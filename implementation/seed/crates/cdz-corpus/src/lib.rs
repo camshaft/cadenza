@@ -1077,7 +1077,7 @@ fn atom_text(a: &Arenas, id: StructId) -> Option<String> {
 fn string_leaf(a: &Arenas, id: StructId) -> Option<String> {
     match a.get(id) {
         cadenza_syntax::ast::Struct::Atom(l) => match a.leaf(*l) {
-            cadenza_syntax::ast::Leaf::Str(s) => Some(s.clone()),
+            cadenza_syntax::ast::Leaf::Str(s) => Some(s.to_string()),
             _ => None,
         },
         _ => None,

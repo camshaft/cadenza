@@ -235,7 +235,7 @@ impl<'b> Toml<'b> {
         match v {
             Value::String(f) => {
                 // A string always carries its decoded logical value as a convenience leaf.
-                let val = Leaf::Str(f.value().clone());
+                let val = Leaf::Str(f.value().clone().into());
                 self.scalar_with("toml-string", &pre, &suf, &f.display_repr(), Some(val))
             }
             Value::Integer(f) => {
@@ -358,7 +358,7 @@ impl<'b> Toml<'b> {
     }
 
     fn mk_str(&mut self, s: String) -> StructId {
-        self.mk_atom_leaf(Leaf::Str(s))
+        self.mk_atom_leaf(Leaf::Str(s.into()))
     }
 
     fn mk_bool(&mut self, v: bool) -> StructId {
@@ -842,7 +842,7 @@ mod tests {
                 if let crate::ast::Struct::Atom(l) = *a.get(items[3])
                     && let Leaf::Str(_) = a.leaf(l)
                 {
-                    a.leaves[l.0 as usize] = Leaf::Str("\"0.0.0.0\"".to_string());
+                    a.leaves[l.0 as usize] = Leaf::Str("\"0.0.0.0\"".into());
                     changed = true;
                 }
             }

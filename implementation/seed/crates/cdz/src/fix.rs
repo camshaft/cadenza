@@ -279,7 +279,7 @@ pub(crate) fn split_top_forms(text: &str) -> Vec<String> {
                         Some(cadenza_syntax::query::Tree::Atom(
                             cadenza_syntax::ast::Leaf::Name(n),
                             _,
-                        )) if n == "do"
+                        )) if &**n == "do"
                     ) =>
                 {
                     items.iter().skip(1).map(|t| t.to_sexpr()).collect()
@@ -300,7 +300,9 @@ pub(crate) fn substitute_hole(
 ) -> cadenza_syntax::query::Tree {
     use cadenza_syntax::query::Tree;
     match template {
-        Tree::Atom(cadenza_syntax::ast::Leaf::Name(n), _) if n == &rcdzc::WRAP_HOLE.to_string() => {
+        Tree::Atom(cadenza_syntax::ast::Leaf::Name(n), _)
+            if &**n == rcdzc::WRAP_HOLE.to_string().as_str() =>
+        {
             fill.clone()
         }
         Tree::Atom(..) => template.clone(),
@@ -493,7 +495,7 @@ mod tests {
         );
         // A bare hole atom at the root becomes exactly the fill.
         let bare_hole = Tree::Atom(
-            cadenza_syntax::ast::Leaf::Name(rcdzc::WRAP_HOLE.to_string()),
+            cadenza_syntax::ast::Leaf::Name(rcdzc::WRAP_HOLE.to_string().into()),
             None,
         );
         assert_eq!(

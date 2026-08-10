@@ -3243,7 +3243,7 @@ impl<'a> Printer<'a> {
     fn head_name(&self, id: StructId) -> Option<String> {
         match self.a.get(id) {
             Struct::Atom(l) => match self.a.leaf(*l) {
-                Leaf::Name(n) => Some(n.clone()),
+                Leaf::Name(n) => Some(n.to_string()),
                 _ => None,
             },
             _ => None,
@@ -3257,7 +3257,7 @@ impl<'a> Printer<'a> {
     fn head_ctor(&self, id: StructId) -> Option<String> {
         match self.a.get(id) {
             Struct::Atom(l) => match self.a.leaf(*l) {
-                Leaf::Str(s) => Some(s.clone()),
+                Leaf::Str(s) => Some(s.to_string()),
                 _ => None,
             },
             _ => None,
@@ -3306,7 +3306,7 @@ impl<'a> Printer<'a> {
         }
         let name = match self.a.get(unit[1]) {
             Struct::Atom(l) => match self.a.leaf(*l) {
-                Leaf::Sym(s) if name_is_bare_safe(s) => s.clone(),
+                Leaf::Sym(s) if name_is_bare_safe(s) => s.to_string(),
                 _ => return None,
             },
             _ => return None,
@@ -3422,7 +3422,7 @@ impl<'a> Printer<'a> {
         }
         match self.a.get(m[1]) {
             Struct::Atom(l) => match self.a.leaf(*l) {
-                Leaf::Sym(s) => Some(s.clone()),
+                Leaf::Sym(s) => Some(s.to_string()),
                 _ => None,
             },
             _ => None,
@@ -3449,7 +3449,7 @@ impl<'a> Printer<'a> {
         }
         let name = match self.a.get(unit[1]) {
             Struct::Atom(l) => match self.a.leaf(*l) {
-                Leaf::Sym(s) if name_is_bare_safe(s) => s.clone(),
+                Leaf::Sym(s) if name_is_bare_safe(s) => s.to_string(),
                 _ => return None,
             },
             _ => return None,
@@ -3917,7 +3917,7 @@ fn sym_is_bare_safe(s: &str) -> bool {
             t.kind == Kind::SymLit
                 && t.span.start == 0
                 && t.span.end == candidate.len()
-                && literal::unescape_sym_token(&candidate) == Leaf::Sym(s.to_string())
+                && literal::unescape_sym_token(&candidate) == Leaf::Sym(s.into())
         }
         _ => false,
     }

@@ -101,7 +101,7 @@ fn build_val(b: &mut Builder, val: &Val) -> Result<StructId, MarshalError> {
         Val::Float32(_) => return Err(unmarshallable("float32 (deferred)")),
         Val::Float64(_) => return Err(unmarshallable("float64 (deferred)")),
         Val::Char(c) => b.atom_leaf(Leaf::Char(*c)),
-        Val::String(s) => b.atom_leaf(Leaf::Str(s.clone())),
+        Val::String(s) => b.atom_leaf(Leaf::Str(s.clone().into())),
         // list<u8> is the ONE list special-cased to a single Bytes leaf (blob-optimized wire, #2063);
         // any other list<T> is a string-head ("list" elem…) form of per-element nodes.
         Val::List(items) => {
@@ -850,7 +850,7 @@ pub fn build_event_document(
         let head = b.name("content-type");
         let fam = {
             let h = b.name("family");
-            let v = b.atom_leaf(Leaf::Str(content_type.family.to_string()));
+            let v = b.atom_leaf(Leaf::Str(content_type.family.to_string().into()));
             b.list(vec![h, v])
         };
         let ver = {
@@ -1571,8 +1571,8 @@ mod tests {
         };
         match a.get(kids[0]) {
             Struct::Atom(lid) => match a.leaf(*lid) {
-                Leaf::Str(s) => s.clone(),
-                Leaf::Name(n) => n.clone(),
+                Leaf::Str(s) => s.to_string(),
+                Leaf::Name(n) => n.to_string(),
                 other => panic!("unexpected head leaf {other:?}"),
             },
             Struct::List(_) => panic!("head is not an atom"),

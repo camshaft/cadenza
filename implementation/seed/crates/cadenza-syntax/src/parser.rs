@@ -210,7 +210,7 @@ impl<'a> Parser<'a> {
     }
 
     /// An `Atom` of a `Name` with source `span`.
-    fn name(&mut self, name: impl Into<String>, span: Span) -> StructId {
+    fn name(&mut self, name: impl Into<std::sync::Arc<str>>, span: Span) -> StructId {
         self.atom(Leaf::Name(name.into()), span)
     }
 
@@ -354,7 +354,7 @@ impl<'a> Parser<'a> {
                 });
                 self.pos = self.tokens.len();
                 let head = self.name("embedded", open);
-                let g = self.atom(Leaf::Sym(grammar.to_string()), open);
+                let g = self.atom(Leaf::Sym(grammar.into()), open);
                 let err = self.error_node(open);
                 return self.list(vec![head, g, err], open);
             }
@@ -371,7 +371,7 @@ impl<'a> Parser<'a> {
         // Parse the raw body with the sub-grammar's own reader and graft the result. `body_start` is the
         // body's offset in the outer source, so each grafted node's span lands in document coordinates.
         let head = self.name("embedded", region_span);
-        let g = self.atom(Leaf::Sym(grammar.to_string()), region_span);
+        let g = self.atom(Leaf::Sym(grammar.into()), region_span);
         let sub = self.read_embedded(grammar, body, body_start, region_span);
         self.list(vec![head, g, sub], region_span)
     }
@@ -430,7 +430,7 @@ impl<'a> Parser<'a> {
     /// name a binding could shadow, so a literal always builds the compound even where the alias name
     /// `list`/`tuple`/`record`/`map` is rebound. ("The strings are the symbols.")
     fn ctor_head(&mut self, name: &str, span: Span) -> StructId {
-        self.atom(Leaf::Str(name.to_string()), span)
+        self.atom(Leaf::Str(name.into()), span)
     }
 
     // ---- token cursor ----
@@ -729,7 +729,7 @@ impl<'a> Parser<'a> {
         items.push(self.name("do", do_span));
         for lead in docs {
             let head = self.name("module-doc", lead.span);
-            let text = self.atom(Leaf::Str(lead.text), lead.span);
+            let text = self.atom(Leaf::Str(lead.text.into()), lead.span);
             items.push(self.list(vec![head, text], lead.span));
         }
         items.push(node);
@@ -756,7 +756,7 @@ impl<'a> Parser<'a> {
     fn wrap_comments(&mut self, comments: Vec<Lead>, mut node: StructId) -> StructId {
         for lead in comments.into_iter().rev() {
             let head = self.name("comment", lead.span);
-            let text = self.atom(Leaf::Str(lead.text), lead.span);
+            let text = self.atom(Leaf::Str(lead.text.into()), lead.span);
             node = self.list(vec![head, text, node], lead.span);
         }
         node
@@ -770,7 +770,7 @@ impl<'a> Parser<'a> {
     fn wrap_comment_after(&mut self, comments: Vec<Lead>, mut node: StructId) -> StructId {
         for lead in comments.into_iter() {
             let head = self.name("comment-after", lead.span);
-            let text = self.atom(Leaf::Str(lead.text), lead.span);
+            let text = self.atom(Leaf::Str(lead.text.into()), lead.span);
             // Same `(head "text" node)` shape as a leading `(comment …)` — so `strip_comments` peels
             // BOTH heads by the identical `tail = [text, form]` rule (the compiler never sees either).
             node = self.list(vec![head, text, node], lead.span);
@@ -825,7 +825,7 @@ impl<'a> Parser<'a> {
         docs.into_iter()
             .map(|lead| {
                 let head = self.name("doc", lead.span);
-                let text = self.atom(Leaf::Str(lead.text), lead.span);
+                let text = self.atom(Leaf::Str(lead.text.into()), lead.span);
                 self.list(vec![head, text], lead.span)
             })
             .collect()
@@ -1211,7 +1211,7 @@ impl<'a> Parser<'a> {
                 let chunks_head = self.name("chunks", span);
                 let mut chunks = vec![chunks_head];
                 for s in chunk_strs {
-                    chunks.push(self.atom(Leaf::Str(s), span));
+                    chunks.push(self.atom(Leaf::Str(s.into()), span));
                 }
                 let chunks = self.list(chunks, span);
                 // holes: each hole's source re-parsed as an expression and grafted in. `read_ml` returns
@@ -1310,7 +1310,7 @@ impl<'a> Parser<'a> {
                     let key_span = self.cur_span();
                     let t = self.bump().unwrap();
                     key_text = self.text(t).to_string();
-                    self.name(&key_text, key_span)
+                    self.name(key_text.as_str(), key_span)
                 } else {
                     self.error("expected a pragma key after `@!` (e.g. `@!default-float Float32`)");
                     self.error_node(self.cur_span())
@@ -1531,7 +1531,7 @@ impl<'a> Parser<'a> {
         self.bump(); // the unit name
         // (Unit.of #"name"), then extend into a COMPOUND / RATE unit across glued operators.
         let unit_head = self.member_head("Unit", "of", unit_span);
-        let sym = self.atom(Leaf::Sym(name), unit_span);
+        let sym = self.atom(Leaf::Sym(name.into()), unit_span);
         let atom = self.list(vec![unit_head, sym], unit_span);
         let unit_expr = self.compound_unit_tail(atom);
         // (Qty.of num <unit>)
@@ -1582,7 +1582,7 @@ impl<'a> Parser<'a> {
             self.bump(); // operator
             self.bump(); // unit name
             let unit_head = self.member_head("Unit", "of", rhs_span);
-            let sym = self.atom(Leaf::Sym(name), rhs_span);
+            let sym = self.atom(Leaf::Sym(name.into()), rhs_span);
             let rhs_atom = self.list(vec![unit_head, sym], rhs_span);
             let rhs = self.unit_pow(rhs_atom); // `^n` binds to THIS factor before the `/`/`*`
             // BARE `/` / `*` head between two unit operands — `eval::unit_of` composes a bare arithmetic
@@ -1684,7 +1684,7 @@ impl<'a> Parser<'a> {
             // (without this the bare-name case read only a SINGLE unit and a following `/s` fell to the
             // enclosing infix loop as a division of the conversion by unbound `s`).
             let unit_head = self.member_head("Unit", "of", span);
-            let sym = self.atom(Leaf::Sym(name), span);
+            let sym = self.atom(Leaf::Sym(name.into()), span);
             let atom = self.list(vec![unit_head, sym], span);
             return self.compound_unit_tail(atom);
         }
@@ -5551,7 +5551,7 @@ mod tests {
                 crate::ast::Struct::Atom(l) => *l,
                 _ => panic!(),
             }),
-            &Leaf::Str("a\nb".to_string())
+            &Leaf::Str("a\nb".into())
         );
     }
 
@@ -5997,7 +5997,7 @@ mod tests {
         match a.get(emb[0]) {
             crate::ast::Struct::Atom(lid) => assert_eq!(
                 a.leaf(*lid),
-                &Leaf::Sym("json".to_string()),
+                &Leaf::Sym("json".into()),
                 "the grammar tag is the #json symbol"
             ),
             other => panic!("grammar tag is an atom, got {other:?}"),

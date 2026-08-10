@@ -138,14 +138,14 @@ impl<'b> Md<'b> {
 
             Event::Text(_) => unreachable!("handled above"),
             Event::Code(c) => {
-                let node = self.mk_list_of("code", &[Leaf::Str(c.into_string())], span);
+                let node = self.mk_list_of("code", &[Leaf::Str(c.into_string().into())], span);
                 self.push_child(node);
             }
             Event::Html(h) | Event::InlineHtml(h) => {
                 // A raw-HTML line (block or inline) — carried verbatim as `(html "…")`. Block vs inline
                 // is recoverable from context (an html node directly under `document` is a block); we
                 // keep one head so the vocabulary stays small.
-                let node = self.mk_list_of("html", &[Leaf::Str(h.into_string())], span);
+                let node = self.mk_list_of("html", &[Leaf::Str(h.into_string().into())], span);
                 self.push_child(node);
             }
             Event::SoftBreak => {
@@ -183,7 +183,7 @@ impl<'b> Md<'b> {
     /// Emit the pending text run (if any) as one `(text …)` node in the current frame.
     fn flush_text(&mut self) {
         if let Some((buf, span)) = self.pending_text.take() {
-            let node = self.mk_list_of("text", &[Leaf::Str(buf)], span);
+            let node = self.mk_list_of("text", &[Leaf::Str(buf.into())], span);
             self.push_child(node);
         }
     }
@@ -420,7 +420,7 @@ impl<'b> Md<'b> {
     }
 
     fn mk_str(&mut self, s: String, span: Span) -> StructId {
-        self.mk_atom_leaf(Leaf::Str(s), span)
+        self.mk_atom_leaf(Leaf::Str(s.into()), span)
     }
 
     fn mk_int(&mut self, n: i64, span: Span) -> StructId {

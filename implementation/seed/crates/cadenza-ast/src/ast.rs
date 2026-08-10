@@ -19,6 +19,7 @@
 //! pre-expansion (rewriting uniform `(head child…)` structure) easy.
 
 use num_bigint::BigInt;
+use std::sync::Arc;
 
 /// A leaf primitive value. The value kinds plus one MARKER (`BadEscape`) the reader emits for a
 /// lexically-malformed literal it cannot itself report.
@@ -37,7 +38,7 @@ pub enum Leaf {
         radix: Radix,
     },
     Float(Decimal),
-    Str(String),
+    Str(Arc<str>),
     /// A CHAR literal (`#\a`, `#\newline`, `#\u+00E9`) — a single Unicode scalar value, the element type
     /// of a string's scalar sequence (`collections-and-text.md` §A Char Is A Single Unicode Scalar
     /// Value). A `char` is a scalar by construction (Rust `char` excludes the surrogate range), so this
@@ -55,9 +56,9 @@ pub enum Leaf {
     /// (`symbol-interning-direction`; `options/symbol-interning/`). Holds the symbol's text. Printed back
     /// `#"…"` so it round-trips. In the units-of-measure layer a base dimension is named by such a symbol
     /// (`(Unit.base #"meter")`).
-    Sym(String),
+    Sym(Arc<str>),
     /// An identifier: a name reference, a construct head, a variant, or a qualified name segment.
-    Name(String),
+    Name(Arc<str>),
     /// A string literal carrying an UNRECOGNIZED ESCAPE (`"\q"`) — a lexical well-formedness defect the
     /// reader detected but does not itself report (its stderr is not the diagnostic surface). The reader
     /// emits this MARKER instead of silently reading `\q` as the bare `q`; it survives the binary codec so
@@ -69,7 +70,7 @@ pub enum Leaf {
     /// AST as a MARKER (like `BadEscape`). Resolving it is a `CDZ0002` rejection (`collections-and-text.md`
     /// §A Char Is A Single Unicode Scalar Value): a `char` cannot hold a surrogate, so the reader records
     /// the offending spelling here rather than fabricating an invalid scalar. Holds the literal's text.
-    BadChar(String),
+    BadChar(Arc<str>),
     /// A numeric literal carrying an explicit TYPE SUFFIX (`100N`, `0.5R`) — the Rust-style opt-in that
     /// selects an unbounded/exact numeric type per-literal instead of the fixed-width default. `N`
     /// selects `BigInt`, `R` selects `Rational`; the body is an ordinary integer or float literal
@@ -198,7 +199,7 @@ pub struct Builder {
     // as a `&str` slice of the source. Keying by `String` lets `leaf_name` look it up with a `&str`
     // (`String: Borrow<str>`) and allocate the owned `String` ONLY on a genuine cache miss — so a
     // repeated name (the norm in real code) costs zero allocation, instead of the old path that built a
-    // `Leaf::Name(text.to_string())` for EVERY occurrence and discarded it on a dedup hit.
+    // `Leaf::Name(text.into())` for EVERY occurrence and discarded it on a dedup hit.
     name_index: crate::fxhash::FxHashMap<String, LeafId>,
     structure: Vec<Struct>,
 }
@@ -261,7 +262,7 @@ impl Builder {
             return id;
         }
         let id = LeafId(self.leaves.len() as u32);
-        self.leaves.push(Leaf::Name(name.to_string()));
+        self.leaves.push(Leaf::Name(Arc::from(name)));
         self.name_index.insert(name.to_string(), id);
         id
     }
@@ -322,7 +323,7 @@ impl Builder {
 
     /// True if `id` is an `Atom` of the NAME leaf `name`.
     fn head_leaf_is(&self, id: StructId, name: &str) -> bool {
-        matches!(self.get(id), Struct::Atom(l) if matches!(&self.leaves[l.0 as usize], Leaf::Name(n) if n == name))
+        matches!(self.get(id), Struct::Atom(l) if matches!(&self.leaves[l.0 as usize], Leaf::Name(n) if &**n == name))
     }
 
     /// If `id` is an `Atom` of a `Name`, that name — for inspecting a just-built node during parse
@@ -557,10 +558,10 @@ impl Arenas {
     /// [`node_eq`] can treat `Name("record")` and `Str("record")` as the same head. Only the four
     /// compound ctors qualify; every other name/string is left to exact leaf comparison.
     fn ctor_head_key(&self, id: StructId) -> Option<&str> {
-        let spelling = match self.get(id) {
+        let spelling: &str = match self.get(id) {
             Struct::Atom(l) => match self.leaf(*l) {
-                Leaf::Name(n) => n.as_str(),
-                Leaf::Str(s) => s.as_str(),
+                Leaf::Name(n) => n,
+                Leaf::Str(s) => s,
                 _ => return None,
             },
             _ => return None,
@@ -667,7 +668,7 @@ mod tests {
         // And the interned text is the NFC (precomposed) form.
         assert_eq!(
             b.leaves[a1.0 as usize],
-            Leaf::Name(precomposed.to_string()),
+            Leaf::Name(precomposed.into()),
             "the interned name is NFC-normalized (precomposed)"
         );
 
@@ -688,7 +689,7 @@ mod tests {
         // two leaf ids and structural equality / dedup would silently break.
         let mut b = Builder::new();
         let via_name = b.leaf_name("foo");
-        let via_leaf = b.leaf(Leaf::Name("foo".to_string()));
+        let via_leaf = b.leaf(Leaf::Name("foo".into()));
         assert_eq!(via_name, via_leaf, "leaf(Name) must reuse leaf_name's id");
         // And a second `leaf_name` hit reuses it too — no new leaf appended.
         let again = b.leaf_name("foo");
@@ -704,15 +705,15 @@ mod tests {
         // name goes through `name_index`, the other two through the general `leaf_index`. They must NOT
         // collapse to one id (a name reference, a text value, and a symbol value are semantically apart).
         let mut b = Builder::new();
-        let n = b.leaf(Leaf::Name("x".to_string()));
-        let s = b.leaf(Leaf::Str("x".to_string()));
-        let y = b.leaf(Leaf::Sym("x".to_string()));
+        let n = b.leaf(Leaf::Name("x".into()));
+        let s = b.leaf(Leaf::Str("x".into()));
+        let y = b.leaf(Leaf::Sym("x".into()));
         assert_ne!(n, s);
         assert_ne!(n, y);
         assert_ne!(s, y);
         // Re-interning each kind reuses its own id (dedup within a kind).
-        assert_eq!(b.leaf(Leaf::Str("x".to_string())), s);
-        assert_eq!(b.leaf(Leaf::Sym("x".to_string())), y);
+        assert_eq!(b.leaf(Leaf::Str("x".into())), s);
+        assert_eq!(b.leaf(Leaf::Sym("x".into())), y);
     }
 
     // Build a one-form arena `(head child…)` where `head` is either a Name or a Str atom.
@@ -734,14 +735,14 @@ mod tests {
         // structural equality MUST treat the two head kinds as equal — in BOTH directions.
         for ctor in ["list", "tuple", "record", "map"] {
             let name_headed = form(
-                Leaf::Name(ctor.to_string()),
+                Leaf::Name(ctor.into()),
                 &[Leaf::Int {
                     value: BigInt::from(1),
                     radix: Radix::Dec,
                 }],
             );
             let str_headed = form(
-                Leaf::Str(ctor.to_string()),
+                Leaf::Str(ctor.into()),
                 &[Leaf::Int {
                     value: BigInt::from(1),
                     radix: Radix::Dec,
@@ -762,8 +763,8 @@ mod tests {
     fn structurally_eq_does_not_collapse_non_ctor_head() {
         // A non-ctor spelling has no head-kind normalization: `(foo 1)` name-headed vs string-headed are
         // DISTINCT (a bare application vs a string-headed form). Only the four ctors collapse.
-        let name_headed = form(Leaf::Name("foo".to_string()), &[Leaf::Bool(true)]);
-        let str_headed = form(Leaf::Str("foo".to_string()), &[Leaf::Bool(true)]);
+        let name_headed = form(Leaf::Name("foo".into()), &[Leaf::Bool(true)]);
+        let str_headed = form(Leaf::Str("foo".into()), &[Leaf::Bool(true)]);
         assert!(!name_headed.structurally_eq(&str_headed));
     }
 
@@ -772,14 +773,8 @@ mod tests {
         // The ctor collapse fires ONLY in head position. A ctor spelling appearing as a non-head CHILD
         // (`(f list)` with `list` a Name vs `(f "list")` with `"list"` a Str) must stay distinct — the
         // child falls through to exact leaf comparison, so Name("list") != Str("list") there.
-        let name_child = form(
-            Leaf::Name("f".to_string()),
-            &[Leaf::Name("list".to_string())],
-        );
-        let str_child = form(
-            Leaf::Name("f".to_string()),
-            &[Leaf::Str("list".to_string())],
-        );
+        let name_child = form(Leaf::Name("f".into()), &[Leaf::Name("list".into())]);
+        let str_child = form(Leaf::Name("f".into()), &[Leaf::Str("list".into())]);
         assert!(
             !name_child.structurally_eq(&str_child),
             "a ctor spelling as a non-head child must not collapse"
@@ -852,7 +847,7 @@ mod tests {
     fn head_and_form_accessors_distinguish_name_from_ctor() {
         // `head_name`/`as_form` read a NAME head; `head_ctor`/`as_ctor_form` read a STRING head. A
         // string-headed form has no name head (and vice-versa), so the accessors don't cross over.
-        let str_headed = form(Leaf::Str("record".to_string()), &[Leaf::Bool(false)]);
+        let str_headed = form(Leaf::Str("record".into()), &[Leaf::Bool(false)]);
         assert_eq!(str_headed.head_ctor(str_headed.root), Some("record"));
         assert_eq!(str_headed.head_name(str_headed.root), None);
         assert_eq!(
@@ -863,7 +858,7 @@ mod tests {
         );
         assert_eq!(str_headed.as_form(str_headed.root, "record"), None);
 
-        let name_headed = form(Leaf::Name("if".to_string()), &[Leaf::Bool(true)]);
+        let name_headed = form(Leaf::Name("if".into()), &[Leaf::Bool(true)]);
         assert_eq!(name_headed.head_name(name_headed.root), Some("if"));
         assert_eq!(name_headed.head_ctor(name_headed.root), None);
         assert_eq!(name_headed.as_str(name_headed.root), None); // the root is a List, not a Str atom
@@ -916,14 +911,14 @@ mod tests {
                 significand: BigInt::from(rng.next() % 10_000),
                 exponent: (rng.next() % 9) as i64 - 4,
             }),
-            2 => Leaf::Str(["", "hi", "a\nb", "λ中🎉"][rng.below(4)].to_string()),
+            2 => Leaf::Str(["", "hi", "a\nb", "λ中🎉"][rng.below(4)].into()),
             3 => Leaf::Char(['a', 'é', '\n', '🎉'][rng.below(4)]),
             4 => Leaf::Bytes(vec![(rng.next() & 0xff) as u8, (rng.next() & 0xff) as u8]),
             5 => Leaf::Bool(rng.next() & 1 == 0),
-            6 => Leaf::Sym(["meter", "x", ""][rng.below(3)].to_string()),
-            7 => Leaf::Name(["f", "x", "+", "list", "record"][rng.below(5)].to_string()),
+            6 => Leaf::Sym(["meter", "x", ""][rng.below(3)].into()),
+            7 => Leaf::Name(["f", "x", "+", "list", "record"][rng.below(5)].into()),
             8 => Leaf::BadEscape(['q', 'z'][rng.below(2)]),
-            9 => Leaf::BadChar("u+D800".to_string()),
+            9 => Leaf::BadChar("u+D800".into()),
             _ => Leaf::Suffixed {
                 value: SuffixBody::Int {
                     value: BigInt::from(rng.next() % 1000),
@@ -1010,7 +1005,7 @@ mod tests {
                             && i == 0
                             && let Struct::Atom(l) = src.get(k)
                             && let Leaf::Name(sp) | Leaf::Str(sp) = src.leaf(*l)
-                            && matches!(sp.as_str(), "list" | "tuple" | "record" | "map")
+                            && matches!(&**sp, "list" | "tuple" | "record" | "map")
                         {
                             // Flip Name→Str / Str→Name for the ctor head.
                             let flipped = match src.leaf(*l) {
@@ -1077,7 +1072,7 @@ mod tests {
             let mutated_root = match bd.get(rd) {
                 Struct::List(kids) => {
                     let mut k = kids.clone();
-                    let extra = bd.atom_leaf(Leaf::Name("cdz-sentinel-xyz".to_string()));
+                    let extra = bd.atom_leaf(Leaf::Name("cdz-sentinel-xyz".into()));
                     k.push(extra);
                     bd.list(k)
                 }

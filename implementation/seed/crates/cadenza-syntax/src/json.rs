@@ -138,7 +138,7 @@ impl<'b, 's, 'c> Json<'b, 's, 'c> {
                 '[' => self.parse_array(start),
                 '"' => {
                     let (s, span) = self.parse_string()?;
-                    Ok(self.mk_atom_leaf(Leaf::Str(s), span))
+                    Ok(self.mk_atom_leaf(Leaf::Str(s.into()), span))
                 }
                 't' | 'f' => self.parse_bool(start),
                 'n' => self.parse_null(start),
@@ -175,7 +175,7 @@ impl<'b, 's, 'c> Json<'b, 's, 'c> {
                 None => return Err(ReadError("unterminated object (expected a key)".into())),
             };
             let (key, key_span) = self.parse_string()?;
-            let key_leaf = self.mk_atom_leaf(Leaf::Str(key), key_span);
+            let key_leaf = self.mk_atom_leaf(Leaf::Str(key.into()), key_span);
             self.skip_ws();
             if !self.eat(':') {
                 return Err(ReadError(format!(

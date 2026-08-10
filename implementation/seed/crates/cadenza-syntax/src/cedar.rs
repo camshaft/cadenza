@@ -459,7 +459,7 @@ impl<'b> Cedar<'b> {
     }
 
     fn mk_str(&mut self, s: String) -> StructId {
-        self.mk_atom_leaf(Leaf::Str(s))
+        self.mk_atom_leaf(Leaf::Str(s.into()))
     }
 
     fn mk_atom_leaf(&mut self, leaf: Leaf) -> StructId {
@@ -1108,9 +1108,9 @@ mod tests {
             if a.head_name(id) == Some("effect") {
                 let items = list_items(&a, id);
                 if let crate::ast::Struct::Atom(l) = *a.get(items[1])
-                    && a.leaf(l) == &Leaf::Name("permit".to_string())
+                    && a.leaf(l) == &Leaf::Name("permit".into())
                 {
-                    a.leaves[l.0 as usize] = Leaf::Name("forbid".to_string());
+                    a.leaves[l.0 as usize] = Leaf::Name("forbid".into());
                     changed = true;
                 }
             }

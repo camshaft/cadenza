@@ -480,7 +480,7 @@ fn binder_names(form: &Tree) -> Vec<String> {
     // nothing (the name is filled from the match, not statically known); wildcards contribute nothing.
     fn pat_names(t: &Tree, out: &mut Vec<String>) {
         match t {
-            Tree::Atom(Leaf::Name(n), _) if !is_wildcard(n) => out.push(n.clone()),
+            Tree::Atom(Leaf::Name(n), _) if !is_wildcard(n) => out.push(n.to_string()),
             Tree::List(kids, _) => {
                 // A metavar `(unquote name)` / splice `(unquote-splicing name)` in binder position names
                 // no static binder — skip it rather than treat `unquote`/its payload as binder names.
@@ -543,7 +543,7 @@ fn binder_names(form: &Tree) -> Vec<String> {
 /// a literal (`0`) or wildcard binds nothing; a metavar/splice pattern binds no static name.
 fn arm_pattern_names(pat: &Tree, out: &mut Vec<String>) {
     match pat {
-        Tree::Atom(Leaf::Name(n), _) if !is_wildcard(n) => out.push(n.clone()),
+        Tree::Atom(Leaf::Name(n), _) if !is_wildcard(n) => out.push(n.to_string()),
         Tree::List(kids, _) => {
             if as_metavar_tree(pat).is_some() || as_splice(pat).is_some() {
                 return;
@@ -568,7 +568,7 @@ fn free_names(tree: &Tree, out: &mut std::collections::BTreeSet<String>) {
     fn walk(t: &Tree, bound: &BoundStack, out: &mut std::collections::BTreeSet<String>) {
         match t {
             Tree::Atom(Leaf::Name(n), _) if !is_wildcard(n) && !bound.contains(n) => {
-                out.insert(n.clone());
+                out.insert(n.to_string());
             }
             Tree::List(items, _) => {
                 let introduced = binder_names(t);
@@ -2942,10 +2942,10 @@ pub mod textedit {
                 // Build `(match cdz_arm_ctx <arm>)`, print it, and take everything after the `with` line
                 // — the rendered arm line(s), correctly `| pat => body`. The sentinel scrutinee name is
                 // arbitrary (never emitted into the result — only the arm tail is kept).
-                let sentinel = Tree::Atom(Leaf::Name("cdz_arm_ctx".to_string()), None);
+                let sentinel = Tree::Atom(Leaf::Name("cdz_arm_ctx".into()), None);
                 let synthetic = Tree::List(
                     vec![
-                        Tree::Atom(Leaf::Name("match".to_string()), None),
+                        Tree::Atom(Leaf::Name("match".into()), None),
                         sentinel,
                         t.clone(),
                     ],
@@ -3079,7 +3079,7 @@ pub mod textedit {
     /// normally; only the one preserved subtree becomes the hole.
     fn replace_origin_with_hole(t: &Tree, target: crate::ast::StructId, hole: &str) -> Tree {
         if t.origin() == Some(target) {
-            return Tree::Atom(crate::ast::Leaf::Name(hole.to_string()), None);
+            return Tree::Atom(crate::ast::Leaf::Name(hole.into()), None);
         }
         match t {
             Tree::Atom(..) => t.clone(),
@@ -4156,7 +4156,7 @@ pub mod antiunify {
         Tree::List(
             vec![
                 Tree::Atom(Leaf::Name("unquote".into()), None),
-                Tree::Atom(Leaf::Name(metavar_name(idx)), None),
+                Tree::Atom(Leaf::Name(metavar_name(idx).into()), None),
             ],
             None,
         )
@@ -4594,7 +4594,7 @@ mod tests {
                 let all = rewrite(&pat("(,c)"), &tmpl(",c"), &t);
                 assert_eq!(all.count, depth, "every list level is rewritten");
                 assert!(
-                    matches!(all.tree, Tree::Atom(Leaf::Name(ref n), _) if n == "x"),
+                    matches!(all.tree, Tree::Atom(Leaf::Name(ref n), _) if &**n == "x"),
                     "chain collapses to x"
                 );
             })
@@ -5651,13 +5651,19 @@ mod tests {
                     radix: [crate::ast::Radix::Dec, crate::ast::Radix::Hex]
                         [(rng.next() % 2) as usize],
                 },
-                1 => Leaf::Str(["", "hi", "a\nb", "λ中"][(rng.next() % 4) as usize].to_string()),
+                1 => Leaf::Str(
+                    ["", "hi", "a\nb", "λ中"][(rng.next() % 4) as usize]
+                        .to_string()
+                        .into(),
+                ),
                 2 => Leaf::Bool(rng.next().is_multiple_of(2)),
                 3 => Leaf::Char(['a', 'é', '\n'][(rng.next() % 3) as usize]),
                 4 => Leaf::Bytes(vec![(rng.next() & 0xff) as u8]),
-                5 => Leaf::Sym(["meter", "x"][(rng.next() % 2) as usize].to_string()),
+                5 => Leaf::Sym(["meter", "x"][(rng.next() % 2) as usize].to_string().into()),
                 _ => Leaf::Name(
-                    ["f", "x", "+", "record", "list"][(rng.next() % 5) as usize].to_string(),
+                    ["f", "x", "+", "record", "list"][(rng.next() % 5) as usize]
+                        .to_string()
+                        .into(),
                 ),
             };
             b.atom_leaf(leaf)

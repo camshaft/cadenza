@@ -144,7 +144,7 @@ pub fn encode_capability_manifest(manifest: &crate::effect::CapabilityManifest) 
                         let h = b.name("descendant-of");
                         // Build the leaf from the OWNED hex directly — str_leaf(&str) would re-clone it via
                         // to_string(), a needless second alloc of the 64-char hex (github-liaison #2443 c2).
-                        let v = b.atom_leaf(Leaf::Str(controller.to_hex()));
+                        let v = b.atom_leaf(Leaf::Str(controller.to_hex().into()));
                         b.list(vec![h, v])
                     }
                 };
@@ -1709,7 +1709,7 @@ fn bytes_leaf(b: &mut Builder, bytes: &[u8]) -> StructId {
 }
 
 fn str_leaf(b: &mut Builder, s: &str) -> StructId {
-    b.atom_leaf(Leaf::Str(s.to_string()))
+    b.atom_leaf(Leaf::Str(s.to_string().into()))
 }
 
 fn hash_form(b: &mut Builder, h: &Hash) -> StructId {
@@ -2032,7 +2032,7 @@ fn read_target_bytes(a: &Arenas, id: StructId) -> Result<Vec<u8>, EventAstError>
     match a.get(id) {
         Struct::Atom(leaf) => match a.leaf(*leaf) {
             Leaf::Bytes(bytes) => Ok(bytes.clone()),
-            Leaf::Str(s) => Ok(s.clone().into_bytes()),
+            Leaf::Str(s) => Ok(s.as_bytes().to_vec()),
             _ => Err(shape("expected bytes or str leaf for target")),
         },
         _ => Err(shape("expected atom for target")),

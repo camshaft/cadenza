@@ -21,7 +21,7 @@ use unicode_normalization::UnicodeNormalization;
 /// Keywords are NOT handled here — that is the parser's job (`token::keyword`); a word like `let`
 /// classifies as `Leaf::Name("let")` and only becomes a keyword in grammatical position.
 pub fn classify_word(text: &str) -> Leaf {
-    classify_word_nonname(text).unwrap_or_else(|| Leaf::Name(text.to_string()))
+    classify_word_nonname(text).unwrap_or_else(|| Leaf::Name(text.into()))
 }
 
 /// Classify a word into a NON-NAME leaf — `Bool` / `Int` / `Float` — or `None` if it is a plain
@@ -119,7 +119,7 @@ pub fn char_leaf(word: &str) -> Leaf {
     {
         return match char::from_u32(cp) {
             Some(c) => Leaf::Char(c),
-            None => Leaf::BadChar(word.to_string()), // surrogate or > U+10FFFF
+            None => Leaf::BadChar(word.into()), // surrogate or > U+10FFFF
         };
     }
     // A named control char.
@@ -130,7 +130,7 @@ pub fn char_leaf(word: &str) -> Leaf {
         "return" => Leaf::Char('\r'),
         "null" => Leaf::Char('\0'),
         // Anything else — an unknown multi-char name — is malformed.
-        _ => Leaf::BadChar(word.to_string()),
+        _ => Leaf::BadChar(word.into()),
     }
 }
 
@@ -411,7 +411,7 @@ pub fn unescape_string_token(token: &str) -> Leaf {
         .and_then(|s| s.strip_suffix('"'))
         .unwrap_or("");
     match unescape_string(inner) {
-        Ok(s) => Leaf::Str(s),
+        Ok(s) => Leaf::Str(s.into()),
         Err(c) => Leaf::BadEscape(c),
     }
 }
@@ -431,7 +431,7 @@ pub fn unescape_sym_token(token: &str) -> Leaf {
     if let Some(body) = token.strip_prefix('#')
         && !body.starts_with('"')
     {
-        return Leaf::Sym(body.nfc().collect());
+        return Leaf::Sym(body.nfc().collect::<String>().into());
     }
     let inner = token
         .strip_prefix("#\"")
@@ -443,7 +443,7 @@ pub fn unescape_sym_token(token: &str) -> Leaf {
         Ok(s) => s,
         Err(_) => inner.nfc().collect(),
     };
-    Leaf::Sym(content)
+    Leaf::Sym(content.into())
 }
 
 /// Unescape a byte-string TOKEN (`b"…"`, the `b` + quotes included, as the ml lexer spans it) into
@@ -926,11 +926,11 @@ mod tests {
             }
         );
         assert!(matches!(classify_word("1.5"), Leaf::Float(_)));
-        assert_eq!(classify_word("foo"), Leaf::Name("foo".to_string()));
+        assert_eq!(classify_word("foo"), Leaf::Name("foo".into()));
         // A malformed number stays a Name (rejected downstream), never silently repaired.
-        assert_eq!(classify_word("1_"), Leaf::Name("1_".to_string()));
+        assert_eq!(classify_word("1_"), Leaf::Name("1_".into()));
         // Keywords are ordinary names here — the parser decides keyword-ness.
-        assert_eq!(classify_word("let"), Leaf::Name("let".to_string()));
+        assert_eq!(classify_word("let"), Leaf::Name("let".into()));
     }
 
     #[test]
@@ -1155,7 +1155,7 @@ mod tests {
         // The token path (what the reader actually calls) agrees.
         assert_eq!(
             unescape_string_token("\"cafe\u{0301}\""),
-            Leaf::Str(precomposed.to_string()),
+            Leaf::Str(precomposed.into()),
             "the string-token reader NFC-normalizes too"
         );
     }

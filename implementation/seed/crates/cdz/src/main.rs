@@ -10210,7 +10210,7 @@ mod tests {
             for _ in 0..width {
                 let id = *next;
                 *next += 1;
-                kids.push(Tree::Atom(Leaf::Name("a".to_string()), Some(StructId(id))));
+                kids.push(Tree::Atom(Leaf::Name("a".into()), Some(StructId(id))));
             }
             Tree::List(kids, Some(StructId(*next)))
         }
@@ -10222,7 +10222,7 @@ mod tests {
                 next += 1;
             }
             let target = StructId(1);
-            kids.push(Tree::Atom(Leaf::Name("y".to_string()), Some(target)));
+            kids.push(Tree::Atom(Leaf::Name("y".into()), Some(target)));
             (Tree::List(kids, Some(StructId(0))), target)
         };
         // A `replace y → _y` fix. `old_sub` must be just the `y` atom (1 node), regardless of the N wide
@@ -10263,7 +10263,7 @@ mod tests {
         use cadenza_syntax::query::Tree;
         use cadenza_syntax::{StructId, ast::Leaf};
         // `(root (a b) c (d (e f)))` with distinct origins — a mix of depths and sibling positions.
-        let leaf = |id: u32, n: &str| Tree::Atom(Leaf::Name(n.to_string()), Some(StructId(id)));
+        let leaf = |id: u32, n: &str| Tree::Atom(Leaf::Name(n.into()), Some(StructId(id)));
         let tree = Tree::List(
             vec![
                 Tree::List(vec![leaf(2, "a"), leaf(3, "b")], Some(StructId(1))),
@@ -10329,7 +10329,7 @@ mod tests {
             let id = *next_id;
             *next_id += 1;
             if depth == 0 {
-                Tree::Atom(Leaf::Name("leaf".to_string()), Some(StructId(id)))
+                Tree::Atom(Leaf::Name("leaf".into()), Some(StructId(id)))
             } else {
                 Tree::List(vec![deep(depth - 1, next_id)], Some(StructId(id)))
             }
@@ -10339,19 +10339,15 @@ mod tests {
             let child = deep(depth, &mut next);
             let target = StructId(1);
             let tree = Tree::List(
-                vec![
-                    child,
-                    Tree::Atom(Leaf::Name("target".to_string()), Some(target)),
-                ],
+                vec![child, Tree::Atom(Leaf::Name("target".into()), Some(target))],
                 Some(StructId(0)),
             );
             (tree, target)
         };
         fn clones_for(tree: &Tree, target: StructId) -> u64 {
             TRANSFORM_SIBLING_CLONES.with(|c| c.set(0));
-            let mut f = |_n: &Tree| -> Option<Tree> {
-                Some(Tree::Atom(Leaf::Name("_t".to_string()), None))
-            };
+            let mut f =
+                |_n: &Tree| -> Option<Tree> { Some(Tree::Atom(Leaf::Name("_t".into()), None)) };
             let out = transform_target(tree, target, &mut f);
             assert!(out.is_some(), "the target must be found and transformed");
             TRANSFORM_SIBLING_CLONES.with(|c| c.get())

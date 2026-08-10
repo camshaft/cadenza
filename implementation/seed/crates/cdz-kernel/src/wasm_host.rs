@@ -518,7 +518,7 @@ pub fn component_signature_from_bytes(
         let export_head = b.name("export");
         let name_form = {
             let h = b.name("name");
-            let v = b.atom_leaf(cadenza_ast::ast::Leaf::Str(fname.clone()));
+            let v = b.atom_leaf(cadenza_ast::ast::Leaf::Str(fname.clone().into()));
             b.list(vec![h, v])
         };
         let params_form = {

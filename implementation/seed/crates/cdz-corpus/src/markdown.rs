@@ -532,7 +532,7 @@ fn clone_into(a: &Arenas, id: StructId, b: &mut Builder) -> StructId {
 /// `(text "s")`.
 fn md_text(b: &mut Builder, s: &str) -> StructId {
     let head = b.name("text");
-    let leaf = b.atom_leaf(Leaf::Str(s.to_string()));
+    let leaf = b.atom_leaf(Leaf::Str(s.to_string().into()));
     b.list(vec![head, leaf])
 }
 
@@ -558,8 +558,8 @@ fn md_paragraph(b: &mut Builder, s: &str) -> StructId {
 /// by `info`, so the code body round-trips byte-exact.
 fn md_code_block(b: &mut Builder, info: &str, raw: &str) -> StructId {
     let head = b.name("code-block");
-    let i = b.atom_leaf(Leaf::Str(info.to_string()));
-    let r = b.atom_leaf(Leaf::Str(raw.to_string()));
+    let i = b.atom_leaf(Leaf::Str(info.to_string().into()));
+    let r = b.atom_leaf(Leaf::Str(raw.to_string().into()));
     b.list(vec![head, i, r])
 }
 
@@ -944,7 +944,7 @@ fn sexpr_of_ml(ml: &str) -> Result<String, String> {
 fn str_leaf(a: &Arenas, id: StructId) -> Option<String> {
     match a.get(id) {
         Struct::Atom(l) => match a.leaf(*l) {
-            Leaf::Str(s) => Some(s.clone()),
+            Leaf::Str(s) => Some(s.to_string()),
             _ => None,
         },
         _ => None,

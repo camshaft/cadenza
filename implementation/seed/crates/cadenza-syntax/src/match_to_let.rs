@@ -73,17 +73,17 @@ pub fn is_irrefutable_with(pat: &Tree, single_ctors: &SingleVariantCtors) -> boo
                 return false; // an empty list is not a pattern shape we rewrite
             };
             match head {
-                Tree::Atom(Leaf::Name(h), _) if h == "tuple" => {
+                Tree::Atom(Leaf::Name(h), _) if &**h == "tuple" => {
                     rest.iter().all(|p| is_irrefutable_with(p, single_ctors))
                 }
-                Tree::Atom(Leaf::Name(h), _) if h == "record" => {
+                Tree::Atom(Leaf::Name(h), _) if &**h == "record" => {
                     // Each field is the canonical `(= fieldname subpat)` triple (path B — same form as a
                     // value-record field); the sub-pattern is the LAST element. A legacy `(fieldname
                     // subpat)` pair is tolerated (sub-pattern = 2nd element).
                     rest.iter().all(|field| match field {
                         Tree::List(fitems, _)
                             if fitems.len() == 3
-                                && matches!(&fitems[0], Tree::Atom(Leaf::Name(eq), _) if eq == "=") =>
+                                && matches!(&fitems[0], Tree::Atom(Leaf::Name(eq), _) if &**eq == "=") =>
                         {
                             is_irrefutable_with(&fitems[2], single_ctors)
                         }
@@ -98,9 +98,7 @@ pub fn is_irrefutable_with(pat: &Tree, single_ctors: &SingleVariantCtors) -> boo
                 // A `(Ctor sub…)` sum-constructor pattern: irrefutable ONLY when `Ctor` is the sole
                 // variant of its (same-program) type AND every sub-pattern is irrefutable. A `guard`
                 // head (`(guard …)`) is never capitalized so it falls through to refutable here.
-                Tree::Atom(Leaf::Name(h), _)
-                    if is_ctor_name(h) && single_ctors.contains(h.as_str()) =>
-                {
+                Tree::Atom(Leaf::Name(h), _) if is_ctor_name(h) && single_ctors.contains(&**h) => {
                     rest.iter().all(|p| is_irrefutable_with(p, single_ctors))
                 }
                 // `(Ctor …)` not known-single-variant → refutable; `(guard …)` → refutable; else refutable.
@@ -127,7 +125,7 @@ pub fn single_variant_ctors(program: &Tree) -> SingleVariantCtors {
 fn collect_type_decls(tree: &Tree, out: &mut SingleVariantCtors) {
     if let Tree::List(items, _) = tree {
         if let Some(Tree::Atom(Leaf::Name(h), _)) = items.first()
-            && h == "type"
+            && &**h == "type"
             && items.len() >= 3
         {
             // items = [type, Name, variant…]. A trailing `.. r` open-sum marker (a `Name("..")` then a
@@ -141,7 +139,7 @@ fn collect_type_decls(tree: &Tree, out: &mut SingleVariantCtors) {
             // irrefutable, which would let the codemod erase a non-exhaustive match's refutability.)
             let variants = &items[2..];
             let is_open = variants.len() >= 2
-                && matches!(&variants[variants.len() - 2], Tree::Atom(Leaf::Name(d), _) if d == "..");
+                && matches!(&variants[variants.len() - 2], Tree::Atom(Leaf::Name(d), _) if &**d == "..");
             if !is_open
                 && variants.len() == 1
                 && let Some(name) = ctor_name_of(&variants[0])
@@ -167,7 +165,7 @@ fn ctor_name_of(variant: &Tree) -> Option<String> {
         },
         _ => return None,
     };
-    is_ctor_name(name).then(|| name.clone())
+    is_ctor_name(name).then(|| name.to_string())
 }
 
 /// A Capitalized name is a constructor (`Wrap`, `Some`); a lowercase one is a var/type-param.
@@ -234,7 +232,7 @@ fn try_match_to_let(tree: &Tree, single_ctors: &SingleVariantCtors) -> Option<Tr
         return None;
     }
     match &items[0] {
-        Tree::Atom(Leaf::Name(h), _) if h == "match" => {}
+        Tree::Atom(Leaf::Name(h), _) if &**h == "match" => {}
         _ => return None,
     }
     let scrut = &items[1];
@@ -252,7 +250,7 @@ fn try_match_to_let(tree: &Tree, single_ctors: &SingleVariantCtors) -> Option<Tr
     // Build `(let ((PAT SCRUT)) BODY)`: a let-head, a binding-list holding one `(PAT SCRUT)` pair, body.
     let binding = Tree::List(vec![pat.clone(), scrut.clone()], None);
     let bindings = Tree::List(vec![binding], None);
-    let let_head = Tree::Atom(Leaf::Name("let".to_string()), None);
+    let let_head = Tree::Atom(Leaf::Name("let".into()), None);
     Some(Tree::List(vec![let_head, bindings, body.clone()], None))
 }
 
@@ -451,7 +449,7 @@ mod tests {
     fn find_first_match_pattern(tree: &Tree) -> Option<Tree> {
         if let Tree::List(items, _) = tree {
             if let Some(Tree::Atom(Leaf::Name(h), _)) = items.first()
-                && h == "match"
+                && &**h == "match"
                 && items.len() == 3
                 && let Tree::List(clause, _) = &items[2]
                 && clause.len() == 2

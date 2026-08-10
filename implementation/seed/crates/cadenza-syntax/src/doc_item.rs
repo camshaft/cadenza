@@ -49,14 +49,14 @@ pub fn project(program: &Arenas, module_name: &str) -> Arenas {
     let mut b = Builder::new();
     let mut children = vec![
         b.name("doc-module"),
-        b.atom_leaf(Leaf::Str(module_name.to_string())),
+        b.atom_leaf(Leaf::Str(module_name.into())),
     ];
 
     // Module-doc: concatenate every top-level `(module-doc "…")` sibling's text (in source order).
     let module_doc = collect_doc_text(program, forms.iter().copied(), "module-doc");
     if let Some(text) = module_doc {
         let head = b.name("module-doc");
-        let t = b.atom_leaf(Leaf::Str(text));
+        let t = b.atom_leaf(Leaf::Str(text.into()));
         let node = b.list(vec![head, t]);
         children.push(node);
     }
@@ -139,7 +139,7 @@ struct DocItemSel {
 /// (e.g. a function def's `(name params)` sig list captured by the value-def pattern) yields `None`.
 fn bound_name(t: &Tree) -> Option<String> {
     match t {
-        Tree::Atom(Leaf::Name(n), _) => Some(n.clone()),
+        Tree::Atom(Leaf::Name(n), _) => Some(n.to_string()),
         _ => None,
     }
 }
@@ -161,7 +161,7 @@ fn build_doc_item(b: &mut Builder, program: &Arenas, sel: &DocItemSel) -> Struct
 
     // (name "…")
     let name_head = b.name("name");
-    let name_val = b.atom_leaf(Leaf::Str(sel.name.clone()));
+    let name_val = b.atom_leaf(Leaf::Str(sel.name.clone().into()));
     let name_node = b.list(vec![name_head, name_val]);
     item.push(name_node);
 
@@ -181,7 +181,7 @@ fn build_doc_item(b: &mut Builder, program: &Arenas, sel: &DocItemSel) -> Struct
     };
     if let Some(text) = collect_doc_text(program, item_children.iter().copied(), "doc") {
         let doc_head = b.name("doc");
-        let doc_val = b.atom_leaf(Leaf::Str(text));
+        let doc_val = b.atom_leaf(Leaf::Str(text.into()));
         let doc_node = b.list(vec![doc_head, doc_val]);
         item.push(doc_node);
     }

@@ -143,7 +143,7 @@ mod tests {
     /// arena (the shape a crafted-but-valid binary AST uses to attack a recursive walker).
     fn deep_chain(n: usize) -> Arenas {
         let mut b = Builder::new();
-        let mut cur = b.atom_leaf(Leaf::Name("x".to_string()));
+        let mut cur = b.atom_leaf(Leaf::Name("x".into()));
         for _ in 0..n {
             cur = b.list(vec![cur]);
         }
@@ -205,14 +205,14 @@ mod tests {
                 }),
                 "Float 1.5",
             ),
-            (Leaf::Str("hi\n".to_string()), "Str \"hi\\n\""),
+            (Leaf::Str("hi\n".into()), "Str \"hi\\n\""),
             (Leaf::Bytes(vec![0, 255]), "Bytes [0, 255]"),
             (Leaf::Bool(true), "Bool true"),
-            (Leaf::Sym("meter".to_string()), "Sym \"meter\""),
-            (Leaf::Name("foo".to_string()), "Name foo"),
+            (Leaf::Sym("meter".into()), "Sym \"meter\""),
+            (Leaf::Name("foo".into()), "Name foo"),
             (Leaf::BadEscape('q'), "BadEscape 'q'"),
             (Leaf::Char('a'), "Char 'a'"),
-            (Leaf::BadChar("u+D800".to_string()), "BadChar \"u+D800\""),
+            (Leaf::BadChar("u+D800".into()), "BadChar \"u+D800\""),
             (
                 Leaf::Suffixed {
                     value: SuffixBody::Int {
@@ -300,13 +300,13 @@ mod tests {
     fn gen_node(rng: &mut Rng, b: &mut Builder, depth: usize) -> StructId {
         if depth == 0 || rng.below(3) == 0 {
             let leaf = match rng.below(4) {
-                0 => Leaf::Name(["a", "b", "cc", "x"][rng.below(4)].to_string()),
+                0 => Leaf::Name(["a", "b", "cc", "x"][rng.below(4)].into()),
                 1 => Leaf::Int {
                     value: BigInt::from(rng.below(1000) as i64),
                     radix: Radix::Dec,
                 },
                 2 => Leaf::Bool(rng.below(2) == 0),
-                _ => Leaf::Str(["", "hi", "a b"][rng.below(3)].to_string()),
+                _ => Leaf::Str(["", "hi", "a b"][rng.below(3)].into()),
             };
             return b.atom_leaf(leaf);
         }

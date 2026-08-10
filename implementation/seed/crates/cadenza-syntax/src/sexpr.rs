@@ -703,7 +703,7 @@ impl<'a, 'b> Reader<'a, 'b> {
         //# The scalar length and the byte length MUST count the string's normalized contents, so that a length is a function of the string's value rather than of an incidental byte spelling that normalization removes.
         let s: String = s.chars().nfc().collect();
         // The string atom spans the opening quote through the closing quote (now consumed).
-        Ok(self.mk_atom_leaf(Leaf::Str(s), Span::new(start, self.pos)))
+        Ok(self.mk_atom_leaf(Leaf::Str(s.into()), Span::new(start, self.pos)))
     }
 
     /// Read a symbol literal `#"meter"` into a `Leaf::Sym` — the interned-name value form. The `#` is
@@ -740,7 +740,7 @@ impl<'a, 'b> Reader<'a, 'b> {
         // §String-backed: a symbol inherits String's normalized-contents equality).
         let s: String = s.chars().nfc().collect();
         // The symbol atom spans the leading `#` through the closing quote (now consumed).
-        Ok(self.mk_atom_leaf(Leaf::Sym(s), Span::new(start, self.pos)))
+        Ok(self.mk_atom_leaf(Leaf::Sym(s.into()), Span::new(start, self.pos)))
     }
 
     /// Read a char literal `#\…` into a `Leaf::Char` (a single Unicode scalar). Three spellings:
@@ -1220,9 +1220,9 @@ mod tests {
                     exponent: -2,
                 }),
             ),
-            ("Str-empty", Leaf::Str(String::new())),
-            ("Str-escapes", Leaf::Str("a\nb\t\"c\\d".to_string())),
-            ("Str-unicode", Leaf::Str("λ中🎉".to_string())),
+            ("Str-empty", Leaf::Str(String::new().into())),
+            ("Str-escapes", Leaf::Str("a\nb\t\"c\\d".into())),
+            ("Str-unicode", Leaf::Str("λ中🎉".into())),
             (
                 "Bytes-high",
                 Leaf::Bytes(vec![0x89, b'P', b'N', b'G', 0x00, 0xff]),
@@ -1230,15 +1230,15 @@ mod tests {
             ("Bytes-empty", Leaf::Bytes(vec![])),
             ("Bool-true", Leaf::Bool(true)),
             ("Bool-false", Leaf::Bool(false)),
-            ("Name", Leaf::Name("foo-bar".to_string())),
-            ("Name-op", Leaf::Name("+".to_string())),
-            ("Sym", Leaf::Sym("meter".to_string())),
-            ("Sym-quote", Leaf::Sym("has\"quote".to_string())),
+            ("Name", Leaf::Name("foo-bar".into())),
+            ("Name-op", Leaf::Name("+".into())),
+            ("Sym", Leaf::Sym("meter".into())),
+            ("Sym-quote", Leaf::Sym("has\"quote".into())),
             ("Char", Leaf::Char('é')),
             ("Char-ctrl", Leaf::Char('\n')),
             ("Char-emoji", Leaf::Char('🎉')),
             ("BadEscape", Leaf::BadEscape('q')),
-            ("BadChar", Leaf::BadChar("u+D800".to_string())),
+            ("BadChar", Leaf::BadChar("u+D800".into())),
         ];
         for (label, leaf) in bare {
             let mut b = Builder::new();
@@ -1623,7 +1623,7 @@ mod tests {
         let Struct::Atom(l) = b.get(b.root) else {
             panic!("expected an atom")
         };
-        assert_eq!(b.leaf(*l), &Leaf::Str("\n".to_string()));
+        assert_eq!(b.leaf(*l), &Leaf::Str("\n".into()));
     }
 
     #[test]
@@ -1657,12 +1657,9 @@ mod tests {
         assert_eq!(leaf_of("#\\u+0061"), Leaf::Char('a'));
         assert_eq!(leaf_of("#\\u+00E9"), Leaf::Char('é'));
         // A surrogate is not a scalar → a BadChar marker carrying the literal text.
-        assert_eq!(leaf_of("#\\u+D800"), Leaf::BadChar("u+D800".to_string()));
+        assert_eq!(leaf_of("#\\u+D800"), Leaf::BadChar("u+D800".into()));
         // A code point past U+10FFFF is likewise a BadChar.
-        assert_eq!(
-            leaf_of("#\\u+110000"),
-            Leaf::BadChar("u+110000".to_string())
-        );
+        assert_eq!(leaf_of("#\\u+110000"), Leaf::BadChar("u+110000".into()));
     }
 
     #[test]
@@ -1703,24 +1700,24 @@ mod tests {
             };
             a.leaf(*l).clone()
         };
-        assert_eq!(leaf_of("#\"meter\""), Leaf::Sym("meter".to_string()));
-        assert_eq!(leaf_of("#\"\""), Leaf::Sym(String::new())); // the empty symbol
+        assert_eq!(leaf_of("#\"meter\""), Leaf::Sym("meter".into()));
+        assert_eq!(leaf_of("#\"\""), Leaf::Sym(String::new().into())); // the empty symbol
         assert_eq!(
             leaf_of("#\"a b\""),
-            Leaf::Sym("a b".to_string()) // a symbol may carry spaces (it is not an identifier)
+            Leaf::Sym("a b".into()) // a symbol may carry spaces (it is not an identifier)
         );
         // A symbol is NOT a string and NOT a name.
-        assert_ne!(leaf_of("#\"meter\""), Leaf::Str("meter".to_string()));
-        assert_ne!(leaf_of("#\"meter\""), Leaf::Name("meter".to_string()));
+        assert_ne!(leaf_of("#\"meter\""), Leaf::Str("meter".into()));
+        assert_ne!(leaf_of("#\"meter\""), Leaf::Name("meter".into()));
         // The `#`-SIGIL BOUNDARY: `#` opens a symbol/char ONLY before `"`/`\`; before anything else
         // (an identifier char), a bare `#foo` is an ORDINARY token — a `Leaf::Name` whose text INCLUDES
         // the `#` (NOT a `Leaf::Sym("foo")`). So `#foo` and `#"foo"` are DISTINCT nodes. This is the
         // reader-lexis rule the ML printer's `#`-name backtick escape depends on (a `#`-headed name must
         // re-emit `` `#foo` `` so it doesn't re-lex as the symbol), and the answer to whether
         // `(quote #foo)` reifies an `Ast.Name "#foo"` (it does) — pinned here so neither can silently drift.
-        assert_eq!(leaf_of("#foo"), Leaf::Name("#foo".to_string()));
-        assert_eq!(leaf_of("#meter"), Leaf::Name("#meter".to_string()));
-        assert_ne!(leaf_of("#foo"), Leaf::Sym("foo".to_string()));
+        assert_eq!(leaf_of("#foo"), Leaf::Name("#foo".into()));
+        assert_eq!(leaf_of("#meter"), Leaf::Name("#meter".into()));
+        assert_ne!(leaf_of("#foo"), Leaf::Sym("foo".into()));
         // And the two `#foo` spellings read to genuinely different leaves.
         assert_ne!(leaf_of("#foo"), leaf_of("#\"foo\""));
     }

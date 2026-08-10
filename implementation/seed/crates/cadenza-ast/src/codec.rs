@@ -1131,15 +1131,15 @@ fn read_leaf(r: &mut Reader) -> Result<Leaf, DecodeError> {
                 exponent,
             })
         }
-        KIND_STR => Leaf::Str(read_string(r)?),
+        KIND_STR => Leaf::Str(read_string(r)?.into()),
         KIND_BYTES => Leaf::Bytes(read_raw_bytes(r)?),
         KIND_BOOL_FALSE => Leaf::Bool(false),
         KIND_BOOL_TRUE => Leaf::Bool(true),
-        KIND_NAME => Leaf::Name(read_string(r)?),
-        KIND_SYM => Leaf::Sym(read_string(r)?),
+        KIND_NAME => Leaf::Name(read_string(r)?.into()),
+        KIND_SYM => Leaf::Sym(read_string(r)?.into()),
         KIND_BAD_ESCAPE => Leaf::BadEscape(read_scalar(r)?),
         KIND_CHAR => Leaf::Char(read_scalar(r)?),
-        KIND_BAD_CHAR => Leaf::BadChar(read_string(r)?),
+        KIND_BAD_CHAR => Leaf::BadChar(read_string(r)?.into()),
         // A TYPE-SUFFIXED numeric literal: the suffix byte, a body-shape byte, then the body encoded
         // as a bare int/float (the same layout `write_leaf` emits and the int/float arms above read).
         KIND_SUFFIXED => {
@@ -1262,7 +1262,7 @@ mod tests {
             significand: BigInt::from_str("15").unwrap(),
             exponent: -1,
         }));
-        let s = b.atom_leaf(Leaf::Str("héllo".to_string()));
+        let s = b.atom_leaf(Leaf::Str("héllo".into()));
         let t = b.atom_leaf(Leaf::Bool(true));
         let root = b.list(vec![plus, x1, x2, big, hex, neg, flt, s, t]);
         b.finish(root)
@@ -1387,7 +1387,7 @@ mod tests {
         );
         // And a Bytes leaf is NOT confused with a same-text Str: `b"hi"` (Bytes) ≠ `"hi"` (Str) on the wire.
         let mut b2 = Builder::new();
-        let as_str = b2.atom_leaf(Leaf::Str("hi".to_string()));
+        let as_str = b2.atom_leaf(Leaf::Str("hi".into()));
         let str_root = b2.list(vec![as_str]);
         let str_a = b2.finish(str_root);
         let mut b3 = Builder::new();
@@ -1893,10 +1893,10 @@ mod tests {
     /// leaf kind that carries a payload, so the mutation walk touches more decode arms.
     fn radix_sample() -> Arenas {
         let mut b = Builder::new();
-        let sym = b.atom_leaf(Leaf::Sym("sym".to_string()));
+        let sym = b.atom_leaf(Leaf::Sym("sym".into()));
         let ch = b.atom_leaf(Leaf::Char('λ'));
         let by = b.atom_leaf(Leaf::Bytes(vec![0, 1, 2, 255]));
-        let bad = b.atom_leaf(Leaf::BadChar("\\q".to_string()));
+        let bad = b.atom_leaf(Leaf::BadChar("\\q".into()));
         let esc = b.atom_leaf(Leaf::BadEscape('z'));
         let suf = b.atom_leaf(Leaf::Suffixed {
             value: SuffixBody::Int {
@@ -2054,7 +2054,7 @@ mod tests {
         // transport: leaf[0] = Name "f"; structure: [Atom f, DictRef{0, dict_root}, List[0,1]]; root = 2.
         let bytes = build_transport(
             &[[0xABu8; 32]],
-            &[Leaf::Name("f".to_string())],
+            &[Leaf::Name("f".into())],
             &[
                 (TAG_ATOM, vec![0]),
                 (TAG_DICT_REF, vec![0, dict_root_id]),
@@ -2088,7 +2088,7 @@ mod tests {
         let missing = [0x99u8; 32];
         let bytes = build_transport(
             &[missing],
-            &[Leaf::Name("f".to_string())],
+            &[Leaf::Name("f".into())],
             &[
                 (TAG_ATOM, vec![0]),
                 (TAG_DICT_REF, vec![0, 0]),
@@ -2116,7 +2116,7 @@ mod tests {
         // (1) dict_idx = 5 but only import 0 exists.
         let bad_dict = build_transport(
             &[[1u8; 32]],
-            &[Leaf::Name("f".to_string())],
+            &[Leaf::Name("f".into())],
             &[
                 (TAG_ATOM, vec![0]),
                 (TAG_DICT_REF, vec![5, 0]),
@@ -2132,7 +2132,7 @@ mod tests {
         // (2) dict_idx = 0 (valid), node_id = 9 past the 1-node dict arena.
         let bad_node = build_transport(
             &[[1u8; 32]],
-            &[Leaf::Name("f".to_string())],
+            &[Leaf::Name("f".into())],
             &[
                 (TAG_ATOM, vec![0]),
                 (TAG_DICT_REF, vec![0, 9]),
@@ -2405,7 +2405,7 @@ mod tests {
         // build its match table, so a CYCLIC imported dict would diverge there. It must SKIP a cyclic dict
         // (encode is infallible) and still produce a valid uncompacted artifact — not hang.
         let cyclic = Arenas {
-            leaves: vec![Leaf::Name("x".to_string())],
+            leaves: vec![Leaf::Name("x".into())],
             structure: vec![Struct::List(vec![StructId(0)]), Struct::Atom(LeafId(0))], // node 0 → itself
             root: StructId(1),
         };
@@ -2444,7 +2444,7 @@ mod tests {
         // Arenas::get, which panics on a bad id. dict_is_safe_to_walk must reject it (return false → skip),
         // so encode never indexes it. DictSet::insert doesn't validate, so such a dict genuinely reaches here.
         let bad = Arenas {
-            leaves: vec![Leaf::Name("x".to_string())],
+            leaves: vec![Leaf::Name("x".into())],
             // node 0 = List[1, 9]: child 9 is past the 2-node structure.
             structure: vec![
                 Struct::List(vec![StructId(1), StructId(9)]),
@@ -2479,7 +2479,7 @@ mod tests {
         // subtree_arena copies an Atom's leaf via Arenas::leaf (&self.leaves[i]), which PANICS on a bad
         // leaf id, same class as the structure-child gap. dict_is_safe_to_walk must reject it too.
         let bad_leaf = Arenas {
-            leaves: vec![Leaf::Name("x".to_string())], // one leaf: only id 0 is valid
+            leaves: vec![Leaf::Name("x".into())], // one leaf: only id 0 is valid
             // node 0 = Atom(leaf 7): leaf id 7 is past the 1-leaf pool.
             structure: vec![Struct::Atom(LeafId(7))],
             root: StructId(0),
@@ -2512,7 +2512,7 @@ mod tests {
         // Set = { a self-cyclic dict (skipped) , a sound `(pair a b)` dict (used) }; the input contains
         // `(pair a b)` → it MUST still emit a dict-ref to the good dict (transport header, not the v1 one).
         let cyclic = Arenas {
-            leaves: vec![Leaf::Name("x".to_string())],
+            leaves: vec![Leaf::Name("x".into())],
             structure: vec![Struct::List(vec![StructId(0)])], // node 0 → itself
             root: StructId(0),
         };
@@ -2614,7 +2614,7 @@ mod tests {
         // structure has a self-cyclic node (structure[0] = List[0] → itself) plus a real root, reference
         // node 0, and assert decode_with_dicts returns NotATree (fast) rather than hanging.
         let cyclic_dict = Arenas {
-            leaves: vec![Leaf::Name("x".to_string())],
+            leaves: vec![Leaf::Name("x".into())],
             // node 0: List[0] (points at itself — a cycle, unreachable from the real root node 1)
             // node 1: Atom(x) — the dict's declared root (a valid tree on its own)
             structure: vec![Struct::List(vec![StructId(0)]), Struct::Atom(LeafId(0))],
@@ -2625,7 +2625,7 @@ mod tests {
         // transport: (f <ref to dict node 0, the cyclic one>) — leaf[0]=f, [Atom f, DictRef{0,0}, List[0,1]], root 2
         let bytes = build_transport(
             &[[0x55u8; 32]],
-            &[Leaf::Name("f".to_string())],
+            &[Leaf::Name("f".into())],
             &[
                 (TAG_ATOM, vec![0]),
                 (TAG_DICT_REF, vec![0, 0]),
