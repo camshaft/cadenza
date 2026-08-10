@@ -3909,6 +3909,23 @@
   (call   main (: -3 Int64)) (output (: 99 Int64))
   (call   main (: 5 Int64)) (output (: 6 Int64)))
 
+(case "a body that TRAPS keeps its OWN trap kind under an @ensures — the postcondition wrapper is transparent to an aborting body"
+  (doc    "The trap-based sibling of the abortive-perform case above: both pin that the @ensures wrapper does not
+           interfere with a body that produces no normal result. `verify_enforce` wraps the body as `(let ((ret
+           BODY)) (if Q ret (trap …)))`. When BODY itself traps — here `(/ 100 x)` on `x = 0`, a runtime
+           divide-by-zero — the `let` never binds `ret`, so the postcondition `if` is never reached and the
+           body's OWN trap kind propagates. main(5): `100 / 5` = 20, `20 >= 0` holds → 20 flows normally. main(0):
+           the body traps with `divide by zero` — NOT the `@ensures`-failed `unreachable`, proving the wrapper is
+           transparent to an aborting body (it does not catch the body's trap and relabel it, nor evaluate Q on a
+           nonexistent result). Pins that the postcondition is a check on a COMPLETED body's value, layered
+           strictly outside the body's own control flow.")
+  (input  (do
+            (@ (ensures (>= ret 0)) (def (f (: x Int64)) (/ 100 x)))
+            (def (main (: k Int64)) (f k))
+            (export main)))
+  (call   main (: 5 Int64))   (output (: 20 Int64))
+  (call   main (: 0 Int64))   (trap "divide by zero"))
+
 (case "a violated @requires traps BEFORE the body's abortive perform can fire"
   (doc    "Entry-check-first ordering under an abortive body: `f` carries `@requires (> x -100)` and its
            body's first action on the negative path is the abortive `(Bail.bail 99)`. At x=-500 the

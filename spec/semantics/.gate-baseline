@@ -1224,6 +1224,7 @@ pass	a bitwise OR on an unusual signed width sign-extends a result that sets the
 pass	a bitwise XOR on an unusual signed width sign-extends a result that sets the sign bit
 pass	a bitwise operator on a boolean operand names the integer requirement
 pass	a block-wrapped conditional whose CONDITION performs (not a branch) folds correctly (adv-69 boundary control)
+pass	a body that TRAPS keeps its OWN trap kind under an @ensures — the postcondition wrapper is transparent to an aborting body
 pass	a bool match missing the false arm is non-exhaustive
 pass	a bool match missing the true arm is non-exhaustive
 pass	a bool match on a constant scrutinee is non-exhaustive even when the constant hits the sole arm
