@@ -10743,14 +10743,8 @@ fn emit(
             // begin with — an OWNED temporary (a constructor / call / concat result) leaks otherwise; a
             // BORROWED operand (param / kept-local / payload read) is left to its owner (dropping it would
             // be a double-free), whether or not it was compacted in place.
-            if lo == HandleOwnership::Owned {
-                out.push(Lir::LocalGet(slot_l));
-                out.push(Lir::CallImport(OP_DROP));
-            }
-            if ro == HandleOwnership::Owned {
-                out.push(Lir::LocalGet(slot_r));
-                out.push(Lir::CallImport(OP_DROP));
-            }
+            lo.drop_slot_if_owned(slot_l, out);
+            ro.drop_slot_if_owned(slot_r, out);
             Ok(())
         }
         // RUNTIME COMPOUND ORDERING — a `value-cmp(a, b, desc)` call: the blessed three-way lexicographic
@@ -10800,14 +10794,8 @@ fn emit(
             // Drop the borrowed-only descriptor Bytes (a fresh owned temporary), then any owned operand.
             out.push(Lir::LocalGet(desc_slot));
             out.push(Lir::CallImport(OP_DROP));
-            if lo == HandleOwnership::Owned {
-                out.push(Lir::LocalGet(slot_l));
-                out.push(Lir::CallImport(OP_DROP));
-            }
-            if ro == HandleOwnership::Owned {
-                out.push(Lir::LocalGet(slot_r));
-                out.push(Lir::CallImport(OP_DROP));
-            }
+            lo.drop_slot_if_owned(slot_l, out);
+            ro.drop_slot_if_owned(slot_r, out);
             // Map the three-way result `res ∈ {-1,0,1}` (still on top) to what `op` wants:
             //   - Lt/Le/Gt/Ge: the BOOLEAN it names — Lt res<0, Le res<=0, Gt res>0, Ge res>=0 (signed
             //     compare against 0).
@@ -10893,14 +10881,8 @@ fn emit(
             // Drop the borrowed-only descriptor Bytes, then any owned operand (like ValueCmp/ValueEq).
             out.push(Lir::LocalGet(desc_slot));
             out.push(Lir::CallImport(OP_DROP));
-            if lo == HandleOwnership::Owned {
-                out.push(Lir::LocalGet(slot_l));
-                out.push(Lir::CallImport(OP_DROP));
-            }
-            if ro == HandleOwnership::Owned {
-                out.push(Lir::LocalGet(slot_r));
-                out.push(Lir::CallImport(OP_DROP));
-            }
+            lo.drop_slot_if_owned(slot_l, out);
+            ro.drop_slot_if_owned(slot_r, out);
             // The bool result is already on top — no mapping needed.
             Ok(())
         }
@@ -12224,6 +12206,20 @@ enum HandleOwnership {
     Borrowed,
 }
 
+impl HandleOwnership {
+    /// Reclaim the handle held in scratch `slot` IFF this operand was `Owned` — the shared tail of every
+    /// borrowing op (`value-eq`/`value-cmp`/`value-eq-shaped`, the runtime BigInt ops): an OWNED temporary
+    /// operand must be dropped after the borrowing call (else it leaks), a `Borrowed` reference must be left
+    /// to its owner (dropping it would be a double-free). Emits `local.get slot ; drop` for `Owned`, nothing
+    /// for `Borrowed`.
+    fn drop_slot_if_owned(self, slot: u32, out: &mut Emit) {
+        if self == HandleOwnership::Owned {
+            out.push(Lir::LocalGet(slot));
+            out.push(Lir::CallImport(OP_DROP));
+        }
+    }
+}
+
 /// Classify a BORROWING op's handle OPERAND ownership, or DECLINE (`Err`) a shape whose ownership this
 /// analysis cannot prove — reject-don't-miscompile: a wrong guess would leak or double-free the heap.
 /// Used by every op that BORROWS a heap operand and returns a fresh/scalar result (so the emit must drop
@@ -12875,10 +12871,7 @@ fn emit_bigint_borrow_unary(
     let o = emit_bigint_operand(db, operand, high, slots, scratch_ty, layout, out)?; // [h : i32]
     out.push(Lir::LocalTee(slot));
     out.push(Lir::CallImport(import)); // pops the borrowed handle → [scalar]
-    if o == HandleOwnership::Owned {
-        out.push(Lir::LocalGet(slot));
-        out.push(Lir::CallImport(OP_DROP));
-    }
+    o.drop_slot_if_owned(slot, out);
     Ok(())
 }
 
@@ -12911,14 +12904,8 @@ fn emit_bigint_borrow_binary(
     let ro = emit_bigint_operand(db, rhs, high, slots, scratch_ty, layout, out)?; // [a, b : i32]
     out.push(Lir::LocalTee(slot_r));
     out.push(Lir::CallImport(import)); // pops both borrowed handles → [result]
-    if lo == HandleOwnership::Owned {
-        out.push(Lir::LocalGet(slot_l));
-        out.push(Lir::CallImport(OP_DROP));
-    }
-    if ro == HandleOwnership::Owned {
-        out.push(Lir::LocalGet(slot_r));
-        out.push(Lir::CallImport(OP_DROP));
-    }
+    lo.drop_slot_if_owned(slot_l, out);
+    ro.drop_slot_if_owned(slot_r, out);
     Ok(())
 }
 
