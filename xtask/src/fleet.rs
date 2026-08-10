@@ -735,6 +735,12 @@ pub enum FleetCmd {
         #[arg(long, default_value = "unknown")]
         agent: String,
     },
+    /// Preview how the queued merge-requests partition into per-LANE scope-batches (the scope-split
+    /// parallel-batching model, operator+concierge greenlit 2026-08-10) — one batch per lane, marked
+    /// PARALLEL (disjoint leaf/corpus territory, can gate concurrently) or SERIAL (shared compiler core /
+    /// hot files / mixed). Read-only: no gate, no push. The preview for the concurrent-gate scheduler
+    /// (slices ii/iii wire the actual parallel gate + serial FF-push on top of this classification).
+    BatchPlan,
     /// DISPATCH a merge-request as a CI-gated candidate PR (I3, operator-greenlit 2026-08-02): re-parent
     /// the `--ref` commit onto `origin/main` in a detached scratch worktree, push `cand/<agent>-<sha>`,
     /// `gh pr create --base main`, arm `gh pr merge --squash --auto`, and record the MR↔PR mapping in
@@ -1061,6 +1067,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         FleetCmd::CiStatus { target } => ci_status(&target),
         FleetCmd::LaneOf { r#ref } => lane_of_cmd(&r#ref),
         FleetCmd::DispatchPlan { r#ref, agent } => dispatch_plan(&fleet, &r#ref, &agent),
+        FleetCmd::BatchPlan => batch_plan(&fleet),
         FleetCmd::PublishCandidate {
             r#ref,
             agent,
@@ -9114,6 +9121,97 @@ fn select_batch_members(queued: &[BatchMr], cap: usize) -> Vec<BatchMr> {
     chosen
 }
 
+/// One scope-batch: the queued MRs that share a lane, plus whether that lane lands in PARALLEL. The unit
+/// the scope-split scheduler gates as one batch (model (a), operator+concierge 2026-08-10) — a `parallel`
+/// lane's batch can gate concurrently with other parallel lanes' batches (disjoint territory → no trunk
+/// race at gate time; the serial FF-push resolves ordering), while `parallel = false` lanes (the shared
+/// compiler core / hot files / `mixed`) serialize as today.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ScopeBatch {
+    lane: String,
+    parallel: bool,
+    members: Vec<BatchMr>,
+}
+
+/// Partition queued merge-requests into per-LANE scope-batches (model (a) slice i). Each MR's lane is its
+/// `lane_of` over the ref's changed files, looked up via the `files_of` resolver (`ref -> Option<files>`;
+/// `None` = unresolvable → conservatively the `mixed` serialized lane, never mis-grouped into a parallel
+/// lane). MRs keep QUEUE ORDER within their lane. Returns one [`ScopeBatch`] per distinct lane, in the
+/// order each lane is FIRST seen (deterministic + oldest-first-stable). PURE over the resolver so the
+/// grouping policy is unit-tested without git — the caller wires `files_of = changed_files_of` and then
+/// applies the existing `select_batch_members` disjointness rule WITHIN each returned batch's members.
+///
+/// This is the classification foundation; it does NOT gate or land — slice ii gates the parallel-lane
+/// batches concurrently, slice iii serial-FF-pushes them with disjoint-lane re-form-on-non-FF.
+fn partition_batch_by_lane(
+    queued: &[BatchMr],
+    files_of: impl Fn(&str) -> Option<Vec<String>>,
+) -> Vec<ScopeBatch> {
+    let mut order: Vec<String> = Vec::new();
+    let mut by_lane: std::collections::HashMap<String, ScopeBatch> =
+        std::collections::HashMap::new();
+    for mr in queued {
+        // Unresolvable ref → `mixed` (serialized), never a parallel lane — same conservative rule as
+        // `lane_label_for_ref`. An empty file set is also `mixed` (nothing to reason about).
+        let lane = match files_of(&mr.r#ref) {
+            Some(files) if !files.is_empty() => lane_of(&files),
+            _ => Lane::mixed(),
+        };
+        let key = lane.label().to_string();
+        by_lane
+            .entry(key.clone())
+            .or_insert_with(|| {
+                order.push(key.clone());
+                ScopeBatch {
+                    lane: key.clone(),
+                    parallel: lane.lands_in_parallel(),
+                    members: Vec::new(),
+                }
+            })
+            .members
+            .push(mr.clone());
+    }
+    order
+        .into_iter()
+        .map(|k| by_lane.remove(&k).expect("lane key was recorded in order"))
+        .collect()
+}
+
+/// `fleet batch-plan`: read-only preview of how the currently-queued merge-requests partition into
+/// per-lane scope-batches ([`partition_batch_by_lane`] over the live queue, resolving each ref's files via
+/// `changed_files_of`). Prints one line per lane — PARALLEL (can gate concurrently with other parallel
+/// lanes) or SERIAL — plus its member MRs. No gate, no push: the inspector for the scope-split scheduler
+/// (slices ii/iii add the concurrent gate + serial FF-push on top of this classification), and a way for
+/// a human/operator to see the split of the current queue.
+fn batch_plan(fleet: &Fleet) {
+    let queued = queued_merge_requests(fleet);
+    if queued.is_empty() {
+        println!("batch-plan: no queued merge-requests.");
+        return;
+    }
+    let batches = partition_batch_by_lane(&queued, changed_files_of);
+    let parallel_lanes = batches.iter().filter(|b| b.parallel).count();
+    println!(
+        "batch-plan: {} queued MR(s) → {} scope-batch(es) ({} parallel-eligible, {} serial):",
+        queued.len(),
+        batches.len(),
+        parallel_lanes,
+        batches.len() - parallel_lanes,
+    );
+    for b in &batches {
+        let disp = if b.parallel { "PARALLEL" } else { "serial" };
+        println!("  [{disp}] lane '{}' — {} MR(s):", b.lane, b.members.len());
+        for m in &b.members {
+            let short: String = m.r#ref.chars().take(12).collect();
+            println!("      {short}  {}  ({})", m.subject, m.from);
+        }
+    }
+    println!(
+        "note: parallel lanes can gate CONCURRENTLY (disjoint territory); serial lanes (shared compiler \
+         core / hot files / mixed) gate one-at-a-time. The FF-push is always serialized (single-writer trunk)."
+    );
+}
+
 /// What the scheduler should DO with one in-flight candidate PR, given whether GitHub has already
 /// auto-merged it and its current CI [`CiVerdict`]. The other half of the executor's decision layer
 /// (the reap, complementing [`schedule_dispatch`]'s dispatch). Pure so the land/reject/wait policy is
@@ -16589,6 +16687,87 @@ mod tests {
         assert!(!lane_of(&["xtask/x.rs".into()]).lands_in_parallel());
         assert!(!lane_of(&["implementation/seed/crates/rcdzc/x.rs".into()]).lands_in_parallel());
         assert!(!Lane::mixed().lands_in_parallel());
+    }
+
+    #[test]
+    fn partition_batch_by_lane_groups_by_scope_preserves_queue_order_and_marks_parallel() {
+        let mr = |file: &str, r#ref: &str| BatchMr {
+            file: file.into(),
+            from: "someone".into(),
+            r#ref: r#ref.into(),
+            subject: "s".into(),
+        };
+        // A resolver mapping each ref to its changed files (the injectable stand-in for changed_files_of).
+        let files_of = |r: &str| -> Option<Vec<String>> {
+            let v: Vec<String> = match r {
+                "cad1" => vec!["implementation/cad/a.cdz".into()],
+                "cad2" => vec!["implementation/cad/b.cdz".into()],
+                "music1" => vec!["implementation/music/m.cdz".into()],
+                "code1" => vec!["implementation/seed/crates/rcdzc/src/lower.rs".into()],
+                "corpus1" => vec!["spec/semantics/9.sexp".into()],
+                "bad" => return None, // unresolvable → mixed
+                "empty" => vec![],    // no-file commit → mixed
+                "span" => vec!["README.md".into(), "implementation/cad/a.cdz".into()], // spans → mixed
+                _ => return None,
+            };
+            Some(v)
+        };
+        // Queue interleaves lanes; partition must group by lane, first-seen lane order, queue order within.
+        let queued = vec![
+            mr("f-cad1", "cad1"),
+            mr("f-music1", "music1"),
+            mr("f-cad2", "cad2"),
+            mr("f-code1", "code1"),
+            mr("f-corpus1", "corpus1"),
+            mr("f-bad", "bad"),
+            mr("f-empty", "empty"),
+            mr("f-span", "span"),
+        ];
+        let batches = partition_batch_by_lane(&queued, files_of);
+
+        // One batch per distinct lane, in first-seen order: cad, music, code, corpus, mixed.
+        let lanes: Vec<&str> = batches.iter().map(|b| b.lane.as_str()).collect();
+        assert_eq!(lanes, vec!["cad", "music", "code", "corpus", "mixed"]);
+
+        // cad groups its two members IN QUEUE ORDER (cad1 before cad2 — not adjacent in the queue).
+        let cad = batches.iter().find(|b| b.lane == "cad").unwrap();
+        assert_eq!(
+            cad.members
+                .iter()
+                .map(|m| m.file.as_str())
+                .collect::<Vec<_>>(),
+            vec!["f-cad1", "f-cad2"]
+        );
+        assert!(cad.parallel, "cad is a parallel leaf lane");
+
+        // The unresolvable + empty + spanning MRs all fold into ONE serialized `mixed` batch.
+        let mixed = batches.iter().find(|b| b.lane == "mixed").unwrap();
+        assert_eq!(
+            mixed
+                .members
+                .iter()
+                .map(|m| m.file.as_str())
+                .collect::<Vec<_>>(),
+            vec!["f-bad", "f-empty", "f-span"]
+        );
+        assert!(
+            !mixed.parallel,
+            "mixed always serializes — never a parallel batch"
+        );
+
+        // code (rcdzc non-test) is serialized; corpus is parallel — the scope-split's whole point:
+        // a compiler batch serializes, a corpus/leaf batch can gate in parallel with it.
+        assert!(!batches.iter().find(|b| b.lane == "code").unwrap().parallel);
+        assert!(
+            batches
+                .iter()
+                .find(|b| b.lane == "corpus")
+                .unwrap()
+                .parallel
+        );
+
+        // Empty queue → no batches.
+        assert!(partition_batch_by_lane(&[], files_of).is_empty());
     }
 
     #[test]
