@@ -13750,6 +13750,95 @@ mod tests {
     }
 
     #[test]
+    fn refs_to_drop_collects_only_well_formed_drop_notes_and_filters_the_queue() {
+        // `refs_to_drop` is the double-land-race guard's collector: it scans pr-sync's inbox and returns
+        // the set of MR refs a pending DROP-REF note withdraws, so `queued_merge_requests` can skip them
+        // BEFORE pr-sync processes the queued MR (the mandate-lint dup that landed before its drop note,
+        // 2026-08-09). Pin the exact acceptance rule: a `note` whose subject carries the DROP-REF token
+        // AND whose structured `ref` is non-empty counts; everything else is ignored — so it can never
+        // drop the wrong MR off a free-text match or a malformed note.
+        let root = std::env::temp_dir().join(format!("cdz-refs-to-drop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let fleet = Fleet {
+            root: root.clone(),
+            worktrees: root.join("worktrees"),
+            repo: PathBuf::from("/hub"),
+            src: PathBuf::from("/wt/fleet"),
+        };
+        let note = |subject: &str, r#ref: &str| Message {
+            from: "some-agent".into(),
+            to: "pr-sync".into(),
+            kind: "note".into(),
+            subject: subject.into(),
+            r#ref: r#ref.into(),
+            body: String::new(),
+            seq: 1,
+            in_reply_to: String::new(),
+        };
+        let mr = |r#ref: &str| Message {
+            from: "v-x".into(),
+            to: "pr-sync".into(),
+            kind: "merge-request".into(),
+            subject: "fleet/v-x".into(),
+            r#ref: r#ref.into(),
+            body: String::new(),
+            seq: 1,
+            in_reply_to: String::new(),
+        };
+
+        // Empty inbox → nothing to drop.
+        assert!(refs_to_drop(&fleet).is_empty());
+
+        // A well-formed drop note (DROP-REF token as a whole word + non-empty ref) IS collected.
+        deliver(
+            &fleet,
+            &note("supersede DROP-REF the older dup", "aaaa1111"),
+        );
+        // A drop note with an EMPTY ref is ignored — it names no MR, so it can't withdraw one.
+        deliver(&fleet, &note("DROP-REF but no ref given", ""));
+        // A `note` that merely MENTIONS the token as a substring of a larger word is NOT a directive.
+        deliver(
+            &fleet,
+            &note("this is not-a-DROP-REFERENCE mention", "bbbb2222"),
+        );
+        // A NON-note message carrying the token + ref is ignored — only `-note.json` files are scanned.
+        deliver(&fleet, &mr("cccc3333"));
+
+        let drops = refs_to_drop(&fleet);
+        assert_eq!(
+            drops,
+            vec!["aaaa1111".to_string()],
+            "only the well-formed drop note contributes its ref; empty-ref, substring-mention, and \
+             non-note messages are all excluded"
+        );
+
+        // End-to-end: an MR whose ref the drop note names is filtered OUT of the queue; a peer MR with a
+        // different ref survives. (The queue filter uses refs_match_for_drop, so a short/long sha still
+        // matches — pinned in its own test; here we prove the collector wires into the queue at all.)
+        deliver(&fleet, &mr("aaaa1111")); // the withdrawn one
+        deliver(&fleet, &mr("dddd4444")); // an unrelated peer MR
+        let queued: Vec<String> = queued_merge_requests(&fleet)
+            .into_iter()
+            .map(|m| m.r#ref)
+            .collect();
+        assert!(
+            !queued.contains(&"aaaa1111".to_string()),
+            "the dropped MR is withdrawn from the queue before processing"
+        );
+        assert!(
+            queued.contains(&"dddd4444".to_string()),
+            "an unrelated peer MR is untouched by the drop"
+        );
+        assert!(
+            queued.contains(&"cccc3333".to_string()),
+            "the non-note mention never became a drop, so that MR still queues"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn reference_transaction_hook_is_fail_open() {
         // The hook runs on EVERY ref update in EVERY worktree, so its safety is load-bearing: it must
         // never be able to block/abort a transaction (that would wedge fleet-wide git) and must only
