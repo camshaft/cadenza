@@ -1081,7 +1081,7 @@ fn collect_closure_call_sigs(
         let arg_vts: Option<Vec<ValType>> = {
             let mut vts = Vec::new();
             let mut ok = true;
-            for &a in args.iter() {
+            for &a in &args {
                 let ty = type_of(db, a);
                 if matches!(ty.strip_nominal(), Ty::Unit) {
                     continue; // Unit arg → no slot, elided
@@ -1180,13 +1180,13 @@ fn collect_closure_codes_at(db: &mut Db, id: StructId, out: &mut std::collection
     match crate::lower::core_of(db, id) {
         Core::Closure { code, captures } => {
             out.insert(code);
-            for c in captures.iter().copied() {
+            for c in captures {
                 collect_closure_codes(db, c, out);
             }
         }
         Core::CallClosure { closure, args } => {
             collect_closure_codes(db, closure, out);
-            for arg in args.iter().copied() {
+            for arg in args {
                 collect_closure_codes(db, arg, out);
             }
         }
@@ -1304,12 +1304,12 @@ fn collect_closure_codes_at(db: &mut Db, id: StructId, out: &mut std::collection
         | Core::BytesLen { operand }
         | Core::StrScalarLen { operand } => collect_closure_codes(db, operand, out),
         Core::Call { args, .. } | Core::HostCall { args, .. } => {
-            for a in args.iter().copied() {
+            for a in args {
                 collect_closure_codes(db, a, out);
             }
         }
         Core::Seq { stmts, tail } => {
-            for s in stmts.iter().copied() {
+            for s in stmts {
                 collect_closure_codes(db, s, out);
             }
             collect_closure_codes(db, tail, out);
@@ -1372,7 +1372,7 @@ fn collect_closure_codes_at(db: &mut Db, id: StructId, out: &mut std::collection
         }
         Core::Proj { operand, .. } => collect_closure_codes(db, operand, out),
         Core::SumNew { payloads, .. } => {
-            for p in payloads.iter().copied() {
+            for p in payloads {
                 collect_closure_codes(db, p, out);
             }
         }
@@ -1478,7 +1478,7 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
             if !out.contains(&callee) {
                 out.push(callee);
             }
-            for a in args.iter().copied() {
+            for a in args {
                 collect_call_callees(db, a, out);
             }
         }
@@ -1662,7 +1662,7 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
         | crate::core::Core::StrScalarLen { operand } => collect_call_callees(db, operand, out),
         // A sum construction's payloads are unconditionally evaluated — descend for their calls.
         crate::core::Core::SumNew { payloads, .. } => {
-            for p in payloads.iter().copied() {
+            for p in payloads {
                 collect_call_callees(db, p, out);
             }
         }
@@ -1687,7 +1687,7 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
         // calls. The lifted function's OWN body is reached via the lifted-def worklist (a lifted lambda is
         // a synthetic def added to the emission set separately), not here.
         crate::core::Core::Closure { captures, .. } => {
-            for c in captures.iter().copied() {
+            for c in captures {
                 collect_call_callees(db, c, out);
             }
         }
@@ -1695,19 +1695,19 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
         // (`call_indirect`), so no static callee to add — the lifted functions are already in the set.
         crate::core::Core::CallClosure { closure, args } => {
             collect_call_callees(db, closure, out);
-            for arg in args.iter().copied() {
+            for arg in args {
                 collect_call_callees(db, arg, out);
             }
         }
         // A host call OR a cross-component call dispatches to a component IMPORT (not a `db.defs`
         // function), so no static callee to add; its arguments may still reach callees.
         crate::core::Core::HostCall { args, .. } => {
-            for arg in args.iter().copied() {
+            for arg in args {
                 collect_call_callees(db, arg, out);
             }
         }
         crate::core::Core::Seq { stmts, tail } => {
-            for s in stmts.iter().copied() {
+            for s in stmts {
                 collect_call_callees(db, s, out);
             }
             collect_call_callees(db, tail, out);

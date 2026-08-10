@@ -227,7 +227,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             synth_core(
                 db,
                 Core::Seq {
-                    stmts: non_def_stmts.into(),
+                    stmts: non_def_stmts,
                     tail,
                 },
                 seq_ty,
@@ -413,7 +413,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     let disc = crate::eval::variant_disc_of(db, id).unwrap_or(0);
                     Core::SumNew {
                         disc,
-                        payloads: Vec::new().into(),
+                        payloads: Vec::new(),
                     }
                 }
                 // A nullary NEWTYPE value (a bare single-variant nullary ctor, `(type Marker (The))` used
@@ -985,7 +985,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     return Core::HostCall {
                         effect: effect.into(),
                         op: op.into(),
-                        args: args.to_vec().into(),
+                        args: args.to_vec(),
                         result,
                     };
                 }
@@ -1159,7 +1159,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 trace!(target: "rcdzc::lower", node = id.0, head = fn_head.0, n_args = all_args.len(), "apply: runtime closure application (spine-flattened) → Core::CallClosure");
                 return Core::CallClosure {
                     closure: fn_head,
-                    args: all_args.into(),
+                    args: all_args,
                 };
             }
             // An `inline-never` def is emitted as ONE real wasm function and CALLED, never β-reduced
@@ -1224,7 +1224,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, head = closure.0, n_args = spine_args.len(), "apply: curried application of a projected lambda → Core::CallClosure on the projected closure");
                     return Core::CallClosure {
                         closure,
-                        args: spine_args.into(),
+                        args: spine_args,
                     };
                 }
             }
@@ -2643,7 +2643,7 @@ fn lower_ast_splice_lift(db: &mut Db, id: StructId, elems: &[StructId]) -> Optio
             db,
             Core::SumNew {
                 disc: leaf_disc,
-                payloads: vec![payload].into(),
+                payloads: vec![payload],
             },
             ast_ty.clone(),
         );
@@ -2701,7 +2701,7 @@ fn lower_ast_lift(db: &mut Db, operand: StructId) -> Core {
             };
             Core::SumNew {
                 disc: disc.int,
-                payloads: vec![widened].into(),
+                payloads: vec![widened],
             }
         }
         // An operand ALREADY typed `BigInt` — `Ast.Int`'s payload IS `BigInt`, so wrap it DIRECTLY (no
@@ -2711,7 +2711,7 @@ fn lower_ast_lift(db: &mut Db, operand: StructId) -> Core {
         // `Ast.Int` is exactly the right leaf — the splice-surface regression the payload flip introduced.
         crate::ty::Ty::BigInt => Core::SumNew {
             disc: disc.int,
-            payloads: vec![operand].into(),
+            payloads: vec![operand],
         },
         // A CONSTANT non-canonical float operand (a NaN) has no canonical value form — lifting it into an
         // `Ast.Float` would reproduce the wasm-traps/rust-accepts split the direct-ctor guard (lower_sum_new)
@@ -2728,15 +2728,15 @@ fn lower_ast_lift(db: &mut Db, operand: StructId) -> Core {
         // `Ast.Float`'s payload is Float64, so a width-64-grounded float operand lifts to `Ast.Float`.
         crate::ty::Ty::Float(ft) if ft.ground_width() == 64 => Core::SumNew {
             disc: disc.float,
-            payloads: vec![operand].into(),
+            payloads: vec![operand],
         },
         crate::ty::Ty::Bool => Core::SumNew {
             disc: disc.bool,
-            payloads: vec![operand].into(),
+            payloads: vec![operand],
         },
         crate::ty::Ty::String => Core::SumNew {
             disc: disc.str,
-            payloads: vec![operand].into(),
+            payloads: vec![operand],
         },
         // No `Ast` value leaf for this type (a narrow-width float, a compound, a function, an unresolved
         // var) — decline honestly rather than building a wrong-typed leaf.
@@ -3073,7 +3073,7 @@ fn reify_read_ast(db: &mut Db, node: &SNode, disc: &AstDiscs) -> Core {
             let payload = synth_core(db, Core::ConstInt(n.clone()), crate::ty::Ty::BigInt);
             Core::SumNew {
                 disc: disc.int,
-                payloads: vec![payload].into(),
+                payloads: vec![payload],
             }
         }
         SNode::Float(f) => {
@@ -3086,7 +3086,7 @@ fn reify_read_ast(db: &mut Db, node: &SNode, disc: &AstDiscs) -> Core {
                     let payload = synth_core(db, Core::ConstFloat(dec), crate::ty::Ty::float64());
                     Core::SumNew {
                         disc: disc.float,
-                        payloads: vec![payload].into(),
+                        payloads: vec![payload],
                     }
                 }
                 None => Core::Poison(Reject::decline(
@@ -3098,14 +3098,14 @@ fn reify_read_ast(db: &mut Db, node: &SNode, disc: &AstDiscs) -> Core {
             let payload = synth_core(db, Core::ConstBool(*b), crate::ty::Ty::Bool);
             Core::SumNew {
                 disc: disc.bool,
-                payloads: vec![payload].into(),
+                payloads: vec![payload],
             }
         }
         SNode::Str(s) => {
             let payload = synth_core(db, Core::ConstStr(s.clone().into()), crate::ty::Ty::String);
             Core::SumNew {
                 disc: disc.str,
-                payloads: vec![payload].into(),
+                payloads: vec![payload],
             }
         }
         SNode::Name(name) => {
@@ -3116,7 +3116,7 @@ fn reify_read_ast(db: &mut Db, node: &SNode, disc: &AstDiscs) -> Core {
             );
             Core::SumNew {
                 disc: disc.name,
-                payloads: vec![payload].into(),
+                payloads: vec![payload],
             }
         }
         SNode::Bytes(raw) => {
@@ -3133,7 +3133,7 @@ fn reify_read_ast(db: &mut Db, node: &SNode, disc: &AstDiscs) -> Core {
             );
             Core::SumNew {
                 disc: disc.bytes,
-                payloads: vec![payload].into(),
+                payloads: vec![payload],
             }
         }
         SNode::List(items) => {
@@ -3153,7 +3153,7 @@ fn reify_read_ast(db: &mut Db, node: &SNode, disc: &AstDiscs) -> Core {
             );
             Core::SumNew {
                 disc: disc.list,
-                payloads: vec![payload].into(),
+                payloads: vec![payload],
             }
         }
     }
@@ -3608,7 +3608,7 @@ fn lower_ast_decode(db: &mut Db, id: StructId, bytes: StructId) -> Core {
             trace!(target: "rcdzc::fold", node = id.0, "Ast.decode folds canonical bytes to (Ok ast)");
             Core::SumNew {
                 disc: disc_ok,
-                payloads: vec![node].into(),
+                payloads: vec![node],
             }
         }
         None => {
@@ -3616,7 +3616,7 @@ fn lower_ast_decode(db: &mut Db, id: StructId, bytes: StructId) -> Core {
             let unit = synth_core(db, Core::Unit, crate::ty::Ty::Unit);
             Core::SumNew {
                 disc: disc_err,
-                payloads: vec![unit].into(),
+                payloads: vec![unit],
             }
         }
     }
@@ -3709,7 +3709,7 @@ fn lower_schema_decode(db: &mut Db, id: StructId, schema: StructId, payload: Str
         let ok_payload = synth_core(db, payload_core, payload_ty);
         Core::SumNew {
             disc: disc_ok,
-            payloads: vec![ok_payload].into(),
+            payloads: vec![ok_payload],
         }
     } else {
         trace!(target: "rcdzc::fold", node = id.0, "decode folds a mismatched payload to (Err (TypeMismatch unit))");
@@ -3718,7 +3718,7 @@ fn lower_schema_decode(db: &mut Db, id: StructId, schema: StructId, payload: Str
         let derr = build_decode_error(db);
         Core::SumNew {
             disc: disc_err,
-            payloads: vec![derr].into(),
+            payloads: vec![derr],
         }
     }
 }
@@ -3736,7 +3736,7 @@ fn build_decode_error(db: &mut Db) -> StructId {
         db,
         Core::SumNew {
             disc: 0,
-            payloads: Vec::new().into(),
+            payloads: vec![],
         },
         ty,
     )
@@ -3809,7 +3809,7 @@ fn decode_ast_value(db: &mut Db, raw: &[u8], disc: &AstDiscs) -> Option<(StructI
                 db,
                 Core::SumNew {
                     disc: disc.int,
-                    payloads: vec![payload].into(),
+                    payloads: vec![payload],
                 },
                 disc.ty.clone(),
             );
@@ -3826,7 +3826,7 @@ fn decode_ast_value(db: &mut Db, raw: &[u8], disc: &AstDiscs) -> Option<(StructI
                 db,
                 Core::SumNew {
                     disc: disc.float,
-                    payloads: vec![payload].into(),
+                    payloads: vec![payload],
                 },
                 disc.ty.clone(),
             );
@@ -3845,7 +3845,7 @@ fn decode_ast_value(db: &mut Db, raw: &[u8], disc: &AstDiscs) -> Option<(StructI
                 db,
                 Core::SumNew {
                     disc: disc.bool,
-                    payloads: vec![payload].into(),
+                    payloads: vec![payload],
                 },
                 disc.ty.clone(),
             );
@@ -3866,7 +3866,7 @@ fn decode_ast_value(db: &mut Db, raw: &[u8], disc: &AstDiscs) -> Option<(StructI
                 db,
                 Core::SumNew {
                     disc: disc.str,
-                    payloads: vec![payload].into(),
+                    payloads: vec![payload],
                 },
                 disc.ty.clone(),
             );
@@ -3885,7 +3885,7 @@ fn decode_ast_value(db: &mut Db, raw: &[u8], disc: &AstDiscs) -> Option<(StructI
                 db,
                 Core::SumNew {
                     disc: disc.name,
-                    payloads: vec![payload].into(),
+                    payloads: vec![payload],
                 },
                 disc.ty.clone(),
             );
@@ -3912,7 +3912,7 @@ fn decode_ast_value(db: &mut Db, raw: &[u8], disc: &AstDiscs) -> Option<(StructI
                 db,
                 Core::SumNew {
                     disc: disc.bytes,
-                    payloads: vec![payload].into(),
+                    payloads: vec![payload],
                 },
                 disc.ty.clone(),
             );
@@ -3939,7 +3939,7 @@ fn decode_ast_value(db: &mut Db, raw: &[u8], disc: &AstDiscs) -> Option<(StructI
                 db,
                 Core::SumNew {
                     disc: disc.list,
-                    payloads: vec![payload].into(),
+                    payloads: vec![payload],
                 },
                 disc.ty.clone(),
             );
@@ -5388,7 +5388,7 @@ fn sink_ctor_through_match_arms(
         // A discriminating tag so arms of DIFFERENT constructor kinds don't get merged: 0=Sum(disc via
         // separate check), 1=Tuple, 2=List, 3=Record. The disc/keys are compared separately below.
         match core_of(db, body) {
-            Core::SumNew { disc: _, payloads } => Some((0, payloads.to_vec())),
+            Core::SumNew { disc: _, payloads } => Some((0, payloads)),
             Core::Tuple { elems } => Some((1, elems.to_vec())),
             Core::ListNew { elems } => Some((2, elems.to_vec())),
             Core::Record { fields } => Some((3, fields.values().copied().collect())),
@@ -5398,7 +5398,7 @@ fn sink_ctor_through_match_arms(
     // Establish the reference shape from the FIRST arm, then require every other arm to match it.
     let first_body = probes[0].2;
     let (shape, first_vals): (Shape, Vec<StructId>) = match core_of(db, first_body) {
-        Core::SumNew { disc, payloads } => (Shape::Sum(disc), payloads.to_vec()),
+        Core::SumNew { disc, payloads } => (Shape::Sum(disc), payloads),
         Core::Tuple { elems } => (Shape::Tuple, elems.to_vec()),
         Core::ListNew { elems } => (Shape::List, elems.to_vec()),
         Core::Record { fields } => {
@@ -5465,7 +5465,7 @@ fn sink_ctor_through_match_arms(
     Some(match shape {
         Shape::Sum(disc) => Core::SumNew {
             disc,
-            payloads: out_vals.into(),
+            payloads: out_vals,
         },
         Shape::Tuple => Core::Tuple {
             elems: out_vals.into(),
@@ -12166,10 +12166,7 @@ fn lower_lambda_value(db: &mut Db, id: StructId, params: &[StructId], body: Stru
         captures: captures.clone(),
     });
     trace!(target: "rcdzc::lower", node = id.0, body = body.0, code, n_params = params.len(), n_captures = captures.len(), "lift lambda → Core::Closure");
-    Core::Closure {
-        code,
-        captures: captures.into(),
-    }
+    Core::Closure { code, captures }
 }
 
 /// Collect the lambda body's FREE-VARIABLE capture set into `captures` (ordered, distinct, first-use
@@ -12609,7 +12606,7 @@ fn emit_call_or_specialize(db: &mut Db, head: StructId, callee: usize, args: &[S
                     .collect();
                 Core::Call {
                     callee: spec,
-                    args: runtime_args.into(),
+                    args: runtime_args,
                 }
             }
             None => {
@@ -12768,7 +12765,7 @@ fn emit_call_or_specialize(db: &mut Db, head: StructId, callee: usize, args: &[S
     trace!(target: "rcdzc::lower", head = head.0, callee, args = args.len(), "recursive call → Core::Call");
     Core::Call {
         callee,
-        args: args.to_vec().into(),
+        args: args.to_vec(),
     }
 }
 
@@ -13132,7 +13129,7 @@ fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<(usi
             // parameter). That collapses two distinct specializations to one memo key → the second call
             // REUSES the first's spec → a WRONG-VALUE miscompile (module-scale: the 2nd export/@test runs
             // the 1st's closure). Disambiguate by the arg's RESOLVED closure identity: when `core_of(a)` is
-            // a lifted `Core::Closure { code, captures: captures.into() }`, append the lifted-function `code` (distinct per
+            // a lifted `Core::Closure { code, captures }`, append the lifted-function `code` (distinct per
             // distinct lambda) + a fingerprint of each captured value (two closures of the same `code` but
             // different captures — e.g. `(fn (x) (+ x k))` at k=1 vs k=2 — must also differ). This keys the
             // memo on WHICH closure is passed, not the syntactic name, so `map`'s and `filter`'s driver
@@ -13202,7 +13199,7 @@ fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<(usi
             {
                 fp.push_str("|clos");
                 fp.push_str(&code.to_string());
-                for cap in captures.iter().copied() {
+                for cap in captures {
                     fp.push(':');
                     subtree_fingerprint(db, cap, &mut fp);
                 }
@@ -19070,7 +19067,7 @@ pub(crate) fn is_trap_free(db: &mut Db, id: StructId) -> bool {
         Core::Tuple { elems } | Core::ListNew { elems } => {
             elems.iter().copied().all(|e| is_trap_free(db, e))
         }
-        Core::SumNew { payloads, .. } => payloads.iter().all(|&p| is_trap_free(db, p)),
+        Core::SumNew { payloads, .. } => payloads.into_iter().all(|p| is_trap_free(db, p)),
         // Bitwise ops are total; a comparison never traps — trap-free if their operands are. The WRAPPING
         // arithmetic ops (`wrapping-add`/`wrapping-sub`/`wrapping-mul`) are ALSO total: they emit the raw
         // machine `add`/`sub`/`mul` with NO overflow guard (wasm's op wraps modulo the slot — that is their
@@ -19314,10 +19311,9 @@ fn hoist_common_ctor(
                     disc: de,
                     payloads: pe,
                 },
-            ) if dt == de && pt.len() == pe.len() => (
-                Shape::Sum(dt),
-                pt.iter().copied().zip(pe.iter().copied()).collect(),
-            ),
+            ) if dt == de && pt.len() == pe.len() => {
+                (Shape::Sum(dt), pt.into_iter().zip(pe).collect())
+            }
             (Core::Tuple { elems: et }, Core::Tuple { elems: ee }) if et.len() == ee.len() => (
                 Shape::Tuple,
                 et.iter().copied().zip(ee.iter().copied()).collect(),
@@ -19386,7 +19382,7 @@ fn hoist_common_ctor(
     Some(match shape {
         Shape::Sum(disc) => Core::SumNew {
             disc,
-            payloads: vals.into(),
+            payloads: vals,
         },
         Shape::Tuple => Core::Tuple { elems: vals.into() },
         Shape::List => Core::ListNew { elems: vals.into() },
@@ -20053,7 +20049,7 @@ fn lower_compare(db: &mut Db, id: StructId, lhs: StructId, rhs: StructId) -> Cor
             trace!(target: "rcdzc::fold", node = id.0, ?o, "compare folds to an Ordering variant");
             Core::SumNew {
                 disc,
-                payloads: Vec::new().into(),
+                payloads: Vec::new(),
             }
         }
         None => {
@@ -20216,7 +20212,7 @@ fn lower_runtime_compare(
         db,
         Core::SumNew {
             disc: lt,
-            payloads: Vec::new().into(),
+            payloads: Vec::new(),
         },
         ordering_ty.clone(),
     );
@@ -20224,7 +20220,7 @@ fn lower_runtime_compare(
         db,
         Core::SumNew {
             disc: gt,
-            payloads: Vec::new().into(),
+            payloads: Vec::new(),
         },
         ordering_ty.clone(),
     );
@@ -20232,7 +20228,7 @@ fn lower_runtime_compare(
         db,
         Core::SumNew {
             disc: eq,
-            payloads: Vec::new().into(),
+            payloads: Vec::new(),
         },
         ordering_ty.clone(),
     );
@@ -22235,7 +22231,7 @@ fn lower_sum_new(db: &mut Db, id: StructId, head: StructId, args: &[StructId]) -
         // `type_errors`, and an over-payloaded nullary is caught there, not silently given a payload).
         return Core::SumNew {
             disc,
-            payloads: Vec::new().into(),
+            payloads: Vec::new(),
         };
     }
     // NON-CANONICAL Ast.Float GUARD (uniform decline — operator-ruled A, adv-ast-float-nan differential).
@@ -22282,7 +22278,7 @@ fn lower_sum_new(db: &mut Db, id: StructId, head: StructId, args: &[StructId]) -
     }
     Core::SumNew {
         disc,
-        payloads: args.to_vec().into(),
+        payloads: args.to_vec(),
     }
 }
 
@@ -22331,7 +22327,7 @@ fn establish_divert(
     };
     Some(Core::Call {
         callee,
-        args: call_args.into(),
+        args: call_args,
     })
 }
 
@@ -22500,14 +22496,14 @@ fn lower_list_at(db: &mut Db, id: StructId, list: StructId, index: StructId) -> 
                 trace!(target: "rcdzc::fold", node = id.0, index = n, "List.at folds to Some (in-bounds constant index)");
                 return Core::SumNew {
                     disc: disc_some,
-                    payloads: vec![elems[n as usize]].into(),
+                    payloads: vec![elems[n as usize]],
                 };
             }
             _ => {
                 trace!(target: "rcdzc::fold", node = id.0, "List.at folds to None (out-of-bounds constant index)");
                 return Core::SumNew {
                     disc: disc_none,
-                    payloads: Vec::new().into(),
+                    payloads: Vec::new(),
                 };
             }
         }
@@ -23370,14 +23366,14 @@ fn lower_char_from_int(db: &mut Db, id: StructId, n: StructId) -> Core {
                     let payload = db.push_atom(crate::ast::Leaf::Char(c));
                     Core::SumNew {
                         disc: disc_some,
-                        payloads: vec![payload].into(),
+                        payloads: vec![payload],
                     }
                 }
                 None => {
                     trace!(target: "rcdzc::fold", node = id.0, "Char.from-int folds to None (surrogate / out-of-range)");
                     Core::SumNew {
                         disc: disc_none,
-                        payloads: Vec::new().into(),
+                        payloads: Vec::new(),
                     }
                 }
             }
@@ -23419,14 +23415,14 @@ fn lower_str_at(db: &mut Db, id: StructId, string: StructId, index: StructId) ->
                     let payload = db.push_atom(crate::ast::Leaf::Str(c.to_string()));
                     Core::SumNew {
                         disc: disc_some,
-                        payloads: vec![payload].into(),
+                        payloads: vec![payload],
                     }
                 }
                 None => {
                     trace!(target: "rcdzc::fold", node = id.0, "String.at folds to None (out-of-range constant index)");
                     Core::SumNew {
                         disc: disc_none,
-                        payloads: Vec::new().into(),
+                        payloads: Vec::new(),
                     }
                 }
             }
@@ -23483,14 +23479,14 @@ fn lower_str_scalar_at(db: &mut Db, id: StructId, string: StructId, index: Struc
                     let payload = db.push_atom(crate::ast::Leaf::Char(c));
                     Core::SumNew {
                         disc: disc_some,
-                        payloads: vec![payload].into(),
+                        payloads: vec![payload],
                     }
                 }
                 None => {
                     trace!(target: "rcdzc::fold", node = id.0, "String.scalar-at folds to None (out-of-range constant index)");
                     Core::SumNew {
                         disc: disc_none,
-                        payloads: Vec::new().into(),
+                        payloads: Vec::new(),
                     }
                 }
             }
@@ -23548,14 +23544,14 @@ fn lower_str_slice(
                     let payload = db.push_atom(crate::ast::Leaf::Str(sub));
                     Core::SumNew {
                         disc: disc_some,
-                        payloads: vec![payload].into(),
+                        payloads: vec![payload],
                     }
                 }
                 _ => {
                     trace!(target: "rcdzc::fold", node = id.0, "String.slice folds to None (out-of-range constant bounds)");
                     Core::SumNew {
                         disc: disc_none,
-                        payloads: Vec::new().into(),
+                        payloads: Vec::new(),
                     }
                 }
             }
@@ -23666,14 +23662,14 @@ fn lower_str_from_bytes(db: &mut Db, id: StructId, bytes: StructId) -> Core {
             let payload = db.push_atom(crate::ast::Leaf::Str(s.to_string()));
             Core::SumNew {
                 disc: disc_some,
-                payloads: vec![payload].into(),
+                payloads: vec![payload],
             }
         }
         Err(_) => {
             trace!(target: "rcdzc::fold", node = id.0, "String.from-bytes folds ill-formed UTF-8 to None");
             Core::SumNew {
                 disc: disc_none,
-                payloads: Vec::new().into(),
+                payloads: Vec::new(),
             }
         }
     }
@@ -24148,14 +24144,14 @@ fn lower_checked_arith(
                     });
                     Core::SumNew {
                         disc: disc_some,
-                        payloads: vec![payload].into(),
+                        payloads: vec![payload],
                     }
                 }
                 None => {
                     trace!(target: "rcdzc::fold", node = id.0, ?prim, "checked arithmetic folds to None (overflow)");
                     Core::SumNew {
                         disc: disc_none,
-                        payloads: Vec::new().into(),
+                        payloads: Vec::new(),
                     }
                 }
             }
@@ -24322,7 +24318,7 @@ fn lower_bytes_at(db: &mut Db, id: StructId, bytes: StructId, index: StructId) -
                     trace!(target: "rcdzc::fold", node = id.0, index = n, "Bytes.at folds to Some (in-bounds constant index + constant element)");
                     return Core::SumNew {
                         disc: disc_some,
-                        payloads: vec![elems[n as usize]].into(),
+                        payloads: vec![elems[n as usize]],
                     };
                 }
                 // A runtime element at an in-bounds constant index — fall through to the runtime read
@@ -24332,7 +24328,7 @@ fn lower_bytes_at(db: &mut Db, id: StructId, bytes: StructId, index: StructId) -
                 trace!(target: "rcdzc::fold", node = id.0, "Bytes.at folds to None (out-of-bounds constant index)");
                 return Core::SumNew {
                     disc: disc_none,
-                    payloads: Vec::new().into(),
+                    payloads: Vec::new(),
                 };
             }
         }
@@ -24430,7 +24426,7 @@ fn lower_bytes_slice(
                 trace!(target: "rcdzc::fold", node = id.0, start = s, len = l, "Bytes.slice folds to Some (in-range constant)");
                 return Core::SumNew {
                     disc: disc_some,
-                    payloads: vec![payload].into(),
+                    payloads: vec![payload],
                 };
             }
             // Provably out of range → `None`.
@@ -24438,7 +24434,7 @@ fn lower_bytes_slice(
                 trace!(target: "rcdzc::fold", node = id.0, "Bytes.slice folds to None (out-of-range constant)");
                 return Core::SumNew {
                     disc: disc_none,
-                    payloads: Vec::new().into(),
+                    payloads: Vec::new(),
                 };
             }
         }

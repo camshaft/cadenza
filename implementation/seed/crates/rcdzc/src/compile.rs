@@ -4520,7 +4520,7 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
         // CALLEE's own body faults surface when it is collected (a reachable def is checked on its own
         // — `collect_faults` covers every def body), so we do not re-enter the callee here.
         Core::Call { args, .. } => {
-            for arg in args.iter().copied() {
+            for arg in args {
                 collect_reached_poisons(db, arg, out);
             }
         }
@@ -4528,13 +4528,13 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
         // the boundary — descend into each (the call itself is a boundary import, not a def whose body
         // could fault).
         Core::HostCall { args, .. } => {
-            for arg in args.iter().copied() {
+            for arg in args {
                 collect_reached_poisons(db, arg, out);
             }
         }
         // A sequencing block unconditionally evaluates every statement AND the tail — descend into each.
         Core::Seq { stmts, tail } => {
-            for s in stmts.iter().copied() {
+            for s in stmts {
                 collect_reached_poisons(db, s, out);
             }
             collect_reached_poisons(db, tail, out);
@@ -4704,7 +4704,7 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
         }
         // A sum construction's payloads are all unconditionally part of the value — descend into each.
         Core::SumNew { payloads, .. } => {
-            for p in payloads.iter().copied() {
+            for p in payloads {
                 collect_reached_poisons(db, p, out);
             }
         }
@@ -4722,13 +4722,13 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
         // A closure's captured values are unconditionally part of the value; a closure application
         // unconditionally evaluates the closure and its argument. Descend for their provable faults.
         Core::Closure { captures, .. } => {
-            for c in captures.iter().copied() {
+            for c in captures {
                 collect_reached_poisons(db, c, out);
             }
         }
         Core::CallClosure { closure, args } => {
             collect_reached_poisons(db, closure, out);
-            for arg in args.iter().copied() {
+            for arg in args {
                 collect_reached_poisons(db, arg, out);
             }
         }

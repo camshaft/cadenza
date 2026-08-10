@@ -1113,31 +1113,31 @@ fn collect_host_arg_strings_at(db: &mut Db, id: crate::ast::StructId, out: &mut 
             // yielding an invalid consumer component.
             let peer_bound = db.effect_bindings.contains_key(&*effect);
             if !peer_bound {
-                for a in args.iter() {
+                for a in &args {
                     if let Core::ConstStr(s) = crate::lower::core_of(db, *a) {
                         out.push(s.to_string());
                     }
                 }
             }
-            for a in args.iter().copied() {
+            for a in args {
                 collect_host_arg_strings(db, a, out);
             }
         }
         Core::Call { args, .. } => {
-            for a in args.iter().copied() {
+            for a in args {
                 collect_host_arg_strings(db, a, out);
             }
         }
         Core::CallClosure { closure, args } => {
             collect_host_arg_strings(db, closure, out);
-            for a in args.iter().copied() {
+            for a in args {
                 collect_host_arg_strings(db, a, out);
             }
         }
         // A closure's CAPTURES may include a host-call result carrying a string arg — walk them (the body
         // is walked as its own lifted function). Mirrors `collect_host_imports`'s `Core::Closure` arm.
         Core::Closure { captures, .. } => {
-            for c in captures.iter().copied() {
+            for c in captures {
                 collect_host_arg_strings(db, c, out);
             }
         }
@@ -1153,7 +1153,7 @@ fn collect_host_arg_strings_at(db: &mut Db, id: crate::ast::StructId, out: &mut 
             collect_host_arg_strings(db, body, out);
         }
         Core::Seq { stmts, tail } => {
-            for s in stmts.iter().copied() {
+            for s in stmts {
                 collect_host_arg_strings(db, s, out);
             }
             collect_host_arg_strings(db, tail, out);
@@ -1317,7 +1317,7 @@ fn collect_host_arg_strings_at(db: &mut Db, id: crate::ast::StructId, out: &mut 
         }
         Core::Proj { operand, .. } => collect_host_arg_strings(db, operand, out),
         Core::SumNew { payloads, .. } => {
-            for p in payloads.iter().copied() {
+            for p in payloads {
                 collect_host_arg_strings(db, p, out);
             }
         }

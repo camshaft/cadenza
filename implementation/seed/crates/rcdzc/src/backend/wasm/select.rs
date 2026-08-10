@@ -986,7 +986,7 @@ fn collect_consuming_payload_sites_expr(
             collect_consuming_payload_sites_expr(db, else_, scrut, consuming, out);
         }
         Core::Seq { stmts, tail } => {
-            for s in stmts.iter() {
+            for s in &stmts {
                 collect_consuming_payload_sites_expr(db, *s, scrut, false, out);
             }
             collect_consuming_payload_sites_expr(db, tail, scrut, consuming, out);
@@ -1384,7 +1384,7 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
         | Core::ListNew { elems }
         | Core::BytesOf { elems }
         | Core::SetOf { elems, .. } => cs.extend(elems.iter().copied()),
-        Core::SumNew { payloads, .. } => cs.extend(payloads.iter().copied()),
+        Core::SumNew { payloads, .. } => cs.extend(payloads),
         Core::Record { fields } => cs.extend(fields.values().copied()),
         Core::MapNew { entries, .. } => {
             for (k, v) in entries.iter().copied() {
@@ -1394,14 +1394,14 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
         }
         Core::BinBuild { segs } => cs.extend(segs.iter().map(|s| s.value)),
         Core::BinBitsBuild { fields } => cs.extend(fields.iter().map(|f| f.value)),
-        Core::Call { args, .. } | Core::HostCall { args, .. } => cs.extend(args.iter().copied()),
+        Core::Call { args, .. } | Core::HostCall { args, .. } => cs.extend(args),
         Core::CallClosure { closure, args } => {
             cs.push(closure);
-            cs.extend(args.iter().copied());
+            cs.extend(args);
         }
-        Core::Closure { captures, .. } => cs.extend(captures.iter().copied()),
+        Core::Closure { captures, .. } => cs.extend(captures),
         Core::Seq { stmts, tail } => {
-            cs.extend(stmts.iter().copied());
+            cs.extend(stmts);
             cs.push(tail);
         }
         // A boundary block's child is its body; a break's child is its value.
@@ -3538,7 +3538,7 @@ fn collect_used_ops_into(
         Core::Call { args, .. } => {
             // A CONSTANT-BigInt argument to a BigInt param materializes via `bigint-of-i64` in the
             // `Core::ConstInt` collect arm (matching its emit) — no per-call special-case needed here.
-            for arg in args.iter().copied() {
+            for arg in args {
                 collect_used_ops_into(db, arg, out);
             }
         }
@@ -3557,7 +3557,7 @@ fn collect_used_ops_into(
         // peer arg (and any scalar/compound host arg) as before.
         Core::HostCall { args, effect, .. } => {
             let peer_bound = db.effect_bindings.contains_key(&*effect);
-            for arg in args.iter().copied() {
+            for arg in args {
                 match crate::infer::type_of(db, arg) {
                     Ty::Unit => {}
                     // A CONSTANT string/bytes host arg crosses via the data segment (no runtime op). A
@@ -3577,7 +3577,7 @@ fn collect_used_ops_into(
             }
         }
         Core::Seq { stmts, tail } => {
-            for s in stmts.iter().copied() {
+            for s in stmts {
                 collect_used_ops_into(db, s, out);
             }
             collect_used_ops_into(db, tail, out);
@@ -3643,7 +3643,7 @@ fn collect_used_ops_into(
                 _ => {
                     out.insert(OP_ARR_ALLOC);
                     out.insert(OP_ARR_SET);
-                    for p in payloads.iter() {
+                    for p in &payloads {
                         if let Ok(Some(op)) = box_op(db, *p) {
                             out.insert(op);
                         }
@@ -3751,7 +3751,7 @@ fn collect_used_ops_into(
             out.insert(OP_ARR_ALLOC);
             out.insert(OP_ARR_SET);
             out.insert(OP_BOX_INT); // slot 0 = box-int(code)
-            for &c in captures.iter() {
+            for &c in &captures {
                 if let Ok(Some(op)) = box_op(db, c) {
                     out.insert(op);
                 }
@@ -3773,7 +3773,7 @@ fn collect_used_ops_into(
                 out.insert(OP_DROP);
             }
             collect_used_ops_into(db, closure, out);
-            for arg in args.iter().copied() {
+            for arg in args {
                 collect_used_ops_into(db, arg, out);
             }
         }
@@ -11349,7 +11349,7 @@ fn emit(
             // host-call arg emit below already threads `arg_base` for the identical two-widths hazard.)
             let arg_base = (*high).max(cell_slot + 1);
             out.push(Lir::LocalGet(cell_slot)); // env (the cell)
-            for &arg in args.iter() {
+            for &arg in &args {
                 emit(db, arg, slots, arg_base, high, scratch_ty, layout, out)?;
             }
             match known_code {
@@ -11446,7 +11446,7 @@ fn emit(
                          effect in-program instead of binding it to a peer"
                     ))
                 })?;
-                for &arg in args.iter() {
+                for &arg in &args {
                     if matches!(crate::infer::type_of(db, arg), Ty::Unit) {
                         continue;
                     }
@@ -11469,7 +11469,7 @@ fn emit(
             // that same slot — one wasm local declared at two widths → an invalid module (the marshalled-arg-
             // BEFORE-scalar order; the reverse worked only because the scalar bumped `*high` first).
             let mut arg_base = base;
-            for &arg in args.iter() {
+            for &arg in &args {
                 let at = crate::infer::type_of(db, arg);
                 match at {
                     // A unit argument carries no boundary value.
@@ -11581,7 +11581,7 @@ fn emit(
         //= spec/capabilities/core-semantics.md#a-sequencing-block-evaluates-its-forms-in-order
         //# A sequencing block MUST evaluate to the value of its last form.
         Core::Seq { stmts, tail } => {
-            for s in stmts.iter() {
+            for s in &stmts {
                 // A discarded PURE statement is unobserved — elide it (its trap, if any, is dead-init).
                 if !crate::lower::subtree_reaches_host_call(db, *s) {
                     continue;

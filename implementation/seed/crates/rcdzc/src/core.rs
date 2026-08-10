@@ -835,7 +835,7 @@ pub enum Core {
     //# Construction MUST be via application in all cases: `(Some 5)`, `(None unit)`, `(Sign.Zero unit)`.
     SumNew {
         disc: u32,
-        payloads: std::rc::Rc<[StructId]>,
+        payloads: Vec<StructId>,
     },
     /// A MATCH over a SUM scrutinee, compiled to a DECISION TREE. The ROOT switch dispatches on
     /// `sum-disc(scrutinee)` (`path` is empty — the scrutinee itself); each arm's continuation is a leaf
@@ -1100,7 +1100,7 @@ pub enum Core {
     //# The compiler MUST NOT emit a construct that forms a cycle among heap values, so that a reference-count reclamation discipline leaves no value uncollected.
     Call {
         callee: usize,
-        args: std::rc::Rc<[StructId]>,
+        args: Vec<StructId>,
     },
     /// A reference to a FUNCTION PARAMETER — the `binder` is the parameter's name occurrence (its
     /// identity, matching what `resolve` binds a reference to). The backend maps it to a `local.get` of
@@ -1133,7 +1133,7 @@ pub enum Core {
     //# A function value MUST capture the bindings in scope at the point it is created, so that applying it later observes those captured bindings rather than the bindings in scope at the point of application.
     Closure {
         code: usize,
-        captures: std::rc::Rc<[StructId]>,
+        captures: Vec<StructId>,
     },
     /// A read of the k-th CAPTURED free variable inside a LIFTED closure body — `arr-get(env, 1 + index)`
     /// then the value's own unbox/borrow. The lifted function receives its closure CELL as its first wasm
@@ -1159,7 +1159,7 @@ pub enum Core {
     /// `DESIGN-runtime-closures-rcdzc.md` §3.
     CallClosure {
         closure: StructId,
-        args: std::rc::Rc<[StructId]>,
+        args: Vec<StructId>,
     },
     /// A HOST CALL — a perform of an effect operation DELEGATED to the component boundary by an enclosing
     /// `(host (E…) …)` (`capabilities-and-effects.md` §Host-Binding Is A Routing Decision Made At The
@@ -1182,7 +1182,7 @@ pub enum Core {
         // at the cold `HostImport` construction boundary (built once per distinct import, not per node).
         effect: std::rc::Rc<str>,
         op: std::rc::Rc<str>,
-        args: std::rc::Rc<[StructId]>,
+        args: Vec<StructId>,
         result: crate::ty::Ty,
     },
     // (The `Core::ExternCall` variant was REMOVED in U4: cross-component interop is unified with EFFECTS —
@@ -1208,7 +1208,7 @@ pub enum Core {
     //= spec/capabilities/core-semantics.md#an-expression-evaluated-only-for-its-effect-yields-the-unit-value
     //# A program that terminates normally without producing a value other than through the host calls it makes MUST produce the unit value as its normal-termination value.
     Seq {
-        stmts: std::rc::Rc<[StructId]>,
+        stmts: Vec<StructId>,
         tail: StructId,
     },
     /// A BOUNDARY BLOCK — the target of a non-local `Break` (the `?`/try-operator's enclosing boundary,
