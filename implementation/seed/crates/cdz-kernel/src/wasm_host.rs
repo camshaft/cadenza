@@ -24,9 +24,10 @@ wasmtime::component::bindgen!({
     path: "wit/reducer.wit",
 });
 
-// Re-export the generated agent-kernel types under clear names so the rest of the crate refers to
-// `wasm_host::EffectRequest` etc. rather than the deep generated path.
-pub use self::cadenza::agent_kernel::types::{ContentType, EffectKind, EffectRequest};
+// B2 (design-binary-ast-abi): the reducer world no longer declares a `types` interface — the fold
+// boundary is binary cadenza-AST (`apply(list<u8>)->list<u8>`), so there are no generated
+// `ContentType`/`EffectKind`/`EffectRequest` structs to re-export. The event/effect shapes live in the
+// AST forms `crate::ast_marshal` builds/parses; the kernel's own effect types are `crate::effect::*`.
 
 // Generate host bindings for the AUTHORIZER world in its OWN module (a second `bindgen!` at module scope
 // would clash on the generated `types`/world names with the reducer bindings above). A policy component
@@ -109,11 +110,6 @@ impl ReducerHost {
     }
 }
 
-// The `types` interface defines only data types (content-type/effect-kind/effect-request), no
-// functions — but bindgen still generates a marker `Host` trait for it that the host must implement
-// (empty). Required because the `kv`/`fold` interfaces `use types.*`.
-impl self::cadenza::agent_kernel::types::Host for ReducerHost {}
-
 // Host implementation of the `kv` import the guest calls DIRECTLY during a fold (§4b — NOT an effect).
 // Backed by the kernel's persistent-map KV; keys/values are opaque bytes (the guest defines the schema).
 // Reads/writes go through the transactional overlay (see [`ReducerHost`]): writes buffer, reads shadow.
@@ -175,8 +171,6 @@ impl self::cadenza::agent_kernel::kv::Host for ReducerHost {
 // module's), so `ReducerHost` must implement THOSE too to serve the async reducer's `kv` import. The kv
 // methods are pure in-memory ops (kept SYNC — imports weren't lowered async), so these DELEGATE to the sync
 // `kv::Host` impl above rather than duplicate the overlay logic — one source of truth for the KV semantics.
-impl async_reducer_bindings::cadenza::agent_kernel::types::Host for ReducerHost {}
-
 impl async_reducer_bindings::cadenza::agent_kernel::kv::Host for ReducerHost {
     fn get(&mut self, key: Vec<u8>) -> Option<Vec<u8>> {
         self::cadenza::agent_kernel::kv::Host::get(self, key)
@@ -249,17 +243,8 @@ pub struct ComponentReducer {
 /// Default per-fold fuel ceiling (§22d). Chosen generous enough that a legitimate reducer fold (a bit
 /// of KV work + assembling a handful of effect-requests) never approaches it, but finite so a runaway
 /// guest is aborted rather than hanging the kernel. Tunable per reducer via
-/// [`ComponentReducer::with_fuel_budget`]; the real per-session budget lands with gas (§22a).
+/// [`ComponentReducer::with_fuel_budget`]. The budget is a uniform per-fold ceiling.
 pub const DEFAULT_FOLD_FUEL: u64 = 1_000_000_000;
-
-/// Cap on the byte-buffer length [`HeapHandle::read_bytes`] will PRE-RESERVE for (reviewer, #2166 read-side
-/// DoS). `bytes-len` returns a raw unbounded `u32` reported by the untrusted guest value-heap; feeding it
-/// straight into `Vec::with_capacity` lets a bogus large length (up to `u32::MAX` ≈ 4 GiB) reserve up front
-/// and abort the host via the alloc-error handler before the read loop can fail-loud. 1 MiB is generous for
-/// a real inline payload/token (larger bodies are content-addressed blobs, not inline value-heap bytes)
-/// while bounding the eager reservation; a truthful larger buffer still reads correctly (the Vec just grows
-/// with amortized reallocations past the cap), and a bogus length Traps cheaply on the first missing `bytes-get`.
-const MAX_PREALLOC_BYTES: u32 = 1 << 20;
 
 /// Errors constructing or running a component reducer. Kept small; grows as the fold path lands.
 #[derive(Debug)]
@@ -280,8 +265,7 @@ pub enum ComponentError {
     /// The guest exhausted its fuel budget mid-fold (§22d): a runaway/looping reducer hit the hard
     /// instruction ceiling before returning. Surfaced DISTINCTLY from a semantic [`ComponentError::Trap`]
     /// because it's a resource-exhaustion outcome (a real DoS vector — Copilot PR#1009), not a guest
-    /// logic bug — the driver can act on it differently (e.g. quarantine the reducer, alert) and, once
-    /// gas (§22a) lands, this is the signal a session's budget was consumed.
+    /// logic bug — the driver can act on it differently (e.g. quarantine the reducer, alert).
     FuelExhausted { budget: u64 },
     /// A declared component dependency isn't present in the blob store (missing by hash). DISTINCT from
     /// [`ComponentError::DepStoreError`] (Copilot PR#1013 #3): "the store doesn't hold it" is a
@@ -893,1017 +877,6 @@ async fn compose_dep_into_linker_async<T: Send + 'static>(
     Ok(dep_instance)
 }
 
-/// Parse a component dependency's `+<hash>` content-address build-metadata into a [`Hash`]. Delegates
-/// to [`Hash::from_hex`] — the single home for the canonical-lowercase-hex rule (PR#1013 #4) — rather
-/// than reimplementing it here (this used to carry its own copy of the length/lowercase checks).
-/// A host-side handle to a live `cadenza:runtime/heap` instance, exposing the value-heap ops the reducer
-/// fold-boundary MARSHALLING needs (operator ruling C, 2026-08-04): the kernel host builds the reducer's
-/// structurally-typed WIT arguments (a content-type `record`, `option<list<u8>>` payloads) as value-heap
-/// HANDLES the Cadenza reducer consumes, and reads its `list<effect-request>` result back — because a real
-/// Cadenza component crosses every compound as an opaque `u32` handle into the shared runtime, NOT as a
-/// structural component-model value (`backend/wasm/host.rs::extern_abi_val_type`; component-abi.md
-/// "components composed against a shared runtime exchange values as handles"). So `reducer.wit` stays
-/// structurally typed (the contract), and this adapter marshals each field ↔ handle around the reducer's
-/// `apply(u32,u32,u32)->u32` handle-ABI export — reusing the SAME runtime instance the reducer's linker
-/// is composed against (§23 [`compose_dep_into_linker`]), so a handle the host mints indexes the heap the
-/// reducer reads.
-///
-/// This is SLICE 1: the BUILD (write) ops B1's empty-effects fold needs — `box-int` (scalar field),
-/// `str-new` (a `String` field), `arr-alloc`/`arr-set` (a record as a sorted-field array), `sum-new` (an
-/// `option` ctor), and `vec-len` (read the effect-list length). The READ ops for B2/B3 (`arr-get`/
-/// `str-get`/`sum-disc`/`sum-payload`/`vec-get`/`get-int`/`bytes-*`) layer on in the next slice.
-///
-/// Each op is a wasmtime component [`Func`] extracted off the instantiated runtime under its
-/// `cadenza:runtime/heap` interface; a method calls it over the runtime's `u32`/`s64` valtypes. The
-/// runtime handle indices are the FROZEN `runtime.wit` order (documented per method).
-pub struct HeapHandle<T: 'static> {
-    store: wasmtime::Store<T>,
-    /// The fuel budget reported in a [`ComponentError::FuelExhausted`] if a heap op hits `OutOfFuel` (the
-    /// store is metered) — set at [`HeapHandle::bind`]. The marshalling ops are host-driven + bounded, so
-    /// exhaustion is unexpected, but the classification mirrors the sibling wasm paths so the budget signal
-    /// is preserved if the shared store IS metered (#2133).
-    fuel_budget: u64,
-    // BUILD ops (slice 1) — construct the reducer's structural WIT args as value-heap handles.
-    box_int: wasmtime::component::Func,
-    arr_alloc: wasmtime::component::Func,
-    arr_set: wasmtime::component::Func,
-    sum_new: wasmtime::component::Func,
-    vec_len: wasmtime::component::Func,
-    str_new: wasmtime::component::Func,
-    // READ ops (slice 2) — project the reducer's returned effect-request list back to structural values.
-    arr_get: wasmtime::component::Func,
-    str_get: wasmtime::component::Func,
-    sum_disc: wasmtime::component::Func,
-    sum_payload: wasmtime::component::Func,
-    vec_get: wasmtime::component::Func,
-    get_int: wasmtime::component::Func,
-    // BYTES ops (slice 2b) — build/read a `Bytes` handle for the reducer's `Option<Bytes>` payload/resumes
-    // fields + their effect-request payload result (all u32-shaped: byte value 0..255 rides as a u32).
-    bytes_alloc: wasmtime::component::Func,
-    bytes_set: wasmtime::component::Func,
-    bytes_len: wasmtime::component::Func,
-    bytes_get: wasmtime::component::Func,
-}
-
-/// Classify a heap-op `Func::call`/`post_return` failure (github-liaison #2122/#2133): the SAME 3-way split
-/// the sibling wasm paths ([`invoke_component`], [`ComponentReducer::apply`]) use:
-/// - `Trap::OutOfFuel` → [`ComponentError::FuelExhausted`] (a resource-ceiling hit — the Copilot PR#1009
-///   DoS convention; distinct from a semantic trap so the budget signal isn't lost if heap ops run metered);
-/// - any other trap → [`ComponentError::Trap`] (a genuine guest trap);
-/// - a NON-trap error → [`ComponentError::Instantiate`] (a host-side signature mismatch = a WIT/runtime-ABI
-///   drift, NOT a guest trap — so ABI drift doesn't masquerade as "the guest trapped").
-fn classify_heap_call_err(e: wasmtime::Error, budget: u64) -> ComponentError {
-    if let Some(wasmtime::Trap::OutOfFuel) = e.downcast_ref::<wasmtime::Trap>() {
-        ComponentError::FuelExhausted { budget }
-    } else if e.downcast_ref::<wasmtime::Trap>().is_some() {
-        ComponentError::Trap(e.to_string())
-    } else {
-        ComponentError::Instantiate(format!("heap-op call failed (runtime-ABI mismatch?): {e}"))
-    }
-}
-
-impl<T: 'static> HeapHandle<T> {
-    /// Bind a `HeapHandle` from an already-instantiated runtime component `instance` in `store` (the
-    /// SAME instance composed into the reducer's linker, so handles are shared). Extracts each B1 heap op
-    /// as a [`Func`] off the `cadenza:runtime/heap` exported interface — a missing op is a `Compose`
-    /// error naming it (the runtime doesn't expose the expected interface, caught here rather than as an
-    /// opaque trap at marshal time).
-    ///
-    /// On error the CONSUMED `store` is handed back with the error (`Err((e, store))`), so a caller can
-    /// recover the store's data — e.g. the fold-boundary rebind returns the reducer host's base KV rather
-    /// than dropping it (github-liaison #2203 MED: the "any error hands the base KV back" atomicity
-    /// contract). A caller that doesn't need the store just discards it.
-    pub fn bind(
-        mut store: wasmtime::Store<T>,
-        instance: &wasmtime::component::Instance,
-    ) -> Result<Self, (ComponentError, wasmtime::Store<T>)> {
-        let iface_err = |reason: String| ComponentError::Compose {
-            import_name: "cadenza:runtime/heap".to_string(),
-            reason,
-        };
-        // Extract every op in an inner closure returning a plain `Result<_, ComponentError>` (it borrows
-        // `store`); the borrow ends when it returns, so on Err `store` is free to move into the error tuple.
-        let ops = (|| {
-            let iface_idx = instance
-                .get_export_index(&mut store, None, "cadenza:runtime/heap")
-                .ok_or_else(|| iface_err("runtime does not export cadenza:runtime/heap".into()))?;
-            let mut op = |name: &str| -> Result<wasmtime::component::Func, ComponentError> {
-                let idx = instance
-                    .get_export_index(&mut store, Some(&iface_idx), name)
-                    .ok_or_else(|| iface_err(format!("heap interface missing op {name:?}")))?;
-                instance
-                    .get_func(&mut store, idx)
-                    .ok_or_else(|| iface_err(format!("heap export {name:?} is not a func")))
-            };
-            Ok::<_, ComponentError>((
-                op("box-int")?,
-                op("arr-alloc")?,
-                op("arr-set")?,
-                op("sum-new")?,
-                op("vec-len")?,
-                op("str-new")?,
-                op("arr-get")?,
-                op("str-get")?,
-                op("sum-disc")?,
-                op("sum-payload")?,
-                op("vec-get")?,
-                op("get-int")?,
-                op("bytes-alloc")?,
-                op("bytes-set")?,
-                op("bytes-len")?,
-                op("bytes-get")?,
-            ))
-        })();
-        let (
-            box_int,
-            arr_alloc,
-            arr_set,
-            sum_new,
-            vec_len,
-            str_new,
-            arr_get,
-            str_get,
-            sum_disc,
-            sum_payload,
-            vec_get,
-            get_int,
-            bytes_alloc,
-            bytes_set,
-            bytes_len,
-            bytes_get,
-        ) = match ops {
-            Ok(ops) => ops,
-            Err(e) => return Err((e, store)),
-        };
-        Ok(HeapHandle {
-            store,
-            fuel_budget: DEFAULT_FOLD_FUEL,
-            box_int,
-            arr_alloc,
-            arr_set,
-            sum_new,
-            vec_len,
-            str_new,
-            arr_get,
-            str_get,
-            sum_disc,
-            sum_payload,
-            vec_get,
-            get_int,
-            bytes_alloc,
-            bytes_set,
-            bytes_len,
-            bytes_get,
-        })
-    }
-
-    /// Call a heap op that takes u32 args and returns one u32 handle — the common shape (arr-alloc,
-    /// arr-set, sum-new, vec-len). Args are passed as `Val::U32`; the single result is read back as u32.
-    fn call_u32s(
-        &mut self,
-        f: &wasmtime::component::Func,
-        args: &[u32],
-    ) -> Result<u32, ComponentError> {
-        use wasmtime::component::Val;
-        let budget = self.fuel_budget;
-        let params: Vec<Val> = args.iter().map(|&a| Val::U32(a)).collect();
-        let mut results = [Val::U32(0)];
-        f.call(&mut self.store, &params, &mut results)
-            .map_err(|e| classify_heap_call_err(e, budget))?;
-        f.post_return(&mut self.store)
-            .map_err(|e| classify_heap_call_err(e, budget))?;
-        match results[0] {
-            Val::U32(h) => Ok(h),
-            ref other => Err(ComponentError::Trap(format!(
-                "heap op returned {other:?}, not a u32 handle"
-            ))),
-        }
-    }
-
-    /// `box-int(v: s64) -> u32` (runtime.wit idx 0): box a scalar int as a heap handle — a scalar field
-    /// inside a record crosses as a BOXED handle (v-rust-backend confirm), so a record's int field is
-    /// `arr-set(arr, i, box_int(v))`.
-    pub fn box_int(&mut self, v: i64) -> Result<u32, ComponentError> {
-        use wasmtime::component::Val;
-        let budget = self.fuel_budget;
-        let f = self.box_int;
-        let mut results = [Val::U32(0)];
-        f.call(&mut self.store, &[Val::S64(v)], &mut results)
-            .map_err(|e| classify_heap_call_err(e, budget))?;
-        f.post_return(&mut self.store)
-            .map_err(|e| classify_heap_call_err(e, budget))?;
-        match results[0] {
-            Val::U32(h) => Ok(h),
-            ref other => Err(ComponentError::Trap(format!(
-                "box-int returned {other:?}, not a u32 handle"
-            ))),
-        }
-    }
-
-    /// `str-new(s: string) -> u32` (idx 17): intern a String as a heap handle — a `String` field crosses
-    /// as its rope handle.
-    pub fn str_new(&mut self, s: &str) -> Result<u32, ComponentError> {
-        use wasmtime::component::Val;
-        let budget = self.fuel_budget;
-        let f = self.str_new;
-        let mut results = [Val::U32(0)];
-        f.call(&mut self.store, &[Val::String(s.into())], &mut results)
-            .map_err(|e| classify_heap_call_err(e, budget))?;
-        f.post_return(&mut self.store)
-            .map_err(|e| classify_heap_call_err(e, budget))?;
-        match results[0] {
-            Val::U32(h) => Ok(h),
-            ref other => Err(ComponentError::Trap(format!(
-                "str-new returned {other:?}, not a u32 handle"
-            ))),
-        }
-    }
-
-    /// `arr-alloc(len: u32) -> u32` (idx 6): allocate a `len`-element value-heap array — a record/tuple
-    /// crosses as an array of its field handles (in SORTED field-name order for a record).
-    pub fn arr_alloc(&mut self, len: u32) -> Result<u32, ComponentError> {
-        let f = self.arr_alloc;
-        self.call_u32s(&f, &[len])
-    }
-
-    /// `arr-set(arr, index, elem) -> arr` (idx 7): set element `index` of `arr` to handle `elem`, returning
-    /// the array handle for threading.
-    pub fn arr_set(&mut self, arr: u32, index: u32, elem: u32) -> Result<u32, ComponentError> {
-        let f = self.arr_set;
-        self.call_u32s(&f, &[arr, index, elem])
-    }
-
-    /// `sum-new(disc, payload) -> u32` (idx 10): build a sum handle with discriminant `disc` and payload
-    /// handle `payload` — an `option` is `sum-new(0, some_handle)` / `sum-new(1, unit_handle)`; a nullary
-    /// variant carries the UNIT value as its payload. WARNING: the runtime's unit is the INLINE-UNIT handle
-    /// (`IMM_UNIT`), NOT handle 0 (a NULL handle/token) — obtain it via [`HeapHandle::unit`] (`arr-alloc(0)`,
-    /// the empty array = inline unit, per runtime.wit "a nullary variant carries the unit value (an arr of
-    /// length 0)"). Passing 0 would build a sum with a NULL payload = a malformed value.
-    pub fn sum_new(&mut self, disc: u32, payload: u32) -> Result<u32, ComponentError> {
-        let f = self.sum_new;
-        self.call_u32s(&f, &[disc, payload])
-    }
-
-    /// The runtime's UNIT value handle — the inline-unit (`IMM_UNIT`), obtained as `arr-alloc(0)` (the
-    /// empty array IS the inline unit). Use this as the payload for a `None`/nullary sum, NOT handle 0 (a
-    /// NULL handle). A compile-time-known immediate; `arr-alloc(0)` returns it with no heap node.
-    pub fn unit(&mut self) -> Result<u32, ComponentError> {
-        self.arr_alloc(0)
-    }
-
-    /// `vec-len(v: u32) -> u32` (idx ~30): the element count of a value-heap vector — reads the length of
-    /// the reducer's returned `list<effect-request>` (B1 asserts it's 0).
-    pub fn vec_len(&mut self, v: u32) -> Result<u32, ComponentError> {
-        let f = self.vec_len;
-        self.call_u32s(&f, &[v])
-    }
-
-    // ── READ ops (slice 2) — PROJECT the reducer's returned effect-request list back to structural values.
-    // These read a value-heap handle the reducer produced: walk the `list<effect-request>` (vec-len/vec-get),
-    // project each effect-request record's fields (arr-get at the SORTED index), and decode leaf values
-    // (get-int for a boxed scalar, str-get for a String, sum-disc/sum-payload for an Option/enum-kind). The
-    // dual of the BUILD ops above; together they marshal the reducer's structural WIT boundary (B2/B3).
-
-    /// `vec-get(v, index) -> u32` (idx 31): the element handle at `index` of a value-heap vector — walks the
-    /// returned effect-request list (each element an effect-request record handle).
-    pub fn vec_get(&mut self, v: u32, index: u32) -> Result<u32, ComponentError> {
-        let f = self.vec_get;
-        self.call_u32s(&f, &[v, index])
-    }
-
-    /// `arr-get(arr, index) -> u32` (idx 8): the element handle at `index` of a value-heap array — projects
-    /// a record field by its SORTED-field-name index (v-rust-backend: records lay out arr in sorted order).
-    pub fn arr_get(&mut self, arr: u32, index: u32) -> Result<u32, ComponentError> {
-        let f = self.arr_get;
-        self.call_u32s(&f, &[arr, index])
-    }
-
-    /// `sum-disc(handle) -> u32` (idx 11): the discriminant of a sum handle — reads an Option's Some(0)/
-    /// None(1) or an effect-kind variant's disc (0..5 per the EffectKind table).
-    pub fn sum_disc(&mut self, handle: u32) -> Result<u32, ComponentError> {
-        let f = self.sum_disc;
-        self.call_u32s(&f, &[handle])
-    }
-
-    /// `sum-payload(handle) -> u32` (idx 12): the payload handle of a sum — the inner value of a `Some`, or
-    /// the unit for a nullary case.
-    pub fn sum_payload(&mut self, handle: u32) -> Result<u32, ComponentError> {
-        let f = self.sum_payload;
-        self.call_u32s(&f, &[handle])
-    }
-
-    /// `get-int(handle) -> s64` (idx 1): unbox a boxed scalar int — the read-dual of [`HeapHandle::box_int`]
-    /// (a record's scalar field, e.g. a version or a numeric effect field).
-    pub fn get_int(&mut self, handle: u32) -> Result<i64, ComponentError> {
-        use wasmtime::component::Val;
-        let budget = self.fuel_budget;
-        let f = self.get_int;
-        let mut results = [Val::S64(0)];
-        f.call(&mut self.store, &[Val::U32(handle)], &mut results)
-            .map_err(|e| classify_heap_call_err(e, budget))?;
-        f.post_return(&mut self.store)
-            .map_err(|e| classify_heap_call_err(e, budget))?;
-        match results[0] {
-            Val::S64(v) => Ok(v),
-            ref other => Err(ComponentError::Trap(format!(
-                "get-int returned {other:?}, not an s64"
-            ))),
-        }
-    }
-
-    /// `str-get(handle) -> string` (idx 18): read a String rope handle back to a Rust `String` — the
-    /// read-dual of [`HeapHandle::str_new`] (a record's String field, e.g. an effect target).
-    pub fn str_get(&mut self, handle: u32) -> Result<String, ComponentError> {
-        use wasmtime::component::Val;
-        let budget = self.fuel_budget;
-        let f = self.str_get;
-        let mut results = [Val::Bool(false)];
-        f.call(&mut self.store, &[Val::U32(handle)], &mut results)
-            .map_err(|e| classify_heap_call_err(e, budget))?;
-        f.post_return(&mut self.store)
-            .map_err(|e| classify_heap_call_err(e, budget))?;
-        match &results[0] {
-            Val::String(s) => Ok(s.clone()),
-            other => Err(ComponentError::Trap(format!(
-                "str-get returned {other:?}, not a string"
-            ))),
-        }
-    }
-
-    // ── BYTES ops (slice 2b) — build/read a value-heap `Bytes` handle. The reducer's payload/resumes are
-    // `Option<Bytes>`, and an emitted effect-request's payload/correlation are `Option<Bytes>` too, so the
-    // marshalling needs to put arg bytes ON the heap (bytes_from) and read result bytes back (read_bytes).
-    // A byte value rides as a u32 (0..255) — the runtime's frozen `bytes-*` shape (idx 13-16).
-
-    /// `bytes-alloc(len) -> u32` (idx 13): allocate a `len`-byte value-heap buffer.
-    pub fn bytes_alloc(&mut self, len: u32) -> Result<u32, ComponentError> {
-        let f = self.bytes_alloc;
-        self.call_u32s(&f, &[len])
-    }
-
-    /// `bytes-set(buf, index, value) -> buf` (idx 14): set byte `index` of `buf` to `value` (0..255),
-    /// returning the buffer handle for threading.
-    pub fn bytes_set(&mut self, buf: u32, index: u32, value: u8) -> Result<u32, ComponentError> {
-        let f = self.bytes_set;
-        self.call_u32s(&f, &[buf, index, value as u32])
-    }
-
-    /// `bytes-len(buf) -> u32` (idx 16): the length of a value-heap byte buffer.
-    pub fn bytes_len(&mut self, buf: u32) -> Result<u32, ComponentError> {
-        let f = self.bytes_len;
-        self.call_u32s(&f, &[buf])
-    }
-
-    /// `bytes-get(buf, index) -> u32` (idx 15): the byte at `index` of `buf` (0..255, as a u32).
-    pub fn bytes_get(&mut self, buf: u32, index: u32) -> Result<u32, ComponentError> {
-        let f = self.bytes_get;
-        self.call_u32s(&f, &[buf, index])
-    }
-
-    /// Build a value-heap `Bytes` handle from a Rust byte slice — `bytes-alloc(len)` then a `bytes-set` per
-    /// byte (threading the handle). The marshalling convenience for an `Option<Bytes>` payload's Some arm.
-    ///
-    /// The slice length is range-checked to `u32` UP FRONT (`u32::try_from`): the value-heap's `bytes-*`
-    /// shape carries a `u32` length, so a `> u32::MAX` slice cannot fit. Truncating (`data.len() as u32`)
-    /// would silently under-allocate and then let the `i as u32` loop index wrap and write PAST the buffer,
-    /// corrupting the guest value-heap (#2151). Failing loud here keeps the loop index provably in-bounds
-    /// (`i < len ≤ u32::MAX`) — symmetric with [`HeapHandle::read_bytes`]'s defensive byte check.
-    pub fn bytes_from(&mut self, data: &[u8]) -> Result<u32, ComponentError> {
-        let len = u32::try_from(data.len()).map_err(|_| {
-            ComponentError::Trap(format!(
-                "bytes_from: slice of {} bytes too large for a u32 value-heap length",
-                data.len()
-            ))
-        })?;
-        let mut buf = self.bytes_alloc(len)?;
-        for (i, &b) in data.iter().enumerate() {
-            buf = self.bytes_set(buf, i as u32, b)?;
-        }
-        Ok(buf)
-    }
-
-    /// Read a value-heap `Bytes` handle back to a Rust `Vec<u8>` — `bytes-len` then a `bytes-get` per byte.
-    /// The read-dual of [`HeapHandle::bytes_from`]; a byte over 255 is a malformed value-heap byte (Trap).
-    ///
-    /// The pre-reservation is CAPPED at [`MAX_PREALLOC_BYTES`]: `bytes-len` returns a raw unbounded `u32`
-    /// reported by the untrusted guest value-heap, so a bogus large length must NOT drive an eager multi-GB
-    /// `Vec::with_capacity` (which aborts the host via the alloc-error handler BEFORE the loop can fail-loud
-    /// on the missing bytes — reviewer, #2166 read-side DoS). A truthful large buffer just grows the Vec
-    /// with amortized reallocations; a bogus length Traps CHEAPLY on the first missing `bytes-get`.
-    pub fn read_bytes(&mut self, buf: u32) -> Result<Vec<u8>, ComponentError> {
-        let len = self.bytes_len(buf)?;
-        let mut out = Vec::with_capacity(len.min(MAX_PREALLOC_BYTES) as usize);
-        for i in 0..len {
-            let b = self.bytes_get(buf, i)?;
-            let byte = u8::try_from(b).map_err(|_| {
-                ComponentError::Trap(format!("bytes-get returned {b}, not a byte (0..255)"))
-            })?;
-            out.push(byte);
-        }
-        Ok(out)
-    }
-
-    /// The underlying store, for the caller to instantiate/call the reducer against the SAME store (so a
-    /// handle the host minted is valid in the reducer's `apply` call).
-    pub fn store_mut(&mut self) -> &mut wasmtime::Store<T> {
-        &mut self.store
-    }
-
-    /// Consume the handle, returning the owned store — for the fold-boundary rebind to commit/recover the
-    /// reducer host's KV after the marshalled `apply` (the handle is done once the effects are unmarshalled).
-    pub fn into_store(self) -> wasmtime::Store<T> {
-        self.store
-    }
-
-    /// Set the fuel budget reported on an `OutOfFuel` classification (the marshalled `apply` reuses the
-    /// reducer's per-fold budget, so the handle's budget should match — see [`HeapHandle::bind`]).
-    pub fn set_fuel_budget(&mut self, budget: u64) {
-        self.fuel_budget = budget;
-    }
-
-    /// Call a handle-lowered reducer's `apply(ct, payload, resumes) -> list-handle` (§19e): three `u32`
-    /// value-heap arg handles in, one `u32` result handle (the returned `list<effect-request>`) out. Runs
-    /// on the SAME store the arg handles were built in, so the guest reads them off the shared heap.
-    ///
-    /// Errors are classified with REDUCER-FOLD context, NOT as a runtime heap-op (#2203): the fuel/trap
-    /// split matches `classify_heap_call_err` (OutOfFuel → `FuelExhausted`, other trap → `Trap`), but a
-    /// NON-trap `call` error here is the reducer's `apply` export not matching the expected
-    /// `func(u32,u32,u32)->u32` signature (an ABI drift in the REDUCER, not the runtime), so it's an
-    /// `InvokeExport` naming the fold apply — reusing `call_u32s`'s "heap-op call failed" label would
-    /// mis-point a debugger at the runtime.
-    pub fn call_apply_lowered(
-        &mut self,
-        apply: &wasmtime::component::Func,
-        ct: u32,
-        payload: u32,
-        resumes: u32,
-    ) -> Result<u32, ComponentError> {
-        use wasmtime::component::Val;
-        let budget = self.fuel_budget;
-        let reducer_err = |e: wasmtime::Error| -> ComponentError {
-            if let Some(wasmtime::Trap::OutOfFuel) = e.downcast_ref::<wasmtime::Trap>() {
-                ComponentError::FuelExhausted { budget }
-            } else if e.downcast_ref::<wasmtime::Trap>().is_some() {
-                ComponentError::Trap(e.to_string())
-            } else {
-                ComponentError::InvokeExport {
-                    interface: "cadenza:agent-kernel/fold".to_string(),
-                    func: "apply".to_string(),
-                    reason: format!(
-                        "reducer apply is not func(u32,u32,u32)->u32 (reducer-ABI mismatch?): {e}"
-                    ),
-                }
-            }
-        };
-        let params = [Val::U32(ct), Val::U32(payload), Val::U32(resumes)];
-        let mut results = [Val::U32(0)];
-        apply
-            .call(&mut self.store, &params, &mut results)
-            .map_err(reducer_err)?;
-        apply.post_return(&mut self.store).map_err(reducer_err)?;
-        match results[0] {
-            Val::U32(h) => Ok(h),
-            ref other => Err(ComponentError::InvokeExport {
-                interface: "cadenza:agent-kernel/fold".to_string(),
-                func: "apply".to_string(),
-                reason: format!("reducer apply returned {other:?}, not a u32 list handle"),
-            }),
-        }
-    }
-}
-
-/// ASYNC twins of the [`HeapHandle`] value-heap ops (#2256 / v-ah-host ask 27000). On an `async_support`
-/// engine `Func::call` PANICS ("must use call_async") — the panic is PER-STORE (`store.0.async_support()`),
-/// not per-func — so a handle-lowered fold on the ASYNC engine ([`AsyncComponentReducer`]) cannot drive the
-/// sync ops above; every heap op it touches must go through `call_async`/`post_return_async`. These twins
-/// mirror the sync ops EXACTLY except for that call, so the value-heap semantics (handle shapes, the sorted
-/// arr layout, the bytes u32 convention) have ONE source of truth — the sync ops' doc comments apply
-/// verbatim. Only the ops the async marshalling path actually uses are twinned (the precise set, not all
-/// 30): build (str_new/box_int/arr_alloc/arr_set/sum_new/unit/bytes_from) + read (vec_len/vec_get/arr_get/
-/// sum_disc/sum_payload/get_int/str_get/read_bytes). `T: Send` because an async call may poll across an
-/// await point (the store data must cross it).
-impl<T: Send + 'static> HeapHandle<T> {
-    /// Async twin of [`HeapHandle::call_u32s`] — the common u32-args → u32-handle shape, via `call_async`.
-    async fn call_u32s_async(
-        &mut self,
-        f: &wasmtime::component::Func,
-        args: &[u32],
-    ) -> Result<u32, ComponentError> {
-        use wasmtime::component::Val;
-        let budget = self.fuel_budget;
-        let params: Vec<Val> = args.iter().map(|&a| Val::U32(a)).collect();
-        let mut results = [Val::U32(0)];
-        f.call_async(&mut self.store, &params, &mut results)
-            .await
-            .map_err(|e| classify_heap_call_err(e, budget))?;
-        f.post_return_async(&mut self.store)
-            .await
-            .map_err(|e| classify_heap_call_err(e, budget))?;
-        match results[0] {
-            Val::U32(h) => Ok(h),
-            ref other => Err(ComponentError::Trap(format!(
-                "heap op returned {other:?}, not a u32 handle"
-            ))),
-        }
-    }
-
-    /// Async twin of [`HeapHandle::box_int`].
-    pub async fn box_int_async(&mut self, v: i64) -> Result<u32, ComponentError> {
-        use wasmtime::component::Val;
-        let budget = self.fuel_budget;
-        let f = self.box_int;
-        let mut results = [Val::U32(0)];
-        f.call_async(&mut self.store, &[Val::S64(v)], &mut results)
-            .await
-            .map_err(|e| classify_heap_call_err(e, budget))?;
-        f.post_return_async(&mut self.store)
-            .await
-            .map_err(|e| classify_heap_call_err(e, budget))?;
-        match results[0] {
-            Val::U32(h) => Ok(h),
-            ref other => Err(ComponentError::Trap(format!(
-                "box-int returned {other:?}, not a u32 handle"
-            ))),
-        }
-    }
-
-    /// Async twin of [`HeapHandle::str_new`].
-    pub async fn str_new_async(&mut self, s: &str) -> Result<u32, ComponentError> {
-        use wasmtime::component::Val;
-        let budget = self.fuel_budget;
-        let f = self.str_new;
-        let mut results = [Val::U32(0)];
-        f.call_async(&mut self.store, &[Val::String(s.into())], &mut results)
-            .await
-            .map_err(|e| classify_heap_call_err(e, budget))?;
-        f.post_return_async(&mut self.store)
-            .await
-            .map_err(|e| classify_heap_call_err(e, budget))?;
-        match results[0] {
-            Val::U32(h) => Ok(h),
-            ref other => Err(ComponentError::Trap(format!(
-                "str-new returned {other:?}, not a u32 handle"
-            ))),
-        }
-    }
-
-    /// Async twin of [`HeapHandle::arr_alloc`].
-    pub async fn arr_alloc_async(&mut self, len: u32) -> Result<u32, ComponentError> {
-        let f = self.arr_alloc;
-        self.call_u32s_async(&f, &[len]).await
-    }
-
-    /// Async twin of [`HeapHandle::arr_set`].
-    pub async fn arr_set_async(
-        &mut self,
-        arr: u32,
-        index: u32,
-        elem: u32,
-    ) -> Result<u32, ComponentError> {
-        let f = self.arr_set;
-        self.call_u32s_async(&f, &[arr, index, elem]).await
-    }
-
-    /// Async twin of [`HeapHandle::sum_new`].
-    pub async fn sum_new_async(&mut self, disc: u32, payload: u32) -> Result<u32, ComponentError> {
-        let f = self.sum_new;
-        self.call_u32s_async(&f, &[disc, payload]).await
-    }
-
-    /// Async twin of [`HeapHandle::unit`] (`arr-alloc(0)`).
-    pub async fn unit_async(&mut self) -> Result<u32, ComponentError> {
-        self.arr_alloc_async(0).await
-    }
-
-    /// Async twin of [`HeapHandle::vec_len`].
-    pub async fn vec_len_async(&mut self, v: u32) -> Result<u32, ComponentError> {
-        let f = self.vec_len;
-        self.call_u32s_async(&f, &[v]).await
-    }
-
-    /// Async twin of [`HeapHandle::vec_get`].
-    pub async fn vec_get_async(&mut self, v: u32, index: u32) -> Result<u32, ComponentError> {
-        let f = self.vec_get;
-        self.call_u32s_async(&f, &[v, index]).await
-    }
-
-    /// Async twin of [`HeapHandle::arr_get`].
-    pub async fn arr_get_async(&mut self, arr: u32, index: u32) -> Result<u32, ComponentError> {
-        let f = self.arr_get;
-        self.call_u32s_async(&f, &[arr, index]).await
-    }
-
-    /// Async twin of [`HeapHandle::sum_disc`].
-    pub async fn sum_disc_async(&mut self, handle: u32) -> Result<u32, ComponentError> {
-        let f = self.sum_disc;
-        self.call_u32s_async(&f, &[handle]).await
-    }
-
-    /// Async twin of [`HeapHandle::sum_payload`].
-    pub async fn sum_payload_async(&mut self, handle: u32) -> Result<u32, ComponentError> {
-        let f = self.sum_payload;
-        self.call_u32s_async(&f, &[handle]).await
-    }
-
-    /// Async twin of [`HeapHandle::get_int`].
-    pub async fn get_int_async(&mut self, handle: u32) -> Result<i64, ComponentError> {
-        use wasmtime::component::Val;
-        let budget = self.fuel_budget;
-        let f = self.get_int;
-        let mut results = [Val::S64(0)];
-        f.call_async(&mut self.store, &[Val::U32(handle)], &mut results)
-            .await
-            .map_err(|e| classify_heap_call_err(e, budget))?;
-        f.post_return_async(&mut self.store)
-            .await
-            .map_err(|e| classify_heap_call_err(e, budget))?;
-        match results[0] {
-            Val::S64(v) => Ok(v),
-            ref other => Err(ComponentError::Trap(format!(
-                "get-int returned {other:?}, not an s64"
-            ))),
-        }
-    }
-
-    /// Async twin of [`HeapHandle::str_get`].
-    pub async fn str_get_async(&mut self, handle: u32) -> Result<String, ComponentError> {
-        use wasmtime::component::Val;
-        let budget = self.fuel_budget;
-        let f = self.str_get;
-        let mut results = [Val::Bool(false)];
-        f.call_async(&mut self.store, &[Val::U32(handle)], &mut results)
-            .await
-            .map_err(|e| classify_heap_call_err(e, budget))?;
-        f.post_return_async(&mut self.store)
-            .await
-            .map_err(|e| classify_heap_call_err(e, budget))?;
-        match &results[0] {
-            Val::String(s) => Ok(s.clone()),
-            other => Err(ComponentError::Trap(format!(
-                "str-get returned {other:?}, not a string"
-            ))),
-        }
-    }
-
-    /// Async twin of [`HeapHandle::bytes_alloc`].
-    async fn bytes_alloc_async(&mut self, len: u32) -> Result<u32, ComponentError> {
-        let f = self.bytes_alloc;
-        self.call_u32s_async(&f, &[len]).await
-    }
-
-    /// Async twin of [`HeapHandle::bytes_set`].
-    async fn bytes_set_async(
-        &mut self,
-        buf: u32,
-        index: u32,
-        value: u8,
-    ) -> Result<u32, ComponentError> {
-        let f = self.bytes_set;
-        self.call_u32s_async(&f, &[buf, index, value as u32]).await
-    }
-
-    /// Async twin of [`HeapHandle::bytes_len`].
-    async fn bytes_len_async(&mut self, buf: u32) -> Result<u32, ComponentError> {
-        let f = self.bytes_len;
-        self.call_u32s_async(&f, &[buf]).await
-    }
-
-    /// Async twin of [`HeapHandle::bytes_get`].
-    async fn bytes_get_async(&mut self, buf: u32, index: u32) -> Result<u32, ComponentError> {
-        let f = self.bytes_get;
-        self.call_u32s_async(&f, &[buf, index]).await
-    }
-
-    /// Async twin of [`HeapHandle::bytes_from`] — same up-front `u32` length range-check (#2151) then a
-    /// `bytes-set` per byte, all via the async ops.
-    pub async fn bytes_from_async(&mut self, data: &[u8]) -> Result<u32, ComponentError> {
-        let len = u32::try_from(data.len()).map_err(|_| {
-            ComponentError::Trap(format!(
-                "bytes_from: slice of {} bytes too large for a u32 value-heap length",
-                data.len()
-            ))
-        })?;
-        let mut buf = self.bytes_alloc_async(len).await?;
-        for (i, &b) in data.iter().enumerate() {
-            // i < len ≤ u32::MAX (checked above), so `i as u32` cannot wrap past the buffer.
-            buf = self.bytes_set_async(buf, i as u32, b).await?;
-        }
-        Ok(buf)
-    }
-
-    /// Async twin of [`HeapHandle::read_bytes`] — `bytes-len` then a `bytes-get` per byte, via the async ops;
-    /// same defensive `u8` range-check on each returned byte.
-    pub async fn read_bytes_async(&mut self, buf: u32) -> Result<Vec<u8>, ComponentError> {
-        let len = self.bytes_len_async(buf).await?;
-        let mut out = Vec::with_capacity(len.min(MAX_PREALLOC_BYTES) as usize);
-        for i in 0..len {
-            let b = self.bytes_get_async(buf, i).await?;
-            let byte = u8::try_from(b).map_err(|_| {
-                ComponentError::Trap(format!("bytes-get returned {b}, not a byte (0..255)"))
-            })?;
-            out.push(byte);
-        }
-        Ok(out)
-    }
-
-    /// Async twin of [`HeapHandle::call_apply_lowered`] — call the handle-lowered reducer's
-    /// `apply(ct,payload,resumes) -> list-handle` via `call_async` (same reducer-fold error classification).
-    pub async fn call_apply_lowered_async(
-        &mut self,
-        apply: &wasmtime::component::Func,
-        ct: u32,
-        payload: u32,
-        resumes: u32,
-    ) -> Result<u32, ComponentError> {
-        use wasmtime::component::Val;
-        let budget = self.fuel_budget;
-        let reducer_err = |e: wasmtime::Error| -> ComponentError {
-            if let Some(wasmtime::Trap::OutOfFuel) = e.downcast_ref::<wasmtime::Trap>() {
-                ComponentError::FuelExhausted { budget }
-            } else if e.downcast_ref::<wasmtime::Trap>().is_some() {
-                ComponentError::Trap(e.to_string())
-            } else {
-                ComponentError::InvokeExport {
-                    interface: "cadenza:agent-kernel/fold".to_string(),
-                    func: "apply".to_string(),
-                    reason: format!(
-                        "reducer apply is not func(u32,u32,u32)->u32 (reducer-ABI mismatch?): {e}"
-                    ),
-                }
-            }
-        };
-        let params = [Val::U32(ct), Val::U32(payload), Val::U32(resumes)];
-        let mut results = [Val::U32(0)];
-        apply
-            .call_async(&mut self.store, &params, &mut results)
-            .await
-            .map_err(reducer_err)?;
-        apply
-            .post_return_async(&mut self.store)
-            .await
-            .map_err(reducer_err)?;
-        match results[0] {
-            Val::U32(h) => Ok(h),
-            ref other => Err(ComponentError::InvokeExport {
-                interface: "cadenza:agent-kernel/fold".to_string(),
-                func: "apply".to_string(),
-                reason: format!("reducer apply returned {other:?}, not a u32 list handle"),
-            }),
-        }
-    }
-}
-
-/// The value-heap ops a handle-ABI `cadenza:agent-kernel/kv` binding needs to read/write `Bytes` handles
-/// on the SHARED runtime — captured as `Copy` `Func`s so the async `kv.get`/`kv.put` linker closures can
-/// drive the heap RE-ENTRANTLY during the reducer's `apply` call (§4b handle-ABI kv, v-ah-host ask 27000).
-///
-/// Unlike [`HeapHandle`] (which OWNS the store), these methods take a borrowed `StoreContextMut` — because
-/// a `func_new_async` closure is handed a `StoreContextMut<ReducerHost>` by wasmtime while the store is
-/// mid-`apply`, so a store-owning handle can't be used there. The captured `Func`s are looked up ONCE from
-/// the composed runtime instance (same lookups as [`HeapHandle::bind`]) and are `Copy`, so the struct is
-/// `Copy` + cheap to move into the closure. Only the ops the bound kv actually drives are captured:
-/// read a `Bytes` arg handle back to `Vec<u8>` (`bytes-len`/`bytes-get`) and marshal an `Option<Bytes>`
-/// result forward (`bytes-alloc`/`bytes-set`/`arr-alloc` for the unit/`sum-new`).
-#[derive(Clone, Copy)]
-struct KvHeapOps {
-    bytes_alloc: wasmtime::component::Func,
-    bytes_set: wasmtime::component::Func,
-    bytes_len: wasmtime::component::Func,
-    bytes_get: wasmtime::component::Func,
-    arr_alloc: wasmtime::component::Func,
-    sum_new: wasmtime::component::Func,
-    fuel_budget: u64,
-}
-
-impl KvHeapOps {
-    /// Look up the six heap ops the bound kv drives from the composed runtime `instance` (the SAME
-    /// `cadenza:runtime/heap` instance the fold marshals on, so a handle the kv mints indexes the same
-    /// heap the reducer reads). Mirrors [`HeapHandle::bind`]'s lookup; a missing op is a `Compose` error.
-    fn capture(
-        store: &mut wasmtime::Store<ReducerHost>,
-        instance: &wasmtime::component::Instance,
-        fuel_budget: u64,
-    ) -> Result<Self, ComponentError> {
-        let iface_err = |reason: String| ComponentError::Compose {
-            import_name: "cadenza:runtime/heap".to_string(),
-            reason,
-        };
-        let iface_idx = instance
-            .get_export_index(&mut *store, None, "cadenza:runtime/heap")
-            .ok_or_else(|| iface_err("runtime does not export cadenza:runtime/heap".into()))?;
-        let mut op = |name: &str| -> Result<wasmtime::component::Func, ComponentError> {
-            let idx = instance
-                .get_export_index(&mut *store, Some(&iface_idx), name)
-                .ok_or_else(|| iface_err(format!("heap interface missing op {name:?}")))?;
-            instance
-                .get_func(&mut *store, idx)
-                .ok_or_else(|| iface_err(format!("heap export {name:?} is not a func")))
-        };
-        Ok(KvHeapOps {
-            bytes_alloc: op("bytes-alloc")?,
-            bytes_set: op("bytes-set")?,
-            bytes_len: op("bytes-len")?,
-            bytes_get: op("bytes-get")?,
-            arr_alloc: op("arr-alloc")?,
-            sum_new: op("sum-new")?,
-            fuel_budget,
-        })
-    }
-
-    /// Async `f(args:u32…) -> u32` over a borrowed `StoreContextMut` (the closure's store), same
-    /// classification as [`HeapHandle::call_u32s_async`] but not store-owning.
-    async fn call_u32s(
-        &self,
-        mut store: wasmtime::StoreContextMut<'_, ReducerHost>,
-        f: &wasmtime::component::Func,
-        args: &[u32],
-    ) -> Result<u32, ComponentError> {
-        use wasmtime::component::Val;
-        let params: Vec<Val> = args.iter().map(|&a| Val::U32(a)).collect();
-        let mut results = [Val::U32(0)];
-        f.call_async(&mut store, &params, &mut results)
-            .await
-            .map_err(|e| classify_heap_call_err(e, self.fuel_budget))?;
-        f.post_return_async(&mut store)
-            .await
-            .map_err(|e| classify_heap_call_err(e, self.fuel_budget))?;
-        match results[0] {
-            Val::U32(h) => Ok(h),
-            ref other => Err(ComponentError::Trap(format!(
-                "kv heap op returned {other:?}, not a u32 handle"
-            ))),
-        }
-    }
-
-    /// Read a `Bytes` value-heap handle back to `Vec<u8>` (`bytes-len` then a `bytes-get` per byte) — the
-    /// read a `kv.put`/`kv.get` does on its key/value arg. Same defensive `u8` range-check + prealloc cap
-    /// as [`HeapHandle::read_bytes`].
-    async fn read_bytes(
-        &self,
-        mut store: wasmtime::StoreContextMut<'_, ReducerHost>,
-        buf: u32,
-    ) -> Result<Vec<u8>, ComponentError> {
-        use wasmtime::AsContextMut;
-        let len = self
-            .call_u32s(store.as_context_mut(), &self.bytes_len, &[buf])
-            .await?;
-        let mut out = Vec::with_capacity(len.min(MAX_PREALLOC_BYTES) as usize);
-        for i in 0..len {
-            let b = self
-                .call_u32s(store.as_context_mut(), &self.bytes_get, &[buf, i])
-                .await?;
-            let byte = u8::try_from(b).map_err(|_| {
-                ComponentError::Trap(format!("bytes-get returned {b}, not a byte (0..255)"))
-            })?;
-            out.push(byte);
-        }
-        Ok(out)
-    }
-
-    /// Build a `Bytes` value-heap handle from a slice (`bytes-alloc(len)` then a `bytes-set` per byte) — the
-    /// same #2151 up-front `u32` length range-check as [`HeapHandle::bytes_from`].
-    async fn bytes_from(
-        &self,
-        mut store: wasmtime::StoreContextMut<'_, ReducerHost>,
-        data: &[u8],
-    ) -> Result<u32, ComponentError> {
-        use wasmtime::AsContextMut;
-        let len = u32::try_from(data.len()).map_err(|_| {
-            ComponentError::Trap(format!(
-                "kv bytes_from: slice of {} bytes too large for a u32 value-heap length",
-                data.len()
-            ))
-        })?;
-        let mut buf = self
-            .call_u32s(store.as_context_mut(), &self.bytes_alloc, &[len])
-            .await?;
-        for (i, &b) in data.iter().enumerate() {
-            buf = self
-                .call_u32s(
-                    store.as_context_mut(),
-                    &self.bytes_set,
-                    &[buf, i as u32, b as u32],
-                )
-                .await?;
-        }
-        Ok(buf)
-    }
-
-    /// Marshal an `Option<Vec<u8>>` (a `kv.get` result) to a value-heap sum handle: `Some(v)` →
-    /// `sum-new(0, bytes-from(v))`, `None` → `sum-new(1, unit)` — the SAME `Option` convention (Some=0/
-    /// None=1, unit = `arr-alloc(0)`) the fold marshalling uses, so the reducer decodes it identically.
-    async fn marshal_option_bytes(
-        &self,
-        mut store: wasmtime::StoreContextMut<'_, ReducerHost>,
-        value: Option<Vec<u8>>,
-    ) -> Result<u32, ComponentError> {
-        use wasmtime::AsContextMut;
-        match value {
-            Some(bytes) => {
-                let payload = self.bytes_from(store.as_context_mut(), &bytes).await?;
-                self.call_u32s(store.as_context_mut(), &self.sum_new, &[0, payload])
-                    .await
-            }
-            None => {
-                let unit = self
-                    .call_u32s(store.as_context_mut(), &self.arr_alloc, &[0])
-                    .await?;
-                self.call_u32s(store.as_context_mut(), &self.sum_new, &[1, unit])
-                    .await
-            }
-        }
-    }
-
-    // ── SYNC twins: the SYNC `ComponentReducer::apply_handle_lowered` runs on a NON-async engine, where
-    // `Func::call` is correct (and `call_async` would panic). These mirror the async methods above EXACTLY
-    // except for the call, so a bound handle-ABI kv on the sync path serves identically to the async path
-    // (coverage parity — the async path got the bound kv in #2290; this closes the sync gap).
-
-    /// Sync twin of [`KvHeapOps::call_u32s`].
-    fn call_u32s_sync(
-        &self,
-        mut store: wasmtime::StoreContextMut<'_, ReducerHost>,
-        f: &wasmtime::component::Func,
-        args: &[u32],
-    ) -> Result<u32, ComponentError> {
-        use wasmtime::component::Val;
-        let params: Vec<Val> = args.iter().map(|&a| Val::U32(a)).collect();
-        let mut results = [Val::U32(0)];
-        f.call(&mut store, &params, &mut results)
-            .map_err(|e| classify_heap_call_err(e, self.fuel_budget))?;
-        f.post_return(&mut store)
-            .map_err(|e| classify_heap_call_err(e, self.fuel_budget))?;
-        match results[0] {
-            Val::U32(h) => Ok(h),
-            ref other => Err(ComponentError::Trap(format!(
-                "kv heap op returned {other:?}, not a u32 handle"
-            ))),
-        }
-    }
-
-    /// Sync twin of [`KvHeapOps::read_bytes`].
-    fn read_bytes_sync(
-        &self,
-        mut store: wasmtime::StoreContextMut<'_, ReducerHost>,
-        buf: u32,
-    ) -> Result<Vec<u8>, ComponentError> {
-        use wasmtime::AsContextMut;
-        let len = self.call_u32s_sync(store.as_context_mut(), &self.bytes_len, &[buf])?;
-        let mut out = Vec::with_capacity(len.min(MAX_PREALLOC_BYTES) as usize);
-        for i in 0..len {
-            let b = self.call_u32s_sync(store.as_context_mut(), &self.bytes_get, &[buf, i])?;
-            let byte = u8::try_from(b).map_err(|_| {
-                ComponentError::Trap(format!("bytes-get returned {b}, not a byte (0..255)"))
-            })?;
-            out.push(byte);
-        }
-        Ok(out)
-    }
-
-    /// Sync twin of [`KvHeapOps::bytes_from`].
-    fn bytes_from_sync(
-        &self,
-        mut store: wasmtime::StoreContextMut<'_, ReducerHost>,
-        data: &[u8],
-    ) -> Result<u32, ComponentError> {
-        use wasmtime::AsContextMut;
-        let len = u32::try_from(data.len()).map_err(|_| {
-            ComponentError::Trap(format!(
-                "kv bytes_from: slice of {} bytes too large for a u32 value-heap length",
-                data.len()
-            ))
-        })?;
-        let mut buf = self.call_u32s_sync(store.as_context_mut(), &self.bytes_alloc, &[len])?;
-        for (i, &b) in data.iter().enumerate() {
-            buf = self.call_u32s_sync(
-                store.as_context_mut(),
-                &self.bytes_set,
-                &[buf, i as u32, b as u32],
-            )?;
-        }
-        Ok(buf)
-    }
-
-    /// Sync twin of [`KvHeapOps::marshal_option_bytes`].
-    fn marshal_option_bytes_sync(
-        &self,
-        mut store: wasmtime::StoreContextMut<'_, ReducerHost>,
-        value: Option<Vec<u8>>,
-    ) -> Result<u32, ComponentError> {
-        use wasmtime::AsContextMut;
-        match value {
-            Some(bytes) => {
-                let payload = self.bytes_from_sync(store.as_context_mut(), &bytes)?;
-                self.call_u32s_sync(store.as_context_mut(), &self.sum_new, &[0, payload])
-            }
-            None => {
-                let unit = self.call_u32s_sync(store.as_context_mut(), &self.arr_alloc, &[0])?;
-                self.call_u32s_sync(store.as_context_mut(), &self.sum_new, &[1, unit])
-            }
-        }
-    }
-}
-
 /// Resolve a possibly-dict-bearing invoke `arg` against supplied dictionary artifacts, handing back
 /// canonical inline `cdzast\x00\x01` bytes for marshalling (I4 invoke-wire, design-binary-ast-dictionary
 /// §I4). The AST-as-ABI invoke primitive accepts dictionaries as ADDITIONAL input artifacts alongside the
@@ -2300,8 +1273,7 @@ impl ComponentReducer {
 
     /// Override the per-fold fuel budget (§22d). Use a smaller ceiling for untrusted/low-trust reducers
     /// or a larger one for a reducer with a legitimately heavier fold; the [`DEFAULT_FOLD_FUEL`] suits a
-    /// typical fold. (When gas §22a lands this becomes per-session budget accounting rather than a
-    /// uniform per-fold cap.)
+    /// typical fold. The budget is a uniform per-fold ceiling.
     pub fn with_fuel_budget(mut self, fuel: u64) -> Self {
         self.fuel_budget = fuel;
         self
@@ -2375,10 +1347,8 @@ impl ComponentReducer {
     pub fn apply(
         &self,
         kv: Kv,
-        content_type: ContentType,
-        payload: Option<Vec<u8>>,
-        resumes: Option<Vec<u8>>,
-    ) -> Result<(Vec<EffectRequest>, Kv), (ComponentError, Kv)> {
+        event_doc: &[u8],
+    ) -> Result<(Vec<crate::reducer::Effect>, Kv), (ComponentError, Kv)> {
         let mut store = wasmtime::Store::new(&self.engine, ReducerHost::new(kv));
         // Fuel metering is enabled on the engine (§22d). Instantiation isn't the DoS surface — a
         // reactive fold guest's runaway risk is in its `fold.apply` body, not its (structure-bounded)
@@ -2452,13 +1422,15 @@ impl ComponentReducer {
             let kv = store.into_data().into_kv();
             return Err((ComponentError::Instantiate(e.to_string()), kv));
         }
-        let effects = match instance.cadenza_agent_kernel_fold().call_apply(
-            &mut store,
-            &content_type,
-            payload.as_deref(),
-            resumes.as_deref(),
-        ) {
-            Ok(effects) => effects,
+        // BINARY-AST fold boundary (B2): the event is ONE cadenza-AST document (built by the caller —
+        // `Reducer::fold` via `event_to_event_doc`, or a test via `ast_marshal::build_event_document`);
+        // call the guest's apply(list<u8>)->list<u8>, then parse the returned cadenza-AST effect list. No
+        // structural WIT marshalling, no closed effect-kind enum — the guest speaks only cadenza-ast.
+        let effect_bytes = match instance
+            .cadenza_agent_kernel_fold()
+            .call_apply(&mut store, event_doc)
+        {
+            Ok(bytes) => bytes,
             Err(e) => {
                 // Distinguish a runaway guest (fuel exhausted) from a semantic guest trap: a fold that
                 // consumed its whole budget is a resource-exhaustion outcome the driver handles
@@ -2477,285 +1449,25 @@ impl ComponentReducer {
                 return Err((ComponentError::Trap(e.to_string()), kv));
             }
         };
+        // Parse the guest's cadenza-AST effect list into kernel Effects. A malformed/undecodable effect
+        // list is a guest CONTRACT violation (not a fuel/trap) — surface it as a Trap-class error with
+        // the overlay discarded (atomic), same as any failed fold.
+        let effects = match crate::ast_marshal::parse_effect_list(&effect_bytes) {
+            Ok(effs) => effs,
+            Err(e) => {
+                let kv = store.into_data().into_kv();
+                return Err((
+                    ComponentError::Trap(format!("guest returned a malformed effect list: {e:?}")),
+                    kv,
+                ));
+            }
+        };
         // Success: COMMIT the overlay into the base (the transactional boundary), then hand the KV back.
         let mut host = store.into_data();
         host.commit();
         let kv = host.into_kv();
         Ok((effects, kv))
     }
-
-    /// The OPTION-C HANDLE-LOWERED fold (§19e): drive a real Cadenza reducer whose `fold.apply` is lowered
-    /// to `apply(u32, u32, u32) -> u32` over the shared `cadenza:runtime/heap` value-heap, instead of the
-    /// WIT-structural [`ComponentReducer::apply`] (which the bindgen path drives). rcdzc CANNOT emit the
-    /// structural shape — every compound crosses the boundary as an opaque value-heap HANDLE (v-hb
-    /// confirmed by compiling `reducer_b1.cdz`), so the host MARSHALS the `(content-type, payload, resumes)`
-    /// inputs into three heap handles ([`crate::heap_marshal`]), calls the guest's `apply`, then UNMARSHALS
-    /// the returned `list<effect-request>` handle back to effects ([`crate::heap_unmarshal`]).
-    ///
-    /// The runtime is a composed dep (§23): [`compose_dep_into_linker`] returns the runtime `Instance`, and
-    /// the host binds a [`HeapHandle`] on THAT instance — so the handles the host builds and the ones the
-    /// guest's `apply` reads index the ONE shared heap. `apply` is exported through the
-    /// `cadenza:agent-kernel/fold` INTERFACE instance (not a top-level func), so it's reached via a nested
-    /// `get_export_index`. Requires exactly one resolved runtime dep exporting `cadenza:runtime/heap`; a
-    /// dependency-free reducer (no runtime) can't be handle-lowered (it has no heap to marshal on).
-    ///
-    /// Fuel/atomicity mirror [`ComponentReducer::apply`]: metered per-fold, `OutOfFuel` → `FuelExhausted`,
-    /// any error hands the base KV back (the guest's overlay is discarded, so a failed fold is atomic). On
-    /// success the overlay commits.
-    pub fn apply_handle_lowered(
-        &self,
-        kv: Kv,
-        content_type: ContentType,
-        payload: Option<Vec<u8>>,
-        resumes: Option<Vec<u8>>,
-    ) -> Result<(Vec<EffectRequest>, Kv), (ComponentError, Kv)> {
-        let mut store = wasmtime::Store::new(&self.engine, ReducerHost::new(kv));
-        if let Err(e) = store.set_fuel(u64::MAX) {
-            let kv = store.into_data().into_kv();
-            return Err((ComponentError::Instantiate(e.to_string()), kv));
-        }
-        // Compose every declared dep into a per-fold linker, capturing the value-heap RUNTIME instance (the
-        // dep exporting `cadenza:runtime/heap`) — that's the instance the host marshals on. A handle-lowered
-        // reducer MUST declare a runtime dep; without one there's no heap, so this path doesn't apply.
-        let mut l = self.linker.clone();
-        let mut runtime_instance: Option<wasmtime::component::Instance> = None;
-        for (import_name, bytes) in &self.resolved_deps {
-            let inst = match compose_dep_into_linker(
-                &self.engine,
-                &mut store,
-                &mut l,
-                import_name,
-                bytes,
-                self.component_store.as_ref(),
-            ) {
-                Ok(inst) => inst,
-                Err(e) => {
-                    let kv = store.into_data().into_kv();
-                    return Err((e, kv));
-                }
-            };
-            // Match the runtime dep by its BARE interface name EXACTLY (via `bare_iface_name`, which strips
-            // both `+<hash>` and `@<semver>` — the SAME parse `declared_deps` uses), NOT `starts_with(...)`.
-            // A `starts_with` prefix would also match a future sibling like `cadenza:runtime/heap2@…`,
-            // wrongly tripping the exactly-one fail-loud below (or mis-selecting it if alone). And a
-            // `split('@')`-only strip UNDER-matches the `cadenza:runtime/heap+<hash>` (no `@`) form (the
-            // `+hash` survives). This pairs with the fail-loud so both COUNT and IDENTITY are exact (#2208 c2 / #2219).
-            if bare_iface_name(import_name) == "cadenza:runtime/heap" {
-                // FAIL LOUD on a second runtime match (#2203 MED): silently overwriting `runtime_instance`
-                // would let a non-deterministic resolved_deps order pick the wrong instance, breaking the
-                // shared-heap invariant. The handle-lowered boundary binds ONE value-heap runtime.
-                if runtime_instance.is_some() {
-                    let kv = store.into_data().into_kv();
-                    return Err((
-                        ComponentError::Compose {
-                            import_name: import_name.clone(),
-                            reason:
-                                "reducer resolved MORE THAN ONE cadenza:runtime/heap dep — the \
-                                     handle-lowered boundary marshals on exactly one shared runtime"
-                                    .to_string(),
-                        },
-                        kv,
-                    ));
-                }
-                runtime_instance = Some(inst);
-            }
-        }
-        let Some(runtime_instance) = runtime_instance else {
-            let kv = store.into_data().into_kv();
-            return Err((
-                ComponentError::Compose {
-                    import_name: "cadenza:runtime/heap".to_string(),
-                    reason: "no resolved cadenza:runtime/heap dep composed — a handle-lowered reducer \
-                             needs its value-heap runtime resolved (via with_resolved_deps) to marshal on"
-                        .to_string(),
-                },
-                kv,
-            ));
-        };
-        // Serve the reducer's BOUND handle-ABI `cadenza:agent-kernel/kv` import (§4b), if it declares one —
-        // the SYNC twin of the async path's kv-serving (#2290). Same handle-ABI: put(u32,u32) reads both
-        // Bytes handles off the shared heap → ReducerHost overlay; get(u32)->u32 reads the key → host.get →
-        // marshals Option<Bytes> back. Uses `func_new` (sync — this is the non-async engine) + the KvHeapOps
-        // `*_sync` ops. Guarded by `imports_kv` so a reducer without a bound kv (b1/b2) skips it.
-        let imports_kv = self
-            .component
-            .component_type()
-            .imports(&self.engine)
-            .any(|(name, _)| bare_iface_name(name) == "cadenza:agent-kernel/kv");
-        if imports_kv {
-            let kv_ops = match KvHeapOps::capture(&mut store, &runtime_instance, self.fuel_budget) {
-                Ok(o) => o,
-                Err(e) => {
-                    let kv = store.into_data().into_kv();
-                    return Err((e, kv));
-                }
-            };
-            let kv_import_name = self
-                .component
-                .component_type()
-                .imports(&self.engine)
-                .map(|(name, _)| name.to_string())
-                .find(|name| bare_iface_name(name) == "cadenza:agent-kernel/kv");
-            if let Some(kv_import_name) = kv_import_name {
-                // Shadow the base linker's WIT-structural kv with the handle-ABI funcs (see the async path).
-                l.allow_shadowing(true);
-                let register = (|| -> Result<(), ComponentError> {
-                    let mut iface =
-                        l.instance(&kv_import_name)
-                            .map_err(|e| ComponentError::Compose {
-                                import_name: kv_import_name.clone(),
-                                reason: format!(
-                                    "linker.instance({kv_import_name:?}) for bound kv: {e}"
-                                ),
-                            })?;
-                    let kv_err = |op: &str, reason: String| ComponentError::Compose {
-                        import_name: kv_import_name.clone(),
-                        reason: format!("binding kv `{op}`: {reason}"),
-                    };
-                    let put_ops = kv_ops;
-                    iface
-                        .func_new("put", move |mut ctx, params, _results| {
-                            use wasmtime::component::Val;
-                            use wasmtime::AsContextMut;
-                            let to_err = |e: ComponentError| wasmtime::Error::msg(format!("{e:?}"));
-                            let [Val::U32(key_h), Val::U32(val_h)] = params else {
-                                return Err(wasmtime::Error::msg(
-                                    "kv.put expects exactly (u32, u32) handle args",
-                                ));
-                            };
-                            let (key_h, val_h) = (*key_h, *val_h);
-                            let key = put_ops
-                                .read_bytes_sync(ctx.as_context_mut(), key_h)
-                                .map_err(to_err)?;
-                            let value = put_ops
-                                .read_bytes_sync(ctx.as_context_mut(), val_h)
-                                .map_err(to_err)?;
-                            self::cadenza::agent_kernel::kv::Host::put(ctx.data_mut(), key, value);
-                            Ok(())
-                        })
-                        .map_err(|e| kv_err("put", e.to_string()))?;
-                    iface
-                        .func_new("get", move |mut ctx, params, results| {
-                            use wasmtime::component::Val;
-                            use wasmtime::AsContextMut;
-                            let to_err = |e: ComponentError| wasmtime::Error::msg(format!("{e:?}"));
-                            let [Val::U32(key_h)] = params else {
-                                return Err(wasmtime::Error::msg(
-                                    "kv.get expects exactly a (u32) handle arg",
-                                ));
-                            };
-                            let key_h = *key_h;
-                            let key = kv_ops
-                                .read_bytes_sync(ctx.as_context_mut(), key_h)
-                                .map_err(to_err)?;
-                            let got =
-                                self::cadenza::agent_kernel::kv::Host::get(ctx.data_mut(), key);
-                            let handle = kv_ops
-                                .marshal_option_bytes_sync(ctx.as_context_mut(), got)
-                                .map_err(to_err)?;
-                            results[0] = Val::U32(handle);
-                            Ok(())
-                        })
-                        .map_err(|e| kv_err("get", e.to_string()))?;
-                    Ok(())
-                })();
-                if let Err(e) = register {
-                    let kv = store.into_data().into_kv();
-                    return Err((e, kv));
-                }
-            }
-        }
-        // Instantiate the reducer against the composed linker (its runtime import is now satisfied). Use a
-        // plain `Linker::instantiate` for the RAW `Instance` (not the bindgen `Reducer` wrapper, which only
-        // exposes the structural `call_apply`) — the handle-lowered `apply` is reached generically via
-        // `get_export_index`, so we need the raw instance.
-        let reducer_instance = match l.instantiate(&mut store, &self.component) {
-            Ok(i) => i,
-            Err(e) => {
-                let kv = store.into_data().into_kv();
-                return Err((ComponentError::Instantiate(e.to_string()), kv));
-            }
-        };
-        // Reach the INTERFACE-NESTED `apply`: `cadenza:agent-kernel/fold` instance → its `apply` func. Both
-        // the runtime instance and this func handle live in `store`; extract the `Func` (Copy) BEFORE
-        // `HeapHandle::bind` takes ownership of the store, then call it via `heap.store_mut()`.
-        let apply_func = match reach_fold_apply(&mut store, &reducer_instance) {
-            Ok(f) => f,
-            Err(e) => {
-                let kv = store.into_data().into_kv();
-                return Err((e, kv));
-            }
-        };
-        // Bind a HeapHandle on the SHARED runtime instance (consumes the store — we drive the reducer's
-        // apply through `heap.store_mut()` from here). Set the per-fold fuel budget now (post-instantiation).
-        // On bind failure recover the base KV from the store bind hands back (#2203 MED: never drop it —
-        // the "any error hands the base KV back" atomicity contract, same as every other arm here).
-        let mut heap = match HeapHandle::bind(store, &runtime_instance) {
-            Ok(h) => h,
-            Err((e, store)) => return Err((e, store.into_data().into_kv())),
-        };
-        heap.set_fuel_budget(self.fuel_budget);
-        if let Err(e) = heap.store_mut().set_fuel(self.fuel_budget) {
-            let kv = heap.into_store().into_data().into_kv();
-            return Err((ComponentError::Instantiate(e.to_string()), kv));
-        }
-        // MARSHAL the inputs into three value-heap handles on the shared runtime.
-        let (ct_h, payload_h, resumes_h) = match crate::heap_marshal::marshal_fold_inputs(
-            &mut heap,
-            (content_type.family.as_str(), content_type.version),
-            payload.as_deref(),
-            resumes.as_deref(),
-        ) {
-            Ok(hs) => hs,
-            Err(e) => {
-                let kv = heap.into_store().into_data().into_kv();
-                return Err((e, kv));
-            }
-        };
-        // CALL the guest's `apply(ct, payload, resumes) -> list-handle` over u32 handles.
-        let result_handle = match heap.call_apply_lowered(&apply_func, ct_h, payload_h, resumes_h) {
-            Ok(h) => h,
-            Err(e) => {
-                let kv = heap.into_store().into_data().into_kv();
-                return Err((e, kv));
-            }
-        };
-        // UNMARSHAL the returned `list<effect-request>` handle back to effects.
-        let effects = match crate::heap_unmarshal::read_effect_requests(&mut heap, result_handle) {
-            Ok(es) => es,
-            Err(e) => {
-                let kv = heap.into_store().into_data().into_kv();
-                return Err((e, kv));
-            }
-        };
-        // Success: COMMIT the overlay into the base KV, hand it back.
-        let mut host = heap.into_store().into_data();
-        host.commit();
-        Ok((effects, host.into_kv()))
-    }
-}
-
-/// Reach the INTERFACE-NESTED `apply` export of a handle-lowered reducer: navigate into the
-/// `cadenza:agent-kernel/fold` interface instance, then its `apply` func (§19e — a real Cadenza reducer
-/// exports `apply` THROUGH the fold interface, not as a top-level func, so a plain top-level lookup fails).
-fn reach_fold_apply(
-    store: &mut wasmtime::Store<ReducerHost>,
-    instance: &wasmtime::component::Instance,
-) -> Result<wasmtime::component::Func, ComponentError> {
-    let err = |reason: String| ComponentError::InvokeExport {
-        interface: "cadenza:agent-kernel/fold".to_string(),
-        func: "apply".to_string(),
-        reason,
-    };
-    let iface_idx = instance
-        .get_export_index(&mut *store, None, "cadenza:agent-kernel/fold")
-        .ok_or_else(|| err("reducer exports no cadenza:agent-kernel/fold interface".into()))?;
-    let apply_idx = instance
-        .get_export_index(&mut *store, Some(&iface_idx), "apply")
-        .ok_or_else(|| err("fold interface exports no apply func".into()))?;
-    instance
-        .get_func(&mut *store, apply_idx)
-        .ok_or_else(|| err("fold apply export is not a func".into()))
 }
 
 /// Drive a WASM `ComponentReducer` through the kernel's [`crate::reducer::Reducer`] loop (§19b/§19e
@@ -2793,8 +1505,8 @@ impl crate::reducer::Reducer for ComponentReducer {
         // mutate `self` — a guest's ONLY durable state is `kv` (the wasm sandbox structurally can't stash
         // cross-call state outside it), so fold stays a PURE FUNCTION of (event, kv) and replay reconstructs
         // identical kv. The `&mut self` here is unused by the guest path; it exists only to satisfy the norm.
-        // Map the kernel event → the guest's (content_type, payload, resumes) inputs.
-        let (content_type, payload, resumes) = event_to_guest_inputs(&event.body);
+        // B2: build the kernel event as ONE cadenza-AST event document — the binary fold-boundary wire.
+        let event_doc = event_to_event_doc(&event.body);
 
         // Move the session KV into the fold WITHOUT cloning (PR#1076 perf): `Kv` is a `BTreeMap`, so a
         // `clone()` would deep-copy the whole session state every event → O(KV size) per fold. `mem::take`
@@ -2804,15 +1516,11 @@ impl crate::reducer::Reducer for ComponentReducer {
         // that `apply` discarded), so a trapped/fuel-exhausted fold leaves the session KV ATOMICALLY
         // untouched (PR#1076/#1150 error-atomicity — now a real guarantee, not just a comment).
         let taken = std::mem::take(kv);
-        match self.apply(taken, content_type, payload, resumes) {
-            Ok((guest_effects, new_kv)) => {
+        match self.apply(taken, &event_doc) {
+            Ok((effects, new_kv)) => {
                 *kv = new_kv;
-                // Map each WIT-boundary effect-request → the kernel Effect via the ONE shared converter
-                // (see `guest_effect_to_kernel_effect`; #2166 — the two EffectRequest types).
-                let effects = guest_effects
-                    .into_iter()
-                    .map(guest_effect_to_kernel_effect)
-                    .collect();
+                // B2: `apply` already parsed the guest's cadenza-AST effect list into kernel `Effect`s
+                // (`ast_marshal::parse_effect_list`) — no WIT-boundary→kernel conversion step remains.
                 crate::reducer::FoldOutput::with_effects(effects)
             }
             // Trap / fuel-exhausted / instantiate failure → fail safe: no effects, and RESTORE the base
@@ -3001,36 +1709,14 @@ impl AsyncComponentReducer {
     pub async fn apply(
         &self,
         kv: Kv,
-        content_type: ContentType,
-        payload: Option<Vec<u8>>,
-        resumes: Option<Vec<u8>>,
-    ) -> Result<(Vec<EffectRequest>, Kv), (ComponentError, Kv)> {
-        // DISPATCH handle-lowered vs structural (v-ah-host ask 27094 — the routing gap): a REAL rcdzc
-        // reducer lowers its `fold.apply` to the handle-ABI `apply(u32,u32,u32)->u32` and crosses every
-        // compound as a value-heap handle, so it declares a `cadenza:runtime/heap` dep to marshal on; a
-        // WIT-STRUCTURAL guest (wit-bindgen) has no such dep and its `fold.apply` lifts structural WIT
-        // types directly. The presence of a resolved runtime-heap dep is therefore the discriminator: route
-        // it to `apply_handle_lowered` (which marshals the inputs to handles, drives the u32x3->u32 apply,
-        // AND serves the bound handle-ABI kv the reducer imports — #2290). Without this dispatch, a
-        // handle-lowered reducer driven through `fold` hit the structural `call_apply` below, which neither
-        // drives the handle boundary nor serves the handle-ABI kv → the guest's Kv.put no-op'd (the genesis
-        // round-trip's red assert). A structural reducer (no runtime dep) falls through unchanged.
-        let is_handle_lowered = self
-            .resolved_deps
-            .iter()
-            .any(|(import_name, _)| bare_iface_name(import_name) == "cadenza:runtime/heap");
-        if is_handle_lowered {
-            return self
-                .apply_handle_lowered(kv, content_type, payload, resumes)
-                .await;
-        }
-        // Bridge the PUBLIC (sync-module re-exported) `ContentType` to the async bindgen module's own
-        // generated type — the two `bindgen!`s produce distinct structs, so the async guest call needs its
-        // module's `ContentType`. Same fields; a trivial field copy at the boundary.
-        let content_type = async_reducer_bindings::cadenza::agent_kernel::types::ContentType {
-            family: content_type.family,
-            version: content_type.version,
-        };
+        event_doc: &[u8],
+    ) -> Result<(Vec<crate::reducer::Effect>, Kv), (ComponentError, Kv)> {
+        // B2 (design-binary-ast-abi): ONE binary fold path — the event is a cadenza-AST document and the
+        // effects a cadenza-AST list. There is no longer a handle-lowered vs WIT-structural DISPATCH: a
+        // real rcdzc reducer folds through the SAME `apply(list<u8>)->list<u8>` boundary (its
+        // `value-decode`/`value-encode` composition — B3 — wraps the byte fold), so the value-heap
+        // marshalling (HeapHandle / apply_handle_lowered) is gone. A structural wit-bindgen guest and an
+        // rcdzc guest both speak cadenza-ast at this seam.
         let mut store = wasmtime::Store::new(&self.engine, ReducerHost::new(kv));
         // Cooperative yield: the guest yields control every `fuel_yield_interval` fuel so a long fold
         // doesn't monopolize the single-threaded loop. Set alongside the fuel budget below (yield-interval
@@ -3115,17 +1801,12 @@ impl AsyncComponentReducer {
             let kv = store.into_data().into_kv();
             return Err((ComponentError::Instantiate(e.to_string()), kv));
         }
-        let effects = match instance
+        let effect_bytes = match instance
             .cadenza_agent_kernel_fold()
-            .call_apply(
-                &mut store,
-                &content_type,
-                payload.as_deref(),
-                resumes.as_deref(),
-            )
+            .call_apply(&mut store, event_doc)
             .await
         {
-            Ok(effects) => effects,
+            Ok(bytes) => bytes,
             Err(e) => {
                 let kv = store.into_data().into_kv();
                 if let Some(wasmtime::Trap::OutOfFuel) = e.downcast_ref::<wasmtime::Trap>() {
@@ -3139,302 +1820,23 @@ impl AsyncComponentReducer {
                 return Err((ComponentError::Trap(e.to_string()), kv));
             }
         };
+        // Parse the guest's cadenza-AST effect list into kernel `Effect`s. A malformed/undecodable list is
+        // a guest CONTRACT violation surfaced as a Trap-class error with the overlay DISCARDED (atomic),
+        // mirroring the sync path — before committing, so a bad output can't land partial KV writes.
+        let effects = match crate::ast_marshal::parse_effect_list(&effect_bytes) {
+            Ok(effs) => effs,
+            Err(e) => {
+                let kv = store.into_data().into_kv();
+                return Err((
+                    ComponentError::Trap(format!("guest returned a malformed effect list: {e:?}")),
+                    kv,
+                ));
+            }
+        };
         let mut host = store.into_data();
         host.commit();
         let kv = host.into_kv();
-        // Bridge the async-bindgen guest `EffectRequest`s back to the PUBLIC (sync-module) `EffectRequest`
-        // the crate exposes everywhere else — structurally identical, distinct generated types.
-        let effects = effects
-            .into_iter()
-            .map(|g| EffectRequest {
-                kind: async_guest_kind_to_public(&g.kind),
-                target: g.target,
-                payload: g.payload,
-                correlation: g.correlation,
-                // Carry the register-by-string family override through the async→sync bridge unchanged.
-                family: g.family,
-            })
-            .collect();
         Ok((effects, kv))
-    }
-
-    /// ASYNC twin of [`ComponentReducer::apply_handle_lowered`] (§19e / v-ah-host ask 27000): drive a
-    /// HANDLE-LOWERED reducer's `apply(u32,u32,u32)->u32` on the ASYNC engine. The structural async
-    /// [`AsyncComponentReducer::apply`] (bindgen `call_apply`) CANNOT drive a real rcdzc reducer — every
-    /// compound crosses the boundary as an opaque value-heap HANDLE, not a structural WIT value — so a real
-    /// async reducer (e.g. the genesis reducer the host folds through its async path) needs THIS entry: it
-    /// composes the runtime dep async, binds a `HeapHandle`, marshals the fold inputs to handles, calls the
-    /// interface-nested `apply` via `call_async`, and unmarshals the returned effect-list handle. Mirrors the
-    /// sync form EXACTLY (same runtime-instance selection + fail-loud, same error-atomicity: every error path
-    /// hands the base KV back), differing only in the async instantiate/compose/heap-op twins. This is the
-    /// path that carries the guest's KV writes through to the session KV (the sync `apply_handle_lowered`
-    /// commits the `ReducerHost` overlay; so does this) — a structural async fold silently dropped them.
-    pub async fn apply_handle_lowered(
-        &self,
-        kv: Kv,
-        content_type: ContentType,
-        payload: Option<Vec<u8>>,
-        resumes: Option<Vec<u8>>,
-    ) -> Result<(Vec<EffectRequest>, Kv), (ComponentError, Kv)> {
-        let mut store = wasmtime::Store::new(&self.engine, ReducerHost::new(kv));
-        // Cooperative yield + ample instantiation fuel (mirrors the structural async `apply`).
-        if let Err(e) = store.fuel_async_yield_interval(Some(self.fuel_yield_interval)) {
-            let kv = store.into_data().into_kv();
-            return Err((ComponentError::Instantiate(e.to_string()), kv));
-        }
-        if let Err(e) = store.set_fuel(u64::MAX) {
-            let kv = store.into_data().into_kv();
-            return Err((ComponentError::Instantiate(e.to_string()), kv));
-        }
-        // Compose every declared dep into a per-fold linker via the ASYNC composer, capturing the value-heap
-        // RUNTIME instance (the dep exporting `cadenza:runtime/heap`) — the instance the host marshals on.
-        let mut l = self.linker.clone();
-        let mut runtime_instance: Option<wasmtime::component::Instance> = None;
-        for (import_name, bytes) in &self.resolved_deps {
-            let inst = match compose_dep_into_linker_async(
-                &self.engine,
-                &mut store,
-                &mut l,
-                import_name,
-                bytes,
-                self.component_store.as_ref(),
-            )
-            .await
-            {
-                Ok(inst) => inst,
-                Err(e) => {
-                    let kv = store.into_data().into_kv();
-                    return Err((e, kv));
-                }
-            };
-            // Match the runtime dep by its BARE interface name EXACTLY + FAIL LOUD on a second match — the
-            // same COUNT+IDENTITY discipline as the sync path (#2203 MED / #2208 c2 / #2219).
-            if bare_iface_name(import_name) == "cadenza:runtime/heap" {
-                if runtime_instance.is_some() {
-                    let kv = store.into_data().into_kv();
-                    return Err((
-                        ComponentError::Compose {
-                            import_name: import_name.clone(),
-                            reason:
-                                "reducer resolved MORE THAN ONE cadenza:runtime/heap dep — the \
-                                     handle-lowered boundary marshals on exactly one shared runtime"
-                                    .to_string(),
-                        },
-                        kv,
-                    ));
-                }
-                runtime_instance = Some(inst);
-            }
-        }
-        let Some(runtime_instance) = runtime_instance else {
-            let kv = store.into_data().into_kv();
-            return Err((
-                ComponentError::Compose {
-                    import_name: "cadenza:runtime/heap".to_string(),
-                    reason: "no resolved cadenza:runtime/heap dep composed — a handle-lowered reducer \
-                             needs its value-heap runtime resolved (via with_resolved_deps) to marshal on"
-                        .to_string(),
-                },
-                kv,
-            ));
-        };
-        // Serve the reducer's BOUND handle-ABI `cadenza:agent-kernel/kv` import (§4b), if it declares one —
-        // the genesis reducer's `Kv.put`, and b3's `get`/`put`, go through THIS, not the WIT-structural kv.
-        // A bound peer iface over the shared runtime lowers its ops with COMPOUND args/results as u32 HEAP
-        // HANDLES (rcdzc host.rs `extern_abi_val_type`): `put: func(p0:u32, p1:u32)` (Bytes key+value
-        // handles, Unit result elided) and `get: func(p0:u32) -> u32` (Bytes key handle → Option<Bytes>
-        // result handle). Register them on the composed linker BEFORE instantiate, so the guest's kv calls
-        // reach the SAME `ReducerHost` overlay `apply_handle_lowered` commits on success — that's what
-        // carries a guest write through to the session KV. Capture the heap ops (Copy `Func`s) from the
-        // shared runtime instance so the closures marshal key/value bytes on the very heap the reducer uses.
-        // Registration is BEST-EFFORT: a reducer that imports no kv (b1/b2) simply never resolves these, and
-        // `linker.instance(...)` on an unimported name is harmless — but a DUPLICATE-define would error, so
-        // we only register when the reducer actually imports the kv interface (checked via the component type).
-        let imports_kv = self
-            .component
-            .component_type()
-            .imports(&self.engine)
-            .any(|(name, _)| bare_iface_name(name) == "cadenza:agent-kernel/kv");
-        if imports_kv {
-            let kv_ops = match KvHeapOps::capture(&mut store, &runtime_instance, self.fuel_budget) {
-                Ok(o) => o,
-                Err(e) => {
-                    let kv = store.into_data().into_kv();
-                    return Err((e, kv));
-                }
-            };
-            // The consumer imports the kv interface under a (possibly `@ver+hash`-suffixed) name; register
-            // under the SAME verbatim import name the reducer declares (found via the component type).
-            let kv_import_name = self
-                .component
-                .component_type()
-                .imports(&self.engine)
-                .map(|(name, _)| name.to_string())
-                .find(|name| bare_iface_name(name) == "cadenza:agent-kernel/kv");
-            if let Some(kv_import_name) = kv_import_name {
-                // The base linker's `add_to_linker` already registered the WIT-STRUCTURAL kv
-                // (`get(list<u8>)`/`put(list<u8>,list<u8>)`) under this same interface name — but a
-                // HANDLE-LOWERED reducer imports the handle-ABI shape (`get(u32)->u32`/`put(u32,u32)`)
-                // instead, so we SHADOW that structural instance with the handle-ABI funcs. Enable shadowing
-                // so redefining `cadenza:agent-kernel/kv` replaces (not double-defines → "defined twice") it.
-                l.allow_shadowing(true);
-                let register = (|| -> Result<(), ComponentError> {
-                    let mut iface =
-                        l.instance(&kv_import_name)
-                            .map_err(|e| ComponentError::Compose {
-                                import_name: kv_import_name.clone(),
-                                reason: format!(
-                                    "linker.instance({kv_import_name:?}) for bound kv: {e}"
-                                ),
-                            })?;
-                    let kv_err = |op: &str, reason: String| ComponentError::Compose {
-                        import_name: kv_import_name.clone(),
-                        reason: format!("binding kv `{op}`: {reason}"),
-                    };
-                    // put(p0: key-handle, p1: value-handle) -> () : read both Bytes off the heap, write to
-                    // the ReducerHost overlay. No result (Unit elided).
-                    iface
-                        .func_new_async("put", move |mut ctx, params, _results| {
-                            Box::new(async move {
-                                use wasmtime::component::Val;
-                                use wasmtime::AsContextMut;
-                                // ComponentError is Debug-only (no Display/Error) → map to wasmtime::Error.
-                                let to_err =
-                                    |e: ComponentError| wasmtime::Error::msg(format!("{e:?}"));
-                                // Slice-pattern the params: guards ARITY and TYPE together, so a call with
-                                // the wrong arg count returns the structured error instead of index-OOB
-                                // panicking (reviewer #2290 — defense-in-depth on this guest-driven boundary).
-                                let [Val::U32(key_h), Val::U32(val_h)] = params else {
-                                    return Err(wasmtime::Error::msg(
-                                        "kv.put expects exactly (u32, u32) handle args",
-                                    ));
-                                };
-                                let (key_h, val_h) = (*key_h, *val_h);
-                                let key = kv_ops
-                                    .read_bytes(ctx.as_context_mut(), key_h)
-                                    .await
-                                    .map_err(to_err)?;
-                                let value = kv_ops
-                                    .read_bytes(ctx.as_context_mut(), val_h)
-                                    .await
-                                    .map_err(to_err)?;
-                                self::cadenza::agent_kernel::kv::Host::put(
-                                    ctx.data_mut(),
-                                    key,
-                                    value,
-                                );
-                                Ok(())
-                            })
-                        })
-                        .map_err(|e| kv_err("put", e.to_string()))?;
-                    // get(p0: key-handle) -> value-option-handle : read the key Bytes, look it up in the
-                    // overlay/base, marshal the Option<Bytes> result back to a heap handle.
-                    iface
-                        .func_new_async("get", move |mut ctx, params, results| {
-                            Box::new(async move {
-                                use wasmtime::component::Val;
-                                use wasmtime::AsContextMut;
-                                let to_err =
-                                    |e: ComponentError| wasmtime::Error::msg(format!("{e:?}"));
-                                // Slice-pattern: guards ARITY + TYPE together (see kv.put — reviewer #2290).
-                                let [Val::U32(key_h)] = params else {
-                                    return Err(wasmtime::Error::msg(
-                                        "kv.get expects exactly a (u32) handle arg",
-                                    ));
-                                };
-                                let key_h = *key_h;
-                                let key = kv_ops
-                                    .read_bytes(ctx.as_context_mut(), key_h)
-                                    .await
-                                    .map_err(to_err)?;
-                                let got =
-                                    self::cadenza::agent_kernel::kv::Host::get(ctx.data_mut(), key);
-                                let handle = kv_ops
-                                    .marshal_option_bytes(ctx.as_context_mut(), got)
-                                    .await
-                                    .map_err(to_err)?;
-                                results[0] = Val::U32(handle);
-                                Ok(())
-                            })
-                        })
-                        .map_err(|e| kv_err("get", e.to_string()))?;
-                    Ok(())
-                })();
-                if let Err(e) = register {
-                    let kv = store.into_data().into_kv();
-                    return Err((e, kv));
-                }
-            }
-        }
-        // Instantiate the reducer ASYNC against the composed linker (raw `Instance` — the handle-lowered
-        // `apply` is reached generically, not via the bindgen structural wrapper).
-        let reducer_instance = match l.instantiate_async(&mut store, &self.component).await {
-            Ok(i) => i,
-            Err(e) => {
-                let kv = store.into_data().into_kv();
-                return Err((ComponentError::Instantiate(e.to_string()), kv));
-            }
-        };
-        // Reach the interface-nested `apply` (sync Func LOOKUP — no call, safe on the async store).
-        let apply_func = match reach_fold_apply(&mut store, &reducer_instance) {
-            Ok(f) => f,
-            Err(e) => {
-                let kv = store.into_data().into_kv();
-                return Err((e, kv));
-            }
-        };
-        // Bind a HeapHandle on the shared runtime instance (sync lookups only — safe on the async store),
-        // set the per-fold fuel budget. On bind failure recover the base KV (error-atomicity, #2203 MED).
-        let mut heap = match HeapHandle::bind(store, &runtime_instance) {
-            Ok(h) => h,
-            Err((e, store)) => return Err((e, store.into_data().into_kv())),
-        };
-        heap.set_fuel_budget(self.fuel_budget);
-        if let Err(e) = heap.store_mut().set_fuel(self.fuel_budget) {
-            let kv = heap.into_store().into_data().into_kv();
-            return Err((ComponentError::Instantiate(e.to_string()), kv));
-        }
-        // MARSHAL the inputs into three value-heap handles via the ASYNC marshaller.
-        let (ct_h, payload_h, resumes_h) = match crate::heap_marshal::marshal_fold_inputs_async(
-            &mut heap,
-            (content_type.family.as_str(), content_type.version),
-            payload.as_deref(),
-            resumes.as_deref(),
-        )
-        .await
-        {
-            Ok(hs) => hs,
-            Err(e) => {
-                let kv = heap.into_store().into_data().into_kv();
-                return Err((e, kv));
-            }
-        };
-        // CALL the guest's `apply` over u32 handles via `call_async`.
-        let result_handle = match heap
-            .call_apply_lowered_async(&apply_func, ct_h, payload_h, resumes_h)
-            .await
-        {
-            Ok(h) => h,
-            Err(e) => {
-                let kv = heap.into_store().into_data().into_kv();
-                return Err((e, kv));
-            }
-        };
-        // UNMARSHAL the returned `list<effect-request>` handle via the ASYNC reader.
-        let effects =
-            match crate::heap_unmarshal::read_effect_requests_async(&mut heap, result_handle).await
-            {
-                Ok(es) => es,
-                Err(e) => {
-                    let kv = heap.into_store().into_data().into_kv();
-                    return Err((e, kv));
-                }
-            };
-        // Success: COMMIT the overlay into the base KV (this is what carries the guest's Kv.put through —
-        // the whole point of routing genesis through this path), hand it back.
-        let mut host = heap.into_store().into_data();
-        host.commit();
-        Ok((effects, host.into_kv()))
     }
 }
 
@@ -3445,16 +1847,13 @@ impl crate::reducer::Reducer for AsyncComponentReducer {
     /// state is `kv`, so fold is a pure function of (event, kv) and replay reconstructs identical kv. See
     /// [`ComponentReducer::fold`] for the full rationale; the `&mut self` is unused by the guest path.
     async fn fold(&mut self, event: &Event, kv: &mut Kv) -> crate::reducer::FoldOutput {
-        let (content_type, payload, resumes) = event_to_guest_inputs(&event.body);
+        // B2: build the kernel event as ONE cadenza-AST document (the binary fold-boundary wire).
+        let event_doc = event_to_event_doc(&event.body);
         let taken = std::mem::take(kv);
-        match self.apply(taken, content_type, payload, resumes).await {
-            Ok((guest_effects, new_kv)) => {
+        match self.apply(taken, &event_doc).await {
+            Ok((effects, new_kv)) => {
                 *kv = new_kv;
-                // Same WIT-boundary → kernel Effect conversion as the sync path, via the shared converter.
-                let effects = guest_effects
-                    .into_iter()
-                    .map(guest_effect_to_kernel_effect)
-                    .collect();
+                // B2: `apply` already parsed the guest's cadenza-AST effect list into kernel `Effect`s.
                 crate::reducer::FoldOutput::with_effects(effects)
             }
             Err((err, restored_kv)) => {
@@ -3464,23 +1863,6 @@ impl crate::reducer::Reducer for AsyncComponentReducer {
                 ))
             }
         }
-    }
-}
-
-/// Map the ASYNC-bindgen guest `effect-kind` to the PUBLIC (sync-module) [`EffectKind`] — the two
-/// `bindgen!` modules generate DISTINCT `EffectKind` enums, so `apply` bridges the async guest's effects
-/// back to the public type the crate exposes. Same variants (both mirror the one WIT enum).
-fn async_guest_kind_to_public(
-    k: &async_reducer_bindings::cadenza::agent_kernel::types::EffectKind,
-) -> EffectKind {
-    use async_reducer_bindings::cadenza::agent_kernel::types::EffectKind as AsyncKind;
-    match k {
-        AsyncKind::Shell => EffectKind::Shell,
-        AsyncKind::Http => EffectKind::Http,
-        AsyncKind::Model => EffectKind::Model,
-        AsyncKind::Now => EffectKind::Now,
-        AsyncKind::Timer => EffectKind::Timer,
-        AsyncKind::Emit => EffectKind::Emit,
     }
 }
 
@@ -3627,71 +2009,75 @@ impl crate::authz::Authorize for ComponentAuthorizer {
     }
 }
 
-/// Map a kernel [`EventBody`] to the guest `fold.apply` inputs `(content_type, payload, resumes)`.
-/// `resumes` (§19e ruling B) is the event's continuation token, already copied onto result/timer events
-/// from their originating `Dispatched` frame (slice-2b-i) — so this reads it off the event, never a map.
-fn event_to_guest_inputs(body: &EventBody) -> (ContentType, Option<Vec<u8>>, Option<Vec<u8>>) {
-    // A synthetic content-type for the kernel-internal event kinds the guest folds (results, timers,
-    // denials): the guest matches on `family` to know what arrived. Inbound carries its OWN content-type.
-    let synthetic = |family: &str| ContentType {
-        family: family.to_string(),
-        version: 1,
-    };
-    match body {
-        EventBody::Inbound {
-            content_type,
-            payload,
-        } => (
-            ContentType {
-                // The guest-binding ContentType.family is `String`; the kernel's is now `Cow` — convert
-                // at the host→guest boundary.
-                family: content_type.family.to_string(),
-                version: content_type.version,
-            },
-            Some(payload_bytes(payload)),
-            None,
-        ),
-        EventBody::EffectResult { result, token, .. } => (
-            synthetic("effect-result"),
-            effect_outcome_bytes(result),
-            token.clone(),
-        ),
-        // TimerFired / AuthzDenied are ALSO terminal outcomes a guest resumes on (resumes_effect
-        // recognizes all three), so they carry the guest's continuation token too, via the same (B)
-        // mechanism as EffectResult (slice 2b-iii): a timer's token is copied from its originating
-        // `TimerArmed` frame when it fires; a denial's token is moved from the requesting effect (a
-        // denial has no prior durable frame). `fold` reads it straight off the event as `resumes`,
-        // staying pure. The full effect→result / timer→fire / request→denial resume cycle is now wired.
-        EventBody::TimerFired {
-            fired_ms, token, ..
-        } => (
-            synthetic("timer-fired"),
-            Some(fired_ms.to_le_bytes().to_vec()),
-            token.clone(),
-        ),
-        EventBody::AuthzDenied { reason, token, .. } => (
-            synthetic("authz-denied"),
-            Some(reason.clone().into_bytes()),
-            token.clone(),
-        ),
-        // Genesis / Dispatched / TimerArmed / Closed are not folded by the reducer (they're kernel
-        // bookkeeping or setup — see the kernel's `observable()` predicate); the loop never calls fold
-        // on them, but map defensively to an empty-payload synthetic content-type rather than panic.
-        EventBody::Genesis { .. } => (synthetic("genesis"), None, None),
-        EventBody::Dispatched { .. } => (synthetic("dispatched"), None, None),
-        EventBody::TimerArmed { .. } => (synthetic("timer-armed"), None, None),
-        EventBody::Closed { .. } => (synthetic("closed"), None, None),
-        // FoldFailed is a kernel-recorded failure event, not a fold input (the loop never folds it —
-        // `observable()` excludes it); map defensively rather than panic.
-        EventBody::FoldFailed { .. } => (synthetic("fold-failed"), None, None),
-        // Terminated is the durable terminal marker (§lifecycle I1); it is never folded (a terminated
-        // session refuses all folds via the FoldRefused guard, and `observable()` excludes it) — map
-        // defensively rather than panic.
-        EventBody::Terminated { .. } => (synthetic("terminated"), None, None),
-        // Spawned is a recorded parent→child edge (§I2), never folded (observable()=false) — map
-        // defensively rather than panic.
-        EventBody::Spawned { .. } => (synthetic("spawned"), None, None),
-    }
+/// Map a kernel [`EventBody`] to the BINARY fold-boundary wire (B2): ONE cadenza-AST event document
+/// `(event (content-type (family <str>)(version <int>)) (payload <opt>)(resumes <opt>))`, built via
+/// [`crate::ast_marshal::build_event_document`]. Computes the `(family, version, payload, resumes)` the
+/// guest sees, then encodes. `resumes` (§19e ruling B) is the event's continuation token, already copied
+/// onto result/timer events from their originating `Dispatched` frame (slice-2b-i) — read off the event,
+/// never a map.
+fn event_to_event_doc(body: &EventBody) -> Vec<u8> {
+    // (family, version, payload, resumes). A SYNTHETIC family tags the kernel-internal event kinds the
+    // guest folds (results, timers, denials) at version 1; Inbound carries its own content-type.
+    let (family, version, payload, resumes): (String, u32, Option<Vec<u8>>, Option<Vec<u8>>) =
+        match body {
+            EventBody::Inbound {
+                content_type,
+                payload,
+            } => (
+                content_type.family.to_string(),
+                content_type.version,
+                Some(payload_bytes(payload)),
+                None,
+            ),
+            EventBody::EffectResult { result, token, .. } => (
+                "effect-result".to_string(),
+                1,
+                effect_outcome_bytes(result),
+                token.clone(),
+            ),
+            // TimerFired / AuthzDenied are ALSO terminal outcomes a guest resumes on (resumes_effect
+            // recognizes all three), so they carry the guest's continuation token too, via the same (B)
+            // mechanism as EffectResult (slice 2b-iii): a timer's token is copied from its originating
+            // `TimerArmed` frame when it fires; a denial's token is moved from the requesting effect (a
+            // denial has no prior durable frame). `fold` reads it straight off the event, staying pure.
+            EventBody::TimerFired {
+                fired_ms, token, ..
+            } => (
+                "timer-fired".to_string(),
+                1,
+                Some(fired_ms.to_le_bytes().to_vec()),
+                token.clone(),
+            ),
+            EventBody::AuthzDenied { reason, token, .. } => (
+                "authz-denied".to_string(),
+                1,
+                Some(reason.clone().into_bytes()),
+                token.clone(),
+            ),
+            // Genesis / Dispatched / TimerArmed / Closed are not folded by the reducer (they're kernel
+            // bookkeeping or setup — see the kernel's `observable()` predicate); the loop never calls fold
+            // on them, but map defensively to an empty-payload synthetic family rather than panic.
+            EventBody::Genesis { .. } => ("genesis".to_string(), 1, None, None),
+            EventBody::Dispatched { .. } => ("dispatched".to_string(), 1, None, None),
+            EventBody::TimerArmed { .. } => ("timer-armed".to_string(), 1, None, None),
+            EventBody::Closed { .. } => ("closed".to_string(), 1, None, None),
+            // FoldFailed is a kernel-recorded failure event, not a fold input (the loop never folds it —
+            // `observable()` excludes it); map defensively rather than panic.
+            EventBody::FoldFailed { .. } => ("fold-failed".to_string(), 1, None, None),
+            // Terminated is the durable terminal marker (§lifecycle I1); never folded (a terminated
+            // session refuses all folds via the FoldRefused guard, and `observable()` excludes it).
+            EventBody::Terminated { .. } => ("terminated".to_string(), 1, None, None),
+            // Spawned is a recorded parent→child edge (§I2), never folded (observable()=false).
+            EventBody::Spawned { .. } => ("spawned".to_string(), 1, None, None),
+        };
+    crate::ast_marshal::build_event_document(
+        crate::ast_marshal::ContentTypeRef {
+            family: &family,
+            version,
+        },
+        payload.as_deref(),
+        resumes.as_deref(),
+    )
 }
 
 /// Opaque bytes of a kernel payload (inline bytes verbatim; a blob-by-hash surfaces its 32 hash bytes —
@@ -3714,61 +2100,6 @@ fn effect_outcome_bytes(o: &EffectOutcome) -> Option<Vec<u8>> {
         // Deferred never reaches the guest: it's intercepted pre-record, so no EffectResult is folded for it
         // (the eventual settle_effect_result folds a real Ok/Err the guest sees instead).
         EffectOutcome::Deferred => None,
-    }
-}
-
-/// Map the guest `effect-kind` (WIT enum) to the kernel [`crate::effect::EffectKind`]. Same variants
-/// (the WIT mirrors the kernel enum); this is the type-boundary translation.
-fn guest_kind_to_kernel(k: &EffectKind) -> crate::effect::EffectKind {
-    match k {
-        EffectKind::Shell => crate::effect::EffectKind::Shell,
-        EffectKind::Http => crate::effect::EffectKind::Http,
-        EffectKind::Model => crate::effect::EffectKind::Model,
-        EffectKind::Now => crate::effect::EffectKind::Now,
-        EffectKind::Timer => crate::effect::EffectKind::Timer,
-        EffectKind::Emit => crate::effect::EffectKind::Emit,
-    }
-}
-
-/// Convert a guest `effect-request` (the WIT component-boundary [`EffectRequest`], as returned by a fold)
-/// into the kernel's [`crate::reducer::Effect`] — the ONE place the boundary→kernel translation lives.
-///
-/// The two `EffectRequest` types are distinct (github-liaison #2166): [`EffectRequest`] here is the
-/// WIT-generated type a `fold.apply` returns; [`crate::effect::EffectRequest`] is the kernel's own struct.
-/// This maps between them: the kind via [`guest_kind_to_kernel`], the opaque payload bytes → an
-/// `Inline` kernel payload (`None` stays `None`; a `Vec<u8>` freezes into ref-counted `Bytes` via `.into()`),
-/// and the guest's `correlation` token → the kernel `Effect`'s continuation `token` (→ the `Dispatched`
-/// frame). Guest effects are always `Timeliness::Interactive` — per-effect batchability is not on the
-/// reducer WIT surface, so a guest cannot declare it (that would be a WIT-surface extension).
-///
-/// Extracted from the two `Reducer::fold` impls ([`ComponentReducer`] + [`AsyncComponentReducer`]), which
-/// built this inline identically; the fold-boundary handle-ABI rebind reuses it too, so the boundary→kernel
-/// mapping is defined once (no drift between the WIT-structural path and the handle-lowered path).
-fn guest_effect_to_kernel_effect(g: EffectRequest) -> crate::reducer::Effect {
-    let kernel_kind = guest_kind_to_kernel(&g.kind);
-    let payload = g.payload.map(|p| crate::effect::Payload::Inline(p.into()));
-    // REGISTER-BY-STRING escape: if the guest set an explicit `family`, build the request with THAT
-    // family (new_with_family, seq-39 — the family string is the authoritative identity, `kind` is the
-    // placeholder tag), so a Cadenza reducer can emit a register-by-string family like `effect/reply`
-    // that has no matching `effect-kind`. Otherwise (the default) derive the family from `kind` exactly
-    // as before — every existing guest is byte-for-byte unchanged.
-    let request = match g.family {
-        Some(family) => crate::effect::EffectRequest::new_with_family(
-            family,
-            g.target,
-            payload,
-            crate::effect::Timeliness::Interactive,
-        ),
-        None => crate::effect::EffectRequest::new(
-            kernel_kind,
-            g.target,
-            payload,
-            crate::effect::Timeliness::Interactive,
-        ),
-    };
-    crate::reducer::Effect {
-        request,
-        token: g.correlation,
     }
 }
 
@@ -3859,75 +2190,6 @@ mod tests {
             bare_iface_name("cadenza:runtime/heap2@0.0.0+def456"),
             "cadenza:runtime/heap2"
         );
-    }
-
-    // The shared WIT-boundary → kernel Effect converter (extracted from both fold impls; #2166). Pins the
-    // full mapping: kind translated, a Some payload → an Inline kernel payload with the same bytes, and the
-    // guest correlation token → the kernel Effect's continuation token. A companion case pins that a None
-    // payload / None correlation stay None (fire-and-forget), so the Some/None distinction isn't collapsed.
-    #[test]
-    fn guest_effect_converts_to_kernel_effect_with_payload_and_token() {
-        let g = EffectRequest {
-            kind: EffectKind::Http,
-            target: "https://example.test".to_string(),
-            payload: Some(b"body".to_vec()),
-            correlation: Some(b"tok-1".to_vec()),
-            family: None,
-        };
-        let e = guest_effect_to_kernel_effect(g);
-        assert_eq!(e.request.kind, crate::effect::EffectKind::Http);
-        assert_eq!(e.request.target_str().unwrap(), "https://example.test");
-        assert_eq!(e.request.timeliness, crate::effect::Timeliness::Interactive);
-        match &e.request.payload {
-            Some(crate::effect::Payload::Inline(b)) => assert_eq!(b.as_ref(), b"body"),
-            other => panic!("expected an Inline payload with the guest bytes, got {other:?}"),
-        }
-        assert_eq!(e.token.as_deref(), Some(&b"tok-1"[..]));
-    }
-
-    #[test]
-    fn guest_effect_none_payload_and_token_stay_none() {
-        let g = EffectRequest {
-            kind: EffectKind::Emit,
-            target: "peer-session".to_string(),
-            payload: None,
-            correlation: None,
-            family: None,
-        };
-        let e = guest_effect_to_kernel_effect(g);
-        assert_eq!(e.request.kind, crate::effect::EffectKind::Emit);
-        assert!(
-            e.request.payload.is_none(),
-            "None payload must stay None (not empty-Inline)"
-        );
-        assert!(
-            e.token.is_none(),
-            "None correlation must stay None (fire-and-forget)"
-        );
-    }
-
-    #[test]
-    fn guest_effect_with_explicit_family_emits_a_register_by_string_family() {
-        // REGISTER-BY-STRING escape: a guest that sets `family: Some(...)` emits an effect whose kernel
-        // content-type family is EXACTLY that string (via new_with_family), overriding the kind-derived
-        // family — so a Cadenza handler-session reducer can emit `effect/reply` (or any userspace family)
-        // that has no matching `effect-kind` variant. `kind` rides as a placeholder; the family string is
-        // the authoritative identity (seq-39). This is the unblock for platform-conformance I2 replies.
-        let g = EffectRequest {
-            kind: EffectKind::Emit, // placeholder — register-by-string families carry no real kind
-            target: "caller-session".to_string(),
-            payload: Some(b"reply-body".to_vec()),
-            correlation: Some(b"reply-tok".to_vec()),
-            family: Some(crate::effect::effect_ct::EFFECT_REPLY.to_string()),
-        };
-        let e = guest_effect_to_kernel_effect(g);
-        assert_eq!(
-            e.request.content_type.family.as_ref(),
-            crate::effect::effect_ct::EFFECT_REPLY,
-            "the explicit family overrides the kind-derived family (register-by-string)"
-        );
-        assert_eq!(e.request.target_str().unwrap(), "caller-session");
-        assert_eq!(e.token.as_deref(), Some(&b"reply-tok"[..]));
     }
 
     // The host `kv` import is backed by the kernel KV THROUGH the transactional overlay: reads see the
@@ -4147,170 +2409,6 @@ mod tests {
                  (export "cadenza:runtime/heap" (instance $heap)))"#,
         )
         .expect("assemble heap stub component")
-    }
-
-    // HeapHandle binds each B1 heap op off a composed cadenza:runtime/heap instance + drives them — the
-    // host-side marshalling foundation (option C). Proves: bind finds every op, and the B1 INPUT-marshal
-    // sequence runs (build a content-type record `arr[0]=str-new(family), arr[1]=box-int(version)`, a None
-    // option `sum-new(1, unit)`, and read an empty effect-list `vec-len==0`).
-    #[test]
-    fn heap_handle_binds_and_drives_the_b1_build_ops() {
-        let bytes = heap_stub_component();
-        let engine = wasmtime::Engine::default();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let linker = wasmtime::component::Linker::<()>::new(&engine);
-        let component =
-            wasmtime::component::Component::new(&engine, &bytes).expect("valid heap stub");
-        let instance = linker
-            .instantiate(&mut store, &component)
-            .expect("heap stub instantiates");
-        // `.expect` would need HeapHandle: Debug (it holds non-Debug Func/Store) — match instead.
-        let mut heap = match HeapHandle::bind(store, &instance) {
-            Ok(h) => h,
-            Err((e, _)) => panic!("bind HeapHandle to the heap iface: {e:?}"),
-        };
-
-        // B1 ct record: arr-alloc(2); arr[0]=str-new("demo"); arr[1]=box-int(1). The stub threads the arr
-        // handle (arr-alloc→200), so the record handle is 200; the field handles are the op sentinels.
-        let family = heap.str_new("demo").expect("str-new");
-        assert_eq!(family, 400);
-        let version = heap.box_int(1).expect("box-int");
-        assert_eq!(version, 100);
-        let ct = heap.arr_alloc(2).expect("arr-alloc");
-        assert_eq!(ct, 200);
-        assert_eq!(heap.arr_set(ct, 0, family).expect("arr-set 0"), 200); // threads the arr
-        assert_eq!(heap.arr_set(ct, 1, version).expect("arr-set 1"), 200);
-        // None option payload: sum-new(1=None disc, UNIT) — the unit is the inline-unit handle from
-        // arr-alloc(0) (github-liaison #2122: NOT handle 0, which is NULL → a malformed sum).
-        let unit = heap.unit().expect("unit (arr-alloc 0)");
-        // #2133: unit() must call arr-alloc(0) — the stub returns 2 for len==0 (distinct from the len>0
-        // sentinel 200), so this asserts unit() actually allocs LENGTH ZERO, not just any array.
-        assert_eq!(
-            unit, 2,
-            "unit() must call arr-alloc(0), the inline-unit — not arr-alloc(non-zero)"
-        );
-        let none_payload = heap.sum_new(1, unit).expect("sum-new None");
-        assert_eq!(none_payload, 300);
-        // Read the (empty) effect-list result length.
-        assert_eq!(heap.vec_len(999).expect("vec-len"), 0);
-    }
-
-    // HeapHandle slice-2 READ ops: project a returned effect-request list back to structural values. Drives
-    // each read op off the stub (sentinels: vec-get→700, arr-get→800, sum-disc→1, sum-payload→900,
-    // get-int→42, str-get→"target"), proving the host reaches every read op + gets the right value KIND
-    // (u32 handle / s64 / String) — the B2/B3 effect-request-reading half.
-    #[test]
-    fn heap_handle_drives_the_read_ops() {
-        let bytes = heap_stub_component();
-        let engine = wasmtime::Engine::default();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let linker = wasmtime::component::Linker::<()>::new(&engine);
-        let component =
-            wasmtime::component::Component::new(&engine, &bytes).expect("valid heap stub");
-        let instance = linker
-            .instantiate(&mut store, &component)
-            .expect("heap stub instantiates");
-        let mut heap = match HeapHandle::bind(store, &instance) {
-            Ok(h) => h,
-            Err((e, _)) => panic!("bind HeapHandle: {e:?}"),
-        };
-        // Walk a returned effect-list: vec-get(list, 0) → an effect-request record handle.
-        assert_eq!(heap.vec_get(555, 0).expect("vec-get"), 700);
-        // Project a record field by sorted index → a field handle.
-        assert_eq!(heap.arr_get(700, 1).expect("arr-get"), 800);
-        // Decode a boxed scalar field.
-        assert_eq!(heap.get_int(800).expect("get-int"), 42);
-        // Decode a String field (an effect target).
-        assert_eq!(heap.str_get(800).expect("str-get"), "target");
-        // Decode an Option/enum-kind discriminant + its payload.
-        assert_eq!(heap.sum_disc(300).expect("sum-disc"), 1);
-        assert_eq!(heap.sum_payload(300).expect("sum-payload"), 900);
-    }
-
-    // HeapHandle slice-2b BYTES ops: build a value-heap Bytes handle from a Rust slice + read it back —
-    // for the reducer's Option<Bytes> payload/resumes args + emitted effect-request payload/correlation.
-    // The stub's bytes ops are FUNCTIONAL (real memory-backed buffer), so this is a true ROUND-TRIP, not a
-    // sentinel check: bytes_from(data) → read_bytes → data, incl. empty + arbitrary (non-UTF8) bytes.
-    #[test]
-    fn heap_handle_round_trips_bytes() {
-        let bytes = heap_stub_component();
-        let engine = wasmtime::Engine::default();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let linker = wasmtime::component::Linker::<()>::new(&engine);
-        let component =
-            wasmtime::component::Component::new(&engine, &bytes).expect("valid heap stub");
-        let instance = linker
-            .instantiate(&mut store, &component)
-            .expect("heap stub instantiates");
-        let mut heap = match HeapHandle::bind(store, &instance) {
-            Ok(h) => h,
-            Err((e, _)) => panic!("bind HeapHandle: {e:?}"),
-        };
-        // Arbitrary bytes (incl. 0x00 and 0xFF, non-UTF8) round-trip exactly.
-        let payload = [0xDE, 0xAD, 0x00, 0xFF, 0x2A];
-        let h = heap.bytes_from(&payload).expect("bytes_from");
-        assert_eq!(heap.bytes_len(h).expect("bytes-len"), 5);
-        assert_eq!(heap.read_bytes(h).expect("read_bytes"), payload);
-        // Empty bytes round-trip too (an empty payload).
-        let empty = heap.bytes_from(&[]).expect("bytes_from empty");
-        assert_eq!(
-            heap.read_bytes(empty).expect("read empty"),
-            Vec::<u8>::new()
-        );
-        // A distinct second buffer doesn't alias the first (bump-allocated).
-        let other = heap.bytes_from(&[1, 2, 3]).expect("bytes_from other");
-        assert_eq!(heap.read_bytes(other).expect("read other"), [1, 2, 3]);
-        assert_eq!(heap.read_bytes(h).expect("re-read first"), payload); // first still intact
-    }
-
-    // DoS guard (reviewer, #2166 read-side): a bytes handle whose bytes-len reports a bogus huge length
-    // (the forged @100 handle = 0xFFFFFFFF, no real bytes) must NOT abort the host via an eager ~4GB
-    // Vec::with_capacity — the MAX_PREALLOC_BYTES cap bounds the reservation, then bytes-get walks past the
-    // single-page memory and Traps cleanly. The test returning (not OOM-aborting) is the proof.
-    #[test]
-    fn read_bytes_with_bogus_huge_len_traps_cleanly_not_an_alloc_abort() {
-        let bytes = heap_stub_component();
-        let engine = wasmtime::Engine::default();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let linker = wasmtime::component::Linker::<()>::new(&engine);
-        let component =
-            wasmtime::component::Component::new(&engine, &bytes).expect("valid heap stub");
-        let instance = linker
-            .instantiate(&mut store, &component)
-            .expect("heap stub instantiates");
-        let mut heap = match HeapHandle::bind(store, &instance) {
-            Ok(h) => h,
-            Err((e, _)) => panic!("bind HeapHandle: {e:?}"),
-        };
-        match heap.read_bytes(100) {
-            Err(_) => {} // clean fail-loud (a bytes-get memory Trap), NOT a process abort
-            Ok(v) => panic!(
-                "a bogus u32::MAX bytes-len must not read as a real {}-byte buffer",
-                v.len()
-            ),
-        }
-    }
-
-    // A runtime that doesn't export cadenza:runtime/heap → a clear Compose error naming it, not a trap.
-    #[test]
-    fn heap_handle_bind_errors_clearly_without_the_heap_interface() {
-        let empty = wat::parse_str("(component)").expect("empty component");
-        let engine = wasmtime::Engine::default();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let linker = wasmtime::component::Linker::<()>::new(&engine);
-        let component = wasmtime::component::Component::new(&engine, &empty).expect("valid");
-        let instance = linker
-            .instantiate(&mut store, &component)
-            .expect("instantiates");
-        match HeapHandle::bind(store, &instance) {
-            Err((ComponentError::Compose { import_name, .. }, _store)) => {
-                assert_eq!(import_name, "cadenza:runtime/heap");
-            }
-            Err((e, _store)) => {
-                panic!("expected a Compose error naming the heap interface, got {e:?}")
-            }
-            Ok(_) => panic!("expected bind to fail without the heap interface, but it succeeded"),
-        }
     }
 
     // the runtime-agnostic linker-composition mechanism (mirrors cdz-run::run_with_peers). Synthetic
@@ -4547,16 +2645,28 @@ mod tests {
             Ok(inst) => inst,
             Err(e) => panic!("compose the runtime dep: {e:?}"),
         };
-        // Bind a HeapHandle on the SAME composed instance + store, then drive a build op — proving the
-        // returned instance is the usable runtime the host marshals on (the stub's box-int → sentinel 100).
-        let mut heap = match HeapHandle::bind(store, &runtime_instance) {
-            Ok(h) => h,
-            Err((e, _)) => panic!("bind HeapHandle to the composed runtime instance: {e:?}"),
-        };
+        // Drive a heap op on the SAME composed instance + store — proving the returned instance is a usable,
+        // callable runtime (the stub's box-int → sentinel 100). A real rcdzc reducer imports this same
+        // composed runtime for its OWN value ops; the host no longer marshals on it (B2 deleted HeapHandle),
+        // so this pins the compose→callable seam via a raw component call rather than the old handle.
+        use wasmtime::component::Val;
+        let idx = runtime_instance
+            .get_export_index(&mut store, None, "cadenza:runtime/heap")
+            .expect("heap iface export");
+        let op_idx = runtime_instance
+            .get_export_index(&mut store, Some(&idx), "box-int")
+            .expect("box-int export");
+        let box_int = runtime_instance
+            .get_func(&mut store, op_idx)
+            .expect("box-int func");
+        let mut results = [Val::U32(0)];
+        box_int
+            .call(&mut store, &[Val::S64(7)], &mut results)
+            .expect("call box-int on the composed runtime");
         assert_eq!(
-            heap.box_int(7).expect("box-int on the composed runtime"),
-            100,
-            "the composed runtime instance's heap ops are drivable via HeapHandle"
+            results[0],
+            Val::U32(100),
+            "the composed runtime instance's heap ops are drivable"
         );
     }
 
@@ -4641,305 +2751,23 @@ mod tests {
                 panic!("compose must match the bare export against the versioned import: {e:?}")
             }
         };
-        let mut heap = match HeapHandle::bind(store, &runtime_instance) {
-            Ok(h) => h,
-            Err((e, _)) => panic!("bind HeapHandle to the composed runtime: {e:?}"),
-        };
-        assert_eq!(heap.box_int(1).expect("box-int"), 100);
-    }
-
-    // §19e HANDLE-LOWERED fold END-TO-END: a synthetic reducer that IMPORTS `cadenza:runtime/heap` and
-    // EXPORTS the interface-nested `cadenza:agent-kernel/fold`.`apply(u32,u32,u32)->u32` — the exact shape
-    // rcdzc emits for a real Cadenza reducer (v-hb-confirmed). Its `apply` ignores its 3 arg handles and
-    // returns `arr-alloc(0)` (an empty-list handle) — the heap stub's `vec-len` is 0, so the host's
-    // `read_effect_requests` decodes ZERO effects (B1-shaped: empty-effects fold). This drives the WHOLE
-    // rebind: compose the runtime dep → capture its instance → instantiate the reducer against it → reach
-    // the nested apply → marshal (ct,payload,resumes)→3 handles → call apply → unmarshal the returned
-    // list handle. The runtime + reducer share ONE store/heap (the point of compose-returns-instance).
-    fn handle_lowered_reducer_component() -> Vec<u8> {
-        wat::parse_str(
-            r#"(component
-                 ;; IMPORT the runtime — declare only the ops apply uses (arr-alloc). The composed heap
-                 ;; stub satisfies this under the same interface name.
-                 (import "cadenza:runtime/heap" (instance $rt
-                   (export "arr-alloc" (func (param "len" u32) (result u32)))))
-                 (core module $m
-                   (import "" "arr-alloc" (func $arr_alloc (param i32) (result i32)))
-                   ;; apply(ct, payload, resumes) -> list-handle : ignore args, return arr-alloc(0) = empty list.
-                   (func (export "apply") (param i32 i32 i32) (result i32)
-                     (call $arr_alloc (i32.const 0))))
-                 (core func $arr_alloc_core (canon lower (func $rt "arr-alloc")))
-                 (core instance $shim (export "arr-alloc" (func $arr_alloc_core)))
-                 (core instance $i (instantiate $m (with "" (instance $shim))))
-                 (func $apply (param "ct" u32) (param "payload" u32) (param "resumes" u32) (result u32)
-                   (canon lift (core func $i "apply")))
-                 ;; EXPORT apply THROUGH the fold interface instance (interface-nested, not top-level).
-                 (instance $fold (export "apply" (func $apply)))
-                 (export "cadenza:agent-kernel/fold" (instance $fold)))"#,
-        )
-        .expect("assemble handle-lowered reducer component")
-    }
-
-    #[test]
-    fn apply_handle_lowered_drives_a_reducer_through_the_marshalled_boundary() {
-        let reducer_bytes = handle_lowered_reducer_component();
-        let runtime_bytes = heap_stub_component();
-        // Build the reducer + attach the runtime as its resolved `cadenza:runtime/heap` dep (the fixture
-        // imports it under that bare name — no +hash — so declared_deps won't auto-detect it; wire it
-        // explicitly, exactly as CAS resolution would for a real reducer).
-        let reducer = match ComponentReducer::from_component_bytes(&reducer_bytes) {
-            Ok(r) => r,
-            Err(e) => panic!("build handle-lowered reducer: {e:?}"),
-        };
-        let runtime_dep = ComponentDep {
-            import_name: "cadenza:runtime/heap".to_string(),
-            hash: Hash::of(b"heap-stub-runtime"),
-        };
-        let reducer = reducer.with_resolved_deps(vec![(runtime_dep, runtime_bytes)]);
-        // Drive the handle-lowered fold: marshal a content-type + None payload/resumes, call apply, unmarshal.
-        let ct = ContentType {
-            family: "message".to_string(),
-            version: 1,
-        };
-        match reducer.apply_handle_lowered(Kv::new(), ct, None, None) {
-            Ok((effects, _kv)) => assert!(
-                effects.is_empty(),
-                "the reducer returned arr-alloc(0) (empty list) → zero effects, got {}",
-                effects.len()
-            ),
-            Err((e, _kv)) => panic!("apply_handle_lowered should drive the reducer, got {e:?}"),
-        }
-    }
-
-    // SYNC bound-kv parity (coverage-hardening — the async path got the bound kv in #2290 + its
-    // propagation test; this pins the SYNC apply_handle_lowered serves it identically): a kv-writing
-    // handle-lowered reducer driven through the SYNC ComponentReducer::apply_handle_lowered must have its
-    // bound kv.put land in the returned session KV. Mirrors async_apply_handle_lowered_propagates... on the
-    // sync engine. (Latent in production — the host is async-only — but keeps the sync path from silently
-    // regressing its handle-ABI kv support.)
-    #[test]
-    fn sync_apply_handle_lowered_propagates_a_bound_kv_put_to_the_session_kv() {
-        let reducer_bytes = kv_writing_reducer_component();
-        let runtime_bytes = heap_stub_component();
-        let reducer = match ComponentReducer::from_component_bytes(&reducer_bytes) {
-            Ok(r) => r,
-            Err(e) => panic!("build kv-writing sync reducer: {e:?}"),
-        };
-        let runtime_dep = ComponentDep {
-            import_name: "cadenza:runtime/heap".to_string(),
-            hash: Hash::of(b"heap-stub-runtime"),
-        };
-        let reducer = reducer.with_resolved_deps(vec![(runtime_dep, runtime_bytes)]);
-        let ct = ContentType {
-            family: "genesis/root".to_string(),
-            version: 1,
-        };
-        match reducer.apply_handle_lowered(Kv::new(), ct, None, None) {
-            Ok((effects, kv)) => {
-                assert!(
-                    effects.is_empty(),
-                    "the reducer emits no effects, got {}",
-                    effects.len()
-                );
-                assert_eq!(
-                    kv.get(b"k1").map(|v| v.to_vec()),
-                    Some(b"v9".to_vec()),
-                    "the guest's bound kv.put(\"k1\",\"v9\") must land in the committed session KV (sync path)"
-                );
-            }
-            Err((e, _kv)) => panic!("kv-writing sync fold should succeed, got {e:?}"),
-        }
-    }
-
-    // #2256 / v-ah-host ask 27000 — the ASYNC twin of the drive test above: `AsyncComponentReducer::
-    // apply_handle_lowered` must drive the SAME handle-lowered fixture on the async_support engine, through
-    // the async heap-op twins (call_async/post_return_async) + async marshal/unmarshal. This is the exact
-    // path a real async reducer (the genesis reducer the host folds through its async path) takes; before it
-    // existed, the async reducer had NO handle-lowered entry at all and drove the STRUCTURAL call_apply.
-    // SCOPE of THIS test: the async marshalled drive-path RUNS (no "must use async instantiation"/"call_async"
-    // panic) and the returned effect-list handle unmarshals — the fixture returns arr-alloc(0) (empty list)
-    // → zero effects, same as the sync assertion. The fixture imports only the runtime heap (NOT the kv
-    // interface), so KV propagation (a guest Kv.put reaching session KV) is NOT exercised here — that lands
-    // with the async handle-ABI kv (stage 2) and its own kv-asserting test.
-    #[tokio::test(flavor = "current_thread")]
-    async fn async_apply_handle_lowered_drives_a_reducer_on_the_async_engine() {
-        let reducer_bytes = handle_lowered_reducer_component();
-        let runtime_bytes = heap_stub_component();
-        let reducer = match AsyncComponentReducer::from_component_bytes(&reducer_bytes) {
-            Ok(r) => r,
-            Err(e) => panic!("build async handle-lowered reducer: {e:?}"),
-        };
-        let runtime_dep = ComponentDep {
-            import_name: "cadenza:runtime/heap".to_string(),
-            hash: Hash::of(b"heap-stub-runtime"),
-        };
-        let reducer = reducer.with_resolved_deps(vec![(runtime_dep, runtime_bytes)]);
-        let ct = ContentType {
-            family: "message".to_string(),
-            version: 1,
-        };
-        match reducer
-            .apply_handle_lowered(Kv::new(), ct, None, None)
-            .await
-        {
-            Ok((effects, _kv)) => assert!(
-                effects.is_empty(),
-                "the reducer returned arr-alloc(0) (empty list) → zero effects, got {}",
-                effects.len()
-            ),
-            Err((e, _kv)) => {
-                panic!("async apply_handle_lowered should drive the reducer, got {e:?}")
-            }
-        }
-    }
-
-    // A HANDLE-LOWERED reducer that WRITES to its bound handle-ABI kv (§4b): it imports BOTH
-    // `cadenza:runtime/heap` (to build value-heap Bytes handles) AND `cadenza:agent-kernel/kv` (`put`), and
-    // its `apply` builds a key + value on the shared heap (via bytes-alloc/bytes-set) then calls
-    // `kv.put(key_handle, value_handle)` before returning arr-alloc(0) (empty effect list). This is the
-    // shape a real kv-writing Cadenza reducer (the genesis reducer) lowers to — the bound kv op takes u32
-    // heap handles (rcdzc host.rs extern ABI). Drives the WHOLE stage-2 path: the host serves `put` by
-    // reading both Bytes handles off the SAME heap the reducer built them on, and writing to the
-    // ReducerHost overlay (committed on success). Key = bytes [0x6b,0x31] ("k1"), value = [0x76,0x39] ("v9").
-    fn kv_writing_reducer_component() -> Vec<u8> {
-        wat::parse_str(
-            r#"(component
-                 (import "cadenza:runtime/heap" (instance $rt
-                   (export "arr-alloc" (func (param "len" u32) (result u32)))
-                   (export "bytes-alloc" (func (param "len" u32) (result u32)))
-                   (export "bytes-set" (func (param "buf" u32) (param "index" u32) (param "value" u32) (result u32)))))
-                 (import "cadenza:agent-kernel/kv" (instance $kv
-                   (export "put" (func (param "p0" u32) (param "p1" u32)))))
-                 (core module $m
-                   (import "" "arr-alloc" (func $arr_alloc (param i32) (result i32)))
-                   (import "" "bytes-alloc" (func $bytes_alloc (param i32) (result i32)))
-                   (import "" "bytes-set" (func $bytes_set (param i32 i32 i32) (result i32)))
-                   (import "" "put" (func $put (param i32 i32)))
-                   ;; build a 2-byte Bytes handle from two byte literals (threading the buf handle).
-                   (func $mk2 (param $b0 i32) (param $b1 i32) (result i32)
-                     (local $buf i32)
-                     (local.set $buf (call $bytes_alloc (i32.const 2)))
-                     (local.set $buf (call $bytes_set (local.get $buf) (i32.const 0) (local.get $b0)))
-                     (local.set $buf (call $bytes_set (local.get $buf) (i32.const 1) (local.get $b1)))
-                     (local.get $buf))
-                   ;; apply(ct, payload, resumes) -> list-handle : write "k1"->"v9" to kv, return empty list.
-                   (func (export "apply") (param i32 i32 i32) (result i32)
-                     (call $put
-                       (call $mk2 (i32.const 0x6b) (i32.const 0x31))    ;; key "k1"
-                       (call $mk2 (i32.const 0x76) (i32.const 0x39)))   ;; value "v9"
-                     (call $arr_alloc (i32.const 0))))
-                 (core func $arr_alloc_core (canon lower (func $rt "arr-alloc")))
-                 (core func $bytes_alloc_core (canon lower (func $rt "bytes-alloc")))
-                 (core func $bytes_set_core (canon lower (func $rt "bytes-set")))
-                 (core func $put_core (canon lower (func $kv "put")))
-                 (core instance $shim
-                   (export "arr-alloc" (func $arr_alloc_core))
-                   (export "bytes-alloc" (func $bytes_alloc_core))
-                   (export "bytes-set" (func $bytes_set_core))
-                   (export "put" (func $put_core)))
-                 (core instance $i (instantiate $m (with "" (instance $shim))))
-                 (func $apply (param "ct" u32) (param "payload" u32) (param "resumes" u32) (result u32)
-                   (canon lift (core func $i "apply")))
-                 (instance $fold (export "apply" (func $apply)))
-                 (export "cadenza:agent-kernel/fold" (instance $fold)))"#,
-        )
-        .expect("assemble kv-writing handle-lowered reducer component")
-    }
-
-    // STAGE 2 (v-ah-host ask 27000, v-nix note 27054) — the KV-PROPAGATION proof: a handle-lowered reducer
-    // whose `apply` calls its bound `cadenza:agent-kernel/kv` `put` must have that write LAND in the session
-    // KV returned by the async `apply_handle_lowered`. This is the exact gap that left the genesis round-trip
-    // red (the fold RAN post-#2285 but Kv.put no-op'd). Drives the WHOLE stage-2 wiring end to end: the host
-    // registers the handle-ABI kv on the composed linker, the guest's `put(key_h, val_h)` reaches the host,
-    // which reads both Bytes off the shared heap and writes the ReducerHost overlay — committed on the
-    // successful fold. Asserts kv["k1"] == "v9" in the returned KV (was empty before → proves propagation).
-    #[tokio::test(flavor = "current_thread")]
-    async fn async_apply_handle_lowered_propagates_a_bound_kv_put_to_the_session_kv() {
-        let reducer_bytes = kv_writing_reducer_component();
-        let runtime_bytes = heap_stub_component();
-        let reducer = match AsyncComponentReducer::from_component_bytes(&reducer_bytes) {
-            Ok(r) => r,
-            Err(e) => panic!("build kv-writing async reducer: {e:?}"),
-        };
-        let runtime_dep = ComponentDep {
-            import_name: "cadenza:runtime/heap".to_string(),
-            hash: Hash::of(b"heap-stub-runtime"),
-        };
-        let reducer = reducer.with_resolved_deps(vec![(runtime_dep, runtime_bytes)]);
-        let ct = ContentType {
-            family: "genesis/root".to_string(),
-            version: 1,
-        };
-        // Start from an EMPTY KV; the reducer's kv.put must be what populates it.
-        match reducer
-            .apply_handle_lowered(Kv::new(), ct, None, None)
-            .await
-        {
-            Ok((effects, kv)) => {
-                assert!(
-                    effects.is_empty(),
-                    "the reducer emits no effects, got {}",
-                    effects.len()
-                );
-                assert_eq!(
-                    kv.get(b"k1").map(|v| v.to_vec()),
-                    Some(b"v9".to_vec()),
-                    "the guest's bound kv.put(\"k1\", \"v9\") must land in the committed session KV"
-                );
-            }
-            Err((e, _kv)) => panic!("kv-writing fold should succeed, got {e:?}"),
-        }
-    }
-
-    // ROUTING (v-ah-host ask 27094 — the THIRD gap): the kv-serving lives on apply_handle_lowered, but the
-    // PRODUCTION path a host session takes is Reducer::fold → self.apply. Before the dispatch, apply always
-    // ran the STRUCTURAL call_apply, so a real handle-lowered reducer driven through fold never reached
-    // apply_handle_lowered → its bound kv.put no-op'd (the genesis round-trip's red assert at host.rs:1002).
-    // This drives the SAME kv-writing reducer through the `Reducer::fold` trait method (NOT apply_handle_
-    // lowered directly), so it exercises the dispatch: apply sees a resolved cadenza:runtime/heap dep →
-    // routes to apply_handle_lowered → the guest's kv.put lands. Asserts the write reached the session KV
-    // AND fold reported success — the end-to-end proof the host's fold path now persists a handle-lowered
-    // reducer's KV writes (what unblocks the genesis round-trip).
-    #[tokio::test(flavor = "current_thread")]
-    async fn reducer_fold_routes_a_handle_lowered_reducer_to_apply_handle_lowered() {
-        use crate::effect::Payload;
-        use crate::event::{ContentType as KernelCt, Event, EventBody};
-        use crate::reducer::Reducer;
-        let reducer_bytes = kv_writing_reducer_component();
-        let runtime_bytes = heap_stub_component();
-        let reducer = match AsyncComponentReducer::from_component_bytes(&reducer_bytes) {
-            Ok(r) => r,
-            Err(e) => panic!("build kv-writing async reducer: {e:?}"),
-        };
-        let runtime_dep = ComponentDep {
-            import_name: "cadenza:runtime/heap".to_string(),
-            hash: Hash::of(b"heap-stub-runtime"),
-        };
-        let mut reducer = reducer.with_resolved_deps(vec![(runtime_dep, runtime_bytes)]);
-        // An inbound event through the REAL fold entry point (what HostedSession::deliver drives).
-        let event = Event {
-            seq: 1,
-            cause: None,
-            body: EventBody::Inbound {
-                content_type: KernelCt {
-                    family: "genesis/root".into(),
-                    version: 1,
-                },
-                payload: Payload::Inline(b"seed".to_vec().into()),
-            },
-        };
-        let mut kv = Kv::new();
-        let out = reducer.fold(&event, &mut kv).await;
-        assert!(
-            out.failure.is_none(),
-            "fold must route the handle-lowered reducer + succeed, got {out:?}"
-        );
-        assert_eq!(
-            kv.get(b"k1").map(|v| v.to_vec()),
-            Some(b"v9".to_vec()),
-            "driving the handle-lowered reducer through Reducer::fold must route to apply_handle_lowered \
-             so the guest's kv.put lands in the session KV"
-        );
+        // The returned instance is bindable + drivable — a raw heap op call (box-int → stub sentinel 100)
+        // proves the bare-export→versioned-import name match produced a live, callable runtime.
+        use wasmtime::component::Val;
+        let idx = runtime_instance
+            .get_export_index(&mut store, None, "cadenza:runtime/heap")
+            .expect("heap iface export");
+        let op_idx = runtime_instance
+            .get_export_index(&mut store, Some(&idx), "box-int")
+            .expect("box-int export");
+        let box_int = runtime_instance
+            .get_func(&mut store, op_idx)
+            .expect("box-int func");
+        let mut results = [Val::U32(0)];
+        box_int
+            .call(&mut store, &[Val::S64(1)], &mut results)
+            .expect("call box-int on the composed runtime");
+        assert_eq!(results[0], Val::U32(100));
     }
 
     // The generic multi-export invoke fixture (operator invoke-ABI ruling seq 107/108): a component whose

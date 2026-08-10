@@ -6,9 +6,15 @@
 //! effect-request + the `kv` host import + the mutated KV across the component boundary, on a real
 //! single-threaded (current-thread) executor (the runtime the kernel is designed for — no Send).
 
+use crate::ast_marshal::{build_event_document, ContentTypeRef};
 use crate::kv::Kv;
 use crate::reducer::Reducer;
-use crate::wasm_host::{AsyncComponentReducer, ComponentError, ContentType, EffectKind};
+use crate::wasm_host::{AsyncComponentReducer, ComponentError};
+
+/// Build the B2 binary fold-boundary event document (the wire `Reducer::fold` builds internally).
+fn event_doc(family: &str, payload: Option<&[u8]>, resumes: Option<&[u8]>) -> Vec<u8> {
+    build_event_document(ContentTypeRef { family, version: 1 }, payload, resumes)
+}
 
 // The SAME guest the sync e2e uses (via REDUCER_GUEST_COMPONENT) — a dependency-free wit-bindgen reducer
 // that, on an inbound "message", requests one Http effect + increments a KV counter.
@@ -37,21 +43,20 @@ async fn real_guest_folds_through_async_apply_end_to_end() {
         Err(e) => panic!("the guest fixture must be a valid async reducer component: {e:?}"),
     };
 
-    let ct = ContentType {
-        family: "message".into(),
-        version: 1,
-    };
     let (effects, kv) = reducer
-        .apply(Kv::new(), ct, Some(b"hello".to_vec()), None)
+        .apply(Kv::new(), &event_doc("message", Some(b"hello"), None))
         .await
         .expect("async apply drives the guest without trapping");
 
     // Identical observable behavior to the sync path: exactly one Http effect with the guest's own
-    // correlation token, round-tripped across the component boundary.
+    // correlation token, round-tripped across the binary-AST component boundary.
     assert_eq!(effects.len(), 1);
-    assert_eq!(effects[0].kind, EffectKind::Http);
-    assert_eq!(effects[0].target, "https://ok.host/x");
-    assert_eq!(effects[0].correlation.as_deref(), Some(&b"step-1"[..]));
+    assert_eq!(effects[0].request.content_type.family.as_ref(), "http");
+    assert_eq!(
+        effects[0].request.target_str().unwrap(),
+        "https://ok.host/x"
+    );
+    assert_eq!(effects[0].token.as_deref(), Some(&b"step-1"[..]));
 
     // The guest wrote its KV counter via the `kv` host import, and the mutated KV came back out.
     assert_eq!(kv.get(b"count").as_deref(), Some(&[1u8][..]));
@@ -141,11 +146,10 @@ async fn async_reducer_declaring_a_dep_reports_it_and_folds_loud_without_attach(
     );
 
     // Fold WITHOUT with_resolved_deps → actionable error naming the builders (not an opaque linker error).
-    let ct = ContentType {
-        family: "message".into(),
-        version: 1,
-    };
-    match reducer.apply(Kv::new(), ct, None, None).await {
+    match reducer
+        .apply(Kv::new(), &event_doc("message", None, None))
+        .await
+    {
         Err((ComponentError::Instantiate(msg), _kv)) => assert!(
             msg.contains("with_resolved_deps") && msg.contains("declares"),
             "expected an actionable no-deps-attached error naming the builders, got {msg:?}"

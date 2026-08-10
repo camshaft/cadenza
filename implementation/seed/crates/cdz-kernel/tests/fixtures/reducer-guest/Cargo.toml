@@ -23,3 +23,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 wit-bindgen = "0.45"
+# B2 binary-AST fold boundary: the guest speaks cadenza-ast at the fold seam (decode the event document,
+# encode the effect list) rather than lifting WIT-structural types. Path-dep on the shared codec crate —
+# it is a pure `no_std`-friendly Rust lib (no wasi imports), so it lifts cleanly to a wasm component.
+cadenza-ast = { path = "../../../../cadenza-ast" }

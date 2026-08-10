@@ -15,8 +15,15 @@
 //!   wasm-tools component new target/wasm32-unknown-unknown/release/reducer_guest.wasm -o /tmp/rg.wasm
 //!   REDUCER_GUEST_COMPONENT=/tmp/rg.wasm cargo test  (or `nix build .#reducer-guest`)
 
+use crate::ast_marshal::{build_event_document, ContentTypeRef};
 use crate::kv::Kv;
-use crate::wasm_host::{ComponentError, ComponentReducer, ContentType, EffectKind};
+use crate::wasm_host::{ComponentError, ComponentReducer};
+
+/// Build the B2 binary fold-boundary event document for a given family/payload/resumes — the wire the
+/// kernel's `Reducer::fold` builds via `event_to_event_doc`; the e2e tests call `apply` with it directly.
+fn event_doc(family: &str, payload: Option<&[u8]>, resumes: Option<&[u8]>) -> Vec<u8> {
+    build_event_document(ContentTypeRef { family, version: 1 }, payload, resumes)
+}
 
 /// The reducer-guest component bytes, read from the `REDUCER_GUEST_COMPONENT` env path (the nix-built
 /// `packages.reducer-guest`; the cdz-kernel CI job exports it). Returns `None` when the env is UNSET so a
@@ -48,33 +55,31 @@ async fn real_guest_component_folds_through_apply_end_to_end() {
         "the Rust guest declares no component dependencies"
     );
 
-    // Fold an inbound "message" event through the REAL guest.
-    let ct = ContentType {
-        family: "message".into(),
-        version: 1,
-    };
+    // Fold an inbound "message" event through the REAL guest (B2: the event is a binary AST document).
     let (effects, kv) = reducer
-        .apply(Kv::new(), ct, Some(b"hello".to_vec()), None)
+        .apply(Kv::new(), &event_doc("message", Some(b"hello"), None))
         .expect("apply drives the guest without trapping");
 
     // The guest requested exactly one Http effect, with its own correlation token — proving the
-    // effect-request round-trips across the component boundary intact.
+    // effect-request round-trips across the binary-AST component boundary intact.
     assert_eq!(effects.len(), 1);
-    assert_eq!(effects[0].kind, EffectKind::Http);
-    assert_eq!(effects[0].target, "https://ok.host/x");
-    assert_eq!(effects[0].correlation.as_deref(), Some(&b"step-1"[..]));
+    assert_eq!(effects[0].request.content_type.family.as_ref(), "http");
+    assert_eq!(
+        effects[0].request.target_str().unwrap(),
+        "https://ok.host/x"
+    );
+    assert_eq!(effects[0].token.as_deref(), Some(&b"step-1"[..]));
 
     // The guest wrote its KV counter via the `kv` HOST IMPORT (§4b: the reducer reads/writes its own
     // KV directly during the fold) — and the mutated KV came back out for the host to persist (§4).
     assert_eq!(kv.get(b"count").as_deref(), Some(&[1u8][..]));
 
     // A result event (resumes = the echoed correlation token) → the guest emits nothing (it stops).
-    let ct2 = ContentType {
-        family: "effect-result".into(),
-        version: 1,
-    };
     let (more, _kv) = reducer
-        .apply(Kv::new(), ct2, None, Some(b"step-1".to_vec()))
+        .apply(
+            Kv::new(),
+            &event_doc("effect-result", None, Some(b"step-1")),
+        )
         .expect("apply on a result event");
     assert!(
         more.is_empty(),
@@ -100,12 +105,8 @@ async fn dependency_free_reducer_takes_the_cached_instance_pre_fast_path() {
         "a dep-free fold-exporting reducer must cache its ReducerPre (the per-fold fast path)"
     );
     // The fast path still folds correctly (same result as the slow path would give).
-    let ct = ContentType {
-        family: "message".into(),
-        version: 1,
-    };
     let (effects, kv) = reducer
-        .apply(Kv::new(), ct, Some(b"hello".to_vec()), None)
+        .apply(Kv::new(), &event_doc("message", Some(b"hello"), None))
         .expect("cached-pre fold works");
     assert_eq!(effects.len(), 1);
     assert_eq!(kv.get(b"count").as_deref(), Some(&[1u8][..]));
@@ -129,13 +130,9 @@ async fn a_fold_that_exceeds_its_fuel_budget_is_aborted_as_fuel_exhausted() {
         .with_fuel_budget(1);
     assert_eq!(reducer.fuel_budget(), 1);
 
-    let ct = ContentType {
-        family: "message".into(),
-        version: 1,
-    };
     // `apply` returns the KV alongside the error (so `fold` restores it without cloning); the
     // fuel-exhaustion classification is unchanged.
-    match reducer.apply(Kv::new(), ct, Some(b"hello".to_vec()), None) {
+    match reducer.apply(Kv::new(), &event_doc("message", Some(b"hello"), None)) {
         Err((ComponentError::FuelExhausted { budget }, _kv)) => {
             assert_eq!(
                 budget, 1,
@@ -156,12 +153,8 @@ async fn a_normal_fold_completes_within_the_default_fuel_budget() {
         return;
     };
     let reducer = ComponentReducer::from_component_bytes(&guest).expect("valid reducer component");
-    let ct = ContentType {
-        family: "message".into(),
-        version: 1,
-    };
     let (effects, _kv) = reducer
-        .apply(Kv::new(), ct, Some(b"hello".to_vec()), None)
+        .apply(Kv::new(), &event_doc("message", Some(b"hello"), None))
         .expect("a normal fold completes within the default fuel budget");
     assert_eq!(
         effects.len(),
@@ -402,11 +395,7 @@ async fn sync_reducer_declaring_a_dep_folds_loud_without_attach() {
         ComponentReducer::from_component_bytes(&bytes).expect("dep-bearing sync reducer builds");
     assert_eq!(reducer.deps().len(), 1, "declares one +hash dep");
 
-    let ct = ContentType {
-        family: "message".into(),
-        version: 1,
-    };
-    match reducer.apply(Kv::new(), ct, None, None) {
+    match reducer.apply(Kv::new(), &event_doc("message", None, None)) {
         Err((ComponentError::Instantiate(msg), _kv)) => assert!(
             msg.contains("with_resolved_deps") && msg.contains("declares"),
             "expected an actionable no-deps-attached error naming the builders, got {msg:?}"

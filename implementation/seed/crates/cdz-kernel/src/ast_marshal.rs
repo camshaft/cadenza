@@ -799,34 +799,63 @@ pub struct ContentTypeRef<'a> {
     pub version: u32,
 }
 
-/// Encode an optional byte payload as the `<opt>` shape: `(some <bytes>)` for present (incl. empty), or
-/// `(none)` for absent — so a zero-length payload is distinct from no payload (matches `Option<Payload>`).
+/// Build a record FIELD as the canonical value-form `=`-ascription triple `(= <name> <value>)` — child list
+/// `[=, name, value]` (the shape `value-decode` reads via `field[0] == "="`; matches `op_value_encode_form`).
+/// The wire bytes come from `codec::encode` (which runs `canon`) → the kernel path is the AUTHORITATIVE
+/// canonical form; the runtime's `value-encode` converges onto it (v-runtime, 2026-08-10). Fields must be
+/// emitted in the shared DESCRIPTOR ORDER (both sides bake canonical sorted-key order).
+fn field_form(b: &mut Builder, name: &str, value: StructId) -> StructId {
+    let eq = b.name("=");
+    let n = b.name(name);
+    b.list(vec![eq, n, value])
+}
+
+/// Build a `(record (= n v)…)` value-form node from `(name, value)` field pairs, in the given (sorted) order.
+fn record_form(b: &mut Builder, fields: Vec<(&str, StructId)>) -> StructId {
+    let head = b.name("record");
+    let mut kids = Vec::with_capacity(1 + fields.len());
+    kids.push(head);
+    for (name, value) in fields {
+        let f = field_form(b, name, value);
+        kids.push(f);
+    }
+    b.list(kids)
+}
+
+/// Encode an `Option(Bytes)` as the canonical value-form: `(Some <bytes>)` present (incl. empty), or
+/// `(None unit)` absent. Capital-`Some`/`None` variant heads; a NULLARY variant's payload is `unit`, so
+/// `None` is `(None unit)`, NOT bare `(None)` (cdz-runtime value-encode).
 fn opt_bytes_form(b: &mut Builder, v: Option<&[u8]>) -> StructId {
     match v {
         Some(bytes) => {
-            let head = b.name("some");
+            let head = b.name("Some");
             let val = b.atom_leaf(Leaf::Bytes(bytes.to_vec().into()));
             b.list(vec![head, val])
         }
         None => {
-            let head = b.name("none");
-            b.list(vec![head])
+            let head = b.name("None");
+            let unit = b.name("unit");
+            b.list(vec![head, unit])
         }
     }
 }
 
-/// Read an `<opt>` node — `(some <bytes>)` → `Some(bytes)`, `(none)` → `None`; anything else is malformed.
+/// Read an `Option(Bytes)` value-form node — `(Some <bytes>)` → `Some(bytes)`, `(None unit)` → `None`;
+/// anything else malformed.
 fn read_opt_bytes(a: &Arenas, id: StructId) -> Result<Option<Vec<u8>>, MarshalError> {
     match head_name(a, id) {
-        Some("some") => {
-            let kids = form(a, id, "some")?;
+        Some("Some") => {
+            let kids = form(a, id, "Some")?;
             match kids {
                 [v] => Ok(Some(read_bytes(a, *v)?)),
-                _ => Err(type_mismatch("some", "expected (some <bytes>)")),
+                _ => Err(type_mismatch("Some", "expected (Some <bytes>)")),
             }
         }
-        Some("none") => Ok(None),
-        _ => Err(type_mismatch("opt", "expected (some <bytes>) or (none)")),
+        Some("None") => Ok(None),
+        _ => Err(type_mismatch(
+            "opt",
+            "expected (Some <bytes>) or (None unit)",
+        )),
     }
 }
 
@@ -836,57 +865,65 @@ fn head_name(a: &Arenas, id: StructId) -> Option<&str> {
     a.head_name(id)
 }
 
-/// Build the ONE event document the fold boundary passes IN (B1): fold the content-type, the optional
-/// payload, and the optional resume token into a single value-form AST, returning its canonical bytes. The
-/// guest `value-decode`s these bytes against the event descriptor. Reuses the shared `cadenza-ast` codec.
+/// Read a record's `=`-ascription field VALUE for the named field, or `None` if absent. Accepts the
+/// canonical `(= name value)` triple (head `=`); order-tolerant on the read side (finds the field by name).
+fn record_field(a: &Arenas, record: StructId, name: &str) -> Option<StructId> {
+    let kids = form(a, record, "record").ok()?;
+    for &f in kids {
+        if let Ok([n, v]) = form(a, f, "=") {
+            if a.as_name(*n) == Some(name) {
+                return Some(*v);
+            }
+        }
+    }
+    None
+}
+
+/// Build the ONE event document the fold boundary passes IN (B2): the canonical VALUE-FORM of the event
+/// record, returning its `cadenza-ast` bytes (via `codec::encode`+`canon` — the AUTHORITATIVE canonical
+/// form; the runtime's `value-decode` parses it against the shared baked event descriptor). Shape (fields in
+/// canonical SORTED-KEY order, the pinned protocol Type both sides bake):
+///   `(record (= content_type (record (= family <Str>)(= version <Int>))) (= payload <opt>)(= resumes <opt>))`
+/// `<opt>` = `(Some <Bytes>)` | `(None unit)`. Bare value-form (root = Record, no outer `(: value Type)`
+/// frame — the Type is the shared baked descriptor, not re-encoded per message; v-runtime-confirmed).
 pub fn build_event_document(
     content_type: ContentTypeRef,
     payload: Option<&[u8]>,
     resumes: Option<&[u8]>,
 ) -> Vec<u8> {
     let mut b = Builder::new();
-    // (content-type (family <str>) (version <int>))
+    // content_type = (record (= family <str>)(= version <int>)) — sub-fields sorted: family, version.
     let ct = {
-        let head = b.name("content-type");
-        let fam = {
-            let h = b.name("family");
-            let v = b.atom_leaf(Leaf::Str(content_type.family.to_string().into()));
-            b.list(vec![h, v])
-        };
-        let ver = {
-            let h = b.name("version");
-            let v = b.atom_leaf(Leaf::Int {
-                value: BigInt::from(content_type.version),
-                radix: Radix::Dec,
-            });
-            b.list(vec![h, v])
-        };
-        b.list(vec![head, fam, ver])
+        let fam = b.atom_leaf(Leaf::Str(content_type.family.to_string().into()));
+        let ver = b.atom_leaf(Leaf::Int {
+            value: BigInt::from(content_type.version),
+            radix: Radix::Dec,
+        });
+        record_form(&mut b, vec![("family", fam), ("version", ver)])
     };
-    let payload_node = {
-        let h = b.name("payload");
-        let v = opt_bytes_form(&mut b, payload);
-        b.list(vec![h, v])
-    };
-    let resumes_node = {
-        let h = b.name("resumes");
-        let v = opt_bytes_form(&mut b, resumes);
-        b.list(vec![h, v])
-    };
-    let head = b.name("event");
-    let root = b.list(vec![head, ct, payload_node, resumes_node]);
+    let payload_v = opt_bytes_form(&mut b, payload);
+    let resumes_v = opt_bytes_form(&mut b, resumes);
+    // Top-level event record — fields sorted: content_type, payload, resumes.
+    let root = record_form(
+        &mut b,
+        vec![
+            ("content_type", ct),
+            ("payload", payload_v),
+            ("resumes", resumes_v),
+        ],
+    );
     codec::encode(&b.finish(root))
 }
 
-/// Parse the effect-list document the fold boundary returns (B1) into `Vec<Effect>` — the dual of
-/// [`build_event_document`], replacing the old `HeapHandle` walk of the returned effect-list handle. The
-/// guest `value-encode`d its requested effects as `(effects <effect-request>…)`; this decodes them back
-/// into the kernel's `Effect` handoff type (an `EffectRequest` + the reducer's optional continuation token).
+/// Parse the effect-list document the fold boundary returns (B2) into `Vec<Effect>` — the dual of
+/// [`build_event_document`]. The guest's `value-encode` renders its requested effects as the canonical
+/// VALUE-FORM `(list <record>…)` (each effect a `(record (= …)…)`); this decodes them back into the kernel's
+/// `Effect` handoff type (an `EffectRequest` + the reducer's optional continuation token).
 /// TOTAL over arbitrary bytes: undecodable bytes → `Undecodable`; a well-formed-but-wrong shape →
 /// `TypeMismatch` — never a panic (untrusted guest output, same discipline as `ast_to_val`).
 pub fn parse_effect_list(bytes: &[u8]) -> Result<Vec<Effect>, MarshalError> {
     let a = codec::decode(bytes).ok_or(MarshalError::Undecodable)?;
-    let reqs = form(&a, a.root, "effects")?;
+    let reqs = form(&a, a.root, "list")?;
     let mut out = Vec::with_capacity(reqs.len());
     for &r in reqs {
         out.push(parse_effect_request(&a, r)?);
@@ -894,60 +931,38 @@ pub fn parse_effect_list(bytes: &[u8]) -> Result<Vec<Effect>, MarshalError> {
     Ok(out)
 }
 
-/// Parse one `(effect-request (kind <name>) (target <bytes>) (payload <opt>) (correlation <opt>))` into an
-/// [`Effect`]. `kind` is the effect FAMILY name (seq-39 identity): a well-known family maps to its
-/// `EffectKind`, an extension family takes the `Emit` placeholder (kernel dispatch/idempotency key on the
-/// family, so the placeholder is inert) — via [`EffectRequest::new_with_family`], the same
-/// register-by-string constructor the rest of the kernel uses. Timeliness defaults to `Interactive` (the
-/// value-form event schema doesn't carry it yet — a follow-up envelope field if a batchable guest effect
-/// needs it).
+/// Parse ONE effect-request value-form record into an [`Effect`]. Shape (pinned protocol Type, fields in
+/// canonical SORTED-KEY order both sides bake):
+///   `(record (= correlation <opt>) (= kind <Str>) (= payload <opt>) (= target <Bytes>))`
+/// `kind` is the effect FAMILY name as a STRING field value (seq-39 identity): a well-known family maps to
+/// its `EffectKind`, an extension family takes the `Emit` placeholder (kernel dispatch/idempotency key on
+/// the family, so the placeholder is inert) — via [`EffectRequest::new_with_family`]. Fields read BY NAME
+/// (order-tolerant); `kind`+`target` required, `payload`/`correlation` default absent. `<opt>` =
+/// `(Some <Bytes>)` | `(None unit)`. Timeliness is `Interactive`: the value-form carries no timeliness field.
 fn parse_effect_request(a: &Arenas, id: StructId) -> Result<Effect, MarshalError> {
-    let fields = form(a, id, "effect-request")?;
-    let mut kind_family: Option<String> = None;
-    let mut target: Option<Vec<u8>> = None;
-    let mut payload: Option<Option<Vec<u8>>> = None;
-    let mut correlation: Option<Option<Vec<u8>>> = None;
-    for &f in fields {
-        match head_name(a, f) {
-            Some("kind") => {
-                let kids = form(a, f, "kind")?;
-                let [n] = kids else {
-                    return Err(type_mismatch("kind", "expected (kind <name>)"));
-                };
-                let name = a
-                    .as_name(*n)
-                    .ok_or_else(|| type_mismatch("kind", "kind is not a name"))?;
-                kind_family = Some(name.to_string());
-            }
-            Some("target") => {
-                let kids = form(a, f, "target")?;
-                let [v] = kids else {
-                    return Err(type_mismatch("target", "expected (target <bytes>)"));
-                };
-                target = Some(read_bytes(a, *v)?);
-            }
-            Some("payload") => {
-                let kids = form(a, f, "payload")?;
-                let [v] = kids else {
-                    return Err(type_mismatch("payload", "expected (payload <opt>)"));
-                };
-                payload = Some(read_opt_bytes(a, *v)?);
-            }
-            Some("correlation") => {
-                let kids = form(a, f, "correlation")?;
-                let [v] = kids else {
-                    return Err(type_mismatch("correlation", "expected (correlation <opt>)"));
-                };
-                correlation = Some(read_opt_bytes(a, *v)?);
-            }
-            _ => return Err(type_mismatch("effect-request", "unknown field")),
-        }
+    // Require a record (rejects a non-record list element cleanly).
+    form(a, id, "record")?;
+    // kind = a STRING field value (the family name rides as a Str leaf).
+    let kind_v = record_field(a, id, "kind")
+        .ok_or_else(|| type_mismatch("effect-request", "missing kind"))?;
+    let family = a
+        .as_str(kind_v)
+        .ok_or_else(|| type_mismatch("kind", "kind is not a string"))?
+        .to_string();
+    // target = a Bytes field value.
+    let target_v = record_field(a, id, "target")
+        .ok_or_else(|| type_mismatch("effect-request", "missing target"))?;
+    let target = read_bytes(a, target_v)?;
+    // payload / correlation = Option(Bytes); absent field → None.
+    let payload = match record_field(a, id, "payload") {
+        Some(v) => read_opt_bytes(a, v)?,
+        None => None,
     }
-    let family = kind_family.ok_or_else(|| type_mismatch("effect-request", "missing kind"))?;
-    let target = target.ok_or_else(|| type_mismatch("effect-request", "missing target"))?;
-    // payload/correlation default to absent if the field is omitted (a fire-and-forget, payload-free effect).
-    let payload = payload.flatten().map(|b| Payload::Inline(b.into()));
-    let token = correlation.flatten();
+    .map(|b| Payload::Inline(b.into()));
+    let token = match record_field(a, id, "correlation") {
+        Some(v) => read_opt_bytes(a, v)?,
+        None => None,
+    };
     let request = EffectRequest::new_with_family(family, target, payload, Timeliness::Interactive);
     Ok(Effect { request, token })
 }
@@ -1810,13 +1825,13 @@ mod tests {
         );
     }
 
-    // --- binary-AST fold boundary (B1) tests ---
+    // --- binary-AST fold boundary (B2) tests — canonical value-form ---
 
     #[test]
     fn event_document_builds_the_content_type_payload_resumes_shape() {
-        // B1: build_event_document folds (content-type, optional payload, optional resumes) into ONE
-        // value-form doc. Decode it back + assert the (event (content-type (family)(version)) (payload)
-        // (resumes)) shape, with (some <bytes>) vs (none) distinguishing an empty payload from absent.
+        // B2: build_event_document builds the canonical VALUE-FORM of the event record. Decode it back +
+        // assert the (record (= content_type (record (= family)(= version))) (= payload)(= resumes)) shape,
+        // with (Some <bytes>) vs (None unit) distinguishing an empty payload from absent.
         let bytes = build_event_document(
             ContentTypeRef {
                 family: "message",
@@ -1826,25 +1841,22 @@ mod tests {
             None,
         );
         let a = codec::decode(&bytes).expect("event doc decodes");
-        // Head is `event` with 3 children.
-        let ev = form(&a, a.root, "event").expect("event form");
-        assert_eq!(ev.len(), 3);
-        // content-type carries family + version.
-        let ct = form(&a, ev[0], "content-type").expect("content-type");
+        // Root is a value-form record; content_type nests a sub-record with family.
+        let ct = record_field(&a, a.root, "content_type").expect("content_type field");
         assert_eq!(
-            read_str(&a, form(&a, ct[0], "family").unwrap()[0]).unwrap(),
+            read_str(&a, record_field(&a, ct, "family").unwrap()).unwrap(),
             "message"
         );
-        // payload = (some b"hi"); resumes = (none).
+        // payload = (Some b"hi"); resumes = (None unit).
         assert_eq!(
-            read_opt_bytes(&a, form(&a, ev[1], "payload").unwrap()[0]).unwrap(),
+            read_opt_bytes(&a, record_field(&a, a.root, "payload").unwrap()).unwrap(),
             Some(b"hi".to_vec())
         );
         assert_eq!(
-            read_opt_bytes(&a, form(&a, ev[2], "resumes").unwrap()[0]).unwrap(),
+            read_opt_bytes(&a, record_field(&a, a.root, "resumes").unwrap()).unwrap(),
             None
         );
-        // An EMPTY payload is (some []), distinct from absent (none).
+        // An EMPTY payload is (Some []), distinct from absent (None unit).
         let empty = build_event_document(
             ContentTypeRef {
                 family: "m",
@@ -1854,55 +1866,35 @@ mod tests {
             None,
         );
         let ae = codec::decode(&empty).unwrap();
-        let eve = form(&ae, ae.root, "event").unwrap();
         assert_eq!(
-            read_opt_bytes(&ae, form(&ae, eve[1], "payload").unwrap()[0]).unwrap(),
+            read_opt_bytes(&ae, record_field(&ae, ae.root, "payload").unwrap()).unwrap(),
             Some(vec![]),
-            "an intentionally-empty payload is (some []), not (none)"
+            "an intentionally-empty payload is (Some []), not (None unit)"
         );
     }
 
     #[test]
     fn effect_list_parses_back_into_effects_with_kind_target_payload_token() {
-        // B1: parse_effect_list is the dual — a value-form (effects <effect-request>…) doc → Vec<Effect>.
-        // Build a two-effect list by hand (as a guest's value-encode would emit it) + parse it back,
-        // asserting kind/target/payload/token per effect (a payload-and-token http effect + a bare now).
+        // B2: parse_effect_list is the dual — a value-form (list <record>…) doc → Vec<Effect>. Build a
+        // two-effect list by hand (as a guest's value-encode would emit it) via record_form/opt_bytes_form +
+        // parse it back, asserting kind/target/payload/token per effect (payload-and-token http + a bare now).
         let mut b = Builder::new();
-        let mk_opt = |b: &mut Builder, v: Option<&[u8]>| match v {
-            Some(x) => {
-                let h = b.name("some");
-                let val = b.atom_leaf(Leaf::Bytes(x.to_vec().into()));
-                b.list(vec![h, val])
-            }
-            None => {
-                let h = b.name("none");
-                b.list(vec![h])
-            }
-        };
         let mk_req =
             |b: &mut Builder, kind: &str, target: &[u8], pl: Option<&[u8]>, corr: Option<&[u8]>| {
-                let head = b.name("effect-request");
-                let kind_n = {
-                    let h = b.name("kind");
-                    let n = b.name(kind);
-                    b.list(vec![h, n])
-                };
-                let tgt = {
-                    let h = b.name("target");
-                    let v = b.atom_leaf(Leaf::Bytes(target.to_vec().into()));
-                    b.list(vec![h, v])
-                };
-                let payload = {
-                    let h = b.name("payload");
-                    let v = mk_opt(b, pl);
-                    b.list(vec![h, v])
-                };
-                let correlation = {
-                    let h = b.name("correlation");
-                    let v = mk_opt(b, corr);
-                    b.list(vec![h, v])
-                };
-                b.list(vec![head, kind_n, tgt, payload, correlation])
+                // fields sorted-key: correlation, kind, payload, target.
+                let corr_v = opt_bytes_form(b, corr);
+                let kind_v = b.atom_leaf(Leaf::Str(kind.into()));
+                let pl_v = opt_bytes_form(b, pl);
+                let tgt_v = b.atom_leaf(Leaf::Bytes(target.to_vec().into()));
+                record_form(
+                    b,
+                    vec![
+                        ("correlation", corr_v),
+                        ("kind", kind_v),
+                        ("payload", pl_v),
+                        ("target", tgt_v),
+                    ],
+                )
             };
         let r1 = mk_req(
             &mut b,
@@ -1912,7 +1904,7 @@ mod tests {
             Some(b"cont-1"),
         );
         let r2 = mk_req(&mut b, "now", b"", None, None);
-        let head = b.name("effects");
+        let head = b.name("list");
         let root = b.list(vec![head, r1, r2]);
         let bytes = codec::encode(&b.finish(root));
 

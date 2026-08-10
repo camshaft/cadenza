@@ -1,15 +1,14 @@
-//! End-to-end test of the OPTION-C HANDLE-LOWERED reducer path (§19e) against a REAL Cadenza reducer:
-//! drive `packages.reducer-cadenza-b1` (v-nix's nix-built component from v-harness-bootstrap's
-//! `reducer_b1.cdz`) through [`ComponentReducer::apply_handle_lowered`] and assert the empty-effects fold.
+//! End-to-end test of the BINARY-AST fold boundary (B2/B3) against a REAL Cadenza reducer: drive
+//! `packages.reducer-cadenza-b1` (v-nix's nix-built component from `reducer_b1.cdz`) through
+//! [`ComponentReducer::apply`] and assert the empty-effects fold.
 //!
-//! B1 is the minimal "a real Cadenza reducer LOADS + FOLDS + RETURNS through the marshalled value-heap
-//! boundary at all" proof: it emits NO effects on any event, so the assertion is `vec-len == 0`. This is
-//! the first time `apply_handle_lowered` runs against a REAL rcdzc-compiled reducer (not the synthetic WAT
-//! fixture in the unit tests) — proving the whole rebind (compose the `cadenza:runtime/heap` dep → bind a
-//! HeapHandle on it → marshal the fold inputs → call the interface-nested `apply` → unmarshal the returned
-//! effect-list handle) works against the actual lowering rcdzc emits (v-hb confirmed: handle-lowered
-//! `apply(u32,u32,u32)->u32`, interface-nested under `cadenza:agent-kernel/fold`, runtime as a composed
-//! content-addressed dep).
+//! B1 is the minimal "a real Cadenza reducer LOADS + FOLDS + RETURNS through the byte-AST boundary at all"
+//! proof: it emits NO effects on any event, so the assertion is an empty effect list. This runs the real
+//! rcdzc-compiled reducer (not the synthetic WAT fixture in the unit tests) through the ONE byte apply —
+//! `apply(list<u8>) -> list<u8>`: the host builds the event document, the guest (B3: its `value-decode`/
+//! `value-encode` composition wraps the fold) returns its effect list, and the host parses it via
+//! `ast_marshal::parse_effect_list`. The reducer still declares its `cadenza:runtime/heap` dep (it uses
+//! the value heap internally for its own compounds), composed here so the fold can run.
 //!
 //! ## Env contract (mirrors the reducer-guest e2e's optional-skip)
 //! - `REDUCER_CADENZA_COMPONENT` — path to the compiled b1 component (v-nix exports it in the cdz-kernel
@@ -25,7 +24,8 @@
 //! runtime dep but NEITHER is provided, the test FAILS LOUD (a real b1 needs its heap — a silent skip there
 //! would hide a broken wiring), distinct from the reducer-env-unset clean skip.
 
-use crate::wasm_host::{ComponentDep, ComponentReducer, ContentType};
+use crate::ast_marshal::{build_event_document, ContentTypeRef};
+use crate::wasm_host::{ComponentDep, ComponentReducer};
 
 /// The compiled b1 component bytes from `REDUCER_CADENZA_COMPONENT`; `None` (clean SKIP) when unset. A set
 /// path that's unreadable PANICS (a broken CI path must fail loud, not skip).
@@ -39,24 +39,24 @@ fn reducer_bytes() -> Option<Vec<u8>> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn reducer_cadenza_b1_folds_empty_effects_through_apply_handle_lowered() {
+async fn reducer_cadenza_b1_folds_empty_effects_through_the_byte_ast_apply() {
     let Some(reducer_component) = reducer_bytes() else {
         eprintln!(
-            "SKIP reducer_cadenza_b1_folds_empty_effects_through_apply_handle_lowered: \
+            "SKIP reducer_cadenza_b1_folds_empty_effects_through_the_byte_ast_apply: \
              REDUCER_CADENZA_COMPONENT unset"
         );
         return;
     };
     // The real b1 runtime imports the bare `cadenza:nfc/normalize` (its transitive dep), which the §23
     // compose resolves ONLY from a `CDZ_STORE` (by name via `runtime.toml`). Without CDZ_STORE the fold
-    // would fail DEEP in `apply_handle_lowered` with an opaque "cadenza:nfc/normalize not found in linker"
+    // would fail DEEP in `apply` with an opaque "cadenza:nfc/normalize not found in linker"
     // — so SKIP cleanly + explain here rather than emit a confusing mid-run linker error (a `cargo test`
     // without the nix env stays green; CI always sets CDZ_STORE). Matches the other env-gated e2es.
     // (`RUNTIME_HEAP_COMPONENT` supplies the runtime BYTES but no store, so it can't resolve transitive nfc
     // for a real nfc-importing runtime — CDZ_STORE is the requirement for this e2e.)
     if std::env::var("CDZ_STORE").is_err() {
         eprintln!(
-            "SKIP reducer_cadenza_b1_folds_empty_effects_through_apply_handle_lowered: \
+            "SKIP reducer_cadenza_b1_folds_empty_effects_through_the_byte_ast_apply: \
              CDZ_STORE unset — required to resolve the runtime's transitive cadenza:nfc/normalize dep (§23)"
         );
         return;
@@ -68,8 +68,8 @@ async fn reducer_cadenza_b1_folds_empty_effects_through_apply_handle_lowered() {
     };
 
     // b1 declares its runtime dep by `+<hash>` (a real Cadenza reducer lowers compounds to opaque
-    // value-heap handles, so it imports cadenza:runtime/heap). Resolve every declared dep's bytes, so
-    // `apply_handle_lowered` can compose them + bind a HeapHandle on the runtime.
+    // value-heap handles internally, so it imports cadenza:runtime/heap). Resolve every declared dep's
+    // bytes, so `apply` can compose them into the fold's linker.
     let deps = reducer.deps().to_vec();
     // Assert the HEAP dep SPECIFICALLY (not just any dep): strip the `@version` / `+hash` build-metadata
     // off each import name and match the bare interface — so the check actually verifies what its message
@@ -86,7 +86,7 @@ async fn reducer_cadenza_b1_folds_empty_effects_through_apply_handle_lowered() {
     let mut reducer = reducer.with_resolved_deps(resolved);
     // Attach the component store so the TRANSITIVE compose (§23) can resolve the runtime's OWN bare
     // `cadenza:nfc/normalize` import by name from `CDZ_STORE`'s `runtime.toml` (the value-heap runtime is
-    // not a leaf — it imports nfc). Without this, `apply_handle_lowered` composing the runtime would fail
+    // not a leaf — it imports nfc). Without this, `apply` composing the runtime would fail
     // "imports cadenza:nfc/normalize, not found in linker". Only when CDZ_STORE is wired (the nix path);
     // the RUNTIME_HEAP_COMPONENT direct-path override has no store, so a runtime that imports nfc needs
     // CDZ_STORE. (See `ComponentReducer::with_component_store` + `compose_transitive_bare_deps`.)
@@ -95,20 +95,25 @@ async fn reducer_cadenza_b1_folds_empty_effects_through_apply_handle_lowered() {
             reducer.with_component_store(crate::component_store::ComponentStore::open(&store_dir));
     }
 
-    // Fold an inbound "message" event. b1 emits ZERO effects → the returned effect-list handle unmarshals
-    // to an empty Vec: the minimal real-reducer-through-the-marshalled-boundary proof.
-    let ct = ContentType {
-        family: "message".into(),
-        version: 1,
-    };
-    match reducer.apply_handle_lowered(crate::kv::Kv::new(), ct, None, None) {
+    // Fold an inbound "message" event (B2 binary-AST boundary: the event is one cadenza-AST document, and
+    // a B3-emitted rcdzc reducer folds through the SAME `apply(list<u8>)->list<u8>` as any guest). b1 emits
+    // ZERO effects → the returned effect list decodes to an empty Vec: the minimal real-reducer proof.
+    let event = build_event_document(
+        ContentTypeRef {
+            family: "message",
+            version: 1,
+        },
+        None,
+        None,
+    );
+    match reducer.apply(crate::kv::Kv::new(), &event) {
         Ok((effects, _kv)) => assert!(
             effects.is_empty(),
             "reducer_b1 is an empty-effects reducer; expected 0 effects, got {}",
             effects.len()
         ),
         Err((e, _kv)) => {
-            panic!("apply_handle_lowered should drive the real reducer_b1 without error, got {e:?}")
+            panic!("apply should drive the real reducer_b1 without error, got {e:?}")
         }
     }
 }
@@ -122,7 +127,7 @@ async fn resolve_runtime_deps(deps: &[ComponentDep]) -> Vec<(ComponentDep, Vec<u
     // supplies ONE component's bytes, so it only makes sense for a single-dep reducer — b1 declares exactly
     // one (its cadenza:runtime/heap). FAIL LOUD if a future reducer declares >1 dep (github-liaison #2312):
     // mapping the same heap bytes to every dep would silently hand an unrelated dep the wrong component →
-    // a deep compose/link failure instead of this targeted error. (Mirrors apply_handle_lowered's
+    // a deep compose/link failure instead of this targeted error. (Mirrors apply's
     // "MORE THAN ONE cadenza:runtime/heap dep" fail-loud.) Use CDZ_STORE for a genuine multi-dep reducer.
     if let Ok(path) = std::env::var("RUNTIME_HEAP_COMPONENT") {
         assert_eq!(
