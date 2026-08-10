@@ -232,11 +232,9 @@ async fn main() -> std::process::ExitCode {
         //   key on boot + snapshotted on each mutation. A build WITHOUT the feature reports a clean "not
         //   compiled in" boot error (config validates regardless of feature, like [blob]/[log]).
         use cdz_agent_host::NameStoreConfig;
-        // `mut` for the I4b boot-recovery loop below (agent_host.spawn each recovered session); a build without
-        // `live-aws-storage` compiles that loop out, so the `mut` is unused there — allow it rather than split
-        // the binding by cfg.
-        #[cfg_attr(not(feature = "live-aws-storage"), allow(unused_mut))]
-        let mut agent_host = match &config.name_store {
+        // Owned by value only — it's moved into the host loop (`AsyncAgentHost::new`) without mutation here;
+        // boot-recovery spawns recovered sessions through `host.host_mut()` after the move, not this binding.
+        let agent_host = match &config.name_store {
             NameStoreConfig::Memory => AgentHost::new(),
             #[cfg(feature = "live-aws-storage")]
             NameStoreConfig::S3 { bucket, prefix } => {
@@ -258,23 +256,44 @@ async fn main() -> std::process::ExitCode {
             config.name_store,
             agent_host.canonical_store().is_some()
         );
+        // Build the HOST LOOP FIRST (empty — no factory yet), so its own loop collaborators (the inbox, the
+        // lifecycle channel, and — behind live-ws — the ws-control channel + node connection registry) EXIST
+        // to wire into the executor set below. The factory that assembles those executors is injected AFTER
+        // (`set_factory`), which resolves the executor-set construction chicken-egg: a LiveExecutorSet wired
+        // with the loop's inbox/ws handles (for Emit / ws/send / ws/dial) can't be built until the host that
+        // mints them exists (federation slice 3b-2). The host's `factory` field is read only inside `run`, so
+        // a post-construction inject is sound. The admin authorizer is the trusted-local-admin allowlist (the
+        // socket is owner-only 0o600, so every caller is the owner).
+        let mut host = AsyncAgentHost::new(agent_host)
+            .with_admin_authz(Box::new(AllowList::allow_all_for_local_admin()));
+        // Grab the loop's own collaborators to wire into the executor set: the SAME lifecycle channel each
+        // session's LifecycleExecutor records on (so its ops reach this loop), the inbox the Emit/userspace
+        // executors forward into, and — behind live-ws — the ws-control channel + shared node connection
+        // registry the ws/send + ws/dial executors route through.
+        let lifecycle_tx = host.lifecycle_channel();
+        #[cfg(feature = "live-ws")]
+        let ws_inbox = host.inbox();
+        #[cfg(feature = "live-ws")]
+        let ws_conns = host.ws_conn_registry();
+        #[cfg(feature = "live-ws")]
+        let ws_control = host.ws_control_channel();
         // Build the LIVE executor transports ONCE, here at startup (this is where the AWS config / IMDS load
         // happens — on the boot path, NOT per install). Each install then CLONES these into a fresh executor
         // set cheaply, so a slow IMDS probe can't stall the host loop mid-run (#1987 review). The per-effect
         // metrics register into the host's registry (shared).
-        // §lifecycle: mint the loop's lifecycle channel HERE, BEFORE the factory, so the SAME channel is wired
-        // into (a) each session's LifecycleExecutor (via LiveExecutorSet::with_lifecycle_channel below) and
-        // (b) the host loop (via with_factory_and_lifecycle) — a session's lifecycle op then lands on the loop
-        // the daemon runs. (The construction chicken-egg: the factory needs the sender, but the host — which
-        // otherwise mints the channel — is built last.)
-        let (lifecycle_tx, lifecycle_rx) = AsyncAgentHost::new_lifecycle_channel();
-        let executors = match LiveExecutorSet::new(agent_host.registry()).await {
-            Ok(e) => e.with_lifecycle_channel(lifecycle_tx.clone()),
+        let executors = match LiveExecutorSet::new(host.host().registry()).await {
+            Ok(e) => e.with_lifecycle_channel(lifecycle_tx),
             Err(e) => {
                 eprintln!("cdz-agent-daemon: could not build the live executor transports: {e}");
                 return std::process::ExitCode::from(1);
             }
         };
+        // THE OUTPOST federation (live-ws): wire the ws/send + ws/dial executors over the loop's shared node
+        // registry + ws-control channel + inbox, so an installed REDUCER can send frames to a federated conn
+        // and dial out to a hub (complementing the daemon's boot-bound transports). The build wires WS_SEND +
+        // WS_DIAL from this into every installed session.
+        #[cfg(feature = "live-ws")]
+        let executors = executors.with_ws(ws_conns, ws_control, ws_inbox);
         // I3: when the reducer blob store is S3, wire the SAME bucket into the blob/put+blob/get executor (one
         // content-addressed store for docs + reducer components — corpus-bugfix PM ruling). A per-session
         // S3BlobStore over this bucket is built in LiveExecutorSet::build. Only the S3 blob backend gets a blob
@@ -476,7 +495,7 @@ async fn main() -> std::process::ExitCode {
                                  following slice; they are reported, not dropped)"
                             );
                         }
-                        agent_host.spawn(id, hosted);
+                        host.host_mut().spawn(id, hosted);
                         recovered_count += 1;
                     }
                     eprintln!(
@@ -696,7 +715,7 @@ async fn main() -> std::process::ExitCode {
                 }
             }
             (
-                agent_host.registry().clone(),
+                host.host().registry().clone(),
                 reporter,
                 std::time::Duration::from_secs(config.observability.report_interval_secs),
                 otlp_forwarders,
@@ -705,15 +724,11 @@ async fn main() -> std::process::ExitCode {
             )
         };
 
-        // Use the SAME lifecycle channel the session executors were wired with (not the internally-minted one)
-        // so a session's lifecycle op reaches this loop.
-        let host = AsyncAgentHost::with_factory_and_lifecycle(
-            agent_host,
-            factory,
-            lifecycle_tx,
-            lifecycle_rx,
-        )
-        .with_admin_authz(Box::new(AllowList::allow_all_for_local_admin()));
+        // Inject the fully-assembled factory into the host built above (federation slice 3b-2): the executor
+        // set it carries was wired with THIS loop's inbox + ws handles, so an installed session's Emit /
+        // ws/send / ws/dial reach this loop. `set_factory` is the seam that lets the host be built BEFORE the
+        // factory (so its handles could be grabbed) yet still install sessions at runtime.
+        host.set_factory(factory);
         // Wire the durable session registry (I4b) when [session_registry] backend=dynamo — the loop then keeps
         // it current (register on install, mark_terminated on terminate) for boot-recovery. `memory` leaves the
         // loop with no external index (lossy-on-restart), so nothing is chained.
@@ -886,7 +901,15 @@ async fn main() -> std::process::ExitCode {
             ));
             (Some(task), Some(export_sd_tx))
         };
-        let loop_result = host.run_with_wall_clock(loop_sd_rx).await;
+        // Drive the host loop inside a LocalSet: a reducer's `ws/dial` effect ([`WsDialExecutor`]) spawns its
+        // dial task with `tokio::task::spawn_local` (the dial moves `!Send`-adjacent per-connection state on
+        // this single-threaded runtime), which is only valid within a LocalSet. The loop + all sessions are
+        // already `!Send` (§15b), so running under a LocalSet matches their execution model — the same shape
+        // the async_host tests use. The boot-bound transports + socket task are separate `Send` `tokio::spawn`s
+        // and run on the runtime independently; only the loop itself needs the LocalSet (federation 3b-2).
+        let loop_result = tokio::task::LocalSet::new()
+            .run_until(host.run_with_wall_clock(loop_sd_rx))
+            .await;
         // Tear the export task down (final-flush-and-return) before the socket, so its last metrics ship.
         #[cfg(feature = "metrics-export")]
         if let (Some(task), Some(tx)) = (export_task, export_sd_tx) {
