@@ -6485,15 +6485,15 @@ todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
 todo	Set.of over runtime lists at two different element types declines pending the recursive-generic tie
 todo	Set.to-list orders float-carrying sums discriminant-first then by float payload
 todo	a BARE-param escaping closure capturing a handled value declines cleanly (annotated-param twin folds)
-todo	a BLOCK-wrapped branch perform in a MATCH-SCRUTINEE declines cleanly (adv-69 g3 sub-face)
+pass	a BLOCK-wrapped branch perform in a MATCH-SCRUTINEE folds through the block (adv-69 g3)
 todo	a BLOCK-wrapped branch perform in a NESTED handler-arm resume-value declines cleanly (adv-69 a3 sub-face)
-todo	a BLOCK-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor, not a silent miscompile)
+pass	a BLOCK-wrapped branch perform in a let-init folds through the block (adv-69 Site-6 commuting conversion)
 todo	a BLOCK-wrapped branch perform in a non-tail DO-STATEMENT declines cleanly (adv-69 c3 sub-face)
 todo	a BigInt entry argument is marshalled through the value's own constructor
 todo	a BigInt entry parameter added to a beyond-i64 annotated literal
 todo	a BigInt entry parameter is COMPUTED on, not just compared
 todo	a Bytes entry argument is marshalled as a Vec<u8>
-todo	a DEPTH-2 block-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor, nested wrappers)
+pass	a DEPTH-2 block-wrapped branch perform in a let-init folds through the block (adv-69 Site-6, nested wrappers)
 todo	a DEPTH-3 nested-op chain whose deepest resume performs the outer effect declines cleanly (no silent drop)
 todo	a DIRECT branch perform in a NESTED handler-arm resume-value declines cleanly (adv-69 a3-direct sub-face)
 todo	a HEAP-accumulator block-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor)
@@ -6505,11 +6505,11 @@ todo	a String ENTRY arg rides a rope into an effect-op argument and the arm read
 todo	a String host RESULT crosses the boundary and is read twice (byte-len + scalar-len of a multibyte response)
 todo	a Symbol entry parameter compares to an interned constant
 todo	a block-wrapped OUTER-effect perform in a do-statement TWO nested handlers deep declines cleanly (adv-69 nh7 depth-3)
-todo	a block-wrapped OUTER-effect perform in a let-init THREE handlers deep declines cleanly (adv-69 a4-depth3 sub-face)
-todo	a block-wrapped OUTER-effect perform in a match-SCRUTINEE inside a nested handler body declines cleanly (adv-69 g3-nested)
+pass	a block-wrapped OUTER-effect perform in a let-init THREE handlers deep folds through the block (adv-69 a4-depth3)
+pass	a block-wrapped OUTER-effect perform in a match-SCRUTINEE inside a nested handler body folds through the block (adv-69 g3-nested)
 todo	a block-wrapped OUTER-effect perform in a nested handle's INIT declines cleanly (adv-69 a4-init sub-face)
 todo	a block-wrapped OUTER-effect perform in a non-tail do-statement INSIDE a nested handler body declines cleanly (adv-69 c3-nested sub-face)
-todo	a block-wrapped branch perform of the OUTER effect in a let-init INSIDE a nested handler body declines cleanly (adv-69 a4 sub-face)
+pass	a block-wrapped branch perform of the OUTER effect in a let-init INSIDE a nested handler body folds through the block (adv-69 a4)
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject
 todo	a constant-try helper that fails feeds the None arm's fallback into resume
 pass	a cross-handler foreign-perform op-arg into a MATCH-shaped-resume arm folds under nested handlers (nv1f)

@@ -7729,18 +7729,19 @@
   (call   main (: true Bool))
   (output (: 2 Int64)))
 
-(case "a BLOCK-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor, not a silent miscompile)"
-  (doc    "adv-69 (HIGH, breaker+corpus-bugfix): a branch-performing conditional wrapped in a BLOCK inside a
-           `let`-init — `(let ((v (let ((b true)) (if b (St.get) 99)))) (+ (* 10 v) (St.get)))` — DROPPED the
-           branch perform's state advance at the block boundary: the trailing `(St.get)` resumed the block-
-           ENTRY state, not the branch's out-state. Seeded 3 it produced 33 (= 10*3 + 3) on wasm AND rust,
-           where the correct value is 34 (= 10*3 + 4). The hoist's Site 4 lifts a conditional that is DIRECTLY
-           a `let`-init to tail position (per-branch threading carries the advance), but a conditional behind
-           a `let`/`do` block wrapper is opaque to it. Until the full through-block distribution lands (an
-           alpha-safe commuting conversion, a separate increment), reduce_handle DECLINES this residual shape
-           → a clean Todo (honest 'not yet reducible'), NEVER the silent 33. This case grades TODO on all
-           backends (the safe floor); its 34 becomes a PASS when the full fold lands. Distinct from the FIXED
-           direct-init/connective-scrutinee cases above (those still compute — see the control below).")
+(case "a BLOCK-wrapped branch perform in a let-init folds through the block (adv-69 Site-6 commuting conversion)"
+  (doc    "adv-69 through-block fold (v-effects Site 6, the alpha-safe commuting conversion). A branch-
+           performing conditional wrapped in a BLOCK inside a `let`-init — `(let ((v (let ((b true)) (if b
+           (St.get) 99)))) (+ (* 10 v) (St.get)))`. The hoist's Site 4 lifts a conditional that is DIRECTLY a
+           `let`-init to tail position (per-branch threading carries the advance), but a conditional behind a
+           `let` block wrapper was opaque to it — historically this DECLINED as a safe floor (the alternative
+           was DROPPING the branch's state advance at the block boundary: the trailing `(St.get)` would read
+           the block-ENTRY state → 33, not the branch out-state → 34). Site 6 now FLOATS the pure wrapper
+           binding `b` OUT into the enclosing `let` (`(let ((b true) (v (if b (St.get) 99))) …)`) — a commuting
+           conversion sound because `b` is pure, so hoisting it earlier in the same sequential binding list
+           changes no effect order — exposing the conditional as a DIRECT init that Site 4 distributes. The
+           branch advance now threads → the trailing `(St.get)` reads 4 → 10*3 + 4 = 34. Folds on all backends
+           (shared lowering). Same 34 as the direct-init control below, now reached through the block.")
   (input  (do
             (effect St (op get (-> Unit Int64)))
             (def (main)
@@ -7772,13 +7773,13 @@
 ; The arm-resume-value positional sub-face (a3 — a block-wrapped OUTER-effect perform inside an INNER
 ; handle's resume-value) is now ALSO declined by a targeted `Resume{value}`-keyed guard (its case below).
 
-(case "a DEPTH-2 block-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor, nested wrappers)"
+(case "a DEPTH-2 block-wrapped branch perform in a let-init folds through the block (adv-69 Site-6, nested wrappers)"
   (doc    "The depth-2 face of the adv-69 safe-decline: the branch-performing conditional sits behind TWO
            nested `let` wrappers in the init — `(let ((v (let ((b true)) (let ((c true)) (if (and b c) (St.get)
            99))))) …)`. The floor's block_wrapped_branch_performs peel recurses through depth-N pure let/do
-           wrappers, so this declines cleanly (TODO) exactly as the depth-1 witness does — NOT the silent 33
+           wrappers, so this FOLDS via Site 6 exactly as the depth-1 witness does (float the pure wrappers out, then Site 4) — NOT the silent 33
            state-drop. Pins that the trigger is ANY block nesting ≥1, not a single-wrapper shape. Flips to the
-           34 PASS when the through-block fold lands. Declines on all backends (shared lowering).")
+           34 (Site 6 floats the pure wrapper bindings out; Site 4 then distributes). Folds on all backends (shared lowering).")
   (input  (do
             (effect St (op get (-> Unit Int64)))
             (def (main)
@@ -7853,13 +7854,13 @@
             (export main)))
   (call   main) (output (: 34 Int64)))
 
-(case "a block-wrapped branch perform of the OUTER effect in a let-init INSIDE a nested handler body declines cleanly (adv-69 a4 sub-face)"
+(case "a block-wrapped branch perform of the OUTER effect in a let-init INSIDE a nested handler body folds through the block (adv-69 a4)"
   (doc    "adv-69 a4 (v-effects self-probe 2026-08-04): the let-init block-boundary drop, but the miscompiling
            `let` sits inside a NESTED inner handler's BODY and performs the OUTER effect. `(handle A 3 ((ga …))
            (handle B 100 ((gb …)) (let ((v (let ((k true)) (if k (A.ga) 9)))) (+ (* 10 v) (A.ga)))))` — the
            block-wrapped branch perform is of the OUTER `A`, in a `let`-init in the inner `B` handle's body, and
            the continuation RE-READS `A`. Seeded A=3 it ran 33, correct is 34 (A.ga returns 3, advances to 4;
-           trailing A.ga must read 4). The single-handle version of this shape declines via the let-init floor,
+           trailing A.ga must read 4). The single-handle version of this shape folds via the let-init Site 6,
            but the intervening nested `B` handle made the OUTER `A` reduction's scanner stop at the inner
            `Handle` and MISS the block-wrapped `A`-perform in `B`'s body — a silent miscompile. FIX: the scanner
            now descends into a nested handle's BODY (not its arms — that is a3's territory) keeping the OUTER
@@ -7877,7 +7878,7 @@
             (export main)))
   (call   main) (output (: 34 Int64)))
 
-(case "a block-wrapped OUTER-effect perform in a let-init THREE handlers deep declines cleanly (adv-69 a4-depth3 sub-face)"
+(case "a block-wrapped OUTER-effect perform in a let-init THREE handlers deep folds through the block (adv-69 a4-depth3)"
   (doc    "adv-69 a4 at DEPTH-3 (breaker nh5 escalation, block-outstate battery): the a4 nested-handle-body
            drop, but the block-wrapped OUTER-effect (`A`) perform sits in a `let`-init THREE handlers deep —
            `(handle A 3 (…) (handle B 100 (…) (handle C 200 (…) (let ((v (let ((k true)) (if k (A.ga) 9))))
@@ -7886,7 +7887,7 @@
            BOTH the `B` and `C` handle bodies (keeping the outer ctx) to reach the block-wrapped `A`-perform.
            If the descent peeled only one `Handle`, this depth-3 shape would escape and miscompile — so this
            locks in the depth-N property (analogous to the a2 depth-2 witness for the flat let-init floor).
-           Grades TODO on all backends; flips to 34 PASS on the through-block fold.")
+           Folds to 34 on all backends via the Site-6 through-block commuting conversion (floats the pure wrapper out, then Site 4 distributes).")
   (input  (do
             (effect A (op ga (-> Unit Int64)))
             (effect B (op gb (-> Unit Int64)))
@@ -7923,15 +7924,15 @@
             (export main)))
   (call   main) (output (: 34 Int64)))
 
-(case "a BLOCK-wrapped branch perform in a MATCH-SCRUTINEE declines cleanly (adv-69 g3 sub-face)"
+(case "a BLOCK-wrapped branch perform in a MATCH-SCRUTINEE folds through the block (adv-69 g3)"
   (doc    "adv-69 g3 (breaker probe-g3, block-outstate battery): the SAME block-boundary out-state drop, at a
            MATCH-SCRUTINEE consuming position. `(match (let ((b true)) (if b (St.get) 99)) (v (+ (* 10 v)
            (St.get))))` — the scrutinee is a block-wrapped branch-performing conditional. Site 5 lifts a
            scrutinee that is DIRECTLY a branch-performing conditional (per-branch threading carries its
            advance), but a block wrapper is opaque to it, so the scrutinee's out-state reverts to entry: seeded
            3 it ran 33, correct is 34 (v=3, state→4, trailing `(St.get)` reads 4). Keyed on the WRAPPED shape
-           only (a DIRECT `if`/`match` scrutinee still folds — no over-decline of the Site-5 path). Declines
-           cleanly → a clean Todo, never the silent 33; flips to 34 PASS on the through-block fold.")
+           only (a DIRECT `if`/`match` scrutinee still folds — no over-decline of the Site-5 path). Folds
+           to 34 via Site 6 (floats the pure wrapper out, exposing the direct scrutinee Site 5 handles), never the silent 33.")
   (input  (do
             (effect St (op get (-> Unit Int64)))
             (def (main)
@@ -8009,7 +8010,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 73 Int64)))
 
-(case "a block-wrapped OUTER-effect perform in a match-SCRUTINEE inside a nested handler body declines cleanly (adv-69 g3-nested)"
+(case "a block-wrapped OUTER-effect perform in a match-SCRUTINEE inside a nested handler body folds through the block (adv-69 g3-nested)"
   (doc    "adv-69 g3-nested (v-effects bonus-probe of the c3-nested fix): the g3 match-scrutinee face of the
            nested-handle-body escape. A block-wrapped OUTER `A`-perform sits in a `match` SCRUTINEE inside a
            nested `B` handler's body — `(handle A 3 ((ga …)) (handle B 100 ((gb …)) (match (let ((k true)) (if
@@ -8018,7 +8019,7 @@
            to 4, so v = 3; the arm's trailing `(A.ga)` reads the advanced 4 → 10*3 + 4 = 34). The g3/c3 scanner
            (`body_has_block_wrapped_scrutinee_or_statement_branch_perform`) shares
            the do-statement scanner's nested-handle-body descent, so the match-scrutinee position in a nested
-           body is covered by the same fix. Grades TODO on all backends; flips to 34 PASS on the through-block
+           body is covered by the same fix. Folds to 34 on all backends via the Site-6 through-block
            fold.")
   (input  (do
             (effect A (op ga (-> Unit Int64)))

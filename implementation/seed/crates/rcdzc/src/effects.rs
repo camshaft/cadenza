@@ -3862,6 +3862,44 @@ fn conditional_branch_performs(db: &mut Db, node: StructId, ctx: &HandlerCtx) ->
 /// PERFORMS — the `..` discards the init: a performing binding is threaded by the ordinary `let` arm, so it
 /// does not itself trigger this decline, but this scanner does not need to distinguish it — declining on the
 /// tail conditional is sound either way; a performing binding just means the peel keeps going to the body.)
+/// Peel nested PURE `let` wrappers off `node`, returning `(collected wrapper binding-pairs, innermost tail)`
+/// — the through-block commuting-conversion peel for adv-69 Site 6. `(let (w0…) (let (w1…) tail))` yields
+/// `([w0…, w1…], tail)`. Returns `None` if `node` is not a `let` OR any wrapper binding INIT PERFORMS (an
+/// effectful wrapper binding cannot be floated earlier in the enclosing `let` — reordering it past a later
+/// perform would change effect order/count; leave those to the ordinary `let` thread arm / a later increment).
+/// The peel stops at the first non-`let` tail; the caller checks that tail is a branch-performing conditional.
+/// A pure wrapper binding is safe to float because the enclosing `let`'s bindings evaluate sequentially and a
+/// PURE init commutes freely earlier in that sequence (it reads only already-bound names, which stay in order).
+fn peel_pure_let_wrapper(db: &mut Db, node: StructId) -> Option<(Vec<StructId>, StructId)> {
+    let mut collected: Vec<StructId> = Vec::new();
+    let mut cur = node;
+    while let Some(form) = db.ast.as_form(cur, "let").map(|t| t.to_vec()) {
+        if form.len() != 2 {
+            break;
+        }
+        let Struct::List(pairs) = db.ast.get(form[0]).clone() else {
+            break;
+        };
+        // Every wrapper binding init must be PURE (no perform of ANY effect) to float it out safely.
+        for &p in &pairs {
+            match db.ast.get(p).clone() {
+                Struct::List(pkv) if pkv.len() == 2 => {
+                    if reaches_any_perform(db, pkv[1]) {
+                        return None;
+                    }
+                }
+                _ => return None, // malformed binding pair — do not peel
+            }
+        }
+        collected.extend(pairs);
+        cur = form[1];
+    }
+    if collected.is_empty() {
+        return None; // `node` was not a `let` wrapper at all
+    }
+    Some((collected, cur))
+}
+
 fn block_wrapped_branch_performs(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
     match resolved_of(db, node) {
         // A `let` block: its value is the body; recurse through it. (A performing binding is threaded by
@@ -4291,6 +4329,64 @@ fn hoist_resumptive_once(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Optio
             let bindings = db.push_list(vec![pair]);
             let let_head = db.push_atom(Leaf::Name("let".to_string()));
             return Some(db.push_list(vec![let_head, bindings, rebuilt]));
+        }
+    }
+    // Site 6 (adv-69 through-block commuting conversion): a `let` binding whose INIT is a branch-performing
+    // conditional WRAPPED in pure `let` blocks — `(let (… (v (let (w…) (if c (E.op) x))) …) body)`. Site 4
+    // only fires on a DIRECT conditional init (`conditional_branch_performs(kv[1])` is false when `kv[1]` is a
+    // `let`, not an `if`/`match`), so a block-wrapped init reached `block_wrapped_branch_performs`'s safe-floor
+    // decline instead of folding — the branch's state advance dropped at the block boundary (adv-69: 33 not
+    // 34). FLOAT the inner pure wrapper bindings `w…` OUT into the enclosing `let`, leaving the conditional as
+    // `v`'s DIRECT init: `(let (… w… (v (if c (E.op) x)) …) body)`. This is a commuting conversion — sound
+    // because the wrapper bindings are PURE (no perform: `wrapper_is_pure` below), so hoisting them earlier in
+    // the same `let`'s (sequential, non-recursive) binding list changes no evaluation order or effect count;
+    // `v`'s init now evaluates the conditional against the same values. Site 4 then fires on the now-direct
+    // conditional init on the next fixpoint pass (threading each branch's advance through the continuation).
+    // Only the wrapper is peeled here (one binding, first found); Site 4 does the actual branch distribution.
+    // GATED: only when the inner conditional performs THIS handler's discharged op in a branch (the adv-69
+    // trigger) — a pure-wrapped pure conditional needs no lift. A `do`-wrapper is left to Site 1 (it peels
+    // do-statements); this handles the `let`-wrapper commuting conversion the direct-init Site 4 can't reach.
+    if let Some(let_form) = db.ast.as_form(node, "let").map(|t| t.to_vec())
+        && let_form.len() == 2
+        && let Struct::List(outer_pairs) = db.ast.get(let_form[0]).clone()
+    {
+        let outer_body = let_form[1];
+        for (k, &pair) in outer_pairs.iter().enumerate() {
+            let Struct::List(kv) = db.ast.get(pair).clone() else {
+                continue;
+            };
+            if kv.len() != 2 {
+                continue;
+            }
+            // The init must be a `let`-block whose (through-nested-pure-lets) tail is a branch-performing
+            // conditional, with every peeled wrapper binding PURE.
+            if let Some((wrapper_pairs, inner_cond)) = peel_pure_let_wrapper(db, kv[1])
+                && !wrapper_pairs.is_empty()
+                && conditional_branch_performs(db, inner_cond, ctx)
+            {
+                // Rebuild: outer prefix `p…` + the floated wrapper bindings `w…` + `(v inner_cond)` + the
+                // remaining outer bindings `r…`, under the same body. Fresh-copy the floated + rebound nodes
+                // (single-parent arena) so nothing is shared across the rebuild.
+                let mut new_pairs: Vec<StructId> =
+                    Vec::with_capacity(outer_pairs.len() + wrapper_pairs.len());
+                for &p in &outer_pairs[..k] {
+                    new_pairs.push(deep_fresh_copy(db, p));
+                }
+                for &wp in &wrapper_pairs {
+                    new_pairs.push(deep_fresh_copy(db, wp));
+                }
+                let binder_c = deep_fresh_copy(db, kv[0]);
+                let cond_c = deep_fresh_copy(db, inner_cond);
+                let v_pair = db.push_list(vec![binder_c, cond_c]);
+                new_pairs.push(v_pair);
+                for &p in &outer_pairs[k + 1..] {
+                    new_pairs.push(deep_fresh_copy(db, p));
+                }
+                let new_bindings = db.push_list(new_pairs);
+                let body_c = deep_fresh_copy(db, outer_body);
+                let let_head = db.push_atom(Leaf::Name("let".to_string()));
+                return Some(db.push_list(vec![let_head, new_bindings, body_c]));
+            }
         }
     }
     // A NESTED `handle-internal`'s ARM LIST is opaque to THIS outer hoist WHEN no arm reaches an operation
