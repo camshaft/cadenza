@@ -2448,6 +2448,18 @@ fn emit_unit_slot(out: &mut Emit) {
     out.push(Lir::ConstI32(super::runtime_abi::IMM_UNIT as i32));
 }
 
+/// Emit the built-in `None` Option handle: `sum-new(disc_none, IMM_UNIT)`. The nullary variant's unit
+/// payload is the inline-unit CONSTANT (`IMM_UNIT`), NOT a runtime `arr-alloc(0)` CALL — the runtime's
+/// `arr-alloc(0)` returns exactly `imm_unit()`, so pushing the derived constant is equivalent and drops one
+/// import call per `None` (the same optimization the `Core::SumNew` nullary path uses). Shared by the
+/// `List.at`/`Map.lookup`/`String.at`/`Bytes.at` and the `?`-desugar None arms; leaves one handle on the
+/// stack. The caller owns the enclosing `Else`/`End` and any owned-temp reclaim around the arm.
+fn emit_none_option(disc_none: u32, out: &mut Emit) {
+    out.push(Lir::ConstI32(disc_none as i32)); // [disc_none]
+    emit_unit_slot(out); // [disc_none, unit-payload]
+    out.push(Lir::CallImport(OP_SUM_NEW)); // [None-handle]
+}
+
 /// Emit the heap-STORE tail AFTER a value node has been emitted (its machine slot is on the stack, or —
 /// for a `Unit` — NOTHING was pushed). Leaves exactly ONE handle for the following `arr-set`/`sum-new`/
 /// insert: a SCALAR boxes (extending a narrow int i32→i64 first, as `box-int` takes an i64 cell); a
@@ -8124,14 +8136,7 @@ fn emit(
                 emit_some(out);
                 out.push(Lir::Else);
                 // ELSE — None: the unit payload is an empty array.
-                out.push(Lir::ConstI32(disc_none as i32)); // [disc_none]
-                // The `None` (nullary) variant's unit payload is the inline-unit CONSTANT (`IMM_UNIT`), NOT a
-                // runtime `arr-alloc(0)` CALL — the runtime's `arr-alloc(0)` returns exactly `imm_unit()`, so
-                // pushing the derived constant is equivalent and drops one import call per `None` (the same
-                // optimization the `SumNew` nullary path already uses; this brings the `List.at`/`Map.lookup`/
-                // `String.at`/`Bytes.at` None arms to parity).
-                out.push(Lir::ConstI32(super::runtime_abi::IMM_UNIT as i32)); // [disc_none, unit-payload]
-                out.push(Lir::CallImport(OP_SUM_NEW)); // [None-handle]
+                emit_none_option(disc_none, out); // [None-handle]
                 out.push(Lir::End);
             }
             if reclaim_list {
@@ -8648,14 +8653,7 @@ fn emit(
             }
             out.push(Lir::Else);
             // ELSE — None: the unit payload is an empty array.
-            out.push(Lir::ConstI32(disc_none as i32)); // [disc_none]
-            // The `None` (nullary) variant's unit payload is the inline-unit CONSTANT (`IMM_UNIT`), NOT a
-            // runtime `arr-alloc(0)` CALL — the runtime's `arr-alloc(0)` returns exactly `imm_unit()`, so
-            // pushing the derived constant is equivalent and drops one import call per `None` (the same
-            // optimization the `SumNew` nullary path already uses; this brings the `List.at`/`Map.lookup`/
-            // `String.at`/`Bytes.at` None arms to parity).
-            out.push(Lir::ConstI32(super::runtime_abi::IMM_UNIT as i32)); // [disc_none, unit-payload]
-            out.push(Lir::CallImport(OP_SUM_NEW)); // [None-handle]
+            emit_none_option(disc_none, out); // [None-handle]
             if map_owned {
                 // None arm: `val_slot` is NULL (no value borrowed out), so the owned-temporary map is dropped
                 // here with nothing to preserve. [None-handle]
@@ -8736,14 +8734,7 @@ fn emit(
             out.push(Lir::CallImport(OP_SUM_NEW)); // [Some-handle]
             out.push(Lir::Else);
             // ELSE — None: the unit payload is an empty array.
-            out.push(Lir::ConstI32(disc_none as i32)); // [disc_none]
-            // The `None` (nullary) variant's unit payload is the inline-unit CONSTANT (`IMM_UNIT`), NOT a
-            // runtime `arr-alloc(0)` CALL — the runtime's `arr-alloc(0)` returns exactly `imm_unit()`, so
-            // pushing the derived constant is equivalent and drops one import call per `None` (the same
-            // optimization the `SumNew` nullary path already uses; this brings the `List.at`/`Map.lookup`/
-            // `String.at`/`Bytes.at` None arms to parity).
-            out.push(Lir::ConstI32(super::runtime_abi::IMM_UNIT as i32)); // [disc_none, unit-payload]
-            out.push(Lir::CallImport(OP_SUM_NEW)); // [None-handle]
+            emit_none_option(disc_none, out); // [None-handle]
             out.push(Lir::End);
             if reclaim_bytes {
                 // [Option] — drop the owned-temporary bytes now that both borrows (len + get) are done.
@@ -8924,14 +8915,7 @@ fn emit(
             // no reference), so it is NOT dropped here — its owner reclaims it (an enclosing `let`/param),
             // exactly as `List.at`'s None branch leaves its list untouched. `String.at` is now a clean
             // BORROW of its string, like `List.at`/`Bytes.at`.
-            out.push(Lir::ConstI32(disc_none as i32));
-            // The `None` (nullary) variant's unit payload is the inline-unit CONSTANT (`IMM_UNIT`), NOT a
-            // runtime `arr-alloc(0)` CALL — the runtime's `arr-alloc(0)` returns exactly `imm_unit()`, so
-            // pushing the derived constant is equivalent and drops one import call per `None` (the same
-            // optimization the `SumNew` nullary path already uses; this brings the `List.at`/`Map.lookup`/
-            // `String.at`/`Bytes.at` None arms to parity).
-            out.push(Lir::ConstI32(super::runtime_abi::IMM_UNIT as i32)); // [disc_none, unit-payload]
-            out.push(Lir::CallImport(OP_SUM_NEW)); // [None-handle]
+            emit_none_option(disc_none, out); // [None-handle]
             out.push(Lir::End);
             Ok(())
         }
@@ -9101,9 +9085,7 @@ fn emit(
             out.push(Lir::Else);
             // ELSE — None. `str` was BORROWED (this branch took no reference), so it is NOT dropped here; its
             // owner reclaims it (exactly like `String.at`'s None branch).
-            out.push(Lir::ConstI32(disc_none as i32));
-            out.push(Lir::ConstI32(super::runtime_abi::IMM_UNIT as i32)); // [disc_none, unit-payload]
-            out.push(Lir::CallImport(OP_SUM_NEW)); // [None-handle]
+            emit_none_option(disc_none, out); // [None-handle]
             out.push(Lir::End);
             Ok(())
         }
@@ -9415,9 +9397,7 @@ fn emit(
             out.push(Lir::Else);
             // ELSE — None: the unit payload is the inline-unit constant (as `Map.lookup`/`Bytes.at` do). The
             // buffer was consumed+dropped by str-from-bytes on failure, so there is nothing to release here.
-            out.push(Lir::ConstI32(disc_none as i32)); // [disc_none]
-            out.push(Lir::ConstI32(super::runtime_abi::IMM_UNIT as i32)); // [disc_none, unit-payload]
-            out.push(Lir::CallImport(OP_SUM_NEW)); // [None-handle]
+            emit_none_option(disc_none, out); // [None-handle]
             out.push(Lir::End);
             Ok(())
         }
@@ -9514,14 +9494,7 @@ fn emit(
             // DROP it (the None path does not consume the bytes) to avoid a leak.
             out.push(Lir::LocalGet(bytes_slot));
             out.push(Lir::CallImport(OP_DROP)); // release the un-consumed bytes reference
-            out.push(Lir::ConstI32(disc_none as i32)); // [disc_none]
-            // The `None` (nullary) variant's unit payload is the inline-unit CONSTANT (`IMM_UNIT`), NOT a
-            // runtime `arr-alloc(0)` CALL — the runtime's `arr-alloc(0)` returns exactly `imm_unit()`, so
-            // pushing the derived constant is equivalent and drops one import call per `None` (the same
-            // optimization the `SumNew` nullary path already uses; this brings the `List.at`/`Map.lookup`/
-            // `String.at`/`Bytes.at` None arms to parity).
-            out.push(Lir::ConstI32(super::runtime_abi::IMM_UNIT as i32)); // [disc_none, unit-payload]
-            out.push(Lir::CallImport(OP_SUM_NEW)); // [None-handle]
+            emit_none_option(disc_none, out); // [None-handle]
             out.push(Lir::End);
             Ok(())
         }
