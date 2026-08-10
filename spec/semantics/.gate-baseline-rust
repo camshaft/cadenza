@@ -1327,6 +1327,7 @@ pass	a capturing closure whose body uses the capture after an inner computation
 pass	a capturing closure whose surviving map store and direct call both feed the result
 pass	a capturing closure with a let binding in its body
 pass	a capturing unannotated closure in a payload is typed from the declared arrow
+pass	a catch-all after the specific arms already cover a finite type is unreachable and earns a CDZ0213 warning
 pass	a chain of perform-fed let inits — each binding feeds the next perform's argument
 pass	a chained Option.expect(Option.expect s) payload consumed per iteration accumulates stably
 pass	a chained access through an if-of-records composes and shields the untaken branch's trap

@@ -3360,6 +3360,20 @@
   (output (: 1 Int64))
   (warns  CDZ0213 (message "this match arm is unreachable")))
 
+(case "a catch-all after the specific arms already cover a finite type is unreachable and earns a CDZ0213 warning"
+  (doc    "The exhaustiveness-saturation face of the unreachable-arm warning — a DISTINCT detector from the
+           duplicate-literal case above (which is caught by first-match-shadowing). Here `(match b (true 1)
+           (false 2) (_ 3))` on a `Bool`: the `true` and `false` arms exhaust the finite type, so the
+           trailing `_` catch-all can never match — dead by SATURATION, not by an earlier duplicate. The
+           program compiles and runs (`(f true)` = 1) but the build surfaces the CDZ0213 `unreachable`
+           warning. Pins that the redundancy pass detects a catch-all after a complete specific cover of a
+           finite scrutinee (all booleans, or all variants of a sum), not only a literal/pattern duplicate.
+           Wasm-graded (the run paths skip the (warns ..) check, not fail it). Companion of the rcdzc
+           a_catch_all_after_the_specific_arms_saturate_a_finite_type_is_redundant test.")
+  (input  (do (def (f (: b Bool)) (match b (true 1) (false 2) (_ 3))) (def (main) (f true)) (export main)))
+  (output (: 1 Int64))
+  (warns  CDZ0213 (message "this match arm is unreachable")))
+
 (case "a match on a computed runtime value dispatches on the result"
   (doc    "The scrutinee is the expression `(% n 2)`, computed at run time. Its value (0 for an
            even n) selects the literal arm 0. Exercises a match whose scrutinee is neither a
