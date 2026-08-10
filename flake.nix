@@ -2243,8 +2243,18 @@
                 inherit clippyShardA clippyShardB codegenCheck gateCheck guideExamplesCheck
                   benchCheck runtimeHashParity fmtCheck testCraneAggregate roundtripCheck
                   cdzAgentHostNativeCore cdzAgentHostNativeLiveNet cdzKernelNativeCheck mandateLintCheck;
+                # cad-test-compiler-ml folded into the fail-set (v-ft/v-cml/concierge 2026-08-10, HARD gate):
+                # it runs the compiler-ml pfq SPINE (compiler-ml Project.cdz tests = src/*.cdz incl
+                # db-query-perfield.cdz), which a Core-shape edit can break — the hole broke twice. ZERO added
+                # gate cost by construction: seedCompilerClosure = crateClosure cdz ++ cdz-run and rcdzc IS in
+                # cdz's closure, so a Core-shape edit (rcdzc/src/core.rs, ty.rs, lower.rs) rotates seedCompilerSrc
+                # → rebuilds seedCompiler → RERUNS this spine; a corpus-only / non-closure MR leaves seedCompiler
+                # cached → this stays cached (cache-hit). So the nix dep graph gives the "gate Core-touching MRs
+                # on the spine" conditional FOR FREE — no pr-sync git-diff logic. (bare-identifier inherit can't
+                # take the hyphenated attr, so bind it explicitly from cdzCadProjectTests.)
+                cadTestCompilerMl = cdzCadProjectTests.cad-test-compiler-ml;
               } ''
-              echo "ok: local-gate — 9 merge-required contexts (ruleset-10 minus test-macos) + cdz-agent-host/kernel-native + mandate-lint, green on aarch64-nix" > $out
+              echo "ok: local-gate — 9 merge-required contexts (ruleset-10 minus test-macos) + cdz-agent-host/kernel-native + mandate-lint + cad-test-compiler-ml (Core-shape spine guard), green on aarch64-nix" > $out
             '';
           in
           {
