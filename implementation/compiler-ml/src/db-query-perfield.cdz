@@ -65,8 +65,22 @@ def compute-type(id: Int64) = match DbState.node-of(id) with
   | Option.Some(Node.NBoolLit(_)) => Ty.TyBool
   | Option.Some(Node.NAnnLit(_, sflag, w)) => mk-int((if sflag == 1 then true else false), w)
   | Option.Some(Node.NVar(_)) =>
+      // A var reference's type is the type of what its binder BINDS — NOT type-of(binder), which would
+      // LOOP for a let-bound var: `let x = 5 in x` resolves x's binder to the enclosing NLet node, so
+      // type-of(NLet) demands type-of(body=NVar) demands type-of(binder=NLet) → infinite recursion (a real
+      // stack-exhaust at run time). Mirror infer-db's `var-type` (infer-db.cdz:422), which distinguishes:
+      //   - an NLet binder → the type of the let's VALUE node (valId), typed before the body (demand it);
+      //   - an NVar binder (a PARAMETER, slice-3c: the arg-flow NApp arm seeds set-ty(paramId, argTy) at the
+      //     param's own NVar node) → read the seeded fact at the binder id directly via get-ty (no re-demand).
       (match DbState.get-resolved(id) with
-        | Option.Some(Resolved.RBound(binder)) => (let _bt = type-of(binder) in _bt)
+        | Option.Some(Resolved.RBound(binder)) =>
+            (match DbState.node-of(binder) with
+              | Option.Some(Node.NLet(_, valId, _)) => type-of(valId)
+              | Option.Some(Node.NVar(_)) =>
+                  (match DbState.get-ty(binder) with
+                    | Option.Some(t) => t
+                    | Option.None(_) => Ty.TyErr)
+              | _ => Ty.TyErr)
         | _ => Ty.TyErr)
   | Option.Some(Node.NBin(op, l, r)) =>
       // FAITHFUL: demand both operands (memoizing them into the column), then call the REAL infer-db bin-type
@@ -228,3 +242,15 @@ def pfq-napp-arg-flows-to-param() =
             (match run-type-of(db, callId) with
               | Ty.TyInt(_) => unit
               | _ => trap("f p = p applied to an int arg must type int (arg flows to param)"))))))))
+
+@test
+def pfq-let-var-body-is-int() =
+  // LET whose BODY is a bound VARIABLE: `let x = 5 in x`. NLet(nameId=1, valId=NLit, bodyId=NVar(1)); the NVar
+  // resolves (RBound) to the enclosing NLet binder. The NVar arm must type it via the let's VALUE (valId), NOT
+  // type-of(binder=NLet) — the latter loops (type-of(NLet)->type-of(NVar)->type-of(NLet)->...) to a run-time
+  // stack-exhaust. This pins the fix (mirror infer-db var-type) + guards the class on the cad-test-compiler-ml gate.
+  (match add-node(empty-tree(), Node.NLit(5)) with | (valId, t1) =>
+    (match add-node(t1, Node.NVar(1)) with | (bodyId, t2) =>
+      (match add-node(t2, Node.NLet(1, valId, bodyId)) with | (root, tree) =>
+        (let db = resolve-into-db(db-of(tree), root) in
+          (if is-int-ty(run-type-of(db, root)) then unit else trap("let x = 5 in x should type int"))))))
