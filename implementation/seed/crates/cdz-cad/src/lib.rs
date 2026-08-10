@@ -275,6 +275,22 @@ impl Parser<'_> {
             && matches!(self.toks.get(self.pos + 1), Some(Tok::Atom(a)) if a == ":")
     }
 
+    /// Consume a `(: <value> Type)` annotation wrapper, parsing the inner value with `inner` and
+    /// DISCARDING the trailing type-name atom — the transparent-unwrap the value parsers share (call it
+    /// only when [`is_annotation_ahead`] holds). Returns the inner value; the annotation carries no runtime
+    /// information here (the type is a compile-time concern), so `(: v Solid)` parses exactly as `v`.
+    fn unwrap_annotated<T>(
+        &mut self,
+        inner: impl FnOnce(&mut Self) -> Result<T, ParseError>,
+    ) -> Result<T, ParseError> {
+        self.expect_open()?; // (
+        let _colon = self.expect_atom()?; // :
+        let value = inner(self)?; // the annotated value
+        let _ty = self.expect_atom()?; // Type name (discarded)
+        self.expect_close()?; // )
+        Ok(value)
+    }
+
     /// Is the next token an open paren (a nested form is ahead)? Used to loop over a `(list …)`'s elements.
     fn peek_is_open(&self) -> bool {
         matches!(self.toks.get(self.pos), Some(Tok::Open))
@@ -291,12 +307,7 @@ impl Parser<'_> {
             )));
         }
         let result = if self.is_annotation_ahead() {
-            self.expect_open()?; // (
-            let _colon = self.expect_atom()?; // :
-            let inner = self.parse_solid_value()?; // the annotated value
-            let _ty = self.expect_atom()?; // Type name (e.g. Solid)
-            self.expect_close()?; // )
-            Ok(inner)
+            self.unwrap_annotated(Self::parse_solid_value)
         } else {
             self.parse_solid_node()
         };
@@ -382,12 +393,7 @@ impl Parser<'_> {
     /// are Rational `n/d`.
     fn parse_vec3(&mut self) -> Result<Vec3, ParseError> {
         if self.is_annotation_ahead() {
-            self.expect_open()?; // (
-            let _colon = self.expect_atom()?; // :
-            let v = self.parse_vec3()?; // inner (tuple …)
-            let _ty = self.expect_atom()?; // Vec3
-            self.expect_close()?; // )
-            return Ok(v);
+            return self.unwrap_annotated(Self::parse_vec3);
         }
         self.expect_open()?;
         let head = self.expect_atom()?;
@@ -407,12 +413,7 @@ impl Parser<'_> {
     /// is discarded, like `parse_vec3`). Components are Rational `n/d`.
     fn parse_vec2(&mut self) -> Result<[f64; 2], ParseError> {
         if self.is_annotation_ahead() {
-            self.expect_open()?; // (
-            let _colon = self.expect_atom()?; // :
-            let v = self.parse_vec2()?; // inner (tuple …)
-            let _ty = self.expect_atom()?; // Vec2R
-            self.expect_close()?; // )
-            return Ok(v);
+            return self.unwrap_annotated(Self::parse_vec2);
         }
         self.expect_open()?;
         let head = self.expect_atom()?;
@@ -431,12 +432,7 @@ impl Parser<'_> {
     /// an outer annotation is discarded (like the Solid/Vec parsers).
     fn parse_profile(&mut self) -> Result<Profile, ParseError> {
         if self.is_annotation_ahead() {
-            self.expect_open()?;
-            let _colon = self.expect_atom()?;
-            let p = self.parse_profile()?;
-            let _ty = self.expect_atom()?;
-            self.expect_close()?;
-            return Ok(p);
+            return self.unwrap_annotated(Self::parse_profile);
         }
         self.expect_open()?;
         let head = self.expect_atom()?;
@@ -457,12 +453,7 @@ impl Parser<'_> {
     /// discarded. Each element is a `PathSeg` constructor.
     fn parse_path(&mut self) -> Result<Vec<PathSeg>, ParseError> {
         if self.is_annotation_ahead() {
-            self.expect_open()?;
-            let _colon = self.expect_atom()?;
-            let segs = self.parse_path()?;
-            let _ty = self.expect_atom()?;
-            self.expect_close()?;
-            return Ok(segs);
+            return self.unwrap_annotated(Self::parse_path);
         }
         self.expect_open()?;
         let head = self.expect_atom()?;
