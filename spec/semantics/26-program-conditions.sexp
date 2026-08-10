@@ -3097,6 +3097,30 @@
   (call via-list (: 50 Int64))                (output (: 50 Int64))
   (call via-list (: 150 Int64))               (trap "unreachable"))
 
+(case "@invariant ESTABLISH fires when the type is IMPORTED from another module and constructed in the entry (cross-package divert site)"
+  (doc    "The divert-reachability set so far (lambda / reconstruct / list-element / match-arm) is all within a
+           SINGLE file; this pins the establish check fires when the constructor is IMPORTED across a package
+           link. `lib` declares `@invariant(0 <= self <= 100) type Pct (P Int64)` and exports it CONCRETELY with
+           the wildcard `(. Pct *)` (the handle + constructor, as a user sum must be to be constructed by the
+           importer — a bare `(export Pct)` would export the handle only, abstract). The entry `(import \"lib\"
+           (Pct))` brings the type + `Pct.P` into scope and constructs `(Pct.P v)` for a runtime v, then unwraps.
+           The establish divert (a construction-SITE rewrite in lower_sum_new) must fire at the entry's
+           construction site even though the type was DECLARED in another file — the invariant travels with the
+           nominal type across the link. mk(50): `(Pct.P 50)` establishes (0..100) → 50. mk(150): `(Pct.P 150)`
+           violates `<= self 100` → traps at the entry's construction, exactly as an in-file construction of a
+           locally-declared invariant type would. Pins that @invariant establish is reachability-complete over
+           CROSS-MODULE construction sites — the divert is keyed to the type's declaration, not the file.")
+  (module "lib"
+    (do (@ (invariant (and (>= self 0) (<= self 100))) (type Pct (P Int64)))
+        (def (unp (: p Pct)) (match p (((. Pct P) n) n)))
+        (export (. Pct *) unp)))
+  (input  (do
+            (import "lib" (Pct unp))
+            (def (mk (: v Int64)) (unp (Pct.P v)))
+            (export mk)))
+  (call mk (: 50 Int64))   (output (: 50 Int64))
+  (call mk (: 150 Int64))  (trap "unreachable"))
+
 (case "@invariant ESTABLISH fires when the constructor is directly a MATCH ARM's selected result (v-patterns divert site)"
   (doc    "An escape-face pin extending the divert-reachability set (lambda / reconstruct / list-element) with
            a MATCH-ARM construction site: the constructor call is the RESULT EXPRESSION of a match arm the
