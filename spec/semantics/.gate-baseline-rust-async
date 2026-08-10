@@ -5878,6 +5878,8 @@ pass	rw1 a nested handle at a performing RECURSION's exit leaf, then a trailing 
 pass	rw1 two sequential Record.with updates each take a DRAW — the second write sees the advanced state, projections read both back
 pass	rw2 draw PARITY picks WHICH field Record.with updates — projections of both fields show exactly one write landed
 pass	rw3 each Record.with value PROJECTS from the record it updates plus a draw — self-referential functional updates chain through the thread
+pass	s6a wrapper binding shadows an outer binding the BODY reads
+pass	s6d the floated wrapper init can trap — division by the argument stays ORDERED before the conditional
 pass	sa1 STRING op arguments measured into a scalar state — the empty string is a real zero-length argument
 pass	sa2 a string BUILT from a prior draw's branch becomes the next op's argument — the tag arm reads the post-pick state
 pass	sa3 STRING resume values — the arm builds a rope per dispatch branching op-arg vs live state, body concatenates two

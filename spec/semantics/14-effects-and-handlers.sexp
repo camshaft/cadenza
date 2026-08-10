@@ -23030,3 +23030,35 @@
   (call   main (: 0 Int64)) (output (: 45 Int64))
   (call   main (: 3 Int64)) (output (: 93 Int64))
   (call   main (: -2 Int64)) (output (: 13 Int64)))
+
+; ── Site-6 through-block fold: capture + trap-order faces (breaker batch 221) ──
+; The Site-6 commuting conversion floats pure let-wrapper bindings out of a
+; branch-performing let-init. These pin its two riskiest faces: a wrapper binding
+; that SHADOWS an outer binding the body reads (the float must not capture), and
+; a wrapper init that can TRAP (division by the argument) — the float must keep
+; the trap ordered before the conditional, and the n=0 call still traps.
+
+(case "s6a wrapper binding shadows an outer binding the BODY reads"
+  (input  (do
+            (effect St (op get (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((get () s (resume s (+ s 1))))
+                (let ((b 10)
+                      (v (let ((b 1)) (if (= b 1) (St.get) 99))))
+                  (+ (* 100 v) (+ (* 10 b) (St.get))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 404 Int64)))
+
+(case "s6d the floated wrapper init can trap — division by the argument stays ORDERED before the conditional"
+  (input  (do
+            (effect St (op get (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((get () s (resume s (+ s 1))))
+                (let ((v (let ((t (/ 100 n))) (if (= t 25) (St.get) t))))
+                  (+ (* 10 v) (St.get)))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 45 Int64))
+  (call   main (: 5 Int64)) (output (: 205 Int64))
+  (call   main (: 0 Int64)) (trap "divide by zero"))
