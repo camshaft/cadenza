@@ -548,12 +548,18 @@ pub enum TracingOutput {
 ///   list (not one) so an outpost can federate to several hubs (the operator's "specify a hub" generalizes
 ///   to N). Empty = dials nothing.
 ///
+/// `outpost_session` names the SESSION the transports address their inbound `ws/connect`/frame/`disconnect`
+/// events to — the outpost reducer that makes every federation/routing decision. It is OPTIONAL by design
+/// (concierge ruling, HUB-FEDERATION v0): a boot transport binds only IF an outpost session is configured,
+/// so a config-less daemon binds nothing at boot AND a later admin-driven "install outpost session" command
+/// can bind transports at runtime on the SAME routing-target path — forward-compatible, no breaking change.
+///
 /// Disabled by default: a daemon with no `[federation]` section (or `enabled=false`) binds no listener and
 /// dials no hub (today's non-federating behavior). This section always PARSES (feature-independent, like
 /// `[observability]`/`[tracing]`); the ws wiring the daemon does from it is behind the `live-ws` feature — a
 /// build without it reports the config as unwireable at boot rather than silently ignoring a federation
-/// request. HOST = PLUMBING: this only selects which transports bind; ALL routing/federation/authz policy is
-/// the outpost reducer's fold (operator's emphasized constraint).
+/// request. HOST = PLUMBING: this only selects which transports bind + which session they address; ALL
+/// routing/federation/authz policy is the outpost reducer's fold (operator's emphasized constraint).
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct FederationConfig {
@@ -579,6 +585,14 @@ pub struct FederationConfig {
     /// when `enabled`.
     #[serde(default)]
     pub hubs: Vec<String>,
+    /// The OUTPOST SESSION id (genesis-hash hex) the bound transports address their inbound events to — the
+    /// reducer that decides all federation/routing/authz policy. `None` (the default) = no outpost session is
+    /// configured, so the daemon binds NO transport at boot even when `listen`/`hubs` are set (a later
+    /// admin-driven install can bind them at runtime — the forward-compat path). When a transport IS selected
+    /// AND `enabled`, this is REQUIRED + validated as 64-hex-char (32-byte) canonical genesis-hash form: a
+    /// configured listener/hub with nowhere to route its inbound frames is a mistake, not a silent drop.
+    #[serde(default)]
+    pub outpost_session: Option<String>,
 }
 
 /// A config error — a bad path, unparseable TOML, or a semantic-validation failure. Stringly-typed (the
@@ -821,9 +835,42 @@ impl DaemonConfig {
                     )));
                 }
             }
+            // A selected transport (listener or hub) needs an outpost_session to address its inbound events
+            // to — a configured transport with no routing target would drop every inbound frame silently.
+            // outpost_session stays OPTIONAL overall (a config-less daemon binds nothing at boot, the
+            // forward-compat admin-driven path); it's REQUIRED only once a boot transport is actually
+            // selected. When present it must be canonical genesis-hash form: exactly 64 LOWERCASE hex chars
+            // (32 bytes), matching `Hash::to_hex`/`from_hex` — a malformed id can't name a real session.
+            match &self.federation.outpost_session {
+                None => {
+                    return Err(ConfigError(
+                        "[federation] a `listen` and/or `hubs` transport is configured but no \
+                         `outpost_session` — set outpost_session to the genesis-hash hex of the session the \
+                         transports address their inbound events to (the outpost reducer)"
+                            .into(),
+                    ));
+                }
+                Some(id) if !is_canonical_genesis_hex(id) => {
+                    return Err(ConfigError(format!(
+                        "[federation] outpost_session {id:?} is not a canonical genesis-hash id — it must be \
+                         exactly 64 lowercase hex characters (32 bytes)"
+                    )));
+                }
+                Some(_) => {}
+            }
         }
         Ok(())
     }
+}
+
+/// A canonical genesis-hash hex id — exactly 64 LOWERCASE hex characters (32 bytes), the form
+/// [`Hash::to_hex`](cdz_kernel::hash::Hash::to_hex) emits + [`from_hex`](cdz_kernel::hash::Hash::from_hex)
+/// accepts. Used to validate `[federation].outpost_session` at config time without pulling the kernel Hash
+/// into the pure-parse path (the daemon re-parses it into a real `SessionId` when it wires the transports).
+fn is_canonical_genesis_hex(s: &str) -> bool {
+    s.len() == 64
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 #[cfg(test)]
@@ -854,19 +901,28 @@ mod tests {
         assert!(!cfg.federation.enabled);
         assert_eq!(cfg.federation.listen, None);
         assert!(cfg.federation.hubs.is_empty());
+        assert_eq!(cfg.federation.outpost_session, None);
+    }
+
+    /// A valid 64-lowercase-hex-char (32-byte) outpost-session id for the federation tests (obviously 64:
+    /// `"ab" * 32`), so the tests don't miscount a literal.
+    fn valid_outpost_id() -> String {
+        "ab".repeat(32)
     }
 
     #[test]
     fn federation_selects_a_listener_and_hubs() {
-        let cfg = DaemonConfig::from_toml_str(
+        let cfg = DaemonConfig::from_toml_str(&format!(
             r#"
             [federation]
             enabled = true
             listen = "127.0.0.1:9800"
             hubs = ["ws://hub-a.local:9800/", "ws://hub-b.local:9800/"]
+            outpost_session = "{}"
             "#,
-        )
-        .expect("a federation config with a loopback listener + hubs parses");
+            valid_outpost_id()
+        ))
+        .expect("a federation config with a loopback listener + hubs + outpost parses");
         assert!(cfg.federation.enabled);
         assert_eq!(cfg.federation.listen.as_deref(), Some("127.0.0.1:9800"));
         assert_eq!(
@@ -876,18 +932,24 @@ mod tests {
                 "ws://hub-b.local:9800/".to_string()
             ]
         );
+        assert_eq!(
+            cfg.federation.outpost_session.as_deref(),
+            Some(valid_outpost_id().as_str())
+        );
     }
 
     #[test]
     fn federation_dial_only_needs_no_listener() {
         // A pure outbound outpost: dials hubs, binds no inbound listener. Valid (one transport is selected).
-        let cfg = DaemonConfig::from_toml_str(
+        let cfg = DaemonConfig::from_toml_str(&format!(
             r#"
             [federation]
             enabled = true
             hubs = ["ws://hub.local:9800/"]
+            outpost_session = "{}"
             "#,
-        )
+            valid_outpost_id()
+        ))
         .expect("a dial-only federation config parses");
         assert!(cfg.federation.enabled);
         assert_eq!(cfg.federation.listen, None);
@@ -897,13 +959,15 @@ mod tests {
     #[test]
     fn federation_listen_only_needs_no_hubs() {
         // A pure inbound outpost: serves a listener, dials nothing. Valid (one transport is selected).
-        let cfg = DaemonConfig::from_toml_str(
+        let cfg = DaemonConfig::from_toml_str(&format!(
             r#"
             [federation]
             enabled = true
             listen = "127.0.0.1:9800"
+            outpost_session = "{}"
             "#,
-        )
+            valid_outpost_id()
+        ))
         .expect("a listen-only federation config parses");
         assert!(cfg.federation.enabled);
         assert_eq!(cfg.federation.listen.as_deref(), Some("127.0.0.1:9800"));
@@ -943,14 +1007,16 @@ mod tests {
             "error explains the non-loopback opt-in requirement: {err:?}"
         );
         // WITH the opt-in it parses (a deliberate off-box inbound peer transport).
-        let cfg = DaemonConfig::from_toml_str(
+        let cfg = DaemonConfig::from_toml_str(&format!(
             r#"
             [federation]
             enabled = true
             listen = "0.0.0.0:9800"
             allow_non_loopback = true
+            outpost_session = "{}"
             "#,
-        )
+            valid_outpost_id()
+        ))
         .expect("a non-loopback listen WITH the opt-in parses");
         assert!(cfg.federation.allow_non_loopback);
     }
@@ -985,6 +1051,59 @@ mod tests {
         )
         .expect("a disabled federation section is not validated (transports inert)");
         assert!(!cfg.federation.enabled);
+    }
+
+    #[test]
+    fn federation_transport_without_an_outpost_session_is_rejected() {
+        // A configured transport with no outpost_session has nowhere to route inbound frames → loud error
+        // (concierge ruling: optional overall, but REQUIRED once a boot transport is selected).
+        let err = DaemonConfig::from_toml_str(
+            r#"
+            [federation]
+            enabled = true
+            listen = "127.0.0.1:9800"
+            "#,
+        )
+        .expect_err("a transport with no outpost_session must be rejected");
+        assert!(
+            err.0.contains("outpost_session") && err.0.contains("inbound events"),
+            "error explains the missing routing target: {err:?}"
+        );
+    }
+
+    #[test]
+    fn federation_malformed_outpost_session_is_rejected() {
+        // A non-canonical outpost id (not 64 lowercase hex chars) can't name a real session → rejected.
+        for bad in ["too-short", "AB", &"g".repeat(64), &"ab".repeat(31)] {
+            let err = DaemonConfig::from_toml_str(&format!(
+                r#"
+                [federation]
+                enabled = true
+                listen = "127.0.0.1:9800"
+                outpost_session = "{bad}"
+                "#
+            ))
+            .expect_err("a malformed outpost_session must be rejected");
+            assert!(
+                err.0.contains("outpost_session") && err.0.contains("64 lowercase hex"),
+                "error explains the canonical-hex requirement for {bad:?}: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn federation_disabled_does_not_require_outpost_session() {
+        // outpost_session stays OPTIONAL when disabled — an operator can pre-write transports and flip
+        // `enabled` later. It's only required once ENABLED with a transport selected.
+        let cfg = DaemonConfig::from_toml_str(
+            r#"
+            [federation]
+            enabled = false
+            listen = "127.0.0.1:9800"
+            "#,
+        )
+        .expect("a disabled federation section needs no outpost_session");
+        assert_eq!(cfg.federation.outpost_session, None);
     }
 
     #[test]
