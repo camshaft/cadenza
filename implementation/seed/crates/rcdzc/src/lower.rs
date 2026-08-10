@@ -8153,7 +8153,7 @@ fn lower_match_bin(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
         if db.ast.head_name(inner_pat) == Some("bin") {
             match crate::resolve::resolved_of(db, inner_pat) {
                 crate::resolved::Resolved::Bin { segs } => {
-                    classified.push(BinArm::Bin(segs, guard, body))
+                    classified.push(BinArm::Bin(segs.to_vec(), guard, body))
                 }
                 crate::resolved::Resolved::Poison(r) => return Core::Poison(r),
                 _ => {

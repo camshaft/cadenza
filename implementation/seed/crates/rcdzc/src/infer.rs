@@ -4153,7 +4153,7 @@ fn collect_param_constraints(
         // is the constraint that grounds a parameter used ONLY in a segment to the width type (a `(def (main
         // n) (bin (u8 n)))` infers `n : UInt8`), the segment analogue of an operator pinning its operand.
         Resolved::Bin { segs } => {
-            for seg in &segs {
+            for seg in segs.iter() {
                 if let Some(want) = seg_value_ty(&seg.kind) {
                     let at = arg_ty_in_env(db, seg.slot, env, subst, fresh);
                     let _ = crate::unify::unify(subst, &want, &at);

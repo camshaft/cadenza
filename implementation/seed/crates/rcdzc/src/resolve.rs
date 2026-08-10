@@ -2141,7 +2141,7 @@ fn match_arm_bin_binds(
     if form == scrutinee {
         return None;
     }
-    Some((scrutinee, segs, seg_index))
+    Some((scrutinee, segs.to_vec(), seg_index))
 }
 
 /// If `form` is a GUARD `(guard (bin <seg>…) <cond>)` ascended from its `<cond>`, and the bin pattern binds
@@ -2191,7 +2191,7 @@ fn guard_cond_bin_binds(
     if arm == scrutinee {
         return None;
     }
-    Some((scrutinee, segs, seg_index))
+    Some((scrutinee, segs.to_vec(), seg_index))
 }
 
 /// If `form` is a GUARD `(guard (map (k v) … .. rest) <cond>)` ascended from its `<cond>`, and the map
@@ -5163,7 +5163,7 @@ fn resolve_bin(db: &Db, id: StructId) -> Resolved {
         }
         return Resolved::Poison(reject);
     }
-    Resolved::Bin { segs }
+    Resolved::Bin { segs: segs.into() }
 }
 
 /// Resolve the PIPELINE operator `(|> L R)` into an ordinary application that threads `L` as `R`'s
@@ -5318,10 +5318,10 @@ fn resolve_handle(db: &Db, id: StructId) -> Resolved {
             }
         };
         let op = parts[0];
-        let params = match db.ast.get(parts[1]) {
-            Struct::List(ps) => ps.clone(),
+        let params: std::rc::Rc<[StructId]> = match db.ast.get(parts[1]) {
+            Struct::List(ps) => ps.as_slice().into(),
             // A single bare param (no parens) — treat as one param. `()` is the empty list (nullary).
-            _ => vec![parts[1]],
+            _ => std::rc::Rc::from([parts[1]]),
         };
         arms.push(HandleArm {
             op,
@@ -5416,8 +5416,8 @@ fn resolve_host(db: &Db, id: StructId) -> Resolved {
             );
         }
     };
-    let effects = match db.ast.get(effects_occ) {
-        Struct::List(es) => es.clone(),
+    let effects: std::rc::Rc<[StructId]> = match db.ast.get(effects_occ) {
+        Struct::List(es) => es.as_slice().into(),
         _ => {
             return Resolved::Poison(Reject::coded(
                 Code::Malformed,

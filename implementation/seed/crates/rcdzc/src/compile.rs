@@ -5869,7 +5869,7 @@ fn bin_pattern_size_occs(db: &mut Db, pat: StructId) -> std::collections::HashSe
             continue;
         }
         if let crate::resolved::Resolved::Bin { segs } = crate::resolve::resolved_of(db, id) {
-            for s in &segs {
+            for s in segs.iter() {
                 match s.kind {
                     crate::resolved::SegKind::Bytes { size: Some(occ) } => {
                         out.insert(occ);

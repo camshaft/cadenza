@@ -1380,7 +1380,10 @@ pub enum Resolved {
     /// only at an entrypoint; its manifest contribution is handled at serialization (E2). Until host
     /// lowering lands, a `host` DECLINES (surface recognized, not yet run).
     Host {
-        effects: Vec<StructId>,
+        // `effects` behind an `Rc<[StructId]>` so cloning a `Resolved::Host` is a refcount bump, not an
+        // O(N) copy — the same cheap-clone migration as the `Tuple`/`List`/`Apply`/`Lambda` siblings
+        // (fix-33/50/53 family); the universal `resolved_of` memo-hit clones this on every read.
+        effects: std::rc::Rc<[StructId]>,
         body: StructId,
     },
     /// A `(bin <segment>…)` binary form — DUAL DIRECTION (like `(Some 5)` builds / `(Some n)` matches):
@@ -1390,7 +1393,9 @@ pub enum Resolved {
     /// as an AST occurrence (a constant value to encode when building, a binder/literal-probe when
     /// matching). `Ty::Bytes` in value position (`binary-syntax`). A well-formedness fault (mis-aligned
     /// bit-fields, non-final unsized `(bytes …)`, non-const `bits` width) is CDZ0220, checked from `segs`.
-    Bin { segs: Vec<Segment> },
+    // `segs` behind an `Rc<[Segment]>` so cloning a `Resolved::Bin` is a refcount bump (the `BinField`
+    // sibling already holds its `segs` as `Rc<[Segment]>`; this finishes the migration).
+    Bin { segs: std::rc::Rc<[Segment]> },
     /// A reference to a `bin` PATTERN binder — the value a segment binder decodes from the matched Bytes
     /// scrutinee (the binary analogue of `SumPayload`, resolve Case B). `(match b ((bin (u16 n)) n) …)`:
     /// the `n` in the body resolves here, carrying the enclosing match's `scrutinee` and the segment whose
@@ -1456,7 +1461,9 @@ pub struct Segment {
 #[derive(Clone, PartialEq, Debug)]
 pub struct HandleArm {
     pub op: StructId,
-    pub params: Vec<StructId>,
+    // `params` behind an `Rc<[StructId]>` so cloning a `HandleArm` (the `Handle.arms` `Rc<[HandleArm]>`
+    // slice, and the per-arm `.clone()` in the effects fold) is a refcount bump, not an O(params) copy.
+    pub params: std::rc::Rc<[StructId]>,
     pub state: StructId,
     /// The explicit continuation binder `k` of a general (`ctl`-style) 5-part arm, or `None` for the
     /// tail/abortive 4-part arm. An arm with `cont: Some(_)` is E5-general — it binds the continuation as a
