@@ -2543,7 +2543,7 @@ mod status_snapshot_tests {
                     // Summarize from local KV alone — read the goal it recorded, describe progress.
                     let goal = kv
                         .get(b"private/goal")
-                        .map(|v| String::from_utf8_lossy(v).into_owned())
+                        .map(|v| String::from_utf8_lossy(&v).into_owned())
                         .unwrap_or_else(|| "(no goal set)".to_string());
                     let summary = format!("working on: {goal}");
                     kv.put(b"public/summary".to_vec(), summary.into_bytes());
@@ -2770,12 +2770,15 @@ mod status_snapshot_tests {
         assert_eq!(fork.snapshot().reducer, s.snapshot().reducer);
         // The KV came across: the fork can read what the parent published.
         assert_eq!(
-            fork.kv().get(b"public/status"),
+            fork.kv().get(b"public/status").as_deref(),
             Some(&b"investigating auth"[..])
         );
         // And the private key too (the fork is a full-privilege clone of the materialized state; scoping
         // is the caller's capability concern, not the KV's — the fork just has the same KV).
-        assert_eq!(fork.kv().get(b"private/secret"), Some(&b"nope"[..]));
+        assert_eq!(
+            fork.kv().get(b"private/secret").as_deref(),
+            Some(&b"nope"[..])
+        );
 
         // NON-INTERFERENCE: forking read the parent immutably — its log, timers, and state are unchanged.
         assert_eq!(s.event_count(), parent_events_before);
@@ -2900,7 +2903,10 @@ mod status_snapshot_tests {
             .await;
         assert_eq!(fired, 1, "exactly one timer was due and fired");
         // The reducer woke on the TimerFired and published its marker.
-        assert_eq!(s.kv().get(b"public/woke"), Some(&b"timer-fired"[..]));
+        assert_eq!(
+            s.kv().get(b"public/woke").as_deref(),
+            Some(&b"timer-fired"[..])
+        );
         // The timer settled: no armed timers left, no open obligations.
         assert_eq!(s.next_timer_deadline(), None);
         assert_eq!(s.open_effects(), 0);
@@ -2956,7 +2962,7 @@ mod status_snapshot_tests {
         .unwrap();
         let live_events_before = live.event_count();
         assert_eq!(
-            live.kv().get(b"private/goal"),
+            live.kv().get(b"private/goal").as_deref(),
             Some(&b"the auth module"[..])
         );
 
@@ -3196,7 +3202,7 @@ mod monotonic_now_tests {
         s.kv()
             .prefix_scan(b"t/")
             .into_iter()
-            .map(|(_, v)| u64::from_le_bytes(<[u8; 8]>::try_from(v).unwrap()))
+            .map(|(_, v)| u64::from_le_bytes(<[u8; 8]>::try_from(v.as_ref()).unwrap()))
             .collect()
     }
 
@@ -4759,7 +4765,7 @@ mod monotonic_now_tests {
             "a deferred effect stays OPEN — the kernel wrote the Dispatched frame but recorded no result"
         );
         assert_eq!(
-            s.kv().get(b"answer"),
+            s.kv().get(b"answer").as_deref(),
             None,
             "the continuation hasn't resumed — no answer yet"
         );
@@ -4997,7 +5003,7 @@ mod monotonic_now_tests {
                                 if !summary.is_empty() {
                                     summary.push(b'|');
                                 }
-                                summary.extend_from_slice(v);
+                                summary.extend_from_slice(&v);
                                 keys.push(k);
                             }
                             None => break,
@@ -5037,8 +5043,8 @@ mod monotonic_now_tests {
                 .await
                 .expect("deliver detail");
         }
-        assert_eq!(s.kv().get(b"detail/0"), Some(&b"alpha"[..]));
-        assert_eq!(s.kv().get(b"detail/2"), Some(&b"gamma"[..]));
+        assert_eq!(s.kv().get(b"detail/0").as_deref(), Some(&b"alpha"[..]));
+        assert_eq!(s.kv().get(b"detail/2").as_deref(), Some(&b"gamma"[..]));
         assert_eq!(
             s.kv().len(),
             3,
@@ -5058,12 +5064,12 @@ mod monotonic_now_tests {
 
         // The working set is now BOUNDED — one summary entry, all detail pruned.
         assert_eq!(
-            s.kv().get(b"summary/latest"),
+            s.kv().get(b"summary/latest").as_deref(),
             Some(&b"alpha|beta|gamma"[..]),
             "compaction folds every detail entry into one summary"
         );
         assert_eq!(
-            s.kv().get(b"detail/0"),
+            s.kv().get(b"detail/0").as_deref(),
             None,
             "detail keys are pruned by the fold"
         );
@@ -5082,7 +5088,7 @@ mod monotonic_now_tests {
             .await
             .expect("replay a compacted session");
         assert_eq!(
-            replayed.kv().get(b"summary/latest"),
+            replayed.kv().get(b"summary/latest").as_deref(),
             Some(&b"alpha|beta|gamma"[..])
         );
         assert_eq!(replayed.kv().get(b"detail/0"), None);
@@ -5127,7 +5133,10 @@ mod monotonic_now_tests {
         )
         .await
         .expect("c1 compact");
-        assert_eq!(s.kv().get(b"summary/latest"), Some(&b"a1|a2"[..]));
+        assert_eq!(
+            s.kv().get(b"summary/latest").as_deref(),
+            Some(&b"a1|a2"[..])
+        );
         assert_eq!(s.kv().len(), 1, "bounded after cycle 1");
 
         // Cycle 2: two more details → compact. The prior summary (a1|a2) must be CARRIED, not overwritten.
@@ -5146,7 +5155,7 @@ mod monotonic_now_tests {
         .await
         .expect("c2 compact");
         assert_eq!(
-            s.kv().get(b"summary/latest"),
+            s.kv().get(b"summary/latest").as_deref(),
             Some(&b"a1|a2|b1|b2"[..]),
             "the second compaction carries cycle 1's summary forward — no earlier content is lost"
         );
@@ -5161,7 +5170,7 @@ mod monotonic_now_tests {
             .await
             .expect("replay a multi-cycle-compacted session");
         assert_eq!(
-            replayed.kv().get(b"summary/latest"),
+            replayed.kv().get(b"summary/latest").as_deref(),
             Some(&b"a1|a2|b1|b2"[..])
         );
         assert_eq!(replayed.kv().len(), 1);
@@ -5721,7 +5730,7 @@ mod store_effect_tests {
         // the hash it set — the store round-tripped THROUGH the kernel's store arm (set applied, resolve
         // read the latest). And the executor NEVER saw a store effect (it's not executor-routed).
         assert_eq!(
-            s.kv().get(b"resolved"),
+            s.kv().get(b"resolved").as_deref(),
             Some(Hash::of(b"compiler-wasm-v1").to_hex().as_bytes())
         );
         assert!(
@@ -5811,7 +5820,7 @@ mod store_effect_tests {
         // The reducer added 2 members then resolve-all'd → the decoded membership it recorded is exactly 2
         // (the group round-tripped THROUGH the kernel's group arm: adds applied, resolve-all folded add-wins).
         assert_eq!(
-            s.kv().get(b"member_count"),
+            s.kv().get(b"member_count").as_deref(),
             Some([2u8].as_slice()),
             "resolve-all returned both joined members"
         );
@@ -6025,7 +6034,7 @@ mod store_effect_tests {
 
         // The loop ran to end_turn and recorded the final answer.
         assert_eq!(
-            s.kv().get(b"answer"),
+            s.kv().get(b"answer").as_deref(),
             Some(b"all green".as_slice()),
             "the agent loop folded through model→tool→model→end_turn and recorded the answer"
         );
@@ -6060,7 +6069,7 @@ mod store_effect_tests {
             .await
             .unwrap();
         assert_eq!(
-            s.kv().get(b"resolved"),
+            s.kv().get(b"resolved").as_deref(),
             Some(Hash::of(b"compiler-wasm-v1").to_hex().as_bytes()),
             "store/set + store/resolve round-trip under a real Capability::for_family grant"
         );
@@ -6115,7 +6124,7 @@ mod store_effect_tests {
             .await
             .unwrap();
         assert_eq!(
-            consumer.kv().get(b"resolved"),
+            consumer.kv().get(b"resolved").as_deref(),
             Some(Hash::of(b"compiler-wasm-v1").to_hex().as_bytes()),
             "consumer B resolved the pointer publisher A set — the hand-across loop closes"
         );
@@ -6163,7 +6172,7 @@ mod store_effect_tests {
             .await
             .unwrap();
         assert_eq!(
-            consumer.kv().get(b"resolved"),
+            consumer.kv().get(b"resolved").as_deref(),
             Some(Hash::of(b"compiler-wasm-v1").to_hex().as_bytes()),
             "B resolved A's pointer after a snapshot_bytes→from_snapshot_bytes round-trip — durable hand-across"
         );
@@ -6322,7 +6331,7 @@ mod store_effect_tests {
             .await
             .unwrap();
         assert_eq!(
-            reader.kv().get(b"resolved"),
+            reader.kv().get(b"resolved").as_deref(),
             Some(Hash::of(b"seeded").to_hex().as_bytes()),
             "a store/resolve grant PERMITS the read"
         );
@@ -6343,7 +6352,7 @@ mod store_effect_tests {
             .await
             .unwrap();
         assert_eq!(
-            writer.kv().get(b"resolved"),
+            writer.kv().get(b"resolved").as_deref(),
             None,
             "a store/resolve-only grant must DENY store/set (allow-read-deny-write)"
         );
@@ -6488,7 +6497,7 @@ mod store_effect_tests {
             .await
             .unwrap();
         assert_eq!(
-            resolver.kv().get(b"resolved"),
+            resolver.kv().get(b"resolved").as_deref(),
             Some(alice_id.to_hex().into_bytes().as_slice()),
             "resolving session/alice yields B's genesis_hash = its SessionId (name → SessionId identity)"
         );

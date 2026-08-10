@@ -3929,7 +3929,7 @@ mod tests {
                                                       // ...but WITHOUT commit, into_kv returns the untouched base: "new" absent, "keep" intact.
         let out = host.into_kv();
         assert_eq!(out.len(), 1);
-        assert_eq!(out.get(b"keep"), Some(&b"1"[..]));
+        assert_eq!(out.get(b"keep").as_deref(), Some(&b"1"[..]));
         assert_eq!(out.get(b"new"), None);
     }
 

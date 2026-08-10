@@ -66,7 +66,7 @@ async fn real_guest_component_folds_through_apply_end_to_end() {
 
     // The guest wrote its KV counter via the `kv` HOST IMPORT (§4b: the reducer reads/writes its own
     // KV directly during the fold) — and the mutated KV came back out for the host to persist (§4).
-    assert_eq!(kv.get(b"count"), Some(&[1u8][..]));
+    assert_eq!(kv.get(b"count").as_deref(), Some(&[1u8][..]));
 
     // A result event (resumes = the echoed correlation token) → the guest emits nothing (it stops).
     let ct2 = ContentType {
@@ -108,7 +108,7 @@ async fn dependency_free_reducer_takes_the_cached_instance_pre_fast_path() {
         .apply(Kv::new(), ct, Some(b"hello".to_vec()), None)
         .expect("cached-pre fold works");
     assert_eq!(effects.len(), 1);
-    assert_eq!(kv.get(b"count"), Some(&[1u8][..]));
+    assert_eq!(kv.get(b"count").as_deref(), Some(&[1u8][..]));
 }
 
 /// §22d fuel bound: a fold that exceeds its fuel budget is aborted with a DISTINCT
@@ -286,9 +286,13 @@ async fn fold_commits_on_success_and_leaves_the_kv_intact_on_failure() {
     let out = inbound(&mut kv, &mut ok_reducer).await;
     assert_eq!(out.effects.len(), 1, "the successful fold emits its effect");
     // Commit MERGED: the guest's new "count" AND the pre-existing "unrelated" both present.
-    assert_eq!(kv.get(b"count"), Some(&[1u8][..]), "guest write committed");
     assert_eq!(
-        kv.get(b"unrelated"),
+        kv.get(b"count").as_deref(),
+        Some(&[1u8][..]),
+        "guest write committed"
+    );
+    assert_eq!(
+        kv.get(b"unrelated").as_deref(),
         Some(&b"keep"[..]),
         "commit merges into the base — pre-existing keys survive"
     );
@@ -309,8 +313,8 @@ async fn fold_commits_on_success_and_leaves_the_kv_intact_on_failure() {
         "a failed fold surfaces a failure reason, not a silent none"
     );
     assert_eq!(kv2.len(), 2, "a failed fold must not shrink the KV");
-    assert_eq!(kv2.get(b"a"), Some(&b"1"[..]));
-    assert_eq!(kv2.get(b"b"), Some(&b"2"[..]));
+    assert_eq!(kv2.get(b"a").as_deref(), Some(&b"1"[..]));
+    assert_eq!(kv2.get(b"b").as_deref(), Some(&b"2"[..]));
 }
 
 /// Error-resilience / supervision (§17): a fold that FAILS (wasm guest trap / fuel-exhaustion) is

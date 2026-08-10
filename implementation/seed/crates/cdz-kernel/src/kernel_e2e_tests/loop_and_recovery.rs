@@ -41,7 +41,7 @@ impl Reducer for TwoStepReducer {
                 ..
             } => {
                 // A step completed — advance the phase and, if this was step 1, fire step 2.
-                match kv.get(b"phase") {
+                match kv.get(b"phase").as_deref() {
                     Some(b"fetching") => {
                         kv.put(b"phase".to_vec(), b"step2".to_vec());
                         FoldOutput::with(vec![EffectRequest::new(
@@ -94,7 +94,7 @@ async fn reactive_two_step_loop_runs_to_completion() {
 
     // Both steps ran, in order, and the reducer reached "done" — driven entirely by the single
     // inbound delivery (reactivity: append wakes the reducer, §9d).
-    assert_eq!(session.kv().get(b"phase"), Some(&b"done"[..]));
+    assert_eq!(session.kv().get(b"phase").as_deref(), Some(&b"done"[..]));
     assert_eq!(exec.seen.len(), 2);
     assert_eq!(
         exec.seen[0].0.target_str().unwrap(),
@@ -399,7 +399,10 @@ async fn time_out_effect_settles_an_open_dispatch_and_resumes_the_reducer() {
             .time_out_effect(open_id, &mut reducer, &http_cap(), &mut exec2)
             .await
     );
-    assert_eq!(restored.kv().get(b"status"), Some(&b"gave-up"[..]));
+    assert_eq!(
+        restored.kv().get(b"status").as_deref(),
+        Some(&b"gave-up"[..])
+    );
     assert_eq!(restored.open_effects(), 0);
 
     // Idempotent (§16c-S4 at-most-once): timing out an already-settled id is a no-op, and a NEVER-
@@ -428,7 +431,10 @@ async fn time_out_effect_settles_an_open_dispatch_and_resumes_the_reducer() {
     )
     .await
     .expect("replay after timeout");
-    assert_eq!(replayed.kv().get(b"status"), Some(&b"gave-up"[..]));
+    assert_eq!(
+        replayed.kv().get(b"status").as_deref(),
+        Some(&b"gave-up"[..])
+    );
     assert_eq!(replayed.kv(), restored.kv());
 }
 
@@ -472,7 +478,7 @@ async fn time_out_effect_on_an_armed_timer_id_is_a_noop_not_a_panic() {
         .fire_due_timers(5000, &mut reducer, &timer_cap(), &mut exec2)
         .await;
     assert_eq!(fired, 1);
-    assert_eq!(session.kv().get(b"woke"), Some(&b"1"[..]));
+    assert_eq!(session.kv().get(b"woke").as_deref(), Some(&b"1"[..]));
     assert_eq!(session.open_effects(), 0);
 }
 
@@ -509,7 +515,7 @@ async fn attached_log_persists_through_on_append_no_manual_mirroring() {
         .deliver(inbound_go(), None, &mut reducer, &http_cap(), &mut exec)
         .await
         .unwrap();
-    assert_eq!(session.kv().get(b"phase"), Some(&b"done"[..]));
+    assert_eq!(session.kv().get(b"phase").as_deref(), Some(&b"done"[..]));
     // No persistence error was latched — every event reached disk.
     assert!(session.take_persist_error().is_none());
 
@@ -519,7 +525,7 @@ async fn attached_log_persists_through_on_append_no_manual_mirroring() {
         .await
         .expect("recover from written-through log");
     assert_eq!(report.kind, crate::log_store::RecoveryKind::Clean);
-    assert_eq!(restored.kv().get(b"phase"), Some(&b"done"[..]));
+    assert_eq!(restored.kv().get(b"phase").as_deref(), Some(&b"done"[..]));
     // Both effects settled during the run, so recovery sees no open obligations.
     assert_eq!(restored.open_effects(), 0);
     assert_eq!(restored.event_count(), session.event_count());
@@ -859,7 +865,10 @@ async fn persist_crash_recover_reconstructs_kv_and_open_obligations() {
         .unwrap();
 
     // KV reconstructed to the crash point (reducer had set phase=fetching before dispatching)...
-    assert_eq!(restored.kv().get(b"phase"), Some(&b"fetching"[..]));
+    assert_eq!(
+        restored.kv().get(b"phase").as_deref(),
+        Some(&b"fetching"[..])
+    );
     // ...and exactly one open obligation (the dispatched-but-unresulted effect) is known, so the
     // driver would re-drive it by its (stable) idempotency key rather than double-fire (§16c-S1).
     assert_eq!(restored.open_effects(), 1);
@@ -910,7 +919,10 @@ async fn session_recover_is_the_one_call_recovery_entry_point() {
     let (restored, report): (Session, RecoveryReport) = Session::recover(&path, &mut reducer)
         .await
         .expect("recover");
-    assert_eq!(restored.kv().get(b"phase"), Some(&b"fetching"[..]));
+    assert_eq!(
+        restored.kv().get(b"phase").as_deref(),
+        Some(&b"fetching"[..])
+    );
     // The report tells the driver exactly what's in flight to re-drive, and how the log ended.
     assert_eq!(report.kind, RecoveryKind::Clean);
     assert!(!report.is_corrupt());
@@ -967,7 +979,10 @@ async fn session_recover_from_is_backend_agnostic_no_file_needed() {
             .await
             .expect("recover_from a hand-built (non-file) Recovered");
     // Identical reconstruction to the file path (session_recover_is_the_one_call_recovery_entry_point).
-    assert_eq!(restored.kv().get(b"phase"), Some(&b"fetching"[..]));
+    assert_eq!(
+        restored.kv().get(b"phase").as_deref(),
+        Some(&b"fetching"[..])
+    );
     assert_eq!(report.kind, RecoveryKind::Clean);
     assert_eq!(report.open_effects.len(), 1);
     assert_eq!(report.open_effects, restored.open_effect_ids());
@@ -1094,7 +1109,7 @@ async fn timer_arms_without_executor_then_kernel_fires_on_deadline() {
             .await,
         1
     );
-    assert_eq!(session.kv().get(b"woke"), Some(&b"1"[..]));
+    assert_eq!(session.kv().get(b"woke").as_deref(), Some(&b"1"[..]));
     // Fired → no longer armed, no longer open.
     assert_eq!(session.next_timer_deadline(), None);
     assert_eq!(session.open_effects(), 0);
@@ -1161,7 +1176,7 @@ async fn armed_timer_survives_replay() {
             .await,
         1
     );
-    assert_eq!(restored.kv().get(b"woke"), Some(&b"1"[..]));
+    assert_eq!(restored.kv().get(b"woke").as_deref(), Some(&b"1"[..]));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1247,7 +1262,7 @@ async fn live_shell_executor_runs_a_real_command_end_to_end() {
 
     // The real subprocess ran; its stdout ("hi\n") folded back into KV.
     let stdout = session.kv().get(b"stdout").expect("stdout recorded");
-    assert_eq!(String::from_utf8_lossy(stdout).trim(), "hi");
+    assert_eq!(String::from_utf8_lossy(&stdout).trim(), "hi");
     assert_eq!(session.open_effects(), 0);
 }
 
@@ -1372,7 +1387,7 @@ async fn live_shell_no_injection_via_metacharacters() {
     );
     // And `echo` treated the whole thing as literal args (stdout contains the literal `;` and `touch`).
     let out = session.kv().get(b"out").expect("echo ran");
-    let text = String::from_utf8_lossy(out);
+    let text = String::from_utf8_lossy(&out);
     assert!(
         text.contains(';') && text.contains("touch"),
         "echo should print its args literally: {text:?}"
@@ -1419,7 +1434,7 @@ async fn authz_denied_is_folded_live_so_replay_matches() {
         .unwrap();
 
     // Live: the reducer folded the denial → counter is 1, and the executor never ran.
-    assert_eq!(session.kv().get(b"denials"), Some(&[1u8][..]));
+    assert_eq!(session.kv().get(b"denials").as_deref(), Some(&[1u8][..]));
     assert_eq!(exec.seen.len(), 0);
     let live_root = session.snapshot().kv_root;
 
@@ -1430,7 +1445,7 @@ async fn authz_denied_is_folded_live_so_replay_matches() {
     )
     .await
     .unwrap();
-    assert_eq!(replayed.kv().get(b"denials"), Some(&[1u8][..]));
+    assert_eq!(replayed.kv().get(b"denials").as_deref(), Some(&[1u8][..]));
     assert_eq!(
         replayed.snapshot().kv_root,
         live_root,

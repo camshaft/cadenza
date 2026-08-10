@@ -54,7 +54,7 @@ async fn real_guest_folds_through_async_apply_end_to_end() {
     assert_eq!(effects[0].correlation.as_deref(), Some(&b"step-1"[..]));
 
     // The guest wrote its KV counter via the `kv` host import, and the mutated KV came back out.
-    assert_eq!(kv.get(b"count"), Some(&[1u8][..]));
+    assert_eq!(kv.get(b"count").as_deref(), Some(&[1u8][..]));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -95,7 +95,7 @@ async fn async_reducer_drives_via_the_async_reducer_trait() {
     );
     assert_eq!(out.effects.len(), 1);
     assert_eq!(out.effects[0].request.kind, crate::effect::EffectKind::Http);
-    assert_eq!(kv.get(b"count"), Some(&[1u8][..]));
+    assert_eq!(kv.get(b"count").as_deref(), Some(&[1u8][..]));
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -25,13 +25,17 @@ use std::collections::BTreeMap;
 /// VALUES are stored as [`Bytes`] (Arc-backed), not owned `Vec<u8>` (operator cheaply-clonable directive):
 /// [`Kv::clone`] is on the hot path — `fork_for_query` clones the whole KV per debug query, and the §4
 /// free-snapshot model conceptually clones per event — so a `Bytes` value makes a clone an O(entries)
-/// refcount-bump instead of an O(total-value-bytes) deep copy. The public API is UNCHANGED: `put` still
-/// takes `Vec<u8>` (converted to `Bytes` on insert, a move not a copy), `get`/`prefix_scan` still hand
-/// back `&[u8]`, and `encode`/`decode`/`root_hash` produce the identical frozen bytes — so no reducer,
-/// no caller, and no on-disk/CAS form changes. Keys stay `Vec<u8>` (small, and the BTreeMap ordering key).
+/// refcount-bump instead of an O(total-value-bytes) deep copy. The API passes [`Bytes`] EVERYWHERE
+/// (operator directive seq364, completing the 5ae05ad3c value-side work): `put` takes `impl Into<Bytes>`
+/// (a `Vec<u8>` converts by MOVE, a `Bytes` by refcount), `get`/`prefix_scan` RETURN owned `Bytes` (a
+/// cheap Arc-clone, never a slice the caller must copy — "no converting to bytes at the leaf"), and both
+/// KEYS and VALUES are `Bytes`. `encode`/`decode`/`root_hash` produce the identical frozen bytes — the
+/// on-disk/CAS/§16c-S3 form is unchanged. `Bytes: Borrow<[u8]> + Ord`, so `get`/`delete`/`prefix_scan`
+/// still take a `&[u8]` lookup arg (a caller holding `Bytes` passes `&b` with no copy) and the BTreeMap
+/// keeps its canonical byte-order ranging.
 #[derive(Clone, Default, PartialEq, Eq, Debug)]
 pub struct Kv {
-    map: BTreeMap<Vec<u8>, Bytes>,
+    map: BTreeMap<Bytes, Bytes>,
 }
 
 impl Kv {
@@ -41,14 +45,16 @@ impl Kv {
         }
     }
 
-    pub fn get(&self, key: &[u8]) -> Option<&[u8]> {
-        self.map.get(key).map(|v| v.as_ref())
+    pub fn get(&self, key: &[u8]) -> Option<Bytes> {
+        // Return an owned `Bytes` (a cheap Arc refcount-bump), NOT a `&[u8]` slice — so a caller can hold
+        // / pass on the value without a leaf-copy (operator directive: no converting-to-bytes at the leaf).
+        self.map.get(key).cloned()
     }
 
-    pub fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
-        // `Vec<u8> -> Bytes` is a MOVE (Bytes::from takes ownership of the Vec's allocation), not a copy —
-        // so the public `put(Vec)` signature is unchanged and no extra allocation happens on insert.
-        self.map.insert(key, Bytes::from(value));
+    pub fn put(&mut self, key: impl Into<Bytes>, value: impl Into<Bytes>) {
+        // `impl Into<Bytes>`: a `Vec<u8>` converts by MOVE (owns the allocation), a `Bytes` by refcount —
+        // so callers pass Bytes-or-Vec with no copy, and nothing converts-to-bytes at the leaf.
+        self.map.insert(key.into(), value.into());
     }
 
     pub fn delete(&mut self, key: &[u8]) -> bool {
@@ -57,11 +63,15 @@ impl Kv {
 
     /// All (key, value) pairs whose key starts with `prefix`, in canonical (byte-ascending) key order.
     /// Deterministic (§16c-S8): the order is a pure function of the keys, never insertion history.
-    pub fn prefix_scan(&self, prefix: &[u8]) -> Vec<(&[u8], &[u8])> {
+    /// Returns owned `Bytes` for both key and value (cheap Arc-clones) — no slice a caller must copy.
+    pub fn prefix_scan(&self, prefix: &[u8]) -> Vec<(Bytes, Bytes)> {
         self.map
-            .range(prefix.to_vec()..)
+            .range::<[u8], _>((
+                std::ops::Bound::Included(prefix),
+                std::ops::Bound::Unbounded,
+            ))
             .take_while(|(k, _)| k.starts_with(prefix))
-            .map(|(k, v)| (k.as_slice(), v.as_ref()))
+            .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
     }
 
@@ -129,7 +139,9 @@ impl Kv {
                 }
             }
             prev_key = Some(key.clone());
-            map.insert(key, val);
+            // Keys are `Bytes` now (Bytes-everywhere, seq364); the canonical-order check above ran on the
+            // `Vec<u8>` — insert the same bytes as `Bytes` (a move of the read Vec's allocation).
+            map.insert(Bytes::from(key), val);
         }
         // Exactly the framed bytes must be consumed — trailing bytes are corruption, not a valid KV.
         if pos != bytes.len() {
@@ -170,7 +182,7 @@ mod tests {
         let mut kv = Kv::new();
         assert_eq!(kv.get(b"k"), None);
         kv.put(b"k".to_vec(), b"v".to_vec());
-        assert_eq!(kv.get(b"k"), Some(&b"v"[..]));
+        assert_eq!(kv.get(b"k").as_deref(), Some(&b"v"[..]));
         assert!(kv.delete(b"k"));
         assert!(!kv.delete(b"k"));
         assert_eq!(kv.get(b"k"), None);
@@ -260,8 +272,11 @@ mod tests {
         kv.put(b"pending/1".to_vec(), b"x".to_vec());
         kv.put(b"other".to_vec(), b"z".to_vec());
         let got = kv.prefix_scan(b"pending/");
+        // prefix_scan returns owned Bytes pairs now (seq364); compare as slices via as_ref.
+        let got_slices: Vec<(&[u8], &[u8])> =
+            got.iter().map(|(k, v)| (k.as_ref(), v.as_ref())).collect();
         assert_eq!(
-            got,
+            got_slices,
             vec![
                 (&b"pending/1"[..], &b"x"[..]),
                 (&b"pending/2"[..], &b"y"[..]),
