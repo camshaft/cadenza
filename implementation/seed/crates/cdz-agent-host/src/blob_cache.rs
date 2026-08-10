@@ -26,9 +26,10 @@
 //! LARGER than the whole budget is never cached (served straight through) rather than evicting everything to
 //! hold one oversized value.
 //!
-//! **Multi-tier to disk is a following slice.** This is the in-MEMORY tier. The operator also asked for a
-//! disk tier under it (mem over disk over S3); that composes as ANOTHER `CachingBlobStore`-style layer over a
-//! `DiskBlobStore` and lands next — this slice is the S3-FIFO eviction core the disk tier reuses.
+//! **Multi-tier: this is the in-MEMORY tier, over an on-disk tier.** The operator asked for mem over disk
+//! over S3; that's wired — [`DiskCacheTier`](crate::disk_cache::DiskCacheTier) composes UNDER this
+//! `CachingBlobStore` (the daemon's `wrap_cache` builds mem-S3-FIFO over disk over the backing store), and
+//! this S3-FIFO eviction core is what each tier reuses.
 //!
 //! **Single-threaded convention.** The kernel traits are `?Send` (single-threaded by design), and
 //! [`BlobStore::get`] takes `&self`, so the cache state lives behind a [`RefCell`] — `get` marks recency

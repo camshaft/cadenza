@@ -119,8 +119,10 @@ impl MetricsReporter {
     /// [`StatsdBackend`](s2n_quic_dc_metrics::backend::StatsdBackend) pushed into the set; a target that can't
     /// connect (bad/unresolvable endpoint) is SKIPPED and its endpoint collected into the returned failure
     /// list (the daemon logs it at boot). The reporter is usable even with an empty backend set — a report
-    /// then just drains the counters to nothing (keeping the drain-on-report window honest). (OTLP/prometheus
-    /// backends will be pushed in by their own constructors/`push_*` in a following slice.)
+    /// then just drains the counters to nothing (keeping the drain-on-report window honest). (Non-statsd
+    /// backends are pushed in by their own constructors — [`push_otlp`](Self::push_otlp),
+    /// [`push_cloudwatch`](Self::push_cloudwatch), [`push_prometheus`](Self::push_prometheus) — after this
+    /// statsd-seeded build.)
     pub fn from_statsd_targets(targets: &[StatsdTarget]) -> (Self, Vec<String>) {
         use s2n_quic_dc_metrics::backend::StatsdBackend;
         let mut backends: Vec<Box<dyn s2n_quic_dc_metrics::backend::Backend + Send>> =
