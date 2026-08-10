@@ -5137,6 +5137,9 @@ pass	gl2 the let-lifted pure-guard equivalent of the gp2 cascade — both guard 
 pass	gp1 a PERFORMING guard on a wildcard pattern is a COMPILE ERROR (guards-side-effect-free, CDZ0407)
 pass	gp2 TWO guard arms where a guard PERFORMS — declines (multi-guard performing-condition fold gap)
 pass	gp2e TWO pure guards cascade over a draw, the fallback re-performs — guard misses leave dispatch serviceable
+pass	gp6 a CTOR-pattern guard with a SAME-CTOR non-guarded sibling admits per-dispatch across TWO dispatches (breaker #15)
+pass	gp7 a LITERAL-payload arm and a same-ctor general arm both select per-dispatch across TWO dispatches (breaker #15 guardless face)
+pass	gp8 a THREE-arm same-ctor ladder (two literals + general) selects each arm per-dispatch across THREE dispatches (breaker #15 ladder face)
 pass	grafting through a DAG-shared user-sum subtree rebuilds one path and leaves the shared original intact
 pass	graph REACHABILITY drains a worklist against a visited-set over a Map adjacency list
 pass	greater-than at the integer extremes is signed

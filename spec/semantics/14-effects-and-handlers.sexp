@@ -21692,6 +21692,85 @@
   (call   main (: 8 Int64)) (output (: 0 Int64))
   (call   main (: -5 Int64)) (output (: 3412 Int64)))
 
+(case "gp6 a CTOR-pattern guard with a SAME-CTOR non-guarded sibling admits per-dispatch across TWO dispatches (breaker #15)"
+  (doc    "breaker FINDING #15 (HIGH silent-miscompile, all 3 backends). A ctor-pattern guard `(guard (Wrap
+           v) (> v s))` followed by a SAME-CTOR non-guarded sibling `(Wrap _v)` — over ≥2 dispatches of the
+           op — collapsed: BOTH dispatches (incl the one whose guard HOLDS) ran the sibling fallback, so a
+           value that should ADMIT via the guard silently took the 0-arm. Single-dispatch, a WILDCARD sibling
+           (`_other`), and scalar/tuple-payload guards (gp1/gp4/gp5) all fold correctly — the break was
+           specific to a ctor-pattern guard shadowed by a same-ctor sibling. ROOT: `fold_ctor_match` (the
+           case-of-known-ctor fold the multi-dispatch arm re-instantiation runs) skipped the guarded arm as
+           refutable but then folded to the LATER same-discriminant sibling, discarding the guard's admit
+           path. Fix: `fold_ctor_match` DECLINES (leaves a runtime match, which evaluates the guard) when a
+           skipped guarded arm's ctor discriminant matches the scrutinee — an undecided same-ctor guard
+           shadows any later arm. `main 5`: dispatch-1 `(Wrap 5)` guard `5>0` HOLDS → `resume 5 5` → 10*5 =
+           50, and threads the next-state s→5; dispatch-2 `(Wrap 3)` guard `3>5` now FAILS → fallback 0 →
+           50 + 0 = 50 (the guard's own next-state advance is what makes dispatch-2 miss). `main 0`:
+           dispatch-1 `(Wrap 0)` guard `0>0` FAILS → 0 (s stays 0); dispatch-2 `(Wrap 3)` guard `3>0` HOLDS →
+           resume 3 → 0*10 + 3 = 3.")
+  (input  (do
+            (type Box (Wrap Int64))
+            (effect E (op rate (-> Box Int64)))
+            (def (main (: k Int64))
+              (handle E 0
+                ((rate (c) s
+                  (match c
+                    ((guard (Wrap v) (> v s)) (resume v v))
+                    ((Wrap _v) (resume 0 s)))))
+                (+ (* 10 (E.rate (Wrap k))) (E.rate (Wrap 3)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 50 Int64))
+  (call   main (: 0 Int64)) (output (: 3 Int64)))
+
+(case "gp7 a LITERAL-payload arm and a same-ctor general arm both select per-dispatch across TWO dispatches (breaker #15 guardless face)"
+  (doc    "breaker FINDING #15 WIDER face — the guard is NOT required; the trigger is [two same-ctor arms in a
+           handler match] × [≥2 dispatches]. A LITERAL-payload arm `(Wrap 0)` before a general `(Wrap v)` arm:
+           over two dispatches the LITERAL arm was lost — dispatch-2's `(Wrap 0)` took the general arm's value
+           (0) instead of the literal arm's 100. Same root as the guarded gp6: `fold_ctor_match` (the
+           case-of-known-ctor fold the multi-dispatch arm re-instantiation runs) skipped the undecidable
+           literal-payload arm and folded to the LATER same-discriminant general arm, discarding the literal's
+           selection path. Fix: fold_ctor_match DECLINES (leaves a runtime match) when a same-disc arm has a
+           LITERAL payload sub-pattern it can't statically decide. `main 7`: dispatch-1 `(Wrap 7)` misses the
+           literal → general v=7 → 1000*7 = 7000; dispatch-2 `(Wrap 0)` HITS the literal → 100 → 7000 + 100 =
+           7100. `main 0`: dispatch-1 `(Wrap 0)` HITS literal → 100 → 1000*100 = 100000; dispatch-2 `(Wrap 0)`
+           HITS literal → 100 → 100100.")
+  (input  (do
+            (type Box (Wrap Int64))
+            (effect E (op rate (-> Box Int64)))
+            (def (main (: k Int64))
+              (handle E 0
+                ((rate (c) s
+                  (match c
+                    ((Wrap 0) (resume 100 s))
+                    ((Wrap v) (resume v s)))))
+                (+ (* 1000 (E.rate (Wrap k))) (E.rate (Wrap 0)))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 7100 Int64))
+  (call   main (: 0 Int64)) (output (: 100100 Int64)))
+
+(case "gp8 a THREE-arm same-ctor ladder (two literals + general) selects each arm per-dispatch across THREE dispatches (breaker #15 ladder face)"
+  (doc    "breaker FINDING #15 ladder face — the fix generalizes to N same-ctor arms, not just two. THREE
+           same-ctor arms `((Wrap 0) 100) ((Wrap 1) 200) ((Wrap v) v)` over three dispatches: the bug dropped
+           BOTH literal arms (every dispatch took the general arm). fold_ctor_match now DECLINES the whole fold
+           the moment it would skip ANY refined same-disc arm (here the first literal `(Wrap 0)`), so the
+           runtime match evaluates all three arms — however many. `main 5`: dispatch-1 `(Wrap 5)` → general 5;
+           dispatch-2 `(Wrap 0)` → literal 100 (×10); dispatch-3 `(Wrap 1)` → literal 200 (×100); 5 + 1000 +
+           20000 = 21005. `main -3`: dispatch-1 `(Wrap -3)` → general -3; +1000 +20000 = 20997.")
+  (input  (do
+            (type Box (Wrap Int64))
+            (effect E (op rate (-> Box Int64)))
+            (def (main (: k Int64))
+              (handle E 0
+                ((rate (c) s
+                  (match c
+                    ((Wrap 0) (resume 100 s))
+                    ((Wrap 1) (resume 200 s))
+                    ((Wrap v) (resume v s)))))
+                (+ (E.rate (Wrap k)) (+ (* 10 (E.rate (Wrap 0))) (* 100 (E.rate (Wrap 1)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 21005 Int64))
+  (call   main (: -3 Int64)) (output (: 20997 Int64)))
+
 
 ; ── Data-driven slot routing and whole-state permutation (breaker ss5-7 / rg1-2) ──────────────
 ; The multi-slot tuple state under DATA-DRIVEN shape changes. Slot routing: an op ARG selects

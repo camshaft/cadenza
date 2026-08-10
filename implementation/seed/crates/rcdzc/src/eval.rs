@@ -2389,8 +2389,33 @@ pub fn fold_ctor_match(db: &mut Db, node: StructId) -> Option<StructId> {
     }
     // Find the arm whose pattern matches the scrutinee's discriminant and is one this fold handles.
     for (pat, body) in &arms {
-        // A guarded arm (`(guard <pat> <cond>)`) is refutable at runtime — never fold it away.
-        if db.ast.as_form(*pat, "guard").is_some() {
+        // A guarded arm (`(guard <pat> <cond>)`) is refutable at runtime — its selection depends on the
+        // GUARD, which this static fold cannot decide. Skipping it and folding to a LATER arm is only sound
+        // if the guarded arm CANNOT match this scrutinee (a different discriminant). But if the guarded arm's
+        // inner pattern has the SAME discriminant as the scrutinee, it MIGHT admit at runtime — folding past
+        // it to a later same-ctor sibling (`(guard (Wrap v) g) … (Wrap _v) …)` over `(Wrap 5)`) DISCARDS the
+        // guard's admit path, so both the guard-hit and the fallback collapse to the sibling body (breaker
+        // FINDING #15: a ctor-pattern guard with a same-ctor non-guarded sibling ran the fallback 0 for BOTH
+        // multi-dispatch dispatches, where the first should admit → 50). DECLINE the whole fold (leave a
+        // runtime match, which evaluates the guard correctly) when a skipped guarded arm's discriminant
+        // matches the scrutinee. A guarded arm of a DIFFERENT ctor (or an unresolvable pattern) cannot match,
+        // so it is safe to skip and keep scanning (a wildcard-fallback shape has no same-disc guarded arm to
+        // block on — the user workaround breaker noted).
+        if let Some(inner_pat) = db
+            .ast
+            .as_form(*pat, "guard")
+            .and_then(|g| g.first().copied())
+        {
+            // The guarded arm's inner pattern head, if it's a `(ctor sub)` shape.
+            let guard_ctor_head = match db.ast.get(inner_pat) {
+                crate::ast::Struct::List(gkids) if gkids.len() == 2 => Some(gkids[0]),
+                _ => None,
+            };
+            if let Some(head) = guard_ctor_head
+                && variant_disc_of(db, head) == Some(disc)
+            {
+                return None; // an undecided same-ctor guard shadows any later arm — not statically foldable
+            }
             continue;
         }
         // The pattern must be a 2-element list `(ctor_head sub_pattern)`: the head names the variant, the
@@ -2438,7 +2463,22 @@ pub fn fold_ctor_match(db: &mut Db, node: StructId) -> Option<StructId> {
             let folded = rewrite_sum_payload(db, *body, scrutinee, payload, Some(&elems));
             return Some(folded);
         }
-        // Any other sub-pattern (nested variant, record, literal) — not a slice this fold serves.
+        // A same-disc arm whose payload sub-pattern is a LITERAL (`(Wrap 0)`) — REFUTABLE and undecidable by
+        // this static fold (the payload may or may not equal the literal at runtime, under multi-dispatch the
+        // scrutinee varies per dispatch). Skipping it to fold to a LATER same-disc arm DISCARDS its selection
+        // path: breaker FINDING #15 wider face — `(match c ((Wrap 0) 100) ((Wrap v) v))` over two dispatches
+        // lost the LITERAL arm (dispatch-2's `(Wrap 0)` took the general arm's 0, not 100). DECLINE the whole
+        // fold (runtime match, which tests the literal correctly). Same root as the guarded same-ctor case
+        // above. NARROW to a literal sub-pattern (a non-name atom): a NESTED-ctor / record sub-pattern is left
+        // to `continue` as before — the caller's loop folds those via a subsequent slice (the DES pqueue
+        // `(PQCons (tuple …))` inner-ctor unfold relies on the scan continuing), and over-declining them would
+        // regress that path. A literal is the confirmed shadowing face.
+        if matches!(db.ast.get(binder), crate::ast::Struct::Atom(_))
+            && db.ast.as_name(binder).is_none()
+        {
+            return None;
+        }
+        // Any other sub-pattern (nested variant, record) — not a slice this fold serves; keep scanning.
         continue;
     }
     None
