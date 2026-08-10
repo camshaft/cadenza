@@ -4974,10 +4974,18 @@ fn dev_gate(paths: &Paths, crates: &[String]) {
     match status {
         Ok(s) if s.success() => {} // app printed its own green + not-merge-safe caveat.
         Ok(s) => {
+            // A non-zero exit is one of THREE things (the app streamed which above): (a) real
+            // test/clippy/fmt failures → fix them; (b) `.#fast-gate` unrecognized → the app MR isn't on
+            // trunk yet; (c) your touched crate is NOT a gated-root crate (a workspace-EXCLUDED crate
+            // like `cdz-kernel`/`cdz-wasm` — its own workspace + a separate nix native check, so fast-gate
+            // skips it). Case (c) is NOT a failure of your code — dev-gate just can't cover that crate; run
+            // its tests directly from the crate dir (`cargo test` in the crate) for your inner loop.
             eprintln!(
-                "dev-gate: fast-gate reported failures (exit {}). Fix them, or if `.#fast-gate` is \
-                 unrecognized the app MR (v-nix's b4b57fd80) may not be on trunk yet — fall back to the \
-                 scoped `cargo xtask gate --files <yours> --target wasm` until it lands.",
+                "dev-gate: fast-gate exit {} — see its output above. If it's TEST/clippy/fmt failures, fix \
+                 them. If it says a crate is 'not a gated root crate' (a workspace-excluded crate like \
+                 cdz-kernel), dev-gate can't cover it — iterate with `cargo test`/`cargo clippy` from that \
+                 crate's own dir instead. If `.#fast-gate` is unrecognized, its app MR isn't on trunk yet — \
+                 fall back to `cargo xtask gate --files <yours> --target wasm`.",
                 s.code().unwrap_or(-1)
             );
             std::process::exit(s.code().unwrap_or(1));
