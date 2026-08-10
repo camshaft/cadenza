@@ -4266,6 +4266,7 @@ pass	an effect in a statically-dead branch is still syntactically reached, so it
 pass	an effect in a statically-dead branch still requires a grant — ungranted is rejected
 pass	an effect op RESUMED with a constructed Ast node crosses the arm boundary and matches in the body
 pass	an effect op RESUMED with a slice-view Bytes crosses the arm boundary intact
+pass	an arm that matches over a COMPUTATION on the op-param and resumes a match binder folds (nv1e/nvC)
 pass	an effect op resumed with a whole MAP threads the CHAMP through the continuation
 pass	an effect op whose declared RESULT is a QUANTITY resumes with a Qty value
 pass	an effect op with a structural-record return types the perform at the declared record

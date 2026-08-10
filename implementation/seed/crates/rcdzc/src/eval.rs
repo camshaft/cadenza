@@ -641,21 +641,27 @@ pub fn beta_reduce(db: &mut Db, body: StructId, arg_of: &HashMap<StructId, Struc
     // and, on a deep nested-call chain, re-resolve exponentially — the stack-overflow regression).
     if db.ast.as_name(body).is_some() && db.resolved_subtrees.contains(&body) {
         if let Resolved::SumPayload { scrutinee, .. } = resolved_of(db, body)
-            && (scrutinee_is_substituted(db, scrutinee, arg_of)
+            && (scrutinee_mentions_substituted(db, scrutinee, arg_of)
                 || db
                     .reduction_root
                     .is_some_and(|root| db.is_within(scrutinee, root)))
         {
-            // Fall through to `copy_structural` — re-resolve against the copied scrutinee. Two cases need
+            // Fall through to `copy_structural` — re-resolve against the copied scrutinee. Three cases need
             // this: (a) the scrutinee IS a substituted param (a lambda whose param is the match scrutinee,
-            // applied through a nested inline); (b) the scrutinee is an EXPRESSION WITHIN the body being
-            // copied — `(match (f c) ((Ok ct) …))` in a monomorphized def, where the scrutinee `(f c)` is
-            // itself copied (a fresh occurrence re-resolving its own `c` against the specialized sig). In
-            // both, SHARING the pinned binder would leave its `SumPayload` reading the ORIGINAL, now-orphaned
-            // scrutinee — whose param references (`c`) have no slot in the copied function, the "parameter
-            // reference has no local slot" backend decline. A scrutinee OUTSIDE the copy root is a genuine
-            // capture (an enclosing match's binder read by an inner lambda) and keeps sharing (copying it
-            // would break its resolution and, on a deep call chain, re-resolve exponentially).
+            // applied through a nested inline); (a') the scrutinee is a COMPOUND expression that MENTIONS a
+            // substituted param — `(match (Bytes.slice b 1 2) ((Some w) (resume w t)) …)` in an effect
+            // handler arm, where the op-param `b` is being substituted by the pure-copied op arg but the
+            // scrutinee `(Bytes.slice b 1 2)` is an Apply, not a bare `Param`, so `scrutinee_is_substituted`
+            // alone (top-value only) misses it (nv1e/nvC: a resume value bound by a match over a computation
+            // on the op-param); (b) the scrutinee is an EXPRESSION WITHIN the body being copied — `(match
+            // (f c) ((Ok ct) …))` in a monomorphized def, where the scrutinee `(f c)` is itself copied (a
+            // fresh occurrence re-resolving its own `c` against the specialized sig). In all three, SHARING
+            // the pinned binder would leave its `SumPayload` reading the ORIGINAL, now-orphaned scrutinee —
+            // whose param references (`c`/`b`) have no slot in the copied function, the "parameter reference
+            // has no local slot" backend decline. A scrutinee OUTSIDE the copy root that mentions no
+            // substituted param is a genuine capture (an enclosing match's binder read by an inner lambda)
+            // and keeps sharing (copying it would break its resolution and, on a deep call chain, re-resolve
+            // exponentially).
         } else {
             return body;
         }
@@ -702,6 +708,30 @@ fn scrutinee_is_substituted(
             _ => return false,
         }
     }
+}
+
+/// Whether the scrutinee subtree at `scrutinee` MENTIONS a parameter THIS β-reduction is substituting —
+/// anywhere within it, not just as its top value (which is [`scrutinee_is_substituted`]'s job). A COMPOUND
+/// scrutinee like `(Bytes.slice b 1 2)` is an application, not a bare `Param`/`Ref`, so
+/// `scrutinee_is_substituted` returns false; yet it READS the substituted op-param `b`, so a pattern binder
+/// whose `SumPayload` points at it must still be COPIED (to re-resolve against the substituted-scrutinee
+/// copy) rather than shared (which would leave the binder reading the original scrutinee's raw `b`, whose
+/// substituted occurrence has no slot in the folded body — "parameter reference has no local slot"). Walk
+/// the subtree, chasing each `Ref`/`Param` to its binder, and return true if any resolves into `arg_of`.
+fn scrutinee_mentions_substituted(
+    db: &mut Db,
+    scrutinee: StructId,
+    arg_of: &HashMap<StructId, StructId>,
+) -> bool {
+    if scrutinee_is_substituted(db, scrutinee, arg_of) {
+        return true;
+    }
+    if let crate::ast::Struct::List(children) = db.ast.get(scrutinee).clone() {
+        return children
+            .iter()
+            .any(|&c| scrutinee_mentions_substituted(db, c, arg_of));
+    }
+    false
 }
 
 /// Structurally copy `body` (no substitution at THIS node — the caller decided it is not a

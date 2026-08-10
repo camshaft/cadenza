@@ -866,6 +866,30 @@
   (call   main (: 22 Int64))
   (output (: 42 Int64)))
 
+(case "an arm that matches over a COMPUTATION on the op-param and resumes a match binder folds (nv1e/nvC)"
+  (doc    "The op-param twin of the slice-view case above: the arm's match scrutinee is a `Bytes.slice`
+           over the OP-PARAM `b` (not a constant), and the resume value `w` is the match binder bound by
+           that scrutinee. The pure-one-hole refold β-reduces the arm body substituting `b := (the pure
+           copy of) the op arg`; the binder `w` carries a `SumPayload` reading the scrutinee, which MENTIONS
+           the substituted `b`. If the fold SHARED `w` as a capture, its payload would keep reading the
+           original scrutinee's raw `b` — an op-param with no slot in the folded body → the 'parameter
+           reference has no local slot' backend decline (nv1e minimized to nvC). The fix COPIES such a
+           binder so it re-resolves against the substituted-scrutinee copy. Here `b = (20,30,40)`, `slice b
+           1 2 = (30,40)`, `Bytes.len = 2`, `+ a(7) = 9`. The control `(cut (b) t (resume b t))` — hand `b`
+           straight back, no match — always folded; this pins the match-over-computed-op-param shape.")
+  (input  (do
+            (effect B (op cut (-> Bytes Bytes)))
+            (def (main (: a Int64))
+              (handle B 0
+                ((cut (b) t
+                  (match (Bytes.slice b 1 2)
+                    ((Some w) (resume w t))
+                    ((None x) (resume (Bytes.of (list)) t)))))
+                (+ (Bytes.len (B.cut (Bytes.of (list 20 30 40)))) a)))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 9 Int64)))
+
 (case "an effect op RESUMED with a constructed Ast node crosses the arm boundary and matches in the body"
   (doc    "An AST as the resume value — the first Ast crossing an effect boundary in the corpus: the arm
            constructs `(Ast.Int (BigInt.of x))` from the op param and resumes with it; the body pattern-matches
