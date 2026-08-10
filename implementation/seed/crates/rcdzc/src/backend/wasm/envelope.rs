@@ -514,6 +514,155 @@ fn assemble_with_imports(
     out
 }
 
+/// The REDUCER shape (B3): a single `apply(event: list<u8>) -> list<u8>` export that IMPORTS the value-heap
+/// runtime (value-decode/encode + kv) AND crosses BOTH its param and result as `list<u8>` through linear
+/// memory, published under the `cadenza:agent-kernel/fold` interface. Combines [`assemble_provider_runtime`]
+/// (runtime-op imports + bundle-under-`iface`) with the `list<u8>`/memory bits of [`assemble_bare_bytes`]:
+///   * lays the shared `list u8` defined type as component TYPE 0 (so the apply functype is type 1);
+///   * aliases `memory` + `cabi_realloc` from the PROGRAM core instance (instance 1) — the canonical ABI
+///     reads the incoming event list from + writes the effect-list result to that memory;
+///   * lifts the apply core func with `canon_lift_list_item` (Memory + Realloc canon options), NOT the
+///     plain lift, so its `list<u8>` param + `list<u8>` result cross.
+/// SINGLE export (`apply`), so `m = 1` throughout. `iface` is the fold interface name.
+pub fn assemble_reducer_apply(
+    core: &[u8],
+    apply: &BoundaryExport,
+    imports: &[&RtOp],
+    import_name: &str,
+    iface: &str,
+) -> Vec<u8> {
+    let k = imports.len();
+    debug_assert_eq!(apply.result, BoundaryResult::Bytes);
+    debug_assert!(apply.params.iter().any(|p| *p == BoundaryParam::ListU8));
+
+    // sec 7 (first): import instance-type (comp type 0 in the INSTANCE-type's own space) — the runtime ops.
+    let instance_type = {
+        let mut decls = Vec::new();
+        for (i, op) in imports.iter().enumerate() {
+            decls.push(0x01);
+            decls.extend_from_slice(&op_comp_functype(op));
+            decls.push(0x04);
+            decls.extend_from_slice(&extern_name(op.name));
+            decls.push(0x01);
+            uleb128(i as u64, &mut decls);
+        }
+        let mut it = vec![0x42];
+        it.extend_from_slice(&wasm_vec(2 * k, &decls));
+        it
+    };
+    // The import instance-type is component type 0; the shared `list u8` is component type 1; the apply
+    // functype is component type 2. (comp types are one shared index space.)
+    let list_type_idx: u32 = 1;
+    let apply_type_idx: u32 = 2;
+    let type_sec = {
+        let mut items = instance_type;
+        items.extend_from_slice(&list_u8_defined_type());
+        items.extend_from_slice(&comp_functype(apply, list_type_idx));
+        section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
+    };
+
+    // sec 10: import the runtime interface as an instance of component type 0.
+    let import_sec = {
+        let mut item = extern_name(import_name);
+        item.push(0x05);
+        uleb128(0, &mut item);
+        section(sec::COMPONENT_IMPORT, &wasm_vec(1, &item))
+    };
+
+    // sec 6 (first): alias each op out of the imported instance (comp instance 0) → comp funcs `0..k`.
+    let op_alias_sec = {
+        let mut items = Vec::new();
+        for op in imports {
+            items.extend_from_slice(&comp_alias_item(0, op.name));
+        }
+        section(sec::ALIAS, &wasm_vec(k, &items))
+    };
+    // sec 8 (first): lower each aliased op → core funcs `0..k`.
+    let lower_sec = {
+        let mut items = Vec::new();
+        for i in 0..k {
+            items.extend_from_slice(&canon_lower_item(i as u32));
+        }
+        section(sec::CANON, &wasm_vec(k, &items))
+    };
+    // sec 2: heap core instance (0) + program core instance (1) bound to `"heap"`.
+    let core_instance_sec = {
+        let mut items = Vec::new();
+        let mut heap = vec![0x01];
+        let mut heap_exports = Vec::new();
+        for (i, op) in imports.iter().enumerate() {
+            heap_exports.extend_from_slice(&uleb_bytes(op.name.len() as u64));
+            heap_exports.extend_from_slice(op.name.as_bytes());
+            heap_exports.push(0x00);
+            uleb128(i as u64, &mut heap_exports);
+        }
+        heap.extend_from_slice(&wasm_vec(k, &heap_exports));
+        items.extend_from_slice(&heap);
+        let mut prog = vec![0x00];
+        uleb128(0, &mut prog);
+        let mut args = Vec::new();
+        args.extend_from_slice(&uleb_bytes(HEAP_MODULE.len() as u64));
+        args.extend_from_slice(HEAP_MODULE.as_bytes());
+        args.push(0x12);
+        uleb128(0, &mut args);
+        prog.extend_from_slice(&wasm_vec(1, &args));
+        items.extend_from_slice(&prog);
+        section(sec::CORE_INSTANCE, &wasm_vec(2, &items))
+    };
+    // sec 6 (second): alias `apply` (core func k), then `memory`, then `cabi_realloc` off the PROGRAM
+    // instance (core instance 1). apply → core func k; memory → mem 0; cabi_realloc → core func k+1.
+    let realloc_func = (k + 1) as u32;
+    let boundary_alias_sec = {
+        let mut items = Vec::new();
+        items.extend_from_slice(&core_alias_item(1, &apply.name));
+        items.extend_from_slice(&memory_alias_item(1, "memory"));
+        items.extend_from_slice(&core_alias_item(1, "cabi_realloc"));
+        section(sec::ALIAS, &wasm_vec(3, &items))
+    };
+    // sec 8 (second): lift the apply core func (k) with Memory+Realloc canon options (list<u8> param +
+    // result cross through the aliased memory), using the apply functype (comp type 2) → comp func k.
+    let lift_sec = section(
+        sec::CANON,
+        &wasm_vec(
+            1,
+            &canon_lift_list_item(k as u32, 0, realloc_func, apply_type_idx),
+        ),
+    );
+    // sec 5: bundle the lifted apply (comp func k) into a component instance (export-items form).
+    let instance_sec = {
+        let mut item = vec![0x01];
+        let name = crate::backend::common::export_name::kebab_extern_name(&apply.name);
+        let mut members = extern_name(&name);
+        members.push(0x01); // ComponentExportKind::Func
+        uleb128(k as u64, &mut members);
+        item.extend_from_slice(&wasm_vec(1, &members));
+        section(sec::COMPONENT_INSTANCE, &wasm_vec(1, &item))
+    };
+    // sec 11: export the bundled instance under the fold interface name (imported RUNTIME instance is
+    // comp-instance 0; the bundle is comp-instance 1 → export index 1).
+    let export_sec = {
+        let iface_name = crate::backend::common::export_name::kebab_extern_name(iface);
+        section(
+            sec::COMPONENT_EXPORT,
+            &wasm_vec(1, &export_instance_item(&iface_name, 1)),
+        )
+    };
+
+    let mut out = Vec::new();
+    out.extend_from_slice(COMPONENT_MAGIC);
+    out.extend_from_slice(&type_sec); // 7: import instance-type + list u8 + apply functype
+    out.extend_from_slice(&import_sec); // 10: component import
+    out.extend_from_slice(&op_alias_sec); // 6: alias ops
+    out.extend_from_slice(&lower_sec); // 8: lower ops
+    out.extend_from_slice(&core_module_section(core)); // 1: embedded program
+    out.extend_from_slice(&core_instance_sec); // 2: heap + program instances
+    out.extend_from_slice(&boundary_alias_sec); // 6: alias apply + memory + cabi_realloc
+    out.extend_from_slice(&lift_sec); // 8: lift apply WITH Memory+Realloc
+    out.extend_from_slice(&instance_sec); // 5: bundle apply into one instance
+    out.extend_from_slice(&export_sec); // 11: export under the fold interface
+    out
+}
+
 /// The PROVIDER + RUNTIME shape (X5c): a PROVIDER whose exports BUILD runtime values (importing the
 /// value-heap runtime) AND publishes them as a named interface instance `iface` so a peer binds them.
 /// Identical to [`assemble_with_imports`] through the lift, but bundles the lifted funcs into a COMPONENT
