@@ -2518,6 +2518,24 @@
   (call   main (: -3 Int64))
   (trap   "unreachable"))
 
+(case "a @requires predicate that calls a RECURSIVE user helper evaluates soundly — predicate eval drives recursion to a fixpoint"
+  (doc    "Extends the user-fn predicate case above (a FLAT `(ok x)`) to a RECURSIVE helper, pinning that
+           predicate evaluation drives a self-recursive call to termination like any expression — the injected
+           `(if (even x) BODY (trap …))` must fully evaluate the recursion before branching, not just resolve the
+           name. `(even n)` counts down by 2 to a base case: `(< n 1) → true`, `(= n 1) → false`, else `(even (-
+           n 2))`. `f` is guarded by `@requires(even x)`. main(4): even(4)→even(2)→even(0)=true → the
+           precondition holds → 4. main(3): even(3)→even(1)=false → the precondition is false → trap. That the
+           odd input traps only AFTER the recursion unwinds to its base case proves the predicate call is
+           evaluated to a fixpoint at body-entry, not short-circuited — a predicate is an ordinary computation,
+           recursion included. Runtime arg via main's param so nothing folds.")
+  (input  (do
+            (def (even (: n Int64)) (if (< n 1) true (if (= n 1) false (even (- n 2)))))
+            (@ (requires (even x)) (def (f (: x Int64)) x))
+            (def (main (: k Int64)) (f k))
+            (export main)))
+  (call   main (: 4 Int64))  (output (: 4 Int64))
+  (call   main (: 3 Int64))  (trap "unreachable"))
+
 (case "a @requires predicate that MATCHES on a sum-typed parameter dispatches and enforces (v-patterns seam)"
   (doc    "A cross-seam composition pin (pattern-matching seam): the precondition predicate is not a scalar
            comparison but a `match` that DISPATCHES on a sum-typed parameter, so the injected `(if (match o …)

@@ -537,6 +537,7 @@ pass	a @requires precondition is enforced for a genuinely-runtime argument
 pass	a @requires predicate over a HEAP collection is enforced at entry and value-transparent when satisfied
 pass	a @requires predicate that CALLS a user-defined function resolves and enforces — not only prelude ops
 pass	a @requires predicate that MATCHES on a sum-typed parameter dispatches and enforces (v-patterns seam)
+pass	a @requires predicate that calls a RECURSIVE user helper evaluates soundly — predicate eval drives recursion to a fixpoint
 pass	a @requires predicate that is NOT Bool-typed is REJECTED CDZ0203 — a predicate must denote a truth value
 pass	a @requires predicate that itself traps keeps its own trap kind
 pass	a @requires predicate that references `ret` is REJECTED CDZ0101 — only @ensures binds the result
