@@ -90,3 +90,39 @@
   (kickoff "worker" (inbound "tick" (: unit Unit)))
   (end-state "worker" (status quiescent))
   (events-processed "worker" 2))
+
+(platform-case "a session writes TWO kv keys on its kick-off (multi-key end-state)"
+  (doc "Exercises the grader's MULTI-KEY end-state path: on a `message` kick-off the reducer writes two
+        distinct kv keys (a=7, b=9) via its bound kv, no effects. Pins that BOTH keys are asserted
+        independently (a case with several (kv …) clauses requires every one to match), not just the
+        first. Distinct one-byte values (07/09) also witness the value decoder at more than one number.")
+  (session "worker" (reducer
+    (do
+      (type EffectKind (Shell) (Http) (Model) (Now) (Timer) (Emit))
+      (type EffectRequest
+        (Mk (Record
+          (: kind EffectKind)
+          (: target String)
+          (: payload (Option Bytes))
+          (: correlation (Option Bytes)))))
+      (effect Kv (op get (-> Bytes (Option Bytes))) (op put (-> Bytes Bytes Unit)))
+      (bind Kv "cadenza:agent-kernel/kv")
+      (def (apply
+             (: ct (Record (: family String) (: version (UInt 32))))
+             (: payload (Option Bytes))
+             (: resumes (Option Bytes)))
+        (: (match resumes
+             ((Some _) ("list"))
+             ((None)
+              (if (= (. ct family) "message")
+                (host (Kv)
+                  (do
+                    ((. Kv put) ((. String to-bytes) "a") ((. Bytes of) ("list" ((. UInt8 wrap) 7))))
+                    ((. Kv put) ((. String to-bytes) "b") ((. Bytes of) ("list" ((. UInt8 wrap) 9))))
+                    ("list")))
+                ("list"))))
+           (List EffectRequest)))
+      (export apply))))
+  (kickoff "worker" (inbound "message" (: unit Unit)))
+  (end-state "worker" (kv "a" (: 7 Int64)) (kv "b" (: 9 Int64)) (status quiescent))
+  (events-processed "worker" 2))

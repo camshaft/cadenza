@@ -1,3 +1,4 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
 pass	a counter session bumps kv count on its kick-off message
+pass	a session writes TWO kv keys on its kick-off (multi-key end-state)
 pass	the same counter IGNORES a non-message kick-off (else-branch writes no state)
