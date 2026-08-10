@@ -2295,6 +2295,7 @@ pass	a match arm binds a nested tuple inside a sum payload
 pass	a match arm building a fresh runtime compound infers its shape
 pass	a match arm mixes a payload LITERAL, a wildcard, and a nested-Option pattern
 pass	a match arm reading two elements of a boxed payload tuple shares the sum-payload prefix
+pass	a match arm whose list length an earlier arm already covers is unreachable and earns a CDZ0213 warning
 pass	a match arm's DESTRUCTURED payload is the argument to a perform in that arm's body
 pass	a match binder over a narrow scrutinee returns the bound value
 pass	a match binder used twice binds its recursive scrutinee once (A-normalized, value-correct)

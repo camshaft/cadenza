@@ -3420,6 +3420,21 @@
   (output (: 0 Int64))
   (warns  CDZ0213 (message "this match arm is unreachable")))
 
+(case "a match arm whose list length an earlier arm already covers is unreachable and earns a CDZ0213 warning"
+  (doc    "The list-length-subsumption face — a sixth DISTINCT detector: a list-match arm covers a LENGTH
+           (an exact `(list a)` = length 1, or a `.. r` rest ray = length ≥ k), and a later arm whose lengths
+           are all already covered is unreachable. `(match xs ((list a) a) ((list b) 9) (_ 0))` — both
+           `(list a)` and `(list b)` match a length-1 list, so the second is dead by length coverage (not by
+           variant, literal, tuple-shape, or irrefutability — the list-arity axis). The program compiles and
+           runs (`(f (list 1))` = 1, the first arm) but the build surfaces the CDZ0213 `unreachable` warning.
+           Pins that the redundancy pass reasons about list-length coverage (exact and `≥ k` ray). Wasm-graded
+           (the run paths skip the (warns ..) check, not fail it). Companion of the rcdzc
+           a_duplicate_or_shadowed_list_length_arm_is_redundant test.")
+  (input  (do (def (f (: xs (List Int64))) (match xs ((list a) a) ((list b) 9) (_ 0))) (def (main) (f (list 1))) (export main)))
+  (call   main)
+  (output (: 1 Int64))
+  (warns  CDZ0213 (message "this match arm is unreachable")))
+
 (case "a match on a computed runtime value dispatches on the result"
   (doc    "The scrutinee is the expression `(% n 2)`, computed at run time. Its value (0 for an
            even n) selects the literal arm 0. Exercises a match whose scrutinee is neither a
