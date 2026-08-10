@@ -22040,3 +22040,47 @@
   (call   main (: 5 Int64)) (output (: 213 Int64))
   (call   main (: 0 Int64)) (output (: 208 Int64))
   (call   main (: -4 Int64)) (output (: 204 Int64)))
+
+
+; ── Map DRAIN dynamics in the arm (breaker md2/md3) ───────────────────────────────────────────
+; The keyed-store lifecycle under removal — the Map twin of the landed Set drain (se3). md2:
+; Map.remove keyed by the op arg, a re-take of the drained key routes to the miss path, a
+; trailing size pins the shrink (one row drains a negative value). md3 COMPOSES insert and
+; remove in one next-state: the drained value re-files under key+3, the THIRD take hits the
+; re-filed entry, and the final take finds it moved again. All rows hand-computed; all pass on
+; wasm, rust, and rust-async.
+
+(case "md2 the arm DRAINS a Map entry per dispatch — Map.remove keyed by the op arg, a re-take of the same key routes to the miss path"
+  (input  (do
+            (effect E (op take (-> Int64 Int64)) (op size (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (Map.insert (Map.insert (Map.insert Map.empty 1 (+ 10 n)) 2 20) 3 30)
+                ((take (k) m (match (Map.lookup m k)
+                               ((Some v) (resume v (Map.remove m k)))
+                               ((None) (resume -1 m))))
+                 (size () m (resume (Map.len m) m)))
+                (+ (* 1000 (E.take 1))
+                   (+ (* 100 (E.take 1))
+                      (+ (* 10 (E.take 3))
+                         (E.size))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 15201 Int64))
+  (call   main (: 0 Int64)) (output (: 10201 Int64))
+  (call   main (: -13 Int64)) (output (: -2799 Int64)))
+
+(case "md3 the drained value RE-FILES under a shifted key — the third take HITS the re-filed entry, the final take finds it moved on"
+  (input  (do
+            (effect E (op take (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E (Map.insert (Map.insert Map.empty 1 (+ 10 n)) 2 20)
+                ((take (k) m (match (Map.lookup m k)
+                               ((Some v) (resume v (Map.insert (Map.remove m k) (+ k 3) v)))
+                               ((None) (resume -1 m)))))
+                (+ (* 1000 (E.take 1))
+                   (+ (* 100 (E.take 2))
+                      (+ (* 10 (E.take 4))
+                         (E.take 4))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 17149 Int64))
+  (call   main (: 0 Int64)) (output (: 12099 Int64))
+  (call   main (: -12 Int64)) (output (: -21 Int64)))

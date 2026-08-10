@@ -7137,3 +7137,5 @@ pass	tr2 TWO string fields in the tuple with only one phi-grown — the sibling 
 pass	ac1 a pipeline chain alternating a 1-ary and a 2-ary op — each result feeds the next call's argument while the thread advances
 pass	ac2 the chain's MIDDLE result routes the branch that picks WHICH op finishes the pipeline
 pass	ac3 the pipeline BOUNCES between two effects — inner B's result feeds outer E's op, whose result feeds B again
+pass	md2 the arm DRAINS a Map entry per dispatch — Map.remove keyed by the op arg, a re-take of the same key routes to the miss path
+pass	md3 the drained value RE-FILES under a shifted key — the third take HITS the re-filed entry, the final take finds it moved on
