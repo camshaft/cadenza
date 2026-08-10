@@ -549,7 +549,12 @@ pub fn assemble_reducer_apply(
     // component core-func index space is populated across the lower + alias sections; a canon-option may
     // reference a core func by its final index). `mem_needs_realloc` gates the whole thing.
     let mem_needs_realloc = extern_fns.iter().any(|f| f.op == "get");
-    let realloc_core_func = (e + k) as u32; // the cabi_realloc alias, right after the op lowers
+    // The mem-module `cabi_realloc` (get's Realloc option) is a CORE func aliased BEFORE the op-lowers (so
+    // the get-lower's back-reference to it is a DEFINED index, not a forward-ref wasm-tools rejects). So it
+    // is core func 0 and every op-produced core func shifts up by `op_core_base` (=1 when get is present,
+    // else 0). realloc = core func 0; op-lowers → `op_core_base..op_core_base+e+k`.
+    let op_core_base = if mem_needs_realloc { 1u32 } else { 0u32 };
+    let realloc_core_func = 0u32;
 
     // sec 7: g peer instance-types (comp types `0..g`) + the runtime instance-type (comp type `g`) + the
     // shared `list u8` (comp type `g+1`) + the apply functype (comp type `g+2`).
@@ -684,19 +689,19 @@ pub fn assemble_reducer_apply(
                 peer_ex.extend_from_slice(&uleb_bytes(f.op.len() as u64));
                 peer_ex.extend_from_slice(f.op.as_bytes());
                 peer_ex.push(0x00); // ExportKind::Func
-                uleb128(i as u64, &mut peer_ex);
+                uleb128((op_core_base + i as u32) as u64, &mut peer_ex); // shifted past the realloc alias
             }
             peer.extend_from_slice(&wasm_vec(e, &peer_ex));
             items.extend_from_slice(&peer);
         }
-        // heap core instance (exports the runtime ops at core funcs `e..e+k`).
+        // heap core instance (exports the runtime ops at core funcs `op_core_base + e .. +k`).
         let mut heap = vec![0x01];
         let mut heap_exports = Vec::new();
         for (j, op) in imports.iter().enumerate() {
             heap_exports.extend_from_slice(&uleb_bytes(op.name.len() as u64));
             heap_exports.extend_from_slice(op.name.as_bytes());
             heap_exports.push(0x00);
-            uleb128((e + j) as u64, &mut heap_exports);
+            uleb128((op_core_base + (e + j) as u32) as u64, &mut heap_exports);
         }
         heap.extend_from_slice(&wasm_vec(k, &heap_exports));
         items.extend_from_slice(&heap);
@@ -729,28 +734,18 @@ pub fn assemble_reducer_apply(
         items.extend_from_slice(&prog);
         section(sec::CORE_INSTANCE, &wasm_vec(n_core_inst, &items))
     };
-    // sec 6 (second): (when get is present) alias the shared-mem module's `cabi_realloc` as core func
-    // `e+k` FIRST — the get-lower's Realloc option references it. Then alias `apply`, `memory`,
-    // `cabi_realloc` off the PROGRAM instance. So the boundary core funcs start at `boundary_base` (= e+k,
-    // or e+k+1 when the realloc alias shifted them): apply → boundary_base, cabi_realloc → boundary_base+1.
-    let boundary_base = if mem_needs_realloc { e + k + 1 } else { e + k } as u32;
-    let apply_core_func = boundary_base;
-    let realloc_func = boundary_base + 1;
+    // sec 6 (second): alias `apply`, `memory`, `cabi_realloc` off the PROGRAM core instance. The op-produced
+    // core funcs are `op_core_base..op_core_base+e+k` (the mem `cabi_realloc` alias, when present, is core
+    // func 0 — aliased in the mem_alias_sec BEFORE the lower, so op funcs shift by `op_core_base`). So the
+    // boundary core funcs start at `op_core_base + e + k`: apply → that, program cabi_realloc → +1.
+    let apply_core_func = op_core_base + (e + k) as u32;
+    let realloc_func = apply_core_func + 1;
     let boundary_alias_sec = {
         let mut items = Vec::new();
-        let mut n = 3;
-        if mem_needs_realloc {
-            // Alias the shared-mem module's cabi_realloc (from the mem core instance) as core func `e+k`.
-            items.extend_from_slice(&core_alias_item(
-                mem_core_inst_idx.expect("mem instance exists when get is present"),
-                "cabi_realloc",
-            ));
-            n += 1;
-        }
         items.extend_from_slice(&core_alias_item(prog_core_inst_idx, &apply.name));
         items.extend_from_slice(&memory_alias_item(prog_core_inst_idx, "memory"));
         items.extend_from_slice(&core_alias_item(prog_core_inst_idx, "cabi_realloc"));
-        section(sec::ALIAS, &wasm_vec(n, &items))
+        section(sec::ALIAS, &wasm_vec(3, &items))
     };
     // sec 8 (second): lift the apply core func with Memory+Realloc, using the apply functype (comp type
     // `g+2`) → comp func `e+k`.
@@ -793,13 +788,26 @@ pub fn assemble_reducer_apply(
         shared_mem_module()
     };
     let (mem_module_sec, mem_instance_sec, mem_alias_sec) = if e > 0 {
+        // The mem alias section: the memory (`mem`.`mem`→core memory 0) AND — when get is present — the
+        // `cabi_realloc` CORE FUNC (→ core func 0), aliased BEFORE the lower so the get-lower's Realloc
+        // reference is a defined (not forward) index. A func alias precedes the memory alias in the item
+        // stream so the func lands at core func 0 (funcs and memories are separate index spaces, so order
+        // within the section only fixes the per-kind index — the realloc func is core func 0 regardless of
+        // the memory alias, but keep the realloc FIRST for clarity).
+        let mut alias_items = Vec::new();
+        let mut n_alias = 1;
+        if mem_needs_realloc {
+            alias_items.extend_from_slice(&core_alias_item(0, "cabi_realloc")); // core func 0
+            n_alias += 1;
+        }
+        alias_items.extend_from_slice(&memory_alias_item(0, "mem")); // core memory 0
         (
             core_module_section(&mem_module_bytes),
             section(
                 sec::CORE_INSTANCE,
                 &wasm_vec(1, &core_instantiate_item(0, &[])),
             ),
-            section(sec::ALIAS, &wasm_vec(1, &memory_alias_item(0, "mem"))),
+            section(sec::ALIAS, &wasm_vec(n_alias, &alias_items)),
         )
     } else {
         (Vec::new(), Vec::new(), Vec::new())
