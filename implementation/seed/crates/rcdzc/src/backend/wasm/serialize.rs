@@ -7346,6 +7346,213 @@ fn reducer_apply_bytes_body(
     e
 }
 
+/// Which kv operation a reducer shim marshals (B3). The guest calls kv with heap HANDLES; the WIT-typed kv
+/// import takes `list<u8>` = `(ptr,len)` in linear memory. Each shim marshals handle↔memory around the raw
+/// WIT import (which the guest's `CallExternImport(i)` is rewritten to call via the shim).
+#[derive(Clone, Copy)]
+pub enum KvShimOp {
+    /// `put(key: list<u8>, value: list<u8>)` — 2 Bytes-handle params, no result.
+    Put,
+    /// `get(key: list<u8>) -> option<list<u8>>` — 1 Bytes-handle param, an Option(Bytes)-handle result.
+    /// `disc_some`/`disc_none` are the result Option's variant discriminants (read off the result type).
+    Get { disc_some: u32, disc_none: u32 },
+}
+
+/// The synthesized body of a reducer kv-op SHIM (B3): marshals the guest's Bytes HANDLE args to the
+/// WIT-typed kv import's `list<u8>` = `(ptr,len)` linear-memory form, calls the raw WIT import (`call
+/// wit_import_func`), and (for `get`) unpacks the `option<list<u8>>` retptr result back to an
+/// `Option(Bytes)` handle. Params are the guest's handle args (`put`: 2 i32; `get`: 1 i32); result is the
+/// guest-visible handle (`put`: none; `get`: 1 i32 Option handle). `import_index` maps runtime-op name →
+/// core func index (for bytes-alloc/get/set + sum-new); `wit_import_func` is the raw WIT kv import's core
+/// func index (0..e). Uses a fixed high scratch region (a kv call completes before the next + before the
+/// apply wrapper's OUT=8 copy-out, so no clobber). Raw-byte synthesis (like `reducer_apply_bytes_body` —
+/// no Core source); the memory ops are the `I32_LOAD`/`I32_LOAD8_U`/`I32_STORE8` opcodes B3 added.
+fn reducer_kv_shim_body(
+    shim: KvShimOp,
+    wit_import_func: u32,
+    import_index: &std::collections::HashMap<&str, u32>,
+) -> Vec<u8> {
+    use crate::backend::wasm::wasm_abi::op;
+    let call_op = |name: &str, out: &mut Vec<u8>| {
+        out.push(op::CALL);
+        uleb128(import_index[name] as u64, out);
+    };
+    let const_i32 = |v: i64, out: &mut Vec<u8>| {
+        out.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(v, out);
+    };
+    // Scratch layout in linear memory (high, above the apply wrapper's OUT=8 area): each list arg gets a
+    // 4KiB copy region; get's 12-byte retptr sits after. KV values in these fixtures are tiny (a 1-byte
+    // counter, a URL, a session id), so 4KiB per arg is ample.
+    const ARG0: i64 = 4096;
+    const ARG1: i64 = 8192;
+    const RETPTR: i64 = 12288;
+    let n_params = match shim {
+        KvShimOp::Put => 2,
+        KvShimOp::Get { .. } => 1,
+    };
+    let mut body = Vec::new();
+    // Locals after the params: h(handle scratch), ln(len), i(loop), + for get: rp(result ptr), rl(len),
+    // vbuf(value buf). 6 i32 locals covers both (unused ones are harmless).
+    uleb128(1, &mut body);
+    uleb128(6, &mut body);
+    body.push(wasm_abi::CORE_I32);
+    let (h, ln, i, rp, rl, vbuf) = (
+        n_params,
+        n_params + 1,
+        n_params + 2,
+        n_params + 3,
+        n_params + 4,
+        n_params + 5,
+    );
+    let get = |l: u32, out: &mut Vec<u8>| {
+        out.push(op::LOCAL_GET);
+        uleb128(l as u64, out);
+    };
+    let set = |l: u32, out: &mut Vec<u8>| {
+        out.push(op::LOCAL_SET);
+        uleb128(l as u64, out);
+    };
+    // Copy the Bytes handle in local-param `param` into memory at `dst_ptr`; leaves nothing; sets `ln` to
+    // the length. `h`/`i`/`ln` are scratch. Loop: i=0; while i<ln: store8(dst+i, bytes-get(handle,i)); i++.
+    let marshal_arg = |param: u32, dst_ptr: i64, body: &mut Vec<u8>| {
+        get(param, body);
+        set(h, body); // h = the handle
+        get(h, body);
+        call_op("bytes-len", body);
+        set(ln, body); // ln = len
+        const_i32(0, body);
+        set(i, body);
+        body.push(op::BLOCK);
+        body.push(wasm_abi::BLOCK_EMPTY);
+        body.push(op::LOOP);
+        body.push(wasm_abi::BLOCK_EMPTY);
+        get(i, body);
+        get(ln, body);
+        body.push(op::I32_GE_U);
+        body.push(op::BR_IF);
+        uleb128(1, body);
+        // store8(dst_ptr + i, bytes-get(h, i))
+        const_i32(dst_ptr, body);
+        get(i, body);
+        body.push(op::I32_ADD);
+        get(h, body);
+        get(i, body);
+        call_op("bytes-get", body);
+        body.push(op::I32_STORE8);
+        body.push(0x00);
+        body.push(0x00);
+        get(i, body);
+        const_i32(1, body);
+        body.push(op::I32_ADD);
+        set(i, body);
+        body.push(op::BR);
+        uleb128(0, body);
+        body.push(op::END); // loop
+        body.push(op::END); // block
+    };
+
+    match shim {
+        KvShimOp::Put => {
+            // Marshal both args, then call the WIT put(ptr0,len0,ptr1,len1). (put's list args are
+            // key=param0, value=param1.) len is set by the LAST marshal, so capture each len before reuse.
+            // Marshal arg0 → ARG0, remember its len via a dedicated push order: push (ARG0, len0), (ARG1,
+            // len1) onto the stack in call order, interleaving the marshals.
+            marshal_arg(0, ARG0, &mut body);
+            const_i32(ARG0, &mut body);
+            get(ln, &mut body); // len0 (ln currently = arg0's len)
+            // stash len0 in `i` is unsafe (marshal reuses i); instead push len0 now, then marshal arg1.
+            // Stack now: [ARG0, len0]. Marshal arg1 (reuses h/ln/i) then push [ARG1, len1].
+            marshal_arg(1, ARG1, &mut body);
+            const_i32(ARG1, &mut body);
+            get(ln, &mut body); // len1
+            // Stack: [ARG0, len0, ARG1, len1] → call WIT put.
+            body.push(op::CALL);
+            uleb128(wit_import_func as u64, &mut body);
+            // put has no result; the shim's guest-visible result is also none (Unit perform).
+        }
+        KvShimOp::Get { disc_some, disc_none } => {
+            // Marshal the key → ARG0; call WIT get(ptr,len,RETPTR); retptr struct = (disc@0, ptr@4, len@8).
+            marshal_arg(0, ARG0, &mut body);
+            const_i32(ARG0, &mut body);
+            get(ln, &mut body); // key len
+            const_i32(RETPTR, &mut body);
+            body.push(op::CALL);
+            uleb128(wit_import_func as u64, &mut body); // get(ptr,len,retptr) → ()
+            // disc = i32.load(RETPTR). option lowering: 0 = None, 1 = Some.
+            const_i32(RETPTR, &mut body);
+            body.push(op::I32_LOAD);
+            body.push(0x02); // align (4-byte)
+            body.push(0x00); // offset
+            body.push(op::IF);
+            body.push(wasm_abi::CORE_I32); // result: the Option(Bytes) handle
+            {
+                // SOME: rp = load(RETPTR+4), rl = load(RETPTR+8); vbuf = bytes-alloc(rl); copy loop
+                // bytes-set(vbuf, i, i32.load8_u(rp+i)); then sum-new(disc_some, vbuf).
+                const_i32(RETPTR + 4, &mut body);
+                body.push(op::I32_LOAD);
+                body.push(0x02);
+                body.push(0x00);
+                set(rp, &mut body);
+                const_i32(RETPTR + 8, &mut body);
+                body.push(op::I32_LOAD);
+                body.push(0x02);
+                body.push(0x00);
+                set(rl, &mut body);
+                get(rl, &mut body);
+                call_op("bytes-alloc", &mut body);
+                set(vbuf, &mut body);
+                const_i32(0, &mut body);
+                set(i, &mut body);
+                body.push(op::BLOCK);
+                body.push(wasm_abi::BLOCK_EMPTY);
+                body.push(op::LOOP);
+                body.push(wasm_abi::BLOCK_EMPTY);
+                get(i, &mut body);
+                get(rl, &mut body);
+                body.push(op::I32_GE_U);
+                body.push(op::BR_IF);
+                uleb128(1, &mut body);
+                get(vbuf, &mut body);
+                get(i, &mut body);
+                get(rp, &mut body);
+                get(i, &mut body);
+                body.push(op::I32_ADD);
+                body.push(op::I32_LOAD8_U);
+                body.push(0x00);
+                body.push(0x00);
+                call_op("bytes-set", &mut body);
+                set(vbuf, &mut body);
+                get(i, &mut body);
+                const_i32(1, &mut body);
+                body.push(op::I32_ADD);
+                set(i, &mut body);
+                body.push(op::BR);
+                uleb128(0, &mut body);
+                body.push(op::END); // loop
+                body.push(op::END); // block
+                // Some(vbuf) = sum-new(disc_some, vbuf).
+                const_i32(disc_some as i64, &mut body);
+                get(vbuf, &mut body);
+                call_op("sum-new", &mut body);
+            }
+            body.push(op::ELSE);
+            {
+                // NONE = sum-new(disc_none, IMM_UNIT).
+                const_i32(disc_none as i64, &mut body);
+                const_i32(crate::backend::wasm::runtime_abi::IMM_UNIT as i64, &mut body);
+                call_op("sum-new", &mut body);
+            }
+            body.push(op::END); // if
+        }
+    }
+    body.push(op::END); // fn
+
+    let mut e = uleb_bytes(body.len() as u64);
+    e.extend_from_slice(&body);
+    e
+}
+
 /// op: recover the heap `rep`, build the compiler-baked shape DESCRIPTOR as a heap `Bytes` (reading its
 /// constant bytes from the data section at `desc_off`, `bytes-set`ting them into a fresh buffer), call
 /// `value-encode(rep, desc)` to render the value-form document (another heap `Bytes`), then COPY that
@@ -7827,6 +8034,51 @@ mod reducer_wrapper_tests {
             body.windows(2)
                 .any(|w| w[0] == op::CALL && w[1] == guest_apply as u8),
             "must call the guest apply"
+        );
+    }
+
+    /// Smoke-check the B3 kv shims: put marshals 2 args + calls the WIT import, no result-unpack; get
+    /// marshals 1 arg, reads the retptr (I32_LOAD), branches (IF) on the disc, and builds Some/None via
+    /// sum-new + an event-bytes read (I32_LOAD8_U). Guards gross structural regressions.
+    #[test]
+    fn reducer_kv_shim_body_is_well_formed() {
+        let mut idx = std::collections::HashMap::new();
+        for (i, name) in ["bytes-alloc", "bytes-get", "bytes-len", "bytes-set", "sum-new"]
+            .iter()
+            .enumerate()
+        {
+            idx.insert(*name, i as u32);
+        }
+        let wit = 3u32;
+        // PUT: no result-unpack (no IF/LOAD), but calls the WIT import + marshals (I32_STORE8).
+        let put = reducer_kv_shim_body(KvShimOp::Put, wit, &idx);
+        assert!(put.len() > 10);
+        assert!(put.contains(&op::I32_STORE8), "put marshals args to memory");
+        assert!(
+            put.windows(2).any(|w| w[0] == op::CALL && w[1] == wit as u8),
+            "put calls the WIT import"
+        );
+        // (No negative opcode-scan on put — a raw byte-contains can't tell an opcode from an operand byte,
+        //  so scanning for the ABSENCE of an opcode is unreliable; the positive checks above suffice.)
+        // GET: marshals (STORE8) + calls WIT + reads retptr (I32_LOAD) + branches (IF) + reads value bytes
+        // (I32_LOAD8_U) + builds the Option via sum-new.
+        let get = reducer_kv_shim_body(
+            KvShimOp::Get {
+                disc_some: 1,
+                disc_none: 0,
+            },
+            wit,
+            &idx,
+        );
+        assert!(get.contains(&op::I32_STORE8), "get marshals the key");
+        assert!(get.contains(&op::I32_LOAD), "get reads the retptr struct");
+        assert!(get.contains(&op::IF), "get branches on the option disc");
+        assert!(get.contains(&op::I32_LOAD8_U), "get reads the result bytes");
+        let sum_new = idx["sum-new"];
+        assert!(
+            get.windows(2)
+                .any(|w| w[0] == op::CALL && w[1] == sum_new as u8),
+            "get builds the Option via sum-new"
         );
     }
 }
