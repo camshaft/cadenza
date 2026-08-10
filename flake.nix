@@ -2517,5 +2517,99 @@
             type = "app";
             program = "${gc}/bin/cdz-gc";
           };
+
+        # apps.fast-gate — the PER-AGENT fast inner-loop dev gate (operator per-agent-latency priority
+        # 2026-08-10, concierge-greenlit). PROBLEM: an agent running the FULL localGate battery (~8-15min)
+        # before every MR pays the whole fleet-wide gate cost on each iteration, which dominates its cycle.
+        # FIX: this runs ONLY the touched crate's per-crate checks (test-<crate> + clippy-<crate>, or
+        # crate-cdz for cdz), warm-cached = seconds-to-~2min, giving fast feedback WITHOUT the full battery.
+        # It auto-detects touched crates from `git diff --name-only` (vs origin/main by default, override
+        # with an explicit arg list of crate names). fmt is whole-tree + cheap so it always runs.
+        #
+        # NOT A MERGE GATE: this is NARROWER by design — it does NOT run the integration checks (guide,
+        # codegen, bench, gate, native, hash-parity, cross-crate dependents beyond the touched crate), so a
+        # green here does NOT mean merge-safe. pr-sync's FULL localGate stays the authoritative pre-merge
+        # catch. The tool PRINTS that caveat on green so no agent mistakes fast-green for merge-clearance
+        # (concierge requirement). Reserve the full battery for pr-sync's integration pass (unchanged).
+        apps.fast-gate =
+          let
+            # crate → the check attr(s) that cover it. cdz is a combined `crate-cdz` (test+clippy in one);
+            # every other root crate has `test-<c>` + `clippy-<c>`. Rendered to bash `case` arms below.
+            crateChecks = name:
+              if name == "cdz" then [ "crate-cdz" ]
+              else [ "test-${name}" "clippy-${name}" ];
+            # bash `case` arms mapping a crate DIR PREFIX → its space-joined check attrs (for git-diff detect).
+            dirCaseArms = pkgs.lib.concatStringsSep "\n" (map
+              (c: ''            ${rootWorkspaceCrates.${c}}/*) echo "${pkgs.lib.concatStringsSep " " (crateChecks c)}" ;;'')
+              rootCrateNames);
+            # bash `case` arms mapping an explicit crate NAME arg → its check attrs.
+            nameCaseArms = pkgs.lib.concatStringsSep "\n" (map
+              (c: ''            ${c}) echo "${pkgs.lib.concatStringsSep " " (crateChecks c)}" ;;'')
+              rootCrateNames);
+            fastGate = pkgs.writeShellApplication {
+              name = "cdz-fast-gate";
+              runtimeInputs = [ pkgs.nix pkgs.coreutils pkgs.git ];
+              text = ''
+                # Map a changed path to its crate's check attrs (empty = a path in no gated root crate).
+                path_checks() {
+                  case "$1" in
+                ${dirCaseArms}
+                    *) echo "" ;;
+                  esac
+                }
+                # Map an explicit crate-name arg to its check attrs.
+                name_checks() {
+                  case "$1" in
+                ${nameCaseArms}
+                    *) echo "" ;;
+                  esac
+                }
+                checks=""
+                if [ "$#" -gt 0 ]; then
+                  # Explicit crate-name args.
+                  for c in "$@"; do
+                    got="$(name_checks "$c")"
+                    if [ -z "$got" ]; then echo "cdz fast-gate: '$c' is not a gated root crate — skipping" >&2; else checks="$checks $got"; fi
+                  done
+                else
+                  # Auto-detect from git diff --name-only vs origin/main (the touched-crate set).
+                  base="''${CDZ_FAST_GATE_BASE:-origin/main}"
+                  echo "cdz fast-gate: detecting touched crates from git diff --name-only $base"
+                  while IFS= read -r f; do
+                    [ -n "$f" ] || continue
+                    got="$(path_checks "$f")"
+                    [ -n "$got" ] && checks="$checks $got"
+                  done < <(git diff --name-only "$base" 2>/dev/null)
+                fi
+                # Dedup the check set.
+                checks="$(echo "$checks" | tr ' ' '\n' | sort -u | grep -v '^$' | tr '\n' ' ')"
+                if [ -z "$checks" ]; then
+                  echo "cdz fast-gate: no touched gated crate detected — nothing to build (a non-crate edit, e.g. docs/corpus, is not covered by a per-crate check; use the full localGate for those)."
+                  exit 0
+                fi
+                echo "cdz fast-gate: building touched-crate checks (warm-cached):$checks"
+                # shellcheck disable=SC2086
+                attrs=""; for c in $checks; do attrs="$attrs .#checks.${system}.$c"; done
+                # fmt is whole-tree + cheap — always include it so a formatting slip is caught fast.
+                attrs="$attrs .#checks.${system}.fmt"
+                # shellcheck disable=SC2086
+                if nix build $attrs --print-build-logs; then
+                  echo ""
+                  echo "cdz fast-gate: GREEN — the touched crate(s) pass test + clippy + fmt."
+                  echo "⚠ NOT MERGE-SAFE: this is the NARROW inner-loop gate (touched crate only). It does NOT"
+                  echo "  run integration checks (guide/codegen/bench/gate/native/hash-parity) or cross-crate"
+                  echo "  dependents. pr-sync's FULL localGate is the authoritative pre-merge catch — a green"
+                  echo "  here means 'fast feedback OK to keep iterating', not 'ready to land'."
+                else
+                  echo "cdz fast-gate: RED — a touched-crate check failed above. Fix + re-run." >&2
+                  exit 1
+                fi
+              '';
+            };
+          in
+          {
+            type = "app";
+            program = "${fastGate}/bin/cdz-fast-gate";
+          };
       });
 }
