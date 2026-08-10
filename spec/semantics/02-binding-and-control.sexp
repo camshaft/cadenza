@@ -5193,6 +5193,25 @@
   (call   main (: 9223372036854775807 Int64))
   (output (: 9223372036854775807 Int64)))
 
+(case "a pure non-final do-statement whose value is discarded compiles but earns a CDZ0307 discarded-value warning"
+  (doc    "The dead-code warning of the discarded-do-statement rule above: `(do (inc 8) (* n 2))` evaluates
+           the non-final `(inc 8)` only for its effect, but it is PURE, so its computed value is thrown away
+           — in a pure language almost always a bug (a call whose result the author forgot to use). The block
+           still COMPILES and runs (its value is the tail `(* n 2)`; `(main 5)` = 10), but the build surfaces
+           a CDZ0307 `discarded value` WARNING anchored at the dead `(inc 8)` form — the same code-quality/
+           dead-code band as the unused binding (CDZ0306), unreachable arm (CDZ0213), and dead trap (CDZ0305).
+           The (warns ..) pins the stable message lead (`computed but discarded`). Contrast the FINAL form and
+           a Unit-typed non-final form, which discard nothing and do not warn. Wasm-graded (warnings ride the
+           shared compile stage = target-independent; the rust/rust-async run paths cannot observe compile
+           stderr, so the (warns ..) check is skipped there, not failed). Portable companion of the rcdzc
+           a_pure_non_final_do_form_that_discards_a_value_warns test; that test additionally asserts the
+           discarded form's user NODE and a delete FIX — a structural + HAS-FIX shape the (warns ..) substring
+           clause cannot express — so it is KEPT.")
+  (input  (do (def (inc (: n Int64)) (+ n 1)) (def (main (: n Int64)) (do (inc 8) (* n 2))) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 10 Int64))
+  (warns  CDZ0307 (message "computed but discarded")))
+
 ; The DIVIDE-BY-ZERO face of the same elision: the trap-observation rule is about WHETHER the value is
 ; observed, not WHICH trap it would raise. An unused binding whose init is a divide-by-zero (`(/ 100 d)`
 ; at d = 0) is elided exactly as the overflow one above — the ÷0 trap does not occur and the body's value
