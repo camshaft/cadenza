@@ -140,6 +140,27 @@ pub(crate) fn reducer_event_record_ty(
     Some(crate::ty::Ty::Record(std::rc::Rc::new(fields)))
 }
 
+/// The two shape descriptors the reducer `apply` wrapper bakes: `(event_desc, effect_list_desc)`.
+///   * `event_desc` = `sum_shape_descriptor` of the assembled event protocol Record (see
+///     [`reducer_event_record_ty`]) — drives `value-decode(event_bytes, event_desc)` into the guest args.
+///   * `effect_list_desc` = `sum_shape_descriptor` of the guest apply's RESULT type directly. Under the
+///     (Q) ruling the guest returns the FLAT protocol `List(Record{correlation, kind, target, payload})`
+///     with no `Mk`/`EffectKind` wrapper, so the result type IS the wire shape — no synthesis or value
+///     transform (a transform would be the adapter the no-adapter directive forbids); it drives
+///     `value-encode(result, effect_list_desc)` → the effect-list document bytes.
+/// Returns `None` if the apply isn't the reducer shape (not 3 params) or either type has no descriptor
+/// (a shape `sum_shape_descriptor` cannot render) — the caller then declines the byte-ABI reshape.
+pub(crate) fn reducer_descriptors(
+    db: &mut Db,
+    params: &[(crate::ast::StructId, crate::ty::Ty)],
+    result: &crate::ty::Ty,
+) -> Option<(Vec<u8>, Vec<u8>)> {
+    let event_ty = reducer_event_record_ty(params)?;
+    let event_desc = crate::lower::sum_shape_descriptor(db, &event_ty)?;
+    let effect_list_desc = crate::lower::sum_shape_descriptor(db, result)?;
+    Some((event_desc, effect_list_desc))
+}
+
 /// Append the lambda-lifted closure bodies to `funcs`, AFTER the `layout.order` defs, in table-slot
 /// order — the shared step both the main emit path and the runtime-resource ESCAPE path need so a
 /// first-class closure's `call_indirect` has a body to dispatch (at func idx `import_base + order.len() +
