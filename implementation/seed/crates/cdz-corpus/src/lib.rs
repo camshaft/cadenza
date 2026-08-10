@@ -20,8 +20,6 @@
 //!   expect\t(output <value-form>) | (error <CODE>) | (trap <reason>) | (declines)
 //!   ---
 
-pub mod markdown;
-
 /// The command surface (`CorpusArgs` + `run`), embeddable so the unified `cdz` binary can mount
 /// `cdz corpus`. The standalone `cdz-corpus` bin is a thin shim over it.
 pub mod cli;
@@ -232,30 +230,11 @@ pub fn read(text: &str) -> Result<Vec<Record>, String> {
     Ok(records)
 }
 
-/// Parse a MIGRATED markdown corpus file's `text` into records — the same `Record`s [`read`] would
-/// produce for the equivalent `.sexp`. It reconstructs the s-expression corpus from the markdown
-/// (via [`markdown::to_sexpr`], the inverse of [`markdown::migrate`]) and reads that, so a `.md` and
-/// its source `.sexp` yield an identical record stream — which is exactly what `markdown::check`
-/// verifies. This is the reader the xtask gate uses for a migrated file.
-pub fn read_markdown(text: &str) -> Result<Vec<Record>, String> {
-    read(&markdown::to_sexpr(text)?)
-}
-
 /// Parse a PLATFORM-conformance file's `text` into [`PlatformRecord`]s — the separate `spec/platform/`
 /// genre (operator seq358/seq359). Dispatches on the `(platform-case …)` head, exactly as [`read`]
 /// dispatches on `(case …)`; a non-`platform-case` top-level form is skipped, so a file may mix (though
 /// in practice platform files are homogeneous). Errors only if the file does not parse as s-expressions;
 /// a malformed individual case is a hard error (fail loud, like `read`).
-/// Parse a MIGRATED markdown PLATFORM file into [`PlatformRecord`]s — the platform-genre analog of
-/// [`read_markdown`]. Reconstructs the `.sexp` from the markdown twin (via [`markdown::to_sexpr`]) and
-/// reads it with [`read_platform`], so a platform `.md` and its source `.sexp` yield an identical
-/// platform record stream (exactly what `markdown::check` verifies for the platform genre). This is the
-/// reader the gate uses for a migrated platform file — without it, a platform `.md` would route through
-/// [`read_markdown`]→[`read`], which only sees `(case …)` and would silently drop the platform case.
-pub fn read_platform_markdown(text: &str) -> Result<Vec<PlatformRecord>, String> {
-    read_platform(&markdown::to_sexpr(text)?)
-}
-
 pub fn read_platform(text: &str) -> Result<Vec<PlatformRecord>, String> {
     let arenas = sexpr::read_all(text).map_err(|e| format!("corpus parse error: {}", e.0))?;
     let top = match arenas.get(arenas.root) {
@@ -394,9 +373,8 @@ pub fn render_platform(records: &[PlatformRecord]) -> String {
         out.push('\n');
         // NOTE: `doc` is documentation-only and is DELIBERATELY NOT part of the record stream — the
         // grader ignores it (xtask `"doc" => {}`), matching the compiler genre where `(doc …)` is prose
-        // dropped from `render`. Emitting it here made the markdown twin (which carries doc as readable
-        // PROSE, not a record line) fail to round-trip. The parsed `PlatformRecord.doc` field is kept
-        // (harmless, available to any doc-aware tool) but is not rendered into the graded stream.
+        // dropped from `render`. The parsed `PlatformRecord.doc` field is kept (harmless, available to
+        // any doc-aware tool) but is not rendered into the graded stream.
         for s in &r.sessions {
             out.push_str("session\t");
             out.push_str(&s.alias);
