@@ -614,6 +614,28 @@ pub fn emit(
                     .ok_or_else(|| Reject::decline(format!("runtime op `{name}` not in the ABI table")))
             })
             .collect::<Result<_, _>>()?;
+        // BOUND-EFFECT PEER imports (kv): a reducer that performs a bound effect (e.g. `bind(Kv,
+        // "cadenza:agent-kernel/kv")`) reaches its ops as peer calls. Collect the reducer body's host
+        // imports, keep only those bound to a peer interface (`db.effect_bindings`), and materialize an
+        // ExternImport per op — the guest body's `Lir::CallExternImport(i)` resolves to peer func `i`. b1/b2
+        // (no bound effect) → empty, so the emit is byte-identical to the heap-only reducer path.
+        let mut red_externs: Vec<host::ExternImport> = Vec::new();
+        if !db.effect_bindings.is_empty() {
+            let bindings = db.effect_bindings.clone();
+            let apply_body = def_body(db, e.def)?;
+            let mut host_imports: Vec<host::HostImport> = Vec::new();
+            host::collect_host_imports(db, apply_body, &mut host_imports);
+            for h in host_imports {
+                if let Some(iface) = bindings.get(&h.effect) {
+                    red_externs.push(host::ExternImport {
+                        interface: iface.clone(),
+                        op: h.op.clone(),
+                        params: h.params.iter().filter_map(host_param_abi).collect(),
+                        result: h.result,
+                    });
+                }
+            }
+        }
         // The two protocol shape descriptors (event = assembled Record from the 3 params; effect-list =
         // e.result directly, the flat protocol List<Record> under ruling (Q)).
         let (event_desc, effect_list_desc) = reducer_descriptors(db, &e.params, &e.result)
@@ -623,9 +645,16 @@ pub fn emit(
                      event/effect-list descriptors for the byte-ABI reshape",
                 )
             })?;
-        // Select the guest apply body (the single reducer def) under the import base the reducer core
-        // module uses (imports occupy core funcs 0..k; the guest apply is the first defined func).
-        let red_layout = layout.with_import_base(red_imports.len() as u32);
+        // Select the guest apply body under the reducer import layout: peer ops occupy core funcs `0..e`,
+        // heap runtime ops `e..e+k`, so the guest's `CallExternImport(i)`=`call i` + its heap `CallImport`
+        // resolves at `e + heap-pos`. The extern_order gives each bound op its `CallExternImport` position.
+        let extern_order: Vec<(String, String)> = red_externs
+            .iter()
+            .map(|x| (x.interface.clone(), x.op.clone()))
+            .collect();
+        let red_layout = layout
+            .with_import_base((red_externs.len() + red_imports.len()) as u32)
+            .with_extern_order(extern_order);
         let apply_body = def_body(db, e.def)?;
         let guest_apply = select_function_of(db, apply_body, &e.params, &red_layout, Some(e.def))?;
         let core = serialize::reducer_core_module(
@@ -633,6 +662,7 @@ pub fn emit(
             &event_desc,
             &effect_list_desc,
             &red_imports,
+            &red_externs,
         )
         .map_err(Reject::decline)?;
         let apply_export = crate::backend::wasm::envelope::BoundaryExport {
@@ -640,11 +670,25 @@ pub fn emit(
             params: vec![crate::backend::wasm::envelope::BoundaryParam::ListU8],
             result: crate::backend::wasm::envelope::BoundaryResult::Bytes,
         };
+        // Build the peer HostFn set + parallel op_ifaces for the assembler (comp functype per peer op +
+        // its interface), mirroring the normal extern path.
+        let red_op_ifaces: Vec<&str> = red_externs.iter().map(|x| x.interface.as_str()).collect();
+        let red_peer_fns: Vec<envelope::HostFn> = red_externs
+            .iter()
+            .map(|x| envelope::HostFn {
+                op: x.op.clone(),
+                comp_functype: extern_op_comp_functype(x),
+                core_functype: Vec::new(),
+                has_list_param: false,
+            })
+            .collect();
         let import_name = runtime_import_name();
         return Ok(envelope::assemble_reducer_apply(
             &core,
             &apply_export,
             &red_imports,
+            &red_peer_fns,
+            &red_op_ifaces,
             &import_name,
             REDUCER_FOLD_IFACE,
         ));

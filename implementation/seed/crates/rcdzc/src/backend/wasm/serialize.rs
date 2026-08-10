@@ -7037,60 +7037,73 @@ fn to_bytes_body(import_index: &std::collections::HashMap<&str, u32>) -> Vec<u8>
 /// The core module for a REDUCER (B3): the guest `apply` body as an INTERNAL core func, plus the
 /// synthesized byte-ABI `apply-bytes` wrapper (exported as `apply`) that value-decodes the event, calls
 /// the guest apply, and value-encodes the result. Also defines + exports a `memory` and a stub
-/// `cabi_realloc` (the canon-lift's Memory+Realloc options bind these). Imports the runtime ops from
-/// `"heap"`. Layout: runtime ops → core funcs `0..k`; guest apply → core func `k`; wrapper → `k+1`
-/// (exported as `apply`); cabi_realloc → `k+2` (exported). Type indices mirror the func order.
-/// `guest_apply` is the selected guest `apply` body (its 3 handle params → 1 handle result).
+/// `cabi_realloc` (the canon-lift's Memory+Realloc options bind these). Imports EXTERN peer ops (a bound
+/// effect like `kv`) from `"peer"` at core funcs `0..e` FIRST (so `Lir::CallExternImport(i)=call i`), then
+/// the runtime ops from `"heap"` at `e..e+k`. Layout: guest apply → core func `e+k`; wrapper → `e+k+1`
+/// (exported as `apply`); cabi_realloc → `e+k+2` (exported). `guest_apply` is the selected guest `apply`
+/// body; `extern_fns` are its bound-effect peer ops (empty for b1/b2 — a heap-only reducer).
 pub fn reducer_core_module(
     guest_apply: &SelectedFunc,
     event_desc: &[u8],
     effect_list_desc: &[u8],
     imports: &[&RtOp],
+    extern_fns: &[crate::backend::wasm::host::ExternImport],
 ) -> Result<Vec<u8>, String> {
+    let e = extern_fns.len();
     let k = imports.len();
 
-    // ── Type section ── runtime-op functypes 0..k; guest apply functype (k); wrapper (i32,i32)->i32 (k+1);
-    // cabi_realloc (i32×4)->i32 (k+2).
+    // ── Type section ── EXTERN peer functypes 0..e FIRST (match the import order → CallExternImport(i)=call
+    // i), then runtime-op functypes e..e+k; then guest apply (e+k), wrapper (i32,i32)->i32 (e+k+1),
+    // cabi_realloc (i32×4)->i32 (e+k+2).
     let mut type_items = Vec::new();
+    for f in extern_fns {
+        type_items.extend_from_slice(&extern_import_functype(f));
+    }
     for o in imports {
         type_items.extend_from_slice(&import_functype(o));
     }
-    type_items.extend_from_slice(&functype(guest_apply)?); // type k
+    type_items.extend_from_slice(&functype(guest_apply)?); // type e+k
     let i32i32_to_i32 = {
         let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
         t.extend_from_slice(&wasm_vec(2, &[wasm_abi::CORE_I32; 2]));
         t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
         t
     };
-    type_items.extend_from_slice(&i32i32_to_i32); // wrapper type k+1
+    type_items.extend_from_slice(&i32i32_to_i32); // wrapper type e+k+1
     let realloc_type = {
         let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
         t.extend_from_slice(&wasm_vec(4, &[wasm_abi::CORE_I32; 4]));
         t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
         t
     };
-    type_items.extend_from_slice(&realloc_type); // realloc type k+2
-    let type_sec = section(wasm_abi::CORE_SEC_TYPE, &wasm_vec(k + 3, &type_items));
+    type_items.extend_from_slice(&realloc_type); // realloc type e+k+2
+    let type_sec = section(wasm_abi::CORE_SEC_TYPE, &wasm_vec(e + k + 3, &type_items));
 
-    // ── Import section ── the k runtime ops from "heap"; build the op-name → core-func-index map.
+    // ── Import section ── e PEER ops (from "peer", indices 0..e, so CallExternImport(i)=call i), then k
+    // runtime ops (from "heap", e..e+k). The wrapper's import_index maps each HEAP op name → its core func
+    // index (e + its heap position), the same the wrapper body calls by name.
     let mut import_index: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
     let mut import_items = Vec::new();
-    for (j, o) in imports.iter().enumerate() {
-        import_items.extend_from_slice(&import_item(o.name, j as u32));
-        import_index.insert(o.name, j as u32);
+    for (i, f) in extern_fns.iter().enumerate() {
+        import_items.extend_from_slice(&extern_import_item(&f.op, i as u32));
     }
-    let import_sec = section(2, &wasm_vec(k, &import_items));
+    for (j, o) in imports.iter().enumerate() {
+        let ti = (e + j) as u32;
+        import_items.extend_from_slice(&import_item(o.name, ti));
+        import_index.insert(o.name, ti);
+    }
+    let import_sec = section(2, &wasm_vec(e + k, &import_items));
 
-    // Core func indices: guest apply = k, wrapper = k+1, cabi_realloc = k+2.
-    let guest_apply_func = k as u32;
-    let wrapper_func = (k + 1) as u32;
-    let realloc_func = (k + 2) as u32;
+    // Core func indices: guest apply = e+k, wrapper = e+k+1, cabi_realloc = e+k+2.
+    let guest_apply_func = (e + k) as u32;
+    let wrapper_func = (e + k + 1) as u32;
+    let realloc_func = (e + k + 2) as u32;
 
-    // ── Function section ── guest apply (type k), wrapper (type k+1), cabi_realloc (type k+2).
+    // ── Function section ── guest apply (type e+k), wrapper (type e+k+1), cabi_realloc (type e+k+2).
     let mut func_items = Vec::new();
-    uleb128(k as u64, &mut func_items);
-    uleb128((k + 1) as u64, &mut func_items);
-    uleb128((k + 2) as u64, &mut func_items);
+    uleb128((e + k) as u64, &mut func_items);
+    uleb128((e + k + 1) as u64, &mut func_items);
+    uleb128((e + k + 2) as u64, &mut func_items);
     let func_sec = section(wasm_abi::CORE_SEC_FUNCTION, &wasm_vec(3, &func_items));
 
     // ── Memory section ── one memory, min 1 page (the canon-lift Memory option binds mem 0).

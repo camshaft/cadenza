@@ -528,134 +528,204 @@ pub fn assemble_reducer_apply(
     core: &[u8],
     apply: &BoundaryExport,
     imports: &[&RtOp],
+    extern_fns: &[HostFn],
+    op_ifaces: &[&str],
     import_name: &str,
     iface: &str,
 ) -> Vec<u8> {
+    let e = extern_fns.len();
     let k = imports.len();
     debug_assert_eq!(apply.result, BoundaryResult::Bytes);
     debug_assert!(apply.params.iter().any(|p| *p == BoundaryParam::ListU8));
+    debug_assert_eq!(extern_fns.len(), op_ifaces.len());
+    // The distinct peer interfaces the bound effects belong to (first-appearance order) → comp
+    // instances/types `0..g`; the runtime is comp instance/type `g`. Empty for a heap-only reducer (b1/b2).
+    let ifaces = distinct_ifaces(op_ifaces);
+    let g = ifaces.len();
 
-    // sec 7 (first): import instance-type (comp type 0 in the INSTANCE-type's own space) — the runtime ops.
-    let instance_type = {
-        let mut decls = Vec::new();
-        for (i, op) in imports.iter().enumerate() {
-            decls.push(0x01);
-            decls.extend_from_slice(&op_comp_functype(op));
-            decls.push(0x04);
-            decls.extend_from_slice(&extern_name(op.name));
-            decls.push(0x01);
-            uleb128(i as u64, &mut decls);
-        }
-        let mut it = vec![0x42];
-        it.extend_from_slice(&wasm_vec(2 * k, &decls));
-        it
-    };
-    // The import instance-type is component type 0; the shared `list u8` is component type 1; the apply
-    // functype is component type 2. (comp types are one shared index space.)
-    let list_type_idx: u32 = 1;
-    let apply_type_idx: u32 = 2;
+    // sec 7: g peer instance-types (comp types `0..g`) + the runtime instance-type (comp type `g`) + the
+    // shared `list u8` (comp type `g+1`) + the apply functype (comp type `g+2`).
+    let list_type_idx: u32 = (g + 1) as u32;
+    let apply_type_idx: u32 = (g + 2) as u32;
     let type_sec = {
-        let mut items = instance_type;
+        let mut items = Vec::new();
+        for iface in &ifaces {
+            let ops = peer_group_ops(extern_fns, &op_ifaces, iface);
+            let mut decls = Vec::new();
+            for (local, f) in ops.iter().enumerate() {
+                decls.push(0x01);
+                decls.extend_from_slice(&f.comp_functype);
+                decls.push(0x04);
+                decls.extend_from_slice(&extern_name(
+                    &crate::backend::common::export_name::kebab_extern_name(&f.op),
+                ));
+                decls.push(0x01);
+                uleb128(local as u64, &mut decls);
+            }
+            let mut it = vec![0x42];
+            it.extend_from_slice(&wasm_vec(2 * ops.len(), &decls));
+            items.extend_from_slice(&it);
+        }
+        let mut rt = Vec::new();
+        for (i, op) in imports.iter().enumerate() {
+            rt.push(0x01);
+            rt.extend_from_slice(&op_comp_functype(op));
+            rt.push(0x04);
+            rt.extend_from_slice(&extern_name(op.name));
+            rt.push(0x01);
+            uleb128(i as u64, &mut rt);
+        }
+        let mut rt_it = vec![0x42];
+        rt_it.extend_from_slice(&wasm_vec(2 * k, &rt));
+        items.extend_from_slice(&rt_it);
         items.extend_from_slice(&list_u8_defined_type());
         items.extend_from_slice(&comp_functype(apply, list_type_idx));
-        section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
+        section(sec::COMPONENT_TYPE, &wasm_vec(g + 3, &items))
     };
 
-    // sec 10: import the runtime interface as an instance of component type 0.
+    // sec 10: import each PEER interface (comp type `g_idx`) → comp instances `0..g`, THEN the runtime
+    // (comp type `g`, `import_name`) → comp instance `g`.
     let import_sec = {
-        let mut item = extern_name(import_name);
-        item.push(0x05);
-        uleb128(0, &mut item);
-        section(sec::COMPONENT_IMPORT, &wasm_vec(1, &item))
+        let mut items = Vec::new();
+        for (g_idx, iface) in ifaces.iter().enumerate() {
+            let mut pe = extern_name(&crate::backend::common::export_name::kebab_extern_name(iface));
+            pe.push(0x05); // ComponentTypeRef::Instance
+            uleb128(g_idx as u64, &mut pe);
+            items.extend_from_slice(&pe);
+        }
+        let mut rt = extern_name(import_name);
+        rt.push(0x05);
+        uleb128(g as u64, &mut rt);
+        items.extend_from_slice(&rt);
+        section(sec::COMPONENT_IMPORT, &wasm_vec(g + 1, &items))
     };
 
-    // sec 6 (first): alias each op out of the imported instance (comp instance 0) → comp funcs `0..k`.
+    // sec 6 (first): alias each PEER op out of its interface instance → comp funcs `0..e`; then each
+    // runtime op out of the runtime instance (comp instance `g`) → comp funcs `e..e+k`.
     let op_alias_sec = {
         let mut items = Vec::new();
-        for op in imports {
-            items.extend_from_slice(&comp_alias_item(0, op.name));
+        for (idx, f) in extern_fns.iter().enumerate() {
+            let g_idx = ifaces.iter().position(|i| *i == op_ifaces[idx]).unwrap() as u32;
+            items.extend_from_slice(&comp_alias_item(
+                g_idx,
+                &crate::backend::common::export_name::kebab_extern_name(&f.op),
+            ));
         }
-        section(sec::ALIAS, &wasm_vec(k, &items))
+        for op in imports {
+            items.extend_from_slice(&comp_alias_item(g as u32, op.name));
+        }
+        section(sec::ALIAS, &wasm_vec(e + k, &items))
     };
-    // sec 8 (first): lower each aliased op → core funcs `0..k`.
+    // sec 8 (first): lower each aliased op (comp funcs `0..e+k`) → core funcs `0..e+k`.
     let lower_sec = {
         let mut items = Vec::new();
-        for i in 0..k {
+        for i in 0..(e + k) {
             items.extend_from_slice(&canon_lower_item(i as u32));
         }
-        section(sec::CANON, &wasm_vec(k, &items))
+        section(sec::CANON, &wasm_vec(e + k, &items))
     };
-    // sec 2: heap core instance (0) + program core instance (1) bound to `"heap"`.
+    // sec 2: (0) the PEER core instance exporting the lowered peer ops (core funcs `0..e`) under their op
+    // names; (1) the HEAP core instance exporting the lowered runtime ops (core funcs `e..e+k`); (2) the
+    // program instance instantiated with `"peer"`=inst 0 (when e>0) AND `"heap"`=inst 1.
+    let (peer_core_inst_idx, heap_core_inst_idx, prog_core_inst_idx, n_core_inst) = if e > 0 {
+        (Some(0u32), 1u32, 2u32, 3)
+    } else {
+        (None, 0u32, 1u32, 2)
+    };
     let core_instance_sec = {
         let mut items = Vec::new();
+        if e > 0 {
+            // peer core instance 0.
+            let mut peer = vec![0x01];
+            let mut peer_ex = Vec::new();
+            for (i, f) in extern_fns.iter().enumerate() {
+                peer_ex.extend_from_slice(&uleb_bytes(f.op.len() as u64));
+                peer_ex.extend_from_slice(f.op.as_bytes());
+                peer_ex.push(0x00); // ExportKind::Func
+                uleb128(i as u64, &mut peer_ex);
+            }
+            peer.extend_from_slice(&wasm_vec(e, &peer_ex));
+            items.extend_from_slice(&peer);
+        }
+        // heap core instance (exports the runtime ops at core funcs `e..e+k`).
         let mut heap = vec![0x01];
         let mut heap_exports = Vec::new();
-        for (i, op) in imports.iter().enumerate() {
+        for (j, op) in imports.iter().enumerate() {
             heap_exports.extend_from_slice(&uleb_bytes(op.name.len() as u64));
             heap_exports.extend_from_slice(op.name.as_bytes());
             heap_exports.push(0x00);
-            uleb128(i as u64, &mut heap_exports);
+            uleb128((e + j) as u64, &mut heap_exports);
         }
         heap.extend_from_slice(&wasm_vec(k, &heap_exports));
         items.extend_from_slice(&heap);
+        // program instance: instantiate module 0 binding "peer" (when e>0) + "heap".
         let mut prog = vec![0x00];
         uleb128(0, &mut prog);
         let mut args = Vec::new();
+        let mut n_args = 0;
+        if let Some(pidx) = peer_core_inst_idx {
+            args.extend_from_slice(&uleb_bytes("peer".len() as u64));
+            args.extend_from_slice(b"peer");
+            args.push(0x12);
+            uleb128(pidx as u64, &mut args);
+            n_args += 1;
+        }
         args.extend_from_slice(&uleb_bytes(HEAP_MODULE.len() as u64));
         args.extend_from_slice(HEAP_MODULE.as_bytes());
         args.push(0x12);
-        uleb128(0, &mut args);
-        prog.extend_from_slice(&wasm_vec(1, &args));
+        uleb128(heap_core_inst_idx as u64, &mut args);
+        n_args += 1;
+        prog.extend_from_slice(&wasm_vec(n_args, &args));
         items.extend_from_slice(&prog);
-        section(sec::CORE_INSTANCE, &wasm_vec(2, &items))
+        section(sec::CORE_INSTANCE, &wasm_vec(n_core_inst, &items))
     };
-    // sec 6 (second): alias `apply` (core func k), then `memory`, then `cabi_realloc` off the PROGRAM
-    // instance (core instance 1). apply → core func k; memory → mem 0; cabi_realloc → core func k+1.
-    let realloc_func = (k + 1) as u32;
+    // sec 6 (second): alias `apply`, `memory`, `cabi_realloc` off the PROGRAM core instance. apply → core
+    // func `e+k`; cabi_realloc → core func `e+k+1`.
+    let realloc_func = (e + k + 1) as u32;
     let boundary_alias_sec = {
         let mut items = Vec::new();
-        items.extend_from_slice(&core_alias_item(1, &apply.name));
-        items.extend_from_slice(&memory_alias_item(1, "memory"));
-        items.extend_from_slice(&core_alias_item(1, "cabi_realloc"));
+        items.extend_from_slice(&core_alias_item(prog_core_inst_idx, &apply.name));
+        items.extend_from_slice(&memory_alias_item(prog_core_inst_idx, "memory"));
+        items.extend_from_slice(&core_alias_item(prog_core_inst_idx, "cabi_realloc"));
         section(sec::ALIAS, &wasm_vec(3, &items))
     };
-    // sec 8 (second): lift the apply core func (k) with Memory+Realloc canon options (list<u8> param +
-    // result cross through the aliased memory), using the apply functype (comp type 2) → comp func k.
+    // sec 8 (second): lift the apply core func (`e+k`) with Memory+Realloc, using the apply functype
+    // (comp type `g+2`) → comp func `e+k`.
     let lift_sec = section(
         sec::CANON,
         &wasm_vec(
             1,
-            &canon_lift_list_item(k as u32, 0, realloc_func, apply_type_idx),
+            &canon_lift_list_item((e + k) as u32, 0, realloc_func, apply_type_idx),
         ),
     );
-    // sec 5: bundle the lifted apply (comp func k) into a component instance (export-items form).
+    // sec 5: bundle the lifted apply (comp func `e+k`) into a component instance.
     let instance_sec = {
         let mut item = vec![0x01];
         let name = crate::backend::common::export_name::kebab_extern_name(&apply.name);
         let mut members = extern_name(&name);
         members.push(0x01); // ComponentExportKind::Func
-        uleb128(k as u64, &mut members);
+        uleb128((e + k) as u64, &mut members);
         item.extend_from_slice(&wasm_vec(1, &members));
         section(sec::COMPONENT_INSTANCE, &wasm_vec(1, &item))
     };
-    // sec 11: export the bundled instance under the fold interface name (imported RUNTIME instance is
-    // comp-instance 0; the bundle is comp-instance 1 → export index 1).
+    // sec 11: export the bundled instance under the fold interface name. Imported instances are comp-
+    // instances `0..g+1`; the bundle is the NEXT comp-instance (`g+1`).
     let export_sec = {
         let iface_name = crate::backend::common::export_name::kebab_extern_name(iface);
         section(
             sec::COMPONENT_EXPORT,
-            &wasm_vec(1, &export_instance_item(&iface_name, 1)),
+            &wasm_vec(1, &export_instance_item(&iface_name, (g + 1) as u32)),
         )
     };
 
     let mut out = Vec::new();
     out.extend_from_slice(COMPONENT_MAGIC);
-    out.extend_from_slice(&type_sec); // 7: import instance-type + list u8 + apply functype
-    out.extend_from_slice(&import_sec); // 10: component import
-    out.extend_from_slice(&op_alias_sec); // 6: alias ops
+    out.extend_from_slice(&type_sec); // 7: peer + runtime instance-types + list u8 + apply functype
+    out.extend_from_slice(&import_sec); // 10: import peer ifaces + runtime
+    out.extend_from_slice(&op_alias_sec); // 6: alias peer + runtime ops
     out.extend_from_slice(&lower_sec); // 8: lower ops
     out.extend_from_slice(&core_module_section(core)); // 1: embedded program
-    out.extend_from_slice(&core_instance_sec); // 2: heap + program instances
+    out.extend_from_slice(&core_instance_sec); // 2: peer + heap + program instances
     out.extend_from_slice(&boundary_alias_sec); // 6: alias apply + memory + cabi_realloc
     out.extend_from_slice(&lift_sec); // 8: lift apply WITH Memory+Realloc
     out.extend_from_slice(&instance_sec); // 5: bundle apply into one instance
