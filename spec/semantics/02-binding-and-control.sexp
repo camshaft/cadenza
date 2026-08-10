@@ -5219,6 +5219,34 @@
   (output (: 42 Int64))
   (warns  CDZ0305 (message "always traps but its value is never used")))
 
+; The dead-trap warning fires for EVERY provably-trapping constant, not only integer ÷0 — the trap-
+; observation elision + its CDZ0305 diagnostic are about WHETHER the value is observed, not WHICH trap the
+; dead computation would raise. These two pin the other trap kinds as unprojected tuple elements (the clean
+; CDZ0305-only carrier — a `let`/argument shape would also draw a CDZ0306 unused-binding/param warning),
+; so a fold change that dropped the trap-proof for one kind (modulo, a constant overflow) is caught here.
+(case "an unprojected element whose constant modulo-by-zero traps is elided but earns a CDZ0305 warning"
+  (doc    "The modulo face of the dead-trap warning: `(. (tuple 42 (% 100 0)) 0)` yields 42 (element 1's
+           `(% 100 0)` is a constant modulo-by-zero the fold proves traps, but it is never projected, so it
+           is unobserved and elided per core-semantics.md §A Trap Occurs Only Where Its Computation Is
+           Observed). Because the elided computation PROVABLY traps, the build surfaces the non-error CDZ0305
+           dead-trap warning exactly as the ÷0 case above. Pins that the dead-trap diagnostic covers %0, not
+           only ÷0. Wasm-graded (warnings ride the shared compile stage; the run paths skip the (warns ..)
+           check, not fail it).")
+  (input  (do (def (main) (. (tuple 42 (% 100 0)) 0)) (export main)))
+  (output (: 42 Int64))
+  (warns  CDZ0305 (message "always traps but its value is never used")))
+
+(case "an unprojected element whose constant overflow traps is elided but earns a CDZ0305 warning"
+  (doc    "The overflow face of the dead-trap warning: `(. (tuple 42 (+ 9223372036854775807 1)) 0)` yields 42
+           (element 1's `Int64.max + 1` is a constant overflow the fold proves traps, but it is never
+           projected, so it is unobserved and elided). The build surfaces the non-error CDZ0305 dead-trap
+           warning as the ÷0 and %0 cases do. Pins that the dead-trap diagnostic covers a provable overflow,
+           not only the divide/modulo family — the trap-KIND axis of core-semantics.md §285. Wasm-graded (the
+           run paths skip the (warns ..) check, not fail it).")
+  (input  (do (def (main) (. (tuple 42 (+ 9223372036854775807 1)) 0)) (export main)))
+  (output (: 42 Int64))
+  (warns  CDZ0305 (message "always traps but its value is never used")))
+
 ; ── The elision ruling is PURE-only: an unused binding whose init PERFORMS is NOT elidable ───────────
 ; The cases above establish that an unreferenced binding's init MAY be elided — for PURE inits, whose
 ; only observable is the value (and the trap observation would force). An init that PERFORMS an effect
