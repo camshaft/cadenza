@@ -39,7 +39,7 @@ fn opt_bytes(b: &mut Builder, v: Option<&[u8]>) -> StructId {
     match v {
         Some(bytes) => {
             let head = b.name("Some");
-            let val = b.atom_leaf(Leaf::Bytes(bytes.to_vec()));
+            let val = b.atom_leaf(Leaf::Bytes(bytes.to_vec().into()));
             b.list(vec![head, val])
         }
         None => {
@@ -70,7 +70,10 @@ fn no_effects() -> Vec<u8> {
 fn record_field(a: &Arenas, record: StructId, name: &str) -> Option<StructId> {
     let kids = a.as_form(record, "record")?;
     for &f in kids {
-        if let Some([n, v]) = a.as_form(f, "=").and_then(|p| <&[StructId; 2]>::try_from(p).ok()) {
+        if let Some([n, v]) = a
+            .as_form(f, "=")
+            .and_then(|p| <&[StructId; 2]>::try_from(p).ok())
+        {
             if a.as_name(*n) == Some(name) {
                 return Some(*v);
             }
@@ -114,7 +117,7 @@ impl Guest for Guest0 {
             let kind = field(&mut b, "kind", kind_v);
             let pay_v = opt_bytes(&mut b, None);
             let payload = field(&mut b, "payload", pay_v);
-            let tgt_v = b.atom_leaf(Leaf::Bytes(b"https://ok.host/x".to_vec()));
+            let tgt_v = b.atom_leaf(Leaf::Bytes(b"https://ok.host/x".to_vec().into()));
             let target = field(&mut b, "target", tgt_v);
             let rhead = b.name("record");
             let req = b.list(vec![rhead, corr, kind, payload, target]);
