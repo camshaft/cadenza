@@ -8195,19 +8195,18 @@
             (export main)))
   (call   main (: 100 Int64)) (output (: 4950 Int64)))
 
-(case "a cross-handler foreign-perform op-arg into a MATCH-shaped-resume arm declines cleanly (completeness gap)"
-  (doc    "The completeness boundary where the op-arg lift meets the match-shaped-resume peel (breaker nv1f).
-           The inner `B.cut`'s ARG is a CROSS-HANDLER foreign perform `(A.src)` AND B's arm RESUMES through a
-           MATCH on a slice of its param — `(cut (b) t (match (Bytes.slice b 1 2) ((Some w) (resume w t)) ((None
-           _x) (resume (Bytes.of (list)) t))))`. Each half folds ALONE: a cross-handler foreign-perform arg with
-           a BARE-resume arm folds (nv1c/nv1d: `(cut (b) t (resume (Bytes.len b) t))`), and a match-shaped-resume
-           arm with a LITERAL arg folds (nv1e). But their CONJUNCTION declines: `b` is single-use so `(A.src)`
-           substitutes directly into the match SCRUTINEE `(Bytes.slice (A.src) 1 2)`, and threading a foreign
-           perform embedded in a peeled match-value's scrutinee across the outer `A` fold is not yet composed.
-           DECLINE, never a wrong value (an honest not-yet-reducible todo). When the op-arg-lift × match-peel
-           composition lands, this FOLDS to 14: `A.src` = bytes[20,30,40]; `Bytes.slice … 1 2` = [30,40] (Some);
-           `B.cut` resumes that view; `Bytes.len` = 2; `(+ 2 12)` = 14. The output is already pinned (14); when
-           the composition lands, flip this case's baseline entry todo→pass.")
+(case "a cross-handler foreign-perform op-arg into a MATCH-shaped-resume arm folds under nested handlers (nv1f)"
+  (doc    "A nested-handle fold where the inner `B.cut`'s ARG is a CROSS-HANDLER foreign perform `(A.src)` AND
+           B's arm RESUMES through a MATCH on a slice of its param — `(cut (b) t (match (Bytes.slice b 1 2)
+           ((Some w) (resume w t)) ((None _x) (resume (Bytes.of (list)) t))))`. Each half already folded ALONE:
+           a cross-handler foreign-perform arg with a BARE-resume arm (nv1c/nv1d), and a match-shaped-resume arm
+           with a LITERAL arg (nv1e). Their CONJUNCTION previously DECLINED — not because of the op-arg-lift ×
+           match-peel composition, but because the OUTER `A` handler's `hoist_resumptive_conditional` recursed
+           INTO the inner `B` handle-internal's ARM and Site-2-distributed B's arm-op `(. B cut)` into the match
+           branches, inverting the arm so the `match` sat in the op-slot (`effect_op_of`→None → B's op-map empty
+           → the nested fold declined). The fix leaves a nested handle's ARMS opaque to the outer hoist (they
+           fold under their own handler's ctx), so this now FOLDS: `A.src` = bytes[20,30,40]; `Bytes.slice … 1 2`
+           = [30,40] (Some); `B.cut` resumes that view; `Bytes.len` = 2; `(+ 2 12)` = 14.")
   (input  (do
             (effect A (op src (-> Unit Bytes)))
             (effect B (op cut (-> Bytes Bytes)))
