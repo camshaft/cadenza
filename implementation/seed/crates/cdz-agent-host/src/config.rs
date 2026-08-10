@@ -60,8 +60,9 @@ pub struct DaemonConfig {
     pub session_registry: SessionRegistryConfig,
     /// Structured TRACING — spans/events on the host loop + session/effect surface (operator directive:
     /// "add tracing to the harness, configured via the toml"). Defaults to disabled (no subscriber
-    /// installed). The subscriber the daemon initializes from this section is wired in a following slice;
-    /// this section always parses ahead of that (config first, subscriber follows — like `[observability]`).
+    /// installed). When `enabled`, the daemon installs a `tracing-subscriber` from this section at boot
+    /// (`init_tracing`): the `filter`/`format`/`output` select the `EnvFilter` directive, the fmt style, and
+    /// the writer stream/file.
     #[serde(default)]
     pub tracing: TracingConfig,
     /// THE OUTPOST federation — the websocket transports that connect this node to peers/hubs (operator
@@ -100,13 +101,16 @@ pub enum LogConfig {
 /// and whose OTHER fields are that backend's OWN typed config, so the wired emitter can send to several
 /// sinks (multiple statsd collectors, or different backend types).
 ///
-/// **Current daemon behavior:** the daemon reads `observability.enabled` (it logs it at boot). The `targets`
-/// are always PARSED (serde), but only VALIDATED (non-empty list, non-blank endpoints) WHEN `enabled` — a
-/// disabled section with a blank endpoint parses fine (nothing consumes it). The daemon does NOT emit to the
-/// targets at all: it never reads them beyond that gated validation, so no metrics are sent anywhere
-/// regardless of config. The emitter that reads `targets` + performs the fan-out is a separate, feature-gated
-/// component (kept out of the default build to exclude the QUIC/metrics dependency tree); the fan-out
-/// described above is that emitter's intended behavior, which the config is defined ahead of.
+/// **Current daemon behavior (feature-gated).** The `targets` are always PARSED (serde) + VALIDATED
+/// (non-empty list, non-blank endpoints/namespaces/binds) WHEN `enabled` — a disabled section with a blank
+/// endpoint parses fine (nothing consumes it). Whether the daemon actually EMITS depends on the build: with
+/// the `metrics-export` feature (+ its per-backend siblings `metrics-export-otlp`/`-cloudwatch`/
+/// `-prometheus`), the daemon builds a backend-agnostic `MetricsReporter` from these `targets` and fans out
+/// on a periodic `run_export_loop` (statsd/otlp/cloudwatch push, prometheus scrape-serve). WITHOUT
+/// `metrics-export` (the default build — kept lean, excludes the QUIC/metrics dependency tree), the daemon
+/// reads only `enabled` (logged at boot) + a target THAT NEEDS AN UNCOMPILED EXPORT FEATURE is reported as
+/// unexportable at boot rather than silently ignored — so no metrics are emitted, by design, not by
+/// omission.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ObservabilityConfig {
@@ -464,10 +468,11 @@ impl Default for BlobCacheConfig {
 /// near-zero-cost no-op the `tracing` facade compiles to when nothing subscribes). When `enabled`, the
 /// daemon installs a `tracing-subscriber` at boot with this `filter`/`format`/`output`.
 ///
-/// **Config first, subscriber follows.** This section always parses; the daemon-bin code that reads it to
-/// install a subscriber is the following slice (staged like `[observability]`). `filter` uses the standard
-/// `EnvFilter` directive syntax (e.g. `"info"`, `"cdz_agent_host=debug,warn"`) — the same grammar as
-/// `RUST_LOG` — so an operator writes familiar per-target levels.
+/// The daemon reads this section at boot (`init_tracing`): when `enabled`, it installs a `tracing-subscriber`
+/// with this `filter`/`format`/`output`; a bad `filter` directive or an un-openable `file` output is a fatal
+/// boot error (surfaced loud, not silently defaulted). `filter` uses the standard `EnvFilter` directive
+/// syntax (e.g. `"info"`, `"cdz_agent_host=debug,warn"`) — the same grammar as `RUST_LOG` — so an operator
+/// writes familiar per-target levels.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct TracingConfig {
