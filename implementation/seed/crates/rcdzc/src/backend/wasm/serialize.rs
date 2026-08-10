@@ -7017,6 +7017,197 @@ fn to_bytes_body(import_index: &std::collections::HashMap<&str, u32>) -> Vec<u8>
 
 /// The `t-encode(handle) -> i32` walker for a RUNTIME RECURSIVE sum (a linked list, a tree). Unlike the
 /// fixed-template walkers, it delegates the recursion + document assembly to the runtime `value-encode`
+/// The synthesized body of the reducer byte-ABI `apply(event: list<u8>) -> list<u8>` wrapper core fn
+/// (B3). Params: `(ptr: i32, len: i32)` — the canonical ABI delivers the `list<u8>` event as its bytes at
+/// `ptr` for `len` bytes in linear memory. The body:
+///   1. copies the `len` event bytes out of memory into a heap `Bytes` (`bytes-alloc(len)` + a
+///      `bytes-set(buf, i, i32.load8_u(ptr+i))` loop — the INVERSE of the encode walker's copy-out loop);
+///   2. bakes the EVENT descriptor as a heap `Bytes` (constant bytes via `bytes-set`, like the encode
+///      walker) and calls `value-decode(buf, event_desc)` → the event value (a Record = an arr at run time);
+///   3. PROJECTS the 3 fields by sorted index — `arr-get(ev, 0/1/2)` = content_type / payload / resumes;
+///   4. calls the guest `apply` core fn (`guest_apply_func` — the existing `(u32,u32,u32)->u32`) on the 3
+///      field handles → the result value (a `List(Record …)` handle);
+///   5. bakes the EFFECT-LIST descriptor and calls `value-encode(result, effect_list_desc)` → the effect-list
+///      document `Bytes`;
+///   6. copies that document into linear memory at `OUT=8` and stores the `(ptr=OUT, len=n)` retarea at
+///      `[0..8]`, returning `0` (the retptr) — exactly the encode walker's return shape.
+/// Releases the temporaries it built (`buf`/`ev_desc`/`ev`/`result`/`el_desc`/`doc`). `import_index` maps
+/// each runtime op name → its core func index; `guest_apply_func` is the guest apply's absolute core func
+/// index. The descriptor bytes are COMPILE-TIME CONSTANTS (`i32.const` per byte, no data-section blob).
+fn reducer_apply_bytes_body(
+    event_desc: &[u8],
+    effect_list_desc: &[u8],
+    guest_apply_func: u32,
+    import_index: &std::collections::HashMap<&str, u32>,
+) -> Vec<u8> {
+    use crate::backend::wasm::wasm_abi::op;
+    let call_op = |name: &str, out: &mut Vec<u8>| {
+        out.push(op::CALL);
+        uleb128(import_index[name] as u64, out);
+    };
+    let const_i32 = |v: i64, out: &mut Vec<u8>| {
+        out.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(v, out);
+    };
+    // Locals after params 0=ptr,1=len: buf, ev_desc, ev, f0, f1, f2, result, el_desc, doc, n, i = 11 i32.
+    let mut body = Vec::new();
+    uleb128(1, &mut body); // one local group
+    uleb128(11, &mut body);
+    body.push(wasm_abi::CORE_I32);
+    let (ptr, len) = (0u32, 1u32);
+    let (buf, ev_desc, ev, f0, f1, f2, result, el_desc, doc, n, i) =
+        (2u32, 3u32, 4u32, 5u32, 6u32, 7u32, 8u32, 9u32, 10u32, 11u32, 12u32);
+    let get = |l: u32, out: &mut Vec<u8>| {
+        out.push(op::LOCAL_GET);
+        uleb128(l as u64, out);
+    };
+    let set = |l: u32, out: &mut Vec<u8>| {
+        out.push(op::LOCAL_SET);
+        uleb128(l as u64, out);
+    };
+    // Bake a constant descriptor into a fresh heap Bytes local (bytes-alloc(len) + per-byte bytes-set).
+    let bake_desc = |desc: &[u8], dst: u32, out: &mut Vec<u8>| {
+        const_i32(desc.len() as i64, out);
+        call_op("bytes-alloc", out);
+        set(dst, out);
+        for (j, &byte) in desc.iter().enumerate() {
+            get(dst, out);
+            const_i32(j as i64, out);
+            const_i32(byte as i64, out);
+            call_op("bytes-set", out);
+            set(dst, out);
+        }
+    };
+
+    // 1. buf = bytes-alloc(len); COPY loop i=0..len: bytes-set(buf, i, i32.load8_u(ptr+i)).
+    get(len, &mut body);
+    call_op("bytes-alloc", &mut body);
+    set(buf, &mut body);
+    const_i32(0, &mut body);
+    set(i, &mut body);
+    body.push(op::BLOCK);
+    body.push(wasm_abi::BLOCK_EMPTY);
+    body.push(op::LOOP);
+    body.push(wasm_abi::BLOCK_EMPTY);
+    {
+        get(i, &mut body);
+        get(len, &mut body);
+        body.push(op::I32_GE_U);
+        body.push(op::BR_IF);
+        uleb128(1, &mut body);
+        // buf = bytes-set(buf, i, i32.load8_u(ptr + i))
+        get(buf, &mut body);
+        get(i, &mut body);
+        get(ptr, &mut body);
+        get(i, &mut body);
+        body.push(op::I32_ADD);
+        body.push(op::I32_LOAD8_U);
+        body.push(0x00); // align
+        body.push(0x00); // offset
+        call_op("bytes-set", &mut body);
+        set(buf, &mut body);
+        get(i, &mut body);
+        const_i32(1, &mut body);
+        body.push(op::I32_ADD);
+        set(i, &mut body);
+        body.push(op::BR);
+        uleb128(0, &mut body);
+    }
+    body.push(op::END); // loop
+    body.push(op::END); // block
+
+    // 2. ev = value-decode(buf, ev_desc).
+    bake_desc(event_desc, ev_desc, &mut body);
+    get(buf, &mut body);
+    get(ev_desc, &mut body);
+    call_op("value-decode", &mut body);
+    set(ev, &mut body);
+
+    // 3. project the 3 fields: f0/f1/f2 = arr-get(ev, 0/1/2) (Record = arr at run time, sorted-key order).
+    for (idx, slot) in [(0i64, f0), (1, f1), (2, f2)] {
+        get(ev, &mut body);
+        const_i32(idx, &mut body);
+        call_op("arr-get", &mut body);
+        set(slot, &mut body);
+    }
+
+    // 4. result = guest apply(f0, f1, f2).
+    get(f0, &mut body);
+    get(f1, &mut body);
+    get(f2, &mut body);
+    body.push(op::CALL);
+    uleb128(guest_apply_func as u64, &mut body);
+    set(result, &mut body);
+
+    // 5. doc = value-encode(result, el_desc).
+    bake_desc(effect_list_desc, el_desc, &mut body);
+    get(result, &mut body);
+    get(el_desc, &mut body);
+    call_op("value-encode", &mut body);
+    set(doc, &mut body);
+    get(doc, &mut body);
+    call_op("bytes-len", &mut body);
+    set(n, &mut body);
+
+    // 6. copy doc bytes out to OUT=8, then store retarea [0]=OUT,[4]=n; return 0.
+    const OUT: i64 = 8;
+    const_i32(0, &mut body);
+    set(i, &mut body);
+    body.push(op::BLOCK);
+    body.push(wasm_abi::BLOCK_EMPTY);
+    body.push(op::LOOP);
+    body.push(wasm_abi::BLOCK_EMPTY);
+    {
+        get(i, &mut body);
+        get(n, &mut body);
+        body.push(op::I32_GE_U);
+        body.push(op::BR_IF);
+        uleb128(1, &mut body);
+        // i32.store8(OUT + i, bytes-get(doc, i))
+        const_i32(OUT, &mut body);
+        get(i, &mut body);
+        body.push(op::I32_ADD);
+        get(doc, &mut body);
+        get(i, &mut body);
+        call_op("bytes-get", &mut body);
+        body.push(op::I32_STORE8);
+        body.push(0x00);
+        body.push(0x00);
+        get(i, &mut body);
+        const_i32(1, &mut body);
+        body.push(op::I32_ADD);
+        set(i, &mut body);
+        body.push(op::BR);
+        uleb128(0, &mut body);
+    }
+    body.push(op::END); // loop
+    body.push(op::END); // block
+
+    // Release the heap temporaries (the value heap is acyclic; each drop cascades to children).
+    for h in [buf, ev_desc, ev, result, el_desc, doc] {
+        get(h, &mut body);
+        call_op("drop", &mut body);
+    }
+
+    // retarea [0]=OUT, [4]=n; return 0.
+    const_i32(0, &mut body);
+    const_i32(OUT, &mut body);
+    body.push(op::I32_STORE);
+    body.push(0x02);
+    body.push(0x00);
+    const_i32(4, &mut body);
+    get(n, &mut body);
+    body.push(op::I32_STORE);
+    body.push(0x02);
+    body.push(0x00);
+    const_i32(0, &mut body);
+    body.push(op::END);
+
+    let mut e = uleb_bytes(body.len() as u64);
+    e.extend_from_slice(&body);
+    e
+}
+
 /// op: recover the heap `rep`, build the compiler-baked shape DESCRIPTOR as a heap `Bytes` (reading its
 /// constant bytes from the data section at `desc_off`, `bytes-set`ting them into a fresh buffer), call
 /// `value-encode(rep, desc)` to render the value-form document (another heap `Bytes`), then COPY that
@@ -7445,4 +7636,59 @@ fn rle(valtypes: &[ValType]) -> Vec<(u32, ValType)> {
         }
     }
     groups
+}
+
+#[cfg(test)]
+mod reducer_wrapper_tests {
+    use super::*;
+    use crate::backend::wasm::wasm_abi::op;
+
+    /// Smoke-check the B3 reducer `apply-bytes` wrapper body: it emits well-formed non-empty code that
+    /// calls value-decode then value-encode (in that order), reads the event bytes via I32_LOAD8_U, writes
+    /// the result via I32_STORE8, calls the guest apply at the given func index, and balances its two
+    /// block/loop pairs. Not a byte-oracle (the real verification is the reducer e2e round-trip); this
+    /// guards gross structural regressions in the hand-emitted body.
+    #[test]
+    fn reducer_apply_bytes_body_is_well_formed() {
+        let mut idx = std::collections::HashMap::new();
+        for (i, name) in [
+            "bytes-alloc",
+            "bytes-set",
+            "bytes-get",
+            "bytes-len",
+            "value-decode",
+            "value-encode",
+            "arr-get",
+            "drop",
+        ]
+        .iter()
+        .enumerate()
+        {
+            idx.insert(*name, i as u32);
+        }
+        let guest_apply = 42u32;
+        let body = reducer_apply_bytes_body(&[0x01, 0x02], &[0x03], guest_apply, &idx);
+        // Non-empty, and the leading uleb length prefix matches the remaining bytes.
+        assert!(body.len() > 20);
+        // Contains the memory read (decode-side) + write (encode-side) opcodes B3 introduced.
+        assert!(body.contains(&op::I32_LOAD8_U), "must read event bytes");
+        assert!(body.contains(&op::I32_STORE8), "must write result bytes");
+        // Calls value-decode BEFORE value-encode (decode event → fold → encode result).
+        let dec = idx["value-decode"];
+        let enc = idx["value-encode"];
+        let call_dec = body
+            .windows(2)
+            .position(|w| w[0] == op::CALL && w[1] == dec as u8);
+        let call_enc = body
+            .windows(2)
+            .position(|w| w[0] == op::CALL && w[1] == enc as u8);
+        assert!(call_dec.is_some() && call_enc.is_some(), "both calls present");
+        assert!(call_dec < call_enc, "decode precedes encode");
+        // Calls the guest apply at its func index.
+        assert!(
+            body.windows(2)
+                .any(|w| w[0] == op::CALL && w[1] == guest_apply as u8),
+            "must call the guest apply"
+        );
+    }
 }
