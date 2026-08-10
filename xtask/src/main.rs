@@ -4201,40 +4201,23 @@ fn default_corpus_files(paths: &Paths) -> Vec<PathBuf> {
 /// only `.sexp` for now (still digit-led-stem, so a README stays out).
 fn default_platform_files(paths: &Paths) -> Vec<PathBuf> {
     let dir = paths.repo.join("spec/platform");
-    let rd = match std::fs::read_dir(&dir) {
-        Ok(rd) => rd,
+    // Digit-led-stem `.sexp` only. (The corpus markdown-literate twin was REMOVED per operator direction —
+    // "the sexpr stuff works just fine, we didn't end up migrating" — so the platform genre stays `.sexp`,
+    // and a README/docs `.md` in this dir is ignored by the digit-led-stem filter.)
+    let mut files: Vec<PathBuf> = match std::fs::read_dir(&dir) {
+        Ok(rd) => rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "sexp"))
+            .filter(|p| {
+                p.file_stem()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|s| s.starts_with(|c: char| c.is_ascii_digit()))
+            })
+            .collect(),
         // No spec/platform dir yet (before the first fixture lands) → no cases, an empty green gate.
-        Err(_) => return Vec::new(),
+        Err(_) => Vec::new(),
     };
-    // Digit-led-stem `.sexp` (source) and/or `.md` (migrated literate twin, O4). `cdz corpus records`
-    // routes a `.md` platform file through `read_platform_markdown` (== `read_platform(to_sexpr(md))`), so
-    // a twin emits the SAME platform record stream as its `.sexp` — a README/docs `.md` (non-digit stem)
-    // stays out. Mirrors `default_corpus_files` exactly.
-    let entries: Vec<PathBuf> = rd
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "sexp" || x == "md"))
-        .filter(|p| {
-            p.file_stem()
-                .and_then(|s| s.to_str())
-                .is_some_and(|s| s.starts_with(|c: char| c.is_ascii_digit()))
-        })
-        .collect();
-    // A stem migrated to `.md` wins: drop its `.sexp` so the twin is graded (the `.md` and `.sexp` yield
-    // an identical record stream, so this is a clean cutover — delete the `.sexp` afterward with no gate
-    // change). Exactly `default_corpus_files`'s prefer-`.md`-per-stem rule.
-    let migrated: std::collections::HashSet<_> = entries
-        .iter()
-        .filter(|p| p.extension().is_some_and(|x| x == "md"))
-        .filter_map(|p| p.file_stem().map(|s| s.to_os_string()))
-        .collect();
-    let mut files: Vec<PathBuf> = entries
-        .into_iter()
-        .filter(|p| {
-            !(p.extension().is_some_and(|x| x == "sexp")
-                && p.file_stem().is_some_and(|s| migrated.contains(s)))
-        })
-        .collect();
     files.sort();
     files
 }
