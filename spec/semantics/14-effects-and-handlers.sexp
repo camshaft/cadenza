@@ -22908,3 +22908,88 @@
             (export main)))
   (call   main (: 0.0 Float64)) (output (: 1 Int64))
   (call   main (: 5.0 Float64)) (output (: 0 Int64)))
+
+
+; ── Bytes PAYLOADS built and consumed across dispatch (breaker bp) ────────────────────────────
+; Byte frames as first-class dispatch data. bp1: a BYTES payload inside an arm-built Result —
+; even states Ok-wrap a one-byte frame built in the arm (Bytes.of + UInt8.wrap), odd states Err;
+; the body reads length and first byte. bp2: a Bytes TRANSFORMER op — the body frames a byte,
+; the arm decodes/adds-five/re-encodes, the body decodes the transform. bp3: the arm REVERSES a
+; three-byte frame by per-index rebuild, positional weights pinning the swap. bp4: two one-byte
+; op RESULTS concatenated in the body — the joined frame's length and both bytes decode. All
+; rows hand-computed; all pass on wasm, rust, and rust-async.
+
+(case "bp1 a BYTES payload inside an arm-built Result — even states Ok-wrap a one-byte frame, the body reads len and first byte"
+  (input  (do
+            (type BRes (Ok Bytes) (Err))
+            (effect E (op step (-> BRes)))
+            (def (main (: n Int64))
+              (handle E (if (< n 0) (- 0 n) n)
+                ((step () s
+                  (resume (if (= (% s 2) 0)
+                              (BRes.Ok (Bytes.of (list (UInt8.wrap s))))
+                              (BRes.Err))
+                          (+ s 1))))
+                (match (E.step)
+                  ((BRes.Ok b) (+ (* 100 (Bytes.len b))
+                                  (match (Bytes.at b 0)
+                                    ((Some v) (Int64.of v))
+                                    ((None) -9))))
+                  ((BRes.Err) -1))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 104 Int64))
+  (call   main (: 7 Int64)) (output (: -1 Int64)))
+
+(case "bp2 a Bytes TRANSFORMER op — the body frames a byte, the arm decodes it, adds five, re-encodes; the body decodes the transform"
+  (input  (do
+            (effect E (op xf (-> Bytes Bytes)))
+            (def (main (: n Int64))
+              (handle E 0
+                ((xf (b) s
+                  (match (Bytes.at b 0)
+                    ((Some v) (resume (Bytes.of (list (UInt8.wrap (+ (Int64.of v) 5)))) s))
+                    ((None) (resume b s)))))
+                (match (Bytes.at (E.xf (Bytes.of (list (UInt8.wrap (if (< n 0) (- 0 n) n))))) 0)
+                  ((Some v) (Int64.of v))
+                  ((None) -9))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 15 Int64))
+  (call   main (: -3 Int64)) (output (: 8 Int64)))
+
+(case "bp3 the arm REVERSES a three-byte frame — per-index rebuild through Bytes.at, positional weights pin the swap"
+  (input  (do
+            (effect E (op rev (-> Bytes Bytes)))
+            (def (byte-at (: b Bytes) (: i Int64))
+              (match (Bytes.at b i) ((Some v) (Int64.of v)) ((None) 0)))
+            (def (main (: n Int64))
+              (handle E 0
+                ((rev (b) s
+                  (resume (Bytes.of (list (UInt8.wrap (byte-at b 2))
+                                          (UInt8.wrap (byte-at b 1))
+                                          (UInt8.wrap (byte-at b 0))))
+                          s)))
+                (let ((r (E.rev (Bytes.of (list (UInt8.wrap (if (< n 0) (- 0 n) n))
+                                                (UInt8.wrap 20)
+                                                (UInt8.wrap 30))))))
+                  (+ (* 10000 (byte-at r 0))
+                     (+ (* 100 (byte-at r 1))
+                        (byte-at r 2))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 302005 Int64))
+  (call   main (: -7 Int64)) (output (: 302007 Int64)))
+
+(case "bp4 two one-byte op results CONCATENATED in the body — the joined frame's length and both bytes decode"
+  (input  (do
+            (effect E (op mk (-> Int64 Bytes)))
+            (def (byte-at (: b Bytes) (: i Int64))
+              (match (Bytes.at b i) ((Some v) (Int64.of v)) ((None) 0)))
+            (def (main (: n Int64))
+              (handle E 0
+                ((mk (v) s (resume (Bytes.of (list (UInt8.wrap v))) s)))
+                (let ((j (Bytes.concat (E.mk (if (< n 0) (- 0 n) n)) (E.mk 42))))
+                  (+ (* 1000 (Bytes.len j))
+                     (+ (* 10 (byte-at j 0))
+                        (- (byte-at j 1) 40))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 2052 Int64))
+  (call   main (: -9 Int64)) (output (: 2092 Int64)))

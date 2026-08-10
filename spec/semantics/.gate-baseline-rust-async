@@ -4722,6 +4722,10 @@ pass	both elements of a runtime-content fn-return tuple are projected directly a
 pass	both same-effect handlers STATEFUL — the outer's advance survives the inner's forwards
 pass	both sibling args consume the same binding independently
 pass	boxed closures of two fn types in one sum: the unbuilt variant's dispatch is dead
+pass	bp1 a BYTES payload inside an arm-built Result — even states Ok-wrap a one-byte frame, the body reads len and first byte
+pass	bp2 a Bytes TRANSFORMER op — the body frames a byte, the arm decodes it, adds five, re-encodes; the body decodes the transform
+pass	bp3 the arm REVERSES a three-byte frame — per-index rebuild through Bytes.at, positional weights pin the swap
+pass	bp4 two one-byte op results CONCATENATED in the body — the joined frame's length and both bytes decode
 pass	branches performing DIFFERENT counts each thread their own post-state to the continuation
 pass	breaker capsubst: a non-capturing substitution takes the plain path
 pass	breaker capsubst: the fresh binder clears the body's ids, not only s's
