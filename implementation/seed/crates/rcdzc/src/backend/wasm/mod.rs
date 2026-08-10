@@ -655,10 +655,28 @@ pub fn emit(
         let red_layout = layout
             .with_import_base((red_externs.len() + red_imports.len()) as u32)
             .with_extern_order(extern_order);
-        let apply_body = def_body(db, e.def)?;
-        let guest_apply = select_function_of(db, apply_body, &e.params, &red_layout, Some(e.def))?;
+        let red_layout = &red_layout;
+        // Select ALL reachable reducer defs (the apply AND its callees — e.g. genesis's `setup-key`, which
+        // is NOT inlined, so `apply` emits a real `call` to it). Emitting only the apply would leave that
+        // call resolving to a missing/wrong func index (an invalid module). `layout.order` is the reachable
+        // set; each def's core func index is `import_base + its emission position` = e+k + pos, which
+        // `reducer_core_module` places the defined funcs at. Find the apply's position for the wrapper.
+        let mut guest_funcs: Vec<select::SelectedFunc> = Vec::new();
+        let mut apply_pos = 0usize;
+        for (pos, &def) in red_layout.order.iter().enumerate() {
+            let body = def_body(db, def)?;
+            let params = match red_layout.export_plan(def) {
+                Some(ep) => ep.params.clone(),
+                None => crate::layout::def_params(db, def),
+            };
+            if def == e.def {
+                apply_pos = pos;
+            }
+            guest_funcs.push(select_function_of(db, body, &params, red_layout, Some(def))?);
+        }
         let core = serialize::reducer_core_module(
-            &guest_apply,
+            &guest_funcs,
+            apply_pos,
             &event_desc,
             &effect_list_desc,
             &red_imports,

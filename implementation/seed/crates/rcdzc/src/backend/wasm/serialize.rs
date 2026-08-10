@@ -7043,7 +7043,8 @@ fn to_bytes_body(import_index: &std::collections::HashMap<&str, u32>) -> Vec<u8>
 /// (exported as `apply`); cabi_realloc → `e+k+2` (exported). `guest_apply` is the selected guest `apply`
 /// body; `extern_fns` are its bound-effect peer ops (empty for b1/b2 — a heap-only reducer).
 pub fn reducer_core_module(
-    guest_apply: &SelectedFunc,
+    guest_funcs: &[SelectedFunc],
+    apply_pos: usize,
     event_desc: &[u8],
     effect_list_desc: &[u8],
     imports: &[&RtOp],
@@ -7051,10 +7052,12 @@ pub fn reducer_core_module(
 ) -> Result<Vec<u8>, String> {
     let e = extern_fns.len();
     let k = imports.len();
+    let n = guest_funcs.len();
 
     // ── Type section ── EXTERN peer functypes 0..e FIRST (match the import order → CallExternImport(i)=call
-    // i), then runtime-op functypes e..e+k; then guest apply (e+k), wrapper (i32,i32)->i32 (e+k+1),
-    // cabi_realloc (i32×4)->i32 (e+k+2).
+    // i), then runtime-op functypes e..e+k; then ONE functype per defined reducer func (e+k .. e+k+n — the
+    // apply + its callees like `setup-key`, so a non-inlined `call` resolves), then the wrapper
+    // (i32,i32)->i32 (e+k+n) + cabi_realloc (i32×4)->i32 (e+k+n+1).
     let mut type_items = Vec::new();
     for f in extern_fns {
         type_items.extend_from_slice(&extern_import_functype(f));
@@ -7062,22 +7065,24 @@ pub fn reducer_core_module(
     for o in imports {
         type_items.extend_from_slice(&import_functype(o));
     }
-    type_items.extend_from_slice(&functype(guest_apply)?); // type e+k
+    for f in guest_funcs {
+        type_items.extend_from_slice(&functype(f)?); // types e+k .. e+k+n
+    }
     let i32i32_to_i32 = {
         let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
         t.extend_from_slice(&wasm_vec(2, &[wasm_abi::CORE_I32; 2]));
         t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
         t
     };
-    type_items.extend_from_slice(&i32i32_to_i32); // wrapper type e+k+1
+    type_items.extend_from_slice(&i32i32_to_i32); // wrapper type e+k+n
     let realloc_type = {
         let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
         t.extend_from_slice(&wasm_vec(4, &[wasm_abi::CORE_I32; 4]));
         t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
         t
     };
-    type_items.extend_from_slice(&realloc_type); // realloc type e+k+2
-    let type_sec = section(wasm_abi::CORE_SEC_TYPE, &wasm_vec(e + k + 3, &type_items));
+    type_items.extend_from_slice(&realloc_type); // realloc type e+k+n+1
+    let type_sec = section(wasm_abi::CORE_SEC_TYPE, &wasm_vec(e + k + n + 2, &type_items));
 
     // ── Import section ── e PEER ops (from "peer", indices 0..e, so CallExternImport(i)=call i), then k
     // runtime ops (from "heap", e..e+k). The wrapper's import_index maps each HEAP op name → its core func
@@ -7094,22 +7099,26 @@ pub fn reducer_core_module(
     }
     let import_sec = section(2, &wasm_vec(e + k, &import_items));
 
-    // Core func indices: guest apply = e+k, wrapper = e+k+1, cabi_realloc = e+k+2.
-    let guest_apply_func = (e + k) as u32;
-    let wrapper_func = (e + k + 1) as u32;
-    let realloc_func = (e + k + 2) as u32;
+    // Core func indices: defined funcs e+k .. e+k+n (apply = e+k+apply_pos); wrapper = e+k+n; realloc =
+    // e+k+n+1. The guest body's `Core::Call` to a sibling def resolves via `layout.abs` (import_base +
+    // emission pos) = e+k + pos — matching the def-func placement here.
+    let guest_apply_func = (e + k + apply_pos) as u32;
+    let wrapper_func = (e + k + n) as u32;
+    let realloc_func = (e + k + n + 1) as u32;
 
-    // ── Function section ── guest apply (type e+k), wrapper (type e+k+1), cabi_realloc (type e+k+2).
+    // ── Function section ── n defined funcs (types e+k .. e+k+n), wrapper (e+k+n), cabi_realloc (e+k+n+1).
     let mut func_items = Vec::new();
-    uleb128((e + k) as u64, &mut func_items);
-    uleb128((e + k + 1) as u64, &mut func_items);
-    uleb128((e + k + 2) as u64, &mut func_items);
-    let func_sec = section(wasm_abi::CORE_SEC_FUNCTION, &wasm_vec(3, &func_items));
+    for i in 0..n {
+        uleb128((e + k + i) as u64, &mut func_items);
+    }
+    uleb128((e + k + n) as u64, &mut func_items);
+    uleb128((e + k + n + 1) as u64, &mut func_items);
+    let func_sec = section(wasm_abi::CORE_SEC_FUNCTION, &wasm_vec(n + 2, &func_items));
 
     // ── Memory section ── one memory, min 1 page (the canon-lift Memory option binds mem 0).
     let mem_sec = section(wasm_abi::CORE_SEC_MEMORY, &wasm_vec(1, &[0x00, 0x01]));
 
-    // ── Export section ── apply → wrapper (k+1), memory → 0, cabi_realloc → k+2.
+    // ── Export section ── apply → wrapper, memory → 0, cabi_realloc.
     let export_sec = {
         let export = |name: &str, kind: u8, idx: u32| {
             let mut item = uleb_bytes(name.len() as u64);
@@ -7130,9 +7139,11 @@ pub fn reducer_core_module(
         section(wasm_abi::CORE_SEC_EXPORT, &wasm_vec(3, &items))
     };
 
-    // ── Code section ── guest apply body, wrapper body, cabi_realloc stub (return 0).
+    // ── Code section ── the n defined bodies (in emission order), the wrapper body, cabi_realloc stub.
     let mut code_items = Vec::new();
-    code_items.extend_from_slice(&code_entry(guest_apply, &import_index));
+    for f in guest_funcs {
+        code_items.extend_from_slice(&code_entry(f, &import_index));
+    }
     code_items.extend_from_slice(&reducer_apply_bytes_body(
         event_desc,
         effect_list_desc,
@@ -7148,7 +7159,7 @@ pub fn reducer_core_module(
         e.extend_from_slice(&inner);
         code_items.extend_from_slice(&e);
     }
-    let code_sec = section(wasm_abi::CORE_SEC_CODE, &wasm_vec(3, &code_items));
+    let code_sec = section(wasm_abi::CORE_SEC_CODE, &wasm_vec(n + 2, &code_items));
 
     let mut core = Vec::new();
     core.extend_from_slice(CORE_MAGIC);
