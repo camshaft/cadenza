@@ -23504,6 +23504,60 @@ mod tests {
         });
     }
 
+    /// value-DECODE (heap idx 90) is the inverse of value-encode: for ANY random value, encoding then
+    /// decoding under the same descriptor must reconstruct a STRUCTURALLY-EQUAL value — the B0 round-trip
+    /// property (`decode ∘ encode == id`), across the full shape space (Tuple/List/Sum/Record/Set/nested),
+    /// not just the hand-picked `value_decode_round_trips_*` cases. Also asserts decode never leaks and
+    /// never traps (returns a handle or declines to NULL). Drives `decode_value` on the in-memory
+    /// `Descriptor`+`ParsedDoc` directly (op_value_decode's guts) so no descriptor byte-serializer is
+    /// needed. NOTE: a Set re-canonicalizes on encode (elements sorted by value), so the decoded Set is
+    /// value-equal though not necessarily node-identical — `value_eq_shaped` compares by canonical value,
+    /// which is the correct equality here.
+    #[test]
+    fn prop_value_decode_round_trips_over_random_shapes() {
+        bolero::check!().with_type::<Vec<u8>>().for_each(|bytes| {
+            reset();
+            let before = live_nodes();
+            let mut table: Vec<super::Shape> = Vec::new();
+            let (mut cur, mut budget) = (0usize, 40u32);
+            let (v, root) = build_rand_value_and_shape(bytes, &mut cur, &mut budget, 0, &mut table);
+            let descriptor = super::Descriptor { table, root };
+            // Encode via the production walk; if it declines (a malformed random descriptor), skip — the
+            // encode-totality property is covered by prop_value_encode_is_total; here we test the round-trip.
+            let mut b = DocBuilder::default();
+            if let Some(r) = encode_value(
+                &descriptor,
+                &mut b,
+                &mut Vec::new(),
+                &mut Vec::new(),
+                v,
+                descriptor.root,
+            ) {
+                let doc_bytes = b.finish(r);
+                let parsed = parse_doc(&doc_bytes).expect("a produced document must parse");
+                let decoded = decode_value(&descriptor, &parsed, parsed.root, descriptor.root, 0);
+                assert_ne!(
+                    decoded,
+                    Handle::NULL,
+                    "value-decode returned NULL on a value value-encode just produced (round-trip must succeed)"
+                );
+                let eq = value_eq_shaped(&descriptor, decoded, v, descriptor.root);
+                assert_eq!(
+                    eq,
+                    Some(true),
+                    "decode ∘ encode must reconstruct a structurally-equal value"
+                );
+                op_drop(decoded);
+            }
+            op_drop(v);
+            assert_eq!(
+                live_nodes(),
+                before,
+                "no leak across a random encode→decode round-trip"
+            );
+        });
+    }
+
     // ── U6: FBIP rc==1 in-place cursor advance for map-iter-next / set-iter-next ────────────────
     // Load-bearing: (1) a forked/peeked/teed cursor (rc>1) stays INDEPENDENT — advancing one owner
     // must not disturb the other (aliasing catcher); (2) a unique (rc==1) walk allocates ZERO new
