@@ -7145,3 +7145,6 @@ pass	md2 the arm DRAINS a Map entry per dispatch — Map.remove keyed by the op 
 pass	md3 the drained value RE-FILES under a shifted key — the third take HITS the re-filed entry, the final take finds it moved on
 pass	il1 strict O-I-O-I body interleave — two independent threads advance in lockstep, positional weights pin the dispatch order
 pass	il2 the interleave WIDTH is data-driven — parity picks one-or-two O draws per I tick, a helper sums each O burst
+pass	cr1 catch-and-reseed — a conditionally-aborting region's value (abort payload OR normal result) seeds a SECOND handle
+pass	cr2 RETRY-until-success — a recursive driver re-runs a conditionally-aborting region until the drawn attempt passes, counting tries
+pass	cr3 a BOUNDED retry budget — two attempts then give up, the fallback negating the last failed attempt

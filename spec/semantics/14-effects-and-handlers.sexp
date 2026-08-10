@@ -22132,3 +22132,79 @@
   (call   main (: 3 Int64)) (output (: 103403 Int64))
   (call   main (: 2 Int64)) (output (: 103905 Int64))
   (call   main (: -1 Int64)) (output (: 102999 Int64)))
+
+
+; ── Catch-and-retry protocols over conditional aborts (breaker cr) ────────────────────────────
+; The exception-recovery idiom family built on the conditional-abort machinery. cr1
+; catch-and-reseed: a conditionally-aborting region's value (abort payload OR normal result)
+; seeds a SECOND effect's handle — the sequential region→seed chain (the sab1 pin nests the
+; aborter INSIDE a seed). cr2 RETRY-until-success: a recursive driver re-runs a
+; conditionally-aborting helper (a fresh abort handle per call) until the drawn attempt passes,
+; counting tries while the counter thread persists ACROSS the retried handles. cr3 bounds the
+; budget: two attempts then give up, the abort payload carrying the negated failed attempt for
+; the fallback path. All rows hand-computed; all pass on wasm, rust, and rust-async.
+
+(case "cr1 catch-and-reseed — a conditionally-aborting region's value (abort payload OR normal result) seeds a SECOND handle"
+  (input  (do
+            (effect R (op raise (-> Int64 Int64)))
+            (effect T (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle T
+                (handle R 0
+                  ((raise (v) u v))
+                  (if (= (% n 2) 0)
+                      (+ n 1)
+                      (do (R.raise (* n 10)) 999)))
+                ((tick () t (resume t (+ t 3))))
+                (+ (T.tick) (T.tick))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 63 Int64))
+  (call   main (: 4 Int64)) (output (: 13 Int64))
+  (call   main (: -5 Int64)) (output (: -97 Int64)))
+
+(case "cr2 RETRY-until-success — a recursive driver re-runs a conditionally-aborting region until the drawn attempt passes, counting tries"
+  (input  (do
+            (effect C (op draw (-> Int64)))
+            (effect R (op fail (-> Int64 Int64)))
+            (def (attempt-once)
+              (handle R 0
+                ((fail (v) u v))
+                (let ((a (C.draw)))
+                  (if (= (% a 3) 0) (* 1000 a) (do (R.fail -1) 999)))))
+            (def (retry (: tries Int64))
+              (let ((r (attempt-once)))
+                (if (< r 0) (retry (+ tries 1)) (+ (* 100 (+ tries 1)) (/ r 1000)))))
+            (def (main (: n Int64))
+              (handle C n
+                ((draw () s (resume s (+ s 1))))
+                (retry 0)))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 103 Int64))
+  (call   main (: 1 Int64)) (output (: 303 Int64))
+  (call   main (: -2 Int64)) (output (: 300 Int64)))
+
+(case "cr3 a BOUNDED retry budget — two attempts then give up, the fallback negating the last failed attempt"
+  (input  (do
+            (effect C (op draw (-> Int64)))
+            (effect R (op fail (-> Int64 Int64)))
+            (def (attempt-once)
+              (handle R 0
+                ((fail (v) u v))
+                (let ((a (C.draw)))
+                  (if (= (% a 5) 0) (* 1000 a) (do (R.fail (- 0 a)) 999)))))
+            (def (retry (: tries Int64))
+              (if (>= tries 2)
+                  -999999
+                  (let ((r (attempt-once)))
+                    (if (> r -999999)
+                        (if (>= r 0) (+ (* 100 (+ tries 1)) (/ r 1000)) 
+                            (if (>= (+ tries 1) 2) r (retry (+ tries 1))))
+                        r))))
+            (def (main (: n Int64))
+              (handle C n
+                ((draw () s (resume s (+ s 1))))
+                (retry 0)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 105 Int64))
+  (call   main (: 4 Int64)) (output (: 205 Int64))
+  (call   main (: 1 Int64)) (output (: -2 Int64)))
