@@ -9177,12 +9177,21 @@ fn partition_batch_by_lane(
         .collect()
 }
 
+/// The scope-batches that are PARALLEL-eligible — the ones the concurrent-gate scheduler (slice ii) may
+/// gate at the same time, because each owns disjoint territory (a distinct leaf/corpus lane) so their
+/// combined trees can't collide and a concurrent gate of one can't invalidate another's. The serial
+/// batches (shared compiler core / hot files / `mixed`) are excluded — they gate one-at-a-time as today.
+/// Pure over the partition so the selection is unit-tested. Preserves input (first-seen lane) order.
+fn parallel_scope_batches(batches: &[ScopeBatch]) -> Vec<&ScopeBatch> {
+    batches.iter().filter(|b| b.parallel).collect()
+}
+
 /// `fleet batch-plan`: read-only preview of how the currently-queued merge-requests partition into
 /// per-lane scope-batches ([`partition_batch_by_lane`] over the live queue, resolving each ref's files via
 /// `changed_files_of`). Prints one line per lane — PARALLEL (can gate concurrently with other parallel
-/// lanes) or SERIAL — plus its member MRs. No gate, no push: the inspector for the scope-split scheduler
-/// (slices ii/iii add the concurrent gate + serial FF-push on top of this classification), and a way for
-/// a human/operator to see the split of the current queue.
+/// lanes) or SERIAL — plus its member MRs, and names the concurrent-gate SET ([`parallel_scope_batches`]).
+/// No gate, no push: the inspector for the scope-split scheduler (slices ii/iii add the concurrent gate +
+/// serial FF-push on top of this classification), and a way for a human/operator to see the split.
 fn batch_plan(fleet: &Fleet) {
     let queued = queued_merge_requests(fleet);
     if queued.is_empty() {
@@ -9190,13 +9199,13 @@ fn batch_plan(fleet: &Fleet) {
         return;
     }
     let batches = partition_batch_by_lane(&queued, changed_files_of);
-    let parallel_lanes = batches.iter().filter(|b| b.parallel).count();
+    let concurrent = parallel_scope_batches(&batches);
     println!(
         "batch-plan: {} queued MR(s) → {} scope-batch(es) ({} parallel-eligible, {} serial):",
         queued.len(),
         batches.len(),
-        parallel_lanes,
-        batches.len() - parallel_lanes,
+        concurrent.len(),
+        batches.len() - concurrent.len(),
     );
     for b in &batches {
         let disp = if b.parallel { "PARALLEL" } else { "serial" };
@@ -9205,6 +9214,18 @@ fn batch_plan(fleet: &Fleet) {
             let short: String = m.r#ref.chars().take(12).collect();
             println!("      {short}  {}  ({})", m.subject, m.from);
         }
+    }
+    if concurrent.len() >= 2 {
+        let names: Vec<&str> = concurrent.iter().map(|b| b.lane.as_str()).collect();
+        println!(
+            "concurrent-gate SET (slice ii will gate these {} lanes at once): {}",
+            concurrent.len(),
+            names.join(", ")
+        );
+    } else {
+        println!(
+            "concurrent-gate SET: <2 parallel lanes this pass → nothing to gate concurrently (all serial)."
+        );
     }
     println!(
         "note: parallel lanes can gate CONCURRENTLY (disjoint territory); serial lanes (shared compiler \
@@ -16768,6 +16789,32 @@ mod tests {
 
         // Empty queue → no batches.
         assert!(partition_batch_by_lane(&[], files_of).is_empty());
+    }
+
+    #[test]
+    fn parallel_scope_batches_selects_only_the_disjoint_lanes_in_order() {
+        let b = |lane: &str, parallel: bool| ScopeBatch {
+            lane: lane.into(),
+            parallel,
+            members: vec![],
+        };
+        // Mixed partition: two parallel leaf lanes + a serial code lane + serial mixed. Only the two
+        // parallel lanes are the concurrent-gate set, in first-seen order; serial ones are excluded.
+        let batches = vec![
+            b("cad", true),
+            b("code", false),
+            b("corpus", true),
+            b("mixed", false),
+        ];
+        let picked: Vec<&str> = parallel_scope_batches(&batches)
+            .iter()
+            .map(|b| b.lane.as_str())
+            .collect();
+        assert_eq!(picked, vec!["cad", "corpus"]);
+        // All-serial partition (the observed compiler-heavy queue) → nothing to gate concurrently.
+        assert!(parallel_scope_batches(&[b("code", false), b("baseline", false)]).is_empty());
+        // Empty → empty.
+        assert!(parallel_scope_batches(&[]).is_empty());
     }
 
     #[test]
