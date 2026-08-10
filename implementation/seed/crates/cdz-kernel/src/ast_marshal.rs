@@ -243,6 +243,41 @@ pub fn schema_hash(ty: &Type) -> Result<crate::hash::Hash, MarshalError> {
     Ok(crate::hash::Hash::of(&type_to_ast(ty)?))
 }
 
+/// The stable STRUCTURAL identity of an EFFECT — the content-hash of its schema tree
+/// `(effect <name> (op <op-name> <sig>)… (authz <a>)?)`, where each op's `<sig>` is the type-descriptor
+/// AST [`build_type`] emits into the SAME arena (one structural-encode path, no parallel encoder). This is
+/// the effect-identity foundation (operator seq367/368, seq374 top feature): an effect is identified by its
+/// SCHEMA — the shapes of its operations — not by a closed enum discriminant or an arbitrary family string.
+/// The family/display name becomes a human ALIAS; THIS hash is the authoritative identity that authz gates
+/// on (collision-proof) and the wire carries (resolved hash→name via the host's [`crate::schema_resolver`]).
+///
+/// ORDER-INDEPENDENT: `ops` are sorted by op-name before the tree is built, so the same operation set hashes
+/// IDENTICALLY regardless of declaration order — a schema is its SET of named operations, not a sequence. A
+/// shape change to ANY op's signature (or adding/removing an op, or an authz change) flips the hash. Pure
+/// over the encoded tree ([`Hash::of`] = blake3, the one content-address algorithm), so the same effect
+/// schema yields the same id everywhere (kernel, host, on the wire). An op whose signature has no
+/// value-crossing descriptor propagates [`build_type`]'s [`MarshalError`].
+pub fn effect_schema_hash(
+    name: &str,
+    ops: &[(&str, &Type)],
+    authz: Option<&Type>,
+) -> Result<crate::hash::Hash, MarshalError> {
+    let mut b = Builder::new();
+    // Build each op's signature descriptor node into the shared arena (the SINGLE structural encoder).
+    let mut op_nodes: Vec<(&str, StructId)> = ops
+        .iter()
+        .map(|(op_name, sig)| Ok((*op_name, build_type(&mut b, sig)?)))
+        .collect::<Result<_, MarshalError>>()?;
+    // Sort by op-name so the identity is the SET of ops, order-independent.
+    op_nodes.sort_by(|a, c| a.0.cmp(c.0));
+    let authz_node = match authz {
+        Some(a) => Some(build_type(&mut b, a)?),
+        None => None,
+    };
+    let tree = b.effect_schema_tree(name, &op_nodes, authz_node);
+    Ok(crate::hash::Hash::of(&codec::encode(&b.finish(tree))))
+}
+
 /// Build the type-descriptor for `ty` INTO an existing arena `b`, returning the root node id — the
 /// node-emitting core [`type_to_ast`] wraps. Exposed `pub` so a caller assembling a LARGER AST can emit
 /// type nodes DIRECTLY into its own [`Builder`] (one shared arena, encoded ONCE) rather than nesting
@@ -1634,6 +1669,56 @@ mod tests {
             crate::hash::Hash::of(&type_to_ast(&u32_ty).unwrap()),
             "schema_hash == content-hash of the type-descriptor AST"
         );
+    }
+
+    #[test]
+    fn effect_schema_hash_is_op_order_independent_and_shape_sensitive() {
+        // seq367/374 effect-identity: an effect's identity is the hash of its schema tree
+        // `(effect <name> (op <op-name> <sig>)…)`, and a schema is the SET of its named ops — so the
+        // SAME ops in a DIFFERENT source order must hash IDENTICALLY (order-independence), while any
+        // shape change (a different op signature, or a renamed op) must flip the hash.
+        let u32_ty = param_type(&probe_component("u32"));
+        let str_ty = param_type(&probe_component("string"));
+
+        // Same two ops, opposite declaration order → identical schema-hash.
+        let ab = effect_schema_hash("kv", &[("get", &str_ty), ("put", &u32_ty)], None)
+            .expect("kv schema ab");
+        let ba = effect_schema_hash("kv", &[("put", &u32_ty), ("get", &str_ty)], None)
+            .expect("kv schema ba");
+        assert_eq!(
+            ab, ba,
+            "op order must not affect the effect-schema identity"
+        );
+
+        // A different op SIGNATURE (get: u32 not string) flips the hash.
+        let sig_changed = effect_schema_hash("kv", &[("get", &u32_ty), ("put", &u32_ty)], None)
+            .expect("kv schema sig-changed");
+        assert_ne!(ab, sig_changed, "an op signature change must flip the hash");
+
+        // A different op NAME (getx not get) flips the hash.
+        let name_changed = effect_schema_hash("kv", &[("getx", &str_ty), ("put", &u32_ty)], None)
+            .expect("kv schema name-changed");
+        assert_ne!(ab, name_changed, "an op rename must flip the hash");
+
+        // A different effect NAME flips the hash (the name is part of the tree head).
+        let effect_renamed =
+            effect_schema_hash("store", &[("get", &str_ty), ("put", &u32_ty)], None)
+                .expect("store schema");
+        assert_ne!(
+            ab, effect_renamed,
+            "the effect name is part of its identity"
+        );
+
+        // Adding an authz gate flips the hash (authz participates in the schema tree).
+        let with_authz =
+            effect_schema_hash("kv", &[("get", &str_ty), ("put", &u32_ty)], Some(&u32_ty))
+                .expect("kv schema with authz");
+        assert_ne!(ab, with_authz, "adding an authz gate must flip the hash");
+
+        // Deterministic: recomputing the same schema yields the same hash.
+        let ab_again = effect_schema_hash("kv", &[("get", &str_ty), ("put", &u32_ty)], None)
+            .expect("kv schema again");
+        assert_eq!(ab, ab_again, "effect-schema hashing is deterministic");
     }
 
     #[test]
