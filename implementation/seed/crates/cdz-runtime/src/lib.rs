@@ -108,6 +108,7 @@ extern crate alloc;
 // `vec!` sites read the same under `no_std` as they did under `std`'s prelude.
 use alloc::boxed::Box;
 use alloc::string::String;
+use alloc::rc::Rc;
 use alloc::vec;
 use alloc::vec::Vec;
 // `format!` is used by `DocBuilder::float_leaf` (the f64 → exact-decimal conversion for a `KIND_FLOAT`
@@ -1560,11 +1561,17 @@ enum Shape {
     /// distinct from `Float` (Float64). A Float32 is stored 4-byte (`box-float32`), so its canonical value
     /// form is the f32's, not a promoted f64's (`0.1f32` renders `0.1`, not `0.10000000149011612`).
     Float32,
-    Tuple(Vec<u32>),
+    // Child-index/field lists are `Arc<[…]>` (not `Vec`) so the descriptor-guided walks (value_cmp_shaped
+    // in the Set/Map render `sort_unstable_by` hot path, value_encode, value_eq_shaped) can CHEAPLY clone
+    // them (a refcount bump, not an O(n) copy) to drop the `&desc.table` borrow before pushing to the work
+    // stack. Shape is in-memory-only (built by decode_shape from the wire descriptor, never serialized), so
+    // this retype is hash-neutral. Field names are `Rc<str>` (deduped-friendly, cheap-clone) for the same
+    // reason. (operator-commissioned cheap-clone audit, v-core-opt 2026-08-10.)
+    Tuple(Rc<[u32]>),
     List(u32),
-    Record(Vec<(String, u32)>),
-    Sum(Vec<(String, u32)>),
-    Named(String, u32),
+    Record(Rc<[(Rc<str>, u32)]>),
+    Sum(Rc<[(Rc<str>, u32)]>),
+    Named(Rc<str>, u32),
     Ref(u32),
     /// A SET over one element shape — rendered `(Set.of (list e1 … en))` with the elements in CANONICAL
     /// key-VALUE order (collections-and-text.md §A Set's canonical form). The runtime iterates the CHAMP
@@ -1586,7 +1593,7 @@ enum Shape {
     /// Read exactly like a `Tuple` (each element via `arr-get`) but the enclosing `Sum` walk splices the
     /// elements directly under the variant head instead of emitting a `tuple` form. Only a `Sum` variant's
     /// payload references a `Spread`; a genuine tuple VALUE stays a `Tuple`.
-    Spread(Vec<u32>),
+    Spread(Rc<[u32]>),
 }
 
 /// A compile-time-baked TYPE node for a `Framed` frame: `head` + child type nodes. A LEAF type
@@ -1682,29 +1689,29 @@ fn decode_shape(d: &[u8], pos: &mut usize) -> Option<Shape> {
             for _ in 0..n {
                 elems.push(desc_leb(d, pos)? as u32);
             }
-            Shape::Tuple(elems)
+            Shape::Tuple(elems.into())
         }
         7 => Shape::List(desc_leb(d, pos)? as u32),
         8 => {
             let n = desc_leb(d, pos)?;
             let mut fields = Vec::with_capacity(reserve_cap(n, d, *pos));
             for _ in 0..n {
-                let name = desc_name(d, pos)?;
+                let name: Rc<str> = desc_name(d, pos)?.into();
                 fields.push((name, desc_leb(d, pos)? as u32));
             }
-            Shape::Record(fields)
+            Shape::Record(fields.into())
         }
         9 => {
             let n = desc_leb(d, pos)?;
             let mut variants = Vec::with_capacity(reserve_cap(n, d, *pos));
             for _ in 0..n {
-                let head = desc_name(d, pos)?;
+                let head: Rc<str> = desc_name(d, pos)?.into();
                 variants.push((head, desc_leb(d, pos)? as u32));
             }
-            Shape::Sum(variants)
+            Shape::Sum(variants.into())
         }
         10 => {
-            let name = desc_name(d, pos)?;
+            let name: Rc<str> = desc_name(d, pos)?.into();
             Shape::Named(name, desc_leb(d, pos)? as u32)
         }
         11 => Shape::Ref(desc_leb(d, pos)? as u32),
@@ -1728,7 +1735,7 @@ fn decode_shape(d: &[u8], pos: &mut usize) -> Option<Shape> {
             for _ in 0..n {
                 elems.push(desc_leb(d, pos)? as u32);
             }
-            Shape::Spread(elems)
+            Shape::Spread(elems.into())
         }
         17 => Shape::BigInt, // arbitrary-precision integer leaf (a runtime BigInt), rendered as KIND_INT
         18 => Shape::Rational, // exact-rational leaf (a 2-BigInt-handle node), rendered as a num/den name
@@ -2408,13 +2415,16 @@ enum EncodeWork {
     /// NESTED) type node, re-derived at process time from `desc.table[framed_ix]` (the `Shape::Framed`).
     /// Pop the inner value, `render_type_node` the type, then `list([colon_s, value, type_node])`.
     Framed { colon_s: u32, framed_ix: u32 },
-    /// Assemble one record pair: pop the field value, `list([katom, fval])`.
-    Pair { katom: u32 },
+    /// Assemble one record field: pop the field value, `list([eq, katom, fval])`. The `=` and key atoms
+    /// are built PRE-order (before the value visit) so the leaf/struct pool matches canon's pre-order
+    /// first-encounter — see `VisitField`.
+    Pair { eq: u32, katom: u32 },
     /// Assemble `((. Set of) (list e1 … en))` — the canonical Set value form. Pops the top `nelems`
     /// results (the elements, already in canonical order from the Set arm's sort), wraps them in an inner
-    /// `(list …)` under the pre-emitted `list_head_s`, and applies the `(. Set of)` member-access head
-    /// (whose atoms are emitted HERE, AFTER the elements — matching the recursive oracle's build order).
-    SetOf { list_head_s: u32, nelems: usize },
+    /// `(list …)` under the pre-emitted `list_head_s`, and applies the pre-built `set_of` = `(. Set of)`
+    /// member-access head. Both `set_of` and `list_head_s` are built PRE-order in the `Set` arm (before the
+    /// elements are visited) so the leaf/struct pool matches canon first-encounter — see the `Set` arm.
+    SetOf { set_of: u32, list_head_s: u32, nelems: usize },
     /// Assemble one MAP entry: the key result is directly below the value result on `out` (key Visited
     /// before value). Pop value then key, build `list([key, value])` — the `(key value)` pair.
     MapPair,
@@ -2705,14 +2715,24 @@ fn encode_value(
                         // order. The CHAMP iterates hash order, so collect + SORT by the element's canonical
                         // scalar value (matching the compiler's `const_key_order`). Only a SCALAR element is
                         // orderable/encodable; a non-scalar element shape declines (as `const_key_order` does).
-                        // Emit the `list` head EAGERLY (pre-order — the SAME discipline as `list`/`tuple`,
-                        // matching the recursive oracle's leaf/struct order); the `(. Set of)` head atoms are
-                        // emitted AFTER the elements by the `SetOf` assembler (the oracle emits them last too).
+                        // CANON CONVERGENCE: build the `(. Set of)` head FIRST (pre-order `.`,`Set`,`of` +
+                        // the member-access list struct), THEN the `list` head atom, THEN visit the elements
+                        // — matching canon's pre-order first-encounter over `((. Set of) (list e…))` (child0
+                        // `(. Set of)` is visited before child1 `(list …)`). The pre-Phase-B code emitted the
+                        // `(. Set of)` atoms in the `SetOf` assembler AFTER the elements, interning them late
+                        // and making a Set value non-canonical vs `codec::encode(canon(tree))`.
                         let elem = *elem;
                         let sorted = set_elements_canonical(desc, h, elem)?;
+                        let dot_l = b.name_leaf(".");
+                        let dot = b.atom(dot_l);
+                        let set_l = b.name_leaf("Set");
+                        let set_mod = b.atom(set_l);
+                        let of_l = b.name_leaf("of");
+                        let of_key = b.atom(of_l);
+                        let set_of = b.list(&[dot, set_mod, of_key]);
                         let list_head = b.name_leaf("list");
                         let list_head_s = b.atom(list_head);
-                        work.push(EncodeWork::SetOf { list_head_s, nelems: sorted.len() });
+                        work.push(EncodeWork::SetOf { set_of, list_head_s, nelems: sorted.len() });
                         // Push in REVERSE so the LIFO stack encodes them in canonical order onto `out`. Each
                         // element is a DISTINCT heap node (a set member) → progress → reset `refs`.
                         for &e in sorted.iter().rev() {
@@ -2778,13 +2798,20 @@ fn encode_value(
                 // Re-derive the key from the owning `Shape::Record` at `field_ix` (no borrow on the stack).
                 let key = match desc.table.get(rec_ix as usize) {
                     Some(Shape::Record(fields)) => {
-                        fields.get(field_ix as usize).map(|(k, _)| k.as_str())
+                        fields.get(field_ix as usize).map(|(k, _)| &**k)
                     }
                     _ => None,
                 }?;
+                // CANON CONVERGENCE: emit the `=` head atom, THEN the key atom, BOTH before descending into
+                // the field value — matching canon's pre-order first-encounter (a field triple's children are
+                // `[=, name, value]`, so canon interns `=` first, then name, then the value subtree). The
+                // pre-Phase-B code built `=` in the `Pair` assembler AFTER the value, which interned `=` LATE
+                // and made value-encode non-canonical vs `codec::encode(canon(tree))`. See canon.rs `visit`.
+                let eq_leaf = b.name_leaf("=");
+                let eq = b.atom(eq_leaf);
                 let kname = b.name_leaf(key);
                 let katom = b.atom(kname);
-                work.push(EncodeWork::Pair { katom });
+                work.push(EncodeWork::Pair { eq, katom });
                 work.push(EncodeWork::Visit {
                     h,
                     shape_ix,
@@ -2803,7 +2830,7 @@ fn encode_value(
                 let value = out.pop()?;
                 // Re-derive the type name from the owning `Shape::Named` (no borrow on the stack).
                 let name = match desc.table.get(named_ix as usize) {
-                    Some(Shape::Named(name, _)) => name.as_str(),
+                    Some(Shape::Named(name, _)) => &**name,
                     _ => return None,
                 };
                 let tname = b.name_leaf(name);
@@ -2820,29 +2847,23 @@ fn encode_value(
                 let type_s = b.render_type_node(type_node);
                 out.push(b.list(&[colon_s, value, type_s]));
             }
-            EncodeWork::Pair { katom } => {
+            EncodeWork::Pair { eq, katom } => {
                 // Record field value-output form is the `(= name value)` ascription (record-type Phase B
                 // full-symmetry migration — literals, patterns, AND value-output all spell `(= name value)`;
-                // operator-ruled 2026-08-09). Emit the `=` head before the key atom and the field value.
+                // operator-ruled 2026-08-09). The `=` and key atoms were built PRE-order (in `VisitField`,
+                // before the value) so the leaf/struct pool matches canon first-encounter; here we only
+                // assemble the list once the field value result is on `out`.
                 let fval = out.pop()?;
-                let eq_leaf = b.name_leaf("=");
-                let eq = b.atom(eq_leaf);
                 out.push(b.list(&[eq, katom, fval]));
             }
-            EncodeWork::SetOf { list_head_s, nelems } => {
+            EncodeWork::SetOf { set_of, list_head_s, nelems } => {
                 // The top `nelems` results are the elements in canonical order, under the pre-emitted
-                // `list_head_s`. Build the inner `(list …)`, then the `(. Set of)` head (atoms emitted now,
-                // AFTER the elements — matching the oracle), then apply it: `((. Set of) (list …))`.
+                // `list_head_s`. Build the inner `(list …)`, then apply the pre-built `set_of` = `(. Set of)`
+                // head: `((. Set of) (list …))`. Both `set_of` and `list_head_s` were built PRE-order in the
+                // `Set` arm (canon first-encounter), so this assembler only wires the completed structs.
                 let base = out.len().checked_sub(nelems)?;
                 let inner_list = b.list_head_tail(list_head_s, &out[base..]);
                 out.truncate(base);
-                let dot_l = b.name_leaf(".");
-                let dot = b.atom(dot_l);
-                let set_l = b.name_leaf("Set");
-                let set_mod = b.atom(set_l);
-                let of_l = b.name_leaf("of");
-                let of_key = b.atom(of_l);
-                let set_of = b.list(&[dot, set_mod, of_key]);
                 out.push(b.list(&[set_of, inner_list]));
             }
             EncodeWork::MapPair => {
@@ -3306,7 +3327,7 @@ fn decode_value_opt(
                         return None;
                     }
                 };
-                if doc_atom_name(doc, name_ix)? != fname.as_str() {
+                if doc_atom_name(doc, name_ix)? != &**fname {
                     op_drop(arr);
                     return None;
                 }
@@ -3352,7 +3373,7 @@ fn decode_value_opt(
             }
             let head = doc_atom_name(doc, kids[0])?;
             let (disc, (_, payload_shape)) =
-                variants.iter().enumerate().find(|(_, (name, _))| name.as_str() == head)?;
+                variants.iter().enumerate().find(|(_, (name, _))| &**name == head)?;
             let payload_shape = *payload_shape;
             // A MULTI-payload variant's payload is a `Spread`: its elements are the variant's children
             // (flattened) — build the payload arr from `kids[1..]` directly. A single/nullary payload
@@ -9490,13 +9511,15 @@ mod tests {
                 let head_s = b.atom(head);
                 let mut children = vec![head_s];
                 for (i, (k, fs)) in fields.iter().enumerate() {
+                    // CANON CONVERGENCE (mirrors the iterative `VisitField`): build `=` then the key atom
+                    // BEFORE recursing into the value, so leaves intern in canon pre-order first-encounter.
+                    let eq_leaf = b.name_leaf("=");
+                    let eq = b.atom(eq_leaf);
                     let kname = b.name_leaf(k);
                     let katom = b.atom(kname);
                     let fval =
                         encode_value_recursive(desc, b, op_arr_get(h, i as u32), *fs, depth + 1)?;
                     // `(= name value)` ascription form (record Phase B full-symmetry migration).
-                    let eq_leaf = b.name_leaf("=");
-                    let eq = b.atom(eq_leaf);
                     children.push(b.list(&[eq, katom, fval]));
                 }
                 b.list(&children)
@@ -9553,13 +9576,9 @@ mod tests {
             S::Set(elem) => {
                 let elem = *elem;
                 let sorted = set_elements_canonical(desc, h, elem)?;
-                let list_head = b.name_leaf("list");
-                let list_head_s = b.atom(list_head);
-                let mut list_children = vec![list_head_s];
-                for e in sorted {
-                    list_children.push(encode_value_recursive(desc, b, e, elem, depth + 1)?);
-                }
-                let inner_list = b.list(&list_children);
+                // CANON CONVERGENCE (mirrors the iterative `Set` arm): build the `(. Set of)` head FIRST,
+                // then the `list` head, then the elements — canon pre-order first-encounter over
+                // `((. Set of) (list e…))`.
                 let dot = b.name_leaf(".");
                 let dot_s = b.atom(dot);
                 let set_l = b.name_leaf("Set");
@@ -9567,6 +9586,13 @@ mod tests {
                 let of_l = b.name_leaf("of");
                 let of_s = b.atom(of_l);
                 let set_of = b.list(&[dot_s, set_s, of_s]);
+                let list_head = b.name_leaf("list");
+                let list_head_s = b.atom(list_head);
+                let mut list_children = vec![list_head_s];
+                for e in sorted {
+                    list_children.push(encode_value_recursive(desc, b, e, elem, depth + 1)?);
+                }
+                let inner_list = b.list(&list_children);
                 b.list(&[set_of, inner_list])
             }
             S::Map(key, val) => {
@@ -13206,7 +13232,7 @@ mod tests {
         assert_eq!(op_get_int(op_arr_get(t, 1)), 9);
         // Render matches the boxed-era text exactly.
         assert_eq!(
-            render(t, &Shape::Tuple(vec![Shape::Bool, Shape::Int])),
+            render(t, &Shape::Tuple(vec![Shape::Bool, Shape::Int].into())),
             "(tuple true 9)"
         );
         op_drop(t);
@@ -13255,7 +13281,7 @@ mod tests {
         let t = op_arr_alloc(1);
         op_arr_set(t, 0, op_arr_alloc(0)); // unit element (inline)
         assert_eq!(
-            render(t, &Shape::Tuple(vec![Shape::Tuple(vec![])])),
+            render(t, &Shape::Tuple(vec![Shape::Tuple(vec![].into())])),
             "(tuple unit)"
         );
         assert_eq!(
@@ -13279,7 +13305,7 @@ mod tests {
         // empty_arr_is_unit).
         assert_eq!(render(op_box_bool(true), &Shape::Bool), "true");
         assert_eq!(render(op_box_bool(false), &Shape::Bool), "false");
-        assert_eq!(render(op_arr_alloc(0), &Shape::Tuple(vec![])), "unit");
+        assert_eq!(render(op_arr_alloc(0), &Shape::Tuple(vec![].into())), "unit");
     }
 
     #[test]
@@ -14341,7 +14367,7 @@ mod tests {
             "10 > -10 (signed; a raw-byte compare would sort -10 as larger)"
         );
         // Tuple(Int,Int): lexicographic by field — first decides, then second.
-        let desc_tup = Descriptor { table: vec![Shape::Int, Shape::Tuple(vec![0, 0])], root: 1 };
+        let desc_tup = Descriptor { table: vec![Shape::Int, Shape::Tuple(vec![0, 0].into())], root: 1 };
         let mk_pair = |x: i64, y: i64| {
             let t = op_arr_alloc(2);
             op_arr_set(t, 0, op_box_int(x));
@@ -14455,7 +14481,7 @@ mod tests {
         );
         // A Bytes leaf INSIDE a compound composes soundly (unlike a float): Tuple(Bytes,Int) is lexicographic.
         let desc_tb = Descriptor {
-            table: vec![Shape::Bytes, Shape::Int, Shape::Tuple(vec![0, 1])],
+            table: vec![Shape::Bytes, Shape::Int, Shape::Tuple(vec![0, 1].into())],
             root: 2,
         };
         let mk_tb = |bs: &[u8], y: i64| {
@@ -14491,7 +14517,7 @@ mod tests {
         let desc_sum = Descriptor {
             table: vec![
                 Shape::Int,
-                Shape::Sum(vec![("A".into(), 0), ("B".into(), 0)]),
+                Shape::Sum(vec![("A".into(), 0), ("B".into(), 0)].into()),
             ],
             root: 1,
         };
@@ -14513,7 +14539,7 @@ mod tests {
         let desc_rec = Descriptor {
             table: vec![
                 Shape::Int,
-                Shape::Record(vec![("x".into(), 0), ("y".into(), 0)]),
+                Shape::Record(vec![("x".into(), 0), ("y".into(), 0)].into()),
             ],
             root: 1,
         };
@@ -14726,7 +14752,7 @@ mod tests {
         }
         // Nested key: (tuple (list Int) Int) — a list buried in a compound key must ALSO canonicalize.
         let desc_nested = Descriptor {
-            table: vec![Shape::Int, Shape::List(0), Shape::Tuple(vec![1, 0])],
+            table: vec![Shape::Int, Shape::List(0), Shape::Tuple(vec![1, 0].into())],
             root: 2,
         };
         let mk_pair = |list_h: Handle, tag: i64| {
@@ -14978,7 +15004,7 @@ mod tests {
         reset();
         let a = op_arr_alloc(0);
         assert_eq!(op_arr_len(a), 0);
-        assert_eq!(render(a, &Shape::Tuple(vec![])), "unit");
+        assert_eq!(render(a, &Shape::Tuple(vec![].into())), "unit");
     }
 
     #[test]
@@ -15001,14 +15027,14 @@ mod tests {
         op_arr_set(a, 0, op_box_int(3));
         op_arr_set(a, 1, op_box_int(1));
         assert_eq!(
-            render(a, &Shape::Tuple(vec![Shape::Int, Shape::Int])),
+            render(a, &Shape::Tuple(vec![Shape::Int, Shape::Int].into())),
             "(tuple 3 1)"
         );
         assert_eq!(render(a, &Shape::List(Box::new(Shape::Int))), "(list 3 1)");
         assert_eq!(
             render(
                 a,
-                &Shape::Record(vec![("x", Shape::Int), ("y", Shape::Int)])
+                &Shape::Record(vec![("x", Shape::Int), ("y", Shape::Int)].into())
             ),
             "(record (= x 3) (= y 1))"
         );
@@ -15021,7 +15047,7 @@ mod tests {
         op_arr_set(a, 0, op_box_int(42));
         op_arr_set(a, 1, op_box_bool(true));
         assert_eq!(
-            render(a, &Shape::Tuple(vec![Shape::Int, Shape::Bool])),
+            render(a, &Shape::Tuple(vec![Shape::Int, Shape::Bool].into())),
             "(tuple 42 true)"
         );
     }
@@ -15036,7 +15062,7 @@ mod tests {
         let outer = op_arr_alloc(2);
         op_arr_set(outer, 0, op_box_int(1));
         op_arr_set(outer, 1, inner);
-        let shape = Shape::Tuple(vec![Shape::Int, Shape::Tuple(vec![Shape::Int, Shape::Int])]);
+        let shape = Shape::Tuple(vec![Shape::Int, Shape::Tuple(vec![Shape::Int, Shape::Int].into())]);
         assert_eq!(render(outer, &shape), "(tuple 1 (tuple 2 3))");
     }
 
@@ -15061,7 +15087,7 @@ mod tests {
         assert_eq!(op_sum_payload(some), payload);
         assert_eq!(op_get_int(op_sum_payload(some)), 7);
 
-        let variants = || Shape::Sum(vec![("None", Shape::Tuple(vec![])), ("Some", Shape::Int)]);
+        let variants = || Shape::Sum(vec![("None", Shape::Tuple(vec![].into())), ("Some", Shape::Int)]);
         assert_eq!(render(some, &variants()), "(Some 7)");
 
         // disc 0 with an empty-arr payload = a nullary variant carrying unit.
@@ -15487,7 +15513,7 @@ mod tests {
             ("xs", Shape::List(Box::new(Shape::Int))),
             (
                 "tag",
-                Shape::Sum(vec![("None", Shape::Tuple(vec![])), ("Some", Shape::Int)]),
+                Shape::Sum(vec![("None", Shape::Tuple(vec![].into())), ("Some", Shape::Int)]),
             ),
             ("raw", Shape::Bytes),
             ("name", Shape::Str),
@@ -23189,10 +23215,10 @@ mod tests {
             }
             6 => {
                 // 2-tuple. Reserve this node's table slot BEFORE recursing so children get later indices.
-                let ix = emit(table, S::Tuple(vec![0, 0]));
+                let ix = emit(table, S::Tuple(vec![0, 0].into()));
                 let (a, sa) = build_rand_value_and_shape(bytes, cur, budget, depth + 1, table);
                 let (bch, sb) = build_rand_value_and_shape(bytes, cur, budget, depth + 1, table);
-                table[ix as usize] = S::Tuple(vec![sa, sb]);
+                table[ix as usize] = S::Tuple(vec![sa, sb].into());
                 let t = op_arr_alloc(2);
                 op_arr_set(t, 0, a);
                 op_arr_set(t, 1, bch);
@@ -23203,21 +23229,21 @@ mod tests {
                 // entry for the CHOSEN disc (the walk indexes `variants[disc]`); give it disc+1 variants,
                 // all pointing at the same payload shape (only the chosen one is read).
                 let disc = (p % 3) as usize;
-                let ix = emit(table, S::Sum(vec![]));
+                let ix = emit(table, S::Sum(vec![].into()));
                 let (payload, sp) =
                     build_rand_value_and_shape(bytes, cur, budget, depth + 1, table);
-                let variants: Vec<(String, u32)> =
-                    (0..=disc).map(|d| (alloc::format!("V{d}"), sp)).collect();
-                table[ix as usize] = S::Sum(variants);
+                let variants: Vec<(Rc<str>, u32)> =
+                    (0..=disc).map(|d| (alloc::format!("V{d}").into(), sp)).collect();
+                table[ix as usize] = S::Sum(variants.into());
                 (op_sum_new(disc as u32, payload), ix)
             }
             _ => {
                 // 3-tuple.
-                let ix = emit(table, S::Tuple(vec![0, 0, 0]));
+                let ix = emit(table, S::Tuple(vec![0, 0, 0].into()));
                 let (a, sa) = build_rand_value_and_shape(bytes, cur, budget, depth + 1, table);
                 let (bch, sb) = build_rand_value_and_shape(bytes, cur, budget, depth + 1, table);
                 let (cch, sc) = build_rand_value_and_shape(bytes, cur, budget, depth + 1, table);
-                table[ix as usize] = S::Tuple(vec![sa, sb, sc]);
+                table[ix as usize] = S::Tuple(vec![sa, sb, sc].into());
                 let t = op_arr_alloc(3);
                 op_arr_set(t, 0, a);
                 op_arr_set(t, 1, bch);
