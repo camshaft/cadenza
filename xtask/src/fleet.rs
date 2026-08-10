@@ -9197,6 +9197,60 @@ fn parallel_scope_batches(batches: &[ScopeBatch]) -> Vec<&ScopeBatch> {
     batches.iter().filter(|b| b.parallel).collect()
 }
 
+/// One lane's slot in a concurrent-gate plan: the lane name, its DEDICATED scratch worktree dir name
+/// (distinct per lane so N gates never share a tree), and the member refs to re-form onto origin/main
+/// there. The pure output of [`plan_concurrent_gate`]; slice ii-d executes it (create each worktree,
+/// reform, spawn `nix build`, harvest via `wait_children_until`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LaneGateSlot {
+    lane: String,
+    /// The scratch worktree DIR NAME (not full path) — `fleet-gate-lane-<lane>`, sanitized so it's a safe
+    /// single path component (lane names are our own tokens, but guard anyway).
+    worktree_name: String,
+    refs: Vec<String>,
+}
+
+/// Plan the CONCURRENT gate over a queue's scope-batches (model a, slice ii-c, PURE — no git, no spawn).
+/// Concurrent gating only applies when ≥2 PARALLEL-eligible lanes each have ≥1 member (else there's
+/// nothing to overlap → the caller uses today's single-batch path). Returns one [`LaneGateSlot`] per such
+/// lane, in first-seen order, each with a DISTINCT `fleet-gate-lane-<lane>` worktree name so the executor
+/// (ii-d) never shares a tree across concurrent gates. Empty result = "don't gate concurrently this pass".
+/// Serial lanes (compiler core / hot files / mixed) are excluded — they keep the single-writer serial gate.
+fn plan_concurrent_gate(batches: &[ScopeBatch]) -> Vec<LaneGateSlot> {
+    let parallel: Vec<&ScopeBatch> = parallel_scope_batches(batches)
+        .into_iter()
+        .filter(|b| !b.members.is_empty())
+        .collect();
+    // <2 parallel lanes with work → no concurrency to exploit; caller falls back to the single gate.
+    if parallel.len() < 2 {
+        return Vec::new();
+    }
+    parallel
+        .into_iter()
+        .map(|b| LaneGateSlot {
+            lane: b.lane.clone(),
+            worktree_name: format!("fleet-gate-lane-{}", sanitize_lane_component(&b.lane)),
+            refs: b.members.iter().map(|m| m.r#ref.clone()).collect(),
+        })
+        .collect()
+}
+
+/// Sanitize a lane name into a safe single path component for a scratch-worktree dir: keep
+/// alphanumerics, `-`, `_`; map anything else to `-`. Lane names are our own controlled tokens (the
+/// `LANE_RULES` table), but a worktree dir name is a filesystem path component, so guard it anyway
+/// (defense-in-depth, same discipline as `validate_agent_name` at the delivery chokepoint). Pure.
+fn sanitize_lane_component(lane: &str) -> String {
+    lane.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
 /// `fleet batch-plan`: read-only preview of how the currently-queued merge-requests partition into
 /// per-lane scope-batches ([`partition_batch_by_lane`] over the live queue, resolving each ref's files via
 /// `changed_files_of`). Prints one line per lane — PARALLEL (can gate concurrently with other parallel
@@ -9226,17 +9280,24 @@ fn batch_plan(fleet: &Fleet) {
             println!("      {short}  {}  ({})", m.subject, m.from);
         }
     }
-    if concurrent.len() >= 2 {
-        let names: Vec<&str> = concurrent.iter().map(|b| b.lane.as_str()).collect();
+    let plan = plan_concurrent_gate(&batches);
+    if plan.is_empty() {
         println!(
-            "concurrent-gate SET (slice ii will gate these {} lanes at once): {}",
-            concurrent.len(),
-            names.join(", ")
+            "concurrent-gate PLAN: <2 parallel lanes with work this pass → nothing to gate concurrently (single serial gate)."
         );
     } else {
         println!(
-            "concurrent-gate SET: <2 parallel lanes this pass → nothing to gate concurrently (all serial)."
+            "concurrent-gate PLAN (slice ii-d will gate these {} lanes AT ONCE, each in its own worktree):",
+            plan.len()
         );
+        for slot in &plan {
+            println!(
+                "  lane '{}' → worktree {} — {} ref(s)",
+                slot.lane,
+                slot.worktree_name,
+                slot.refs.len()
+            );
+        }
     }
     println!(
         "note: parallel lanes can gate CONCURRENTLY (disjoint territory); serial lanes (shared compiler \
@@ -16883,6 +16944,69 @@ mod tests {
         assert!(parallel_scope_batches(&[b("code", false), b("baseline", false)]).is_empty());
         // Empty → empty.
         assert!(parallel_scope_batches(&[]).is_empty());
+    }
+
+    #[test]
+    fn plan_concurrent_gate_needs_2plus_parallel_lanes_with_work_and_names_distinct_worktrees() {
+        let mr = |r#ref: &str| BatchMr {
+            file: format!("f-{ref}"),
+            from: "a".into(),
+            r#ref: r#ref.into(),
+            subject: "s".into(),
+        };
+        let batch = |lane: &str, parallel: bool, refs: &[&str]| ScopeBatch {
+            lane: lane.into(),
+            parallel,
+            members: refs.iter().map(|r| mr(r)).collect(),
+        };
+        // 2+ parallel lanes with work → a plan, one slot per lane, DISTINCT worktree names, refs carried.
+        let plan = plan_concurrent_gate(&[
+            batch("cad", true, &["c1", "c2"]),
+            batch("code", false, &["k1"]), // serial → excluded
+            batch("corpus", true, &["p1"]),
+        ]);
+        assert_eq!(plan.len(), 2, "only the 2 parallel lanes are planned");
+        assert_eq!(plan[0].lane, "cad");
+        assert_eq!(plan[0].worktree_name, "fleet-gate-lane-cad");
+        assert_eq!(plan[0].refs, vec!["c1".to_string(), "c2".to_string()]);
+        assert_eq!(plan[1].lane, "corpus");
+        assert_eq!(plan[1].worktree_name, "fleet-gate-lane-corpus");
+        // Worktree names are distinct (no shared tree across concurrent gates).
+        assert_ne!(plan[0].worktree_name, plan[1].worktree_name);
+
+        // <2 parallel lanes with work → NO concurrent plan (caller uses the single serial gate):
+        // one parallel lane only,
+        assert!(
+            plan_concurrent_gate(&[batch("cad", true, &["c1"]), batch("code", false, &["k1"])])
+                .is_empty()
+        );
+        // a parallel lane with NO members doesn't count toward the ≥2,
+        assert!(
+            plan_concurrent_gate(&[batch("cad", true, &["c1"]), batch("corpus", true, &[])])
+                .is_empty(),
+            "an empty parallel lane isn't real work — needs ≥2 NON-empty parallel lanes"
+        );
+        // all-serial,
+        assert!(
+            plan_concurrent_gate(&[
+                batch("code", false, &["k1"]),
+                batch("mixed", false, &["m1"])
+            ])
+            .is_empty()
+        );
+        // empty.
+        assert!(plan_concurrent_gate(&[]).is_empty());
+    }
+
+    #[test]
+    fn sanitize_lane_component_keeps_safe_chars_maps_the_rest() {
+        assert_eq!(sanitize_lane_component("cad"), "cad");
+        assert_eq!(sanitize_lane_component("rcdzc-tests"), "rcdzc-tests");
+        assert_eq!(sanitize_lane_component("agent_harness"), "agent_harness");
+        // Path-unsafe chars → '-' (defense-in-depth; lane names are our tokens but a dir component must be safe).
+        assert_eq!(sanitize_lane_component("a/b"), "a-b");
+        assert_eq!(sanitize_lane_component("../x"), "---x");
+        assert_eq!(sanitize_lane_component("a b.c"), "a-b-c");
     }
 
     #[test]
