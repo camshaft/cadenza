@@ -500,6 +500,20 @@ pub enum FleetCmd {
         /// The agent to describe.
         name: String,
     },
+    /// Change an agent's `/loop` INTERVAL (e.g. retighten a sluggish vertical `30m`→`15m`). Updates the
+    /// registry row (the durable source of truth `window.sh` reads at (re)launch) AND re-issues the
+    /// agent's `/loop <new-interval> <tick>` NOW so the change takes effect without a relaunch — the
+    /// registry field alone only governs the NEXT kickoff, so a running agent keeps its old cron until
+    /// re-issued. Same mechanism as the watchdog's `reissue_loop`. Validates the interval string. Use
+    /// for the per-agent loop-latency retighten (operator priority): shorten an active vertical's cycle
+    /// so its next self-driven slice starts sooner. MEASURE tick-load after (the load-109 lesson) — a
+    /// too-tight fleet-wide sweep can thrash the box; retighten targeted agents, not everyone at once.
+    SetInterval {
+        /// The agent whose loop cadence to change.
+        name: String,
+        /// The new interval (e.g. `15m`, `10m`, `1h`). Same grammar as `fleet add --interval`.
+        interval: String,
+    },
     /// List an agent's queued inbox messages (oldest-first) at the canonical HUB path. This is the
     /// SAFE way for an agent to drain its inbox: the inbox lives at the MAIN repo's
     /// `.claude/fleet/inbox/<agent>/` (the hub), NOT the agent's worktree — an `ls`/glob of a RELATIVE
@@ -1001,6 +1015,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         ),
         FleetCmd::Heartbeat { name } => heartbeat(&fleet, &name),
         FleetCmd::Describe { name } => describe(&fleet, &name),
+        FleetCmd::SetInterval { name, interval } => set_interval(&fleet, &name, &interval),
         FleetCmd::Inbox { name, processed } => match processed {
             Some(msg) => inbox_consume(&fleet, &name, &msg),
             None => inbox_list(&fleet, &name),
@@ -2988,6 +3003,73 @@ fn nudge_drain_stall(session: &str, agent: &str) -> bool {
         }
     }
     true
+}
+
+/// Is `s` a well-formed `/loop` interval (`<n><unit>`, unit ∈ {s,m,h,d} or bare = minutes, n≥1)? Strict
+/// — unlike `parse_interval_secs` (which fails-soft to 10m so a bad stored value can't wedge the
+/// watchdog), `set-interval` REJECTS a malformed input loudly rather than silently persisting a 10m
+/// fallback the caller didn't ask for. Pure so it's unit-tested.
+fn interval_is_valid(s: &str) -> bool {
+    let s = s.trim();
+    let split = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+    let (num, unit) = s.split_at(split);
+    let Ok(n) = num.parse::<u64>() else {
+        return false;
+    };
+    n >= 1 && matches!(unit, "" | "s" | "m" | "h" | "d")
+}
+
+/// Change an agent's `/loop` interval: update its registry row (durable, read by `window.sh` at the NEXT
+/// launch) AND re-issue its `/loop <interval> <tick>` NOW so a RUNNING agent adopts the new cadence
+/// without a relaunch (the registry field alone governs only the next kickoff — the live cron keeps the
+/// old interval until re-issued, exactly the watchdog's `reissue_loop` mechanism). See the FleetCmd doc.
+fn set_interval(fleet: &Fleet, name: &str, interval: &str) {
+    if !interval_is_valid(interval) {
+        eprintln!(
+            "fleet set-interval: '{interval}' is not a valid interval — use <n>{{s,m,h,d}} (bare = \
+             minutes), e.g. 15m, 10m, 1h."
+        );
+        std::process::exit(1);
+    }
+    let mut reg = fleet.load();
+    let Some(a) = reg.agents.iter_mut().find(|a| a.name == name) else {
+        eprintln!("fleet set-interval: no agent named '{name}'");
+        std::process::exit(1);
+    };
+    let old = a.interval.clone();
+    if old == interval {
+        println!("fleet set-interval: '{name}' is already at {interval} — no change.");
+        return;
+    }
+    a.interval = interval.to_string();
+    // Snapshot the agent for the re-issue (borrow ends when we save).
+    let agent = a.clone();
+    fleet.save(&reg);
+    println!("fleet set-interval: '{name}' {old} → {interval} (registry updated).");
+    // Re-issue the /loop NOW so the running agent adopts the new cadence (best-effort — the registry
+    // write is the durable part; the re-issue only makes it immediate). Skip if not in a tmux session
+    // or the window isn't live; `/loop` stays governed by the persisted interval on the next launch.
+    if !in_tmux() {
+        println!(
+            "  (not re-issued: not in a tmux session — takes effect on '{name}''s next launch, or run \
+             this from the fleet tmux to re-issue now.)"
+        );
+        return;
+    }
+    let session = tmux_current_session();
+    if !tmux_windows(&session).iter().any(|w| w == name) {
+        println!("  (not re-issued: no live '{name}' window — takes effect on next launch.)");
+        return;
+    }
+    let prompt = watchdog_tick_prompt(fleet, &agent);
+    if reissue_loop(&session, name, interval, &prompt) {
+        println!("  re-issued '{name}''s /loop at {interval} (adopted now).");
+    } else {
+        println!(
+            "  (re-issue send-keys failed — the {interval} interval is persisted + takes effect on next \
+             launch; re-run if the window recovers.)"
+        );
+    }
 }
 
 fn heartbeat(fleet: &Fleet, name: &str) {
@@ -12704,6 +12786,18 @@ mod tests {
             "v-fleet-tooling green",
             "v-fleet-tooling"
         ));
+    }
+
+    #[test]
+    fn interval_is_valid_accepts_grammar_and_rejects_malformed() {
+        // Well-formed: <n> with a unit (or bare = minutes), n>=1.
+        for ok in ["15m", "10m", "30m", "1h", "1d", "45s", "10"] {
+            assert!(interval_is_valid(ok), "{ok} should be valid");
+        }
+        // Malformed: rejected LOUDLY (set-interval must not silently persist a 10m fallback).
+        for bad in ["", "m", "0m", "0", "abc", "15x", "1.5h", "15 m", "-5m"] {
+            assert!(!interval_is_valid(bad), "{bad} should be INVALID");
+        }
     }
 
     #[test]
