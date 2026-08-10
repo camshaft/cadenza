@@ -4510,6 +4510,9 @@ struct ObservedRun {
     /// The routed inter-session messages in whole-run order (I3): `(from-alias, to-alias, optional
     /// value-render)` from each `message\t<from>\t<to>[\t<hex>]` line.
     messages: Vec<(String, String, Option<String>)>,
+    /// The bounced delivery-failures in whole-run order (I3 slice-2): `(from-alias, to-alias)` from each
+    /// `delivery-failure\t<from>\t<to>` line — a message to an absent peer that bounced back to the sender.
+    delivery_failures: Vec<(String, String)>,
 }
 
 /// Parse a `cdz-session-run` invocation's stdout (per-alias `end-*` lines + whole-run `effect` lines) into
@@ -4540,6 +4543,10 @@ fn parse_observed_run(stdout: &str) -> ObservedRun {
                     (*to).to_string(),
                     Some((*value).to_string()),
                 ));
+            }
+            ["delivery-failure", from, to] => {
+                run.delivery_failures
+                    .push(((*from).to_string(), (*to).to_string()));
             }
             ["end-fault", alias, reason] => {
                 run.sessions.entry((*alias).to_string()).or_default().fault =
@@ -4665,10 +4672,18 @@ fn grade_platform_case(
     // MD1 peer-addressing (I3): each `expect-message (from A) (to B)` declares A must reach peer B, so seed
     // A's KV with B's resolved SessionId-hex (--peer A=B) — the runner delivers a `platform/peers` config
     // inbound pre-kick-off so A's reducer can Emit to B by alias without an author writing a content hash.
-    // De-dup identical holder=peer pairs (a case may declare several messages on the same edge).
+    // De-dup identical holder=peer pairs (a case may declare several messages on the same edge). Both an
+    // expect-message and an expect-delivery-failure declare a from→to edge the sender must be able to
+    // address (a delivery-failure's `to` is a valid-hex-but-ABSENT peer the runner resolves but never
+    // spawns — the sender emits to it, deliver returns None, the drive bounces).
     let mut peer_pairs: Vec<(String, String)> = Vec::new();
-    for m in &rec.expect_messages {
-        let pair = (m.from.clone(), m.to.clone());
+    for (from, to) in rec
+        .expect_messages
+        .iter()
+        .map(|m| (m.from.clone(), m.to.clone()))
+        .chain(rec.expect_delivery_failures.iter().cloned())
+    {
+        let pair = (from, to);
         if !peer_pairs.contains(&pair) {
             peer_pairs.push(pair);
         }
@@ -4813,10 +4828,25 @@ fn grade_platform_case(
             }
         }
     }
-    // Delivery-failure assertions (I3) land with the bounce-replication slice; a case that declares one
-    // before the drive replicates the loop's bounce path grades Todo (coverage-not-yet), never a false pass.
-    if !rec.expect_delivery_failures.is_empty() {
-        return Grade::Todo;
+    // Delivery-failure assertions (I3 slice-2): each `(expect-delivery-failure (from A) (to B))` must appear
+    // in the observed bounce stream — a message A emitted to an ABSENT peer B that bounced back to A. Order-
+    // insensitive set-compare (a case rarely orders failures against each other) with exact multiplicity.
+    if !rec.expect_delivery_failures.is_empty() || !obs.delivery_failures.is_empty() {
+        if obs.delivery_failures.len() != rec.expect_delivery_failures.len() {
+            return Grade::Fail(format!(
+                "expect-delivery-failure: expected {} bounce(s), observed {}",
+                rec.expect_delivery_failures.len(),
+                obs.delivery_failures.len()
+            ));
+        }
+        for edge in &rec.expect_delivery_failures {
+            if !obs.delivery_failures.contains(edge) {
+                return Grade::Fail(format!(
+                    "expect-delivery-failure: expected a bounce ({} -> {}), not observed",
+                    edge.0, edge.1
+                ));
+            }
+        }
     }
     Grade::Pass
 }

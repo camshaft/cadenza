@@ -25,6 +25,7 @@
 //! ```text
 //! effect\t<from-alias>\t<family>[\t<payload-hex>]   one per dispatched effect, in whole-run order
 //! message\t<from-alias>\t<to-alias>[\t<payload-hex>] one per routed inter-session message, in order (I3)
+//! delivery-failure\t<from-alias>\t<to-alias>         one per bounced message (absent peer), in order (I3)
 //! end-fault\t<alias>\t<reason>                       present ONLY when a fold trapped/failed (grades Fail)
 //! end-status\t<alias>\t<state>                       state in active|quiescent|stalled|closed
 //! events-processed\t<alias>\t<n>
@@ -37,6 +38,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 
+use cdz_agent_host::async_host::Inbound;
 use cdz_agent_host::effect_reply::ReplyTokenRegistry;
 use cdz_agent_host::emit::EmitExecutor;
 use cdz_agent_host::host::{AgentHost, HostedSession, SessionId};
@@ -54,6 +56,12 @@ use std::rc::Rc;
 /// The `effect-request/<family>` content-type prefix a `UserspaceEffectExecutor` forwards under. The
 /// runner strips it to recover the bare family for the observed-effect line + reads the framed payload.
 const EFFECT_REQUEST_PREFIX: &str = "effect-request/";
+
+/// The family the host bounces an undeliverable cross-session Emit back under (§lifecycle I5) — the same
+/// literal `cdz-agent-host`'s async loop uses (`DELIVERY_FAILURE_FAMILY`, a private const there). The FIFO
+/// drive replicates that bounce so a `message` to an absent peer surfaces as a graded `delivery-failure`
+/// (Failure-to-sender), never a silent drop; the sender folds it under this family.
+const DELIVERY_FAILURE_FAMILY: &str = "delivery-failure";
 
 #[derive(Parser)]
 #[command(
@@ -209,9 +217,18 @@ async fn main() -> Result<()> {
         let _ = *id_of
             .get(&holder)
             .with_context(|| format!("peer names unknown holder alias {holder:?}"))?;
-        let peer_id = *id_of
-            .get(&peer)
-            .with_context(|| format!("peer names unknown peer alias {peer:?}"))?;
+        // Resolve the peer's deterministic id. A peer alias need NOT be a spawned `--session`: an UNSPAWNED
+        // peer is the valid-hex-but-ABSENT target the delivery-failure slice needs — the reducer emits to a
+        // canonical-hex id that resolves to no live session, so `deliver` returns None and the drive bounces a
+        // `delivery-failure` (a non-hex target would instead be a PERMANENT EmitExecutor error routing
+        // nothing — not a bounce). Register the alias↔id both ways (even when unspawned) so the bounce line
+        // can name the failed target by its alias. Id = Hash::of(salt ++ alias), the SAME rule as a session.
+        let peer_id = *id_of.entry(peer.clone()).or_insert_with(|| {
+            let mut seed = args.salt.clone().into_bytes();
+            seed.extend_from_slice(peer.as_bytes());
+            SessionId::new(Hash::of(&seed))
+        });
+        alias_of.entry(peer_id).or_insert_with(|| peer.clone());
         peer_of.insert(holder, peer_id.to_hex().to_string());
     }
 
@@ -270,6 +287,11 @@ async fn main() -> Result<()> {
     // A `message`-family Inbound on the shared inbox is a cross-session Emit routed by an EmitExecutor
     // (distinct from an `effect-request/*` forward, which is a deferred userspace effect).
     let mut observed_messages: Vec<(String, String, Option<Vec<u8>>)> = Vec::new();
+    // Observed delivery-failures (I3 slice-2), in whole-run order: (from-alias, to-alias). A cross-session
+    // `message` whose target is ABSENT from the registry bounces a `delivery-failure` back to the sender —
+    // recorded here as (sender, failed-target). The failed-target's alias is recovered from its id (it is a
+    // spawned-alias id we resolved, or a valid-hex-but-unspawned id → "?").
+    let mut observed_delivery_failures: Vec<(String, String)> = Vec::new();
     let mut steps: u32 = 0;
     let mut budget_exceeded = false;
 
@@ -339,7 +361,9 @@ async fn main() -> Result<()> {
                         .unwrap_or_else(|| "?".to_string());
                     let payload = (!bytes.is_empty()).then(|| bytes.to_vec());
                     observed_messages.push((from, to, payload));
-                } else {
+                } else if content_type.family.as_ref() != DELIVERY_FAILURE_FAMILY {
+                    // A delivery-failure bounce (below) is itself a `message`-shaped Inbound we route back to
+                    // the sender; it is NOT a fresh observed effect (guard it out of the effect stream).
                     let family = content_type
                         .family
                         .strip_prefix(EFFECT_REQUEST_PREFIX)
@@ -349,8 +373,55 @@ async fn main() -> Result<()> {
                     observed_effects.push((from, family, payload));
                 }
             }
-            host.deliver(&inbound.session, inbound.body, inbound.cause)
+            // Route the inbound. For a cross-session `message`, capture the sender return-address + the target
+            // id + the echoed payload BEFORE the body moves into deliver, so an ABSENT target (deliver → None)
+            // can BOUNCE a `delivery-failure` back to the sender — the drive's replication of the async loop's
+            // §lifecycle-I5 bounce path (reply_to = sender-owner, family = delivery-failure, payload verbatim,
+            // the bounce's own reply_to cleared so there is no bounce-of-a-bounce). Only a `message` bounces;
+            // an effect-request/delivery-failure inbound routes plainly (reply_to None on a bounce; a handler
+            // is always live for an effect-request in these cases).
+            let is_message = matches!(&inbound.body,
+                EventBody::Inbound { content_type, .. } if content_type.family.as_ref() == "message");
+            let bounce_ctx = if is_message {
+                inbound.reply_to.map(|sender| {
+                    let echoed = match &inbound.body {
+                        EventBody::Inbound {
+                            payload: Payload::Inline(b),
+                            ..
+                        } => b.clone(),
+                        _ => Vec::new().into(),
+                    };
+                    (sender, inbound.session, echoed)
+                })
+            } else {
+                None
+            };
+            let delivered = host
+                .deliver(&inbound.session, inbound.body, inbound.cause)
                 .await;
+            if let (None, Some((sender, failed_target, echoed))) = (delivered, bounce_ctx) {
+                // Target absent from the registry → bounce a delivery-failure back to the sender. Record the
+                // observed failure (from = sender, to = failed-target alias) and route the bounce Inbound.
+                let from = alias_of.get(&sender).cloned().unwrap_or_else(|| "?".to_string());
+                let to = alias_of
+                    .get(&failed_target)
+                    .cloned()
+                    .unwrap_or_else(|| "?".to_string());
+                observed_delivery_failures.push((from, to));
+                let bounce = Inbound {
+                    session: sender,
+                    body: EventBody::Inbound {
+                        content_type: ContentType {
+                            family: DELIVERY_FAILURE_FAMILY.into(),
+                            version: 1,
+                        },
+                        payload: Payload::Inline(echoed),
+                    },
+                    cause: None,
+                    reply_to: None, // no bounce-of-a-bounce
+                };
+                let _ = inbox_tx.send(bounce);
+            }
             continue;
         }
         // A reply-settle: resume the caller's open effect with the handler's reply outcome.
@@ -388,6 +459,11 @@ async fn main() -> Result<()> {
             }
             _ => out.push_str(&format!("message\t{from}\t{to}\n")),
         }
+    }
+    // Observed delivery-failures (I3 slice-2), in whole-run order: `delivery-failure\t<from>\t<to>`. A
+    // cross-session message to an ABSENT peer bounced back to the sender (Failure-to-sender, not a drop).
+    for (from, to) in &observed_delivery_failures {
+        out.push_str(&format!("delivery-failure\t{from}\t{to}\n"));
     }
     // Per-session end-state, in the case's declaration order (stable, deterministic).
     for (alias, _) in &session_specs {
