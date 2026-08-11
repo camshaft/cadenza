@@ -7425,6 +7425,70 @@
   (host-calls (call io.fire) (call io.get))
   (call   main (: 5 Int64)) (output (: 9 Int64)))
 
+; ── The effect-fold analogue of the dead-init elision family above (adv-56 / 09-functions unused-param) ──
+; A handler's accumulated state is observable ONLY through the operations the effect declares
+; (capabilities-and-effects.md #A Handler Threads State), so a resume NEXT-STATE that no later dispatch reads,
+; and a handler SEED that no dispatch consumes, are UNOBSERVED — and an unread op ARGUMENT is the call-boundary
+; analogue of the unused-parameter case. Per core-semantics.md #A Trap Occurs Only Where Its Computation Is
+; Observed, an implementation MAY elide such an unobserved computation AND the trap it would raise. The three
+; cases below pin that CURRENT lazy-effect-elision semantics: a trapping expression in an unconsumed
+; next-state / unconsumed seed / unread op-arg is ELIDED, so the handle yields its value and does NOT trap.
+; REVERSIBILITY (v-effects + concierge, 2026-08-11): these document the CURRENT conformant behavior; IF the
+; operator later revises the spec to STRICT effect-evaluation (evaluate these positions for effect regardless
+; of demand), these three flip to (trap "division by zero") and become the strict-fold witnesses — a
+; cross-vertical spec-revision (spec text + these flips + 3-backend), NOT a unilateral compiler change. The
+; CONSUMED twins already trap correctly (a 2nd dispatch that READS the poisoned state observes it); only the
+; UNOBSERVED drop is elided. (breaker strict-fold #17 faces 1-3; face 4, the foreign-perform state-advance
+; drop, WAS a genuine bug and is fixed on trunk — 5a0ceaf12.)
+
+(case "an unconsumed resume next-state is unobserved, so its trapping expression is elided (lazy-effect)"
+  (doc    "The sole dispatch's resume threads a NEXT-STATE `(/ 100 (- s 4))` that no later dispatch reads —
+           the identity arm returns the seed as the handle value. The next-state is unobserved
+           (capabilities-and-effects.md #A Handler Threads State), so per core-semantics.md #A Trap Occurs Only
+           Where Its Computation Is Observed the implementation MAY elide it and the trap it would raise at
+           seed 4 (`100/0`). `main 4` = 4 (no trap), `main 6` = 6 (next-state 100/2=50 also elided). REVERSIBLE:
+           documents CURRENT lazy semantics; flips to a trap under a future strict-effect spec revision.")
+  (input  (do
+            (effect St (op step (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((step () s (resume s (/ 100 (- s 4)))))
+                (St.step)))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 4 Int64))
+  (call   main (: 6 Int64)) (output (: 6 Int64)))
+
+(case "an unconsumed handler seed is unobserved when the body never performs, so its trap is elided (lazy-effect)"
+  (doc    "The handle SEED `(/ 100 (- n 4))` is never consumed — the body `77` performs no operation, so no
+           dispatch ever reads the seeded state. The seed is unobserved, so its trap at n = 4 (`100/0`) MAY be
+           elided and the handle yields its body value 77. `main 4` = 77 (no trap), `main 6` = 77 (seed 100/2=50
+           also unconsumed). REVERSIBLE: documents CURRENT lazy semantics; flips to a trap under strict.")
+  (input  (do
+            (effect St (op step (-> Int64)))
+            (def (main (: n Int64))
+              (handle St (/ 100 (- n 4))
+                ((step () s (resume s s)))
+                77))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 77 Int64))
+  (call   main (: 6 Int64)) (output (: 77 Int64)))
+
+(case "an unread op argument is unobserved (arm ignores its param), so its trapping expression is elided (lazy-effect)"
+  (doc    "The op argument `(/ 100 (- n 4))` is bound to the arm parameter `v`, which the arm `(fire (v) s
+           (resume 7 s))` NEVER reads — the call-boundary analogue of an argument bound to an unused parameter
+           (09-functions). The argument is unobserved, so its trap at n = 4 (`100/0`) MAY be elided; the arm
+           resumes 7. `main 4` = 7 (no trap), `main 6` = 7 (arg 100/2=50 also unread). REVERSIBLE: documents
+           CURRENT lazy semantics; flips to a trap under a future strict-effect spec revision.")
+  (input  (do
+            (effect St (op fire (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((fire (v) s (resume 7 s)))
+                (St.fire (/ 100 (- n 4)))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 7 Int64))
+  (call   main (: 6 Int64)) (output (: 7 Int64)))
+
 (case "a RESULT-returning effect op is matched on Ok / Err — the fallible-step idiom"
   (doc    "The `Result` companion of the Option-result case: an operation whose declared result is a
            `(Result Int64 Int64)`, resumed with an `Ok` or `Err` chosen by the arm, and the body dispatches
