@@ -23511,3 +23511,52 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 64 Int64))
   (call   main (: 4 Int64)) (output (: 4 Int64)))
+
+; ── Short-circuit guards + nested-CHAMP state (breaker batch 227) ─────────────
+; bg2 pins a short-circuit AND recursion guard whose RIGHT operand is a state-
+; advancing Bool draw (the left bound runs out or the draw stops the walk);
+; m2m1 pins a Map-of-Maps handler state — the counters-by-category shape with
+; per-dispatch two-level rebuild and old-cell answers.
+
+(case "bg2 the recursion guard is an AND of a bool draw and a pure bound check — short-circuit must not skip the draw's state advance observation"
+  (input  (do
+            (effect T (op odd (-> Bool)) (op tick (-> Int64)))
+            (def (walk (: k Int64) (: acc Int64))
+              (if (and (< k 6) (T.odd))
+                  (walk (+ k 1) (+ (* 10 acc) (T.tick)))
+                  acc))
+            (def (main (: n Int64))
+              (handle T n
+                ((odd () s (resume (= (% s 2) 1) (+ s 1)))
+                 (tick () s (resume s (+ s 1))))
+                (+ (* 100 (walk 0 0)) (T.tick))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 24691213 Int64))
+  (call   main (: 2 Int64)) (output (: 3 Int64)))
+
+(case "m2m1 a MAP-OF-MAPS handler state — each dispatch bumps a (category key) cell, the drain reads across both levels"
+  (input  (do
+            (effect Tally
+              (op bump (-> Int64 Int64 Int64))
+              (op read (-> Int64 Int64 Int64)))
+            (def (main (: n Int64))
+              (handle Tally (Map.insert Map.empty 1 (Map.insert Map.empty 10 n))
+                ((bump (k j) s
+                  (let ((inner (match (Map.lookup s k) ((Some im) im) ((None u) Map.empty))))
+                    (let ((old (match (Map.lookup inner j) ((Some v) v) ((None u) 0))))
+                      (resume old (Map.insert s k (Map.insert inner j (+ old 1)))))))
+                 (read (k j) s
+                  (resume (match (Map.lookup s k)
+                            ((Some im) (match (Map.lookup im j) ((Some v) v) ((None u) -1)))
+                            ((None u) -2))
+                          s)))
+                (let ((a (Tally.bump 1 10)))
+                  (let ((b (Tally.bump 2 20)))
+                    (let ((c (Tally.bump 2 20)))
+                      (+ (* 1000000 a)
+                         (+ (* 10000 b)
+                            (+ (* 100 c)
+                               (+ (* 10 (Tally.read 1 10)) (Tally.read 2 20))))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 5000162 Int64))
+  (call   main (: 0 Int64)) (output (: 112 Int64)))

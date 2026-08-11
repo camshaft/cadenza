@@ -4689,6 +4689,7 @@ pass	bf1 a growing BYTES FRAME as handler state — each op appends a u8 record,
 pass	bf2 the frame grows by u16 BE records — dump decodes the SECOND record through a fixed-width first segment
 pass	bf3 tagged-record round-trip — arms ENCODE (tag,val) u8 pairs into the frame state, the body decodes the REPLAYED frame
 pass	bg1 a BOOL op result is the recursion CONDITION itself — the walk continues while draws stay true
+pass	bg2 the recursion guard is an AND of a bool draw and a pure bound check — short-circuit must not skip the draw's state advance observation
 pass	bg3 a BIGINT handler state — tripling per dispatch crosses the i64 boundary mid-thread, the exact multi-limb value survives
 pass	bg4 BIGINT comparison in the arm routes tri-band verdicts — doubling walks past both thresholds, one row compares a genuine multi-limb value
 pass	bin-encode segment ORDER holds for runtime-swapped operand values
@@ -5372,6 +5373,7 @@ pass	ls1 a LIST-state snapshot crosses mid-growth — the held list is immutable
 pass	lt1 the arm SWAPS its list state's ends per dispatch — the head alternates between the original ends
 pass	lt2 the arm DOUBLES every list element per dispatch (via a projection helper) — the sum geometrically grows
 pass	lv1 a List of TUPLES from the empty (list) literal seed — pushed in one arm, indexed in a sibling
+pass	m2m1 a MAP-OF-MAPS handler state — each dispatch bumps a (category key) cell, the drain reads across both levels
 pass	map THEN filter compose — one combinator's output list is the next's input
 pass	map equality is independent of insertion order
 pass	maps reached via Map.swap and Map.take equal their directly-built twins
