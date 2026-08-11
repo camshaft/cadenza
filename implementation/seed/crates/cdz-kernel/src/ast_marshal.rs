@@ -2093,4 +2093,63 @@ mod tests {
             Err(MarshalError::TypeMismatch { .. })
         ));
     }
+
+    #[test]
+    fn effect_list_round_trips_a_register_by_string_family_with_no_builtin_kind() {
+        // GUARDRAIL (DESIGN-binary-ast-abi §2 / the B2-revert lesson): the effect-request `kind` crosses
+        // the bytes boundary as a family STRING, NEVER a closed enum discriminant — so a REGISTER-BY-STRING
+        // userspace family with NO matching `EffectKind` variant (seq-39) round-trips intact. This is the
+        // exact invariant whose violation (a kind-discriminant ABI) caused the B2+B3 revert; pin it in the
+        // gate so a future change to the effect codec can't quietly re-introduce a closed-enum kind.
+        let mut b = Builder::new();
+        // A novel family that is NOT one of shell/http/model/now/timer/emit — pure register-by-string.
+        let novel = "effect/reply";
+        let req = {
+            let head = b.name("effect-request");
+            let kind_n = {
+                let h = b.name("kind");
+                let n = b.name(novel);
+                b.list(vec![h, n])
+            };
+            let tgt = {
+                let h = b.name("target");
+                let v = b.atom_leaf(Leaf::Bytes(b"sess-42".to_vec().into()));
+                b.list(vec![h, v])
+            };
+            let payload = {
+                let h = b.name("payload");
+                let inner = {
+                    let sh = b.name("some");
+                    let sv = b.atom_leaf(Leaf::Bytes(b"answer".to_vec().into()));
+                    b.list(vec![sh, sv])
+                };
+                b.list(vec![h, inner])
+            };
+            let correlation = {
+                let h = b.name("correlation");
+                let inner = {
+                    let sh = b.name("some");
+                    let sv = b.atom_leaf(Leaf::Bytes(b"tok-9".to_vec().into()));
+                    b.list(vec![sh, sv])
+                };
+                b.list(vec![h, inner])
+            };
+            b.list(vec![head, kind_n, tgt, payload, correlation])
+        };
+        let head = b.name("effects");
+        let root = b.list(vec![head, req]);
+        let bytes = codec::encode(&b.finish(root));
+
+        let effects = parse_effect_list(&bytes).expect("register-by-string family parses");
+        assert_eq!(effects.len(), 1);
+        // The family is preserved VERBATIM as the string — not coerced to a built-in kind, not dropped.
+        assert_eq!(effects[0].request.content_type.family, novel);
+        // Sanity: it is genuinely NOT one of the well-known families (this is the register-by-string path).
+        assert!(!["shell", "http", "model", "now", "timer", "emit"].contains(&novel));
+        assert_eq!(effects[0].request.target_str().unwrap(), "sess-42");
+        assert!(
+            matches!(&effects[0].request.payload, Some(Payload::Inline(p)) if p.as_ref() == b"answer")
+        );
+        assert_eq!(effects[0].token.as_deref(), Some(&b"tok-9"[..]));
+    }
 }
