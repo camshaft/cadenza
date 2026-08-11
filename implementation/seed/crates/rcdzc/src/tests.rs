@@ -862,8 +862,11 @@ fn find_runtime_wasm() -> Option<Vec<u8>> {
     for path in candidates {
         if let Ok(bytes) = std::fs::read(&path) {
             // Only accept a runtime whose content hash matches what the compiler compiled against —
-            // a stale runtime would compose wrong ops (the /loop gotcha). Verify before use.
-            let hash = sha256_hex(&bytes);
+            // a stale runtime would compose wrong ops (the /loop gotcha). Verify before use. The pinned
+            // `REQUIRED_RUNTIME_HASH` is a BLAKE3 content address (the tree-wide unified digest), so verify
+            // with the canonical `content_address` (BLAKE3), NOT SHA-256 — a SHA-256 digest never matches
+            // the BLAKE3 constant, so the store runtime was silently rejected and value-encode tests skipped.
+            let hash = cdz_run::cli::content_address(&bytes);
             if hash == REQUIRED_RUNTIME_HASH {
                 return Some(bytes);
             }
@@ -889,21 +892,12 @@ fn find_nfc_wasm() -> Option<Vec<u8>> {
     };
     for path in candidates {
         if let Ok(bytes) = std::fs::read(&path)
-            && sha256_hex(&bytes) == REQUIRED_NFC_HASH
+            && cdz_run::cli::content_address(&bytes) == REQUIRED_NFC_HASH
         {
             return Some(bytes);
         }
     }
     None
-}
-
-/// The SHA-256 of `bytes` as lowercase hex — the same content-address the store keys on and
-/// `REQUIRED_RUNTIME_HASH` records. (Uses `cdz-run`'s dep chain transitively; computed here to compare
-/// a found runtime against the pinned hash.)
-fn sha256_hex(bytes: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(bytes);
-    digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// A `let`-bound tuple built from runtime params but ONLY PROJECTED (never used as a whole value)
@@ -2995,7 +2989,7 @@ fn a_recursive_runtime_record_escapes_to_the_host() {
     };
     match cdz_run::run(&bytes, &opts).expect("run") {
         cdz_run::Outcome::Value(s) => assert_eq!(
-            s, "(: (record (a 0) (b 7)) (Record (: a Int64) (: b Int64)))",
+            s, "(: (record (= a 0) (= b 7)) (Record (: a Int64) (: b Int64)))",
             "R2 record escape value form"
         ),
         cdz_run::Outcome::Trap(t) => panic!("R2 record escape run trapped: {t}"),
@@ -3099,7 +3093,8 @@ fn a_record_with_a_runtime_tuple_field_escapes_to_the_host() {
     };
     match cdz_run::run(&bytes, &opts).expect("run") {
         cdz_run::Outcome::Value(s) => assert_eq!(
-            s, "(: (record (x 0) (y (tuple 0 1))) (Record (: x Int64) (: y (Tuple Int64 Int64))))",
+            s,
+            "(: (record (= x 0) (= y (tuple 0 1))) (Record (: x Int64) (: y (Tuple Int64 Int64))))",
             "R2 nested record escape value form"
         ),
         cdz_run::Outcome::Trap(t) => panic!("R2 nested record escape run trapped: {t}"),
@@ -4260,7 +4255,8 @@ fn find_debug_runtime_wasm() -> Option<Vec<u8>> {
     let path = repo.join(format!("target/cadenza-store/{DEBUG_RUNTIME_HASH}.wasm"));
     let bytes = std::fs::read(&path).ok()?;
     // Guard against a stale store entry: only accept bytes whose hash matches the pinned debug hash.
-    (sha256_hex(&bytes) == DEBUG_RUNTIME_HASH).then_some(bytes)
+    // `DEBUG_RUNTIME_HASH` is BLAKE3 (like `REQUIRED_RUNTIME_HASH`), so verify with `content_address`.
+    (cdz_run::cli::content_address(&bytes) == DEBUG_RUNTIME_HASH).then_some(bytes)
 }
 
 /// A program COMPOSED with the value-heap runtime in ONE wasmtime store — the reusable harness for the
@@ -10151,9 +10147,13 @@ fn a_closure_over_a_pure_or_outside_capture_still_folds() {
               (export main))";
     let b = compile_component(&crate::codec::encode(&parse(d1)))
         .expect("d1 control: draw bound outside the closure init-let must fold");
-    if let Some(v) = run_linked(&b, "main") {
-        assert_eq!(v, "80", "d1: a captured ONCE (=5), f(6)=30 + f(10)=50 = 80");
-    }
+    // `main` takes `n` (the handler's initial state); run it with n=5 so a=(St.next)=5 — the scalar-arg
+    // helper (like d2fix below), NOT `run_linked` (which passes no args and would arg-count-mismatch).
+    let d1_got: i64 = run_returns_with(&b, "main", &[Val::S64(5)]);
+    assert_eq!(
+        d1_got, 80,
+        "d1: a captured ONCE (=5), f(6)=30 + f(10)=50 = 80"
+    );
     // d2fix: the nested-let-init shape but a PURE init — folds (not a perform, so the detector never fires).
     let d2fix = "(do (effect St (op next (-> Int64))) \
                  (def (main (: n Int64)) \
@@ -40223,7 +40223,7 @@ mod match_engine {
         )
         .expect("runtime present");
         assert_eq!(
-            out, "(: (record (data (list 1 2)) (n 2)) (record (data (List Int64)) (n Int64)))",
+            out, "(: (record (= data (list 1 2)) (= n 2)) (record (data (List Int64)) (n Int64)))",
             "a runtime list nested in a record field crosses, rendering the nested collection + its type"
         );
     }

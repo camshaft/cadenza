@@ -83,9 +83,6 @@ wasmtime = { version = "37", default-features = false, features = ["runtime", "c
 # runtime (the composed round-trip) without re-implementing composition in the test. It takes no
 # compiler-crate dependency, so this dev-dep introduces no cycle and never enters the compile path.
 cdz-run = { path = "../cdz-run" }
-# Content-address a candidate runtime wasm (SHA-256) to verify it matches the compiler's pinned
-# `REQUIRED_RUNTIME_HASH` before composing it — a stale runtime would compose wrong ops. Tests only.
-sha2 = "0.10"
 # The shared native runtime interface an emitted ASYNC module links against (`cdz_rt::CdzEnv`). A
 # dev-dependency so `cargo test` builds its rlib into the target dir, where the Rust-async round-trip
 # tests locate it to pass `rustc --extern cdz_rt=…`. Tests only — never in the compile path.
