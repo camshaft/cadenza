@@ -18608,3 +18608,43 @@
                          (if (= (at g 41) 40) 1 0))))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 81111 Int64)))
+
+; ── Emit-idiom edge legs (breaker batch 222) ──────────────────────────────────
+; Two pins on shared emit idioms: a two-arm sum match exercising BOTH legs of the
+; branchless discriminant test (disc 0 takes the eqz leg, disc 1 the const/eq leg)
+; across both constructor orders, and three None-producing built-ins (List.at in-
+; and out-of-range, Map.lookup hit and miss) draining through one Option consumer
+; in a single expression.
+
+(case "d1 two-arm sum match where the FIRST ctor is disc 0 — the eqz leg of the branchless select, both orders"
+  (input  (do
+            (type Pick (A Int64) (B Int64))
+            (def (score (: p Pick))
+              (match p
+                ((A x) (* 10 x))
+                ((B y) (+ 1000 y))))
+            (def (main (: n Int64))
+              (+ (score (if (= (% n 2) 0) (A n) (B n)))
+                 (* 100000 (score (if (= (% n 3) 0) (B n) (A n))))))
+            (export main)))
+  (call   main (: 6 Int64)) (output (: 100600060 Int64))
+  (call   main (: 4 Int64)) (output (: 4000040 Int64))
+  (call   main (: 3 Int64)) (output (: 100301003 Int64))
+  (call   main (: 5 Int64)) (output (: 5001005 Int64)))
+
+(case "d2 three None-producing built-in reads in one expression — List.at in and out of range plus Map.lookup hit and miss"
+  (input  (do
+            (def (opt-score (: o (Option Int64)))
+              (match o
+                ((Some v) v)
+                (None -7)))
+            (def (main (: n Int64))
+              (let ((xs (list 10 20 30))
+                    (m (Map.insert (Map.insert (Map.empty) 1 100) 2 200)))
+                (+ (* 1000000 (opt-score (List.at xs n)))
+                   (+ (* 1000 (opt-score (Map.lookup m n)))
+                      (opt-score (List.at xs (+ n 10)))))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 20099993 Int64))
+  (call   main (: 5 Int64)) (output (: -7007007 Int64))
+  (call   main (: 2 Int64)) (output (: 30199993 Int64)))

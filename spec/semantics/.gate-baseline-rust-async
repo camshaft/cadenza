@@ -4905,6 +4905,8 @@ pass	cv2 TWO asks each running the in-arm chain — the second chain starts wher
 pass	cv3 the in-arm chain routes through a PURE fn mid-hop — O.b of dbl of O.a, the pure call must not detach the thread
 pass	cx1 a COUNTDOWN arm exhausts mid-sequence — positive states pass through, the floor returns a sentinel-free constant
 pass	cy1 a CYCLE detector — a bitmask accumulator of seen residues stops the walk on the first repeat
+pass	d1 two-arm sum match where the FIRST ctor is disc 0 — the eqz leg of the branchless select, both orders
+pass	d2 three None-producing built-in reads in one expression — List.at in and out of range plus Map.lookup hit and miss
 pass	da1 THREE draws inside one list literal passed to a helper — left-to-right element order, the post-call draw sees all three
 pass	da2 draws as MAP-literal keys and values — two entries built from three sequential draws
 pass	da3 draws as SET-literal elements — n=7 collides the first draw with the fixed element, n=6 collides the second
