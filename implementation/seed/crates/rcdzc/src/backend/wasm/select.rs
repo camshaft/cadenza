@@ -11376,9 +11376,27 @@ fn emit(
             let index = layout.host_index(&effect, &op).ok_or_else(|| {
                 Reject::decline("a host call's operation is not in the host-import set")
             })?;
-            // Only ONE runtime string arg per host call (they share the one fixed scratch buffer); a second
-            // declines above rather than silently overwriting the first.
-            let mut runtime_string_arg_seen = false;
+            // A runtime String/Bytes arg is marshalled into a scratch region of the shared `mem` (copy the
+            // rope's logical bytes in, pass `(ptr,len)`). N such args in one call each need a DISJOINT region,
+            // so a running CURSOR (a scratch i32 local) starts at the fixed scratch base and advances by each
+            // marshalled arg's runtime length — the k-th runtime compound arg lands past the first k-1. The
+            // cursor is reserved (and the per-arg `emit` floor raised past it) ONLY when a runtime compound arg
+            // is actually present, so an all-scalar / const-string host call stays byte-identical to before.
+            let has_runtime_compound = args.iter().any(|&a| {
+                matches!(crate::infer::type_of(db, a), Ty::String | Ty::Bytes)
+                    && !matches!(core_of(db, a), Core::ConstStr(_))
+            });
+            let scratch_cursor_slot = if has_runtime_compound {
+                let slot = base.max(*high);
+                *high = (*high).max(slot);
+                scratch_ty.insert(slot, ValType::I32);
+                // Seed the cursor at the fixed scratch base once, before any arg is marshalled.
+                out.push(Lir::ConstI32(host_arg_scratch_base(layout) as i32));
+                out.push(Lir::LocalSet(slot));
+                Some(slot)
+            } else {
+                None
+            };
             // Each arg is emitted above the scratch its predecessors consumed — `arg_base` rises to `*high`
             // after every arg (the same `arg_base = *high` threading the call/tail-call arg loops use —
             // `emit_call_args` and `emit_loop_iteration`). WITHOUT this, a runtime
@@ -11386,7 +11404,9 @@ fn emit(
             // a FOLLOWING scalar arg emitted with the stale `base` would tee its i64 checked-arith guard into
             // that same slot — one wasm local declared at two widths → an invalid module (the marshalled-arg-
             // BEFORE-scalar order; the reverse worked only because the scalar bumped `*high` first).
-            let mut arg_base = base;
+            // When a scratch cursor is reserved, per-arg slots must start ABOVE it so no marshal/scalar arg
+            // reuses (and re-types) the cursor slot, which must survive across the whole arg list.
+            let mut arg_base = scratch_cursor_slot.map_or(base, |c| c + 1);
             for &arg in &args {
                 let at = crate::infer::type_of(db, arg);
                 match at {
@@ -11397,8 +11417,9 @@ fn emit(
                     // op). A CONSTANT string's bytes were laid in the data segment at `host_string_offset` —
                     // push that ptr + len. Everything else (a RUNTIME string rope OR any `Bytes` value, const
                     // or runtime — a `Bytes.of`/slice-view byte-buffer) is MARSHALED here: copy its logical
-                    // bytes into a fixed scratch region of `mem` via the rep-agnostic `bytes-len`/`bytes-get`
-                    // walk (transparent through a rope OR a slice-view), then push `(scratch_base, len)`. The
+                    // bytes into a cursor-advanced scratch region of `mem` via the rep-agnostic
+                    // `bytes-len`/`bytes-get` walk (transparent through a rope OR a slice-view), then push
+                    // `(cursor, len)` — N runtime compound args per call each get a disjoint region. The
                     // component boundary declares the Bytes param as `list<u8>` (a defined type-index) vs the
                     // String's inline `string`; the CORE marshalling here is identical. adv-62b sibling: this
                     // is the wasm side of the Bytes-host-arg reverse-parity gap (rust already crossed it).
@@ -11412,24 +11433,19 @@ fn emit(
                             out.push(Lir::ConstI32(offset as i32));
                             out.push(Lir::ConstI32(s.len() as i32));
                         }
-                        // RUNTIME string arg → copy the rope into `mem` at `scratch_base`, push `(scratch_base,
-                        // len)`. The scratch region starts past the const-string data (rounded up + a gap) in
-                        // the 1-page shared `mem`. A host string arg is consumed IMMEDIATELY by the call (not
-                        // retained), so a fixed scratch reused per call is sound; a host call with TWO runtime
-                        // string args in one arg list would collide → declined (a nested/bump scheme is a later
-                        // increment). The copy loop mirrors `String.scalar-len`'s byte-scan (~7086) with
-                        // `I32Store8` in place of the counter. `bytes-len`/`bytes-get` are declared for this
-                        // path in `collect_used_ops_into` (else their `CallImport` resolves to u32::MAX).
+                        // RUNTIME string/Bytes arg → copy the rope into `mem` at the running cursor, push
+                        // `(cursor, len)`, then advance the cursor by `len` so a following runtime compound arg
+                        // lands in a DISJOINT region (N runtime compound args per call are supported; the cursor
+                        // starts at the fixed scratch base past the const-string data in the 1-page shared
+                        // `mem`). A host arg is consumed IMMEDIATELY by the call (not retained), so all the
+                        // marshalled args coexist in scratch only until the `CallHostImport`. The copy loop
+                        // mirrors `String.scalar-len`'s byte-scan (~7086) with `I32Store8` in place of the
+                        // counter. `bytes-len`/`bytes-get` are declared for this path in `collect_used_ops_into`
+                        // (else their `CallImport` resolves to u32::MAX).
                         _ => {
-                            if runtime_string_arg_seen {
-                                return Err(Reject::decline(
-                                    "a host call with TWO runtime string/Bytes arguments is not yet emitted \
-                                     (one fixed scratch buffer, shared by String and Bytes args; a per-arg \
-                                     bump allocator is a later increment)",
-                                ));
-                            }
-                            runtime_string_arg_seen = true;
-                            let scratch_base = host_arg_scratch_base(layout);
+                            let cursor = scratch_cursor_slot.expect(
+                                "a runtime compound arg reserves the scratch cursor (pre-scan)",
+                            );
                             let rope_slot = arg_base.max(*high);
                             *high = (*high).max(rope_slot + 3);
                             scratch_ty.insert(rope_slot, ValType::I32);
@@ -11444,7 +11460,7 @@ fn emit(
                             out.push(Lir::LocalSet(len_slot));
                             out.push(Lir::ConstI32(0));
                             out.push(Lir::LocalSet(pos_slot)); // pos = 0
-                            // block { loop { br_out if pos>=len; mem[scratch_base+pos] = bytes-get(rope,pos);
+                            // block { loop { br_out if pos>=len; mem[cursor+pos] = bytes-get(rope,pos);
                             //   pos++; br loop } }
                             out.push(Lir::Block(BlockType::Empty)); // $done
                             out.push(Lir::Loop(BlockType::Empty)); // $copy
@@ -11452,13 +11468,13 @@ fn emit(
                             out.push(Lir::LocalGet(len_slot));
                             out.push(Lir::I32GeS);
                             out.push(Lir::BrIf(1)); // pos >= len → $done
-                            out.push(Lir::ConstI32(scratch_base as i32));
+                            out.push(Lir::LocalGet(cursor));
                             out.push(Lir::LocalGet(pos_slot));
-                            out.push(Lir::I32Add); // [addr]
+                            out.push(Lir::I32Add); // [addr = cursor + pos]
                             out.push(Lir::LocalGet(rope_slot));
                             out.push(Lir::LocalGet(pos_slot));
                             out.push(Lir::CallImport(OP_BYTES_GET)); // [addr, byte:i32]
-                            out.push(Lir::I32Store8 { offset: 0 }); // mem[scratch_base+pos] = byte
+                            out.push(Lir::I32Store8 { offset: 0 }); // mem[cursor+pos] = byte
                             out.push(Lir::LocalGet(pos_slot));
                             out.push(Lir::ConstI32(1));
                             out.push(Lir::I32Add);
@@ -11466,8 +11482,15 @@ fn emit(
                             out.push(Lir::Br(0)); // → $copy
                             out.push(Lir::End); // end $copy
                             out.push(Lir::End); // end $done
-                            out.push(Lir::ConstI32(scratch_base as i32));
+                            // Push (ptr = cursor-before-advance, len), then advance cursor += len for the next
+                            // runtime compound arg. The advance is stack-neutral (leaves the pushed (ptr,len)
+                            // in place below it on the operand stack).
+                            out.push(Lir::LocalGet(cursor));
                             out.push(Lir::LocalGet(len_slot)); // push (ptr, len)
+                            out.push(Lir::LocalGet(cursor));
+                            out.push(Lir::LocalGet(len_slot));
+                            out.push(Lir::I32Add);
+                            out.push(Lir::LocalSet(cursor)); // cursor += len
                         }
                     },
                     // A scalar argument emits its value directly.

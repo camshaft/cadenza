@@ -68388,32 +68388,52 @@ mod stage1 {
     }
 
     #[test]
-    fn a_host_op_with_two_runtime_bytes_args_declines_cleanly_never_miscompiles() {
-        // The Bytes twin of the two-runtime-STRING-args limit: the `_mem` marshalling uses ONE fixed scratch
-        // region shared by String AND Bytes args, so a host op taking TWO runtime Bytes args (each needing
-        // the copy-loop) would OVERWRITE the first arg's bytes with the second. Rather than miscompile
-        // (silently corrupt arg 1), it DECLINES — the `runtime_string_arg_seen` guard fires on the second
-        // rep-arg regardless of String/Bytes. This PINS the clean decline: a future "support two rep args"
-        // change (a per-arg bump allocator) must marshal them to DISTINCT regions, never share the one
-        // scratch — a regression here is a silent wrong-value at the host boundary. A SINGLE Bytes arg (and
-        // a Bytes+scalar mix) compiles + runs (the corpus pins those); only TWO rep-args that both copy
-        // collide. Assert it declines (Err) and the decline doesn't leak an internal scratch/emit name.
-        // BOTH args wrap a `k`-derived value so each is unambiguously a RUNTIME Bytes that MUST copy into
-        // scratch — a compile-time-constant second arg (`wrap 66`) would today still marshal, but a future
-        // const-Bytes data-segment fast-path could quietly stop exercising the two-RUNTIME-args collision
-        // this test names (the #1688 review nit, test-durability class of #1651/#1662).
+    fn a_host_op_with_two_runtime_bytes_args_marshals_each_to_a_disjoint_region_and_runs() {
+        // S0 of the compiler-platform-separation arc (was: this DECLINED). A host op taking TWO runtime Bytes
+        // args used to decline ("a host call with TWO runtime string/Bytes arguments is not yet emitted")
+        // because the `_mem` marshal shared ONE fixed scratch region — a second runtime compound arg would
+        // overwrite the first. Now a running scratch CURSOR advances by each marshalled arg's runtime length,
+        // so the two args land in DISJOINT regions and both cross canonically. This is the generic
+        // N-compound-arg marshal the reducer `put(key, value)` un-fork (S1) consumes; it also generalizes the
+        // non-reducer path. Pins: (a) it now COMPILES (was a decline), (b) the composed component is VALID
+        // (the cursor slot is reserved once + per-arg rope/len/pos slots start ABOVE it, so no i32/i64
+        // slot-width clobber, and the `(ptr,len)` push followed by the stack-neutral cursor advance stays
+        // balanced), (c) it RUNS. BOTH args wrap a `k`-derived value so each is unambiguously a RUNTIME Bytes
+        // that MUST copy into scratch (a const second arg could take the data-segment fast-path and stop
+        // exercising the two-RUNTIME-args path this test names).
+        use crate::testkit::parse;
+        let Some(runtime) = find_runtime_wasm() else {
+            eprintln!("[host-two-runtime-bytes-args] runtime wasm not in the store; skipping run");
+            return;
+        };
         let src = "(do (effect io (op sink2 (-> Bytes Bytes Int64))) \
                    (def (main (: k Int64)) \
                      (host (io) (io.sink2 (Bytes.of (list ((UInt 8).wrap k))) (Bytes.of (list ((UInt 8).wrap (+ k 1))))))) \
                    (export main))";
-        let err = crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect_err(
-            "two runtime Bytes args share one scratch buffer → must decline, not miscompile",
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
+            "two runtime Bytes args must each marshal to a disjoint scratch region, not decline",
         );
-        assert!(
-            err.message.contains("TWO runtime string/Bytes arguments"),
-            "the decline names the shared-scratch limitation (not an internal leak): {}",
-            err.message
+        let engine = wasmtime::Engine::default();
+        wasmtime::component::Component::from_binary(&engine, &bytes).expect(
+            "the two-runtime-Bytes-args component must be VALID (disjoint scratch regions, no slot clobber)",
         );
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["65".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: vec![cdz_run::HostResponse {
+                op: "io.sink2".to_string(),
+                value: "9".to_string(),
+            }],
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "9",
+                "both runtime Bytes args marshal (disjoint regions) + the host call returns its response"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("two-runtime-Bytes-args run trapped: {t}"),
+        }
     }
 
     #[test]
