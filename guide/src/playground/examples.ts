@@ -113,6 +113,25 @@ export const EXAMPLES: Example[] = [
     expected: "25",
   },
   {
+    // Shows off: a record NESTED inside a compound pattern. The tuple's first slot is a point
+    // record, and (x px) (y py) bind its fields in place — no intermediate binding, no new type.
+    // The second slot binds the weight alongside. weigh((3,4), 2) => 2·(9+16) = 50. In ML the arm
+    // reads `({ x = px, y = py }, w)`.
+    id: "nested-record-patterns",
+    name: "Nested record patterns (destructure in place)",
+    theme: "basics",
+    surface: "sexpr",
+    source: `(do
+  ; A match arm destructures a record nested inside a compound pattern — the tuple's first
+  ; slot is a point, and (x px) (y py) bind its fields directly; w binds the weight.
+  (def (weigh pair)
+    (match pair
+      ((tuple (record (x px) (y py)) w) (* w (+ (* px px) (* py py))))))
+  (def (main) (weigh (tuple (record (x 3) (y 4)) 2)))
+  (export main))`,
+    expected: "50",
+  },
+  {
     id: "tuple",
     name: "A tuple",
     theme: "basics",
