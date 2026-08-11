@@ -4172,6 +4172,7 @@ pass	an `and` whose first RESUMING perform is true evaluates the second: both ad
 pass	an `or` short-circuit SKIPS a resuming perform, and the skip is observable through the state
 pass	an abort abandons a pending borrowed map lookup and the map survives
 pass	an abort abandons a pending consuming op and the shared binding survives
+pass	an aborting arm's unread op-argument still threads its foreign perform's state advance
 pass	an abortive arm READS the heap LIST op argument it was handed — the payload survives the abort
 pass	an abortive arm returns a MAP built FROM its heap op argument as the handle's value
 pass	an abortive arm that READS a heap-typed (List) handler state folds — the List face

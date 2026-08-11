@@ -23354,3 +23354,29 @@
             (export main)))
   (call   main (: 4 Int64)) (output (: 122 Int64))
   (call   main (: 1 Int64)) (output (: 122 Int64)))
+
+(case "an aborting arm's unread op-argument still threads its foreign perform's state advance"
+  (doc    "Pins the ABORTING-arm face of the strict-fold #17 foreign-perform-in-unread-arg fix (v-effects:
+           resumptive f4be3f419, aborting-arm residual 5a0ceaf12). An op argument that performs a SECOND
+           in-scope effect is observable at the perform site regardless of whether the handling arm reads it.
+           Here A's `bail` arm ABORTS (returns 55, never resumes), and its unread argument is `(B.tick)` under
+           an outer B counter. The B.tick MUST still advance B's state at the perform site before the abort
+           discards A's continuation. Pre-fix the abort path's beta-substitution dropped the argument's
+           dispatch, so the later `(B.tick)` read the stale seed; fixed by threading the aborting arm's unread
+           op-arg foreign perform via the same #cv lift the resumptive path uses. Seeded n: A.bail aborts to 55
+           (times 1000 = 55000), the argument B.tick advances n→n+1 returning n, then the outer B.tick returns
+           n+1, so main(n) = 55000 + (n+1). main(3) = 55004, main(0) = 55001 — the +1 over the pre-fix 55003/
+           55000 witnesses the foreign advance fired.")
+  (input  (do
+            (effect A (op bail (-> Int64 Int64)))
+            (effect B (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle B n
+                ((tick () t (resume t (+ t 1))))
+                (+ (* 1000 (handle A 0
+                             ((bail (v) s 55))
+                             (+ 7777 (A.bail (B.tick)))))
+                   (B.tick))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 55004 Int64))
+  (call   main (: 0 Int64)) (output (: 55001 Int64)))
