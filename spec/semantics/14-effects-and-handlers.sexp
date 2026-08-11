@@ -23170,3 +23170,29 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 403321 Int64))
   (call   main (: 0 Int64)) (output (: 100021 Int64)))
+
+(case "an observed tail-recursive performer keeps constant stack on all three backends"
+  (doc    "A source-tail-recursive performer whose OUT-STATE is observed AFTER the recursion. `grow` self-calls
+           in the discard-match tail and performs `Acc.push` each iteration; the body observes `(Acc.size)` after
+           `(grow n)`, so the multi-value fold upgrades `grow` to return (value, out-state). That upgraded loop
+           must still dispatch in CONSTANT stack — the established mandate for tail-recursive performers. Pins
+           breaker finding 16: the wasm backend previously did NOT recognize the multi-value-upgraded tail
+           self-call (rewritten to a let-bound-call + identity-repackage tuple) as a tail edge, so it pushed a
+           frame per iteration and trapped 'call stack exhausted' between depth 5000 and 8000, while rust ran it
+           via LLVM TCO; fixed by teaching the wasm loop machinery to recognize the upgraded shape. At depth
+           10000 all three backends now run constant-stack. Each push resumes with next-state s+1 (advancing the
+           counter) but grow DISCARDS the push result via the `_` arm and returns grow(n-1), so grow(n) = 0; the
+           body is (+ 0 (Acc.size)) and after n pushes the counter is n, so main(10000) = 10000. The result value
+           is incidental — the case exists to witness that the observed multi-value upgrade dispatches in
+           constant stack at scale, not to compute a sum.")
+  (input  (do
+            (effect Acc (op push (-> Int64 Int64)) (op size (-> Int64)))
+            (def (grow (: n Int64))
+              (if (< n 1) 0 (match (Acc.push n) (_ (grow (- n 1))))))
+            (def (main (: n Int64))
+              (handle Acc 0
+                ((push (v) s (resume s (+ s 1)))
+                 (size () s (resume s s)))
+                (let ((g (grow n))) (+ g (Acc.size)))))
+            (export main)))
+  (call   main (: 10000 Int64)) (output (: 10000 Int64)))

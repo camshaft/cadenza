@@ -4500,6 +4500,7 @@ pass	an internally ill-typed unselected match arm body is a type error
 pass	an interposing handler TRANSFORMS the host response before resuming (offset adapter)
 pass	an intra-program handler interposes on a delegated effect, counts it, and forwards to the boundary
 pass	an iterative fibonacci swaps two accumulators through the tail call
+pass	an observed tail-recursive performer keeps constant stack on all three backends
 pass	an octal-prefixed token is a malformed literal, not an unbound name
 pass	an odd-width SIGNED shift result exceeding the declared width traps (Int24: 4194304<<1)
 pass	an odd-width division overflow traps before the out-of-range value escapes into Int64 arithmetic
