@@ -8041,3 +8041,35 @@
   (call   main (: 5 Int64)) (output (: 850 Int64))
   (call   main (: 0 Int64)) (output (: 300 Int64)))
 
+
+(case "a match-discard chain sequencing 3 dispatches over LIST-OF-LISTS state declines cleanly (let-chain twin folds)"
+  (doc    "SEQUENCING-FORM FENCE (breaker list-of-lists-state, 2026-08-11): the same program that FOLDS when the
+           three `Rows.add` dispatches are sequenced with a `let`-chain (the ll1 green pin in 14c) DECLINES
+           (honest `not yet reducible` todo) when they are sequenced with a wildcard `(match (Rows.add ..) (_
+           ...))` discard chain at depth 3. The tail-resumptive fold tracks the wildcard-match discard
+           SEQUENCING form only to depth 2 (two chained discards fold); depth 3+ falls to a clean decline.
+           `let`-binding is the general sequencing form and folds at ANY depth — so this is a pure coverage gap
+           in the match-discard tracking, not a soundness issue. This case is a REJECT-DON'T-MISCOMPILE sentinel:
+           the pinned value (identical to the ll1 let-chain twin, 400800 / 100200) is what the fold MUST produce
+           if it ever folds this shape; until the match-discard tracking extends past depth 2 it declines
+           cleanly. If a future fold change turns this into a SILENT WRONG VALUE (dropping a dispatch's
+           out-state across a discard) rather than a decline-or-correct, this case goes red. Flips todo->pass
+           when the wildcard-match discard-chain sequencing is tracked past depth 2.")
+  (input  (do
+            (effect Rows (op add (-> Int64 Int64)) (op pick (-> Int64 Int64 Int64)))
+            (def (row-at (: xss (List (List Int64))) (: i Int64) (: j Int64))
+              (match (List.at xss i)
+                ((Some xs) (match (List.at xs j) ((Some v) v) ((None _u) -1)))
+                ((None _u) -2)))
+            (def (main (: n Int64))
+              (handle Rows (list)
+                ((add (v) s (resume (List.len s) (List.push s (list v (* v 10) (* v 100)))))
+                 (pick (i j) s (resume (row-at s i j) s)))
+                (match (Rows.add n) (_
+                  (match (Rows.add (+ n 1)) (_
+                    (match (Rows.add (+ n 2)) (_
+                      (+ (* 10000 (Rows.pick 1 1))
+                         (+ (* 100 (Rows.pick 2 0)) (Rows.pick 0 2)))))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 400800 Int64))
+  (call   main (: 0 Int64)) (output (: 100200 Int64)))
