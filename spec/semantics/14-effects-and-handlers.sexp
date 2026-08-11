@@ -23691,3 +23691,33 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 3110521 Int64))
   (call   main (: 0 Int64)) (output (: 3110521 Int64)))
+
+(case "nested recursive performers through a non-recursive intermediate — out-state threads across the hop"
+  (doc    "The INDIRECTION face of finding #19 (breaker/corpus-bugfix): the recursion-boundary out-state
+           demand must reach a recursive performer even when an intervening NON-recursive helper (`via`) sits
+           between the enclosing recursive `outer` and the recursive `inner`. Pre-fix (before `5a788c845`) the
+           transitive closure stopped at the direct callee — `via` being non-recursive broke the chain, so
+           `outer` stayed single-value and dropped `inner`'s S.tick advances every outer iteration (a silent
+           wrong value: 9 not 7). `5a788c845` makes the reach transitive THROUGH non-recursive helpers to the
+           recursive leaf, so the composed shape no longer SILENTLY MISCOMPILES. Threading it to the final
+           value is the same cross-def recursion-boundary fold follow-on as the direct face; until then it
+           DECLINES cleanly (the honest not-yet-reducible todo) rather than the pre-fix silent wrong value.
+           Correct value pinned: main(1)=7. Depth-general (a two-hop via1→via2→inner drops identically pre-fix);
+           a straight-line non-recursive helper folds fine (it reaches no recursive leaf). Uniform on all 3
+           backends.")
+  (input  (do
+            (effect S (op depth (-> Int64)) (op tick (-> Int64)))
+            (def (inner (: k Int64) (: acc Int64))
+              (if (< k 1) acc (inner (- k 1) (+ acc (S.tick)))))
+            (def (via (: k Int64)) (inner k 0))
+            (def (outer (: k Int64) (: acc Int64))
+              (if (< k 1) acc
+                (let ((d (S.depth)))
+                  (outer (- k 1) (+ acc (via d))))))
+            (def (main (: n Int64))
+              (handle S n
+                ((depth () s (resume (% s 3) (+ s 1)))
+                 (tick () s (resume s (+ s 1))))
+                (outer 3 0)))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 7 Int64)))
