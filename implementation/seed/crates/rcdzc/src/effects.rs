@@ -2590,6 +2590,11 @@ pub fn reduce_handle(
     // OWN body, so this caller-side observation must be recorded up front. Purely additive: it only UPGRADES a
     // multi-value-threadable callee — a non-threadable one stays single-return.
     mark_caller_observed_outstate(db, body, &ctx);
+    // RECURSION-BOUNDARY caller-observed out-state (finding #19): a recursive-effectful callee whose out-state
+    // flows into an enclosing recursive def's self-call argument must thread across the recursion. Scans the
+    // reachable recursive-effectful defs' bodies (not just the handle body) and marks both the callee and the
+    // enclosing def multi-value. Additive: gated by `multivalue_leaves_threadable` at the mode decision.
+    mark_recursion_boundary_observed_outstate(db, body, &ctx);
     // CALLER-OBSERVED OUT-STATE via a same-effect ABORT arm (breaker sr5). The task-#15 machinery above
     // upgrades a recursive-effectful callee to MULTI-VALUE mode when a LATER spine perform observes its
     // out-state — which threads correctly to a RESUMING observer (sr4 → 2). But when the observing perform's
@@ -7896,6 +7901,84 @@ fn mark_caller_observed_outstate(db: &mut Db, node: StructId, ctx: &HandlerCtx) 
     if let Struct::List(children) = db.ast.get(node).clone() {
         for c in children {
             mark_caller_observed_outstate(db, c, ctx);
+        }
+    }
+}
+
+/// RECURSION-BOUNDARY caller-observed out-state (finding #19). `mark_caller_observed_outstate` above catches a
+/// callee whose out-state a LATER SPINE ITEM in the SAME body observes — but it scans only the handle body, and
+/// a callee's out-state can also be observed ACROSS A RECURSION: when a recursive-effectful def `D` calls
+/// another recursive-effectful callee `C` in one of `D`'s OWN self-call's ARGUMENTS — `(def (outer k acc) …
+/// (outer (- k 1) (+ acc (inner d 0))))` — `C`'s (`inner`'s) state advance must thread into `D`'s self-call so
+/// the NEXT `D` iteration reads the advanced state (its own next perform / draw). Single-return drops `C`'s
+/// advance every `D` iteration (the composed-recursion silent wrong value, finding #19). Neither
+/// `mark_caller_observed_outstate` (scans the handle body, which is just `(outer 3 0)` — no spine) nor
+/// `selfcall_precedes_perform_in_operands` (keys on `D`'s OWN self-calls, so `C` in the arg is invisible)
+/// catches it. So scan each recursive-effectful def `D` reachable from the handle body: for every self-call of
+/// `D`, mark EACH recursive-effectful callee found in that self-call's ARGUMENTS — and `D` itself — as
+/// `force_multivalue`, so both take multi-value mode and thread `C`'s `(. t 1)` out-state into `D`'s recursion.
+/// Purely additive (only UPGRADES a multi-value-threadable callee; the mode decision still gates on
+/// `multivalue_leaves_threadable`, so a non-threadable one stays single-return / declines as before). The
+/// pre-recursion-let non-tail shape (`(let ((x (inner …))) (if … (outer …)))`) is NOT flagged here — `x` is not
+/// in the self-call's arguments — so its existing honest decline (breaker s19c) is preserved.
+fn mark_recursion_boundary_observed_outstate(db: &mut Db, handle_body: StructId, ctx: &HandlerCtx) {
+    // Collect the recursive-effectful defs reachable from the handle body (the same call-graph the fold walks).
+    let mut roots: Vec<usize> = Vec::new();
+    collect_rec_eff_call_defs(db, handle_body, ctx, &mut roots);
+    // Transitively close over callees (s19e: the demand survives an indirection hop `outer → via-k → inner`).
+    let mut i = 0;
+    while i < roots.len() {
+        let d = roots[i];
+        i += 1;
+        if let Some(body) = db.defs[d].body {
+            let mut callees: Vec<usize> = Vec::new();
+            collect_rec_eff_call_defs(db, body, ctx, &mut callees);
+            for c in callees {
+                if !roots.contains(&c) {
+                    roots.push(c);
+                }
+            }
+        }
+    }
+    // For each recursive-effectful def D, find its self-calls and mark any recursive-effectful callee in a
+    // self-call's ARGUMENTS (+ D itself) multi-value.
+    let key = ctx.key.clone();
+    for &d in &roots {
+        let Some(body) = db.defs[d].body else {
+            continue;
+        };
+        // Walk D's body for self-calls `(D args…)`; for each, scan its args for recursive-effectful callees.
+        fn scan_self_call_args(
+            db: &mut Db,
+            node: StructId,
+            d: usize,
+            ctx: &HandlerCtx,
+            hits: &mut Vec<usize>,
+        ) {
+            if let Resolved::Apply { head, args } = resolved_of(db, node)
+                && callee_def_index_of(db, head) == Some(d)
+            {
+                for a in args.iter().copied().collect::<Vec<_>>() {
+                    collect_rec_eff_call_defs(db, a, ctx, hits);
+                }
+            }
+            if let Struct::List(children) = db.ast.get(node).clone() {
+                for c in children {
+                    scan_self_call_args(db, c, d, ctx, hits);
+                }
+            }
+        }
+        let mut hits: Vec<usize> = Vec::new();
+        scan_self_call_args(db, body, d, ctx, &mut hits);
+        if !hits.is_empty() {
+            // D's self-call carries a recursive-effectful callee's out-state → D must be multi-value, and each
+            // such callee must be too (so its out-state is a runtime `(value, out-state)` D can thread).
+            db.force_multivalue.insert((body, key.clone()));
+            for c in hits {
+                if let Some(cbody) = db.defs[c].body {
+                    db.force_multivalue.insert((cbody, key.clone()));
+                }
+            }
         }
     }
 }

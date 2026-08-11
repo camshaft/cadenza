@@ -1282,6 +1282,35 @@
             (export main)))
   (output (: 218 Int64)))
 
+(case "nested recursive performers — an inner walk's out-state threads across the outer recursion boundary"
+  (doc    "Finding #19 (breaker/corpus-bugfix): two composed recursive performers. `outer` draws a depth via
+           `S.depth` per iteration and adds `(inner d 0)`; `inner` performs `S.tick` per hop. `inner`'s state
+           advances must thread back across the OUTER recursion so the next `outer` iteration's `S.depth`
+           reads the advanced state — the composed-nested-loop shape. The SINGLE-return fold dropped `inner`'s
+           out-state every outer iteration (a silent wrong value: 9 not 7). The multi-value marking now
+           recognizes that a recursive-effectful callee (`inner`) whose out-state feeds an enclosing recursive
+           def's self-call must be threaded, and both are upgraded to multi-value — so the shape no longer
+           SILENTLY MISCOMPILES. Threading it to the final value is the full cross-def recursion-boundary fold
+           (a later increment): until then it DECLINES cleanly (the honest not-yet-reducible todo) rather than
+           the pre-fix silent wrong value. Correct value pinned: main(1)=7, main(0)=2. Each walk folds ALONE
+           (the compositions is the gap). Uniform on all 3 backends.")
+  (input  (do
+            (effect S (op depth (-> Int64)) (op tick (-> Int64)))
+            (def (inner (: k Int64) (: acc Int64))
+              (if (< k 1) acc (inner (- k 1) (+ acc (S.tick)))))
+            (def (outer (: k Int64) (: acc Int64))
+              (if (< k 1) acc
+                (let ((d (S.depth)))
+                  (outer (- k 1) (+ acc (inner d 0))))))
+            (def (main (: n Int64))
+              (handle S n
+                ((depth () s (resume (% s 3) (+ s 1)))
+                 (tick () s (resume s (+ s 1))))
+                (outer 3 0)))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 7 Int64))
+  (call   main (: 0 Int64)) (output (: 2 Int64)))
+
 (case "a NON-recursive helper calling a nested op whose resume performs the outer effect folds"
   (doc    "The non-recursive-helper twin of the resume-value-performs-outer case above (v-effects self-probe).
            A non-recursive `helper` calls the inner `B.step` (whose arm resumes with `(A.tick)`, performing the
