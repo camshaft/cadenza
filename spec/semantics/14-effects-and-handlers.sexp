@@ -23745,3 +23745,36 @@
                 (outer 3 0)))
             (export main)))
   (call   main (: 1 Int64)) (output (: 7 Int64)))
+; ── Perform-per-iteration scale + observed-loop values (breaker batch 230) ────
+; ps1 pins a 100k-iteration tail loop PERFORMING every iteration (unobserved —
+; constant stack; the observed twin is the breaker-16 sentinel); px1 pins the
+; observed loop's VALUES at shallow depths — the finding-16 divergence was
+; stack-only, never value corruption.
+
+(case "ps1 a 100k-iteration tail loop that PERFORMS every iteration — dispatch itself must run in constant stack"
+  (input  (do
+            (effect Ctr (op next (-> Int64)))
+            (def (loop (: n Int64) (: acc Int64))
+              (if (< n 1) acc (loop (- n 1) (+ acc (Ctr.next)))))
+            (def (main (: n Int64))
+              (handle Ctr 0
+                ((next () s (resume s (+ s 1))))
+                (loop n 0)))
+            (export main)))
+  (call   main (: 100000 Int64)) (output (: 4999950000 Int64))
+  (call   main (: 3 Int64)) (output (: 3 Int64)))
+
+(case "px1 observed tail performer at depth 100 — values must agree while the stack face is under repair"
+  (input  (do
+            (effect Acc (op push (-> Int64 Int64)) (op size (-> Int64)))
+            (def (grow (: n Int64))
+              (if (< n 1) 0 (match (Acc.push n) (_ (grow (- n 1))))))
+            (def (main (: n Int64))
+              (handle Acc 0
+                ((push (v) s (resume s (+ s 1)))
+                 (size () s (resume s s)))
+                (let ((g (grow n))) (+ (* 10 g) (Acc.size)))))
+            (export main)))
+  (call   main (: 100 Int64)) (output (: 100 Int64))
+  (call   main (: 0 Int64)) (output (: 0 Int64))
+  (call   main (: 7 Int64)) (output (: 7 Int64)))

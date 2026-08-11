@@ -5706,12 +5706,14 @@ pass	projecting the result of a function that threads a tuple parameter must not
 pass	projecting the safe element of a tuple elides the discarded trapping element's trap
 pass	promoting a Float32 literal to Float64 promotes the binary32 VALUE, not the un-demoted f64 payload (const fold)
 pass	promoting a Float32 to Float64 is exact
+pass	ps1 a 100k-iteration tail loop that PERFORMS every iteration — dispatch itself must run in constant stack
 pass	pure guards on fused-match arms read the payload binder and an enclosing capture
 pass	pushing an element of a different type onto a list is a type error
 pass	pushing an element onto a list appends it
 pass	pushing onto a SHARED perform-built list — the original stays len 2 beside the grown copy
 pass	pushing through ONE alias of a doubly-held list leaves the sibling field intact
 pass	pw1 a TRIPLING state crosses fixed thresholds — three compares catch the crossing at input-dependent depth
+pass	px1 observed tail performer at depth 100 — values must agree while the stack face is under repair
 pass	q5 a FIVE-argument op — the arm folds all five positions with distinct weights, two calls permute the arguments
 pass	q6 all FIVE arguments are draws — left-to-right evaluation order pinned at width five by distinct weights
 pass	qs1 two perform-drawn quantities of one dimension ADD — same-unit combine over two crossings
