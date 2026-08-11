@@ -8127,3 +8127,47 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 55003 Int64))
   (call   main (: 0 Int64)) (output (: 55001 Int64)))
+
+(case "an inner handler arm performs the OUTER effect mid-transition — both threads advance in lockstep per inner dispatch"
+  (doc    "Cross-arm perform where the inner handler B's arm computes its answer by performing the OUTER
+           effect A `(gb () t (resume (+ t (A.ga)) (+ t 10)))`. The landed 51-forward pins A.ga in an inner
+           arm's resume-VALUE via a helper; this pins the mid-TRANSITION face — the outer perform is inside the
+           arm's answer computation, so EACH inner B.gb dispatch advances BOTH handler threads (A's s and B's
+           t) in lockstep. Arm bodies resolve under the handlers enclosing THEIR handle, so B's arm (nested
+           inside A) can see A. `main(3)`: A seed 3, B seed 100. 1st B.gb: t=100, answer 100 + A.ga(s=3->3,
+           s->4) = 103, t->110; 2nd B.gb: t=110, answer 110 + A.ga(s=4->4, s->5) = 114, t->120; body
+           `(+ (B.gb) (* 1000 (B.gb)))` = 103 + 1000*114 = 114103. Uniform x3, opt-sweep 0-divergence. Breaker
+           nesting-order probe no1 (2026-08-11); its order-flipped twin below pins the scoping rule this relies
+           on.")
+  (input  (do
+            (effect A (op ga (-> Int64)))
+            (effect B (op gb (-> Int64)))
+            (def (main (: n Int64))
+              (handle A n
+                ((ga () s (resume s (+ s 1))))
+                (handle B 100
+                  ((gb () t (resume (+ t (A.ga)) (+ t 10))))
+                  (+ (B.gb) (* 1000 (B.gb))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 114103 Int64))
+  (call   main (: 0 Int64)) (output (: 111100 Int64)))
+
+(case "a cross-arm perform with the handler nesting FLIPPED has no home — arm bodies resolve under the handlers enclosing their handle"
+  (doc    "The order-flipped REJECT twin of the cross-arm-perform pin above. The SAME program with the nesting
+           FLIPPED (B OUTSIDE, A inside) is CDZ0401: B's arm body `(resume (+ t (A.ga)) ...)` performs A, but
+           an arm body resolves under the handlers enclosing ITS OWN handle — B's handle encloses nothing that
+           handles A (A's handle is INSIDE B's body, not around B's arm), so A.ga in B's arm has no home. Pins
+           the scoping rule the green mid-transition case relies on: a cross-arm perform of an outer effect is
+           legal only when the performing arm's handle is nested INSIDE the target effect's handler. Breaker
+           nesting-order probe no2 (2026-08-11).")
+  (input  (do
+            (effect A (op ga (-> Int64)))
+            (effect B (op gb (-> Int64)))
+            (def (main (: n Int64))
+              (handle B 100
+                ((gb () t (resume (+ t (A.ga)) (+ t 10))))
+                (handle A n
+                  ((ga () s (resume s (+ s 1))))
+                  (+ (B.gb) (* 1000 (B.gb))))))
+            (export main)))
+  (error  CDZ0401))

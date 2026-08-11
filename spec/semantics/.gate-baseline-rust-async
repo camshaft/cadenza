@@ -1592,6 +1592,7 @@ pass	a contradictory arrow annotation on a function in a SUM payload is rejected
 pass	a contradictory arrow annotation on a function in a runtime Map value is rejected
 pass	a contradictory arrow annotation on a function stored as a Map KEY is rejected
 pass	a correctly-annotated function parameter is accepted
+pass	a cross-arm perform with the handler nesting FLIPPED has no home — arm bodies resolve under the handlers enclosing their handle
 pass	a cross-function recursive fold's out-state threads to a later perform in the caller's continuation
 pass	a cross-handler foreign-perform op-arg into a MATCH-shaped-resume arm folds under nested handlers (nv1f)
 pass	a cross-handler op-arg performing an outer effect runs EXACTLY ONCE though the arm uses it thrice
@@ -4482,6 +4483,7 @@ pass	an inner arm resumes with the OUTER handler's result while both states adva
 pass	an inner binding shadows an outer one only within its scope
 pass	an inner handle of the SAME delegated effect discharges in-program inside the host block
 pass	an inner handle's SEED expression performs against the outer handler
+pass	an inner handler arm performs the OUTER effect mid-transition — both threads advance in lockstep per inner dispatch
 pass	an inner handler's INIT state is computed by performing an enclosing effect
 pass	an inner handler's SEED is a perform of an OUTER in-program effect
 pass	an inner lambda captures an enclosing match-arm binder and is applied
