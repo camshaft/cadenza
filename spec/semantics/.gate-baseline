@@ -1002,6 +1002,7 @@ pass	a SET op RESULT crosses resume — membership-probed and measured per dispa
 pass	a SET state churns — inserts and removes interleave across dispatches, canonical at each read
 pass	a SET state dedup accumulator — the condition PROBES the state, the pass branch inserts
 pass	a SET-valued handler state accumulates uniques across resumes (the visited-set idiom)
+pass	a SEVEN-op handler — the widest arm table in the corpus, each op a distinct answer shape and stride, order scrambled
 pass	a SINGLE-variant open sum still requires an open-tail arm
 pass	a SIX-deep alternating A-B perform chain threads both nested states through every crossing
 pass	a SLIDING-WINDOW max walks a k=3 window by paired index reads
