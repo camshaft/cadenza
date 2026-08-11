@@ -35,7 +35,7 @@
 //! `form` (accepts BOTH name- and str-head spellings) and records accept the legacy `(name value)` 2-list
 //! alongside the canonical `(= name value)` — the same migration tolerance value-decode keeps.
 
-use cadenza_ast::ast::{Arenas, Builder, Leaf, Radix, Struct, StructId};
+use cadenza_ast::ast::{Arenas, Builder, Leaf, Radix, Struct, StructId, WitDir};
 use cadenza_ast::codec;
 use num_bigint::BigInt;
 use wasmtime::component::{Type, Val};
@@ -977,6 +977,66 @@ pub fn build_event_document(
     codec::encode(&b.finish(root))
 }
 
+/// Produce the REDUCER world artifact — the `KIND_WIT_WORLD` binary-AST bytes (`db.wit_world`) a reducer
+/// program targets so `rcdzc`'s full-A emit bytes-wraps its `fold.apply` (DESIGN-compiler-platform-separation
+/// §3b). This is the "external artifact" source, built via the SHARED `cadenza-ast` world builders
+/// (`world_schema_tree`/`wit_interface`/`wit_func_sig`) so it is byte-identical to v-syntax's inline
+/// declaration and to v-cml's emit-side read BY CONSTRUCTION (one canonical world tree, hashed like an
+/// effect schema). Each param/result type is a `build_type`-form descriptor.
+///
+/// SCOPE A (the genesis MVP world, agreed with v-cml): the SMALLEST honest slice of `reducer.wit` that makes
+/// the genesis fold emit bytes — the `fold.apply` export (`list<u8> -> list<u8>`) plus the `kv` import members
+/// the genesis fold uses, `get(list<u8>) -> option<list<u8>>` and `put(list<u8>, list<u8>)` (unit). The rest
+/// of `kv` (`delete`/`prefix-scan`, needing `bool`/`tuple`/`list<tuple>`) is deferred until the emit reader
+/// widens past `list<u8>`+`option` — a backward slice, not a fake shape.
+pub fn reducer_world_artifact() -> Vec<u8> {
+    let mut b = Builder::new();
+    // `build_type`-form descriptors (must match `ast_marshal::build_type` / `rcdzc::wit_world::parse_wit_type`
+    // EXACTLY): a primitive is a NAME-head 1-marker `(u8)`; `list<T>` is `("list" <T>)` (str head); `option<T>`
+    // is `("option" <T>)` (str head); `unit` is `("unit")` (str head, no children). Built FRESH per occurrence
+    // (as `build_type` does); the codec canonicalizes occurrence order, so identical worlds encode identically.
+    let bytes_desc = |b: &mut Builder| {
+        let u8d = b.name("u8");
+        let u8_prim = b.list(vec![u8d]);
+        let list_head = b.atom_leaf(Leaf::Str("list".into()));
+        b.list(vec![list_head, u8_prim])
+    };
+    let opt_bytes_desc = |b: &mut Builder| {
+        let inner = bytes_desc(b);
+        let opt_head = b.atom_leaf(Leaf::Str("option".into()));
+        b.list(vec![opt_head, inner])
+    };
+    let unit_desc = |b: &mut Builder| {
+        let head = b.atom_leaf(Leaf::Str("unit".into()));
+        b.list(vec![head])
+    };
+
+    // export `fold`: `apply(event: list<u8>) -> list<u8>`
+    let apply_sig = {
+        let ev = bytes_desc(&mut b);
+        let res = bytes_desc(&mut b);
+        b.wit_func_sig(&[("event", ev)], res)
+    };
+    let fold = b.wit_interface(WitDir::Export, "fold", &[("apply", apply_sig)]);
+
+    // import `kv`: `get(key: list<u8>) -> option<list<u8>>`, `put(key: list<u8>, value: list<u8>)` (unit)
+    let get_sig = {
+        let key = bytes_desc(&mut b);
+        let res = opt_bytes_desc(&mut b);
+        b.wit_func_sig(&[("key", key)], res)
+    };
+    let put_sig = {
+        let key = bytes_desc(&mut b);
+        let value = bytes_desc(&mut b);
+        let res = unit_desc(&mut b);
+        b.wit_func_sig(&[("key", key), ("value", value)], res)
+    };
+    let kv = b.wit_interface(WitDir::Import, "kv", &[("get", get_sig), ("put", put_sig)]);
+
+    let world = b.world_schema_tree("reducer", &[fold, kv]);
+    codec::encode(&b.finish(world))
+}
+
 /// Parse the effect-list document the fold boundary returns (B1) into `Vec<Effect>` — the dual of
 /// [`build_event_document`], replacing the old `HeapHandle` walk of the returned effect-list handle. The
 /// guest `value-encode`d its requested effects as `(effects <effect-request>…)`; this decodes them back
@@ -1661,6 +1721,59 @@ mod tests {
                 let _ = ast_to_val(&bytes, ty);
             }
         }
+    }
+
+    // The reducer world artifact (KIND_WIT_WORLD bytes) is the SCOPE-A world: export fold.apply
+    // (list<u8> -> list<u8>) + import kv get/put, built via the shared cadenza-ast world builders so it is
+    // byte-identical to v-syntax's inline decl + v-cml's emit read. Pin the vocabulary (world/interface/
+    // member/param NAME atoms + the build_type-form descriptor STR heads list/option/unit) + determinism,
+    // without coupling to v-syntax's exact node layout (their S1 tests pin that + its byte-stable identity).
+    #[test]
+    fn reducer_world_artifact_is_the_scope_a_world() {
+        let bytes = reducer_world_artifact();
+        let a = codec::decode(&bytes).expect("world artifact decodes");
+        assert_eq!(
+            a.head_name(a.root),
+            Some("world"),
+            "root head is the `world` name"
+        );
+        fn collect(a: &Arenas, id: StructId, names: &mut Vec<String>, strs: &mut Vec<String>) {
+            if let Some(n) = a.as_name(id) {
+                names.push(n.to_string());
+                return;
+            }
+            match a.get(id) {
+                Struct::Atom(lid) => {
+                    if let Leaf::Str(s) = a.leaf(*lid) {
+                        strs.push(s.to_string());
+                    }
+                }
+                Struct::List(kids) => {
+                    for &k in kids.iter() {
+                        collect(a, k, names, strs);
+                    }
+                }
+            }
+        }
+        let (mut names, mut strs) = (Vec::new(), Vec::new());
+        collect(&a, a.root, &mut names, &mut strs);
+        for expect in [
+            "world", "reducer", "fold", "apply", "kv", "get", "put", "event", "key", "value", "u8",
+        ] {
+            assert!(
+                names.iter().any(|n| n == expect),
+                "missing NAME atom {expect}"
+            );
+        }
+        // build_type-form descriptor heads are STR atoms: list<u8> -> ("list" (u8)); option -> ("option" ..);
+        // unit -> ("unit"). Their presence proves the param/result descriptors are the shared build_type form.
+        for expect in ["list", "option", "unit"] {
+            assert!(
+                strs.iter().any(|s| s == expect),
+                "missing STR head {expect}"
+            );
+        }
+        assert_eq!(reducer_world_artifact(), bytes, "artifact is deterministic");
     }
 
     // Val::Flags round-trip (v-syntax review F2, LOW): built (name-head `(flags a c …)`) + read
