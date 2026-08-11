@@ -64133,6 +64133,41 @@ mod stage1 {
     }
 
     #[test]
+    fn an_observed_tail_performer_keeps_constant_stack_on_wasm() {
+        // breaker #16: a source-tail-recursive performer whose out-state is OBSERVED after the recursion is
+        // multi-value-upgraded to return `(value, out-state)`, and the tail self-call is rewritten into
+        // `(let ((t (grow …))) (tuple (. t 0) (. t 1)))` — the call moves into the `let` BINDING INIT and the
+        // body re-packages `t`. That identity-repackage IS a tail call; the wasm loop transform must
+        // recognize it (see `multivalue_repackage_tail_call` + the `emit_tail`/`invalidate_varying_params`
+        // arms) or the upgraded def recurses one wasm frame per iteration and traps `call stack exhausted`
+        // (observed ~5-8k). Rust survives only via rustc/LLVM TCO. Here `grow` counts down from 100_000
+        // performing `Acc.push` each step; observed `(+ g (Acc.size))` forces the upgrade. A depth that far
+        // beyond the wasm call-stack limit passing PROVES the loop transform fired (constant stack). Each
+        // `push` advances the handler state by 1 (resume s ; s+1), so after 100k pushes the state is 100000;
+        // `grow` returns 0 at the base case, and `(+ g (Acc.size))` = 0 + 100000 = 100000.
+        // `main` is nullary with the 100k depth baked in, so the runtime-composing `run_linked` (which
+        // passes no args) can drive it. The program imports the value heap (`Acc.push` boxes via `arr-alloc`),
+        // so it must run through the composed runtime, not the bare linker.
+        let src = "(module m \
+            (effect Acc (op push (-> Int64 Int64)) (op size (-> Int64))) \
+            (def (grow (: n Int64)) (if (< n 1) 0 (match (Acc.push n) (_ (grow (- n 1)))))) \
+            (def (main) (handle Acc 0 \
+              ((push (v) s (resume s (+ s 1))) (size () s (resume s s))) \
+              (let ((g (grow 100000))) (+ g (Acc.size))))) \
+            (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("the observed-tail-performer compiles");
+        // `run_linked` returns None only when the runtime wasm isn't findable in the tree; then skip (the
+        // established heap-test pattern). When present, the loop must run 100k iterations at constant stack.
+        if let Some(rendered) = run_linked(&bytes, "main") {
+            assert_eq!(
+                rendered, "100000",
+                "the loop runs 100k iterations at constant stack (each push resumes s+1; final g=0 + size=100000)"
+            );
+        }
+    }
+
+    #[test]
     fn an_agent_loop_shape_runs_model_ask_then_tool_dispatch_over_turns() {
         // The native agent HARNESS (v-agent-harness) loop SPINE, pinned as a single-shot tail-resumptive
         // program that runs today with NO ABI dependency — the control structure Inc-2 builds on

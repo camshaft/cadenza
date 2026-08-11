@@ -4591,6 +4591,30 @@ fn invalidate_varying_params(
             }
         }
         Core::Call { .. } => {}
+        // MULTI-VALUE-UPGRADE back-edge: `(let ((t (member-call …))) (tuple (. t 0) …))` iterates the loop
+        // via the bound self-call (see `multivalue_repackage_tail_call` + the `emit_tail` `Core::Let` arm),
+        // so its args drive the SAME per-param varying analysis a plain `Core::Call` back-edge does. Without
+        // this the varying counter (e.g. `n-1`) is misread as invariant and LICM wrongly hoists the loop
+        // condition out — an infinite loop. Handle it BEFORE the generic `Core::Let` body recursion below.
+        Core::Let { .. }
+            if multivalue_repackage_tail_call(db, id)
+                .map(|c| matches!(core_of(db, c), Core::Call { callee, .. } if members.contains(&callee)))
+                .unwrap_or(false) =>
+        {
+            let call = multivalue_repackage_tail_call(db, id).unwrap();
+            if let Core::Call { args, .. } = core_of(db, call) {
+                for (i, &arg) in args.iter().enumerate() {
+                    if i >= param_slots.len() {
+                        continue;
+                    }
+                    let is_identity = matches!(core_of(db, arg), Core::Param { binder }
+                        if slots.get(&binder) == Some(&param_slots[i]));
+                    if !is_identity {
+                        invariant.remove(&params[i].0);
+                    }
+                }
+            }
+        }
         Core::If { then_, else_, .. } => {
             invalidate_varying_params(
                 db,
@@ -5382,6 +5406,57 @@ fn is_cse_shareable(db: &mut Db, id: StructId) -> bool {
     }
 }
 
+/// Recognize the MULTI-VALUE-UPGRADE tail shape and, if present, return the underlying self-call node.
+///
+/// When a recursive PERFORMER's out-state is OBSERVED after the recursion, the effect lowering upgrades
+/// it to return `(value, out-state…)` and rewrites its tail self-call into
+/// `(let ((temp (self-call …))) (tuple (. temp 0) (. temp 1) …))` — the call moves into the `let` BINDING
+/// INIT and the `let` BODY re-packages `temp`'s slots into the return tuple (effects.rs `drain_and_wrap`).
+/// That body is an IDENTITY repackage: `temp` already IS a `(value, out-state…)` tuple, and the body
+/// rebuilds exactly `(. temp 0) … (. temp k)` in order — so the whole `let` is semantically just
+/// `return self-call(…)`, a genuine tail call the upgrade obscured. Without recognizing it, the wasm loop
+/// transform misses the edge and emits a real recursive call (one frame per iteration → stack exhaustion
+/// at depth ~5-8k; the Rust backend survives only because rustc/LLVM TCO's the emitted identity tail).
+///
+/// Returns `Some(call_node)` when `id` is exactly that shape: a single-binding `let` whose init is a
+/// `Core::Call`, whose body is a `Core::Tuple` of `arity` elements, and whose i-th element is
+/// `Core::Proj { operand → the let binder, index: i }` for every `i` (a full, in-order identity
+/// repackage). Any deviation (extra bindings, a non-projection element, a permuted/partial projection, a
+/// projection of a different operand, a mismatched arity) returns `None` — so only the exact
+/// return-packaging shape is treated as a tail call; genuine post-call computation is never mistaken for
+/// one.
+fn multivalue_repackage_tail_call(db: &mut Db, id: StructId) -> Option<StructId> {
+    let Core::Let { bindings, body } = core_of(db, id) else {
+        return None;
+    };
+    if bindings.len() != 1 {
+        return None;
+    }
+    let (temp_binder, init) = bindings[0];
+    // The init must be a call (the candidate self-call — membership is checked by the caller).
+    if !matches!(core_of(db, init), Core::Call { .. }) {
+        return None;
+    }
+    let Core::Tuple { elems } = core_of(db, body) else {
+        return None;
+    };
+    // Each tuple element must be `(. temp i)` in order — a full identity repackage of the bound temp.
+    for (i, elem) in elems.iter().enumerate() {
+        let Core::Proj { operand, index } = core_of(db, *elem) else {
+            return None;
+        };
+        if index != i {
+            return None;
+        }
+        // `operand` must resolve to a reference to THIS let's binder (not some other tuple).
+        match core_of(db, operand) {
+            Core::LocalRef { binder } if binder == temp_binder => {}
+            _ => return None,
+        }
+    }
+    Some(init)
+}
+
 /// Whether the body at `id` makes a tail call to any def in `members` through the tail positions the
 /// loop transform HANDLES — the body itself, an `if`'s two branches, a `let`'s body, or a `match`'s arm
 /// bodies. NOT a non-tail position (an operand — that is a non-tail call). Mirrors `emit_tail`'s
@@ -5396,6 +5471,16 @@ fn body_has_member_tail_call(db: &mut Db, id: StructId, members: &[usize]) -> bo
                 || body_has_member_tail_call(db, else_, members)
         }
         Core::Let { bindings, body } => {
+            // MULTI-VALUE-UPGRADE tail: `(let ((t (member-call …))) (tuple (. t 0) …))` is an identity
+            // repackage of a self-call — a genuine tail edge the effect upgrade obscured (see
+            // `multivalue_repackage_tail_call`). Treat it as a member tail-call so an observed-out-state
+            // performer still loops (else it recurses per iteration and exhausts the wasm stack).
+            if let Some(call) = multivalue_repackage_tail_call(db, id)
+                && let Core::Call { callee, .. } = core_of(db, call)
+                && members.contains(&callee)
+            {
+                return true;
+            }
             // Match `emit_tail`: a `let` keeps its body's tail position only when no heap drop is pending
             // (a drop after the body would fall back to non-tail `emit`). A scalar-only `let` (the loop
             // shapes) has no drop, so this simply recurses the body.
@@ -5467,6 +5552,16 @@ fn tail_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
             tail_callees(db, else_, out);
         }
         Core::Let { bindings, body } => {
+            // MULTI-VALUE-UPGRADE tail (see `multivalue_repackage_tail_call` + `body_has_member_tail_call`):
+            // the identity-repackage `let` IS a tail call to the bound callee — collect it as a tail edge
+            // so `mutual_loop_group` includes the self-recursion in the loop SCC.
+            if let Some(call) = multivalue_repackage_tail_call(db, id)
+                && let Core::Call { callee, .. } = core_of(db, call)
+                && !out.contains(&callee)
+            {
+                out.push(callee);
+                return;
+            }
             let any_drop = bindings.iter().any(|(binder, _)| {
                 is_heap_type(&type_of(db, *binder)) && !binding_escapes(db, body, *binder, false)
             });
@@ -6002,6 +6097,23 @@ fn emit_tail(
         // body's call pushes an ordinary frame that returns, then the drops run). A body with no
         // pending drop (every heap binding escapes, or there are none) keeps the tail position.
         Core::Let { bindings, body } => {
+            // MULTI-VALUE-UPGRADE tail: `(let ((t (member-call …))) (tuple (. t 0) …))` is an identity
+            // repackage of a self-call (see `multivalue_repackage_tail_call`). When it targets a member of
+            // THIS loop group, iterate in place — evaluate the call's args, move them into the param slots,
+            // and `br` to the loop top — exactly as the plain `Core::Call` tail arm does. The tuple body is
+            // pure return-packaging the loop reconstructs at exit (the base-case leaf), so it is not emitted
+            // here. Without this the upgraded performer emits a real recursive call and exhausts the stack.
+            if let Some(tl) = tl
+                && let Some(call) = multivalue_repackage_tail_call(db, id)
+                && let Core::Call { callee, args } = core_of(db, call)
+                && let Some(which) = tl.member_which(callee)
+                && args.len() == tl.param_slots.len()
+            {
+                emit_loop_iteration(
+                    db, which, &args, tl, slots, base, high, scratch_ty, layout, out,
+                )?;
+                return Ok(());
+            }
             // DUP-AWARE (see the non-tail `Core::Let` drop): a binding whose only consuming occurrences are
             // Perceus retains (`dup_sites`) still needs a scope-end drop of its surviving slot reference, so
             // it must fall back to the non-tail `emit` (which emits the drop epilogue), not the drop-free
