@@ -1270,6 +1270,12 @@ pub enum Resolved {
         scrutinee: StructId,
         path: std::rc::Rc<[crate::core::PathStep]>,
         key: Symbol,
+        /// The variant-constructor head at EACH `Payload` step in `path`, in order — so inference can walk
+        /// the scrutinee's type level by level through a variant payload to reach the nested `Ty::Record`
+        /// (a record nested UNDER a variant, `(Wrap (record (= x a)))`). One entry per `Payload` step;
+        /// EMPTY for the common tuple/list-only nesting (all `Elem` steps). The record-field twin of
+        /// `SumPayload.heads`.
+        heads: std::rc::Rc<[StructId]>,
     },
     /// A tuple PROJECTION `(. operand N)` — member access whose key is an INTEGER literal selects the
     /// element at position `index` (0-based). The integer key is what distinguishes a positional tuple

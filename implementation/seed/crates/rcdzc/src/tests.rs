@@ -54729,27 +54729,38 @@ mod diagnostics {
     }
 
     #[test]
-    fn a_variant_nested_record_match_binder_declines_coded_not_uncoded_at_compile() {
-        // A record sub-pattern nested under a VARIANT payload — `(Wrap (record (= x a)))` — is NOT wired
-        // (only `Elem`-pathed tuple/list nesting is; a `Payload`-pathed `RecordField` would type `Ty::Any`
-        // since `record_field_at_path` grounds only `Elem` steps). REGRESSION SENTINEL: it must decline with
-        // a CLEAN CODED CDZ0201 that `cdz check` (the diagnostics/collect_faults path) surfaces — NOT type
-        // `Ty::Any` and pass check while `compile` blows up with an UNCODED "no machine representation" (the
-        // check≡compile divergence this guards). The resolve descent deliberately stops at a variant head so
-        // the binder falls through to the coded `match_arm_nested_record_binds` decline.
-        let src = "(module m (type W (Wrap (Record (: x Int64)))) \
-               (def (f (: w W)) (match w ((Wrap (record (= x a))) a))) (export f))";
-        let all = diags_of(src);
+    fn a_variant_nested_record_match_binder_wires_and_grounds_the_field_width() {
+        use crate::compile::compile_component;
+        // A record sub-pattern nested under a VARIANT payload — `(Wrap (record (= x a)))` — now WIRES: the
+        // path carries a `Payload` step (recording the variant head), and `record_field_at_path` walks the
+        // payload type via that head (`payload_ty_at_instantiation`, the `SumPayload` payload walk) to reach
+        // the nested `Ty::Record`, then the trailing name-keyed sorted-slot reads the field. Completes the
+        // {tuple, list, variant} × record nesting matrix. `f (Wrap (record (= x 7)))` binds `a` = 7.
+        let wired = "(module m (type W (Wrap (Record (: x Int64)))) \
+               (def (f (: w W)) (match w ((Wrap (record (= x a))) a))) \
+               (def (main) (f (Wrap (record (= x 7))))) (export main))";
+        let wb = compile_component(&crate::codec::encode(&parse(wired))).expect("compile wired");
+        assert_eq!(super::run_returns::<i64>(&wb, "main"), 7);
+        // NARROW-WIDTH WITNESS (v-rust-backend's decisive proof): an Int8 field under the variant payload,
+        // returned so its `i8` width crosses the boundary. A width mis-grounding (the Payload walk failing →
+        // field typed `Ty::Any` → defaulted i64) would render `a` at the wrong width. That it round-trips
+        // `100` as `i8` proves the type-walk grounds the REAL field width THROUGH the `Payload` step — not
+        // the vacuous `Ty::Any` the pre-wiring decline produced.
+        let i8src = "(module m (type W (Wrap (Record (: x Int8)))) \
+               (def (f (: w W)) (match w ((Wrap (record (= x a))) a))) \
+               (def (main) (f (Wrap (record (= x 100))))) (export main))";
+        let b =
+            compile_component(&crate::codec::encode(&parse(i8src))).expect("compile i8-variant");
+        assert_eq!(super::run_returns::<i8>(&b, "main"), 100);
+
+        // NO check≡compile divergence remains: the wired case type-checks clean (no CDZ0201 decline, no
+        // CDZ0101 unbound) — the diagnostics path agrees with the emit path.
+        let all = diags_of(i8src);
         assert!(
-            all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
-                && d.message.contains(
-                    "record sub-pattern nested inside a tuple/list/constructor match pattern"
-                )),
-            "a variant-nested record binder declines CODED CDZ0201, surfaced by check: {all:?}"
-        );
-        assert!(
-            all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
-            "no misleading 'unbound name' cascade for the variant-nested binder: {all:?}"
+            all.iter()
+                .all(|d| d.code.as_deref() != Some("CDZ0201")
+                    && d.code.as_deref() != Some("CDZ0101")),
+            "a wired variant-nested record binder has no decline/unbound diagnostic: {all:?}"
         );
     }
 

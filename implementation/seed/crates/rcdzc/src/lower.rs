@@ -333,8 +333,9 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             scrutinee,
             path,
             key,
+            heads,
         } => {
-            // CONSTANT FOLD: reach the nested record Core (a constant tuple/list scrutinee folds its `Elem`
+            // CONSTANT FOLD: reach the nested record Core (a constant scrutinee folds its `Elem`/`Payload`
             // steps to the inner `Core::Record`); the field folds to its value by name.
             if let Some(Core::Record { fields }) = fold_sum_path(db, scrutinee, &path)
                 && let Some(&fv) = fields.get(&key)
@@ -344,7 +345,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             // RUNTIME: the field's SORTED slot in the record type at the path end (the same slot
             // `runtime_member_index` computes for a top-level member read). Read it as an `arr-get` `Elem`
             // step off the `SumPayload` walk to the record.
-            let rec_ty = crate::infer::record_field_at_path(db, scrutinee, &path);
+            let rec_ty = crate::infer::record_field_at_path(db, scrutinee, &path, &heads);
             let crate::ty::Ty::Record(rec_fields) = rec_ty else {
                 return Core::Poison(Reject::decline(
                     "a nested record match binder over a scrutinee whose nested value is not a record \

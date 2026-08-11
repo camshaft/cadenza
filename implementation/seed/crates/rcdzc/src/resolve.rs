@@ -1732,11 +1732,14 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
     // for it — the slot resolves at fold from `key`), so `path` reaches the RECORD, not the field. A
     // TOP-LEVEL record arm is Case 6rec's job (`match_arm_record_binds` → `Member`), so a non-empty path is
     // required here. Complements Case 6rec; wireable BEFORE the deeper-nesting decline below.
-    if let Some((scrutinee, path, key)) = match_arm_nested_record_binds_path(db, form, from, name) {
+    if let Some((scrutinee, path, key, heads)) =
+        match_arm_nested_record_binds_path(db, form, from, name)
+    {
         return Some(Resolved::RecordField {
             scrutinee,
             path: path.into(),
             key,
+            heads: heads.into(),
         });
     }
     // Case 6rec-nested-decline: `form`'s pattern nests a `(record …)` sub-pattern binding `name` whose field
@@ -4275,12 +4278,14 @@ fn find_map_binder_in_pattern(
 /// from it down to the nested RECORD, and the field's `Symbol`. `None` otherwise. The NESTED companion of
 /// [`match_arm_record_binds`] (the DIRECT record scrutinee, Case 6rec); the record twin of
 /// [`match_arm_nested_map_binds`]. A non-empty path is required — a TOP-LEVEL record is Case 6rec's job.
+/// `heads` carries the variant-constructor head at each `Payload` step in `path` (empty for tuple/list-only
+/// nesting), so inference can walk a variant payload down to the nested record.
 fn match_arm_nested_record_binds_path(
     db: &Db,
     form: StructId,
     from: StructId,
     name: &str,
-) -> Option<(StructId, Vec<crate::core::PathStep>, Symbol)> {
+) -> Option<(StructId, Vec<crate::core::PathStep>, Symbol, Vec<StructId>)> {
     let Struct::List(pb) = db.ast.get(form) else {
         return None;
     };
@@ -4305,11 +4310,12 @@ fn match_arm_nested_record_binds_path(
     }
     // A TOP-LEVEL record is Case 6rec's, not here — descend the compound for a nested record sub-pattern.
     let mut path = Vec::new();
-    let key = find_record_binder_in_pattern(db, arm_pat, name, &mut path)?;
+    let mut heads = Vec::new();
+    let key = find_record_binder_in_pattern(db, arm_pat, name, &mut path, &mut heads)?;
     if path.is_empty() {
         return None; // the record is the whole pattern → Case 6rec's job
     }
-    Some((scrutinee, path, key))
+    Some((scrutinee, path, key, heads))
 }
 
 /// Descend a COMPOUND pattern (tuple/list/variant) looking for a `(record …)` sub-pattern that binds `name`
@@ -4318,12 +4324,15 @@ fn match_arm_nested_record_binds_path(
 /// RECORD (NOT the field — the field is name-keyed via the returned key, resolved at fold). The record
 /// analogue of [`find_map_binder_in_pattern`]; only a BARE-binder field is wired (a further compound field
 /// value is out of scope — returns `None`, keeping deeper nesting declining via the coded Case
-/// 6rec-nested-decline). Element positions compose to any depth.
+/// 6rec-nested-decline). Element positions compose to any depth. `heads` accumulates the variant-ctor head
+/// at each `Payload` step (empty for tuple/list-only nesting), so inference can walk a variant payload down
+/// to the nested record — the record-field twin of `SumPayload.heads`.
 fn find_record_binder_in_pattern(
     db: &Db,
     pattern: StructId,
     name: &str,
     path: &mut Vec<crate::core::PathStep>,
+    heads: &mut Vec<StructId>,
 ) -> Option<Symbol> {
     // A RECORD pattern here: does a BARE-binder field `(= key name)` bind `name`? (`path` reaches THIS
     // record; the field is name-keyed, no step pushed.)
@@ -4347,7 +4356,8 @@ fn find_record_binder_in_pattern(
         }
         return None;
     }
-    // A TUPLE / LIST pattern: try each element position at `Elem(i)`, recursing for a nested record.
+    // A TUPLE / LIST pattern: try each element position at `Elem(i)`, recursing for a nested record. No head
+    // is pushed for an `Elem` step (its type comes from tuple/list-indexing, not a variant head).
     let elems: Option<Vec<StructId>> = if is_tuple_pattern(db, pattern) {
         db.ast
             .as_form(pattern, "tuple")
@@ -4372,23 +4382,56 @@ fn find_record_binder_in_pattern(
         for (i, &elem) in elems.iter().enumerate() {
             let len = path.len();
             path.push(crate::core::PathStep::Elem(i));
-            if let Some(hit) = find_record_binder_in_pattern(db, elem, name, path) {
+            if let Some(hit) = find_record_binder_in_pattern(db, elem, name, path, heads) {
                 return Some(hit);
             }
             path.truncate(len);
         }
         return None;
     }
-    // A VARIANT-nested record (`(W.Wrap (record (= x a)))`) is DELIBERATELY NOT descended: reaching the
-    // record under a variant needs a `Payload` step, but `record_field_at_path` (infer) only grounds `Elem`
-    // steps — a `Payload`-pathed `RecordField` types `Ty::Any`, which passes `cdz check` yet fails `cdz
-    // compile` with an UNCODED "no machine representation" (a check≡compile divergence). Since only `Elem`
-    // (tuple/list) descent is wired, STOP here for a variant head; the binder then falls through to the
-    // coded `match_arm_nested_record_binds` decline (`pattern_has_nested_record_binding` DOES recurse the
-    // variant payload), so a variant-nested record binder names the unimplemented feature with a clean coded
-    // CDZ0201 that `cdz check` surfaces — instead of the uncoded compile blow-up. (Wiring the variant case =
-    // thread the payload's variant heads into `record_field_at_path` like `SumPayload.heads`; a future
-    // increment, out of the tuple/list-nested scope this shipped.)
+    // A VARIANT pattern `(head arg…)` (head a `(. Sum V)` / bare variant name, not a compound ctor): the
+    // payload is reached by a `Payload` step (recording the variant HEAD so inference walks the payload
+    // type), then each arg (multi-payload → tuple `Elem(i)`) descends — mirrors `find_map_binder_in_pattern`'s
+    // variant arm. Inference's `record_field_at_path` consumes `heads` at each `Payload` (via the same
+    // variant-payload walk `SumPayload` uses) to reach the nested `Ty::Record`, then the trailing field
+    // read is the name-keyed sorted-slot the lowering appends — so a variant-nested record field grounds to
+    // its real type (not `Ty::Any`), the wired twin of the tuple/list nesting.
+    let Struct::List(app) = db.ast.get(pattern) else {
+        return None;
+    };
+    if app.len() < 2 {
+        return None;
+    }
+    let head = app[0];
+    let is_compound_ctor = db
+        .ast
+        .as_name(head)
+        .is_some_and(|h| matches!(h, "list" | "tuple" | "record" | "map"));
+    let head_ok = !is_compound_ctor
+        && (db.ast.as_form(head, ".").is_some() || db.ast.as_name(head).is_some());
+    if !head_ok {
+        return None;
+    }
+    let (plen, hlen) = (path.len(), heads.len());
+    path.push(crate::core::PathStep::Payload);
+    heads.push(head);
+    if app.len() == 2 {
+        if let Some(hit) = find_record_binder_in_pattern(db, app[1], name, path, heads) {
+            return Some(hit);
+        }
+    } else {
+        // Multi-payload `(Cons h t)` = a single tuple payload: each arg descends at `Elem(i)` after Payload.
+        for (i, &arg) in app[1..].iter().enumerate() {
+            let alen = path.len();
+            path.push(crate::core::PathStep::Elem(i));
+            if let Some(hit) = find_record_binder_in_pattern(db, arg, name, path, heads) {
+                return Some(hit);
+            }
+            path.truncate(alen);
+        }
+    }
+    path.truncate(plen);
+    heads.truncate(hlen);
     None
 }
 

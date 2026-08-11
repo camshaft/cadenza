@@ -327,7 +327,8 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             scrutinee,
             path,
             key,
-        } => match record_field_at_path(db, scrutinee, &path) {
+            heads,
+        } => match record_field_at_path(db, scrutinee, &path, &heads) {
             Ty::Record(fields) => fields.get(&key).cloned().unwrap_or(Ty::Any),
             _ => Ty::Any,
         },
@@ -4567,10 +4568,30 @@ pub(crate) fn record_field_at_path(
     db: &mut Db,
     scrutinee: StructId,
     path: &[crate::core::PathStep],
+    heads: &[StructId],
 ) -> Ty {
     let mut cur = type_of(db, scrutinee);
+    let mut heads = heads.iter();
     for step in path {
-        cur = match (step, &cur) {
+        // A `Payload` step (a record nested UNDER a variant): advance to the entered variant's payload type,
+        // reading the variant HEAD at this step — mirrors `walk_payload_ty`. A nominal newtype IS its inner
+        // value (erased tag), so unwrap it; otherwise the head's `(-> payload Sum)` at the current
+        // instantiation gives the payload sub-value's type.
+        if let crate::core::PathStep::Payload = step {
+            let Some(&head) = heads.next() else {
+                return Ty::Any;
+            };
+            cur = if let Ty::Nominal { inner, .. } = &cur {
+                (**inner).clone()
+            } else {
+                match payload_ty_at_instantiation(db, head, &cur) {
+                    Some(t) => t,
+                    None => return Ty::Any,
+                }
+            };
+            continue;
+        }
+        cur = match (step, cur.strip_nominal()) {
             (crate::core::PathStep::Elem(i), Ty::Tuple(elems)) => match elems.get(*i) {
                 Some(t) => t.clone(),
                 None => return Ty::Any,
