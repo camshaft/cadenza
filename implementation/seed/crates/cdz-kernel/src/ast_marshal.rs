@@ -1037,6 +1037,32 @@ pub fn reducer_world_artifact() -> Vec<u8> {
     codec::encode(&b.finish(world))
 }
 
+/// The PURE-FOLD world artifact — the smallest world for the pure-genesis INTERMEDIATE co-land: a reducer
+/// that only EXPORTS `fold.apply(list<u8>) -> list<u8>` and imports NOTHING (no `kv`). Targeting this world,
+/// `rcdzc`'s landed world-driven emit (GAP A) bytes-wraps a pure `apply(Event) -> effect-list` guest so it
+/// crosses as `list<u8>`, and the kernel host drives it through `build_event_document` / `parse_effect_list`
+/// — proving the CADENZA-guest bytes path end-to-end WITHOUT the host-fused `kv` emit (GAP B). Uses the same
+/// builders and descriptors as [`reducer_world_artifact`], minus the `kv` import (so it stays within the
+/// emit's `list<u8>` vocab and needs no host-import fusion).
+pub fn pure_fold_world_artifact() -> Vec<u8> {
+    let mut b = Builder::new();
+    let bytes_desc = |b: &mut Builder| {
+        let u8d = b.name("u8");
+        let u8_prim = b.list(vec![u8d]);
+        let list_head = b.atom_leaf(Leaf::Str("list".into()));
+        b.list(vec![list_head, u8_prim])
+    };
+    // export `fold`: `apply(event: list<u8>) -> list<u8>` — the only member; no `kv` import.
+    let apply_sig = {
+        let ev = bytes_desc(&mut b);
+        let res = bytes_desc(&mut b);
+        b.wit_func_sig(&[("event", ev)], res)
+    };
+    let fold = b.wit_interface(WitDir::Export, "fold", &[("apply", apply_sig)]);
+    let world = b.world_schema_tree("reducer", &[fold]);
+    codec::encode(&b.finish(world))
+}
+
 /// Parse the effect-list document the fold boundary returns (B1) into `Vec<Effect>` — the dual of
 /// [`build_event_document`], replacing the old `HeapHandle` walk of the returned effect-list handle. The
 /// guest `value-encode`d its requested effects as `(effects <effect-request>…)`; this decodes them back
@@ -1774,6 +1800,48 @@ mod tests {
             );
         }
         assert_eq!(reducer_world_artifact(), bytes, "artifact is deterministic");
+    }
+
+    // The PURE-FOLD world (pure-genesis intermediate): export fold.apply only, NO kv import — the smallest
+    // world for proving the Cadenza-guest bytes path through the host without the GAP-B kv emit.
+    #[test]
+    fn pure_fold_world_artifact_has_fold_apply_and_no_kv() {
+        let bytes = pure_fold_world_artifact();
+        let a = codec::decode(&bytes).expect("pure world decodes");
+        assert_eq!(
+            a.head_name(a.root),
+            Some("world"),
+            "root head is the `world` name"
+        );
+        fn collect_names(a: &Arenas, id: StructId, out: &mut Vec<String>) {
+            if let Some(n) = a.as_name(id) {
+                out.push(n.to_string());
+                return;
+            }
+            if let Struct::List(kids) = a.get(id) {
+                for &k in kids.iter() {
+                    collect_names(a, k, out);
+                }
+            }
+        }
+        let mut names = Vec::new();
+        collect_names(&a, a.root, &mut names);
+        for expect in ["world", "reducer", "fold", "apply", "event"] {
+            assert!(
+                names.iter().any(|n| n == expect),
+                "missing NAME atom {expect}"
+            );
+        }
+        // pure = NO kv import (that is the whole point — no host-fused import for the intermediate).
+        assert!(
+            !names.iter().any(|n| n == "kv"),
+            "pure-fold world must NOT declare a kv import"
+        );
+        assert_eq!(
+            pure_fold_world_artifact(),
+            bytes,
+            "artifact is deterministic"
+        );
     }
 
     // Val::Flags round-trip (v-syntax review F2, LOW): built (name-head `(flags a c …)`) + read
