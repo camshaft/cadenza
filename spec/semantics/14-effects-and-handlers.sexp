@@ -23113,3 +23113,36 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 113013 Int64))
   (call   main (: 0 Int64)) (output (: 110010 Int64)))
+
+; ── Draw-captures across later state (breaker batch 224) ──────────────────────
+; A closure capturing an effect draw freezes the VALUE: cd1 invokes the capture
+; only after a later draw advanced state (the capture must not re-read), and cd4
+; sends the capture through a higher-order def that applies it twice — capture
+; fixed while the call arguments vary, with a post-call draw pinning the thread.
+
+(case "cd1 a closure CAPTURES a draw then is called after LATER draws — the captured value must not re-read state"
+  (input  (do
+            (effect St (op get (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((get () s (resume s (+ s 1))))
+                (let ((d1 (St.get)))
+                  (let ((f (fn (k) (+ (* 100 d1) k))))
+                    (let ((d2 (St.get)))
+                      (+ (f d2) (* 10000 (St.get))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 50304 Int64))
+  (call   main (: 0 Int64)) (output (: 20001 Int64)))
+
+(case "cd4 a captured draw crosses a HIGHER-ORDER def boundary — helper applies the closure twice with different args"
+  (input  (do
+            (effect St (op get (-> Int64)))
+            (def (twice f) (+ (f 1) (* 10 (f 2))))
+            (def (main (: n Int64))
+              (handle St n
+                ((get () s (resume s (+ s 1))))
+                (let ((d (St.get)))
+                  (+ (twice (fn (k) (+ (* 100 d) k))) (* 100000 (St.get))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 403321 Int64))
+  (call   main (: 0 Int64)) (output (: 100021 Int64)))

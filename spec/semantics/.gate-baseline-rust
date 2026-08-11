@@ -4765,6 +4765,8 @@ pass	cc5 composed closures over three draws — g(f(draw)) where f and g each ca
 pass	cc6b a closure bound OUTSIDE the outer handle applied inside a nested SHADOW region and after it — capture crosses both boundaries
 pass	cc7 a draw-capturing closure threaded through a RECURSIVE helper — applied per frame, the leaf applies it to a fresh draw
 pass	cc8 a closure carried in a TUPLE beside a scalar — destructured in one match and applied around advancing draws
+pass	cd1 a closure CAPTURES a draw then is called after LATER draws — the captured value must not re-read state
+pass	cd4 a captured draw crosses a HIGHER-ORDER def boundary — helper applies the closure twice with different args
 pass	ch1 a FOUR-op result chain in one nested expression — each op transforms the last result while bumping the shared state differently
 pass	ch2 the same FOUR-op chain flattened through LETs — one binding per hop must equal the nested form exactly
 pass	ch3 the chain hops CROSS two effects — F.b of G.p of F.a, each thread advancing only on its own hops
