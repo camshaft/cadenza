@@ -898,22 +898,6 @@ pub struct ContentTypeRef<'a> {
     pub version: u32,
 }
 
-/// Encode an optional byte payload as the `<opt>` shape: `(some <bytes>)` for present (incl. empty), or
-/// `(none)` for absent — so a zero-length payload is distinct from no payload (matches `Option<Payload>`).
-fn opt_bytes_form(b: &mut Builder, v: Option<&[u8]>) -> StructId {
-    match v {
-        Some(bytes) => {
-            let head = b.name("some");
-            let val = b.atom_leaf(Leaf::Bytes(bytes.to_vec().into()));
-            b.list(vec![head, val])
-        }
-        None => {
-            let head = b.name("none");
-            b.list(vec![head])
-        }
-    }
-}
-
 /// Read an `<opt>` node — `(some <bytes>)` → `Some(bytes)`, `(none)` → `None`; anything else is malformed.
 fn read_opt_bytes(a: &Arenas, id: StructId) -> Result<Option<Vec<u8>>, MarshalError> {
     match head_name(a, id) {
@@ -943,38 +927,35 @@ pub fn build_event_document(
     payload: Option<&[u8]>,
     resumes: Option<&[u8]>,
 ) -> Vec<u8> {
-    let mut b = Builder::new();
-    // (content-type (family <str>) (version <int>))
-    let ct = {
-        let head = b.name("content-type");
-        let fam = {
-            let h = b.name("family");
-            let v = b.atom_leaf(Leaf::Str(content_type.family.to_string().into()));
-            b.list(vec![h, v])
-        };
-        let ver = {
-            let h = b.name("version");
-            let v = b.atom_leaf(Leaf::Int {
-                value: BigInt::from(content_type.version),
-                radix: Radix::Dec,
-            });
-            b.list(vec![h, v])
-        };
-        b.list(vec![head, fam, ver])
+    // Build the Event as a wasmtime `Val` and marshal it via the SHARED canonical codec ([`val_to_ast`]),
+    // so the bytes are the deterministic value-form the guest's `value-decode` (op 90) reconstructs the
+    // Event from — byte-identical to what `value-encode` produces (record-type Phase B; the ad-hoc named
+    // form is gone). The Event is `record { content-type: record { family: string, version: u32 },
+    // payload: option<list<u8>>, resumes: option<list<u8>> }`; the kebab field names match the guest
+    // reducer's Event type (Cadenza allows kebab identifiers). `list<u8>` marshals to a `Bytes` leaf; an
+    // `option` present/absent (incl. an empty `Some []`) distinguishes an empty payload from an absent one.
+    let opt_bytes = |v: Option<&[u8]>| {
+        Val::Option(
+            v.map(|bytes| Box::new(Val::List(bytes.iter().copied().map(Val::U8).collect()))),
+        )
     };
-    let payload_node = {
-        let h = b.name("payload");
-        let v = opt_bytes_form(&mut b, payload);
-        b.list(vec![h, v])
-    };
-    let resumes_node = {
-        let h = b.name("resumes");
-        let v = opt_bytes_form(&mut b, resumes);
-        b.list(vec![h, v])
-    };
-    let head = b.name("event");
-    let root = b.list(vec![head, ct, payload_node, resumes_node]);
-    codec::encode(&b.finish(root))
+    let event = Val::Record(vec![
+        (
+            "content-type".to_string(),
+            Val::Record(vec![
+                (
+                    "family".to_string(),
+                    Val::String(content_type.family.to_string()),
+                ),
+                ("version".to_string(), Val::U32(content_type.version)),
+            ]),
+        ),
+        ("payload".to_string(), opt_bytes(payload)),
+        ("resumes".to_string(), opt_bytes(resumes)),
+    ]);
+    // The Event's shape is fixed (record/option/list<u8>/string/u32 — all marshallable), so `val_to_ast`
+    // never errors here.
+    val_to_ast(&event).expect("the Event value is always marshallable")
 }
 
 /// Produce the REDUCER world artifact — the `KIND_WIT_WORLD` binary-AST bytes (`db.wit_world`) a reducer
@@ -2269,38 +2250,44 @@ mod tests {
     // --- binary-AST fold boundary (B1) tests ---
 
     #[test]
-    fn event_document_builds_the_content_type_payload_resumes_shape() {
-        // B1: build_event_document folds (content-type, optional payload, optional resumes) into ONE
-        // value-form doc. Decode it back + assert the (event (content-type (family)(version)) (payload)
-        // (resumes)) shape, with (some <bytes>) vs (none) distinguishing an empty payload from absent.
-        let bytes = build_event_document(
-            ContentTypeRef {
-                family: "message",
-                version: 1,
-            },
-            Some(b"hi"),
-            None,
-        );
-        let a = codec::decode(&bytes).expect("event doc decodes");
-        // Head is `event` with 3 children.
-        let ev = form(&a, a.root, "event").expect("event form");
-        assert_eq!(ev.len(), 3);
-        // content-type carries family + version.
-        let ct = form(&a, ev[0], "content-type").expect("content-type");
+    fn event_document_is_the_canonical_event_value_form() {
+        // build_event_document now builds the Event as a Val::Record + val_to_ast, so its bytes ARE the
+        // canonical value-form the guest's value-decode reconstructs the Event from (the ad-hoc named form
+        // is gone). Pin it against val_to_ast of the manually-built Event Val — record { content-type:
+        // { family, version }, payload: option<list<u8>>, resumes: option<list<u8>> }.
+        let event_val =
+            |family: &str, version: u32, payload: Option<&[u8]>, resumes: Option<&[u8]>| {
+                let opt = |v: Option<&[u8]>| {
+                    Val::Option(
+                        v.map(|b| Box::new(Val::List(b.iter().copied().map(Val::U8).collect()))),
+                    )
+                };
+                Val::Record(vec![
+                    (
+                        "content-type".into(),
+                        Val::Record(vec![
+                            ("family".into(), Val::String(family.to_string())),
+                            ("version".into(), Val::U32(version)),
+                        ]),
+                    ),
+                    ("payload".into(), opt(payload)),
+                    ("resumes".into(), opt(resumes)),
+                ])
+            };
         assert_eq!(
-            read_str(&a, form(&a, ct[0], "family").unwrap()[0]).unwrap(),
-            "message"
+            build_event_document(
+                ContentTypeRef {
+                    family: "message",
+                    version: 1
+                },
+                Some(b"hi"),
+                None
+            ),
+            val_to_ast(&event_val("message", 1, Some(b"hi"), None)).unwrap(),
+            "build_event_document == val_to_ast of the Event Val (canonical value-form)"
         );
-        // payload = (some b"hi"); resumes = (none).
-        assert_eq!(
-            read_opt_bytes(&a, form(&a, ev[1], "payload").unwrap()[0]).unwrap(),
-            Some(b"hi".to_vec())
-        );
-        assert_eq!(
-            read_opt_bytes(&a, form(&a, ev[2], "resumes").unwrap()[0]).unwrap(),
-            None
-        );
-        // An EMPTY payload is (some []), distinct from absent (none).
+        // An intentionally-EMPTY payload (Some []) is distinct from an absent one (None) — the option
+        // present/absent carries it (Some [] vs None), so the two docs differ.
         let empty = build_event_document(
             ContentTypeRef {
                 family: "m",
@@ -2309,12 +2296,21 @@ mod tests {
             Some(b""),
             None,
         );
-        let ae = codec::decode(&empty).unwrap();
-        let eve = form(&ae, ae.root, "event").unwrap();
+        let absent = build_event_document(
+            ContentTypeRef {
+                family: "m",
+                version: 1,
+            },
+            None,
+            None,
+        );
+        assert_ne!(
+            empty, absent,
+            "an empty payload (Some []) differs from absent (None)"
+        );
         assert_eq!(
-            read_opt_bytes(&ae, form(&ae, eve[1], "payload").unwrap()[0]).unwrap(),
-            Some(vec![]),
-            "an intentionally-empty payload is (some []), not (none)"
+            empty,
+            val_to_ast(&event_val("m", 1, Some(b""), None)).unwrap()
         );
     }
 
