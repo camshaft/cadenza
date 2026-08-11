@@ -153,6 +153,21 @@ fn compile_with_opt_inner(
         .iter()
         .find(|a| a.kind == link::KIND_COMPONENT_NAME)
         .map(|a| String::from_utf8_lossy(&a.bytes).into_owned());
+    // Which provider export members cross as canonical BYTES (`list<u8>`) rather than runtime handles —
+    // the §3c compiler-platform-separation signal (the toolchain derives it from the declared target WIT
+    // world; the compiler consumes the contract). Newline-separated member names; empty/absent → handles.
+    db.export_bytes_members = inputs
+        .iter()
+        .find(|a| a.kind == link::KIND_EXPORT_BYTES_MEMBERS)
+        .map(|a| {
+            String::from_utf8_lossy(&a.bytes)
+                .lines()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
     // The `--component-name` a PROVIDER publishes its interface under is a component-boundary name,
     // emitted verbatim as the exported interface-instance's extern name. A non-conforming value would
     // produce a component `wasmtime` rejects at LOAD with no diagnostic (the provider twin of the

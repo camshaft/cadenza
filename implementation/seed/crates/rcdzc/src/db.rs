@@ -852,6 +852,13 @@ pub struct Db {
     /// component funcs (byte-identical to before). Set AFTER `Db::load`/`load_linked` by the caller
     /// (`compile`), which reads the request artifact.
     pub component_name: Option<String>,
+    /// PROVIDER export members that cross as CANONICAL BYTES (`list<u8>` via `value-encode`/`value-decode`)
+    /// rather than opaque runtime `u32` HANDLES — the compiler-platform-separation §3c signal. Empty (the
+    /// common case) → provider exports cross as handles. Populated by `compile` from the
+    /// `KIND_EXPORT_BYTES_MEMBERS` request artifact (the toolchain derives it from the declared target WIT
+    /// world). A member listed here has its structured body `value-encode`/`value-decode`-wrapped so its
+    /// external ABI matches the declared `list<u8>` boundary (the reducer fold `apply`).
+    pub export_bytes_members: Vec<String>,
     /// EFFECT → PEER-CONTRACT bindings (U2, the effects-unification of cross-component interop): a
     /// top-level `(bind Math "cadenza:math/api")` DEFAULTS the whole component scope to route the escaping
     /// effect `Math` to the peer interface `cadenza:math/api` (rather than the generic host). An escaping
@@ -2664,6 +2671,7 @@ impl Db {
             type_decls,
             effect_decls,
             component_name: None,
+            export_bytes_members: Vec::new(),
             effect_bindings,
             modules,
             newtype_inner: crate::fxhash::FxHashMap::default(),

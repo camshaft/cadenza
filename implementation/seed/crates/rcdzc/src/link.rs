@@ -59,6 +59,18 @@ pub const KIND_ENTRY: &str = "entry";
 /// import them. The compile REQUEST specifies it (operator: peers must agree on the published name).
 pub const KIND_COMPONENT_NAME: &str = "component-name";
 
+/// The input-artifact kind naming which PROVIDER export members cross the boundary as CANONICAL BYTES
+/// (`list<u8>` via `value-encode`/`value-decode`) rather than as opaque runtime `u32` HANDLES (X5).
+/// Its bytes are newline-separated export member names (e.g. `apply`). The TOOLCHAIN derives this from
+/// the target WIT world the program declares it exports (the driver parses the WIT — the compiler needs
+/// no WIT parser): a member whose declared signature is `list<u8>`-shaped is a bytes boundary to an
+/// external/durable host (the reducer fold), so the compiler `value-encode`/`value-decode`-wraps the
+/// guest's structured body to that member's declared `list<u8>` ABI, instead of the shared-runtime peer
+/// handle crossing. Absent (the common case) → provider exports cross as handles (byte-identical to
+/// before). This is the compiler-platform-separation "program declares its WIT, compiler emits to it"
+/// signal — narrow first slice (one interface's member), grows to a full target-WIT-world artifact.
+pub const KIND_EXPORT_BYTES_MEMBERS: &str = "export-bytes-members";
+
 /// The input-artifact kind that OVERRIDES effect→peer bindings at COMPILE time (U3, the effects-unification
 /// of cross-component interop). Its bytes are newline-separated `Effect=cadenza:pkg/iface` lines that WIN
 /// over a program's in-source `(bind …)` defaults: `Effect=<iface>` rebinds an effect to a different peer;
