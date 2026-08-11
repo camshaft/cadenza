@@ -96,6 +96,29 @@ pub enum SuffixBody {
     Float(Decimal),
 }
 
+/// The DIRECTION of a WIT interface in a [`Builder::world_schema_tree`] — whether the world IMPORTS the
+/// interface (the host provides it; the compiler emits an import marshal) or EXPORTS it (the guest
+/// provides it; the compiler emits an export-side value-bridge). Direction is STRUCTURAL (a distinct
+/// NAME-atom sub-head), not a member attribute, because the emitted bridge differs per direction. A
+/// closed set — a WIT world member is imported or exported, nothing else.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum WitDir {
+    /// The world IMPORTS this interface (host-provided) — the sub-head `import`.
+    Import,
+    /// The world EXPORTS this interface (guest-provided) — the sub-head `export`.
+    Export,
+}
+
+impl WitDir {
+    /// The NAME-atom sub-head this direction renders as in the world tree (`import`/`export`).
+    pub fn head(self) -> &'static str {
+        match self {
+            WitDir::Import => "import",
+            WitDir::Export => "export",
+        }
+    }
+}
+
 /// The type a numeric literal suffix selects: `N` → `BigInt` (unbounded integer), `R` → `Rational`
 /// (exact rational). A closed set — the lexer accepts only these two suffix letters.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -370,6 +393,81 @@ impl Builder {
             let opn = self.name(op_name);
             let op_node = self.list(vec![op_head, opn, sig]);
             children.push(op_node);
+        }
+        self.list(children)
+    }
+
+    /// Build a WIT function-signature node `(func (param PName Desc)… (result Desc))` and return its root
+    /// — the member-level shape a [`world_schema_tree`] interface member carries. A WIT func is named
+    /// params PLUS a result, but a type descriptor (the kernel's `build_type`) encodes ONE type, so the
+    /// func WRAPPER groups them. `params` is `(param_name, type_descriptor_node)` in declaration order
+    /// (order is significant — WIT params are positional-and-named); `result` is the (ALWAYS-present)
+    /// result type descriptor — a no-return member passes a `unit` descriptor, never an omitted slot, so
+    /// the shape is uniform (no optional-slot presence marker that could drift the byte-exact identity).
+    /// Each `Desc` is a node the caller emitted via the SAME type-descriptor emitter (`build_type`) it
+    /// uses everywhere — one structural-encode path, never a parallel encoder. The `func`/`param`/`result`
+    /// heads are NAME atoms (the head-kind-fixed discipline `effect_schema_tree` documents, so identical
+    /// worlds encode byte-identically); the caller's descriptor nodes keep whatever heads their emitter
+    /// chose. A param name participates in the identity (WIT treats it as part of the contract).
+    pub fn wit_func_sig(&mut self, params: &[(&str, StructId)], result: StructId) -> StructId {
+        let mut children = Vec::with_capacity(1 + params.len() + 1);
+        let func_head = self.name("func");
+        children.push(func_head);
+        for &(param_name, desc) in params {
+            let param_head = self.name("param");
+            let pn = self.name(param_name);
+            let param_node = self.list(vec![param_head, pn, desc]);
+            children.push(param_node);
+        }
+        let result_head = self.name("result");
+        let result_node = self.list(vec![result_head, result]);
+        children.push(result_node);
+        self.list(children)
+    }
+
+    /// Build a WIT interface node `(<dir> IfaceName (member MName FuncSig)…)` where `dir` is `import` or
+    /// `export` — the direction is STRUCTURAL (a NAME-atom sub-head), not a member attribute, because the
+    /// compiler emits a different value-bridge per direction (an export-side bridge for an exported member,
+    /// an import marshal for an imported one). `members` is `(member_name, func_sig_node)` (each `func_sig`
+    /// from [`wit_func_sig`]) in declaration order. `import`/`export`/`member` heads are NAME atoms
+    /// (head-kind-fixed). Use [`WitDir`] so a caller cannot misspell the direction head.
+    pub fn wit_interface(
+        &mut self,
+        dir: WitDir,
+        iface_name: &str,
+        members: &[(&str, StructId)],
+    ) -> StructId {
+        let mut children = Vec::with_capacity(2 + members.len());
+        let dir_head = self.name(dir.head());
+        children.push(dir_head);
+        let iname = self.name(iface_name);
+        children.push(iname);
+        for &(member_name, func_sig) in members {
+            let member_head = self.name("member");
+            let mn = self.name(member_name);
+            let member_node = self.list(vec![member_head, mn, func_sig]);
+            children.push(member_node);
+        }
+        self.list(children)
+    }
+
+    /// Build the CANONICAL WIT-world tree `(world Name <interface>…)` and return its root — the single
+    /// constructor for the target-world shape whose `Hash::of(codec::encode(root))` is the world identity,
+    /// mirroring [`effect_schema_tree`]. This is the ONE structured-world representation THREE sources
+    /// converge on (an external preparsed-binary-AST artifact, an inline `world …` module declaration, and
+    /// v-compiler-ml's emit) so a target world means the same tree regardless of source. `interfaces` are
+    /// the import/export interface nodes from [`wit_interface`], in caller order. The `world` head is a
+    /// NAME atom (head-kind-fixed, matching [`Arenas::schema_declared_name`]'s `as_name` read), so two
+    /// structurally-identical worlds encode byte-identically. v0 shape: interfaces + typed func members
+    /// only (WIT resources and named type-aliases are deferred).
+    pub fn world_schema_tree(&mut self, name: &str, interfaces: &[StructId]) -> StructId {
+        let mut children = Vec::with_capacity(2 + interfaces.len());
+        let world_head = self.name("world");
+        children.push(world_head);
+        let wname = self.name(name);
+        children.push(wname);
+        for &iface in interfaces {
+            children.push(iface);
         }
         self.list(children)
     }
@@ -1281,5 +1379,123 @@ mod tests {
         let one_op = b2.finish(r2);
         let tail2 = one_op.as_form(one_op.root, "effect").expect("effect form");
         assert_eq!(tail2.len(), 2, "name + 1 op, no authz slot");
+    }
+
+    // Build the reducer world `(world Reducer (export fold (member apply (func (param event (list (u8)))
+    // (result (list (u8)))))) (import kv (member get (func (param key (string)) (result (string))))))`
+    // through the canonical builders — the concrete v-ah reducer example. Returns the built arena.
+    fn reducer_world(b: &mut Builder) -> StructId {
+        // Signature descriptor stand-ins (in practice the kernel's `build_type` emits these). A `(list
+        // (u8))` and a `(string)` — arbitrary descriptor nodes; the builder does not interpret them.
+        let bytes_desc = |b: &mut Builder| {
+            let (l, u8h) = (b.name("list"), b.name("u8"));
+            let u8n = b.list(vec![u8h]);
+            b.list(vec![l, u8n])
+        };
+        let str_desc = |b: &mut Builder| {
+            let s = b.name("string");
+            b.list(vec![s])
+        };
+        // export fold { apply: (event: bytes) -> bytes }
+        let (ev, res) = (bytes_desc(b), bytes_desc(b));
+        let apply_sig = b.wit_func_sig(&[("event", ev)], res);
+        let fold = b.wit_interface(WitDir::Export, "fold", &[("apply", apply_sig)]);
+        // import kv { get: (key: string) -> string }
+        let (k, r) = (str_desc(b), str_desc(b));
+        let get_sig = b.wit_func_sig(&[("key", k)], r);
+        let kv = b.wit_interface(WitDir::Import, "kv", &[("get", get_sig)]);
+        b.world_schema_tree("Reducer", &[fold, kv])
+    }
+
+    #[test]
+    fn world_schema_tree_builds_the_canonical_shape_with_import_export_directions() {
+        // The locked WIT-world node shape (converged w/ v-agent-harness, 2026-08-11): `(world Name
+        // <interface>…)` where each interface is `(import|export IfaceName (member MName (func (param
+        // PName Desc)… (result Desc)))…)`. All structure heads (world/import/export/member/func/param/
+        // result) are NAME atoms (head-kind-fixed like `effect_schema_tree`, so identical worlds encode
+        // byte-identically). Direction is STRUCTURAL (import vs export sub-head), not a member attribute.
+        let mut b = Builder::new();
+        let root = reducer_world(&mut b);
+        let built = b.finish(root);
+
+        // `(world Reducer <export-iface> <import-iface>)` — head is a NAME, name reads back, 2 interfaces.
+        let world = built.as_form(built.root, "world").expect("world form");
+        assert_eq!(world.len(), 3, "name + 2 interfaces");
+        assert_eq!(built.as_name(world[0]), Some("Reducer"));
+
+        // Interface 0: `(export fold (member apply <func>))`.
+        let fold = built.as_form(world[1], "export").expect("export interface");
+        assert_eq!(built.as_name(fold[0]), Some("fold"));
+        let apply = built.as_form(fold[1], "member").expect("member form");
+        assert_eq!(built.as_name(apply[0]), Some("apply"));
+        // The member's signature is a `(func (param event …) (result …))` — param present, result present.
+        let func = built.as_form(apply[1], "func").expect("func form");
+        assert_eq!(
+            func.len(),
+            2,
+            "one param sub-node + the (always-present) result"
+        );
+        let param = built.as_form(func[0], "param").expect("param form");
+        assert_eq!(built.as_name(param[0]), Some("event"));
+        assert!(
+            built.as_form(func[1], "result").is_some(),
+            "result sub-node present"
+        );
+
+        // Interface 1: `(import kv (member get …))` — direction is the sub-head, structurally distinct.
+        let kv = built.as_form(world[2], "import").expect("import interface");
+        assert_eq!(built.as_name(kv[0]), Some("kv"));
+        assert!(built.as_form(kv[1], "member").is_some(), "kv has a member");
+    }
+
+    #[test]
+    fn world_schema_tree_identity_is_byte_stable_across_independent_builds() {
+        // Two independent builds of the SAME world encode BYTE-identically — the world identity is
+        // `Hash::of(codec::encode(root))` (mirroring the effect-schema identity), and the head-kind-fixed
+        // NAME atoms mean no Name/Str drift can split an otherwise-identical world's content address. This
+        // is the property the THREE world sources (external artifact, inline decl, v-cml emit) rely on to
+        // agree a target world is the same tree regardless of who produced it.
+        let mut b1 = Builder::new();
+        let r1 = reducer_world(&mut b1);
+        let w1 = b1.finish(r1);
+        let mut b2 = Builder::new();
+        let r2 = reducer_world(&mut b2);
+        let w2 = b2.finish(r2);
+        assert_eq!(
+            crate::codec::encode(&w1),
+            crate::codec::encode(&w2),
+            "two builds of the same world must encode byte-identically (stable identity)"
+        );
+    }
+
+    #[test]
+    fn world_schema_tree_nullary_member_has_an_explicit_present_result() {
+        // A no-parameter, no-meaningful-return member is `(func (result <unit>))` — ZERO param sub-nodes
+        // but the result sub-node is ALWAYS present (a `unit` descriptor, never an omitted slot), so the
+        // func shape is uniform (no optional-slot presence marker that could drift the byte-exact
+        // identity). Pin that a nullary func is exactly `(func (result …))`.
+        let mut b = Builder::new();
+        let unit = {
+            let u = b.name("unit");
+            b.list(vec![u])
+        };
+        let sig = b.wit_func_sig(&[], unit);
+        let iface = b.wit_interface(WitDir::Export, "clock", &[("now", sig)]);
+        let root = b.world_schema_tree("W", &[iface]);
+        let built = b.finish(root);
+        let iface_form = built
+            .as_form(built.as_form(built.root, "world").unwrap()[1], "export")
+            .unwrap();
+        let member = built.as_form(iface_form[1], "member").unwrap();
+        let func = built.as_form(member[1], "func").expect("func form");
+        assert_eq!(
+            func.len(),
+            1,
+            "zero params, just the (always-present) result sub-node"
+        );
+        assert!(
+            built.as_form(func[0], "result").is_some(),
+            "the sole sub-node is the result"
+        );
     }
 }
