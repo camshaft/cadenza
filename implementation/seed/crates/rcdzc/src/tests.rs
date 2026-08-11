@@ -64250,6 +64250,35 @@ mod stage1 {
     }
 
     #[test]
+    fn a_computed_index_bytes_at_over_a_to_bytes_rope_view_emits_valid_wasm() {
+        // breaker #18, SECOND emit site (the WIDENED face reviewer flagged had no landed guard): a computed-
+        // index `Bytes.at` reading a `String.to-bytes` VIEW of an effect-grown rope lowers through
+        // `Core::BytesAt`, which had the identical fixed-scratch-floor bug as `Core::StrAt` — the rope-view
+        // handle types the shared floor i32 and the computed i64 index reused it → invalid component. This
+        // guards the `Core::BytesAt` half of the float-the-index-floor fix so a future revert of JUST that
+        // float is caught (VERIFIED load-bearing: reverting only the BytesAt float makes this shape emit an
+        // invalid `function[17]`). Same walk as the String.at guard; `Bytes.at 3` over the grown "zzzz"
+        // reads byte 3 = 'z' = 122.
+        let src = "(module m \
+            (effect S (op add (-> Int64 Int64)) (op pick (-> Int64 Int64))) \
+            (def (walk (: k Int64)) (if (< k 1) 0 (let ((_d (S.add k))) (walk (- k 1))))) \
+            (def (main) (handle S \"\" \
+              ((add (v) s (resume 0 (String.concat s \"z\"))) \
+               (pick (i) s (resume (match (Bytes.at (String.to-bytes s) i) ((Some c) c) ((None _u) -1)) s))) \
+              (let ((_w (walk 4))) (S.pick (- 4 1))))) \
+            (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
+            "the computed-index Bytes.at over a to-bytes rope view compiles to a VALID component",
+        );
+        if let Some(rendered) = run_linked(&bytes, "main") {
+            assert_eq!(
+                rendered, "122",
+                "Bytes.at(3) over the grown 'zzzz' to-bytes view reads the byte 'z' = 122"
+            );
+        }
+    }
+
+    #[test]
     fn an_agent_loop_shape_runs_model_ask_then_tool_dispatch_over_turns() {
         // The native agent HARNESS (v-agent-harness) loop SPINE, pinned as a single-shot tail-resumptive
         // program that runs today with NO ABI dependency — the control structure Inc-2 builds on
