@@ -1469,6 +1469,70 @@ mod tests {
     }
 
     #[test]
+    fn distinct_worlds_encode_to_distinct_bytes() {
+        // The DISCRIMINATION half of the world-identity contract (symmetric to
+        // `distinct_effect_schemas_encode_to_distinct_bytes` for effect schemas): worlds that differ in
+        // ANY identity-bearing position must encode to DIFFERENT bytes, so the world content-hash never
+        // COLLIDES distinct worlds (an import-world with an export-world, or two worlds differing only by
+        // a param name). Without this, a future encode/builder change that dropped an identity-bearing
+        // field would pass every same->same test while silently collapsing distinct worlds to one hash.
+        // Each of world name / direction / interface name / member name / param name / result type
+        // occupies a distinct encodable position; perturb each and assert the bytes change.
+        //
+        // One tiny descriptor per position — the builder does not interpret it, so a bare `(t)` suffices.
+        let ty = |b: &mut Builder, n: &str| {
+            let h = b.name(n);
+            b.list(vec![h])
+        };
+        // Build `(world <wname> (<dir> <iface> (member <member> (func (param <param> (pty)) (result (rty))))))`.
+        let build = |wname, dir, iface, member, param, pty, rty| {
+            let mut b = Builder::new();
+            let (p, r) = (ty(&mut b, pty), ty(&mut b, rty));
+            let sig = b.wit_func_sig(&[(param, p)], r);
+            let i = b.wit_interface(dir, iface, &[(member, sig)]);
+            let root = b.world_schema_tree(wname, &[i]);
+            crate::codec::encode(&b.finish(root))
+        };
+        let base = build("W", WitDir::Export, "iface", "m", "p", "A", "B");
+        // Each variation perturbs exactly one identity-bearing position.
+        assert_ne!(
+            base,
+            build("W2", WitDir::Export, "iface", "m", "p", "A", "B"),
+            "world name"
+        );
+        assert_ne!(
+            base,
+            build("W", WitDir::Import, "iface", "m", "p", "A", "B"),
+            "direction (import vs export)"
+        );
+        assert_ne!(
+            base,
+            build("W", WitDir::Export, "iface2", "m", "p", "A", "B"),
+            "interface name"
+        );
+        assert_ne!(
+            base,
+            build("W", WitDir::Export, "iface", "m2", "p", "A", "B"),
+            "member name"
+        );
+        assert_ne!(
+            base,
+            build("W", WitDir::Export, "iface", "m", "p2", "A", "B"),
+            "param name"
+        );
+        assert_ne!(
+            base,
+            build("W", WitDir::Export, "iface", "m", "p", "A2", "B"),
+            "param type"
+        );
+        assert_ne!(
+            base,
+            build("W", WitDir::Export, "iface", "m", "p", "A", "B2"),
+            "result type"
+        );
+    }
+
+    #[test]
     fn world_schema_tree_nullary_member_has_an_explicit_present_result() {
         // A no-parameter, no-meaningful-return member is `(func (result <unit>))` — ZERO param sub-nodes
         // but the result sub-node is ALWAYS present (a `unit` descriptor, never an omitted slot), so the
