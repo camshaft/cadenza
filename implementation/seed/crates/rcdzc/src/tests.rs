@@ -64181,6 +64181,36 @@ mod stage1 {
     }
 
     #[test]
+    fn a_computed_index_string_at_over_an_effect_grown_rope_emits_valid_wasm() {
+        // breaker #18: a `String.at` (or `Bytes.at` over a `String.to-bytes` view) whose INDEX operand is a
+        // COMPUTED expression, reading a rope-bearing handler state grown through a RECURSIVE (multi-value-
+        // upgraded) performer, USED to emit an invalid wasm component. Root cause: the `Core::StrAt` /
+        // `Core::BytesAt` emit evaluated its string/bytes operand AND its index operand at the SAME fixed
+        // scratch floor; when the operand is a rope handle off the multi-value-upgraded state thread it typed
+        // that slot i32, and the computed i64 index reused it → "expected i64, found i32", invalid component.
+        // Fixed by floating the index floor to `floor.max(*high)` in both emits (mirroring `String.slice`).
+        // Here `walk` grows the rope through recursive `S.add` performs, then a computed-index `S.pick (n-1)`
+        // reads it: at n=4 the state grows "zzzz" and pick(3) reads the last 'z' (byte-len 1).
+        let src = "(module m \
+            (effect S (op add (-> Int64 Int64)) (op pick (-> Int64 Int64))) \
+            (def (walk (: k Int64)) (if (< k 1) 0 (let ((_d (S.add k))) (walk (- k 1))))) \
+            (def (main) (handle S \"\" \
+              ((add (v) s (resume 0 (String.concat s \"z\"))) \
+               (pick (i) s (resume (match (String.at s i) ((Some c) (String.byte-len c)) ((None _u) -1)) s))) \
+              (let ((_w (walk 4))) (S.pick (- 4 1))))) \
+            (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
+            "the computed-index String.at over an effect-grown rope compiles to a VALID component",
+        );
+        if let Some(rendered) = run_linked(&bytes, "main") {
+            assert_eq!(
+                rendered, "1",
+                "pick(3) over the grown 'zzzz' reads the last scalar 'z', byte-len 1"
+            );
+        }
+    }
+
+    #[test]
     fn an_agent_loop_shape_runs_model_ask_then_tool_dispatch_over_turns() {
         // The native agent HARNESS (v-agent-harness) loop SPINE, pinned as a single-shot tail-resumptive
         // program that runs today with NO ABI dependency — the control structure Inc-2 builds on

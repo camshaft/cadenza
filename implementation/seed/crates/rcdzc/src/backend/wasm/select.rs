@@ -8795,7 +8795,15 @@ fn emit(
                 emit(db, bytes, slots, floor, high, scratch_ty, layout, out)?; // [bytes]
                 out.push(Lir::LocalSet(bytes_slot));
             }
-            emit(db, index, slots, floor, high, scratch_ty, layout, out)?; // [index:i64]
+            // Float the index operand's scratch floor ABOVE the running high-water (breaker #18, WIDENED
+            // face): when the bytes operand is a `String.to-bytes` rope VIEW over a multi-value-upgraded
+            // effect-state thread, its emit spends transient scratch at `floor` and types those slots i32
+            // (the rope handle); a computed INDEX (i64 arith) reset to the SAME `floor` then reuses an
+            // i32-typed slot → "expected i64, found i32", invalid component — identical seam to the
+            // `Core::StrAt` fix. Advancing to `floor.max(*high)` hands the index fresh slots. Harmless when
+            // the bytes operand was reused (no bytes emit, `*high` unchanged) or spent no scratch.
+            let index_floor = floor.max(*high);
+            emit(db, index, slots, index_floor, high, scratch_ty, layout, out)?; // [index:i64]
             out.push(Lir::LocalSet(index_slot));
             // in_bounds = (index >= 0) & (index < len), all in i64. LOWER-BOUND ELISION (see `ListAt`): a
             // provably NON-NEGATIVE index (a masked/length/unsigned/refined value) makes `index >= 0` a
@@ -8868,7 +8876,17 @@ fn emit(
             }
             emit(db, string, slots, base + 6, high, scratch_ty, layout, out)?; // [str]
             out.push(Lir::LocalSet(str_slot));
-            emit(db, index, slots, base + 6, high, scratch_ty, layout, out)?; // [index:i64]
+            // Float the index operand's scratch floor ABOVE the running high-water (not a fixed `base + 6`),
+            // exactly as `String.slice` does for its start/end operands. A wasm local's type is fixed
+            // function-wide, so if the STRING emit spent transient scratch at `base + 6` (e.g. its handle
+            // traces to a multi-value-upgraded effect-state thread, whose owned-reclaim tees an i32 handle
+            // into a scratch slot) and the computed INDEX (`(- n 1)`, i64 arith) then reset to the SAME
+            // `base + 6`, the later i64 store reuses a slot already typed i32 → "expected i32, found i64",
+            // module invalid (the `function[18]` invalid-wasm, breaker #18; sibling of the `String.slice`
+            // width-disjoint-slot fix). A literal / bare-param index spends no scratch so never collided,
+            // which is why only a COMPUTED index over an effect-grown string tripped it.
+            let index_base = (base + 6).max(*high);
+            emit(db, index, slots, index_base, high, scratch_ty, layout, out)?; // [index:i64]
             out.push(Lir::LocalSet(index_slot));
             // byte-count (i64), read repeatedly below.
             out.push(Lir::LocalGet(str_slot));
