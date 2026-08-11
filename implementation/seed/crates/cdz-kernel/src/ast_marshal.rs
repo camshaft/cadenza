@@ -264,18 +264,40 @@ pub fn effect_schema_hash(
 ) -> Result<crate::hash::Hash, MarshalError> {
     let mut b = Builder::new();
     // Build each op's signature descriptor node into the shared arena (the SINGLE structural encoder).
-    let mut op_nodes: Vec<(&str, StructId)> = ops
+    let op_nodes: Vec<(&str, StructId)> = ops
         .iter()
         .map(|(op_name, sig)| Ok((*op_name, build_type(&mut b, sig)?)))
         .collect::<Result<_, MarshalError>>()?;
-    // Sort by op-name so the identity is the SET of ops, order-independent.
-    op_nodes.sort_by(|a, c| a.0.cmp(c.0));
     let authz_node = match authz {
         Some(a) => Some(build_type(&mut b, a)?),
         None => None,
     };
-    let tree = b.effect_schema_tree(name, &op_nodes, authz_node);
-    Ok(crate::hash::Hash::of(&codec::encode(&b.finish(tree))))
+    Ok(effect_schema_hash_from_nodes(
+        b, name, &op_nodes, authz_node,
+    ))
+}
+
+/// The `&Type`-free core of [`effect_schema_hash`]: given op-signature descriptor nodes ALREADY built into
+/// `b` (as `StructId`s in `b`'s arena), assemble the schema tree + content-hash it. The op-order-independence
+/// (sort by op-name) and the encode→[`Hash::of`] happen HERE, so this is the single hashing path both callers
+/// share. Use this when the op signatures come from a source OTHER than wasmtime component reflection — a
+/// wasmtime [`Type`] is NOT directly constructible (it only comes from reflecting a real component), so a
+/// KERNEL-authored effect schema (e.g. the built-in effects, which have no reflected component) must build its
+/// op-sig descriptor nodes directly with the [`Builder`] (`build_type`'s primitive/compound forms — `bytes`,
+/// `unit`, records, etc.) and pass them here. [`effect_schema_hash`] is the thin wrapper that reflects a
+/// `&Type` per op into `b` then delegates. `authz` is [`None`] for the current schema model (operator
+/// directive: grants live OUTSIDE the schema, dynamic — the schema carries the effect's DATA SHAPE only).
+pub fn effect_schema_hash_from_nodes(
+    mut b: Builder,
+    name: &str,
+    ops: &[(&str, StructId)],
+    authz: Option<StructId>,
+) -> crate::hash::Hash {
+    // Sort by op-name so the identity is the SET of ops, order-independent.
+    let mut op_nodes: Vec<(&str, StructId)> = ops.to_vec();
+    op_nodes.sort_by(|a, c| a.0.cmp(c.0));
+    let tree = b.effect_schema_tree(name, &op_nodes, authz);
+    crate::hash::Hash::of(&codec::encode(&b.finish(tree)))
 }
 
 /// Build the type-descriptor for `ty` INTO an existing arena `b`, returning the root node id — the
@@ -1704,6 +1726,58 @@ mod tests {
         let ab_again = effect_schema_hash("kv", &[("get", &str_ty), ("put", &u32_ty)], None)
             .expect("kv schema again");
         assert_eq!(ab, ab_again, "effect-schema hashing is deterministic");
+    }
+
+    #[test]
+    fn effect_schema_hash_from_nodes_equals_the_type_path_and_hashes_directly_built_ops() {
+        // effect_schema_hash_from_nodes is the &Type-free core: given op-sig descriptor nodes already built
+        // into a Builder, it assembles the schema tree + hashes it — the SAME hashing path effect_schema_hash
+        // uses after it reflects each &Type into a node. Two properties:
+        //
+        // (1) EQUIVALENCE — for the same schema, the from_nodes path yields the IDENTICAL hash to the &Type
+        //     path. Build the op-sig nodes with build_type (exactly what effect_schema_hash does internally),
+        //     pass them to from_nodes, and confirm it matches.
+        let u32_ty = param_type(&probe_component("u32"));
+        let str_ty = param_type(&probe_component("string"));
+        let via_type = effect_schema_hash("kv", &[("get", &str_ty), ("put", &u32_ty)], None)
+            .expect("kv schema via &Type");
+        let via_nodes = {
+            let mut b = Builder::new();
+            let get_sig = build_type(&mut b, &str_ty).unwrap();
+            let put_sig = build_type(&mut b, &u32_ty).unwrap();
+            effect_schema_hash_from_nodes(b, "kv", &[("get", get_sig), ("put", put_sig)], None)
+        };
+        assert_eq!(
+            via_type, via_nodes,
+            "from_nodes must match the &Type path for the same schema (shared hashing core)"
+        );
+
+        // (2) DIRECTLY-BUILT ops — the KERNEL built-in path: a schema whose op sigs are built WITHOUT a
+        //     wasmtime Type (which is not constructible). Build a `(bytes)` prim node directly and hash a
+        //     single-perform-op schema `(effect http (op perform (-> bytes bytes)))` shape. This is how the
+        //     built-in effects author their schemas (they have no reflected component). Order-independence +
+        //     name-sensitivity still hold on this path.
+        let built_in = |name: &str| {
+            let mut b = Builder::new();
+            // A `(-> bytes bytes)` op signature built directly: result form is ("result" bytes bytes)-ish
+            // isn't needed here — the op sig is any descriptor node; use a lone `(bytes)` marker as the
+            // stand-in data-shape (the real built-in derivation composes -> in out, but a prim node exercises
+            // the from_nodes path identically).
+            let bytes_head = b.name("bytes");
+            let bytes_sig = b.list(vec![bytes_head]);
+            effect_schema_hash_from_nodes(b, name, &[("perform", bytes_sig)], None)
+        };
+        let http = built_in("http");
+        let http_again = built_in("http");
+        let shell = built_in("shell");
+        assert_eq!(
+            http, http_again,
+            "directly-built built-in schema is deterministic"
+        );
+        assert_ne!(
+            http, shell,
+            "built-ins with the same op-shape but different NAME hash differently (name in the (effect <name>) head)"
+        );
     }
 
     #[test]
