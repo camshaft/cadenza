@@ -8252,3 +8252,27 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 160349103 Int64))
   (call   main (: 0 Int64)) (output (: 142711381 Int64)))
+
+(case "a TUPLE-keyed Map STATE grown across dispatches — compound-key inserts and lookups thread, the flipped key misses"
+  (doc    "The STATE face of tuple-keyed Maps: the landed tuple-key pin crosses a tuple-keyed Map as an op
+           RESULT in one dispatch; here the Map IS the threaded handler state, grown by `mark` (insert
+           `(tuple x y) -> (+ x y)`) and read by `check` (lookup `(tuple x y)`) across dispatches. Structural
+           tuple-key equality must thread through the state so a later lookup hits an earlier insert, and a
+           FLIPPED key `(tuple 2 1)` vs the inserted `(tuple 1 2)` correctly MISSES (distinct compound keys).
+           `mark` resumes `(Map.len s)` (pre-insert size). `main(3)`: mark(1,2) inserts (1,2)->3; mark(3,4)
+           inserts (3,4)->7; check(1,2)=3, check(3,4)=7, check(2,1)=MISS=-1; body
+           `(+ (* 10000 3) (+ (* 100 7) -1))` = 30000 + 700 - 1 = 30699. Uniform on all 3 backends, opt-sweep
+           0-divergence. Breaker tuple-key-state probe tk1 (2026-08-11).")
+  (input  (do
+            (effect S (op mark (-> Int64 Int64 Int64)) (op check (-> Int64 Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S Map.empty
+                ((mark (x y) s (resume (Map.len s) (Map.insert s (tuple x y) (+ x y))))
+                 (check (x y) s (resume (match (Map.lookup s (tuple x y)) ((Some v) v) ((None _u) -1)) s)))
+                (let ((_a (S.mark 1 2)))
+                  (let ((_b (S.mark n 4)))
+                    (+ (* 10000 (S.check 1 2))
+                       (+ (* 100 (S.check n 4)) (S.check 2 1)))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 30699 Int64))
+  (call   main (: 1 Int64)) (output (: 30499 Int64)))

@@ -1101,6 +1101,7 @@ pass	a TUPLE containing a closure as a map key is rejected (CDZ0216 descends int
 pass	a TUPLE handler state — the arm destructures, branches, and rebuilds both slots
 pass	a TUPLE mixing Float64 and Int64 crosses as op ARGUMENT — the arm scales by the int
 pass	a TUPLE op argument with a HEAP leaf destructures inside the arm
+pass	a TUPLE-keyed Map STATE grown across dispatches — compound-key inserts and lookups thread, the flipped key misses
 pass	a TUPLE-keyed Map op result — the body looks up by a reconstructed compound key
 pass	a TUPLE-literal scrutinee with performing fields — draws fire once, bind by position
 pass	a TUPLE-result perform's projected field feeds a SECOND perform's argument, threading state across both
