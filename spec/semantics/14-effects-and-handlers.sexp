@@ -23230,3 +23230,53 @@
                 (let ((g (grow n))) (+ g (Acc.size)))))
             (export main)))
   (call   main (: 10000 Int64)) (output (: 10000 Int64)))
+
+; ── Bytes state under recursion + slice windows (breaker batch 225) ───────────
+; A Bytes handler state accumulated by RECURSIVE dispatches (one byte per hop,
+; rope growth in the state thread), and an arm answering a slice WINDOW over the
+; growing state — the by1/by2 straight-line pins' recursive and windowed twins.
+
+(case "br1 a BYTES handler state grows one byte per recursive dispatch — the final frame's length and bytes pin the accumulation"
+  (input  (do
+            (effect Acc
+              (op push (-> Int64 Int64))
+              (op dump (-> Bytes)))
+            (def (walk (: k Int64))
+              (if (= k 0)
+                  0
+                  (match (Acc.push k) (_ (walk (- k 1))))))
+            (def (at-or (: b Bytes) (: i Int64))
+              (match (Bytes.at b i) ((Some v) v) ((None u) -1)))
+            (def (main (: n Int64))
+              (handle Acc (Bytes.of (list))
+                ((push (v) s (resume (Bytes.len s) (Bytes.concat s (Bytes.of (list (UInt8.wrap (+ 60 v)))))))
+                 (dump () s (resume s s)))
+                (match (walk n)
+                  (_ (let ((b (Acc.dump)))
+                       (+ (* 1000 (Bytes.len b))
+                          (+ (* 10 (at-or b 0))
+                             (at-or b (- (Bytes.len b) 1)))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 3691 Int64)))
+
+(case "br2 the arm returns a SLICE of the growing Bytes state — a window over rope-accumulated bytes crosses dispatch"
+  (input  (do
+            (effect Acc
+              (op push (-> Int64 Bytes)))
+            (def (at-or (: b Bytes) (: i Int64))
+              (match (Bytes.at b i) ((Some v) v) ((None u) -1)))
+            (def (main (: n Int64))
+              (handle Acc (Bytes.of (list (UInt8.wrap 5) (UInt8.wrap 6)))
+                ((push (v) s
+                  (let ((grown (Bytes.concat s (Bytes.of (list (UInt8.wrap v))))))
+                    (match (Bytes.slice grown 1 (- (Bytes.len grown) 1))
+                      ((Some w) (resume w grown))
+                      ((None u) (resume grown grown))))))
+                (let ((w1 (Acc.push 40)))
+                  (let ((w2 (Acc.push 50)))
+                    (+ (* 100000 (Bytes.len w1))
+                       (+ (* 10000 (at-or w1 0))
+                          (+ (* 100 (Bytes.len w2))
+                             (+ (* 10 (at-or w2 0)) (at-or w2 (- (Bytes.len w2) 1))))))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 260410 Int64)))

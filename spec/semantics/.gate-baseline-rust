@@ -4728,6 +4728,8 @@ pass	bp1 a BYTES payload inside an arm-built Result — even states Ok-wrap a on
 pass	bp2 a Bytes TRANSFORMER op — the body frames a byte, the arm decodes it, adds five, re-encodes; the body decodes the transform
 pass	bp3 the arm REVERSES a three-byte frame — per-index rebuild through Bytes.at, positional weights pin the swap
 pass	bp4 two one-byte op results CONCATENATED in the body — the joined frame's length and both bytes decode
+pass	br1 a BYTES handler state grows one byte per recursive dispatch — the final frame's length and bytes pin the accumulation
+pass	br2 the arm returns a SLICE of the growing Bytes state — a window over rope-accumulated bytes crosses dispatch
 pass	branches performing DIFFERENT counts each thread their own post-state to the continuation
 pass	breaker capsubst: a non-capturing substitution takes the plain path
 pass	breaker capsubst: the fresh binder clears the body's ids, not only s's
