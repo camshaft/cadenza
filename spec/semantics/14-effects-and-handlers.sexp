@@ -23644,3 +23644,50 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 101 Int64))
   (call   main (: 0 Int64)) (output (: 101 Int64)))
+
+; ── List-of-lists state + set algebra across dispatch (breaker batch 229) ─────
+; ll1 pins a (List (List Int64)) handler state — rows appended per dispatch,
+; two-level element reads via nested Option matches in the arm; sga1 pins
+; Set.union/intersection/difference computed in the arm against the threaded
+; state (an argument-built set per dispatch; a grow between two probes flips
+; the same probe's answer).
+
+(case "ll1 a LIST-OF-LISTS handler state — each dispatch appends a fresh row, the drain reads a middle row's middle element"
+  (input  (do
+            (effect Rows (op add (-> Int64 Int64)) (op pick (-> Int64 Int64 Int64)))
+            (def (row-at (: xss (List (List Int64))) (: i Int64) (: j Int64))
+              (match (List.at xss i)
+                ((Some xs) (match (List.at xs j) ((Some v) v) ((None _u) -1)))
+                ((None _u) -2)))
+            (def (main (: n Int64))
+              (handle Rows (list)
+                ((add (v) s (resume (List.len s) (List.push s (list v (* v 10) (* v 100)))))
+                 (pick (i j) s (resume (row-at s i j) s)))
+                (let ((a (Rows.add n)))
+                  (let ((b (Rows.add (+ n 1))))
+                    (let ((c (Rows.add (+ n 2))))
+                      (+ (* 10000 (Rows.pick 1 1))
+                         (+ (* 100 (Rows.pick 2 0)) (Rows.pick 0 2))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 400800 Int64))
+  (call   main (: 0 Int64)) (output (: 100200 Int64)))
+
+(case "sga1 the arm answers with SET ALGEBRA over its state and an argument-built set — union, intersection, and difference sizes cross dispatch"
+  (input  (do
+            (effect S (op probe (-> Int64 Int64)) (op grow (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S (Set.of (list n (+ n 2)))
+                ((probe (v) s
+                  (let ((arg (Set.of (list v (+ v 1)))))
+                    (resume (+ (* 100 (Set.len (Set.union s arg)))
+                               (+ (* 10 (Set.len (Set.intersection s arg)))
+                                  (Set.len (Set.difference s arg))))
+                            s)))
+                 (grow (v) s (resume (Set.len s) (Set.insert s v))))
+                (let ((a (S.probe n)))
+                  (let ((b (S.grow (+ n 1))))
+                    (let ((c (S.probe n)))
+                      (+ (* 10000 a) (+ (* 100 b) c)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 3110521 Int64))
+  (call   main (: 0 Int64)) (output (: 3110521 Int64)))
