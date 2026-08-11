@@ -2254,6 +2254,70 @@ mod tests {
         );
     }
 
+    #[test]
+    fn distinct_effect_schemas_encode_to_distinct_bytes() {
+        // The OTHER half of the schema-identity contract (the negative direction of
+        // `equal_schemas_…share…bytes`): the content address must DISCRIMINATE — schemas that differ in a
+        // meaningful way (effect name, op set, or op signature) must encode to DIFFERENT canonical bytes,
+        // so `Hash::of(encode(effect_schema_tree(..)))` gives distinct effects distinct identities and
+        // never collides them. Without this, a future encode change that dropped op names/signatures from
+        // the bytes would still pass every "same → same" test while silently collapsing unrelated effects
+        // to one hash — a dangerous identity regression. Build via the canonical `effect_schema_tree` (the
+        // one identity constructor) and assert each variation perturbs the bytes.
+        let sig = |b: &mut Builder, from: &str, to: &str| {
+            let (arrow, f, t) = (b.name("->"), b.name(from), b.name(to));
+            b.list(vec![arrow, f, t])
+        };
+        let base = {
+            let mut b = Builder::new();
+            let s = sig(&mut b, "Unit", "A");
+            let root = b.effect_schema_tree("E", &[("get", s)]);
+            encode(&b.finish(root))
+        };
+        // (1) Different EFFECT NAME.
+        let diff_name = {
+            let mut b = Builder::new();
+            let s = sig(&mut b, "Unit", "A");
+            let root = b.effect_schema_tree("F", &[("get", s)]);
+            encode(&b.finish(root))
+        };
+        // (2) Different OP NAME (same signature).
+        let diff_op = {
+            let mut b = Builder::new();
+            let s = sig(&mut b, "Unit", "A");
+            let root = b.effect_schema_tree("E", &[("put", s)]);
+            encode(&b.finish(root))
+        };
+        // (3) Different op SIGNATURE (same op name).
+        let diff_sig = {
+            let mut b = Builder::new();
+            let s = sig(&mut b, "A", "Unit");
+            let root = b.effect_schema_tree("E", &[("get", s)]);
+            encode(&b.finish(root))
+        };
+        // (4) An ADDED op (larger op set).
+        let extra_op = {
+            let mut b = Builder::new();
+            let s1 = sig(&mut b, "Unit", "A");
+            let s2 = sig(&mut b, "A", "Unit");
+            let root = b.effect_schema_tree("E", &[("get", s1), ("put", s2)]);
+            encode(&b.finish(root))
+        };
+        assert_ne!(
+            base, diff_name,
+            "distinct effect name must perturb the schema bytes"
+        );
+        assert_ne!(
+            base, diff_op,
+            "distinct op name must perturb the schema bytes"
+        );
+        assert_ne!(
+            base, diff_sig,
+            "distinct op signature must perturb the schema bytes"
+        );
+        assert_ne!(base, extra_op, "an added op must perturb the schema bytes");
+    }
+
     // ---- I2: encode_with_dict (honor-supplied-dict transport encoder) ----
 
     /// The round-trip IDENTITY that is I2's whole correctness story (design §7): encoding against a dict
