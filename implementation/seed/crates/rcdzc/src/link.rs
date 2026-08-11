@@ -63,14 +63,6 @@ pub const KIND_COMPONENT_NAME: &str = "component-name";
 /// (`list<u8>` via `value-encode`/`value-decode`) rather than as opaque runtime `u32` HANDLES (X5).
 /// Its bytes are newline-separated export member names (e.g. `apply`). The TOOLCHAIN derives this from
 /// the target WIT world the program declares it exports (the driver parses the WIT — the compiler needs
-/// no WIT parser): a member whose declared signature is `list<u8>`-shaped is a bytes boundary to an
-/// external/durable host (the reducer fold), so the compiler `value-encode`/`value-decode`-wraps the
-/// guest's structured body to that member's declared `list<u8>` ABI, instead of the shared-runtime peer
-/// handle crossing. Absent (the common case) → provider exports cross as handles (byte-identical to
-/// before). This is the compiler-platform-separation "program declares its WIT, compiler emits to it"
-/// signal — narrow first slice (one interface's member), grows to a full target-WIT-world artifact.
-pub const KIND_EXPORT_BYTES_MEMBERS: &str = "export-bytes-members";
-
 /// The input-artifact kind carrying the PREPARSED TARGET WIT WORLD in binary-AST form (§3b full-A
 /// end-state, operator 2026-08-11). Its bytes are a `cadenza-ast` binary document — the world tree
 /// (world → import/export interfaces → members → func signatures with `build_type` type descriptors)
@@ -78,8 +70,10 @@ pub const KIND_EXPORT_BYTES_MEMBERS: &str = "export-bytes-members";
 /// SAME locked world node). rcdzc NEVER parses WIT text; it consumes this artifact and reads each member's
 /// declared canonical-ABI type to drive emit-to-match (`value-encode`/`value-decode`-bridging wherever the
 /// guest value-model type differs from the declared type — `DESIGN-compiler-platform-separation.md` §3b).
-/// Absent → no world-targeted emit. This SUPERSEDES the narrow `KIND_EXPORT_BYTES_MEMBERS` signal as the
-/// emit grows from the one-bytes-member slice to the full target-WIT-world.
+/// Absent → no world-targeted emit; a provider export crosses as a shared-runtime handle (byte-identical to
+/// before). This is the SOLE bytes-boundary signal — the compiler decides which members cross as `list<u8>`
+/// purely from this declared world (no separate member-name list), so the fold's `apply` is just the first
+/// member the world declares that way, not a hard-coded contract.
 pub const KIND_WIT_WORLD: &str = "wit-world";
 
 /// The input-artifact kind that OVERRIDES effect→peer bindings at COMPILE time (U3, the effects-unification

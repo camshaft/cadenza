@@ -1058,23 +1058,17 @@ pub fn emit(
             .iter()
             .all(|e| e.result != envelope::BoundaryResult::Bytes)
     {
-        // §3c COMPILER-PLATFORM SEPARATION — ANY provider export member the target WIT declares as a
+        // §3c COMPILER-PLATFORM SEPARATION — a provider export member the TARGET WIT WORLD declares as a
         // `list<u8>`-in / `list<u8>`-out boundary (the fold's `apply` is the first such member, not the
         // contract) crosses as CANONICAL VALUE-FORM bytes, NOT as a `u32` value-heap handle: its single
         // compound param is value-DECODEd from the incoming document and its compound result value-ENCODEd
-        // back out. The compiler stays generic over any WIT — the driver names which members cross as bytes
-        // in `db.export_bytes_members`
-        // (KIND_EXPORT_BYTES_MEMBERS, derived from the target WIT). This list is EMPTY for every program
-        // that carries no such artifact, so the branch never fires in the current corpus (byte-identical).
-        if !db.export_bytes_members.is_empty() {
-            let bytes_def = layout
-                .exports
-                .iter()
-                .find(|e| db.export_bytes_members.iter().any(|m| m == &e.name))
-                .map(|e| e.def);
-            if let Some(def) = bytes_def {
-                return emit_bytes_provider_member(db, layout, def, &iface, spans);
-            }
+        // back out. The compiler stays generic over any WIT — the DECISION is derived purely from the
+        // declared world signature via [`bridge_decision`] (the §3b value-bridging rule), never a hard-coded
+        // member/contract shape. Absent (no `db.wit_world`) → no such member fires (byte-identical).
+        if let Some(world_bytes) = db.wit_world.clone()
+            && let Some(def) = world_bytes_crossing_export(layout, &world_bytes)
+        {
+            return emit_bytes_provider_member(db, layout, def, &iface, spans);
         }
         if imports.is_empty() {
             return Ok(envelope::assemble_provider(&core, &boundary, &iface));
@@ -7803,6 +7797,40 @@ fn emit_recursive_sum_resource(
     ))
 }
 
+/// §3c — decide which provider export member (if any) the TARGET WIT WORLD declares as a bytes boundary,
+/// so [`crate::backend::wasm`] routes it to [`emit_bytes_provider_member`]. Decodes the world (`db.wit_world`,
+/// raw cadenza-ast bytes), then for each EXPORT member matched to a layout export BY NAME (v-ah: name match),
+/// applies [`crate::wit_world::bridge_decision`] to the single declared param + result against the guest's
+/// value-model types: BOTH must be `ValueForm` (the world declares `list<u8>` over a value-encodable guest
+/// compound). Returns the def of the first such member. Purely declared-signature-driven — no member name
+/// or contract shape is hard-coded, so the compiler stays generic over any WIT (the fold's `apply` is merely
+/// the first member that satisfies this, not a special case).
+fn world_bytes_crossing_export(layout: &Layout, world_bytes: &[u8]) -> Option<usize> {
+    use crate::wit_world::{BridgeAction, bridge_decision, parse_target_world};
+    let arenas = crate::codec::decode(world_bytes)?;
+    let world = parse_target_world(&arenas, arenas.root)?;
+    for iface in &world.exports {
+        for member in &iface.members {
+            let Some(e) = layout.exports.iter().find(|e| e.name == member.name) else {
+                continue;
+            };
+            // The current bytes-boundary slice is a single-compound-param member (widened later); require the
+            // declared param + result to both value-form-bridge against the guest's types.
+            if member.func.params.len() != 1 || e.params.len() != 1 {
+                continue;
+            }
+            let param_vf = bridge_decision(&member.func.params[0].1, &e.params[0].1)
+                == BridgeAction::ValueForm;
+            let result_vf =
+                bridge_decision(&member.func.result, &e.result) == BridgeAction::ValueForm;
+            if param_vf && result_vf {
+                return Some(e.def);
+            }
+        }
+    }
+    None
+}
+
 /// §3c — emit ANY WIT bytes-provider export member: a member the target WIT declares `list<u8> -> list<u8>`
 /// crosses as CANONICAL VALUE-FORM bytes rather than exchanging a `u32` value-heap handle. NOTHING here is
 /// specific to a reducer/fold — the fold's `apply` is merely the FIRST caller; the emit is driven purely off
@@ -7811,12 +7839,12 @@ fn emit_recursive_sum_resource(
 /// out as `list<u8>`. The PARAM side is the inverse — the single compound `list<u8>` param is lifted to a
 /// runtime Bytes handle and value-DECODEd to the compound rep before the member body runs.
 ///
-/// This is the compiler↔platform-separation boundary: the compiler knows no specific contract — the driver
-/// names which members cross as bytes (`db.export_bytes_members`, from KIND_EXPORT_BYTES_MEMBERS, parsed from
-/// the target WIT), and both descriptors come from [`crate::lower::sum_shape_descriptor`] over the declared
-/// types, the same source the runtime value-encode escapes use — so the wire form is byte-identical to a
-/// constant/collection value form. The "exactly one compound parameter" shape below is a current-slice
-/// constraint of the declared signature (widened later), NOT a fold assumption.
+/// This is the compiler↔platform-separation boundary: the compiler knows no specific contract — which members
+/// cross as bytes is decided by [`world_bytes_crossing_export`] from the declared target WIT world (`db.wit_world`)
+/// via [`crate::wit_world::bridge_decision`], and both descriptors come from [`crate::lower::sum_shape_descriptor`]
+/// over the declared types, the same source the runtime value-encode escapes use — so the wire form is
+/// byte-identical to a constant/collection value form. The "exactly one compound parameter" shape below is a
+/// current-slice constraint of the declared signature (widened later), NOT a fold assumption.
 fn emit_bytes_provider_member(
     db: &mut Db,
     layout: &Layout,

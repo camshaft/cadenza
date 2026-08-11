@@ -153,25 +153,11 @@ fn compile_with_opt_inner(
         .iter()
         .find(|a| a.kind == link::KIND_COMPONENT_NAME)
         .map(|a| String::from_utf8_lossy(&a.bytes).into_owned());
-    // Which provider export members cross as canonical BYTES (`list<u8>`) rather than runtime handles —
-    // the §3c compiler-platform-separation signal (the toolchain derives it from the declared target WIT
-    // world; the compiler consumes the contract). Newline-separated member names; empty/absent → handles.
-    db.export_bytes_members = inputs
-        .iter()
-        .find(|a| a.kind == link::KIND_EXPORT_BYTES_MEMBERS)
-        .map(|a| {
-            String::from_utf8_lossy(&a.bytes)
-                .lines()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
-    // The PREPARSED TARGET WIT WORLD (binary-AST), if the program targets one — the §3b full-A ingest.
-    // Raw `cadenza-ast` bytes; the world-structure reader decodes + walks it for emit-to-match. rcdzc never
-    // parses WIT text (a producer / v-syntax inline-decl lowering emits this artifact). Absent → no
-    // world-targeted emit. SUPERSEDES `export_bytes_members` as the emit grows to the full world.
+    // The PREPARSED TARGET WIT WORLD (binary-AST), if the program targets one — the §3b full-A ingest and
+    // the SOLE bytes-boundary signal. Raw `cadenza-ast` bytes; the world-structure reader decodes + walks it
+    // for emit-to-match (a member the world declares `list<u8>`-in/out over a value-encodable guest compound
+    // crosses as canonical bytes, not a runtime handle). rcdzc never parses WIT text (a producer / v-syntax
+    // inline-decl lowering emits this artifact). Absent → no world-targeted emit (handles, byte-identical).
     db.wit_world = inputs
         .iter()
         .find(|a| a.kind == link::KIND_WIT_WORLD)

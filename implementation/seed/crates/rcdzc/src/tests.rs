@@ -3035,17 +3035,57 @@ fn a_reducer_event_shaped_record_with_bytes_escapes_via_value_encode() {
     }
 }
 
+/// The PREPARSED TARGET WIT WORLD (KIND_WIT_WORLD bytes) declaring a single export interface `fold` with
+/// member `apply : func(input: list<u8>) -> list<u8>` — the world the §3c bytes-provider tests target so the
+/// world-driven gate (`world_bytes_crossing_export` → `bridge_decision`) routes `apply` to the bytes emit.
+/// Hand-built via the cadenza-ast `Builder` (the same node `world_schema_tree`/`wit_interface`/`wit_func_sig`
+/// and v-syntax's inline decl produce; descriptors are `build_type`-form: `("list" (u8))` for `list<u8>`),
+/// then `codec::encode`d — exactly the shape `wit_world::parse_target_world` reads. PURE (no `kv` imports):
+/// a kv-importing world's reducer would decline until the host-fused slice.
+fn reducer_apply_world_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let byte_list = |b: &mut Builder| {
+        let h = b.atom_leaf(Leaf::Str("list".into()));
+        let uh = b.name("u8");
+        let u = b.list(vec![uh]);
+        b.list(vec![h, u])
+    };
+    let param_ty = byte_list(&mut b);
+    let result_ty = byte_list(&mut b);
+    // (member "apply" (func (param "input" <list<u8>>) (result <list<u8>>)))
+    let func_h = b.name("func");
+    let param_h = b.name("param");
+    let pn = b.name("input");
+    let param_node = b.list(vec![param_h, pn, param_ty]);
+    let result_h = b.name("result");
+    let result_node = b.list(vec![result_h, result_ty]);
+    let func = b.list(vec![func_h, param_node, result_node]);
+    let member_h = b.name("member");
+    let mn = b.name("apply");
+    let apply = b.list(vec![member_h, mn, func]);
+    // (export "fold" <apply>)
+    let exp_h = b.name("export");
+    let iname = b.name("fold");
+    let fold = b.list(vec![exp_h, iname, apply]);
+    // (world "reducer" <fold>)
+    let world_h = b.name("world");
+    let wn = b.name("reducer");
+    let world = b.list(vec![world_h, wn, fold]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
 /// §3c full-A BEHAVIORAL: the FIRST full-A slice end-to-end — a CLOSURE-free, HOST/PEER-import-free pure
-/// reducer (`apply(Event) -> List<EffectRequest>`) whose `apply` member the target WIT declares as a
-/// `list<u8>`-in / `list<u8>`-out boundary (named in `db.export_bytes_members`) EMITS through
-/// `emit_bytes_provider_member` — the compound param value-DECODEd from the incoming document, the compound
-/// result value-ENCODEd back — and the assembled provider component VALIDATES. This is the behavioral +
-/// wasmparser guard the emit wiring (§3c full-A WIRE) named as its next step: it proves the whole path
-/// (KIND_EXPORT_BYTES_MEMBERS → the bytes-member dispatch → bytes_roundtrip_core_module →
-/// assemble_bytes_roundtrip_provider) actually produces a well-formed component, not just that the pieces
-/// compile. `e` is a record `{ct: String, pl: Bytes}` (the reducer Event shape) and the result is a
-/// `List<Record{op, arg}>` (the effect-list), both compounds with value-form shape descriptors — so
-/// `sum_shape_descriptor` derives event_desc + result_desc off the DECLARED types, generic over the WIT.
+/// reducer (`apply(Event) -> List<EffectRequest>`) whose `apply` member the target WIT WORLD declares as a
+/// `list<u8>`-in / `list<u8>`-out boundary EMITS through `emit_bytes_provider_member` — the compound param
+/// value-DECODEd from the incoming document, the compound result value-ENCODEd back — and the assembled
+/// provider component VALIDATES. This is the behavioral + wasmparser guard: it proves the whole path
+/// (KIND_WIT_WORLD → world_bytes_crossing_export/bridge_decision → the bytes-member dispatch →
+/// bytes_roundtrip_core_module → assemble_bytes_roundtrip_provider) produces a well-formed component. `e` is
+/// a record `{ct: String, pl: Bytes}` (the reducer Event shape) and the result is a `List<Record{op, arg}>`
+/// (the effect-list), both compounds with value-form shape descriptors — so `sum_shape_descriptor` derives
+/// the param + result descriptors off the DECLARED types, generic over the WIT.
 #[test]
 fn a_pure_reducer_apply_emits_a_valid_bytes_roundtrip_provider_component() {
     use crate::testkit::parse;
@@ -3067,9 +3107,9 @@ fn a_pure_reducer_apply_emits_a_valid_bytes_roundtrip_provider_component() {
             crate::cli::component_name_artifact("cadenza:reducer/api"),
             // … and the target WIT names `apply` as a `list<u8>`-in/out (bytes) boundary member.
             crate::abi::Artifact::new(
-                crate::link::KIND_EXPORT_BYTES_MEMBERS,
-                "export-bytes-members",
-                b"apply".to_vec(),
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                reducer_apply_world_bytes(),
             ),
         ],
         &[crate::backend::Target::Wasm],
@@ -3132,9 +3172,9 @@ fn a_bytes_member_with_a_scalar_param_declines_cleanly_no_miscompile() {
             ),
             crate::cli::component_name_artifact("cadenza:reducer/api"),
             crate::abi::Artifact::new(
-                crate::link::KIND_EXPORT_BYTES_MEMBERS,
-                "export-bytes-members",
-                b"apply".to_vec(),
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                reducer_apply_world_bytes(),
             ),
         ],
         &[crate::backend::Target::Wasm],
@@ -3183,9 +3223,9 @@ fn a_reducer_with_a_variant_effect_list_result_emits_a_valid_provider() {
             ),
             crate::cli::component_name_artifact("cadenza:reducer/api"),
             crate::abi::Artifact::new(
-                crate::link::KIND_EXPORT_BYTES_MEMBERS,
-                "export-bytes-members",
-                b"apply".to_vec(),
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                reducer_apply_world_bytes(),
             ),
         ],
         &[crate::backend::Target::Wasm],
@@ -3262,9 +3302,9 @@ fn a_pure_reducer_apply_round_trips_an_event_document_end_to_end() {
             ),
             crate::cli::component_name_artifact("cadenza:reducer/api"),
             crate::abi::Artifact::new(
-                crate::link::KIND_EXPORT_BYTES_MEMBERS,
-                "export-bytes-members",
-                b"apply".to_vec(),
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                reducer_apply_world_bytes(),
             ),
         ],
         &[crate::backend::Target::Wasm],

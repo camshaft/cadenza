@@ -852,18 +852,13 @@ pub struct Db {
     /// component funcs (byte-identical to before). Set AFTER `Db::load`/`load_linked` by the caller
     /// (`compile`), which reads the request artifact.
     pub component_name: Option<String>,
-    /// PROVIDER export members that cross as CANONICAL BYTES (`list<u8>` via `value-encode`/`value-decode`)
-    /// rather than opaque runtime `u32` HANDLES — the compiler-platform-separation §3c signal. Empty (the
-    /// common case) → provider exports cross as handles. Populated by `compile` from the
-    /// `KIND_EXPORT_BYTES_MEMBERS` request artifact (the toolchain derives it from the declared target WIT
-    /// world). A member listed here has its structured body `value-encode`/`value-decode`-wrapped so its
-    /// external ABI matches the declared `list<u8>` boundary (the reducer fold `apply`).
-    pub export_bytes_members: Vec<String>,
     /// The PREPARSED TARGET WIT WORLD as a raw `cadenza-ast` binary document (§3b full-A end-state), or
     /// `None` when the program targets no world. Populated by `compile` from the `KIND_WIT_WORLD` input
     /// artifact (an external WIT→binary-AST step OR v-syntax's inline-declaration lowering — rcdzc never
     /// parses WIT). The world-structure reader (`wit_world`) decodes + walks this to drive per-member
-    /// emit-to-match; SUPERSEDES `export_bytes_members` as the emit grows to the full world.
+    /// emit-to-match: a member the world declares as a `list<u8>` boundary over a value-encodable guest
+    /// compound has its structured body `value-encode`/`value-decode`-wrapped to that ABI (the reducer
+    /// fold `apply` is the first such member). This is the SOLE bytes-boundary signal.
     pub wit_world: Option<Vec<u8>>,
     /// EFFECT → PEER-CONTRACT bindings (U2, the effects-unification of cross-component interop): a
     /// top-level `(bind Math "cadenza:math/api")` DEFAULTS the whole component scope to route the escaping
@@ -2677,7 +2672,6 @@ impl Db {
             type_decls,
             effect_decls,
             component_name: None,
-            export_bytes_members: Vec::new(),
             wit_world: None,
             effect_bindings,
             modules,
