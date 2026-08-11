@@ -132,6 +132,26 @@ export const EXAMPLES: Example[] = [
     expected: "50",
   },
   {
+    // Shows off: a match arm reaching THROUGH a variant into the record it carries. `(Some (record
+    // (x px) (y py)))` binds the point's fields directly from inside the Option — the variant×record
+    // corner that completes {tuple,list,variant}×record nested patterns. dist(Some(3,4)) => 9+16 = 25,
+    // None => 0. In ML the arm reads `Some({ x = px, y = py })`.
+    id: "variant-nested-record-patterns",
+    name: "Variant-nested record patterns (match through a variant)",
+    theme: "basics",
+    surface: "sexpr",
+    source: `(do
+  ; A match arm reaches through a variant into its record payload: (Some (record ...)) binds
+  ; the point's fields directly; the None arm handles the empty case.
+  (def (dist opt)
+    (match opt
+      ((Some (record (x px) (y py))) (+ (* px px) (* py py)))
+      ((None) 0)))
+  (def (main) (dist (Some (record (x 3) (y 4)))))
+  (export main))`,
+    expected: "25",
+  },
+  {
     id: "tuple",
     name: "A tuple",
     theme: "basics",
