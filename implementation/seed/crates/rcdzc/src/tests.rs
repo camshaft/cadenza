@@ -54778,6 +54778,20 @@ mod diagnostics {
            (export main))";
         let lb = compile_component(&crate::codec::encode(&parse(listed))).expect("compile listed");
         assert_eq!(super::run_returns::<i64>(&lb, "main"), 42);
+
+        // PARTIAL + BY-NAME: a nested record pattern naming only the SECOND field `y` (sorted slot 1, not
+        // slot 0) binds `b` to `y` — proving the nested read is by-NAME→sorted-slot (like the top-level
+        // record match), not by written position. `(record (= y b))` over `(Record (x Int64) (y Int64))`
+        // must read field `y` = 20 (its slot-1 arr cell), not field `x` = 10. Guards that the RecordField
+        // sorted-slot (`rec_fields.keys().position`) picks the right cell for a PARTIAL, single-field pattern.
+        let partial = "(module m \
+           (def (f (: t (Tuple (Record (x Int64) (y Int64)) Int64))) \
+             (match t ((tuple (record (= y b)) c) (+ b c)))) \
+           (def (main) (f (tuple (record (x 10) (y 20)) 5))) \
+           (export main))";
+        let pb =
+            compile_component(&crate::codec::encode(&parse(partial))).expect("compile partial");
+        assert_eq!(super::run_returns::<i64>(&pb, "main"), 25);
     }
 
     #[test]
