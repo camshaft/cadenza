@@ -7272,6 +7272,30 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 112 Int64)))
 
+(case "an unread op-argument that performs a foreign effect still threads that perform's state advance"
+  (doc    "The op-ARGUMENT-position face of the do-discarded foreign-perform family above. `A.fire`'s arm
+           IGNORES its parameter `v` (`(fire (v) s (resume 7 s))`), so a naive fold SUBSTITUTES the argument
+           into the arm body and — since the body never reads `v` — DROPS it. But the argument is `(B.tick)`,
+           a perform of the OUTER `B` effect: dropping it erases B's STATE ADVANCE (t -> t+1), so a LATER
+           `(B.tick)` reads STALE state — a silent wrong value. B.tick is a DECLARED operation of B, so its
+           advance is observable (capabilities-and-effects.md #A Handler Threads State), unlike a discarded
+           PURE argument whose trap is unobserved and rightly elided (09-functions unused-parameter case).
+           The fix let-lifts the unread foreign-performing argument so its perform runs EXACTLY ONCE for
+           effect (the same `#cv` lift the twice-read foreign-arg case already uses). `(+ (A.fire (B.tick))
+           (B.tick))` at n=3: first B.tick = 3 (t->4), A.fire ignores it and yields 7, second B.tick reads 4,
+           so 7 + 4 = 11 (was 10 — the first advance lost). At n=0: 7 + 1 = 8 (was 7). The control where
+           A.fire's arm READS `v` already threaded both ticks; this closes the UNREAD gap.")
+  (input  (do
+            (effect A (op fire (-> Int64 Int64)))
+            (effect B (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle B n ((tick () t (resume t (+ t 1))))
+                (handle A 0 ((fire (v) s (resume 7 s)))
+                  (+ (A.fire (B.tick)) (B.tick)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 11 Int64))
+  (call   main (: 0 Int64)) (output (: 8 Int64)))
+
 ; The do-discarded family above concerns non-final FOREIGN PERFORMS (which the handle-body fold must
 ; preserve). Its complement: a discarded non-final PURE item in a host do-body is ELIDED per the
 ; §283 dead-init ruling (core-semantics.md §A Trap Occurs Only Where Its Computation Is Observed) —

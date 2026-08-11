@@ -69742,6 +69742,36 @@ mod stage1 {
     }
 
     #[test]
+    fn an_unread_op_arg_performing_a_foreign_effect_threads_its_state_advance() {
+        // OP-ARG LET-LIFT, the UNREAD (count == 0) face (v-effects strict-fold #17 face 4). An op whose
+        // ARGUMENT carries a FOREIGN perform, bound to an arm parameter the arm NEVER reads, previously
+        // DROPPED the argument on β-substitution — erasing the foreign perform's STATE ADVANCE, so a later
+        // perform of that outer effect read STALE state (a silent wrong value). The lift now also fires for a
+        // dropped foreign-performing arg (not only a twice-read one), so the perform runs EXACTLY ONCE for its
+        // effect and its advance threads to the outer handler. `A.fire`'s arm `(fire (v) s (resume 7 s))`
+        // ignores `v`; the arg `(B.tick)` performs the OUTER `B`. `(+ (A.fire (B.tick)) (B.tick))` at seed 3:
+        // first B.tick = 3 (t->4), A.fire yields 7, second B.tick reads 4 → 7 + 4 = 11 (was 10, the first
+        // advance lost). Distinct from a dropped PURE arg (elided, its trap unobserved — 09-functions
+        // unused-parameter case) and from an arg performing the handler's OWN op (still declines — needs
+        // threading, not a plain let).
+        let src = "(do (effect A (op fire (-> Int64 Int64))) \
+                   (effect B (op tick (-> Int64))) \
+                   (def (main) (handle B 3 ((tick () t (resume t (+ t 1)))) \
+                     (handle A 0 ((fire (v) s (resume 7 s))) \
+                       (+ (A.fire (B.tick)) (B.tick))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src))).expect(
+                    "an unread foreign-performing op arg folds (op-arg let-lift, count==0)"
+                ),
+                "main"
+            ),
+            11,
+            "the dropped foreign perform (B.tick) must still run ONCE and thread its advance: 7 + 4 = 11, not 10"
+        );
+    }
+
+    #[test]
     fn a_recursive_effectful_def_with_a_post_recursion_sibling_perform_folds_via_multivalue_return()
     {
         // OUT-STATE-OBSERVING SIBLING PERFORM, now FOLDED (repro-1 multi-value return). A recursive-effectful

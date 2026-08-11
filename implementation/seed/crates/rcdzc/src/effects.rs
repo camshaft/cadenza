@@ -5418,22 +5418,33 @@ fn thread_bounded(
                 let mut to_lift: Vec<usize> = Vec::new();
                 for (i, &p) in arm.params.iter().enumerate() {
                     let a = rewritten_args[i];
-                    if is_unit_param(db, p)
-                        || !arg_reaches_any_perform(db, a, ctx)
-                        || count_param_refs(db, arm.body, p) <= 1
-                    {
+                    let refs = count_param_refs(db, arm.body, p);
+                    if is_unit_param(db, p) || !arg_reaches_any_perform(db, a, ctx) || refs == 1 {
+                        // A unit param, a PURE arg (nothing to preserve — a dropped pure arg stays elided,
+                        // core-semantics.md #A Trap Occurs Only Where Its Computation Is Observed / the
+                        // unused-parameter elision in 09-functions), or a SINGLE-use performing arg (naive
+                        // substitution places it once → the perform runs exactly once, no lift needed).
                         continue;
                     }
-                    // A multi-use param with a performing arg. If the arg performs a FOREIGN op (none of it
-                    // is THIS handler's discharged op that would need threading), LET-LIFT it; else decline.
-                    // "Performs only foreign" = reaches a perform AND reaches no discharged op. We already
-                    // established the first half via the `continue` guard above (`arg_reaches_any_perform`
-                    // TRUE), so test only the discharged-op half here — a single traversal per candidate
-                    // rather than re-walking the subtree for the reaches-any-perform conjunct (github-liaison/
-                    // Copilot #2120 review).
+                    // A performing arg used a number of times OTHER than once — `refs == 0` (the arm IGNORES
+                    // its param, so substitution DROPS the arg) or `refs >= 2` (the arm reads it more than
+                    // once, so substitution DUPLICATES it). Naive substitution would LOSE the perform (dropped)
+                    // or RE-RUN it (duplicated). If the arg performs a FOREIGN op (none of it is THIS handler's
+                    // discharged op that would need threading), LET-LIFT it so the perform runs EXACTLY ONCE
+                    // for its effect: a DROPPED foreign perform still threads its state advance to the outer
+                    // handler (an unread op-arg's foreign perform must not vanish — its declared operation is
+                    // observable, capabilities-and-effects.md #A Handler Threads State; the same class as the
+                    // do-discarded-foreign-perform preservation below), and a DUPLICATED one is bound once and
+                    // read via the pure `#cv` ref (xh1/xh2). A perform of THIS handler's discharged op that
+                    // would be DUPLICATED (`refs >= 2`) needs threading, not a plain let — decline (safe floor).
+                    // (A DROPPED (`refs == 0`) discharged-op arg is left untouched here — out of scope; the
+                    // enclosing fold's own threading covers the single-handler case, and a cross-level drop of
+                    // a discharged-op arg is a separate, harder arc.)
+                    // We already established `arg_reaches_any_perform` TRUE via the guard above, so test only
+                    // the discharged-op half here — one traversal per candidate (github-liaison/Copilot #2120).
                     if !subtree_reaches_discharged_op(db, a, ctx) {
                         to_lift.push(i);
-                    } else {
+                    } else if refs >= 2 {
                         return None;
                     }
                 }
