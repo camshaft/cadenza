@@ -402,7 +402,10 @@ async fn main() -> Result<()> {
             if let (None, Some((sender, failed_target, echoed))) = (delivered, bounce_ctx) {
                 // Target absent from the registry → bounce a delivery-failure back to the sender. Record the
                 // observed failure (from = sender, to = failed-target alias) and route the bounce Inbound.
-                let from = alias_of.get(&sender).cloned().unwrap_or_else(|| "?".to_string());
+                let from = alias_of
+                    .get(&sender)
+                    .cloned()
+                    .unwrap_or_else(|| "?".to_string());
                 let to = alias_of
                     .get(&failed_target)
                     .cloned()
