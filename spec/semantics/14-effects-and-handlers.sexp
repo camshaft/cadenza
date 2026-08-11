@@ -2537,6 +2537,26 @@
             (export main)))
   (output (: 21 Int64)))
 
+(case "a do-def value in a handle body flows into an ABORTIVE perform's argument and stays in scope"
+  (doc    "The ABORTIVE companion of the resume-arg pin above (breaker matrix row 1, previously held as a
+           separate bug). Inside the handle body, `(def v (+ u 2))` is referenced from the ARGUMENT of an
+           ABORTIVE `(Bail.bail v)` — the arm `(bail (v) s (* 100 v))` never resumes, so performing it collapses
+           the handle to the arm value. The do-def must stay in scope for the abort perform's arg exactly as for
+           a resuming one; before the fix this false-rejected CDZ0101 'unbound v' (the resuming row was pinned
+           separately, this abortive row was still held). `run 5`: v = 7, `(Bail.bail 7)` aborts, arm yields
+           7·100 = 700. Same do-def-to-`let` normalization in reduce_handle covers the abort-arm path.")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (run (: u Int64))
+              (handle Bail 0
+                ((bail (v) s (* 100 v)))
+                (do
+                  (def v (+ u 2))
+                  (Bail.bail v))))
+            (def (main) (run 5))
+            (export main)))
+  (output (: 700 Int64)))
+
 (case "a chain of perform-fed let inits — each binding feeds the next perform's argument"
   (doc    "The sequential-dependency face of let × effects: three lets where each init's perform takes
            the PREVIOUS binding as its argument — a = add(5) = 5 (s 1), b = add(a) = 6 (s 2),
