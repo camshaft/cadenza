@@ -617,6 +617,7 @@ pass	a CLOSURE state whose body performs an OUTER effect when the arm applies it
 pass	a COMPOUND generated value is reproducible from its seed (a tuple draws identically twice)
 pass	a COMPOUND map key with a Rational leaf hashes+matches by the leaf's normalized form
 pass	a CONCRETELY-exported error sum flows back through two call layers and dispatches at the entry
+pass	a CONDITIONALLY-recursive helper reaching a performer in one branch folds where no outer recursion needs the boundary guard
 pass	a CONSECUTIVE dedup collapses runs but keeps recurrences separated by other values
 pass	a CONST in-range rational truncate still folds to its integer part, not over-rejected as overflow
 pass	a CONST narrow wrap folds with sign-extension at the target width, matching the runtime wrap

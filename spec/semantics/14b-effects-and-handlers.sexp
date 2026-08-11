@@ -8101,3 +8101,29 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 12 Int64))
   (call   main (: 0 Int64)) (output (: 0 Int64)))
+
+(case "a CONDITIONALLY-recursive helper reaching a performer in one branch folds where no outer recursion needs the boundary guard"
+  (doc    "The precision companion of finding #19: `inner` is a self-recursive performer (`S.tick`/hop);
+           `maybe` CONDITIONALLY reaches it — `(if (= go 1) (inner 2 0) 55)`, one branch recurses into the
+           performer, the other is a constant. Called from body position (NOT under an outer recursion), both
+           branches exercised across two calls `(+ (maybe 1) (* 1000 (maybe 0)))`. The finding-#19
+           recursion-boundary guard flags a helper by its POTENTIAL transitive reach (a sound
+           over-approximation — s19h under an OUTER recursion declines conservatively even when the taken
+           branch is pure); this pins that WITHOUT an outer-recursion boundary the conditional helper folds
+           precisely. `main(1)`: maybe(1)=inner(2,0): tick@s=1->1 (s->2), tick@s=2->2 (s->3), inner=0+1+2=3;
+           maybe(0)=55; 3 + 1000*55 = 55003. `main(0)`: seed 0 → inner=0+0+1=1; 1 + 55000 = 55001. Uniform on
+           all 3 backends, stable across O0..O3 (opt-sweep 0-divergence). Breaker conditional-reach probe ci1
+           (2026-08-11).")
+  (input  (do
+            (effect S (op tick (-> Int64)))
+            (def (inner (: k Int64) (: acc Int64))
+              (if (< k 1) acc (inner (- k 1) (+ acc (S.tick)))))
+            (def (maybe (: go Int64))
+              (if (= go 1) (inner 2 0) 55))
+            (def (main (: n Int64))
+              (handle S n
+                ((tick () s (resume s (+ s 1))))
+                (+ (maybe 1) (* 1000 (maybe 0)))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 55003 Int64))
+  (call   main (: 0 Int64)) (output (: 55001 Int64)))
