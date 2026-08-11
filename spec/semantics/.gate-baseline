@@ -4145,6 +4145,7 @@ pass	an Ok and an Err decode compose through one shared handler
 pass	an Ok carrying a bare None type-checks under a whole-expression annotation
 pass	an Option built by an if with the nullary branch first type-checks
 pass	an Option built by an if with the payload branch first type-checks (the control)
+pass	an Option built by one dispatch is STORED into the tuple state and drained by a later dispatch — Some and None both persist
 pass	an Option carrying a Result is matched across two different sum types
 pass	an Option pipeline chains the SAME fallible step twice and reports WHICH step failed
 pass	an Option pipeline short-circuits on the first None

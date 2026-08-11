@@ -8301,3 +8301,30 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 3835 Int64))
   (call   main (: 0 Int64)) (output (: 805 Int64)))
+
+(case "an Option built by one dispatch is STORED into the tuple state and drained by a later dispatch — Some and None both persist"
+  (doc    "Option-valued handler STATE, not just Option-valued resume: the threaded state is a
+           `(tuple counter (Option Int64))`. `stash` bin-matches the state, computes a state-dependent
+           `Some`/`None`, and installs it into the tuple's Option slot (resuming a dummy); a LATER `read`
+           dispatch pulls that Option back out of the state and unwraps it. The Option must survive the state
+           thread intact across the intervening dispatches — Some and None both persist. `find` is the direct
+           Option-resume companion (verdict from the state comparison). `main(5)`: state (5, None); stash(2):
+           2<5 -> store Some(102); read -> unwrap Some(102) = 102; find(9): 9<5 false -> None -> unwrap-or -3;
+           body `(+ (* 100 102) -3)` = 10197. `main(1)`: state (1, None); stash(2): 2<1 false -> store None;
+           read -> unwrap-or None -7; find(9): 9<1 false -> None -> -3; `(+ (* 100 -7) -3)` = -703. Uniform on
+           all 3 backends, opt-sweep 0-divergence. Breaker option-result-branch probe op2 (2026-08-11).")
+  (input  (do
+            (effect S (op find (-> Int64 (Option Int64))) (op stash (-> Int64 Int64)) (op read (-> Int64)))
+            (def (unwrap-or (: o (Option Int64)) (: d Int64))
+              (match o ((Some v) v) ((None _u) d)))
+            (def (main (: n Int64))
+              (handle S (tuple n (: (None unit) (Option Int64)))
+                ((find (k) st (match st ((tuple s o) (resume (if (< k s) (Some (+ k 100)) (: (None unit) (Option Int64))) st))))
+                 (stash (k) st (match st ((tuple s _o)
+                    (resume 0 (tuple s (if (< k s) (Some (+ k 100)) (: (None unit) (Option Int64))))))))
+                 (read () st (match st ((tuple _s o) (resume (unwrap-or o -7) st)))))
+                (let ((_a (S.stash 2)))
+                  (+ (* 100 (S.read)) (unwrap-or (S.find 9) -3)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 10197 Int64))
+  (call   main (: 1 Int64)) (output (: -703 Int64)))
