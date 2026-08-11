@@ -1017,7 +1017,11 @@ pub fn reducer_world_artifact() -> Vec<u8> {
         let res = bytes_desc(&mut b);
         b.wit_func_sig(&[("event", ev)], res)
     };
-    let fold = b.wit_interface(WitDir::Export, "fold", &[("apply", apply_sig)]);
+    let fold = b.wit_interface(
+        WitDir::Export,
+        "cadenza:agent-kernel/fold",
+        &[("apply", apply_sig)],
+    );
 
     // import `kv`: `get(key: list<u8>) -> option<list<u8>>`, `put(key: list<u8>, value: list<u8>)` (unit)
     let get_sig = {
@@ -1031,7 +1035,11 @@ pub fn reducer_world_artifact() -> Vec<u8> {
         let res = unit_desc(&mut b);
         b.wit_func_sig(&[("key", key), ("value", value)], res)
     };
-    let kv = b.wit_interface(WitDir::Import, "kv", &[("get", get_sig), ("put", put_sig)]);
+    let kv = b.wit_interface(
+        WitDir::Import,
+        "cadenza:agent-kernel/kv",
+        &[("get", get_sig), ("put", put_sig)],
+    );
 
     let world = b.world_schema_tree("reducer", &[fold, kv]);
     codec::encode(&b.finish(world))
@@ -1058,7 +1066,11 @@ pub fn pure_fold_world_artifact() -> Vec<u8> {
         let res = bytes_desc(&mut b);
         b.wit_func_sig(&[("event", ev)], res)
     };
-    let fold = b.wit_interface(WitDir::Export, "fold", &[("apply", apply_sig)]);
+    let fold = b.wit_interface(
+        WitDir::Export,
+        "cadenza:agent-kernel/fold",
+        &[("apply", apply_sig)],
+    );
     let world = b.world_schema_tree("reducer", &[fold]);
     codec::encode(&b.finish(world))
 }
@@ -1784,7 +1796,17 @@ mod tests {
         let (mut names, mut strs) = (Vec::new(), Vec::new());
         collect(&a, a.root, &mut names, &mut strs);
         for expect in [
-            "world", "reducer", "fold", "apply", "kv", "get", "put", "event", "key", "value", "u8",
+            "world",
+            "reducer",
+            "cadenza:agent-kernel/fold",
+            "apply",
+            "cadenza:agent-kernel/kv",
+            "get",
+            "put",
+            "event",
+            "key",
+            "value",
+            "u8",
         ] {
             assert!(
                 names.iter().any(|n| n == expect),
@@ -1826,7 +1848,13 @@ mod tests {
         }
         let mut names = Vec::new();
         collect_names(&a, a.root, &mut names);
-        for expect in ["world", "reducer", "fold", "apply", "event"] {
+        for expect in [
+            "world",
+            "reducer",
+            "cadenza:agent-kernel/fold",
+            "apply",
+            "event",
+        ] {
             assert!(
                 names.iter().any(|n| n == expect),
                 "missing NAME atom {expect}"
@@ -1834,7 +1862,7 @@ mod tests {
         }
         // pure = NO kv import (that is the whole point — no host-fused import for the intermediate).
         assert!(
-            !names.iter().any(|n| n == "kv"),
+            !names.iter().any(|n| n == "cadenza:agent-kernel/kv"),
             "pure-fold world must NOT declare a kv import"
         );
         assert_eq!(
