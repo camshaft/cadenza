@@ -8328,3 +8328,41 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 10197 Int64))
   (call   main (: 1 Int64)) (output (: -703 Int64)))
+
+(case "NEGATIVE and HUGE indices cross the dispatch — List.at in the arm answers None-fallback for both out-of-range directions"
+  (doc    "An out-of-range index crossing the dispatch into an arm-side `List.at` must answer the None
+           fallback in BOTH directions. The op `at` takes an index that flows into `(List.at s i)` where the
+           handler state `s` is a 3-element list; a negative index and a huge positive index both miss. This
+           guards the index marshal across the effect boundary: a truncating or sign-confused marshal would
+           fold an out-of-range index into a valid slot. `main(1)`: at(1)=20, at(-1)=None=-7, at(99)=None=-7;
+           `(+ (* 10000 20) (+ (* 100 -7) -7))` = 200000 - 700 - 7 = 199293. `main(-5)`: at(-5)=-7, at(-1)=-7,
+           at(99)=-7 = -70707. Uniform on all 3 backends, opt-sweep 0-divergence. Breaker index-edge-faces
+           probe nx1 (2026-08-11); its i64-extreme twin below pins the MAX/MIN faces.")
+  (input  (do
+            (effect S (op at (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S (list 10 20 30)
+                ((at (i) s (resume (match (List.at s i) ((Some v) v) ((None _u) -7)) s)))
+                (+ (* 10000 (S.at n))
+                   (+ (* 100 (S.at -1)) (S.at 99)))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 199293 Int64))
+  (call   main (: -5 Int64)) (output (: -70707 Int64)))
+
+(case "i64-EXTREME indices — MAX and MIN as List.at arguments both answer the None fallback; a truncating index marshal would wrap into range"
+  (doc    "The sharp face of the index-marshal guard: i64 MAX (9223372036854775807) and i64 MIN
+           (-9223372036854775808) as `List.at` indices through the dispatch. A truncating i64->i32 index
+           marshal would wrap MAX to -1 and MIN to 0 — folding both into (or adjacent to) the valid range and
+           silently returning an in-range element instead of the None fallback. Both must answer None (-7).
+           `main(0)`: at(MAX)=None=-7, at(MIN)=None=-7; `(+ (* 1000 -7) -7)` = -7007. Uniform on all 3 backends
+           AND stable across O0..O3 (opt-sweep 0-divergence) — the sweep is the real guard, since a wrap could
+           be introduced by a specific opt level. Breaker index-edge-faces probe nx2 (2026-08-11).")
+  (input  (do
+            (effect S (op at (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S (list 10 20 30)
+                ((at (i) s (resume (match (List.at s i) ((Some v) v) ((None _u) -7)) s)))
+                (+ (* 1000 (S.at 9223372036854775807))
+                   (S.at -9223372036854775808))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: -7007 Int64)))

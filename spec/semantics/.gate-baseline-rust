@@ -254,6 +254,7 @@ pass	Map.to-list over a RUNTIME-built map enumerates entries in canonical key or
 pass	Map.to-list over runtime STRING keys enumerates in content byte order (first is byte-smallest)
 pass	McCarthy 91 — a self-call nested INSIDE the argument of another self-call
 pass	N-suffixed literals compose under BigInt arithmetic
+pass	NEGATIVE and HUGE indices cross the dispatch — List.at in the arm answers None-fallback for both out-of-range directions
 pass	NEGATIVE values thread every effect slot — state, argument, and result stay signed
 pass	NESTED CONTRACT: an @ensures predicate that CALLS a @requires-guarded helper enforces the HELPER's precondition during postcondition eval
 pass	NaN equality survives the hoisted float compare by canonical byte form
@@ -5302,6 +5303,7 @@ pass	hygiene fix does not over-reach: a different-named template binder needs no
 pass	hygiene: a spliced unquote sits beside the template's own use of the renamed binder
 pass	hygiene: an unquote is uncaptured through two nested same-named template binders
 pass	hygiene: two distinct unquotes each colliding with a different template binder are both renamed
+pass	i64-EXTREME indices — MAX and MIN as List.at arguments both answer the None fallback; a truncating index marshal would wrap into range
 pass	i8s1 an Int8 handler state walked to the TOP of its range under a guard — the +40 stride stops exactly where one more step would overflow
 pass	ic2 an INLINE performing if-condition — the taken branch's draw reads the condition-advanced state
 pass	ic3 CHAINED if-else-if where each condition draws — three rows land in three different arms
