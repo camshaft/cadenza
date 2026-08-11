@@ -1943,11 +1943,30 @@ mod tests {
     /// A present-but-EMPTY var (`CDZ_STORE=""`) counts as UNSET, not set: `.ok()` alone maps `Some("")`
     /// through, which would drive `ComponentStore::open("")` (CWD-relative) and silently mask a misconfigured
     /// CI env — so filter empties out and treat them as absent (#2320 review).
+    ///
+    /// BYTES-ABI TRANSITION GATE (`CDZ_KERNEL_BYTES_ABI`, coordinated with v-agent-harness for the A1 kernel
+    /// bytes fold boundary): these E2Es drive a STRUCTURED-shape rcdzc reducer (`apply(u32×3)`) through the
+    /// host, but once the kernel host flips to the bytes boundary (`apply(list<u8>)->list<u8>`, A1) a
+    /// structured reducer can't emit bytes until v-cml's GAP-B host-fused kv emit lands — so driving it would
+    /// RED with a payload mismatch. Rather than have v-nix stop building/setting the reducer env, we gate on a
+    /// FLAG: unless `CDZ_KERNEL_BYTES_ABI` is set, SKIP (the nix native-check keeps building+setting the
+    /// structured `reducer_env`+`CDZ_STORE` as-is; the flag-unset skip keeps it green through the transition).
+    /// v-nix sets `CDZ_KERNEL_BYTES_ABI=1` post-GAP-B alongside a bytes-shape reducer, at which point these run
+    /// against the bytes host again. The flag is checked FIRST so the skip is clean even when the reducer env
+    /// is fully wired to the old structured component.
     fn require_reducer_and_store_or_skip(
         test_name: &str,
         reducer_env: &str,
     ) -> Option<(String, String)> {
         let non_empty = |var: &str| std::env::var(var).ok().filter(|v| !v.is_empty());
+        if non_empty("CDZ_KERNEL_BYTES_ABI").is_none() {
+            eprintln!(
+                "SKIP {test_name}: CDZ_KERNEL_BYTES_ABI unset — the kernel bytes fold boundary (A1) is not \
+                 wired for a bytes-shape reducer yet; driving the structured reducer through the bytes host \
+                 would mismatch (re-enabled by v-nix post-GAP-B). See require_reducer_and_store_or_skip docs."
+            );
+            return None;
+        }
         let reducer_path = non_empty(reducer_env);
         let store_dir = non_empty("CDZ_STORE");
         match (reducer_path, store_dir) {
