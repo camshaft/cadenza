@@ -8063,3 +8063,57 @@
   (call   main (: 6 Int64)) (output (: 110 Int64))
   (call   main (: 4 Int64)) (trap "divide by zero")
   (call   main (: 2 Int64)) (output (: -30 Int64)))
+
+; ── Compound transformers + verdict flips (breaker batch 233) ─────────────────
+; t2t1 pins a tuple-to-tuple transformer op (compound in AND out) chained twice;
+; nl2 pins the nested-record match binder in LIST-ELEMENT position with a rest
+; binder (canonical (= x a) pattern-field spelling); rsw1 pins the arm's Ok/Err
+; verdict FLIPPING between two identical performs as the state passes the
+; payload, including the exact flip-boundary seed.
+
+(case "t2t1 a TUPLE-to-TUPLE transformer op chained twice — the arm swaps components and salts with the state, both crossings exact"
+  (input  (do
+            (effect S (op swap2 (-> (Tuple Int64 Int64) (Tuple Int64 Int64))))
+            (def (main (: n Int64))
+              (handle S 0
+                ((swap2 (p) s
+                  (match p ((tuple a b) (resume (tuple (+ b s) a) (+ s 1))))))
+                (match (S.swap2 (tuple n 20))
+                  ((tuple x y)
+                    (match (S.swap2 (tuple x y))
+                      ((tuple u v) (+ (* 1000 u) v)))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 4020 Int64))
+  (call   main (: 0 Int64)) (output (: 1020 Int64)))
+
+(case "nl2 the nested-record binder in LIST-ELEMENT pattern position — the head record's field binds, the rest carries full records"
+  (input  (do
+            (def (main (: n Int64))
+              (let ((xs (list (record (= x n) (= y 2)) (record (= x 7) (= y 8)))))
+                (match xs
+                  ((list (record (= x a)) .. rest)
+                    (+ (* 1000 a)
+                       (+ (* 10 (List.len rest))
+                          (match (List.at rest 0)
+                            ((Some r2) (. r2 y))
+                            ((None _u) -1)))))
+                  (_other -9))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 3018 Int64))
+  (call   main (: 0 Int64)) (output (: 18 Int64)))
+
+(case "rsw1 the arm's Ok/Err verdict FLIPS between two identical performs as the state passes the payload — both variants cross and unwrap"
+  (input  (do
+            (effect S (op step (-> Int64 (Result Int64 Int64))))
+            (def (unwrap-or (: r (Result Int64 Int64)) (: d Int64))
+              (match r ((Ok v) v) ((Err e) (+ d e))))
+            (def (main (: n Int64))
+              (handle S n
+                ((step (v) s
+                  (resume (if (< v s) (Ok (* v 10)) (Err (- v s))) (+ s 1))))
+                (+ (* 1000 (unwrap-or (S.step 3) -100))
+                   (unwrap-or (S.step 3) -100))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 30030 Int64))
+  (call   main (: 2 Int64)) (output (: -99100 Int64))
+  (call   main (: 3 Int64)) (output (: -99970 Int64)))
