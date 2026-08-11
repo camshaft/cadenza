@@ -3076,6 +3076,131 @@ fn reducer_apply_world_bytes() -> Vec<u8> {
     crate::codec::encode(&a)
 }
 
+/// A KIND_WIT_WORLD declaring the scope-A kv-genesis world: export interface `fold` member `apply`
+/// (list<u8>->list<u8>) AND import interface `cadenza:agent-kernel/kv` (the FQ name v-ah's host binds)
+/// member `put` (key,value: list<u8> -> unit). Drives the host-fused (GAP B) emit: the world-driven gate
+/// routes `apply` to the bytes emit, and the emit imports the kv host interface at the world's FQ name.
+fn reducer_kv_put_world_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let byte_list = |b: &mut Builder| {
+        let hh = b.atom_leaf(Leaf::Str("list".into()));
+        let uh = b.name("u8");
+        let u = b.list(vec![uh]);
+        b.list(vec![hh, u])
+    };
+    // export fold { apply: func(input: list<u8>) -> list<u8> }
+    let a_in = byte_list(&mut b);
+    let a_out = byte_list(&mut b);
+    let apply = {
+        let func_h = b.name("func");
+        let param_h = b.name("param");
+        let pn = b.name("input");
+        let pnode = b.list(vec![param_h, pn, a_in]);
+        let result_h = b.name("result");
+        let rnode = b.list(vec![result_h, a_out]);
+        let func = b.list(vec![func_h, pnode, rnode]);
+        let member_h = b.name("member");
+        let mn = b.name("apply");
+        b.list(vec![member_h, mn, func])
+    };
+    let exp_h = b.name("export");
+    let ename = b.name("fold");
+    let fold = b.list(vec![exp_h, ename, apply]);
+    // import cadenza:agent-kernel/kv { put: func(key: list<u8>, value: list<u8>) -> unit }
+    let k_key = byte_list(&mut b);
+    let k_val = byte_list(&mut b);
+    let put = {
+        let func_h = b.name("func");
+        let p1h = b.name("param");
+        let p1n = b.name("key");
+        let p1 = b.list(vec![p1h, p1n, k_key]);
+        let p2h = b.name("param");
+        let p2n = b.name("value");
+        let p2 = b.list(vec![p2h, p2n, k_val]);
+        let result_h = b.name("result");
+        let unit_h = b.atom_leaf(Leaf::Str("unit".into()));
+        let unit_ty = b.list(vec![unit_h]);
+        let rnode = b.list(vec![result_h, unit_ty]);
+        let func = b.list(vec![func_h, p1, p2, rnode]);
+        let member_h = b.name("member");
+        let mn = b.name("put");
+        b.list(vec![member_h, mn, func])
+    };
+    let imp_h = b.name("import");
+    let kv_name = b.name("cadenza:agent-kernel/kv");
+    let kv = b.list(vec![imp_h, kv_name, put]);
+    // world reducer { export fold; import kv }
+    let world_h = b.name("world");
+    let wn = b.name("reducer");
+    let world = b.list(vec![world_h, wn, fold, kv]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+/// §3c GAP B (host-fused, put-only): a reducer whose `apply` body calls the HOST `kv.put` (an UNHANDLED
+/// effect → escapes as a host import) EMITS through the host-fused path and the assembled component
+/// wasmparser-validates AND LOADS on the pinned wasmtime. The world declares `import cadenza:agent-kernel/kv`
+/// (put: list<u8>,list<u8> -> unit), so the component imports the kv host interface at that FQ name (matching
+/// v-ah's host bind) alongside the runtime, over a shared memory. Load (Component::new, imports left
+/// unsatisfied) type-checks the whole host+runtime+mem+list-lift wiring — the guard for the hand-assembled
+/// host envelope. (The full invoke-with-kv-binding run is a later step.)
+#[test]
+fn a_host_fused_kv_put_reducer_emits_and_loads() {
+    use crate::testkit::parse;
+    // apply reads the Event, calls kv.put(pl, pl) (unit, unhandled → host import), returns an effect-list.
+    let src = "(module m \
+                 (effect kv (op put (-> Bytes Bytes Unit))) \
+                 (def (apply (: e (Record (ct String) (pl Bytes)))) \
+                   (host (kv) \
+                     (do (kv.put (. e pl) (. e pl)) \
+                         (list (record (op (. e ct)) (arg (. e pl))))))) \
+                 (export apply))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:agent-kernel/fold"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                reducer_kv_put_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "the host-fused kv.put reducer bytes-roundtrip emit must not decline: {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("the host-fused kv.put reducer emits a component");
+    let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+    v.validate_all(bytes)
+        .expect("the host-fused kv.put provider component validates");
+    // Loads on the pinned wasmtime (Component::new type-checks the host+runtime+mem+list-lift wiring; the
+    // kv host import is declared-but-unsatisfied, which is fine at load).
+    let req = cdz_run::required_runtime(bytes)
+        .expect("the host-fused kv.put provider component loads on the pinned wasmtime");
+    assert!(
+        req.is_some_and(|r| r.import_name.contains("cadenza:runtime/heap")),
+        "a host-fused reducer still marshals its Event/effect-list through the value-heap runtime"
+    );
+    // It imports the kv host interface at the world's FQ name (matching v-ah's host bind).
+    assert!(
+        String::from_utf8_lossy(bytes).contains("cadenza:agent-kernel/kv"),
+        "the host-fused reducer imports the kv host interface at the world's FQ name"
+    );
+}
+
 /// §3c full-A BEHAVIORAL: the FIRST full-A slice end-to-end — a CLOSURE-free, HOST/PEER-import-free pure
 /// reducer (`apply(Event) -> List<EffectRequest>`) whose `apply` member the target WIT WORLD declares as a
 /// `list<u8>`-in / `list<u8>`-out boundary EMITS through `emit_bytes_provider_member` — the compound param

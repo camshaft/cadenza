@@ -7503,6 +7503,151 @@ pub fn bytes_roundtrip_core_module(
     Ok(core)
 }
 
+/// §3c GAP B — the HOST-FUSED variant of [`bytes_roundtrip_core_module`]: a bytes-roundtrip member whose
+/// body also calls a HOST interface (e.g. `kv`). It differs from the pure form in ONE way — the memory is
+/// IMPORTED (`mem`.`mem`, memory 0), not owned. A host `list<u8>` arg is canon-LOWERED at the component
+/// level (reading (ptr,len) from a memory) BEFORE the program instantiates, so that memory must be a shared
+/// module the envelope provides (see [`assemble_host_runtime_mem`]); the apply body's value-decode/encode
+/// marshal + `cabi_realloc` bump then use that SAME shared memory 0. Import order (host FIRST so a
+/// `Lir::CallHostImport(i)=call i` resolves): host func imports `0..h` (module `"host"`), runtime ops
+/// `h..h+k` (module `"heap"`, resolved by name via `import_index`), then the `"mem"` memory import. The
+/// caller selects `funcs` with import base `h+k` and `host_needs_memory` set; `member_body_abs` is the
+/// member body's absolute core index. Exports the member func + `cabi_realloc` (NOT memory — it is imported).
+pub fn bytes_roundtrip_host_core_module(
+    funcs: &[SelectedFunc],
+    imports: &[&RtOp],
+    host_fns: &[crate::backend::wasm::host::HostImport],
+    member_body_abs: u32,
+    param_desc: &[u8],
+    result_desc: &[u8],
+    member_name: &str,
+) -> Result<Vec<u8>, String> {
+    let h = host_fns.len();
+    let k = imports.len();
+    let n = funcs.len();
+
+    // ── Type section ── host functypes 0..h, runtime h..h+k, defined h+k..h+k+n, apply (h+k+n), realloc.
+    let mut type_items = Vec::new();
+    for f in host_fns {
+        type_items.extend_from_slice(&host_import_functype(f));
+    }
+    for o in imports {
+        type_items.extend_from_slice(&import_functype(o));
+    }
+    for f in funcs {
+        type_items.extend_from_slice(&functype(f)?);
+    }
+    let apply_type_idx = h + k + n;
+    {
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(2, &[wasm_abi::CORE_I32, wasm_abi::CORE_I32]));
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        type_items.extend_from_slice(&t);
+    }
+    let realloc_type_idx = h + k + n + 1;
+    {
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(4, &[wasm_abi::CORE_I32; 4]));
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        type_items.extend_from_slice(&t);
+    }
+    let type_sec = section(
+        wasm_abi::CORE_SEC_TYPE,
+        &wasm_vec(h + k + n + 2, &type_items),
+    );
+
+    // ── Import section ── host func imports (module "host", 0..h), runtime ops (module "heap", h..h+k),
+    // then the SHARED memory (module "mem", name "mem", memory 0). The lowered host ops read their list<u8>
+    // args out of this shared memory (envelope: `canon_lower_item_mem`), and the apply body marshals into it.
+    let mut import_index: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    let mut import_items = Vec::new();
+    for (i, f) in host_fns.iter().enumerate() {
+        import_items.extend_from_slice(&host_import_item(&f.op, i as u32));
+    }
+    for (j, o) in imports.iter().enumerate() {
+        let ti = (h + j) as u32;
+        import_items.extend_from_slice(&import_item(o.name, ti));
+        import_index.insert(o.name, ti);
+    }
+    // The `mem`.`mem` memory import (desc 0x02, limits flag 0x00 min-only, min 1 page).
+    let mut mem_import = uleb_bytes("mem".len() as u64);
+    mem_import.extend_from_slice(b"mem");
+    mem_import.extend_from_slice(&uleb_bytes("mem".len() as u64));
+    mem_import.extend_from_slice(b"mem");
+    mem_import.push(0x02);
+    mem_import.push(0x00);
+    uleb128(1, &mut mem_import);
+    import_items.extend_from_slice(&mem_import);
+    let import_sec = section(2, &wasm_vec(h + k + 1, &import_items));
+
+    // ── Function section ── defined bodies (types h+k..h+k+n), apply (h+k+n), realloc (h+k+n+1).
+    let mut func_items = Vec::new();
+    for i in 0..n {
+        uleb128((h + k + i) as u64, &mut func_items);
+    }
+    uleb128(apply_type_idx as u64, &mut func_items);
+    uleb128(realloc_type_idx as u64, &mut func_items);
+    let func_sec = section(wasm_abi::CORE_SEC_FUNCTION, &wasm_vec(n + 2, &func_items));
+    let apply_abs = (h + k + n) as u32;
+    let realloc_abs = apply_abs + 1;
+
+    // NO memory section — memory 0 is the imported shared `mem`.
+
+    // ── Global section ── the mutable i32 bump cursor (init 16, above the fixed OUT=8 retarea).
+    let bump_global: u32 = 0;
+    let global_sec = {
+        use crate::backend::wasm::wasm_abi::op;
+        let mut item = vec![wasm_abi::CORE_I32, 0x01];
+        item.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(16, &mut item);
+        item.push(op::END);
+        section(wasm_abi::CORE_SEC_GLOBAL, &wasm_vec(1, &item))
+    };
+
+    // ── Export section ── the member func + cabi_realloc (NOT memory — it is the shared imported memory).
+    let export_sec = {
+        let export = |name: &str, kind: u8, idx: u32| {
+            let mut item = uleb_bytes(name.len() as u64);
+            item.extend_from_slice(name.as_bytes());
+            item.push(kind);
+            uleb128(idx as u64, &mut item);
+            item
+        };
+        let mut items = Vec::new();
+        items.extend_from_slice(&export(member_name, wasm_abi::EXPORT_KIND_FUNC, apply_abs));
+        items.extend_from_slice(&export(
+            "cabi_realloc",
+            wasm_abi::EXPORT_KIND_FUNC,
+            realloc_abs,
+        ));
+        section(wasm_abi::CORE_SEC_EXPORT, &wasm_vec(2, &items))
+    };
+
+    // ── Code section ── defined bodies, then the apply body + the realloc body.
+    let mut code_items = Vec::new();
+    for f in funcs {
+        code_items.extend_from_slice(&code_entry(f, &import_index));
+    }
+    code_items.extend_from_slice(&emit_bytes_roundtrip_apply_body(
+        param_desc,
+        result_desc,
+        member_body_abs,
+        &import_index,
+    ));
+    code_items.extend_from_slice(&emit_bump_realloc_body(bump_global));
+    let code_sec = section(wasm_abi::CORE_SEC_CODE, &wasm_vec(n + 2, &code_items));
+
+    let mut core = Vec::new();
+    core.extend_from_slice(CORE_MAGIC);
+    core.extend_from_slice(&type_sec);
+    core.extend_from_slice(&import_sec);
+    core.extend_from_slice(&func_sec);
+    core.extend_from_slice(&global_sec);
+    core.extend_from_slice(&export_sec);
+    core.extend_from_slice(&code_sec);
+    Ok(core)
+}
+
 /// Emit the instructions that WALK to one hole's leaf and WRITE its bytes into the output buffer (at the
 /// hole's absolute `offset`). Shared by the flat tuple/record walker and the per-variant sum walker.
 /// `rep` is the local holding the root heap handle; `scratch` an i64 scratch local. The walk starts at

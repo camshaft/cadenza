@@ -918,6 +918,19 @@ pub fn emit(
         });
     }
 
+    // §3c COMPILER-PLATFORM SEPARATION — a provider export member the TARGET WIT WORLD declares as a
+    // `list<u8>`-in/out boundary crosses as CANONICAL VALUE-FORM bytes. This takes PRECEDENCE over the
+    // host-import / plain-provider paths below: `emit_bytes_provider_member` handles BOTH a pure reducer AND
+    // a HOST-FUSED one (its body calls a host import like `kv`) — the declared WORLD, not the presence of a
+    // host import, decides the bytes shape. Absent a world declaring such a member, this falls through to
+    // the normal host/plain provider shapes (byte-identical for every program that targets no such world).
+    if let Some(iface) = db.component_name.clone()
+        && let Some(world_bytes) = db.wit_world.clone()
+        && let Some(def) = world_bytes_crossing_export(layout, &world_bytes)
+    {
+        return emit_bytes_provider_member(db, layout, def, &iface, spans);
+    }
+
     // A HOST-delegating program takes the host-import envelope shape (E2h-2): the delegated effect is a
     // component INTERFACE, its operations imported funcs the boundary resolves. This increment delegates a
     // SINGLE effect (every host import shares one effect name); a program delegating two distinct effects
@@ -1058,18 +1071,7 @@ pub fn emit(
             .iter()
             .all(|e| e.result != envelope::BoundaryResult::Bytes)
     {
-        // §3c COMPILER-PLATFORM SEPARATION — a provider export member the TARGET WIT WORLD declares as a
-        // `list<u8>`-in / `list<u8>`-out boundary (the fold's `apply` is the first such member, not the
-        // contract) crosses as CANONICAL VALUE-FORM bytes, NOT as a `u32` value-heap handle: its single
-        // compound param is value-DECODEd from the incoming document and its compound result value-ENCODEd
-        // back out. The compiler stays generic over any WIT — the DECISION is derived purely from the
-        // declared world signature via [`bridge_decision`] (the §3b value-bridging rule), never a hard-coded
-        // member/contract shape. Absent (no `db.wit_world`) → no such member fires (byte-identical).
-        if let Some(world_bytes) = db.wit_world.clone()
-            && let Some(def) = world_bytes_crossing_export(layout, &world_bytes)
-        {
-            return emit_bytes_provider_member(db, layout, def, &iface, spans);
-        }
+        // (The world-driven bytes gate ran EARLIER, before the host/plain provider branches — see above.)
         if imports.is_empty() {
             return Ok(envelope::assemble_provider(&core, &boundary, &iface));
         }
@@ -7917,22 +7919,40 @@ fn emit_bytes_provider_member(
         })
         .collect::<Result<_, _>>()?;
 
-    // Host/peer imports (e.g. `kv`) → the host-fused bytes-roundtrip emit is a later slice; decline.
+    // A PEER-bound effect crosses as a handle over a SHARED runtime — not the host-fused bytes path; decline.
+    if !db.effect_bindings.is_empty() {
+        return Err(Reject::decline(
+            "a bytes-crossing member bound to a peer interface is not yet emitted (the host-fused \
+             bytes-roundtrip path handles host imports, not peer-bound effects)",
+        ));
+    }
+    // A HOST op whose DECLARED signature has no host-boundary form — a compound RESULT like `kv.get`'s
+    // `option<list<u8>>` — needs the host compound-result ABI (a later §3c slice); decline cleanly. A
+    // REPRESENTABLE host op (`kv.put`: `list<u8>` params, `unit` result) IS emitted (host-fused).
+    for &def in &layout.order {
+        let body = def_body(db, def)?;
+        if let Some((op, _, ty)) = host::first_unrepresentable_host_op(db, body) {
+            return Err(Reject::decline(format!(
+                "a bytes-crossing member calls host op `{op}` whose `{ty}` signature has no host-boundary \
+                 form yet (a compound host result like `option<list<u8>>` needs the host compound-result \
+                 ABI — a later §3c slice); a representable host op IS emitted"
+            )));
+        }
+    }
     let mut host_imports: Vec<host::HostImport> = Vec::new();
     for &def in &layout.order {
         let body = def_body(db, def)?;
         host::collect_host_imports(db, body, &mut host_imports);
     }
-    if !host_imports.is_empty() || !db.effect_bindings.is_empty() {
-        return Err(Reject::decline(
-            "a bytes-crossing member whose body imports a host/peer interface (e.g. kv) is not yet emitted \
-             (host-fused bytes-roundtrip is a later §3c full-A slice); a pure host/peer-import-free member \
-             IS emitted",
-        ));
-    }
 
+    // Host imports FIRST (core funcs 0..h), then runtime (h..h+k) — so `CallHostImport(i)=call i` resolves;
+    // the pure (h=0) path keeps import base k, byte-identical. A host `list<u8>` arg copies to the shared
+    // memory, so a host-fused reducer's layout carries `host_needs_memory`.
+    let h = host_imports.len() as u32;
     let k = imports.len() as u32;
-    let layout = layout.with_import_base(k);
+    let layout = layout
+        .with_import_base(h + k)
+        .with_host_needs_memory(host::set_needs_memory(&host_imports));
     let layout = &layout;
     let mut funcs: Vec<SelectedFunc> = Vec::new();
     for &def in &layout.order {
@@ -7954,19 +7974,80 @@ fn emit_bytes_provider_member(
         .abs(export_def)
         .ok_or_else(|| Reject::decline("the bytes-crossing member is not in the emission order"))?;
 
-    let core = serialize::bytes_roundtrip_core_module(
+    if host_imports.is_empty() {
+        // PURE (host/peer-import-free) member — owns its memory, imports only the runtime.
+        let core = serialize::bytes_roundtrip_core_module(
+            &funcs,
+            &imports,
+            member_body_abs,
+            &param_desc,
+            &result_desc,
+            &member_name,
+        )
+        .map_err(Reject::decline)?;
+        return Ok(envelope::assemble_bytes_roundtrip_provider(
+            &core,
+            iface,
+            &member_name,
+            &imports,
+            &runtime_import_name(),
+        ));
+    }
+
+    // HOST-FUSED (GAP B): the member body calls a host interface (e.g. `kv`). The core module imports a
+    // SHARED memory (host `list<u8>` args lower against it before the program instantiates); the envelope
+    // provides the shared-memory module + imports the host interface (at the FQ name the WORLD declares,
+    // matching the host bind) + the runtime. The kv import interface name is DERIVED from the world —
+    // generic, no hard-coded host contract.
+    let kv_iface = {
+        let world_bytes = db.wit_world.as_deref().ok_or_else(|| {
+            Reject::decline(
+                "a host-fused bytes member requires a target WIT world (the host interface name is \
+                 declared there)",
+            )
+        })?;
+        let arenas = crate::codec::decode(world_bytes)
+            .ok_or_else(|| Reject::decline("the target WIT world did not decode"))?;
+        let world = crate::wit_world::parse_target_world(&arenas, arenas.root)
+            .ok_or_else(|| Reject::decline("the target WIT world did not parse"))?;
+        // FIRST full-A host slice: a single host import interface (the reducer's `kv`). Its component-import
+        // name is the world's import interface name (FQ). A multi-host-interface member is a later slice.
+        let [iface_import] = &world.imports[..] else {
+            return Err(Reject::decline(
+                "a host-fused bytes member with other than exactly one target-world import interface is \
+                 not yet emitted (single host interface, e.g. kv, is the first slice)",
+            ));
+        };
+        iface_import.name.clone()
+    };
+    let host_fns: Vec<envelope::HostFn> = host_imports
+        .iter()
+        .map(|hf| envelope::HostFn {
+            op: hf.op.clone(),
+            comp_functype: host_op_comp_functype(hf, 0),
+            has_list_param: hf
+                .params
+                .iter()
+                .any(|p| matches!(p, host::HostParam::Bytes)),
+            core_functype: Vec::new(),
+        })
+        .collect();
+    let core = serialize::bytes_roundtrip_host_core_module(
         &funcs,
         &imports,
+        &host_imports,
         member_body_abs,
         &param_desc,
         &result_desc,
         &member_name,
     )
     .map_err(Reject::decline)?;
-    Ok(envelope::assemble_bytes_roundtrip_provider(
+    Ok(envelope::assemble_bytes_roundtrip_host_provider(
         &core,
         iface,
         &member_name,
+        &host_fns,
+        &kv_iface,
         &imports,
         &runtime_import_name(),
     ))
