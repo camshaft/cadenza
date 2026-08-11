@@ -464,24 +464,34 @@ each with doc + signature; the round-trip decodes. **Anchors:** `control/` query
 > **The 6 kernel built-ins ARE the first schemas in the uniform model (seq367 step-2 fit-confirm,
 > 2026-08-10).** v-agent-harness authors the built-in schemas (`shell`/`http`/`model`/`now`/`timer`/
 > `emit`); they conform to THIS model, not a parallel kernel-only one. Confirmed fit (no model gap):
-> - **Single perform-op per built-in.** A built-in is `(effect http (op perform (-> Req Res)))` — ONE
+> - **Single perform-op per built-in.** A built-in is `(effect http (op perform (-> In Out)))` — ONE
 >   op, because it is one request→one result. The Weather `today`/`set` multi-op example was a STATEFUL
 >   handler with several operations; the model ALLOWS any op count but never MANDATES multi-op. Built-ins
 >   are genuinely "the first schemas in the uniform model, kernel-authored, single-op" — identical shape
 >   to a userspace effect. Derived from each built-in's existing `EffectRequest`/result shape.
-> - **Absent request/result = `Unit`.** `now = (op perform (-> Unit Timestamp))`, `emit = (op perform
->   (-> EmitRequest Unit))` (fire-and-forget), `timer` likewise. `build_type` + the cdzast tree already
->   encode `Unit` as a type, so a missing request or result side is just `Unit` — no special-case.
-> - **Minimal step-2 authz node; the full vocabulary stays deferred to I5.** The authz CONTRACT a
->   built-in schema carries for step-2 is MINIMAL: (a) the action NAME, already the effect HEAD per
->   D14=A (`(effect http …)`) — no separate node; plus (b) a declaration of WHICH request field is the
->   SEC-F1 target the predicate gates (existing kernel authz = action + `ResourcePredicate.admits(&req.
->   target)`; the only authz-relevant structural fact beyond the name is which field IS that target). The
->   PREDICATE KIND (host/prefix/exact/Cedar-entity) is NOT baked into the schema — that is the external
->   policy's + I5's concern (D15: authz CONTRACT in schema, authz POLICY external). So do NOT invent the
->   full `(authz (target-predicate …))` vocabulary now; it is I5's to design and baking it would foreclose
->   the deferred Cedar resource model. The step-2 node is just the target-field declaration, keeping the
->   authz seam OPEN/PLUGGABLE (the I1–I4 constraint).
+> - **Bake the HONEST kernel bytes (Option A), not idealized semantic types.** The kernel is
+>   type-uniform opaque bytes (operator opaque-bytes ruling 2026-08-09): every built-in carries
+>   `target: Arc<[u8]>` + `payload: Option<Bytes>` and folds an `EffectResult` of bytes — there is NO
+>   `Timestamp`/`EmitRequest` type in the kernel. So the built-in schemas bake what they ACTUALLY are:
+>   `shell`/`http`/`model` = `(-> bytes bytes)`; `now` = `(-> unit bytes)`; `timer`/`emit` =
+>   `(-> bytes unit)`. Do NOT invent semantic descriptor nodes with no backing type. (An earlier draft
+>   of this note used `now = (-> Unit Timestamp)` / `emit = (-> EmitRequest Unit)` — those were
+>   ILLUSTRATIVE of the shape GRAMMAR `(effect Name (op perform (-> In Out)))`, NOT a claim the kernel
+>   has those types; corrected to the honest bytes.) `unit` is the type for a genuinely absent request
+>   or result side (`build_type` + the cdzast tree already encode it — no special-case).
+> - **Name-distinguished identity is sufficient + correct.** The schema HEAD = the effect NAME is IN the
+>   hashed tree (D14=A: name is a schema field), so `(effect now (op perform (-> unit bytes)))` and
+>   `(effect http (op perform (-> bytes bytes)))` hash DISTINCT even though `bytes`/`unit` repeat across
+>   built-ins. And this does NOT weaken the uniform-model principle: a future userspace handler that
+>   genuinely returns a TYPED result (a real `Timestamp`) is a DIFFERENT, richer contract than the
+>   kernel's opaque-bytes `now`, so it SHOULD hash differently — that is honest (they are not the same
+>   effect), not a mismatch. The principle is shape-uniformity of the MODEL, not built-ins pretending to
+>   richer types.
+> - **NO authz node in the schema (operator reversal 2026-08-11).** The effect schema is the DATA SHAPE
+>   ONLY — it carries no authz/grant information. See the authz reversal note in D15 below: grants are
+>   dynamic and live OUTSIDE the schema; the full granting infrastructure is a separate later design.
+>   (This reverses an earlier draft of this note that put a minimal name+target-field authz node in the
+>   schema.)
 
 This holds up and fits the platform's everything-hash-identified through-line (sessions = genesis hash,
 blobs = content hash, ws-conns = a hash). An effect's SCHEMA — the operation signatures + type contract
@@ -631,11 +641,27 @@ change owned by `v-agent-harness` (it folds with their binary-target rework) —
 is removed, not merely re-fielded. See the reconciliation note under D13 above (D14=A supersedes D13's
 interim `{family, schema_hash}` framing — the family is NOT a wire field, it is a schema field).
 
-### D15 — the schema is self-describing for AUTHZ too; authz is HASH-BOUND (operator thread; anti-collision by construction)
+### D15 — authz is OUTSIDE the schema; the schema is DATA-SHAPE ONLY (operator reversal 2026-08-11)
+
+> **⚡ SUPERSEDING RULING (operator, 2026-08-11).** Verbatim: *"I don't want to have the authz field in
+> the effect schemas. I think grants should live outside of the schema since they're much more dynamic.
+> But we'll have to design the whole granting infrastructure later."* This REVERSES the "authz contract
+> IN the schema" model worked out below: the effect schema is the **DATA SHAPE ONLY** — it carries NO
+> authz field, NO authz contract, NO grant information. **Grants are DYNAMIC and live OUTSIDE the
+> schema.** The full **granting infrastructure is a SEPARATE, LATER design** (subsumes what was I5 / the
+> deferred Cedar resource model). What SURVIVES from the analysis below (still true + still the reason
+> the model is sound): the schema-hash is the stable, collision-proof effect IDENTITY (a same-name
+> different-hash schema is a different identity by construction), and an external grant/policy keys on
+> that schema-hash. What is REMOVED: any `(authz …)` node, target-predicate declaration, or
+> resource-shape vocabulary inside the schema — none of that is in the schema anymore; it belongs to the
+> later granting-infrastructure design, keyed on the schema-hash from outside. So read the section below
+> as the ANTI-COLLISION reasoning for why schema-hash identity is sound (kept), with its "authz contract
+> lives in the schema" conclusion SUPERSEDED by "authz lives outside; schema is data-shape only."
 
 The operator extended D14 into authz across three messages, ending at the maximally-secure model. The
 important part is a soundness distinction that must NOT be hand-waved (operator: *"do not hand-wave
-it"*). Working the thread through:
+it"*). Working the thread through (NOTE: superseded by the 2026-08-11 reversal above on the
+"contract-in-schema" point — retained for the anti-collision reasoning):
 
 1. **Schema self-describes authz facts (operator).** The schema should declare not just its routing
    name but its authz-relevant structure — the stable Cedar ACTION name and the RESOURCE shape (target
