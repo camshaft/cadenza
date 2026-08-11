@@ -1410,6 +1410,15 @@ fn is_rust_keyword(s: &str) -> bool {
 /// its own copy. A def whose name is unique among the emitted set is left un-suffixed (the common case, so
 /// ordinary programs are byte-identical).
 pub(crate) fn fn_ident(db: &Db, layout: &crate::layout::Layout, def: usize) -> String {
+    // CONTENT-ADDRESSED SPEC DEDUP: canonicalize a merged recursive-effectful spec to its representative
+    // FIRST. The layout congruence-dedup drops a merged spec from `order` (never emitted) and redirects the
+    // wasm func-index via `order_pos`; the rust backend resolves a `Core::Call` callee BY NAME, so without
+    // this a call to a merged-away spec names a `fn` that was never declared → rustc E0425 (the exact
+    // regression that reverted the dedup). `spec_representative` maps a merged spec to the emitted,
+    // structurally-identical representative (identity for any non-merged def / empty-merge program, so this
+    // is byte-identical when no dedup fired). Applied to BOTH the declaration site (a representative names
+    // itself) and every reference site (a merged callee names its rep), so the two always agree.
+    let def = layout.spec_representative(def);
     // The Rust identifier for ANY def is its SANITIZED name (`sum-to` → `sum_to`) — the `-` etc. that
     // Cadenza allows are not Rust ident chars, so a boundary name is still sanitized for the emitted `fn`.
     let base = match layout.export_plan(def) {

@@ -141,6 +141,16 @@ pub struct Layout {
     /// cross-edge order so the consumer's import index MATCHES the provider's export index (the
     /// index-agreement invariant that keeps the composed module valid).
     pub cross_edge_import: std::collections::HashMap<usize, usize>,
+    /// CONTENT-ADDRESSED SPEC DEDUP: `merged_spec_def → representative_def` for every recursive-effectful
+    /// spec collapsed into a structurally-identical representative by [`effect_spec_merge_map`]. The wasm
+    /// backend redirects a merged spec's func-index via `order_pos` (see `add_merged_spec_redirects`), but
+    /// the RUST backend resolves a `Core::Call` callee BY NAME (`fn_ident`), so a merged spec — dropped from
+    /// `order`, never emitted — would be a dangling by-name call (rustc E0425) unless `fn_ident` also
+    /// canonicalizes the callee to its representative. This map is that canonicalization source, consulted by
+    /// `fn_ident`. Empty for a program with no redundant specializations (byte-identical to before) — the
+    /// common case. This is the fix for the revert of the layout-congruence dedup: the redirect must cover
+    /// BOTH the wasm func-index path (order_pos) AND the rust by-name path (fn_ident).
+    pub spec_merge: std::collections::HashMap<usize, usize>,
 }
 
 impl Layout {
@@ -182,6 +192,7 @@ impl Layout {
             extern_order: Vec::new(),
             closure_call_types: Vec::new(),
             cross_edge_import: std::collections::HashMap::new(),
+            spec_merge: std::collections::HashMap::new(),
         }
     }
 
@@ -336,6 +347,34 @@ impl Layout {
         self.order_pos
             .get(&def)
             .map(|&k| self.import_base + k as u32)
+    }
+
+    /// CONTENT-ADDRESSED SPEC DEDUP redirect: point each merged spec at its representative's emission slot,
+    /// so `abs(merged)` returns the representative's func index (the merged body is not in `order` and never
+    /// emitted, but a `Core::Call` still names it — this makes that call resolve to the identical rep). The
+    /// map is `merged_def → representative_def`; the rep is in `order`, so its `order_pos` slot is known.
+    pub fn add_merged_spec_redirects(
+        &mut self,
+        spec_merge: &std::collections::HashMap<usize, usize>,
+    ) {
+        for (&merged, &rep) in spec_merge {
+            if let Some(&k) = self.order_pos.get(&rep) {
+                self.order_pos.insert(merged, k);
+            }
+        }
+        // Store the map so the RUST backend's `fn_ident` can canonicalize a merged spec's callee to its
+        // representative's name (the wasm `order_pos` redirect above only fixes the wasm func-index path).
+        self.spec_merge = spec_merge.clone();
+    }
+
+    /// The representative a merged spec collapsed into, or `def` itself if it was not merged — the
+    /// canonicalization the RUST backend applies to a `Core::Call` callee so a call to a merged-away spec
+    /// (dropped from `order`, never emitted) names the structurally-identical representative that IS emitted,
+    /// instead of a dangling by-name reference (rustc E0425). Identity for every def in a program with no
+    /// redundant specializations (`spec_merge` empty). The map is flat (a representative is never itself
+    /// merged — it is the lowest-index member of its class), so a single lookup suffices, no chase.
+    pub fn spec_representative(&self, def: usize) -> usize {
+        self.spec_merge.get(&def).copied().unwrap_or(def)
     }
 
     /// The [`ExportPlan`] for definition `def`, or `None` if `def` is not an export — an O(1) lookup
@@ -948,10 +987,28 @@ fn finish_layout_bounded(
         .map(|code| reached_codes.contains(&code))
         .collect();
 
+    // CONTENT-ADDRESSED SPEC DEDUP (transient-spec cost-cliff): now that `order` holds the full reachable
+    // set (both worklists closed) and every reachable body is lowered, collapse the recursive-effectful
+    // specializations (`f#eff{n}`) that are congruent (structurally identical up to occurrence id + the
+    // classes of the specs they call — a partition-refinement over the spec call graph). A merged spec is
+    // DROPPED from `order` (its body never emitted) and its func-index resolution redirected to its
+    // representative (structurally identical, so it serves the merged spec's callers). The redirect is
+    // applied to `order_pos` after layout construction. Empty map (the common case: no congruent specs) →
+    // byte-identical to before, so a program without redundant effect specializations is unaffected.
+    let spec_merge = effect_spec_merge_map(db, &order);
+    if !spec_merge.is_empty() {
+        order.retain(|d| !spec_merge.contains_key(d));
+    }
+
     // `import_base` is 0 until a program uses a runtime op: the per-program runtime-import set is
     // computed by the backend when a `Core` compound op lowers to a heap call (value-heap H2). A
     // program that imports nothing keeps base 0 and is byte-identical to a runtime-free build.
-    let base_layout = Layout::with_lifted(exports, order, 0, lifted, lifted_reached);
+    let mut base_layout = Layout::with_lifted(exports, order, 0, lifted, lifted_reached);
+    // Redirect each merged spec's func-index resolution to its representative's slot, so a `Core::Call`
+    // whose callee is a merged spec resolves to the (identical) representative's emitted function.
+    if !spec_merge.is_empty() {
+        base_layout.add_merged_spec_redirects(&spec_merge);
+    }
 
     // EXTRA closure-application functypes: a `Core::CallClosure` can reach a closure of a type NO lifted
     // lambda in this program builds — the applied variant's `match` arm is statically emitted but never
@@ -1730,6 +1787,299 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
         | crate::core::Core::LocalRef { .. }
         | crate::core::Core::Poison(_) => {}
     }
+}
+
+/// CONTENT-ADDRESSED SPEC DEDUP (transient-spec cost-cliff, op ruling B) — a CONGRUENCE / partition-
+/// refinement over the reachable recursive-effectful specializations (`f#eff{n}` defs). The group fold mints
+/// one spec per `(def-body-occ, handler-context-key)`, but many occurrence-distinct contexts thread to
+/// STRUCTURALLY IDENTICAL specs that differ only by the `#eff{n}` occurrence id embedded in their names +
+/// the names of the specs they call. Lowering every copy via `core_of` is the dominant compile cost of the
+/// compiler-ml self-compile (measured 264s→39s, 6.7x, when 16 reachable specs collapse to 2). Two specs are
+/// EQUIVALENT iff their bodies+sigs are structurally equal treating every `#eff` name reference UP TO
+/// equivalence — a reference to X in A matches a reference to Y in B iff X and Y are themselves equivalent
+/// (a congruence, computed by partition-refinement to a fixpoint, à la DFA minimization). A blanket
+/// occurrence-id strip is UNSOUND (it merges two specs that call genuinely-different partners → the caller
+/// recurses into the wrong partner → non-terminating; caught by db-query-diff.cdz::diff-let-agrees-int).
+///
+/// Returns a MERGE MAP `merged_def → representative_def` for every non-representative spec in a class of
+/// size > 1. The caller drops the merged defs from `order` and points their func-index resolution at the
+/// representative (so a `Core::Call{callee: merged}` resolves to the representative's emitted function — the
+/// representative is structurally identical, incl. sig arity, so it serves the merged spec's callers). No
+/// Core surgery: the redirect lives in the layout's `order_pos`.
+fn effect_spec_merge_map(db: &mut Db, order: &[usize]) -> std::collections::HashMap<usize, usize> {
+    // The reachable #eff specs, by def index, with their AST body present. Only these are candidates.
+    let specs: Vec<usize> = order
+        .iter()
+        .copied()
+        .filter(|&d| db.defs[d].name.contains("#eff") && db.defs[d].body.is_some())
+        .collect();
+    if specs.len() < 2 {
+        return std::collections::HashMap::new();
+    }
+    // name → def index, for resolving a #eff reference (self or partner) to its spec. A reference leaf may
+    // carry a `$s{k}`/`$t{k}` suffix (a state/temp param name of the referenced spec's sig); strip it to the
+    // bare spec name before lookup. Not every #eff name is a spec in `specs` (an unreachable partner) — such
+    // a ref resolves to None and is compared by its (suffix-canonicalized) text, keeping distinct.
+    let mut name_to_def: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    for &d in &specs {
+        name_to_def.insert(db.defs[d].name.clone(), d);
+    }
+
+    // The current class of each spec (index into a class-id space). Initialized by a coarse structural hash
+    // that HOLES every #eff reference (so occurrence-only-different specs start together), then refined.
+    let mut class: std::collections::HashMap<usize, u64> = std::collections::HashMap::new();
+    for &d in &specs {
+        let sig = db.defs[d].sig_occ;
+        let body = db.defs[d].body.expect("filtered to body.is_some()");
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        use std::hash::{Hash, Hasher};
+        0x5347u16.hash(&mut h); // sig tag
+        spec_shape_hash(db, sig, &mut h);
+        0x424fu16.hash(&mut h); // body tag
+        spec_shape_hash(db, body, &mut h);
+        class.insert(d, h.finish());
+    }
+
+    // Refine to a fixpoint: recompute each spec's signature from (its shape + the CURRENT class of every
+    // spec it references at each #eff-ref position); two specs stay together only if these agree. A spec's
+    // own self-reference resolves to its OWN current class, so recursion is handled uniformly.
+    loop {
+        let mut next: std::collections::HashMap<usize, u64> = std::collections::HashMap::new();
+        for &d in &specs {
+            let sig = db.defs[d].sig_occ;
+            let body = db.defs[d].body.expect("body");
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            use std::hash::{Hash, Hasher};
+            // Seed with the current class so two specs that are already distinguished stay distinct.
+            class[&d].hash(&mut h);
+            0x5347u16.hash(&mut h);
+            spec_ref_class_hash(db, sig, &class, &name_to_def, &mut h);
+            0x424fu16.hash(&mut h);
+            spec_ref_class_hash(db, body, &class, &name_to_def, &mut h);
+            next.insert(d, h.finish());
+        }
+        // Re-canonicalize the raw hashes into a stable partition: group specs by their `next` hash, and only
+        // KEEP a distinction if a class actually split. We compare the induced PARTITION, not the raw hashes.
+        if same_partition(&specs, &class, &next) {
+            break;
+        }
+        class = next;
+    }
+
+    // Build the merge map: within each final class, the lowest def index is the representative; every other
+    // member maps to it. Verify structural equality (occurrence-canonicalized) as a belt — a hash collision
+    // then degrades to a skipped merge, never a wrong alias.
+    let mut by_class: std::collections::HashMap<u64, Vec<usize>> = std::collections::HashMap::new();
+    for &d in &specs {
+        by_class.entry(class[&d]).or_default().push(d);
+    }
+    let mut merged: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    for (_c, mut members) in by_class {
+        if members.len() < 2 {
+            continue;
+        }
+        members.sort_unstable();
+        let rep = members[0];
+        for &m in &members[1..] {
+            if spec_congruent(db, rep, m, &class, &name_to_def) {
+                merged.insert(m, rep);
+            }
+        }
+    }
+    merged
+}
+
+/// A coarse structural hash of an AST subtree that HOLES every `#eff` reference leaf (so occurrence-only-
+/// different specs hash equal at the start of refinement). Non-`#eff` leaves hash by content; lists by shape.
+fn spec_shape_hash(db: &Db, node: StructId, h: &mut std::collections::hash_map::DefaultHasher) {
+    use crate::ast::{Leaf, Struct};
+    use std::hash::Hash;
+    match db.ast.get(node) {
+        Struct::Atom(lid) => {
+            0u8.hash(h);
+            match db.ast.leaf(*lid) {
+                Leaf::Name(n) if n.contains("#eff") => 9u8.hash(h), // HOLE — any #eff ref
+                other => {
+                    1u8.hash(h);
+                    other.hash(h);
+                }
+            }
+        }
+        Struct::List(children) => {
+            2u8.hash(h);
+            (children.len() as u64).hash(h);
+            let kids: Vec<StructId> = children.clone();
+            for c in kids {
+                spec_shape_hash(db, c, h);
+            }
+        }
+    }
+}
+
+/// The refinement-step hash: like [`spec_shape_hash`] but each `#eff` reference contributes the CURRENT
+/// CLASS of the spec it names (self or partner), so two specs split when a reference position points to
+/// specs in different classes. A `#eff` name with a `$s`/`$t` suffix is stripped to the bare spec name for
+/// the class lookup; a name not resolving to a tracked spec contributes its suffix-canonicalized text.
+fn spec_ref_class_hash(
+    db: &Db,
+    node: StructId,
+    class: &std::collections::HashMap<usize, u64>,
+    name_to_def: &std::collections::HashMap<String, usize>,
+    h: &mut std::collections::hash_map::DefaultHasher,
+) {
+    use crate::ast::{Leaf, Struct};
+    use std::hash::Hash;
+    match db.ast.get(node) {
+        Struct::Atom(lid) => {
+            0u8.hash(h);
+            match db.ast.leaf(*lid) {
+                Leaf::Name(n) if n.contains("#eff") => {
+                    let (base, suffix) = split_eff_suffix(n);
+                    match name_to_def.get(base).and_then(|d| class.get(d)) {
+                        Some(&cls) => {
+                            8u8.hash(h);
+                            cls.hash(h);
+                            suffix.hash(h); // keep $s0 vs $s1 distinct
+                        }
+                        None => {
+                            // Not a tracked spec — compare by canonicalized text (base + suffix).
+                            7u8.hash(h);
+                            base.hash(h);
+                            suffix.hash(h);
+                        }
+                    }
+                }
+                other => {
+                    1u8.hash(h);
+                    other.hash(h);
+                }
+            }
+        }
+        Struct::List(children) => {
+            2u8.hash(h);
+            (children.len() as u64).hash(h);
+            let kids: Vec<StructId> = children.clone();
+            for c in kids {
+                spec_ref_class_hash(db, c, class, name_to_def, h);
+            }
+        }
+    }
+}
+
+/// Split a `#eff` name into its bare-spec part and the `$s{k}`/`$t{k}` param suffix (if any). The suffix
+/// begins at the first `$` AFTER the `#eff{digits}`; a name with no `$` has an empty suffix. E.g.
+/// `type-of#eff540$s0` → (`type-of#eff540`, `$s0`); `type-of#eff540` → (`type-of#eff540`, ``).
+fn split_eff_suffix(name: &str) -> (&str, &str) {
+    match name.find('$') {
+        Some(p) => (&name[..p], &name[p..]),
+        None => (name, ""),
+    }
+}
+
+/// Whether two `#eff` names refer to the same spec UP TO the current partition — same bare-spec class (or
+/// same base text if untracked) AND identical `$s`/`$t` suffix.
+fn eff_ref_equiv(
+    a: &str,
+    b: &str,
+    class: &std::collections::HashMap<usize, u64>,
+    name_to_def: &std::collections::HashMap<String, usize>,
+) -> bool {
+    let (ba, sa) = split_eff_suffix(a);
+    let (bb, sb) = split_eff_suffix(b);
+    if sa != sb {
+        return false;
+    }
+    match (
+        name_to_def.get(ba).and_then(|d| class.get(d)),
+        name_to_def.get(bb).and_then(|d| class.get(d)),
+    ) {
+        (Some(ca), Some(cb)) => ca == cb,
+        (None, None) => ba == bb,
+        _ => false,
+    }
+}
+
+/// Structural equality of two `#eff` specs UP TO the current partition — the verification belt confirming a
+/// same-class pair really is congruent before merging (so a hash collision degrades to a skipped merge, not
+/// a wrong alias). Compares sig then body in lockstep; `#eff` reference leaves compare via [`eff_ref_equiv`].
+fn spec_congruent(
+    db: &Db,
+    a: usize,
+    b: usize,
+    class: &std::collections::HashMap<usize, u64>,
+    name_to_def: &std::collections::HashMap<String, usize>,
+) -> bool {
+    let (sa, sb) = (db.defs[a].sig_occ, db.defs[b].sig_occ);
+    let (ba, bb) = match (db.defs[a].body, db.defs[b].body) {
+        (Some(x), Some(y)) => (x, y),
+        _ => return false,
+    };
+    ast_congruent(db, sa, sb, class, name_to_def) && ast_congruent(db, ba, bb, class, name_to_def)
+}
+
+/// Lockstep structural equality of two AST subtrees, `#eff` refs compared up to the current partition.
+fn ast_congruent(
+    db: &Db,
+    a: StructId,
+    b: StructId,
+    class: &std::collections::HashMap<usize, u64>,
+    name_to_def: &std::collections::HashMap<String, usize>,
+) -> bool {
+    use crate::ast::{Leaf, Struct};
+    match (db.ast.get(a), db.ast.get(b)) {
+        (Struct::Atom(la), Struct::Atom(lb)) => match (db.ast.leaf(*la), db.ast.leaf(*lb)) {
+            (Leaf::Name(na), Leaf::Name(nb)) => {
+                let (ea, eb) = (na.contains("#eff"), nb.contains("#eff"));
+                if ea && eb {
+                    eff_ref_equiv(na, nb, class, name_to_def)
+                } else if ea || eb {
+                    false
+                } else {
+                    na == nb
+                }
+            }
+            (Leaf::Name(_), _) | (_, Leaf::Name(_)) => false,
+            (oa, ob) => oa == ob,
+        },
+        (Struct::List(ca), Struct::List(cb)) => {
+            ca.len() == cb.len() && {
+                let (ca, cb): (Vec<StructId>, Vec<StructId>) = (ca.clone(), cb.clone());
+                ca.iter()
+                    .zip(cb.iter())
+                    .all(|(&x, &y)| ast_congruent(db, x, y, class, name_to_def))
+            }
+        }
+        _ => false,
+    }
+}
+
+/// Whether two class assignments induce the SAME partition over `specs` (refinement fixpoint test): the
+/// equivalence "same class" is identical under `a` and `b`. Compared by mapping each spec to the set of
+/// specs sharing its class and checking those groupings match.
+fn same_partition(
+    specs: &[usize],
+    a: &std::collections::HashMap<usize, u64>,
+    b: &std::collections::HashMap<usize, u64>,
+) -> bool {
+    // Canonicalize each partition to a map: representative(min index in class) → sorted members. Equal iff
+    // the two canonical groupings are identical.
+    let group = |m: &std::collections::HashMap<usize, u64>| {
+        let mut by: std::collections::HashMap<u64, Vec<usize>> = std::collections::HashMap::new();
+        for &s in specs {
+            by.entry(m[&s]).or_default().push(s);
+        }
+        let mut canon: Vec<Vec<usize>> = by
+            .into_values()
+            .map(|mut v| {
+                v.sort_unstable();
+                v
+            })
+            .collect();
+        canon.sort_unstable();
+        canon
+    };
+    group(a) == group(b)
 }
 
 /// Collect the callees reachable through a sum-match CONTINUATION — a leaf's body, or a nested switch's
