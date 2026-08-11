@@ -8073,3 +8073,31 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 400800 Int64))
   (call   main (: 0 Int64)) (output (: 100200 Int64)))
+
+(case "a MIXED mutual SCC where only ONE partner performs — the non-performing arithmetic leg threads through the group fold"
+  (doc    "The mixed-SCC face of the group multi-value fold: `pa` and `pb` mutually recurse, but only `pa`
+           performs (the base case `(S.tick)`); `pb` is pure arithmetic wrapping the cycle
+           `(let ((child (pa (- n 1)))) (+ child (* 2 n)))`. The landed mutual-group pins have BOTH partners
+           performing (14b `a mutual walk where BOTH partners perform ...`); this pins that the group fold
+           also threads the value correctly when the effect is reached through only ONE partner and the OTHER
+           leg is non-performing arithmetic that consumes the recursion result. `main(3)`: pa(0) draws the
+           seed (tick resumes s->s, seed 0) = 0; pb(1) = 0 + 2*1 = 2; pb(2) = 2 + 2*2 = 6; pb(3) = 6 + 2*3 =
+           12. Uniform across all 3 backends and stable across O0..O3 (opt-sweep 0-divergence). Breaker
+           mixed-scc probe mx1 (2026-08-11). FENCE (documented, not pinned here): if a TRAILING draw observes
+           the SCC's post-recursion out-state advance, it stays behind the fold frontier and declines cleanly
+           — the same mutual-SCC-out-state completeness gap pinned at 14c `a mutually-recursive performer pair
+           whose out-state a trailing caller draw observes declines cleanly`.")
+  (input  (do
+            (effect S (op tick (-> Unit Int64)) (op put (-> Int64 Unit)))
+            (def (pa (: n Int64)) (if (= n 0) (S.tick) (pb n)))
+            (def (pb (: n Int64))
+              (let ((child (pa (- n 1))))
+                (+ child (* 2 n))))
+            (def (main (: k Int64))
+              (handle S 0
+                ((tick (u) s (resume s s))
+                 (put (v) s (resume unit (+ s v))))
+                (pa k)))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 12 Int64))
+  (call   main (: 0 Int64)) (output (: 0 Int64)))

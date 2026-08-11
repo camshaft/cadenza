@@ -759,6 +759,7 @@ pass	a MAX-fold threads a CONDITIONAL accumulator over a list with a runtime ele
 pass	a MEDIAN-OF-3 filter smooths interior spikes while endpoints pass through unchanged
 pass	a MEMOIZED recursion threads a (tuple result memo-Map) through both self-call branches
 pass	a MIXED Int-and-Float Tuple closure ARG flattens + rebuilds (box-int + box-float)
+pass	a MIXED mutual SCC where only ONE partner performs — the non-performing arithmetic leg threads through the group fold
 pass	a MIXED payload+nullary SUM compound = has DISCRIMINATING power (separates tags AND a payloaded vs a nullary variant)
 pass	a MIXED-endian frame packs big and little fields side by side and round-trips both
 pass	a MIXED-shape compound scales its quantity leaf beside a non-quantity element
