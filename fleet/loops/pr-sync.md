@@ -101,6 +101,23 @@ stalls fleet-wide. Keep it small:
    (it's one line, low-context — don't paste the whole build log). The metrics are cheap wall-clock, no
    gating effect.
 
+   **⇉ SCOPE-SPLIT PARALLEL BATCHING — opt-in `--concurrent-lanes` (scope-split model a, landed default-off).**
+   When the queue holds ≥2 file-DISJOINT PARALLEL lanes (corpus / per-subsystem leaf lanes — NOT the shared
+   compiler core, which stays serial), you can gate each lane's batch in its OWN worktree CONCURRENTLY so a
+   cheap corpus/agent-harness lane isn't head-of-line-blocked behind an expensive compiler lane's gate. Add
+   `--concurrent-lanes` to a `schedule-pass --local-gate --execute --publish-origin --batch` invocation
+   (it REQUIRES `--batch`). The GREEN lanes' members (disjoint by construction) FF-push via the SAME serial
+   single-writer path you already use — only the GATE is concurrent, so `origin/main` stays single-writer.
+   SAFE by design: `<2` parallel lanes → it's a no-op (your single-combined-batch path runs unchanged);
+   RED/NoChecks/non-FF lanes fall through to the proven per-MR path; it logs whether the lane gate spans
+   actually OVERLAPPED (a serialized-run alarm — if they don't overlap the parallelism was a no-op, worth a
+   look). **Preview the split first:** `cargo xtask fleet batch-plan` (read-only) shows how the current queue
+   partitions into parallel vs serial lanes + names the concurrent-gate set. **Rollout measurement (operator
+   wants the number):** on a pass with a real 2+-parallel-lane split, capture the overlap log + the
+   agent-harness/corpus lane's land-latency while a compiler lane is also gating — that's the throughput win
+   to relay via the concierge. Default OFF: omit the flag and integration is exactly the single-batch model
+   above; opt in when `batch-plan` shows a good split.
+
    **⟳ DRAIN-UNTIL-QUIESCENT within the tick (bounded).** ONE `schedule-pass --local-gate --execute
    --publish-origin` gates + FF-pushes the queued MRs it can this pass, then returns. Under load (MRs
    arriving faster than one pass) a single pass per scheduled tick leaves the queue lagging — the concierge
