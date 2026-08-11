@@ -33,64 +33,16 @@
 // world is not yet wired to a host, so it can still be reshaped before the first component binds it.
 package cadenza:agent-kernel;
 
-// ── Shared value types ────────────────────────────────────────────────────────────────────────────
-interface types {
-  // NOTE (operator design review, 2026-08-01): there is NO guest-facing effect id. The kernel keeps a
-  // monotonic effect id INTERNALLY (event.rs/kernel.rs) purely for its own uniqueness-guaranteed
-  // bookkeeping — matching a Dispatched log event to its result, the open-obligation set, the
-  // kernel-fired-timer table — but the guest never sees it. The guest resumes SOLELY via its OWN
-  // opaque continuation token (see `effect-request.correlation`), which the kernel echoes back
-  // verbatim on the result event. One guest-supplied token, echoed back; the guest owns interpreting
-  // it. (An earlier draft surfaced both a kernel id AND the token to the guest — redundant at the
-  // boundary; collapsed to the single guest token per the operator's simpler model.)
-
-  // The structured content-type tag (§9b): a HINT the kernel carries opaquely for routing/filtering,
-  // NEVER a trusted type assertion. `family` + `version` so tolerant readers match on family and
-  // range-check version.
-  record content-type {
-    family: string,
-    version: u32,
-  }
-
-  // The effect KIND — the coarse verb; the resolved target + payload carry the specifics. Additive:
-  // append new kinds, never reorder. Mirrors src/effect.rs EffectKind.
-  enum effect-kind {
-    shell,   // run a command (structured {program,args} model — §18b lock-down; NOT a shell string)
-    http,    // an HTTP request; `target` is the URL (host is what the capability predicate gates)
-    model,   // invoke a model; `target` is the model id
-    now,     // read the wall clock → a recorded time-result (§9c); the guest never reads it directly
-    timer,   // arm a timer; the kernel injects timer-fired at the (absolute) deadline (§9c/§16c-S5)
-    emit,    // signal a peer session's inbox (§5); `target` is the session id
-  }
-
-  // An effect the guest wants performed. `target` is the SEC-F1 security-relevant string the host's
-  // capability predicate gates (a URL, a command, a session id) — the host authorizes it against the
-  // session's resource-scoped capability BEFORE dispatch; this boundary does not self-authorize.
-  record effect-request {
-    kind: effect-kind,
-    target: string,
-    // Opaque request body (Cadenza binary-sexpr above the wire). `none` = NO payload, distinct from
-    // `some([])` = an intentionally-empty payload (PR#1003 #3 — matches Rust `Option<Payload>`; a bare
-    // `list<u8>` couldn't tell absent from empty).
-    payload: option<list<u8>>,
-    // The guest's opaque continuation token — the SINGLE resume mechanism (operator design review). The
-    // guest sets it here (e.g. a key into its KV continuation table, or serialized continuation state);
-    // the kernel echoes it back VERBATIM on this effect's result/timer event, and the guest deserializes
-    // / makes sense of it. The kernel treats it as opaque bytes. `none` = fire-and-forget (the guest
-    // won't await this effect). This is what the guest resumes on — it never sees the kernel's internal
-    // effect id.
-    correlation: option<list<u8>>,
-    // REGISTER-BY-STRING escape (effect.rs "future register-by-string slice"): an OPTIONAL explicit
-    // content-type FAMILY string. `none` (the default) = the family is derived from `kind` as before
-    // (shell→"shell", emit→"message", …) — every existing guest is unchanged. `some("<family>")` =
-    // emit an effect whose family is EXACTLY that string, overriding the kind-derived family, so a
-    // Cadenza reducer can emit a REGISTER-BY-STRING family (e.g. `effect/reply` to settle a caller in a
-    // handler session, or any userspace-effect family) that has no matching `effect-kind` variant. `kind`
-    // still rides along (a placeholder like `emit` for such families — the kernel keys on the family
-    // string, seq-39). Append-only field (contract-additive; existing callers pass `none`).
-    family: option<string>,
-  }
-}
+// ── Shared value types: NONE at this boundary anymore (bytes-AST fold, DESIGN-binary-ast-abi §2/§3a) ──
+// The former `types` interface (content-type, effect-kind, effect-request) is GONE. Under the bytes-AST
+// fold boundary the event and the returned effect list each cross as ONE `list<u8>` cadenza-ast value-form
+// document, so content-type/effect-kind/effect-request are no longer WIT records — they are value-form AST
+// SHAPES the guest and kernel agree on ABOVE the wire (the kernel builds/parses them via
+// `ast_marshal.rs`; the guest via `cadenza-ast`). This is the "full collapse, delete the old thing"
+// (no-adapter directive): the boundary carries a self-describing binary AST, not a hand-split WIT tuple
+// whose fields the host must know — a new envelope/effect field is a new named AST child, never a WIT
+// signature change (additive-by-symbol). The effect KIND rides as a family STRING inside the AST (never a
+// closed enum discriminant), so a register-by-string userspace family with no built-in kind round-trips.
 
 // ── The KV store, as a HOST IMPORT the guest calls directly ─────────────────────────────────────────
 // Per §4/§4b, a reducer reading its OWN KV is a direct query, NOT a world-touching effect — so KV is a
@@ -108,27 +60,30 @@ interface kv {
 
 // ── The fold export — the guest's one entrypoint ────────────────────────────────────────────────────
 interface fold {
-  use types.{effect-request, content-type};
-
   // Fold ONE event into the KV, returning the effects requested (§3). Called once per event, in log
-  // order. The event is delivered as its opaque payload bytes + the envelope the guest needs: which
-  // content-type it is, and — for a result/timer event — the guest's OWN continuation token (`resumes`),
-  // echoed back verbatim from the originating effect-request's `correlation`, so the guest looks up /
-  // deserializes its continuation. Genesis/setup context arrive as ordinary early `apply` calls (§3
-  // genesis + context-as-events), so there is no separate init export.
+  // order. Both directions are ONE cadenza-ast value-form document as opaque bytes (DESIGN-binary-ast-abi
+  // §3a — the kernel host never constructs or inspects a value-heap handle):
+  //
+  //   IN  `event`: the whole event as one AST document folding the former three args into named children,
+  //        e.g. `(event (content-type <ct>) (payload <bytes-or-absent>) (resumes <bytes-or-absent>))`.
+  //        `content-type` is the routing/filtering hint; `payload` is the opaque request body; `resumes`
+  //        is — for a result/timer event — the guest's OWN continuation token, echoed verbatim from the
+  //        originating effect-request's `correlation` (the single resume mechanism), absent for inbound
+  //        messages / genesis / denials / fire-and-forget. The kernel builds this document
+  //        (`ast_marshal::build_event_document`); the guest decodes it.
+  //   OUT `list<u8>`: the requested effects as one AST document — a value-form list of effect-request
+  //        records `(correlation? kind:string payload? target:bytes)`. The kernel parses it
+  //        (`ast_marshal::parse_effect_list`). `kind` is the family STRING (never a closed enum), so a
+  //        register-by-string userspace family with no built-in kind round-trips.
+  //
+  // Any guest — Cadenza OR Rust — that can decode/encode `cadenza-ast` bytes is a valid reducer; there is
+  // no value-heap handle ABI. Genesis/setup context arrive as ordinary early `apply` calls, so there is no
+  // separate init export.
   //
   // TOTALITY (§17 "can't-brick"): the guest must not trap for any input — an event it doesn't
-  // understand should yield an empty effect list, not a crash. (The host treats a guest trap as a fold
-  // failure; the trap→event policy is a host concern, §16c gap A.)
-  apply: func(
-    content-type: content-type,
-    payload: option<list<u8>>,
-    // For a result/timer event: the guest's OWN continuation token, echoed verbatim from the
-    // originating effect-request's `correlation` (the single resume mechanism — operator design review;
-    // the guest never sees the kernel's internal effect id). Absent for inbound messages / genesis /
-    // denials, and for a completed effect whose request set no `correlation` (fire-and-forget).
-    resumes: option<list<u8>>,
-  ) -> list<effect-request>;
+  // understand should yield an empty effect list (an empty `(effects)` document), not a crash. (The host
+  // treats a guest trap as a fold failure; the trap→event policy is a host concern, §16c gap A.)
+  apply: func(event: list<u8>) -> list<u8>;
 }
 
 // ── The reducer world: what a reducer component EXPORTS + IMPORTS ────────────────────────────────────

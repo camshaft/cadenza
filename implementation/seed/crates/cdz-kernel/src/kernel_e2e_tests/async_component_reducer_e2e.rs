@@ -6,9 +6,10 @@
 //! effect-request + the `kv` host import + the mutated KV across the component boundary, on a real
 //! single-threaded (current-thread) executor (the runtime the kernel is designed for — no Send).
 
+use crate::event::ContentType;
 use crate::kv::Kv;
 use crate::reducer::Reducer;
-use crate::wasm_host::{AsyncComponentReducer, ComponentError, ContentType, EffectKind};
+use crate::wasm_host::{AsyncComponentReducer, ComponentError};
 
 // The SAME guest the sync e2e uses (via REDUCER_GUEST_COMPONENT) — a dependency-free wit-bindgen reducer
 // that, on an inbound "message", requests one Http effect + increments a KV counter.
@@ -49,9 +50,13 @@ async fn real_guest_folds_through_async_apply_end_to_end() {
     // Identical observable behavior to the sync path: exactly one Http effect with the guest's own
     // correlation token, round-tripped across the component boundary.
     assert_eq!(effects.len(), 1);
-    assert_eq!(effects[0].kind, EffectKind::Http);
-    assert_eq!(effects[0].target, "https://ok.host/x");
-    assert_eq!(effects[0].correlation.as_deref(), Some(&b"step-1"[..]));
+    // Bytes boundary: kind crosses as the family STRING, kernel `Effect` is `{request, token}`.
+    assert_eq!(effects[0].request.content_type.family, "http");
+    assert_eq!(
+        effects[0].request.target_str().unwrap(),
+        "https://ok.host/x"
+    );
+    assert_eq!(effects[0].token.as_deref(), Some(&b"step-1"[..]));
 
     // The guest wrote its KV counter via the `kv` host import, and the mutated KV came back out.
     assert_eq!(kv.get(b"count").as_deref(), Some(&[1u8][..]));

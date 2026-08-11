@@ -23,3 +23,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 wit-bindgen = "0.45"
+# The guest speaks `cadenza-ast` DIRECTLY under the bytes fold boundary (DESIGN-binary-ast-abi §3d): it
+# decodes the event document + encodes the effect-list document itself — needs cadenza-ast and nothing else.
+cadenza-ast = { path = "../../../../cadenza-ast" }

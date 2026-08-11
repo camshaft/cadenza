@@ -15,8 +15,9 @@
 //!   wasm-tools component new target/wasm32-unknown-unknown/release/reducer_guest.wasm -o /tmp/rg.wasm
 //!   REDUCER_GUEST_COMPONENT=/tmp/rg.wasm cargo test  (or `nix build .#reducer-guest`)
 
+use crate::event::ContentType;
 use crate::kv::Kv;
-use crate::wasm_host::{ComponentError, ComponentReducer, ContentType, EffectKind};
+use crate::wasm_host::{ComponentError, ComponentReducer};
 
 /// The reducer-guest component bytes, read from the `REDUCER_GUEST_COMPONENT` env path (the nix-built
 /// `packages.reducer-guest`; the cdz-kernel CI job exports it). Returns `None` when the env is UNSET so a
@@ -60,9 +61,15 @@ async fn real_guest_component_folds_through_apply_end_to_end() {
     // The guest requested exactly one Http effect, with its own correlation token — proving the
     // effect-request round-trips across the component boundary intact.
     assert_eq!(effects.len(), 1);
-    assert_eq!(effects[0].kind, EffectKind::Http);
-    assert_eq!(effects[0].target, "https://ok.host/x");
-    assert_eq!(effects[0].correlation.as_deref(), Some(&b"step-1"[..]));
+    // Under the bytes boundary the guest's `kind` crosses as the family STRING (parse_effect_list →
+    // new_with_family), and the kernel `Effect` is `{request, token}` — so assert the family/target/token
+    // rather than a WIT `EffectKind` enum + bare fields.
+    assert_eq!(effects[0].request.content_type.family, "http");
+    assert_eq!(
+        effects[0].request.target_str().unwrap(),
+        "https://ok.host/x"
+    );
+    assert_eq!(effects[0].token.as_deref(), Some(&b"step-1"[..]));
 
     // The guest wrote its KV counter via the `kv` HOST IMPORT (§4b: the reducer reads/writes its own
     // KV directly during the fold) — and the mutated KV came back out for the host to persist (§4).

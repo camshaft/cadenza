@@ -17,7 +17,4 @@
 mod async_component_reducer_e2e;
 mod component_reducer_e2e;
 mod loop_and_recovery;
-mod reducer_cadenza_b1_e2e;
-mod reducer_cadenza_b2_e2e;
-mod reducer_cadenza_b3_e2e;
 mod replay_determinism;

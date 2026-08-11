@@ -1324,6 +1324,11 @@
           fileset = pkgs.lib.fileset.unions [
             ./implementation/seed/crates/cdz-kernel/tests/fixtures/reducer-guest
             ./implementation/seed/crates/cdz-kernel/wit
+            # Under the BYTES fold boundary the guest speaks `cadenza-ast` DIRECTLY (decodes the event
+            # doc + encodes the effect-list doc — DESIGN-binary-ast-abi §3d), so the guest crate carries a
+            # `cadenza-ast` PATH dep; the offline --locked build needs its source in the fileset to resolve
+            # the manifest (registry deps come from the guest's own Cargo.lock via importCargoLock).
+            ./implementation/seed/crates/cadenza-ast
             ./rust-toolchain.toml
           ];
         };
