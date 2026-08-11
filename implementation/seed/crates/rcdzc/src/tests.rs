@@ -54728,6 +54728,31 @@ mod diagnostics {
         );
     }
 
+    #[test]
+    fn a_variant_nested_record_match_binder_declines_coded_not_uncoded_at_compile() {
+        // A record sub-pattern nested under a VARIANT payload — `(Wrap (record (= x a)))` — is NOT wired
+        // (only `Elem`-pathed tuple/list nesting is; a `Payload`-pathed `RecordField` would type `Ty::Any`
+        // since `record_field_at_path` grounds only `Elem` steps). REGRESSION SENTINEL: it must decline with
+        // a CLEAN CODED CDZ0201 that `cdz check` (the diagnostics/collect_faults path) surfaces — NOT type
+        // `Ty::Any` and pass check while `compile` blows up with an UNCODED "no machine representation" (the
+        // check≡compile divergence this guards). The resolve descent deliberately stops at a variant head so
+        // the binder falls through to the coded `match_arm_nested_record_binds` decline.
+        let src = "(module m (type W (Wrap (Record (: x Int64)))) \
+               (def (f (: w W)) (match w ((Wrap (record (= x a))) a))) (export f))";
+        let all = diags_of(src);
+        assert!(
+            all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains(
+                    "record sub-pattern nested inside a tuple/list/constructor match pattern"
+                )),
+            "a variant-nested record binder declines CODED CDZ0201, surfaced by check: {all:?}"
+        );
+        assert!(
+            all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
+            "no misleading 'unbound name' cascade for the variant-nested binder: {all:?}"
+        );
+    }
+
     /// A BARE-binder RECORD sub-pattern NESTED inside a tuple match pattern — `(tuple (record (x a)) c)` —
     /// now WIRES: the binder `a` resolves to a `Resolved::RecordField` reading field `x` off the record at
     /// tuple-slot 0 (the nested-in-compound twin of the top-level record-match `Resolved::Member`, the

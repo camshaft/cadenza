@@ -4379,42 +4379,16 @@ fn find_record_binder_in_pattern(
         }
         return None;
     }
-    // A VARIANT pattern `(head arg…)` (head a `(. Sum V)` / bare variant name, not a compound ctor): the
-    // payload is reached by a `Payload` step, then each arg (multi-payload → tuple `Elem(i)`) descends —
-    // mirrors `find_map_binder_in_pattern`'s variant arm.
-    let Struct::List(app) = db.ast.get(pattern) else {
-        return None;
-    };
-    if app.len() < 2 {
-        return None;
-    }
-    let head = app[0];
-    let is_compound_ctor = db
-        .ast
-        .as_name(head)
-        .is_some_and(|h| matches!(h, "list" | "tuple" | "record" | "map"));
-    let head_ok = !is_compound_ctor
-        && (db.ast.as_form(head, ".").is_some() || db.ast.as_name(head).is_some());
-    if !head_ok {
-        return None;
-    }
-    let len = path.len();
-    path.push(crate::core::PathStep::Payload);
-    if app.len() == 2 {
-        if let Some(hit) = find_record_binder_in_pattern(db, app[1], name, path) {
-            return Some(hit);
-        }
-    } else {
-        for (i, &arg) in app[1..].iter().enumerate() {
-            let plen = path.len();
-            path.push(crate::core::PathStep::Elem(i));
-            if let Some(hit) = find_record_binder_in_pattern(db, arg, name, path) {
-                return Some(hit);
-            }
-            path.truncate(plen);
-        }
-    }
-    path.truncate(len);
+    // A VARIANT-nested record (`(W.Wrap (record (= x a)))`) is DELIBERATELY NOT descended: reaching the
+    // record under a variant needs a `Payload` step, but `record_field_at_path` (infer) only grounds `Elem`
+    // steps — a `Payload`-pathed `RecordField` types `Ty::Any`, which passes `cdz check` yet fails `cdz
+    // compile` with an UNCODED "no machine representation" (a check≡compile divergence). Since only `Elem`
+    // (tuple/list) descent is wired, STOP here for a variant head; the binder then falls through to the
+    // coded `match_arm_nested_record_binds` decline (`pattern_has_nested_record_binding` DOES recurse the
+    // variant payload), so a variant-nested record binder names the unimplemented feature with a clean coded
+    // CDZ0201 that `cdz check` surfaces — instead of the uncoded compile blow-up. (Wiring the variant case =
+    // thread the payload's variant heads into `record_field_at_path` like `SumPayload.heads`; a future
+    // increment, out of the tuple/list-nested scope this shipped.)
     None
 }
 
