@@ -392,6 +392,7 @@ pass	Symbol.of over a slice of a dying rope interns the WINDOW content
 pass	Symbol.to-string output compares equal to a slice VIEW of matching content
 pass	THREE Tuple args cross the direct-call boundary
 pass	THREE Tuple args with a LIST result
+pass	THREE performs nested in one expression — each op's result is the next op's argument, three distinct arms and strides
 pass	THREE stacked guards on one constructor classify a heap payload into bands in order
 pass	TO-DIGITS and FROM-DIGITS round-trip a number through its base-10 digit list
 pass	TOP-K keeps the k largest via a bounded descending insort that drops the smallest overflow

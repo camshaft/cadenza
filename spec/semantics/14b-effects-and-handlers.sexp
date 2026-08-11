@@ -8171,3 +8171,26 @@
                   (+ (B.gb) (* 1000 (B.gb))))))
             (export main)))
   (error  CDZ0401))
+
+(case "THREE performs nested in one expression — each op's result is the next op's argument, three distinct arms and strides"
+  (doc    "Deeper than the landed 2-deep tuple-projection pin: three distinct ops nested in ONE expression
+           `(S.c (S.b (S.a 5)))`, each op's result flowing as the next op's argument, plus a fourth trailing
+           dispatch — three arms with different state strides (a: +1, b: +10, c: +100) threaded through one
+           spine. Argument-position evaluation order must be exact (innermost perform first). S seeded n, arms
+           `a (v) s -> resume (+ v s) (+ s 1)`, `b (v) s -> resume (* v 2) (+ s 10)`, `c (v) s -> resume (- v s)
+           (+ s 100)`. `main(3)`: S.a 5 @s=3 -> 5+3=8, s->4; S.b 8 @s=4 -> 16, s->14; S.c 16 @s=14 -> 16-14=2,
+           s->114; S.a 1 @s=114 -> 1+114=115, s->115; body `(+ (S.c (S.b (S.a 5))) (* 10000 (S.a 1)))` =
+           2 + 10000*115 = 1150002. Uniform on all 3 backends, opt-sweep 0-divergence. Breaker
+           nested-perform-compose probe nc1 (2026-08-11). (The middle-op-aborts face nc2 declines, banked — the
+           1-dispatch-before-abort fence.)")
+  (input  (do
+            (effect S (op a (-> Int64 Int64)) (op b (-> Int64 Int64)) (op c (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S n
+                ((a (v) s (resume (+ v s) (+ s 1)))
+                 (b (v) s (resume (* v 2) (+ s 10)))
+                 (c (v) s (resume (- v s) (+ s 100))))
+                (+ (S.c (S.b (S.a 5))) (* 10000 (S.a 1)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 1150002 Int64))
+  (call   main (: 0 Int64)) (output (: 1119999 Int64)))
