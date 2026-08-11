@@ -4701,6 +4701,7 @@ pass	bd2 the scoring CLOSURE captures a DRAW — the weight itself comes from th
 pass	bf1 a growing BYTES FRAME as handler state — each op appends a u8 record, the final op bin-decodes head + rest length
 pass	bf2 the frame grows by u16 BE records — dump decodes the SECOND record through a fixed-width first segment
 pass	bf3 tagged-record round-trip — arms ENCODE (tag,val) u8 pairs into the frame state, the body decodes the REPLAYED frame
+pass	bg1 a BOOL op result is the recursion CONDITION itself — the walk continues while draws stay true
 pass	bg3 a BIGINT handler state — tripling per dispatch crosses the i64 boundary mid-thread, the exact multi-limb value survives
 pass	bg4 BIGINT comparison in the arm routes tri-band verdicts — doubling walks past both thresholds, one row compares a genuine multi-limb value
 pass	bin-encode segment ORDER holds for runtime-swapped operand values
@@ -6422,6 +6423,7 @@ pass	tl1 THREE live handlers, each drawn in one expression — every draw dispat
 pass	tl2 a THREE-frame value pipeline — innermost pick feeds middle dbl feeds outermost send, then an outer draw stamps the hundreds
 pass	tl3 the MIDDLE frame's arm resumes with an OUTERMOST draw — rv-face at depth, dispatched from under a third live frame
 pass	tl4 SAME effect handled at two depths — the inner handle shadows for its extent, the outer thread resumes after it closes
+pass	tm2 a THREE-function mutual SCC — two tail legs route by value, the third combines the cycle result with a post-put draw
 pass	to-bytes of a sliced multibyte string is read twice and both reads see the right bytes
 pass	tp1 TWO ops each own a tuple-state SLOT — lo advances field 0, hi doubles field 1, interleaved
 pass	tp2 a SWAP op exchanges the tuple-state slots — interleaved readers observe the exchange
