@@ -23062,3 +23062,54 @@
   (call   main (: 4 Int64)) (output (: 45 Int64))
   (call   main (: 5 Int64)) (output (: 205 Int64))
   (call   main (: 0 Int64)) (trap "divide by zero"))
+
+; ── Open-row projection × effect dispatch (breaker batch 223) ─────────────────
+; Row polymorphism's per-call-site slot resolution meets the dispatch boundary:
+; a projector applied at two record widths whose rows hold fresh draws, an
+; arm-BUILT record projected open-row by the body, and a RECORD handler state
+; projected open-row inside the arm itself (the arm's instantiation independent
+; of the body's).
+
+(case "or1 an open-row projector applied to TWO record widths where one field is a fresh DRAW — per-call-site slots under effect state"
+  (input  (do
+            (effect St (op get (-> Int64)))
+            (def (get-x r) (. r x))
+            (def (main (: n Int64))
+              (handle St n
+                ((get () s (resume s (+ s 1))))
+                (+ (get-x (record (= x (St.get))))
+                   (* 100 (get-x (record (= a 9) (= x (St.get)) (= z 8)))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 403 Int64))
+  (call   main (: 0 Int64)) (output (: 100 Int64)))
+
+(case "or2 the handler ARM builds a record and the body projects it open-row at two widths — arm-built rows cross the dispatch boundary"
+  (input  (do
+            (effect Mk (op pack (-> Int64 (Record (: x Int64) (: t Int64)))))
+            (def (get-x r) (. r x))
+            (def (main (: n Int64))
+              (handle Mk n
+                ((pack (a) s (resume (record (= x (* 10 a)) (= t s)) (+ s 1))))
+                (let ((r1 (Mk.pack 2))
+                      (r2 (Mk.pack 3)))
+                  (+ (get-x r1)
+                     (+ (* 100 (get-x r2))
+                        (+ (* 10000 (. r1 t)) (* 1000000 (. r2 t))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 6053020 Int64))
+  (call   main (: 0 Int64)) (output (: 1003020 Int64)))
+
+(case "or3 a RECORD handler state projected open-row inside the arm — the arm's row instantiation is independent of the body's"
+  (input  (do
+            (effect St (op bump (-> Int64 Int64)))
+            (def (get-x r) (. r x))
+            (def (main (: n Int64))
+              (handle St (record (= x n) (= hits 0))
+                ((bump (a) s (resume (+ (get-x s) a)
+                                     (record (= x (+ (get-x s) a)) (= hits (+ (. s hits) 1))))))
+                (let ((b1 (St.bump 10)))
+                  (let ((b2 (St.bump 100)))
+                    (+ b1 (* 1000 b2))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 113013 Int64))
+  (call   main (: 0 Int64)) (output (: 110010 Int64)))

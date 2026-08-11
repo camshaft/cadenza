@@ -5572,6 +5572,9 @@ pass	or evaluates the right operand when the left is false
 pass	or performs the right operand's effect when the left is false
 pass	or short-circuit does not perform the right operand's effect
 pass	or short-circuits at run time: a true left operand skips the trapping right operand
+pass	or1 an open-row projector applied to TWO record widths where one field is a fresh DRAW — per-call-site slots under effect state
+pass	or2 the handler ARM builds a record and the body projects it open-row at two widths — arm-built rows cross the dispatch boundary
+pass	or3 a RECORD handler state projected open-row inside the arm — the arm's row instantiation is independent of the body's
 pass	ordering a string against an integer is a type error regardless of operand order
 pass	ordering an integer against a boolean is a type error
 pass	ordering an integer against a float is rejected, not silently promoted
