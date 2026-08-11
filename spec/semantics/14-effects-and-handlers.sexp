@@ -23560,3 +23560,36 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 5000162 Int64))
   (call   main (: 0 Int64)) (output (: 112 Int64)))
+
+; ── Abort-after-advance + arm-built value-eq (breaker batch 228) ──────────────
+; ag3 pins the abort-arm reading the ADVANCED state after one resumptive
+; dispatch (the fold's 1-dispatch-before-abort boundary, green side); dh1 pins
+; value-eq on two ARM-BUILT lists per dispatch — the owned-handle reclaim runs
+; once per dispatch while the state advances (drop-hoist regression guard).
+
+(case "ag3 one resumptive dispatch then an ABORT on the same handler — the abort arm reads the advanced state"
+  (input  (do
+            (effect St (op put (-> Int64 Int64)) (op halt (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((put (v) s (resume s (+ s v)))
+                 (halt (u) s (* 100 s)))
+                (match (St.put n) (_ (+ 7777 (St.halt))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 300 Int64))
+  (call   main (: 0 Int64)) (output (: 0 Int64))
+  (call   main (: -4 Int64)) (output (: -400 Int64)))
+
+(case "dh1 value-eq on two ARM-BUILT lists inside a dispatch — the borrowed-handle reclaim after = must not double-drop"
+  (input  (do
+            (effect Q (op probe (-> Int64 Bool)))
+            (def (main (: n Int64))
+              (handle Q n
+                ((probe (v) s
+                  (resume (= (list v (+ v 1)) (list s (+ s 1))) (+ s 1))))
+                (+ (if (Q.probe n) 1 0)
+                   (+ (* 10 (if (Q.probe n) 1 0))
+                      (* 100 (if (Q.probe (+ n 2)) 1 0))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 101 Int64))
+  (call   main (: 0 Int64)) (output (: 101 Int64)))

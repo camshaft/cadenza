@@ -4066,6 +4066,7 @@ pass	ae7 draw NESTED under a pure unary call in the first arg slot, second slot 
 pass	ae8 LIST literal of three draws — element positions carry the draw order into the structure
 pass	ae9 RECORD literal of two draws read back by PROJECTION — field-init order in the literal drives the state thread
 pass	ag2 TWO aggregator effects interleaved — each keeps its own running sum, weighted reads pin the four-feed order
+pass	ag3 one resumptive dispatch then an ABORT on the same handler — the abort arm reads the advanced state
 pass	al1 chained LET locals inside the arm — intermediate names feed both the resume value and the next-state
 pass	al2 a PURE helper called from the arm for BOTH slots — the arm delegates its computation to a def
 pass	al3 a two-site resume where EACH branch has its own LET local — gap/overshoot named per path, different strides
@@ -4958,6 +4959,7 @@ pass	decoding well-formed UTF-8 bytes yields the string
 pass	deeply nested pattern matching
 pass	demoting a Float64 to Float32 rounds to the nearest binary32
 pass	dg1 a DIGIT-extractor arm — each dispatch peels the low digit and floors the state by ten, three peels reverse the tail
+pass	dh1 value-eq on two ARM-BUILT lists inside a dispatch — the borrowed-handle reclaim after = must not double-drop
 pass	difference DISTRIBUTES over union but is NOT associative - both facts witnessed live
 pass	difference cardinality with a runtime-element subtrahend
 pass	difference is NOT commutative
