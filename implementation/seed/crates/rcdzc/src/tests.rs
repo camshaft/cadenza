@@ -70004,6 +70004,33 @@ mod stage1 {
     }
 
     #[test]
+    fn an_aborting_arms_unread_op_arg_still_threads_its_foreign_perform() {
+        // OP-ARG LET-LIFT on the ABORT value (strict-fold #17 face-4 RESIDUAL, corpus-bugfix routed). The
+        // resumptive face (test above) threads an unread foreign-performing arg by wrapping the resume result
+        // in the `#cv` lets. But when the ignoring arm ABORTS — `(bail (v) s 55)` never resumes — the abort
+        // path returned the bare arm value, SKIPPING the lifts, so the foreign perform in the arg was dropped
+        // and its advance lost. `(A.bail (B.tick))` under an outer B: the abort discards the CONTINUATION, but
+        // NOT the already-committed B advance, so a later `(B.tick)` must read the advanced state. Seed 3:
+        // first B.tick = 3 (t->4), A.bail aborts to 55, the `* 1000` makes 55000, the later B.tick reads 4 →
+        // 55000 + 4 = 55004 (was 55003, the advance lost). The abort value now carries the same `#cv` lets.
+        let src = "(do (effect A (op bail (-> Int64 Int64))) \
+                   (effect B (op tick (-> Int64))) \
+                   (def (main) (handle B 3 ((tick () t (resume t (+ t 1)))) \
+                     (+ (* 1000 (handle A 0 ((bail (v) s 55)) (+ 7777 (A.bail (B.tick))))) (B.tick)))) \
+                   (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src))).expect(
+                    "an aborting arm's unread foreign-performing op arg folds (abort-path lift)"
+                ),
+                "main"
+            ),
+            55004,
+            "the abort must still run the dropped foreign perform (B.tick) ONCE: 55000 + 4 = 55004, not 55003"
+        );
+    }
+
+    #[test]
     fn a_recursive_effectful_def_with_a_post_recursion_sibling_perform_folds_via_multivalue_return()
     {
         // OUT-STATE-OBSERVING SIBLING PERFORM, now FOLDED (repro-1 multi-value return). A recursive-effectful

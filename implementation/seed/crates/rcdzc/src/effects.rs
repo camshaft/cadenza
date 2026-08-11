@@ -5514,7 +5514,31 @@ fn thread_bounded(
                 if let Some(existing) = ctx.abort_value.get() {
                     return Some((existing, cur));
                 }
-                let copied = copy_pure(db, arm_body);
+                // OP-ARG LET-LIFT on the ABORT value too (strict-fold #17 face-4 RESIDUAL, corpus-bugfix
+                // 2026-08-11). When the aborting arm IGNORES its param, its unread arg — a FOREIGN perform
+                // `(B.tick)` this handler does not discharge — was dropped by the `beta_reduce` above, so the
+                // outer handler never threaded its state advance (a later `(B.tick)` read stale state:
+                // `(A.bail (B.tick))` under B → 55003 not 55004). The RESUMPTIVE path already wraps its result
+                // in `arg_lifts` (below); the abort path returned the bare arm value, skipping them. Wrap the
+                // abort value in the SAME `#cv` lets so the foreign perform still runs ONCE for effect before
+                // the abort collapses the continuation — the abort discards the CONTINUATION, not an
+                // already-committed foreign advance (the do-shape abort-outer-advance rule, same spirit as the
+                // `(do <foreign…> <abort-value>)` preservation in `reduce_handle`). A resumptive arg drop and an
+                // abortive arg drop are the SAME face; both must thread the dropped foreign dispatch. Nothing
+                // lifted (a pure/unread-pure arg, the common case) → `arm_body` unchanged, byte-identical.
+                let aborted = if arg_lifts.is_empty() {
+                    arm_body
+                } else {
+                    let mut wrapped = arm_body;
+                    for &(binder, arg) in arg_lifts.iter().rev() {
+                        let let_head = db.push_name("let");
+                        let pair = db.push_list(vec![binder, arg]);
+                        let bindings = db.push_list(vec![pair]);
+                        wrapped = db.push_list(vec![let_head, bindings, wrapped]);
+                    }
+                    wrapped
+                };
+                let copied = copy_pure(db, aborted);
                 ctx.abort_value.set(Some(copied));
                 return Some((copied, cur));
             }
