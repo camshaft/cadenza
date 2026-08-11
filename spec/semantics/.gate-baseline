@@ -6315,6 +6315,7 @@ pass	the read primitive skips a line comment inside program text
 pass	the reader literal reads to Symbol.of
 pass	the ready-queue is a plain FIFO — spawned-ready tasks run in enqueue order
 pass	the record-perform workaround — `let`-bind then read by `(. r field)` projection — folds once each (finding #8 control)
+pass	the recursion DEPTH itself is a draw — the walk runs mod-4-of-state iterations, including the zero-depth face
 pass	the remainder takes the sign of the dividend for a negative dividend
 pass	the remainder takes the sign of the dividend for a negative divisor
 pass	the rest binder carries the unmatched runtime-keyed remainder

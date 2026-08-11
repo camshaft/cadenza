@@ -8194,3 +8194,28 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 1150002 Int64))
   (call   main (: 0 Int64)) (output (: 1119999 Int64)))
+
+(case "the recursion DEPTH itself is a draw — the walk runs mod-4-of-state iterations, including the zero-depth face"
+  (doc    "The recursion bound is DATA from a perform, not a literal: `(let ((d (S.depth))) (+ (* 100000 d)
+           (walk d 0)))` — `S.depth` resumes `(% s 4)` so the walk's iteration count is drawn from the handler
+           state, and the depth draw ALSO advances the state that the subsequent `walk`'s per-hop `S.tick`
+           reads. Covers the zero-depth face (when the draw is 0 the walk never performs and the fold must
+           still thread cleanly). depth arm `(resume (% s 4) (+ s 1))`, tick arm `(resume s (+ s 1))`.
+           `main(6)`: d = 6%4 = 2 (s->7); walk(2,0): tick@7->7 acc=7 (s->8), tick@8->8 acc=78 (s->9); 100000*2
+           + 78 = 200078. `main(4)`: d = 0 (zero-depth, walk never ticks) → 0. `main(5)`: d = 1 (s->6);
+           walk(1,0): tick@6->6 acc=6; 100000*1 + 6 = 100006. Uniform on all 3 backends, opt-sweep
+           0-divergence. Breaker draw-determined-depth probe sd2 (2026-08-11).")
+  (input  (do
+            (effect S (op depth (-> Int64)) (op tick (-> Int64)))
+            (def (walk (: k Int64) (: acc Int64))
+              (if (< k 1) acc (walk (- k 1) (+ (* 10 acc) (S.tick)))))
+            (def (main (: n Int64))
+              (handle S n
+                ((depth () s (resume (% s 4) (+ s 1)))
+                 (tick () s (resume s (+ s 1))))
+                (let ((d (S.depth)))
+                  (+ (* 100000 d) (walk d 0)))))
+            (export main)))
+  (call   main (: 6 Int64)) (output (: 200078 Int64))
+  (call   main (: 4 Int64)) (output (: 0 Int64))
+  (call   main (: 5 Int64)) (output (: 100006 Int64)))
