@@ -68565,6 +68565,194 @@ mod stage1 {
     }
 
     #[test]
+    fn a_host_op_with_three_runtime_bytes_args_marshals_each_to_a_disjoint_region_and_runs() {
+        // S0 N-arg coverage BEYOND N=2: THREE runtime Bytes args must each marshal to a DISJOINT scratch
+        // region via the running cursor (the cursor advances by each arg's runtime length; three
+        // rope/len/pos slot triples are allocated above the reserved cursor slot without collision). Pins
+        // that the generalization holds for N>2, not just the 2-arg reducer put(key,value) shape. Each arg
+        // wraps a k-derived value so all three are genuine RUNTIME Bytes that MUST copy into scratch.
+        // Compiles + valid component + runs.
+        use crate::testkit::parse;
+        let Some(runtime) = find_runtime_wasm() else {
+            eprintln!(
+                "[host-three-runtime-bytes-args] runtime wasm not in the store; skipping run"
+            );
+            return;
+        };
+        let src = "(do (effect io (op sink3 (-> Bytes Bytes Bytes Int64))) \
+                   (def (main (: k Int64)) \
+                     (host (io) (io.sink3 (Bytes.of (list ((UInt 8).wrap k))) (Bytes.of (list ((UInt 8).wrap (+ k 1)))) (Bytes.of (list ((UInt 8).wrap (+ k 2))))))) \
+                   (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
+            "three runtime Bytes args must each marshal to a disjoint scratch region, not decline",
+        );
+        let engine = wasmtime::Engine::default();
+        wasmtime::component::Component::from_binary(&engine, &bytes).expect(
+            "the three-runtime-Bytes-args component must be VALID (three disjoint scratch regions, no slot clobber)",
+        );
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["65".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: vec![cdz_run::HostResponse {
+                op: "io.sink3".to_string(),
+                value: "11".to_string(),
+            }],
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "11",
+                "all three runtime Bytes args marshal (disjoint regions) + the host call returns its response"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("three-runtime-Bytes-args run trapped: {t}"),
+        }
+    }
+
+    #[test]
+    fn a_host_op_interleaving_runtime_bytes_and_scalar_args_keeps_regions_and_slots_distinct() {
+        // S0 N-arg coverage, INTERLEAVED shape: Bytes, scalar, Bytes — a runtime Bytes arg, then a SCALAR,
+        // then another runtime Bytes arg. Exercises the cursor PERSISTING across a scalar arg together with
+        // the arg_base slot-threading: arg1 marshals (reserving the cursor + its rope/len/pos slots), the
+        // scalar arg emits ABOVE them (arg_base rose past the cursor and arg1's slots), then arg3 marshals
+        // to the region the cursor advanced to, with fresh slots. A slot collision or a stale arg_base here
+        // would produce an invalid module (the i32/i64 slot-width clobber class). Compiles + valid + runs.
+        use crate::testkit::parse;
+        let Some(runtime) = find_runtime_wasm() else {
+            eprintln!(
+                "[host-interleaved-bytes-scalar-args] runtime wasm not in the store; skipping run"
+            );
+            return;
+        };
+        let src = "(do (effect io (op mix (-> Bytes Int64 Bytes Int64))) \
+                   (def (main (: k Int64)) \
+                     (host (io) (io.mix (Bytes.of (list ((UInt 8).wrap k))) (+ k 7) (Bytes.of (list ((UInt 8).wrap (+ k 1))))))) \
+                   (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
+            "an interleaved Bytes/scalar/Bytes host call must marshal both Bytes args, not decline",
+        );
+        let engine = wasmtime::Engine::default();
+        wasmtime::component::Component::from_binary(&engine, &bytes).expect(
+            "the interleaved Bytes/scalar/Bytes component must be VALID (cursor persists across the scalar, no slot clobber)",
+        );
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["65".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: vec![cdz_run::HostResponse {
+                op: "io.mix".to_string(),
+                value: "3".to_string(),
+            }],
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "3",
+                "interleaved runtime Bytes and scalar args marshal correctly + the host call returns its response"
+            ),
+            cdz_run::Outcome::Trap(t) => {
+                panic!("interleaved Bytes/scalar host-args run trapped: {t}")
+            }
+        }
+    }
+
+    #[test]
+    fn a_host_op_mixing_a_const_string_and_a_runtime_bytes_arg_routes_each_to_its_own_path() {
+        // S0 coverage for the CONST-vs-RUNTIME split of the `has_runtime_compound` pre-scan: a host op
+        // taking a CONST String arg AND a RUNTIME Bytes arg. The const string is NOT a runtime compound
+        // (it is a `Core::ConstStr`), so the pre-scan must route it to the DATA-SEGMENT path (push its
+        // `host_string_offset` + len, no cursor), while the runtime Bytes IS a runtime compound and takes
+        // the reserved-cursor marshal. My three prior tests all used ONLY runtime compound args; this pins
+        // that a const-string arg alongside a runtime one does NOT spuriously consume the cursor and both
+        // cross correctly (the pre-scan's `!matches!(core_of(..), Core::ConstStr(_))` discriminator).
+        // Compiles + valid component + runs.
+        use crate::testkit::parse;
+        let Some(runtime) = find_runtime_wasm() else {
+            eprintln!(
+                "[host-const-string-plus-runtime-bytes] runtime wasm not in the store; skipping run"
+            );
+            return;
+        };
+        let src = "(do (effect io (op mix2 (-> String Bytes Int64))) \
+                   (def (main (: k Int64)) \
+                     (host (io) (io.mix2 \"const-key\" (Bytes.of (list ((UInt 8).wrap k)))))) \
+                   (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
+            "a const String + runtime Bytes host call must route each arg to its own path, not decline",
+        );
+        let engine = wasmtime::Engine::default();
+        wasmtime::component::Component::from_binary(&engine, &bytes).expect(
+            "the const-String-plus-runtime-Bytes component must be VALID (data-segment const + cursor runtime, no clobber)",
+        );
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["65".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: vec![cdz_run::HostResponse {
+                op: "io.mix2".to_string(),
+                value: "4".to_string(),
+            }],
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "4",
+                "const String (data segment) + runtime Bytes (cursor) both marshal + the host call returns its response"
+            ),
+            cdz_run::Outcome::Trap(t) => {
+                panic!("const-String-plus-runtime-Bytes host-args run trapped: {t}")
+            }
+        }
+    }
+
+    #[test]
+    fn a_generic_reducer_shaped_program_compiles_to_a_valid_component() {
+        // The generic reducer EMIT (operator-mandated compiler-platform-separation): the compiler emits
+        // a valid component for a program shaped like a reducer — WITHOUT any reducer/fold/kv-specific
+        // code. The reducer is just "a program that exports a `list<u8>->list<u8>` fn under a named
+        // interface and imports `kv`"; the compiler marshals the declared signatures generically (the
+        // named-interface export + the host-import path + S0's N-compound-arg marshal for `put`). Pins
+        // the DESIGN's "un-fork-reuse" outcome: no bespoke reducer emit is needed. Compiler-side pin
+        // (valid component); the end-to-end fold run is `gate --target platform` once v-agent-harness's
+        // bytes-apply kernel boundary lands (apply(event list<u8>)->list<u8>).
+        use crate::testkit::parse;
+        let compile_reducer = |src: &str| -> Vec<u8> {
+            let ast = crate::codec::encode(&parse(src));
+            let out = crate::compile::compile(
+                &[
+                    crate::abi::Artifact::new(crate::abi::Artifact::KIND_AST, "main", ast),
+                    // The program names the interface it EXPORTS under — the reducer fold interface —
+                    // exactly as a user program would; the compiler does not know it is "the fold".
+                    crate::cli::component_name_artifact("cadenza:agent-kernel/fold"),
+                ],
+                &[crate::backend::Target::Wasm],
+            );
+            out.artifact(crate::backend::Target::Wasm.artifact_kind())
+                .unwrap_or_else(|| {
+                    let msgs: Vec<_> = out.diagnostics.iter().map(|d| d.message.clone()).collect();
+                    panic!("a generic reducer-shaped program must emit a component, got: {msgs:?}");
+                })
+                .to_vec()
+        };
+        let engine = wasmtime::Engine::default();
+        // (1) The fold EXPORT alone: apply(Bytes)->Bytes as a member of the named interface — the
+        //     pinned bytes fold shape (list<u8>->list<u8>).
+        let export_only = compile_reducer("(do (def (apply (: ev Bytes)) ev) (export apply))");
+        wasmtime::component::Component::from_binary(&engine, &export_only)
+            .expect("the fold-export-only reducer component must be VALID");
+        // (2) The FULL reducer shape: export apply(Bytes)->Bytes + import `kv` via `bind` + perform
+        //     put(Bytes,Bytes) — the two-`list<u8>`-arg host call S0 enables — inside the fold.
+        let full = compile_reducer(
+            "(do (effect Kv (op put (-> Bytes Bytes Unit))) (bind Kv \"cadenza:agent-kernel/kv\") \
+             (def (apply (: ev Bytes)) (host (Kv) (do ((. Kv put) ev ev) ev))) (export apply))",
+        );
+        wasmtime::component::Component::from_binary(&engine, &full).expect(
+            "the full reducer component (fold export + kv import + put marshal) must be VALID — the \
+             generic paths compose, no reducer-specific emit",
+        );
+    }
+
+    #[test]
     fn a_marshalled_host_arg_before_a_scalar_arg_keeps_distinct_slots_valid_module() {
         // The multi-arg SLOT-THREADING regression: a runtime String/Bytes host arg reserves i32 rope/len/pos
         // scratch (at `base.max(high)`) and bumps `high`, but the HostCall emit arm formerly reused the STALE
