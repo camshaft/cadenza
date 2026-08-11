@@ -8013,3 +8013,53 @@
   (call   main (: 100 Int64)) (output (: 100 Int64))
   (call   main (: 0 Int64)) (output (: 0 Int64))
   (call   main (: 7 Int64)) (output (: 7 Int64)))
+
+; ── Mixed-endian dispatch + next-state trap (breaker batch 232) ───────────────
+; me1/me2 pin mixed-endian frames ACROSS the dispatch boundary (per-segment
+; byte order surviving the crossing in both directions, including an arm that
+; re-encodes with SWAPPED endianness); nst1 pins a trap in the arm's NEXT-STATE
+; expression firing on the dispatch whose poisoned state a later dispatch
+; consumes (the consumed face; the unconsumed faces are the strict-fold family).
+
+(case "me1 a MIXED-endian frame crosses the dispatch boundary as an op ARGUMENT — the arm decodes big and little fields independently"
+  (input  (do
+            (effect Codec (op parse (-> Bytes Int64)))
+            (def (main (: n Int64))
+              (handle Codec 0
+                ((parse (frame) s
+                  (match frame
+                    ((bin (u16 x) (u16 y le)) (resume (+ (* 100000 x) y) s))
+                    (_other (resume -1 s)))))
+                (Codec.parse (bin (u16 (UInt16.wrap n)) (u16 (UInt16.wrap (+ n 514)) le)))))
+            (export main)))
+  (call   main (: 258 Int64)) (output (: 25800772 Int64))
+  (call   main (: 0 Int64)) (output (: 514 Int64)))
+
+(case "me2 the arm RE-ENCODES its two decoded fields with SWAPPED endianness and the body decodes the swap"
+  (input  (do
+            (effect Codec (op flip (-> Bytes Bytes)))
+            (def (main (: n Int64))
+              (handle Codec 0
+                ((flip (frame) s
+                  (match frame
+                    ((bin (u16 x) (u16 y le))
+                      (resume (bin (u16 (UInt16.wrap x) le) (u16 (UInt16.wrap y))) s))
+                    (_other (resume frame s)))))
+                (match (Codec.flip (bin (u16 (UInt16.wrap n)) (u16 (UInt16.wrap (+ n 3)) le)))
+                  ((bin (u16 a le) (u16 b)) (+ (* 100000 a) b))
+                  (_other -1))))
+            (export main)))
+  (call   main (: 258 Int64)) (output (: 25800261 Int64))
+  (call   main (: 500 Int64)) (output (: 50000503 Int64)))
+
+(case "nst1 the arm's NEXT-STATE expression divides by a state-derived quantity — both signs thread, the zero seed traps"
+  (input  (do
+            (effect St (op step (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((step () s (resume s (/ 100 (- s 4)))))
+                (+ (* 10 (St.step)) (St.step))))
+            (export main)))
+  (call   main (: 6 Int64)) (output (: 110 Int64))
+  (call   main (: 4 Int64)) (trap "divide by zero")
+  (call   main (: 2 Int64)) (output (: -30 Int64)))
