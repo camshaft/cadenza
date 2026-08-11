@@ -1480,6 +1480,8 @@ pass	a compound-element float renders the same full expansion as the scalar path
 pass	a computed (runtime-branched) label operand to Record.with is rejected — labels are static
 pass	a computed Float32 map key is found by its literal twin
 pass	a computed float map key is found by its literal twin
+pass	a computed-index Bytes.at over a to-bytes view of an effect-grown rope emits valid wasm
+pass	a computed-index String.at over an effect-grown rope emits valid wasm
 pass	a concat of two runtime SLICES joins the sliced views, not the originals
 pass	a concat-built and a push-built SMALL list (single-leaf, n<=32) with the same elements are the same map key
 pass	a concat-built list = a push-built list with the same elements (element-wise, shape-independent, n>=33)

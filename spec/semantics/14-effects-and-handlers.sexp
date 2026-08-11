@@ -23280,3 +23280,57 @@
                              (+ (* 10 (at-or w2 0)) (at-or w2 (- (Bytes.len w2) 1))))))))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 260410 Int64)))
+
+(case "a computed-index String.at over an effect-grown rope emits valid wasm"
+  (doc    "Pins breaker finding 18 (v-wasm-opt fix 27aba9cc5). A String handler state grown by a RECURSIVE
+           effect-dispatch walk, then a String.at whose op ARGUMENT is a COMPUTED index. The wasm emit
+           previously floored both the string operand and the index operand at the same fixed scratch slot;
+           when the string traces to the multi-value-upgraded effect-state thread its transient scratch
+           recorded that slot as an i32 rope handle, and the computed i64 index then reused the same slot,
+           producing an invalid component (expected i32 found i64). Fixed by floating the index-operand
+           floor to floor.max(high) in Core::StrAt, mirroring String.slice. rust and rust-async ran it green
+           throughout; this pins the wasm emit valid. walk grows the rope to n copies of 'z'; pick reads the
+           last with a computed index (n-1) and returns its byte-len 1.")
+  (input  (do
+            (effect S (op add (-> Int64 Int64)) (op pick (-> Int64 Int64)))
+            (def (walk (: k Int64))
+              (if (< k 1) 0 (let ((_d (S.add k))) (walk (- k 1)))))
+            (def (main (: n Int64))
+              (handle S ""
+                ((add (v) s (resume 0 (String.concat s "z")))
+                 (pick (i) s
+                  (resume (match (String.at s i)
+                            ((Some c) (String.byte-len c))
+                            ((None _u) -1))
+                          s)))
+                (let ((_w (walk n)))
+                  (S.pick (- n 1)))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 1 Int64))
+  (call   main (: 1 Int64)) (output (: 1 Int64)))
+
+(case "a computed-index Bytes.at over a to-bytes view of an effect-grown rope emits valid wasm"
+  (doc    "Second face of breaker finding 18 (same fix 27aba9cc5). The to-bytes-view computed Bytes.at read
+           lowers through a DISTINCT emit site Core::BytesAt, which had the IDENTICAL fixed-floor bug: the
+           String.to-bytes rope view over the effect-state thread is an i32 handle at the shared floor and the
+           computed i64 index reused its slot, yielding invalid wasm. Fixed by the same float-the-index-floor
+           treatment in Core::BytesAt alongside Core::StrAt. This pins the second emit site so a future edit
+           that re-fixes only one of the two reopens the class here. The rope grows to n copies of 'z' (ASCII
+           122); Bytes.at at the computed index (n-1) returns 122.")
+  (input  (do
+            (effect S (op add (-> Int64 Int64)) (op pick (-> Int64 Int64)))
+            (def (walk (: k Int64))
+              (if (< k 1) 0 (let ((_d (S.add k))) (walk (- k 1)))))
+            (def (main (: n Int64))
+              (handle S ""
+                ((add (v) s (resume 0 (String.concat s "z")))
+                 (pick (i) s
+                  (resume (match (Bytes.at (String.to-bytes s) i)
+                            ((Some b) b)
+                            ((None _u) -1))
+                          s)))
+                (let ((_w (walk n)))
+                  (S.pick (- n 1)))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 122 Int64))
+  (call   main (: 1 Int64)) (output (: 122 Int64)))
