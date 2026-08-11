@@ -155,6 +155,98 @@ WIT, an arbitrary component's exported interface — compiles the same way: the 
 signature canonically. The reducer is just "a program that happens to import `kv` and export a fold
 interface," with zero compiler privilege. That is the mandate realized: **generic-over-WIT, not WIT-free.**
 
+## 3b. The full-A end-state (operator override 2026-08-11): rcdzc ingests the TARGET WIT WORLD; one value-bridging rule for every member, exports AND imports
+
+The operator overrode the interim "narrow fold-only bytes-wrap" (concierge B ruling): the mandate is **full
+A only, end-state defined first then sliced backwards, no workarounds.** This section pins that end-state on
+the compiler-emit side (v-compiler-ml owns it; v-agent-harness owns the first concrete target world —
+`reducer.wit` + the Event/effect-request value-form contract).
+
+**End-state input: rcdzc ingests a TARGET WIT WORLD, not a name.** Today the driver hands rcdzc the bare
+interface NAME (`KIND_COMPONENT_NAME`) plus, as a stepping-stone, a `KIND_EXPORT_BYTES_MEMBERS` list naming
+which export members cross as `list<u8>` (the `db.export_bytes_members` signal). The end-state replaces both
+with the **full target WIT world**: every exported/imported interface with its complete member signatures.
+
+**rcdzc does NOT parse WIT (operator refinement 2026-08-11).** Verbatim: *"I'd prefer the compiler not to
+have to parse WIT. It should take a preparsed WIT description in the binary AST form as one of the
+artifacts."* So the target world reaches rcdzc as a **PREPARSED binary-AST artifact** — a WIT world lowered
+into the SAME `cadenza-ast` binary codec the rest of the pipeline already speaks (the artifact stream
+`compile()` consumes, alongside the program AST + today's `KIND_COMPONENT_NAME`). A SEPARATE producer does
+the WIT-text→binary-AST-world lowering (a toolchain step / a `cdz` subcommand, NOT the compiler); rcdzc just
+consumes the artifact and reads each member's declared param/result canonical-ABI types off it. **Two
+sources, one structured world (operator, 2026-08-11):** the target world reaches rcdzc EITHER as this
+external preparsed-binary-AST artifact OR as an INLINE world declaration in the module itself (self-contained,
+no external resource — likely the common case for a simple fold). v-agent-harness's binary-AST schema covers
+BOTH sources, lowering each to the SAME structured world the emit reads — so the emit is source-agnostic:
+rcdzc never cares whether the world came inline or from an artifact, only that it has the member signatures.
+This keeps WIT-parsing entirely out of the compiler — consistent with the binary-ast-abi direction and the
+generic-compiler mandate (the compiler consumes a declared world, knows no specific contract). Two schema
+pieces to pin (coordinate: **v-agent-harness** owns the binary-AST/kernel side, **v-syntax** if the AST needs
+a new WIT-world node): (1) the binary-AST SHAPE of a preparsed WIT-world artifact (interfaces → members →
+param/result canonical-ABI types), and (2) how a program REFERENCES its target world (a world-name artifact,
+or the world artifact carries the binding). `export_bytes_members` is then an interim NARROWING (just "which
+members are bytes") that collapses into "read the member's declared type from the preparsed world artifact" —
+the emit MECHANISM is unchanged, only the trigger generalizes to the artifact read.
+
+**The one value-bridging rule (the general rule the operator wants), symmetric across exports and imports.**
+At every WIT boundary member, for each param and result position, compare the DECLARED canonical-ABI type
+(from the world) against the GUEST value-model type (what the Cadenza program actually has there):
+
+- **Match → pass through.** A declared scalar the guest also has as that scalar; a declared `list<u8>` the
+  guest already produces/consumes as raw bytes. No bridge — the canonical lift/lower is the identity on the
+  value model. (This is the non-reducer common case.)
+- **Mismatch → bridge via the value-heap codec.** Where the guest value-model type differs from the declared
+  canonical-ABI type, the compiler inserts the value-heap `value-encode`/`value-decode` bridge (the language's
+  own value model crossing the canonical ABI, §2c items 2-4; §4's RESOLVED compiler-side-generic decision):
+  - **Import call (guest → host), already specified in §4/§6:** value-heap-handle arg → marshal to the
+    declared canonical type (`value-encode` for a compound handle; the S0 `bytes-len`/`bytes-get` copy for a
+    Bytes/String handle); declared canonical result → lift back to a handle (`value-decode` for a compound).
+  - **Export member (host → guest → host), the SYMMETRIC twin this section adds:** a member the guest
+    PROVIDES whose declared param is `list<u8>` (or any canonical type) but whose guest value is a COMPOUND
+    → `value-decode(param_bytes, param_shape_desc)` on entry to reconstruct the guest value; run the guest
+    body; `value-encode(result, result_shape_desc)` to lower the compound result back to the declared
+    `list<u8>`. This is exactly the export-side bridge the doc previously assumed "already works post-B2" —
+    B2 was reverted, so it is a real emit the compiler must produce, and it is NOT reducer-specific: it fires
+    for ANY exported member whose declared canonical type differs from the guest value-model type.
+
+**Why world-targeting adds emit information the ad-hoc export does NOT (operator question, 2026-08-11).**
+"Aren't we already exporting an ad-hoc world today — the host binds structurally, name-agnostic — so what
+does explicit world-targeting add?" HOST BINDING is indeed already structural + name-agnostic; what
+world-targeting adds is entirely on the **compiler-emit side**. The compiler needs each member's DECLARED
+signature to know (a) which canonical-ABI type to emit that member to, and (b) whether the value-bridge
+fires (declared-type vs guest-value-model type). Without a declared target, the compiler emits the guest
+value's NATURAL ABI — a value-heap handle or a canonical record for a compound — NOT `list<u8>`; that is
+exactly the genesis mismatch (guest emits a handle/record, kernel expects bytes). Auto-emitting bytes for a
+"fold" would be hard-coded fold knowledge the mandate forbids. So the PROGRAM declares its export ABI
+(inline or artifact) and the compiler emits to match. Net: world-targeting supplies (1) the emit-to
+signature that drives the bridge, and (2) a checkable guest-satisfies-world contract (the guest's
+value-model type must be bridgeable to the declared type, else a compile error — not a silent wrong emit).
+The ad-hoc export suffices for host BINDING but cannot tell the compiler to emit bytes.
+
+**The reducer is ONE instance.** `reducer.wit` (v-agent-harness's A1 branch) declares the fold export
+directly as `apply: func(list<u8>) -> list<u8>` — a pure bytes boundary — and imports `kv`. IMPORTANT (v-ah
+clarification): the `content-type`/`payload`/`resumes` Event structure and the `effect-request` shape are NOT
+WIT params — they are the VALUE-FORM CONTRACT carried INSIDE the one event doc / result doc (v-ah deleted the
+earlier structured-types interface). So the WIT itself is bytes↔bytes; the compound lives in the value form.
+Under the rule: the exported `apply`'s declared `list<u8>` param/result differ from the guest's compound
+Event / `List<EffectRequest>` value-model type → the export-side bridge fires (value-decode the Event doc,
+value-encode the effect-list doc); the `kv` imports marshal per §4. Nothing reducer-specific in the compiler
+— it is the general rule applied to this world. (The Event/effect-request value-form contract itself —
+`content-type{family,version}`, `effect-request{kind:enum, target, payload, correlation, family}` — is
+v-agent-harness's to pin alongside the target-world artifact; the compiler only needs each member's declared
+canonical-ABI type from the artifact + the guest value-model type it already knows.)
+
+**Backward slice (what v-compiler-ml is building, reframed as the first full-A slice — NOT the killed
+wrap).** The export-side bridge MECHANISM is built: `emit_bytes_roundtrip_apply_body` (value-decode param →
+body → value-encode result), `emit_bump_realloc_body` (real `cabi_realloc` for the input-list lowering), and
+`bytes_roundtrip_core_module` (assembles the `apply(list<u8>)->list<u8>` core). This is member-signature-
+driven and generic over any bytes-boundary export member — the export-side twin of §4's import marshal, not a
+fold-hard-coded wrap. Its current trigger (`db.export_bytes_members`) is the interim narrowing above; wiring
+it to the full-WIT-world read is the generalization step. So the slice ORDER backward from the end-state is:
+(i) export-side bytes bridge mechanism [built], (ii) drive it from the target WIT world instead of
+`export_bytes_members`, (iii) generalize the bridge to any declared-type↔guest-type mismatch (not only
+`list<u8>`), (iv) the import side is §4/§6's S0-S3 (S0 landed).
+
 ## 4. The crux — where the value-heap-handle↔canonical-ABI bridge lives (RESOLVED: compiler-side, generic)
 
 `v-compiler-ml` named the one genuine architectural fork: *"the value-heap-handle↔linmem BRIDGE is
