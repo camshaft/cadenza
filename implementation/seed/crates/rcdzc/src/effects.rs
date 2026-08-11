@@ -7926,6 +7926,10 @@ fn mark_recursion_boundary_observed_outstate(db: &mut Db, handle_body: StructId,
     let mut roots: Vec<usize> = Vec::new();
     collect_rec_eff_call_defs(db, handle_body, ctx, &mut roots);
     // Transitively close over callees (s19e: the demand survives an indirection hop `outer → via-k → inner`).
+    // A `HashSet` visited-set keeps the worklist O(V+E), not O(V²) from a `Vec::contains` membership test —
+    // negligible on today's tiny rec-effectful subgraph, but the trivial scalable form (v-compiler-perf
+    // advisory, mirroring the `08678f992` mutual_scc fix). `roots` stays a Vec for stable iteration order.
+    let mut seen: crate::fxhash::FxHashSet<usize> = roots.iter().copied().collect();
     let mut i = 0;
     while i < roots.len() {
         let d = roots[i];
@@ -7934,7 +7938,7 @@ fn mark_recursion_boundary_observed_outstate(db: &mut Db, handle_body: StructId,
             let mut callees: Vec<usize> = Vec::new();
             collect_rec_eff_call_defs(db, body, ctx, &mut callees);
             for c in callees {
-                if !roots.contains(&c) {
+                if seen.insert(c) {
                     roots.push(c);
                 }
             }
