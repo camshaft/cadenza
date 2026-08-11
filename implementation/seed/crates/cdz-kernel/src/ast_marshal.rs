@@ -18,15 +18,22 @@
 //!   decomposition is a dedicated later slice — the invoke paths that matter now carry no floats);
 //! - `list<u8>` → a single `Leaf::Bytes` (a byte blob is ONE length-prefixed bytes leaf, not a
 //!   node-per-byte list — #2063 wired the codec to ride blobs this way for exactly this wire);
-//! - `list<T>` (T≠u8) → a STRING-HEAD `("list" elem…)` form;
-//! - `record{f: v…}` → `("record" (f v)…)` (string head; each field a `(name val)` 2-list);
-//! - `tuple<v…>` → `("tuple" v…)` (string head);
+//! - `list<T>` (T≠u8) → a NAME-HEAD `(list elem…)` form;
+//! - `record{f: v…}` → `(record (= f v)…)` (NAME head; fields SORTED by name; each field a `(= name value)`
+//!   3-list — the canonical deterministic-value-form, record-type Phase B, operator-ruled 2026-08-09);
+//! - `tuple<v…>` → `(tuple v…)` (name head);
 //! - `option<T>` → NAME-HEAD ctor `(Some v)` / `(None)`; `result<T,E>` → `(Ok v)` / `(Err e)`;
 //! - `variant{Case(v)}` → NAME-HEAD ctor `(Case v)`; `enum{Case}` → `(Case)` (name head, no children);
-//! - `flags{A,B}` → `("flags" A B…)` (string head, set-flag names).
+//! - `flags{A,B}` → `(flags A B…)` (name head, set-flag names).
 //!
-//! The string-head vs name-head split matters for the READ side (the dual): record/tuple/list/flags are
-//! read via `as_ctor_form` (string head), ctors via `as_form`/`head_name` (name head).
+//! Every VALUE form is NAME-head — this is cadenza's canonical deterministic-value-form, the exact wire
+//! `value-encode` emits and `value-decode` (op 90) consumes (a Str-head aggregate is REJECTED by
+//! value-decode as a NULL: `doc_atom_name` matches only a `Name` leaf). `rcdzc`'s `const_value_ast` builds
+//! this same Name-head form, so the marshal is byte-aligned with the compiler. (The TYPE-DESCRIPTOR
+//! vocabulary of [`build_type`] below is a DISTINCT, str-head form — a type NAMES a shape, it is not a
+//! value, and it is decoded by a different consumer.) The READ side is tolerant: aggregates read via
+//! `form` (accepts BOTH name- and str-head spellings) and records accept the legacy `(name value)` 2-list
+//! alongside the canonical `(= name value)` — the same migration tolerance value-decode keeps.
 
 use cadenza_ast::ast::{Arenas, Builder, Leaf, Radix, Struct, StructId};
 use cadenza_ast::codec;
@@ -75,8 +82,9 @@ pub fn val_to_ast(val: &Val) -> Result<Vec<u8>, MarshalError> {
 
 /// Build `val` into the arena `b`, returning the root node id. Recursive: a compound `Val`'s children
 /// are built first, then wrapped in the head form. The head-shape rules are the WIT↔form correspondence
-/// documented at the module head (string-head for record/tuple/list/flags, name-head ctors for
-/// option/result/variant/enum, a lone `Leaf` for primitives, `Leaf::Bytes` for `list<u8>`).
+/// documented at the module head (NAME-head for record/tuple/list/flags AND for the option/result/
+/// variant/enum ctors, a lone `Leaf` for primitives, `Leaf::Bytes` for `list<u8>`; a record's fields are
+/// sorted by name and each spelled `(= name value)` — the canonical deterministic-value-form).
 fn build_val(b: &mut Builder, val: &Val) -> Result<StructId, MarshalError> {
     let int_leaf = |b: &mut Builder, v: BigInt| {
         b.atom_leaf(Leaf::Int {
@@ -103,12 +111,12 @@ fn build_val(b: &mut Builder, val: &Val) -> Result<StructId, MarshalError> {
         Val::Char(c) => b.atom_leaf(Leaf::Char(*c)),
         Val::String(s) => b.atom_leaf(Leaf::Str(s.clone().into())),
         // list<u8> is the ONE list special-cased to a single Bytes leaf (blob-optimized wire, #2063);
-        // any other list<T> is a string-head ("list" elem…) form of per-element nodes.
+        // any other list<T> is a NAME-head (list elem…) form of per-element nodes.
         Val::List(items) => {
             if let Some(bytes) = as_u8_list(items) {
                 b.atom_leaf(Leaf::Bytes(bytes.into()))
             } else {
-                let mut children = vec![b.atom_leaf(Leaf::Str("list".into()))];
+                let mut children = vec![b.name("list")];
                 for it in items.iter() {
                     let c = build_val(b, it)?;
                     children.push(c);
@@ -116,20 +124,26 @@ fn build_val(b: &mut Builder, val: &Val) -> Result<StructId, MarshalError> {
                 b.list(children)
             }
         }
-        // record → ("record" (name val)…): string head, each field a (name val) 2-list.
+        // record → (record (= name value)…): NAME head, fields SORTED by name (lexicographic), each field a
+        // 3-list (= name value). This is the canonical deterministic-value-form value-encode produces and
+        // value-decode consumes (record-type Phase B, operator-ruled 2026-08-09). The wasmtime `Val` carries
+        // fields in WIT declaration order, so sort them here to match the canonical (BTreeMap) order.
         Val::Record(fields) => {
-            let mut children = vec![b.atom_leaf(Leaf::Str("record".into()))];
-            for (name, v) in fields.iter() {
+            let mut children = vec![b.name("record")];
+            let mut sorted: Vec<&(String, Val)> = fields.iter().collect();
+            sorted.sort_by(|x, y| x.0.cmp(&y.0));
+            for (name, v) in sorted {
+                let eq = b.name("=");
                 let name_node = b.name(name);
                 let val_node = build_val(b, v)?;
-                let field = b.list(vec![name_node, val_node]);
+                let field = b.list(vec![eq, name_node, val_node]);
                 children.push(field);
             }
             b.list(children)
         }
-        // tuple → ("tuple" v…): string head, positional.
+        // tuple → (tuple v…): name head, positional.
         Val::Tuple(items) => {
-            let mut children = vec![b.atom_leaf(Leaf::Str("tuple".into()))];
+            let mut children = vec![b.name("tuple")];
             for it in items.iter() {
                 let c = build_val(b, it)?;
                 children.push(c);
@@ -161,9 +175,9 @@ fn build_val(b: &mut Builder, val: &Val) -> Result<StructId, MarshalError> {
             let head = b.name(case);
             b.list(vec![head])
         }
-        // flags → ("flags" A B…): string head, one Name per SET flag.
+        // flags → (flags A B…): name head, one Name per SET flag.
         Val::Flags(names) => {
-            let mut children = vec![b.atom_leaf(Leaf::Str("flags".into()))];
+            let mut children = vec![b.name("flags")];
             for n in names.iter() {
                 let node = b.name(n);
                 children.push(node);
@@ -444,9 +458,10 @@ pub fn ast_to_val(bytes: &[u8], ty: &Type) -> Result<Val, MarshalError> {
 
 /// Build the `Val` at arena node `id` per the target WIT `ty`. Recursive: a compound type reads its
 /// children by the sub-types `ty` exposes (via wasmtime's `Type` reflection) and recurses. The form
-/// rules mirror [`build_val`] exactly (string-head record/tuple/list/flags read via `as_ctor_form`,
-/// name-head option/result/variant/enum ctors read via `as_form`, `list<u8>` from a `Leaf::Bytes`,
-/// primitives from their leaf), but here the TYPE drives which reader to apply.
+/// rules mirror [`build_val`] (name-head record/tuple/list/flags AND option/result/variant/enum ctors,
+/// `list<u8>` from a `Leaf::Bytes`, primitives from their leaf), but here the TYPE drives which reader to
+/// apply. Reads are HEAD-tolerant (`form` accepts both name- and str-head spellings) and a record field
+/// may be the canonical `(= name value)` 3-list or the legacy `(name value)` 2-list.
 fn build_from_ast(a: &Arenas, id: StructId, ty: &Type) -> Result<Val, MarshalError> {
     match ty {
         Type::Bool => Ok(Val::Bool(read_bool(a, id)?)),
@@ -463,7 +478,7 @@ fn build_from_ast(a: &Arenas, id: StructId, ty: &Type) -> Result<Val, MarshalErr
         Type::Float32 | Type::Float64 => Err(MarshalError::UnsupportedType {
             wit_type: "float (deferred)".into(),
         }),
-        // list<u8> ← a single Leaf::Bytes; list<T≠u8> ← a string-head ("list" elem…) form, each elem
+        // list<u8> ← a single Leaf::Bytes; list<T≠u8> ← a name-head (list elem…) form, each elem
         // built per the element type.
         Type::List(lt) => {
             let elem_ty = lt.ty();
@@ -492,22 +507,40 @@ fn build_from_ast(a: &Arenas, id: StructId, ty: &Type) -> Result<Val, MarshalErr
                 Ok(Val::List(out))
             }
         }
-        // record ← ("record" (fieldname val)…): match each declared field by NAME (order-independent).
+        // record ← (record (= name value)…): match each declared field by NAME (order-independent). The
+        // canonical field is a 3-list (= name value); a legacy 2-list (name value) is ALSO accepted (the
+        // same migration tolerance value-decode keeps at cdz-runtime lib.rs 3322-3324).
         Type::Record(rt) => {
             let field_nodes = form(a, id, "record")?;
-            // Collect the AST fields as (name → value-node), rejecting a malformed field entry (not a
-            // (name val) 2-list) AND a DUPLICATE name up front. ast_to_val decodes UNTRUSTED arg bytes, so
-            // the record must EXACTLY match the WIT shape (github-liaison #2078): silently accepting extra
-            // or duplicate fields hides malformed input + yields a surprising Val (same untrusted-input
-            // hardening as the #2050 {val:?} DoS; mirrors the tuple arm's strict arity below).
+            // Collect the AST fields as (name → value-node), rejecting a malformed field entry (neither a
+            // (= name value) 3-list nor a (name value) 2-list) AND a DUPLICATE name up front. ast_to_val
+            // decodes UNTRUSTED arg bytes, so the record must EXACTLY match the WIT shape (github-liaison
+            // #2078): silently accepting extra or duplicate fields hides malformed input + yields a
+            // surprising Val (same untrusted-input hardening as the #2050 {val:?} DoS; mirrors the tuple
+            // arm's strict arity below).
             let mut ast_fields: std::collections::BTreeMap<&str, StructId> = Default::default();
             for &fnode in field_nodes {
                 let (name, val_node) = match a.get(fnode) {
+                    // canonical (= name value) 3-list — value-encode emits this form.
+                    Struct::List(kids) if kids.len() == 3 && a.as_name(kids[0]) == Some("=") => {
+                        match a.as_name(kids[1]) {
+                            Some(n) => (n, kids[2]),
+                            None => {
+                                return Err(type_mismatch("record", "field name is not a name"))
+                            }
+                        }
+                    }
+                    // legacy (name value) 2-list — decode tolerance.
                     Struct::List(kids) if kids.len() == 2 => match a.as_name(kids[0]) {
                         Some(n) => (n, kids[1]),
                         None => return Err(type_mismatch("record", "field name is not a name")),
                     },
-                    _ => return Err(type_mismatch("record", "field is not a (name val) pair")),
+                    _ => {
+                        return Err(type_mismatch(
+                            "record",
+                            "field is not a (= name value) or (name value) form",
+                        ))
+                    }
                 };
                 if ast_fields.insert(name, val_node).is_some() {
                     return Err(type_mismatch(
@@ -1146,10 +1179,50 @@ mod tests {
         );
     }
 
+    // Pin the CANONICAL value-form `val_to_ast` PRODUCES for a record: a NAME-head `record`, fields SORTED
+    // by name, each a 3-list `(= name value)`. This IS the deterministic-value-form a guest's value-decode
+    // (op 90) consumes and value-encode produces — a Str head decodes to NULL, an unsorted/2-list form
+    // drifts from value-encode. Built with fields in NON-sorted order (`size` before `kind`) to prove the
+    // sort. This is the invariant the bytes fold boundary (A1) routes the Event doc through.
+    #[test]
+    fn val_to_ast_emits_canonical_name_head_sorted_equals_record() {
+        let v = Val::Record(vec![
+            ("size".into(), Val::U32(7)),
+            ("kind".into(), Val::String("wasm".into())),
+        ]);
+        let bytes = val_to_ast(&v).expect("val_to_ast");
+        let a = codec::decode(&bytes).expect("decode");
+        let Struct::List(kids) = a.get(a.root) else {
+            panic!("record root is a list");
+        };
+        // head is a NAME leaf `record` (a Str head is rejected by value-decode as a NULL).
+        assert_eq!(
+            a.as_name(kids[0]),
+            Some("record"),
+            "head is the name `record`"
+        );
+        assert!(
+            matches!(leaf_at(&a, kids[0]), Leaf::Name(_)),
+            "head must be a Name leaf, not a Str leaf"
+        );
+        assert_eq!(kids.len(), 3, "head + 2 fields");
+        // each field is a `(= name value)` 3-list; fields are SORTED by name (`kind` before `size`).
+        let field_name = |i: usize| -> &str {
+            let Struct::List(f) = a.get(kids[i]) else {
+                panic!("field is a list");
+            };
+            assert_eq!(f.len(), 3, "field is a (= name value) 3-list");
+            assert_eq!(a.as_name(f[0]), Some("="), "field head is the `=` name");
+            a.as_name(f[1]).expect("field name is a name")
+        };
+        assert_eq!(field_name(1), "kind", "fields sorted: kind first");
+        assert_eq!(field_name(2), "size", "fields sorted: size second");
+    }
+
     // ast_to_val decodes UNTRUSTED arg bytes, so a record must EXACTLY match the WIT shape (github-liaison
     // #2078): an EXTRA field beyond the declared set, or a DUPLICATE field name, is rejected — not silently
-    // accepted. Build the malformed record AST by hand (a string-head ("record" (name val)…) form) and
-    // decode against a 1-field record type.
+    // accepted. Build the malformed record AST by hand (the LEGACY str-head ("record" (name val)…) 2-list
+    // form, still accepted by the reader's migration tolerance) and decode against a 1-field record type.
     #[test]
     fn ast_to_val_rejects_extra_and_duplicate_record_fields() {
         let one_field_ty = param_type(&probe_component(r#"(record (field "kind" string))"#));
@@ -1396,13 +1469,11 @@ mod tests {
     }
 
     #[test]
-    fn a_non_u8_list_marshals_to_a_string_head_list_form() {
+    fn a_non_u8_list_marshals_to_a_name_head_list_form() {
         let v = Val::List(vec![Val::U32(1), Val::U32(2)]);
         let a = decode(&val_to_ast(&v).unwrap());
-        // ("list" 1 2): string head, read via as_ctor_form
-        let elems = a
-            .as_ctor_form(a.root, "list")
-            .expect("string-head list form");
+        // (list 1 2): NAME head, read via as_form (the canonical value-form head)
+        let elems = a.as_form(a.root, "list").expect("name-head list form");
         assert_eq!(elems.len(), 2);
         assert_eq!(
             leaf_at(&a, elems[0]),
@@ -1421,32 +1492,31 @@ mod tests {
     }
 
     #[test]
-    fn a_record_marshals_to_a_string_head_record_of_name_val_fields() {
+    fn a_record_marshals_to_a_name_head_record_of_equals_name_value_fields() {
         let v = Val::Record(vec![
             ("kind".into(), Val::String("wasm".into())),
             ("size".into(), Val::U32(7)),
         ]);
         let a = decode(&val_to_ast(&v).unwrap());
-        let fields = a
-            .as_ctor_form(a.root, "record")
-            .expect("string-head record form");
+        // (record (= kind "wasm") (= size 7)): NAME head, read via as_form
+        let fields = a.as_form(a.root, "record").expect("name-head record form");
         assert_eq!(fields.len(), 2);
-        // each field is a (name val) 2-list
+        // each field is a (= name value) 3-list (record-type Phase B canonical value-form)
         let f0 = match a.get(fields[0]) {
             Struct::List(kids) => kids.clone(),
             _ => panic!("field is a list"),
         };
-        assert_eq!(a.as_name(f0[0]), Some("kind"));
-        assert_eq!(leaf_at(&a, f0[1]), &Leaf::Str("wasm".into()));
+        assert_eq!(f0.len(), 3);
+        assert_eq!(a.as_name(f0[0]), Some("="));
+        assert_eq!(a.as_name(f0[1]), Some("kind"));
+        assert_eq!(leaf_at(&a, f0[2]), &Leaf::Str("wasm".into()));
     }
 
     #[test]
-    fn a_tuple_marshals_to_a_string_head_tuple_form() {
+    fn a_tuple_marshals_to_a_name_head_tuple_form() {
         let v = Val::Tuple(vec![Val::Bool(true), Val::U8(9)]);
         let a = decode(&val_to_ast(&v).unwrap());
-        let elems = a
-            .as_ctor_form(a.root, "tuple")
-            .expect("string-head tuple form");
+        let elems = a.as_form(a.root, "tuple").expect("name-head tuple form");
         assert_eq!(elems.len(), 2);
         assert_eq!(leaf_at(&a, elems[0]), &Leaf::Bool(true));
     }
@@ -1562,7 +1632,7 @@ mod tests {
         }
     }
 
-    // Val::Flags round-trip (v-syntax review F2, LOW): built (string-head `(flags a c …)`) + read
+    // Val::Flags round-trip (v-syntax review F2, LOW): built (name-head `(flags a c …)`) + read
     // (Type::Flags), but the pair was untested. Non-empty + empty.
     #[test]
     fn ast_to_val_round_trips_flags() {
