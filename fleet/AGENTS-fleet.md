@@ -237,9 +237,15 @@ Before you send a `merge-request`, the NARROW pre-send verify (NOT the full batt
    drifts as peers land). `(error CODE)` cases are code-matched; `(trap "reason")` reason-matched.
 2. For a new test/slice, add its coverage (a fold unit + a wasmtime run where a value executes; a reject
    test for a new diagnostic) and confirm it via `dev-gate` / `cargo test -p <crate> --lib`.
-3. `dev-gate` already runs fmt + clippy `-D warnings` on your touched crates. Watch the fmt-drift trap: a
-   whole-package `cargo fmt` touches foreign drift; revert files you didn't edit (`git checkout --`),
-   verify only YOUR files are fmt-clean.
+3. **Format with the PINNED rustfmt, NOT ambient `cargo fmt`** (recurring reject class — cost 4 MRs one
+   session: v-inference/v-compiler-ml/v-agent-harness tests all reject-red on a pinned-fmt diff their
+   local `cargo fmt` missed). The gate formats with the flake's PINNED rustfmt; a plain `cargo fmt` uses
+   your ambient rustfmt, which wraps DIFFERENTLY (long string literals / test code line-wrap is the usual
+   culprit) → gate reject even though the code is fine. Two ways to stay clean: `cargo xtask dev-gate`
+   ALREADY runs the pinned `fmt --check` (a red there IS this diff — heed it), and to auto-FIX it, format
+   through the pinned toolchain: **`nix develop -c cargo fmt --all`** (the devShell carries the pinned
+   `rustToolchain`), NOT bare `cargo fmt`. Watch the fmt-drift trap too: a whole-workspace fmt touches
+   foreign drift — revert files you didn't edit (`git checkout --`), verify only YOUR files changed.
 4. Do NOT edit `cdz-runtime`'s `//` comments or `wit/runtime.wit` casually — they are inside the frozen
    `REQUIRED_RUNTIME_HASH`; a change there means `cargo xtask build` + `codegen --check` (the one place a
    heavier local check is unavoidable, since pr-sync can't recover a hash mismatch for you).
