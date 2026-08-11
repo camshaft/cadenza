@@ -18650,3 +18650,90 @@
   (call   main (: 1 Int64)) (output (: 20099993 Int64))
   (call   main (: 5 Int64)) (output (: -7007007 Int64))
   (call   main (: 2 Int64)) (output (: 30199993 Int64)))
+
+; ── Persistence generations + rope shapes (breaker batch 231) ─────────────────
+; Five pins on structure sharing and rope-tree shape: self-concat (the same list
+; twice in one concat), concat ASSOCIATIVITY (left- vs right-nested trees equal),
+; a 10-deep left-leaning concat chain, THREE update generations, and THREE
+; Map.remove generations (each ancestor re-reads what its descendant removed).
+
+(case "lc1 SELF-CONCAT sharing — the same list appears twice in one concat, then the original grows and is re-read unchanged"
+  (input  (do
+            (def (main (: n Int64))
+              (let ((xs (list n (+ n 1))))
+                (let ((doubled (List.concat xs xs)))
+                  (let ((grown (List.push xs 99)))
+                    (+ (* 100000 (List.len doubled))
+                       (+ (* 1000 (match (List.at doubled 2) ((Some v) v) ((None _u) -1)))
+                          (+ (* 10 (List.len grown))
+                             (match (List.at xs 1) ((Some v) v) ((None _u) -1)))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 403034 Int64))
+  (call   main (: 0 Int64)) (output (: 400031 Int64)))
+
+(case "as1 concat ASSOCIATIVITY — left-nested and right-nested three-way concats are structurally EQUAL and element-identical"
+  (input  (do
+            (def (main (: n Int64))
+              (let ((a (list n 2)))
+                (let ((b (list 3 4)))
+                  (let ((c (list 5 6)))
+                    (let ((lr (List.concat (List.concat a b) c)))
+                      (let ((rl (List.concat a (List.concat b c))))
+                        (+ (* 1000000 (if (= lr rl) 1 0))
+                           (+ (* 10000 (List.len lr))
+                              (+ (* 100 (match (List.at lr 4) ((Some v) v) ((None _u) -1)))
+                                 (+ (* 10 (match (List.at rl 0) ((Some v) v) ((None _u) -1)))
+                                    (match (List.at rl 5) ((Some v) v) ((None _u) -1))))))))))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 1060516 Int64))
+  (call   main (: 9 Int64)) (output (: 1060596 Int64)))
+
+(case "dc1 a DEEP left-leaning concat chain — ten single-element concats build an 11-deep rope, random-access reads stay exact"
+  (input  (do
+            (def (at-or (: xs (List Int64)) (: i Int64))
+              (match (List.at xs i) ((Some v) v) ((None _u) -1)))
+            (def (grow (: k Int64) (: acc (List Int64)))
+              (if (< k 1) acc (grow (- k 1) (List.concat acc (list k)))))
+            (def (main (: n Int64))
+              (let ((deep (grow 10 (list n))))
+                (+ (* 100000 (List.len deep))
+                   (+ (* 10000 (at-or deep 0))
+                      (+ (* 100 (at-or deep 5)) (at-or deep 10))))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 1170601 Int64))
+  (call   main (: 0 Int64)) (output (: 1100601 Int64)))
+
+(case "ug1 THREE update GENERATIONS share structure — a, update(a), update(update(a)) all readable with distinct views, the untouched slot threads to the newest"
+  (input  (do
+            (def (at-or (: xs (List Int64)) (: i Int64))
+              (match (List.at xs i) ((Some v) v) ((None _u) -1)))
+            (def (main (: n Int64))
+              (let ((a (list n 20 30)))
+                (let ((b (List.update a 1 99)))
+                  (let ((c (List.update b 2 88)))
+                    (+ (* 1000000 (at-or c 0))
+                       (+ (* 100000 (at-or a 1))
+                          (+ (* 10000 (at-or a 2))
+                             (+ (* 1000 (at-or b 1))
+                                (+ (* 100 (at-or b 2))
+                                   (+ (* 10 (at-or c 1)) (at-or c 2)))))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 7403078 Int64))
+  (call   main (: 1 Int64)) (output (: 3403078 Int64)))
+
+(case "mr1 THREE Map.remove GENERATIONS share structure — each ancestor still holds what its descendant removed"
+  (input  (do
+            (def (lk (: m (Map Int64 Int64)) (: k Int64))
+              (match (Map.lookup m k) ((Some v) v) ((None _u) -1)))
+            (def (main (: n Int64))
+              (let ((a (Map.insert (Map.insert (Map.insert Map.empty 1 n) 2 20) 3 30)))
+                (let ((b (Map.remove a 2)))
+                  (let ((c (Map.remove b 3)))
+                    (+ (* 1000000 (Map.len a))
+                       (+ (* 100000 (Map.len b))
+                          (+ (* 10000 (Map.len c))
+                             (+ (* 1000 (lk a 2))
+                                (+ (* 10 (lk b 3)) (lk c 1))))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 3230305 Int64))
+  (call   main (: 0 Int64)) (output (: 3230300 Int64)))
