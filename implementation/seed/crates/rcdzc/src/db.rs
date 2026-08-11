@@ -859,6 +859,12 @@ pub struct Db {
     /// world). A member listed here has its structured body `value-encode`/`value-decode`-wrapped so its
     /// external ABI matches the declared `list<u8>` boundary (the reducer fold `apply`).
     pub export_bytes_members: Vec<String>,
+    /// The PREPARSED TARGET WIT WORLD as a raw `cadenza-ast` binary document (§3b full-A end-state), or
+    /// `None` when the program targets no world. Populated by `compile` from the `KIND_WIT_WORLD` input
+    /// artifact (an external WIT→binary-AST step OR v-syntax's inline-declaration lowering — rcdzc never
+    /// parses WIT). The world-structure reader (`wit_world`) decodes + walks this to drive per-member
+    /// emit-to-match; SUPERSEDES `export_bytes_members` as the emit grows to the full world.
+    pub wit_world: Option<Vec<u8>>,
     /// EFFECT → PEER-CONTRACT bindings (U2, the effects-unification of cross-component interop): a
     /// top-level `(bind Math "cadenza:math/api")` DEFAULTS the whole component scope to route the escaping
     /// effect `Math` to the peer interface `cadenza:math/api` (rather than the generic host). An escaping
@@ -2672,6 +2678,7 @@ impl Db {
             effect_decls,
             component_name: None,
             export_bytes_members: Vec::new(),
+            wit_world: None,
             effect_bindings,
             modules,
             newtype_inner: crate::fxhash::FxHashMap::default(),

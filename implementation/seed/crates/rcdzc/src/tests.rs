@@ -2996,6 +2996,222 @@ fn a_recursive_runtime_record_escapes_to_the_host() {
     }
 }
 
+/// §3c REDUCER-SHAPE de-risk: a runtime-built record with a STRING field and a BYTES field — the essence
+/// of the reducer Event (`{content-type, payload}`) — escapes via the value-encode WALKER. Pins that the
+/// exact reducer-Event field shape (mixed String + Bytes) value-encodes to the canonical `(= name value)`
+/// WIRE, so §3c step 2b's value-decode-param + value-encode-result path has a sound descriptor + encoder
+/// for the real shape (not just all-scalar records). This is the value-encode half of the reducer apply.
+#[test]
+fn a_reducer_event_shaped_record_with_bytes_escapes_via_value_encode() {
+    use crate::testkit::parse;
+    // Fields sorted (BTreeMap): `ct` < `pl`. `ct` = String, `pl` = Bytes. Runtime-built (recursion defeats
+    // the constant fold), so it takes the runtime value-encode walker — the reducer apply's result path.
+    let src = "(module m (def (f n) (if (= n 0) (record (ct \"wasm\") (pl (Bytes.of (list 1 2 3)))) (f (- n 1)))) \
+                 (def (main) (f 2)) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        "a runtime record-with-Bytes escape must import the value-heap runtime"
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("[3c] runtime wasm not found; skipping reducer-event-shaped escape");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: None,
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => assert_eq!(
+            s,
+            "(: (record (= ct \"wasm\") (= pl b\"\\x01\\x02\\x03\")) (record (ct String) (pl Bytes)))",
+            "reducer-event-shaped record (String + Bytes) value-encode WIRE: name-head record, \
+             (= name value) fields, Bytes as b\"..\""
+        ),
+        cdz_run::Outcome::Trap(t) => panic!("reducer-event-shaped escape run trapped: {t}"),
+    }
+}
+
+/// §3c full-A BEHAVIORAL: the FIRST full-A slice end-to-end — a CLOSURE-free, HOST/PEER-import-free pure
+/// reducer (`apply(Event) -> List<EffectRequest>`) whose `apply` member the target WIT declares as a
+/// `list<u8>`-in / `list<u8>`-out boundary (named in `db.export_bytes_members`) EMITS through
+/// `emit_bytes_provider_member` — the compound param value-DECODEd from the incoming document, the compound
+/// result value-ENCODEd back — and the assembled provider component VALIDATES. This is the behavioral +
+/// wasmparser guard the emit wiring (§3c full-A WIRE) named as its next step: it proves the whole path
+/// (KIND_EXPORT_BYTES_MEMBERS → the bytes-member dispatch → bytes_roundtrip_core_module →
+/// assemble_bytes_roundtrip_provider) actually produces a well-formed component, not just that the pieces
+/// compile. `e` is a record `{ct: String, pl: Bytes}` (the reducer Event shape) and the result is a
+/// `List<Record{op, arg}>` (the effect-list), both compounds with value-form shape descriptors — so
+/// `sum_shape_descriptor` derives event_desc + result_desc off the DECLARED types, generic over the WIT.
+#[test]
+fn a_pure_reducer_apply_emits_a_valid_bytes_roundtrip_provider_component() {
+    use crate::testkit::parse;
+    // A pure fold: read the Event's fields, return a one-element effect-list referencing them. Runtime
+    // (the result depends on the param), no effects, no host/peer imports, no first-class closures — the
+    // FIRST full-A slice's exact shape. `apply` is the sole boundary export the WIT names as bytes-crossing.
+    let src = "(module m \
+                 (def (apply (: e (Record (ct String) (pl Bytes)))) \
+                   (list (record (op (. e ct)) (arg (. e pl))))) \
+                 (export apply))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            // The provider publishes its members under this interface (X4b) …
+            crate::cli::component_name_artifact("cadenza:reducer/api"),
+            // … and the target WIT names `apply` as a `list<u8>`-in/out (bytes) boundary member.
+            crate::abi::Artifact::new(
+                crate::link::KIND_EXPORT_BYTES_MEMBERS,
+                "export-bytes-members",
+                b"apply".to_vec(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    // The emit must NOT decline — a decline (host/peer import, closure, no shape descriptor) would leave
+    // no artifact and surface an error diagnostic. Name it so a regression is legible.
+    assert!(
+        !out.has_error(),
+        "the pure reducer bytes-roundtrip emit must not decline: {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("the pure reducer emits a bytes-roundtrip provider component");
+    // The assembled component must be a WELL-FORMED component (the wasmparser structural guard — the exact
+    // catch for a mis-laid section / bad type index the hand-assembled envelope could otherwise ship).
+    let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+    v.validate_all(bytes)
+        .expect("the bytes-roundtrip provider component validates");
+    // …AND it LOADS on the pinned wasmtime (the real runtime), which fully compiles the embedded core
+    // module + type-checks the component wiring — a STRICTER guard than wasmparser alone. This caught TWO
+    // real envelope bugs wasmparser did NOT: (1) the value-encode/decode core module was instantiated with
+    // ZERO args, never wiring the runtime `heap` import ("missing module instantiation argument named
+    // `heap`"); (2) the provider interface-instance was exported at index 0 — the IMPORTED heap instance —
+    // re-exporting its ops ("arr-alloc is a reexport of an imported function which is not implemented"): the
+    // bundle is component-instance 1, the import is instance 0. `required_runtime` runs `Component::new` and
+    // returns the parsed runtime import, so `Some` proves the component LOADS AND took the value-form
+    // marshal path (it imports the value-heap runtime, not a bare handle-return).
+    let req = cdz_run::required_runtime(bytes)
+        .expect("the bytes-roundtrip provider component loads on the pinned wasmtime");
+    assert!(
+        req.is_some_and(|r| r.import_name.contains("cadenza:runtime/heap")),
+        "a bytes-roundtrip reducer marshals through the value-heap runtime import"
+    );
+}
+
+/// §3c full-A DECLINE-DON'T-MISCOMPILE: a member named as a `list<u8>` bytes boundary whose PARAM is a
+/// bare scalar (not a value-form compound the runtime value-decode walker can reconstruct) must DECLINE
+/// cleanly — no wasm artifact, a diagnostic naming the reason — rather than mis-emit a value-decode of a
+/// shape that has no descriptor. Pins the param-side guard in `emit_bytes_provider_member`
+/// (`sum_shape_descriptor` on the param returns `None`), the twin of the result-side guard. The RESULT is
+/// a compound (a `List<Record>`), so the emit reaches the param check before declining — this isolates the
+/// param descriptor, not the earlier compound-result / exactly-one-param guards.
+#[test]
+fn a_bytes_member_with_a_scalar_param_declines_cleanly_no_miscompile() {
+    use crate::testkit::parse;
+    // `apply` takes a scalar Int64 (no value-form shape) and returns a compound effect-list.
+    let src = "(module m \
+                 (def (apply (: n Int64)) (list (record (op \"x\") (arg n)))) \
+                 (export apply))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:reducer/api"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_EXPORT_BYTES_MEMBERS,
+                "export-bytes-members",
+                b"apply".to_vec(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    // No mis-emit: the bytes path declines rather than shipping a component.
+    assert!(
+        out.artifact(crate::backend::Target::Wasm.artifact_kind())
+            .is_none(),
+        "a scalar-param bytes member must NOT emit a component (decline-don't-miscompile)"
+    );
+    // …and the decline names WHY (the param has no value-form shape descriptor).
+    assert!(
+        out.diagnostics
+            .iter()
+            .any(|d| d.message.contains("no value-form shape descriptor")),
+        "the decline names the missing param shape descriptor: {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// §3c full-A BEHAVIORAL (the SUM result shape): a pure reducer whose effect-list result is a
+/// `List<Effect>` where `Effect` is a SUM (variant) — the realistic reducer shape, an effect-list of
+/// heterogeneous effect requests — emits through `emit_bytes_provider_member` and LOADS on the pinned
+/// wasmtime. Distinct from the record-result sibling: the result-side `sum_shape_descriptor` builds the
+/// `List(sum)` shape and the value-encode walker renders per-element sum-disc + payload, exercising the
+/// sum-render path through the bytes-provider marshal (not just records). Pins that a variant effect-list
+/// result crosses the `list<u8>` boundary as a well-formed, loadable component.
+#[test]
+fn a_reducer_with_a_variant_effect_list_result_emits_a_valid_provider() {
+    use crate::testkit::parse;
+    // Effect is a sum with a String arm and a Bytes arm; the fold returns a two-element effect-list.
+    let src = "(module m \
+                 (type Effect (Log String) (Emit Bytes)) \
+                 (def (apply (: e (Record (ct String) (pl Bytes)))) \
+                   (list (Effect.Log (. e ct)) (Effect.Emit (. e pl)))) \
+                 (export apply))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:reducer/api"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_EXPORT_BYTES_MEMBERS,
+                "export-bytes-members",
+                b"apply".to_vec(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "a variant-effect-list reducer bytes-roundtrip emit must not decline: {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("the variant-result reducer emits a bytes-roundtrip provider component");
+    let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+    v.validate_all(bytes)
+        .expect("the variant-result bytes-roundtrip provider component validates");
+    let req = cdz_run::required_runtime(bytes)
+        .expect("the variant-result provider component loads on the pinned wasmtime");
+    assert!(
+        req.is_some_and(|r| r.import_name.contains("cadenza:runtime/heap")),
+        "a variant-effect-list reducer marshals through the value-heap runtime import"
+    );
+}
+
 /// R2 NESTED: a runtime tuple whose element is ITSELF a runtime tuple escapes — the inner compound is
 /// built on the heap as its own array, and the outer `arr-set`s the inner HANDLE directly (no box), so
 /// the outer array holds a handle to the inner array. `encode()` walks the nested `arr-get` path and
@@ -40189,6 +40405,50 @@ mod match_engine {
         assert_eq!(
             out, "(: (map (1 (list 1)) (2 (list 2))) (Map Int64 (List Int64)))",
             "runtime map-of-lists renders the nested value type"
+        );
+    }
+
+    #[test]
+    fn a_runtime_list_of_records_escapes_via_value_encode() {
+        // §3c REDUCER-RESULT de-risk: a runtime `(List <record>)` — a list whose ELEMENTS are records —
+        // is the exact shape of a reducer apply's result `(List EffectRequest)`. The value-encode walker
+        // recurses List -> per-element record -> `(= name value)` fields (sorted by name). Pins that step
+        // 2b's result_desc (`sum_shape_descriptor` on `List(record)`) + the walker render the reducer
+        // result cleanly. `build i n` pushes `(record (op "x") (seq i))` for i in 0..n; fields sort op<seq.
+        // The seed list is annotated so the element record type is fully determined (else the loop
+        // counter `i` in `(seq i)` stays a type var -> `Any` field -> CDZ0203 not-fully-determined).
+        let Some(out) = escape_render(
+            "(module m (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out (record (op \"x\") (seq i)))) out)) \
+                       (def (main) (build 0 2 (: (list) (List (Record (: op String) (: seq Int64)))))) (export main))",
+        ) else {
+            eprintln!("runtime wasm not found; skipping runtime list-of-records escape run");
+            return;
+        };
+        assert_eq!(
+            out,
+            "(: (list (record (= op \"x\") (= seq 0)) (record (= op \"x\") (= seq 1))) (List (record (op String) (seq Int64))))",
+            "runtime list-of-records renders each element as a (= name value) record under (List <record>)"
+        );
+    }
+
+    #[test]
+    fn a_runtime_list_of_sums_escapes_via_value_encode() {
+        // §3c REDUCER-RESULT de-risk (the sum case): a runtime `(List <sum>)` — the reducer result shape
+        // `(List EffectRequest)` IF EffectRequest is a SUM (a variant per effect kind) rather than a record.
+        // The value-encode walker recurses List -> per-element SUM (sum-disc switch + payload render). This
+        // is the value-encode escape path, DISTINCT from `a_provider_returning_a_list_of_sum_...` which
+        // crosses (List (Sum ..)) as a peer HANDLE. Pins that step 2b's result_desc + walker serve a
+        // list-of-sums result too. `build i n` pushes `(Some i)` for i>0 else `None` -> [None, (Some 1)].
+        let Some(out) = escape_render(
+            "(module m (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out (if (> i 0) (: ((. Option Some) i) (Option Int64)) (: (. Option None) (Option Int64))))) out)) \
+                       (def (main) (build 0 2 (: (list) (List (Option Int64))))) (export main))",
+        ) else {
+            eprintln!("runtime wasm not found; skipping runtime list-of-sums escape run");
+            return;
+        };
+        assert_eq!(
+            out, "(: (list (None unit) (Some 1)) (List (Option Int64)))",
+            "runtime list-of-sums renders each element as a sum under (List (Option Int64))"
         );
     }
 

@@ -71,6 +71,17 @@ pub const KIND_COMPONENT_NAME: &str = "component-name";
 /// signal — narrow first slice (one interface's member), grows to a full target-WIT-world artifact.
 pub const KIND_EXPORT_BYTES_MEMBERS: &str = "export-bytes-members";
 
+/// The input-artifact kind carrying the PREPARSED TARGET WIT WORLD in binary-AST form (§3b full-A
+/// end-state, operator 2026-08-11). Its bytes are a `cadenza-ast` binary document — the world tree
+/// (world → import/export interfaces → members → func signatures with `build_type` type descriptors)
+/// produced by an external WIT→binary-AST step OR by v-syntax's inline-declaration lowering (both emit the
+/// SAME locked world node). rcdzc NEVER parses WIT text; it consumes this artifact and reads each member's
+/// declared canonical-ABI type to drive emit-to-match (`value-encode`/`value-decode`-bridging wherever the
+/// guest value-model type differs from the declared type — `DESIGN-compiler-platform-separation.md` §3b).
+/// Absent → no world-targeted emit. This SUPERSEDES the narrow `KIND_EXPORT_BYTES_MEMBERS` signal as the
+/// emit grows from the one-bytes-member slice to the full target-WIT-world.
+pub const KIND_WIT_WORLD: &str = "wit-world";
+
 /// The input-artifact kind that OVERRIDES effect→peer bindings at COMPILE time (U3, the effects-unification
 /// of cross-component interop). Its bytes are newline-separated `Effect=cadenza:pkg/iface` lines that WIN
 /// over a program's in-source `(bind …)` defaults: `Effect=<iface>` rebinds an effect to a different peer;

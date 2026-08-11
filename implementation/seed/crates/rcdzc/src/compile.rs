@@ -168,6 +168,14 @@ fn compile_with_opt_inner(
                 .collect()
         })
         .unwrap_or_default();
+    // The PREPARSED TARGET WIT WORLD (binary-AST), if the program targets one — the §3b full-A ingest.
+    // Raw `cadenza-ast` bytes; the world-structure reader decodes + walks it for emit-to-match. rcdzc never
+    // parses WIT text (a producer / v-syntax inline-decl lowering emits this artifact). Absent → no
+    // world-targeted emit. SUPERSEDES `export_bytes_members` as the emit grows to the full world.
+    db.wit_world = inputs
+        .iter()
+        .find(|a| a.kind == link::KIND_WIT_WORLD)
+        .map(|a| a.bytes.clone());
     // The `--component-name` a PROVIDER publishes its interface under is a component-boundary name,
     // emitted verbatim as the exported interface-instance's extern name. A non-conforming value would
     // produce a component `wasmtime` rejects at LOAD with no diagnostic (the provider twin of the

@@ -122,6 +122,7 @@ pub mod spans;
 // Cadenza self-host). Runs compilation on a stack sized to reach the recursive-descent depth guard,
 // so `decline-don't-crash` holds in every build profile with no environment to remember.
 pub mod host;
+pub mod wit_world;
 
 // The `rcdzc` compile command surface (arg parsing + filesystem + the trace sink), factored into the
 // library so both the standalone `rcdzc` bin and the unified `cdz` bin drive ONE implementation. Also

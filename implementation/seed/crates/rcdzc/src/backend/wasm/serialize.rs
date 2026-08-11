@@ -7145,6 +7145,363 @@ fn encode_recursive_sum_walk_body(
     e
 }
 
+/// §3c — the `apply(ptr,len) -> retptr` core body for a reducer BYTES-ROUNDTRIP export. Lifts the
+/// incoming `list<u8>` event document (lowered by the host to `ptr`/`len` in linear memory) into a runtime
+/// Bytes handle, value-DECODEs it to the compound Event rep (guided by `event_desc`), calls the reducer's
+/// selected body `apply_body_abs(rep)`, value-ENCODEs the result to a canonical document (guided by
+/// `result_desc`), and copies that out to the `(ptr=OUT, len=n)` retarea (retptr 0). This is the inverse
+/// pair of [`encode_recursive_sum_walk_body`] (which only ENCODEs a borrowed rep): here the rep comes from
+/// value-decode and the result from the body call.
+///
+/// OWNERSHIP (leak-critical — MUST be checked with the debug-counters live-objects harness): `value-decode`
+/// and `value-encode` BORROW their `(bytes, desc)` / `(rep, desc)` args (mirrors the recursive-sum walker,
+/// which drops `desc`+`doc` after encode). The reducer body CONSUMES its `rep` param (Perceus owned-arg).
+/// So this drops `bh`, `edesc`, `result`, `rdesc`, `doc` — but NOT `rep` (the body took it).
+fn emit_bytes_roundtrip_apply_body(
+    event_desc: &[u8],
+    result_desc: &[u8],
+    apply_body_abs: u32,
+    import_index: &std::collections::HashMap<&str, u32>,
+) -> Vec<u8> {
+    use crate::backend::wasm::wasm_abi::op;
+    let call_op = |name: &str, out: &mut Vec<u8>| {
+        out.push(op::CALL);
+        uleb128(import_index[name] as u64, out);
+    };
+    let const_i32 = |v: i64, out: &mut Vec<u8>| {
+        out.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(v, out);
+    };
+    // Output region begins after the 8-byte retarea. Safe against the input at `ptr` because the copy-IN
+    // loop below consumes the input into `bh` BEFORE the copy-OUT loop writes at OUT.
+    const OUT: i64 = 8;
+    let mut body = Vec::new();
+    // Locals after params (ptr=0, len=1): bh, edesc, rep, result, rdesc, doc, n, i — one group of 8 i32.
+    uleb128(1, &mut body);
+    uleb128(8, &mut body);
+    body.push(wasm_abi::CORE_I32);
+    let (ptr, len) = (0u32, 1u32);
+    let (bh, edesc, rep, result, rdesc, doc, n, i) =
+        (2u32, 3u32, 4u32, 5u32, 6u32, 7u32, 8u32, 9u32);
+    let get = |l: u32, out: &mut Vec<u8>| {
+        out.push(op::LOCAL_GET);
+        uleb128(l as u64, out);
+    };
+    let set = |l: u32, out: &mut Vec<u8>| {
+        out.push(op::LOCAL_SET);
+        uleb128(l as u64, out);
+    };
+    // Bake a compile-time-constant descriptor into a heap Bytes handle stashed in `dst` (bytes-alloc + a
+    // literal `bytes-set` per byte — same idiom the recursive-sum walker uses for its descriptor).
+    let bake_desc = |desc: &[u8], dst: u32, out: &mut Vec<u8>| {
+        const_i32(desc.len() as i64, out);
+        call_op("bytes-alloc", out);
+        set(dst, out);
+        for (j, &b) in desc.iter().enumerate() {
+            get(dst, out);
+            const_i32(j as i64, out);
+            const_i32(b as i64, out);
+            call_op("bytes-set", out);
+            set(dst, out);
+        }
+    };
+
+    // (1) bh = bytes-alloc(len); copy-IN loop: for i in 0..len { bh = bytes-set(bh, i, load8_u(ptr+i)) }.
+    get(len, &mut body);
+    call_op("bytes-alloc", &mut body);
+    set(bh, &mut body);
+    const_i32(0, &mut body);
+    set(i, &mut body);
+    body.push(op::BLOCK);
+    body.push(wasm_abi::BLOCK_EMPTY);
+    body.push(op::LOOP);
+    body.push(wasm_abi::BLOCK_EMPTY);
+    {
+        get(i, &mut body);
+        get(len, &mut body);
+        body.push(op::I32_GE_U);
+        body.push(op::BR_IF);
+        uleb128(1, &mut body); // exit the block
+        get(bh, &mut body);
+        get(i, &mut body);
+        get(ptr, &mut body);
+        get(i, &mut body);
+        body.push(op::I32_ADD);
+        body.push(op::I32_LOAD8_U);
+        body.push(0x00); // align
+        body.push(0x00); // offset
+        call_op("bytes-set", &mut body);
+        set(bh, &mut body);
+        get(i, &mut body);
+        const_i32(1, &mut body);
+        body.push(op::I32_ADD);
+        set(i, &mut body);
+        body.push(op::BR);
+        uleb128(0, &mut body); // continue the loop
+    }
+    body.push(op::END); // end loop
+    body.push(op::END); // end block
+
+    // (2) rep = value-decode(bytes-lift, event_desc).
+    bake_desc(event_desc, edesc, &mut body);
+    get(bh, &mut body);
+    get(edesc, &mut body);
+    call_op("value-decode", &mut body);
+    set(rep, &mut body);
+
+    // (3) result = apply-body(rep)  (the reducer's selected fold body; CONSUMES rep).
+    get(rep, &mut body);
+    body.push(op::CALL);
+    uleb128(apply_body_abs as u64, &mut body);
+    set(result, &mut body);
+
+    // (4) doc = value-encode(result, result_desc).
+    bake_desc(result_desc, rdesc, &mut body);
+    get(result, &mut body);
+    get(rdesc, &mut body);
+    call_op("value-encode", &mut body);
+    set(doc, &mut body);
+
+    // (5) n = bytes-len(doc); copy-OUT loop: for i in 0..n { store8(OUT+i, bytes-get(doc, i)) }.
+    get(doc, &mut body);
+    call_op("bytes-len", &mut body);
+    set(n, &mut body);
+    const_i32(0, &mut body);
+    set(i, &mut body);
+    body.push(op::BLOCK);
+    body.push(wasm_abi::BLOCK_EMPTY);
+    body.push(op::LOOP);
+    body.push(wasm_abi::BLOCK_EMPTY);
+    {
+        get(i, &mut body);
+        get(n, &mut body);
+        body.push(op::I32_GE_U);
+        body.push(op::BR_IF);
+        uleb128(1, &mut body);
+        const_i32(OUT, &mut body);
+        get(i, &mut body);
+        body.push(op::I32_ADD);
+        get(doc, &mut body);
+        get(i, &mut body);
+        call_op("bytes-get", &mut body);
+        body.push(op::I32_STORE8);
+        body.push(0x00);
+        body.push(0x00);
+        get(i, &mut body);
+        const_i32(1, &mut body);
+        body.push(op::I32_ADD);
+        set(i, &mut body);
+        body.push(op::BR);
+        uleb128(0, &mut body);
+    }
+    body.push(op::END);
+    body.push(op::END);
+
+    // (6) Drops (see OWNERSHIP above): bh, edesc, result, rdesc, doc — NOT rep (the body consumed it).
+    for h in [bh, edesc, result, rdesc, doc] {
+        get(h, &mut body);
+        call_op("drop", &mut body);
+    }
+
+    // (7) retarea: mem[0] = OUT (ptr), mem[4] = n (len); return retptr 0.
+    const_i32(0, &mut body);
+    const_i32(OUT, &mut body);
+    body.push(op::I32_STORE);
+    body.push(0x02); // align 2 (4-byte)
+    body.push(0x00); // offset
+    const_i32(4, &mut body);
+    get(n, &mut body);
+    body.push(op::I32_STORE);
+    body.push(0x02);
+    body.push(0x00);
+    const_i32(0, &mut body);
+    body.push(op::END);
+    let mut e = uleb_bytes(body.len() as u64);
+    e.extend_from_slice(&body);
+    e
+}
+
+/// §3c — a minimal bump-allocator `cabi_realloc(orig_ptr, orig_size, align, new_size) -> i32` body for a
+/// reducer bytes-roundtrip module. The host calls this to LOWER the incoming `list<u8>` event into the
+/// guest's owned memory (the canonical component ABI), so — unlike the resource builders' return-0 stub —
+/// it must hand back real, `align`-aligned, non-overlapping space. It bump-allocates off a module global
+/// (`bump_global`, the high-water cursor, initialized above the fixed `OUT=8` retarea) and never frees:
+/// a fold is one call, the whole instance is torn down after, so leak-forever is correct and simplest.
+/// Ignores `orig_ptr`/`orig_size` (the host only ever grows a fresh 0-ptr allocation for the param list).
+fn emit_bump_realloc_body(bump_global: u32) -> Vec<u8> {
+    use crate::backend::wasm::wasm_abi::op;
+    let mut body = Vec::new();
+    // One i32 local (index 4, after the 4 params) to hold the aligned base.
+    uleb128(1, &mut body);
+    uleb128(1, &mut body);
+    body.push(wasm_abi::CORE_I32);
+    let emit = |out: &mut Vec<u8>, o: u8| out.push(o);
+    let get = |out: &mut Vec<u8>, l: u64| {
+        out.push(op::LOCAL_GET);
+        uleb128(l, out);
+    };
+    let const_i32 = |out: &mut Vec<u8>, v: i64| {
+        out.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(v, out);
+    };
+    // aligned = (global.get(bump) + align - 1) & (0 - align)   [align is a power of two → -align is the mask]
+    body.push(op::GLOBAL_GET);
+    uleb128(bump_global as u64, &mut body);
+    get(&mut body, 2); // align
+    emit(&mut body, op::I32_ADD);
+    const_i32(&mut body, 1);
+    emit(&mut body, op::I32_SUB);
+    const_i32(&mut body, 0);
+    get(&mut body, 2); // align
+    emit(&mut body, op::I32_SUB); // 0 - align
+    emit(&mut body, op::I32_AND);
+    body.push(op::LOCAL_SET);
+    uleb128(4, &mut body); // aligned
+    // global.set(bump, aligned + new_size)
+    get(&mut body, 4);
+    get(&mut body, 3); // new_size
+    emit(&mut body, op::I32_ADD);
+    body.push(op::GLOBAL_SET);
+    uleb128(bump_global as u64, &mut body);
+    // return aligned
+    get(&mut body, 4);
+    body.push(op::END);
+    let mut e = uleb_bytes(body.len() as u64);
+    e.extend_from_slice(&body);
+    e
+}
+
+/// §3c — assemble the CORE MODULE for a reducer BYTES-ROUNDTRIP provider member: a single exported
+/// `apply(ptr,len) -> retptr` that value-DECODEs the incoming `list<u8>` event, runs the reducer fold
+/// body, and value-ENCODEs the `list<u8>` result. Unlike [`runtime_resource_core_module_form_ex2`] this is
+/// a plain function (no resource type / make / t-encode / dtor / methods): the module imports the `k`
+/// runtime ops, OWNS a memory + a real bump-allocator `cabi_realloc` (so the host can lower the input list
+/// via the canonical component ABI), and exports `apply` + `memory` + `cabi_realloc` for the envelope.
+///
+/// `apply_body_abs` is the reducer fold body's absolute core-func index (the caller selects `funcs` with an
+/// import base of `imports.len()`, so a `CallImport(i)` resolves to `call i` and a self/body call to
+/// `k + its emission position`). This increment handles the closure-free, host-import-free reducer; the
+/// caller declines the fused shapes for now.
+pub fn bytes_roundtrip_core_module(
+    funcs: &[SelectedFunc],
+    imports: &[&RtOp],
+    apply_body_abs: u32,
+    event_desc: &[u8],
+    result_desc: &[u8],
+    member_name: &str,
+) -> Result<Vec<u8>, String> {
+    use crate::backend::wasm::wasm_abi::op;
+    let k = imports.len();
+    let n = funcs.len();
+
+    // ── Type section ── import functypes 0..k, then one per defined body (k..k+n), then apply
+    // `(i32,i32)->i32` (k+n) and cabi_realloc `(i32×4)->i32` (k+n+1).
+    let mut type_items = Vec::new();
+    for o in imports {
+        type_items.extend_from_slice(&import_functype(o));
+    }
+    for f in funcs {
+        type_items.extend_from_slice(&functype(f)?);
+    }
+    let apply_type_idx = k + n;
+    {
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(2, &[wasm_abi::CORE_I32, wasm_abi::CORE_I32]));
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        type_items.extend_from_slice(&t);
+    }
+    let realloc_type_idx = k + n + 1;
+    {
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(4, &[wasm_abi::CORE_I32; 4]));
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        type_items.extend_from_slice(&t);
+    }
+    let total_types = k + n + 2;
+    let type_sec = section(wasm_abi::CORE_SEC_TYPE, &wasm_vec(total_types, &type_items));
+
+    // ── Import section ── the k runtime ops (func indices 0..k), from the runtime import name. Guest OWNS
+    // its memory (canonical ABI), so no memory import.
+    let mut import_index: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    let mut import_items = Vec::new();
+    for (j, o) in imports.iter().enumerate() {
+        import_items.extend_from_slice(&import_item(o.name, j as u32));
+        import_index.insert(o.name, j as u32);
+    }
+    let import_sec = section(2, &wasm_vec(k, &import_items));
+
+    // ── Function section ── defined bodies (types k..k+n), then apply (type k+n), realloc (type k+n+1).
+    let mut func_items = Vec::new();
+    for i in 0..n {
+        uleb128((k + i) as u64, &mut func_items);
+    }
+    uleb128(apply_type_idx as u64, &mut func_items);
+    uleb128(realloc_type_idx as u64, &mut func_items);
+    let func_sec = section(wasm_abi::CORE_SEC_FUNCTION, &wasm_vec(n + 2, &func_items));
+    let apply_abs = (k + n) as u32;
+    let realloc_abs = apply_abs + 1;
+
+    // ── Memory section ── one owned memory, min 1 page.
+    let mem_sec = section(wasm_abi::CORE_SEC_MEMORY, &wasm_vec(1, &[0x00, 0x01]));
+
+    // ── Global section ── one MUTABLE i32 bump cursor, initialized above the fixed OUT=8 retarea (16 gives
+    // slack). `cabi_realloc` bumps it to hand the host non-overlapping space for the input list.
+    let bump_global: u32 = 0;
+    let global_sec = {
+        let mut item = vec![wasm_abi::CORE_I32, 0x01]; // i32, mutable
+        item.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(16, &mut item);
+        item.push(op::END);
+        section(wasm_abi::CORE_SEC_GLOBAL, &wasm_vec(1, &item))
+    };
+
+    // ── Export section ── the apply member (by its declared name), the owned memory, and cabi_realloc —
+    // the three the bytes-roundtrip envelope aliases + canon-lifts through.
+    let export_sec = {
+        let export = |name: &str, kind: u8, idx: u32| {
+            let mut item = uleb_bytes(name.len() as u64);
+            item.extend_from_slice(name.as_bytes());
+            item.push(kind);
+            uleb128(idx as u64, &mut item);
+            item
+        };
+        let mut items = Vec::new();
+        items.extend_from_slice(&export(member_name, wasm_abi::EXPORT_KIND_FUNC, apply_abs));
+        items.extend_from_slice(&export("memory", wasm_abi::EXPORT_KIND_MEMORY, 0));
+        items.extend_from_slice(&export(
+            "cabi_realloc",
+            wasm_abi::EXPORT_KIND_FUNC,
+            realloc_abs,
+        ));
+        section(wasm_abi::CORE_SEC_EXPORT, &wasm_vec(3, &items))
+    };
+
+    // ── Code section ── defined bodies (emission order), then the apply body + the realloc body.
+    let mut code_items = Vec::new();
+    for f in funcs {
+        code_items.extend_from_slice(&code_entry(f, &import_index));
+    }
+    code_items.extend_from_slice(&emit_bytes_roundtrip_apply_body(
+        event_desc,
+        result_desc,
+        apply_body_abs,
+        &import_index,
+    ));
+    code_items.extend_from_slice(&emit_bump_realloc_body(bump_global));
+    let code_sec = section(wasm_abi::CORE_SEC_CODE, &wasm_vec(n + 2, &code_items));
+
+    let mut core = Vec::new();
+    core.extend_from_slice(CORE_MAGIC);
+    core.extend_from_slice(&type_sec);
+    core.extend_from_slice(&import_sec);
+    core.extend_from_slice(&func_sec);
+    core.extend_from_slice(&mem_sec);
+    core.extend_from_slice(&global_sec);
+    core.extend_from_slice(&export_sec);
+    core.extend_from_slice(&code_sec);
+    Ok(core)
+}
+
 /// Emit the instructions that WALK to one hole's leaf and WRITE its bytes into the output buffer (at the
 /// hole's absolute `offset`). Shared by the flat tuple/record walker and the per-variant sum walker.
 /// `rep` is the local holding the root heap handle; `scratch` an i64 scratch local. The walk starts at
