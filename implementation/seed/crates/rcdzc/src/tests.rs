@@ -54756,6 +54756,19 @@ mod diagnostics {
         let nb = compile_component(&crate::codec::encode(&parse(narrow))).expect("compile narrow");
         assert_eq!(super::run_returns::<i64>(&nb, "main"), 7);
 
+        // NON-VACUOUS narrow witness: RETURN the Int8 field itself (`a`, not `c`) so the field's VALUE
+        // crosses the boundary — a width mis-grounding (field type walked to `Ty::Any` → defaulted i64)
+        // would read/render `a` at the wrong width. The `narrow` case above returns `c` (proves `a` BINDS,
+        // not its width); this returns `a` = 100 read as `i8`, proving the type-walk grounds the real width.
+        let narrow_read = "(module m \
+           (def (f (: t (Tuple (Record (x Int8)) Int64))) \
+             (match t ((tuple (record (x a)) c) a))) \
+           (def (main) (f (tuple (record (x 100)) 7))) \
+           (export main))";
+        let nrb = compile_component(&crate::codec::encode(&parse(narrow_read)))
+            .expect("compile narrow-read");
+        assert_eq!(super::run_returns::<i8>(&nrb, "main"), 100);
+
         // A record nested in a LIST element (the other `Elem` descent) binds its field too. A wildcard arm
         // covers the other lengths (a single-element list arm alone is non-exhaustive, CDZ0210).
         let listed = "(module m \
