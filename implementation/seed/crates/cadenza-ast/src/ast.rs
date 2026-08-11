@@ -356,15 +356,11 @@ impl Builder {
     /// cannot drift the structural head-kind and split the identity of an otherwise-identical schema.
     ///
     /// `ops` is `(op_name, signature_node)` in the caller's order (op order is significant to the hash —
-    /// the caller sorts if it wants order-independent identity). `authz`, when `Some`, is wrapped as a
-    /// trailing `(authz <node>)`; `None` omits the slot entirely.
-    pub fn effect_schema_tree(
-        &mut self,
-        name: &str,
-        ops: &[(&str, StructId)],
-        authz: Option<StructId>,
-    ) -> StructId {
-        let mut children = Vec::with_capacity(2 + ops.len() + authz.is_some() as usize);
+    /// the caller sorts if it wants order-independent identity). The schema is the effect's DATA SHAPE only:
+    /// there is NO authz node (operator directive — grants are dynamic and live OUTSIDE the schema; the
+    /// schema-hash stays the collision-proof identity a grant keys on, but the authz contract is external).
+    pub fn effect_schema_tree(&mut self, name: &str, ops: &[(&str, StructId)]) -> StructId {
+        let mut children = Vec::with_capacity(2 + ops.len());
         let effect_head = self.name("effect");
         children.push(effect_head);
         let ename = self.name(name);
@@ -374,11 +370,6 @@ impl Builder {
             let opn = self.name(op_name);
             let op_node = self.list(vec![op_head, opn, sig]);
             children.push(op_node);
-        }
-        if let Some(a) = authz {
-            let authz_head = self.name("authz");
-            let authz_node = self.list(vec![authz_head, a]);
-            children.push(authz_node);
         }
         self.list(children)
     }
@@ -1237,7 +1228,7 @@ mod tests {
             let s = b.name("string");
             b.list(vec![s])
         };
-        let root = b.effect_schema_tree("Weather", &[("get", sig)], None);
+        let root = b.effect_schema_tree("Weather", &[("get", sig)]);
         let built = b.finish(root);
 
         assert_eq!(built.schema_declared_name(), Some("Weather"));
@@ -1253,7 +1244,7 @@ mod tests {
             let s = b2.name("string");
             b2.list(vec![s])
         };
-        let root2 = b2.effect_schema_tree("Weather", &[("get", sig2)], None);
+        let root2 = b2.effect_schema_tree("Weather", &[("get", sig2)]);
         let built2 = b2.finish(root2);
         assert_eq!(
             bytes1,
@@ -1263,17 +1254,18 @@ mod tests {
     }
 
     #[test]
-    fn effect_schema_tree_carries_ops_in_order_and_an_optional_authz() {
-        // Multiple ops in caller order + a trailing `(authz …)` slot when provided; the structural heads
-        // (effect/op/authz) are NAME atoms so `as_form`/`schema_declared_name` read them.
+    fn effect_schema_tree_carries_ops_in_order_data_shape_only() {
+        // Multiple ops in caller order; the structural heads (effect/op) are NAME atoms so
+        // `as_form`/`schema_declared_name` read them. The schema is DATA SHAPE ONLY — there is NO authz
+        // node (operator directive: grants are dynamic, external to the schema).
         let mut b = Builder::new();
-        let (s1, s2, az) = (b.name("string"), b.name("u8"), b.name("public"));
-        let root = b.effect_schema_tree("Fs", &[("read", s1), ("write", s2)], Some(az));
+        let (s1, s2) = (b.name("string"), b.name("u8"));
+        let root = b.effect_schema_tree("Fs", &[("read", s1), ("write", s2)]);
         let built = b.finish(root);
         assert_eq!(built.schema_declared_name(), Some("Fs"));
-        // Two ops present as `(op read …)` / `(op write …)`, and an `(authz public)` tail.
+        // Two ops present as `(op read …)` / `(op write …)`, and NO authz tail.
         let tail = built.as_form(built.root, "effect").expect("effect form");
-        assert_eq!(tail.len(), 4, "name + 2 ops + authz");
+        assert_eq!(tail.len(), 3, "name + 2 ops, no authz slot");
         assert!(
             built.as_form(tail[1], "op").is_some(),
             "first op is an (op …) form"
@@ -1282,18 +1274,12 @@ mod tests {
             built.as_form(tail[2], "op").is_some(),
             "second op is an (op …) form"
         );
-        assert!(
-            built.as_form(tail[3], "authz").is_some(),
-            "trailing (authz …)"
-        );
-        // No-authz omits the slot entirely.
+        // A single-op schema is name + 1 op, no authz slot.
         let mut b2 = Builder::new();
         let s = b2.name("string");
-        let r2 = b2.effect_schema_tree("Fs", &[("read", s)], None);
-        let no_authz = b2.finish(r2);
-        let tail2 = no_authz
-            .as_form(no_authz.root, "effect")
-            .expect("effect form");
+        let r2 = b2.effect_schema_tree("Fs", &[("read", s)]);
+        let one_op = b2.finish(r2);
+        let tail2 = one_op.as_form(one_op.root, "effect").expect("effect form");
         assert_eq!(tail2.len(), 2, "name + 1 op, no authz slot");
     }
 }

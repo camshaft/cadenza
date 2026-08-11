@@ -244,23 +244,24 @@ pub fn schema_hash(ty: &Type) -> Result<crate::hash::Hash, MarshalError> {
 }
 
 /// The stable STRUCTURAL identity of an EFFECT — the content-hash of its schema tree
-/// `(effect <name> (op <op-name> <sig>)… (authz <a>)?)`, where each op's `<sig>` is the type-descriptor
+/// `(effect <name> (op <op-name> <sig>)…)`, where each op's `<sig>` is the type-descriptor
 /// AST [`build_type`] emits into the SAME arena (one structural-encode path, no parallel encoder). This is
 /// the effect-identity foundation (operator seq367/368, seq374 top feature): an effect is identified by its
 /// SCHEMA — the shapes of its operations — not by a closed enum discriminant or an arbitrary family string.
 /// The family/display name becomes a human ALIAS; THIS hash is the authoritative identity that authz gates
 /// on (collision-proof) and the wire carries (resolved hash→name via the host's [`crate::schema_resolver`]).
+/// The schema is the effect's DATA SHAPE only — there is NO authz node in it (operator directive: grants are
+/// dynamic and live OUTSIDE the schema; the schema-hash is the identity a grant keys on, the grant is external).
 ///
 /// ORDER-INDEPENDENT: `ops` are sorted by op-name before the tree is built, so the same operation set hashes
 /// IDENTICALLY regardless of declaration order — a schema is its SET of named operations, not a sequence. A
-/// shape change to ANY op's signature (or adding/removing an op, or an authz change) flips the hash. Pure
+/// shape change to ANY op's signature (or adding/removing an op) flips the hash. Pure
 /// over the encoded tree ([`Hash::of`] = blake3, the one content-address algorithm), so the same effect
 /// schema yields the same id everywhere (kernel, host, on the wire). An op whose signature has no
 /// value-crossing descriptor propagates [`build_type`]'s [`MarshalError`].
 pub fn effect_schema_hash(
     name: &str,
     ops: &[(&str, &Type)],
-    authz: Option<&Type>,
 ) -> Result<crate::hash::Hash, MarshalError> {
     let mut b = Builder::new();
     // Build each op's signature descriptor node into the shared arena (the SINGLE structural encoder).
@@ -268,13 +269,7 @@ pub fn effect_schema_hash(
         .iter()
         .map(|(op_name, sig)| Ok((*op_name, build_type(&mut b, sig)?)))
         .collect::<Result<_, MarshalError>>()?;
-    let authz_node = match authz {
-        Some(a) => Some(build_type(&mut b, a)?),
-        None => None,
-    };
-    Ok(effect_schema_hash_from_nodes(
-        b, name, &op_nodes, authz_node,
-    ))
+    Ok(effect_schema_hash_from_nodes(b, name, &op_nodes))
 }
 
 /// The `&Type`-free core of [`effect_schema_hash`]: given op-signature descriptor nodes ALREADY built into
@@ -285,18 +280,17 @@ pub fn effect_schema_hash(
 /// KERNEL-authored effect schema (e.g. the built-in effects, which have no reflected component) must build its
 /// op-sig descriptor nodes directly with the [`Builder`] (`build_type`'s primitive/compound forms — `bytes`,
 /// `unit`, records, etc.) and pass them here. [`effect_schema_hash`] is the thin wrapper that reflects a
-/// `&Type` per op into `b` then delegates. `authz` is [`None`] for the current schema model (operator
-/// directive: grants live OUTSIDE the schema, dynamic — the schema carries the effect's DATA SHAPE only).
+/// `&Type` per op into `b` then delegates. The schema carries the effect's DATA SHAPE only — no authz node
+/// (operator directive: grants live OUTSIDE the schema, dynamic; the schema-hash is the identity a grant keys on).
 pub fn effect_schema_hash_from_nodes(
     mut b: Builder,
     name: &str,
     ops: &[(&str, StructId)],
-    authz: Option<StructId>,
 ) -> crate::hash::Hash {
     // Sort by op-name so the identity is the SET of ops, order-independent.
     let mut op_nodes: Vec<(&str, StructId)> = ops.to_vec();
     op_nodes.sort_by(|a, c| a.0.cmp(c.0));
-    let tree = b.effect_schema_tree(name, &op_nodes, authz);
+    let tree = b.effect_schema_tree(name, &op_nodes);
     crate::hash::Hash::of(&codec::encode(&b.finish(tree)))
 }
 
@@ -1688,42 +1682,35 @@ mod tests {
         let str_ty = param_type(&probe_component("string"));
 
         // Same two ops, opposite declaration order → identical schema-hash.
-        let ab = effect_schema_hash("kv", &[("get", &str_ty), ("put", &u32_ty)], None)
-            .expect("kv schema ab");
-        let ba = effect_schema_hash("kv", &[("put", &u32_ty), ("get", &str_ty)], None)
-            .expect("kv schema ba");
+        let ab =
+            effect_schema_hash("kv", &[("get", &str_ty), ("put", &u32_ty)]).expect("kv schema ab");
+        let ba =
+            effect_schema_hash("kv", &[("put", &u32_ty), ("get", &str_ty)]).expect("kv schema ba");
         assert_eq!(
             ab, ba,
             "op order must not affect the effect-schema identity"
         );
 
         // A different op SIGNATURE (get: u32 not string) flips the hash.
-        let sig_changed = effect_schema_hash("kv", &[("get", &u32_ty), ("put", &u32_ty)], None)
+        let sig_changed = effect_schema_hash("kv", &[("get", &u32_ty), ("put", &u32_ty)])
             .expect("kv schema sig-changed");
         assert_ne!(ab, sig_changed, "an op signature change must flip the hash");
 
         // A different op NAME (getx not get) flips the hash.
-        let name_changed = effect_schema_hash("kv", &[("getx", &str_ty), ("put", &u32_ty)], None)
+        let name_changed = effect_schema_hash("kv", &[("getx", &str_ty), ("put", &u32_ty)])
             .expect("kv schema name-changed");
         assert_ne!(ab, name_changed, "an op rename must flip the hash");
 
         // A different effect NAME flips the hash (the name is part of the tree head).
-        let effect_renamed =
-            effect_schema_hash("store", &[("get", &str_ty), ("put", &u32_ty)], None)
-                .expect("store schema");
+        let effect_renamed = effect_schema_hash("store", &[("get", &str_ty), ("put", &u32_ty)])
+            .expect("store schema");
         assert_ne!(
             ab, effect_renamed,
             "the effect name is part of its identity"
         );
 
-        // Adding an authz gate flips the hash (authz participates in the schema tree).
-        let with_authz =
-            effect_schema_hash("kv", &[("get", &str_ty), ("put", &u32_ty)], Some(&u32_ty))
-                .expect("kv schema with authz");
-        assert_ne!(ab, with_authz, "adding an authz gate must flip the hash");
-
         // Deterministic: recomputing the same schema yields the same hash.
-        let ab_again = effect_schema_hash("kv", &[("get", &str_ty), ("put", &u32_ty)], None)
+        let ab_again = effect_schema_hash("kv", &[("get", &str_ty), ("put", &u32_ty)])
             .expect("kv schema again");
         assert_eq!(ab, ab_again, "effect-schema hashing is deterministic");
     }
@@ -1739,13 +1726,13 @@ mod tests {
         //     pass them to from_nodes, and confirm it matches.
         let u32_ty = param_type(&probe_component("u32"));
         let str_ty = param_type(&probe_component("string"));
-        let via_type = effect_schema_hash("kv", &[("get", &str_ty), ("put", &u32_ty)], None)
+        let via_type = effect_schema_hash("kv", &[("get", &str_ty), ("put", &u32_ty)])
             .expect("kv schema via &Type");
         let via_nodes = {
             let mut b = Builder::new();
             let get_sig = build_type(&mut b, &str_ty).unwrap();
             let put_sig = build_type(&mut b, &u32_ty).unwrap();
-            effect_schema_hash_from_nodes(b, "kv", &[("get", get_sig), ("put", put_sig)], None)
+            effect_schema_hash_from_nodes(b, "kv", &[("get", get_sig), ("put", put_sig)])
         };
         assert_eq!(
             via_type, via_nodes,
@@ -1765,7 +1752,7 @@ mod tests {
             // the from_nodes path identically).
             let bytes_head = b.name("bytes");
             let bytes_sig = b.list(vec![bytes_head]);
-            effect_schema_hash_from_nodes(b, name, &[("perform", bytes_sig)], None)
+            effect_schema_hash_from_nodes(b, name, &[("perform", bytes_sig)])
         };
         let http = built_in("http");
         let http_again = built_in("http");
