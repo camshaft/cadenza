@@ -8276,3 +8276,28 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 30699 Int64))
   (call   main (: 1 Int64)) (output (: 30499 Int64)))
+
+(case "a DEPTH-3 same-effect shadow ladder — each shadow's seed draws from the ENCLOSING handler, strides 1 2 3 stay separate"
+  (doc    "Cross-seeded same-effect shadowing: three nested handlers for the SAME effect St, but unlike the
+           literal-seed towers (dn1), each inner shadow's SEED is COMPUTED by drawing from the ENCLOSING
+           handler — `(handle St (* (St.get) 10) ...)` seeds the middle from the outer's first draw, and
+           `(handle St (+ (St.get) 5) ...)` seeds the inner from the middle's first draw. Each level's arm has
+           its own stride (outer +1, middle +2, inner +3) and its own state slot; the body's two draws both
+           home to the innermost. `main(3)`: outer seed 3, its first draw (for the middle seed) = 3 (s->4),
+           middle seed = 30; middle's first draw (for the inner seed) = 30 (s->32), inner seed = 35; body
+           `(+ (St.get) (* 100 (St.get)))` on the inner: 35 (s->38) + 100*38 = 35 + 3800 = 3835. The strides
+           stay separate — no slot bleeds across the ladder. Uniform on all 3 backends, opt-sweep 0-divergence.
+           Breaker shadow-ladder probe sl1 (2026-08-11).")
+  (input  (do
+            (effect St (op get (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((get () s (resume s (+ s 1))))
+                (handle St (* (St.get) 10)
+                  ((get () t (resume t (+ t 2))))
+                  (handle St (+ (St.get) 5)
+                    ((get () u (resume u (+ u 3))))
+                    (+ (St.get) (* 100 (St.get)))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 3835 Int64))
+  (call   main (: 0 Int64)) (output (: 805 Int64)))

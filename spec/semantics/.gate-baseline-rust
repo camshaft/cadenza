@@ -653,6 +653,7 @@ pass	a DEFERRED resume-thunk escaping to another function re-installs the handle
 pass	a DEPTH-2 block-wrapped branch perform in a let-init folds through the block (adv-69 Site-6, nested wrappers)
 pass	a DEPTH-3 nested-op chain WITHOUT a post-observer folds (the no-observer control for the observer-gated guard)
 pass	a DEPTH-3 op-arg chain threads across two handler layers
+pass	a DEPTH-3 same-effect shadow ladder — each shadow's seed draws from the ENCLOSING handler, strides 1 2 3 stay separate
 pass	a DERIVED-dimension (velocity) quantity used as a Map key hits by content
 pass	a DIRECT-init branch perform in a let-init threads its state advance (adv-69 control, still computes)
 pass	a DOUBLY-nested Tuple ARG (three levels deep) crosses the direct-call boundary
