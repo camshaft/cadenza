@@ -204,31 +204,48 @@ recipient, one with no live window, one already mid-tick (it'll drain your messa
 and the interactive `concierge`/`design` windows (a human may be typing). `/loop` remains the safety
 heartbeat, so even a missed nudge is eventually picked up. Pass `--no-wake` when seeding a batch.
 
-## The gate (what "green" means — unchanged from the pre-fleet loops)
+## The gate (what "green" means)
 
-**⏱ ITERATE NARROW, gate FULL once (per-agent loop-latency squash, operator priority 2026-08-10).**
-The full battery below is ~8-15min and pr-sync RE-GATES it on your MR anyway, so paying it on every
-inner iteration is the dominant per-step waste. While ITERATING a slice, self-check NARROW — only what
-you touched: **`cargo xtask dev-gate`** (the fast inner-loop gate — auto-detects your touched crates
-from `git diff` and runs only their test+clippy+fmt, warm = seconds; pass crate names to scope
-explicitly). It's a code-level check, so pair it with a corpus spot-check when your slice changes
-behavior: `cargo xtask gate --files <your-file>.sexp --target wasm`. Run the FULL battery below ONCE,
-right before your final send — it's the authoritative self-verify; a green `dev-gate` is NOT merge-safe
-(it prints that caveat), and pr-sync's pass is the full-battery backstop, so a rare scoped-miss costs
-one reject round-trip, far cheaper than 10min/iteration.
+**🚦 FULL GATES ARE pr-sync's JOB — you iterate on `dev-gate` + a scoped spot-check (OPERATOR DIRECTIVE
+2026-08-11: "restrict full gates to the pr-sync").** The full `cargo xtask gate`/`check` battery is
+~8-15min AND pr-sync RE-GATES the full battery on every MR anyway, so an agent running the full battery —
+whether per iteration OR as a pre-send verify — is redundant work that was measurably killing fleet
+iteration speed. So the policy is now: **the ONLY agent that runs the full authoritative gate is
+pr-sync** (its integration pass is the single source of merge-truth). Every other agent iterates AND
+pre-sends with the NARROW checks only:
 
-Before you send a `merge-request`, all of these must hold in your worktree (the FINAL pre-send verify):
+- **`cargo xtask dev-gate`** — the fast inner-loop gate (auto-detects your touched crates from `git diff`
+  and runs only their test+clippy+fmt; warm ≈ 4s; pass crate names to scope explicitly). Your primary
+  self-check, every iteration.
+- **a scoped corpus spot-check** when your slice changes behavior: `cargo xtask gate --files
+  <your-file>.sexp --target wasm` (YOUR corpus file, one backend). Not the whole battery — just the
+  case(s) your slice touches.
+- `cargo test -p <your-crate> --lib` for a specific test `dev-gate` isn't surfacing.
 
-1. `cargo test -p rcdzc --lib` — 0 failed (add tests for your slice: a fold unit + a wasmtime run
-   where a value executes; a reject test for a new diagnostic).
-2. `cargo xtask gate` — **diff the FAIL SET against the baseline, not the pass count** (the pass
-   count drifts as peers land). ADDITIVE only: a `Todo→Fail` flip is a genuine MISCOMPILE — fix it,
-   do not send. `(error CODE)` cases are code-matched; `(trap "reason")` cases reason-matched.
-3. `cargo xtask check` — fmt + clippy `-D warnings` + `codegen --check` all clean. Watch the
-   fmt-drift trap: a whole-package `cargo fmt` touches foreign drift; revert files you didn't edit
-   (`git checkout --`), verify only YOUR files are fmt-clean, land on the substantive gates.
-4. Do NOT edit `cdz-runtime`'s `//` comments or `wit/runtime.wit` casually — they are inside the
-   frozen `REQUIRED_RUNTIME_HASH`; a change there means `cargo xtask build` + `codegen --check`.
+**Do NOT run the full `cargo xtask gate` (whole corpus × 3 backends) or `cargo xtask check` (whole
+workspace) yourself** — not per iteration, not "once before send." A green `dev-gate` + scoped spot-check
+is your send bar; pr-sync's full-battery re-gate is the authoritative backstop, so a rare scoped-miss
+costs ONE reject round-trip — far cheaper than every agent paying ~10min/verify. (pr-sync itself, and a
+one-off deliberate whole-repo audit an owner explicitly decides to run, are the exceptions; the rule is
+that routine per-MR full-gating belongs to pr-sync alone.)
+
+Before you send a `merge-request`, the NARROW pre-send verify (NOT the full battery):
+
+1. `cargo xtask dev-gate` green (your touched crates' test+clippy+fmt) — a `Todo→Fail` corpus flip is a
+   genuine MISCOMPILE, so if your slice changes behavior also run the scoped `cargo xtask gate --files
+   <your-file>.sexp --target wasm` and diff the FAIL SET against the baseline (ADDITIVE only; pass count
+   drifts as peers land). `(error CODE)` cases are code-matched; `(trap "reason")` reason-matched.
+2. For a new test/slice, add its coverage (a fold unit + a wasmtime run where a value executes; a reject
+   test for a new diagnostic) and confirm it via `dev-gate` / `cargo test -p <crate> --lib`.
+3. `dev-gate` already runs fmt + clippy `-D warnings` on your touched crates. Watch the fmt-drift trap: a
+   whole-package `cargo fmt` touches foreign drift; revert files you didn't edit (`git checkout --`),
+   verify only YOUR files are fmt-clean.
+4. Do NOT edit `cdz-runtime`'s `//` comments or `wit/runtime.wit` casually — they are inside the frozen
+   `REQUIRED_RUNTIME_HASH`; a change there means `cargo xtask build` + `codegen --check` (the one place a
+   heavier local check is unavoidable, since pr-sync can't recover a hash mismatch for you).
+
+pr-sync's pass remains the AUTHORITATIVE full-battery gate — this policy doesn't weaken merge-truth, it
+stops every agent from redundantly re-running what pr-sync runs anyway.
 
 **A sudden MASS heap-test failure is almost always a STALE STORE, not a regression.** If dozens+ of
 heap/gate cases flip to fail at once — ESPECIALLY right after a numeric/bignum/runtime change (which

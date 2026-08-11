@@ -10504,6 +10504,20 @@ fn pr_state_and_verdict(pr: u64) -> (PrState, CiVerdict, CiVerdict) {
 /// queued MRs it WOULD dispatch next (via the pure [`schedule_dispatch`]), honoring the cap + per-lane
 /// serialization. The read-only preview for pr-sync + humans; skips MRs already in flight.
 fn schedule_plan(fleet: &Fleet, cap: usize) {
+    // STALE-MODEL REDIRECT (GHA-off cutover 2026-08-08): this DRY preview describes the CI-gated
+    // CANDIDATE-PR model (in-flight PRs + GitHub polling), which is DEAD — the operator disabled required
+    // GHA checks, so pr-sync integrates via `schedule-pass --local-gate` (local-nix gate + direct FF-push,
+    // no candidate PRs). A bare `schedule-pass` (no `--local-gate`) lands here and prints an in-flight /
+    // candidate picture that no longer reflects how integration works, which misleads an operator/agent who
+    // runs it. Banner the live path up front so the stale output below is read as legacy, not current. (We
+    // still print the legacy plan for the GHA-on future the machinery is kept for, but nobody should act on
+    // it now.) The correct preview is `schedule-pass --local-gate` → schedule_pass_local_gate's DRY.
+    eprintln!(
+        "NOTE: bare `schedule-pass` previews the LEGACY candidate-PR model (dead under the GHA-off cutover). \
+         The LIVE integration model is `cargo xtask fleet schedule-pass --local-gate` (local-nix gate + \
+         direct FF-push, no candidate PRs). For a current preview use `--local-gate`; for the live drain add \
+         `--execute --publish-origin`. The in-flight/candidate picture below is legacy — do not act on it."
+    );
     // Only IN-FLIGHT records count — a resolved (merged/rejected) record is done, not occupying a slot.
     let dispatched: Vec<CiDispatch> = read_ci_dispatches(fleet)
         .into_iter()

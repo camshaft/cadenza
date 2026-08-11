@@ -125,29 +125,28 @@ returning to the tick-top check):
    improvement to your slice and do it this tick.
 3. **Land one slice** (handed OR self-chosen): implement it, add tests (a fold unit + a wasmtime run
    where a value executes; an assert-fold where it folds; a reject test for a new diagnostic).
-4. **Gate green** (all three, per the contract — diff the FAIL SET, additive only). Verify runtime
-   slices e2e via `cdz-run` with a RECURSIVE non-foldable value (a constant folds away + imports no
-   runtime, so it doesn't exercise the runtime path).
-   **⏱ ITERATE NARROW, gate FULL once (loop-latency squash, operator priority 2026-08-10).** The full
-   `cargo xtask gate` is the whole corpus battery (29 `spec/semantics/*.sexp` × 3 backends) and `cargo
-   xtask check` builds the whole workspace — ~8-15min, and pr-sync RE-GATES the full battery on your MR
-   anyway, so paying it on EVERY inner iteration is the dominant per-step cost. While you're iterating a
-   slice, self-check NARROW — only what you touched:
-   - **`cargo xtask dev-gate`** (PREFERRED — the fast inner-loop gate: auto-detects your touched crates
-     from `git diff` and runs only their test+clippy+fmt, warm = seconds). Pass crate names to scope
-     explicitly (`cargo xtask dev-gate rcdzc`). It's a code-level check (crate tests/clippy), so pair it
-     with a corpus spot-check if your slice changes behavior:
-   - `cargo xtask gate --files spec/semantics/<your-file>.sexp --target wasm` (scope to YOUR corpus file
-     + one backend; add `--target rust`/`rust-async` only if your slice touches backend-specific emit), and
-   - `cargo test -p <your-crate> --lib` if `dev-gate` isn't picking up a test you want to run directly.
-   That narrow loop is seconds-to-a-few-minutes vs the ~8-15min full battery. Run the FULL `cargo xtask
-   gate` + `cargo xtask check` ONCE, right before your final send (the authoritative self-verify), not on
-   every edit — a green `dev-gate` is NOT merge-safe (it prints that caveat). pr-sync's pass is the
-   full-battery backstop; the tradeoff is that a scoped self-check can miss a cross-cutting break → one
-   reject round-trip, which is rare for a well-scoped slice and far cheaper than 10min/iteration.
-   **Then apply discipline (b): a full gate/build cycle is the single biggest context ingest in a
-   tick — CHECK your context after it and `/compact` if past ~70% BEFORE the next unit** (committing,
-   the next slice, or resending after a reject). Never carry a near-full window into another gate run.
+4. **Gate NARROW — full gates are pr-sync's job (OPERATOR DIRECTIVE 2026-08-11: "restrict full gates to
+   the pr-sync").** The full `cargo xtask gate` (whole corpus × 3 backends) + `cargo xtask check` (whole
+   workspace) is ~8-15min, and pr-sync RE-GATES the full battery on your MR anyway — so you running it,
+   whether per-iteration OR as a pre-send verify, is redundant work that was measurably killing fleet
+   iteration speed. **Do NOT run the full battery yourself.** You iterate AND pre-send with the NARROW
+   checks; pr-sync is the sole full-gater + the authoritative backstop:
+   - **`cargo xtask dev-gate`** (your primary self-check every iteration — auto-detects touched crates
+     from `git diff`, runs only their test+clippy+fmt, warm ≈ 4s; `cargo xtask dev-gate rcdzc` to scope).
+   - a **scoped corpus spot-check** when your slice changes behavior: `cargo xtask gate --files
+     spec/semantics/<your-file>.sexp --target wasm` (YOUR corpus file, one backend; add `--target rust`
+     only if your slice touches backend-specific emit — the nightly full-rust gate + pr-sync cover the rest).
+   - `cargo test -p <your-crate> --lib` for a specific test `dev-gate` isn't surfacing.
+   Verify runtime slices e2e via `cdz-run` with a RECURSIVE non-foldable value (a constant folds away +
+   imports no runtime). Diff the corpus FAIL SET against the baseline (ADDITIVE only; a `Todo→Fail` flip is
+   a genuine MISCOMPILE — fix it, don't send). A green `dev-gate` + scoped spot-check is your SEND BAR;
+   pr-sync's full re-gate catches a rare cross-cutting miss → one reject round-trip, far cheaper than every
+   agent paying ~10min/verify. (Exception: a `cdz-runtime` `//`-comment / `wit/runtime.wit` edit bumps the
+   frozen `REQUIRED_RUNTIME_HASH` → `cargo xtask build` + `codegen --check` locally, since pr-sync can't
+   recover a hash mismatch for you.)
+   **Then apply discipline (b): even a dev-gate + build cycle is a real context ingest — CHECK your context
+   after it and `/compact` if past ~70% BEFORE the next unit** (committing, the next slice, resending after
+   a reject). Never carry a near-full window into another build.
 5. **Request merge**: commit (`rcdzc: <slice>` + the `Co-Authored-By: Claude Opus 4.8 (1M context)
    <noreply@anthropic.com>` trailer), then `cargo xtask fleet send --to pr-sync --kind merge-request
    --subject "<branch>" --ref $(git rev-parse HEAD) --body "<slice + gate summary>"`. Idle for the
