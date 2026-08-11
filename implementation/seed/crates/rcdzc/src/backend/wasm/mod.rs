@@ -1058,11 +1058,12 @@ pub fn emit(
             .iter()
             .all(|e| e.result != envelope::BoundaryResult::Bytes)
     {
-        // §3c COMPILER-PLATFORM SEPARATION — a provider export member the target WIT declares as a
-        // `list<u8>`-in / `list<u8>`-out boundary (a reducer `apply`) crosses as CANONICAL VALUE-FORM
-        // bytes, NOT as a `u32` value-heap handle: its single compound param is value-DECODEd from the
-        // incoming document and its compound result value-ENCODEd back out. The compiler stays generic
-        // over any WIT — the driver names which members cross as bytes in `db.export_bytes_members`
+        // §3c COMPILER-PLATFORM SEPARATION — ANY provider export member the target WIT declares as a
+        // `list<u8>`-in / `list<u8>`-out boundary (the fold's `apply` is the first such member, not the
+        // contract) crosses as CANONICAL VALUE-FORM bytes, NOT as a `u32` value-heap handle: its single
+        // compound param is value-DECODEd from the incoming document and its compound result value-ENCODEd
+        // back out. The compiler stays generic over any WIT — the driver names which members cross as bytes
+        // in `db.export_bytes_members`
         // (KIND_EXPORT_BYTES_MEMBERS, derived from the target WIT). This list is EMPTY for every program
         // that carries no such artifact, so the branch never fires in the current corpus (byte-identical).
         if !db.export_bytes_members.is_empty() {
@@ -7802,18 +7803,20 @@ fn emit_recursive_sum_resource(
     ))
 }
 
-/// §3c — emit a PROVIDER export member that crosses as CANONICAL VALUE-FORM bytes (a reducer `apply` the
-/// target WIT declares `list<u8> -> list<u8>`), rather than exchanging a `u32` value-heap handle. The
-/// RESULT side reuses the runtime `value-encode` walker (as [`emit_recursive_sum_resource`] does): the
-/// compound result is rendered to a value-form document and copied out as `list<u8>`. The PARAM side is
-/// the inverse — the single compound `list<u8>` param is lifted to a runtime Bytes handle and value-
-/// DECODEd to the compound rep before the member body runs.
+/// §3c — emit ANY WIT bytes-provider export member: a member the target WIT declares `list<u8> -> list<u8>`
+/// crosses as CANONICAL VALUE-FORM bytes rather than exchanging a `u32` value-heap handle. NOTHING here is
+/// specific to a reducer/fold — the fold's `apply` is merely the FIRST caller; the emit is driven purely off
+/// the member's DECLARED WIT signature. The RESULT side reuses the runtime `value-encode` walker (as
+/// [`emit_recursive_sum_resource`] does): the compound result is rendered to a value-form document and copied
+/// out as `list<u8>`. The PARAM side is the inverse — the single compound `list<u8>` param is lifted to a
+/// runtime Bytes handle and value-DECODEd to the compound rep before the member body runs.
 ///
-/// This is the compiler↔platform-separation boundary: the compiler knows no specific contract — the
-/// driver names which members cross as bytes (`db.export_bytes_members`, from KIND_EXPORT_BYTES_MEMBERS,
-/// parsed from the target WIT), and the emit is driven purely off the member's declared param/result
-/// types. Both descriptors come from [`crate::lower::sum_shape_descriptor`], the same source the runtime
-/// value-encode escapes use, so the wire form is byte-identical to a constant/collection value form.
+/// This is the compiler↔platform-separation boundary: the compiler knows no specific contract — the driver
+/// names which members cross as bytes (`db.export_bytes_members`, from KIND_EXPORT_BYTES_MEMBERS, parsed from
+/// the target WIT), and both descriptors come from [`crate::lower::sum_shape_descriptor`] over the declared
+/// types, the same source the runtime value-encode escapes use — so the wire form is byte-identical to a
+/// constant/collection value form. The "exactly one compound parameter" shape below is a current-slice
+/// constraint of the declared signature (widened later), NOT a fold assumption.
 fn emit_bytes_provider_member(
     db: &mut Db,
     layout: &Layout,
@@ -7840,25 +7843,26 @@ fn emit_bytes_provider_member(
              sum/collection/compound the runtime value-encode walker renders)",
         )
     })?;
-    // PARAM side (NEW): exactly one compound param, value-DECODEd from the incoming document.
+    // PARAM side: exactly one compound param, value-DECODEd from the incoming document (a current-slice
+    // shape constraint of the declared signature — a multi-param or scalar-param member is a later slice).
     let [(_, param_ty)] = &params[..] else {
         return Err(Reject::decline(
-            "a bytes-crossing provider export must take exactly one compound parameter (the event \
-             document the host hands the reducer)",
+            "a bytes-crossing provider export must take exactly one compound parameter (the value-form \
+             document the host passes the member)",
         ));
     };
     let param_ty = param_ty.clone();
-    let event_desc = crate::lower::sum_shape_descriptor(db, &param_ty).ok_or_else(|| {
+    let param_desc = crate::lower::sum_shape_descriptor(db, &param_ty).ok_or_else(|| {
         Reject::decline(
             "a bytes-crossing provider export's parameter has no value-form shape descriptor (not a \
              sum/collection/compound the runtime value-decode walker reconstructs)",
         )
     })?;
-    // ── EMIT ── select the guest's funcs + build the `apply(ptr,len)->retptr` core module (value-decode
-    // the event, run the fold body, value-encode the result) + the provider component. FIRST full-A slice:
-    // the CLOSURE-free, HOST/PEER-import-free reducer (a pure `Event -> List<EffectRequest>` fold). A
-    // reducer that calls `kv` (a host import) or a peer, or uses first-class closures, is a later slice —
-    // decline cleanly (gate-neutral) rather than mis-emit.
+    // ── EMIT ── select the guest's funcs + build the member's `(ptr,len)->retptr` core module (value-decode
+    // the incoming document, run the member body, value-encode the result) + the provider component. FIRST
+    // full-A slice: the CLOSURE-free, HOST/PEER-import-free member (the fold's pure `apply` is the first such
+    // caller). A member whose body calls a host import (e.g. `kv`) or a peer, or uses first-class closures, is
+    // a later slice — decline cleanly (gate-neutral) rather than mis-emit.
     let _ = spans; // no debug sections in the bytes-roundtrip core yet
     let member_name = db.defs[export_def].name.to_string();
 
@@ -7893,8 +7897,9 @@ fn emit_bytes_provider_member(
     }
     if !host_imports.is_empty() || !db.effect_bindings.is_empty() {
         return Err(Reject::decline(
-            "a bytes-roundtrip reducer that imports a host/peer interface (e.g. kv) is not yet emitted \
-             (host-fused bytes-roundtrip is a later §3c full-A slice); a pure fold IS emitted",
+            "a bytes-crossing member whose body imports a host/peer interface (e.g. kv) is not yet emitted \
+             (host-fused bytes-roundtrip is a later §3c full-A slice); a pure host/peer-import-free member \
+             IS emitted",
         ));
     }
 
@@ -7913,19 +7918,19 @@ fn emit_bytes_provider_member(
     append_lifted_bodies(db, &mut funcs, layout)?;
     if !escape_lifted_table(layout).is_empty() {
         return Err(Reject::decline(
-            "a bytes-roundtrip reducer using first-class closures is not yet emitted (the bytes-roundtrip \
+            "a bytes-crossing member using first-class closures is not yet emitted (the bytes-roundtrip \
              core module lays no funcref table yet — a later slice)",
         ));
     }
-    let apply_body_abs = layout.abs(export_def).ok_or_else(|| {
-        Reject::decline("the bytes-roundtrip export is not in the emission order")
-    })?;
+    let member_body_abs = layout
+        .abs(export_def)
+        .ok_or_else(|| Reject::decline("the bytes-crossing member is not in the emission order"))?;
 
     let core = serialize::bytes_roundtrip_core_module(
         &funcs,
         &imports,
-        apply_body_abs,
-        &event_desc,
+        member_body_abs,
+        &param_desc,
         &result_desc,
         &member_name,
     )

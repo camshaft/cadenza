@@ -7145,22 +7145,22 @@ fn encode_recursive_sum_walk_body(
     e
 }
 
-/// §3c — the `apply(ptr,len) -> retptr` core body for a reducer BYTES-ROUNDTRIP export. Lifts the
-/// incoming `list<u8>` event document (lowered by the host to `ptr`/`len` in linear memory) into a runtime
-/// Bytes handle, value-DECODEs it to the compound Event rep (guided by `event_desc`), calls the reducer's
-/// selected body `apply_body_abs(rep)`, value-ENCODEs the result to a canonical document (guided by
-/// `result_desc`), and copies that out to the `(ptr=OUT, len=n)` retarea (retptr 0). This is the inverse
-/// pair of [`encode_recursive_sum_walk_body`] (which only ENCODEs a borrowed rep): here the rep comes from
-/// value-decode and the result from the body call.
+/// §3c — the member's `(ptr,len) -> retptr` core body for ANY WIT bytes-roundtrip export member (the fold's
+/// `apply` is the first such member, not the contract). Lifts the incoming `list<u8>` value-form document
+/// (lowered by the host to `ptr`/`len` in linear memory) into a runtime Bytes handle, value-DECODEs it to
+/// the compound param rep (guided by `param_desc`), calls the member's selected body `member_body_abs(rep)`,
+/// value-ENCODEs the result to a canonical document (guided by `result_desc`), and copies that out to the
+/// `(ptr=OUT, len=n)` retarea (retptr 0). This is the inverse pair of [`encode_recursive_sum_walk_body`]
+/// (which only ENCODEs a borrowed rep): here the rep comes from value-decode and the result from the body call.
 ///
 /// OWNERSHIP (leak-critical — MUST be checked with the debug-counters live-objects harness): `value-decode`
 /// and `value-encode` BORROW their `(bytes, desc)` / `(rep, desc)` args (mirrors the recursive-sum walker,
-/// which drops `desc`+`doc` after encode). The reducer body CONSUMES its `rep` param (Perceus owned-arg).
-/// So this drops `bh`, `edesc`, `result`, `rdesc`, `doc` — but NOT `rep` (the body took it).
+/// which drops `desc`+`doc` after encode). The member body CONSUMES its `rep` param (Perceus owned-arg).
+/// So this drops `bh`, `pdesc`, `result`, `rdesc`, `doc` — but NOT `rep` (the body took it).
 fn emit_bytes_roundtrip_apply_body(
-    event_desc: &[u8],
+    param_desc: &[u8],
     result_desc: &[u8],
-    apply_body_abs: u32,
+    member_body_abs: u32,
     import_index: &std::collections::HashMap<&str, u32>,
 ) -> Vec<u8> {
     use crate::backend::wasm::wasm_abi::op;
@@ -7176,12 +7176,12 @@ fn emit_bytes_roundtrip_apply_body(
     // loop below consumes the input into `bh` BEFORE the copy-OUT loop writes at OUT.
     const OUT: i64 = 8;
     let mut body = Vec::new();
-    // Locals after params (ptr=0, len=1): bh, edesc, rep, result, rdesc, doc, n, i — one group of 8 i32.
+    // Locals after params (ptr=0, len=1): bh, pdesc, rep, result, rdesc, doc, n, i — one group of 8 i32.
     uleb128(1, &mut body);
     uleb128(8, &mut body);
     body.push(wasm_abi::CORE_I32);
     let (ptr, len) = (0u32, 1u32);
-    let (bh, edesc, rep, result, rdesc, doc, n, i) =
+    let (bh, pdesc, rep, result, rdesc, doc, n, i) =
         (2u32, 3u32, 4u32, 5u32, 6u32, 7u32, 8u32, 9u32);
     let get = |l: u32, out: &mut Vec<u8>| {
         out.push(op::LOCAL_GET);
@@ -7242,17 +7242,17 @@ fn emit_bytes_roundtrip_apply_body(
     body.push(op::END); // end loop
     body.push(op::END); // end block
 
-    // (2) rep = value-decode(bytes-lift, event_desc).
-    bake_desc(event_desc, edesc, &mut body);
+    // (2) rep = value-decode(bytes-lift, param_desc).
+    bake_desc(param_desc, pdesc, &mut body);
     get(bh, &mut body);
-    get(edesc, &mut body);
+    get(pdesc, &mut body);
     call_op("value-decode", &mut body);
     set(rep, &mut body);
 
-    // (3) result = apply-body(rep)  (the reducer's selected fold body; CONSUMES rep).
+    // (3) result = member-body(rep)  (the member's selected body; CONSUMES rep).
     get(rep, &mut body);
     body.push(op::CALL);
-    uleb128(apply_body_abs as u64, &mut body);
+    uleb128(member_body_abs as u64, &mut body);
     set(result, &mut body);
 
     // (4) doc = value-encode(result, result_desc).
@@ -7297,8 +7297,8 @@ fn emit_bytes_roundtrip_apply_body(
     body.push(op::END);
     body.push(op::END);
 
-    // (6) Drops (see OWNERSHIP above): bh, edesc, result, rdesc, doc — NOT rep (the body consumed it).
-    for h in [bh, edesc, result, rdesc, doc] {
+    // (6) Drops (see OWNERSHIP above): bh, pdesc, result, rdesc, doc — NOT rep (the body consumed it).
+    for h in [bh, pdesc, result, rdesc, doc] {
         get(h, &mut body);
         call_op("drop", &mut body);
     }
@@ -7322,12 +7322,12 @@ fn emit_bytes_roundtrip_apply_body(
 }
 
 /// §3c — a minimal bump-allocator `cabi_realloc(orig_ptr, orig_size, align, new_size) -> i32` body for a
-/// reducer bytes-roundtrip module. The host calls this to LOWER the incoming `list<u8>` event into the
+/// bytes-roundtrip member module. The host calls this to LOWER the incoming `list<u8>` document into the
 /// guest's owned memory (the canonical component ABI), so — unlike the resource builders' return-0 stub —
 /// it must hand back real, `align`-aligned, non-overlapping space. It bump-allocates off a module global
 /// (`bump_global`, the high-water cursor, initialized above the fixed `OUT=8` retarea) and never frees:
-/// a fold is one call, the whole instance is torn down after, so leak-forever is correct and simplest.
-/// Ignores `orig_ptr`/`orig_size` (the host only ever grows a fresh 0-ptr allocation for the param list).
+/// a member invocation is one call, the whole instance is torn down after, so leak-forever is correct and
+/// simplest. Ignores `orig_ptr`/`orig_size` (the host only ever grows a fresh 0-ptr allocation for the param list).
 fn emit_bump_realloc_body(bump_global: u32) -> Vec<u8> {
     use crate::backend::wasm::wasm_abi::op;
     let mut body = Vec::new();
@@ -7371,22 +7371,23 @@ fn emit_bump_realloc_body(bump_global: u32) -> Vec<u8> {
     e
 }
 
-/// §3c — assemble the CORE MODULE for a reducer BYTES-ROUNDTRIP provider member: a single exported
-/// `apply(ptr,len) -> retptr` that value-DECODEs the incoming `list<u8>` event, runs the reducer fold
-/// body, and value-ENCODEs the `list<u8>` result. Unlike [`runtime_resource_core_module_form_ex2`] this is
-/// a plain function (no resource type / make / t-encode / dtor / methods): the module imports the `k`
-/// runtime ops, OWNS a memory + a real bump-allocator `cabi_realloc` (so the host can lower the input list
-/// via the canonical component ABI), and exports `apply` + `memory` + `cabi_realloc` for the envelope.
+/// §3c — assemble the CORE MODULE for ANY WIT bytes-roundtrip provider member (the fold's `apply` is the
+/// first such member, not the contract): a single exported `<member>(ptr,len) -> retptr` that value-DECODEs
+/// the incoming `list<u8>` document, runs the member's body, and value-ENCODEs the `list<u8>` result. Unlike
+/// [`runtime_resource_core_module_form_ex2`] this is a plain function (no resource type / make / t-encode /
+/// dtor / methods): the module imports the `k` runtime ops, OWNS a memory + a real bump-allocator
+/// `cabi_realloc` (so the host can lower the input list via the canonical component ABI), and exports the
+/// member func + `memory` + `cabi_realloc` for the envelope.
 ///
-/// `apply_body_abs` is the reducer fold body's absolute core-func index (the caller selects `funcs` with an
+/// `member_body_abs` is the member body's absolute core-func index (the caller selects `funcs` with an
 /// import base of `imports.len()`, so a `CallImport(i)` resolves to `call i` and a self/body call to
-/// `k + its emission position`). This increment handles the closure-free, host-import-free reducer; the
+/// `k + its emission position`). This increment handles the closure-free, host-import-free member; the
 /// caller declines the fused shapes for now.
 pub fn bytes_roundtrip_core_module(
     funcs: &[SelectedFunc],
     imports: &[&RtOp],
-    apply_body_abs: u32,
-    event_desc: &[u8],
+    member_body_abs: u32,
+    param_desc: &[u8],
     result_desc: &[u8],
     member_name: &str,
 ) -> Result<Vec<u8>, String> {
@@ -7482,9 +7483,9 @@ pub fn bytes_roundtrip_core_module(
         code_items.extend_from_slice(&code_entry(f, &import_index));
     }
     code_items.extend_from_slice(&emit_bytes_roundtrip_apply_body(
-        event_desc,
+        param_desc,
         result_desc,
-        apply_body_abs,
+        member_body_abs,
         &import_index,
     ));
     code_items.extend_from_slice(&emit_bump_realloc_body(bump_global));

@@ -272,22 +272,22 @@ pub fn assemble_provider(core: &[u8], exports: &[BoundaryExport], iface: &str) -
     out
 }
 
-/// §3c full-A — assemble the reducer BYTES-ROUNDTRIP provider component: wrap a `core` module (which
-/// exports the apply core-func under `member_name` + `memory` + `cabi_realloc`, built by
-/// [`super::serialize::bytes_roundtrip_core_module`]) as a component exporting interface `iface` with the
-/// single member `member_name : func(list<u8>) -> list<u8>`. Combines the provider iface-INSTANCE export
-/// shape ([`assemble_provider`]) with the `list<u8>` param+result canon lift (Memory+Realloc,
-/// [`canon_lift_list_item`], as [`assemble_bare_bytes`]): the ONE canon-lift's Memory/Realloc options serve
-/// BOTH directions — the host lowers the incoming `list<u8>` event into the guest's memory via
-/// `cabi_realloc`, the core value-decodes it, runs the fold body, value-encodes the result, and the lift
-/// reads the `(ptr,len)` result back out. The declared boundary is `list<u8>`↔`list<u8>`; the compound
-/// Event/effect-list lives in the value-form document (DESIGN §3b). One member for now (the reducer
-/// `apply`); widened to N members as full-A grows.
+/// §3c full-A — assemble the BYTES-ROUNDTRIP provider component for ANY WIT member (the fold's `apply` is
+/// the first such member, not the contract): wrap a `core` module (which exports the member core-func under
+/// `member_name` + `memory` + `cabi_realloc`, built by [`super::serialize::bytes_roundtrip_core_module`]) as
+/// a component exporting interface `iface` with the single member `member_name : func(list<u8>) -> list<u8>`.
+/// Combines the provider iface-INSTANCE export shape ([`assemble_provider`]) with the `list<u8>` param+result
+/// canon lift (Memory+Realloc, [`canon_lift_list_item`], as [`assemble_bare_bytes`]): the ONE canon-lift's
+/// Memory/Realloc options serve BOTH directions — the host lowers the incoming `list<u8>` document into the
+/// guest's memory via `cabi_realloc`, the core value-decodes it, runs the member body, value-encodes the
+/// result, and the lift reads the `(ptr,len)` result back out. The declared boundary is `list<u8>`↔`list<u8>`;
+/// the compound param/result lives in the value-form document (DESIGN §3b). One member for now; widened to N
+/// members as full-A grows.
 ///
 /// The core module IMPORTS the value-heap runtime (its value-decode/encode + bytes-* ops), so — exactly
 /// like [`assemble_with_imports`] — the component imports `cadenza:runtime/heap@…` as an instance, lowers
 /// each op into a `"heap"` core instance, and instantiates the program module threading that instance in.
-/// A bytes-roundtrip reducer ALWAYS imports the runtime (value-decode of the event + value-encode of the
+/// A bytes-roundtrip member ALWAYS imports the runtime (value-decode of the param + value-encode of the
 /// result), so `imports` is never empty here; the wiring below is unconditional.
 ///
 /// Index spaces (with `k = imports.len()`):
@@ -391,14 +391,14 @@ pub fn assemble_bytes_roundtrip_provider(
         section(sec::ALIAS, &wasm_vec(3, &items))
     };
 
-    // sec 7 (second): the shared `list<u8>` defined type (component type 1), then the apply functype
-    // (component type 2): `(event: list<u8>) -> list<u8>` — the defined-type param/result reference the
+    // sec 7 (second): the shared `list<u8>` defined type (component type 1), then the member functype
+    // (component type 2): `(input: list<u8>) -> list<u8>` — the defined-type param/result reference the
     // list type by INDEX (its valtype is the uleb type index), not an inline primitive byte.
     let boundary_type_sec = {
         let mut type_items = list_u8_defined_type();
         let mut t = vec![wasm_abi::COMP_FUNCTYPE_FORM];
         let mut params = Vec::new();
-        let pname = "event";
+        let pname = "input";
         params.extend_from_slice(&uleb_bytes(pname.len() as u64));
         params.extend_from_slice(pname.as_bytes());
         uleb128(list_type_idx as u64, &mut params); // param valtype = the list<u8> defined-type index
