@@ -150,7 +150,9 @@ fn build_val(b: &mut Builder, val: &Val) -> Result<StructId, MarshalError> {
             }
             b.list(children)
         }
-        // option → NAME-head ctor (Some v) / (None).
+        // option → NAME-head ctor (Some v) / (None unit). A nullary variant's payload is the unit atom
+        // (`Core::Unit` renders as the lowercase `unit` name leaf) — value-decode's Sum arm requires each
+        // variant to have EXACTLY two children (head + one payload node), so a bare (None) decodes to NULL.
         Val::Option(opt) => match opt {
             Some(v) => {
                 let head = b.name("Some");
@@ -159,21 +161,23 @@ fn build_val(b: &mut Builder, val: &Val) -> Result<StructId, MarshalError> {
             }
             None => {
                 let head = b.name("None");
-                b.list(vec![head])
+                let unit = b.name("unit");
+                b.list(vec![head, unit])
             }
         },
         // result → NAME-head ctor (Ok v) / (Err e). A payload-less Ok/Err (result<_, _> with a unit arm)
-        // is the bare ctor (Ok) / (Err).
+        // is the nullary two-element (Ok unit) / (Err unit) via build_ctor.
         Val::Result(res) => match res {
             Ok(v) => build_ctor(b, "Ok", v.as_deref())?,
             Err(e) => build_ctor(b, "Err", e.as_deref())?,
         },
-        // variant → NAME-head ctor (Case v) (or (Case) for a payload-less case).
+        // variant → NAME-head ctor (Case v) (or (Case unit) for a payload-less case).
         Val::Variant(case, payload) => build_ctor(b, case, payload.as_deref())?,
-        // enum → NAME-head ctor (Case) with no children.
+        // enum → NAME-head ctor (Case unit): a nullary variant carries the unit atom as its payload.
         Val::Enum(case) => {
             let head = b.name(case);
-            b.list(vec![head])
+            let unit = b.name("unit");
+            b.list(vec![head, unit])
         }
         // flags → (flags A B…): name head, one Name per SET flag.
         Val::Flags(names) => {
@@ -192,8 +196,9 @@ fn build_val(b: &mut Builder, val: &Val) -> Result<StructId, MarshalError> {
     })
 }
 
-/// Build a NAME-head ctor form `(Name payload?)` — the shared shape for option/result/variant cases.
-/// `None` payload → the bare `(Name)` (a payload-less case); `Some` → `(Name inner)`.
+/// Build a NAME-head ctor form `(Name payload)` — the shared shape for option/result/variant cases.
+/// A nullary (payload-less) case → the two-element `(Name unit)` (its payload is the unit atom, the
+/// lowercase `unit` name leaf); `Some` → `(Name inner)`. value-decode requires exactly two children.
 fn build_ctor(
     b: &mut Builder,
     name: &str,
@@ -205,7 +210,10 @@ fn build_ctor(
             let inner = build_val(b, v)?;
             b.list(vec![head, inner])
         }
-        None => b.list(vec![head]),
+        None => {
+            let unit = b.name("unit");
+            b.list(vec![head, unit])
+        }
     })
 }
 
@@ -622,14 +630,17 @@ fn build_from_ast(a: &Arenas, id: StructId, ty: &Type) -> Result<Val, MarshalErr
             let val = opt_payload(a, payload, decl.ty)?;
             Ok(Val::Variant(case.to_string(), val))
         }
-        // enum ← name-head (Case) with no payload; the case must be a declared name.
+        // enum ← name-head (Case unit): a nullary variant's payload is the unit atom (a bare (Case) with
+        // no payload is tolerated too). The case must be a declared name; a NON-unit payload is a mismatch.
         Type::Enum(et) => {
             let (case, payload) = ctor(a, id)?;
-            if payload.is_some() {
-                return Err(type_mismatch(
-                    "enum",
-                    format!("case {} carries a payload", bounded_name(case)),
-                ));
+            if let Some(node) = payload {
+                if a.as_name(node) != Some("unit") {
+                    return Err(type_mismatch(
+                        "enum",
+                        format!("case {} carries a non-unit payload", bounded_name(case)),
+                    ));
+                }
             }
             if !et.names().any(|n| n == case) {
                 return Err(type_mismatch(
@@ -803,7 +814,11 @@ fn opt_payload(
     match (payload, arm_ty) {
         (Some(node), Some(t)) => Ok(Some(Box::new(build_from_ast(a, node, &t)?))),
         (None, None) => Ok(None),
-        (Some(_), None) => Err(type_mismatch("ctor", "payload present but arm is unit")),
+        // A nullary case is the two-element (Name unit): the unit-atom payload against a unit arm means
+        // "no payload" (a bare (Name) with no payload node also reaches (None, None) above — both forms
+        // accepted). A NON-unit payload against a unit arm is a genuine shape mismatch.
+        (Some(node), None) if a.as_name(node) == Some("unit") => Ok(None),
+        (Some(_), None) => Err(type_mismatch("ctor", "non-unit payload but arm is unit")),
         (None, Some(_)) => Err(type_mismatch(
             "ctor",
             "arm expects a payload but none present",
@@ -1379,6 +1394,15 @@ mod tests {
             round_trip(Val::Enum("red".into()), r#"(enum "red" "green")"#),
             Val::Enum("red".into())
         );
+        // NULLARY variant case (stay, no payload) → (stay unit) two-element; the reader accepts the unit
+        // atom against a unit arm via opt_payload. Pins the nullary two-element read path.
+        assert_eq!(
+            round_trip(
+                Val::Variant("stay".into(), None),
+                r#"(variant (case "move-to" u32) (case "stay"))"#
+            ),
+            Val::Variant("stay".into(), None)
+        );
     }
 
     #[test]
@@ -1534,9 +1558,14 @@ mod tests {
                 radix: Radix::Dec
             }
         );
-        // None — bare (None)
+        // None — nullary two-element (None unit): the payload is the lowercase `unit` name atom
+        // (value-decode's Sum arm requires exactly two children; a bare (None) decodes to NULL).
         let none = decode(&val_to_ast(&Val::Option(None)).unwrap());
-        assert_eq!(none.as_form(none.root, "None"), Some(&[][..]));
+        let none_kids = none
+            .as_form(none.root, "None")
+            .expect("name-head (None unit)");
+        assert_eq!(none_kids.len(), 1);
+        assert_eq!(none.as_name(none_kids[0]), Some("unit"));
         // Ok(v) / Err(e)
         let ok = decode(&val_to_ast(&Val::Result(Ok(Some(Box::new(Val::Bool(true)))))).unwrap());
         assert!(ok.as_form(ok.root, "Ok").is_some());
@@ -1552,9 +1581,11 @@ mod tests {
         let var =
             decode(&val_to_ast(&Val::Variant("Move".into(), Some(Box::new(Val::U32(3))))).unwrap());
         assert!(var.as_form(var.root, "Move").is_some());
-        // enum Case — bare (Case), no children
+        // enum Case — nullary two-element (Case unit)
         let en = decode(&val_to_ast(&Val::Enum("Red".into())).unwrap());
-        assert_eq!(en.as_form(en.root, "Red"), Some(&[][..]));
+        let en_kids = en.as_form(en.root, "Red").expect("name-head (Red unit)");
+        assert_eq!(en_kids.len(), 1);
+        assert_eq!(en.as_name(en_kids[0]), Some("unit"));
     }
 
     #[test]
