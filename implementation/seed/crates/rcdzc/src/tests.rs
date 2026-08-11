@@ -3212,6 +3212,83 @@ fn a_reducer_with_a_variant_effect_list_result_emits_a_valid_provider() {
     );
 }
 
+/// §3c full-A INVOKE-ROUNDTRIP (the real behavioral proof): a compiled pure reducer's `apply` member is
+/// INVOKED on the pinned wasmtime with a real Event value-form document and its effect-list result is read
+/// back — the whole `list<u8>` -> value-decode -> fold -> value-encode -> `list<u8>` pipeline runs on the
+/// real runtime. The input document is not hand-encoded: it is CAPTURED by running a builder program that
+/// constructs the SAME `{ct, pl}` Event record and lets it escape as its canonical `list<u8>` value form
+/// (value-encode), then fed to the reducer's value-DECODE (the two are inverses). The reducer copies the
+/// Event's `ct` string into each effect's `op`, so the effect-list result document must carry `wasm`.
+#[test]
+fn a_pure_reducer_apply_round_trips_an_event_document_end_to_end() {
+    use crate::testkit::parse;
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("[3c] runtime wasm not found; skipping reducer invoke-roundtrip");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: None,
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    // (1) CAPTURE a real Event value-form document: a runtime-built `{ct: "wasm", pl: Bytes}` record
+    // escapes as its canonical `list<u8>` value form. Recursive so it does not constant-fold.
+    let builder = "(module m \
+                 (def (mk (: n Int64)) \
+                   (if (= n 0) (record (ct \"wasm\") (pl (Bytes.of (list 1 2 3)))) (mk (- n 1)))) \
+                 (def (main) (mk 2)) (export main))";
+    let builder_bytes =
+        compile_component(&crate::codec::encode(&parse(builder))).expect("the builder compiles");
+    let event_doc = cdz_run::capture_escaped_value_doc(&builder_bytes, &[], &opts)
+        .expect("capture the Event value-form document");
+    assert!(
+        !event_doc.is_empty(),
+        "the captured Event value-form document is non-empty"
+    );
+
+    // (2) The reducer provider: `apply(Event) -> List<effect>` where each effect copies the Event fields.
+    let src = "(module m \
+                 (def (apply (: e (Record (ct String) (pl Bytes)))) \
+                   (list (record (op (. e ct)) (arg (. e pl))))) \
+                 (export apply))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:reducer/api"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_EXPORT_BYTES_MEMBERS,
+                "export-bytes-members",
+                b"apply".to_vec(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    let reducer = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("the reducer provider emits");
+
+    // (3) INVOKE `apply` with the captured Event document → the effect-list value-form document.
+    let result =
+        cdz_run::run_reducer_bytes(reducer, "cadenza:reducer/api", "apply", &event_doc, &opts)
+            .expect("the reducer apply round-trips the Event document on the real runtime");
+    assert!(
+        !result.is_empty(),
+        "the reducer returns a non-empty effect-list document"
+    );
+    // The effect copies the Event's `ct` ("wasm") into each effect's `op`, so the result value-form
+    // document must carry the `wasm` string the reducer read out of the decoded Event and re-encoded.
+    assert!(
+        result.windows(4).any(|w| w == b"wasm"),
+        "the effect-list document carries the `wasm` string the reducer copied from the Event's ct field"
+    );
+}
+
 /// R2 NESTED: a runtime tuple whose element is ITSELF a runtime tuple escapes — the inner compound is
 /// built on the heap as its own array, and the outer `arr-set`s the inner HANDLE directly (no box), so
 /// the outer array holds a handle to the inner array. `encode()` walks the nested `arr-get` path and

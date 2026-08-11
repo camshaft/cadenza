@@ -361,6 +361,137 @@ pub fn run_core_module(module_bytes: &[u8], export: &str) -> Result<Outcome> {
     }
 }
 
+/// Compose the value-heap runtime (if the component imports it) and instantiate `component_bytes`,
+/// returning the live `(store, instance)` for a caller that drives a chosen export directly (the
+/// bytes-boundary reducer path below). A component with NO runtime import instantiates against a bare
+/// linker (the runtime compose is skipped) — so this serves both the reducer provider (imports the heap)
+/// and a bare value-form escape program. The runtime bytes come from `opts.runtime` (as `instantiate_
+/// runtime` requires); a component that imports the runtime with no `opts.runtime` supplied errors there.
+fn compose_and_instantiate(
+    component_bytes: &[u8],
+    opts: &RunOpts,
+) -> Result<(Store<()>, wasmtime::component::Instance)> {
+    let engine = engine();
+    let component =
+        Component::new(&engine, component_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
+    let mut store = new_store(&engine);
+    let mut linker: Linker<()> = Linker::new(&engine);
+    if let Some(req) = find_runtime_req(&engine, &component) {
+        let (rt_instance, heap_names) = instantiate_runtime(&engine, &mut store, &req, opts)?;
+        bind_runtime_into(
+            &engine,
+            &mut store,
+            &mut linker,
+            &req.import_name,
+            &rt_instance,
+            &heap_names,
+        )?;
+    }
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .map_err(|e| anyhow!("instantiate component: {e}"))?;
+    Ok((store, instance))
+}
+
+/// A component-model `list<u8>` argument value from raw bytes (each byte a `Val::U8` element).
+fn list_u8_val(bytes: &[u8]) -> Val {
+    Val::List(bytes.iter().map(|b| Val::U8(*b)).collect())
+}
+
+/// Extract the raw bytes of a component-model `list<u8>` result value (errors if it is not a `list<u8>`).
+fn val_list_u8(v: &Val) -> Result<Vec<u8>> {
+    match v {
+        Val::List(items) => items
+            .iter()
+            .map(|e| match e {
+                Val::U8(b) => Ok(*b),
+                other => Err(anyhow!("list element is not a u8: {other:?}")),
+            })
+            .collect(),
+        other => Err(anyhow!("value is not a list<u8>: {other:?}")),
+    }
+}
+
+/// Invoke a REDUCER provider's `list<u8>`-in / `list<u8>`-out member — the §3c full-A bytes boundary. The
+/// provider exports interface INSTANCE `iface` (e.g. `cadenza:reducer/api`) with a member `member` (e.g.
+/// `apply`) typed `(list<u8>) -> list<u8>`; this composes the value-heap runtime the provider imports,
+/// resolves the interface member, calls it with `input` (the canonical value-form Event document), and
+/// returns the result bytes (the value-form of the reducer's effect-list). This is the reducer-run entry
+/// a host (the agent-harness) uses to drive a compiled reducer over a value-form document.
+pub fn run_reducer_bytes(
+    provider_bytes: &[u8],
+    iface: &str,
+    member: &str,
+    input: &[u8],
+    opts: &RunOpts,
+) -> Result<Vec<u8>> {
+    let (mut store, instance) = compose_and_instantiate(provider_bytes, opts)?;
+    let iface_idx = instance
+        .get_export_index(&mut store, None, iface)
+        .ok_or_else(|| anyhow!("reducer provider does not export interface `{iface}`"))?;
+    let member_idx = instance
+        .get_export_index(&mut store, Some(&iface_idx), member)
+        .ok_or_else(|| anyhow!("reducer interface `{iface}` has no member `{member}`"))?;
+    let func = instance
+        .get_func(&mut store, member_idx)
+        .ok_or_else(|| anyhow!("reducer member `{member}` is not a func"))?;
+    let mut results = [Val::Bool(false)];
+    func.call(&mut store, &[list_u8_val(input)], &mut results)
+        .map_err(|e| anyhow!("reducer `{member}` call failed: {e:#}"))?;
+    func.post_return(&mut store)
+        .map_err(|e| anyhow!("reducer `{member}` post_return failed: {e:#}"))?;
+    val_list_u8(&results[0])
+}
+
+/// CAPTURE a program's escaping compound result as its RAW canonical value-form `list<u8>` document (the
+/// bytes, NOT the decoded text [`run`] renders). A program whose top-level export returns a runtime
+/// compound (record/tuple/sum/collection) publishes it through the `cadenza:run/run` instance as a
+/// resource: `make() -> own<t>` then `encode(handle) -> list<u8>` (the value-encode walker's output). This
+/// runs that make+encode dance and returns the raw bytes — the same wire a reducer's value-DECODE
+/// reconstructs, so it feeds [`run_reducer_bytes`] as a real input document without hand-encoding
+/// (value-encode and value-decode are inverses). `args` coerce to the escaping export's params (empty for
+/// a nullary `main`). Mirrors the raw-bytes half of [`run_resource_escape`], before its decode+print.
+pub fn capture_escaped_value_doc(
+    component_bytes: &[u8],
+    args: &[String],
+    opts: &RunOpts,
+) -> Result<Vec<u8>> {
+    let (mut store, instance) = compose_and_instantiate(component_bytes, opts)?;
+    let iface = instance
+        .get_export_index(&mut store, None, RUN_INTERFACE)
+        .ok_or_else(|| {
+            anyhow!("capture: component publishes no `{RUN_INTERFACE}` instance (its result does not escape as a value-form document)")
+        })?;
+    let make_idx = instance
+        .get_export_index(&mut store, Some(&iface), "make")
+        .ok_or_else(|| anyhow!("capture: `{RUN_INTERFACE}` exports no `make`"))?;
+    let encode_idx = instance
+        .get_export_index(&mut store, Some(&iface), "encode")
+        .ok_or_else(|| anyhow!("capture: `{RUN_INTERFACE}` exports no `encode`"))?;
+    let make = instance
+        .get_func(&mut store, make_idx)
+        .ok_or_else(|| anyhow!("capture: `make` is not a function"))?;
+    let encode = instance
+        .get_func(&mut store, encode_idx)
+        .ok_or_else(|| anyhow!("capture: `encode` is not a function"))?;
+
+    let make_param_types: Vec<Type> = make.params(&store).iter().map(|(_, t)| t.clone()).collect();
+    let make_args = coerce_args(args, &make_param_types)?;
+    let mut handle = [Val::Bool(false)];
+    make.call(&mut store, &make_args, &mut handle)
+        .map_err(|e| anyhow!("capture: `make` call failed: {e:#}"))?;
+    make.post_return(&mut store)
+        .map_err(|e| anyhow!("capture: `make` post_return failed: {e:#}"))?;
+    let mut out = [Val::Bool(false)];
+    encode
+        .call(&mut store, &handle, &mut out)
+        .map_err(|e| anyhow!("capture: `encode` call failed: {e:#}"))?;
+    encode
+        .post_return(&mut store)
+        .map_err(|e| anyhow!("capture: `encode` post_return failed: {e:#}"))?;
+    val_list_u8(&out[0])
+}
+
 /// [`run`], additionally returning the ordered list of HOST OPERATIONS the run performed (each a dotted
 /// `E.op`, in call order) — so a caller (the corpus gate) can verify the observed host-call sequence
 /// against a case's recorded `(host-calls …)`. Empty for a program that makes no host call.
