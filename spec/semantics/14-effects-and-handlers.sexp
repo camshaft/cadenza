@@ -2478,6 +2478,40 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 10 Int64)))
 
+(case "a three-member memo group with a let-var-body recursion arm folds — the group threads the cache state"
+  (doc    "REGRESSION PIN for the specialized group-fold let-var-body stack-overflow (fixed on trunk by the
+           mutual-group demand-perform-demand + nested-let state-fork landings). A memo-DB shape: `type-of`
+           reads a cached value (`St.get`); on a miss it `cache-type`s the `compute-type` result, where
+           `cache-type` WRITES the cache (`St.put`) and `compute-type`'s recursion arm is a LET-VAR-BODY
+           `(let _v = type-of(..) in (let b = type-of(..) in b))` — a `let` whose body is a bound VARIABLE,
+           not a dispatch. Pre-fix the group pre-check declined the nested-let/bare-var body and the fold fell
+           to a single-return that dropped the cache-write's out-state, so the next `get` re-demanded forever
+           (call-stack-exhausted); the group multi-value fold now threads each member's out-state across the
+           three-def SCC. A LITERAL let-body always folded; only a VAR body tripped it — this pins the var
+           case. `main(2)`: type-of(2) get=0 → compute-type(2) recurses type-of(1) twice (its var-body binds
+           the second) → base compute-type(0)=5; cache-type puts along the way; the block yields 5. main(0):
+           type-of(0) get=0 → compute-type(0)=5 → cache-type puts 5, returns 5. It must terminate with a
+           value, not exhaust the stack. (The self-hosted compiler-ml `type_of` demand loop is this shape.)")
+  (input  (do
+            (effect St (op get (-> Int64 Int64)) (op put (-> Int64 Int64)))
+            (def (type-of (: id Int64))
+              (let ((cur (St.get id)))
+                (if (= cur 0) (cache-type id (compute-type id)) cur)))
+            (def (cache-type (: id Int64) (: t Int64))
+              (let ((w (St.put t))) t))
+            (def (compute-type (: id Int64))
+              (if (= id 0) 5
+                (let ((_v (type-of (- id 1))))
+                  (let ((b (type-of (- id 1)))) b))))
+            (def (main (: k Int64))
+              (handle St 0
+                ((get (id) s (resume s s))
+                 (put (v) s (resume v v)))
+                (type-of k)))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 5 Int64))
+  (call   main (: 0 Int64)) (output (: 5 Int64)))
+
 ; A do-local value def in a handle body must stay in scope for a perform's ARGUMENT (breaker FINDING;
 ; v-effects e49c698a1). The handle-body folds dropped non-final do-items and re-spliced only a survivor,
 ; orphaning a `(def v e)` that a later perform arg referenced → a false CDZ0101 'unbound name'; the
