@@ -7259,6 +7259,49 @@ fn callee_calls_other_recursive_def(db: &mut Db, body: StructId, callee_def: usi
     }
 }
 
+/// Like [`callee_calls_other_recursive_def`] but TRANSITIVE through NON-RECURSIVE helper defs (finding #19
+/// indirection face). `callee_calls_other_recursive_def` only sees a DIRECT call to another recursive def; the
+/// indirection variant `outer → via → inner` (via a non-recursive pass-through `via`) hides the recursive
+/// performer `inner` behind `via`, so the direct check misses it and the recursion-boundary decline guard
+/// doesn't fire → single-return DROPS `inner`'s advance = a silent miscompile. Follow a call to a NON-recursive
+/// def into its body (cycle-guarded via `visiting`) so the reachable recursive performer is found; a recursive
+/// callee OTHER than `callee_def` is the hit (as the direct fn), and a recursive callee is NOT descended (it is
+/// the performer). Used ONLY at the recursion-boundary decline guard, so the indirection reaches the SAME sound
+/// DECLINE floor as the direct case (rather than a leaky multi-value attempt). The direct
+/// `callee_calls_other_recursive_def` stays in use at the abortive guard (unchanged behavior there).
+fn callee_transitively_calls_other_recursive_def(
+    db: &mut Db,
+    body: StructId,
+    callee_def: usize,
+    visiting: &mut Vec<usize>,
+) -> bool {
+    if let Resolved::Apply { head, .. } = resolved_of(db, body)
+        && let Some(other) = callee_def_index_of(db, head)
+        && other != callee_def
+        && let Some(other_body) = db.defs[other].body
+    {
+        if crate::eval::is_recursive(db, other_body) {
+            return true; // a directly-reachable OTHER recursive def — the hit
+        }
+        // A NON-recursive helper: follow it (cycle-guarded) to find a recursive performer it reaches.
+        if !visiting.contains(&other) {
+            visiting.push(other);
+            let hit =
+                callee_transitively_calls_other_recursive_def(db, other_body, callee_def, visiting);
+            visiting.pop();
+            if hit {
+                return true;
+            }
+        }
+    }
+    match db.ast.get(body).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| callee_transitively_calls_other_recursive_def(db, c, callee_def, visiting)),
+        Struct::Atom(_) => false,
+    }
+}
+
 /// Collect the def indices of every DIRECT callee in `body` that resolves to a known def — one edge per
 /// application head. Used by `mutual_scc_of` to walk the recursive group. Deduped, order-insensitive.
 fn direct_callee_defs(db: &mut Db, body: StructId, out: &mut Vec<usize>) {
@@ -7905,6 +7948,39 @@ fn mark_caller_observed_outstate(db: &mut Db, node: StructId, ctx: &HandlerCtx) 
     }
 }
 
+/// Collect the recursive-effectful callee def-indices TRANSITIVELY reachable from a self-call ARGUMENT `node`,
+/// following NON-RECURSIVE helper bodies (finding #19 indirection face). A DIRECT recursive-effectful call is
+/// recorded (via `collect_rec_eff_call_defs`); a call to a NON-recursive def is FOLLOWED into that def's body
+/// (so `(via d)` where `via` calls the recursive `inner` reaches `inner`). Depth-general (any indirection chain
+/// length, s19f) with a `visiting` cycle-guard. A recursive def's body is NOT descended (it is itself the
+/// performer, already recorded by `collect_rec_eff_call_defs`). This makes the indirection variant reach the
+/// same recursion-boundary marking as the direct case — and paired with the transitive decline guard, the
+/// indirection reaches the sound DECLINE floor instead of the pre-fix silent wrong value.
+fn collect_transitive_rec_eff_in_arg(
+    db: &mut Db,
+    node: StructId,
+    ctx: &HandlerCtx,
+    hits: &mut Vec<usize>,
+    visiting: &mut Vec<usize>,
+) {
+    collect_rec_eff_call_defs(db, node, ctx, hits);
+    if let Resolved::Apply { head, .. } = resolved_of(db, node)
+        && let Some(cd) = callee_def_index_of(db, head)
+        && let Some(cbody) = db.defs[cd].body
+        && !crate::eval::is_recursive(db, cbody) // a recursive callee is recorded directly; don't descend
+        && !visiting.contains(&cd)
+    {
+        visiting.push(cd);
+        collect_transitive_rec_eff_in_arg(db, cbody, ctx, hits, visiting);
+        visiting.pop();
+    }
+    if let Struct::List(children) = db.ast.get(node).clone() {
+        for c in children {
+            collect_transitive_rec_eff_in_arg(db, c, ctx, hits, visiting);
+        }
+    }
+}
+
 /// RECURSION-BOUNDARY caller-observed out-state (finding #19). `mark_caller_observed_outstate` above catches a
 /// callee whose out-state a LATER SPINE ITEM in the SAME body observes — but it scans only the handle body, and
 /// a callee's out-state can also be observed ACROSS A RECURSION: when a recursive-effectful def `D` calls
@@ -7963,7 +8039,14 @@ fn mark_recursion_boundary_observed_outstate(db: &mut Db, handle_body: StructId,
                 && callee_def_index_of(db, head) == Some(d)
             {
                 for a in args.iter().copied().collect::<Vec<_>>() {
-                    collect_rec_eff_call_defs(db, a, ctx, hits);
+                    // TRANSITIVE (finding #19 indirection face, s19e/f): a recursive-effectful callee whose
+                    // out-state must thread can be reached through NON-RECURSIVE helper defs — `outer`'s
+                    // self-call arg `(via d)` where `via` (non-recursive) calls the recursive `inner`. A direct
+                    // `collect_rec_eff_call_defs` misses it (`via` is not itself recursive-effectful), so `outer`
+                    // stayed unmarked → single-value → SILENT MISCOMPILE. Collect through non-rec helpers so the
+                    // reachable performer is recorded; that marks `outer` caller-observed, and the transitive
+                    // decline guard above then declines the indirection cleanly (the sound floor).
+                    collect_transitive_rec_eff_in_arg(db, a, ctx, hits, &mut Vec::new());
                 }
             }
             if let Struct::List(children) = db.ast.get(node).clone() {
@@ -8166,7 +8249,15 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     // todo. (Threading a mutual-SCC's out-state across the whole recursive group needs group-wide multi-value
     // specialization — a later increment.) Only the CALLER-OBSERVED mutual case declines; a bare mutual
     // recursion with no observed out-state still specializes single-return (unaffected).
-    if caller_observes_outstate && callee_calls_other_recursive_def(db, orig_body, callee_def) {
+    // TRANSITIVE reachability (finding #19 indirection face): a caller-observed callee whose recursion reaches
+    // ANOTHER recursive performer — DIRECTLY or through a NON-RECURSIVE helper (`outer → via → inner`) — cannot
+    // be soundly multi-value-threaded here (the sibling/indirect performer's out-state is not projected), so it
+    // must reach the DECLINE floor. `callee_calls_other_recursive_def` was direct-only, so the indirection
+    // variant slipped past this guard into a single-return that DROPPED the advance (silent miscompile 9 vs 7);
+    // the transitive variant follows the pass-through so the indirection declines cleanly like the direct case.
+    if caller_observes_outstate
+        && callee_transitively_calls_other_recursive_def(db, orig_body, callee_def, &mut Vec::new())
+    {
         return None;
     }
     // GROUP-AWARE MULTI-VALUE (the mutual-performer SCC fold). This body is a member of a mutually-recursive

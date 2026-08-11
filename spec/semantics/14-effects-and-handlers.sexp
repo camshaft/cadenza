@@ -1311,6 +1311,57 @@
   (call   main (: 1 Int64)) (output (: 7 Int64))
   (call   main (: 0 Int64)) (output (: 2 Int64)))
 
+(case "nested recursive performers THROUGH A NON-RECURSIVE PASS-THROUGH also reach the sound decline floor"
+  (doc    "The INDIRECTION face of finding #19: `outer`'s self-call reaches the recursive performer `inner`
+           through a NON-RECURSIVE helper `via` (`(def (via k) (inner k 0))`, outer adds `(via d)`). The
+           recursion-boundary marking + decline guard are TRANSITIVE (follow non-recursive helpers, depth-general
+           per breaker s19f), so this reaches the SAME sound decline as the direct case — instead of the earlier
+           silent wrong value (9 not 7) that slipped past the direct-only checks. A STRAIGHT-LINE performing
+           helper that reaches NO recursive performer (a `pair-draw` doing two ticks) is NOT flagged and folds
+           normally (breaker s19g) — only a helper transitively reaching a recursive performer declines. Correct
+           value pinned main(1)=7 / main(0)=2; declines cleanly (todo) until the value-computing cross-def fold
+           lands. Uniform 3 backends.")
+  (input  (do
+            (effect S (op depth (-> Int64)) (op tick (-> Int64)))
+            (def (inner (: k Int64) (: acc Int64))
+              (if (< k 1) acc (inner (- k 1) (+ acc (S.tick)))))
+            (def (via (: k Int64)) (inner k 0))
+            (def (outer (: k Int64) (: acc Int64))
+              (if (< k 1) acc
+                (let ((d (S.depth)))
+                  (outer (- k 1) (+ acc (via d))))))
+            (def (main (: n Int64))
+              (handle S n
+                ((depth () s (resume (% s 3) (+ s 1)))
+                 (tick () s (resume s (+ s 1))))
+                (outer 3 0)))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 7 Int64))
+  (call   main (: 0 Int64)) (output (: 2 Int64)))
+
+(case "a straight-line non-recursive performing helper under an outer recursion folds (finding #19 boundary)"
+  (doc    "The FOLD boundary of finding #19's indirection decline (breaker s19g): `outer`'s self-call arg calls
+           a NON-recursive helper `pair-draw` that performs two `S.tick`s but reaches NO recursive performer.
+           The transitive recursion-boundary marking must NOT flag it (only a helper transitively reaching a
+           RECURSIVE performer declines) — so this FOLDS to a value, it is not over-declined. Pins that the
+           indirection decline is precise: straight-line helpers stay folding. main(1) = 33 (outer3 seed1:
+           depth s→1 tick 1+tick 2 = 3; depth s→... the two ticks per iteration accumulate), main(0) exercised
+           by the direct/indirection pins. Uniform 3 backends.")
+  (input  (do
+            (effect S (op depth (-> Int64)) (op tick (-> Int64)))
+            (def (pair-draw (: x Int64)) (+ (S.tick) (S.tick)))
+            (def (outer (: k Int64) (: acc Int64))
+              (if (< k 1) acc
+                (let ((d (S.depth)))
+                  (outer (- k 1) (+ acc (pair-draw d))))))
+            (def (main (: n Int64))
+              (handle S n
+                ((depth () s (resume (% s 3) (+ s 1)))
+                 (tick () s (resume s (+ s 1))))
+                (outer 3 0)))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 33 Int64)))
+
 (case "a NON-recursive helper calling a nested op whose resume performs the outer effect folds"
   (doc    "The non-recursive-helper twin of the resume-value-performs-outer case above (v-effects self-probe).
            A non-recursive `helper` calls the inner `B.step` (whose arm resumes with `(A.tick)`, performing the
