@@ -2671,13 +2671,34 @@ mod tests {
             "llm",
             "the model effect targets the opaque bytes \"llm\""
         );
+        // The model-effect payload is a value-form M1 `ModelRequest` doc (b1: the reducer emits a structured
+        // ModelRequest, NOT the raw message bytes). Decode it and assert on the request STRUCTURE — the model
+        // id the transport gates on + that the enumerated conversation carries the message as a user Text
+        // turn. This is what my converse.rs `from_model_request` consumes downstream (the decode is the same
+        // codec, now value-form after v-cml's collapse 616f9080f).
         let model_payload = match &msg_effects[0].request.payload {
             Some(cdz_kernel::effect::Payload::Inline(b)) => b.to_vec(),
             other => panic!("expected an inline model-effect payload, got {other:?}"),
         };
+        let m1 = cdz_kernel::event_ast::decode_model_request(&model_payload)
+            .expect("the model effect's payload decodes as a value-form M1 ModelRequest");
         assert_eq!(
-            model_payload, message,
-            "the model effect carries the message as context (enumerated from the inbox)"
+            m1.model, "claude",
+            "the M1 request names the model the transport invokes"
+        );
+        assert!(
+            !m1.messages.is_empty(),
+            "the M1 request carries the enumerated inbox conversation (non-empty)"
+        );
+        let carries_message = m1.messages.iter().any(|turn| {
+            turn.content.iter().any(|blk| {
+                matches!(blk, cdz_kernel::event_ast::ContentBlock::Text(t)
+                    if t.as_bytes() == message.as_slice())
+            })
+        });
+        assert!(
+            carries_message,
+            "the M1 conversation carries the message as a Text content block (enumerated from the inbox)"
         );
 
         // STEP 2 (action): a `model-response` event (the LLM asked for a tool call) folds to ONE `tool`
@@ -2746,14 +2767,26 @@ mod tests {
             "llm",
             "the re-invoke model effect targets the opaque bytes \"llm\""
         );
+        // The re-invoke model effect's payload is also a value-form M1 ModelRequest (b1). Decode it and assert
+        // the grown conversation carries the tool result as a ToolResult content block — closing
+        // message→model→tool→result→model with the tool output folded into the context via kv.prefix-scan.
         let reinvoke_payload = match &result_effects[0].request.payload {
             Some(cdz_kernel::effect::Payload::Inline(b)) => b.to_vec(),
             other => panic!("expected an inline re-invoke model-effect payload, got {other:?}"),
         };
-        assert_eq!(
-            reinvoke_payload, result,
-            "the re-invoke model effect carries the tool result (folded into the context and enumerated \
-             via kv.prefix-scan) — closing message→model→tool→result→model end-to-end through the host"
+        let m1_reinvoke = cdz_kernel::event_ast::decode_model_request(&reinvoke_payload)
+            .expect("the re-invoke model effect's payload decodes as a value-form M1 ModelRequest");
+        assert_eq!(m1_reinvoke.model, "claude");
+        let carries_result = m1_reinvoke.messages.iter().any(|turn| {
+            turn.content.iter().any(|blk| {
+                matches!(blk, cdz_kernel::event_ast::ContentBlock::ToolResult { result: r, .. }
+                    if r.as_slice() == result.as_slice())
+            })
+        });
+        assert!(
+            carries_result,
+            "the re-invoke M1 conversation carries the tool result as a ToolResult content block — closing \
+             message→model→tool→result→model end-to-end through the host (context grown via kv.prefix-scan)"
         );
 
         // NEGATIVE: an unrelated event family is not part of the loop → no effects.
