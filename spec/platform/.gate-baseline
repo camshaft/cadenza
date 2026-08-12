@@ -21,4 +21,5 @@ pass	one handler session serves two effect families; a caller performs both and 
 pass	one sender fans a distinct message out to two different peers in a single fold
 pass	the effect correlation token is echoed to the caller on the effect-result (observed as e.resumes)
 pass	the same counter IGNORES a non-message kick-off (else-branch writes no state)
+pass	two independent senders converge on one receiver which accumulates both messages (fan-in)
 pass	two sessions ping-pong: a emits to b, b replies to a, a folds the reply and stops

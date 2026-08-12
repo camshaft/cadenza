@@ -4372,8 +4372,9 @@ struct PlatformSession {
 struct PlatformCaseRecord {
     title: String,
     sessions: Vec<PlatformSession>,
-    /// `(kickoff <alias> <inbound-family> <value-form>)` — the single stimulus.
-    kickoff: (String, String, String),
+    /// `(kickoff <alias> <inbound-family> <value-form>)` — the stimuli, in declared order. Usually one; a
+    /// FAN-IN case declares several (each seeds a distinct session before the FIFO drives to a joint fixpoint).
+    kickoffs: Vec<(String, String, String)>,
     /// Ordered `(expect-effects (effect (from <a>) (family <f>) <value>?)…)` → the whole-run dispatched
     /// effect sequence, in order. `value` (a `(: v T)` form) optional (a payload-less effect omits it).
     expect_effects: Vec<ExpectEffect>,
@@ -4419,7 +4420,7 @@ fn parse_platform_records(text: &str) -> Vec<PlatformCaseRecord> {
     let mut records = Vec::new();
     let mut title = String::new();
     let mut sessions: Vec<PlatformSession> = Vec::new();
-    let mut kickoff = (String::new(), String::new(), String::new());
+    let mut kickoffs: Vec<(String, String, String)> = Vec::new();
     let mut expect_effects: Vec<ExpectEffect> = Vec::new();
     let mut expect_messages: Vec<ExpectMessage> = Vec::new();
     let mut expect_delivery_failures: Vec<(String, String)> = Vec::new();
@@ -4432,7 +4433,7 @@ fn parse_platform_records(text: &str) -> Vec<PlatformCaseRecord> {
             records.push(PlatformCaseRecord {
                 title: std::mem::take(&mut title),
                 sessions: std::mem::take(&mut sessions),
-                kickoff: std::mem::take(&mut kickoff),
+                kickoffs: std::mem::take(&mut kickoffs),
                 expect_effects: std::mem::take(&mut expect_effects),
                 expect_messages: std::mem::take(&mut expect_messages),
                 expect_delivery_failures: std::mem::take(&mut expect_delivery_failures),
@@ -4467,11 +4468,11 @@ fn parse_platform_records(text: &str) -> Vec<PlatformCaseRecord> {
                     s.serves.push(family.to_string());
                 }
             }
-            // `kickoff\t<alias>\t<inbound>\t<value-form>` — the single stimulus.
+            // `kickoff\t<alias>\t<inbound>\t<value-form>` — a stimulus (repeated for a fan-in case).
             "kickoff" => {
                 let mut it = val.splitn(3, '\t');
                 if let (Some(a), Some(inb), Some(v)) = (it.next(), it.next(), it.next()) {
-                    kickoff = (a.to_string(), inb.to_string(), v.to_string());
+                    kickoffs.push((a.to_string(), inb.to_string(), v.to_string()));
                 }
             }
             // `end-kv\t<alias>\t<key>\t<value-form>`.
@@ -4764,10 +4765,13 @@ fn grade_platform_case(
     for (holder, peer) in &peer_pairs {
         cmd.args(["--peer", &format!("{holder}={peer}")]);
     }
-    cmd.args(["--kickoff-alias", &rec.kickoff.0])
-        .args(["--kickoff-family", &rec.kickoff.1])
-        // I1/I2 kick-offs are payload-less (unit); a typed kick-off payload is a later increment.
-        .args(["--kickoff-value", ""]);
+    // Pass every kick-off seed as a repeatable `--kickoff <alias>=<family>=<value>` (declared order). A
+    // single-kickoff case sends exactly one — the common path; a fan-in case sends several, each seeding a
+    // distinct session before the FIFO drives to a joint fixpoint. I1/I2 kick-offs are payload-less (unit);
+    // a typed kick-off payload is a later increment, so the value is empty here.
+    for (alias, family, _value) in &rec.kickoffs {
+        cmd.args(["--kickoff", &format!("{alias}={family}=")]);
+    }
     // A fault-expecting case (an unbounded effect/reply ping-pong) would otherwise run to the runner's default
     // 1000-delivery budget — 1000 wasm instantiations, far too slow for the gate. Cap it low: a genuine
     // divergence trips the SettleUnbounded fault within a handful of deliveries (each fold re-performs), so a

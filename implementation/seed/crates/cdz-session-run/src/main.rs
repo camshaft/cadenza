@@ -90,15 +90,23 @@ struct Args {
     /// Content-addressed store dir the reducers' `cadenza:runtime/heap` dep resolves from.
     #[arg(long)]
     store: std::path::PathBuf,
-    /// The kick-off target session alias.
-    #[arg(long)]
+    /// The kick-off target session alias. Used only when no repeatable `--kickoff` is given (the
+    /// single-stimulus path); a case with `--kickoff` entries supersedes these three.
+    #[arg(long, default_value = "")]
     kickoff_alias: String,
     /// The kick-off inbound event's content-type family (e.g. `start`, `message`).
-    #[arg(long)]
+    #[arg(long, default_value = "")]
     kickoff_family: String,
     /// The kick-off inbound payload as raw UTF-8 bytes (empty for a payload-less stimulus).
     #[arg(long, default_value = "")]
     kickoff_value: String,
+    /// A repeatable kick-off seed `<alias>=<family>=<value>` (value may be empty). When ANY are given, the
+    /// runner delivers each (in the order given) as the initial stimuli — the FAN-IN path: several sessions
+    /// are seeded before the FIFO drives to a joint fixpoint. All seeds are enqueued in declared order BEFORE
+    /// the drive loop, so the run stays single-fixpoint-deterministic (N seed events instead of 1). When none
+    /// are given, the single `--kickoff-alias/--kickoff-family/--kickoff-value` above is the one stimulus.
+    #[arg(long = "kickoff", value_name = "ALIAS=FAMILY=VALUE")]
+    kickoffs: Vec<String>,
     /// Deterministic-id salt: each session's genesis nonce is `Hash::of(salt ++ alias)` (D5.3).
     #[arg(long, default_value = "platform-conformance")]
     salt: String,
@@ -324,22 +332,43 @@ async fn main() -> Result<()> {
         host.deliver(&holder_id, config, None).await;
     }
 
-    // Deliver the ONE kick-off, then drive the FIFO to a fixpoint.
-    let kickoff_target = *id_of.get(&args.kickoff_alias).with_context(|| {
-        format!(
-            "kickoff names unknown session alias {:?}",
-            args.kickoff_alias
-        )
-    })?;
-    let kickoff_body = EventBody::Inbound {
-        content_type: ContentType {
-            family: args.kickoff_family.clone().into(),
-            version: 1,
-        },
-        payload: Payload::Inline(args.kickoff_value.clone().into_bytes().into()),
+    // Resolve the kick-off seed list. FAN-IN: any `--kickoff <alias>=<family>=<value>` entries are the seeds
+    // (in the order given); otherwise the single `--kickoff-alias/family/value` is the one seed. Each is
+    // `(alias, family, value)`. All are enqueued in declared order BEFORE the FIFO drive loop below, so a
+    // multi-seed run stays single-fixpoint-deterministic — it just starts from N events instead of 1.
+    let seeds: Vec<(String, String, String)> = if args.kickoffs.is_empty() {
+        vec![(
+            args.kickoff_alias.clone(),
+            args.kickoff_family.clone(),
+            args.kickoff_value.clone(),
+        )]
+    } else {
+        args.kickoffs
+            .iter()
+            .map(|k| {
+                let mut it = k.splitn(3, '=');
+                let alias = it.next().unwrap_or_default().to_string();
+                let family = it.next().unwrap_or_default().to_string();
+                let value = it.next().unwrap_or_default().to_string();
+                (alias, family, value)
+            })
+            .collect()
     };
-    host.deliver(&kickoff_target, kickoff_body, None).await;
-    steps += 1;
+    // Deliver every seed, then drive the FIFO to a fixpoint.
+    for (alias, family, value) in &seeds {
+        let target = *id_of
+            .get(alias)
+            .with_context(|| format!("kickoff names unknown session alias {alias:?}"))?;
+        let body = EventBody::Inbound {
+            content_type: ContentType {
+                family: family.clone().into(),
+                version: 1,
+            },
+            payload: Payload::Inline(value.clone().into_bytes().into()),
+        };
+        host.deliver(&target, body, None).await;
+        steps += 1;
+    }
 
     // FIFO breadth-first: drain forwarded effect-requests (→ deliver to handler) and reply-settles (→ resume
     // caller) in arrival order until both queues are empty and nothing new is produced. Each drained item is
