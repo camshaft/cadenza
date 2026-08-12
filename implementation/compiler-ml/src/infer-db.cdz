@@ -115,9 +115,24 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
         (let tcol2 = infer-tuple-elems(tree, ids, rcol, tcol, 0) in
          (let elem-tys = tuple-elem-types(ids, tcol2, 0, ([] : List(Ty))) in
           Map.insert(tcol2, id, Ty.TyTuple(elem-tys))))
-    // PROJECTION stage-A: `(. t i)` declines (TyErr) — parses but run-src declines (coverage-not-yet; the
-    // oracle runs a valid projection to a scalar, so a decline is safe). Stage B infers the i-th element type.
-    | Option.Some(Node.NProj(_, _)) => Map.insert(tcol, id, Ty.TyErr)
+    // PROJECTION `(. t i)`: infer the operand + index children, then — if the operand is a `TyTuple(elems)`
+    // and the index is a LITERAL `NLit(i)` IN BOUNDS — the projection's type is `elems[i]` (a scalar element
+    // type, so run-src does NOT decline it at the tuple boundary guard). A non-tuple operand, a non-literal
+    // index (e.g. `(. t f)`), or an out-of-bounds index (List.at → None, the static-arity range-check) all
+    // decline (TyErr → run-src declines, coverage-not-yet; the oracle rejects these CDZ0201, so a decline is
+    // safe — never a differential disagreement).
+    | Option.Some(Node.NProj(operandId, indexId)) =>
+        (let t1 = infer-node(tree, operandId, rcol, tcol) in
+         (let t2 = infer-node(tree, indexId, rcol, t1) in
+          (match Map.lookup(t2, operandId) with
+            | Option.Some(Ty.TyTuple(elems)) =>
+                (match node-at(tree, indexId) with
+                  | Option.Some(Node.NLit(i)) =>
+                      (match List.at(elems, i) with
+                        | Option.Some(ety) => Map.insert(t2, id, ety)
+                        | Option.None(_) => Map.insert(t2, id, Ty.TyErr))
+                  | _ => Map.insert(t2, id, Ty.TyErr))
+            | _ => Map.insert(t2, id, Ty.TyErr))))
     | Option.Some(Node.NAnnLit(_, sflag, w)) =>
         // a width-annotated literal `(: v IntN)` has the ANNOTATED type TIntW(signed, width) — the narrow
         // type flows from here (sread already fits-width-checked the value). signed rides as 1|0.

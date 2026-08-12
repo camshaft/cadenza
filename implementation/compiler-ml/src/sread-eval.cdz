@@ -90,6 +90,31 @@ def se-negative-literal-in-let-and-cmp() =
     | Option.None(_) => trap("negative literal in let runs")
 
 @test
+def se-tuple-projection-runs-to-element() =
+  // TUPLE PROJECTION `(. t i)` runs to the i-th element (a SCALAR verdict, differential-safe): a tuple lowers
+  // to CCtor(0, elems) and CProj reads store-payload(handle, i). `(. p 1)` of `(tuple 10 20)` → 20; element 0
+  // of `(tuple 10 20 30)` → 10. The rcdzc-wasm oracle runs these to the same scalars (differentially expressible).
+  match run-src("(let ((p (tuple 10 20))) (. p 1))") with
+    | Option.Some(v) => (if v == 20 then
+        match run-src("(. (tuple 10 20 30) 0)") with
+          | Option.Some(w) => (if w == 10 then unit else trap("(. (tuple 10 20 30) 0) = 10"))
+          | Option.None(_) => trap("element-0 projection runs")
+      else trap("(. p 1) of (tuple 10 20) = 20"))
+    | Option.None(_) => trap("tuple projection runs to a scalar")
+
+@test
+def se-tuple-projection-rejects-decline() =
+  // The static-arity range-check + operand/index gating: an OUT-OF-BOUNDS index (List.at → None), a NON-TUPLE
+  // operand, and a NON-INT index all DECLINE (run-src None) — coverage-not-yet, matching the oracle's CDZ0201
+  // reject (never a value/trap, so never a differential disagreement).
+  match run-src("(. (tuple 10 20 30) 3)") with
+    | Option.Some(_) => trap("out-of-bounds projection must decline, not run")
+    | Option.None(_) =>
+      (match run-src("(. 5 0)") with
+        | Option.Some(_) => trap("projection of a non-tuple operand must decline")
+        | Option.None(_) => unit)
+
+@test
 def se-unary-minus() =
   // (- 5) → -5: unary minus (a `-` head with one operand) desugars to `0 - 5` and evaluates. The reference
   // runs this to -5; the s-expr reader previously DECLINED it (read-bin-form required two operands).

@@ -196,6 +196,8 @@ def can-emit(c: Core) = match c with
       // M2-b-2b sum deconstruct is EVAL-ONLY for now (emit(B) = a MatchSum decision tree on the disc + payload loads).
   | Core.CMatchEnum(_, _, _, _) => false
       // ii-c2b-2 enum-disc deconstruct is EVAL-ONLY for now (emit(B) = a MatchSum on a bare i32 disc, deferred).
+  | Core.CProj(_, _) => false
+      // tuple PROJECTION is EVAL-ONLY for now (emit(B) = a store-payload load off the CCtor heap layout, deferred with CCtor).
 
 /// The position of `x` in `xs` (0-based). Used to map a CLet binder node-id to its wasm LOCAL INDEX
 /// (index = the binder's position in the `collect-binders` list). That list's ORDER is arbitrary-but-
@@ -368,6 +370,7 @@ def render-core(c: Core) = match c with
   | Core.CCtor(tag, args) => String.concat("(ctor ", String.concat(int-to-decimal(tag), String.concat(render-core-list(args), ")")))
   | Core.CMatchSum(scrut, tag, binders, t, e) => String.concat("(matchsum ", String.concat(render-core(scrut), String.concat(" ", String.concat(int-to-decimal(tag), String.concat(" nbinders=", String.concat(int-to-decimal(List.len(binders)), String.concat(" ", String.concat(render-core(t), String.concat(" ", String.concat(render-core(e), ")"))))))))))
   | Core.CMatchEnum(scrut, tag, t, e) => String.concat("(matchenum ", String.concat(render-core(scrut), String.concat(" ", String.concat(int-to-decimal(tag), String.concat(" ", String.concat(render-core(t), String.concat(" ", String.concat(render-core(e), ")"))))))))
+  | Core.CProj(operand, index) => String.concat("(proj ", String.concat(render-core(operand), String.concat(" ", String.concat(int-to-decimal(index), ")"))))
 
 /// Render a `List(Core)` (call/ctor/fnrefvar args) as space-prefixed renders: `""` for empty, else
 /// ` <arg0> <arg1> …`. Each arg is preceded by a space so it appends cleanly after the head token.

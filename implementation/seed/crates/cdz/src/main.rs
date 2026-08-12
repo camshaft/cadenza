@@ -681,8 +681,19 @@ fn looks_in_ml_subset(src: &str) -> bool {
     if s.is_empty() {
         return false;
     }
-    // A quoted string or a decimal/float is out of the integer/bool subset.
-    if s.contains('"') || s.contains('.') {
+    // A quoted string is out of the integer/bool subset. A DECIMAL/FLOAT (a `.` adjacent to a digit, e.g.
+    // `3.14` / `.5`) is out too — but a POSITIONAL TUPLE PROJECTION `(. t i)`, where `.` is a HEAD atom
+    // (flanked by `(` and whitespace, never a digit), IS in subset now that the port lowers `(. tuple i)` to a
+    // scalar element read. So decline `"` and a float-`.`, but admit a projection-`.` (a record/non-tuple
+    // operand or non-int index still declines in the port — coverage-not-yet — so admitting it is sound).
+    if s.contains('"') {
+        return false;
+    }
+    let b = s.as_bytes();
+    let has_float = s.match_indices('.').any(|(i, _)| {
+        (i > 0 && b[i - 1].is_ascii_digit()) || (i + 1 < b.len() && b[i + 1].is_ascii_digit())
+    });
+    if has_float {
         return false;
     }
     // A `(do …)` MODULE with a NULLARY `main` IS in subset — the ML reader peels `main` to its body and

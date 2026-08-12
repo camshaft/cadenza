@@ -75,6 +75,13 @@ type Core =
                                    // IS a ctor tag. lower picks CMatchEnum (vs CMatchSum) via decl-is-enum-disc.
                                    // Mirrors rcdzc's ONE MatchSum whose tag-read branches on ty_is_enum_disc at
                                    // select. Eval-only for now (emit deferred, like CMatchSum).
+  | CProj(Core, Int64)             // TUPLE PROJECTION (`(. t i)`): `CProj(operand, index)` = the i-th element of
+                                   // the tuple `operand` builds. A tuple lowers to `CCtor(0, elems)` (a tag-0
+                                   // SumStore product), so eval evals `operand` to its handle then reads
+                                   // `store-payload(h, index)` — the SAME payload-read CMatchSum binds with, but
+                                   // as a direct positional read (no pattern). infer proved the operand is a
+                                   // TyTuple and `index` is in `0..arity` (else it declined), so the read is
+                                   // in-bounds. Eval-only for now (emit deferred, like CCtor/CMatchSum).
 
 /// The canonical Int64 constant — the width the monomorphic-i64 pipeline lowers every literal to today (a
 /// narrow-width annotation lowers to a NARROW CNum; emit reads the width). A single name so construct sites
@@ -133,9 +140,17 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
         (match lower-tuple-elems(tree, ids, rcol, tcol, 0, ([] : List(Core))) with
           | Option.Some(elems) => Option.Some(Core.CCtor(0, elems))
           | Option.None(_) => Option.None(unit))
-    // PROJECTION stage-A: NProj declines (infer TyErrs it, so the lower type-gate never routes here; this arm
-    // is for match totality). Stage B lowers NProj to a payload read of the CCtor(0) tuple handle.
-    | Option.Some(Node.NProj(_, _)) => Option.None(unit)
+    // PROJECTION `(. t i)` → `CProj(operandCore, i)`: lower the operand (a tuple → CCtor(0, elems)) and read
+    // the literal index from indexId. infer only types this node (routing it here via the gate) when the
+    // operand is a TyTuple and the index is an in-bounds NLit, so the operand lowers and the index is a
+    // literal; the defensive non-NLit/None arms decline. eval reads store-payload(handle, i).
+    | Option.Some(Node.NProj(operandId, indexId)) =>
+        (match lower-node(tree, operandId, rcol, tcol) with
+          | Option.Some(opCore) =>
+            (match node-at(tree, indexId) with
+              | Option.Some(Node.NLit(i)) => Option.Some(Core.CProj(opCore, i))
+              | _ => Option.None(unit))
+          | Option.None(_) => Option.None(unit))
     | Option.Some(Node.NAnnLit(v, sflag, w)) =>
         // a width-annotated literal lowers to a NARROW CNum carrying its (signed, width) — emit reads the
         // width to pick i32-vs-i64 codegen. signed rides as 1|0.

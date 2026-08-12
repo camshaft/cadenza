@@ -194,6 +194,16 @@ def eval-core-s(c: Core, env: Map(Int64, Int64), defs: Map(Int64, (List(Int64), 
             (if (v == tag)
              then eval-core-s(thn, env, defs, store1)
              else eval-core-s(els, env, defs, store1))))
+  | Core.CProj(operand, index) =>
+      // TUPLE PROJECTION `(. t i)`: eval the operand to its SumStore handle (a tuple is CCtor(0, elems)), then
+      // read `store-payload(h, index)` — the i-th element value. infer proved the operand is a tuple and the
+      // index is in-bounds, so the read succeeds; a None (non-handle scalar / out-of-bounds) declines totally.
+      (match eval-core-s(operand, env, defs, store) with
+        | Option.None(_) => Option.None(unit)
+        | Option.Some(hs) => (match hs with | (h, store1) =>
+            (match store-payload(store1, h, index) with
+              | Option.Some(v) => Option.Some((v, store1))
+              | Option.None(_) => Option.None(unit))))
 
 /// Apply a binary op: 43 +, 45 -, 42 *, 47 /, and the relational ops 60 `<`, 61 `==`, 62 `>`, 63 `<=`,
 /// 64 `>=`, 65 `!=`. Relational ops yield a Bool encoded as 0/1 (Core represents Bool as an Int); each of
