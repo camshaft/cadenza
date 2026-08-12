@@ -3454,6 +3454,98 @@ fn a_pure_reducer_apply_round_trips_an_event_document_end_to_end() {
     );
 }
 
+/// §3c GAP B INVOKE-WITH-HOST-BINDING (the deep behavioral proof of the host-fused path): a compiled
+/// host-fused kv.put reducer is INVOKED on the pinned wasmtime with a real Event document AND its host
+/// `cadenza:agent-kernel/kv` `put` op bound to a recording closure — proving the reducer actually EXECUTES
+/// its host effect (calls `kv.put`) during `apply`, not merely that its component loads (the twin
+/// `a_host_fused_kv_put_reducer_emits_and_loads` guards load only). The reducer body
+/// `(host (kv) (do (kv.put (. e pl) (. e pl)) (list …)))` performs one put passing the Event's `pl` bytes
+/// as BOTH args, so the recorded put must be exactly one pair with key == value; the returned effect-list
+/// still carries the `ct` the reducer copied. Drives `run_reducer_bytes_with_puts` — the host-satisfies-
+/// effects entry the agent-harness uses to run a compiled reducer.
+#[test]
+fn a_host_fused_kv_put_reducer_performs_its_put_when_invoked() {
+    use crate::testkit::parse;
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("[3c] runtime wasm not found; skipping host-fused kv.put invoke");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: None,
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    // (1) CAPTURE a real Event value-form document (a runtime-built `{ct: "wasm", pl: Bytes[1,2,3]}`).
+    let builder = "(module m \
+                 (def (mk (: n Int64)) \
+                   (if (= n 0) (record (ct \"wasm\") (pl (Bytes.of (list 1 2 3)))) (mk (- n 1)))) \
+                 (def (main) (mk 2)) (export main))";
+    let builder_bytes =
+        compile_component(&crate::codec::encode(&parse(builder))).expect("the builder compiles");
+    let event_doc = cdz_run::capture_escaped_value_doc(&builder_bytes, &[], &opts)
+        .expect("capture the Event value-form document");
+
+    // (2) The host-fused reducer: `apply` performs `kv.put(pl, pl)` (unhandled → host import) then returns
+    // an effect-list. The world declares `import cadenza:agent-kernel/kv` (put) — routed to the host path.
+    let src = "(module m \
+                 (effect kv (op put (-> Bytes Bytes Unit))) \
+                 (def (apply (: e (Record (ct String) (pl Bytes)))) \
+                   (host (kv) \
+                     (do (kv.put (. e pl) (. e pl)) \
+                         (list (record (op (. e ct)) (arg (. e pl))))))) \
+                 (export apply))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:agent-kernel/fold"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                reducer_kv_put_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    let reducer = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("the host-fused kv.put reducer emits");
+
+    // (3) INVOKE `apply`, binding the world's kv interface `put` op to a recording closure.
+    let (result, puts) = cdz_run::run_reducer_bytes_with_puts(
+        reducer,
+        "cadenza:agent-kernel/fold",
+        "apply",
+        &event_doc,
+        "cadenza:agent-kernel/kv",
+        "put",
+        &opts,
+    )
+    .expect("the host-fused reducer applies and performs its kv.put on the real runtime");
+
+    // The reducer performed EXACTLY ONE put, passing the Event's `pl` bytes as both key and value.
+    assert_eq!(puts.len(), 1, "apply performs exactly one kv.put");
+    let (key, value) = &puts[0];
+    assert!(
+        !key.is_empty(),
+        "the put's key (the Event's pl bytes) is non-empty"
+    );
+    assert_eq!(
+        key, value,
+        "the reducer passes the Event's `pl` field as BOTH kv.put args, so key == value"
+    );
+    // The returned effect-list still carries the `ct` the reducer copied into each effect's `op`.
+    assert!(
+        result.windows(4).any(|w| w == b"wasm"),
+        "the effect-list result carries the `wasm` string the reducer copied from the Event's ct"
+    );
+}
+
 /// R2 NESTED: a runtime tuple whose element is ITSELF a runtime tuple escapes — the inner compound is
 /// built on the heap as its own array, and the outer `arr-set`s the inner HANDLE directly (no box), so
 /// the outer array holds a handle to the inner array. `encode()` walks the nested `arr-get` path and

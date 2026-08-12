@@ -443,6 +443,92 @@ pub fn run_reducer_bytes(
     val_list_u8(&results[0])
 }
 
+/// The ordered `(key, value)` byte-pairs a reducer's host `put` op performed during an invoke — the
+/// recording sink [`run_reducer_bytes_with_puts`] returns (and threads through its `Arc<Mutex<_>>` sink).
+pub type PutLog = Vec<(Vec<u8>, Vec<u8>)>;
+
+/// Invoke a HOST-FUSED reducer's bytes member (§3c GAP B) while BINDING its host `put`-style op to a
+/// RECORDING closure — the deeper behavioral proof that the reducer actually EXECUTES its host effect on
+/// the real runtime, not merely that its component loads. Composes the value-heap runtime (as
+/// [`run_reducer_bytes`]), then binds `host_iface`.`host_op` (two `list<u8>` params, unit result — the kv
+/// `put` shape) to a closure that records each (arg0, arg1) byte-pair, invokes `iface`.`member` with
+/// `input`, and returns the member's result document PLUS the ordered puts the reducer performed. Generic:
+/// the interface/op names come from the caller (the compiled world), never hard-coded — this is the entry
+/// a host (the agent-harness) uses to drive a compiled reducer whose effects it satisfies.
+pub fn run_reducer_bytes_with_puts(
+    provider_bytes: &[u8],
+    iface: &str,
+    member: &str,
+    input: &[u8],
+    host_iface: &str,
+    host_op: &str,
+    opts: &RunOpts,
+) -> Result<(Vec<u8>, PutLog)> {
+    use std::sync::{Arc, Mutex};
+    let engine = engine();
+    let component =
+        Component::new(&engine, provider_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
+    let mut store = new_store(&engine);
+    let mut linker: Linker<()> = Linker::new(&engine);
+    if let Some(req) = find_runtime_req(&engine, &component) {
+        let (rt_instance, heap_names) = instantiate_runtime(&engine, &mut store, &req, opts)?;
+        bind_runtime_into(
+            &engine,
+            &mut store,
+            &mut linker,
+            &req.import_name,
+            &rt_instance,
+            &heap_names,
+        )?;
+    }
+    // The recording sink: each performed put appends its (key, value) byte-pair. `Arc<Mutex<_>>` because the
+    // `func_new` closure must be `Send + Sync + 'static` (wasmtime holds it inside the linker/instance).
+    let puts: Arc<Mutex<PutLog>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = puts.clone();
+    let op_label = host_op.to_string();
+    {
+        let mut iface_linker = linker
+            .instance(host_iface)
+            .map_err(|e| anyhow!("linker instance {host_iface}: {e}"))?;
+        // The host `put` op crosses two `list<u8>` args (lifted to `Val::List(Val::U8 …)`) and returns unit
+        // (a zero-result component functype), so the closure reads both args and writes nothing to `results`.
+        iface_linker.func_new(host_op, move |_ctx, params, _results| {
+            let key = val_list_u8(
+                params
+                    .first()
+                    .ok_or_else(|| anyhow!("{op_label}: missing arg 0"))?,
+            )?;
+            let value = val_list_u8(
+                params
+                    .get(1)
+                    .ok_or_else(|| anyhow!("{op_label}: missing arg 1"))?,
+            )?;
+            sink.lock().unwrap().push((key, value));
+            Ok(())
+        })?;
+    }
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .map_err(|e| anyhow!("instantiate component: {e}"))?;
+    let iface_idx = instance
+        .get_export_index(&mut store, None, iface)
+        .ok_or_else(|| anyhow!("reducer provider does not export interface `{iface}`"))?;
+    let member_idx = instance
+        .get_export_index(&mut store, Some(&iface_idx), member)
+        .ok_or_else(|| anyhow!("reducer interface `{iface}` has no member `{member}`"))?;
+    let func = instance
+        .get_func(&mut store, member_idx)
+        .ok_or_else(|| anyhow!("reducer member `{member}` is not a func"))?;
+    let mut results = [Val::Bool(false)];
+    func.call(&mut store, &[list_u8_val(input)], &mut results)
+        .map_err(|e| anyhow!("reducer `{member}` call failed: {e:#}"))?;
+    func.post_return(&mut store)
+        .map_err(|e| anyhow!("reducer `{member}` post_return failed: {e:#}"))?;
+    let out = val_list_u8(&results[0])?;
+    let recorded = puts.lock().unwrap().clone();
+    Ok((out, recorded))
+}
+
 /// CAPTURE a program's escaping compound result as its RAW canonical value-form `list<u8>` document (the
 /// bytes, NOT the decoded text [`run`] renders). A program whose top-level export returns a runtime
 /// compound (record/tuple/sum/collection) publishes it through the `cadenza:run/run` instance as a
