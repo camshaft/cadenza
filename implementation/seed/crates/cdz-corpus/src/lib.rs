@@ -138,8 +138,11 @@ pub struct PlatformRecord {
     /// carries its alias, its reducer program (normalized one-line like a `(case (input …))` program —
     /// the reader does NOT compile it), and the effect families it serves as a handler.
     pub sessions: Vec<PlatformSession>,
-    /// The single `(kickoff <alias> (inbound <family> <value>))` — the one event that seeds the run.
-    pub kickoff: Kickoff,
+    /// The `(kickoff <alias> (inbound <family> <value>))` seed events, in DECLARATION ORDER (1+). A
+    /// single-kickoff case (the common one) carries exactly one; the multi-kickoff fan-in shape carries
+    /// several, all enqueued in this order before the FIFO drive loop (single-fixpoint-deterministic,
+    /// just N seeds instead of 1). At least one is required — the fixpoint needs a seed.
+    pub kickoffs: Vec<Kickoff>,
     /// Ordered `(expect-effects (effect (from <a>) (family <f>) <value>?)…)` — each emitted effect the
     /// run must produce, in stream order (order-verified, like `host_calls`). Value-form optional (an
     /// effect with no payload omits it).
@@ -365,7 +368,7 @@ pub fn to_records(text: &str) -> Result<String, String> {
 /// FIXED-ARITY tab lines + one line per element of an ordered list (mirrors `host-call`/`module`), so
 /// v-platform-conformance's `run_platform_case` parses with the same split-on-tab loop, no s-expr parser:
 ///   `platform-case\t<title>` · `doc\t<text>`? · `session\t<alias>\t<program>` (1+) ·
-///   `serves\t<alias>\t<family>` (0+) · `kickoff\t<alias>\t<inbound>\t<value>` (1) ·
+///   `serves\t<alias>\t<family>` (0+) · `kickoff\t<alias>\t<inbound>\t<value>` (1+, declaration order) ·
 ///   `expect-effect\t<from>\t<family>[\t<value>]` (0+, order) ·
 ///   `expect-message\t<from>\t<to>\t<family>\t<value>` (0+, order) ·
 ///   `expect-delivery-failure\t<from>\t<to>` (0+) · `end-kv\t<alias>\t<key>\t<value>` (0+) ·
@@ -395,13 +398,15 @@ pub fn render_platform(records: &[PlatformRecord]) -> String {
                 out.push('\n');
             }
         }
-        out.push_str("kickoff\t");
-        out.push_str(&r.kickoff.alias);
-        out.push('\t');
-        out.push_str(&r.kickoff.inbound);
-        out.push('\t');
-        out.push_str(&r.kickoff.value);
-        out.push('\n');
+        for k in &r.kickoffs {
+            out.push_str("kickoff\t");
+            out.push_str(&k.alias);
+            out.push('\t');
+            out.push_str(&k.inbound);
+            out.push('\t');
+            out.push_str(&k.value);
+            out.push('\n');
+        }
         for e in &r.expect_effects {
             out.push_str("expect-effect\t");
             out.push_str(&e.from);
@@ -702,7 +707,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
 /// Parse a `(platform-case "title" <clause>…)` into a [`PlatformRecord`]. Mirrors [`parse_case`]'s
 /// clause walk. Clauses (all optional except a kickoff, which the fixpoint needs to start):
 ///   `(doc "…")` · `(session <alias> (reducer <prog>) (serves <family>…)?)` (1+) ·
-///   `(kickoff <alias> (inbound <family> <value>))` (exactly 1) ·
+///   `(kickoff <alias> (inbound <family> <value>))` (1+, declaration order — repeatable for fan-in) ·
 ///   `(expect-effects (effect (from <a>) (family <f>) <value>?)…)` (ordered) ·
 ///   `(expect-messages (message (from <a>) (to <b>) (family <f>) <value>)…)` (ordered) ·
 ///   `(expect-delivery-failure (from <a>) (to <b>))` (0+) ·
@@ -720,7 +725,7 @@ fn parse_platform_case(a: &Arenas, case_id: StructId) -> Result<PlatformRecord, 
 
     let mut doc: Option<String> = None;
     let mut sessions: Vec<PlatformSession> = Vec::new();
-    let mut kickoff: Option<Kickoff> = None;
+    let mut kickoffs: Vec<Kickoff> = Vec::new();
     let mut expect_effects: Vec<ExpectEffect> = Vec::new();
     let mut expect_messages: Vec<ExpectMessage> = Vec::new();
     let mut expect_delivery_failures: Vec<(String, String)> = Vec::new();
@@ -775,7 +780,9 @@ fn parse_platform_case(a: &Arenas, case_id: StructId) -> Result<PlatformRecord, 
                     });
                 }
             }
-            // `(kickoff <alias> (inbound <family> <value>))` — the single seed event.
+            // `(kickoff <alias> (inbound <family> <value>))` — a seed event. Repeatable: every clause is
+            // collected in DECLARATION ORDER (a single-kickoff case yields a one-element Vec, rendering
+            // byte-identically to before). All seeds are enqueued in this order before the drive loop.
             Some("kickoff") => {
                 if let Some(tail) = a.as_form(clause, "kickoff")
                     && let Some(&alias_id) = tail.first()
@@ -789,7 +796,7 @@ fn parse_platform_case(a: &Arenas, case_id: StructId) -> Result<PlatformRecord, 
                         .get(1)
                         .map(|&v| value_form_text(a, v))
                         .unwrap_or_default();
-                    kickoff = Some(Kickoff {
+                    kickoffs.push(Kickoff {
                         alias,
                         inbound,
                         value,
@@ -915,7 +922,9 @@ fn parse_platform_case(a: &Arenas, case_id: StructId) -> Result<PlatformRecord, 
         }
     }
 
-    let kickoff = kickoff.ok_or_else(|| format!("platform-case {title:?} has no (kickoff …)"))?;
+    if kickoffs.is_empty() {
+        return Err(format!("platform-case {title:?} has no (kickoff …)"));
+    }
     if sessions.is_empty() {
         return Err(format!("platform-case {title:?} has no (session …)"));
     }
@@ -924,7 +933,7 @@ fn parse_platform_case(a: &Arenas, case_id: StructId) -> Result<PlatformRecord, 
         title,
         doc,
         sessions,
-        kickoff,
+        kickoffs,
         expect_effects,
         expect_messages,
         expect_delivery_failures,
@@ -1122,9 +1131,10 @@ mod tests {
         assert_eq!(r.sessions.len(), 3);
         assert_eq!(r.sessions[2].alias, "clock");
         assert_eq!(r.sessions[2].serves, vec!["now".to_string()]);
-        assert_eq!(r.kickoff.alias, "worker");
-        assert_eq!(r.kickoff.inbound, "start");
-        assert_eq!(r.kickoff.value, "(: unit Unit)");
+        assert_eq!(r.kickoffs.len(), 1);
+        assert_eq!(r.kickoffs[0].alias, "worker");
+        assert_eq!(r.kickoffs[0].inbound, "start");
+        assert_eq!(r.kickoffs[0].value, "(: unit Unit)");
         // Ordered effects: the payload-less one carries None, the second keeps its value form.
         assert_eq!(r.expect_effects.len(), 2);
         assert_eq!(r.expect_effects[0].family, "now");
@@ -1193,6 +1203,34 @@ mod tests {
         // here we assert the rendered stream is fixed-point under a re-read of the ORIGINAL sexp.
         let recs2 = read_platform(src).unwrap();
         assert_eq!(render_platform(&recs2), out);
+    }
+
+    /// Multiple `(kickoff …)` clauses (the operator-approved fan-in shape) collect into `kickoffs` in
+    /// DECLARATION ORDER and render one `kickoff` line each — a single-kickoff case is a one-element Vec
+    /// rendering byte-identically to before (so the 23 existing single-kickoff cases are unchanged).
+    #[test]
+    fn platform_case_collects_multiple_kickoffs_in_declaration_order() {
+        let src = r#"(platform-case "two senders fan in to one reporter"
+                 (session "s1" (reducer (do (def (main) 0) (export main))))
+                 (session "s2" (reducer (do (def (main) 0) (export main))))
+                 (session "r"  (reducer (do (def (main) 0) (export main))) (serves "count"))
+                 (kickoff "s1" (inbound "start" (: 1 Int64)))
+                 (kickoff "s2" (inbound "start" (: 2 Int64))))"#;
+        let recs = read_platform(src).unwrap();
+        assert_eq!(recs.len(), 1);
+        // Two seeds, in source order.
+        assert_eq!(recs[0].kickoffs.len(), 2);
+        assert_eq!(recs[0].kickoffs[0].alias, "s1");
+        assert_eq!(recs[0].kickoffs[0].value, "(: 1 Int64)");
+        assert_eq!(recs[0].kickoffs[1].alias, "s2");
+        assert_eq!(recs[0].kickoffs[1].value, "(: 2 Int64)");
+        // Renders one line per kickoff, in order (the grader delivers each before draining).
+        let out = render_platform(&recs);
+        assert!(out.contains("kickoff\ts1\tstart\t(: 1 Int64)\n"));
+        assert!(out.contains("kickoff\ts2\tstart\t(: 2 Int64)\n"));
+        assert_eq!(out.matches("kickoff\t").count(), 2);
+        // Re-read of the same sexp renders identically (fixed-point).
+        assert_eq!(render_platform(&read_platform(src).unwrap()), out);
     }
 
     /// A platform-case MUST carry a kickoff and at least one session — the fixpoint has nothing to run
