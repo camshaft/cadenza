@@ -22,7 +22,7 @@
 ///   - concrete ~ concrete: must be EQUAL (sign-eq/width-eq) else conflict (the CDZ0301 no-silent-promotion rule);
 ///   - deferred behaves as before (a SignDef/WidthDef takes the other — deferred is not a solvable var, it's a
 ///     literal's not-yet-constrained axis that grounds by defaulting; only SVar/WVar record bindings).
-import { Sign, Width, IntType, Ty, sign-eq, width-eq } from "ty"
+import { Sign, Width, IntType, Ty, sign-eq, width-eq, int-list-eq } from "ty"
 import { Subst, apply-sign, apply-width, apply, subst-bind-sign, subst-bind-width, subst-bind-ty } from "subst"
 import { sign-occurs, width-occurs, ty-occurs } from "hm-vars"
 
@@ -117,6 +117,12 @@ def unify-ty-concrete(su: Subst, a: Ty, b: Ty) = match a with
   | Ty.TyTuple(esa) => (match b with
     | Ty.TyTuple(esb) => (if List.len(esa) == List.len(esb)
         then unify-ty-list-su(su, esa, esb, 0)
+        else Option.None(unit))
+    | _ => Option.None(unit))
+  // COMPOUND RECORD: same field names + paired types unify pairwise, threading the Subst (mirrors TyTuple + names).
+  | Ty.TyRecord(na, ta) => (match b with
+    | Ty.TyRecord(nb, tb) => (if ((List.len(na) == List.len(nb)) and int-list-eq(na, nb, 0))
+        then unify-ty-list-su(su, ta, tb, 0)
         else Option.None(unit))
     | _ => Option.None(unit))
   // unreachable: bind-or-unify-ty handles both TyVar cases before dispatching here; a TyVar never reaches

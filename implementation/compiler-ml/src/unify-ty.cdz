@@ -10,7 +10,7 @@
 /// the value-combining form infer uses (arith result type = unify of operand types); it does not thread a
 /// substitution (compiler-ml's int types carry no unification VARs yet — that's the deferred Sign/Width
 /// Var slice, later). TyErr never unifies (poison propagates as None → the caller yields TErr).
-import { Sign, Width, IntType, Ty, ty-eq } from "ty"
+import { Sign, Width, IntType, Ty, ty-eq, int-list-eq } from "ty"
 
 /// Combine two signs (rcdzc unify_sign): a DEFERRED sign takes the other; two FIXED signs must be EQUAL
 /// (Signed/Signed or Unsigned/Unsigned) else conflict. `Some(sign)` = the combined sign, `None` = mismatch.
@@ -95,6 +95,14 @@ def unify-ty(a: Ty, b: Ty) = match a with
           | Option.None(_) => Option.None(unit))
         else Option.None(unit))                                 // arity mismatch → conflict
     | _ => Option.None(unit))                                    // tuple ~ non-tuple → conflict
+  // COMPOUND RECORD: unify iff SAME field names AND paired types unify pairwise (mirrors TyTuple + a name check).
+  | Ty.TyRecord(na, ta) => (match b with
+    | Ty.TyRecord(nb, tb) => (if ((List.len(na) == List.len(nb)) and int-list-eq(na, nb, 0))
+        then (match unify-ty-list(ta, tb, 0) with
+          | Option.Some(ts) => Option.Some(Ty.TyRecord(na, ts))
+          | Option.None(_) => Option.None(unit))
+        else Option.None(unit))                                 // field-name/arity mismatch → conflict
+    | _ => Option.None(unit))                                    // record ~ non-record → conflict
   // ARC-B5 B1: this STATELESS combiner (the pre-HM live-infer primitive) has no Subst to bind a var into, so a
   // TyVar declines here — the real var-binding unify is unify-subst.cdz's unify-ty-su (Subst-threading, B3). A
   // TyVar never reaches this stateless path in the current live pipeline; the arm is for exhaustiveness.

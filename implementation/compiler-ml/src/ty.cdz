@@ -78,6 +78,14 @@
                                    // list, structurally analogous to TyFn's param list — the type-algorithm
                                    // walkers (unify/subst/free-vars) handle it by MIRRORING their TyFn arm
                                    // element-wise. Two TyTuples unify iff same arity + elements unify pairwise.
+  | TyRecord(List(Int64), List(Ty))  // COMPOUND-VALUE slice: a named-field record type — PARALLEL lists of the
+                                   // field NAME-ids and their types, positionally paired (NRecord's infer fact).
+                                   // Like TyTuple but the type-algorithm walkers ALSO compare the name lists:
+                                   // two TyRecords are equal/unify iff SAME field names AND the paired types
+                                   // are equal/unify pairwise. subst/occurs walk the TYPES only (names are
+                                   // literals). Field order is the source order in the type stage (dormant); the
+                                   // CONSTRUCT stage canonicalizes to sorted-by-name so field access maps a name
+                                   // to a positional slot.
 
 /// A bare integer literal's type: BOTH axes deferred (rcdzc `IntType::deferred`) — grounds to the default via
 /// unification/root-defaulting. This is the type a literal STARTS as; an annotation or operator fixes it.
@@ -205,10 +213,27 @@ def ty-eq(a: Ty, b: Ty) = match a with
     | Ty.TyTuple(esb) => (if List.len(esa) == List.len(esb) then ty-eq-list(esa, esb, 0) else false)
     | _ => false
   )
+  // COMPOUND RECORD: equal iff SAME field names (in order) AND the paired types are pairwise equal.
+  | Ty.TyRecord(na, ta) => (match b with
+    | Ty.TyRecord(nb, tb) => (if List.len(na) == List.len(nb)
+        then (if int-list-eq(na, nb, 0) then ty-eq-list(ta, tb, 0) else false)
+        else false)
+    | _ => false
+  )
   | Ty.TyVar(va) => (match b with
     | Ty.TyVar(vb) => va == vb
     | _ => false
   )
+
+/// Pairwise `==` over two same-length Int64 lists (index recursion) — the field-NAME-list equality a
+/// `TyRecord` ty-eq/unify needs (two records match iff the same field names in order). True iff every pair equal.
+def int-list-eq(a: List(Int64), b: List(Int64), i: Int64) =
+  (if i == List.len(a) then true
+   else (match List.at(a, i) with
+     | Option.None(_) => false
+     | Option.Some(x) => (match List.at(b, i) with
+       | Option.None(_) => false
+       | Option.Some(y) => (if x == y then int-list-eq(a, b, i + 1) else false))))
 
 /// Pairwise `ty-eq` over two same-length type lists (index recursion). True iff every pair is equal.
 def ty-eq-list(a: List(Ty), b: List(Ty), i: Int64) =
@@ -422,5 +447,6 @@ export {
   ground-default,
   sign-eq,
   width-eq,
-  ty-eq
+  ty-eq,
+  int-list-eq
 }

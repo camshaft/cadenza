@@ -115,9 +115,15 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
         (let tcol2 = infer-tuple-elems(tree, ids, rcol, tcol, 0) in
          (let elem-tys = tuple-elem-types(ids, tcol2, 0, ([] : List(Ty))) in
           Map.insert(tcol2, id, Ty.TyTuple(elem-tys))))
-    // RECORD stage-A: `(record (f v)…)` declines (TyErr) — parses but run-src declines (coverage-not-yet).
-    // Stage B infers a TyRecord (field-name→type) + lowers/evals it + wires `(. r field)` field access.
-    | Option.Some(Node.NRecord(_, _)) => Map.insert(tcol, id, Ty.TyErr)
+    // RECORD `(record (f v)…)`: infer each field VALUE (reusing infer-tuple-elems, threading tcol), read the
+    // types back, and build `TyRecord(fieldNameIds, fieldTypes)` — the names straight from NRecord, types
+    // inferred, positionally paired in SOURCE order (the CONSTRUCT stage canonicalizes to sorted-by-name).
+    // DORMANT still: lower's type-gate does not admit TyRecord yet, so a record run-src DECLINES (coverage-
+    // not-yet); this only makes the TYPE fact so unify/subst/occurs handle records for the construct stage.
+    | Option.Some(Node.NRecord(nameIds, valueIds)) =>
+        (let tcol2 = infer-tuple-elems(tree, valueIds, rcol, tcol, 0) in
+         (let field-tys = tuple-elem-types(valueIds, tcol2, 0, ([] : List(Ty))) in
+          Map.insert(tcol2, id, Ty.TyRecord(nameIds, field-tys))))
     // PROJECTION `(. t i)`: infer the operand + index children, then — if the operand is a `TyTuple(elems)`
     // and the index is a LITERAL `NLit(i)` IN BOUNDS — the projection's type is `elems[i]` (a scalar element
     // type, so run-src does NOT decline it at the tuple boundary guard). A non-tuple operand, a non-literal
@@ -706,6 +712,7 @@ def typed-to-ty-defer(t: Ty) = match t with
   | Ty.TyFn(_, _) => Option.None(unit)  // a fn value is not an arith operand → None (arith declines it, like TBool/TErr)
   | Ty.TySum(_) => Option.None(unit)    // a sum value is not an arith operand → None (arith declines it)
   | Ty.TyTuple(_) => Option.None(unit)  // a tuple value is not an arith operand → None (arith declines it)
+  | Ty.TyRecord(_, _) => Option.None(unit)  // a record value is not an arith operand → None (arith declines it)
   // ARITHMETIC IS INTEGER-ONLY: a Bool operand → None, so arith-result-type declines `(+ true false)` (→ TErr,
   // not a laundered Bool — arith requires TInt). This is NOT a regression for relational ops: bin-type's
   // relational arm (op 60..65) has a `both-bool` fallback, so `(== true false)`/`(< true false)` still type Bool
