@@ -2082,6 +2082,96 @@ mod tests {
         );
     }
 
+    /// END-TO-END: drive the REAL rcdzc-compiled PURE-GENESIS reducer (`reducer_pure.cdz`) through the A1
+    /// BYTES fold boundary on wasmtime — the smallest Cadenza guest that exercises the whole
+    /// `apply(list<u8>) -> list<u8>` round-trip: the kernel `build_event_document`s the Event to bytes, the
+    /// guest decodes it, folds, and encodes its effect-list back, and `parse_effect_list` decodes the result.
+    /// Where the kv-genesis E2E above needs a bytes-shape kv reducer + `CDZ_STORE` dep-compose (deferred behind
+    /// `CDZ_KERNEL_BYTES_ABI` until v-cml's kv.get emit lands), THIS reducer is PURE — `fold.apply` only, NO
+    /// kv import, no deps, no store — so it proves the A1 bytes boundary END-TO-END with the minimal surface.
+    ///
+    /// The contract (`reducer_pure.cdz`): a PAYLOADED event folds to ONE `emit` effect echoing the payload
+    /// (target = the bytes `"out"`, correlation none); a payload-free event folds to no effects.
+    ///
+    /// Env-gated skip-on-unset (own env `PURE_GENESIS_REDUCER_COMPONENT`, no `CDZ_STORE` — the pure component
+    /// imports NOTHING): a bare `cargo test` stays green; v-nix's pure-reducer precompile derivation sets the
+    /// env in the native-check (pure-genesis co-land step 2/3). NOTE this test does NOT go through the
+    /// `require_reducer_and_store_or_skip` helper (+ its `CDZ_KERNEL_BYTES_ABI` transition guard): it is the
+    /// bytes-boundary proof itself + needs no store, so it gates directly on its own env being set — meaning it
+    /// runs the moment v-nix wires `PURE_GENESIS_REDUCER_COMPONENT`, post-A1, no flag needed.
+    #[tokio::test]
+    async fn real_pure_reducer_folds_an_event_through_the_a1_bytes_boundary() {
+        use cdz_kernel::wasm_host::AsyncComponentReducer;
+
+        let Some(reducer_path) = std::env::var("PURE_GENESIS_REDUCER_COMPONENT")
+            .ok()
+            .filter(|v| !v.is_empty())
+        else {
+            eprintln!(
+                "SKIP real_pure_reducer_folds_an_event_through_the_a1_bytes_boundary: \
+                 PURE_GENESIS_REDUCER_COMPONENT unset (or empty)"
+            );
+            return;
+        };
+        let bytes = std::fs::read(&reducer_path).unwrap_or_else(|e| {
+            panic!("PURE_GENESIS_REDUCER_COMPONENT={reducer_path:?} set but unreadable: {e}")
+        });
+        let reducer = AsyncComponentReducer::from_component_bytes(&bytes)
+            .unwrap_or_else(|e| panic!("reducer_pure must be a valid component: {e:?}"));
+        // Pure: imports NOTHING → no dep resolution, no ComponentStore. Drive apply directly across the A1
+        // bytes boundary (kernel encodes the Event to bytes IN, decodes the effect-list bytes OUT).
+        let ct = cdz_kernel::event::ContentType {
+            family: "message".into(),
+            version: 1,
+        };
+        let (effects, _kv) = reducer
+            .apply(
+                cdz_kernel::kv::Kv::new(),
+                ct,
+                Some(b"echo-me".to_vec()),
+                None,
+            )
+            .await
+            .expect(
+                "the pure reducer folds an event through the A1 bytes boundary without trapping",
+            );
+
+        // A payloaded event → exactly one `emit` effect echoing the payload (the reducer_pure.cdz contract),
+        // proving the round-trip: family "emit" + target bytes "out" + payload = the echoed input.
+        assert_eq!(effects.len(), 1, "a payloaded event folds to one effect");
+        assert_eq!(
+            effects[0].request.content_type.family, "emit",
+            "the folded effect's kind crosses the bytes boundary as the family string"
+        );
+        assert_eq!(
+            effects[0].request.target_str().unwrap(),
+            "out",
+            "the effect target is the opaque bytes \"out\""
+        );
+        let echoed = match &effects[0].request.payload {
+            Some(cdz_kernel::effect::Payload::Inline(b)) => b.to_vec(),
+            other => panic!("expected an inline echoed payload, got {other:?}"),
+        };
+        assert_eq!(
+            echoed, b"echo-me",
+            "the emit effect echoes the event payload verbatim through the bytes round-trip"
+        );
+
+        // A payload-FREE event folds to NO effects — the other arm of the pure contract, same reducer.
+        let ct2 = cdz_kernel::event::ContentType {
+            family: "message".into(),
+            version: 1,
+        };
+        let (none_effects, _kv2) = reducer
+            .apply(cdz_kernel::kv::Kv::new(), ct2, None, None)
+            .await
+            .expect("a payload-free event folds without trapping");
+        assert!(
+            none_effects.is_empty(),
+            "a payload-free event requests no effects (the pure fold's empty arm)"
+        );
+    }
+
     #[tokio::test]
     async fn with_sink_persists_a_sessions_events_durably() {
         // with_sink attaches a durable LogStore: the events a session appends during a turn are persisted,
