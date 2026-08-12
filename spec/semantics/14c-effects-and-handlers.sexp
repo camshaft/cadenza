@@ -8337,3 +8337,155 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 6072 Int64))
   (call   main (: 8 Int64)) (output (: 13142 Int64)))
+
+; --- breaker batch 238: finding-21 regression fence — computed perform args x two-lookup-match arms
+; (width-partition fix aaee597d5): multimap, scalar-map, checked-shift arg, three-param op,
+; record-wrapped state, abort path, chained keys, cross-handler ---
+(case "mml1 a MULTIMAP handler state — (Map Int64 (List Int64)) buckets grow per-key across dispatches; put answers the new bucket length and total sums a bucket later"
+  (input  (do
+            (effect S
+              (op put (-> Int64 Int64 Int64))
+              (op total (-> Int64 Int64)))
+            (def (sum-list (: xs (List Int64)) (: i Int64) (: acc Int64))
+              (match (List.at xs i)
+                ((Some v) (sum-list xs (+ i 1) (+ acc v)))
+                ((None u) acc)))
+            (def (append-at (: m (Map Int64 (List Int64))) (: k Int64) (: v Int64))
+              (match (Map.lookup m k)
+                ((Some xs) (Map.insert m k (List.push xs v)))
+                ((None u) (Map.insert m k (list v)))))
+            (def (bucket-len (: m (Map Int64 (List Int64))) (: k Int64))
+              (match (Map.lookup m k) ((Some xs) (List.len xs)) ((None u) 0)))
+            (def (bucket-sum (: m (Map Int64 (List Int64))) (: k Int64))
+              (match (Map.lookup m k) ((Some xs) (sum-list xs 0 0)) ((None u) 0)))
+            (def (main (: n Int64))
+              (handle S Map.empty
+                ((put (k v) m (let ((m2 (append-at m k v))) (resume (bucket-len m2 k) m2)))
+                 (total (k) m (resume (bucket-sum m k) m)))
+                (let ((a (S.put n n)))
+                  (let ((b (S.put (+ n 1) (* 2 n))))
+                    (let ((c (S.put n (+ n 10))))
+                      (let ((d (S.total n)))
+                        (let ((e (S.total (+ n 1))))
+                          (let ((f (S.total 99)))
+                            (+ (* 10 (+ (* 100 (+ (* 100 (+ (* 10 (+ (* 10 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 11216060 Int64))
+  (call   main (: 7 Int64)) (output (: 11224140 Int64)))
+
+(case "mk21 a scalar-map handler whose second put uses a COMPUTED key — the checked-add scratch and the Option-handle slot stay width-partitioned"
+  (input  (do
+            (effect S (op put (-> Int64 Int64 Int64)))
+            (def (append-at (: m (Map Int64 Int64)) (: k Int64) (: v Int64))
+              (match (Map.lookup m k)
+                ((Some x) (Map.insert m k v))
+                ((None u) (Map.insert m k v))))
+            (def (main (: n Int64))
+              (handle S Map.empty
+                ((put (k v) m (let ((m2 (append-at m k v)))
+                  (resume (match (Map.lookup m2 k) ((Some x) x) ((None u) 0)) m2))))
+                (let ((a (S.put n n)))
+                  (let ((b (S.put (+ n 1) (* 2 n))))
+                    (+ (* 10 a) b)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 36 Int64)))
+
+(case "wp2 a CHECKED-SHIFT computed perform arg feeding the two-lookup-match arm — shl scratch width does not alias the Option handle"
+  (input  (do
+            (effect S (op put (-> Int64 Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S Map.empty
+                ((put (k v) m
+                  (let ((m2 (match (Map.lookup m k)
+                              ((Some x) (Map.insert m k v))
+                              ((None u) (Map.insert m k v)))))
+                    (resume (match (Map.lookup m2 k) ((Some x) x) ((None u) 0)) m2))))
+                (S.put (<< n 2) n)))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 3 Int64)))
+
+(case "wp3 a THREE-param op with two computed args through the two-lookup-match arm — every arg slot and the handle slot stay disjoint"
+  (input  (do
+            (effect S (op put (-> Int64 Int64 Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S Map.empty
+                ((put (k v w) m
+                  (let ((m2 (match (Map.lookup m k)
+                              ((Some x) (Map.insert m k (+ v w)))
+                              ((None u) (Map.insert m k (+ v w))))))
+                    (resume (match (Map.lookup m2 k) ((Some x) x) ((None u) 0)) m2))))
+                (S.put (+ n 1) (* n 2) (- n 1))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 8 Int64)))
+
+(case "rmp1 a RECORD state wrapping a Map plus a counter — computed perform keys; the arm answers 10*lookup + the ADVANCED counter so both fields are observed"
+  (input  (do
+            (effect S (op put (-> Int64 Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S (record (= m Map.empty) (= cnt 0))
+                ((put (k v) st
+                  (let ((m2 (Map.insert (. st m) k v)))
+                    (let ((c2 (+ (. st cnt) 1)))
+                      (resume (+ (* 10 (match (Map.lookup m2 k) ((Some x) x) ((None u) 0))) c2)
+                              (record (= m m2) (= cnt c2)))))))
+                (let ((a (S.put (+ n 1) n)))
+                  (let ((b (S.put (* 2 n) (+ n 5))))
+                    (+ (* 100 a) b)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 3182 Int64))
+  (call   main (: 9 Int64)) (output (: 9242 Int64)))
+
+(case "ab21 the arm ABORTS (no resume) with a value built from two lookup-matches over a computed-key insert — the width-partition holds on the abort path"
+  (input  (do
+            (effect S (op put (-> Int64 Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S (Map.insert Map.empty n (* n 3))
+                ((put (k v) m
+                  (let ((m2 (match (Map.lookup m k)
+                              ((Some x) (Map.insert m k 5))
+                              ((None u) (Map.insert m k 5)))))
+                    (+ (* 100 (match (Map.lookup m2 k) ((Some x) x) ((None u) 0)))
+                       (match (Map.lookup m2 n) ((Some y) y) ((None u) 0))))))
+                (S.put (+ n 1) n)))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 509 Int64))
+  (call   main (: 10 Int64)) (output (: 530 Int64)))
+
+(case "ch21 CHAINED computed keys — the second perform's key is computed FROM the first's answer, both dispatches walk the two-lookup-match arm"
+  (input  (do
+            (effect S (op put (-> Int64 Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S Map.empty
+                ((put (k v) m
+                  (let ((m2 (match (Map.lookup m k)
+                              ((Some x) (Map.insert m k v))
+                              ((None u) (Map.insert m k v)))))
+                    (resume (match (Map.lookup m2 k) ((Some x) x) ((None u) 0)) m2))))
+                (let ((a (S.put (+ n 1) n)))
+                  (let ((b (S.put (* a 2) (+ a 1))))
+                    (+ (* 10 a) b)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 34 Int64))
+  (call   main (: 8 Int64)) (output (: 89 Int64)))
+
+(case "xh1 the INNER arm performs the OUTER op with a COMPUTED key and the outer arm is the two-lookup-match Map shape — the width-partition crosses a handler boundary"
+  (input  (do
+            (effect T (op put (-> Int64 Int64 Int64)))
+            (effect S (op bump (-> Int64)))
+            (def (main (: n Int64))
+              (handle T Map.empty
+                ((put (k v) m
+                  (let ((m2 (match (Map.lookup m k)
+                              ((Some x) (Map.insert m k v))
+                              ((None u) (Map.insert m k v)))))
+                    (resume (match (Map.lookup m2 k) ((Some x) x) ((None u) 0)) m2))))
+                (handle S n
+                  ((bump () s
+                    (let ((t (T.put (+ s 1) s)))
+                      (resume (+ (* 10 t) s) (+ s t)))))
+                  (let ((a (S.bump)))
+                    (let ((b (S.bump)))
+                      (+ (* 100 a) b))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 3366 Int64))
+  (call   main (: 7 Int64)) (output (: 7854 Int64)))

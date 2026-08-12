@@ -4018,6 +4018,7 @@ pass	aa5 DIVISION in the resume value with a subtracting stride — quotients sh
 pass	ab1d the scalar twin — a conditional abort under a SCALAR-state outer, pre-abort advance committed
 pass	ab1e a branch-conditional abort under a STRING-state outer handler — the taken abort skips the post-abort emit, the untaken row grows the rope
 pass	ab2 a conditional abort under a MAP-state outer — the pre-abort insert is committed either way
+pass	ab21 the arm ABORTS (no resume) with a value built from two lookup-matches over a computed-key insert — the width-partition holds on the abort path
 pass	ab3 the abort VALUE is itself a draw from the outer STRING-state handler — the pre-abort dispatch commits before the unwind
 pass	ab4 TWO sequential abort regions under one STRING-state outer — an aborted region leaves the rope where it was
 pass	ab8 a draw picks WHICH of two nested abort handlers fires — outer-abort skips the inner arm's scale and the tail draw
@@ -4782,6 +4783,7 @@ pass	cd1 a closure CAPTURES a draw then is called after LATER draws — the capt
 pass	cd4 a captured draw crosses a HIGHER-ORDER def boundary — helper applies the closure twice with different args
 pass	ch1 a FOUR-op result chain in one nested expression — each op transforms the last result while bumping the shared state differently
 pass	ch2 the same FOUR-op chain flattened through LETs — one binding per hop must equal the nested form exactly
+pass	ch21 CHAINED computed keys — the second perform's key is computed FROM the first's answer, both dispatches walk the two-lookup-match arm
 pass	ch3 the chain hops CROSS two effects — F.b of G.p of F.a, each thread advancing only on its own hops
 pass	ch4 the SAME op chained into itself — E.b of E.b of E.a, the middle hop's argument is already a hop
 pass	chained Record.with at TWO DIFFERENT fields holds both updates
@@ -5473,9 +5475,11 @@ pass	mixing two numeric types without an explicit conversion does not silently p
 pass	mixing units of DIFFERENT dimensions is still a compile-time error
 pass	mk1 a MAP handler state keyed by the op ARGUMENT — per-key counters, lookup-or-default then insert per dispatch
 pass	mk2 map keys DERIVED from prior draws — n=1 collides the derived key with the first insert, shrinking the map
+pass	mk21 a scalar-map handler whose second put uses a COMPUTED key — the checked-add scratch and the Option-handle slot stay width-partitioned
 pass	mk3 the arm SHRINKS the map state via remove — re-removing the same key is idempotent, a missing key is a no-op
 pass	ml1 a Map whose VALUES are tuples — a draw-keyed insert of a drawn pair, lookups destructure both hit and neighbor
 pass	mm1 a MIN/MAX tracking arm — three feeds tighten the (lo,hi) tuple state, readers project the final spread
+pass	mml1 a MULTIMAP handler state — (Map Int64 (List Int64)) buckets grow per-key across dispatches; put answers the new bucket length and total sums a bucket later
 pass	mo1 a TWO-op effect fully shadowed — the inner handler re-interprets BOTH ops with different arms
 pass	mo2 THREE-deep same-effect shadowing — each depth's draws thread its own state, interleaved before/inside/after
 pass	mo4 a SAME-effect draw in the inner handle's SEED homes to the OUTER handler — the shadow starts at the body, not the seed
@@ -5827,6 +5831,7 @@ pass	resuming with a wrong-type value for a compound result type is a type error
 pass	rg1 the arm ROTATES the tuple state (a b c)->(b c a) per dispatch and returns the evicted head — four weighted reads wrap the ring
 pass	rg2 the rotation DIRECTION flips on the evicted head's parity — even rotates left, odd rotates right, negative-odd exercises truncated mod
 pass	rle1 RUN-LENGTH tracking — the 3-tuple state carries (last,run,best); the n=5 seed extends one run to five, n=7 breaks it at two
+pass	rmp1 a RECORD state wrapping a Map plus a counter — computed perform keys; the arm answers 10*lookup + the ADVANCED counter so both fields are observed
 pass	rn1 a RUNNING-AVERAGE state (sum,count) — three feeds then a truncating divide read, negative total exercises toward-zero
 pass	round-trip byte-rope consumer alongside a plain export — the consumer
 pass	round-trip byte-rope consumer alongside a plain export — the plain
@@ -6679,6 +6684,8 @@ pass	when two abortive performs sit on one spine the FIRST (leftmost) abort wins
 pass	widening a runtime narrow-width unsigned integer to Int64 zero-extends (total, emits)
 pass	widening a runtime signed narrow integer to Int64 sign-extends (total, emits)
 pass	without- and with-REACHED records with runtime leaves equal the directly-built record
+pass	wp2 a CHECKED-SHIFT computed perform arg feeding the two-lookup-match arm — shl scratch width does not alias the Option handle
+pass	wp3 a THREE-param op with two computed args through the two-lookup-match arm — every arg slot and the handle slot stay disjoint
 pass	wrap-narrowed values fill BOTH segments of a dispatching frame — the wrapped tag selects the arm
 pass	wrapping addition of in-range operands is ordinary addition
 pass	wrapping addition wraps modulo two to the sixty-fourth on overflow
@@ -6706,6 +6713,7 @@ pass	wx3 Int64.min and Int64.max ride as SUM payloads through dispatch — varia
 pass	wx4 the ARM doubles its argument with wrapping-mul — MAX wraps to -2, MIN to 0, a small value stays exact, count rides along
 pass	wx5 the state STEPS by wrapping-sub of MAX each draw — two hops cross the seam in opposite directions
 pass	wx6 wrapping increments CHAINED hop-to-hop — MAX-1 crosses the seam inside a nested three-op chain, count pins the trips
+pass	xh1 the INNER arm performs the OUTER op with a COMPUTED key and the outer arm is the two-lookup-match Map shape — the width-partition crosses a handler boundary
 pass	za1 literal-arm dispatch on a draw — the MATCHED arm performs again, both calls exercised
 pass	za2 a COMPUTED scrutinee (difference of two draws) selects the performing arm at one input only
 pass	za3 NESTED literal-arm dispatch — each level matches a let-bound draw, the innermost arm reads a third
