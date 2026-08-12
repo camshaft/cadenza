@@ -4,10 +4,14 @@
 //! The domain types ([`AdminCommand`]/[`AdminResponse`]/[`InstallSpec`] in [`crate::admin`]) are kept
 //! serde-free on purpose: they hold a [`SessionId`] (a genesis [`Hash`](struct@Hash), which is not
 //! `Serialize`) and a reducer [`Hash`](struct@Hash) (likewise). Rather than push serde requirements onto the
-//! domain types (and onto the kernel's `Hash`), the wire layer mirrors them with small serde-native DTOs —
-//! ids as their canonical hex `String`, the reducer hash as its canonical hex — and converts. That decoupling
-//! makes the WIRE CONTRACT explicit and versionable (it's what an external admin client encodes against), and
-//! keeps the domain types transport-agnostic.
+//! domain types (and onto the kernel's `Hash`), the wire layer mirrors them with small serde-native DTOs and
+//! converts. Every hash rides the wire as its **raw 32 bytes** (`[u8; 32]`), NOT as a hex string: a runtime
+//! hash is raw bytes produced only by hashing, never parsed from a string (operator hash-encoding directive —
+//! no `from_hex`/decode). The receive side reconstructs the [`Hash`] with [`Hash::from_bytes`] (raw-bytes
+//! reconstruction, NOT a decode) — so [`AdminCommandWire::to_domain`] is INFALLIBLE; a wrong-length byte
+//! array is a malformed frame caught at JSON deserialization in [`decode_frame`], not a domain-conversion
+//! error. That keeps the WIRE CONTRACT explicit (it's what an admin client encodes against) and the domain
+//! types transport-agnostic.
 //!
 //! The frame codec is length-prefixed JSON: a 4-byte big-endian `u32` length followed by that many bytes
 //! of the JSON body. That framing is what a stream transport (the Unix-domain-socket listener, the next
@@ -21,14 +25,15 @@ use crate::host::SessionId;
 use cdz_kernel::hash::Hash;
 use serde::{Deserialize, Serialize};
 
-/// The wire form of an [`InstallSpec`]: a plain-`String` id + the reducer hash as canonical hex + the
+/// The wire form of an [`InstallSpec`]: the session id + reducer hash each as their raw 32 bytes + the
 /// optional goal. Decoupled from the domain [`InstallSpec`] so the domain type needs no serde derive and
-/// the kernel's non-`Serialize` [`Hash`](struct@Hash) rides as hex.
+/// the kernel's non-`Serialize` [`Hash`](struct@Hash) rides as raw bytes (never a hex string — no decode).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstallSpecWire {
-    pub id: String,
-    /// The reducer component's content hash as 64 lowercase hex chars ([`Hash::to_hex`]).
-    pub reducer_hash: String,
+    /// The session's genesis-hash id as raw 32 bytes ([`Hash::as_bytes`]).
+    pub id: [u8; 32],
+    /// The reducer component's content hash as raw 32 bytes ([`Hash::as_bytes`]).
+    pub reducer_hash: [u8; 32],
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal: Option<String>,
 }
@@ -40,8 +45,8 @@ pub struct InstallSpecWire {
 pub enum AdminCommandWire {
     InstallSession(InstallSpecWire),
     ListSessions,
-    SessionStatus { id: String },
-    StopSession { id: String },
+    SessionStatus { id: [u8; 32] },
+    StopSession { id: [u8; 32] },
 }
 
 /// The wire form of an [`AdminResponse`] — internally tagged on `result` (`{"result":"installed","id":…}`).
@@ -49,10 +54,10 @@ pub enum AdminCommandWire {
 #[serde(tag = "result", rename_all = "kebab-case")]
 pub enum AdminResponseWire {
     Installed {
-        id: String,
+        id: [u8; 32],
     },
     Sessions {
-        ids: Vec<String>,
+        ids: Vec<[u8; 32]>,
     },
     /// The status body is the [`crate::status::session_status_json`] object, carried inline as parsed JSON
     /// (not a re-escaped string) so the whole response is one clean JSON document.
@@ -60,16 +65,17 @@ pub enum AdminResponseWire {
         status: serde_json::Value,
     },
     Stopped {
-        id: String,
+        id: [u8; 32],
     },
     Error {
         message: String,
     },
 }
 
-/// A wire-codec error: an unparseable frame, a bad JSON body, or a hash that isn't canonical hex. Stringly
-/// typed — the transport layer surfaces it (a malformed admin frame is answered with an error response /
-/// dropped, never a panic).
+/// A wire-codec error: an unparseable frame or a bad JSON body (including a byte-array field of the wrong
+/// length — that's a malformed frame, caught here at deserialization, since a hash rides as raw 32 bytes and
+/// is never re-parsed from a string). Stringly typed — the transport layer surfaces it (a malformed admin
+/// frame is answered with an error response / dropped, never a panic).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WireError(pub String);
 
@@ -86,44 +92,31 @@ impl std::error::Error for WireError {}
 pub const MAX_FRAME_LEN: usize = 1024 * 1024;
 
 // ── domain ⇄ wire conversions ────────────────────────────────────────────────────────────────────────
-
-/// Parse a wire session-id HEX back to a [`SessionId`] (the genesis [`Hash`]). A non-canonical-hex id is a
-/// [`WireError`] — a malformed admin frame is rejected, never silently coerced. The hex↔Hash conversion lives
-/// ONLY here at the wire edge; the domain [`SessionId`] is the raw `Hash`.
-fn session_id_from_hex(id: &str) -> Result<SessionId, WireError> {
-    Hash::from_hex(id).map(SessionId::new).ok_or_else(|| {
-        WireError(format!(
-            "session id is not canonical hex (64 lowercase): {id:?}"
-        ))
-    })
-}
+//
+// A hash crosses the wire as its raw 32 bytes. Encoding is `Hash::as_bytes`; the receive side reconstructs
+// with `Hash::from_bytes` (raw-bytes reconstruction, NOT a decode) — always valid, so `to_domain` is
+// infallible. A wrong-length byte array never reaches here: it fails JSON deserialization in `decode_frame`.
 
 impl From<&InstallSpec> for InstallSpecWire {
     fn from(spec: &InstallSpec) -> Self {
         InstallSpecWire {
-            id: spec.id.to_hex(),
-            reducer_hash: spec.reducer_hash.to_hex(),
+            id: *spec.id.hash().as_bytes(),
+            reducer_hash: *spec.reducer_hash.as_bytes(),
             goal: spec.goal.clone(),
         }
     }
 }
 
 impl InstallSpecWire {
-    /// Convert back to the domain [`InstallSpec`], parsing the hex hash. `Err` if the hash isn't canonical
-    /// (64 lowercase hex chars) — a malformed install frame is rejected, not silently coerced.
-    pub fn to_domain(&self) -> Result<InstallSpec, WireError> {
-        let reducer_hash = Hash::from_hex(&self.reducer_hash).ok_or_else(|| {
-            WireError(format!(
-                "reducer_hash is not canonical hex (64 lowercase): {:?}",
-                self.reducer_hash
-            ))
-        })?;
-        Ok(InstallSpec {
-            // The wire `id` is the session-id HEX (a SessionId is the genesis Hash; hex only at this edge).
-            id: session_id_from_hex(&self.id)?,
-            reducer_hash,
+    /// Convert back to the domain [`InstallSpec`], reconstructing each hash from its raw bytes. Infallible —
+    /// a wrong-length byte array is a malformed frame rejected earlier at JSON decode, never here.
+    pub fn to_domain(&self) -> InstallSpec {
+        InstallSpec {
+            // The wire `id` is the session-id's raw genesis-hash bytes (a SessionId is the genesis Hash).
+            id: SessionId::new(Hash::from_bytes(self.id)),
+            reducer_hash: Hash::from_bytes(self.reducer_hash),
             goal: self.goal.clone(),
-        })
+        }
     }
 }
 
@@ -132,29 +125,32 @@ impl From<&AdminCommand> for AdminCommandWire {
         match cmd {
             AdminCommand::InstallSession(spec) => AdminCommandWire::InstallSession(spec.into()),
             AdminCommand::ListSessions => AdminCommandWire::ListSessions,
-            AdminCommand::SessionStatus { id } => {
-                AdminCommandWire::SessionStatus { id: id.to_hex() }
-            }
-            AdminCommand::StopSession { id } => AdminCommandWire::StopSession { id: id.to_hex() },
+            AdminCommand::SessionStatus { id } => AdminCommandWire::SessionStatus {
+                id: *id.hash().as_bytes(),
+            },
+            AdminCommand::StopSession { id } => AdminCommandWire::StopSession {
+                id: *id.hash().as_bytes(),
+            },
         }
     }
 }
 
 impl AdminCommandWire {
-    /// Convert to the domain [`AdminCommand`], parsing any embedded hash. `Err` on a malformed install spec.
-    pub fn to_domain(&self) -> Result<AdminCommand, WireError> {
-        Ok(match self {
+    /// Convert to the domain [`AdminCommand`], reconstructing any embedded hash from raw bytes. Infallible —
+    /// a structurally-valid frame always yields a valid command (malformed bytes fail at JSON decode).
+    pub fn to_domain(&self) -> AdminCommand {
+        match self {
             AdminCommandWire::InstallSession(spec) => {
-                AdminCommand::InstallSession(spec.to_domain()?)
+                AdminCommand::InstallSession(spec.to_domain())
             }
             AdminCommandWire::ListSessions => AdminCommand::ListSessions,
             AdminCommandWire::SessionStatus { id } => AdminCommand::SessionStatus {
-                id: session_id_from_hex(id)?,
+                id: SessionId::new(Hash::from_bytes(*id)),
             },
             AdminCommandWire::StopSession { id } => AdminCommand::StopSession {
-                id: session_id_from_hex(id)?,
+                id: SessionId::new(Hash::from_bytes(*id)),
             },
-        })
+        }
     }
 }
 
@@ -165,11 +161,13 @@ impl AdminResponseWire {
     /// producing a malformed frame.
     pub fn from_domain(resp: &AdminResponse) -> Self {
         match resp {
-            // Domain ids are SessionId (a genesis Hash); the wire carries them as canonical hex String — the
-            // hex↔SessionId conversion lives here at the transport boundary, not in the domain type.
-            AdminResponse::Installed { id } => AdminResponseWire::Installed { id: id.to_hex() },
+            // Domain ids are SessionId (a genesis Hash); the wire carries them as raw 32 bytes — the
+            // Hash⇄bytes conversion lives here at the transport boundary, not in the domain type.
+            AdminResponse::Installed { id } => AdminResponseWire::Installed {
+                id: *id.hash().as_bytes(),
+            },
             AdminResponse::Sessions { ids } => AdminResponseWire::Sessions {
-                ids: ids.iter().map(|s| s.to_hex()).collect(),
+                ids: ids.iter().map(|s| *s.hash().as_bytes()).collect(),
             },
             AdminResponse::Status { json } => match serde_json::from_str(json) {
                 Ok(status) => AdminResponseWire::Status { status },
@@ -177,7 +175,9 @@ impl AdminResponseWire {
                     message: format!("status body was not valid JSON: {e}"),
                 },
             },
-            AdminResponse::Stopped { id } => AdminResponseWire::Stopped { id: id.to_hex() },
+            AdminResponse::Stopped { id } => AdminResponseWire::Stopped {
+                id: *id.hash().as_bytes(),
+            },
             AdminResponse::Error { message } => AdminResponseWire::Error {
                 message: message.clone(),
             },
@@ -262,7 +262,7 @@ mod tests {
             let json = serde_json::to_vec(&wire).unwrap();
             let back: AdminCommandWire = serde_json::from_slice(&json).unwrap();
             assert_eq!(back, wire, "wire JSON round-trips");
-            assert_eq!(back.to_domain().unwrap(), cmd, "wire → domain is identity");
+            assert_eq!(back.to_domain(), cmd, "wire → domain is identity");
         }
     }
 
@@ -272,8 +272,11 @@ mod tests {
         let wire = AdminCommandWire::from(&AdminCommand::InstallSession(spec("w")));
         let json: serde_json::Value = serde_json::to_value(&wire).unwrap();
         assert_eq!(json["cmd"], "install-session");
-        assert_eq!(json["id"], SessionId::new(Hash::of(b"w")).to_hex());
-        assert_eq!(json["reducer_hash"], Hash::of(b"w").to_hex());
+        assert_eq!(json["id"], serde_json::json!(Hash::of(b"w").as_bytes()));
+        assert_eq!(
+            json["reducer_hash"],
+            serde_json::json!(Hash::of(b"w").as_bytes())
+        );
         assert_eq!(json["goal"], "do the thing");
     }
 
@@ -297,7 +300,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             status,
-            serde_json::json!({"cmd": "session-status", "id": SessionId::new(Hash::of(b"s1")).to_hex()})
+            serde_json::json!({"cmd": "session-status", "id": Hash::of(b"s1").as_bytes()})
         );
 
         let stop = serde_json::to_value(AdminCommandWire::from(&AdminCommand::StopSession {
@@ -306,7 +309,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             stop,
-            serde_json::json!({"cmd": "stop-session", "id": SessionId::new(Hash::of(b"victim")).to_hex()})
+            serde_json::json!({"cmd": "stop-session", "id": Hash::of(b"victim").as_bytes()})
         );
     }
 
@@ -321,7 +324,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             installed,
-            serde_json::json!({"result": "installed", "id": SessionId::new(Hash::of(b"w")).to_hex()})
+            serde_json::json!({"result": "installed", "id": Hash::of(b"w").as_bytes()})
         );
 
         let sessions =
@@ -335,8 +338,8 @@ mod tests {
         assert_eq!(
             sessions,
             serde_json::json!({"result": "sessions", "ids": [
-                SessionId::new(Hash::of(b"a")).to_hex(),
-                SessionId::new(Hash::of(b"b")).to_hex(),
+                Hash::of(b"a").as_bytes(),
+                Hash::of(b"b").as_bytes(),
             ]})
         );
 
@@ -347,7 +350,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             stopped,
-            serde_json::json!({"result": "stopped", "id": SessionId::new(Hash::of(b"gone")).to_hex()})
+            serde_json::json!({"result": "stopped", "id": Hash::of(b"gone").as_bytes()})
         );
 
         let error = serde_json::to_value(AdminResponseWire::from_domain(&AdminResponse::Error {
@@ -372,45 +375,42 @@ mod tests {
     }
 
     #[test]
-    fn a_noncanonical_reducer_hash_is_rejected() {
-        let wire = AdminCommandWire::InstallSession(InstallSpecWire {
-            id: "w".into(),
-            reducer_hash: "not-hex".into(),
-            goal: None,
-        });
-        let err = wire.to_domain().unwrap_err();
-        assert!(err.0.contains("canonical hex"), "{err}");
-    }
-
-    #[test]
-    fn a_noncanonical_session_id_is_rejected_on_every_id_carrying_command() {
-        // Fail-closed wire id parsing (the sessionid-hash sweep): a command's session `id` is the peer's
-        // genesis-hash HEX, parsed back via session_id_from_hex. A non-canonical id (vanity label, non-hex,
-        // wrong length) is a WireError — a malformed admin frame is REJECTED at the transport edge, never
-        // silently coerced into a bogus SessionId. Pins it on all three id-carrying commands (install spec id,
-        // session-status, stop-session). The reducer_hash reject above covers the OTHER hash on install; the
-        // valid reducer_hash here isolates the FAILURE to the id so install's id path is genuinely exercised
-        // (reducer_hash is parsed first, so a bad-id install needs a good reducer_hash to reach the id check).
-        let good_reducer = Hash::of(b"reducer").to_hex();
-        for bad in ["victim", "not-hex", "deadbeef" /* too short */, ""] {
-            let install = AdminCommandWire::InstallSession(InstallSpecWire {
-                id: bad.into(),
-                reducer_hash: good_reducer.clone(),
-                goal: None,
-            });
+    fn a_wrong_shape_hash_field_is_rejected_at_json_deserialization() {
+        // A hash rides as raw 32 bytes: there is no from_hex/string-parse, so `to_domain` is INFALLIBLE. A
+        // malformed hash is a wrong-SHAPE byte field — a short array, OR the OLD hex STRING form (now invalid)
+        // — and it fails serde deserialization (a malformed FRAME caught at decode), never a silent coercion.
+        // The pre-sweep hex-string case is the key regression pin: the wire no longer accepts a hex string.
+        let ok = serde_json::json!(Hash::of(b"x").as_bytes()); // a valid 32-byte array
+        let short = serde_json::json!(vec![0u8; 31]);
+        let old_hex = serde_json::json!(Hash::of(b"x").to_hex()); // the pre-sweep hex STRING — now invalid
+        for bad in [short, old_hex] {
             assert!(
-                matches!(install.to_domain(), Err(WireError(m)) if m.contains("canonical hex")),
-                "install with a non-hex id {bad:?} is a WireError"
+                serde_json::from_value::<InstallSpecWire>(
+                    serde_json::json!({"id": ok.clone(), "reducer_hash": bad.clone()})
+                )
+                .is_err(),
+                "install reducer_hash of the wrong shape is rejected"
             );
             assert!(
-                matches!(AdminCommandWire::SessionStatus { id: bad.into() }.to_domain(),
-                    Err(WireError(m)) if m.contains("canonical hex")),
-                "session-status with a non-hex id {bad:?} is a WireError"
+                serde_json::from_value::<InstallSpecWire>(
+                    serde_json::json!({"id": bad.clone(), "reducer_hash": ok.clone()})
+                )
+                .is_err(),
+                "install id of the wrong shape is rejected"
             );
             assert!(
-                matches!(AdminCommandWire::StopSession { id: bad.into() }.to_domain(),
-                    Err(WireError(m)) if m.contains("canonical hex")),
-                "stop-session with a non-hex id {bad:?} is a WireError"
+                serde_json::from_value::<AdminCommandWire>(
+                    serde_json::json!({"cmd": "session-status", "id": bad.clone()})
+                )
+                .is_err(),
+                "session-status id of the wrong shape is rejected"
+            );
+            assert!(
+                serde_json::from_value::<AdminCommandWire>(
+                    serde_json::json!({"cmd": "stop-session", "id": bad.clone()})
+                )
+                .is_err(),
+                "stop-session id of the wrong shape is rejected"
             );
         }
     }
@@ -497,7 +497,7 @@ mod tests {
         assert_eq!(
             second,
             AdminCommandWire::StopSession {
-                id: SessionId::new(Hash::of(b"x")).to_hex()
+                id: *Hash::of(b"x").as_bytes()
             }
         );
     }

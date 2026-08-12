@@ -231,20 +231,12 @@ async fn serve_connection(mut stream: UnixStream, admin: &AdminChannel) -> io::R
 pub const LOCAL_ADMIN_PRINCIPAL: &str = "local-admin";
 
 /// Forward one decoded command to the host loop and await its reply. Converts the wire command to the
-/// domain [`crate::admin::AdminCommand`] (returning a wire error response if the frame's hash is malformed),
+/// domain [`crate::admin::AdminCommand`] (infallible — each hash rides as raw bytes and reconstructs via
+/// `Hash::from_bytes`; a malformed hash is a wrong-length byte array rejected earlier at frame decode),
 /// sends it on the [`AdminChannel`] with a fresh reply oneshot (asserting the [`LOCAL_ADMIN_PRINCIPAL`] —
 /// the socket's owner-gate identity), and maps the domain response back to wire.
 async fn dispatch(cmd_wire: AdminCommandWire, admin: &AdminChannel) -> AdminResponseWire {
-    let command = match cmd_wire.to_domain() {
-        Ok(c) => c,
-        // A structurally-valid frame whose content is invalid (e.g. a non-canonical reducer hash) — answer
-        // with an error, don't tear down the connection.
-        Err(e) => {
-            return AdminResponseWire::Error {
-                message: format!("invalid admin command: {e}"),
-            }
-        }
-    };
+    let command = cmd_wire.to_domain();
     let (reply, rx) = tokio::sync::oneshot::channel();
     let request = AdminRequest {
         command,
@@ -360,7 +352,7 @@ mod tests {
             assert_eq!(
                 installed,
                 AdminResponseWire::Installed {
-                    id: SessionId::new(Hash::of(b"s1")).to_hex()
+                    id: *Hash::of(b"s1").as_bytes()
                 }
             );
 
@@ -368,7 +360,7 @@ mod tests {
             assert_eq!(
                 listed,
                 AdminResponseWire::Sessions {
-                    ids: vec![SessionId::new(Hash::of(b"s1")).to_hex()]
+                    ids: vec![*Hash::of(b"s1").as_bytes()]
                 }
             );
             // Done: close the client stream, then stop the socket + host loop.
@@ -559,7 +551,7 @@ mod tests {
             assert_eq!(
                 installed,
                 AdminResponseWire::Installed {
-                    id: SessionId::new(Hash::of(b"w1")).to_hex()
+                    id: *Hash::of(b"w1").as_bytes()
                 }
             );
 
@@ -607,7 +599,7 @@ mod tests {
             assert_eq!(
                 stopped,
                 AdminResponseWire::Stopped {
-                    id: SessionId::new(Hash::of(b"w1")).to_hex()
+                    id: *Hash::of(b"w1").as_bytes()
                 }
             );
 
