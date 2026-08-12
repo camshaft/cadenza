@@ -9685,6 +9685,41 @@ mod tests {
     /// left-to-right over the struct tree from the root (see cadenza-ast/canon.rs `visit`). This is what
     /// makes `value_encode(v)` == `codec::encode(canon(tree))` byte-for-byte, i.e. a STABLE content-address.
     ///
+    /// REPRO (v-compiler-ml issue, b1 blocker): a Sum arm carrying a RECORD must value-encode the record,
+    /// not an empty leaf. Descriptor (v-cml-pinned, 21 bytes): P = A of Bytes | B of Record(x: Str), rooted
+    /// at Named("P"). Value B(record x="hi") must encode to `(: (B (record (= x "hi"))) P)` — the doc MUST
+    /// contain the "B", "record", "x" name leaves and the "hi" str leaf. An empty render is the reported bug.
+    #[test]
+    fn value_encode_sum_arm_carrying_a_record_is_not_empty() {
+        reset();
+        let before = live_nodes();
+        // v-cml's exact descriptor bytes.
+        let desc: &[u8] = &[
+            0x05, 0x09, 0x02, 0x01, 0x41, 0x01, 0x01, 0x42, 0x03, 0x04, 0x03, 0x08, 0x01, 0x01,
+            0x78, 0x02, 0x0a, 0x01, 0x50, 0x00, 0x04,
+        ];
+        // Build B(record x="hi"): arm B has disc 1; its payload is a 1-field record arr [str "hi"].
+        let rec = op_arr_alloc(1);
+        op_arr_set(rec, 0, op_str_new(String::from("hi")));
+        let v = op_sum_new(1, rec); // B(record …)
+        let doc_bytes = op_value_encode_form(v, desc).expect("encode Sum-arm-Record must not decline");
+        let doc = parse_doc(&doc_bytes).expect("parse the value-form document");
+        // The record must actually be rendered: the "B" head, "record"/"x" names, and the "hi" str leaf
+        // must all be present. The reported bug drops the record → these leaves are absent.
+        let has_name = |want: &str| {
+            doc.leaves.iter().any(|l| matches!(l, ParsedLeaf::Name(n) if n == want.as_bytes()))
+        };
+        let has_str = |want: &str| {
+            doc.leaves.iter().any(|l| matches!(l, ParsedLeaf::Str(b) if b == want.as_bytes()))
+        };
+        assert!(has_name("B"), "the B variant head must be rendered");
+        assert!(has_name("record"), "the record head must be rendered (bug: record dropped)");
+        assert!(has_name("x"), "the record field name x must be rendered (bug: record dropped)");
+        assert!(has_str("hi"), "the record field value \"hi\" must be rendered (bug: empty leaf)");
+        op_drop(v);
+        assert_eq!(live_nodes(), before, "no leak encoding the Sum-arm-Record value");
+    }
+
     /// A rendered-text gate CANNOT catch a regression here: emitting the record-field `=` or the Set
     /// `(. Set of)` head POST-order (the pre-convergence bug) produces IDENTICAL rendered s-expr text but a
     /// DIFFERENT leaf pool — so it would slip silently past the corpus. This walks the parsed document and
