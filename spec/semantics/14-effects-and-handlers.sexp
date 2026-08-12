@@ -7750,3 +7750,42 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 3 Int64)))
 
+(case "three list-append dispatches then a two-param range over a computed-index List.at emits valid wasm (ListAt index floated above the high-water)"
+  (doc    "regression guard for breaker finding-23 (case pfxmin5): a handler arm that reads the
+           threaded list at a COMPUTED index ((- (List.len xs) 1)) via List.at AND List.push-es to
+           the same list, dispatched THREE times, then a two-param range op whose resume value is a
+           nested double-List.at match. Formerly emitted invalid wasm on the wasm backend only
+           (Core::ListAt emitted its index operand at the bare scratch floor, not floor.max(high),
+           unlike the sibling Core::BytesAt/StrAt fixed for finding-18; when the list operand is a
+           live List.push-grown handle threaded across dispatches, the i64 computed index reset to the
+           stale floor reused an i32-typed handle slot -> one wasm local at two widths -> validator
+           expected i32 found i64; rust/rust-async passed). List-specific and dispatch-count-dependent
+           (needs the arm to re-enter across the length-4 list boundary). Fixed by v-effects floating
+           the ListAt index scratch above the high-water (d52544411, backend/wasm/select.rs, mirrors
+           BytesAt). Now valid + passes x3: prefix table 0,3,7,16; range 0 3 answers 16. A revert
+           reintroduces the invalid-component wasm reject, caught here.")
+  (input  (do
+            (effect S
+              (op add (-> Int64 Int64))
+              (op range (-> Int64 Int64 Int64)))
+            (def (last (: xs (List Int64)))
+              (match (List.at xs (- (List.len xs) 1)) ((Some v) v) ((None u) 0)))
+            (def (main (: n Int64))
+              (handle S (list 0)
+                ((add (v) pre
+                  (let ((t (+ (last pre) v)))
+                    (resume t (List.push pre t))))
+                 (range (i j) pre
+                  (resume (match (List.at pre i)
+                            ((Some a) (match (List.at pre j)
+                                        ((Some b) (- b a))
+                                        ((None u) -1)))
+                            ((None u) -1))
+                          pre)))
+                (let ((_a (S.add n)))
+                  (let ((_b (S.add 4)))
+                    (let ((_c (S.add 9)))
+                      (S.range 0 3))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 16 Int64)))
+
