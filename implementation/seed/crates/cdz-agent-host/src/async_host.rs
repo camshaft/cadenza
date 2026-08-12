@@ -174,8 +174,7 @@ async fn apply_lifecycle_ops(
                         // log's Terminated tail is the source of truth; the registry is an index over it).
                         #[cfg(feature = "live-aws-storage")]
                         if let Some(registry) = session_registry {
-                            if let Err(e) = registry.mark_terminated(&target.to_hex(), now_ms).await
-                            {
+                            if let Err(e) = registry.mark_terminated(target.hash(), now_ms).await {
                                 tracing::warn!(
                                     target: "cdz_agent_host::session_registry",
                                     session_id = target.to_base64url(),
@@ -1015,7 +1014,7 @@ async fn handle_admin(
     if let (Some(registry), AdminResponse::Installed { id }, Some(reducer_hash)) =
         (session_registry, &resp, &install_reducer_hash)
     {
-        if let Err(e) = registry.register(&id.to_hex(), *reducer_hash, now_ms).await {
+        if let Err(e) = registry.register(id.hash(), *reducer_hash, now_ms).await {
             // Non-sensitive: the session id + a registry-write error. Never a guest-controlled string.
             tracing::warn!(
                 target: "cdz_agent_host::session_registry",

@@ -57,7 +57,11 @@ impl SessionStatus {
 /// when the record was last written. The pure decoded shape a `list_*` query returns.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRecord {
-    pub session_id: String,
+    /// The session's genesis-hash id, stored RAW ([`Hash`] = 32 bytes) as the Dynamo partition key's BINARY
+    /// (`B`) attribute — NO hex (operator directive: all hashes are raw bytes at storage, never a string).
+    /// Boot-recovery reconstructs the [`SessionId`](crate::host::SessionId) directly via `SessionId::new`,
+    /// no decode.
+    pub session_id: cdz_kernel::hash::Hash,
     pub status: SessionStatus,
     /// The reducer's content hash (the genesis reducer — boot-recovery loads it by this to rebuild the
     /// session's reducer). Stored RAW ([`Hash`] = 32 bytes), round-tripped through Dynamo as a BINARY (`B`)
@@ -116,7 +120,7 @@ mod live {
         /// host-supplied (the kernel is clock-free).
         pub async fn register(
             &self,
-            session_id: &str,
+            session_id: cdz_kernel::hash::Hash,
             reducer_hash: cdz_kernel::hash::Hash,
             now_ms: u64,
         ) -> io::Result<()> {
@@ -129,7 +133,11 @@ mod live {
         /// existing reducer hash so a terminate needn't re-supply it; a missing item is a no-op-ish put of a
         /// terminated record with an empty reducer hash (a terminate for an unknown session shouldn't fail the
         /// caller — the session is gone either way).
-        pub async fn mark_terminated(&self, session_id: &str, now_ms: u64) -> io::Result<()> {
+        pub async fn mark_terminated(
+            &self,
+            session_id: cdz_kernel::hash::Hash,
+            now_ms: u64,
+        ) -> io::Result<()> {
             // Preserve the recorded reducer hash if present; a terminate for an unknown session (no item)
             // writes a terminated record with a zero hash (a terminate shouldn't fail — the session is gone
             // either way, and a terminated record is never recovered so its reducer hash is unread).
@@ -213,13 +221,18 @@ mod live {
         /// `mark_terminated` to preserve it. `None` if the item or attribute is absent / not 32 bytes.
         async fn get_reducer_hash(
             &self,
-            session_id: &str,
+            session_id: cdz_kernel::hash::Hash,
         ) -> io::Result<Option<cdz_kernel::hash::Hash>> {
             let resp = self
                 .client
                 .get_item()
                 .table_name(&self.table)
-                .key(ATTR_SESSION, AttributeValue::S(session_id.to_string()))
+                .key(
+                    ATTR_SESSION,
+                    AttributeValue::B(aws_sdk_dynamodb::primitives::Blob::new(
+                        session_id.as_bytes().to_vec(),
+                    )),
+                )
                 .send()
                 .await
                 .map_err(|e| {
@@ -239,7 +252,7 @@ mod live {
         /// The shared PutItem for register + mark_terminated.
         async fn put(
             &self,
-            session_id: &str,
+            session_id: cdz_kernel::hash::Hash,
             status: SessionStatus,
             reducer_hash: cdz_kernel::hash::Hash,
             now_ms: u64,
@@ -247,7 +260,13 @@ mod live {
             self.client
                 .put_item()
                 .table_name(&self.table)
-                .item(ATTR_SESSION, AttributeValue::S(session_id.to_string()))
+                .item(
+                    // Raw 32 bytes as the Dynamo BINARY partition key — no hex (same as reducer_hash below).
+                    ATTR_SESSION,
+                    AttributeValue::B(aws_sdk_dynamodb::primitives::Blob::new(
+                        session_id.as_bytes().to_vec(),
+                    )),
+                )
                 .item(ATTR_STATUS, AttributeValue::S(status.as_str().to_string()))
                 .item(
                     // Raw 32 bytes as a Dynamo BINARY attribute — no hex (operator: Dynamo stores binary).
@@ -262,7 +281,8 @@ mod live {
                 .map(|_| ())
                 .map_err(|e| {
                     io::Error::other(format!(
-                        "session registry put ({session_id}, {}) failed: {}",
+                        "session registry put ({}, {}) failed: {}",
+                        session_id.to_base64url(),
                         status.as_str(),
                         aws_sdk_dynamodb::error::DisplayErrorContext(&e)
                     ))
@@ -276,7 +296,9 @@ mod live {
         item: &std::collections::HashMap<String, AttributeValue>,
     ) -> io::Result<SessionRecord> {
         let session_id = match item.get(ATTR_SESSION) {
-            Some(AttributeValue::S(s)) => s.clone(),
+            Some(AttributeValue::B(b)) => <[u8; 32]>::try_from(b.as_ref())
+                .map(cdz_kernel::hash::Hash::from_bytes)
+                .map_err(|_| corrupt("session_id is not 32 bytes"))?,
             _ => return Err(corrupt("missing session_id")),
         };
         let status = match item.get(ATTR_STATUS) {

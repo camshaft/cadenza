@@ -425,18 +425,10 @@ async fn main() -> std::process::ExitCode {
                         if record.status == cdz_agent_host::SessionStatus::Terminated {
                             continue;
                         }
-                        // The registry stores the session id as its canonical genesis-hash hex. Parse it back
-                        // to the `Hash` id; a non-hex entry is registry corruption — log + skip that session
-                        // (fail-closed), don't abort the whole boot.
-                        let Some(id) = Hash::from_hex(&record.session_id).map(SessionId::new)
-                        else {
-                            tracing::error!(
-                                target: "cdz_agent_host::recovery",
-                                session_id = record.session_id.as_str(),
-                                "boot-recovery: registry entry's session id is not canonical genesis-hash hex — skipping it"
-                            );
-                            continue;
-                        };
+                        // The registry stores the session id as its raw genesis-hash bytes (Dynamo BINARY key);
+                        // reconstruct the `SessionId` directly — no decode (the id is raw bytes, never parsed
+                        // from a string).
+                        let id = SessionId::new(record.session_id);
                         // Read this session's persisted log back into a `Recovered`. `Ok(None)` = no durable
                         // log for it (nothing to recover — skip); `Err` = a read failure (log + skip, don't
                         // abort the whole boot for one session).
@@ -446,7 +438,7 @@ async fn main() -> std::process::ExitCode {
                             Err(e) => {
                                 tracing::error!(
                                     target: "cdz_agent_host::recovery",
-                                    session_id = record.session_id.as_str(),
+                                    session_id = record.session_id.to_base64url(),
                                     error = %e,
                                     "boot-recovery: could not read a session's durable log — skipping it"
                                 );
@@ -460,7 +452,7 @@ async fn main() -> std::process::ExitCode {
                             Err(e) => {
                                 tracing::error!(
                                     target: "cdz_agent_host::recovery",
-                                    session_id = record.session_id.as_str(),
+                                    session_id = record.session_id.to_base64url(),
                                     error = %e,
                                     "boot-recovery: could not rebuild a session — skipping it"
                                 );
@@ -477,7 +469,7 @@ async fn main() -> std::process::ExitCode {
                         if report.is_corrupt() {
                             tracing::error!(
                                 target: "cdz_agent_host::recovery",
-                                session_id = record.session_id.as_str(),
+                                session_id = record.session_id.to_base64url(),
                                 "boot-recovery: a session's log recovered CORRUPT — skipping it (the other \
                                  sessions still recover)"
                             );
@@ -489,7 +481,7 @@ async fn main() -> std::process::ExitCode {
                         if !report.open_effects.is_empty() {
                             tracing::warn!(
                                 target: "cdz_agent_host::recovery",
-                                session_id = record.session_id.as_str(),
+                                session_id = record.session_id.to_base64url(),
                                 open_effects = report.open_effects.len(),
                                 "boot-recovery: recovered a session with open effects (re-drive is a \
                                  following slice; they are reported, not dropped)"
