@@ -1,5 +1,6 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
 pass	a counter session bumps kv count on its kick-off message
+pass	a handler serves two families but replies to only one; the caller resumes one effect and stays active on the other
 pass	a message chains across three sessions a -> b -> c, each hop emitting to the next
 pass	a message to an absent peer bounces a delivery-failure back to the sender, which folds it
 pass	a reducer deletes KV slots and branches on the delete bool: true for a present key, false for an absent one
