@@ -1150,6 +1150,13 @@
           # the same bytes through the host. Gates on this env + CDZ_STORE (the kv reducer imports
           # cadenza:runtime/heap, resolved from the store). Same pattern as PURE_GENESIS_REDUCER_COMPONENT.
           export CDZ_KV_GENESIS_REDUCER_COMPONENT="${reducerCadenzaKv}"
+          # A1 agent-loop (GAP-1 keystone): feed the precompiled agent-loop reducer so v-ah-host's
+          # real_agent_loop_reducer_folds_the_message_model_tool_spine E2E RUNS instead of skipping — it drives
+          # a message event then a model-response event through the real component and asserts the model + tool
+          # effects fire (the agentic loop as a fold over KV inbox state, message → model → tool). Gates on this
+          # env + CDZ_STORE (the reducer imports cadenza:runtime/heap + host-fused kv, resolved from the store).
+          # Same pattern as CDZ_KV_GENESIS_REDUCER_COMPONENT above.
+          export CDZ_AGENT_LOOP_REDUCER_COMPONENT="${reducerCadenzaAgentLoop}"
           # (The A1 transition arming-switch CDZ_KERNEL_BYTES_ABI was dropped here once v-ah-host collapsed its
           # reader in 813570fa5 — the genesis e2e now gates purely on GENESIS_REDUCER_COMPONENT + CDZ_STORE like
           # pure/kv, so the export was a dead no-op. Dual-land: reader removed on origin FIRST, then this drop.)
