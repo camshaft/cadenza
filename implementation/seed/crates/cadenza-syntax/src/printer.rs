@@ -667,6 +667,7 @@ impl<'a> Printer<'a> {
                 "do" if !args.is_empty() => return self.print_do(args),
                 "type" if self.is_type_shape(args) => return self.print_type(args),
                 "effect" if self.is_effect_shape(args) => return self.print_effect(args),
+                "world" if self.is_world_shape(args) => return self.print_world(args),
                 "handle" if self.is_handle_shape(args) => {
                     return self.print_handle(args, parent_prec);
                 }
@@ -2006,6 +2007,83 @@ impl<'a> Printer<'a> {
         self.doc.end();
     }
 
+    /// A `(world Name (import|export Iface (member M (func …))…)…)` -> the inline `world …` surface, the
+    /// dual of `world_expr` (guarded by [`Self::is_world_shape`]). `world Name =` then each interface on
+    /// its own `| import|export Iface =` line, then each member indented `| member : (p : T, …) -> R`.
+    /// The direction word IS the interface head (`import`/`export`); the member func node reverses to the
+    /// parenthesized named-param + arrow-result surface.
+    fn print_world(&mut self, args: &[StructId]) {
+        let docs_end = 1 + args[1..].iter().take_while(|&&a| self.is_doc(a)).count();
+        let docs = &args[1..docs_end];
+        let ifaces = &args[docs_end..];
+        for &d in docs {
+            if let Some(a) = self.a.as_form(d, "doc") {
+                self.print_doc(a[0]);
+            }
+            self.doc.hardbreak();
+        }
+        self.doc.cbox(INDENT);
+        self.doc.word("world ");
+        self.expr(args[0], 0); // world name
+        self.doc.word(" =");
+        for &iface in ifaces {
+            // iface = (import|export IfaceName (member …)…)
+            let (dir, entry) = if let Some(e) = self.a.as_form(iface, "import") {
+                ("import", e)
+            } else if let Some(e) = self.a.as_form(iface, "export") {
+                ("export", e)
+            } else {
+                continue; // guarded by is_world_shape; be total
+            };
+            self.doc.hardbreak();
+            self.doc.word("| ");
+            self.doc.word(dir);
+            self.doc.word(" ");
+            self.expr(entry[0], 0); // interface name
+            self.doc.word(" =");
+            // Each member indented under its interface, `| name : sig`.
+            self.doc.cbox(INDENT);
+            for &m in &entry[1..] {
+                if let Some(mem) = self.a.as_form(m, "member") {
+                    self.doc.hardbreak();
+                    self.doc.word("| ");
+                    self.expr(mem[0], 0); // member name
+                    self.doc.word(" : ");
+                    self.print_world_func_sig(mem[1]);
+                }
+            }
+            self.doc.end();
+        }
+        self.doc.end();
+    }
+
+    /// A member's `(func (param <n> <t>)* (result <t>))` -> `(p1 : T1, …) -> R`. A nullary func (no
+    /// params) elides the list to `() -> R`. The dual of `world_member`'s signature parse.
+    fn print_world_func_sig(&mut self, func: StructId) {
+        let Some(f) = self.a.as_form(func, "func") else {
+            self.expr(func, 0); // guarded by is_world_member_shape; be total
+            return;
+        };
+        let Some((&result, params)) = f.split_last() else {
+            return;
+        };
+        self.doc.word("(");
+        for (i, &p) in params.iter().enumerate() {
+            if i > 0 {
+                self.doc.word(", ");
+            }
+            if let Some(pp) = self.a.as_form(p, "param") {
+                self.expr(pp[0], 0); // param name
+                self.doc.word(" : ");
+                self.expr(pp[1], 0); // param type
+            }
+        }
+        self.doc.word(") -> ");
+        if let Some(r) = self.a.as_form(result, "result") {
+            self.expr(r[0], PREC_ARROW); // result type
+        }
+    }
+
     /// An effect operation's type. An operation type is always a function arrow. The flat two-element
     /// `(-> P R)` prints via the ordinary arrow surface `P -> R`. The NULLARY-elided one-element
     /// `(-> R)` (typed as `Unit -> R`) has no infix form, so it prints with a LEADING arrow `-> R` —
@@ -2226,6 +2304,61 @@ impl<'a> Printer<'a> {
             && ops.iter().all(|&op| match self.a.as_form(op, "op") {
                 Some(o) => o.len() == 2 && self.head_name(o[0]).is_some(),
                 None => false,
+            })
+    }
+
+    /// A `(world Name (import|export Iface (member M (func …))…)…)` the inline `world …` surface handles:
+    /// a NAME head, optional `(doc …)` forms, then AT LEAST ONE interface (each `import`/`export`-headed
+    /// with a name + members). Each member is `(member <name> (func …))`, each func a `(param <n> <t>)*`
+    /// then a `(result <t>)`. Anything else (a bare `(world Name)`, a malformed member) falls back to the
+    /// generic call form so it still round-trips. The dual of `world_expr`'s grammar.
+    fn is_world_shape(&self, args: &[StructId]) -> bool {
+        if args.len() < 2 || self.head_name(args[0]).is_none() {
+            return false;
+        }
+        let docs_end = 1 + args[1..].iter().take_while(|&&a| self.is_doc(a)).count();
+        let ifaces = &args[docs_end..];
+        !ifaces.is_empty()
+            && ifaces.iter().all(|&i| {
+                let entry = self
+                    .a
+                    .as_form(i, "import")
+                    .or_else(|| self.a.as_form(i, "export"));
+                match entry {
+                    // (import|export IfaceName (member …)…): a name then ≥1 well-shaped member.
+                    Some(e) => {
+                        e.len() >= 2
+                            && self.head_name(e[0]).is_some()
+                            && e[1..].iter().all(|&m| self.is_world_member_shape(m))
+                    }
+                    None => false,
+                }
+            })
+    }
+
+    /// A `(member <name> (func (param <n> <t>)* (result <t>)))` — a member name then a func node whose
+    /// children are zero-or-more `(param name type)` then exactly one trailing `(result type)`.
+    fn is_world_member_shape(&self, m: StructId) -> bool {
+        let Some(mem) = self.a.as_form(m, "member") else {
+            return false;
+        };
+        if mem.len() != 2 || self.head_name(mem[0]).is_none() {
+            return false;
+        }
+        let Some(func) = self.a.as_form(mem[1], "func") else {
+            return false;
+        };
+        // Last child is the result; all earlier children are params.
+        let Some((&result, params)) = func.split_last() else {
+            return false;
+        };
+        self.a
+            .as_form(result, "result")
+            .is_some_and(|r| r.len() == 1)
+            && params.iter().all(|&p| {
+                self.a
+                    .as_form(p, "param")
+                    .is_some_and(|pp| pp.len() == 2 && self.head_name(pp[0]).is_some())
             })
     }
 
@@ -3943,6 +4076,52 @@ mod tests {
     use super::*;
     use crate::ast::Builder;
     use crate::{parser, sexpr};
+
+    #[test]
+    fn inline_world_decl_round_trips_through_the_ml_surface() {
+        // The inline `world …` surface prints back to itself and re-reads to the same AST (S2b printer,
+        // dual of the S2a parser). A full world with an export + import interface, multi-param and
+        // nullary members. `assert_roundtrip` checks print∘read∘print is idempotent + reparses clean.
+        let printed = assert_roundtrip(
+            "world Reducer = \
+             | export fold = | apply : (event : Bytes) -> Bytes \
+             | import kv = | get : (key : String) -> Bytes | put : (key : String, value : Bytes) -> Unit",
+            80,
+        );
+        // Sanity: the printed form uses the WIT-familiar surface, not the raw (world …) sexp.
+        assert!(
+            printed.contains("world Reducer ="),
+            "prints the world head: {printed}"
+        );
+        assert!(
+            printed.contains("| export fold ="),
+            "export interface: {printed}"
+        );
+        assert!(
+            printed.contains("| import kv ="),
+            "import interface: {printed}"
+        );
+        assert!(
+            printed.contains("| apply : (event : Bytes) -> Bytes"),
+            "member sig: {printed}"
+        );
+    }
+
+    #[test]
+    fn inline_world_nullary_member_round_trips() {
+        let printed = assert_roundtrip("world Clock = | export c = | now : () -> Timestamp", 80);
+        assert!(
+            printed.contains("now : () -> Timestamp"),
+            "nullary member: {printed}"
+        );
+    }
+
+    #[test]
+    fn a_world_headed_form_that_is_not_a_world_decl_falls_back_to_the_generic_form() {
+        // A `(world x)` that is NOT a well-shaped world decl (no interfaces) must NOT crash print_world;
+        // is_world_shape declines it and it prints as the generic call form, round-tripping.
+        assert_roundtrip("world(x)", 80);
+    }
 
     #[test]
     fn every_reserved_word_used_as_a_bare_name_backtick_round_trips_to_a_name() {

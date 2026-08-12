@@ -4490,52 +4490,67 @@ mod tests {
         // s-expr printer, `canon`, the compiler's own walk) then overflowed the stack on (SIGABRT) —
         // even though the PARSE itself never recursed and succeeded. The `expr`/`postfix` loop guards
         // now bound the folded spine against the same `MAX_NESTING_DEPTH`, so a pathological chain is a
-        // clean parse diagnostic. This test needs NO large stack: the guard fires while building the
-        // tree, before any deep walk. (Regression for the flat-chain stack-overflow class.)
-        let over = (crate::sexpr::MAX_NESTING_DEPTH as usize) + 50;
-        let cases = [
-            format!("1{}", "+1".repeat(over)),    // left-assoc infix spine
-            format!("1{}", " |> f".repeat(over)), // pipeline spine (also infix)
-            format!("x{}", ".a".repeat(over)),    // postfix member chain
-            format!("f{}", "(1)".repeat(over)),   // postfix call chain
-        ];
-        for src in cases {
-            let p = read_ml(&src);
-            assert!(
-                !p.ok()
-                    && p.errors
-                        .iter()
-                        .any(|e| e.message.contains("nests too deeply")),
-                "a deep flat chain must be a clean depth-limit error, not a crash; got ok={} errs={:?}",
-                p.ok(),
-                p.errors
-            );
-            // The produced arena is well-formed and EVERY recursive downstream consumer must handle it
-            // without crashing — the guard capped the tree depth, so the whole pipeline is safe on an
-            // ordinary stack. This is the invariant the cap exists to uphold: "a reader produces
-            // bounded-depth trees ⇒ the printer, canon, and codec walks are all safe." Exercise all
-            // three (the s-expr printer, the ML printer, and codec::encode, which canonicalizes).
-            let _ = crate::printer::print(&p.arenas, 80);
-            let _ = crate::sexpr::print(&p.arenas);
-            let _ = crate::codec::encode(&p.arenas);
+        // clean parse diagnostic. (Regression for the flat-chain stack-overflow class.)
+        //
+        // Run the body on a LARGE-STACK thread (mirroring `sexpr::deeply_nested_input_is_diagnosed_not_
+        // crashed`): the guard caps the tree at `MAX_NESTING_DEPTH` (1024), but the DOWNSTREAM walks this
+        // test deliberately exercises — the ML printer, the s-expr printer, `codec::encode` — recurse one
+        // native frame per level, and 1024 debug-build frames exceed a default `cargo test` worker's
+        // stack. (This is about the CONSUMERS' recursion depth, NOT the parse: the parse itself loops.
+        // The margin is genuinely tight — a printer-dispatch change once tipped it over — so provision the
+        // stack explicitly rather than depend on per-frame size staying under an implicit cap.)
+        let h = std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(|| {
+                let over = (crate::sexpr::MAX_NESTING_DEPTH as usize) + 50;
+                let cases = [
+                    format!("1{}", "+1".repeat(over)),    // left-assoc infix spine
+                    format!("1{}", " |> f".repeat(over)), // pipeline spine (also infix)
+                    format!("x{}", ".a".repeat(over)),    // postfix member chain
+                    format!("f{}", "(1)".repeat(over)),   // postfix call chain
+                ];
+                for src in cases {
+                    let p = read_ml(&src);
+                    assert!(
+                        !p.ok()
+                            && p.errors
+                                .iter()
+                                .any(|e| e.message.contains("nests too deeply")),
+                        "a deep flat chain must be a clean depth-limit error, not a crash; got ok={} errs={:?}",
+                        p.ok(),
+                        p.errors
+                    );
+                    // The produced arena is well-formed and EVERY recursive downstream consumer must
+                    // handle it without crashing — the guard capped the tree depth, so the whole pipeline
+                    // is safe. This is the invariant the cap exists to uphold: "a reader produces
+                    // bounded-depth trees ⇒ the printer, canon, and codec walks are all safe." Exercise all
+                    // three (the s-expr printer, the ML printer, and codec::encode, which canonicalizes).
+                    let _ = crate::printer::print(&p.arenas, 80);
+                    let _ = crate::sexpr::print(&p.arenas);
+                    let _ = crate::codec::encode(&p.arenas);
+                }
+                // A flat chain WELL under the limit parses cleanly (no over-rejection) and survives the
+                // full round-trip through every surface.
+                let ok_n = (crate::sexpr::MAX_NESTING_DEPTH as usize) / 2;
+                let shallow = format!("1{}", "+1".repeat(ok_n));
+                let ps = read_ml(&shallow);
+                assert!(
+                    ps.ok(),
+                    "a flat chain under the limit must parse: {:?}",
+                    ps.errors
+                );
+                // Binary round-trip: the deep-but-legal arena encodes and decodes back structurally-equal.
+                let bytes = crate::codec::encode(&ps.arenas);
+                let back = crate::codec::decode(&bytes).expect("deep-but-legal arena decodes");
+                assert!(
+                    back.structurally_eq(&ps.arenas),
+                    "a deep-but-legal flat chain must survive the binary round-trip"
+                );
+            })
+            .expect("spawn deep-flat-chain worker");
+        if let Err(payload) = h.join() {
+            std::panic::resume_unwind(payload);
         }
-        // A flat chain WELL under the limit parses cleanly (no over-rejection) and survives the full
-        // round-trip through every surface.
-        let ok_n = (crate::sexpr::MAX_NESTING_DEPTH as usize) / 2;
-        let shallow = format!("1{}", "+1".repeat(ok_n));
-        let ps = read_ml(&shallow);
-        assert!(
-            ps.ok(),
-            "a flat chain under the limit must parse: {:?}",
-            ps.errors
-        );
-        // Binary round-trip: the deep-but-legal arena encodes and decodes back structurally-equal.
-        let bytes = crate::codec::encode(&ps.arenas);
-        let back = crate::codec::decode(&bytes).expect("deep-but-legal arena decodes");
-        assert!(
-            back.structurally_eq(&ps.arenas),
-            "a deep-but-legal flat chain must survive the binary round-trip"
-        );
     }
 
     #[test]
