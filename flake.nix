@@ -819,9 +819,10 @@
         # NO kv import). `witWorld = "pure"` materializes that world (186 B) via emit-wit-world + drives rcdzc's
         # world-driven bytes emit, so the built component exports `cadenza:agent-kernel/fold`'s
         # apply(list<u8>)->list<u8> and imports ONLY cadenza:runtime/heap (verified: no kv). Consumed by the
-        # cdz-agent-host pure-genesis E2E via env PURE_GENESIS_REDUCER_COMPONENT (the E2E lands in a later
-        # co-land step; the component + validComponent check are the nix half, ready ahead of it). CA for the
-        # same batch-gate early-cutoff reason as genesis (byte-identical hit across inert compiler edits).
+        # cdz-agent-host pure-genesis E2E (host.rs real_pure_reducer_folds_an_event_through_the_a1_bytes_boundary)
+        # via env PURE_GENESIS_REDUCER_COMPONENT, exported in agentHostEnvSetup below (the E2E resolves the heap
+        # import from CDZ_STORE). CA for the same batch-gate early-cutoff reason as genesis (byte-identical hit
+        # across inert compiler edits).
         reducerCadenzaPureGenesis = mkCadenzaComponent {
           name = "reducer-cadenza-pure-genesis";
           cdzFile = "reducer_pure.cdz";
@@ -1096,6 +1097,15 @@
           # genesis reducer imports the value-heap runtime + transitive nfc, resolved by hash/name from
           # CDZ_STORE (my hash-keyed componentStore). Distinct var from CDZ_REDUCER_COMPONENT.
           export GENESIS_REDUCER_COMPONENT="${reducerCadenzaGenesis}"
+          # A1 pure-genesis (co-land step 2/3 completion): feed the precompiled PURE reducer bytes-provider
+          # component so v-ah-host's real_pure_reducer_folds_an_event_through_the_a1_bytes_boundary E2E
+          # (host.rs) RUNS instead of skipping — driving apply across the A1 bytes boundary
+          # (build_event_document → guest → parse_effect_list) through the real component. The e2e gates on
+          # BOTH this env AND CDZ_STORE (below): "pure" = no kv / no host caps, but the reducer still imports
+          # cadenza:runtime/heap (it builds structural records + String.to-bytes), resolved from the store
+          # like the genesis reducer's deps. Its List-rooted result value-encodes BARE (rcdzc result+param
+          # value-form both bare after 50b82e141 + 01c29a0f5), which parse_effect_list accepts.
+          export PURE_GENESIS_REDUCER_COMPONENT="${reducerCadenzaPureGenesis}"
           # CDZ_STORE resolves the genesis reducer's value-heap runtime + transitive nfc.
           export CDZ_STORE="${componentStore}"
         '';
