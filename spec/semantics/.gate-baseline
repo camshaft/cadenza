@@ -140,6 +140,7 @@ pass	HORNER polynomial evaluation folds coefficients high-to-low and agrees with
 pass	IDIOMATIC HeadOp-sum encoding discharges no-overflow: for x<=100, (x+1)<=MAXINT (sum-typed head, not a magic-int Const tag)
 pass	INTERLEAVE alternates two spines and drains the longer tail after the shorter empties
 pass	INTERLEAVED pops and inserts keep the event queue min-ordered across live mutation
+pass	INT_MIN divided by the state — the minus-one seed overflows, other signs give exact halves
 pass	INVALID UTF-8 crosses as a Bytes op argument — the arm's decode declines with None
 pass	INVERSION COUNT pairs every element with its successors, zero when sorted and maximal when reversed
 pass	Int64 MAX threads the handler state intact (representation at the boundary)
@@ -6138,6 +6139,7 @@ pass	the RUNTIME division identity a=(a/b)*b+(a%b) holds across all four sign qu
 pass	the SAME op name on two DIFFERENT effects — each qualified perform routes to its own handler
 pass	the SAME runtime set as both operands of union intersection and difference computes each law live
 pass	the SELECT (choice) axiom is minted via new_axiom as a hypothesis-free theorem
+pass	the STATE is the divisor — a descending thread crosses zero and the exact dispatch that hits it traps
 pass	the STATE-outer nesting of the dual-sum arm threads fresh payloads across three dispatches — the peel's state-match threading face
 pass	the Sign sum orders Neg below Pos per its declaration
 pass	the absorption law does not discard a trapping runtime operand

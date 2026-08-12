@@ -8366,3 +8366,44 @@
                    (S.at -9223372036854775808))))
             (export main)))
   (call   main (: 0 Int64)) (output (: -7007 Int64)))
+
+(case "the STATE is the divisor — a descending thread crosses zero and the exact dispatch that hits it traps"
+  (doc    "Dividing the op VALUE by the THREADED STATE, with the state descending toward zero so the exact
+           dispatch that lands on divisor 0 traps divide-by-zero. The landed div pins divide by op args or
+           constants; dividing BY the threaded state (which the arm advances) is the uncovered direction, and
+           this lands the trap ON the state thread. `div` arm resumes `(/ v s)` and steps `s -> s-1`.
+           `main(5)`: div(100)@s=5 = 20 (s->4); div(100)@s=4 = 25 (s->3); `(+ 20 (* 1000 25))` = 25020.
+           `main(2)`: div(100)@s=2 = 50 (s->1); div(100)@s=1 = 100 (s->0); `(+ 50 (* 1000 100))` = 100050.
+           `main(1)`: div(100)@s=1 = 100 (s->0); div(100)@s=0 -> DIVIDE BY ZERO trap. Uniform on all 3 backends
+           incl. the trap, opt-sweep 0-divergence. Breaker state-divisor probe dv1 (2026-08-11).")
+  (input  (do
+            (effect S (op div (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S n
+                ((div (v) s (resume (/ v s) (- s 1))))
+                (let ((a (S.div 100)))
+                  (let ((b (S.div 100)))
+                    (+ a (* 1000 b))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 25020 Int64))
+  (call   main (: 2 Int64)) (output (: 100050 Int64))
+  (call   main (: 1 Int64)) (trap "divide by zero"))
+
+(case "INT_MIN divided by the state — the minus-one seed overflows, other signs give exact halves"
+  (doc    "The OTHER i64 division trap through the state thread: INT_MIN / state. When the state is -1,
+           `INT_MIN / -1` overflows i64 (the quotient +2^63 is unrepresentable) and traps integer overflow;
+           other divisors give exact halves. `div` arm resumes `(/ v s)`, steps `s -> s+1`, dividing the fixed
+           INT_MIN dividend by the seed. `main(2)`: INT_MIN / 2 = -4611686018427387904. `main(-2)`: INT_MIN /
+           -2 = 4611686018427387904 (exact, no overflow — |result| < 2^63). `main(-1)`: INT_MIN / -1 -> INTEGER
+           OVERFLOW trap. Uniform on all 3 backends incl. the trap, opt-sweep 0-divergence. Breaker
+           state-divisor probe dv2 (2026-08-11); the divide-by-zero twin is above.")
+  (input  (do
+            (effect S (op div (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S n
+                ((div (v) s (resume (/ v s) (+ s 1))))
+                (S.div -9223372036854775808)))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: -4611686018427387904 Int64))
+  (call   main (: -2 Int64)) (output (: 4611686018427387904 Int64))
+  (call   main (: -1 Int64)) (trap "integer overflow"))
