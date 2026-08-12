@@ -4744,6 +4744,7 @@ pass	bitwise XOR of an integer and a float does not silently promote
 pass	bitwise XOR toggles bits
 pass	bitwise XOR with negative one is the bitwise complement
 pass	bitwise XOR with zero is the operand (identity)
+pass	bmv1 BOYER-MOORE majority vote — the (leader,votes) state deposes on exhausted votes, the challenger seed flips the winner
 pass	both elements of a runtime-content fn-return tuple are projected directly and combined
 pass	both same-effect handlers STATEFUL — the outer's advance survives the inner's forwards
 pass	both sibling args consume the same binding independently
@@ -5091,6 +5092,7 @@ pass	ed2 a handled def CALLED from inside another def's handle — the callee's 
 pass	ed3 a RECURSIVE def that handles per frame, called from a handled main — the base case draws from the deepest frame's handler
 pass	ed4 one shared performing helper called under TWO different live handlers — each call homes to its caller's region
 pass	effect state threads across a successful `?`
+pass	ema1 an INTEGER EMA state — each dispatch blends (3*ema + 100*v)/4 at 100x scale, convergence toward the fed value from both sides
 pass	encoding a decoded string round-trips to the same bytes
 pass	encoding and decoding a constructor-built AST round-trips to an equal value
 pass	encoding and decoding a constructor-built compound AST round-trips
@@ -5514,6 +5516,7 @@ pass	mr2 the mutual pair draws from DIFFERENT effects — ev advances P, od adva
 pass	mr3 the NEXT callee in the mutual group is picked by draw parity — the descent path itself follows the thread
 pass	mr4 an ACCUMULATOR threads the mutual pair — ev doubles it plus a draw, od triples it plus a draw, alternating scales
 pass	mr5 TWENTY alternating mutual levels with the scaling accumulator — depth stress on the cross-function fold
+pass	mrv1 REMOVE-then-REINSERT churn on a Map state — del answers the removed value (0 when absent); for n=98 the second del hits the n+1 key it planted
 pass	ms1 a WHOLE nested handle expression as a MATCH's SCRUTINEE — the region builds an Option, the chosen arm draws again
 pass	ms1 an op returns a THREE-variant sum built from state parity — two sequential performing scrutinees, the second sees the advanced state
 pass	ms2 match ARMS themselves draw after the performing scrutinee advanced the state — arm-selected continuation of the same thread
