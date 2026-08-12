@@ -2075,13 +2075,44 @@ impl<'a> Printer<'a> {
             if let Some(pp) = self.a.as_form(p, "param") {
                 self.expr(pp[0], 0); // param name
                 self.doc.word(" : ");
-                self.expr(pp[1], 0); // param type
+                self.print_wit_type(pp[1]); // param type descriptor -> surface type
             }
         }
         self.doc.word(") -> ");
         if let Some(r) = self.a.as_form(result, "result") {
-            self.expr(r[0], PREC_ARROW); // result type
+            self.print_wit_type(r[0]); // result type descriptor -> surface type
         }
+    }
+
+    /// Print a WIT type DESCRIPTOR back to its inline-world surface type — the inverse of the parser's
+    /// `wit_type_desc_of`, so a world member round-trips. A primitive `(name)` prints bare `name`; a
+    /// `("list" <elem>)` prints `list(<elem>)`; an `("option" <inner>)` prints `option(<inner>)`. A node
+    /// that is NOT one of these descriptor shapes prints via the generic expr surface (a raw type node
+    /// the lowering left as-is — e.g. a record/tuple type outside the shared MVP scope).
+    fn print_wit_type(&mut self, ty: StructId) {
+        // Primitive `(name)`: a one-element list whose sole child is a NAME atom.
+        if let Struct::List(kids) = self.a.get(ty)
+            && kids.len() == 1
+            && let Some(name) = self.a.as_name(kids[0])
+        {
+            self.doc.word(emit_name(name));
+            return;
+        }
+        // Compound `("list"|"option" <child>)`: a two-element list whose head is a STRING atom.
+        if let Struct::List(kids) = self.a.get(ty)
+            && kids.len() == 2
+            && let Some(head) = self.a.as_str(kids[0])
+            && matches!(head, "list" | "option")
+        {
+            let child = kids[1];
+            self.doc.word(head);
+            self.doc.word("(");
+            self.print_wit_type(child);
+            self.doc.word(")");
+            return;
+        }
+        // Not a recognized descriptor — the raw type node the lowering left as-is.
+        self.expr(ty, 0);
     }
 
     /// An effect operation's type. An operation type is always a function arrow. The flat two-element
@@ -4113,6 +4144,41 @@ mod tests {
         assert!(
             printed.contains("now : () -> Timestamp"),
             "nullary member: {printed}"
+        );
+    }
+
+    #[test]
+    fn inline_world_wit_type_descriptors_round_trip() {
+        // WIT primitive + list + option member types lower to the canonical descriptor form AND print
+        // back to the surface, so a world using them round-trips ML->ML. `string` -> `(string)` prim;
+        // `list(u8)` -> `("list" (u8))`; `option(list(u8))` -> `("option" ("list" (u8)))`; each prints
+        // back bare/`list(...)`/`option(...)`.
+        let printed = assert_roundtrip(
+            "world W = | export i = | m : (key : string, val : list(u8)) -> option(list(u8))",
+            80,
+        );
+        assert!(
+            printed.contains("key : string"),
+            "prim round-trips bare: {printed}"
+        );
+        assert!(
+            printed.contains("val : list(u8)"),
+            "list round-trips: {printed}"
+        );
+        assert!(
+            printed.contains("-> option(list(u8))"),
+            "option(list) round-trips: {printed}"
+        );
+        // The stored descriptor is the canonical str-head form (not the ML `(list u8)` application).
+        let parsed = parser::read_ml("world W = | export i = | m : (v : list(u8)) -> u8");
+        let sexp = sexpr::print(&parsed.arenas);
+        assert!(
+            sexp.contains("(\"list\" (u8))"),
+            "member type stored as canonical str-head descriptor, got: {sexp}"
+        );
+        assert!(
+            sexp.contains("(result (u8))"),
+            "result prim stored as (u8) descriptor, got: {sexp}"
         );
     }
 

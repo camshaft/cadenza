@@ -51,6 +51,30 @@ fn embedded_grammar(tag: &str) -> Option<&'static str> {
     }
 }
 
+/// The WIT primitive type names an inline world member's type may name directly (lowered to a
+/// `(name)` primitive descriptor via [`crate::ast::Builder::wit_type_prim`]). The closed set the
+/// kernel's `build_type` produces primitives for (component-model scalars + `string`); a bare name
+/// NOT in this set is left as an ordinary type node (not a WIT descriptor). Kept in sync with
+/// `build_type`'s `prim(...)` arms.
+fn is_wit_primitive(name: &str) -> bool {
+    matches!(
+        name,
+        "bool"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "s8"
+            | "s16"
+            | "s32"
+            | "s64"
+            | "char"
+            | "string"
+            | "f32"
+            | "f64"
+    )
+}
+
 /// The result of parsing: the canonical arenas, the span table, and any recovered errors. The
 /// arenas are always well-formed (`root` is valid) even when `errors` is non-empty — error recovery
 /// substitutes `Name` placeholders rather than leaving holes.
@@ -2624,6 +2648,49 @@ impl<'a> Parser<'a> {
     /// is parenthesized and comma-separated (each `name : type`); the result follows `->`. A nullary
     /// member is `member_name : () -> R` (empty parens) or `member_name : -> R`. The result is ALWAYS
     /// present (no omitted slot) — a no-return member writes `-> Unit`.
+    /// Lower a parsed ML type node (from [`Self::type_ref`]) to the CANONICAL WIT type-descriptor form
+    /// the kernel's `build_type` and rcdzc's `parse_wit_type` share — via the shared
+    /// `Builder::wit_type_prim`/`wit_type_list`/`wit_type_option`, so the inline world surface encodes
+    /// BYTE-IDENTICALLY to the external artifact + v-cml's emit (v-agent-harness ruling 2026-08-12; both
+    /// route through the same builders). Recognized member types (MVP scope = the shared builders'):
+    /// - a bare WIT PRIMITIVE name (`u8`/`u16`/…/`s64`/`bool`/`char`/`string`/`f32`/`f64`) -> `(name)`
+    /// - `list(T)` / `List(T)` -> `("list" <T>)`
+    /// - `option(T)` / `Option(T)` -> `("option" <T>)`
+    ///
+    /// Any other type node is left AS-IS (still round-trips; record/tuple/result/variant stay inline both
+    /// sides per the shared-scope agreement). The printer's `print_wit_type` is the inverse.
+    fn wit_type_desc_of(&mut self, ty: StructId) -> StructId {
+        // A bare WIT-primitive NAME atom -> a primitive descriptor `(name)`. (Clone the name so the read
+        // borrow releases before the mutable builder call.) A non-WIT-prim bare name is left as-is.
+        if let Some(name) = self.builder.as_name(ty).map(str::to_string) {
+            return if is_wit_primitive(&name) {
+                self.builder.wit_type_prim(&name)
+            } else {
+                ty
+            };
+        }
+        // A `(list|List T)` / `(option|Option T)` application (name head + one arg) -> list/option compound.
+        // Extract (head-name, arg) WITHOUT holding the `get` borrow across the mutable builder calls.
+        let app = match self.builder.get(ty) {
+            crate::ast::Struct::List(kids) if kids.len() == 2 => {
+                let (head, arg) = (kids[0], kids[1]);
+                self.builder.as_name(head).map(|h| (h.to_string(), arg))
+            }
+            _ => None,
+        };
+        match app.as_ref().map(|(h, arg)| (h.as_str(), *arg)) {
+            Some(("list" | "List", arg)) => {
+                let elem = self.wit_type_desc_of(arg);
+                self.builder.wit_type_list(elem)
+            }
+            Some(("option" | "Option", arg)) => {
+                let inner = self.wit_type_desc_of(arg);
+                self.builder.wit_type_option(inner)
+            }
+            _ => ty,
+        }
+    }
+
     fn world_member(&mut self) -> StructId {
         let start = self.cur_span();
         let member_head = self.name("member", start);
@@ -2640,7 +2707,8 @@ impl<'a> Parser<'a> {
                     let param_head = self.name("param", p_start);
                     let p_name = self.binder();
                     self.expect(Kind::Colon, "`:`");
-                    let p_ty = self.type_ref();
+                    let p_ty_raw = self.type_ref();
+                    let p_ty = self.wit_type_desc_of(p_ty_raw);
                     let p_span = p_start.merge(self.prev_span());
                     func_items.push(self.list(vec![param_head, p_name, p_ty], p_span));
                     if !self.sep_continue(Kind::RParen) {
@@ -2656,7 +2724,8 @@ impl<'a> Parser<'a> {
         // Result: `-> R` (required; the arrow separates params from the result type).
         self.expect(Kind::Arrow, "`->`");
         let result_start = self.cur_span();
-        let result_ty = self.type_ref();
+        let result_ty_raw = self.type_ref();
+        let result_ty = self.wit_type_desc_of(result_ty_raw);
         let result_head = self.name("result", result_start);
         let result = self.list(
             vec![result_head, result_ty],
@@ -4823,6 +4892,44 @@ mod tests {
             crate::codec::encode(&parsed),
             crate::codec::encode(&built),
             "inline world surface must encode identically to world_schema_tree — cross-source identity"
+        );
+    }
+
+    #[test]
+    fn inline_pure_fold_world_encodes_identically_to_the_kernel_artifact_form() {
+        // The CROSS-SOURCE BYTE-IDENTITY gate v-agent-harness cleared (build_type dedup landed cf1433380):
+        // the inline surface for v-ah's `pure_fold_world_artifact` must encode BYTE-IDENTICALLY to the
+        // artifact — both now route through the shared `world_schema_tree` + `wit_type_*` builders, so a
+        // target world is one content-hash whether it comes from the inline decl or the external artifact.
+        // Reproduce the artifact's exact build here (its cdz-kernel fn is another workspace, but it is
+        // documented as building via these same shared builders): `world "reducer"`, one export interface
+        // `cadenza:agent-kernel/fold`, one member `apply(event: list<u8>) -> list<u8>`.
+        let parsed = parse_ok(
+            "world reducer = | export `cadenza:agent-kernel/fold` = | apply : (event : list(u8)) -> list(u8)",
+        );
+
+        let mut b = crate::Builder::new();
+        let ev = {
+            let u8 = b.wit_type_prim("u8");
+            b.wit_type_list(u8)
+        };
+        let res = {
+            let u8 = b.wit_type_prim("u8");
+            b.wit_type_list(u8)
+        };
+        let sig = b.wit_func_sig(&[("event", ev)], res);
+        let fold = b.wit_interface(
+            crate::ast::WitDir::Export,
+            "cadenza:agent-kernel/fold",
+            &[("apply", sig)],
+        );
+        let root = b.world_schema_tree("reducer", &[fold]);
+        let built = b.finish(root);
+
+        assert_eq!(
+            crate::codec::encode(&parsed),
+            crate::codec::encode(&built),
+            "inline pure_fold world must encode identically to the shared-builder artifact form"
         );
     }
 
