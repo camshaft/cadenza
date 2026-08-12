@@ -316,6 +316,169 @@ pub fn effect_schema_hash_from_nodes(
     crate::hash::Hash::of(&codec::encode(&b.finish(tree)))
 }
 
+/// Build a `record{field: ty…}` WIT type descriptor node directly into `b` — the `("record" (fname <ty>)…)`
+/// form [`build_type`]'s `Type::Record` arm emits (a `Str("record")` head, then one `(name-node ty-node)`
+/// 2-list per field). Used by the built-in effect schema declarations, whose op arg/result types are records
+/// (e.g. a model request) that have NO reflected wasmtime [`Type`] to feed [`build_type`] — a KERNEL-authored
+/// schema builds its descriptor nodes directly, exactly as [`effect_schema_hash_from_nodes`]'s doc prescribes.
+/// The head is a `Str` (matching `build_type`, NOT a `Name`), so a built-in record schema hashes identically
+/// to the same record reflected off a component. Fields are passed in the caller's order.
+fn wit_type_record(b: &mut Builder, fields: &[(&str, StructId)]) -> StructId {
+    let mut children = Vec::with_capacity(1 + fields.len());
+    children.push(b.atom_leaf(Leaf::Str("record".into())));
+    for &(name, ty) in fields {
+        let name_node = b.name(name);
+        let entry = b.list(vec![name_node, ty]);
+        children.push(entry);
+    }
+    b.list(children)
+}
+
+/// The canonical schema-hash of a BUILT-IN effect ([`crate::effect::EffectKind`]) — its identity under the
+/// schema-hash-only effect model (operator directive 2026-08-12: effect identity is the schema-hash, computed
+/// over the AST-typed schema, for EVERY effect including built-ins, hashed by the SAME [`effect_schema_hash`]
+/// path as a userspace effect — no special-casing). A built-in has no reflected wasmtime component, so its
+/// op-signature descriptor nodes are built DIRECTLY with the [`Builder`] (the [`effect_schema_hash_from_nodes`]
+/// path), reusing the effect's landed payload/result shapes as the op arg/result types so the schema mirrors
+/// the real wire. Each built-in is a single-op effect named for its verb. Pure + deterministic (content-address
+/// over the encoded schema tree), so the same built-in yields the same id everywhere (kernel/host/wire) and on
+/// replay — the id a router/authz grant keys on. The schema carries the effect's DATA SHAPE only (no authz).
+pub fn builtin_effect_schema_hash(kind: &crate::effect::EffectKind) -> crate::hash::Hash {
+    use crate::effect::EffectKind;
+    let mut b = Builder::new();
+    // The op-signature is a `(func (param PName Desc)… (result Desc))` node (WIT func shape), built via the
+    // shared `wit_func_sig`; the descriptor nodes reuse the effect's landed payload/result shapes.
+    let (name, op_name, sig): (&str, &str, StructId) = match kind {
+        // model.invoke(request: ModelRequest) -> ModelResponse. Records reuse the b1 ModelRequest/Response
+        // shapes: request = {model: string, messages: list<chat-message>, tools: list<tool-def>,
+        // max-tokens: option<u64>}; response = {stop-reason: string, content: list<content-block>}. The
+        // nested chat-message/tool-def/content-block element types are opaque `unit`-shaped placeholders here
+        // (the op-signature pins the TOP-LEVEL record shape — the identity — not the full nested grammar,
+        // which the payload codec owns); a later slice can deepen them additively.
+        EffectKind::Model => {
+            let model = b.wit_type_prim("string");
+            let messages = {
+                let elem = b.wit_type_unit();
+                b.wit_type_list(elem)
+            };
+            let tools = {
+                let elem = b.wit_type_unit();
+                b.wit_type_list(elem)
+            };
+            let max_tokens = {
+                let u64_ty = b.wit_type_prim("u64");
+                b.wit_type_option(u64_ty)
+            };
+            let request = wit_type_record(
+                &mut b,
+                &[
+                    ("model", model),
+                    ("messages", messages),
+                    ("tools", tools),
+                    ("max-tokens", max_tokens),
+                ],
+            );
+            let stop_reason = b.wit_type_prim("string");
+            let content = {
+                let elem = b.wit_type_unit();
+                b.wit_type_list(elem)
+            };
+            let response = wit_type_record(
+                &mut b,
+                &[("stop-reason", stop_reason), ("content", content)],
+            );
+            let sig = b.wit_func_sig(&[("request", request)], response);
+            ("model", "invoke", sig)
+        }
+        // http.request(method: string, headers: list<tuple<string,string>>, body: option<list<u8>>)
+        //   -> record{status: u16, headers: list<tuple<string,string>>, body: list<u8>}.
+        EffectKind::Http => {
+            let method = b.wit_type_prim("string");
+            let headers_ty = |b: &mut Builder| {
+                let k = b.wit_type_prim("string");
+                let v = b.wit_type_prim("string");
+                let pair = b.wit_type_tuple(&[k, v]);
+                b.wit_type_list(pair)
+            };
+            let req_headers = headers_ty(&mut b);
+            let body = {
+                let u8_ty = b.wit_type_prim("u8");
+                let bytes = b.wit_type_list(u8_ty);
+                b.wit_type_option(bytes)
+            };
+            let status = b.wit_type_prim("u16");
+            let resp_headers = headers_ty(&mut b);
+            let resp_body = {
+                let u8_ty = b.wit_type_prim("u8");
+                b.wit_type_list(u8_ty)
+            };
+            let response = wit_type_record(
+                &mut b,
+                &[
+                    ("status", status),
+                    ("headers", resp_headers),
+                    ("body", resp_body),
+                ],
+            );
+            let sig = b.wit_func_sig(
+                &[("method", method), ("headers", req_headers), ("body", body)],
+                response,
+            );
+            ("http", "request", sig)
+        }
+        // shell.run(pipeline: list<record{program: string, args: list<string>}>) -> unit. The outcome folds
+        // back as a separate result event; the op result is unit (the dispatched-request shape). Reuses the
+        // ShellPipeline/ShellStage shape (a pipeline is a list of stages).
+        EffectKind::Shell => {
+            let stage = {
+                let program = b.wit_type_prim("string");
+                let args = {
+                    let s = b.wit_type_prim("string");
+                    b.wit_type_list(s)
+                };
+                wit_type_record(&mut b, &[("program", program), ("args", args)])
+            };
+            let pipeline = b.wit_type_list(stage);
+            let unit = b.wit_type_unit();
+            let sig = b.wit_func_sig(&[("pipeline", pipeline)], unit);
+            ("shell", "run", sig)
+        }
+        // now.read() -> record{ms: u64}. No params (unit-arg-free); the wall-clock ms anchor folds back as a
+        // time-result event, the op result records the ms shape.
+        EffectKind::Now => {
+            let ms = b.wit_type_prim("u64");
+            let time = wit_type_record(&mut b, &[("ms", ms)]);
+            let sig = b.wit_func_sig(&[], time);
+            ("now", "read", sig)
+        }
+        // timer.arm(deadline-ms: u64) -> unit. The fire arrives as a separate injected timer-fired event, not
+        // this op's result.
+        EffectKind::Timer => {
+            let deadline = b.wit_type_prim("u64");
+            let unit = b.wit_type_unit();
+            let sig = b.wit_func_sig(&[("deadline-ms", deadline)], unit);
+            ("timer", "arm", sig)
+        }
+        // emit.send(target: list<u8>, payload: list<u8>) -> unit. The target is the peer session id (opaque
+        // bytes); payload is the signal body (opaque bytes). Delivery folds back as a separate ack/failure
+        // event, so the op result is unit.
+        EffectKind::Emit => {
+            let target = {
+                let u8_ty = b.wit_type_prim("u8");
+                b.wit_type_list(u8_ty)
+            };
+            let payload = {
+                let u8_ty = b.wit_type_prim("u8");
+                b.wit_type_list(u8_ty)
+            };
+            let unit = b.wit_type_unit();
+            let sig = b.wit_func_sig(&[("target", target), ("payload", payload)], unit);
+            ("emit", "send", sig)
+        }
+    };
+    effect_schema_hash_from_nodes(b, name, &[(op_name, sig)])
+}
+
 /// Build the type-descriptor for `ty` INTO an existing arena `b`, returning the root node id — the
 /// node-emitting core [`type_to_ast`] wraps. Exposed `pub` so a caller assembling a LARGER AST can emit
 /// type nodes DIRECTLY into its own [`Builder`] (one shared arena, encoded ONCE) rather than nesting
@@ -2711,6 +2874,47 @@ mod tests {
         let ab_again = effect_schema_hash("kv", &[("get", &str_ty), ("put", &u32_ty)])
             .expect("kv schema again");
         assert_eq!(ab, ab_again, "effect-schema hashing is deterministic");
+    }
+
+    #[test]
+    fn builtin_effect_schema_hashes_are_stable_and_pairwise_distinct() {
+        // Effect-identity removal (operator 2026-08-12): every built-in effect has a schema, hashed by the
+        // SAME path as a userspace effect, and that hash IS its identity (what the router + Cedar authz key
+        // on). Pin the two properties the identity contract needs:
+        //   (1) STABILITY — the hash is a deterministic function of the schema, so recomputing yields the
+        //       SAME id (a router built at startup and a replay both see the same identity). This is what
+        //       lets a grant bind to a specific built-in's schema-hash durably.
+        //   (2) PAIRWISE-DISTINCTNESS — the six built-ins have distinct schemas (different name AND op
+        //       shape), so no two built-ins collide onto one identity (a collision would let an http grant
+        //       authorize a shell request, etc.).
+        use crate::effect::EffectKind;
+        let kinds = [
+            EffectKind::Shell,
+            EffectKind::Http,
+            EffectKind::Model,
+            EffectKind::Now,
+            EffectKind::Timer,
+            EffectKind::Emit,
+        ];
+        // (1) stable: recompute each and confirm it equals the first computation.
+        for k in &kinds {
+            assert_eq!(
+                builtin_effect_schema_hash(k),
+                builtin_effect_schema_hash(k),
+                "built-in {k:?} schema-hash must be deterministic"
+            );
+        }
+        // (2) pairwise-distinct: all six hashes differ.
+        let hashes: Vec<_> = kinds.iter().map(builtin_effect_schema_hash).collect();
+        for i in 0..hashes.len() {
+            for j in (i + 1)..hashes.len() {
+                assert_ne!(
+                    hashes[i], hashes[j],
+                    "built-in {:?} and {:?} must have distinct schema-hashes",
+                    kinds[i], kinds[j]
+                );
+            }
+        }
     }
 
     #[test]
