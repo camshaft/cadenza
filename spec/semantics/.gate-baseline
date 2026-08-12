@@ -5604,6 +5604,7 @@ pass	oc6 an Option-of-TUPLE state — the Some payload is a (total,count) pair u
 pass	odd-width CHECKED arithmetic traps at the odd boundary, not the machine slot (Int24 max + 1)
 pass	odd-width values as Set keys dedupe at their own width (UInt4: wrap 3 = wrap 19)
 pass	odd-width wrap lands exactly at its own boundary (UInt4 16->0, Int24 2^23 -> -2^23)
+pass	olc1 an Option-of-LIST handler state lifecycle — None is uninitialized, push initializes-or-appends, take scores and RESETS to None, a later push re-initializes
 pass	one @param accessor performed TWICE consumes two host responses in order
 pass	one @param read bound ONCE fans out to a map key, a set probe, and arithmetic
 pass	one RRB list shared as two map VALUES diverges by List.update without cross-talk
@@ -5897,6 +5898,7 @@ pass	rs1 a RECORD state where each op owns a FIELD — bump advances a, scale mu
 pass	rs1 a RESULT built from draw parity crosses dispatch as an op ARGUMENT — Ok scales with state, Err folds in negated
 pass	rs2 the arm updates the record state via Record.with — field b is held by the functional update across dispatches
 pass	rs3 a NESTED record state — the arm functionally updates the inner record's x by y and bumps the outer counter
+pass	rsl1 a Result whose Ok payload is a HEAP LIST snapshot of the state — the first snap Errs on the empty list, the second Oks the grown snapshot, both cross resume
 pass	rsw1 the arm's Ok/Err verdict FLIPS between two identical performs as the state passes the payload — both variants cross and unwrap
 pass	rt1 Ok/Err resume values with a DEPENDENT second dispatch — the sign of the falling state flips Ok to Err
 pass	rt2 an Err SHORT-CIRCUITS a recursive Result walk — Ok accumulates, the first Err multiplies out and stops
@@ -6502,6 +6504,7 @@ pass	tt2 NESTED-tuple resume values across two dispatches — outer destructured
 pass	tt3 a tuple ROTATED through two chained dispatches — each rotation folds the state into the moved slot
 pass	tt4 a MIXED String+Int tuple state — the arm grows the rope and folds the op arg into the counter per dispatch
 pass	tt5 an inner PAIR swapped on counter parity — a nested-tuple state machine, both slots and the counter observed
+pass	tug1 a TUPLE state pairing TWO collections — a List and a Map advance through different ops, and a cross op reads BOTH halves in one answer
 pass	tuple access on a non-tuple is a type error
 pass	tuple access on a record is a type error
 pass	tuple access on a tuple chosen by a conditional projects the element

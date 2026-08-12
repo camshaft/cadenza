@@ -8717,3 +8717,91 @@
             (export main)))
   (call   main (: 4 Int64)) (output (: 41005 Int64))
   (call   main (: 7 Int64)) (output (: 71608 Int64)))
+
+; --- breaker batch 243: Result with heap-list payload, Option-of-List state lifecycle, tuple pairing two collections ---
+(case "rsl1 a Result whose Ok payload is a HEAP LIST snapshot of the state — the first snap Errs on the empty list, the second Oks the grown snapshot, both cross resume"
+  (input  (do
+            (effect S
+              (op snap (-> (Result (List Int64) Int64)))
+              (op push (-> Int64 Int64)))
+            (def (score (: r (Result (List Int64) Int64)))
+              (match r
+                ((Ok xs) (+ (* 10 (List.len xs)) (match (List.at xs 0) ((Some h) h) ((None u) 0))))
+                ((Err e) (* e -1))))
+            (def (main (: n Int64))
+              (handle S (list)
+                ((snap () xs
+                  (resume (if (= (List.len xs) 0)
+                              (: (Err 7) (Result (List Int64) Int64))
+                              (Ok xs))
+                          xs))
+                 (push (v) xs (resume (List.len xs) (List.push xs v))))
+                (let ((a (score (S.snap))))
+                  (let ((_p (S.push n)))
+                    (let ((_q (S.push (+ n 1))))
+                      (let ((b (score (S.snap))))
+                        (+ (* 100 a) b)))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: -677 Int64))
+  (call   main (: 50 Int64)) (output (: -630 Int64)))
+
+(case "olc1 an Option-of-LIST handler state lifecycle — None is uninitialized, push initializes-or-appends, take scores and RESETS to None, a later push re-initializes"
+  (input  (do
+            (effect S
+              (op push (-> Int64 Int64))
+              (op take (-> Int64)))
+            (def (main (: n Int64))
+              (handle S (: (None unit) (Option (List Int64)))
+                ((push (v) st
+                  (let ((xs2 (match st
+                               ((Some xs) (List.push xs v))
+                               ((None u) (list v)))))
+                    (resume (List.len xs2) (Some xs2))))
+                 (take () st
+                  (resume (match st
+                            ((Some xs) (+ (* 10 (List.len xs))
+                                          (match (List.at xs 0) ((Some h) h) ((None u) 0))))
+                            ((None u) 0))
+                          (: (None unit) (Option (List Int64))))))
+                (let ((a (S.push n)))
+                  (let ((b (S.push (+ n 1))))
+                    (let ((c (S.take)))
+                      (let ((d (S.push (+ n 2))))
+                        (let ((e (S.take)))
+                          (+ (* 100 (+ (* 10 (+ (* 100 (+ (* 10 a) b)) c)) d)) e))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 1223115 Int64))
+  (call   main (: 8 Int64)) (output (: 1228120 Int64)))
+
+(case "tug1 a TUPLE state pairing TWO collections — a List and a Map advance through different ops, and a cross op reads BOTH halves in one answer"
+  (input  (do
+            (effect S
+              (op pushl (-> Int64 Int64))
+              (op putm (-> Int64 Int64 Int64))
+              (op cross (-> Int64)))
+            (def (main (: n Int64))
+              (handle S (tuple (: (list) (List Int64)) Map.empty)
+                ((pushl (v) st
+                  (match st
+                    ((tuple xs m) (let ((xs2 (List.push xs v)))
+                      (resume (List.len xs2) (tuple xs2 m))))))
+                 (putm (k v) st
+                  (match st
+                    ((tuple xs m) (let ((m2 (Map.insert m k v)))
+                      (resume (Map.len m2) (tuple xs m2))))))
+                 (cross () st
+                  (match st
+                    ((tuple xs m)
+                      (resume (+ (* 10 (match (List.at xs 0)
+                                         ((Some h) (match (Map.lookup m h) ((Some x) x) ((None u) 0)))
+                                         ((None u) -1)))
+                                 (List.len xs))
+                              st)))))
+                (let ((a (S.pushl n)))
+                  (let ((b (S.putm n (* 2 n))))
+                    (let ((c (S.pushl (+ n 1))))
+                      (let ((d (S.cross)))
+                        (+ (* 1000 (+ (* 10 (+ (* 10 a) b)) c)) d)))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 112062 Int64))
+  (call   main (: 0 Int64)) (output (: 112002 Int64)))
