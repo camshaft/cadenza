@@ -185,10 +185,11 @@ world reducer {
   export fold;
 }
 interface fold {
-  // The whole event as ONE cadenza-ast value-form document: an s-expr carrying the content-type, the
-  // optional payload, and the optional resume token as named fields, e.g.
-  //   (event (content-type <ct>) (payload <bytes-or-absent>) (resumes <bytes-or-absent>))
-  // Returns the requested effects as ONE value-form document: a list of effect-request records.
+  // The whole event as ONE cadenza-ast value-form document: an s-expr carrying the event's SCHEMA-HASH
+  // (its type identity — see below), the optional payload, and the optional resume token as named fields, e.g.
+  //   (event (schema <schema-hash>) (payload <bytes-or-absent>) (resumes <bytes-or-absent>))
+  // Returns the requested effects as ONE value-form document: a list of effect-request records, each
+  // identified by its own schema-hash (NOT a content-type/family/version tag).
   apply: func(event: list<u8>) -> list<u8>;
 }
 ```
@@ -198,11 +199,21 @@ interface fold {
   The guest decodes the one document; the kernel builds the one document. It also means the boundary
   signature never changes again as the event envelope grows (a new envelope field is a new named child in
   the AST, not a new WIT parameter — additive-by-symbol, §2b).
-- **`content-type`, `effect-kind`, `effect-request` remain concepts**, but they are now *value-form AST
-  shapes* the guest and kernel agree on (a small schema in `cadenza-ast` terms), NOT WIT records. This is
-  where the marshalling that was in `HeapHandle` goes on the KERNEL side: the kernel builds the event
-  document and parses the effect-list document with `cadenza-ast` (it already has `ast_marshal.rs` and the
-  full codec) — pure byte work, no heap handle, no wasmtime `Func` binding.
+- **Effect/event identity is the SCHEMA-HASH, computed over the AST-typed schema — NOT `content-type`,
+  `effect-kind`, or `version`** (operator directive 2026-08-12; `spec/capabilities/value-interchange.md`
+  §"The Schema-Identity Function And Header Layout Are Pinned"). The binary AST IS the ABI: the schema
+  encodes the contract, so a schema is naturally *versioned* (a type's evolution yields a DISTINCT header,
+  never a colliding one — value-interchange.md 73-85) and strongly *typed* (the AST node types ARE the
+  typing). Therefore there is NO separate `content-type` tag, NO `family` field, NO `version` field on the
+  wire — `content-type` and `version` are SUBSUMED by the schema-hash-over-AST, and the `effect-kind` enum
+  is removed. The `effect-request` shape stays a value-form AST record (a `cadenza-ast` schema the guest and
+  kernel agree on, NOT a WIT record), but its identity is the schema-hash of its declared type, and routing/
+  authz resolve `schema-hash → declared-name` via the `ResolveSchema` seam (`schema_resolver.rs`, envelope
+  D14=A) rather than reading a family field off the message. This is where the marshalling that was in
+  `HeapHandle` goes on the KERNEL side: the kernel builds the event document and parses the effect-list
+  document with `cadenza-ast` (it already has `ast_marshal.rs` and the full codec, including
+  `effect_schema_hash` — the schema-identity function over the effect's op-signature) — pure byte work, no
+  heap handle, no wasmtime `Func` binding.
 - **`kv` is unchanged** — it already crosses `list<u8>` keys/values (`reducer.wit:92-97`); it is a host
   import the guest calls inline and never involved a heap handle.
 
@@ -301,10 +312,11 @@ is independently useful (it completes the encode/decode symmetry the runtime was
 probe increment** — prove the byte↔handle bridge is a correct inverse before any boundary consumes it.
 
 **B1 — the fold-boundary schema in `cadenza-ast` terms (`v-agent-harness`).** Define the value-form AST
-shapes for the event document (`(event (content-type …) (payload …) (resumes …))`) and the effect-list
-document (a list of `effect-request` records), as a small schema module in `cdz-kernel` over `cadenza-ast`
-(reusing `ast_marshal.rs`). Kernel-side builder (`EffectRequest`/`ContentType` Rust → AST) + parser (AST →
-Rust). Gate: round-trip unit tests (kernel builds an event doc a hand-written decode reads back; kernel
+shapes for the event document (`(event (schema <schema-hash>) (payload …) (resumes …))` — identity is the
+schema-hash, NOT a content-type tag; see the schema-hash bullet in §3a) and the effect-list document (a
+list of `effect-request` records, each identified by its own schema-hash), as a small schema module in
+`cdz-kernel` over `cadenza-ast` (reusing `ast_marshal.rs`). Kernel-side builder (`EffectRequest` Rust → AST)
++ parser (AST → Rust). Gate: round-trip unit tests (kernel builds an event doc a hand-written decode reads back; kernel
 parses an effect-list doc a hand-written encode produced). NO boundary change yet — this is the byte
 schema both sides will agree on, proven in isolation (the analogue of H0's structured-data-before-consumer
 probe).
@@ -337,9 +349,11 @@ re-derived in the same commit.)
   handle-exchange rule (then it's a v6 increment with the stated migration in §4). This is the one
   decision that could need the operator; it is scoped so the build (B0–B3) does not block on it — the
   code is identical either way; only the contract's version header differs.
-- **D2 — one folded `event` document vs keeping `content-type` a WIT field.** Default: fold ALL THREE
+- **D2 — one folded `event` document vs keeping the type tag a WIT field.** Default: fold ALL THREE
   args into ONE `event` AST document (§3a) — maximally "one binary AST crosses," and future-proof (a new
-  envelope field is a new AST child, never a WIT signature change). Alternative (keep `content-type` as a
+  envelope field is a new AST child, never a WIT signature change). The event's type identity is its
+  SCHEMA-HASH (a named child of the document), NOT a `content-type`/`family`/`version` tag — those are
+  removed, subsumed by the schema-hash-over-AST (§3a schema-hash bullet). Alternative (keep a type tag as a
   WIT enum + only payload/resumes as bytes) is REJECTED: it re-splits the boundary the operator wants
   unified and re-introduces a structural WIT shape the host must track.
 - **D3 — does the Cadenza guest decode in-guest, or does the kernel pre-decode to a handle?** Default: the
