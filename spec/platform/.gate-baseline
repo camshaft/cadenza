@@ -1,5 +1,6 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
 pass	a counter session bumps kv count on its kick-off message
+pass	a message chains across three sessions a -> b -> c, each hop emitting to the next
 pass	a message to an absent peer bounces a delivery-failure back to the sender, which folds it
 pass	a sender emits a message to a peer session, which the peer receives and folds
 pass	a sender emits two messages to one peer in a single fold; the peer folds both in order
