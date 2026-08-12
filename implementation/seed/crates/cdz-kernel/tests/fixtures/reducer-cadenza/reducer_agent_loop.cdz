@@ -11,8 +11,10 @@
 //       LLM with the message as context. This is the "read inbox → call model" half of the loop.
 //   model-response event { content-type.family = "model-response", payload = Some(call) }
 //     → the model replied with a tool-call request; dispatch it as a "tool" effect (the loop's ACTION
-//       step). A real deployment folds the tool RESULT back as another event, closing the loop; this
-//       reference shows the message→model→tool spine.
+//       step).
+//   tool-result event    { content-type.family = "tool-result", payload = Some(result) }
+//     → the tool ran; fold its result into the "context/" working set, then re-invoke the model with the
+//       context enumerated via kv.prefix-scan — CLOSING the loop (message→model→tool→result→model→…).
 //   anything else → [] (no effects).
 //
 // KV inbox state (this reducer's own §4 schema; opaque to the kernel): messages live under the "inbox/"
@@ -41,6 +43,11 @@ def inbox-prefix() -> Bytes = String.to-bytes("inbox/")
 // The KV key a message is stored under: the "inbox/" prefix ++ the message bytes (content-addressed, so
 // distinct messages get distinct keys and prefix-scan lists them all).
 def inbox-key(msg: Bytes) -> Bytes = Bytes.concat(inbox-prefix(), msg)
+
+// The accumulated-context namespace: tool results fold in here, enumerated by prefix-scan when the loop
+// re-invokes the model. The "context/" prefix is the agent's growing working set across the loop.
+def context-prefix() -> Bytes = String.to-bytes("context/")
+def context-key(result: Bytes) -> Bytes = Bytes.concat(context-prefix(), result)
 
 def apply(
   event: Record(
@@ -77,6 +84,22 @@ def apply(
            payload = Some(call),
            correlation = None(),
          }]
+       | None() => [])
+  else if family == "tool-result" then
+    // Loop-CLOSURE: the tool ran; fold its result into the accumulated context, then re-invoke the model
+    // with the context enumerated via kv.prefix-scan — closing the cycle message→model→tool→RESULT→model→…
+    // This is what makes it a LOOP (not a single message→model→tool pass): each tool result grows the
+    // agent's working set and drives the next model turn.
+    (match event.payload with
+       | Some(result) => host Kv in (
+           Kv.put(context-key(result), result);
+           (if List.len(Kv.prefix-scan(context-prefix())) == 0 then []
+            else [{
+              kind = "model",
+              target = String.to-bytes("llm"),
+              payload = Some(result),
+              correlation = None(),
+            }]))
        | None() => [])
   else
     // Not part of the loop → no effects.
