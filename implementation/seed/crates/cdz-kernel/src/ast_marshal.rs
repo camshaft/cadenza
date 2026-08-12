@@ -333,10 +333,9 @@ pub fn effect_schema_hash_from_nodes(
 /// disagree on which types exist. The descriptor form vocabulary is documented on [`type_to_ast`].
 pub fn build_type(b: &mut Builder, ty: &Type) -> Result<StructId, MarshalError> {
     // A primitive type = a lone name-head marker `(kind)` (a 1-element list whose head names the kind).
-    let prim = |b: &mut Builder, kind: &str| {
-        let head = b.name(kind);
-        b.list(vec![head])
-    };
+    // Emit through the shared `cadenza-ast` descriptor builders (the single source ALL three world sources
+    // target — v-syntax's `b27906601`), so build_type / the inline surface / rcdzc emit stay byte-identical.
+    let prim = |b: &mut Builder, kind: &str| b.wit_type_prim(kind);
     Ok(match ty {
         Type::Bool => prim(b, "bool"),
         Type::U8 => prim(b, "u8"),
@@ -354,9 +353,8 @@ pub fn build_type(b: &mut Builder, ty: &Type) -> Result<StructId, MarshalError> 
         Type::Float64 => prim(b, "f64"),
         // list<T> → ("list" <T>): string head, one child = the element TYPE descriptor.
         Type::List(lt) => {
-            let head = b.atom_leaf(Leaf::Str("list".into()));
             let elem = build_type(b, &lt.ty())?;
-            b.list(vec![head, elem])
+            b.wit_type_list(elem)
         }
         // record → ("record" (fieldname <T>)…): string head, each field a (name type) 2-list.
         Type::Record(rt) => {
@@ -380,9 +378,8 @@ pub fn build_type(b: &mut Builder, ty: &Type) -> Result<StructId, MarshalError> 
         }
         // option<T> → ("option" <T>): string head (a TYPE, not the value side's Some/None ctor).
         Type::Option(ot) => {
-            let head = b.atom_leaf(Leaf::Str("option".into()));
             let inner = build_type(b, &ot.ty())?;
-            b.list(vec![head, inner])
+            b.wit_type_option(inner)
         }
         // result<T,E> → ("result" <T-or-unit> <E-or-unit>): a unit (payload-less) arm is ("unit").
         Type::Result(rt) => {
@@ -951,20 +948,17 @@ pub fn build_event_document(
 /// widens past `list<u8>`+`option` — a backward slice, not a fake shape.
 pub fn reducer_world_artifact() -> Vec<u8> {
     let mut b = Builder::new();
-    // `build_type`-form descriptors (must match `ast_marshal::build_type` / `rcdzc::wit_world::parse_wit_type`
-    // EXACTLY): a primitive is a NAME-head 1-marker `(u8)`; `list<T>` is `("list" <T>)` (str head); `option<T>`
-    // is `("option" <T>)` (str head); `unit` is `("unit")` (str head, no children). Built FRESH per occurrence
-    // (as `build_type` does); the codec canonicalizes occurrence order, so identical worlds encode identically.
+    // Type descriptors via the shared `cadenza-ast` builders (the single source ALL three world sources
+    // target — v-syntax's `b27906601`), so this artifact stays byte-identical to the inline surface + rcdzc
+    // emit: `list<u8>` is `("list" (u8))`, `option<list<u8>>` is `("option" ("list" (u8)))`. `unit` is
+    // `("unit")` (str head, no children) — no shared builder yet (MVP is prim/list/option), so built inline.
     let bytes_desc = |b: &mut Builder| {
-        let u8d = b.name("u8");
-        let u8_prim = b.list(vec![u8d]);
-        let list_head = b.atom_leaf(Leaf::Str("list".into()));
-        b.list(vec![list_head, u8_prim])
+        let u8_prim = b.wit_type_prim("u8");
+        b.wit_type_list(u8_prim)
     };
     let opt_bytes_desc = |b: &mut Builder| {
         let inner = bytes_desc(b);
-        let opt_head = b.atom_leaf(Leaf::Str("option".into()));
-        b.list(vec![opt_head, inner])
+        b.wit_type_option(inner)
     };
     let unit_desc = |b: &mut Builder| {
         let head = b.atom_leaf(Leaf::Str("unit".into()));
@@ -1014,11 +1008,11 @@ pub fn reducer_world_artifact() -> Vec<u8> {
 /// emit's `list<u8>` vocab and needs no host-import fusion).
 pub fn pure_fold_world_artifact() -> Vec<u8> {
     let mut b = Builder::new();
+    // `list<u8>` descriptor via the shared `cadenza-ast` builders (single-source, byte-identical across
+    // sources — v-syntax's `b27906601`), same as [`reducer_world_artifact`].
     let bytes_desc = |b: &mut Builder| {
-        let u8d = b.name("u8");
-        let u8_prim = b.list(vec![u8d]);
-        let list_head = b.atom_leaf(Leaf::Str("list".into()));
-        b.list(vec![list_head, u8_prim])
+        let u8_prim = b.wit_type_prim("u8");
+        b.wit_type_list(u8_prim)
     };
     // export `fold`: `apply(event: list<u8>) -> list<u8>` — the only member; no `kv` import.
     let apply_sig = {
