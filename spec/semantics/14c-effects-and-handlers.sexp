@@ -8225,3 +8225,64 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 243 Int64))
   (call   main (: 1 Int64)) (output (: 323 Int64)))
+
+; ── Algorithm-trace states (breaker batch 236) ────────────────────────────────
+; Three classic algorithms as handler compositions: cz1 a COLLATZ walk observing
+; every step (data-dependent dispatch counts per seed, budget-guarded); gcd1
+; EUCLID with a logged divisor chain; fib1 the FIBONACCI recurrence as a tuple
+; transition — (a,b) -> (b,a+b), both fields reordered per hop.
+
+(case "cz1 COLLATZ-driven dispatch counting — the walk observes each step, the counter state tallies data-dependent iteration counts"
+  (input  (do
+            (effect S (op obs (-> Int64 Int64)) (op count (-> Int64)))
+            (def (collatz (: x Int64) (: k Int64))
+              (if (< k 1) x
+                (if (= x 1) x
+                  (let ((_o (S.obs x)))
+                    (collatz (if (= (% x 2) 0) (/ x 2) (+ (* 3 x) 1)) (- k 1))))))
+            (def (main (: n Int64))
+              (handle S 0
+                ((obs (v) c (resume v (+ c 1)))
+                 (count () c (resume c c)))
+                (let ((r (collatz n 30)))
+                  (+ (* 1000 r) (S.count)))))
+            (export main)))
+  (call   main (: 6 Int64)) (output (: 1008 Int64))
+  (call   main (: 7 Int64)) (output (: 1016 Int64))
+  (call   main (: 1 Int64)) (output (: 1000 Int64)))
+
+(case "gcd1 EUCLID with a logged trace — each remainder step performs, the accumulator sums the divisor chain, data-dependent step counts"
+  (input  (do
+            (effect S (op log (-> Int64 Int64)) (op sum (-> Int64)))
+            (def (gcd (: a Int64) (: b Int64) (: k Int64))
+              (if (< k 1) a
+                (if (= b 0) a
+                  (let ((_l (S.log b)))
+                    (gcd b (% a b) (- k 1))))))
+            (def (main (: n Int64))
+              (handle S 0
+                ((log (v) acc (resume v (+ acc v)))
+                 (sum () acc (resume acc acc)))
+                (let ((g (gcd n 12 20)))
+                  (+ (* 1000 g) (S.sum)))))
+            (export main)))
+  (call   main (: 18 Int64)) (output (: 6018 Int64))
+  (call   main (: 35 Int64)) (output (: 1024 Int64))
+  (call   main (: 12 Int64)) (output (: 12012 Int64)))
+
+(case "fib1 the FIBONACCI recurrence as a state transition — (a,b) becomes (b,a+b) per dispatch, five draws walk the sequence"
+  (input  (do
+            (effect S (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle S (tuple 0 1)
+                ((next () st
+                  (match st ((tuple a b) (resume a (tuple b (+ a b)))))))
+                (let ((f1 (S.next)))
+                  (let ((_f2 (S.next)))
+                    (let ((_f3 (S.next)))
+                      (let ((_f4 (S.next)))
+                        (let ((f5 (S.next)))
+                          (+ (* 1000 f5) (+ (* 10 f1) n)))))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 3000 Int64))
+  (call   main (: 7 Int64)) (output (: 3007 Int64)))

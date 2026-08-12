@@ -4933,6 +4933,7 @@ pass	cv2 TWO asks each running the in-arm chain — the second chain starts wher
 pass	cv3 the in-arm chain routes through a PURE fn mid-hop — O.b of dbl of O.a, the pure call must not detach the thread
 pass	cx1 a COUNTDOWN arm exhausts mid-sequence — positive states pass through, the floor returns a sentinel-free constant
 pass	cy1 a CYCLE detector — a bitmask accumulator of seen residues stops the walk on the first repeat
+pass	cz1 COLLATZ-driven dispatch counting — the walk observes each step, the counter state tallies data-dependent iteration counts
 pass	d1 two-arm sum match where the FIRST ctor is disc 0 — the eqz leg of the branchless select, both orders
 pass	d2 three None-producing built-in reads in one expression — List.at in and out of range plus Map.lookup hit and miss
 pass	da1 THREE draws inside one list literal passed to a helper — left-to-right element order, the post-call draw sees all three
@@ -5197,6 +5198,7 @@ pass	fe3 an Int64 handler and a Float64 handler INTERLEAVED — integer ticks an
 pass	fe4 float comparisons route an integer match — the sign of the second draw picks the arm, exact identities verify inside
 pass	fe5 Float64 arguments HALVED in the arm — exact binary fractions cross dispatch both directions, count folds in
 pass	fe6 a Float64 TUPLE state — one slot advances additively, the other doubles, both exact across two dispatches
+pass	fib1 the FIBONACCI recurrence as a state transition — (a,b) becomes (b,a+b) per dispatch, five draws walk the sequence
 pass	filter-via-effects — a STATEFUL predicate dispatch decides each element's survival
 pass	first-match-wins holds with a duplicate string-literal arm
 pass	fl1 a Float64 handler state through a two-site arm (threshold on the magnitude)
@@ -5226,6 +5228,7 @@ pass	fx5 the float state SATURATES to infinity mid-thread — a squaring ladder 
 pass	fx6 NaN born in the ARM — s2−s2 is 0.0 while finite and NaN once the thread saturates; canonical equality distinguishes them per dispatch
 pass	fx7 NEGATIVE ZERO through the state thread — canonical equality separates -0.0 from +0.0, and IEEE addition washes the sign out mid-thread
 pass	gc1 a EUCLID-step arm — each dispatch advances (a,b) one gcd step, low digits of the descent spell the trace
+pass	gcd1 EUCLID with a logged trace — each remainder step performs, the accumulator sums the divisor chain, data-dependent step counts
 pass	gd1 PURE guards over a draw-bound scrutinee — three guard tiers select on the drawn value, the trailing probe pins one advance
 pass	gd2 pure guards on SUM-PAYLOAD binders — guarded and unguarded twins of each variant arm, five paths input-reachable
 pass	gd3 the guard COMPARES the scrutinee draw to an earlier let-bound draw — two thread values meet in one pure predicate
