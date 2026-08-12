@@ -1,8 +1,8 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
-fail	a message to an absent peer bounces a delivery-failure back to the sender, which folds it
-fail	a sender emits a message to a peer session, which the peer receives and folds
-fail	a worker performs a userspace effect served by a handler session, and resumes on the reply
-pass	a counter session bumps kv count on its kick-off message
 pass	a session stores a fixed mid-range byte value (decoder past the counter's 1)
 pass	a session writes TWO kv keys on its kick-off (multi-key end-state)
-pass	the same counter IGNORES a non-message kick-off (else-branch writes no state)
+pass	a worker performs a userspace effect served by a handler session, and resumes on the reply
+todo	a counter session bumps kv count on its kick-off message
+todo	a message to an absent peer bounces a delivery-failure back to the sender, which folds it
+todo	a sender emits a message to a peer session, which the peer receives and folds
+todo	the same counter IGNORES a non-message kick-off (else-branch writes no state)

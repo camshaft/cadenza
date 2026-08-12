@@ -1,23 +1,27 @@
-; Platform-conformance suite — I3 slice-2: cross-session DELIVERY-FAILURE bounce (seq358 / §lifecycle-I5).
-; A sender emits a message to a peer that is NOT live; the send cannot be delivered, so the host bounces a
-; `delivery-failure`-family inbound back to the SENDER (a Failure-to-sender, never a silent drop) — the
-; SAME machinery THE OUTPOST federates over the wire (an emit to a terminated/absent federated peer bounces
-; identically). The runner replicates the async loop's §lifecycle-I5 bounce path in its deterministic FIFO
-; drive: on a message whose target is absent (deliver returns None) and whose reply_to is the sender, it
-; routes a `delivery-failure` inbound (echoed payload, reply_to cleared) back to the sender.
-;
-; The peer "ghost" is a VALID-HEX id the runner resolves (Hash::of(salt ++ "ghost")) but never spawns as a
-; --session, so the emit targets a canonical-hex id that resolves to no live session → the deliver-None
-; bounce path (a NON-hex target would instead be a permanent EmitExecutor error that routes NOTHING, not a
-; bounce). MD1: the runner seeds the sender KV[peer]=ghost-id-hex pre-kick-off so the reducer emits by id.
+; Platform-conformance suite — I3 slice-2: cross-session DELIVERY-FAILURE bounce (seq358 / lifecycle-I5),
+; on the post-A1 BYTES fold boundary. A sender emits a message to a peer that is NOT live; the send cannot
+; be delivered, so the FIFO drive bounces a `delivery-failure`-family inbound back to the sender (a
+; Failure-to-sender). The sender READS KV[peer] via kv.get (a valid-hex-but-absent id) — which the bytes
+; boundary does not yet emit (§3c GAP C) — so the sender DECLINES and this case grades Todo until GAP C.
 
 (platform-case "a message to an absent peer bounces a delivery-failure back to the sender, which folds it"
-  (doc "The I3 delivery-failure round-trip: config seeds sender.KV[peer]=ghost-id-hex (ghost is resolved but
-        unspawned); kickoff message -> sender emits kind=emit target=ghost payload=7; deliver-to-ghost
-        returns None -> the drive bounces a delivery-failure inbound (echoed payload) back to sender, which
-        folds failed=1. Asserts the message was attempted (sender->ghost), the bounce (sender->ghost), the
-        sender folded failed=1, and the sender is quiescent (it handled the failure, not stuck).")
-  (session "sender" (reducer (do (effect Kv (op get (-> Bytes (Option Bytes))) (op put (-> Bytes Bytes Unit))) (bind Kv "cadenza:agent-kernel/kv") (def (apply (: ct (Record (: family String) (: version (UInt 32)))) (: payload (Option Bytes)) (: resumes (Option Bytes))) (: (if (= (. ct family) "platform/peers") (match payload ((Some peer) (host (Kv) (do ((. Kv put) ((. String to-bytes) "peer") peer) ("list")))) ((None) ("list"))) (if (= (. ct family) "delivery-failure") (host (Kv) (do ((. Kv put) ((. String to-bytes) "failed") ((. Bytes of) ("list" ((. UInt8 wrap) 1)))) ("list"))) (if (= (. ct family) "message") (host (Kv) (match ((. Kv get) ((. String to-bytes) "peer")) ((Some peer) ("list" ("record" (= correlation (None)) (= kind "emit") (= payload (Some ((. Bytes of) ("list" ((. UInt8 wrap) 7))))) (= target peer)))) ((None) ("list")))) ("list")))) (List (Record (: correlation (Option Bytes)) (: kind String) (: payload (Option Bytes)) (: target Bytes))))) (export apply))))
+  (doc "The I3 delivery-failure round-trip: config seeds sender.KV[peer]=ghost-id-hex (ghost resolved but
+        unspawned); kickoff message -> sender reads KV[peer] (kv.get) + emits kind=emit target=ghost
+        payload=7; deliver-to-ghost returns None -> the drive bounces a delivery-failure inbound back to
+        sender, which folds failed=1. TODO until §3c GAP C (kv.get option-result emit) lands.")
+  (session "sender" (reducer
+    (do
+      (effect kv (op get (-> Bytes (Option Bytes))) (op put (-> Bytes Bytes Unit)))
+      (def (apply (: e (Record (: content-type (Record (: family String) (: version (UInt 32)))) (: payload (Option Bytes)) (: resumes (Option Bytes)))))
+        (: (if (= (. (. e content-type) family) "delivery-failure")
+             (host (kv) (do (kv.put ((. String to-bytes) "failed") ((. Bytes of) ("list" ((. UInt8 wrap) 1)))) (list)))
+             (if (= (. (. e content-type) family) "message")
+               (host (kv) (match (kv.get ((. String to-bytes) "peer"))
+                 ((Some peer) (list (record (correlation (None)) (kind "emit") (payload (Some ((. Bytes of) ("list" ((. UInt8 wrap) 7))))) (target peer))))
+                 ((None) (list))))
+               (list)))
+           (List (Record (: correlation (Option Bytes)) (: kind String) (: payload (Option Bytes)) (: target Bytes)))))
+      (export apply))))
   (kickoff "sender" (inbound "message" (: unit Unit)))
   (expect-messages
     (message (from "sender") (to "ghost") (family "message") (: 7 Int64)))

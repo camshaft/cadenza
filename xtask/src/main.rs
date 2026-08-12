@@ -4316,6 +4316,48 @@ fn build_session_run(paths: &Paths, profile: &str) -> PathBuf {
         .join("cdz-session-run")
 }
 
+/// Build the `emit-wit-world` binary (a `cdz-kernel` bin) and materialize the FULL reducer WIT-world
+/// artifact (`fold.apply(list<u8>)->list<u8>` + the `kv` import) to a temp file, returning its path. This
+/// is the `wit-world:reducer-world=<path>` compile input that drives rcdzc's world-driven BYTES-provider
+/// emit (DESIGN-compiler-platform-separation §3c): with it a reducer compiles to the bytes fold boundary
+/// (`apply(list<u8>)->list<u8>`, value-decoding the Event + value-encoding the effect-list) that the
+/// A1-flipped kernel drives; WITHOUT it the compiler defaults to the handle-lowered heap-ABI. The world
+/// bytes come from `cdz_kernel::ast_marshal::reducer_world_artifact` (the SAME builder the kernel's
+/// `reducer.wit` + v-syntax's inline decl derive from), so the emit-to-match is byte-exact by construction.
+/// `emit-wit-world` lives in the ISOLATED cdz-session-run-adjacent kernel tree, so build it against the
+/// cdz-kernel manifest, once per platform-gate invocation (same pattern as `build_session_run`).
+fn build_emit_wit_world_and_dump(paths: &Paths) -> PathBuf {
+    let crate_dir = paths.seed.join("crates/cdz-kernel");
+    let sh = Shell::new().expect("open a shell");
+    sh.change_dir(&crate_dir);
+    // Build under `dev` (not the gate's `release-debug`): cdz-kernel's ISOLATED workspace does not define
+    // the `release-debug` profile (only cdz-session-run's manifest mirrors it), and this tool only
+    // materializes a deterministic world artifact — its opt level is irrelevant. cdz-kernel is
+    // v-agent-harness's single-writer crate, so we do NOT add a profile there; we just use `dev`.
+    if let Err(e) = cmd!(sh, "cargo build --quiet --bin emit-wit-world")
+        .quiet()
+        .run()
+    {
+        eprintln!("xtask gate --target platform: building emit-wit-world failed: {e}");
+        std::process::exit(1);
+    }
+    let bin = crate_dir
+        .join("target")
+        .join("debug")
+        .join("emit-wit-world");
+    let world_file = std::env::temp_dir().join(format!(
+        "cdz-platform-fold-world-{}.bin",
+        std::process::id()
+    ));
+    // `full` = the scope-A world (fold.apply + kv get/put), the world reducers with a bound kv target.
+    let sh2 = Shell::new().expect("open a shell");
+    if let Err(e) = cmd!(sh2, "{bin} full {world_file}").quiet().run() {
+        eprintln!("xtask gate --target platform: dumping the reducer WIT-world failed: {e}");
+        std::process::exit(1);
+    }
+    world_file
+}
+
 /// One `(session <alias> (reducer <prog>) (serves <family>…)?)` block of a platform case.
 struct PlatformSession {
     alias: String,
@@ -4609,6 +4651,7 @@ fn grade_platform_case(
     cdz: &Path,
     session_run: &Path,
     store: &Path,
+    world_file: &Path,
     rec: &PlatformCaseRecord,
 ) -> Grade {
     if rec.sessions.is_empty() {
@@ -4633,9 +4676,16 @@ fn grade_platform_case(
                 s.alias
             ));
         }
+        // `wit-world:reducer-world=<path>` drives the bytes-provider emit (§3c): the reducer's `apply`
+        // crosses as `list<u8>->list<u8>` (value-decoding the Event, value-encoding the effect-list) —
+        // the A1 fold boundary the kernel drives. `--component-name` names the exported `fold` interface.
+        // A reducer whose body needs a host op the compiler can't yet emit (e.g. `kv.get`'s option result,
+        // GAP C) DECLINES → the `Ok(_)` non-success arm below grades it Todo (coverage-not-yet), not Fail.
+        let world_arg = format!("wit-world:reducer-world={}", world_file.display());
         let compile = std::process::Command::new(cdz)
             .arg("compile")
             .arg(&src)
+            .arg(&world_arg)
             .args([
                 "--target",
                 "wasm",
@@ -4857,6 +4907,10 @@ fn grade_platform_case(
 fn gate_platform(paths: &Paths, profile: &str, opts: GateOpts) {
     let tools = build_tools(paths, profile);
     let session_run = build_session_run(paths, profile);
+    // The target WIT world that drives rcdzc's bytes-provider emit (§3c) — materialized once, passed to
+    // every reducer compile as `wit-world:reducer-world=<path>` so `apply` crosses as bytes (the A1 fold
+    // boundary), not the handle-lowered heap ABI.
+    let world_file = build_emit_wit_world_and_dump(paths);
     // The kernel resolves the reducer's `cadenza:runtime/heap` dep from the content-addressed store; the
     // default is the one `cargo xtask build` populates.
     let store = opts
@@ -4877,7 +4931,7 @@ fn gate_platform(paths: &Paths, profile: &str, opts: GateOpts) {
     let mut failures: Vec<String> = Vec::new();
     let mut verdicts: Vec<(String, Verdict)> = Vec::new();
     for rec in &records {
-        let v = match grade_platform_case(&tools.rcdzc, &session_run, &store, rec) {
+        let v = match grade_platform_case(&tools.rcdzc, &session_run, &store, &world_file, rec) {
             Grade::Pass => {
                 pass += 1;
                 Verdict::Pass
