@@ -125,9 +125,10 @@ async fn serve_connection(
         let _ = control_tx.send(WsControlOp::Deregister { conn_id });
         return Ok(());
     }
-    // Render the conn-id hex ONCE for the pump loop — every inbound frame tags its payload with it, so this
-    // avoids a per-frame Hash re-encode (cheaply-clonable audit HOT-2).
-    let conn_id_hex = conn_id.to_hex();
+    // The conn-id as RAW bytes for the pump loop — every inbound frame tags its payload with it. `as_bytes`
+    // is free (a pointer into the Copy `Hash`, no alloc), so per-frame tagging is zero-cost — and no hex (the
+    // runtime no-hex directive; the reducer echoes these raw bytes as the ws/send target).
+    let conn_id_bytes = conn_id.as_bytes();
 
     // Pump both directions until the peer closes or an end fails. The writer half drains the reducer's
     // outbound frames (out_rx, fed by ws/send via the registry sink) onto the wire; the reader half turns each
@@ -155,14 +156,14 @@ async fn serve_connection(
             inbound = read.next() => {
                 match inbound {
                     Some(Ok(Message::Binary(bytes))) => {
-                        if !emit_ws_event(&inbox, ws_frame_inbound(session, &conn_id_hex, &bytes)) {
+                        if !emit_ws_event(&inbox, ws_frame_inbound(session, conn_id_bytes, &bytes)) {
                             break; // inbox gone
                         }
                     }
                     Some(Ok(Message::Text(text))) => {
                         if !emit_ws_event(
                             &inbox,
-                            ws_frame_inbound(session, &conn_id_hex, text.as_bytes()),
+                            ws_frame_inbound(session, conn_id_bytes, text.as_bytes()),
                         ) {
                             break;
                         }
@@ -247,12 +248,12 @@ mod tests {
         assert_eq!(family, effect_ct::WS_CONNECT);
         assert_eq!(
             payload,
-            conn_id.to_hex().into_bytes(),
-            "ws/connect payload is the conn-id hex the reducer echoes as the ws/send target"
+            conn_id.as_bytes().to_vec(),
+            "ws/connect payload is the raw conn-id bytes the reducer echoes as the ws/send target"
         );
 
         // 2. PEER -> HOST: the client sends a frame; it surfaces as a ws/frame Inbound carrying
-        // [len][conn-id-hex][frame].
+        // [len][conn-id-bytes][frame].
         client
             .send(Message::Binary(b"hello-from-peer".to_vec()))
             .await
@@ -261,11 +262,10 @@ mod tests {
         let (family, payload) = family_payload(&frame_ev.body);
         assert_eq!(family, WS_FRAME_FAMILY);
         let cid_len = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]) as usize;
-        let hex = conn_id.to_hex();
         assert_eq!(
             &payload[4..4 + cid_len],
-            hex.as_bytes(),
-            "frame is tagged with the conn-id hex"
+            conn_id.as_bytes(),
+            "frame is tagged with the raw conn-id bytes"
         );
         assert_eq!(
             &payload[4 + cid_len..],
@@ -301,7 +301,7 @@ mod tests {
                     if let Some(ev) = ev {
                         let (family, payload) = family_payload(&ev.body);
                         if family == effect_ct::WS_DISCONNECT {
-                            assert_eq!(payload, conn_id.to_hex().into_bytes(), "disconnect names the conn-id");
+                            assert_eq!(payload, conn_id.as_bytes().to_vec(), "disconnect names the conn-id");
                             saw_disconnect = true;
                         }
                     }

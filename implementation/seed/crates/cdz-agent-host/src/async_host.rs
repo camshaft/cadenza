@@ -1200,7 +1200,7 @@ mod tests {
             1,
             "the loop drained the Register into the shared registry"
         );
-        let sent = shared_conns.send_frame(&conn_id.to_hex(), bytes::Bytes::from_static(b"frame"));
+        let sent = shared_conns.send_frame(conn_id.as_bytes(), bytes::Bytes::from_static(b"frame"));
         assert!(
             matches!(sent, WsSendResult::Delivered),
             "ws/send resolves the loop-registered conn-id + delivers, got {sent:?}"

@@ -11,10 +11,10 @@
 //! `ws/connect`/`ws/disconnect` Inbound events (emitted by the listener slice) — this executor just delivers.
 //!
 //! **Wire shape (reconciled with v-agent-harness, the `ws/*` kernel-family owner, #2807).** The conn-id rides
-//! `req.target` (opaque `Arc<[u8]>`, read as UTF-8 hex via [`EffectRequest::target_str`] — exactly like `shell`
-//! target=program / `blob/get` target=hex-hash) — the kernel never interprets it; the host mints it and both
-//! sides pass it verbatim; a non-UTF-8 target is a fail-closed PERMANENT error. `req.payload` = the outbound
-//! frame bytes (`Payload::Inline`). Result:
+//! `req.target` (opaque `Arc<[u8]>`) as the RAW conn-id bytes — the live registry mints it as a 32-byte content
+//! [`Hash`] and keys by those raw bytes, NOT a hex string (the runtime no-hex directive). The kernel never
+//! interprets the target; the host mints it and both sides pass it verbatim byte-for-byte. An empty target is a
+//! fail-closed PERMANENT error. `req.payload` = the outbound frame bytes (`Payload::Inline`). Result:
 //! - delivered -> `Ok(None)` ("sent, nothing to fold back" — like a fire-and-forget write).
 //! - unknown / gone conn-id -> `Err` PERMANENT (the peer is no longer connected; a blind retry to the same dead
 //!   conn-id re-fails — the reducer learns the send didn't land + prunes on the paired `ws/disconnect`).
@@ -59,7 +59,11 @@ pub trait WsConnRegistry {
     /// path. `Payload::Inline` is already ref-counted `Bytes`, so the executor MOVES it in (O(1) clone, no
     /// memcpy) — the operator's cheaply-clonable/ownership rule: take the owned cheaply-clonable value, don't
     /// borrow-then-copy.
-    fn send_frame(&self, conn_id: &str, frame: Bytes) -> WsSendResult;
+    ///
+    /// `conn_id` is the OPAQUE conn-id BYTES (`req.target` verbatim) — NOT a string. The live registry mints it
+    /// as a content [`Hash`] and keys by the raw 32 bytes (never a hex string — the runtime no-hex directive);
+    /// this trait stays byte-opaque so the executor never interprets it (a test may use any byte handle).
+    fn send_frame(&self, conn_id: &[u8], frame: Bytes) -> WsSendResult;
 }
 
 /// An `Rc<R>` is a [`WsConnRegistry`] whenever `R` is — so a `WsSendExecutor<Rc<LiveWsConnRegistry>>` sends
@@ -69,7 +73,7 @@ pub trait WsConnRegistry {
 /// node-scoped map without moving ownership. Single-threaded (`Rc`, not `Arc`) — the loop + executors are all
 /// on the one `!Send` task.
 impl<R: WsConnRegistry> WsConnRegistry for std::rc::Rc<R> {
-    fn send_frame(&self, conn_id: &str, frame: Bytes) -> WsSendResult {
+    fn send_frame(&self, conn_id: &[u8], frame: Bytes) -> WsSendResult {
         (**self).send_frame(conn_id, frame)
     }
 }
@@ -106,14 +110,10 @@ impl<R: WsConnRegistry> Executor for WsSendExecutor<R> {
                 effect_ct::WS_SEND
             ));
         }
-        // target = the opaque conn-id (hex) the host minted + surfaced in ws/connect. The target is now
-        // opaque Arc<[u8]>; the conn-id hex is UTF-8, so a non-UTF-8 target is malformed → structural
-        // PERMANENT (fail-closed). Empty target is also structural.
-        let Ok(conn_id) = req.target_str() else {
-            return EffectOutcome::err(
-                "ws/send: target is not valid UTF-8 (expected the peer conn-id)",
-            );
-        };
+        // target = the opaque conn-id BYTES the host minted + surfaced in ws/connect (the live registry mints
+        // it as a raw 32-byte content hash — no hex). Read `req.target` verbatim; the executor never interprets
+        // it (byte-opaque). An empty target is structural PERMANENT (fail-closed).
+        let conn_id = req.target.as_ref();
         if conn_id.is_empty() {
             return EffectOutcome::err("ws/send: empty target (expected the peer conn-id)");
         }
@@ -164,29 +164,27 @@ mod tests {
     /// `live-ws` listener supplies a registry over live websocket sinks with the same trait.
     #[derive(Default)]
     struct MemWsConnRegistry {
-        /// conn-id -> the frames written to it (in order), for delivered connections.
-        live: RefCell<std::collections::HashMap<String, Vec<Vec<u8>>>>,
+        /// conn-id (opaque bytes) -> the frames written to it (in order), for delivered connections.
+        live: RefCell<std::collections::HashMap<Vec<u8>, Vec<Vec<u8>>>>,
         /// conn-ids that should report a transient write failure (connection up, sink hiccup).
-        failing: RefCell<std::collections::HashSet<String>>,
+        failing: RefCell<std::collections::HashSet<Vec<u8>>>,
     }
 
     impl MemWsConnRegistry {
-        fn open(&self, conn_id: &str) {
-            self.live
-                .borrow_mut()
-                .insert(conn_id.to_string(), Vec::new());
+        fn open(&self, conn_id: &[u8]) {
+            self.live.borrow_mut().insert(conn_id.to_vec(), Vec::new());
         }
-        fn fail(&self, conn_id: &str) {
+        fn fail(&self, conn_id: &[u8]) {
             self.open(conn_id);
-            self.failing.borrow_mut().insert(conn_id.to_string());
+            self.failing.borrow_mut().insert(conn_id.to_vec());
         }
-        fn frames(&self, conn_id: &str) -> Vec<Vec<u8>> {
+        fn frames(&self, conn_id: &[u8]) -> Vec<Vec<u8>> {
             self.live.borrow().get(conn_id).cloned().unwrap_or_default()
         }
     }
 
     impl WsConnRegistry for MemWsConnRegistry {
-        fn send_frame(&self, conn_id: &str, frame: Bytes) -> WsSendResult {
+        fn send_frame(&self, conn_id: &[u8], frame: Bytes) -> WsSendResult {
             if self.failing.borrow().contains(conn_id) {
                 return WsSendResult::WriteFailed("sink full".into());
             }
@@ -200,7 +198,7 @@ mod tests {
         }
     }
 
-    fn send_req(conn_id: &str, frame: &[u8]) -> EffectRequest {
+    fn send_req(conn_id: &[u8], frame: &[u8]) -> EffectRequest {
         EffectRequest::new_with_family(
             effect_ct::WS_SEND,
             conn_id,
@@ -212,10 +210,10 @@ mod tests {
     #[tokio::test]
     async fn send_to_a_live_conn_delivers_the_frame_and_folds_ok_none() {
         let reg = MemWsConnRegistry::default();
-        reg.open("conn-1");
+        reg.open(b"conn-1");
         let mut exec = WsSendExecutor::new(reg);
         let out = exec
-            .perform(EffectId(0), &send_req("conn-1", b"hello"), Hash::of(b"k"))
+            .perform(EffectId(0), &send_req(b"conn-1", b"hello"), Hash::of(b"k"))
             .await;
         assert_eq!(
             out,
@@ -224,7 +222,7 @@ mod tests {
         );
         // The frame reached the sink verbatim.
         assert_eq!(
-            exec.registry.frames("conn-1"),
+            exec.registry.frames(b"conn-1"),
             vec![b"hello".to_vec()],
             "the exact frame bytes were written to the live connection"
         );
@@ -234,7 +232,7 @@ mod tests {
     async fn send_to_an_unknown_conn_id_is_a_permanent_err() {
         let mut exec = WsSendExecutor::new(MemWsConnRegistry::default());
         let out = exec
-            .perform(EffectId(0), &send_req("gone", b"x"), Hash::of(b"k"))
+            .perform(EffectId(0), &send_req(b"gone", b"x"), Hash::of(b"k"))
             .await;
         match out {
             EffectOutcome::Err { retryability, .. } => assert_eq!(
@@ -249,10 +247,10 @@ mod tests {
     #[tokio::test]
     async fn a_transient_write_failure_is_retryable() {
         let reg = MemWsConnRegistry::default();
-        reg.fail("conn-flaky");
+        reg.fail(b"conn-flaky");
         let mut exec = WsSendExecutor::new(reg);
         let out = exec
-            .perform(EffectId(0), &send_req("conn-flaky", b"x"), Hash::of(b"k"))
+            .perform(EffectId(0), &send_req(b"conn-flaky", b"x"), Hash::of(b"k"))
             .await;
         match out {
             EffectOutcome::Err { retryability, .. } => assert_eq!(
@@ -269,7 +267,7 @@ mod tests {
         let mut exec = WsSendExecutor::new(MemWsConnRegistry::default());
         // empty conn-id
         assert!(matches!(
-            exec.perform(EffectId(0), &send_req("", b"x"), Hash::of(b"k"))
+            exec.perform(EffectId(0), &send_req(b"", b"x"), Hash::of(b"k"))
                 .await,
             EffectOutcome::Err { .. }
         ));
@@ -310,5 +308,24 @@ mod tests {
             exec.perform(EffectId(0), &misrouted, Hash::of(b"k")).await,
             EffectOutcome::Err { .. }
         ));
+    }
+
+    #[test]
+    fn an_authorized_ws_send_to_a_raw_bytes_conn_id_is_admitted() {
+        // Regression pin (the withdrawn-4a lesson): ws/send is Cedar-authorized on its target = conn-id
+        // BEFORE dispatch (SEC-F1). Before the operator's raw-bytes-authz ruling, a raw 32-byte conn-id target
+        // was DENIED — the authz gate fed target_str (UTF-8) to admits and a non-UTF-8 target failed closed.
+        // Now ResourcePredicate matches the target as RAW BYTES, so an Any-granted ws/send to a raw conn-id is
+        // ADMITTED — the raw-bytes conn-id target (this slice) composes with the authz gate. conn-ids are
+        // dynamic (minted per accept), so the realistic grant is Any (a Cedar Exact, being string-based, can't
+        // name an unpredictable raw-bytes conn-id). This runs in the default gate — it caught the false-green.
+        use cdz_kernel::effect::{Capability, ResourcePredicate};
+        let conn_id = Hash::of(b"a-minted-conn-id"); // a raw 32-byte hash, as mint_conn_id yields
+        let req = send_req(conn_id.as_bytes(), b"frame");
+        let grant = Capability::for_family(effect_ct::WS_SEND, ResourcePredicate::Any);
+        assert!(
+            grant.permits(&req),
+            "an Any-granted ws/send to a raw-bytes conn-id target is admitted (was DENIED pre-ruling)"
+        );
     }
 }

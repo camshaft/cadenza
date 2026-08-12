@@ -113,9 +113,10 @@ where
         let _ = control_tx.send(WsControlOp::Deregister { conn_id });
         return Ok(());
     }
-    // Render the conn-id hex ONCE for the pump loop — every inbound frame tags its payload with it, so this
-    // avoids a per-frame Hash re-encode (cheaply-clonable audit HOT-2).
-    let conn_id_hex = conn_id.to_hex();
+    // The conn-id as RAW bytes for the pump loop — every inbound frame tags its payload with it. `as_bytes`
+    // is free (a pointer into the Copy `Hash`, no alloc), so per-frame tagging is zero-cost — and no hex (the
+    // runtime no-hex directive; the reducer echoes these raw bytes as the ws/send target).
+    let conn_id_bytes = conn_id.as_bytes();
 
     // Pump both directions until the hub closes, an end fails, or shutdown fires. The writer half drains the
     // reducer's outbound frames (out_rx, fed by ws/send via the registry sink) onto the wire; the reader half
@@ -145,12 +146,12 @@ where
             inbound = read.next() => {
                 match inbound {
                     Some(Ok(Message::Binary(bytes))) => {
-                        if !emit_ws_event(&inbox, ws_frame_inbound(session, &conn_id_hex, &bytes)) {
+                        if !emit_ws_event(&inbox, ws_frame_inbound(session, conn_id_bytes, &bytes)) {
                             break; // inbox gone
                         }
                     }
                     Some(Ok(Message::Text(text))) => {
-                        if !emit_ws_event(&inbox, ws_frame_inbound(session, &conn_id_hex, text.as_bytes())) {
+                        if !emit_ws_event(&inbox, ws_frame_inbound(session, conn_id_bytes, text.as_bytes())) {
                             break;
                         }
                     }
@@ -268,7 +269,7 @@ impl cdz_kernel::executor::Executor for WsDialExecutor {
         });
         // Return the minted conn-id hex as the dispatched result — the reducer folds it + binds conn_id↔hub.
         EffectOutcome::Ok(Some(cdz_kernel::effect::Payload::Inline(
-            conn_id.to_hex().into_bytes().into(),
+            conn_id.as_bytes().to_vec().into(),
         )))
     }
 
@@ -357,8 +358,8 @@ mod tests {
         assert_eq!(family, effect_ct::WS_CONNECT);
         assert_eq!(
             payload,
-            conn_id.to_hex().into_bytes(),
-            "ws/connect payload is the conn-id hex the reducer echoes as the ws/send target"
+            conn_id.as_bytes().to_vec(),
+            "ws/connect payload is the raw conn-id bytes the reducer echoes as the ws/send target"
         );
 
         // The hub's side accepted the dialer: drain its Register + ws/connect so we can echo back below.
@@ -396,8 +397,8 @@ mod tests {
         let cid_len = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]) as usize;
         assert_eq!(
             &payload[4..4 + cid_len],
-            conn_id.to_hex().as_bytes(),
-            "the hub frame is tagged with the dialer's conn-id hex"
+            conn_id.as_bytes(),
+            "the hub frame is tagged with the dialer's conn-id bytes"
         );
         assert_eq!(
             &payload[4 + cid_len..],
@@ -420,7 +421,7 @@ mod tests {
             if family == effect_ct::WS_DISCONNECT {
                 assert_eq!(
                     payload,
-                    conn_id.to_hex().into_bytes(),
+                    conn_id.as_bytes().to_vec(),
                     "disconnect names the conn-id"
                 );
                 saw_disconnect = true;
@@ -548,11 +549,11 @@ mod tests {
                 let EffectOutcome::Ok(Some(Payload::Inline(bytes))) = &out else {
                     panic!("ws/dial returns Ok(Some(conn-id)), got {out:?}");
                 };
-                let returned_conn_id = String::from_utf8(bytes.to_vec()).unwrap();
+                let returned_conn_id = bytes.to_vec();
                 assert_eq!(
                     returned_conn_id.len(),
-                    64,
-                    "conn-id is a 64-char genesis-hash hex"
+                    32,
+                    "conn-id is the 32 raw genesis-hash bytes"
                 );
 
                 // The spawned dial connected: it Registers the sink + emits ws/connect under the SAME conn-id
@@ -566,14 +567,14 @@ mod tests {
                     other => panic!("expected Register, got {other:?}"),
                 };
                 assert_eq!(
-                    conn_id.to_hex(),
+                    conn_id.as_bytes().to_vec(),
                     returned_conn_id,
                     "the live connection's conn-id == the id ws/dial returned synchronously"
                 );
                 let connect_ev = out_inbox_rx.recv().await.expect("ws/connect Inbound");
                 let (family, payload) = family_payload(&connect_ev.body);
                 assert_eq!(family, effect_ct::WS_CONNECT);
-                assert_eq!(payload, conn_id.to_hex().into_bytes());
+                assert_eq!(payload, conn_id.as_bytes().to_vec());
                 // The hub saw the dialer connect.
                 let _ = hub_inbox_rx.recv().await.expect("hub ws/connect");
             })

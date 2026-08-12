@@ -19,12 +19,13 @@
 //!
 //! **Connection identity = a [`Hash`], like a session (operator unification, #2820 review).** A ws connection
 //! is a stateful host-managed resource, so its identity uses the SAME scheme as reducer-backed sessions: a
-//! [`SessionId`] IS its genesis-hash hex, and a conn-id is likewise a `Hash` ([`mint_conn_id`]) whose hex is
+//! [`SessionId`] IS its genesis hash, and a conn-id is likewise a `Hash` ([`mint_conn_id`]) whose RAW bytes are
 //! the opaque routing token the reducer echoes as the `ws/send` target. This unifies host-managed resources
 //! with sessions under one id scheme (the capstone: anything stateful looks like any other session/handler).
 //! The identity AND the registry key are the `Hash` itself (a `Copy` [u8;32], cheaply clonable — the operator's
-//! cheaply-clonable-everywhere rule, NOT an owned String); the hex form appears ONLY at the kernel effect-target
-//! boundary (`req.target` is `Arc<str>`), where the `ws/send` executor parses it back to a `Hash` to look up.
+//! cheaply-clonable-everywhere rule). The conn-id crosses the kernel effect-target boundary as the RAW 32 bytes
+//! (`req.target` is `Arc<[u8]>`), which the `ws/send` executor reconstructs via `Hash::from_bytes` — no hex
+//! anywhere (the runtime no-hex directive; a hash is raw bytes, never parsed from a string).
 
 use crate::async_host::{Inbound, Inbox};
 use crate::host::SessionId;
@@ -86,9 +87,9 @@ pub fn ws_control_channel() -> (WsControlSender, WsControlReceiver) {
 /// Mint a fresh CONNECTION IDENTITY for a newly-accepted peer — 32 OS-random bytes hashed into a [`Hash`],
 /// exactly as [`crate::host::mint_spawn_nonce`] mints a session's genesis nonce. A ws connection is a
 /// stateful host-managed RESOURCE, and the operator's unification (review on #2820) is that such resources
-/// share the SAME identity scheme as reducer-backed sessions: a session's [`SessionId`] IS its genesis-hash
-/// hex, so a connection's id is likewise a `Hash` (its hex is the routing token the reducer echoes as the
-/// `ws/send` target). `Hash::of` over the entropy keeps the id a real content hash in the blake3 domain,
+/// share the SAME identity scheme as reducer-backed sessions: a session's [`SessionId`] IS its genesis
+/// hash, so a connection's id is likewise a `Hash` (its RAW bytes are the routing token the reducer echoes as
+/// the `ws/send` target — no hex). `Hash::of` over the entropy keeps the id a real content hash in the blake3 domain,
 /// uniform with every other `Hash` in the system, NOT an ad-hoc counter. `getrandom` failing is unsurvivable
 /// (no entropy = can't mint a unique id), so it is a hard error, not a weak-id fallback — same as the nonce.
 pub fn mint_conn_id() -> Hash {
@@ -165,11 +166,12 @@ impl LiveWsConnRegistry {
 }
 
 impl WsConnRegistry for LiveWsConnRegistry {
-    fn send_frame(&self, conn_id: &str, frame: Bytes) -> WsSendResult {
-        // `conn_id` arrives as the kernel effect target (`req.target` is `Arc<str>` — a string the reducer
-        // echoed), so parse it back to the `Hash` the registry keys by. A non-hex/wrong-length target names
-        // no real connection (a reducer sent a malformed target) → Unknown, same as a gone peer.
-        let Some(conn_id) = Hash::from_hex(conn_id) else {
+    fn send_frame(&self, conn_id: &[u8], frame: Bytes) -> WsSendResult {
+        // `conn_id` arrives as the kernel effect target (`req.target`, opaque bytes the reducer echoed) — the
+        // RAW 32 conn-id bytes. Reconstruct the `Hash` the registry keys by via `from_bytes` (NOT from_hex —
+        // the conn-id is raw bytes, never a string). A wrong-length target names no real connection (a reducer
+        // sent a malformed target) → Unknown, same as a gone peer.
+        let Ok(conn_id) = <[u8; 32]>::try_from(conn_id).map(Hash::from_bytes) else {
             return WsSendResult::Unknown;
         };
         match self.conns.borrow().get(&conn_id) {
@@ -191,23 +193,19 @@ impl WsConnRegistry for LiveWsConnRegistry {
 /// exists + can address `ws/send` to `conn_id`. Payload = the opaque conn-id bytes (the reducer echoes it as
 /// the `ws/send` target while the peer is up). Addressed to the outpost `session`.
 pub fn ws_connect_inbound(session: SessionId, conn_id: Hash) -> Inbound {
-    // Payload = the conn-id hex bytes: the reducer receives the hex string it echoes back as the `ws/send`
-    // target (`req.target` is `Arc<str>`). The identity is a `Hash` (cheap `Copy`); only this boundary + the
-    // effect target render it as hex.
-    ws_event_inbound(
-        session,
-        effect_ct::WS_CONNECT,
-        conn_id.to_hex().into_bytes(),
-    )
+    // Payload = the RAW conn-id bytes: the reducer receives the 32 bytes it echoes back verbatim as the
+    // `ws/send` target (`req.target`, opaque bytes). No hex — the conn-id is raw bytes end to end (the runtime
+    // no-hex directive); the live registry reconstructs the `Hash` via `from_bytes` on the send path.
+    ws_event_inbound(session, effect_ct::WS_CONNECT, conn_id.as_bytes().to_vec())
 }
 
 /// Build the `ws/disconnect` [`Inbound`] the host emits when a peer's connection closes: the reducer prunes
-/// the peer from its federation state. Payload = the conn-id hex (which connection went away).
+/// the peer from its federation state. Payload = the raw conn-id bytes (which connection went away).
 pub fn ws_disconnect_inbound(session: SessionId, conn_id: Hash) -> Inbound {
     ws_event_inbound(
         session,
         effect_ct::WS_DISCONNECT,
-        conn_id.to_hex().into_bytes(),
+        conn_id.as_bytes().to_vec(),
     )
 }
 
@@ -216,16 +214,15 @@ pub fn ws_disconnect_inbound(session: SessionId, conn_id: Hash) -> Inbound {
 /// `[conn_id_len: u32-le][conn_id bytes][frame bytes]`. The host does NOT interpret the frame — it's opaque
 /// application bytes (JSON-RPC/whatever is a userspace concern). Family is a distinct `ws/frame` content-type
 /// so the reducer matches data frames apart from the connect/disconnect lifecycle.
-/// `conn_id_hex` is the connection's conn-id ALREADY rendered to hex — the caller (a per-connection pump loop)
-/// computes it ONCE at accept/connect and reuses it for every inbound frame, rather than re-encoding the Hash
-/// per frame (cheaply-clonable audit HOT-2: `ws_frame_inbound` is the per-frame hot path; a per-frame
-/// `conn_id.to_hex()` allocated a fresh 64-byte String on every frame). The hex bytes are still copied into the
-/// per-frame payload Vec (that alloc is inherent — each frame is its own event), but the hex ENCODE happens once.
-pub fn ws_frame_inbound(session: SessionId, conn_id_hex: &str, frame: &[u8]) -> Inbound {
-    let cid = conn_id_hex.as_bytes();
-    let mut payload = Vec::with_capacity(4 + cid.len() + frame.len());
-    payload.extend_from_slice(&(cid.len() as u32).to_le_bytes());
-    payload.extend_from_slice(cid);
+/// `conn_id` is the connection's RAW conn-id bytes (the 32-byte content hash) — no hex (the runtime no-hex
+/// directive; the raw bytes are what the reducer echoes as the `ws/send` target). The caller (a per-connection
+/// pump loop) holds the `Hash` and passes `conn_id.as_bytes()`; that's free (no per-frame encode — this is the
+/// per-frame hot path). The bytes are copied into the per-frame payload Vec (that alloc is inherent — each
+/// frame is its own event).
+pub fn ws_frame_inbound(session: SessionId, conn_id: &[u8], frame: &[u8]) -> Inbound {
+    let mut payload = Vec::with_capacity(4 + conn_id.len() + frame.len());
+    payload.extend_from_slice(&(conn_id.len() as u32).to_le_bytes());
+    payload.extend_from_slice(conn_id);
     payload.extend_from_slice(frame);
     ws_event_inbound(session, WS_FRAME_FAMILY, payload)
 }
@@ -289,9 +286,9 @@ mod tests {
         reg.register(c1, tx);
         assert_eq!(reg.len(), 1);
 
-        // A send to the live conn is delivered (the executor addresses it by the conn-id HEX = req.target).
+        // A send to the live conn is delivered (the executor addresses it by the conn-id RAW BYTES = req.target).
         assert_eq!(
-            reg.send_frame(&c1.to_hex(), Bytes::from_static(b"hello")),
+            reg.send_frame(c1.as_bytes(), Bytes::from_static(b"hello")),
             WsSendResult::Delivered
         );
         assert_eq!(rx.try_recv().unwrap(), Bytes::from_static(b"hello"));
@@ -300,22 +297,23 @@ mod tests {
         reg.deregister(&c1);
         assert!(reg.is_empty());
         assert_eq!(
-            reg.send_frame(&c1.to_hex(), Bytes::from_static(b"x")),
+            reg.send_frame(c1.as_bytes(), Bytes::from_static(b"x")),
             WsSendResult::Unknown
         );
     }
 
     #[test]
-    fn send_to_never_registered_or_non_hex_target_is_unknown() {
+    fn send_to_never_registered_or_wrong_length_target_is_unknown() {
         let reg = LiveWsConnRegistry::new();
-        // A valid-hex-but-unregistered conn-id: no such connection.
+        // A 32-byte-but-unregistered conn-id: no such connection.
         assert_eq!(
-            reg.send_frame(&cid(b"nope").to_hex(), Bytes::from_static(b"x")),
+            reg.send_frame(cid(b"nope").as_bytes(), Bytes::from_static(b"x")),
             WsSendResult::Unknown
         );
-        // A non-hex target (a reducer sent a malformed ws/send target): names no connection -> Unknown.
+        // A wrong-length target (a reducer sent a malformed ws/send target, not 32 bytes): names no
+        // connection -> Unknown (from_bytes needs exactly 32 bytes).
         assert_eq!(
-            reg.send_frame("not-a-hash", Bytes::from_static(b"x")),
+            reg.send_frame(b"not-a-hash", Bytes::from_static(b"x")),
             WsSendResult::Unknown
         );
     }
@@ -330,13 +328,13 @@ mod tests {
         // channel send errors -> a transient write failure (the disconnect event resolves the race).
         drop(rx);
         assert!(matches!(
-            reg.send_frame(&c.to_hex(), Bytes::from_static(b"x")),
+            reg.send_frame(c.as_bytes(), Bytes::from_static(b"x")),
             WsSendResult::WriteFailed(_)
         ));
     }
 
     #[test]
-    fn connect_inbound_carries_the_conn_id_hex_under_ws_connect() {
+    fn connect_inbound_carries_the_conn_id_bytes_under_ws_connect() {
         let c = cid(b"conn-42");
         let ev = ws_connect_inbound(SessionId::new(Hash::of(b"outpost")), c);
         assert_eq!(ev.session, SessionId::new(Hash::of(b"outpost")));
@@ -344,8 +342,8 @@ mod tests {
         assert_eq!(family, effect_ct::WS_CONNECT);
         assert_eq!(
             payload,
-            c.to_hex().into_bytes(),
-            "connect payload is the conn-id HEX (the reducer echoes it as the ws/send target)"
+            c.as_bytes().to_vec(),
+            "connect payload is the raw conn-id bytes (the reducer echoes them as the ws/send target)"
         );
         assert!(
             ev.reply_to.is_none(),
@@ -354,56 +352,48 @@ mod tests {
     }
 
     #[test]
-    fn disconnect_inbound_carries_the_conn_id_hex_under_ws_disconnect() {
+    fn disconnect_inbound_carries_the_conn_id_bytes_under_ws_disconnect() {
         let c = cid(b"conn-42");
         let ev = ws_disconnect_inbound(SessionId::new(Hash::of(b"outpost")), c);
         let (family, payload) = drain_family(&ev.body);
         assert_eq!(family, effect_ct::WS_DISCONNECT);
-        assert_eq!(payload, c.to_hex().into_bytes());
+        assert_eq!(payload, c.as_bytes().to_vec());
     }
 
     #[test]
-    fn frame_inbound_length_prefixes_the_conn_id_hex_then_the_opaque_frame() {
+    fn frame_inbound_length_prefixes_the_conn_id_bytes_then_the_opaque_frame() {
         let c = cid(b"cid");
         let ev = ws_frame_inbound(
             SessionId::new(Hash::of(b"outpost")),
-            &c.to_hex(),
+            c.as_bytes(),
             b"opaque-bytes",
         );
         let (family, payload) = drain_family(&ev.body);
         assert_eq!(family, WS_FRAME_FAMILY);
-        // [len:u32-le][conn-id-hex][frame]
+        // [len:u32-le][conn-id-bytes][frame]
         let cid_len = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]) as usize;
-        let hex = c.to_hex();
-        assert_eq!(cid_len, hex.len());
-        assert_eq!(&payload[4..4 + cid_len], hex.as_bytes());
+        assert_eq!(cid_len, 32, "the conn-id is the raw 32 hash bytes");
+        assert_eq!(&payload[4..4 + cid_len], c.as_bytes());
         assert_eq!(&payload[4 + cid_len..], b"opaque-bytes");
     }
 
     #[test]
-    fn mint_conn_id_produces_distinct_hashes_whose_hex_is_the_routing_token() {
+    fn mint_conn_id_produces_distinct_hashes_routed_by_raw_bytes() {
         // A conn-id is a Hash (like a session's genesis hash), minted from fresh entropy each accept -> two
-        // connections get different ids. Its hex is the token the reducer echoes as the ws/send target.
+        // connections get different ids. The RAW bytes are the token the reducer echoes as the ws/send target.
         let a = mint_conn_id();
         let b = mint_conn_id();
         assert_ne!(
             a, b,
             "each accepted connection gets a fresh unique conn-id Hash"
         );
-        // The hex round-trips as a canonical Hash hex (same scheme as SessionId = genesis-hash hex).
-        let hex = a.to_hex();
-        assert_eq!(hex.len(), 64, "a conn-id hex is a 64-char blake3 hash hex");
-        assert_eq!(
-            Hash::from_hex(&hex),
-            Some(a),
-            "the hex round-trips to the Hash"
-        );
-        // The registry keys by the Hash; the executor addresses it by that Hash's hex (= req.target).
+        // The registry keys by the Hash; the executor addresses it by that Hash's RAW bytes (= req.target),
+        // which the live registry reconstructs via from_bytes — no hex.
         let reg = LiveWsConnRegistry::new();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
         reg.register(a, tx);
         assert_eq!(
-            reg.send_frame(&hex, Bytes::from_static(b"f")),
+            reg.send_frame(a.as_bytes(), Bytes::from_static(b"f")),
             WsSendResult::Delivered
         );
     }
@@ -425,7 +415,7 @@ mod tests {
         reg.apply_control(rx.try_recv().unwrap());
         assert_eq!(reg.len(), 1);
         assert_eq!(
-            reg.send_frame(&conn.to_hex(), Bytes::from_static(b"hi")),
+            reg.send_frame(conn.as_bytes(), Bytes::from_static(b"hi")),
             WsSendResult::Delivered
         );
 
@@ -433,7 +423,7 @@ mod tests {
         reg.apply_control(rx.try_recv().unwrap());
         assert!(reg.is_empty());
         assert_eq!(
-            reg.send_frame(&conn.to_hex(), Bytes::from_static(b"x")),
+            reg.send_frame(conn.as_bytes(), Bytes::from_static(b"x")),
             WsSendResult::Unknown
         );
     }
