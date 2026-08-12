@@ -1,0 +1,82 @@
+// reducer_pure.cdz — the PURE-GENESIS intermediate reducer for the A1 bytes fold boundary.
+//
+// A1 flips the kernel<->reducer fold boundary to BYTES: reducer.wit's `fold.apply(list<u8>) -> list<u8>`,
+// where the IN bytes are ONE canonical value-form Event document (built by cdz-kernel
+// `ast_marshal::build_event_document`) and the OUT bytes are a canonical value-form effect-list document
+// (parsed by `ast_marshal::parse_effect_list`). This program is the smallest REAL Cadenza reducer that
+// exercises the WHOLE round-trip end-to-end on wasmtime: decode Event -> run apply -> encode the returned
+// effect-list -> bytes out. It targets the PURE-FOLD world (`pure_fold_world_artifact`) — `fold.apply`
+// only, NO `kv` import, no closures — so rcdzc's landed world-driven emit (GAP A) bytes-wraps it generically.
+//
+// LOCKED VALUE-FORM CONTRACT (both ends pin; kebab field names, byte-critical):
+//   Event         = record { content-type: record { family: string, version: u32 },
+//                            payload: option<list<u8>>, resumes: option<list<u8>> }
+//   EffectRequest = record { kind: string, target: list<u8>, payload: option<list<u8>>,
+//                            correlation: option<list<u8>> }   -- a BARE structural record, NOT a nominal
+//   sum: `parse_effect_request` reads it via `read_canonical_record` (a `(record (= name value)…)` head),
+//   so the guest must return structural records; a `| Mk(Record(…))` variant would value-encode to a Sum
+//   `(Mk (record …))` and fail the parse. `kind` is the effect FAMILY STRING (register-by-string, seq-39
+//   identity — NEVER a closed enum); `target` is opaque bytes (Target=Bytes ruling).
+//
+// This reducer folds an event into a single "emit" effect that echoes the event's payload (a payload-free
+// event folds to no effects). It requests no host capability — the fold is pure.
+//
+// BUILD (v-nix precompile, PURE_GENESIS_REDUCER_COMPONENT): the world is materialized by the emit-wit-world
+// bin (pure), then:
+//   cdz compile reducer_pure.cdz wit-world:reducer-world=pure-world.bin
+//     --component-name cadenza:agent-kernel/fold -o reducer_pure.wasm
+//   -> exports fold.apply(list<u8>) -> list<u8>; imports NOTHING; VALID component.
+
+def apply(
+  event: Record(
+    content-type: Record(family: String, version: UInt(32)),
+    payload: Option(Bytes),
+    resumes: Option(Bytes),
+  ),
+) -> List(Record(
+  kind: String,
+  target: Bytes,
+  payload: Option(Bytes),
+  correlation: Option(Bytes),
+)) =
+  match event.payload with
+    // A payloaded event folds to ONE emit effect that echoes the payload back (correlation-free).
+    | Some(p) => [{
+        kind = "emit",
+        target = String.to-bytes("out"),
+        payload = Some(p),
+        correlation = None(),
+      }]
+    // A payload-free event requests no effects — the fold is empty.
+    | None() => []
+
+// Standalone behavioral coverage (`cdz test`, INDEPENDENT of the kernel host adapter; plain `cdz compile`
+// ignores @test). The real bytes round-trip proof is the cdz-agent-host e2e (env PURE_GENESIS_REDUCER
+// _COMPONENT, driving call_apply on wasmtime); these @tests pin the pure fold semantics on the seed VM.
+@test
+def pure_payloaded_event_folds_to_one_emit() =
+  let evt = {
+    content-type = { family = "message", version = 1 },
+    payload = Some(String.to-bytes("hello")),
+    resumes = None(),
+  } in
+  match List.at(apply(evt), 0) with
+    | Some(eff) =>
+      (if eff.kind == "emit" then
+         (match eff.payload with
+            | Some(p) => (if p == String.to-bytes("hello") then unit else trap("echoed payload wrong"))
+            | None() => trap("emit effect must carry the echoed payload"))
+       else trap("folded effect kind must be emit"))
+    | None() => trap("a payloaded event must fold to one effect")
+
+@test
+def pure_payloadless_event_folds_to_nothing() =
+  let evt = {
+    content-type = { family = "message", version = 1 },
+    payload = None(),
+    resumes = None(),
+  } in
+  if List.len(apply(evt)) == 0 then unit
+  else trap("a payload-free event must request no effects")
+
+export { apply }
