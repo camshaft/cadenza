@@ -7964,12 +7964,14 @@ fn emit_bytes_provider_member(
             used.insert("sum-new");
         }
         // The prefix-scan lift CONSTRUCTS a value-heap `List<Tuple<Bytes,Bytes>>` via `arr-alloc`/`arr-set`
-        // (outer list + each 2-tuple) and `bytes-alloc`/`bytes-set` (each key/value) — ops the reducer's own
-        // Core may never use, so `collect_module_used_ops` misses them. Add them when a host op returns
-        // `list<tuple<list<u8>,list<u8>>>`.
+        // (outer list + each 2-tuple) then `vec-of-arr` (turn the outer array into the persistent VEC a
+        // Cadenza `List` is — without it `List.len`/`vec-*` misread the raw arr as empty), and
+        // `bytes-alloc`/`bytes-set` (each key/value) — ops the reducer's own Core may never use, so
+        // `collect_module_used_ops` misses them. Add them when a host op returns `list<tuple<list<u8>,list<u8>>>`.
         if host_probe.iter().any(|hi| hi.result_list_byte_pairs) {
             used.insert("arr-alloc");
             used.insert("arr-set");
+            used.insert("vec-of-arr");
             used.insert("bytes-alloc");
             used.insert("bytes-set");
         }

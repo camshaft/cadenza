@@ -529,6 +529,76 @@ pub fn run_reducer_bytes_with_puts(
     Ok((out, recorded))
 }
 
+/// Invoke a host-fused reducer's bytes member while binding its host `prefix-scan`-style op (one `list<u8>`
+/// param, `list<tuple<list<u8>,list<u8>>>` result) to a closure returning a FIXED list of key/value byte
+/// PAIRS — the deep behavioral proof of the kv.prefix-scan LIST-OF-BYTE-PAIRS LIFT (§3c). The reducer's
+/// `apply` decodes the Event, calls `prefix-scan`, and the guest lift reconstructs a value-heap
+/// `List<Tuple<Bytes,Bytes>>` from the host's spilled `(ptr, count)` result + each 16-byte element; this
+/// drives it on the real runtime so a test can assert the pairs actually round-trip through the lift (e.g.
+/// the reducer branching on `List.len` of the scan). Generic — the interface/op names come from the
+/// compiled world. Companion to [`run_reducer_bytes_with_get`] (the option-result lift).
+#[allow(clippy::too_many_arguments)]
+pub fn run_reducer_bytes_with_scan(
+    provider_bytes: &[u8],
+    iface: &str,
+    member: &str,
+    input: &[u8],
+    host_iface: &str,
+    host_op: &str,
+    pairs: Vec<(Vec<u8>, Vec<u8>)>,
+    opts: &RunOpts,
+) -> Result<Vec<u8>> {
+    let engine = engine();
+    let component =
+        Component::new(&engine, provider_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
+    let mut store = new_store(&engine);
+    let mut linker: Linker<()> = Linker::new(&engine);
+    if let Some(req) = find_runtime_req(&engine, &component) {
+        let (rt_instance, heap_names) = instantiate_runtime(&engine, &mut store, &req, opts)?;
+        bind_runtime_into(
+            &engine,
+            &mut store,
+            &mut linker,
+            &req.import_name,
+            &rt_instance,
+            &heap_names,
+        )?;
+    }
+    {
+        let mut iface_linker = linker
+            .instance(host_iface)
+            .map_err(|e| anyhow!("linker instance {host_iface}: {e}"))?;
+        // `prefix-scan(prefix: list<u8>) -> list<tuple<list<u8>,list<u8>>>`: the closure ignores the prefix
+        // and returns the fixed `pairs` as a `Val::List` of 2-element `Val::Tuple`s (each `(list<u8>, list<u8>)`).
+        iface_linker.func_new(host_op, move |_ctx, _params, results| {
+            let items = pairs
+                .iter()
+                .map(|(k, v)| Val::Tuple(vec![list_u8_val(k), list_u8_val(v)]))
+                .collect();
+            results[0] = Val::List(items);
+            Ok(())
+        })?;
+    }
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .map_err(|e| anyhow!("instantiate component: {e}"))?;
+    let iface_idx = instance
+        .get_export_index(&mut store, None, iface)
+        .ok_or_else(|| anyhow!("reducer provider does not export interface `{iface}`"))?;
+    let member_idx = instance
+        .get_export_index(&mut store, Some(&iface_idx), member)
+        .ok_or_else(|| anyhow!("reducer interface `{iface}` has no member `{member}`"))?;
+    let func = instance
+        .get_func(&mut store, member_idx)
+        .ok_or_else(|| anyhow!("reducer member `{member}` is not a func"))?;
+    let mut results = [Val::Bool(false)];
+    func.call(&mut store, &[list_u8_val(input)], &mut results)
+        .map_err(|e| anyhow!("reducer `{member}` call failed: {e:#}"))?;
+    func.post_return(&mut store)
+        .map_err(|e| anyhow!("reducer `{member}` post_return failed: {e:#}"))?;
+    val_list_u8(&results[0])
+}
+
 /// Invoke a host-fused reducer's bytes member while binding its host `get`-style op (one `list<u8>` param,
 /// `option<list<u8>>` result) to a closure that returns a FIXED `reply` (`Some(bytes)` or `None`) — the
 /// deep behavioral proof of the kv.get OPTION-RESULT LIFT (§3c GAP C). The reducer's `apply` decodes the

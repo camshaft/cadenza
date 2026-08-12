@@ -11857,7 +11857,13 @@ fn emit(
                 out.push(Lir::Br(0));
                 out.push(Lir::End); // outer loop
                 out.push(Lir::End); // outer block
-                out.push(Lir::LocalGet(outer)); // leave the List<Tuple<Bytes,Bytes>> handle
+                // The `outer` handle is a raw `arr` — but a Cadenza `List` is a persistent VEC, so convert the
+                // built array into the vector rep (exactly as a `(list …)` literal: `arr-alloc`+`arr-set` then
+                // ONE `vec-of-arr`). WITHOUT this the lift returned a raw arr, which `List.len`/`vec-*` misread
+                // as EMPTY regardless of count — the prefix-scan-returns-empty miscompile. The inner 2-tuples
+                // stay raw arrs (a Tuple IS an arr, no conversion).
+                out.push(Lir::LocalGet(outer)); // [arr]
+                out.push(Lir::CallImport(OP_VEC_OF_ARR)); // [arr] → [list]  (the List<Tuple<Bytes,Bytes>> handle)
                 return Ok(());
             }
             out.push(Lir::CallHostImport(index));
