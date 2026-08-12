@@ -808,9 +808,17 @@
         # SAFELY: cache-hit when the emit is byte-identical, rebuild when it genuinely changes — unlike the
         # old FIXED-OUTPUT pin (f2ab207de) which served a STALE component on v-runtime's B0 hash bump →
         # BlobMissing. Empirically proven output-stable across an inert rcdzc edit (see the maker note).
+        # A1 (2026-08-12): genesis rewritten to the bytes fold boundary — single-Event apply, kv.put host-routed
+        # (escapes as the world's kv import, host-fused), inline-structural EffectRequest return. So it now
+        # TARGETS the FULL reducer world (fold.apply + kv), materialized via emit-wit-world "full" — witWorld =
+        # "full" drives rcdzc's world-driven bytes emit + fuses the kv.put escape against the world's kv import.
+        # Built WITHOUT the world it would DECLINE (the host-fused escape needs the world to fuse against), so
+        # this witWorld arg is co-landed same-batch with the fixture rewrite (v-agent-harness). PUT-ONLY (unit
+        # result) → unaffected by the kv.get option-result path.
         reducerCadenzaGenesis = mkCadenzaComponent {
           name = "reducer-cadenza-genesis";
           cdzFile = "reducer_genesis.cdz";
+          witWorld = "full";
           contentAddressed = true;
         };
         # PURE-GENESIS (A1 bytes fold boundary, DESIGN-binary-ast-abi §3b): the smallest REAL Cadenza reducer
