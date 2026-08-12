@@ -8435,3 +8435,26 @@
   (call   main (: 0 Int64)) (output (: 0 Int64))
   (call   main (: 100 Int64)) (output (: 100 Int64))
   (call   main (: 63 Int64)) (output (: 63 Int64)))
+
+(case "remainder BY the state — truncated dividend-sign semantics hold as the state walks through negative and positive divisors"
+  (doc    "The remainder companion of the state-divisor pins: `(% v s)` where the DIVISOR is the threaded
+           state `s` (which the arm advances `s -> s+3`, so it crosses from negative through positive across
+           dispatches). i64 `%` truncates toward zero, taking the SIGN OF THE DIVIDEND regardless of the
+           divisor's sign — this must hold as the state-divisor changes sign. `rem` arm resumes `(% v s)`.
+           `main(3)`: a = (-7 % 3) = -1 (s->6); b = (7 % 6) = 1; `(+ -1 (* 100 1))` = 99. `main(-5)`: a =
+           (-7 % -5) = -2 (negative divisor, dividend-sign result, s->-2); b = (7 % -2) = 1; `(+ -2 (* 100 1))`
+           = 98. `main(2)`: a = (-7 % 2) = -1 (s->5); b = (7 % 5) = 2; `(+ -1 (* 100 2))` = 199. Distinct from
+           the fixed-divisor negative-remainder pin (nm1): here the DIVISOR is the walking state. Uniform on
+           all 3 backends, opt-sweep 0-divergence. Breaker state-remainder probe rm1 (2026-08-11).")
+  (input  (do
+            (effect S (op rem (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S n
+                ((rem (v) s (resume (% v s) (+ s 3))))
+                (let ((a (S.rem -7)))
+                  (let ((b (S.rem 7)))
+                    (+ a (* 100 b))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 99 Int64))
+  (call   main (: -5 Int64)) (output (: 98 Int64))
+  (call   main (: 2 Int64)) (output (: 199 Int64)))
