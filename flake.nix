@@ -852,6 +852,21 @@
           witWorld = "full";
           contentAddressed = true;
         };
+        # AGENT-LOOP (GAP-1 keystone, design/agent-harness-kernel.md §3): the agentic loop expressed as a FOLD
+        # over KV inbox state — message events append to the inbox under an "inbox/" prefix + enumerate the
+        # pending inbox via kv.prefix-scan then emit a "model" effect; model-response events dispatch a "tool"
+        # effect. The smallest honest demo that the harness hosts a REAL agent loop as a pure reducer over the
+        # A1 bytes boundary — no new kernel mechanism, just a fold over the existing kv + emit. Host-fused
+        # (kv.put + kv.prefix-scan escape as world imports), TARGETS the EXISTING full reducer world so
+        # `witWorld = "full"` + ZERO world change (no hash ripple for the other reducers; usage-based imports).
+        # NEW ADDITIVE derivation (like kv). COMPILE+VALIDATE only here (green today); the runtime prefix-scan
+        # enumeration is correct once v-cml's guest list-lift fix lands, then a v-ah runtime e2e follows. CA.
+        reducerCadenzaAgentLoop = mkCadenzaComponent {
+          name = "reducer-cadenza-agent-loop";
+          cdzFile = "reducer_agent_loop.cdz";
+          witWorld = "full";
+          contentAddressed = true;
+        };
 
         # Full-CI-in-nix increment 6e: the GHA `cad-tests` job — `cdz test` on the 4 committed
         # in-tree Cadenza PROJECTS (implementation/{cad,compiler-ml,choreography,iterators}). These are
@@ -2145,6 +2160,7 @@
         packages.reducer-cadenza-genesis = reducerCadenzaGenesis;
         packages.reducer-cadenza-pure-genesis = reducerCadenzaPureGenesis;
         packages.reducer-cadenza-kv = reducerCadenzaKv;
+        packages.reducer-cadenza-agent-loop = reducerCadenzaAgentLoop;
         packages.emit-wit-world = emitWitWorld;
         packages.reducer-cadenza-b1-hash = hashOf reducerCadenzaB1 "reducer-cadenza-b1-hash";
         packages.reducer-cadenza-b2-hash = hashOf reducerCadenzaB2 "reducer-cadenza-b2-hash";
@@ -2152,6 +2168,7 @@
         packages.reducer-cadenza-genesis-hash = hashOf reducerCadenzaGenesis "reducer-cadenza-genesis-hash";
         packages.reducer-cadenza-pure-genesis-hash = hashOf reducerCadenzaPureGenesis "reducer-cadenza-pure-genesis-hash";
         packages.reducer-cadenza-kv-hash = hashOf reducerCadenzaKv "reducer-cadenza-kv-hash";
+        packages.reducer-cadenza-agent-loop-hash = hashOf reducerCadenzaAgentLoop "reducer-cadenza-agent-loop-hash";
 
         # PARITY CHECK (not a pin): assert the DERIVED hash of the nix-built runtime equals the hash
         # `xtask codegen` already recorded in runtime_abi.rs. This reads the committed value only to
@@ -2337,7 +2354,7 @@
                 inherit runtimeHashParity runtimeDebugHashParity nfcHashParity
                   reducerGuestValid cedarGuestValid
                   reducerCadenzaB1Valid reducerCadenzaB2Valid reducerCadenzaB3Valid reducerCadenzaGenesisValid
-                  reducerCadenzaPureGenesisValid reducerCadenzaKvValid
+                  reducerCadenzaPureGenesisValid reducerCadenzaKvValid reducerCadenzaAgentLoopValid
                   exampleProjectTests reducerCadenzaTests crateClosureAssert;
               } ''
               echo "ok: flake reproducibility-backstop — hash-parity + component-validity + project-@tests + closure-assert" > $out
@@ -2357,6 +2374,7 @@
             reducerCadenzaGenesisValid = validComponent { name = "reducer-cadenza-genesis"; drv = reducerCadenzaGenesis; };
             reducerCadenzaPureGenesisValid = validComponent { name = "reducer-cadenza-pure-genesis"; drv = reducerCadenzaPureGenesis; };
             reducerCadenzaKvValid = validComponent { name = "reducer-cadenza-kv"; drv = reducerCadenzaKv; };
+            reducerCadenzaAgentLoopValid = validComponent { name = "reducer-cadenza-agent-loop"; drv = reducerCadenzaAgentLoop; };
 
             # LOCAL-GATE bindings (v-nix+v-fleet-tooling 2026-08-06, GHA-outage fallback). The 3 required
             # checks that were inline `cargoWorkspaceCheck {…}` at their attr get `let`-bound here so BOTH
@@ -2496,6 +2514,7 @@
             reducer-cadenza-genesis-valid = reducerCadenzaGenesisValid;
             reducer-cadenza-pure-genesis-valid = reducerCadenzaPureGenesisValid;
             reducer-cadenza-kv-valid = reducerCadenzaKvValid;
+            reducer-cadenza-agent-loop-valid = reducerCadenzaAgentLoopValid;
 
             # Full-CI-in-nix increment 1: the LINT pair, mirroring checks.yml `fmt` + `clippy` exactly.
             # `nix flake check` now runs them; the checks.yml jobs stay in place (advisory overlap) until
