@@ -1944,16 +1944,17 @@ mod tests {
     /// through, which would drive `ComponentStore::open("")` (CWD-relative) and silently mask a misconfigured
     /// CI env — so filter empties out and treat them as absent (#2320 review).
     ///
-    /// BYTES-ABI TRANSITION GATE (`CDZ_KERNEL_BYTES_ABI`, coordinated with v-agent-harness for the A1 kernel
-    /// bytes fold boundary): these E2Es drive a STRUCTURED-shape rcdzc reducer (`apply(u32×3)`) through the
-    /// host, but once the kernel host flips to the bytes boundary (`apply(list<u8>)->list<u8>`, A1) a
-    /// structured reducer can't emit bytes until v-cml's GAP-B host-fused kv emit lands — so driving it would
-    /// RED with a payload mismatch. Rather than have v-nix stop building/setting the reducer env, we gate on a
-    /// FLAG: unless `CDZ_KERNEL_BYTES_ABI` is set, SKIP (the nix native-check keeps building+setting the
-    /// structured `reducer_env`+`CDZ_STORE` as-is; the flag-unset skip keeps it green through the transition).
-    /// v-nix sets `CDZ_KERNEL_BYTES_ABI=1` post-GAP-B alongside a bytes-shape reducer, at which point these run
-    /// against the bytes host again. The flag is checked FIRST so the skip is clean even when the reducer env
-    /// is fully wired to the old structured component.
+    /// A1 BYTES FOLD BOUNDARY — `CDZ_KERNEL_BYTES_ABI` is now the coordinated ARMING SWITCH (not the old
+    /// shape-mismatch guard). The genesis reducer fixture is A1-native on origin (`apply(list<u8>) -> list<u8>`
+    /// with the single canonical Event doc IN + value-form effect-list OUT), so there is no longer a STRUCTURED
+    /// reducer that could mismatch the bytes host. The Rust `AsyncComponentReducer::apply(kv, ct, payload,
+    /// resumes)` signature is ALSO unchanged across A1 — it builds the Event doc internally
+    /// (`ast_marshal::build_event_document`) — and this E2E drives via `seed_genesis`→`deliver`→`fold`→`apply`,
+    /// so it needs NO apply-call reshape. What remains is the cross-lane handoff: v-nix flips
+    /// `CDZ_KERNEL_BYTES_ABI=1` (alongside the already-wired `GENESIS_REDUCER_COMPONENT`+`CDZ_STORE`) to ARM
+    /// this E2E non-vacuously in the native-check — the step v-agent-harness reserved as v-nix's, gated on this
+    /// adaptation. Until that flip, SKIP (the flag is checked FIRST so the skip is clean even with the reducer
+    /// env fully wired). A follow-up collapses the flag once the arming is proven green in CI.
     fn require_reducer_and_store_or_skip(
         test_name: &str,
         reducer_env: &str,
@@ -1961,9 +1962,8 @@ mod tests {
         let non_empty = |var: &str| std::env::var(var).ok().filter(|v| !v.is_empty());
         if non_empty("CDZ_KERNEL_BYTES_ABI").is_none() {
             eprintln!(
-                "SKIP {test_name}: CDZ_KERNEL_BYTES_ABI unset — the kernel bytes fold boundary (A1) is not \
-                 wired for a bytes-shape reducer yet; driving the structured reducer through the bytes host \
-                 would mismatch (re-enabled by v-nix post-GAP-B). See require_reducer_and_store_or_skip docs."
+                "SKIP {test_name}: CDZ_KERNEL_BYTES_ABI unset — the A1 arming switch is off; v-nix flips it \
+                 to 1 (with GENESIS_REDUCER_COMPONENT + CDZ_STORE) to run this against the A1 genesis reducer."
             );
             return None;
         }
@@ -2086,9 +2086,9 @@ mod tests {
     /// BYTES fold boundary on wasmtime — the smallest Cadenza guest that exercises the whole
     /// `apply(list<u8>) -> list<u8>` round-trip: the kernel `build_event_document`s the Event to bytes, the
     /// guest decodes it, folds, and encodes its effect-list back, and `parse_effect_list` decodes the result.
-    /// Where the kv-genesis E2E above drives a KV-using reducer (deferred behind `CDZ_KERNEL_BYTES_ABI` until
-    /// v-cml's kv.get emit lands), THIS reducer is PURE — `fold.apply` only, NO kv import and NO host
-    /// capabilities — so it proves the A1 bytes boundary END-TO-END with the minimal EFFECT-emitting surface.
+    /// Where the genesis E2E above drives a KV-writing reducer through the host `seed_genesis` fold path,
+    /// THIS reducer is PURE — `fold.apply` only, NO kv import and NO host capabilities — so it proves the A1
+    /// bytes boundary END-TO-END with the minimal EFFECT-emitting surface, driving `apply` DIRECTLY.
     /// "PURE" ≠ zero component imports though: reducer_pure.cdz CONSTRUCTS values (structural records +
     /// `String.to-bytes`), so — like any value-building Cadenza reducer — it imports the value-heap runtime
     /// (`cadenza:runtime/heap`, ONE dep), resolved from `CDZ_STORE` exactly as the genesis reducer's deps are.
@@ -2103,8 +2103,8 @@ mod tests {
     /// pure component set but CDZ_STORE missing → fail loud (the heap dep needs the store). A bare `cargo test`
     /// stays green; v-nix's pure-reducer precompile derivation exports `PURE_GENESIS_REDUCER_COMPONENT` in the
     /// native-check and the e2e runs against the real component. It does NOT go through
-    /// `require_reducer_and_store_or_skip` (+ its `CDZ_KERNEL_BYTES_ABI` transition guard): this test IS the
-    /// bytes-boundary proof + gates on its own component env, no flag needed.
+    /// `require_reducer_and_store_or_skip` because it gates on ITS OWN component env directly (the genesis/kv
+    /// E2Es share that helper only to single-source the reducer-path + CDZ_STORE skip/fail-loud contract).
     #[tokio::test]
     async fn real_pure_reducer_folds_an_event_through_the_a1_bytes_boundary() {
         use cdz_kernel::wasm_host::AsyncComponentReducer;
@@ -2216,6 +2216,137 @@ mod tests {
         assert!(
             none_effects.is_empty(),
             "a payload-free event requests no effects (the pure fold's empty arm)"
+        );
+    }
+
+    /// END-TO-END: drive the REAL rcdzc-compiled KV-GENESIS reducer (`reducer_kv.cdz`) through the A1 BYTES
+    /// fold boundary on wasmtime, proving the kv HOST IMPORT round-trips the SAME bytes through the host — the
+    /// sibling of the pure-genesis E2E, exercising BOTH `kv.put` AND the new `kv.get` option<list<u8>> lift
+    /// (rcdzc §3c GAP C) end to end. The pure E2E proves the effect-emitting bytes boundary with NO host cap;
+    /// THIS one adds the `cadenza:agent-kernel/kv` host import (served by the kernel `ReducerHost`, backed by
+    /// the passed-in `Kv`) and proves put-then-get returns what put wrote.
+    ///
+    /// The contract (`reducer_kv.cdz`, v-agent-harness-host-agreed): a `kv-seed`-family event WITH a payload
+    /// folds to `kv.put("kv-genesis/slot", payload)` + NO effects; a `kv-read`-family event folds to
+    /// `kv.get("kv-genesis/slot")` → on `Some(got)` one `emit` effect echoing the stored bytes (target "out",
+    /// correlation none), on `None()` no effects; any other family folds to nothing. Driving SEED then TRIGGER
+    /// and asserting the emit payload equals the seeded bytes proves the whole kv put→get round-trip.
+    ///
+    /// The KV is THREADED across the two folds (the seed fold's returned `Kv` is fed into the trigger fold) —
+    /// this is exactly the kernel loop's fold contract (KV moves through each fold), so the trigger's `kv.get`
+    /// reads what the seed's `kv.put` committed. Env-gated on `CDZ_KV_GENESIS_REDUCER_COMPONENT` ALONE (skip
+    /// when unset); `CDZ_STORE` required only once the component is set (fail loud on half-wired) — the SAME
+    /// gating shape as the pure-genesis E2E (the kv reducer also imports `cadenza:runtime/heap` to build its
+    /// structural records, resolved from the store). A bare `cargo test` stays green; v-nix's kv-reducer
+    /// precompile derivation exports the env in the native-check and this runs against the real component.
+    #[tokio::test]
+    async fn real_kv_reducer_round_trips_stored_bytes_through_the_kv_host_import() {
+        use cdz_kernel::wasm_host::AsyncComponentReducer;
+
+        // Gate on THIS test's own component env; require CDZ_STORE only when the component is set (its heap dep
+        // needs the store) — same skip/fail-loud shape as the pure-genesis E2E (CDZ_STORE is shared, so gating
+        // on the pair would wrongly panic when the store is present but the kv component isn't yet wired).
+        let non_empty = |var: &str| std::env::var(var).ok().filter(|v| !v.is_empty());
+        let Some(reducer_path) = non_empty("CDZ_KV_GENESIS_REDUCER_COMPONENT") else {
+            eprintln!(
+                "SKIP real_kv_reducer_round_trips_stored_bytes_through_the_kv_host_import: \
+                 CDZ_KV_GENESIS_REDUCER_COMPONENT unset (or empty)"
+            );
+            return;
+        };
+        let store_dir = non_empty("CDZ_STORE").unwrap_or_else(|| {
+            panic!(
+                "real_kv_reducer_...: CDZ_KV_GENESIS_REDUCER_COMPONENT is set but CDZ_STORE is not — the kv \
+                 reducer imports cadenza:runtime/heap, whose bytes resolve from the component store"
+            )
+        });
+        let bytes = std::fs::read(&reducer_path).unwrap_or_else(|e| {
+            panic!("CDZ_KV_GENESIS_REDUCER_COMPONENT={reducer_path:?} set but unreadable: {e}")
+        });
+        let reducer = AsyncComponentReducer::from_component_bytes(&bytes)
+            .unwrap_or_else(|e| panic!("reducer_kv must be a valid component: {e:?}"));
+        // Resolve the reducer's declared component deps (the value-heap runtime) from CDZ_STORE via
+        // `get_by_hash` + attach the store — identical to the pure/genesis dep-resolve path.
+        let store = cdz_kernel::component_store::ComponentStore::open(&store_dir);
+        let deps = reducer.deps().to_vec();
+        assert!(
+            !deps.is_empty(),
+            "the kv reducer must declare a cadenza:runtime/heap dep (it constructs values via the heap)"
+        );
+        let mut resolved = Vec::with_capacity(deps.len());
+        for dep in &deps {
+            let dep_bytes = store.get_by_hash(&dep.hash).unwrap_or_else(|e| {
+                panic!(
+                    "CDZ_STORE={store_dir:?} could not resolve kv reducer dep {:?} (hash {}): {e:?}",
+                    dep.import_name,
+                    dep.hash.to_hex()
+                )
+            });
+            resolved.push((dep.clone(), dep_bytes));
+        }
+        let reducer = reducer
+            .with_resolved_deps(resolved)
+            .with_component_store(store);
+
+        // SEED: a `kv-seed`-family event with a payload → the reducer's kv.put writes it under its fixed slot
+        // and returns NO effects. The put lands on the returned Kv (committed on fold success).
+        let stored = b"seeded-kv-genesis-value".to_vec();
+        let seed_ct = cdz_kernel::event::ContentType {
+            family: "kv-seed".into(),
+            version: 1,
+        };
+        let (seed_effects, kv_after_seed) = reducer
+            .apply(
+                cdz_kernel::kv::Kv::new(),
+                seed_ct,
+                Some(stored.clone()),
+                None,
+            )
+            .await
+            .expect("the kv reducer folds the seed event (kv.put) through the A1 bytes boundary");
+        assert!(
+            seed_effects.is_empty(),
+            "a kv-seed event writes state (kv.put) and requests no effects"
+        );
+
+        // TRIGGER: a `kv-read`-family event → the reducer's kv.get reads the slot back and echoes it in ONE
+        // emit effect. Thread the SEED fold's returned Kv in (the kernel loop's fold contract — KV moves
+        // through each fold), so the trigger's kv.get sees what the seed's kv.put committed.
+        let read_ct = cdz_kernel::event::ContentType {
+            family: "kv-read".into(),
+            version: 1,
+        };
+        let (read_effects, _kv_after_read) = reducer
+            .apply(kv_after_seed, read_ct, None, None)
+            .await
+            .expect(
+                "the kv reducer folds the trigger event (kv.get) through the A1 bytes boundary",
+            );
+
+        // Exactly one emit effect whose payload equals the seeded bytes — kv.get read back what kv.put wrote,
+        // the SAME bytes round-tripped through the host kv import + the value-form bytes boundary both ways.
+        assert_eq!(
+            read_effects.len(),
+            1,
+            "a kv-read event with the slot populated folds to one emit effect"
+        );
+        assert_eq!(
+            read_effects[0].request.content_type.family, "emit",
+            "the folded effect's kind crosses the bytes boundary as the family string"
+        );
+        assert_eq!(
+            read_effects[0].request.target_str().unwrap(),
+            "out",
+            "the emit effect target is the opaque bytes \"out\""
+        );
+        let echoed = match &read_effects[0].request.payload {
+            Some(cdz_kernel::effect::Payload::Inline(b)) => b.to_vec(),
+            other => panic!("expected an inline echoed payload, got {other:?}"),
+        };
+        assert_eq!(
+            echoed, stored,
+            "the emit effect echoes the SEEDED bytes — kv.get returned exactly what kv.put stored, proving \
+             the round-trip through the host kv import"
         );
     }
 
