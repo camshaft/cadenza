@@ -1944,29 +1944,21 @@ mod tests {
     /// through, which would drive `ComponentStore::open("")` (CWD-relative) and silently mask a misconfigured
     /// CI env — so filter empties out and treat them as absent (#2320 review).
     ///
-    /// A1 BYTES FOLD BOUNDARY — `CDZ_KERNEL_BYTES_ABI` is now the coordinated ARMING SWITCH (not the old
-    /// shape-mismatch guard). The genesis reducer fixture is A1-native on origin (`apply(list<u8>) -> list<u8>`
-    /// with the single canonical Event doc IN + value-form effect-list OUT), so there is no longer a STRUCTURED
-    /// reducer that could mismatch the bytes host. The Rust `AsyncComponentReducer::apply(kv, ct, payload,
-    /// resumes)` signature is ALSO unchanged across A1 — it builds the Event doc internally
-    /// (`ast_marshal::build_event_document`) — and this E2E drives via `seed_genesis`→`deliver`→`fold`→`apply`,
-    /// so it needs NO apply-call reshape. What remains is the cross-lane handoff: v-nix flips
-    /// `CDZ_KERNEL_BYTES_ABI=1` (alongside the already-wired `GENESIS_REDUCER_COMPONENT`+`CDZ_STORE`) to ARM
-    /// this E2E non-vacuously in the native-check — the step v-agent-harness reserved as v-nix's, gated on this
-    /// adaptation. Until that flip, SKIP (the flag is checked FIRST so the skip is clean even with the reducer
-    /// env fully wired). A follow-up collapses the flag once the arming is proven green in CI.
+    /// A1 BYTES FOLD BOUNDARY (settled — no arming flag). Every real reducer fixture is A1-native on origin
+    /// (`apply(list<u8>) -> list<u8>`, single canonical Event doc IN + value-form effect-list OUT), the
+    /// `CDZ_KERNEL_BYTES_ABI` arming switch has been flipped + proven green in CI (all three reducer E2Es
+    /// exercise non-vacuously), so the transition guard is GONE — collapsed, not carried as a dead migration
+    /// flag (operator no-migration-layer directive; v-nix drops the export in lockstep). The Rust
+    /// `AsyncComponentReducer::apply(kv, ct, payload, resumes)` signature is unchanged across A1 (it builds the
+    /// Event doc internally via `ast_marshal::build_event_document`), and the genesis E2E drives via
+    /// `seed_genesis`→`deliver`→`fold`→`apply`, so no apply-call reshape was ever needed. These E2Es now gate
+    /// purely on their reducer-component env + `CDZ_STORE`, exactly like
+    /// `real_pure_reducer_folds_an_event_through_the_a1_bytes_boundary`.
     fn require_reducer_and_store_or_skip(
         test_name: &str,
         reducer_env: &str,
     ) -> Option<(String, String)> {
         let non_empty = |var: &str| std::env::var(var).ok().filter(|v| !v.is_empty());
-        if non_empty("CDZ_KERNEL_BYTES_ABI").is_none() {
-            eprintln!(
-                "SKIP {test_name}: CDZ_KERNEL_BYTES_ABI unset — the A1 arming switch is off; v-nix flips it \
-                 to 1 (with GENESIS_REDUCER_COMPONENT + CDZ_STORE) to run this against the A1 genesis reducer."
-            );
-            return None;
-        }
         let reducer_path = non_empty(reducer_env);
         let store_dir = non_empty("CDZ_STORE");
         match (reducer_path, store_dir) {
