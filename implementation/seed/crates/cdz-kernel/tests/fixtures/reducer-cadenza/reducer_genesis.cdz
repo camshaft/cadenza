@@ -20,26 +20,21 @@
 // by v-agent-harness-host). This reducer records the authorizer-hash POINTER; it does not know or run
 // Cedar — the kernel/host resolves whatever authorizer component the pointer names.
 //
-// BUILD: cdz compile reducer_genesis.cdz --target wasm --component-name cadenza:agent-kernel/fold
-//   -> apply: func(u32,u32,u32)->u32 + imports cadenza:agent-kernel/kv + cadenza:runtime/heap; VALID.
+// A1 BYTES FOLD BOUNDARY: this reducer targets the REDUCER world (reducer_world_artifact — export
+// fold.apply(list<u8>)->list<u8> + import cadenza:agent-kernel/kv). apply takes the single canonical Event
+// record and returns a list of inline structural EffectRequest records (the locked value-form contract,
+// same as reducer_pure); rcdzc bytes-wraps it under the world. There is NO `bind`: the kv.put call is an
+// UNHANDLED effect that ESCAPES as the world's `cadenza:agent-kernel/kv` HOST import (host-fused). A `bind`
+// would make kv a PEER interface, which the host-fused bytes-roundtrip path declines.
+//
+// BUILD: emit-wit-world full -> reducer-world.bin; then
+//   cdz compile reducer_genesis.cdz wit-world:reducer-world=reducer-world.bin
+//     --component-name cadenza:agent-kernel/fold -o reducer_genesis.wasm
+//   -> exports fold.apply(list<u8>)->list<u8>, imports cadenza:agent-kernel/kv (+ runtime/heap); VALID.
 
-type EffectKind =
-  | Shell()
-  | Http()
-  | Model()
-  | Now()
-  | Timer()
-  | Emit()
-
-type EffectRequest =
-  | Mk(Record(kind: EffectKind, target: String, payload: Option(Bytes), correlation: Option(Bytes)))
-
-// kv host import (bound peer iface over the shared value-heap runtime — handle ABI): only put is needed
-// (genesis WRITES setup state; it never reads to decide an action).
+// The kv host import: genesis only PUTs (it writes setup state; it never reads to decide an action).
 effect Kv =
   | put : `->`(Bytes, Bytes, Unit)
-
-bind(Kv, "cadenza:agent-kernel/kv")
 
 // Which well-known KV key a setup content-type family folds into. `None` = not a setup event this
 // genesis reducer recognizes (fold to nothing). The families are the genesis-event contract with the
@@ -52,51 +47,33 @@ def setup-key(family: String) -> Option(Bytes) =
   else None()
 
 def apply(
-  ct: Record(family: String, version: UInt(32)),
+  event: Record(
+    content-type: Record(family: String, version: UInt(32)),
+    payload: Option(Bytes),
+    resumes: Option(Bytes),
+  ),
+) -> List(Record(
+  kind: String,
+  target: Bytes,
   payload: Option(Bytes),
-  resumes: Option(Bytes),
-) -> List(EffectRequest) = match resumes with
-  // Genesis has no effects to await; a resume event is not part of setup — ignore.
-  | Some(_) => []
-  | None() =>
-    match setup-key(ct.family) with
-      // A recognized setup event WITH a payload: fold it into KV under its well-known key. No effects.
-      | Some(key) => (match payload with
-          | Some(value) => host Kv in ( Kv.put(key, value); [] )
-          | None() => [])
-      // Not a setup event this genesis reducer folds → nothing.
-      | None() => []
+  correlation: Option(Bytes),
+)) =
+  match event.resumes with
+    // Genesis has no effects to await; a resume event is not part of setup — ignore.
+    | Some(_) => []
+    | None() =>
+      match setup-key(event.content-type.family) with
+        // A recognized setup event WITH a payload: fold it into KV under its well-known key. No effects.
+        | Some(key) => (match event.payload with
+            | Some(value) => host Kv in ( Kv.put(key, value); [] )
+            | None() => [])
+        // Not a setup event this genesis reducer folds → nothing.
+        | None() => []
 
-// Behavioral coverage (seed compiler via `cdz test`, INDEPENDENT of the kernel host adapter; plain
-// `cdz compile` ignores @test). The KV-writing branches need a host handler (v-agent-harness's adapter
-// drives that E2E); these @tests cover the pure `setup-key` routing + the no-effect invariants that are
-// testable standalone.
-@test
-def genesis_recognizes_root_family() =
-  match setup-key("genesis/root") with
-    | Some(k) => (if k == String.to-bytes("bootstrap/root-identity") then unit else trap("root key wrong"))
-    | None() => trap("genesis/root must be a recognized setup family (the trust-root seam)")
-
-@test
-def genesis_recognizes_authorizer_family() =
-  match setup-key("genesis/authorizer") with
-    | Some(k) => (if k == String.to-bytes("bootstrap/authorizer-hash") then unit else trap("authorizer key wrong"))
-    | None() => trap("genesis/authorizer must be a recognized setup family (install-by-hash)")
-
-@test
-def genesis_ignores_unknown_family() =
-  match setup-key("message") with
-    | Some(_) => trap("a non-setup family must not be a genesis setup key")
-    | None() => unit
-
-@test
-def genesis_emits_no_effects_on_unknown() =
-  if List.len(apply({ family = "message", version = 1 }, None(), None())) == 0
-  then unit else trap("genesis must request no effects for a non-setup event")
-
-@test
-def genesis_emits_no_effects_on_resume() =
-  if List.len(apply({ family = "genesis/root", version = 1 }, None(), Some(String.to-bytes("tok")))) == 0
-  then unit else trap("genesis must request no effects on a resume event")
+// No `@test`: a host-fused reducer (the unhandled kv.put escapes to a host import) cannot build a
+// standalone test component on the seed VM (no kv host), so `cdz test` cannot inspect it — same as
+// reducer_kv. This fixture is gated by the WORLD-DRIVEN compile (v-nix's reducerCadenzaGenesis
+// derivation, witWorld=full) + v-agent-harness-host's genesis e2e, NOT by `cdz test`; it is therefore
+// NOT registered in Project.cdz `tests` (that would break reducerCadenzaTests building a test component).
 
 export { apply }
