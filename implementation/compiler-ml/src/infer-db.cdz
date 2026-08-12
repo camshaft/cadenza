@@ -103,6 +103,15 @@ def tuple-elem-types(ids: List(Int64), tcol: Map(Int64, Ty), i: Int64, acc: List
           tuple-elem-types(ids, tcol, i + 1, List.push(acc, ty)))
      | Option.None(_) => acc))
 
+/// Find `target`'s position in a field-NAME-id list (index recursion) — `Some(i)` if present, `None` if not.
+/// Record field access `(. r fieldname)` looks up the field name's slot in the record's (source-order) field
+/// list; lower reuses the SAME index for the `CProj` payload slot, so construct + access agree on the order.
+def index-of-name(names: List(Int64), target: Int64, i: Int64) =
+  (if i == List.len(names) then Option.None(unit)
+   else (match List.at(names, i) with
+     | Option.Some(n) => (if n == target then Option.Some(i) else index-of-name(names, target, i + 1))
+     | Option.None(_) => Option.None(unit)))
+
 def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Ty)) =
   match node-at(tree, id) with
     // item-3 HM: a bare literal is DEFERRED (sign+width unconstrained) — it grounds to a narrow sibling in an
@@ -133,12 +142,27 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
     | Option.Some(Node.NProj(operandId, indexId)) =>
         (let t1 = infer-node(tree, operandId, rcol, tcol) in
          (let t2 = infer-node(tree, indexId, rcol, t1) in
-          (match Map.lookup(t2, operandId) with
-            | Option.Some(Ty.TyTuple(elems)) =>
-                (match node-at(tree, indexId) with
-                  | Option.Some(Node.NLit(i)) =>
+          (match node-at(tree, indexId) with
+            // TUPLE projection `(. t <int>)`: a LITERAL index into a TyTuple → the i-th element type (in bounds).
+            | Option.Some(Node.NLit(i)) =>
+                (match Map.lookup(t2, operandId) with
+                  | Option.Some(Ty.TyTuple(elems)) =>
                       (match List.at(elems, i) with
                         | Option.Some(ety) => Map.insert(t2, id, ety)
+                        | Option.None(_) => Map.insert(t2, id, Ty.TyErr))
+                  | _ => Map.insert(t2, id, Ty.TyErr))
+            // RECORD field access `(. r fieldname)`: a NAME index into a TyRecord → the named field's type. The
+            // index node is an NVar carrying the field NAME-id (NOT a variable reference — resolve leaves it
+            // unresolved); find that name in the record's field-name list → its type. Field not present, or
+            // operand not a record → decline (coverage-not-yet; the oracle rejects a missing/ill-typed field).
+            | Option.Some(Node.NVar(fieldNameId)) =>
+                (match Map.lookup(t2, operandId) with
+                  | Option.Some(Ty.TyRecord(nameIds, types)) =>
+                      (match index-of-name(nameIds, fieldNameId, 0) with
+                        | Option.Some(idx) =>
+                            (match List.at(types, idx) with
+                              | Option.Some(fty) => Map.insert(t2, id, fty)
+                              | Option.None(_) => Map.insert(t2, id, Ty.TyErr))
                         | Option.None(_) => Map.insert(t2, id, Ty.TyErr))
                   | _ => Map.insert(t2, id, Ty.TyErr))
             | _ => Map.insert(t2, id, Ty.TyErr))))
@@ -1032,6 +1056,7 @@ def type-err-at(tree: Tree, root: Int64, id: Int64) = match type-at(tree, root, 
 /// scalar) is fine — only the top-level RESULT is gated.
 def is-tuple-at(tree: Tree, root: Int64, id: Int64) = match type-at(tree, root, id) with
   | Option.Some(Ty.TyTuple(_)) => true
+  | Option.Some(Ty.TyRecord(_, _)) => true   // a raw RECORD program result also declines (a compound is not a scalar boundary value), matching the oracle
   | _ => false
 
 /// How many nodes carry a type fact (in a well-formed tree, every node).
@@ -1748,4 +1773,4 @@ def id-nmatchctor-terr-scrutinee-taints-match-pr849() =
                 | Option.Some(Ty.TyErr) => unit                              // TErr scrutinee taints the match
                 | _ => trap("a TErr scrutinee must taint the whole NMatchCtor → TErr, not be masked by well-typed arms (PR#849)")))))))))
 
-export { infer-node, infer-tree, type-at, ground-deferred, well-typed, all-defs-well-scoped, type-err-at, typed-count, is-bool-at, is-int-at, is-tuple-at, def-arrow-type, bin-type, if-type, let-type, match-type, var-type, mk-int, int-parts-of, is-deferred-int, t-int-deferred }
+export { infer-node, infer-tree, type-at, ground-deferred, well-typed, all-defs-well-scoped, type-err-at, typed-count, is-bool-at, is-int-at, is-tuple-at, index-of-name, def-arrow-type, bin-type, if-type, let-type, match-type, var-type, mk-int, int-parts-of, is-deferred-int, t-int-deferred }

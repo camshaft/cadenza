@@ -66,8 +66,10 @@ def resolve-node(tree: Tree, id: Int64, env: Map(Int64, Int64), col: Map(Int64, 
     | Option.Some(Node.NAnnLit(_, _, _)) => col   // an annotated literal binds nothing (like NLit)
     | Option.Some(Node.NTuple(_)) => col          // COMPOUND stage-1: NTuple resolves nothing (infer TyErrs it → run-src declines)
     | Option.Some(Node.NRecord(_, _)) => col       // RECORD stage-A: NRecord resolves nothing yet (infer TyErrs it → run-src declines); stage-B resolves the field values
-    | Option.Some(Node.NProj(operandId, indexId)) =>   // PROJECTION: resolve the operand (so `p` in `(. p 1)` binds) then the index (a literal, resolves nothing)
-        resolve-node(tree, indexId, env, resolve-node(tree, operandId, env, col))
+    | Option.Some(Node.NProj(operandId, _)) =>   // PROJECTION `(. t i)` / `(. r field)`: resolve ONLY the operand.
+        // The index is a POSITION LITERAL (tuple) or a FIELD LABEL (record) — NOT a variable reference, so it
+        // must NOT be resolved (resolving a record field label as a var would poison it → misread as unbound).
+        resolve-node(tree, operandId, env, col)
     | Option.Some(Node.NVar(nm)) =>
         // scope-first (params+lets → RBound), THEN the def table (a bare def-name used as a VALUE → RDef),
         // else unbound → RPoison. Mirrors rcdzc resolve_name's scope-then-def-table order (HO-2a). RDef is

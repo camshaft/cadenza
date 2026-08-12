@@ -16,7 +16,7 @@
 
 import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, record-def, record-param, def-body-of, call-is-recursive, call-is-self-recursive, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of, ctor-tag-of, ctor-decl-of, decl-is-enum-disc, record-ctor-tag, record-ctor-tag-typed } from "parse-db"
 import { Resolved, resolve-tree, resolve-node, param-scope } from "resolve-db"
-import { infer-tree, infer-node, mk-int, int-parts-of } from "infer-db"
+import { infer-tree, infer-node, mk-int, int-parts-of, index-of-name } from "infer-db"
 import { Ty, is-int-ty } from "ty"
 // ARC-A2 final consumer: lower-db reads a Ty type column directly now (was Typed via ty-bridge). The 3 upstream
 // columns (resolve/infer/lower) are Ty-native end-to-end, so the ty-bridge + typed.cdz imports are gone.
@@ -125,6 +125,10 @@ def lower-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
     // the SumStore product rep). eval store-allocs it to a handle; run-src DECLINES a raw-tuple PROGRAM RESULT
     // (is-tuple-at guard) matching the oracle, so a tuple is only ever USED internally (projected to a scalar).
     | Option.Some(Ty.TyTuple(_)) => lower-ok(tree, id, rcol, tcol)
+    // COMPOUND RECORD: a node typed as a record lowers — a `(record …)` literal → CCtor(0, values in field
+    // order), reusing the tuple/SumStore rep; field access `(. r f)` (a scalar) lowers via CProj. A raw-record
+    // PROGRAM RESULT declines at the is-tuple-at compound guard, so a record is only USED internally (projected).
+    | Option.Some(Ty.TyRecord(_, _)) => lower-ok(tree, id, rcol, tcol)
     | _ => Option.None(unit))
 
 /// The typed-node case: build the Core node, canonicalizing a var to its binder id via `rcol`.
@@ -140,9 +144,14 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
         (match lower-tuple-elems(tree, ids, rcol, tcol, 0, ([] : List(Core))) with
           | Option.Some(elems) => Option.Some(Core.CCtor(0, elems))
           | Option.None(_) => Option.None(unit))
-    // RECORD stage-A: NRecord declines (infer TyErrs it, so the lower type-gate never routes here; this arm is
-    // for match totality). Stage B lowers a record to CCtor(0, values-in-sorted-key-order) reusing the tuple rep.
-    | Option.Some(Node.NRecord(_, _)) => Option.None(unit)
+    // RECORD `(record (f v)…)` → `CCtor(0, [field values in field order])` — REUSE the SumStore product rep
+    // (like a tuple; the field values are positional, in the record's source field order). Field access
+    // `(. r f)` reads the field's slot by finding its name's index in that same order (index-of-name), so
+    // construct + access agree without a sort. Any field value that fails to lower declines the whole record.
+    | Option.Some(Node.NRecord(_, valueIds)) =>
+        (match lower-tuple-elems(tree, valueIds, rcol, tcol, 0, ([] : List(Core))) with
+          | Option.Some(vals) => Option.Some(Core.CCtor(0, vals))
+          | Option.None(_) => Option.None(unit))
     // PROJECTION `(. t i)` → `CProj(operandCore, i)`: lower the operand (a tuple → CCtor(0, elems)) and read
     // the literal index from indexId. infer only types this node (routing it here via the gate) when the
     // operand is a TyTuple and the index is an in-bounds NLit, so the operand lowers and the index is a
@@ -151,7 +160,17 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
         (match lower-node(tree, operandId, rcol, tcol) with
           | Option.Some(opCore) =>
             (match node-at(tree, indexId) with
+              // TUPLE `(. t <int>)`: the literal index IS the payload slot.
               | Option.Some(Node.NLit(i)) => Option.Some(Core.CProj(opCore, i))
+              // RECORD `(. r fieldname)`: resolve the field name to its slot via the operand's TyRecord field
+              // order (the SAME order lower-NRecord laid the CCtor values), then read that slot with CProj.
+              | Option.Some(Node.NVar(fieldNameId)) =>
+                  (match Map.lookup(tcol, operandId) with
+                    | Option.Some(Ty.TyRecord(nameIds, _)) =>
+                        (match index-of-name(nameIds, fieldNameId, 0) with
+                          | Option.Some(slot) => Option.Some(Core.CProj(opCore, slot))
+                          | Option.None(_) => Option.None(unit))
+                    | _ => Option.None(unit))
               | _ => Option.None(unit))
           | Option.None(_) => Option.None(unit))
     | Option.Some(Node.NAnnLit(v, sflag, w)) =>

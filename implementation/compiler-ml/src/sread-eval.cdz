@@ -115,6 +115,27 @@ def se-tuple-projection-rejects-decline() =
         | Option.None(_) => unit)
 
 @test
+def se-record-field-access-runs-to-value() =
+  // RECORD field access `(. r fieldname)` runs to the named field's value (a SCALAR verdict, differential-safe):
+  // a record lowers to CCtor(0, field values in field order) and CProj reads the field's slot found by name.
+  // `(. r b)` → 20, `(. r a)` → 10. The rcdzc-wasm oracle runs these to the same scalars.
+  match run-src("(let ((r (record (a 10) (b 20)))) (. r b))") with
+    | Option.Some(v) => (if v == 20 then
+        match run-src("(let ((r (record (a 10) (b 20)))) (. r a))") with
+          | Option.Some(w) => (if w == 10 then unit else trap("(. r a) = 10"))
+          | Option.None(_) => trap("field a access runs")
+      else trap("(. r b) of (record (a 10) (b 20)) = 20"))
+    | Option.None(_) => trap("record field access runs to a scalar")
+
+@test
+def se-record-rejects-decline() =
+  // A MISSING field and a raw-record PROGRAM RESULT both DECLINE (coverage-not-yet, matching the oracle — a
+  // missing field is ill-typed; a raw compound is not a scalar boundary value). Never a value/trap → no disagree.
+  match run-src("(let ((r (record (a 10) (b 20)))) (. r c))") with
+    | Option.Some(_) => trap("access of a missing field must decline")
+    | Option.None(_) => unit
+
+@test
 def se-unary-minus() =
   // (- 5) → -5: unary minus (a `-` head with one operand) desugars to `0 - 5` and evaluates. The reference
   // runs this to -5; the s-expr reader previously DECLINED it (read-bin-form required two operands).
