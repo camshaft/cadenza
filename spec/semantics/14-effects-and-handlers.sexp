@@ -7726,3 +7726,27 @@
                 (St.add (. (St.pair) 1)))) (export main)))
   (output (: 21 Int64)))
 
+(case "a handler arm with two lookup-matches and a computed perform key emits valid wasm (checked-arith scratch slot-width partition)"
+  (doc    "regression guard for breaker finding-21 (case mmlminT): a handler arm with TWO
+           Option-match sites (one building new state, one building the resume value) over
+           Map.lookup, plus a COMPUTED perform key ((+ n 1)) re-materialized inside the arm,
+           formerly emitted invalid wasm on the wasm backend only (function slot-width alias:
+           the i64 checked-add scratch temp for the re-materialized key aliased an i32
+           Option-handle slot -> validator expected i64 found i32; rust/rust-async passed).
+           Fixed by width-partitioning the checked-arith scratch claim in
+           emit_checked_arith_to (v-effects, backend/wasm/select.rs). Now valid + passes x3:
+           n=3 -> put key (+ 3 1)=4 value 3 -> m2 has 4->3 -> lookup 4 = Some 3 -> resume 3.
+           A revert reintroduces the invalid-component wasm reject, caught here.")
+  (input  (do
+            (effect S (op put (-> Int64 Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S Map.empty
+                ((put (k v) m
+                  (let ((m2 (match (Map.lookup m k)
+                              ((Some x) (Map.insert m k v))
+                              ((None u) (Map.insert m k v)))))
+                    (resume (match (Map.lookup m2 k) ((Some x) x) ((None u) 0)) m2))))
+                (S.put (+ n 1) n)))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 3 Int64)))
+

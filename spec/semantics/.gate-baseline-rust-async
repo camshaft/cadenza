@@ -2012,6 +2012,7 @@ pass	a handler arm that resumes NON-tail folds when the perform is in a match sc
 pass	a handler arm that resumes NON-tail folds when the perform is in an and lhs
 pass	a handler arm that resumes NON-tail folds when the perform is in an if condition
 pass	a handler arm that resumes NON-tail folds when the perform is the whole body
+pass	a handler arm with two lookup-matches and a computed perform key emits valid wasm (checked-arith scratch slot-width partition)
 pass	a handler folds a counter across the operations it discharges
 pass	a handler mixing arms of two different effects is rejected
 pass	a handler resumes its continuation at most once by default
