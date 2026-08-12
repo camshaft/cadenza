@@ -2776,6 +2776,117 @@ mod tests {
         );
     }
 
+    /// END-TO-END: the agent-loop reducer ACCUMULATES its inbox across multiple messages in durable KV,
+    /// enumerated via kv.prefix-scan — the distinctive "self-hosting agent manages its own inbox/context in
+    /// durable KV rather than tmux/fleet-tooling state" property. The closed-loop E2E above proves the
+    /// message→model→tool→result→model spine with a SINGLE inbox entry; THIS proves the inbox is genuinely
+    /// STATEFUL: two distinct messages, threaded through the fold KV (the kernel loop's contract), leave TWO
+    /// pairs under the `inbox/` prefix that prefix-scan enumerates. Asserts on the KV STATE + effect
+    /// family/target, NOT the model-effect payload bytes — so it is independent of the M1 structured-payload
+    /// change (which reshapes only the payload, not the inbox accumulation).
+    ///
+    /// Same component + env as the other agent-loop E2E (`CDZ_AGENT_LOOP_REDUCER_COMPONENT` + `CDZ_STORE`).
+    #[tokio::test]
+    async fn real_agent_loop_reducer_accumulates_its_inbox_across_messages_in_kv() {
+        use cdz_kernel::wasm_host::AsyncComponentReducer;
+
+        let non_empty = |var: &str| std::env::var(var).ok().filter(|v| !v.is_empty());
+        let Some(reducer_path) = non_empty("CDZ_AGENT_LOOP_REDUCER_COMPONENT") else {
+            eprintln!(
+                "SKIP real_agent_loop_reducer_accumulates_its_inbox_across_messages_in_kv: \
+                 CDZ_AGENT_LOOP_REDUCER_COMPONENT unset (or empty)"
+            );
+            return;
+        };
+        let store_dir = non_empty("CDZ_STORE").unwrap_or_else(|| {
+            panic!(
+                "real_agent_loop_reducer_accumulates_...: CDZ_AGENT_LOOP_REDUCER_COMPONENT is set but \
+                 CDZ_STORE is not — the agent-loop reducer imports cadenza:runtime/heap, resolved from the store"
+            )
+        });
+        let bytes = std::fs::read(&reducer_path).unwrap_or_else(|e| {
+            panic!("CDZ_AGENT_LOOP_REDUCER_COMPONENT={reducer_path:?} set but unreadable: {e}")
+        });
+        let reducer = AsyncComponentReducer::from_component_bytes(&bytes)
+            .unwrap_or_else(|e| panic!("reducer_agent_loop must be a valid component: {e:?}"));
+        let store = cdz_kernel::component_store::ComponentStore::open(&store_dir);
+        let deps = reducer.deps().to_vec();
+        assert!(
+            !deps.is_empty(),
+            "the agent-loop reducer must declare a cadenza:runtime/heap dep (it constructs values via the heap)"
+        );
+        let mut resolved = Vec::with_capacity(deps.len());
+        for dep in &deps {
+            let dep_bytes = store.get_by_hash(&dep.hash).unwrap_or_else(|e| {
+                panic!(
+                    "CDZ_STORE={store_dir:?} could not resolve agent-loop reducer dep {:?} (hash {}): {e:?}",
+                    dep.import_name,
+                    dep.hash.to_hex()
+                )
+            });
+            resolved.push((dep.clone(), dep_bytes));
+        }
+        let reducer = reducer
+            .with_resolved_deps(resolved)
+            .with_component_store(store);
+
+        // Deliver TWO distinct messages, threading the fold KV through both (message A then message B). Each
+        // message appends to the "inbox/" prefix and — the inbox being non-empty — emits one model effect.
+        let msg_a = b"first task: read the log".to_vec();
+        let msg_b = b"second task: summarize it".to_vec();
+        let msg_ct = || cdz_kernel::event::ContentType {
+            family: "message".into(),
+            version: 1,
+        };
+
+        let (effects_a, kv_after_a) = reducer
+            .apply(
+                cdz_kernel::kv::Kv::new(),
+                msg_ct(),
+                Some(msg_a.clone()),
+                None,
+            )
+            .await
+            .expect("the agent-loop reducer folds the first message through the A1 bytes boundary");
+        assert_eq!(
+            effects_a.len(),
+            1,
+            "the first message (inbox now non-empty) folds to one model effect"
+        );
+        assert_eq!(effects_a[0].request.content_type.family, "model");
+
+        let (effects_b, kv_after_b) = reducer
+            .apply(kv_after_a, msg_ct(), Some(msg_b.clone()), None)
+            .await
+            .expect(
+                "the agent-loop reducer folds the second message through the A1 bytes boundary",
+            );
+        assert_eq!(
+            effects_b.len(),
+            1,
+            "the second message also folds to one model effect (inbox still non-empty)"
+        );
+        assert_eq!(effects_b[0].request.content_type.family, "model");
+
+        // THE ACCUMULATION PROOF: after both folds, the reducer's own `inbox/` prefix holds BOTH messages'
+        // pairs — the inbox is durable, stateful KV the reducer grows and re-enumerates, not per-turn scratch.
+        // (The keys are `inbox/` ++ the message bytes, per reducer_agent_loop.cdz's `inbox-key`.)
+        let inbox = kv_after_b.prefix_scan(b"inbox/");
+        assert_eq!(
+            inbox.len(),
+            2,
+            "both messages accumulated under the inbox/ prefix (durable stateful inbox, enumerated via \
+             prefix-scan) — got {} entries",
+            inbox.len()
+        );
+        let values: std::collections::BTreeSet<Vec<u8>> =
+            inbox.iter().map(|(_k, v)| v.to_vec()).collect();
+        assert!(
+            values.contains(&msg_a) && values.contains(&msg_b),
+            "the accumulated inbox holds BOTH distinct messages' payloads"
+        );
+    }
+
     #[tokio::test]
     async fn with_sink_persists_a_sessions_events_durably() {
         // with_sink attaches a durable LogStore: the events a session appends during a turn are persisted,
