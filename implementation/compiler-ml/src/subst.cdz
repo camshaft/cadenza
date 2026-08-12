@@ -90,6 +90,8 @@ def apply-go(su: Subst, t: Ty, fuel: Int64) = match t with
   | Ty.TyErr => Ty.TyErr
   | Ty.TySum(n) => Ty.TySum(n)
   | Ty.TyFn(ps, r) => Ty.TyFn(apply-list(su, ps, 0, ([] : List(Ty))), apply-go(su, r, fuel))
+  // COMPOUND TUPLE: apply the subst into each element (mirrors the TyFn param-list arm, no result).
+  | Ty.TyTuple(es) => Ty.TyTuple(apply-list(su, es, 0, ([] : List(Ty))))
   // ARC-B5 B2 (rcdzc apply@unify.rs:118 `Ty::Var(v) => match tys.get(v) { Some(t) => apply(t), None => Var(v) }`):
   // a bound TyVar follows its `tys` binding and re-applies (the binding may itself hold vars); an unbound TyVar
   // stays. Fuel guards a cyclic binding (occurs-check bypass) from infinite recursion — stop and keep the var.

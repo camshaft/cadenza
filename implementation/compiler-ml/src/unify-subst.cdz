@@ -112,6 +112,13 @@ def unify-ty-concrete(su: Subst, a: Ty, b: Ty) = match a with
   | Ty.TySum(na) => (match b with
     | Ty.TySum(nb) => (if na == nb then Option.Some(su) else Option.None(unit))
     | _ => Option.None(unit))
+  // COMPOUND TUPLE: same arity + elements unify PAIRWISE, threading the Subst (mirrors the TyFn param arm,
+  // no result). The list unify returns the threaded Subst directly.
+  | Ty.TyTuple(esa) => (match b with
+    | Ty.TyTuple(esb) => (if List.len(esa) == List.len(esb)
+        then unify-ty-list-su(su, esa, esb, 0)
+        else Option.None(unit))
+    | _ => Option.None(unit))
   // unreachable: bind-or-unify-ty handles both TyVar cases before dispatching here; a TyVar never reaches
   // unify-ty-concrete. Arm present for exhaustiveness only.
   | Ty.TyVar(_) => Option.None(unit)

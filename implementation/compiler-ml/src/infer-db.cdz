@@ -76,15 +76,45 @@ def is-deferred-int(t: Ty) = match t with
 /// Infer the type of every node in the subtree at `id`, reading the pre-built resolve column `rcol` and
 /// threading the type column `tcol` (NodeId → Typed) it fills. Reading `rcol` (not re-resolving) is the
 /// producer-reads-producer contract: infer consumes resolve's already-memoized facts.
+/// Infer each tuple ELEMENT node in order, threading the type column (mirrors NBin/NIf's sequential child
+/// inference, generalized to a list). Returns the filled tcol; `tuple-elem-types` then reads each back.
+def infer-tuple-elems(
+  tree: Tree,
+  ids: List(Int64),
+  rcol: Map(Int64, Resolved),
+  tcol: Map(Int64, Ty),
+  i: Int64,
+) =
+  (if i == List.len(ids) then tcol
+   else (match List.at(ids, i) with
+     | Option.Some(eid) =>
+         infer-tuple-elems(tree, ids, rcol, infer-node(tree, eid, rcol, tcol), i + 1)
+     | Option.None(_) => tcol))
+
+/// Read each tuple element's inferred type from `tcol` (filled by `infer-tuple-elems`), in order, into a
+/// positional `List(Ty)` — the `TyTuple` payload. A missing type fact (should not occur post-infer) is TyErr.
+def tuple-elem-types(ids: List(Int64), tcol: Map(Int64, Ty), i: Int64, acc: List(Ty)) =
+  (if i == List.len(ids) then acc
+   else (match List.at(ids, i) with
+     | Option.Some(eid) =>
+         (let ty = (match Map.lookup(tcol, eid) with
+            | Option.Some(t) => t
+            | Option.None(_) => Ty.TyErr) in
+          tuple-elem-types(ids, tcol, i + 1, List.push(acc, ty)))
+     | Option.None(_) => acc))
+
 def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Ty)) =
   match node-at(tree, id) with
     // item-3 HM: a bare literal is DEFERRED (sign+width unconstrained) — it grounds to a narrow sibling in an
     // arith/relational op (via arith-result-type), or to Int64 at the root if never constrained. Was t-int64().
     | Option.Some(Node.NLit(_)) => Map.insert(tcol, id, t-int-deferred())
     | Option.Some(Node.NBoolLit(_)) => Map.insert(tcol, id, Ty.TyBool)
-    // COMPOUND-VALUE slice stage-1: a tuple literal has no type fact YET (TTuple is a later stage), so it is
-    // TyErr — run-src DECLINES cleanly (coverage-not-yet). Recognize-but-decline; NOT a miscompile.
-    | Option.Some(Node.NTuple(_)) => Map.insert(tcol, id, Ty.TyErr)
+    // COMPOUND-VALUE slice: a tuple literal `(tuple e0 e1 …)` has type `TyTuple([T0, T1, …])` — infer each
+    // element (threading tcol), then read the elements' types back and build the positional tuple type.
+    | Option.Some(Node.NTuple(ids)) =>
+        (let tcol2 = infer-tuple-elems(tree, ids, rcol, tcol, 0) in
+         (let elem-tys = tuple-elem-types(ids, tcol2, 0, ([] : List(Ty))) in
+          Map.insert(tcol2, id, Ty.TyTuple(elem-tys))))
     | Option.Some(Node.NAnnLit(_, sflag, w)) =>
         // a width-annotated literal `(: v IntN)` has the ANNOTATED type TIntW(signed, width) — the narrow
         // type flows from here (sread already fits-width-checked the value). signed rides as 1|0.
@@ -654,6 +684,7 @@ def typed-to-ty-defer(t: Ty) = match t with
   | Ty.TyInt(_) => Option.Some(t)
   | Ty.TyFn(_, _) => Option.None(unit)  // a fn value is not an arith operand → None (arith declines it, like TBool/TErr)
   | Ty.TySum(_) => Option.None(unit)    // a sum value is not an arith operand → None (arith declines it)
+  | Ty.TyTuple(_) => Option.None(unit)  // a tuple value is not an arith operand → None (arith declines it)
   // ARITHMETIC IS INTEGER-ONLY: a Bool operand → None, so arith-result-type declines `(+ true false)` (→ TErr,
   // not a laundered Bool — arith requires TInt). This is NOT a regression for relational ops: bin-type's
   // relational arm (op 60..65) has a `both-bool` fallback, so `(== true false)`/`(< true false)` still type Bool
@@ -964,6 +995,15 @@ def is-int-at(tree: Tree, root: Int64, id: Int64) = match type-at(tree, root, id
 /// Probe: is the node at `id` type-erroneous (TErr — type-level poison)?
 def type-err-at(tree: Tree, root: Int64, id: Int64) = match type-at(tree, root, id) with
   | Option.Some(Ty.TyErr) => true
+  | _ => false
+
+/// Probe: is the node at `id` typed a TUPLE? Used by run-src to DECLINE a raw-tuple PROGRAM RESULT — a
+/// tuple is a heap compound, not a scalar boundary value, so rcdzc (the oracle) declines emitting a
+/// tuple-returning export; the ML interp matches that by declining a TyTuple main-result (else the
+/// differential disagrees: ML value-handle vs oracle decline). A tuple used INTERNALLY (projected to a
+/// scalar) is fine — only the top-level RESULT is gated.
+def is-tuple-at(tree: Tree, root: Int64, id: Int64) = match type-at(tree, root, id) with
+  | Option.Some(Ty.TyTuple(_)) => true
   | _ => false
 
 /// How many nodes carry a type fact (in a well-formed tree, every node).
@@ -1680,4 +1720,4 @@ def id-nmatchctor-terr-scrutinee-taints-match-pr849() =
                 | Option.Some(Ty.TyErr) => unit                              // TErr scrutinee taints the match
                 | _ => trap("a TErr scrutinee must taint the whole NMatchCtor → TErr, not be masked by well-typed arms (PR#849)")))))))))
 
-export { infer-node, infer-tree, type-at, ground-deferred, well-typed, all-defs-well-scoped, type-err-at, typed-count, is-bool-at, is-int-at, def-arrow-type, bin-type, if-type, let-type, match-type, var-type, mk-int, int-parts-of, is-deferred-int, t-int-deferred }
+export { infer-node, infer-tree, type-at, ground-deferred, well-typed, all-defs-well-scoped, type-err-at, typed-count, is-bool-at, is-int-at, is-tuple-at, def-arrow-type, bin-type, if-type, let-type, match-type, var-type, mk-int, int-parts-of, is-deferred-int, t-int-deferred }

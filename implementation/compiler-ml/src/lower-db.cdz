@@ -114,6 +114,10 @@ def lower-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
     // infer started typing ctor-apps as TySum (was Int64 placeholder, which the TyInt arm admitted). eval runs
     // it via the SumStore (CCtor store-alloc / CMatchSum store-read).
     | Option.Some(Ty.TySum(_)) => lower-ok(tree, id, rcol, tcol)
+    // COMPOUND-VALUE slice: a node typed as a TUPLE lowers — a `(tuple …)` literal (→ CCtor(0, elems), reusing
+    // the SumStore product rep). eval store-allocs it to a handle; run-src DECLINES a raw-tuple PROGRAM RESULT
+    // (is-tuple-at guard) matching the oracle, so a tuple is only ever USED internally (projected to a scalar).
+    | Option.Some(Ty.TyTuple(_)) => lower-ok(tree, id, rcol, tcol)
     | _ => Option.None(unit))
 
 /// The typed-node case: build the Core node, canonicalizing a var to its binder id via `rcol`.
@@ -121,7 +125,14 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
   match node-at(tree, id) with
     | Option.Some(Node.NLit(v)) => Option.Some(cnum64(v))
     | Option.Some(Node.NBoolLit(b)) => Option.Some(cnum64(b))   // Bool is Int 0/1 in Core (i64)
-    | Option.Some(Node.NTuple(_)) => Option.None(unit)          // COMPOUND stage-1: no Core form yet → declines (unreachable via the TyErr type-gate, but the match must be total)
+    // COMPOUND-VALUE slice: a tuple literal lowers to `CCtor(0, elems)` — REUSE the SumStore product rep (a
+    // tuple is a single tag-0 product; eval store-allocs it to a handle, projection reads store-payload[i]).
+    // Lower each element; any element that fails to lower declines the whole tuple. A raw-tuple PROGRAM RESULT
+    // still declines at the is-tuple-at boundary guard (run-src) — matching the oracle.
+    | Option.Some(Node.NTuple(ids)) =>
+        (match lower-tuple-elems(tree, ids, rcol, tcol, 0, ([] : List(Core))) with
+          | Option.Some(elems) => Option.Some(Core.CCtor(0, elems))
+          | Option.None(_) => Option.None(unit))
     | Option.Some(Node.NAnnLit(v, sflag, w)) =>
         // a width-annotated literal lowers to a NARROW CNum carrying its (signed, width) — emit reads the
         // width to pick i32-vs-i64 codegen. signed rides as 1|0.
@@ -357,6 +368,17 @@ def lower-ctor-decl-enum-disc(tree: Tree, ctorName: Int64) =
 // ([] nullary, [id] single-binder, [id0,id1,…] compound), so this is the identity — the wrapper is kept as the ONE
 // seam where binder lowering could specialize (e.g. drop a `-1` placeholder field) without touching the arm above.
 def lower-binder-list(binderIds: List(Int64)) = binderIds
+
+/// Lower each tuple ELEMENT node in order into a `List(Core)` (the CCtor(0, …) payload). Any element that
+/// fails to lower declines the whole tuple (None). Mirrors lower-rec-args' arg-list lowering, N-ary.
+def lower-tuple-elems(tree: Tree, ids: List(Int64), rcol: Map(Int64, Resolved), tcol: Map(Int64, Ty), i: Int64, acc: List(Core)) =
+  (if i == List.len(ids) then Option.Some(acc)
+   else (match List.at(ids, i) with
+     | Option.None(_) => Option.None(unit)
+     | Option.Some(eid) =>
+         (match lower-node(tree, eid, rcol, tcol) with
+           | Option.None(_) => Option.None(unit)
+           | Option.Some(ec) => lower-tuple-elems(tree, ids, rcol, tcol, i + 1, List.push(acc, ec)))))
 
 def lower-rec-args(tree: Tree, id: Int64, argId: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Ty)) =
   (if (argId == -1) then Option.Some(([] : List(Core)))            // nullary recursive call → no args

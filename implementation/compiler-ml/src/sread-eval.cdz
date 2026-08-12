@@ -8,7 +8,7 @@
 /// integer/bool subset, and they guard it as the reader/pipeline evolve.
 import { read-source, has-illwidth-marker, has-unboundtype-marker } from "sread"
 
-import { is-bool-at, all-defs-well-scoped } from "infer-db"
+import { is-bool-at, is-tuple-at, all-defs-well-scoped } from "infer-db"
 
 import { db-of } from "db"
 
@@ -28,7 +28,11 @@ def run-src(s: String) = match read-source(s) with
     // Plus the two reader-time type-decl markers: an invalid int/float payload width (has-illwidth-marker,
     // CDZ0302) and an unbound TYPE name in a top-level payload (has-unboundtype-marker, gap-B-C, CDZ0101).
     (if all-defs-well-scoped(tree) and (if has-illwidth-marker(tree) then false else true)
-        and (if has-unboundtype-marker(tree) then false else true) then
+        and (if has-unboundtype-marker(tree) then false else true)
+        // BOUNDARY: a raw COMPOUND program result (a tuple) is not a scalar boundary value — the oracle
+        // (rcdzc) declines emitting a tuple-returning export, so the ML interp DECLINES a TyTuple main-result
+        // to match (else the differential disagrees). A tuple used internally (projected to a scalar) is fine.
+        and (if is-tuple-at(tree, root, root) then false else true) then
       (match run-of-db(db-of(tree), root) with | (_, v) => v)
      else Option.None(unit))
 
@@ -43,7 +47,11 @@ def run-src-typed(s: String) = match read-source(s) with
     // gap1 fix lives HERE): an unbound name in an uncalled sibling def declines, matching the oracle. Plus the
     // two reader-time type-decl markers (invalid payload width CDZ0302, unbound payload TYPE gap-B-C CDZ0101).
     (if all-defs-well-scoped(tree) and (if has-illwidth-marker(tree) then false else true)
-        and (if has-unboundtype-marker(tree) then false else true) then
+        and (if has-unboundtype-marker(tree) then false else true)
+        // BOUNDARY: a raw COMPOUND program result (a tuple) is not a scalar boundary value — the oracle
+        // (rcdzc) declines emitting a tuple-returning export, so the ML interp DECLINES a TyTuple main-result
+        // to match (else the differential disagrees). A tuple used internally (projected to a scalar) is fine.
+        and (if is-tuple-at(tree, root, root) then false else true) then
       (match run-of-db(db-of(tree), root) with
         | (_, Option.Some(v)) => Option.Some((v, if is-bool-at(tree, root, root) then 1 else 0))
         | (_, Option.None(_)) => Option.None(unit) : Option(Tuple(Int64, Int64)))

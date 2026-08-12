@@ -86,6 +86,15 @@ def unify-ty(a: Ty, b: Ty) = match a with
   | Ty.TySum(na) => (match b with
     | Ty.TySum(nb) => (if na == nb then Option.Some(Ty.TySum(na)) else Option.None(unit))
     | _ => Option.None(unit))                                    // sum ~ non-sum → conflict
+  // COMPOUND TUPLE: two tuple types unify iff SAME arity and elements unify PAIRWISE (mirrors the TyFn param
+  // arm, minus a result). Any arity/element conflict → None; a tuple ~ non-tuple → conflict.
+  | Ty.TyTuple(esa) => (match b with
+    | Ty.TyTuple(esb) => (if List.len(esa) == List.len(esb)
+        then (match unify-ty-list(esa, esb, 0) with
+          | Option.Some(es) => Option.Some(Ty.TyTuple(es))
+          | Option.None(_) => Option.None(unit))
+        else Option.None(unit))                                 // arity mismatch → conflict
+    | _ => Option.None(unit))                                    // tuple ~ non-tuple → conflict
   // ARC-B5 B1: this STATELESS combiner (the pre-HM live-infer primitive) has no Subst to bind a var into, so a
   // TyVar declines here — the real var-binding unify is unify-subst.cdz's unify-ty-su (Subst-threading, B3). A
   // TyVar never reaches this stateless path in the current live pipeline; the arm is for exhaustiveness.

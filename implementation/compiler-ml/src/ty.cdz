@@ -73,6 +73,11 @@
                                    // be an int (a param used only as a match scrutinee, a fn-typed param) gets a
                                    // TyVar and unifies toward whatever concrete type its uses force. Enables the
                                    // recursive-descent type_of to seed every node a fresh TyVar and unify inline.
+  | TyTuple(List(Ty))              // COMPOUND-VALUE slice: a positional tuple type `tuple<T0, T1, …>` (the
+                                   // `(tuple e0 e1 …)` literal's type, NTuple's infer fact). N-ary element
+                                   // list, structurally analogous to TyFn's param list — the type-algorithm
+                                   // walkers (unify/subst/free-vars) handle it by MIRRORING their TyFn arm
+                                   // element-wise. Two TyTuples unify iff same arity + elements unify pairwise.
 
 /// A bare integer literal's type: BOTH axes deferred (rcdzc `IntType::deferred`) — grounds to the default via
 /// unification/root-defaulting. This is the type a literal STARTS as; an annotation or operator fixes it.
@@ -196,6 +201,10 @@ def ty-eq(a: Ty, b: Ty) = match a with
   )
   // ARC-B5 (rcdzc ty.rs:1025 `(Ty::Var(a), Ty::Var(b)) => a == b`): two type variables are equal iff the SAME
   // id. A TyVar is never equal to a concrete type (it's unsolved) — that's unify's job, not equality's.
+  | Ty.TyTuple(esa) => (match b with
+    | Ty.TyTuple(esb) => (if List.len(esa) == List.len(esb) then ty-eq-list(esa, esb, 0) else false)
+    | _ => false
+  )
   | Ty.TyVar(va) => (match b with
     | Ty.TyVar(vb) => va == vb
     | _ => false
