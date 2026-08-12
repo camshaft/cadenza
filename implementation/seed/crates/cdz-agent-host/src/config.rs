@@ -585,12 +585,14 @@ pub struct FederationConfig {
     /// when `enabled`.
     #[serde(default)]
     pub hubs: Vec<String>,
-    /// The OUTPOST SESSION id (genesis-hash hex) the bound transports address their inbound events to — the
-    /// reducer that decides all federation/routing/authz policy. `None` (the default) = no outpost session is
-    /// configured, so the daemon binds NO transport at boot even when `listen`/`hubs` are set (a later
-    /// admin-driven install can bind them at runtime — the forward-compat path). When a transport IS selected
-    /// AND `enabled`, this is REQUIRED + validated as 64-hex-char (32-byte) canonical genesis-hash form: a
-    /// configured listener/hub with nowhere to route its inbound frames is a mistake, not a silent drop.
+    /// The OUTPOST SESSION id (genesis-hash as base64url) the bound transports address their inbound events to
+    /// — the reducer that decides all federation/routing/authz policy. `None` (the default) = no outpost
+    /// session is configured, so the daemon binds NO transport at boot even when `listen`/`hubs` are set (a
+    /// later admin-driven install can bind them at runtime — the forward-compat path). When a transport IS
+    /// selected AND `enabled`, this is REQUIRED + validated as a 43-char base64url (32-byte) genesis-hash: a
+    /// configured listener/hub with nowhere to route its inbound frames is a mistake, not a silent drop. This
+    /// human-authored config value is the ONE place a hash is decoded from a string (operator ruling — an
+    /// accepted input edge); everywhere else a hash is raw bytes, never parsed.
     #[serde(default)]
     pub outpost_session: Option<String>,
 }
@@ -839,21 +841,22 @@ impl DaemonConfig {
             // to — a configured transport with no routing target would drop every inbound frame silently.
             // outpost_session stays OPTIONAL overall (a config-less daemon binds nothing at boot, the
             // forward-compat admin-driven path); it's REQUIRED only once a boot transport is actually
-            // selected. When present it must be canonical genesis-hash form: exactly 64 LOWERCASE hex chars
-            // (32 bytes), matching `Hash::to_hex`/`from_hex` — a malformed id can't name a real session.
+            // selected. When present it must be a base64url genesis-hash: exactly 43 url-safe-base64 chars
+            // (32 bytes), the form `Hash::to_base64url` emits + `outpost_session_bytes` decodes — a malformed
+            // id can't name a real session.
             match &self.federation.outpost_session {
                 None => {
                     return Err(ConfigError(
                         "[federation] a `listen` and/or `hubs` transport is configured but no \
-                         `outpost_session` — set outpost_session to the genesis-hash hex of the session the \
-                         transports address their inbound events to (the outpost reducer)"
+                         `outpost_session` — set outpost_session to the base64url genesis-hash of the session \
+                         the transports address their inbound events to (the outpost reducer)"
                             .into(),
                     ));
                 }
-                Some(id) if !is_canonical_genesis_hex(id) => {
+                Some(id) if outpost_session_bytes(id).is_none() => {
                     return Err(ConfigError(format!(
                         "[federation] outpost_session {id:?} is not a canonical genesis-hash id — it must be \
-                         exactly 64 lowercase hex characters (32 bytes)"
+                         a 43-character base64url string (32 bytes)"
                     )));
                 }
                 Some(_) => {}
@@ -863,14 +866,53 @@ impl DaemonConfig {
     }
 }
 
-/// A canonical genesis-hash hex id — exactly 64 LOWERCASE hex characters (32 bytes), the form
-/// [`Hash::to_hex`](cdz_kernel::hash::Hash::to_hex) emits + [`from_hex`](cdz_kernel::hash::Hash::from_hex)
-/// accepts. Used to validate `[federation].outpost_session` at config time without pulling the kernel Hash
-/// into the pure-parse path (the daemon re-parses it into a real `SessionId` when it wires the transports).
-fn is_canonical_genesis_hex(s: &str) -> bool {
-    s.len() == 64
-        && s.bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+/// Decode a base64url genesis-id — the human-authored `[federation].outpost_session` config value — into
+/// its raw 32 bytes. base64url (RFC 4648 §5 alphabet `A-Z a-z 0-9 - _`, no padding, exactly 43 chars for 32
+/// bytes) is the form [`Hash::to_base64url`](cdz_kernel::hash::Hash::to_base64url) emits.
+///
+/// **This is the SOLE permitted hash DECODE in the whole runtime** (operator ruling 2026-08-12): a
+/// human-authored config value is an accepted input edge, like the FS/S3 path exception, and this decode
+/// lives ONLY here at config load. Everywhere else a hash is raw bytes produced only by hashing, never
+/// parsed from a string (no `from_hex`). Returns raw bytes (no kernel `Hash` dependency in this pure-parse
+/// path); the daemon reconstructs the `Hash` via `Hash::from_bytes` when it wires the transports. `None` on
+/// any wrong length (≠ 43) or non-alphabet character — a malformed id can't name a real session.
+pub fn outpost_session_bytes(s: &str) -> Option<[u8; 32]> {
+    // Reverse the base64url alphabet: A-Z = 0..=25, a-z = 26..=51, 0-9 = 52..=61, '-' = 62, '_' = 63.
+    fn sextet(b: u8) -> Option<u32> {
+        match b {
+            b'A'..=b'Z' => Some(u32::from(b - b'A')),
+            b'a'..=b'z' => Some(u32::from(b - b'a') + 26),
+            b'0'..=b'9' => Some(u32::from(b - b'0') + 52),
+            b'-' => Some(62),
+            b'_' => Some(63),
+            _ => None,
+        }
+    }
+    if s.len() != 43 {
+        return None; // 32 bytes → 43 base64url chars, no padding
+    }
+    let bytes = s.as_bytes();
+    let mut out = [0u8; 32];
+    let mut oi = 0;
+    let mut i = 0;
+    // Ten full 4-char groups → 30 bytes.
+    while i + 4 <= bytes.len() {
+        let n = (sextet(bytes[i])? << 18)
+            | (sextet(bytes[i + 1])? << 12)
+            | (sextet(bytes[i + 2])? << 6)
+            | sextet(bytes[i + 3])?;
+        out[oi] = (n >> 16) as u8;
+        out[oi + 1] = (n >> 8) as u8;
+        out[oi + 2] = n as u8;
+        oi += 3;
+        i += 4;
+    }
+    // The 3-char tail (43 = 10*4 + 3) encodes the final 2 bytes.
+    let n =
+        (sextet(bytes[i])? << 18) | (sextet(bytes[i + 1])? << 12) | (sextet(bytes[i + 2])? << 6);
+    out[oi] = (n >> 16) as u8;
+    out[oi + 1] = (n >> 8) as u8;
+    Some(out)
 }
 
 #[cfg(test)]
@@ -904,10 +946,10 @@ mod tests {
         assert_eq!(cfg.federation.outpost_session, None);
     }
 
-    /// A valid 64-lowercase-hex-char (32-byte) outpost-session id for the federation tests (obviously 64:
-    /// `"ab" * 32`), so the tests don't miscount a literal.
+    /// A valid 43-char base64url (32-byte) outpost-session id for the federation tests (43 'A' = the
+    /// all-zero hash, a valid genesis-hash rendering), so the tests don't miscount a literal.
     fn valid_outpost_id() -> String {
-        "ab".repeat(32)
+        "A".repeat(43)
     }
 
     #[test]
@@ -1073,8 +1115,10 @@ mod tests {
 
     #[test]
     fn federation_malformed_outpost_session_is_rejected() {
-        // A non-canonical outpost id (not 64 lowercase hex chars) can't name a real session → rejected.
-        for bad in ["too-short", "AB", &"g".repeat(64), &"ab".repeat(31)] {
+        // A non-canonical outpost id (not a 43-char base64url) can't name a real session → rejected. Covers
+        // too-short, short, right-alphabet-but-wrong-length (64), and right-length-but-invalid-alphabet (a
+        // 43-char string with a non-base64url char).
+        for bad in ["too-short", "AB", &"g".repeat(64), &"!".repeat(43)] {
             let err = DaemonConfig::from_toml_str(&format!(
                 r#"
                 [federation]
@@ -1085,10 +1129,33 @@ mod tests {
             ))
             .expect_err("a malformed outpost_session must be rejected");
             assert!(
-                err.0.contains("outpost_session") && err.0.contains("64 lowercase hex"),
-                "error explains the canonical-hex requirement for {bad:?}: {err:?}"
+                err.0.contains("outpost_session") && err.0.contains("base64url"),
+                "error explains the base64url requirement for {bad:?}: {err:?}"
             );
         }
+    }
+
+    #[test]
+    fn outpost_session_bytes_round_trips_to_base64url_and_rejects_malformed() {
+        use cdz_kernel::hash::Hash;
+        // Round-trip: Hash::to_base64url → outpost_session_bytes is the identity on the raw 32 bytes — the
+        // config-load decode is the exact inverse of the display encode.
+        for seed in [b"alpha".as_slice(), b"beta", b""] {
+            let h = Hash::of(seed);
+            assert_eq!(
+                outpost_session_bytes(&h.to_base64url()),
+                Some(*h.as_bytes())
+            );
+        }
+        // 43 'A' is the all-zero hash.
+        assert_eq!(outpost_session_bytes(&"A".repeat(43)), Some([0u8; 32]));
+        // Rejects: empty, wrong length, and a right-length string with a non-base64url char.
+        assert_eq!(outpost_session_bytes(""), None);
+        assert_eq!(outpost_session_bytes(&"A".repeat(42)), None);
+        assert_eq!(outpost_session_bytes(&"A".repeat(44)), None);
+        assert_eq!(outpost_session_bytes(&"!".repeat(43)), None);
+        // The pre-sweep hex form (64 chars) is no longer accepted.
+        assert_eq!(outpost_session_bytes(&Hash::of(b"x").to_hex()), None);
     }
 
     #[test]

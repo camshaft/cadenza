@@ -775,13 +775,17 @@ async fn main() -> std::process::ExitCode {
             use cdz_kernel::hash::Hash;
             let mut fed_sd_txs = Vec::new();
             // Bind only when enabled AND an outpost_session is configured. `outpost_session` was validated as
-            // canonical genesis-hash hex, so `from_hex` is Some; defend anyway (skip + warn rather than panic).
+            // a 43-char base64url genesis-hash, so the decode is Some; defend anyway (skip + warn rather than
+            // panic). This config-load base64url→bytes decode is the SOLE permitted hash decode (operator
+            // ruling — a human config edge); the id is raw bytes everywhere after `Hash::from_bytes`.
             let outpost = if config.federation.enabled {
                 config
                     .federation
                     .outpost_session
                     .as_deref()
-                    .and_then(|hex| Hash::from_hex(hex).map(SessionId::new))
+                    .and_then(cdz_agent_host::outpost_session_bytes)
+                    .map(Hash::from_bytes)
+                    .map(SessionId::new)
             } else {
                 None
             };

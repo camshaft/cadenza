@@ -118,9 +118,9 @@ pub use blob_cache::CachingBlobStore;
 pub use blob_exec::BlobExecutor;
 pub use clock::ClockExecutor;
 pub use config::{
-    AdminConfig, BlobCacheConfig, BlobConfig, DaemonConfig, LogConfig, MetricsTarget,
-    NameStoreConfig, ObservabilityConfig, RetryConfig, SessionRegistryConfig, TracingConfig,
-    TracingFormat, TracingOutput,
+    outpost_session_bytes, AdminConfig, BlobCacheConfig, BlobConfig, DaemonConfig, LogConfig,
+    MetricsTarget, NameStoreConfig, ObservabilityConfig, RetryConfig, SessionRegistryConfig,
+    TracingConfig, TracingFormat, TracingOutput,
 };
 pub use disk_cache::DiskCacheTier;
 #[cfg(feature = "live-aws-storage")]
