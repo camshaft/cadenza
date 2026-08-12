@@ -1,0 +1,90 @@
+// reducer_agent_loop.cdz — the AGENT-LOOP reference reducer: the agentic loop expressed as a FOLD over
+// KV inbox state (GAP-1 keystone, design/agent-harness-kernel.md §3). This is the smallest honest
+// demonstration that our harness hosts a REAL agent loop as a pure reducer over the A1 bytes fold boundary
+// — no new kernel mechanism, just a fold over the existing kv + emit effects (v-agent-harness-host's
+// standing recommendation, greenlight 2026-08-12).
+//
+// THE LOOP (agentic loop = fold over KV inbox state):
+//   message event        { content-type.family = "message", payload = Some(msg) }
+//     → append the message to the INBOX under the "inbox/" prefix (content-addressed key), then enumerate
+//       the pending inbox via kv.prefix-scan and, iff any are pending, emit a "model" effect to invoke the
+//       LLM with the message as context. This is the "read inbox → call model" half of the loop.
+//   model-response event { content-type.family = "model-response", payload = Some(call) }
+//     → the model replied with a tool-call request; dispatch it as a "tool" effect (the loop's ACTION
+//       step). A real deployment folds the tool RESULT back as another event, closing the loop; this
+//       reference shows the message→model→tool spine.
+//   anything else → [] (no effects).
+//
+// KV inbox state (this reducer's own §4 schema; opaque to the kernel): messages live under the "inbox/"
+// prefix, keyed by content so kv.prefix-scan enumerates all pending. This is exactly the pattern that lets
+// a self-hosting agent manage its own context/inbox in durable KV rather than tmux/fleet-tooling state.
+//
+// Targets the REDUCER world (reducer_world_artifact — export fold.apply(list<u8>)->list<u8> + import
+// cadenza:agent-kernel/kv). Host-fused (kv escapes as the world import, no bind), single canonical Event
+// param, inline structural EffectRequest return — same A1 value-form contract as reducer_pure/genesis/kv.
+//
+// BUILD: emit-wit-world full -> reducer-world.bin; then
+//   cdz compile reducer_agent_loop.cdz wit-world:reducer-world=reducer-world.bin
+//     --component-name cadenza:agent-kernel/fold -o reducer_agent_loop.wasm
+//   -> exports fold.apply(list<u8>)->list<u8>, imports cadenza:agent-kernel/kv (put+prefix-scan) + runtime
+//      heap; VALID. (The prefix-scan ENUMERATION is runtime-correct once the guest list-lift fix lands;
+//      the reducer compiles + validates today.)
+
+// kv host import: put (append to inbox) + prefix-scan (enumerate the pending inbox). No bind — host-fused.
+effect Kv =
+  | put : `->`(Bytes, Bytes, Unit)
+  | prefix-scan : `->`(Bytes, List(Tuple(Bytes, Bytes)))
+
+// The inbox namespace: every stored message key starts with this, so prefix-scan enumerates the inbox.
+def inbox-prefix() -> Bytes = String.to-bytes("inbox/")
+
+// The KV key a message is stored under: the "inbox/" prefix ++ the message bytes (content-addressed, so
+// distinct messages get distinct keys and prefix-scan lists them all).
+def inbox-key(msg: Bytes) -> Bytes = Bytes.concat(inbox-prefix(), msg)
+
+def apply(
+  event: Record(
+    content-type: Record(family: String, version: UInt(32)),
+    payload: Option(Bytes),
+    resumes: Option(Bytes),
+  ),
+) -> List(Record(
+  kind: String,
+  target: Bytes,
+  payload: Option(Bytes),
+  correlation: Option(Bytes),
+)) =
+  let family = event.content-type.family in
+  if family == "message" then
+    // Read-inbox → call-model half: append the message, enumerate the pending inbox, invoke the model.
+    (match event.payload with
+       | Some(msg) => host Kv in (
+           Kv.put(inbox-key(msg), msg);
+           (if List.len(Kv.prefix-scan(inbox-prefix())) == 0 then []
+            else [{
+              kind = "model",
+              target = String.to-bytes("llm"),
+              payload = Some(msg),
+              correlation = None(),
+            }]))
+       | None() => [])
+  else if family == "model-response" then
+    // Action half: the model requested a tool call; dispatch it as a tool effect.
+    (match event.payload with
+       | Some(call) => [{
+           kind = "tool",
+           target = String.to-bytes("shell"),
+           payload = Some(call),
+           correlation = None(),
+         }]
+       | None() => [])
+  else
+    // Not part of the loop → no effects.
+    []
+
+// No `@test`: host-fused (kv escapes to host imports) → cannot build a standalone test component on the
+// seed VM, and prefix-scan enumeration is host-driven. Gated by the WORLD-DRIVEN compile (v-nix precompile
+// derivation) + a v-agent-harness-host agent-loop e2e (runs once the prefix-scan lift fix lands). NOT in
+// Project.cdz `tests`.
+
+export { apply }
