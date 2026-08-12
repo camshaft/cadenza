@@ -6702,6 +6702,11 @@ pass	uv3 the handler ARM calls a @requires-guarded helper — the contract check
 pass	uv4 a RELATIONAL @ensures (ret > x) over a TWO-draw body — the postcondition compares the effectful result to the arg, twice
 pass	uwr1 a NARROW UInt8 handler state — wrapping-add accumulates modulo 256 through the thread, each dispatch answers the widened running value
 pass	value-eq CONTROL: a runtime slice compares equal to a flat Bytes of the same content
+pass	vse1 a record with SIBLING Option-sum and Option-Bytes fields value-encodes the sum payload intact — the Option-Bytes sibling must not alias its bytes descriptor onto the Option-sum field
+pass	vse10 two RESULT fields at different type args each encode their own Err payload — the same generic decl at two instantiations shares no descriptor
+pass	vse11 two LIST fields of different element types encode independently — the list control of the generic-instantiation family
+pass	vse7 TWO Option-sum sibling fields at DIFFERENT sum decls each keep their own value-form — the first instantiation's descriptor must not stamp the second
+pass	vse9 the Option-sum field sorting FIRST keeps both siblings intact — the sort-order control of the sibling-descriptor pair
 pass	wa1 wrapping-add as the next-state — a near-MAX seed wraps to a concrete near-MIN value on the second draw
 pass	wa2 wrapping-add of the op ARG and state in the resume value — wrap, exact-MAX, and identity rows
 pass	wa3 the wrap WALK — three draws from a MAX seed step MAX, MIN, MIN+1 through wrapping-add(+1), checked '+' beside

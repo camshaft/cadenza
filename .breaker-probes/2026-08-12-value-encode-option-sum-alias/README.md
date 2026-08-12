@@ -41,3 +41,12 @@ vse2/3/8/9 stay pass. Promote vse1+vse7+controls on land.
 - `vse11.sexp` — LIST family: (List Int64) + (List String) siblings → PASS even
   pre-fix (lists don't route through the sums memo). Control.
 Fix-verify set on land: vse1/4/5/6/7/10 flip to pass; vse2/3/8/9/11 stay pass.
+
+## Tick 1356 — FIX VERIFIED, FINDING #22 CLOSED
+Fix landed origin 94a289481 (re-sha of 2b6c82f9b: descriptor memo keyed by full
+instantiation at Ty::Sum + Ty::Nominal). Fresh worktree-local cdz + store from the
+landed sha: ALL 11 vse probes PASS ×3 (wasm/rust/rust-async). vse1's expectation
+re-annotated to the wasm render form (the gate accepts it on rust too — comparison
+normalizes). Flip set confirmed: vse1/4/5/6/7/10 red→green; controls stayed green.
+PROMOTION SET (next batch): vse1 (minimal) + vse7 (two-sums directional) + vse10
+(Result family) + vse9 (sort-order control) + vse11 (List control).

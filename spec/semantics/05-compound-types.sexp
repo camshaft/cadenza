@@ -18737,3 +18737,55 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 3230305 Int64))
   (call   main (: 0 Int64)) (output (: 3230300 Int64)))
+
+; --- breaker batch 246: finding-22 regression fence — the value-encode descriptor memo keys by FULL
+; generic instantiation (fix 94a289481): sibling Option-sum/Option-Bytes, two distinct Option-sums,
+; sort-order control, Result family, List control ---
+(case "vse1 a record with SIBLING Option-sum and Option-Bytes fields value-encodes the sum payload intact — the Option-Bytes sibling must not alias its bytes descriptor onto the Option-sum field"
+  (input  (do
+            (type P (A Bytes) (B (Record (: x String))))
+            (def (main (: n Int64))
+              (record (= payload (Some (P.B (record (= x "hi")))))
+                      (= correlation (: (None unit) (Option Bytes)))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: (record (= correlation (None unit)) (= payload (Some (B (record (= x "hi")))))) (record (correlation (Option Bytes)) (payload (Option P))))))
+
+(case "vse7 TWO Option-sum sibling fields at DIFFERENT sum decls each keep their own value-form — the first instantiation's descriptor must not stamp the second"
+  (input  (do
+            (type P (A Bytes) (B (Record (: x String))))
+            (type Q (C Int64) (D (Record (: y Int64))))
+            (def (main (: n Int64))
+              (record (= first (Some (P.B (record (= x "hi")))))
+                      (= second (Some (Q.D (record (= y 7)))))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: (record (= first (Some (B (record (= x "hi"))))) (= second (Some (D (record (= y 7)))))) (record (first (Option P)) (second (Option Q))))))
+
+(case "vse9 the Option-sum field sorting FIRST keeps both siblings intact — the sort-order control of the sibling-descriptor pair"
+  (input  (do
+            (type P (A Bytes) (B (Record (: x String))))
+            (def (main (: n Int64))
+              (record (= apayload (Some (P.B (record (= x "hi")))))
+                      (= zcorrelation (: (None unit) (Option Bytes)))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: (record (= apayload (Some (B (record (= x "hi"))))) (= zcorrelation (None unit))) (record (apayload (Option P)) (zcorrelation (Option Bytes))))))
+
+(case "vse10 two RESULT fields at different type args each encode their own Err payload — the same generic decl at two instantiations shares no descriptor"
+  (input  (do
+            (def (main (: n Int64))
+              (record (= first (: (Ok 7) (Result Int64 String)))
+                      (= second (: (Err (String.to-bytes "no")) (Result Int64 Bytes)))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: (record (= first (Ok 7)) (= second (Err b"no"))) (record (first (Result Int64 String)) (second (Result Int64 Bytes))))))
+
+(case "vse11 two LIST fields of different element types encode independently — the list control of the generic-instantiation family"
+  (input  (do
+            (def (main (: n Int64))
+              (record (= nums (list 1 2))
+                      (= tags (list "a" "b"))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: (record (= nums (list 1 2)) (= tags (list "a" "b"))) (record (nums (List Int64)) (tags (List String))))))

@@ -6,4 +6,4 @@
                       (= correlation (: (None unit) (Option Bytes)))))
             (export main)))
   (call   main (: 1 Int64))
-  (output (record (= correlation (None unit)) (= payload (Some (B (record (= x "hi"))))))))
+  (output (: (record (= correlation (None unit)) (= payload (Some (B (record (= x "hi")))))) (record (correlation (Option Bytes)) (payload (Option P))))))
