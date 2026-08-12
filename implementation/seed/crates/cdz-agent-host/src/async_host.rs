@@ -107,8 +107,8 @@ async fn bounce_delivery_failure(
     // none is guest-controlled payload, so no guest-string-logging concern (§4 keeps the echoed payload out of
     // the log entirely).
     tracing::warn!(
-        sender = %sender.to_hex(),
-        failed_target = %failed_target.to_hex(),
+        sender = %sender.to_base64url(),
+        failed_target = %failed_target.to_base64url(),
         reason = %reason,
         "delivery-failure: bouncing an undeliverable cross-session Emit back to its sender"
     );
@@ -178,7 +178,7 @@ async fn apply_lifecycle_ops(
                             {
                                 tracing::warn!(
                                     target: "cdz_agent_host::session_registry",
-                                    session_id = target.to_hex(),
+                                    session_id = target.to_base64url(),
                                     "session-registry mark_terminated failed (best-effort; terminate still applied): {e}"
                                 );
                             }
@@ -213,7 +213,7 @@ async fn apply_lifecycle_ops(
                     // materialize a child. Loud no-op, not a silent drop; the parent already has the id but
                     // no session backs it. A deployed daemon always has a factory.
                     tracing::warn!(
-                        parent = %parent.to_hex(), child_id = %child_id.to_hex(),
+                        parent = %parent.to_base64url(), child_id = %child_id.to_base64url(),
                         "lifecycle/spawn: no session factory configured — cannot materialize the child reducer (child NOT registered)"
                     );
                     continue;
@@ -247,7 +247,7 @@ async fn apply_lifecycle_ops(
                                 );
                             }
                             Some(Err(KernelError::FoldRefused)) | None => {
-                                tracing::warn!(parent = %parent.to_hex(), "lifecycle/spawn: parent gone/terminated — child not spawned (benign)");
+                                tracing::warn!(parent = %parent.to_base64url(), "lifecycle/spawn: parent gone/terminated — child not spawned (benign)");
                             }
                             Some(Err(e)) => return Err(e),
                         }
@@ -257,7 +257,7 @@ async fn apply_lifecycle_ops(
                         // silent drop. The parent has the id but no live child (a Failure-to-parent is a
                         // follow-on refinement; v0 logs).
                         tracing::warn!(
-                            parent = %parent.to_hex(), reducer_hash = %reducer_hash.to_hex(),
+                            parent = %parent.to_base64url(), reducer_hash = %reducer_hash.to_base64url(),
                             reason = %reason,
                             "lifecycle/spawn: factory could not build the child reducer — child NOT registered"
                         );
@@ -296,7 +296,7 @@ async fn apply_reply_settles(
         if !landed {
             tracing::debug!(
                 target: "cdz_agent_host::userspace_effect",
-                caller = %caller.to_hex(),
+                caller = %caller.to_base64url(),
                 effect_id = effect_id.0,
                 "effect/reply settle was a no-op (caller gone/terminated or effect already settled)"
             );
@@ -750,7 +750,7 @@ impl AsyncAgentHost {
                                 if held_inbound.len() >= HELD_INBOUND_CAP {
                                     let shed = held_inbound.remove(0);
                                     tracing::warn!(
-                                        target_session = %shed.session.to_hex(),
+                                        target_session = %shed.session.to_base64url(),
                                         cap = HELD_INBOUND_CAP,
                                         "held-inbound buffer at cap — shedding the oldest held message (suspend is meant to be short-lived; a stuck-suspended target or flooding producer hit the ceiling)"
                                     );
@@ -1019,7 +1019,7 @@ async fn handle_admin(
             // Non-sensitive: the session id + a registry-write error. Never a guest-controlled string.
             tracing::warn!(
                 target: "cdz_agent_host::session_registry",
-                session_id = id.to_hex(),
+                session_id = id.to_base64url(),
                 "session-registry register failed (best-effort; install still succeeded): {e}"
             );
         }

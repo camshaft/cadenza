@@ -88,6 +88,12 @@ impl SessionId {
     pub fn to_hex(&self) -> String {
         self.0.to_hex()
     }
+    /// The base64url rendering — the encode-only display form for TRACING output (operator directive
+    /// 2026-08-12: base64url, not hex, at the permitted display + FS/S3 sites). Never routing/storage;
+    /// there is no decode counterpart (a session-id is raw hash bytes, never parsed from a string).
+    pub fn to_base64url(&self) -> String {
+        self.0.to_base64url()
+    }
 }
 
 /// Mint a fresh SPAWN NONCE for a root session's genesis (§lifecycle I2a) — 32 OS-random bytes hashed into
