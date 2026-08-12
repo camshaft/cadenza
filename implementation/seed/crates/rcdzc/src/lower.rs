@@ -14676,13 +14676,111 @@ struct TypeNode {
     children: Vec<TypeNode>,
 }
 
-/// Builds the shape table, memoizing each `Ty::Sum` by its declaration occurrence so a recursive
-/// reference reuses the same entry (a `Ref`) rather than expanding forever.
+/// Builds the shape table, memoizing each `Ty::Sum`/`Ty::Nominal` by its full INSTANTIATION (decl + a
+/// structural fingerprint of its type args) so a recursive reference reuses the same entry (a `Ref`)
+/// rather than expanding forever. Keying on the decl ALONE is unsound for a GENERIC decl: `Option Bytes`
+/// and `Option P` share the `Option` decl but are DIFFERENT types (`type-system.md`: two sums agree iff
+/// decl AND args agree), so a decl-only memo aliases the second instantiation's shape onto the first —
+/// silently mis-encoding sibling `Option`-of-different-arg fields (the `Option<P>`-beside-`Option<Bytes>`
+/// value-encode miscompile). The args are a FINITE tree (recursion lives in variant PAYLOADS, closed by
+/// this same memo — never in the args), so the fingerprint terminates.
 #[derive(Default)]
 struct ShapeTableBuilder {
     table: Vec<ShapeNode>,
-    /// sum decl → its table index (filled BEFORE the variants are built, so a self-reference resolves).
-    sums: std::collections::HashMap<StructId, u32>,
+    /// (sum/nominal decl, args-fingerprint) → its table index (filled BEFORE the variants are built, so a
+    /// self-reference at the SAME instantiation resolves to a `Ref`).
+    sums: std::collections::HashMap<(StructId, String), u32>,
+}
+
+/// A stable structural fingerprint of a type, injective enough to distinguish two instantiations of the
+/// same generic decl (`Option Bytes` vs `Option P`). Uses decl NUMBERS (not names) for nominal/sum
+/// identity and recurses over children/args — it descends into a sum/nominal's ARGS (finite) but NOT its
+/// variant payloads (that recursion is closed by the `sums` memo, and the args already disambiguate the
+/// instantiation). Only used as a `HashMap` key; not written to any wire format.
+fn ty_instantiation_key(ty: &crate::ty::Ty) -> String {
+    use crate::ty::Ty;
+    use std::fmt::Write;
+    let mut s = String::new();
+    fn go(s: &mut String, ty: &Ty) {
+        use crate::ty::Ty;
+        match ty {
+            Ty::Int(w) => {
+                let _ = write!(s, "I{w:?}");
+            }
+            Ty::BigInt => s.push_str("BI"),
+            Ty::Rational => s.push_str("Ra"),
+            Ty::Bool => s.push('B'),
+            Ty::Float(w) => {
+                let _ = write!(s, "F{w:?}");
+            }
+            Ty::String => s.push_str("St"),
+            Ty::Symbol => s.push_str("Sy"),
+            Ty::Bytes => s.push_str("By"),
+            Ty::Unit => s.push('U'),
+            Ty::Tuple(es) => {
+                s.push_str("T(");
+                for e in es.iter() {
+                    go(s, e);
+                    s.push(',');
+                }
+                s.push(')');
+            }
+            Ty::List(e) => {
+                s.push_str("L(");
+                go(s, e);
+                s.push(')');
+            }
+            Ty::Set(e) => {
+                s.push_str("Se(");
+                go(s, e);
+                s.push(')');
+            }
+            Ty::Map(k, v) => {
+                s.push_str("M(");
+                go(s, k);
+                s.push(',');
+                go(s, v);
+                s.push(')');
+            }
+            Ty::Record(fs) => {
+                s.push_str("R(");
+                for (n, t) in fs.iter() {
+                    let _ = write!(s, "{}:", n.name);
+                    go(s, t);
+                    s.push(',');
+                }
+                s.push(')');
+            }
+            Ty::Sum { decl, args } => {
+                let _ = write!(s, "S{}<", decl.0);
+                for a in args.iter() {
+                    go(s, a);
+                    s.push(',');
+                }
+                s.push('>');
+            }
+            Ty::Nominal { decl, args, .. } => {
+                let _ = write!(s, "N{}<", decl.0);
+                for a in args.iter() {
+                    go(s, a);
+                    s.push(',');
+                }
+                s.push('>');
+            }
+            Ty::Qty { inner, .. } => {
+                s.push_str("Q(");
+                go(s, inner);
+                s.push(')');
+            }
+            // Any/Var and other non-instantiation-bearing leaves: a coarse tag is fine (they never key a
+            // distinct sum instantiation — a fully-solved reducer boundary type has no free vars).
+            other => {
+                let _ = write!(s, "?{other:?}");
+            }
+        }
+    }
+    go(&mut s, ty);
+    s
 }
 
 impl ShapeTableBuilder {
@@ -14778,14 +14876,20 @@ impl ShapeTableBuilder {
                 self.push(ShapeNode::Record(out))
             }
             Ty::Sum { decl, .. } => {
-                // Already building/built this sum → a Ref to its reserved entry (closes recursion).
-                if let Some(&existing) = self.sums.get(decl) {
+                // Key by the full INSTANTIATION (decl + args fingerprint), NOT decl alone — a generic
+                // `Option Bytes` and `Option P` share the `Option` decl but have DIFFERENT shapes; a
+                // decl-only memo would alias the second onto the first (the sibling-Option value-encode
+                // miscompile). A recursive self-reference has the SAME instantiation key, so it still
+                // closes to a `Ref`.
+                let key = (*decl, ty_instantiation_key(ty));
+                // Already building/built this instantiation → a Ref to its reserved entry (closes recursion).
+                if let Some(&existing) = self.sums.get(&key) {
                     return Some(self.push(ShapeNode::Ref(existing)));
                 }
                 // Reserve THIS sum's entry index BEFORE building the variants (a variant payload that
                 // references the sum resolves to this index). Fill it in place once the variants are built.
                 let self_ix = self.push(ShapeNode::Unit); // placeholder, overwritten below
-                self.sums.insert(*decl, self_ix);
+                self.sums.insert(key, self_ix);
                 let variants = sum_variant_payload_types(db, ty)?;
                 let mut out = Vec::with_capacity(variants.len());
                 for (head, payload_tys) in variants {
@@ -14822,12 +14926,16 @@ impl ShapeTableBuilder {
             // erased-newtype μ-binder) resolves to this same reserved entry via `sums`, so the shape table
             // is finite. Reuses `Named`, which the runtime `value-encode` walker already renders.
             Ty::Nominal { decl, inner, .. } => {
-                if let Some(&existing) = self.sums.get(decl) {
+                // Same instantiation-keying as `Ty::Sum` — a generic nominal `Box Int64` vs `Box Bool`
+                // share the decl but differ, so key on (decl, args fingerprint). A recursive nominal's
+                // inner back-edge re-references the SAME instantiation → resolves to the reserved `Ref`.
+                let key = (*decl, ty_instantiation_key(ty));
+                if let Some(&existing) = self.sums.get(&key) {
                     return Some(self.push(ShapeNode::Ref(existing)));
                 }
                 let name = db.type_decl_by_occ(*decl)?.name.clone();
                 let self_ix = self.push(ShapeNode::Unit); // placeholder, filled below
-                self.sums.insert(*decl, self_ix);
+                self.sums.insert(key, self_ix);
                 let inner_ix = self.shape_of(db, inner)?;
                 self.table[self_ix as usize] = ShapeNode::Named(name, inner_ix);
                 self_ix

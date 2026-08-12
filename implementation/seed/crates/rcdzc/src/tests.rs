@@ -41364,6 +41364,41 @@ mod match_engine {
     }
 
     #[test]
+    fn two_sibling_option_fields_of_different_arg_do_not_alias_in_the_value_encode_descriptor() {
+        // SILENT MISCOMPILE (concierge issue, v-effects-diagnosed): a runtime record with TWO sibling
+        // Option fields — `pl: Option<P>` (P a nominal sum) beside `corr: Option<Bytes>` — value-encoded the
+        // Option-of-sum field as an EMPTY bytes-leaf (`(Some b"")`) instead of the sum value-form, silent
+        // data loss = reject-don't-miscompile violated at the artifact. ROOT (`ShapeTableBuilder.sums`,
+        // lower.rs): the shape memo keyed each `Ty::Sum`/`Ty::Nominal` by its `decl` (StructId) ALONE, but a
+        // GENERIC decl like `Option a` is one decl across ALL instantiations — so whichever of `Option<P>` /
+        // `Option<Bytes>` built first won the `Option`-decl slot and the sibling short-circuited to a `Ref`
+        // onto it (`Option<P>` aliased onto `Option<Bytes>`'s empty-bytes descriptor). `Ty::Sum`'s own doc:
+        // two sums agree iff decl AND args agree. FIX: key the memo by (decl, ty_instantiation_key(ty)) — the
+        // full instantiation — so `Option<P>` and `Option<Bytes>` get DISTINCT entries; a recursive
+        // self-reference still shares the same instantiation key and closes to a `Ref`. Recursion defeats
+        // const-fold here (the `build` helper) so this takes the value-encode WALKER, not the const path.
+        let Some(out) = escape_render(
+            "(module m (type P (A Bytes) (B (Record (: x String)))) \
+               (def (build i) (if (< i 1) (build (+ i 1)) \
+                 (record (pl (: ((. Option Some) (: ((. P B) (record (x \"hi\"))) P)) (Option P))) \
+                         (corr (: (. Option None) (Option Bytes)))))) \
+               (def (main) (build 0)) (export main))",
+        ) else {
+            eprintln!(
+                "runtime wasm not found; skipping sibling-Option descriptor-alias escape run"
+            );
+            return;
+        };
+        assert_eq!(
+            out,
+            "(: (record (= corr (None unit)) (= pl (Some (B (record (= x \"hi\")))))) \
+(record (corr (Option Bytes)) (pl (Option P))))",
+            "the Option<P> field must render its OWN sum value-form (Some (B (record (= x \"hi\")))), NOT \
+alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
+        );
+    }
+
+    #[test]
     fn a_runtime_list_of_sums_escapes_via_value_encode() {
         // §3c REDUCER-RESULT de-risk (the sum case): a runtime `(List <sum>)` — the reducer result shape
         // `(List EffectRequest)` IF EffectRequest is a SUM (a variant per effect kind) rather than a record.
