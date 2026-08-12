@@ -2456,6 +2456,119 @@ mod tests {
         );
     }
 
+    /// END-TO-END: drive the REAL `reducer_kv.cdz` kv-SCAN branch through the A1 BYTES boundary, proving the
+    /// `kv.prefix-scan` LIST-OF-PAIRS lift round-trips through the host — the fourth and richest kv host op
+    /// (put + get + delete + prefix-scan), returning `list<tuple<list<u8>, list<u8>>>` (a value-heap List of
+    /// Tuple of Bytes the guest forces with `List.len`), the heaviest host result shape of the four. This
+    /// completes the put/get/delete/prefix-scan E2E coverage of the kv host op surface.
+    ///
+    /// The contract (`reducer_kv.cdz` kv-scan branch): a `kv-scan`-family event folds to
+    /// `kv.prefix-scan("kv-genesis/")` (the slot's namespace — the seeded `"kv-genesis/slot"` key lives under
+    /// it) → on a NON-EMPTY list ONE emit `{kind=emit, target="scanned", payload=None}`; on empty NO effects.
+    /// Two arms: (1) SEED the slot then SCAN → the prefix has one pair → one "scanned" emit; (2) SCAN with
+    /// nothing seeded → empty → zero effects. KV threaded across seed→scan (the kernel loop's fold contract).
+    /// Same component + env as the other kv E2Es (`CDZ_KV_GENESIS_REDUCER_COMPONENT` + `CDZ_STORE`) — the SAME
+    /// reducer_kv component (kv-scan appended; kv-seed/kv-read/kv-del byte-intact).
+    #[tokio::test]
+    async fn real_kv_reducer_scan_branch_emits_iff_the_prefix_is_non_empty() {
+        use cdz_kernel::wasm_host::AsyncComponentReducer;
+
+        let non_empty = |var: &str| std::env::var(var).ok().filter(|v| !v.is_empty());
+        let Some(reducer_path) = non_empty("CDZ_KV_GENESIS_REDUCER_COMPONENT") else {
+            eprintln!(
+                "SKIP real_kv_reducer_scan_branch_emits_iff_the_prefix_is_non_empty: \
+                 CDZ_KV_GENESIS_REDUCER_COMPONENT unset (or empty)"
+            );
+            return;
+        };
+        let store_dir = non_empty("CDZ_STORE").unwrap_or_else(|| {
+            panic!(
+                "real_kv_reducer_scan_...: CDZ_KV_GENESIS_REDUCER_COMPONENT is set but CDZ_STORE is not — \
+                 the kv reducer imports cadenza:runtime/heap, whose bytes resolve from the component store"
+            )
+        });
+        let bytes = std::fs::read(&reducer_path).unwrap_or_else(|e| {
+            panic!("CDZ_KV_GENESIS_REDUCER_COMPONENT={reducer_path:?} set but unreadable: {e}")
+        });
+        let reducer = AsyncComponentReducer::from_component_bytes(&bytes)
+            .unwrap_or_else(|e| panic!("reducer_kv must be a valid component: {e:?}"));
+        // Resolve the value-heap runtime dep from CDZ_STORE + attach the store — same path as the other kv E2Es.
+        let store = cdz_kernel::component_store::ComponentStore::open(&store_dir);
+        let deps = reducer.deps().to_vec();
+        assert!(
+            !deps.is_empty(),
+            "the kv reducer must declare a cadenza:runtime/heap dep (it constructs values via the heap)"
+        );
+        let mut resolved = Vec::with_capacity(deps.len());
+        for dep in &deps {
+            let dep_bytes = store.get_by_hash(&dep.hash).unwrap_or_else(|e| {
+                panic!(
+                    "CDZ_STORE={store_dir:?} could not resolve kv reducer dep {:?} (hash {}): {e:?}",
+                    dep.import_name,
+                    dep.hash.to_hex()
+                )
+            });
+            resolved.push((dep.clone(), dep_bytes));
+        }
+        let reducer = reducer
+            .with_resolved_deps(resolved)
+            .with_component_store(store);
+
+        // ARM 1 (prefix NON-empty): SEED the slot, then SCAN its namespace — thread the seed fold's Kv into
+        // the scan fold so the scan sees the committed pair. prefix-scan returns a one-element list → one
+        // "scanned" emit, no payload.
+        let seed_ct = cdz_kernel::event::ContentType {
+            family: "kv-seed".into(),
+            version: 1,
+        };
+        let (_seed_effects, kv_after_seed) = reducer
+            .apply(
+                cdz_kernel::kv::Kv::new(),
+                seed_ct,
+                Some(b"scannable-value".to_vec()),
+                None,
+            )
+            .await
+            .expect("the kv reducer folds the seed event (kv.put) through the A1 bytes boundary");
+        let scan_ct = cdz_kernel::event::ContentType {
+            family: "kv-scan".into(),
+            version: 1,
+        };
+        let (scan_effects, _kv_after_scan) = reducer
+            .apply(kv_after_seed, scan_ct.clone(), None, None)
+            .await
+            .expect("the kv reducer folds the scan event (kv.prefix-scan) through the A1 bytes boundary");
+        assert_eq!(
+            scan_effects.len(),
+            1,
+            "scanning a NON-EMPTY prefix folds to one emit (prefix-scan returned a non-empty list of pairs)"
+        );
+        assert_eq!(
+            scan_effects[0].request.content_type.family, "emit",
+            "the folded effect's kind crosses the bytes boundary as the family string"
+        );
+        assert_eq!(
+            scan_effects[0].request.target_str().unwrap(),
+            "scanned",
+            "the scan emit's target is the opaque bytes \"scanned\""
+        );
+        assert!(
+            scan_effects[0].request.payload.is_none(),
+            "the scan emit carries no payload (the kv-scan branch emits target-only)"
+        );
+
+        // ARM 2 (prefix EMPTY): SCAN with nothing seeded — the prefix has no pairs → prefix-scan returns an
+        // empty list → zero effects. Proves the empty arm of the list-of-pairs lift (List.len == 0 branch).
+        let (empty_scan_effects, _kv3) = reducer
+            .apply(cdz_kernel::kv::Kv::new(), scan_ct, None, None)
+            .await
+            .expect("the kv reducer folds a scan-of-empty-prefix without trapping");
+        assert!(
+            empty_scan_effects.is_empty(),
+            "scanning an EMPTY prefix requests no effects (prefix-scan returned an empty list)"
+        );
+    }
+
     #[tokio::test]
     async fn with_sink_persists_a_sessions_events_durably() {
         // with_sink attaches a durable LogStore: the events a session appends during a turn are persisted,
