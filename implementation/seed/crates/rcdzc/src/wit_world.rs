@@ -280,6 +280,17 @@ pub fn parse_target_world(a: &Arenas, root: StructId) -> Option<TargetWorld> {
     let mut exports = Vec::new();
     for &iface_id in items.get(2..)? {
         let dir = a.head_name(iface_id)?;
+        // SURFACE DOC METADATA: a `///` doc on the inline `world` decl lowers to a `(doc …)` child — v-syntax's
+        // `world_expr` interleaves doc nodes after the name (for round-trip). Docs are NOT part of world
+        // IDENTITY: `world_schema_tree` (the canonical builder the external artifact + rcdzc's emit both route
+        // through) takes no doc param, so a documented world MUST decode to the SAME `TargetWorld` as its
+        // undocumented twin (v-syntax pinned that interface-structure identity in f1e3edc92). Skip doc heads
+        // before reading interfaces; without this a doc'd top-level `world` decl fails to parse (its `(doc …)`
+        // child is neither `import` nor `export`) → `world_bytes_crossing_export` returns None → the in-source
+        // world-decl compile arm silently would not drive emit. MVP worlds carry no docs, so this is inert today.
+        if dir == "doc" {
+            continue;
+        }
         let iface = parse_wit_interface(a, iface_id)?;
         match dir {
             "import" => imports.push(iface),
@@ -568,6 +579,44 @@ mod tests {
         let mh = b.name("member");
         let mn = b.name(name);
         b.list(vec![mh, mn, func])
+    }
+
+    #[test]
+    fn a_doc_node_on_the_world_is_skipped_and_the_world_parses() {
+        // A `///`-documented inline `world` decl lowers to a `(doc …)` child interleaved after the name
+        // (v-syntax's world_expr). Docs are NOT part of world identity, so `parse_target_world` must SKIP
+        // them and decode the SAME `TargetWorld` as the undocumented twin (v-syntax pinned the syntax-side
+        // interface-structure identity in f1e3edc92). Without the doc-skip this world would fail to parse (its
+        // `(doc …)` child is neither `import` nor `export`) and the in-source world-decl arm silently would not
+        // drive emit. This is the cross-side pin of the doc-independence guarantee.
+        let mut b = Builder::new();
+        let ev = byte_list(&mut b);
+        let res = byte_list(&mut b);
+        let apply = member(&mut b, "apply", vec![("event", ev)], res);
+        let eh = b.name("export");
+        let en = b.name("fold");
+        let fold = b.list(vec![eh, en, apply]);
+        // (doc "…") interleaved right after the world NAME, before the export — the world_expr doc position.
+        let dh = b.name("doc");
+        let dtext = str_head(&mut b, "the reducer world");
+        let doc = b.list(vec![dh, dtext]);
+        let wh = b.name("world");
+        let wn = b.name("reducer");
+        let world = b.list(vec![wh, wn, doc, fold]);
+        let a = b.finish(world);
+
+        let tw = parse_target_world(&a, world)
+            .expect("a doc'd world still parses (the doc node is skipped)");
+        assert_eq!(tw.name, "reducer");
+        assert_eq!(tw.imports.len(), 0, "no imports");
+        assert_eq!(
+            tw.exports.len(),
+            1,
+            "the fold export is read past the doc node"
+        );
+        assert_eq!(tw.exports[0].name, "fold");
+        assert_eq!(tw.exports[0].members.len(), 1);
+        assert_eq!(tw.exports[0].members[0].name, "apply");
     }
 
     #[test]
