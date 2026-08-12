@@ -1108,6 +1108,77 @@ fn read_canonical_opt_bytes(a: &Arenas, id: StructId) -> Result<Option<Vec<u8>>,
     }
 }
 
+/// Deep-copy the subtree rooted at `id` of `a` into a fresh arena and encode it to its canonical codec
+/// bytes — the standalone byte form of a nested value-form value. Uses only the public `Arenas`/`Builder`
+/// surface (an atom copies its leaf; a list copies its children), so it needs no codec-internal access.
+/// This is how a `Structured` payload's inner value (e.g. an M1 `ModelRequest` record) becomes the bytes a
+/// schema-typed host decoder consumes — the SAME value-form the guest emitted, re-serialized standalone.
+fn reencode_subtree(a: &Arenas, id: StructId) -> Vec<u8> {
+    fn copy_node(a: &Arenas, id: StructId, b: &mut Builder) -> StructId {
+        match a.get(id) {
+            Struct::Atom(lid) => {
+                let leaf = a.leaf(*lid).clone();
+                b.atom_leaf(leaf)
+            }
+            Struct::List(kids) => {
+                let kid_ids: Vec<StructId> = kids.clone();
+                let copied: Vec<StructId> = kid_ids.iter().map(|&k| copy_node(a, k, b)).collect();
+                b.list(copied)
+            }
+        }
+    }
+    let mut b = Builder::new();
+    let root = copy_node(a, id, &mut b);
+    codec::encode(&b.finish(root))
+}
+
+/// Read a canonical `option<payload>` under the §GAP-1 b1 SHAPE — a SELF-DESCRIBING value-form dispatch,
+/// NOT a tagged sum the kernel must know the arms of. The inner value distinguishes ITSELF by shape: a bare
+/// `list<u8>` marshals to a single bytes-LEAF (`val_to_ast`'s `list<u8>` special-case) and IS an opaque
+/// payload; a name-headed COMPOUND `(Structured <value>)` is a structured value-form payload, re-encoded
+/// standalone to the value-form bytes a schema-typed decoder (e.g. `decode_model_request`) reads.
+/// `(None <unit>)` → `None`. Both arms yield the effect's inline bytes, so the kernel [`Payload::Inline`]
+/// stays a UNIFORM byte payload. This is not an adapter: the value-form already distinguishes a leaf from a
+/// compound, so "leaf = opaque, `Structured`-compound = value-form" is a dispatch over the ONE value-form —
+/// and an effect's IDENTITY keys on its schema-hash, never on this payload shape. An opaque reducer emits a
+/// bare bytes payload UNCHANGED; only a reducer with a structured payload wraps it in a `Structured` ctor.
+fn read_canonical_opt_payload(a: &Arenas, id: StructId) -> Result<Option<Vec<u8>>, MarshalError> {
+    let (case, payload) = ctor(a, id)?;
+    match case {
+        "Some" => {
+            let inner = payload.ok_or_else(|| type_mismatch("option", "Some without payload"))?;
+            match a.get(inner) {
+                // A bare bytes-leaf IS an opaque payload (the natural value-form of `list<u8>`).
+                Struct::Atom(_) => Ok(Some(read_bytes(a, inner)?)),
+                // A name-headed compound is the `Structured` value-form arm — re-encode it standalone.
+                Struct::List(_) => {
+                    let (tag, val) = ctor(a, inner)?;
+                    match tag {
+                        "Structured" => Ok(Some(reencode_subtree(
+                            a,
+                            val.ok_or_else(|| {
+                                type_mismatch("payload", "Structured without value")
+                            })?,
+                        ))),
+                        other => Err(type_mismatch(
+                            "payload",
+                            format!(
+                                "compound payload head {} != Structured",
+                                bounded_name(other)
+                            ),
+                        )),
+                    }
+                }
+            }
+        }
+        "None" => Ok(None),
+        other => Err(type_mismatch(
+            "option",
+            format!("case {} ∉ {{Some,None}}", bounded_name(other)),
+        )),
+    }
+}
+
 /// Parse the effect-list document the fold boundary returns (B1) into `Vec<Effect>` — the dual of
 /// [`build_event_document`]. The guest `value-encode`s its returned `list<effect-request>` as the canonical
 /// value-form `(list <record>…)` — a NAME-head `list` of canonical `(record (= field value)…)` elements.
@@ -1140,8 +1211,10 @@ fn parse_effect_request(a: &Arenas, id: StructId) -> Result<Effect, MarshalError
         field("target").ok_or_else(|| type_mismatch("effect-request", "missing target"))?,
     )?;
     // payload/correlation absent if the field is omitted (a fire-and-forget, payload-free effect).
+    // The payload is the b1 self-describing shape (bare bytes = opaque | Structured compound = value-form);
+    // correlation stays a bare opaque option<bytes> (a correlation token is never structured).
     let payload = match field("payload") {
-        Some(n) => read_canonical_opt_bytes(a, n)?,
+        Some(n) => read_canonical_opt_payload(a, n)?,
         None => None,
     }
     .map(|b| Payload::Inline(b.into()));
@@ -2555,6 +2628,68 @@ mod tests {
             parse_effect_list(&wb),
             Err(MarshalError::TypeMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn effect_list_structured_payload_arm_reencodes_the_value_form_bytes() {
+        // b1 self-describing payload dispatch: an opaque payload is a bare bytes-leaf (covered by the
+        // sibling test's `body` payload — unchanged), and a STRUCTURED payload is a name-headed
+        // `(Structured <value>)` compound. parse_effect_list must produce the effect's Inline payload =
+        // the CANONICAL value-form bytes of that inner value — exactly the bytes a schema-typed host
+        // decoder (decode_model_request) reads. Re-encoded standalone, byte-identical to `val_to_ast` of
+        // the same value (the form pinned by `val_to_ast_pins_the_b1_model_request_value_form`).
+        let model_request = Val::Record(vec![
+            ("model".into(), Val::String("claude".into())),
+            (
+                "messages".into(),
+                Val::List(vec![Val::Record(vec![
+                    ("role".into(), Val::String("user".into())),
+                    (
+                        "content".into(),
+                        Val::List(vec![Val::Variant(
+                            "Text".into(),
+                            Some(Box::new(Val::String("hi".into()))),
+                        )]),
+                    ),
+                ])]),
+            ),
+            ("tools".into(), Val::List(vec![])),
+            (
+                "max-tokens".into(),
+                Val::Option(Some(Box::new(Val::U64(1024)))),
+            ),
+        ]);
+        // The canonical standalone bytes of the ModelRequest value — what the Structured arm must yield.
+        let want_inline = val_to_ast(&model_request).expect("model-request marshals");
+
+        // A model effect whose payload is the Structured value-form arm carrying that ModelRequest.
+        let structured_effect = Val::Record(vec![
+            ("kind".into(), Val::String("model".into())),
+            (
+                "target".into(),
+                Val::List(b"llm".iter().copied().map(Val::U8).collect()),
+            ),
+            (
+                "payload".into(),
+                Val::Option(Some(Box::new(Val::Variant(
+                    "Structured".into(),
+                    Some(Box::new(model_request.clone())),
+                )))),
+            ),
+            ("correlation".into(), Val::Option(None)),
+        ]);
+        let bytes = effect_list_bytes(vec![structured_effect]);
+        let effects = parse_effect_list(&bytes).expect("structured payload parses");
+        assert_eq!(effects.len(), 1);
+        assert_eq!(effects[0].request.content_type.family, "model");
+        match &effects[0].request.payload {
+            Some(Payload::Inline(p)) => assert_eq!(
+                p.as_ref(),
+                want_inline.as_slice(),
+                "Structured arm re-encodes the inner value-form standalone"
+            ),
+            other => panic!("expected an Inline value-form payload, got {other:?}"),
+        }
     }
 
     #[test]
