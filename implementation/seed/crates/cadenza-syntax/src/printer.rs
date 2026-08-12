@@ -2090,7 +2090,7 @@ impl<'a> Printer<'a> {
     /// that is NOT one of these descriptor shapes prints via the generic expr surface (a raw type node
     /// the lowering left as-is — e.g. a record/tuple type outside the shared MVP scope).
     fn print_wit_type(&mut self, ty: StructId) {
-        // Primitive `(name)`: a one-element list whose sole child is a NAME atom.
+        // Primitive `(name)`: a one-element list whose sole child is a NAME atom -> bare `name`.
         if let Struct::List(kids) = self.a.get(ty)
             && kids.len() == 1
             && let Some(name) = self.a.as_name(kids[0])
@@ -2098,7 +2098,15 @@ impl<'a> Printer<'a> {
             self.doc.word(emit_name(name));
             return;
         }
-        // Compound `("list"|"option" <child>)`: a two-element list whose head is a STRING atom.
+        // `unit` descriptor `("unit")`: a one-element list whose sole child is a STRING atom -> bare `unit`.
+        if let Struct::List(kids) = self.a.get(ty)
+            && kids.len() == 1
+            && self.a.as_str(kids[0]) == Some("unit")
+        {
+            self.doc.word("unit");
+            return;
+        }
+        // `list`/`option` `("head" <child>)`: a two-element list, STRING head -> `head(<child>)`.
         if let Struct::List(kids) = self.a.get(ty)
             && kids.len() == 2
             && let Some(head) = self.a.as_str(kids[0])
@@ -2108,6 +2116,22 @@ impl<'a> Printer<'a> {
             self.doc.word(head);
             self.doc.word("(");
             self.print_wit_type(child);
+            self.doc.word(")");
+            return;
+        }
+        // `tuple` `("tuple" <a> <b> …)`: a STRING head + N element descriptors -> `tuple(<a>, <b>, …)`.
+        if let Struct::List(kids) = self.a.get(ty)
+            && kids.len() >= 2
+            && self.a.as_str(kids[0]) == Some("tuple")
+        {
+            let elems: Vec<StructId> = kids[1..].to_vec();
+            self.doc.word("tuple(");
+            for (i, &e) in elems.iter().enumerate() {
+                if i > 0 {
+                    self.doc.word(", ");
+                }
+                self.print_wit_type(e);
+            }
             self.doc.word(")");
             return;
         }
@@ -4179,6 +4203,40 @@ mod tests {
         assert!(
             sexp.contains("(result (u8))"),
             "result prim stored as (u8) descriptor, got: {sexp}"
+        );
+    }
+
+    #[test]
+    fn inline_world_unit_and_tuple_member_types_round_trip() {
+        // The kv-widened world's extra member types — `unit` and `tuple(A, B)` — lower to the str-head
+        // descriptor form (`("unit")`, `("tuple" <a> <b>)`) and print back to the surface, so a full
+        // kv-shaped world round-trips ML->ML. Mirrors put's unit result + prefix-scan's list-of-pairs.
+        let printed = assert_roundtrip(
+            "world W = | export i = | put : (v : list(u8)) -> unit \
+             | scan : (p : list(u8)) -> list(tuple(list(u8), list(u8)))",
+            80,
+        );
+        assert!(
+            printed.contains("-> unit"),
+            "unit result round-trips bare: {printed}"
+        );
+        assert!(
+            printed.contains("list(tuple(list(u8), list(u8)))"),
+            "list-of-tuple-pairs round-trips: {printed}"
+        );
+        // Stored as the canonical str-head descriptors (not name-head ML applications).
+        let parsed = parser::read_ml(
+            "world W = | export i = | put : (v : list(u8)) -> unit \
+             | scan : (p : list(u8)) -> list(tuple(list(u8), list(u8)))",
+        );
+        let sexp = sexpr::print(&parsed.arenas);
+        assert!(
+            sexp.contains("(result (\"unit\"))"),
+            "unit stored as str-head (\"unit\"), got: {sexp}"
+        );
+        assert!(
+            sexp.contains("(\"tuple\" (\"list\" (u8)) (\"list\" (u8)))"),
+            "tuple stored as str-head positional descriptor, got: {sexp}"
         );
     }
 

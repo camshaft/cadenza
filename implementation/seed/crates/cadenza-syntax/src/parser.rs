@@ -2660,32 +2660,38 @@ impl<'a> Parser<'a> {
     /// Any other type node is left AS-IS (still round-trips; record/tuple/result/variant stay inline both
     /// sides per the shared-scope agreement). The printer's `print_wit_type` is the inverse.
     fn wit_type_desc_of(&mut self, ty: StructId) -> StructId {
-        // A bare WIT-primitive NAME atom -> a primitive descriptor `(name)`. (Clone the name so the read
-        // borrow releases before the mutable builder call.) A non-WIT-prim bare name is left as-is.
+        // A bare NAME atom: `unit`/`Unit` -> the str-head `("unit")`; a WIT primitive -> `(name)`; any
+        // other bare name is left as-is. (Clone the name so the read borrow releases before the mutable
+        // builder call.)
         if let Some(name) = self.builder.as_name(ty).map(str::to_string) {
-            return if is_wit_primitive(&name) {
-                self.builder.wit_type_prim(&name)
-            } else {
-                ty
+            return match name.as_str() {
+                "unit" | "Unit" => self.builder.wit_type_unit(),
+                n if is_wit_primitive(n) => self.builder.wit_type_prim(n),
+                _ => ty,
             };
         }
-        // A `(list|List T)` / `(option|Option T)` application (name head + one arg) -> list/option compound.
-        // Extract (head-name, arg) WITHOUT holding the `get` borrow across the mutable builder calls.
+        // A `(head arg…)` application. Extract (head-name, args) WITHOUT holding the `get` borrow across
+        // the mutable builder calls. `list`/`option` take one arg; `tuple` is variable-arity.
         let app = match self.builder.get(ty) {
-            crate::ast::Struct::List(kids) if kids.len() == 2 => {
-                let (head, arg) = (kids[0], kids[1]);
-                self.builder.as_name(head).map(|h| (h.to_string(), arg))
+            crate::ast::Struct::List(kids) if kids.len() >= 2 => {
+                let head = kids[0];
+                let args: Vec<StructId> = kids[1..].to_vec();
+                self.builder.as_name(head).map(|h| (h.to_string(), args))
             }
             _ => None,
         };
-        match app.as_ref().map(|(h, arg)| (h.as_str(), *arg)) {
-            Some(("list" | "List", arg)) => {
-                let elem = self.wit_type_desc_of(arg);
+        match app {
+            Some((h, args)) if (h == "list" || h == "List") && args.len() == 1 => {
+                let elem = self.wit_type_desc_of(args[0]);
                 self.builder.wit_type_list(elem)
             }
-            Some(("option" | "Option", arg)) => {
-                let inner = self.wit_type_desc_of(arg);
+            Some((h, args)) if (h == "option" || h == "Option") && args.len() == 1 => {
+                let inner = self.wit_type_desc_of(args[0]);
                 self.builder.wit_type_option(inner)
+            }
+            Some((h, args)) if h == "tuple" || h == "Tuple" => {
+                let elems: Vec<StructId> = args.iter().map(|&a| self.wit_type_desc_of(a)).collect();
+                self.builder.wit_type_tuple(&elems)
             }
             _ => ty,
         }

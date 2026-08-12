@@ -502,6 +502,25 @@ impl Builder {
         self.list(vec![head, inner])
     }
 
+    /// Build a `unit` WIT type descriptor `("unit")` — a STRING-atom head `unit`, no children. Unlike a
+    /// scalar primitive (a NAME-head `(name)` via [`wit_type_prim`]), `unit` is a STR-head marker in the
+    /// landed `build_type` form (it is the empty/no-value type, not a component-model scalar). See
+    /// [`wit_type_prim`] for the head-kind discipline.
+    pub fn wit_type_unit(&mut self) -> StructId {
+        let head = self.atom_leaf(Leaf::Str("unit".into()));
+        self.list(vec![head])
+    }
+
+    /// Build a `tuple<A, B, …>` WIT type descriptor `("tuple" <a> <b> …)` — a STRING-atom head `tuple`
+    /// then each element type descriptor in positional order. Matches the landed `build_type` form.
+    /// See [`wit_type_prim`].
+    pub fn wit_type_tuple(&mut self, elems: &[StructId]) -> StructId {
+        let mut children = Vec::with_capacity(1 + elems.len());
+        children.push(self.atom_leaf(Leaf::Str("tuple".into())));
+        children.extend_from_slice(elems);
+        self.list(children)
+    }
+
     pub fn finish(self, root: StructId) -> Arenas {
         Arenas {
             leaves: self.leaves,
