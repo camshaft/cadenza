@@ -16462,11 +16462,19 @@ fn emit_mul_pow2_as_shift(
     dest: ResultDest,
 ) -> Result<(), Reject> {
     let ot = IntTy::fixed(m.signed, m.width);
+    // WIDTH-PARTITIONED CLAIM (finding #21 Mul sibling): the shift/round-trip scratch is stored at `m.slot()`;
+    // skip any slot `scratch_ty` records at a different width (a live i32 let-binder / handle temp holds it)
+    // so the guard never re-types a wasm local. Same discipline as `emit_checked_arith_to`.
+    let want = m.slot();
     let mut next_scratch = base;
-    let mut claim = |high: &mut u32| {
+    let mut claim = |high: &mut u32, scratch_ty: &mut HashMap<u32, ValType>| {
+        while matches!(scratch_ty.get(&next_scratch), Some(&w) if w != want) {
+            next_scratch += 1;
+        }
         let s = next_scratch;
         next_scratch += 1;
         *high = (*high).max(s + 1);
+        scratch_ty.insert(s, want);
         s
     };
     // The value operand `$a` is read three times (the shift, the round-trip check's compare); a reusable
@@ -16475,8 +16483,7 @@ fn emit_mul_pow2_as_shift(
     let sa = match sa_src {
         Some(src) => src,
         None => {
-            let s = claim(high);
-            scratch_ty.insert(s, m.slot());
+            let s = claim(high, scratch_ty);
             OperandSrc::Slot(s)
         }
     };
@@ -16487,11 +16494,7 @@ fn emit_mul_pow2_as_shift(
     // with it. The round-trip guard re-reads `$r`, which is fine at either a scratch slot or `d`.
     let sr = match dest {
         ResultDest::Slot(d) => d,
-        ResultDest::Stack => {
-            let s = claim(high);
-            scratch_ty.insert(s, m.slot());
-            s
-        }
+        ResultDest::Stack => claim(high, scratch_ty),
     };
     let operand_base = next_scratch;
     if sa_src.is_none()
@@ -16582,19 +16585,26 @@ fn emit_shift(
     // pushed directly at each use (no scratch), and only a nested computation is stashed in a scratch
     // slot. `$r` (the result) always needs its own scratch. Both share the op's machine slot, so a
     // bare-literal value/count is grounded to that width (a mixed i32/i64 shift is invalid wasm).
+    // WIDTH-PARTITIONED CLAIM (finding #21 shift sibling): scratch stored at `m.slot()`; skip any slot
+    // `scratch_ty` records at a different width (a live i32 handle/let-binder) so the shift never re-types a
+    // wasm local. Same discipline as `emit_checked_arith_to`.
+    let want = m.slot();
     let mut next_scratch = base;
-    let mut claim = |high: &mut u32| {
+    let mut claim = |high: &mut u32, scratch_ty: &mut HashMap<u32, ValType>| {
+        while matches!(scratch_ty.get(&next_scratch), Some(&w) if w != want) {
+            next_scratch += 1;
+        }
         let s = next_scratch;
         next_scratch += 1;
         *high = (*high).max(s + 1);
+        scratch_ty.insert(s, want);
         s
     };
     let sa_src = operand_src(db, lhs, ot, slots)?;
     let sa = match sa_src {
         Some(src) => src,
         None => {
-            let s = claim(high);
-            scratch_ty.insert(s, m.slot());
+            let s = claim(high, scratch_ty);
             OperandSrc::Slot(s)
         }
     };
@@ -16602,17 +16612,14 @@ fn emit_shift(
     let sb = match sb_src {
         Some(src) => src,
         None => {
-            let s = claim(high);
-            scratch_ty.insert(s, m.slot());
+            let s = claim(high, scratch_ty);
             OperandSrc::Slot(s)
         }
     };
     // `$r` (the result scratch) is needed ONLY by `<<`, which reads it back for the overflow round-trip
     // + range-check. `>>` leaves its exact result on the stack, so it claims no `$r` slot (no dead local).
     let sr = if matches!(op, Prim::Shl) {
-        let s = claim(high);
-        scratch_ty.insert(s, m.slot());
-        s
+        claim(high, scratch_ty)
     } else {
         0 // unused for `>>` — the result stays on the stack.
     };
