@@ -4868,6 +4868,54 @@ mod tests {
     }
 
     #[test]
+    fn a_docd_world_carries_the_doc_but_its_interfaces_are_identity_stable() {
+        // A `///` doc on a world attaches as a `(doc …)` child right after the name (round-trip), same as
+        // `effect`/`type`. The doc is SURFACE metadata, NOT part of the world's identity: `world_schema_
+        // tree` (the identity constructor) takes no docs, so the identity is over the INTERFACE children
+        // only. Pin that a doc'd world and its undocumented twin have byte-identical INTERFACE structure —
+        // the invariant the compile arm's `parse_target_world` relies on when it skips doc heads (so a
+        // documented world keeps the same `wit_world` as its undocumented twin; coordinated w/ v-compiler-ml
+        // 2026-08-12). This guards the docs-vs-identity boundary from the syntax side.
+        let doc = parse_ok("/// a reducer world\nworld W = | export i = | m : () -> u8");
+        let plain = parse_ok("world W = | export i = | m : () -> u8");
+        let dw = doc.as_form(doc.root, "world").expect("world form");
+        let pw = plain.as_form(plain.root, "world").expect("world form");
+        // The doc'd world carries a leading `(doc …)` after the name; the plain one does not.
+        assert_eq!(doc.as_name(dw[0]), Some("W"));
+        assert!(
+            doc.as_form(dw[1], "doc").is_some(),
+            "doc node attaches after the name"
+        );
+        assert!(
+            plain.as_form(pw[1], "doc").is_none(),
+            "no doc on the plain world"
+        );
+        // The IDENTITY-bearing part — the interfaces (children after name, skipping any doc) — matches
+        // between the two worlds. The doc'd world's interfaces are children[2..] (past the doc);
+        // the plain world's are children[1..]. Assert same count + pairwise structural equality, so the
+        // identity computed over the non-doc children is doc-independent (what parse_target_world relies
+        // on when it skips doc heads).
+        let doc_ifaces: Vec<StructId> = dw[1..]
+            .iter()
+            .copied()
+            .filter(|&c| doc.as_form(c, "doc").is_none())
+            .collect();
+        let plain_ifaces: Vec<StructId> = pw[1..].to_vec();
+        assert_eq!(
+            doc_ifaces.len(),
+            plain_ifaces.len(),
+            "same interface count once the doc is skipped"
+        );
+        for (&d, &p) in doc_ifaces.iter().zip(plain_ifaces.iter()) {
+            assert_eq!(
+                crate::sexpr::print_from(&doc, d),
+                crate::sexpr::print_from(&plain, p),
+                "each identity-bearing interface matches its undocumented twin"
+            );
+        }
+    }
+
+    #[test]
     fn inline_world_surface_encodes_identically_to_the_world_schema_tree_builder() {
         // THE cross-source identity guarantee: the inline `world …` surface must lower to the EXACT SAME
         // canonical tree `cadenza-ast::Builder::world_schema_tree` builds (the node an external binary-AST
