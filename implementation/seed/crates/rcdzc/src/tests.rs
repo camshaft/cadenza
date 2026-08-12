@@ -64000,6 +64000,32 @@ mod stage1 {
     }
 
     #[test]
+    fn sum_shape_descriptor_describes_a_record_carrying_arm() {
+        // A 2-arm sum whose 2nd arm carries a RECORD `(B (Record (x String)))`: the descriptor MUST describe
+        // arm B's record (the field name `x` rides in the descriptor), NOT drop it to empty — the codegen bug
+        // where a 2-arm-sum record arm value-encodes to an empty leaf (035911). Localizes descriptor-vs-walker:
+        // if this ASSERT passes the descriptor is correct (bug is downstream in the runtime value-encode walker);
+        // if it FAILS the descriptor drops the record (bug is here in shape_of/sum_shape_descriptor).
+        let src = "(module m (type P (A Bytes) (B (Record (x String)))) (def (main) (A (Bytes.of (list)))) (export main))";
+        let mut db =
+            crate::db::Db::load(crate::codec::decode(&crate::codec::encode(&parse(src))).unwrap());
+        let body = db
+            .defs
+            .iter()
+            .find(|d| d.name == "main")
+            .unwrap()
+            .body
+            .unwrap();
+        let ty = crate::infer::type_of(&mut db, body);
+        let desc = crate::lower::sum_shape_descriptor(&mut db, &ty).expect("descriptor");
+        eprintln!("[035911] P descriptor bytes = {desc:02x?}");
+        assert!(
+            desc.contains(&b'x'),
+            "the descriptor must carry arm B's record field name `x` (not drop the record to empty): {desc:02x?}"
+        );
+    }
+
+    #[test]
     fn shape_descriptor_peels_a_quantity_element_to_its_inner() {
         // A quantity erases to its inner scalar at runtime (the unit is compile-time-only), so the shape
         // descriptor of a `(List (Qty Int64 meter))` must be Some — `shape_of` peels `Ty::Qty` to the inner
