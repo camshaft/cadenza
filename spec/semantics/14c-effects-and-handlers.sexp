@@ -8538,3 +8538,56 @@
             (export main)))
   (call   main (: 7 Int64)) (output (: 710007 Int64))
   (call   main (: 0 Int64)) (output (: 10000 Int64)))
+
+; --- breaker batch 240: dynamic shift amounts with checked-overflow trap, parallel AND/OR/XOR accumulators, min-stack ---
+(case "shd1 DYNAMIC shift amounts from the state — two drawn widths, the value-63 draw traps the checked shift overflow"
+  (input  (do
+            (effect S (op amt (-> Int64)))
+            (def (main (: n Int64))
+              (handle S n
+                ((amt () s (resume s (+ s 31))))
+                (let ((a (<< 1 (S.amt))))
+                  (let ((b (<< 1 (S.amt))))
+                    (+ a b)))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 4294967298 Int64))
+  (call   main (: 0 Int64)) (output (: 2147483649 Int64))
+  (call   main (: 32 Int64)) (trap "integer overflow"))
+
+(case "bwa1 THREE parallel bit-accumulators in one state — running AND, OR, and XOR folds over the drawn payloads, read as a sum"
+  (input  (do
+            (effect S (op mix (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S (tuple 0 0 0)
+                ((mix (v) st
+                  (match st
+                    ((tuple ao oo xo)
+                      (resume (+ ao (+ oo xo))
+                              (tuple (& (if (= ao 0) v ao) v) (| oo v) (^ xo v)))))))
+                (let ((_a (S.mix 12)))
+                  (let ((_b (S.mix 10)))
+                    (let ((_c (S.mix n)))
+                      (S.mix 0))))))
+            (export main)))
+  (call   main (: 6 Int64)) (output (: 14 Int64))
+  (call   main (: 15 Int64)) (output (: 32 Int64)))
+
+(case "mns1 a MIN-TRACKING stack state — (stack, min) pushes thread the heap and the scalar together, mid-run and final min reads"
+  (input  (do
+            (effect S (op push (-> Int64 Int64)) (op mn (-> Int64)))
+            (def (main (: n Int64))
+              (handle S (tuple (list) 9999)
+                ((push (v) st
+                  (match st
+                    ((tuple stk mn)
+                      (resume (List.len stk)
+                              (tuple (List.push stk v) (if (< v mn) v mn))))))
+                 (mn () st (match st ((tuple _stk m) (resume m st)))))
+                (let ((_a (S.push 5)))
+                  (let ((_b (S.push n)))
+                    (let ((m1 (S.mn)))
+                      (let ((_c (S.push 1)))
+                        (+ (* 100 m1) (S.mn))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 301 Int64))
+  (call   main (: 8 Int64)) (output (: 501 Int64)))

@@ -4772,6 +4772,7 @@ pass	bw1 BIT operations over draws — mask, set-bit, and a draw-driven shift co
 pass	bw2 an XOR accumulator folds four draws through a recursion — bit-mixing order-sensitive under the stride
 pass	bw3 shift-up then shift-back round trip over MASKED draws — both the value and the shift count come from the thread
 pass	bw4 the ARM bit-mixes its argument with the live state — low nibble from the arg, bits 4-5 stamped from the state
+pass	bwa1 THREE parallel bit-accumulators in one state — running AND, OR, and XOR folds over the drawn payloads, read as a sum
 pass	by1 a BYTES handler state grows two bytes per dispatch — each arm returns the pre-growth length
 pass	by1 bytes built from THREE draws then read at a draw-picked index — Bytes.at follows the thread into the buffer
 pass	by2 a SLICE view (start,LEN) of the Bytes state read per dispatch — in-range bytes returned, out-of-range answers -1
@@ -5493,6 +5494,7 @@ pass	mk3 the arm SHRINKS the map state via remove — re-removing the same key i
 pass	ml1 a Map whose VALUES are tuples — a draw-keyed insert of a drawn pair, lookups destructure both hit and neighbor
 pass	mm1 a MIN/MAX tracking arm — three feeds tighten the (lo,hi) tuple state, readers project the final spread
 pass	mml1 a MULTIMAP handler state — (Map Int64 (List Int64)) buckets grow per-key across dispatches; put answers the new bucket length and total sums a bucket later
+pass	mns1 a MIN-TRACKING stack state — (stack, min) pushes thread the heap and the scalar together, mid-run and final min reads
 pass	mo1 a TWO-op effect fully shadowed — the inner handler re-interprets BOTH ops with different arms
 pass	mo2 THREE-deep same-effect shadowing — each depth's draws thread its own state, interleaved before/inside/after
 pass	mo4 a SAME-effect draw in the inner handle's SEED homes to the OUTER handler — the shadow starts at the body, not the seed
@@ -6008,6 +6010,7 @@ pass	sh1 a NESTED handler for the SAME effect shadows the outer — inner draws 
 pass	sh2d a let bound in a handle body, read by a NESTED handle's seed — folds (let-crossing seed freshened)
 pass	sh2n the config-fetch idiom with its perform LET-LIFTED — folds (let-crossing seed freshened)
 pass	sh2x a let binder feeds a nested handle's SEED and is read again AFTER the region — the freshened seed reference and the tail reference are the same binder
+pass	shd1 DYNAMIC shift amounts from the state — two drawn widths, the value-63 draw traps the checked shift overflow
 pass	shift-by-zero is a no-op on a runtime operand for both directions
 pass	shl1 an inner let SHADOWS a draw binder — the shadow scales it locally, the original stays visible after the shadow closes
 pass	shrinking an @invariant newtype to EMPTY traps at the rebuild — the invariant catches the crossing
