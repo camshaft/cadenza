@@ -1579,7 +1579,7 @@ pub fn assemble_host_runtime(
     // sec 7: TWO instance-types — component type 0 (the effect) then component type 1 (the runtime). Each
     // is `0x42` + a vec of 2*count interleaved (ty, export) decls, exactly as the single-import shapes.
     let type_sec = {
-        let host_it = host_effect_instance_type(host_fns, false);
+        let host_it = host_effect_instance_type(host_fns, false, false);
         let rt_it = {
             let mut decls = Vec::new();
             for (i, op) in imports.iter().enumerate() {
@@ -1777,7 +1777,7 @@ pub fn assemble_host_runtime_mem(
     // sec 7: TWO instance-types — host effect (comp type 0) then runtime (comp type 1) — identical to the
     // memoryless host+runtime shape (the shared memory is a CORE detail, invisible to the component types).
     let type_sec = {
-        let host_it = host_effect_instance_type(host_fns, false);
+        let host_it = host_effect_instance_type(host_fns, false, false);
         let rt_it = {
             let mut decls = Vec::new();
             for (i, op) in imports.iter().enumerate() {
@@ -1985,6 +1985,7 @@ pub fn assemble_bytes_roundtrip_host_provider(
     imports: &[&RtOp],
     import_name: &str,
     needs_option_bytes: bool,
+    needs_list_byte_pairs: bool,
 ) -> Vec<u8> {
     let h = host_fns.len();
     let k = imports.len();
@@ -1993,7 +1994,8 @@ pub fn assemble_bytes_roundtrip_host_provider(
 
     // sec 7 (first): host effect instance-type (comp type 0) + runtime instance-type (comp type 1).
     let type_sec = {
-        let host_it = host_effect_instance_type(host_fns, needs_option_bytes);
+        let host_it =
+            host_effect_instance_type(host_fns, needs_option_bytes, needs_list_byte_pairs);
         let mut rt_decls = Vec::new();
         for (i, op) in imports.iter().enumerate() {
             rt_decls.push(0x01);
@@ -3100,7 +3102,7 @@ pub fn assemble_host_runtime_resource(
     // sec 7: TWO instance-types — the host effect (comp type 0, its h ops) then the runtime (comp type 1,
     // its k ops).
     let type_sec = {
-        let host_it = host_effect_instance_type(host_fns, false);
+        let host_it = host_effect_instance_type(host_fns, false, false);
         let rt_it = {
             let mut decls = Vec::new();
             for (i, op) in imports.iter().enumerate() {
@@ -3878,7 +3880,7 @@ pub fn assemble_host_runtime_resource_with_scalar_methods(
 
     // sec 7: TWO instance-types — the host effect (comp type 0, its h ops) then the runtime (comp type 1).
     let type_sec = {
-        let host_it = host_effect_instance_type(host_fns, false);
+        let host_it = host_effect_instance_type(host_fns, false, false);
         let rt_it = {
             let mut decls = Vec::new();
             for (i, op) in imports.iter().enumerate() {
@@ -9545,12 +9547,18 @@ fn list_u8_defined_type() -> Vec<u8> {
 /// then occupy indices `1..=h`, so each export decl references `base + i` where `base = 1`. A pure
 /// scalar/string set (no Bytes param) takes `base = 0`, no prepend, `2*h` decls — byte-identical to the
 /// pre-Bytes shape. Shared by every host-import assembly variant so the prepend/shift is defined once.
-fn host_effect_instance_type(host_fns: &[HostFn], needs_option_bytes: bool) -> Vec<u8> {
+fn host_effect_instance_type(
+    host_fns: &[HostFn],
+    needs_option_bytes: bool,
+    needs_list_byte_pairs: bool,
+) -> Vec<u8> {
     let h = host_fns.len();
-    // An `option<list<u8>>` RESULT (S0) references the `(list u8)` type, so the list type is needed
-    // whenever a Bytes param OR an option-bytes result is present. Prepended defined types (in order):
-    // type index 0 = `(list u8)` (when needed), type index 1 = `option<list<u8>>` (when a result needs it).
-    let needs_list = host_fns.iter().any(|f| f.has_list_param) || needs_option_bytes;
+    // An `option<list<u8>>` RESULT (S0) OR a `list<tuple<list<u8>,list<u8>>>` RESULT (prefix-scan) references
+    // the `(list u8)` type, so the list type is needed whenever a Bytes param OR either compound result is
+    // present. Prepended defined types (in order): idx 0 `(list u8)`; idx 1 `option<list<u8>>` (if needed);
+    // then `tuple<list,list>` + `list<tuple>` (if a prefix-scan result needs them).
+    let needs_list =
+        host_fns.iter().any(|f| f.has_list_param) || needs_option_bytes || needs_list_byte_pairs;
     let mut decls = Vec::new();
     let mut prepended: u64 = 0;
     if needs_list {
@@ -9564,6 +9572,22 @@ fn host_effect_instance_type(host_fns: &[HostFn], needs_option_bytes: bool) -> V
         // option-result op's `comp_functype` references (`list_type_idx + 1`, list_type_idx = 0).
         decls.push(0x01);
         decls.extend_from_slice(&[0x6b, 0x00]); // type index 1
+        prepended += 1;
+    }
+    if needs_list_byte_pairs {
+        // `list<tuple<list<u8>,list<u8>>>` (kv prefix-scan) as two defined types:
+        //   - `tuple<list<u8>,list<u8>>` = `0x6f 02 00 00` (tuple former, 2 fields, each a type-INDEX valtype
+        //     referencing the `(list u8)` at type index 0) — placed at index `1 + needs_option_bytes`.
+        //   - `list<tuple>` = the list former `0x70` over that tuple type's index — placed right after.
+        // The list-of-tuple index (`2 + needs_option_bytes`) is what `host_op_comp_functype` was threaded.
+        let tuple_idx = prepended; // next free index
+        decls.push(0x01);
+        decls.extend_from_slice(&tuple_defined_type(&[0x00, 0x00]));
+        prepended += 1;
+        decls.push(0x01);
+        let mut lot = vec![0x70];
+        uleb128(tuple_idx, &mut lot);
+        decls.extend_from_slice(&lot);
         prepended += 1;
     }
     let base: u64 = prepended;

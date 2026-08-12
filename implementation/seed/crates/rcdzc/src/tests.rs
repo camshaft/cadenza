@@ -91115,6 +91115,7 @@ mod closure_host_resource {
             params: Vec::<HostParam>::new(),
             result: None,
             result_option_bytes: false,
+            result_list_byte_pairs: false,
         }];
         // The runtime cell ops (make builds the capturing cell; call recovers it). Shift to h..h+k.
         let imports = vec![
@@ -91229,6 +91230,7 @@ mod closure_host_resource {
             params: Vec::<HostParam>::new(),
             result: None, // () -> () — leaves nothing on the stack
             result_option_bytes: false,
+            result_list_byte_pairs: false,
         }];
         let imports = vec![
             OPS.arr_alloc,
@@ -98952,4 +98954,246 @@ mod ir_payloads_stay_rc_backed_not_arc {
     const _: () = <crate::resolved::Resolved as AmbiguousIfSend<_>>::MARKER;
     const _: () = <crate::ty::Ty as AmbiguousIfSend<_>>::MARKER;
     const _: () = <crate::core::Core as AmbiguousIfSend<_>>::MARKER;
+}
+
+/// The `is_list_byte_pairs` detector recognizes the kv `prefix-scan` result shape `list<tuple<bytes,bytes>>`
+/// (a list of key-value byte pairs) — the SECOND compound host result the bytes-provider path will lift
+/// (after `Option<Bytes>`). Foundation for the prefix-scan host-result lift; pins the shape match + rejects
+/// near-misses so a future change can't quietly widen/narrow what the lift fires on.
+#[test]
+fn is_list_byte_pairs_detects_the_prefix_scan_result_shape() {
+    use crate::backend::wasm::host::is_list_byte_pairs;
+    use crate::ty::Ty;
+    let pair = |elems: Vec<Ty>| Ty::List(Box::new(Ty::Tuple(std::rc::Rc::from(elems.as_slice()))));
+    // POSITIVE: list<tuple<bytes,bytes>>.
+    assert!(
+        is_list_byte_pairs(&pair(vec![Ty::Bytes, Ty::Bytes])),
+        "list of (bytes,bytes) tuples IS the prefix-scan shape"
+    );
+    // NEGATIVES:
+    assert!(
+        !is_list_byte_pairs(&Ty::List(Box::new(Ty::Bytes))),
+        "list<bytes> (no tuple) is not byte-pairs"
+    );
+    assert!(
+        !is_list_byte_pairs(&pair(vec![Ty::Bytes, Ty::Bytes, Ty::Bytes])),
+        "a 3-tuple is not a pair"
+    );
+    assert!(
+        !is_list_byte_pairs(&pair(vec![Ty::Bytes, Ty::int64()])),
+        "tuple<bytes,int> is not byte-PAIRS"
+    );
+    assert!(!is_list_byte_pairs(&Ty::Bytes), "bare bytes is not a list");
+    assert!(
+        !is_list_byte_pairs(&Ty::Tuple(std::rc::Rc::from([Ty::Bytes, Ty::Bytes]))),
+        "a bare tuple (not wrapped in a list) is not the shape"
+    );
+}
+
+/// The KIND_WIT_WORLD for a kv PREFIX-SCAN reducer: export `fold.apply` (list<u8>->list<u8>) + import
+/// `cadenza:agent-kernel/kv` member `prefix-scan` (key: list<u8> -> list<tuple<list<u8>,list<u8>>>, a list
+/// of key-value byte pairs). Descriptors: `("list" ("tuple" ("list" (u8)) ("list" (u8))))` for the result.
+fn reducer_kv_prefix_scan_world_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let byte_list = |b: &mut Builder| {
+        let h = b.atom_leaf(Leaf::Str("list".into()));
+        let uh = b.name("u8");
+        let u = b.list(vec![uh]);
+        b.list(vec![h, u])
+    };
+    let a_in = byte_list(&mut b);
+    let a_out = byte_list(&mut b);
+    let apply = {
+        let fh = b.name("func");
+        let ph = b.name("param");
+        let pn = b.name("input");
+        let pnode = b.list(vec![ph, pn, a_in]);
+        let rh = b.name("result");
+        let rn = b.list(vec![rh, a_out]);
+        let func = b.list(vec![fh, pnode, rn]);
+        let mh = b.name("member");
+        let mn = b.name("apply");
+        b.list(vec![mh, mn, func])
+    };
+    let eh = b.name("export");
+    let en = b.name("fold");
+    let fold = b.list(vec![eh, en, apply]);
+    // prefix-scan result: ("list" ("tuple" ("list" (u8)) ("list" (u8))))
+    let pk = byte_list(&mut b);
+    let result_ty = {
+        let listh = b.atom_leaf(Leaf::Str("list".into()));
+        let tuph = b.atom_leaf(Leaf::Str("tuple".into()));
+        let t0 = byte_list(&mut b);
+        let t1 = byte_list(&mut b);
+        let tup = b.list(vec![tuph, t0, t1]);
+        b.list(vec![listh, tup])
+    };
+    let ps = {
+        let fh = b.name("func");
+        let ph = b.name("param");
+        let pn = b.name("key");
+        let pnode = b.list(vec![ph, pn, pk]);
+        let rh = b.name("result");
+        let rn = b.list(vec![rh, result_ty]);
+        let func = b.list(vec![fh, pnode, rn]);
+        let mh = b.name("member");
+        let mn = b.name("prefix-scan");
+        b.list(vec![mh, mn, func])
+    };
+    let ih = b.name("import");
+    let kn = b.name("cadenza:agent-kernel/kv");
+    let kv = b.list(vec![ih, kn, ps]);
+    let wh = b.name("world");
+    let wn = b.name("reducer");
+    let world = b.list(vec![wh, wn, fold, kv]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+/// §3c kv PREFIX-SCAN emit: a host-fused reducer calling `kv.prefix-scan` (result
+/// `list<tuple<list<u8>,list<u8>>>`) EMITS through the bytes-provider path — the guest lifts the spilled
+/// list-of-byte-pairs into a value-heap `List<Tuple<Bytes,Bytes>>` — and the assembled component VALIDATES
+/// and LOADS on the pinned wasmtime (importing kv + runtime). The list-of-tuple host-result lift + its
+/// nested `list<tuple<list<u8>,list<u8>>>` component type.
+#[test]
+fn a_host_fused_kv_prefix_scan_reducer_emits_and_loads() {
+    use crate::testkit::parse;
+    let src = "(module m \
+      (effect kv (op prefix-scan (-> Bytes (List (Tuple Bytes Bytes))))) \
+      (def (apply (: e (Record (ct String) (pl Bytes)))) \
+        (host (kv) (do (kv.prefix-scan (. e pl)) (list (record (op (. e ct)) (arg (. e pl))))))) \
+      (export apply))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:agent-kernel/fold"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                reducer_kv_prefix_scan_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "the host-fused prefix-scan reducer must emit (the list-of-byte-pairs lift): {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("the prefix-scan reducer emits a component");
+    let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+    v.validate_all(bytes)
+        .expect("the prefix-scan provider component validates");
+    let req = cdz_run::required_runtime(bytes)
+        .expect("the prefix-scan provider component loads on the pinned wasmtime");
+    assert!(
+        req.is_some_and(|r| r.import_name.contains("cadenza:runtime/heap")),
+        "a prefix-scan reducer marshals through the value-heap runtime"
+    );
+    assert!(
+        String::from_utf8_lossy(bytes).contains("cadenza:agent-kernel/kv"),
+        "the prefix-scan reducer imports the kv host interface"
+    );
+}
+
+/// §3c kv DELETE is FREE: a host-fused reducer calling `kv.delete` (result BOOL — present-or-removed)
+/// EMITS with no host-result lift, because a `bool` is a FLAT SCALAR at the host boundary
+/// (`abi_val_type(Ty::Bool)=Some`), unlike the spilled `option<list<u8>>`/`list<tuple>` compounds. Pins
+/// that delete needs zero emit work (only the world must declare it) — the co-land guarantee to v-ah.
+#[test]
+fn a_host_fused_kv_delete_bool_reducer_emits_and_loads() {
+    use crate::ast::{Builder, Leaf};
+    use crate::testkit::parse;
+    let world_bytes = {
+        let mut b = Builder::new();
+        let byte_list = |b: &mut Builder| {
+            let h = b.atom_leaf(Leaf::Str("list".into()));
+            let uh = b.name("u8");
+            let u = b.list(vec![uh]);
+            b.list(vec![h, u])
+        };
+        let a_in = byte_list(&mut b);
+        let a_out = byte_list(&mut b);
+        let apply = {
+            let fh = b.name("func");
+            let ph = b.name("param");
+            let pn = b.name("input");
+            let pnode = b.list(vec![ph, pn, a_in]);
+            let rh = b.name("result");
+            let rn = b.list(vec![rh, a_out]);
+            let func = b.list(vec![fh, pnode, rn]);
+            let mh = b.name("member");
+            let mn = b.name("apply");
+            b.list(vec![mh, mn, func])
+        };
+        let eh = b.name("export");
+        let en = b.name("fold");
+        let fold = b.list(vec![eh, en, apply]);
+        let dk = byte_list(&mut b);
+        let boolty = {
+            let bh = b.name("bool");
+            b.list(vec![bh])
+        };
+        let del = {
+            let fh = b.name("func");
+            let ph = b.name("param");
+            let pn = b.name("key");
+            let pnode = b.list(vec![ph, pn, dk]);
+            let rh = b.name("result");
+            let rn = b.list(vec![rh, boolty]);
+            let func = b.list(vec![fh, pnode, rn]);
+            let mh = b.name("member");
+            let mn = b.name("delete");
+            b.list(vec![mh, mn, func])
+        };
+        let ih = b.name("import");
+        let kn = b.name("cadenza:agent-kernel/kv");
+        let kv = b.list(vec![ih, kn, del]);
+        let wh = b.name("world");
+        let wn = b.name("reducer");
+        let world = b.list(vec![wh, wn, fold, kv]);
+        let a = b.finish(world);
+        crate::codec::encode(&a)
+    };
+    let src = "(module m \
+      (effect kv (op delete (-> Bytes Bool))) \
+      (def (apply (: e (Record (ct String) (pl Bytes)))) \
+        (host (kv) (if (kv.delete (. e pl)) (list (record (op (. e ct)) (arg (. e pl)))) (list)))) \
+      (export apply))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:agent-kernel/fold"),
+            crate::abi::Artifact::new(crate::link::KIND_WIT_WORLD, "wit-world", world_bytes),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "kv.delete (bool result) emits with no lift — bool is a flat scalar: {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("the delete reducer emits a component");
+    let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+    v.validate_all(bytes)
+        .expect("the delete provider component validates");
 }

@@ -11734,6 +11734,132 @@ fn emit(
                 out.push(Lir::End); // if
                 return Ok(());
             }
+            // LIST-OF-BYTE-PAIRS LIFT (kv.prefix-scan): a host op returning `list<tuple<list<u8>,list<u8>>>`
+            // is canon-lowered with a spilled result — core sig `(args…, retptr) -> ()`, the host writing an
+            // 8-byte list header `(list-ptr@0, count@4)` into a CALLER-provided retptr. Each of `count`
+            // elements is a 16-byte `tuple<list<u8>,list<u8>>` at `list-ptr + i*16`:
+            // `(key-ptr@0, key-len@4, val-ptr@8, val-len@12)`. LIFT into a value-heap `List<Tuple<Bytes,Bytes>>`:
+            // `arr-alloc(count)`, then per element `bytes-alloc`+copy the key and value, build a 2-tuple
+            // (`arr-alloc(2)` + two `arr-set`s, kept on the stack), and `arr-set` it into the outer list.
+            // Mirrors the option lift's retptr read + `bytes-alloc`/`bytes-set` copy-loop; the outer list +
+            // each Bytes handle live in i32 scratch across the runtime loop (arr-set/bytes-set RETURN the
+            // handle, re-stashed via `LocalSet`).
+            if crate::backend::wasm::host::is_list_byte_pairs(&result) {
+                let retptr = (*high).max(base);
+                let (list_ptr, count, i, elem_base, kptr, klen, vptr, vlen, kh, vh, outer, j) = (
+                    retptr + 1,
+                    retptr + 2,
+                    retptr + 3,
+                    retptr + 4,
+                    retptr + 5,
+                    retptr + 6,
+                    retptr + 7,
+                    retptr + 8,
+                    retptr + 9,
+                    retptr + 10,
+                    retptr + 11,
+                    retptr + 12,
+                );
+                *high = (*high).max(j + 1);
+                for s in [
+                    retptr, list_ptr, count, i, elem_base, kptr, klen, vptr, vlen, kh, vh, outer, j,
+                ] {
+                    scratch_ty.insert(s, ValType::I32);
+                }
+                // retptr = cabi_realloc(0, 0, align=4, size=8); leave it as the trailing call arg (tee-stash).
+                out.push(Lir::ConstI32(0));
+                out.push(Lir::ConstI32(0));
+                out.push(Lir::ConstI32(4));
+                out.push(Lir::ConstI32(8));
+                out.push(Lir::CallImport("cabi_realloc"));
+                out.push(Lir::LocalTee(retptr)); // [args…, retptr]
+                out.push(Lir::CallHostImport(index)); // (args…, retptr) -> () ; host wrote (list-ptr, count)
+                // list-ptr = mem[retptr]; count = mem[retptr+4].
+                out.push(Lir::LocalGet(retptr));
+                out.push(Lir::I32Load { offset: 0 });
+                out.push(Lir::LocalSet(list_ptr));
+                out.push(Lir::LocalGet(retptr));
+                out.push(Lir::I32Load { offset: 4 });
+                out.push(Lir::LocalSet(count));
+                // outer = arr-alloc(count)
+                out.push(Lir::LocalGet(count));
+                out.push(Lir::CallImport(OP_ARR_ALLOC));
+                out.push(Lir::LocalSet(outer));
+                // for i in 0..count { … }
+                out.push(Lir::ConstI32(0));
+                out.push(Lir::LocalSet(i));
+                out.push(Lir::Block(BlockType::Empty));
+                out.push(Lir::Loop(BlockType::Empty));
+                out.push(Lir::LocalGet(i));
+                out.push(Lir::LocalGet(count));
+                out.push(Lir::I32GeU);
+                out.push(Lir::BrIf(1)); // i >= count → exit the outer block
+                // elem_base = list-ptr + i*16 ; read the 4 header words.
+                out.push(Lir::LocalGet(list_ptr));
+                out.push(Lir::LocalGet(i));
+                out.push(Lir::ConstI32(16));
+                out.push(Lir::I32Mul);
+                out.push(Lir::I32Add);
+                out.push(Lir::LocalSet(elem_base));
+                for (off, slot) in [(0u32, kptr), (4, klen), (8, vptr), (12, vlen)] {
+                    out.push(Lir::LocalGet(elem_base));
+                    out.push(Lir::I32Load { offset: off });
+                    out.push(Lir::LocalSet(slot));
+                }
+                // kh = bytes-alloc(klen)+copy ; vh = bytes-alloc(vlen)+copy (j = shared inner byte counter).
+                for (len_slot, ptr_slot, handle_slot) in [(klen, kptr, kh), (vlen, vptr, vh)] {
+                    out.push(Lir::LocalGet(len_slot));
+                    out.push(Lir::CallImport(OP_BYTES_ALLOC));
+                    out.push(Lir::LocalSet(handle_slot));
+                    out.push(Lir::ConstI32(0));
+                    out.push(Lir::LocalSet(j));
+                    out.push(Lir::Block(BlockType::Empty));
+                    out.push(Lir::Loop(BlockType::Empty));
+                    out.push(Lir::LocalGet(j));
+                    out.push(Lir::LocalGet(len_slot));
+                    out.push(Lir::I32GeU);
+                    out.push(Lir::BrIf(1));
+                    out.push(Lir::LocalGet(handle_slot));
+                    out.push(Lir::LocalGet(j));
+                    out.push(Lir::LocalGet(ptr_slot));
+                    out.push(Lir::LocalGet(j));
+                    out.push(Lir::I32Add);
+                    out.push(Lir::I32Load8U { offset: 0 });
+                    out.push(Lir::CallImport(OP_BYTES_SET));
+                    out.push(Lir::LocalSet(handle_slot));
+                    out.push(Lir::LocalGet(j));
+                    out.push(Lir::ConstI32(1));
+                    out.push(Lir::I32Add);
+                    out.push(Lir::LocalSet(j));
+                    out.push(Lir::Br(0));
+                    out.push(Lir::End); // inner loop
+                    out.push(Lir::End); // inner block
+                }
+                // arr-set(outer, i, tuple) where tuple = arr-alloc(2)+arr-set(0,kh)+arr-set(1,vh), built on
+                // the stack between [outer, i] and the outer arr-set (arr-set returns the array handle).
+                out.push(Lir::LocalGet(outer)); // [outer]
+                out.push(Lir::LocalGet(i)); // [outer, i]
+                out.push(Lir::ConstI32(2));
+                out.push(Lir::CallImport(OP_ARR_ALLOC)); // [outer, i, tup]
+                out.push(Lir::ConstI32(0));
+                out.push(Lir::LocalGet(kh));
+                out.push(Lir::CallImport(OP_ARR_SET)); // [outer, i, tup]
+                out.push(Lir::ConstI32(1));
+                out.push(Lir::LocalGet(vh));
+                out.push(Lir::CallImport(OP_ARR_SET)); // [outer, i, tup]
+                out.push(Lir::CallImport(OP_ARR_SET)); // [outer]
+                out.push(Lir::LocalSet(outer));
+                // i += 1
+                out.push(Lir::LocalGet(i));
+                out.push(Lir::ConstI32(1));
+                out.push(Lir::I32Add);
+                out.push(Lir::LocalSet(i));
+                out.push(Lir::Br(0));
+                out.push(Lir::End); // outer loop
+                out.push(Lir::End); // outer block
+                out.push(Lir::LocalGet(outer)); // leave the List<Tuple<Bytes,Bytes>> handle
+                return Ok(());
+            }
             out.push(Lir::CallHostImport(index));
             Ok(())
         }

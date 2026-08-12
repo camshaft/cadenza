@@ -64,6 +64,14 @@ pub struct HostImport {
     /// plain scalar/unit op). A host-boundary-only shape (a peer-bound op never sets it — a peer compound
     /// crosses as an opaque `u32` handle, not this canonical option marshal).
     pub result_option_bytes: bool,
+    /// The result is the compound `list<tuple<list<u8>,list<u8>>>` (guest `List<Tuple<Bytes,Bytes>>`) — the
+    /// kv `prefix-scan` result, a list of (key, value) byte pairs ([`is_list_byte_pairs`]). Like
+    /// `result_option_bytes` it is a SPILLED compound (a list flattens to `(ptr, len)`, >1 flat, so it
+    /// returns via a caller-provided retptr, NOT an i32); the host writes the flattened list there and the
+    /// guest lifts it into a value-heap `List<Tuple<Bytes,Bytes>>`. Host-boundary only; mutually exclusive
+    /// with a scalar `result` and with `result_option_bytes`. (The lift + component type are the ACTIVATION
+    /// slice; this flag rides the same spilled-retptr core ABI as `result_option_bytes`.)
+    pub result_list_byte_pairs: bool,
 }
 
 /// Whether `ty` is the built-in `Option<Bytes>` (guest `option<list<u8>>` at the host boundary) — a `Sum`
@@ -83,6 +91,22 @@ pub fn is_option_bytes(db: &mut Db, ty: &Ty) -> bool {
     d.variants.len() == 2
         && d.variants.iter().any(|v| v.name == "Some")
         && d.variants.iter().any(|v| v.name == "None")
+}
+
+/// Whether `ty` is `List<Tuple<Bytes, Bytes>>` (guest `list<tuple<list<u8>,list<u8>>>` at the host
+/// boundary) — the kv `prefix-scan` result shape: a list of (key, value) byte-pair tuples. The SECOND
+/// compound host RESULT the host-fused bytes path will lift (after `Option<Bytes>`, [`is_option_bytes`]):
+/// the host writes a spilled list of pairs into a caller-provided return area, which the guest lifts into
+/// a value-heap `List<Tuple<Bytes,Bytes>>`. Purely structural (List/Tuple/Bytes — no decl lookup, unlike a
+/// `Sum`), so it takes `&Ty` not `&mut Db`. Reads through erased nominal wrappers at each level.
+pub fn is_list_byte_pairs(ty: &Ty) -> bool {
+    let Ty::List(inner) = ty.strip_nominal() else {
+        return false;
+    };
+    let Ty::Tuple(elems) = inner.strip_nominal() else {
+        return false;
+    };
+    elems.len() == 2 && matches!(elems[0], Ty::Bytes) && matches!(elems[1], Ty::Bytes)
 }
 
 /// The component/boundary scalar ABI type a value of solved type `ty` crosses as, or `None` if it has no
@@ -394,19 +418,24 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
             // `Option<Bytes>`. Host-boundary only (a peer-bound op's compound crosses as a `u32` handle,
             // never this canonical option marshal), so it never coexists with a scalar `result`.
             let result_option_bytes = !peer_bound && is_option_bytes(db, &result);
-            let result_abi = if matches!(result, Ty::Unit) || result_option_bytes {
-                None
-            } else if peer_bound {
-                extern_abi_val_type(&result)
-            } else {
-                abi_val_type(&result)
-            };
+            // The kv prefix-scan compound result `list<tuple<list<u8>,list<u8>>>` — a spilled compound like
+            // `option<list<u8>>` (host-boundary only). Never coexists with a scalar `result` or the option.
+            let result_list_byte_pairs = !peer_bound && is_list_byte_pairs(&result);
+            let result_abi =
+                if matches!(result, Ty::Unit) || result_option_bytes || result_list_byte_pairs {
+                    None
+                } else if peer_bound {
+                    extern_abi_val_type(&result)
+                } else {
+                    abi_val_type(&result)
+                };
             let imp = HostImport {
                 effect: effect.to_string(),
                 op: op.to_string(),
                 params,
                 result: result_abi,
                 result_option_bytes,
+                result_list_byte_pairs,
             };
             if !out.iter().any(|h| h.effect == imp.effect && h.op == imp.op) {
                 out.push(imp);
@@ -773,10 +802,16 @@ pub fn first_unrepresentable_host_op(
         // crosses its compound as a handle, never this canonical option marshal — so gate on `!peer_bound`).
         let result_is_liftable_option_bytes =
             allow_option_bytes && !peer_bound && is_option_bytes(db, &result);
+        // The SAME host-fused bytes-provider path also lifts a `list<tuple<list<u8>,list<u8>>>` result (kv
+        // prefix-scan) into a value-heap `List<Tuple<Bytes,Bytes>>` (the select lift) — representable under
+        // the same `allow_option_bytes` gate (the flag = "this is the bytes provider", not option-specific).
+        let result_is_liftable_list_byte_pairs =
+            allow_option_bytes && !peer_bound && is_list_byte_pairs(&result);
         if !matches!(result, Ty::Unit)
             && !ty_undetermined(&result)
             && !abi_ok(&result)
             && !result_is_liftable_option_bytes
+            && !result_is_liftable_list_byte_pairs
         {
             return Some((op.to_string(), "result", result.render_name(&db.name_ctx())));
         }

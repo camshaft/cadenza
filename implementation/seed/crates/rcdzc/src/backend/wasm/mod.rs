@@ -959,7 +959,7 @@ pub fn emit(
             .iter()
             .map(|h| envelope::HostFn {
                 op: h.op.clone(),
-                comp_functype: host_op_comp_functype(h, 0),
+                comp_functype: host_op_comp_functype(h, 0, 0),
                 has_list_param: h.params.iter().any(|p| matches!(p, host::HostParam::Bytes)),
                 core_functype: Vec::new(), // unused by the envelope (the core module builds its own)
             })
@@ -1402,7 +1402,11 @@ fn collect_cont_host_arg_strings(db: &mut Db, cont: &crate::core::SumCont, out: 
     }
 }
 
-fn host_op_comp_functype(h: &host::HostImport, list_type_idx: u32) -> Vec<u8> {
+fn host_op_comp_functype(
+    h: &host::HostImport,
+    list_type_idx: u32,
+    list_pairs_type_idx: u32,
+) -> Vec<u8> {
     use host::HostParam;
     let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM];
     let mut param_items = Vec::new();
@@ -1430,6 +1434,13 @@ fn host_op_comp_functype(h: &host::HostImport, list_type_idx: u32) -> Vec<u8> {
         // type — index `list_type_idx + 1` (a type-index valtype, uleb128, like the Bytes param above).
         item.push(0x00);
         encode::uleb128((list_type_idx + 1) as u64, &mut item);
+    } else if h.result_list_byte_pairs {
+        // The compound `list<tuple<list<u8>,list<u8>>>` result (kv prefix-scan): a single unnamed result
+        // referencing the `list<tuple<…>>` DEFINED type the host instance-type appends after the (list u8)
+        // + optional (option) types. Its index is GLOBAL (depends on whether an option type is also present),
+        // so it is COMPUTED by the caller (`host_effect_instance_type`'s prepend order) and threaded in.
+        item.push(0x00);
+        encode::uleb128(list_pairs_type_idx as u64, &mut item);
     } else {
         match h.result {
             Some(r) => item.extend_from_slice(&[0x00, r.comp_byte()]),
@@ -2195,7 +2206,7 @@ fn emit_runtime_resource(
             .iter()
             .map(|hi| envelope::HostFn {
                 op: hi.op.clone(),
-                comp_functype: host_op_comp_functype(hi, 0),
+                comp_functype: host_op_comp_functype(hi, 0, 0),
                 has_list_param: hi
                     .params
                     .iter()
@@ -3986,7 +3997,7 @@ fn emit_closure_host_resource(
         .iter()
         .map(|hi| envelope::HostFn {
             op: hi.op.clone(),
-            comp_functype: host_op_comp_functype(hi, 0),
+            comp_functype: host_op_comp_functype(hi, 0, 0),
             has_list_param: hi
                 .params
                 .iter()
@@ -7166,7 +7177,7 @@ fn emit_runtime_bytes_resource(
             .iter()
             .map(|hi| envelope::HostFn {
                 op: hi.op.clone(),
-                comp_functype: host_op_comp_functype(hi, 0),
+                comp_functype: host_op_comp_functype(hi, 0, 0),
                 has_list_param: hi
                     .params
                     .iter()
@@ -7468,7 +7479,7 @@ fn emit_runtime_sum_resource(
             .iter()
             .map(|hi| envelope::HostFn {
                 op: hi.op.clone(),
-                comp_functype: host_op_comp_functype(hi, 0),
+                comp_functype: host_op_comp_functype(hi, 0, 0),
                 has_list_param: hi
                     .params
                     .iter()
@@ -7725,7 +7736,7 @@ fn emit_recursive_sum_resource(
             .iter()
             .map(|hi| envelope::HostFn {
                 op: hi.op.clone(),
-                comp_functype: host_op_comp_functype(hi, 0),
+                comp_functype: host_op_comp_functype(hi, 0, 0),
                 has_list_param: hi
                     .params
                     .iter()
@@ -7952,6 +7963,16 @@ fn emit_bytes_provider_member(
         if host_probe.iter().any(|hi| hi.result_option_bytes) {
             used.insert("sum-new");
         }
+        // The prefix-scan lift CONSTRUCTS a value-heap `List<Tuple<Bytes,Bytes>>` via `arr-alloc`/`arr-set`
+        // (outer list + each 2-tuple) and `bytes-alloc`/`bytes-set` (each key/value) — ops the reducer's own
+        // Core may never use, so `collect_module_used_ops` misses them. Add them when a host op returns
+        // `list<tuple<list<u8>,list<u8>>>`.
+        if host_probe.iter().any(|hi| hi.result_list_byte_pairs) {
+            used.insert("arr-alloc");
+            used.insert("arr-set");
+            used.insert("bytes-alloc");
+            used.insert("bytes-set");
+        }
     }
     let imports: Vec<&runtime_abi::RtOp> = used
         .iter()
@@ -7998,7 +8019,10 @@ fn emit_bytes_provider_member(
     // (func index h+k) for the select lift's retptr alloc — shifting the DEFINED funcs by +1, so the import
     // base (which `member_body_abs`/self-calls resolve against) must account for it. No option-result op
     // (kv.put) → base h+k, byte-identical.
-    let needs_realloc = host_imports.iter().any(|hi| hi.result_option_bytes) as u32;
+    let needs_realloc = host_imports
+        .iter()
+        .any(|hi| hi.result_option_bytes || hi.result_list_byte_pairs)
+        as u32;
     let layout = layout
         .with_import_base(h + k + needs_realloc)
         .with_host_needs_memory(host::set_needs_memory(&host_imports));
@@ -8069,11 +8093,18 @@ fn emit_bytes_provider_member(
         };
         iface_import.name.clone()
     };
+    // The instance-type prepends defined types in order: idx0 `(list u8)`, idx1 `option<list<u8>>` (if any
+    // option-bytes result), then `tuple<list,list>` + `list<tuple>` (if any prefix-scan result). So the
+    // `list<tuple<list<u8>,list<u8>>>` result type lands at index `2 + needs_option_bytes` — threaded into
+    // `host_op_comp_functype` since it is a GLOBAL layout property (a single op can't compute it alone).
+    let needs_option_bytes = host_imports.iter().any(|h| h.result_option_bytes);
+    let needs_list_byte_pairs = host_imports.iter().any(|h| h.result_list_byte_pairs);
+    let list_pairs_type_idx = 2 + needs_option_bytes as u32;
     let host_fns: Vec<envelope::HostFn> = host_imports
         .iter()
         .map(|hf| envelope::HostFn {
             op: hf.op.clone(),
-            comp_functype: host_op_comp_functype(hf, 0),
+            comp_functype: host_op_comp_functype(hf, 0, list_pairs_type_idx),
             has_list_param: hf
                 .params
                 .iter()
@@ -8091,7 +8122,6 @@ fn emit_bytes_provider_member(
         &member_name,
     )
     .map_err(Reject::decline)?;
-    let needs_option_bytes = host_imports.iter().any(|h| h.result_option_bytes);
     Ok(envelope::assemble_bytes_roundtrip_host_provider(
         &core,
         iface,
@@ -8101,6 +8131,7 @@ fn emit_bytes_provider_member(
         &imports,
         &runtime_import_name(),
         needs_option_bytes,
+        needs_list_byte_pairs,
     ))
 }
 
