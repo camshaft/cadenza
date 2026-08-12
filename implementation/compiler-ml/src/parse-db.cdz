@@ -90,6 +90,16 @@ type Node =
                                   // NTuple arm yet, so a tuple falls to infer's `_ => TyErr` catch-all and
                                   // run-src DECLINES cleanly (coverage-not-yet, never a miscompile). The
                                   // TTuple type + CTuple lowering + tuple Value + wasm emit are later stages.
+  | NProj(Int64, Int64)           // POSITIONAL TUPLE PROJECTION `(. t i)` → NProj(operandId, indexId): read the
+                                  // projected operand FORM (operandId) + the index FORM (indexId, a numeric
+                                  // literal position). STAGE A wires ONLY the reader + parse node; resolve/infer/
+                                  // lower have DECLINE arms (resolve→col, infer→TyErr, lower→None), so `(. t i)`
+                                  // PARSES but run-src DECLINES (coverage-not-yet, never a miscompile — the
+                                  // rcdzc-wasm oracle RUNS a valid projection to a scalar, so a decline is safe).
+                                  // STAGE B (infer the i-th element type + CProj lowering + eval store-payload)
+                                  // makes projection RUN to a scalar. Numeric-index projection matches rcdzc's
+                                  // `(. t <int>)` surface; a non-int index / non-tuple operand / out-of-bounds
+                                  // index all DECLINE (coverage-not-yet; the oracle rejects them CDZ0201).
 
 /// The arena: nodes keyed by NodeId, the next fresh id, a DEF-TABLE (`Map(nameId, bodyNodeId)`), AND a
 /// PARAM-TABLE (`Map(nameId, paramNodeId)`) — the module's `(def (name) body)` / `(def (name p) body)` forms,

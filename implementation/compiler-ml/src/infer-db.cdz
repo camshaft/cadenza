@@ -115,6 +115,9 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
         (let tcol2 = infer-tuple-elems(tree, ids, rcol, tcol, 0) in
          (let elem-tys = tuple-elem-types(ids, tcol2, 0, ([] : List(Ty))) in
           Map.insert(tcol2, id, Ty.TyTuple(elem-tys))))
+    // PROJECTION stage-A: `(. t i)` declines (TyErr) — parses but run-src declines (coverage-not-yet; the
+    // oracle runs a valid projection to a scalar, so a decline is safe). Stage B infers the i-th element type.
+    | Option.Some(Node.NProj(_, _)) => Map.insert(tcol, id, Ty.TyErr)
     | Option.Some(Node.NAnnLit(_, sflag, w)) =>
         // a width-annotated literal `(: v IntN)` has the ANNOTATED type TIntW(signed, width) — the narrow
         // type flows from here (sread already fits-width-checked the value). signed rides as 1|0.

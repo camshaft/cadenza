@@ -163,7 +163,8 @@ def read-paren-form(s: String, i: Int64, tree: Tree) =
       else (if (sym == "not") then read-not-form(s, a0, tree)
       else (if (sym == "match") then read-match-form(s, a0, tree)   // M1-a: integer match → NMatch
       else (if (sym == "tuple") then read-tuple-form(s, a0, tree)   // COMPOUND: positional tuple → NTuple
-      else read-app-or-bin(s, sym, a0, tree))))))))))))
+      else (if (sym == ".") then read-proj-form(s, a0, tree)        // PROJECTION: (. t i) → NProj(operand, index)
+      else read-app-or-bin(s, sym, a0, tree)))))))))))))
 
 /// The paren-form fallthrough head `sym` (not a keyword/op-symbol): either a CALL to a def-name or a binary
 /// op. The discriminator is `op-code-of(sym)`: `None` (not an operator) → a CALL — a NULLARY form (the atom is
@@ -268,6 +269,18 @@ def read-tuple-form(s: String, i: Int64, tree: Tree) =
   (match read-tuple-elems(s, i, ([] : List(Int64)), tree) with | (elemIds, e, t1) =>
     (let close = close-paren(s, e) in
      (match add-node(t1, Node.NTuple(elemIds)) with | (id, t2) => (id, close, t2))))
+
+/// PROJECTION reader (stage A): `(. t i)` → `NProj(operandId, indexId)`. `i` is just past the `.` head atom.
+/// Read the projected operand as an expression FORM (so `(. (mk) 1)` / `(. (tuple 10 20) 1)` nest), then the
+/// index as a FORM (a numeric literal position → an NLit node), then consume `)`. Mirrors `read-bin-form`'s
+/// two-child read. Only the reader + parse node land in stage A — resolve/infer/lower DECLINE an NProj (so
+/// `(. t i)` PARSES but run-src DECLINES, coverage-not-yet, no miscompile); stage B infers the i-th element
+/// type + lowers to a payload read so projection RUNS to a scalar. Part of the read-form↔read-paren-form group.
+def read-proj-form(s: String, i: Int64, tree: Tree) =
+  (match read-form(s, i, tree) with | (operandId, a1, t1) =>
+    (match read-form(s, a1, t1) with | (indexId, a2, t2) =>
+      (let close = close-paren(s, a2) in
+       (match add-node(t2, Node.NProj(operandId, indexId)) with | (id, t3) => (id, close, t3)))))
 
 /// Loop the tuple's element FORMS into a positional `List(Int64)` (mirrors `read-ctor-pattern-binders`): stop at
 /// the closing `)` (or end-of-input, tolerated), otherwise read one element form and recurse, `List.push`ing its
@@ -1195,6 +1208,20 @@ def sr-tuple-nests-element-forms() =
             (if ((List.len(elems) == 2) and is-bin-op(tree, e0, 43)) then unit else trap("2 elements, first a + Bin"))
           | Option.None(_) => trap("tuple has a first element"))
       | _ => trap("root reads as an NTuple")))
+
+@test
+def sr-proj-reads-operand-and-index() =
+  // "(. (tuple 10 20) 1)" → NProj(operandId, indexId): the reader reads the projected operand FORM (here a
+  // nested NTuple) and the index FORM (NLit 1). Stage-A reader slice; resolve/infer/lower DECLINE an NProj, so
+  // run-src on a projection declines — this pins the READER shape (the node + that index is NLit 1), not a value.
+  (match read-source("(. (tuple 10 20) 1)") with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NProj(operandId, indexId)) =>
+        (match node-at(tree, operandId) with
+          | Option.Some(Node.NTuple(elems)) =>
+            (if ((List.len(elems) == 2) and is-lit(tree, indexId, 1)) then unit else trap("operand NTuple of 2, index NLit 1"))
+          | _ => trap("operand reads as an NTuple"))
+      | _ => trap("root reads as an NProj")))
 
 @test
 def sr-subtraction-still-binop() =

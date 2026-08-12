@@ -133,6 +133,9 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
         (match lower-tuple-elems(tree, ids, rcol, tcol, 0, ([] : List(Core))) with
           | Option.Some(elems) => Option.Some(Core.CCtor(0, elems))
           | Option.None(_) => Option.None(unit))
+    // PROJECTION stage-A: NProj declines (infer TyErrs it, so the lower type-gate never routes here; this arm
+    // is for match totality). Stage B lowers NProj to a payload read of the CCtor(0) tuple handle.
+    | Option.Some(Node.NProj(_, _)) => Option.None(unit)
     | Option.Some(Node.NAnnLit(v, sflag, w)) =>
         // a width-annotated literal lowers to a NARROW CNum carrying its (signed, width) — emit reads the
         // width to pick i32-vs-i64 codegen. signed rides as 1|0.
