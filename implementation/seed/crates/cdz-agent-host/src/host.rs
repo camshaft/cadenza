@@ -2570,31 +2570,33 @@ mod tests {
     }
 
     /// END-TO-END: drive the REAL `reducer_agent_loop.cdz` — the GAP-1 KEYSTONE — through the A1 BYTES
-    /// boundary on wasmtime, proving the harness hosts a REAL AGENTIC LOOP as a pure reducer: the
-    /// message→model→tool spine, with the inbox managed as durable KV state enumerated via kv.prefix-scan
-    /// (the "read inbox → call model → dispatch tool" loop a self-hosting agent runs instead of tmux/fleet).
+    /// boundary on wasmtime, proving the harness hosts a REAL AGENTIC LOOP as a pure reducer: the CLOSED
+    /// message→model→tool→result→model loop, with the inbox + growing context managed as durable KV state
+    /// enumerated via kv.prefix-scan (the loop a self-hosting agent runs instead of tmux/fleet-tooling state).
     /// This is the highest-signal proof of the whole self-hosting-harness arc: no new kernel mechanism, just
     /// a fold over the existing kv + emit effects (v-agent-harness-host's greenlit recommendation).
     ///
-    /// The contract (`reducer_agent_loop.cdz`, LANDED spine `7432bb96a`): a `message`-family event with a
-    /// payload appends it to the `inbox/` prefix (kv.put) then, iff the inbox prefix-scan is non-empty, emits
-    /// ONE `model` effect (target "llm", payload = the message) — the read-inbox→call-model half. A
-    /// `model-response`-family event with a payload emits ONE `tool` effect (target "shell", payload = the
-    /// call) — the action step. Anything else folds to nothing. (The tool-result→model loop-CLOSE arm arrives
-    /// with v-ah's `acd830ae0`; this E2E covers the landed spine + will grow the third arm then.)
+    /// The contract (`reducer_agent_loop.cdz`, spine `7432bb96a` + loop-close `3b58ceb66`): a `message` event
+    /// with a payload appends it to the `inbox/` prefix (kv.put) then, iff the inbox prefix-scan is non-empty,
+    /// emits ONE `model` effect (target "llm") — read-inbox→call-model. A `model-response` event emits ONE
+    /// `tool` effect (target "shell") — the action step. A `tool-result` event folds the result into the
+    /// `context/` prefix then, iff the context prefix-scan is non-empty, RE-INVOKES the model — ONE more
+    /// `model` effect (target "llm") — CLOSING the loop. Anything else folds to nothing. Each arm's payload
+    /// echoes the driving event's, and the KV is threaded across all three folds (the kernel loop's fold
+    /// contract) so the inbox/context accumulate exactly as a live session's would.
     ///
     /// Env-gated on `CDZ_AGENT_LOOP_REDUCER_COMPONENT` (skip when unset); `CDZ_STORE` required once the
     /// component is set (the reducer imports `cadenza:runtime/heap`) — the SAME skip/fail-loud shape as the
     /// kv-genesis E2E. A bare `cargo test` stays green; v-nix's reducerCadenzaAgentLoop precompile derivation
     /// exports the env in the native-check and this runs against the real component.
     #[tokio::test]
-    async fn real_agent_loop_reducer_folds_the_message_model_tool_spine() {
+    async fn real_agent_loop_reducer_folds_the_closed_message_model_tool_result_loop() {
         use cdz_kernel::wasm_host::AsyncComponentReducer;
 
         let non_empty = |var: &str| std::env::var(var).ok().filter(|v| !v.is_empty());
         let Some(reducer_path) = non_empty("CDZ_AGENT_LOOP_REDUCER_COMPONENT") else {
             eprintln!(
-                "SKIP real_agent_loop_reducer_folds_the_message_model_tool_spine: \
+                "SKIP real_agent_loop_reducer_folds_the_closed_message_model_tool_result_loop: \
                  CDZ_AGENT_LOOP_REDUCER_COMPONENT unset (or empty)"
             );
             return;
@@ -2680,7 +2682,7 @@ mod tests {
             family: "model-response".into(),
             version: 1,
         };
-        let (resp_effects, _kv_after_resp) = reducer
+        let (resp_effects, kv_after_resp) = reducer
             .apply(kv_after_msg, resp_ct, Some(call.clone()), None)
             .await
             .expect(
@@ -2707,6 +2709,45 @@ mod tests {
         assert_eq!(
             tool_payload, call,
             "the tool effect carries the model's tool-call request verbatim"
+        );
+
+        // STEP 3 (loop CLOSURE): a `tool-result` event folds the tool's result into the "context/" working
+        // set (kv.put) then, since the context prefix-scan is now non-empty, RE-INVOKES the model — emitting
+        // ONE more `model` effect. This is what makes it a LOOP, not a single pass: message→model→tool→
+        // RESULT→model→… Thread the post-response KV in so the context accumulates across the whole cycle.
+        let result = b"exit 0: 42 tests passed".to_vec();
+        let tool_result_ct = cdz_kernel::event::ContentType {
+            family: "tool-result".into(),
+            version: 1,
+        };
+        let (result_effects, _kv_after_result) = reducer
+            .apply(kv_after_resp, tool_result_ct, Some(result.clone()), None)
+            .await
+            .expect(
+                "the agent-loop reducer folds a tool-result event through the A1 bytes boundary",
+            );
+        assert_eq!(
+            result_effects.len(),
+            1,
+            "a tool-result event RE-INVOKES the model (loop closure): one more model effect"
+        );
+        assert_eq!(
+            result_effects[0].request.content_type.family, "model",
+            "the tool-result step emits another `model` effect (re-invoke the LLM with the grown context)"
+        );
+        assert_eq!(
+            result_effects[0].request.target_str().unwrap(),
+            "llm",
+            "the re-invoke model effect targets the opaque bytes \"llm\""
+        );
+        let reinvoke_payload = match &result_effects[0].request.payload {
+            Some(cdz_kernel::effect::Payload::Inline(b)) => b.to_vec(),
+            other => panic!("expected an inline re-invoke model-effect payload, got {other:?}"),
+        };
+        assert_eq!(
+            reinvoke_payload, result,
+            "the re-invoke model effect carries the tool result (folded into the context and enumerated \
+             via kv.prefix-scan) — closing message→model→tool→result→model end-to-end through the host"
         );
 
         // NEGATIVE: an unrelated event family is not part of the loop → no effects.
