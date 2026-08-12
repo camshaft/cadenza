@@ -8458,3 +8458,27 @@
   (call   main (: 3 Int64)) (output (: 99 Int64))
   (call   main (: -5 Int64)) (output (: 98 Int64))
   (call   main (: 2 Int64)) (output (: 199 Int64)))
+
+(case "a state byte built into a Bytes and decoded by a from-bytes match in a tail-resumptive arm folds"
+  (doc    "The inline (no-let) face of finding #20 (breaker via corpus-bugfix): the handler state byte is wrapped
+           into a one-element `Bytes`, decoded through a `String.from-bytes` MATCH in the resume value, and the
+           two arms (valid Some / invalid None) both cross the dispatch. `dec` arm resumes `(match
+           (String.from-bytes (Bytes.of (list (UInt8.wrap s)))) ((Some t) (String.byte-len t)) ((None _u) -1))`.
+           `main(65)`: 65 = ASCII 'A', a valid 1-byte UTF-8 string → byte-len 1. `main(200)`: 200 = 0xC8, a lone
+           continuation byte → invalid UTF-8 → None → -1. Uniform on all 3 backends, opt-sweep 0-divergence.
+           (The LET-BOUND twin — let-binding the Bytes first — DECLINES cleanly on current trunk, a
+           reject-don't-miscompile fold-frontier todo, NOT an ICE; this inline form is the passing sentinel.)
+           Breaker finding-20 inline twin (2026-08-12).")
+  (input  (do
+            (effect S (op dec (-> Int64)))
+            (def (main (: n Int64))
+              (handle S n
+                ((dec () s
+                  (resume (match (String.from-bytes (Bytes.of (list (UInt8.wrap s))))
+                            ((Some t) (String.byte-len t))
+                            ((None _u) -1))
+                          s)))
+                (S.dec)))
+            (export main)))
+  (call   main (: 65 Int64)) (output (: 1 Int64))
+  (call   main (: 200 Int64)) (output (: -1 Int64)))
