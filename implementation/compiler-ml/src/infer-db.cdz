@@ -115,6 +115,9 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
         (let tcol2 = infer-tuple-elems(tree, ids, rcol, tcol, 0) in
          (let elem-tys = tuple-elem-types(ids, tcol2, 0, ([] : List(Ty))) in
           Map.insert(tcol2, id, Ty.TyTuple(elem-tys))))
+    // RECORD stage-A: `(record (f v)…)` declines (TyErr) — parses but run-src declines (coverage-not-yet).
+    // Stage B infers a TyRecord (field-name→type) + lowers/evals it + wires `(. r field)` field access.
+    | Option.Some(Node.NRecord(_, _)) => Map.insert(tcol, id, Ty.TyErr)
     // PROJECTION `(. t i)`: infer the operand + index children, then — if the operand is a `TyTuple(elems)`
     // and the index is a LITERAL `NLit(i)` IN BOUNDS — the projection's type is `elems[i]` (a scalar element
     // type, so run-src does NOT decline it at the tuple boundary guard). A non-tuple operand, a non-literal

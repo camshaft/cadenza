@@ -140,6 +140,9 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
         (match lower-tuple-elems(tree, ids, rcol, tcol, 0, ([] : List(Core))) with
           | Option.Some(elems) => Option.Some(Core.CCtor(0, elems))
           | Option.None(_) => Option.None(unit))
+    // RECORD stage-A: NRecord declines (infer TyErrs it, so the lower type-gate never routes here; this arm is
+    // for match totality). Stage B lowers a record to CCtor(0, values-in-sorted-key-order) reusing the tuple rep.
+    | Option.Some(Node.NRecord(_, _)) => Option.None(unit)
     // PROJECTION `(. t i)` → `CProj(operandCore, i)`: lower the operand (a tuple → CCtor(0, elems)) and read
     // the literal index from indexId. infer only types this node (routing it here via the gate) when the
     // operand is a TyTuple and the index is an in-bounds NLit, so the operand lowers and the index is a

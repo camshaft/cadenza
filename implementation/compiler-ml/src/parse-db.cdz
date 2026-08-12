@@ -100,6 +100,16 @@ type Node =
                                   // makes projection RUN to a scalar. Numeric-index projection matches rcdzc's
                                   // `(. t <int>)` surface; a non-int index / non-tuple operand / out-of-bounds
                                   // index all DECLINE (coverage-not-yet; the oracle rejects them CDZ0201).
+  | NRecord(List(Int64), List(Int64))  // COMPOUND-VALUE slice — NAMED-FIELD RECORD `(record (f0 v0) (f1 v1) …)`
+                                  // → NRecord(fieldNameIds, valueIds): two PARALLEL positional lists — the field
+                                  // NAME-ids and the field VALUE node-ids, in source order (a field is a
+                                  // `(name value)` pair, read like a `let` binding). STAGE A wires ONLY the reader
+                                  // + parse node; resolve/infer/lower DECLINE an NRecord (resolve→col, infer→TyErr,
+                                  // lower→None) for match totality, so a record literal PARSES but run-src DECLINES
+                                  // (coverage-not-yet, never a miscompile). STAGE B adds a TyRecord type + lowering
+                                  // (likely CCtor(0, values-in-sorted-key-order) reusing the tuple SumStore rep) +
+                                  // eval, and extends NProj so `(. r fieldname)` (a NAME index on a TyRecord) reads
+                                  // the field — the field-access face of the same `.` head tuples project with.
 
 /// The arena: nodes keyed by NodeId, the next fresh id, a DEF-TABLE (`Map(nameId, bodyNodeId)`), AND a
 /// PARAM-TABLE (`Map(nameId, paramNodeId)`) — the module's `(def (name) body)` / `(def (name p) body)` forms,

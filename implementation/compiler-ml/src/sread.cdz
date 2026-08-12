@@ -163,8 +163,9 @@ def read-paren-form(s: String, i: Int64, tree: Tree) =
       else (if (sym == "not") then read-not-form(s, a0, tree)
       else (if (sym == "match") then read-match-form(s, a0, tree)   // M1-a: integer match → NMatch
       else (if (sym == "tuple") then read-tuple-form(s, a0, tree)   // COMPOUND: positional tuple → NTuple
+      else (if (sym == "record") then read-record-form(s, a0, tree) // COMPOUND: named-field record → NRecord
       else (if (sym == ".") then read-proj-form(s, a0, tree)        // PROJECTION: (. t i) → NProj(operand, index)
-      else read-app-or-bin(s, sym, a0, tree)))))))))))))
+      else read-app-or-bin(s, sym, a0, tree))))))))))))))
 
 /// The paren-form fallthrough head `sym` (not a keyword/op-symbol): either a CALL to a def-name or a binary
 /// op. The discriminator is `op-code-of(sym)`: `None` (not an operator) → a CALL — a NULLARY form (the atom is
@@ -281,6 +282,31 @@ def read-proj-form(s: String, i: Int64, tree: Tree) =
     (match read-form(s, a1, t1) with | (indexId, a2, t2) =>
       (let close = close-paren(s, a2) in
        (match add-node(t2, Node.NProj(operandId, indexId)) with | (id, t3) => (id, close, t3)))))
+
+/// COMPOUND-VALUE slice (stage A, READER): a named-field record literal `(record (f0 v0) (f1 v1) …)` →
+/// `NRecord(fieldNameIds, valueIds)`. `i` is just past the `record` head atom. Each field is a `(name value)`
+/// pair read like a `let` binding (see `read-let-bindings`); collect the field NAME-ids + VALUE node-ids into
+/// two parallel lists, positionally, until the record's closing `)`. Only the reader + parse node land here —
+/// resolve/infer/lower DECLINE an NRecord, so a record literal PARSES but `run-src` DECLINES cleanly
+/// (coverage-not-yet, never a miscompile); the TyRecord type + lowering + eval + `(. r field)` access are stage B.
+def read-record-form(s: String, i: Int64, tree: Tree) =
+  (match read-record-fields(s, i, ([] : List(Int64)), ([] : List(Int64)), tree) with | (nameIds, valIds, e, t1) =>
+    (let close = close-paren(s, e) in
+     (match add-node(t1, Node.NRecord(nameIds, valIds)) with | (id, t2) => (id, close, t2))))
+
+/// At `k` = positioned at the next field's `(` OR the record-closing `)`. Reads ONE field `(name value)` —
+/// scan the field-name atom, then read the value FORM (so `(record (a (+ 1 2)) (b x))` nests) — then RECURSES,
+/// `List.push`ing the name-id + value-id so both lists stay in source order. Mirrors `read-let-bindings`' pair
+/// read. Stops at the closing `)` (or end-of-input, tolerated), returning the accumulated fields + position.
+def read-record-fields(s: String, k: Int64, nameAcc: List(Int64), valAcc: List(Int64), tree: Tree) =
+  (let p = skip-space(s, k) in
+   (if (char-at(s, p) == "(")
+    then (let b1 = p + 1 in                  // this field's `(`
+          (match scan-atom(s, skip-space(s, b1), "") with | (nm, v0) =>
+            (match read-form(s, v0, tree) with | (valId, v1, t1) =>
+              (let c1 = close-paren(s, v1) in                          // close this field `)`
+               read-record-fields(s, c1, List.push(nameAcc, name-id(nm)), List.push(valAcc, valId), t1)))))
+    else (nameAcc, valAcc, p, tree)))
 
 /// Loop the tuple's element FORMS into a positional `List(Int64)` (mirrors `read-ctor-pattern-binders`): stop at
 /// the closing `)` (or end-of-input, tolerated), otherwise read one element form and recurse, `List.push`ing its
@@ -1222,6 +1248,21 @@ def sr-proj-reads-operand-and-index() =
             (if ((List.len(elems) == 2) and is-lit(tree, indexId, 1)) then unit else trap("operand NTuple of 2, index NLit 1"))
           | _ => trap("operand reads as an NTuple"))
       | _ => trap("root reads as an NProj")))
+
+@test
+def sr-record-reads-named-fields() =
+  // "(record (a 1) (b 2))" → NRecord(nameIds, valIds): the reader reads each `(name value)` field pair (like a
+  // let binding) into two parallel lists — field name-ids + value node-ids. Stage-A reader slice; resolve/infer/
+  // lower DECLINE an NRecord, so run-src on a record declines — this pins the READER shape (2 fields, first
+  // value NLit 1, and the two lists are equal length), not an end-to-end value.
+  (match read-source("(record (a 1) (b 2))") with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NRecord(nameIds, valIds)) =>
+        (match List.at(valIds, 0) with
+          | Option.Some(v0) =>
+            (if ((List.len(nameIds) == 2) and ((List.len(valIds) == 2) and is-lit(tree, v0, 1))) then unit else trap("2 fields, first value NLit 1"))
+          | Option.None(_) => trap("record has a first field value"))
+      | _ => trap("root reads as an NRecord")))
 
 @test
 def sr-subtraction-still-binop() =
