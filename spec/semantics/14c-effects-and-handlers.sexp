@@ -8489,3 +8489,52 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 3366 Int64))
   (call   main (: 7 Int64)) (output (: 7854 Int64)))
+
+; --- breaker batch 239: saturating clamp both-bounds, match-over-op-result in another op's argument, atomic tuple slot swap ---
+(case "clp1 a SATURATING counter — the arm clamps every transition to 0..10 via a pure helper, both bounds hit in one run"
+  (input  (do
+            (effect S (op nudge (-> Int64 Int64)))
+            (def (clamp (: x Int64))
+              (if (< x 0) 0 (if (> x 10) 10 x)))
+            (def (main (: n Int64))
+              (handle S n
+                ((nudge (d) s
+                  (let ((nx (clamp (+ s d))))
+                    (resume nx nx))))
+                (let ((a (S.nudge 7)))
+                  (let ((b (S.nudge 7)))
+                    (let ((c (S.nudge -25)))
+                      (+ (* 10000 a) (+ (* 100 b) c)))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 71000 Int64))
+  (call   main (: 5 Int64)) (output (: 101000 Int64)))
+
+(case "mia1 a MATCH over one op's Option result sits in ANOTHER op's argument position — unwrap-then-perform composed twice, verdicts flip"
+  (input  (do
+            (effect S (op cls (-> Int64 (Option Int64))) (op use (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S n
+                ((cls (v) s (resume (if (< v s) (Some (* v 2)) (: (None unit) (Option Int64))) (+ s 1)))
+                 (use (v) s (resume (+ v s) (+ s 10))))
+                (+ (S.use (match (S.cls 3) ((Some x) x) ((None _u) -50)))
+                   (* 1000 (S.use (match (S.cls 3) ((Some x) x) ((None _u) -50)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 23012 Int64))
+  (call   main (: 2 Int64)) (output (: 19953 Int64)))
+
+(case "swp1 an ATOMIC slot swap — the swap dispatch exchanges both tuple fields in one transition, reads before and after pin the exchange"
+  (input  (do
+            (effect S (op geta (-> Int64)) (op getb (-> Int64)) (op swap (-> Int64)))
+            (def (main (: n Int64))
+              (handle S (tuple n 100)
+                ((geta () st (match st ((tuple a b) (resume a st))))
+                 (getb () st (match st ((tuple a b) (resume b st))))
+                 (swap () st (match st ((tuple a b) (resume (+ a b) (tuple b a))))))
+                (let ((a1 (S.geta)))
+                  (let ((_s (S.swap)))
+                    (let ((a2 (S.geta)))
+                      (let ((b2 (S.getb)))
+                        (+ (* 100000 a1) (+ (* 100 a2) b2))))))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 710007 Int64))
+  (call   main (: 0 Int64)) (output (: 10000 Int64)))

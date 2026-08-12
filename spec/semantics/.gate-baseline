@@ -4807,6 +4807,7 @@ pass	closures built one per iteration each capture their OWN loop value
 pass	closures capture successive SNAPSHOTS of a growing heap list
 pass	closures extracted from a list by RUNTIME index and applied dispatch correctly
 pass	closures stored as MAP VALUES dispatch by key with distinct captures
+pass	clp1 a SATURATING counter — the arm clamps every transition to 0..10 via a pure helper, both bounds hit in one run
 pass	cn1 a THREE-deep seed RELAY — each nested shadow's seed is a draw from its parent, strides differ per depth
 pass	cn2 the inner shadow's RESULT flows up into the outer computation — a let-bound region value scaled beside an outer draw
 pass	combining a named rate with a length is a dimensional error
@@ -5458,6 +5459,7 @@ pass	mf3 one performing helper called from an ARM's resume-value AND the body �
 pass	mi1 enumeration DELTA across dispatches — dumps before and after keyed inserts, collision rows shrink the delta
 pass	mi2 SORTED Set enumeration survives a draw-keyed insert — positional reads, the collision row exposes the missing third slot
 pass	mi3 the arm AGGREGATES map values via a to-list walk — the n=1 row OVERWRITES the seed value, shrinking the total
+pass	mia1 a MATCH over one op's Option result sits in ANOTHER op's argument position — unwrap-then-perform composed twice, verdicts flip
 pass	mixed bool and int splices evaluate in one template
 pass	mixed comparison operators across if arms keep their own arms
 pass	mixed operators across the if arms keep their own arms
@@ -6105,6 +6107,7 @@ pass	sw3 the window CAPACITY is itself state — a grow op resizes the window mi
 pass	sw4 windowed AVERAGE with the truncating divide — window sum over live length, a negative window exercises toward-zero
 pass	sw5 DISTINCT-count over the window — a Set built per dispatch from the last-3 list measures dedupe, n=7 collides with the constant feed
 pass	swapped-operand complements do not fold — less-than or flipped greater-equal is not a tautology
+pass	swp1 an ATOMIC slot swap — the swap dispatch exchanges both tuple fields in one transition, reads before and after pin the exchange
 pass	sy2 a SYMBOL toggle state — equality routes the resume value while the arm flips fast/slow per dispatch
 pass	sy3 the SYMBOL state is a MAP KEY per dispatch — the a→b→c walk ends at a missing key
 pass	sy4 sequential draws written into record FIELDS via Record.with symbol selectors — chained functional updates
