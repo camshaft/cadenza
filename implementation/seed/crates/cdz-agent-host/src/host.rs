@@ -2569,6 +2569,166 @@ mod tests {
         );
     }
 
+    /// END-TO-END: drive the REAL `reducer_agent_loop.cdz` — the GAP-1 KEYSTONE — through the A1 BYTES
+    /// boundary on wasmtime, proving the harness hosts a REAL AGENTIC LOOP as a pure reducer: the
+    /// message→model→tool spine, with the inbox managed as durable KV state enumerated via kv.prefix-scan
+    /// (the "read inbox → call model → dispatch tool" loop a self-hosting agent runs instead of tmux/fleet).
+    /// This is the highest-signal proof of the whole self-hosting-harness arc: no new kernel mechanism, just
+    /// a fold over the existing kv + emit effects (v-agent-harness-host's greenlit recommendation).
+    ///
+    /// The contract (`reducer_agent_loop.cdz`, LANDED spine `7432bb96a`): a `message`-family event with a
+    /// payload appends it to the `inbox/` prefix (kv.put) then, iff the inbox prefix-scan is non-empty, emits
+    /// ONE `model` effect (target "llm", payload = the message) — the read-inbox→call-model half. A
+    /// `model-response`-family event with a payload emits ONE `tool` effect (target "shell", payload = the
+    /// call) — the action step. Anything else folds to nothing. (The tool-result→model loop-CLOSE arm arrives
+    /// with v-ah's `acd830ae0`; this E2E covers the landed spine + will grow the third arm then.)
+    ///
+    /// Env-gated on `CDZ_AGENT_LOOP_REDUCER_COMPONENT` (skip when unset); `CDZ_STORE` required once the
+    /// component is set (the reducer imports `cadenza:runtime/heap`) — the SAME skip/fail-loud shape as the
+    /// kv-genesis E2E. A bare `cargo test` stays green; v-nix's reducerCadenzaAgentLoop precompile derivation
+    /// exports the env in the native-check and this runs against the real component.
+    #[tokio::test]
+    async fn real_agent_loop_reducer_folds_the_message_model_tool_spine() {
+        use cdz_kernel::wasm_host::AsyncComponentReducer;
+
+        let non_empty = |var: &str| std::env::var(var).ok().filter(|v| !v.is_empty());
+        let Some(reducer_path) = non_empty("CDZ_AGENT_LOOP_REDUCER_COMPONENT") else {
+            eprintln!(
+                "SKIP real_agent_loop_reducer_folds_the_message_model_tool_spine: \
+                 CDZ_AGENT_LOOP_REDUCER_COMPONENT unset (or empty)"
+            );
+            return;
+        };
+        let store_dir = non_empty("CDZ_STORE").unwrap_or_else(|| {
+            panic!(
+                "real_agent_loop_reducer_...: CDZ_AGENT_LOOP_REDUCER_COMPONENT is set but CDZ_STORE is not — \
+                 the agent-loop reducer imports cadenza:runtime/heap, whose bytes resolve from the store"
+            )
+        });
+        let bytes = std::fs::read(&reducer_path).unwrap_or_else(|e| {
+            panic!("CDZ_AGENT_LOOP_REDUCER_COMPONENT={reducer_path:?} set but unreadable: {e}")
+        });
+        let reducer = AsyncComponentReducer::from_component_bytes(&bytes)
+            .unwrap_or_else(|e| panic!("reducer_agent_loop must be a valid component: {e:?}"));
+        // Resolve the value-heap runtime dep from CDZ_STORE + attach the store — same path as the kv E2Es.
+        let store = cdz_kernel::component_store::ComponentStore::open(&store_dir);
+        let deps = reducer.deps().to_vec();
+        assert!(
+            !deps.is_empty(),
+            "the agent-loop reducer must declare a cadenza:runtime/heap dep (it constructs values via the heap)"
+        );
+        let mut resolved = Vec::with_capacity(deps.len());
+        for dep in &deps {
+            let dep_bytes = store.get_by_hash(&dep.hash).unwrap_or_else(|e| {
+                panic!(
+                    "CDZ_STORE={store_dir:?} could not resolve agent-loop reducer dep {:?} (hash {}): {e:?}",
+                    dep.import_name,
+                    dep.hash.to_hex()
+                )
+            });
+            resolved.push((dep.clone(), dep_bytes));
+        }
+        let reducer = reducer
+            .with_resolved_deps(resolved)
+            .with_component_store(store);
+
+        // STEP 1 (read-inbox → call-model): a `message` event appends to the inbox and, since the inbox is
+        // now non-empty, emits ONE `model` effect targeting the LLM with the message as context. This is the
+        // agentic loop's "the agent read its inbox and decided to call the model" step.
+        let message = b"summarize the build log".to_vec();
+        let msg_ct = cdz_kernel::event::ContentType {
+            family: "message".into(),
+            version: 1,
+        };
+        let (msg_effects, kv_after_msg) = reducer
+            .apply(
+                cdz_kernel::kv::Kv::new(),
+                msg_ct,
+                Some(message.clone()),
+                None,
+            )
+            .await
+            .expect("the agent-loop reducer folds a message event through the A1 bytes boundary");
+        assert_eq!(
+            msg_effects.len(),
+            1,
+            "a message event with a non-empty inbox folds to one model effect (read-inbox → call-model)"
+        );
+        assert_eq!(
+            msg_effects[0].request.content_type.family, "model",
+            "the message step emits a `model` effect (invoke the LLM)"
+        );
+        assert_eq!(
+            msg_effects[0].request.target_str().unwrap(),
+            "llm",
+            "the model effect targets the opaque bytes \"llm\""
+        );
+        let model_payload = match &msg_effects[0].request.payload {
+            Some(cdz_kernel::effect::Payload::Inline(b)) => b.to_vec(),
+            other => panic!("expected an inline model-effect payload, got {other:?}"),
+        };
+        assert_eq!(
+            model_payload, message,
+            "the model effect carries the message as context (enumerated from the inbox)"
+        );
+
+        // STEP 2 (action): a `model-response` event (the LLM asked for a tool call) folds to ONE `tool`
+        // effect targeting the shell with the call — the loop's ACTION step. Thread the post-message KV in
+        // (the loop's fold contract), though this arm reads no inbox state.
+        let call = b"cargo test --lib".to_vec();
+        let resp_ct = cdz_kernel::event::ContentType {
+            family: "model-response".into(),
+            version: 1,
+        };
+        let (resp_effects, _kv_after_resp) = reducer
+            .apply(kv_after_msg, resp_ct, Some(call.clone()), None)
+            .await
+            .expect(
+                "the agent-loop reducer folds a model-response event through the A1 bytes boundary",
+            );
+        assert_eq!(
+            resp_effects.len(),
+            1,
+            "a model-response event folds to one tool effect (the loop's action step)"
+        );
+        assert_eq!(
+            resp_effects[0].request.content_type.family, "tool",
+            "the model-response step emits a `tool` effect (dispatch the requested tool call)"
+        );
+        assert_eq!(
+            resp_effects[0].request.target_str().unwrap(),
+            "shell",
+            "the tool effect targets the opaque bytes \"shell\""
+        );
+        let tool_payload = match &resp_effects[0].request.payload {
+            Some(cdz_kernel::effect::Payload::Inline(b)) => b.to_vec(),
+            other => panic!("expected an inline tool-effect payload, got {other:?}"),
+        };
+        assert_eq!(
+            tool_payload, call,
+            "the tool effect carries the model's tool-call request verbatim"
+        );
+
+        // NEGATIVE: an unrelated event family is not part of the loop → no effects.
+        let other_ct = cdz_kernel::event::ContentType {
+            family: "unrelated".into(),
+            version: 1,
+        };
+        let (other_effects, _kv3) = reducer
+            .apply(
+                cdz_kernel::kv::Kv::new(),
+                other_ct,
+                Some(b"noise".to_vec()),
+                None,
+            )
+            .await
+            .expect("the agent-loop reducer folds an unrelated event without trapping");
+        assert!(
+            other_effects.is_empty(),
+            "an event family outside the loop requests no effects"
+        );
+    }
+
     #[tokio::test]
     async fn with_sink_persists_a_sessions_events_durably() {
         // with_sink attaches a durable LogStore: the events a session appends during a turn are persisted,
