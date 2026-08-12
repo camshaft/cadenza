@@ -960,23 +960,21 @@ pub fn reducer_world_artifact() -> Vec<u8> {
         let inner = bytes_desc(b);
         b.wit_type_option(inner)
     };
-    let unit_desc = |b: &mut Builder| {
-        let head = b.atom_leaf(Leaf::Str("unit".into()));
-        b.list(vec![head])
-    };
+    // `unit` = STR-head `("unit")` (put's result), via the shared builder (v-syntax's `wit_type_unit`).
+    let unit_desc = |b: &mut Builder| b.wit_type_unit();
     // `bool` is a NAME-head primitive descriptor `(bool)`, like `(u8)` — the faithful boundary form of
     // `kv.delete`'s scalar result (present-or-removed). No retptr lift needed (a flat scalar, unlike
     // `option<list<u8>>`), so it emits like `put`'s unit result.
     let bool_desc = |b: &mut Builder| b.wit_type_prim("bool");
     // `kv.prefix-scan`'s result `list<tuple<list<u8>, list<u8>>>` — the key-value pairs. STR-head compounds
-    // (build_type form): `("list" ("tuple" ("list" (u8)) ("list" (u8))))`. `tuple` has no shared builder
-    // (MVP is prim/list/option), so its str head is built inline like `unit`. The nested list-of-byte-pairs
-    // is a genuine compound host result (rcdzc's GAP-C+ lift, landed) — not a flat scalar.
+    // (build_type form): `("list" ("tuple" ("list" (u8)) ("list" (u8))))`, via the shared builders
+    // (`wit_type_tuple`/`wit_type_list`). The nested list-of-byte-pairs is a genuine compound host result
+    // (rcdzc's GAP-C+ lift, landed) — not a flat scalar. All 5 MVP member types now route through the
+    // single shared `wit_type_*` source (prim/list/option/unit/tuple), byte-identical across all 3 sources.
     let scan_pairs_desc = |b: &mut Builder| {
         let k = bytes_desc(b);
         let v = bytes_desc(b);
-        let tuple_head = b.atom_leaf(Leaf::Str("tuple".into()));
-        let pair = b.list(vec![tuple_head, k, v]);
+        let pair = b.wit_type_tuple(&[k, v]);
         b.wit_type_list(pair)
     };
 
