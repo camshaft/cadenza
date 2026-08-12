@@ -8407,3 +8407,31 @@
   (call   main (: 2 Int64)) (output (: -4611686018427387904 Int64))
   (call   main (: -2 Int64)) (output (: 4611686018427387904 Int64))
   (call   main (: -1 Int64)) (trap "integer overflow"))
+
+(case "BINARY SEARCH against a hidden state target — the body bisects on the arm's ordering verdicts, eight probes find any target in 0..100"
+  (doc    "An oracle-driven control-flow shape over effect state: the handler state `n` is the hidden search
+           TARGET, and the `cmp` arm answers a 3-way ordering verdict against it — `(if (< v s) 1 (if (> v s)
+           -1 0))`. The body `bisect` recurses, halving `[lo,hi]` on each verdict (8 probes bound the search over
+           0..100), so the RECURSION PATH is data-dependent on the hidden target — every seed drives a distinct
+           sequence of dispatches through the fold. Verifies the tail-resumptive fold serves a real
+           oracle-search program where the answer flows back and steers control. Four seeds exercise distinct
+           paths incl. the 0 and 100 BOUNDARY faces: `main(37)`=37, `main(0)`=0, `main(100)`=100, `main(63)`=63.
+           Uniform on all 3 backends, opt-sweep 0-divergence. Breaker ordering-verdicts probe cp2 (2026-08-11).")
+  (input  (do
+            (effect S (op cmp (-> Int64 Int64)))
+            (def (bisect (: lo Int64) (: hi Int64) (: k Int64))
+              (if (< k 1) -1
+                (let ((mid (/ (+ lo hi) 2)))
+                  (let ((c (S.cmp mid)))
+                    (if (= c 0) mid
+                      (if (< c 0) (bisect lo (- mid 1) (- k 1))
+                        (bisect (+ mid 1) hi (- k 1))))))))
+            (def (main (: n Int64))
+              (handle S n
+                ((cmp (v) s (resume (if (< v s) 1 (if (> v s) -1 0)) s)))
+                (bisect 0 100 8)))
+            (export main)))
+  (call   main (: 37 Int64)) (output (: 37 Int64))
+  (call   main (: 0 Int64)) (output (: 0 Int64))
+  (call   main (: 100 Int64)) (output (: 100 Int64))
+  (call   main (: 63 Int64)) (output (: 63 Int64)))

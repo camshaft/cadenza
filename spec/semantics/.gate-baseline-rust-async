@@ -48,6 +48,7 @@ pass	Ast.decode decodes bytes that arrive as a function argument
 pass	Ast.encode and Ast.decode round-trip
 pass	BETA over the capture-avoiding substitution still proves the identity theorem (no regression)
 pass	BIJECTIVE base-26 column codec biases each step by one and round-trips at the boundaries
+pass	BINARY SEARCH against a hidden state target — the body bisects on the arm's ordering verdicts, eight probes find any target in 0..100
 pass	BINOMIAL nCk multiplies incrementally with exact interleaved division and uses the symmetry cut
 pass	BIPARTITE check two-colors components and rejects the odd cycle
 pass	BOYER-MOORE majority vote pairs a cancel-count sweep with a verify recount
