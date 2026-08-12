@@ -4640,6 +4640,20 @@ fn decode_value_form_to_hex(value_form: &str) -> Option<String> {
             let n: i64 = value.parse().ok()?;
             Some(format!("hex:{:02x}", (n as u8)))
         }
+        // A `String` value stored as its raw UTF-8 bytes (`String.to-bytes("c1")`) — the same bytes a
+        // reducer writes to KV or echoes back (e.g. the correlation token on an effect-result). The
+        // printed value-form quotes the leaf (`(: "c1" String)`), so strip the surrounding quotes and
+        // emit the UTF-8 bytes as hex. `value` came from `split_whitespace`, so a string containing
+        // whitespace would have been split across tokens — reject those (they need a different parse)
+        // rather than silently hex a truncated prefix.
+        "String" => {
+            let s = value.strip_prefix('"')?.strip_suffix('"')?;
+            if s.contains('"') {
+                return None;
+            }
+            let hex: String = s.bytes().map(|b| format!("{b:02x}")).collect();
+            Some(format!("hex:{hex}"))
+        }
         _ => None,
     }
 }
@@ -10035,10 +10049,29 @@ mod platform_grading_tests {
     }
 
     #[test]
+    fn decode_value_form_maps_a_string_to_its_utf8_bytes_hex() {
+        // A `String` value (`String.to-bytes("c1")`) decodes to its raw UTF-8 bytes as hex — the same bytes a
+        // reducer writes to KV or echoes back (e.g. a correlation token on an effect-result). The printed
+        // value-form quotes the leaf, so the quotes are stripped before hexing.
+        assert_eq!(
+            decode_value_form_to_hex("(: \"c1\" String)").as_deref(),
+            Some("hex:6331")
+        );
+        assert_eq!(
+            decode_value_form_to_hex("(: \"hi\" String)").as_deref(),
+            Some("hex:6869")
+        );
+        // An empty string decodes to the empty byte string.
+        assert_eq!(
+            decode_value_form_to_hex("(: \"\" String)").as_deref(),
+            Some("hex:")
+        );
+    }
+
+    #[test]
     fn decode_value_form_is_none_for_an_unmodeled_shape() {
-        // A value shape the I1 decoder doesn't model yet → None, so the grader treats it as coverage-not-yet
-        // (Todo), never a false Fail. A String value + a malformed form both decline.
-        assert_eq!(decode_value_form_to_hex("(: \"hi\" String)"), None);
+        // A value shape the decoder doesn't model yet → None, so the grader treats it as coverage-not-yet
+        // (Todo), never a false Fail. A Bool value + a malformed form both decline.
         assert_eq!(decode_value_form_to_hex("(: 1 Bool)"), None);
         assert_eq!(decode_value_form_to_hex("not-a-value-form"), None);
         assert_eq!(decode_value_form_to_hex("(: 1)"), None);
