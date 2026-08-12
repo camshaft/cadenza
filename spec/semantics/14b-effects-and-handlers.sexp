@@ -8482,3 +8482,24 @@
             (export main)))
   (call   main (: 65 Int64)) (output (: 1 Int64))
   (call   main (: 200 Int64)) (output (: -1 Int64)))
+
+(case "PREFIX-order edges — the state string compares against crossed op-arg strings: equal, longer-prefix, and shorter-prefix faces"
+  (doc    "3-way LEXICOGRAPHIC String ordering (< / = / >) against a threaded String handler state — distinct
+           from the string-EQUALITY pins (sg3, one-shot lock): the `vs` arm answers `(if (< s probe) -1 (if
+           (= s probe) 0 1))`, comparing the state string `s` to each crossed op-arg probe. Covers the three
+           prefix-order edges: EQUAL (`s`='mm' vs 'mm' → 0), STATE-LONGER-prefix (`s`='mm' vs 'm', 'm' is a
+           proper prefix so 'mm' > 'm' → 1), and PROBE-LONGER/lex-greater (`s`='mm' vs 'mzz', 'mm' < 'mzz' →
+           -1). Seed parity picks the state string 'mm' (even) or 'mz' (odd). `main(2)`: s='mm'; vs('mm')=0,
+           vs('m')=1, vs('mzz')=-1; `(+ (* 100 0) (+ (* 10 1) -1))` = 9. `main(3)`: s='mz'; vs('mm')=1 (mz>mm),
+           vs('m')=1, vs('mzz')=-1 (mz<mzz); `(+ 100 (+ 10 -1))` = 109. Uniform on all 3 backends, opt-sweep
+           0-divergence. Breaker rope-lex-order probe lx2 (2026-08-11).")
+  (input  (do
+            (effect S (op vs (-> String Int64)))
+            (def (main (: n Int64))
+              (handle S (if (= (% n 2) 0) "mm" "mz")
+                ((vs (probe) s (resume (if (< s probe) -1 (if (= s probe) 0 1)) s)))
+                (+ (* 100 (S.vs "mm"))
+                   (+ (* 10 (S.vs "m")) (S.vs "mzz")))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 9 Int64))
+  (call   main (: 3 Int64)) (output (: 109 Int64)))
