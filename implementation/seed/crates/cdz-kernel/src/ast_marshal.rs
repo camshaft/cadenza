@@ -1336,6 +1336,157 @@ mod tests {
         assert_eq!(field_name(2), "size", "fields sorted: size second");
     }
 
+    // Pin the CANONICAL val_to_ast value-form of a §GAP-1 M1 `ModelRequest` — the SHARED CONTRACT the b1
+    // model-effect co-land hangs on. Under b1 the reducer builds a `ModelRequest` as an ordinary structural
+    // record (its `ContentBlock` sum declared nominally per v-compiler-ml's Q1 answer, the record fields
+    // structural), the A1 boundary marshals it through THIS path, and `decode_model_request` (v-compiler-ml,
+    // re-pointed from the bespoke `(model-request …)` head to the value-form) reads exactly these bytes. So
+    // this test IS the b1 wire: the field/ctor NAMES are the contract vocabulary, and the SHAPE invariants
+    // pinned here (sum-ctor head is a NAME leaf — value-decode reads a case by name-head, a Str head decodes
+    // to NULL; record fields SORTED by name — v-compiler-ml's decode is by-name/order-independent, so the
+    // reducer's field-declaration order never matters; nested record-in-sum-arm-in-list fully supported per
+    // the Q2 answer) are what any drift is caught against. `max-tokens` is kebab (Cadenza-idiomatic; decode
+    // maps it to the struct's `max_tokens`); every other field is single-word, identical either convention.
+    #[test]
+    fn val_to_ast_pins_the_b1_model_request_value_form() {
+        // Nav helpers over the decoded arena (nested `fn`s — they capture nothing, take `&Arenas`).
+        fn kids(a: &Arenas, id: StructId) -> Vec<StructId> {
+            match a.get(id) {
+                Struct::List(k) => k.to_vec(),
+                Struct::Atom(_) => panic!("expected a list at {id:?}"),
+            }
+        }
+        fn field_names(a: &Arenas, record_kids: &[StructId]) -> Vec<String> {
+            // record_kids[0] is the `record` head; each remaining child is a `(= name value)` 3-list.
+            record_kids[1..]
+                .iter()
+                .map(|id| {
+                    let f = kids(a, *id);
+                    assert_eq!(f.len(), 3, "field is a (= name value) 3-list");
+                    assert_eq!(a.as_name(f[0]), Some("="), "field head is the `=` name");
+                    a.as_name(f[1]).expect("field name is a name").to_string()
+                })
+                .collect()
+        }
+        // record_kids[i] is `(= <name> <value>)`; return the value node.
+        fn field_val(a: &Arenas, record_kids: &[StructId], i: usize) -> StructId {
+            kids(a, record_kids[i])[2]
+        }
+
+        // A representative M1: one user turn carrying a Text block AND a ToolCall block, one tool offered,
+        // a max-tokens cap — exercises every sub-shape (record-in-list, sum-in-list, record-in-sum-arm, bytes).
+        let text_block = Val::Variant("Text".into(), Some(Box::new(Val::String("hi".into()))));
+        let tool_call_block = Val::Variant(
+            "ToolCall".into(),
+            Some(Box::new(Val::Record(vec![
+                ("id".into(), Val::String("t1".into())),
+                ("name".into(), Val::String("shell".into())),
+                (
+                    "input".into(),
+                    Val::List(vec![Val::U8(b'{'), Val::U8(b'}')]),
+                ),
+            ]))),
+        );
+        let message = Val::Record(vec![
+            ("role".into(), Val::String("user".into())),
+            (
+                "content".into(),
+                Val::List(vec![text_block, tool_call_block]),
+            ),
+        ]);
+        let tool = Val::Record(vec![
+            ("name".into(), Val::String("shell".into())),
+            (
+                "schema".into(),
+                Val::List(vec![Val::U8(b'{'), Val::U8(b'}')]),
+            ),
+        ]);
+        let model_request = Val::Record(vec![
+            ("model".into(), Val::String("claude".into())),
+            ("messages".into(), Val::List(vec![message])),
+            ("tools".into(), Val::List(vec![tool])),
+            (
+                "max-tokens".into(),
+                Val::Option(Some(Box::new(Val::U64(1024)))),
+            ),
+        ]);
+
+        let a = decode(&val_to_ast(&model_request).expect("val_to_ast"));
+
+        // Root: the ModelRequest record — NAME head `record`, fields SORTED by name.
+        let mr = kids(&a, a.root);
+        assert_eq!(a.as_name(mr[0]), Some("record"), "ModelRequest is a record");
+        assert!(
+            matches!(leaf_at(&a, mr[0]), Leaf::Name(_)),
+            "record head is a NAME leaf, not a Str"
+        );
+        assert_eq!(
+            field_names(&a, &mr),
+            vec!["max-tokens", "messages", "model", "tools"],
+            "M1 fields sorted by name (contract vocabulary)"
+        );
+
+        // model → the Str leaf "claude".
+        assert_eq!(
+            leaf_at(&a, field_val(&a, &mr, 3)),
+            &Leaf::Str("claude".into()),
+            "model field is the Str \"claude\""
+        );
+        // max-tokens → (Some <int>): a 2-list NAME-head ctor.
+        let max_tokens = kids(&a, field_val(&a, &mr, 1));
+        assert_eq!(
+            a.as_name(max_tokens[0]),
+            Some("Some"),
+            "max-tokens is Some(..)"
+        );
+
+        // messages → (list <msg>); the message is a record with fields sorted content, role.
+        let messages = kids(&a, field_val(&a, &mr, 2));
+        assert_eq!(
+            a.as_name(messages[0]),
+            Some("list"),
+            "messages is a (list ..)"
+        );
+        let msg = kids(&a, messages[1]);
+        assert_eq!(a.as_name(msg[0]), Some("record"), "a message is a record");
+        assert_eq!(
+            field_names(&a, &msg),
+            vec!["content", "role"],
+            "ChatMessage fields sorted"
+        );
+
+        // content → (list <block>…): block[0] = (Text "hi"), block[1] = (ToolCall (record id,input,name)).
+        let content = kids(&a, field_val(&a, &msg, 1));
+        assert_eq!(
+            a.as_name(content[0]),
+            Some("list"),
+            "content is a (list ..)"
+        );
+        let text = kids(&a, content[1]);
+        assert_eq!(a.as_name(text[0]), Some("Text"), "block 0 is the Text ctor");
+        assert!(
+            matches!(leaf_at(&a, text[0]), Leaf::Name(_)),
+            "ContentBlock ctor head is a NAME leaf (value-decode reads a case by name-head)"
+        );
+        assert_eq!(
+            leaf_at(&a, text[1]),
+            &Leaf::Str("hi".into()),
+            "Text payload is the Str \"hi\""
+        );
+        let tool_call = kids(&a, content[2]);
+        assert_eq!(
+            a.as_name(tool_call[0]),
+            Some("ToolCall"),
+            "block 1 is the ToolCall ctor"
+        );
+        let tc_rec = kids(&a, tool_call[1]);
+        assert_eq!(
+            field_names(&a, &tc_rec),
+            vec!["id", "input", "name"],
+            "ToolCall record fields sorted (input is a list<u8> → Bytes leaf)"
+        );
+    }
+
     // ast_to_val decodes UNTRUSTED arg bytes, so a record must EXACTLY match the WIT shape (github-liaison
     // #2078): an EXTRA field beyond the declared set, or a DUPLICATE field name, is rejected — not silently
     // accepted. Build the malformed record AST by hand (the LEGACY str-head ("record" (name val)…) 2-list
