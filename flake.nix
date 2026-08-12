@@ -1123,6 +1123,16 @@
           # authz + ComponentSessionFactory e2es RUN instead of skipping.
           export CEDAR_POLICY_COMPONENT="${cedarGuest}"
           export CDZ_REDUCER_COMPONENT="${reducerGuest}"
+          # §4c publish→consume-through-a-hosted-agent E2Es (host.rs a_published_compiler_pointer_resolves…
+          # + a_consumer_agent_resolves_and_runs…): feed a REAL runnable reducer component so they RUN the
+          # publish→resolve→load→RUN arc instead of skipping. Must be DEP-FREE: the consume arc loads via
+          # AsyncComponentReducer::from_component_bytes + HostedSession::genesis with an EMPTY executor and NO
+          # with_resolved_deps/with_component_store, so a component importing cadenza:runtime/heap (all the
+          # reducer-cadenza ones) would fail the no-deps-attached fold error. reducerGuest imports only the
+          # kv HOST import (denied-but-settled by the empty executor → open_effects()==0 holds), NO runtime/heap
+          # component dep — so it loads + folds a turn to quiescence, proving the artifact RUNS (v-ah-host ruled).
+          # Same value as CDZ_REDUCER_COMPONENT, distinct var.
+          export CDZ_LIVE_REDUCER_COMPONENT="${reducerGuest}"
           # signature-query part-1 E2E (#2711): reflect the lifted cadenza:syntax component; feed syntaxGuest
           # so the CDZ_SYNTAX_COMPONENT-gated reflect E2E RUNS (unset → skips).
           export CDZ_SYNTAX_COMPONENT="${syntaxGuest}"
