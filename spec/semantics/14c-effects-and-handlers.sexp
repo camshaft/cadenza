@@ -8117,3 +8117,54 @@
   (call   main (: 5 Int64)) (output (: 30030 Int64))
   (call   main (: 2 Int64)) (output (: -99100 Int64))
   (call   main (: 3 Int64)) (output (: -99970 Int64)))
+
+; ── Shadow-forward faces + compact of the grown rope (breaker batch 234) ──────
+; sf1/sf2 pin an inner SAME-effect shadow whose arm RE-PERFORMS the effect it
+; discharges (routing outward past itself) — in the resume-value and next-state
+; positions; bcp1 pins Bytes.compact of the effect-grown rope inside the arm
+; with a computed-index read of the flat rep and a re-thread.
+
+(case "sf1 an inner SAME-effect handler's arm re-performs the effect it discharges — the re-perform routes to the OUTER handler, both states advance independently"
+  (input  (do
+            (effect St (op get (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((get () s (resume s (+ s 1))))
+                (handle St 100
+                  ((get () t (resume (+ (St.get) t) (+ t 10))))
+                  (+ (St.get) (* 1000 (St.get))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 114103 Int64))
+  (call   main (: 0 Int64)) (output (: 111100 Int64)))
+
+(case "sf2 the inner arm's NEXT-STATE re-performs to the outer — the forward sits in the state-thread position, not the resume value"
+  (input  (do
+            (effect St (op get (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((get () s (resume s (+ s 1))))
+                (handle St 100
+                  ((get () t (resume t (+ t (St.get)))))
+                  (+ (St.get) (* 1000 (St.get))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 103100 Int64))
+  (call   main (: 0 Int64)) (output (: 100100 Int64)))
+
+(case "bcp1 Bytes.compact of the EFFECT-GROWN rope inside the arm — the compacted flat rep reads exactly at a computed index and re-threads"
+  (input  (do
+            (effect S (op add (-> Int64 Int64)) (op flat (-> Int64 Int64)))
+            (def (walk (: k Int64))
+              (if (< k 1) 0 (let ((_d (S.add k))) (walk (- k 1)))))
+            (def (main (: n Int64))
+              (handle S (Bytes.of (list))
+                ((add (v) s (resume 0 (Bytes.concat s (Bytes.of (list (UInt8.wrap (+ 60 v)))))))
+                 (flat (i) s
+                  (let ((c (Bytes.compact s)))
+                    (resume (+ (* 100 (Bytes.len c))
+                               (match (Bytes.at c i) ((Some v) v) ((None _u) -1)))
+                            c))))
+                (let ((_w (walk n)))
+                  (S.flat (- n 1)))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 461 Int64))
+  (call   main (: 1 Int64)) (output (: 161 Int64)))

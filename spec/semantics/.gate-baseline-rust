@@ -4710,6 +4710,7 @@ pass	bc2 monotonicity of THREE draws under a parity-dependent step — the and o
 pass	bc2 short-circuit OR over two draws — the true-first row skips the second draw
 pass	bc3 a nested and-of-or short-circuit tree over draws — each row exercises a distinct skip pattern
 pass	bc3 an op RETURNS Bool consumed by a two-flag if ladder — a mod-3-dependent step makes all four paths reachable
+pass	bcp1 Bytes.compact of the EFFECT-GROWN rope inside the arm — the compacted flat rep reads exactly at a computed index and re-threads
 pass	bd1 the arm CLASSIFIES its state into a tri-band SUM — the body matches Lo/Mid/Hi per dispatch as the thread climbs through the bands
 pass	bd2 the scoring CLOSURE captures a DRAW — the weight itself comes from the thread before the classified reads
 pass	bf1 a growing BYTES FRAME as handler state — each op appends a u8 record, the final op bin-decodes head + rest length
@@ -5982,6 +5983,8 @@ pass	set union is associative on generated inputs (the order merges are grouped 
 pass	set union is commutative on generated inputs (a grow-only-set CRDT merge converges)
 pass	set union is idempotent on generated inputs (re-delivering a set changes nothing)
 pass	sets reached via DIFFERENCE and INTERSECTION equal the directly-built set
+pass	sf1 an inner SAME-effect handler's arm re-performs the effect it discharges — the re-perform routes to the OUTER handler, both states advance independently
+pass	sf2 the inner arm's NEXT-STATE re-performs to the outer — the forward sits in the state-thread position, not the resume value
 pass	sg1 a string BUILT by a recursive walk of draws — one H/L character per dispatch, exact content compared
 pass	sg2 a stable PREFIX slice of a growing rope — String.slice (start,END) of the state per dispatch, prefix identical across growth
 pass	sg3 a ONE-SHOT string lock — the arm string-compares op arg vs state, consuming the key on the first match
