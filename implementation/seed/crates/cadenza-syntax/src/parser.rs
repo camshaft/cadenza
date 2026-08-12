@@ -1103,7 +1103,7 @@ impl<'a> Parser<'a> {
     /// as the next juxtaposed form by `program`/`module_expr`.
     fn at_declaration_keyword(&self) -> bool {
         self.at(Kind::Ident)
-            && matches!(
+            && (matches!(
                 keyword(self.cur_text()),
                 Some(
                     Keyword::Def
@@ -1114,6 +1114,12 @@ impl<'a> Parser<'a> {
                         | Keyword::Export
                 )
             )
+            // The CONTEXTUAL `world` declaration (not a reserved keyword) — recognized by the same
+            // unambiguous `world <name> =` shape `prefix` uses, so a `;`-sequence stops before a
+            // top-level `world` decl the way it stops before `def`/`effect`.
+            || (self.cur_text() == "world"
+                && self.nth_kind(1) == Kind::Ident
+                && self.nth_kind(2) == Kind::Eq))
     }
 
     /// Run a bracketed sub-expression parser with the match-arm `|`-terminates flag CLEARED, restoring
@@ -1367,6 +1373,18 @@ impl<'a> Parser<'a> {
                         == self.tokens.get(self.pos + 1).map(|t| t.span.start) =>
             {
                 self.embedded_syntax()
+            }
+            // CONTEXTUAL `world` declaration: `world Name = …`. `world` is NOT a reserved keyword (a
+            // bare `world` stays an ordinary name everywhere else), so recognize the declaration only by
+            // the unambiguous `world <name> =` shape — a bare `world` variable is never followed by
+            // `<ident> =`. This keeps the common word usable as an identifier while still spelling the
+            // inline WIT-world decl (operator's contextual + WIT-familiar surface ruling, 2026-08-11).
+            Kind::Ident
+                if self.cur_text() == "world"
+                    && self.nth_kind(1) == Kind::Ident
+                    && self.nth_kind(2) == Kind::Eq =>
+            {
+                self.world_expr()
             }
             Kind::Ident => match keyword(self.cur_text()) {
                 Some(Keyword::Let) => self.let_expr(),
@@ -2507,6 +2525,148 @@ impl<'a> Parser<'a> {
         };
         let span = start.merge(self.prev_span());
         self.list(vec![op_head, op_name, ty], span)
+    }
+
+    /// `world Name = | import Iface = | member : Sig … | export Iface = … `  ->
+    /// `(world Name (import Iface (member M Func)…) (export Iface …)…)` — the inline WIT-world
+    /// declaration (DESIGN inline-WIT-world, converged w/ v-agent-harness 2026-08-11). Lowers to the
+    /// SAME canonical node `cadenza-ast::Builder::world_schema_tree` builds, so a target world means one
+    /// tree whether it comes from this inline surface, an external binary-AST artifact, or v-cml's emit.
+    /// `world` is a CONTEXTUAL keyword (recognized only at a declaration head — a bare `world` elsewhere
+    /// stays an ordinary name), matching the operator's "keep it WIT-familiar" surface direction. The
+    /// body is `|`-led interfaces, each `import`/`export IfaceName = | member : Sig …` — reusing the
+    /// reserved `import`/`export` words as the direction sub-heads so the correspondence to the WIT world
+    /// it lowers to is self-evident. All structure heads are NAME atoms (head-kind-fixed, so the world's
+    /// content-hash is byte-stable — see `world_schema_tree`).
+    fn world_expr(&mut self) -> StructId {
+        let start = self.cur_span();
+        let docs = self.take_docs_here();
+        let head = self.name("world", start);
+        self.bump(); // `world`
+        let name = self.binder();
+        let mut items = vec![head, name];
+        items.extend(self.doc_nodes(docs));
+        self.expect(Kind::Eq, "`=`");
+        // `|`-led interfaces (tolerate an absent leading `|`, mirroring `effect_expr`).
+        if self.at(Kind::Pipe) {
+            self.bump();
+        }
+        loop {
+            items.push(self.world_interface());
+            if self.at(Kind::Pipe) {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        let span = start.merge(self.prev_span());
+        self.list(items, span)
+    }
+
+    /// One interface of a `world` body: `import|export IfaceName = | member : Sig …`  ->
+    /// `(import|export IfaceName (member M Func)…)`. The direction word (`import`/`export`) is the NAME
+    /// sub-head — structural, since the compiler emits a different value-bridge per direction. Members
+    /// are `|`-led, each `member : Sig` (see [`Self::world_member`]).
+    fn world_interface(&mut self) -> StructId {
+        let start = self.cur_span();
+        // Direction: reuse the reserved `import`/`export` keywords contextually. Anything else is an error.
+        let dir = match keyword(self.cur_text()) {
+            Some(Keyword::Import) => "import",
+            Some(Keyword::Export) => "export",
+            _ => {
+                self.error("expected `import` or `export` to head a world interface");
+                "import"
+            }
+        };
+        let dir_head = self.name(dir, start);
+        self.bump(); // `import`/`export`
+        let iface_name = self.binder();
+        let mut items = vec![dir_head, iface_name];
+        self.expect(Kind::Eq, "`=`");
+        if self.at(Kind::Pipe) {
+            self.bump();
+        }
+        loop {
+            items.push(self.world_member());
+            // A following `|` continues the member list UNLESS it heads a new interface (`| import …` /
+            // `| export …`) — that `|` belongs to the enclosing world loop, so stop and leave it.
+            if self.at(Kind::Pipe) && !self.next_pipe_heads_interface() {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        let span = start.merge(self.prev_span());
+        self.list(items, span)
+    }
+
+    /// True when the CURRENT `|` is followed by an interface-direction keyword (`import`/`export`) — i.e.
+    /// the `|` opens a new world interface, not another member of the current one. Used by
+    /// [`Self::world_interface`] to hand a `| import …`/`| export …` back to the world-level loop.
+    fn next_pipe_heads_interface(&self) -> bool {
+        debug_assert!(self.at(Kind::Pipe));
+        self.nth_kind(1) == Kind::Ident
+            && self
+                .tokens
+                .get(self.pos + 1)
+                .map(|&t| {
+                    matches!(
+                        keyword(self.text(t)),
+                        Some(Keyword::Import | Keyword::Export)
+                    )
+                })
+                .unwrap_or(false)
+    }
+
+    /// One member of a world interface: `member_name : ( p1 : T1 , … ) -> R`  ->
+    /// `(member member_name (func (param p1 T1) … (result R)))`. A WIT func is named params plus a
+    /// result; the `func` wrapper groups them (a lone type descriptor encodes one type). The param list
+    /// is parenthesized and comma-separated (each `name : type`); the result follows `->`. A nullary
+    /// member is `member_name : () -> R` (empty parens) or `member_name : -> R`. The result is ALWAYS
+    /// present (no omitted slot) — a no-return member writes `-> Unit`.
+    fn world_member(&mut self) -> StructId {
+        let start = self.cur_span();
+        let member_head = self.name("member", start);
+        let member_name = self.binder();
+        self.expect(Kind::Colon, "`:`");
+        // Params: an optional `( name : T , … )` list. An elided list (a leading `->`) is a nullary func.
+        let mut func_items = vec![self.name("func", self.cur_span())];
+        if self.at(Kind::LParen) {
+            self.bump(); // `(`
+            if !self.at(Kind::RParen) {
+                loop {
+                    let before = self.pos;
+                    let p_start = self.cur_span();
+                    let param_head = self.name("param", p_start);
+                    let p_name = self.binder();
+                    self.expect(Kind::Colon, "`:`");
+                    let p_ty = self.type_ref();
+                    let p_span = p_start.merge(self.prev_span());
+                    func_items.push(self.list(vec![param_head, p_name, p_ty], p_span));
+                    if !self.sep_continue(Kind::RParen) {
+                        break;
+                    }
+                    if self.pos == before {
+                        self.bump(); // never-loop guard on a malformed param
+                    }
+                }
+            }
+            self.expect(Kind::RParen, "`)`");
+        }
+        // Result: `-> R` (required; the arrow separates params from the result type).
+        self.expect(Kind::Arrow, "`->`");
+        let result_start = self.cur_span();
+        let result_ty = self.type_ref();
+        let result_head = self.name("result", result_start);
+        let result = self.list(
+            vec![result_head, result_ty],
+            result_start.merge(self.prev_span()),
+        );
+        func_items.push(result);
+        let func_span = start.merge(self.prev_span());
+        let func = self.list(func_items, func_span);
+        let span = start.merge(self.prev_span());
+        self.list(vec![member_head, member_name, func], span)
     }
 
     /// `handle E(seed) with | op(p…, state) => body … in body`  ->
@@ -4586,6 +4746,99 @@ mod tests {
             1,
             "nullary-elided `-> R` is a one-element arrow"
         );
+    }
+
+    #[test]
+    fn world_decl_builds_the_canonical_wit_world_node() {
+        // `world Reducer = | export fold = | apply : (event : Bytes) -> Bytes | import kv = | get :
+        // (key : String) -> String` -> the canonical world node the S1 builders produce: a `world` head,
+        // the name, then import/export interface sub-nodes, each `(member M (func (param P T) (result R)))`.
+        let a = parse_ok(
+            "world Reducer = \
+             | export fold = | apply : (event : Bytes) -> Bytes \
+             | import kv = | get : (key : String) -> String",
+        );
+        let world = a.as_form(a.root, "world").unwrap();
+        assert_eq!(a.as_name(world[0]), Some("Reducer"));
+        // export fold { apply : (event: Bytes) -> Bytes }
+        let fold = a.as_form(world[1], "export").unwrap();
+        assert_eq!(a.as_name(fold[0]), Some("fold"));
+        let apply = a.as_form(fold[1], "member").unwrap();
+        assert_eq!(a.as_name(apply[0]), Some("apply"));
+        let func = a.as_form(apply[1], "func").unwrap();
+        assert_eq!(
+            func.len(),
+            2,
+            "one param sub-node + the always-present result"
+        );
+        let param = a.as_form(func[0], "param").unwrap();
+        assert_eq!(a.as_name(param[0]), Some("event"));
+        assert!(
+            a.as_form(func[1], "result").is_some(),
+            "result sub-node present"
+        );
+        // import kv { get : (key: String) -> String } — direction is the structural sub-head.
+        let kv = a.as_form(world[2], "import").unwrap();
+        assert_eq!(a.as_name(kv[0]), Some("kv"));
+        assert!(a.as_form(kv[1], "member").is_some(), "kv has a member");
+    }
+
+    #[test]
+    fn inline_world_surface_encodes_identically_to_the_world_schema_tree_builder() {
+        // THE cross-source identity guarantee: the inline `world …` surface must lower to the EXACT SAME
+        // canonical tree `cadenza-ast::Builder::world_schema_tree` builds (the node an external binary-AST
+        // artifact and v-cml's emit also target), so a target world means one content-hash regardless of
+        // source. Build `world W = | export i = | m : (p : T) -> R` both ways and assert byte-identical
+        // `codec::encode`. If the parser ever drifts from the builder shape (a head-kind flip, a reordered
+        // child), this fails — the same drift-guard `world_schema_tree`'s own byte-stable test gives the
+        // builder, now extended across the SURFACE boundary.
+        // A bare type name `T` lowers through `type_ref` to a plain `Name` atom, so use name atoms as the
+        // builder's type descriptors to match the surface exactly.
+        let parsed = parse_ok("world W = | export i = | m : (p : T) -> R");
+
+        let mut b = crate::Builder::new();
+        let pty = b.name("T");
+        let rty = b.name("R");
+        let sig = b.wit_func_sig(&[("p", pty)], rty);
+        let iface = b.wit_interface(crate::ast::WitDir::Export, "i", &[("m", sig)]);
+        let root = b.world_schema_tree("W", &[iface]);
+        let built = b.finish(root);
+
+        assert_eq!(
+            crate::codec::encode(&parsed),
+            crate::codec::encode(&built),
+            "inline world surface must encode identically to world_schema_tree — cross-source identity"
+        );
+    }
+
+    #[test]
+    fn world_nullary_member_elides_the_param_list() {
+        // A nullary member `now : () -> Timestamp` (or `now : -> Timestamp`) yields a func with zero
+        // params but an always-present result — matching `wit_func_sig(&[], …)`.
+        let a = parse_ok("world Clock = | export c = | now : () -> Timestamp");
+        let iface = a
+            .as_form(a.as_form(a.root, "world").unwrap()[1], "export")
+            .unwrap();
+        let func = a
+            .as_form(a.as_form(iface[1], "member").unwrap()[1], "func")
+            .unwrap();
+        assert_eq!(func.len(), 1, "zero params, just the result sub-node");
+        assert!(a.as_form(func[0], "result").is_some());
+    }
+
+    #[test]
+    fn bare_world_is_still_an_ordinary_name_not_a_world_decl() {
+        // `world` is CONTEXTUAL — only `world <name> =` heads a decl. A bare `world` used as a variable
+        // (a let binding, a reference) MUST stay an ordinary name so the common word is not burned.
+        let a = parse_ok("let world = 5 in world + 1");
+        // The body reads `world` as a plain name, not a `(world …)` decl — no `world`-headed form at root.
+        assert!(
+            a.as_form(a.root, "world").is_none(),
+            "a bare `world` must not parse as a world declaration"
+        );
+        // And `world` alone as an expression is just the name.
+        let b = parse_ok("world");
+        assert_eq!(b.as_name(b.root), Some("world"));
     }
 
     #[test]
