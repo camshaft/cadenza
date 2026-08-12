@@ -8805,3 +8805,54 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 112062 Int64))
   (call   main (: 0 Int64)) (output (: 112002 Int64)))
+
+; --- breaker batch 244: tuple-valued Map stats, narrow UInt8 wrapping state, signed Int8 sign-extension state ---
+(case "mts1 a Map whose VALUES are TUPLES — per-key (count,sum) stats update through tuple rebuild inside the arm, the answer packs the fresh pair"
+  (input  (do
+            (effect S (op obs (-> Int64 Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S (: Map.empty (Map Int64 (Tuple Int64 Int64)))
+                ((obs (k v) m
+                  (let ((pair (match (Map.lookup m k)
+                                ((Some p) (match p ((tuple c s) (tuple (+ c 1) (+ s v)))))
+                                ((None u) (tuple 1 v)))))
+                    (match pair
+                      ((tuple c2 s2)
+                        (resume (+ (* 100 c2) s2) (Map.insert m k pair)))))))
+                (let ((a (S.obs n 4)))
+                  (let ((b (S.obs n n)))
+                    (let ((c (S.obs (+ n 1) 9)))
+                      (+ a (+ (* 1000 b) (* 1000000 c))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 109207104 Int64))
+  (call   main (: 7 Int64)) (output (: 109211104 Int64)))
+
+(case "uwr1 a NARROW UInt8 handler state — wrapping-add accumulates modulo 256 through the thread, each dispatch answers the widened running value"
+  (input  (do
+            (effect S (op add (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S (UInt8.wrap n)
+                ((add (v) s
+                  (let ((s2 (UInt8.wrapping-add s (UInt8.wrap v))))
+                    (resume (Int64.of s2) s2))))
+                (let ((a (S.add 200)))
+                  (let ((b (S.add 100)))
+                    (+ (* 1000 a) b)))))
+            (export main)))
+  (call   main (: 100 Int64)) (output (: 44144 Int64))
+  (call   main (: 0 Int64)) (output (: 200044 Int64)))
+
+(case "iwr1 a SIGNED Int8 handler state — wrapping-add crosses the sign boundary through the thread, the widened answers expose the sign-extension"
+  (input  (do
+            (effect S (op add (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S (Int8.wrap n)
+                ((add (v) s
+                  (let ((s2 (Int8.wrapping-add s (Int8.wrap v))))
+                    (resume (Int64.of s2) s2))))
+                (let ((a (S.add 100)))
+                  (let ((b (S.add 100)))
+                    (+ (* 1000 a) b)))))
+            (export main)))
+  (call   main (: 100 Int64)) (output (: -55956 Int64))
+  (call   main (: -28 Int64)) (output (: 71916 Int64)))
