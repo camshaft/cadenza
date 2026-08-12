@@ -4966,6 +4966,7 @@ pass	decoding well-formed UTF-8 bytes yields the string
 pass	deeply nested pattern matching
 pass	demoting a Float64 to Float32 rounds to the nearest binary32
 pass	dg1 a DIGIT-extractor arm — each dispatch peels the low digit and floors the state by ten, three peels reverse the tail
+pass	dgn1 digit-peel of a NEGATIVE state — truncated division and dividend-sign remainder agree through the thread, three negative digits
 pass	dh1 value-eq on two ARM-BUILT lists inside a dispatch — the borrowed-handle reclaim after = must not double-drop
 pass	difference DISTRIBUTES over union but is NOT associative - both facts witnessed live
 pass	difference cardinality with a runtime-element subtrahend
@@ -5637,6 +5638,7 @@ pass	pa1 a SAME-effect perform as another op's ARGUMENT — the arg dispatch adv
 pass	pa1 two SIBLING nested handles as the two arguments of one 2-ary op — each region draws the outer thread in arg order
 pass	pa2 TWO same-effect draws as the TWO arguments of one op — left-to-right arg order, the arm reads the post-args state
 pass	pa3 THREE-deep nested same-effect arg-feed — scale(scale(next)) with a state-advancing scale arm
+pass	pal1 PARITY-ALTERNATING two-effect draws — one recursive driver picks which effect to draw per hop, both threads advance interleaved
 pass	parsing a length-framed message and rebuilding it yields the original bytes
 pass	partial application captures a let-bound value in the residual lambda
 pass	partial application captures a runtime parameter in the residual lambda
@@ -5824,6 +5826,7 @@ pass	resuming with a value of the wrong type for the operation's result is a typ
 pass	resuming with a wrong-type value for a compound result type is a type error
 pass	rg1 the arm ROTATES the tuple state (a b c)->(b c a) per dispatch and returns the evicted head — four weighted reads wrap the ring
 pass	rg2 the rotation DIRECTION flips on the evicted head's parity — even rotates left, odd rotates right, negative-odd exercises truncated mod
+pass	rle1 RUN-LENGTH tracking — the 3-tuple state carries (last,run,best); the n=5 seed extends one run to five, n=7 breaks it at two
 pass	rn1 a RUNNING-AVERAGE state (sum,count) — three feeds then a truncating divide read, negative total exercises toward-zero
 pass	round-trip byte-rope consumer alongside a plain export — the consumer
 pass	round-trip byte-rope consumer alongside a plain export — the plain

@@ -8286,3 +8286,54 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 3000 Int64))
   (call   main (: 7 Int64)) (output (: 3007 Int64)))
+
+; --- breaker batch 237: run-length 3-tuple state, negative digit-peel (truncated div/rem), parity-alternating two-effect draws ---
+(case "rle1 RUN-LENGTH tracking — the 3-tuple state carries (last,run,best); the n=5 seed extends one run to five, n=7 breaks it at two"
+  (input  (do
+            (effect S (op feed (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S (tuple 0 0 0)
+                ((feed (v) st
+                  (match st
+                    ((tuple last run best)
+                      (let ((nrun (if (= v last) (+ run 1) 1)))
+                        (resume nrun (tuple v nrun (if (> nrun best) nrun best))))))))
+                (let ((_a (S.feed 5)))
+                  (let ((_b (S.feed 5)))
+                    (let ((_c (S.feed n)))
+                      (let ((_d (S.feed n)))
+                        (S.feed n)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 5 Int64))
+  (call   main (: 7 Int64)) (output (: 3 Int64)))
+
+(case "dgn1 digit-peel of a NEGATIVE state — truncated division and dividend-sign remainder agree through the thread, three negative digits"
+  (input  (do
+            (effect S (op digit (-> Int64)))
+            (def (main (: n Int64))
+              (handle S n
+                ((digit () s (resume (% s 10) (/ s 10))))
+                (let ((d1 (S.digit)))
+                  (let ((d2 (S.digit)))
+                    (let ((d3 (S.digit)))
+                      (+ (* 100 d1) (+ (* 10 d2) d3)))))))
+            (export main)))
+  (call   main (: -251 Int64)) (output (: -152 Int64))
+  (call   main (: -8 Int64)) (output (: -800 Int64)))
+
+(case "pal1 PARITY-ALTERNATING two-effect draws — one recursive driver picks which effect to draw per hop, both threads advance interleaved"
+  (input  (do
+            (effect A (op get (-> Int64)))
+            (effect B (op get (-> Int64)))
+            (def (walk (: k Int64) (: acc Int64))
+              (if (< k 1) acc
+                (walk (- k 1) (+ (* 10 acc) (if (= (% k 2) 0) (A.get) (B.get))))))
+            (def (main (: n Int64))
+              (handle A n
+                ((get () s (resume s (+ s 1))))
+                (handle B 50
+                  ((get () t (resume t (+ t 2))))
+                  (walk 4 0))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 6072 Int64))
+  (call   main (: 8 Int64)) (output (: 13142 Int64)))
