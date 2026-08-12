@@ -4237,6 +4237,24 @@ impl Db {
             .collect()
     }
 
+    /// The top-level in-source `(world …)` TARGET-WORLD declaration, if the program declares one — the
+    /// paren-form twin of an external KIND_WIT_WORLD artifact. Its parsed subtree is byte-identical to the
+    /// artifact form: v-syntax's inline `world …` surface lowers through the SAME shared
+    /// `world_schema_tree`/`wit_type_*` builders the artifact and rcdzc's own emit target (the landed
+    /// cross-source identity gate), so `compile` codec-encodes this subtree VERBATIM into `db.wit_world`
+    /// when no artifact is supplied (the artifact — a deliberate build input retargeting the world —
+    /// OVERRIDES the in-source decl, mirroring effect-bind request-overrides-source). `world` is
+    /// recognized-but-registers-nothing at the top level (`TOP_LEVEL_FORMS`, no `scan_top_level` branch —
+    /// the `module-doc` precedent), so it never resolves as a value. Returns ALL such forms so the caller
+    /// can DECLINE on more than one — a module targets AT MOST ONE world, so two `(world …)` decls is a
+    /// structural error the compiler rejects rather than silently picking one (decline-don't-miscompile).
+    pub fn top_world_forms(&self) -> Vec<StructId> {
+        top_items(&self.ast)
+            .into_iter()
+            .filter(|&item| self.ast.as_form(item, "world").is_some())
+            .collect()
+    }
+
     /// Malformed elements of top-level `(export …)` clauses. An export clause names one or more
     /// definitions — `(export a)` / `(export a b …)` (the multi-name surface) — so EVERY tail element must
     /// be a bare NAME. A NON-name element — `(export (g x))`, `(export 5)`, `(export a 5)` — and an EMPTY
@@ -6222,7 +6240,21 @@ fn top_items(ast: &Arenas) -> Vec<StructId> {
 /// comment. It DECLARES nothing (`scan_top_level` has no branch for it — it is simply skipped), so it
 /// produces no index entry; it is listed here ONLY so `unknown_top_forms` recognizes it as legitimate
 /// and does not reject it as an unmodeled declaration. It is inert at every later stage (a no-op form).
-const TOP_LEVEL_FORMS: &[&str] = &["def", "export", "type", "effect", "bind", "module-doc"];
+///
+/// `world` is an in-source `(world …)` TARGET-WORLD declaration — the paren-form twin of an external
+/// KIND_WIT_WORLD artifact. It follows the SAME recognize-register-nothing pattern as `module-doc`
+/// (`scan_top_level` has no branch, so it registers no def/type/effect and never resolves as a value),
+/// but it is NOT inert: `compile` reads it via `top_world_form` and codec-encodes its subtree into
+/// `db.wit_world` (when no artifact overrides), so it drives emit-to-match without being a runtime decl.
+const TOP_LEVEL_FORMS: &[&str] = &[
+    "def",
+    "export",
+    "type",
+    "effect",
+    "bind",
+    "module-doc",
+    "world",
+];
 
 /// The declaration/directive keywords a top-level `(head …)` form may legitimately lead with — the
 /// closed candidate pool for a "did you mean?" when an unknown top-level head is a plausible TYPO of one
@@ -6231,7 +6263,7 @@ const TOP_LEVEL_FORMS: &[&str] = &["def", "export", "type", "effect", "bind", "m
 /// mistyping any of these writes a top-level form, and pointing at the intended keyword is the fix. Kept
 /// in one place so the suggestion pool cannot drift into naming a keyword the grammar would then reject.
 pub const TOP_LEVEL_KEYWORDS: &[&str] = &[
-    "def", "export", "type", "effect", "bind", "module", "pragma",
+    "def", "export", "type", "effect", "bind", "module", "pragma", "world",
 ];
 
 /// Substitute a generic newtype's TEMPLATE `Ty` at a concrete instantiation: replace each `Ty::Var(i)`

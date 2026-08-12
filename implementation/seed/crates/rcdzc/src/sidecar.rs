@@ -1040,7 +1040,7 @@ fn effect_op_types_node(db: &mut Db, name: &str) -> Option<StructId> {
     Some(db.push_list(children))
 }
 
-fn extract_subtree(src: &crate::ast::Arenas, root: StructId) -> crate::ast::Arenas {
+pub(crate) fn extract_subtree(src: &crate::ast::Arenas, root: StructId) -> crate::ast::Arenas {
     fn copy(src: &crate::ast::Arenas, id: StructId, b: &mut crate::ast::Builder) -> StructId {
         match src.get(id) {
             Struct::Atom(lid) => {

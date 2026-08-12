@@ -3353,6 +3353,141 @@ fn a_pure_reducer_apply_emits_a_valid_bytes_roundtrip_provider_component() {
     );
 }
 
+/// §3c full-A FOLLOW-ON — the top-level `(world …)` DECLARATION compile arm: a target world declared
+/// IN SOURCE (the inline-world surface's lowered node, a top-level module item) must drive the SAME
+/// bytes-provider emit as the external KIND_WIT_WORLD artifact — the cross-source identity guarantee (a
+/// target world means one emit whether it comes from an in-source decl, an external binary-AST artifact,
+/// or v-cml's own emit; v-syntax + v-agent-harness rulings 2026-08-12). Before this arm, a top-level
+/// `(world …)` form DECLINED with "unbound name `world` at the top level" (the scan recognized only
+/// def/type/effect/module/import). Now `world` is recognized-and-excluded (`TOP_LEVEL_FORMS`, the
+/// `module-doc` recognize-register-nothing precedent) and `compile` codec-encodes its subtree into
+/// `db.wit_world` when no artifact overrides. This gate compiles ONE reducer body two ways — via the
+/// artifact and via an in-source decl — and asserts BYTE-IDENTICAL wasm: the emit reads the DECODED
+/// `TargetWorld` (`parse_target_world`), so both paths that decode to the same world emit the same
+/// component. The compound type ctors use QUOTED-string heads (`("list" (u8))`) — the head-kind-fixed
+/// descriptor form `parse_wit_type` reads (a Str head is a compound, a Name head is a primitive).
+#[test]
+fn an_in_source_world_decl_drives_the_bytes_provider_emit_identically_to_the_artifact() {
+    use crate::testkit::parse;
+    // The reducer body is IDENTICAL in both compiles; the sole difference is where the target world comes
+    // from. A pure fold reading the Event's fields into a one-element effect-list — the first full-A shape.
+    let reducer_body = "(def (apply (: e (Record (ct String) (pl Bytes)))) \
+                          (list (record (op (. e ct)) (arg (. e pl))))) \
+                        (export apply)";
+
+    // (A) ARTIFACT PATH (the §3b ingest): the reducer source alone + the world as an external artifact.
+    let artifact_src = format!("(module m {reducer_body})");
+    let via_artifact = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(&artifact_src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:reducer/api"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                reducer_apply_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+
+    // (B) IN-SOURCE PATH: the SAME reducer plus a top-level `(world …)` decl, NO artifact supplied. The
+    // world declares the same `fold.apply : (input: list<u8>) -> list<u8>` boundary as the artifact.
+    let world_decl = "(world reducer (export fold (member apply \
+                       (func (param input (\"list\" (u8))) (result (\"list\" (u8)))))))";
+    let inline_src = format!("(module m {world_decl} {reducer_body})");
+    let via_inline = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(&inline_src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:reducer/api"),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+
+    // The in-source path must NOT decline (the pre-arm behavior was an "unbound name `world`" reject) —
+    // the top-level `world` decl is recognized-and-excluded, then read into `db.wit_world`.
+    assert!(
+        !via_inline.has_error(),
+        "an in-source (world …) decl must compile with no unbound-name decline: {:?}",
+        via_inline
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let inline_wasm = via_inline
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("the in-source-world reducer emits a bytes-roundtrip provider component");
+    let artifact_wasm = via_artifact
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("the artifact-world reducer emits a bytes-roundtrip provider component");
+    // THE cross-source identity: the same reducer + the same world (declared vs supplied) emits the SAME
+    // component — the emit is a function of the DECODED world, not of where the world bytes originated.
+    assert_eq!(
+        inline_wasm, artifact_wasm,
+        "a target world drives the SAME emit whether declared in-source or supplied as an artifact"
+    );
+    // …and the in-source-world component is well-formed (the wasmparser structural guard).
+    let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+    v.validate_all(inline_wasm)
+        .expect("the in-source-world provider component validates");
+}
+
+/// DECLINE-DON'T-MISCOMPILE for the in-source world arm: a module with TWO top-level `(world …)`
+/// declarations targets no single world, so `compile` DECLINES (naming the count) rather than silently
+/// encoding the first and dropping the second — a reducer targets at most one world. Pins the guard in
+/// `compile` (`db.top_world_forms().len() > 1`).
+#[test]
+fn a_module_with_two_top_level_world_decls_declines_no_miscompile() {
+    use crate::testkit::parse;
+    let two_worlds = "(module m \
+                        (world reducer (export fold (member apply \
+                          (func (param input (\"list\" (u8))) (result (\"list\" (u8))))))) \
+                        (world other (export fold (member apply \
+                          (func (param input (\"list\" (u8))) (result (\"list\" (u8))))))) \
+                        (def (apply (: e (Record (ct String) (pl Bytes)))) \
+                          (list (record (op (. e ct)) (arg (. e pl))))) \
+                        (export apply))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(two_worlds)),
+            ),
+            crate::cli::component_name_artifact("cadenza:reducer/api"),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    // It must DECLINE (an error diagnostic, no wasm artifact) — not silently compile the first world.
+    assert!(
+        out.has_error(),
+        "two top-level (world …) decls must decline, not silently pick the first"
+    );
+    assert!(
+        out.diagnostics
+            .iter()
+            .any(|d| d.message.contains("at most one world")),
+        "the decline names the at-most-one-world rule: {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        out.artifact(crate::backend::Target::Wasm.artifact_kind())
+            .is_none(),
+        "a declined multi-world module emits no wasm artifact"
+    );
+}
+
 /// §3c full-A DECLINE-DON'T-MISCOMPILE: a member named as a `list<u8>` bytes boundary whose PARAM is a
 /// bare scalar (not a value-form compound the runtime value-decode walker can reconstruct) must DECLINE
 /// cleanly — no wasm artifact, a diagnostic naming the reason — rather than mis-emit a value-decode of a

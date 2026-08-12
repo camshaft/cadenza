@@ -162,6 +162,35 @@ fn compile_with_opt_inner(
         .iter()
         .find(|a| a.kind == link::KIND_WIT_WORLD)
         .map(|a| a.bytes.clone());
+    // An in-source top-level `(world …)` DECLARATION targets the world when no external artifact was
+    // supplied. The external KIND_WIT_WORLD artifact (a deliberate build input retargeting the program's
+    // world without editing source) OVERRIDES the in-source decl — mirroring the effect-bind
+    // request-overrides-source precedent — so this only fires when the artifact left `wit_world` unset. The
+    // parsed `world` subtree is byte-identical to the artifact form (v-syntax's inline lowering routes
+    // through the SAME shared `world_schema_tree`/`wit_type_*` builders the artifact and rcdzc's emit
+    // target, per the landed cross-source identity gate), so we codec-encode the subtree VERBATIM — never
+    // re-derive the world node a second way, which is where cross-source drift would re-enter.
+    if db.wit_world.is_none() {
+        let world_forms = db.top_world_forms();
+        // A module targets AT MOST ONE world. Two top-level `(world …)` decls is a structural error —
+        // decline (naming the count) rather than silently encoding the first and dropping the rest
+        // (decline-don't-miscompile). No single AST node anchors "the module has two worlds", so a coded
+        // decline, mirroring the `--component-name` validation just below.
+        if world_forms.len() > 1 {
+            return fail(vec![Reject::coded(
+                crate::diag::Code::Malformed,
+                format!(
+                    "a module declares {} top-level `(world ...)` targets; a reducer targets at most one world — remove the extra declaration(s)",
+                    world_forms.len()
+                ),
+            )]);
+        }
+        if let Some(&world_item) = world_forms.first() {
+            db.wit_world = Some(crate::codec::encode(&crate::sidecar::extract_subtree(
+                &db.ast, world_item,
+            )));
+        }
+    }
     // The `--component-name` a PROVIDER publishes its interface under is a component-boundary name,
     // emitted verbatim as the exported interface-instance's extern name. A non-conforming value would
     // produce a component `wasmtime` rejects at LOAD with no diagnostic (the provider twin of the
