@@ -46,6 +46,46 @@ impl Hash {
         s
     }
 
+    /// URL-safe base64 (RFC 4648 §5 alphabet, NO padding) — the ENCODE-ONLY display form for the two
+    /// permitted hash-to-string sites (operator directive 2026-08-12): (1) tracing/log output, (2)
+    /// rendering FS/S3 paths. base64url is ~1.33x the 32 raw bytes (43 chars) vs hex's 2x (64 chars),
+    /// and its alphabet (`A-Z a-z 0-9 - _`) is filesystem/URL safe with no separators. Deliberately
+    /// ENCODE-ONLY: there is NO base64 DECODE anywhere — a runtime hash is raw bytes produced only by
+    /// hashing, never parsed back from a string (that is the whole point of the no-`from_hex` sweep).
+    pub fn to_base64url(&self) -> String {
+        const ALPHABET: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let bytes = &self.0;
+        // 32 bytes → 10 full 3-byte groups (40 chars) + a 2-byte tail (3 chars) = 43 chars, no padding.
+        let mut out = String::with_capacity(43);
+        let mut i = 0;
+        while i + 3 <= bytes.len() {
+            let n = (u32::from(bytes[i]) << 16)
+                | (u32::from(bytes[i + 1]) << 8)
+                | u32::from(bytes[i + 2]);
+            out.push(ALPHABET[((n >> 18) & 63) as usize] as char);
+            out.push(ALPHABET[((n >> 12) & 63) as usize] as char);
+            out.push(ALPHABET[((n >> 6) & 63) as usize] as char);
+            out.push(ALPHABET[(n & 63) as usize] as char);
+            i += 3;
+        }
+        match bytes.len() - i {
+            1 => {
+                let n = u32::from(bytes[i]) << 16;
+                out.push(ALPHABET[((n >> 18) & 63) as usize] as char);
+                out.push(ALPHABET[((n >> 12) & 63) as usize] as char);
+            }
+            2 => {
+                let n = (u32::from(bytes[i]) << 16) | (u32::from(bytes[i + 1]) << 8);
+                out.push(ALPHABET[((n >> 18) & 63) as usize] as char);
+                out.push(ALPHABET[((n >> 12) & 63) as usize] as char);
+                out.push(ALPHABET[((n >> 6) & 63) as usize] as char);
+            }
+            _ => {}
+        }
+        out
+    }
+
     /// Parse the canonical hex form (the inverse of [`Hash::to_hex`]): exactly 64 LOWERCASE hex chars.
     /// `None` on any wrong-length / non-hex / UPPERCASE input. Uppercase is rejected on purpose — a
     /// content address is canonical LOWERCASE hex, so admitting `AB..` alongside `ab..` would give one
@@ -71,8 +111,9 @@ impl Hash {
 
 impl fmt::Debug for Hash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Short prefix is enough to eyeball in test output; full hash via `to_hex`.
-        write!(f, "Hash({}…)", &self.to_hex()[..12])
+        // Short prefix is enough to eyeball in test output. Debug is diagnostic/trace output, one of the
+        // two permitted encode sites, so it uses the base64url display form (`to_base64url`), not hex.
+        write!(f, "Hash({}…)", &self.to_base64url()[..12])
     }
 }
 
@@ -105,6 +146,41 @@ mod tests {
     #[test]
     fn hex_is_64_chars() {
         assert_eq!(Hash::of(b"x").to_hex().len(), 64);
+    }
+
+    #[test]
+    fn base64url_is_43_chars_no_padding_and_url_safe_alphabet() {
+        let s = Hash::of(b"x").to_base64url();
+        // 32 bytes → 43 base64 chars, no `=` padding.
+        assert_eq!(s.len(), 43);
+        assert!(!s.contains('='));
+        // Only the url-safe alphabet: A-Z a-z 0-9 - _ (no `+` or `/`).
+        assert!(
+            s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
+            "unexpected char in {s}"
+        );
+    }
+
+    #[test]
+    fn base64url_known_vectors() {
+        // All-zero 32 bytes → 43 'A' (index 0 of the alphabet).
+        assert_eq!(Hash::from_bytes([0u8; 32]).to_base64url(), "A".repeat(43));
+        // All-0xFF 32 bytes: ten 0xFFFFFF groups → 40 '_' (index 63), then the 2-byte tail
+        // 0xFFFF → sextets 63,63,60 → '_','_','8' ⇒ 42 '_' followed by '8'.
+        assert_eq!(
+            Hash::from_bytes([0xFFu8; 32]).to_base64url(),
+            format!("{}8", "_".repeat(42))
+        );
+    }
+
+    #[test]
+    fn base64url_distinguishes_and_is_stable() {
+        let a = Hash::of(b"alpha").to_base64url();
+        let b = Hash::of(b"beta").to_base64url();
+        assert_ne!(a, b);
+        // Deterministic: same content, same encoding.
+        assert_eq!(a, Hash::of(b"alpha").to_base64url());
     }
 
     #[test]
