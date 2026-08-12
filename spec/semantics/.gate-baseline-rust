@@ -5651,6 +5651,8 @@ pass	partial application captures a let-bound value in the residual lambda
 pass	partial application captures a runtime parameter in the residual lambda
 pass	passing one newtype where a different newtype is expected names both nominal types
 pass	pattern matching over AST distinguishes forms
+pass	pbr1 PER-BRANCH resume with different value AND stride — the else branch jumps the state 50, flipping the next dispatch's route
+pass	pbr2 THREE-way match-branch resumes — each residue class answers and strides differently, three dispatches walk the classes
 pass	performing a string-parameter operation with a non-string argument is a type error
 pass	performing an operation with a wrong-type argument for a compound parameter is a type error
 pass	performing an operation with an argument of the wrong type is a type error
@@ -6042,6 +6044,7 @@ pass	splitting a tuple at zero yields an empty prefix
 pass	splitting a tuple beyond its arity is rejected
 pass	splitting a tuple with a runtime element addresses the prefix and suffix
 pass	sq1 two SEQUENTIAL handles of the SAME inner effect, each seeded by a fresh outer draw — independent inner threads, one advancing outer thread
+pass	sqm1 SQUARE-AND-MULTIPLY over the state — (base,acc) squares every dispatch, multiplies on 1-bits mod 1000, the n-bit's effect observed by a final read
 pass	sr1 a performing self-recursive walk's result SEEDS an inner handle, then a trailing outer draw
 pass	sr2 a Result-typed op whose Err carries a STRING reason — the body matches Ok payload vs the reason by string equality
 pass	sr3 the Err reason is BUILT in the arm — String.concat of a prefix and a sign-picked tag, matched against literals in the body

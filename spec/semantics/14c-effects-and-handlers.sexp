@@ -8168,3 +8168,60 @@
             (export main)))
   (call   main (: 4 Int64)) (output (: 461 Int64))
   (call   main (: 1 Int64)) (output (: 161 Int64)))
+
+; ── Per-branch strides + square-and-multiply (breaker batch 235) ──────────────
+; pbr1/pbr2 pin the arm resuming under a CONDITIONAL where each branch carries
+; a DIFFERENT value AND stride (if-branches with a 50-jump that flips the next
+; route; a three-way match by residue class); sqm1 pins the square-and-multiply
+; modular-exponent kernel — (base,acc) squares per dispatch, 1-bits multiply.
+
+(case "pbr1 PER-BRANCH resume with different value AND stride — the else branch jumps the state 50, flipping the next dispatch's route"
+  (input  (do
+            (effect S (op route (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S n
+                ((route (v) s
+                  (if (< v s)
+                      (resume (* v 10) (+ s 1))
+                      (resume (+ v 100) (+ s 50)))))
+                (+ (S.route 3) (* 1000 (S.route 3)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 30030 Int64))
+  (call   main (: 1 Int64)) (output (: 30103 Int64))
+  (call   main (: 3 Int64)) (output (: 30103 Int64)))
+
+(case "pbr2 THREE-way match-branch resumes — each residue class answers and strides differently, three dispatches walk the classes"
+  (input  (do
+            (effect S (op step (-> Int64)))
+            (def (main (: n Int64))
+              (handle S n
+                ((step () s
+                  (match (% s 3)
+                    (0 (resume (* s 100) (+ s 1)))
+                    (1 (resume (- 0 s) (+ s 2)))
+                    (_ (resume s (+ s 3))))))
+                (+ (S.step) (+ (* 100 (S.step)) (* 100000 (S.step))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 29999900 Int64))
+  (call   main (: 1 Int64)) (output (: -370001 Int64))
+  (call   main (: 2 Int64)) (output (: 800502 Int64)))
+
+(case "sqm1 SQUARE-AND-MULTIPLY over the state — (base,acc) squares every dispatch, multiplies on 1-bits mod 1000, the n-bit's effect observed by a final read"
+  (input  (do
+            (effect S (op bit (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S (tuple 3 1)
+                ((bit (b) st
+                  (match st
+                    ((tuple base acc)
+                      (resume acc
+                              (tuple (% (* base base) 1000)
+                                     (if (= b 1) (% (* acc base) 1000) acc)))))))
+                (let ((_a (S.bit 1)))
+                  (let ((_b (S.bit 0)))
+                    (let ((_c (S.bit 1)))
+                      (let ((_d (S.bit n)))
+                        (S.bit 0)))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 243 Int64))
+  (call   main (: 1 Int64)) (output (: 323 Int64)))
