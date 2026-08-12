@@ -14440,6 +14440,20 @@ pub fn value_cmp_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec
     Some(builder.encode(root))
 }
 
+/// The BARE value-form shape descriptor for `ty` — the inner value shape with NO `Named`/`Framed`
+/// type-frame wrapper. The reducer FOLD BOUNDARY (apply param decode + result encode) carries BARE value
+/// documents: the kernel's `val_to_ast`/`build_event_document`/`parse_effect_list` are bare (root head
+/// `record`/`list`, `= name value` fields), and the type is statically known on BOTH sides, so no inline
+/// type frame is wanted. `value-encode` frames the output as `(: value Type)` ONLY when the descriptor
+/// ROOT is `Shape::Named`/`Framed` (v-ah + v-runtime ruling 2026-08-12); rooting at the bare `shape_of`
+/// makes it emit the bare form, byte-matching the kernel. `sum_shape_descriptor` (the ESCAPE path) keeps
+/// the frame — that path crosses to an untyped host that renders `(: value Type)`; this boundary does not.
+pub fn bare_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> {
+    let mut builder = ShapeTableBuilder::default();
+    let root = builder.shape_of(db, ty)?;
+    Some(builder.encode(root))
+}
+
 pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> {
     let mut builder = ShapeTableBuilder::default();
     match ty {

@@ -3514,6 +3514,18 @@ fn a_pure_reducer_apply_round_trips_an_event_document_end_to_end() {
         result.windows(4).any(|w| w == b"wasm"),
         "the effect-list document carries the `wasm` string the reducer copied from the Event's ct field"
     );
+    // CONTRACT GATE (v-pc issue 035342): the result value-form must be the BARE effect-list the kernel's
+    // `parse_effect_list` reads — a NAME-head `(list …)` at the ROOT — NOT the `(: value Type)` typed-
+    // document form (root head ":") the escape path uses. Decode + assert the root is the bare `list` form;
+    // a substring check alone (above) missed the earlier `(:`-wrapped mis-emit. This is the reducer→kernel
+    // fold-boundary decode contract (bare both directions; v-ah+v-runtime ruling 2026-08-12).
+    let decoded = crate::codec::decode(&result).expect("the effect-list result document decodes");
+    assert_eq!(
+        decoded.head_name(decoded.root),
+        Some("list"),
+        "the effect-list result must be the BARE name-head (list …) value form parse_effect_list reads, \
+         not the (: value Type) typed-document (root head \":\")"
+    );
 }
 
 /// §3c GAP B INVOKE-WITH-HOST-BINDING (the deep behavioral proof of the host-fused path): a compiled
@@ -90843,6 +90855,7 @@ mod closure_host_resource {
             op: "emit".to_string(),
             params: Vec::<HostParam>::new(),
             result: None,
+            result_option_bytes: false,
         }];
         // The runtime cell ops (make builds the capturing cell; call recovers it). Shift to h..h+k.
         let imports = vec![
@@ -90956,6 +90969,7 @@ mod closure_host_resource {
             op: "emit".to_string(),
             params: Vec::<HostParam>::new(),
             result: None, // () -> () — leaves nothing on the stack
+            result_option_bytes: false,
         }];
         let imports = vec![
             OPS.arr_alloc,

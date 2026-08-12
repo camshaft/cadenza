@@ -160,9 +160,15 @@ pub fn emit(
     // String-RESULT op used AS the export routed to `emit_runtime_resource` (the value-escape path) and hit
     // it THERE, ahead of the post-collection check further down. Checking here covers all paths uniformly.
     // (`ty_undetermined`-gated inside, so a fold-synthesized `Ty::Any` HostCall is not falsely flagged.)
+    // NOTE (S0 in progress): an `option<list<u8>>` host result is lifted by the host-fused bytes-provider
+    // path, so it WILL be allowed here once the lift + envelope land — gated on being that provider. Until
+    // the emit is wired, this stays `false` (every path declines the compound result, byte-identical).
+    let allow_option_bytes = false;
     for &def in &layout.order {
         let body = def_body(db, def)?;
-        if let Some((op, pos, ty)) = host::first_unrepresentable_host_op(db, body) {
+        if let Some((op, pos, ty)) =
+            host::first_unrepresentable_host_op(db, body, allow_option_bytes)
+        {
             // "an argument" / "a result" — the article agrees with the position word.
             let article = if pos == "argument" { "an" } else { "a" };
             return Err(Reject::decline(format!(
@@ -1412,9 +1418,17 @@ fn host_op_comp_functype(h: &host::HostImport, list_type_idx: u32) -> Vec<u8> {
         }
     }
     item.extend_from_slice(&encode::wasm_vec(h.params.len(), &param_items));
-    match h.result {
-        Some(r) => item.extend_from_slice(&[0x00, r.comp_byte()]),
-        None => item.extend_from_slice(&[0x01, 0x00]),
+    if h.result_option_bytes {
+        // The compound `option<list<u8>>` result (S0): a single unnamed result referencing the
+        // `option<list<u8>>` DEFINED type the host instance-type prepends right AFTER the shared `(list u8)`
+        // type — index `list_type_idx + 1` (a type-index valtype, uleb128, like the Bytes param above).
+        item.push(0x00);
+        encode::uleb128((list_type_idx + 1) as u64, &mut item);
+    } else {
+        match h.result {
+            Some(r) => item.extend_from_slice(&[0x00, r.comp_byte()]),
+            None => item.extend_from_slice(&[0x01, 0x00]),
+        }
     }
     item
 }
@@ -7866,8 +7880,13 @@ fn emit_bytes_provider_member(
             })?;
         (plan.params.clone(), plan.result.clone())
     };
-    // RESULT side (REUSE): the runtime value-encode walker renders the compound result to a document.
-    let result_desc = crate::lower::sum_shape_descriptor(db, &result_ty).ok_or_else(|| {
+    // RESULT side: the runtime value-encode walker renders the compound result to a BARE value document
+    // (root head `list`/`record`, `= name value` fields) — the fold boundary carries bare value forms both
+    // directions (the kernel's `parse_effect_list` reads bare; the type is statically known both sides), so
+    // root at the BARE inner shape, NOT `sum_shape_descriptor`'s `Named`/`Framed` frame (which would make
+    // value-encode emit the `(: value Type)` typed-document the kernel rejects). v-ah+v-runtime ruling
+    // 2026-08-12: value-encode frames only a Named/Framed descriptor root.
+    let result_desc = crate::lower::bare_shape_descriptor(db, &result_ty).ok_or_else(|| {
         Reject::decline(
             "a bytes-crossing provider export's result has no value-form shape descriptor (not a \
              sum/collection/compound the runtime value-encode walker renders)",
@@ -7882,6 +7901,9 @@ fn emit_bytes_provider_member(
         ));
     };
     let param_ty = param_ty.clone();
+    // PARAM side: value-DECODE the incoming document. Keep `sum_shape_descriptor` here (unchanged) — the
+    // param decode already round-trips (v-ah ruled only the RESULT descriptor needs the bare root; a
+    // separate param-side change is deferred until proven needed against the kernel's bare Event).
     let param_desc = crate::lower::sum_shape_descriptor(db, &param_ty).ok_or_else(|| {
         Reject::decline(
             "a bytes-crossing provider export's parameter has no value-form shape descriptor (not a \
@@ -7926,12 +7948,12 @@ fn emit_bytes_provider_member(
              bytes-roundtrip path handles host imports, not peer-bound effects)",
         ));
     }
-    // A HOST op whose DECLARED signature has no host-boundary form — a compound RESULT like `kv.get`'s
-    // `option<list<u8>>` — needs the host compound-result ABI (a later §3c slice); decline cleanly. A
-    // REPRESENTABLE host op (`kv.put`: `list<u8>` params, `unit` result) IS emitted (host-fused).
+    // A HOST op whose DECLARED signature has no host-boundary form declines. (S0 in progress: the
+    // host-fused path will LIFT an `option<list<u8>>` result into a value-heap `Option<Bytes>` and pass
+    // `true` here once the lift + envelope land; until then it declines like every other compound result.)
     for &def in &layout.order {
         let body = def_body(db, def)?;
-        if let Some((op, _, ty)) = host::first_unrepresentable_host_op(db, body) {
+        if let Some((op, _, ty)) = host::first_unrepresentable_host_op(db, body, false) {
             return Err(Reject::decline(format!(
                 "a bytes-crossing member calls host op `{op}` whose `{ty}` signature has no host-boundary \
                  form yet (a compound host result like `option<list<u8>>` needs the host compound-result \
@@ -8042,6 +8064,7 @@ fn emit_bytes_provider_member(
         &member_name,
     )
     .map_err(Reject::decline)?;
+    let needs_option_bytes = host_imports.iter().any(|h| h.result_option_bytes);
     Ok(envelope::assemble_bytes_roundtrip_host_provider(
         &core,
         iface,
@@ -8050,6 +8073,7 @@ fn emit_bytes_provider_member(
         &kv_iface,
         &imports,
         &runtime_import_name(),
+        needs_option_bytes,
     ))
 }
 

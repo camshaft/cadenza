@@ -1569,7 +1569,7 @@ pub fn assemble_host_runtime(
     // sec 7: TWO instance-types — component type 0 (the effect) then component type 1 (the runtime). Each
     // is `0x42` + a vec of 2*count interleaved (ty, export) decls, exactly as the single-import shapes.
     let type_sec = {
-        let host_it = host_effect_instance_type(host_fns);
+        let host_it = host_effect_instance_type(host_fns, false);
         let rt_it = {
             let mut decls = Vec::new();
             for (i, op) in imports.iter().enumerate() {
@@ -1767,7 +1767,7 @@ pub fn assemble_host_runtime_mem(
     // sec 7: TWO instance-types — host effect (comp type 0) then runtime (comp type 1) — identical to the
     // memoryless host+runtime shape (the shared memory is a CORE detail, invisible to the component types).
     let type_sec = {
-        let host_it = host_effect_instance_type(host_fns);
+        let host_it = host_effect_instance_type(host_fns, false);
         let rt_it = {
             let mut decls = Vec::new();
             for (i, op) in imports.iter().enumerate() {
@@ -1965,6 +1965,7 @@ pub fn assemble_host_runtime_mem(
 /// apply lift `h+k`. Core: mem module → core instance 0 (memory 0); lowered host ops (Memory 0) `0..h` +
 /// runtime `h..h+k`; program → host instance 1, heap instance 2, program instance 3 (bound host/heap/mem);
 /// apply + cabi_realloc aliased off the program (core funcs `h+k`, `h+k+1`).
+#[allow(clippy::too_many_arguments)]
 pub fn assemble_bytes_roundtrip_host_provider(
     core: &[u8],
     provider_iface: &str,
@@ -1973,6 +1974,7 @@ pub fn assemble_bytes_roundtrip_host_provider(
     host_iface: &str,
     imports: &[&RtOp],
     import_name: &str,
+    needs_option_bytes: bool,
 ) -> Vec<u8> {
     let h = host_fns.len();
     let k = imports.len();
@@ -1981,7 +1983,7 @@ pub fn assemble_bytes_roundtrip_host_provider(
 
     // sec 7 (first): host effect instance-type (comp type 0) + runtime instance-type (comp type 1).
     let type_sec = {
-        let host_it = host_effect_instance_type(host_fns);
+        let host_it = host_effect_instance_type(host_fns, needs_option_bytes);
         let mut rt_decls = Vec::new();
         for (i, op) in imports.iter().enumerate() {
             rt_decls.push(0x01);
@@ -2030,19 +2032,35 @@ pub fn assemble_bytes_roundtrip_host_provider(
         section(sec::ALIAS, &wasm_vec(h + k, &items))
     };
 
-    // sec 1/2/6: the shared-memory module (core module 0) → core instance 0 → memory alias (core memory 0).
-    let mem_module_sec = core_module_section(&shared_mem_module());
+    // sec 1/2/6: the shared-memory+realloc module (core module 0) → core instance 0 → memory alias (core
+    // memory 0). Carries a bump `cabi_realloc` (the S0 single allocator over memory 0); the put path leaves
+    // it unused (the guest still owns its own realloc for the apply lift) — a harmless additive export.
+    let mem_module_sec = core_module_section(&shared_mem_realloc_module());
     let mem_instance_sec = section(
         sec::CORE_INSTANCE,
         &wasm_vec(1, &core_instantiate_item(0, &[])),
     );
-    let mem_alias_sec = section(sec::ALIAS, &wasm_vec(1, &memory_alias_item(0, "mem")));
+    // Alias the shared memory (core memory 0) AND the shared `cabi_realloc` (core func 0) off the mem
+    // instance — BEFORE `lower_sec`, so the kv.get canon-LOWER (which returns `option<list<u8>>`, needing
+    // realloc to lift the returned list into memory 0) can reference it; the apply canon-LIFT uses the same
+    // realloc. Placing the realloc alias here makes it core func 0, so the lowered ops shift to `1..1+h+k`.
+    let mem_alias_sec = section(
+        sec::ALIAS,
+        &wasm_vec(2, &{
+            let mut it = memory_alias_item(0, "mem");
+            it.extend_from_slice(&core_alias_item(0, "cabi_realloc"));
+            it
+        }),
+    );
 
-    // sec 8 (first): lower host ops WITH Memory 0 (list<u8> args read from the shared mem), runtime memoryless.
+    // sec 8 (first): lower host ops WITH Memory 0 + Realloc (core func 0, the shared cabi_realloc aliased
+    // pre-lower). Memory 0: a host op's list<u8> args are read from the shared mem. Realloc: a host op that
+    // RETURNS a heap value (kv.get's `option<list<u8>>`) needs it to lift the returned list into memory 0; a
+    // unit/scalar-result host op (kv.put) carries it unused (harmless). Runtime ops stay memoryless.
     let lower_sec = {
         let mut items = Vec::new();
         for i in 0..h {
-            items.extend_from_slice(&canon_lower_item_mem(i as u32, 0));
+            items.extend_from_slice(&canon_lower_item_mem_realloc(i as u32, 0, 0));
         }
         for i in h..(h + k) {
             items.extend_from_slice(&canon_lower_item(i as u32));
@@ -2054,6 +2072,8 @@ pub fn assemble_bytes_roundtrip_host_provider(
     let prog_module_sec = core_module_section(core);
 
     // sec 2 (second): host ops instance (1), runtime ops instance (2), program (3) bound host/heap/mem.
+    // Core-func indices are +1 vs the pre-realloc-alias layout: core func 0 is the shared cabi_realloc alias,
+    // so the lowered host op `i` is core func `1+i` and the lowered runtime op `j` is core func `1+h+j`.
     let prog_instance_sec = {
         let mut items = Vec::new();
         let mut host = vec![0x01];
@@ -2062,7 +2082,7 @@ pub fn assemble_bytes_roundtrip_host_provider(
             host_exports.extend_from_slice(&uleb_bytes(f.op.len() as u64));
             host_exports.extend_from_slice(f.op.as_bytes());
             host_exports.push(0x00);
-            uleb128(i as u64, &mut host_exports);
+            uleb128((i + 1) as u64, &mut host_exports);
         }
         host.extend_from_slice(&wasm_vec(h, &host_exports));
         items.extend_from_slice(&host);
@@ -2072,7 +2092,7 @@ pub fn assemble_bytes_roundtrip_host_provider(
             heap_exports.extend_from_slice(&uleb_bytes(op.name.len() as u64));
             heap_exports.extend_from_slice(op.name.as_bytes());
             heap_exports.push(0x00);
-            uleb128((h + j) as u64, &mut heap_exports);
+            uleb128((h + j + 1) as u64, &mut heap_exports);
         }
         heap.extend_from_slice(&wasm_vec(k, &heap_exports));
         items.extend_from_slice(&heap);
@@ -2096,13 +2116,12 @@ pub fn assemble_bytes_roundtrip_host_provider(
         section(sec::CORE_INSTANCE, &wasm_vec(3, &items))
     };
 
-    // sec 6 (member alias): alias the apply member func (core func h+k) + cabi_realloc (h+k+1) off the
-    // program instance (core instance 3). The memory is the shared mem (core memory 0, already aliased).
+    // sec 6 (member alias): alias the apply member func off the PROGRAM instance (core instance 3) → core
+    // func `1+h+k` (core func 0 = the shared cabi_realloc alias, `1..1+h+k` = the lowered ops). The realloc
+    // is already aliased (core func 0, in mem_alias_sec) so the apply canon-LIFT + kv.get lower both use it.
     let member_alias_sec = {
-        let mut items = Vec::new();
-        items.extend_from_slice(&core_alias_item(3, member_name));
-        items.extend_from_slice(&core_alias_item(3, "cabi_realloc"));
-        section(sec::ALIAS, &wasm_vec(2, &items))
+        let items = core_alias_item(3, member_name);
+        section(sec::ALIAS, &wasm_vec(1, &items))
     };
 
     // sec 7 (second): the shared list<u8> defined type (comp type 2) + the apply functype (comp type 3).
@@ -2121,9 +2140,10 @@ pub fn assemble_bytes_roundtrip_host_provider(
         section(sec::COMPONENT_TYPE, &wasm_vec(2, &type_items))
     };
 
-    // sec 8 (second): lift apply (core func h+k) with Memory(0) + Realloc(core func h+k+1), functype 3.
-    let apply_core_func = (h + k) as u32;
-    let realloc_core_func = (h + k) as u32 + 1;
+    // sec 8 (second): lift apply with Memory(0) + Realloc. Core func 0 = shared cabi_realloc alias, lowered
+    // ops = `1..1+h+k`, apply alias = `1+h+k`. So apply is core func `1+h+k` and realloc is core func 0.
+    let apply_core_func = (h + k) as u32 + 1;
+    let realloc_core_func = 0u32;
     let lift_sec = section(
         sec::CANON,
         &wasm_vec(
@@ -2197,6 +2217,65 @@ fn shared_mem_module() -> Vec<u8> {
     out.extend_from_slice(wasm_abi::CORE_MAGIC);
     out.extend_from_slice(&mem_sec);
     out.extend_from_slice(&export_sec);
+    out
+}
+
+/// [`shared_mem_module`] PLUS a bump-allocator `cabi_realloc` exported alongside `mem` — the SINGLE
+/// allocator over the shared memory 0 for the bytes-roundtrip host provider (S0). A host op whose result
+/// is `option<list<u8>>` (kv.get) is canon-LOWERED with `(memory 0, realloc <this>)`, and the apply
+/// canon-LIFT uses the SAME realloc — so both the returned-list lift and the apply-result encode bump ONE
+/// cursor over memory 0 (no dual-allocator conflict). Living in this pre-instance shared module (core
+/// instance 0) it is available BEFORE the program instance, breaking the lower↔realloc circularity a
+/// list-returning host import would otherwise face (the guest imports both `mem` and `cabi_realloc`). The
+/// bump cursor inits at 16 (above the fixed `OUT=8` retarea), matching the guest's own former allocator.
+fn shared_mem_realloc_module() -> Vec<u8> {
+    use crate::backend::wasm::wasm_abi::op;
+    // type 0: (i32,i32,i32,i32) -> i32 (the cabi_realloc signature).
+    let type_sec = {
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(4, &[wasm_abi::CORE_I32; 4]));
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        section(wasm_abi::CORE_SEC_TYPE, &wasm_vec(1, &t))
+    };
+    // func 0: type 0.
+    let func_sec = section(wasm_abi::CORE_SEC_FUNCTION, &wasm_vec(1, &[0x00]));
+    let mem_sec = section(wasm_abi::CORE_SEC_MEMORY, &wasm_vec(1, &[0x00, 0x01])); // limits {min:1}
+    // global 0: mutable i32 bump cursor, init 16 (above the fixed OUT=8 retarea).
+    let global_sec = {
+        let mut item = vec![wasm_abi::CORE_I32, 0x01];
+        item.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(16, &mut item);
+        item.push(op::END);
+        section(wasm_abi::CORE_SEC_GLOBAL, &wasm_vec(1, &item))
+    };
+    // export `mem` (memory 0) + `cabi_realloc` (func 0).
+    let export_sec = {
+        let mut items = uleb_bytes("mem".len() as u64);
+        items.extend_from_slice(b"mem");
+        items.push(wasm_abi::EXPORT_KIND_MEMORY);
+        uleb128(0, &mut items);
+        items.extend_from_slice(&uleb_bytes("cabi_realloc".len() as u64));
+        items.extend_from_slice(b"cabi_realloc");
+        items.push(wasm_abi::EXPORT_KIND_FUNC);
+        uleb128(0, &mut items);
+        section(wasm_abi::CORE_SEC_EXPORT, &wasm_vec(2, &items))
+    };
+    // code: the bump-allocator body (bump global 0).
+    let code_sec = section(
+        wasm_abi::CORE_SEC_CODE,
+        &wasm_vec(
+            1,
+            &crate::backend::wasm::serialize::emit_bump_realloc_body(0),
+        ),
+    );
+    let mut out = Vec::new();
+    out.extend_from_slice(wasm_abi::CORE_MAGIC);
+    out.extend_from_slice(&type_sec);
+    out.extend_from_slice(&func_sec);
+    out.extend_from_slice(&mem_sec);
+    out.extend_from_slice(&global_sec);
+    out.extend_from_slice(&export_sec);
+    out.extend_from_slice(&code_sec);
     out
 }
 
@@ -3024,7 +3103,7 @@ pub fn assemble_host_runtime_resource(
     // sec 7: TWO instance-types — the host effect (comp type 0, its h ops) then the runtime (comp type 1,
     // its k ops).
     let type_sec = {
-        let host_it = host_effect_instance_type(host_fns);
+        let host_it = host_effect_instance_type(host_fns, false);
         let rt_it = {
             let mut decls = Vec::new();
             for (i, op) in imports.iter().enumerate() {
@@ -3802,7 +3881,7 @@ pub fn assemble_host_runtime_resource_with_scalar_methods(
 
     // sec 7: TWO instance-types — the host effect (comp type 0, its h ops) then the runtime (comp type 1).
     let type_sec = {
-        let host_it = host_effect_instance_type(host_fns);
+        let host_it = host_effect_instance_type(host_fns, false);
         let rt_it = {
             let mut decls = Vec::new();
             for (i, op) in imports.iter().enumerate() {
@@ -9395,6 +9474,22 @@ fn canon_lower_item_mem(comp_func: u32, mem_idx: u32) -> Vec<u8> {
     item
 }
 
+/// A sec-8 canon-LOWER item WITH both Memory + Realloc options — needed to lower a host import that RETURNS
+/// a heap value (`option<list<u8>>`, kv.get): the adapter uses `realloc` to allocate the returned list in
+/// guest memory `mem_idx`. A host op with no list result carries the realloc option unused (harmless). Both
+/// the memory and the realloc core func are aliased BEFORE `lower_sec` (the shared mem module; realloc =
+/// core func 0 in the bytes-provider), breaking the lower↔realloc circularity.
+fn canon_lower_item_mem_realloc(comp_func: u32, mem_idx: u32, realloc_func: u32) -> Vec<u8> {
+    let mut item = vec![0x01, 0x00];
+    uleb128(comp_func as u64, &mut item);
+    item.push(0x02); // canon options: count 2
+    item.push(0x03); // CanonicalOption::Memory
+    uleb128(mem_idx as u64, &mut item);
+    item.push(0x04); // CanonicalOption::Realloc
+    uleb128(realloc_func as u64, &mut item);
+    item
+}
+
 /// A sec-8 canon-lift item: `00 00 <core-func> 00 <type>` — `00 00` canon lift core func, `00` empty
 /// canon-options, then the component type index.
 fn canon_lift_item(core_func: u32, type_idx: u32) -> Vec<u8> {
@@ -9453,16 +9548,28 @@ fn list_u8_defined_type() -> Vec<u8> {
 /// then occupy indices `1..=h`, so each export decl references `base + i` where `base = 1`. A pure
 /// scalar/string set (no Bytes param) takes `base = 0`, no prepend, `2*h` decls — byte-identical to the
 /// pre-Bytes shape. Shared by every host-import assembly variant so the prepend/shift is defined once.
-fn host_effect_instance_type(host_fns: &[HostFn]) -> Vec<u8> {
+fn host_effect_instance_type(host_fns: &[HostFn], needs_option_bytes: bool) -> Vec<u8> {
     let h = host_fns.len();
-    let needs_list = host_fns.iter().any(|f| f.has_list_param);
+    // An `option<list<u8>>` RESULT (S0) references the `(list u8)` type, so the list type is needed
+    // whenever a Bytes param OR an option-bytes result is present. Prepended defined types (in order):
+    // type index 0 = `(list u8)` (when needed), type index 1 = `option<list<u8>>` (when a result needs it).
+    let needs_list = host_fns.iter().any(|f| f.has_list_param) || needs_option_bytes;
     let mut decls = Vec::new();
-    // The prepended `(list u8)` type is a bare `ty` decl (`01 <deftype>`) → instance-type type index 0.
+    let mut prepended: u64 = 0;
     if needs_list {
         decls.push(0x01);
-        decls.extend_from_slice(&list_u8_defined_type());
+        decls.extend_from_slice(&list_u8_defined_type()); // type index 0
+        prepended += 1;
     }
-    let base: u64 = if needs_list { 1 } else { 0 };
+    if needs_option_bytes {
+        // `option<list<u8>>` = the option former `0x6b` over the `(list u8)` type (type index 0), as a
+        // type-INDEX valtype (uleb128 0). Placed at instance-type type index 1 — the index each
+        // option-result op's `comp_functype` references (`list_type_idx + 1`, list_type_idx = 0).
+        decls.push(0x01);
+        decls.extend_from_slice(&[0x6b, 0x00]); // type index 1
+        prepended += 1;
+    }
+    let base: u64 = prepended;
     for (i, f) in host_fns.iter().enumerate() {
         decls.push(0x01);
         decls.extend_from_slice(&f.comp_functype);
@@ -9473,7 +9580,7 @@ fn host_effect_instance_type(host_fns: &[HostFn]) -> Vec<u8> {
         decls.push(0x01); // sort: component func
         uleb128(base + i as u64, &mut decls);
     }
-    let decl_count = if needs_list { 2 * h + 1 } else { 2 * h };
+    let decl_count = prepended as usize + 2 * h;
     let mut it = vec![0x42]; // instance type form
     it.extend_from_slice(&wasm_vec(decl_count, &decls));
     it

@@ -55,8 +55,34 @@ pub struct HostImport {
     /// The operation's boundary parameters (scalar or string). A `Unit` domain is ELIDED (a nullary op
     /// `(-> Unit R)` performed as `(E.op)` takes no boundary parameter).
     pub params: Vec<HostParam>,
-    /// The operation's boundary result type — `None` for a `Unit` result.
+    /// The operation's SCALAR boundary result — `None` for a `Unit` result OR for the compound
+    /// `option<list<u8>>` result (distinguished by [`result_option_bytes`]).
     pub result: Option<AbiValType>,
+    /// The result is the compound `option<list<u8>>` (guest `Option<Bytes>`) — the host writes
+    /// `(disc, ptr, len)` into a caller-provided return area, which the guest lifts into a value-heap
+    /// `Option<Bytes>` handle (S0). Mutually exclusive with a scalar `result` (both `None`/false for a
+    /// plain scalar/unit op). A host-boundary-only shape (a peer-bound op never sets it — a peer compound
+    /// crosses as an opaque `u32` handle, not this canonical option marshal).
+    pub result_option_bytes: bool,
+}
+
+/// Whether `ty` is the built-in `Option<Bytes>` (guest `option<list<u8>>` at the host boundary) — a `Sum`
+/// whose declaration has exactly the `Some`/`None` variants instantiated at a single `Bytes` payload. The
+/// one compound host RESULT the host-fused bytes path lifts (S0); every other compound result still
+/// declines. Reads through an erased nominal wrapper.
+pub fn is_option_bytes(db: &mut Db, ty: &Ty) -> bool {
+    let Ty::Sum { decl, args } = ty.strip_nominal() else {
+        return false;
+    };
+    if args.len() != 1 || !matches!(args[0], Ty::Bytes) {
+        return false;
+    }
+    let Some(d) = db.type_decl_by_occ(*decl) else {
+        return false;
+    };
+    d.variants.len() == 2
+        && d.variants.iter().any(|v| v.name == "Some")
+        && d.variants.iter().any(|v| v.name == "None")
 }
 
 /// The component/boundary scalar ABI type a value of solved type `ty` crosses as, or `None` if it has no
@@ -364,7 +390,11 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                     }
                 }
             }
-            let result_abi = if matches!(result, Ty::Unit) {
+            // The compound `option<list<u8>>` HOST result (S0) — the guest lifts it into a value-heap
+            // `Option<Bytes>`. Host-boundary only (a peer-bound op's compound crosses as a `u32` handle,
+            // never this canonical option marshal), so it never coexists with a scalar `result`.
+            let result_option_bytes = !peer_bound && is_option_bytes(db, &result);
+            let result_abi = if matches!(result, Ty::Unit) || result_option_bytes {
                 None
             } else if peer_bound {
                 extern_abi_val_type(&result)
@@ -376,6 +406,7 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                 op: op.to_string(),
                 params,
                 result: result_abi,
+                result_option_bytes,
             };
             if !out.iter().any(|h| h.effect == imp.effect && h.op == imp.op) {
                 out.push(imp);
@@ -710,6 +741,7 @@ fn ty_undetermined(ty: &Ty) -> bool {
 pub fn first_unrepresentable_host_op(
     db: &mut Db,
     id: StructId,
+    allow_option_bytes: bool,
 ) -> Option<(String, &'static str, String)> {
     if let Core::HostCall {
         effect,
@@ -736,7 +768,16 @@ pub fn first_unrepresentable_host_op(
         // free var) is NOT flagged: a fold-SYNTHESIZED `Core::HostCall` (a forwarded/interposed perform)
         // types its result `Ty::Any` (infer.rs), and its real emittability is decided when selection
         // resolves it — flagging `Any` here would falsely reject the working interpose-forward case.
-        if !matches!(result, Ty::Unit) && !ty_undetermined(&result) && !abi_ok(&result) {
+        // The host-fused bytes-provider path lifts an `option<list<u8>>` result into a value-heap
+        // `Option<Bytes>` (S0), so it is REPRESENTABLE when `allow_option_bytes` (a peer-bound op still
+        // crosses its compound as a handle, never this canonical option marshal — so gate on `!peer_bound`).
+        let result_is_liftable_option_bytes =
+            allow_option_bytes && !peer_bound && is_option_bytes(db, &result);
+        if !matches!(result, Ty::Unit)
+            && !ty_undetermined(&result)
+            && !abi_ok(&result)
+            && !result_is_liftable_option_bytes
+        {
             return Some((op.to_string(), "result", result.render_name(&db.name_ctx())));
         }
         // Each ARGUMENT: emittable iff Unit, String, Bytes, or (peer-bound) a handle-crossable value /
@@ -754,7 +795,7 @@ pub fn first_unrepresentable_host_op(
         }
         // Descend the args too (a host call may be nested in an arg).
         for a in args {
-            if let Some(hit) = first_unrepresentable_host_op(db, a) {
+            if let Some(hit) = first_unrepresentable_host_op(db, a, allow_option_bytes) {
                 return Some(hit);
             }
         }
@@ -762,7 +803,7 @@ pub fn first_unrepresentable_host_op(
     }
     if let crate::ast::Struct::List(children) = db.ast.get(id).clone() {
         for c in children {
-            if let Some(hit) = first_unrepresentable_host_op(db, c) {
+            if let Some(hit) = first_unrepresentable_host_op(db, c, allow_option_bytes) {
                 return Some(hit);
             }
         }

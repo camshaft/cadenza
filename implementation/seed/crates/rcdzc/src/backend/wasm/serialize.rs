@@ -67,7 +67,7 @@ fn host_import_functype(f: &crate::backend::wasm::host::HostImport) -> Vec<u8> {
         }
     }
     // A string/bytes param is 2 core slots, so count the total slots (not the param count).
-    let slot_count = f
+    let mut slot_count = f
         .params
         .iter()
         .map(|p| {
@@ -78,10 +78,22 @@ fn host_import_functype(f: &crate::backend::wasm::host::HostImport) -> Vec<u8> {
             }
         })
         .sum::<usize>();
+    // A compound `option<list<u8>>` RESULT (S0) is returned via a caller-provided RETPTR: the canonical ABI
+    // lowers a >1-flat result to a TRAILING i32 return-pointer param (the callee writes the flattened
+    // `(disc, listptr, listlen)` there) and the core function returns NOTHING. Mirrors the runtime's nfc
+    // string->string lower core sig `(ptr, len, retptr) -> ()` (store 9a5728f5 core type 2).
+    if f.result_option_bytes {
+        params.push(wasm_abi::CORE_I32);
+        slot_count += 1;
+    }
     item.extend_from_slice(&wasm_vec(slot_count, &params));
-    match f.result {
-        Some(r) => item.extend_from_slice(&wasm_vec(1, &[r.core_byte()])),
-        None => item.extend_from_slice(&wasm_vec(0, &[])),
+    if f.result_option_bytes {
+        item.extend_from_slice(&wasm_vec(0, &[])); // no core result — written via the retptr param
+    } else {
+        match f.result {
+            Some(r) => item.extend_from_slice(&wasm_vec(1, &[r.core_byte()])),
+            None => item.extend_from_slice(&wasm_vec(0, &[])),
+        }
     }
     item
 }
@@ -7328,7 +7340,7 @@ fn emit_bytes_roundtrip_apply_body(
 /// (`bump_global`, the high-water cursor, initialized above the fixed `OUT=8` retarea) and never frees:
 /// a member invocation is one call, the whole instance is torn down after, so leak-forever is correct and
 /// simplest. Ignores `orig_ptr`/`orig_size` (the host only ever grows a fresh 0-ptr allocation for the param list).
-fn emit_bump_realloc_body(bump_global: u32) -> Vec<u8> {
+pub(crate) fn emit_bump_realloc_body(bump_global: u32) -> Vec<u8> {
     use crate::backend::wasm::wasm_abi::op;
     let mut body = Vec::new();
     // One i32 local (index 4, after the 4 params) to hold the aligned base.
@@ -7544,16 +7556,13 @@ pub fn bytes_roundtrip_host_core_module(
         t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
         type_items.extend_from_slice(&t);
     }
-    let realloc_type_idx = h + k + n + 1;
-    {
-        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
-        t.extend_from_slice(&wasm_vec(4, &[wasm_abi::CORE_I32; 4]));
-        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
-        type_items.extend_from_slice(&t);
-    }
+    // NO realloc type/func/global here — the guest does not allocate linear memory itself (the apply body
+    // writes its result at the fixed OUT=8 retarea; the input is lowered in by the adapter). The ONE bump
+    // `cabi_realloc` lives in the shared mem module (S0): the apply canon-LIFT and the kv.get canon-LOWER
+    // both use THAT single allocator over memory 0 (no dual-allocator conflict, no lower-realloc circularity).
     let type_sec = section(
         wasm_abi::CORE_SEC_TYPE,
-        &wasm_vec(h + k + n + 2, &type_items),
+        &wasm_vec(h + k + n + 1, &type_items),
     );
 
     // ── Import section ── host func imports (module "host", 0..h), runtime ops (module "heap", h..h+k),
@@ -7580,50 +7589,29 @@ pub fn bytes_roundtrip_host_core_module(
     import_items.extend_from_slice(&mem_import);
     let import_sec = section(2, &wasm_vec(h + k + 1, &import_items));
 
-    // ── Function section ── defined bodies (types h+k..h+k+n), apply (h+k+n), realloc (h+k+n+1).
+    // ── Function section ── defined bodies (types h+k..h+k+n), apply (h+k+n). NO realloc func.
     let mut func_items = Vec::new();
     for i in 0..n {
         uleb128((h + k + i) as u64, &mut func_items);
     }
     uleb128(apply_type_idx as u64, &mut func_items);
-    uleb128(realloc_type_idx as u64, &mut func_items);
-    let func_sec = section(wasm_abi::CORE_SEC_FUNCTION, &wasm_vec(n + 2, &func_items));
+    let func_sec = section(wasm_abi::CORE_SEC_FUNCTION, &wasm_vec(n + 1, &func_items));
     let apply_abs = (h + k + n) as u32;
-    let realloc_abs = apply_abs + 1;
 
-    // NO memory section — memory 0 is the imported shared `mem`.
+    // NO memory section — memory 0 is the imported shared `mem`. NO global section — the removed realloc was
+    // its only user; the shared mem module owns the bump cursor now.
 
-    // ── Global section ── the mutable i32 bump cursor (init 16, above the fixed OUT=8 retarea).
-    let bump_global: u32 = 0;
-    let global_sec = {
-        use crate::backend::wasm::wasm_abi::op;
-        let mut item = vec![wasm_abi::CORE_I32, 0x01];
-        item.push(op::I32_CONST);
-        crate::backend::wasm::encode::sleb128(16, &mut item);
-        item.push(op::END);
-        section(wasm_abi::CORE_SEC_GLOBAL, &wasm_vec(1, &item))
-    };
-
-    // ── Export section ── the member func + cabi_realloc (NOT memory — it is the shared imported memory).
+    // ── Export section ── the member func only. `cabi_realloc` is exported by the shared mem module (the
+    // apply lift + kv.get lower alias it from THERE), not by the guest.
     let export_sec = {
-        let export = |name: &str, kind: u8, idx: u32| {
-            let mut item = uleb_bytes(name.len() as u64);
-            item.extend_from_slice(name.as_bytes());
-            item.push(kind);
-            uleb128(idx as u64, &mut item);
-            item
-        };
-        let mut items = Vec::new();
-        items.extend_from_slice(&export(member_name, wasm_abi::EXPORT_KIND_FUNC, apply_abs));
-        items.extend_from_slice(&export(
-            "cabi_realloc",
-            wasm_abi::EXPORT_KIND_FUNC,
-            realloc_abs,
-        ));
-        section(wasm_abi::CORE_SEC_EXPORT, &wasm_vec(2, &items))
+        let mut item = uleb_bytes(member_name.len() as u64);
+        item.extend_from_slice(member_name.as_bytes());
+        item.push(wasm_abi::EXPORT_KIND_FUNC);
+        uleb128(apply_abs as u64, &mut item);
+        section(wasm_abi::CORE_SEC_EXPORT, &wasm_vec(1, &item))
     };
 
-    // ── Code section ── defined bodies, then the apply body + the realloc body.
+    // ── Code section ── defined bodies, then the apply body. NO realloc body.
     let mut code_items = Vec::new();
     for f in funcs {
         code_items.extend_from_slice(&code_entry(f, &import_index));
@@ -7634,15 +7622,13 @@ pub fn bytes_roundtrip_host_core_module(
         member_body_abs,
         &import_index,
     ));
-    code_items.extend_from_slice(&emit_bump_realloc_body(bump_global));
-    let code_sec = section(wasm_abi::CORE_SEC_CODE, &wasm_vec(n + 2, &code_items));
+    let code_sec = section(wasm_abi::CORE_SEC_CODE, &wasm_vec(n + 1, &code_items));
 
     let mut core = Vec::new();
     core.extend_from_slice(CORE_MAGIC);
     core.extend_from_slice(&type_sec);
     core.extend_from_slice(&import_sec);
     core.extend_from_slice(&func_sec);
-    core.extend_from_slice(&global_sec);
     core.extend_from_slice(&export_sec);
     core.extend_from_slice(&code_sec);
     Ok(core)
