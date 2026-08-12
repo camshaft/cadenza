@@ -49,6 +49,30 @@ def inbox-key(msg: Bytes) -> Bytes = Bytes.concat(inbox-prefix(), msg)
 def context-prefix() -> Bytes = String.to-bytes("context/")
 def context-key(result: Bytes) -> Bytes = Bytes.concat(context-prefix(), result)
 
+// GAP-1 M1 content block — a NAME-headed sum (Text / ToolCall / ToolResult) whose tool-use ids round-trip
+// through the conversation. Declared nominally (Cadenza sums need a local declaration; structural records
+// do not); its value-form is the b1 model-effect wire the kernel re-encodes and the host decodes.
+type ContentBlock =
+  | Text(String)
+  | ToolCall(Record(id: String, name: String, input: Bytes))
+  | ToolResult(Record(id: String, result: Bytes))
+
+// The effect PAYLOAD (b1): a payload-ENCODING sum — opaque `Raw` bytes OR a `Structured` value-form value
+// the host decodes per the effect's schema. TWO arms (so it does NOT newtype-erase): this reducer emits
+// BOTH — `Raw` for the opaque tool-call dispatch, `Structured` for the model-request. `Structured` is a
+// GENERIC codec marker, NOT a model capability (an effect's identity is its schema-hash, never this ctor
+// name); the kernel's parse_effect_list unwraps `Raw` to opaque bytes and re-encodes `Structured` to the
+// value-form bytes decode_model_request reads. The `Structured` arm carries an M1 ModelRequest (an inline
+// structural record — the model id, the conversation, the offered tools, an optional token cap).
+type Payload =
+  | Raw(Bytes)
+  | Structured(Record(
+      model: String,
+      messages: List(Record(role: String, content: List(ContentBlock))),
+      tools: List(Record(name: String, schema: Bytes)),
+      max-tokens: Option(UInt(64)),
+    ))
+
 def apply(
   event: Record(
     content-type: Record(family: String, version: UInt(32)),
@@ -58,36 +82,46 @@ def apply(
 ) -> List(Record(
   kind: String,
   target: Bytes,
-  payload: Option(Bytes),
+  payload: Option(Payload),
   correlation: Option(Bytes),
 )) =
   let family = event.content-type.family in
   if family == "message" then
-    // Read-inbox → call-model half: append the message, enumerate the pending inbox, invoke the model.
+    // Read-inbox → call-model half: append the message, enumerate the pending inbox, invoke the model with
+    // a real M1 ModelRequest (the message decoded to a user turn; the shell tool offered).
     (match event.payload with
        | Some(msg) => host Kv in (
            Kv.put(inbox-key(msg), msg);
            (if List.len(Kv.prefix-scan(inbox-prefix())) == 0 then []
-            else [{
+            else
+              // Decode the message bytes to text for the M1 user turn (total UTF-8 decode; a non-UTF-8
+              // message folds to an empty prompt rather than trapping).
+              let msg-text = (match String.from-bytes(msg) with | Some(s) => s | None() => "") in
+              [{
               kind = "model",
               target = String.to-bytes("llm"),
-              payload = Some(msg),
+              payload = Some(Structured({
+                model = "claude",
+                messages = [{ role = "user", content = [Text(msg-text)] }],
+                tools = [{ name = "shell", schema = String.to-bytes("{}") }],
+                max-tokens = Some(1024),
+              })),
               correlation = None(),
             }]))
        | None() => [])
   else if family == "model-response" then
-    // Action half: the model requested a tool call; dispatch it as a tool effect.
+    // Action half: the model requested a tool call; dispatch it as a tool effect (opaque Raw payload).
     (match event.payload with
        | Some(call) => [{
            kind = "tool",
            target = String.to-bytes("shell"),
-           payload = Some(call),
+           payload = Some(Raw(call)),
            correlation = None(),
          }]
        | None() => [])
   else if family == "tool-result" then
     // Loop-CLOSURE: the tool ran; fold its result into the accumulated context, then re-invoke the model
-    // with the context enumerated via kv.prefix-scan — closing the cycle message→model→tool→RESULT→model→…
+    // with the result folded in as an M1 tool-result turn — closing the cycle message→model→tool→RESULT→…
     // This is what makes it a LOOP (not a single message→model→tool pass): each tool result grows the
     // agent's working set and drives the next model turn.
     (match event.payload with
@@ -97,7 +131,12 @@ def apply(
             else [{
               kind = "model",
               target = String.to-bytes("llm"),
-              payload = Some(result),
+              payload = Some(Structured({
+                model = "claude",
+                messages = [{ role = "user", content = [ToolResult({ id = "t1", result = result })] }],
+                tools = [{ name = "shell", schema = String.to-bytes("{}") }],
+                max-tokens = Some(1024),
+              })),
               correlation = None(),
             }]))
        | None() => [])

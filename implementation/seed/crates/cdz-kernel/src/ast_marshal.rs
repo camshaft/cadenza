@@ -1150,10 +1150,19 @@ fn read_canonical_opt_payload(a: &Arenas, id: StructId) -> Result<Option<Vec<u8>
             match a.get(inner) {
                 // A bare bytes-leaf IS an opaque payload (the natural value-form of `list<u8>`).
                 Struct::Atom(_) => Ok(Some(read_bytes(a, inner)?)),
-                // A name-headed compound is the `Structured` value-form arm — re-encode it standalone.
+                // A name-headed compound is a TAGGED payload arm. A reducer whose payload field is a
+                // TWO-arm sum `Raw(Bytes) | Structured(<value>)` (needed when it emits BOTH opaque and
+                // structured payloads — the two arms defeat newtype erasure, so the tag survives on the
+                // wire) tags opaque bytes as `(Raw <bytes>)` and a structured value as `(Structured <v>)`.
+                // `Raw` unwraps to the opaque bytes; `Structured` re-encodes its value standalone. (A
+                // single-payload reducer instead emits a bare bytes-leaf — the Atom arm above.)
                 Struct::List(_) => {
                     let (tag, val) = ctor(a, inner)?;
                     match tag {
+                        "Raw" => Ok(Some(read_bytes(
+                            a,
+                            val.ok_or_else(|| type_mismatch("payload", "Raw without bytes"))?,
+                        )?)),
                         "Structured" => Ok(Some(reencode_subtree(
                             a,
                             val.ok_or_else(|| {
@@ -1162,10 +1171,7 @@ fn read_canonical_opt_payload(a: &Arenas, id: StructId) -> Result<Option<Vec<u8>
                         ))),
                         other => Err(type_mismatch(
                             "payload",
-                            format!(
-                                "compound payload head {} != Structured",
-                                bounded_name(other)
-                            ),
+                            format!("payload arm {} ∉ {{Raw,Structured}}", bounded_name(other)),
                         )),
                     }
                 }
@@ -2690,6 +2696,39 @@ mod tests {
             ),
             other => panic!("expected an Inline value-form payload, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn effect_list_raw_payload_arm_unwraps_to_the_opaque_bytes() {
+        // A reducer whose payload field is a TWO-arm `Raw(Bytes) | Structured(<value>)` sum (it emits BOTH
+        // opaque and structured payloads — the agent-loop) tags an opaque payload as `(Raw <bytes>)`, not a
+        // bare bytes-leaf, because the two arms defeat newtype erasure so the tag survives. parse_effect_list
+        // must UNWRAP `(Raw <bytes>)` to the same inline bytes a bare-leaf opaque payload yields — so a tool
+        // effect from the two-arm agent-loop reads identically to an opaque payload from a bare reducer.
+        let raw_effect = Val::Record(vec![
+            ("kind".into(), Val::String("tool".into())),
+            (
+                "target".into(),
+                Val::List(b"shell".iter().copied().map(Val::U8).collect()),
+            ),
+            (
+                "payload".into(),
+                Val::Option(Some(Box::new(Val::Variant(
+                    "Raw".into(),
+                    Some(Box::new(Val::List(
+                        b"cargo test".iter().copied().map(Val::U8).collect(),
+                    ))),
+                )))),
+            ),
+            ("correlation".into(), Val::Option(None)),
+        ]);
+        let effects = parse_effect_list(&effect_list_bytes(vec![raw_effect])).expect("Raw parses");
+        assert_eq!(effects.len(), 1);
+        assert_eq!(effects[0].request.content_type.family, "tool");
+        assert!(
+            matches!(&effects[0].request.payload, Some(Payload::Inline(p)) if p.as_ref() == b"cargo test"),
+            "the Raw arm unwraps to the opaque bytes verbatim"
+        );
     }
 
     #[test]
