@@ -472,6 +472,36 @@ impl Builder {
         self.list(children)
     }
 
+    /// Build a PRIMITIVE WIT type descriptor `(kind)` — a one-element list whose sole child is a NAME
+    /// atom naming the primitive (`u8`, `string`, `bool`, `s64`, `f64`, …). One of the shared canonical
+    /// WIT type-descriptor builders ([`wit_type_prim`]/[`wit_type_list`]/[`wit_type_option`]) that ALL
+    /// three world sources emit through so a target world's per-member type descriptors are byte-identical
+    /// regardless of source (the descriptor-form analogue of [`world_schema_tree`] for the world wrapper).
+    /// The form is the LANDED one the kernel's `ast_marshal::build_type` produces and rcdzc's
+    /// `parse_wit_type` already reads (v-agent-harness ruling 2026-08-12): a primitive is a NAME-head
+    /// one-element list, a compound is a STRING-head form — so a `Name` vs `Str` head DISTINGUISHES prim
+    /// from compound, and the codec's distinct Name/Str bytes make the choice load-bearing for identity.
+    pub fn wit_type_prim(&mut self, kind: &str) -> StructId {
+        let head = self.name(kind);
+        self.list(vec![head])
+    }
+
+    /// Build a `list<T>` WIT type descriptor `("list" <elem>)` — a STRING-atom head `list` then the
+    /// element type descriptor (itself built by a `wit_type_*`). String head (a compound), matching
+    /// `build_type`'s landed form. See [`wit_type_prim`].
+    pub fn wit_type_list(&mut self, elem: StructId) -> StructId {
+        let head = self.atom_leaf(Leaf::Str("list".into()));
+        self.list(vec![head, elem])
+    }
+
+    /// Build an `option<T>` WIT type descriptor `("option" <inner>)` — a STRING-atom head `option` then
+    /// the inner type descriptor. The TYPE-side option (distinct from a value's `Some`/`None` ctor).
+    /// See [`wit_type_prim`].
+    pub fn wit_type_option(&mut self, inner: StructId) -> StructId {
+        let head = self.atom_leaf(Leaf::Str("option".into()));
+        self.list(vec![head, inner])
+    }
+
     pub fn finish(self, root: StructId) -> Arenas {
         Arenas {
             leaves: self.leaves,
@@ -1560,6 +1590,72 @@ mod tests {
         assert!(
             built.as_form(func[0], "result").is_some(),
             "the sole sub-node is the result"
+        );
+    }
+
+    #[test]
+    fn wit_type_descriptors_match_the_canonical_str_head_build_type_form() {
+        // The shared WIT type-descriptor builders emit the LANDED `ast_marshal::build_type` form (the
+        // anchor rcdzc's `parse_wit_type` already reads; v-agent-harness ruling 2026-08-12): a PRIMITIVE
+        // is a NAME-head one-element list `(u8)`; a COMPOUND (`list`/`option`) is a STRING-head form
+        // `("list" <elem>)` / `("option" <inner>)`. A Name-vs-Str head is what distinguishes prim from
+        // compound, so the head KIND is load-bearing — pin it explicitly, not just the spelling.
+        let mut b = Builder::new();
+        // Primitive: `(u8)` — head is a NAME `u8`, exactly one child.
+        let u8 = b.wit_type_prim("u8");
+        // list<u8>: `("list" (u8))` — head is a STRING `list`, child is the u8 prim descriptor.
+        let list_u8 = {
+            let e = b.wit_type_prim("u8");
+            b.wit_type_list(e)
+        };
+        // option<list<u8>>: `("option" ("list" (u8)))`.
+        let opt = {
+            let inner = {
+                let e = b.wit_type_prim("u8");
+                b.wit_type_list(e)
+            };
+            b.wit_type_option(inner)
+        };
+        let built = b.finish(u8); // finish needs a root; reuse the arena via accessors below
+        // Primitive: a 1-element list whose head is a NAME atom.
+        let Struct::List(prim_kids) = built.get(u8) else {
+            panic!("prim is a list")
+        };
+        assert_eq!(
+            prim_kids.len(),
+            1,
+            "a primitive descriptor is a one-element list"
+        );
+        assert_eq!(
+            built.as_name(prim_kids[0]),
+            Some("u8"),
+            "prim head is a NAME atom"
+        );
+
+        // list: a 2-element list whose head is a STRING atom `list` (NOT a name), child is the element.
+        let Struct::List(list_kids) = built.get(list_u8) else {
+            panic!("list is a list")
+        };
+        assert_eq!(list_kids.len(), 2, "list<T> is head + element");
+        assert_eq!(
+            built.as_str(list_kids[0]),
+            Some("list"),
+            "list head is a STRING atom (compound marker), not a name"
+        );
+        assert!(
+            built.as_name(list_kids[0]).is_none(),
+            "list head is NOT a name atom"
+        );
+
+        // option: STRING head `option` + inner.
+        let Struct::List(opt_kids) = built.get(opt) else {
+            panic!("option is a list")
+        };
+        assert_eq!(opt_kids.len(), 2, "option<T> is head + inner");
+        assert_eq!(
+            built.as_str(opt_kids[0]),
+            Some("option"),
+            "option head is a STRING atom"
         );
     }
 }
