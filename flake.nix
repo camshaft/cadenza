@@ -1128,6 +1128,20 @@
           # like the genesis reducer's deps. Its List-rooted result value-encodes BARE (rcdzc result+param
           # value-form both bare after 50b82e141 + 01c29a0f5), which parse_effect_list accepts.
           export PURE_GENESIS_REDUCER_COMPONENT="${reducerCadenzaPureGenesis}"
+          # A1 kv-genesis: feed the precompiled KV reducer bytes-provider component so v-ah-host's
+          # real_kv_reducer_round_trips_stored_bytes_through_the_kv_host_import E2E RUNS instead of skipping —
+          # it PUTs a value under a key on a seed event then GETs it back on a trigger event and echoes it,
+          # proving BOTH kv.put AND the kv.get option<list<u8>> host-result lift (rcdzc §3c GAP C) round-trip
+          # the same bytes through the host. Gates on this env + CDZ_STORE (the kv reducer imports
+          # cadenza:runtime/heap, resolved from the store). Same pattern as PURE_GENESIS_REDUCER_COMPONENT.
+          export CDZ_KV_GENESIS_REDUCER_COMPONENT="${reducerCadenzaKv}"
+          # A1 BYTES-ABI ARMING SWITCH (v-agent-harness-host coordinated): flip to 1 to un-skip the genesis
+          # e2e (real_genesis_reducer_folds_setup_events_through_the_host_async_path), which drives the A1
+          # host-fused genesis reducer (single-Event apply, kv.put host-routed) via the host seed_genesis fold
+          # path. Held unset through the A1 transition (the reducers/e2es were mid-migration); now armed since
+          # the full-A reducer arc (pure+genesis+kv derivations) + v-ah-host's e2e bytes-adaptation (cfedca65f)
+          # are all on trunk. v-ah-host follows up to collapse this switch entirely once arming proves green.
+          export CDZ_KERNEL_BYTES_ABI=1
           # CDZ_STORE resolves the genesis reducer's value-heap runtime + transitive nfc.
           export CDZ_STORE="${componentStore}"
         '';
