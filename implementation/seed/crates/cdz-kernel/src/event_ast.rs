@@ -34,12 +34,14 @@
 //! value form). u64 ids/versions/deadlines ride as `Leaf::Int` (a `BigInt`, decoded back with a range
 //! check so an out-of-u64 value is a clean `Corrupt`, never a panic).
 
+use crate::ast_marshal::val_to_ast;
 use crate::effect::{EffectId, EffectKind, Payload};
 use crate::event::{ContentType, EffectOutcome, Event, EventBody};
 use crate::hash::Hash;
 use cadenza_ast::ast::{Arenas, Builder, Leaf, Radix, Struct, StructId};
 use cadenza_ast::codec;
 use num_bigint::BigInt;
+use wasmtime::component::Val;
 
 /// Why an `Arenas`/byte stream isn't a well-formed kernel event. Total: the mapping never panics on bad
 /// input. Mirrors the shape a log reader needs — a torn write (from `decode_detailed`'s `Truncated`) vs.
@@ -617,263 +619,199 @@ pub struct ModelRequest {
     pub max_tokens: Option<u64>,
 }
 
-/// Encode one [`ContentBlock`] as its headed AST form (shared by the message encoder): `(text <str>)` |
-/// `(tool-call (id <str>) (name <str>) (input <bytes>))` | `(tool-result (id <str>) (result <bytes>))`.
-fn content_block_form(b: &mut Builder, block: &ContentBlock) -> StructId {
+/// Build one [`ContentBlock`] as a wasmtime [`Val`] — the value-form the shared M1/M2 codec marshals via
+/// [`val_to_ast`]: `Text(<str>)` | `ToolCall(record id,name,input)` | `ToolResult(record id,result)`. The
+/// ctor NAME is the case head (value-decode reads a case by name-head); `input`/`result` ride as `list<u8>`
+/// (→ one `Bytes` leaf). Shared by the request (assistant tool-calls) and response (tool-results).
+fn content_block_val(block: &ContentBlock) -> Val {
     match block {
         ContentBlock::Text(t) => {
-            let h = b.name("text");
-            let v = str_leaf(b, t);
-            b.list(vec![h, v])
+            Val::Variant("Text".into(), Some(Box::new(Val::String(t.clone()))))
         }
-        ContentBlock::ToolCall { id, name, input } => {
-            let h = b.name("tool-call");
-            let id_f = {
-                let ih = b.name("id");
-                let iv = str_leaf(b, id);
-                b.list(vec![ih, iv])
-            };
-            let name_f = {
-                let nh = b.name("name");
-                let nv = str_leaf(b, name);
-                b.list(vec![nh, nv])
-            };
-            let input_f = {
-                let ph = b.name("input");
-                let pv = bytes_leaf(b, input);
-                b.list(vec![ph, pv])
-            };
-            b.list(vec![h, id_f, name_f, input_f])
-        }
-        ContentBlock::ToolResult { id, result } => {
-            let h = b.name("tool-result");
-            let id_f = {
-                let ih = b.name("id");
-                let iv = str_leaf(b, id);
-                b.list(vec![ih, iv])
-            };
-            let result_f = {
-                let rh = b.name("result");
-                let rv = bytes_leaf(b, result);
-                b.list(vec![rh, rv])
-            };
-            b.list(vec![h, id_f, result_f])
-        }
+        ContentBlock::ToolCall { id, name, input } => Val::Variant(
+            "ToolCall".into(),
+            Some(Box::new(Val::Record(vec![
+                ("id".into(), Val::String(id.clone())),
+                ("name".into(), Val::String(name.clone())),
+                ("input".into(), bytes_to_val(input)),
+            ]))),
+        ),
+        ContentBlock::ToolResult { id, result } => Val::Variant(
+            "ToolResult".into(),
+            Some(Box::new(Val::Record(vec![
+                ("id".into(), Val::String(id.clone())),
+                ("result".into(), bytes_to_val(result)),
+            ]))),
+        ),
     }
 }
 
-/// Decode one [`ContentBlock`] from its headed AST form — the dual of [`content_block_form`]. An unknown
-/// head is a `Shape` error (the reducer/host defines the block vocab; the codec pins the M1 set).
+/// `list<u8>` as a `Val::List` of `Val::U8` — `build_val` renders it as one `Bytes` leaf (the
+/// blob-optimized wire), so opaque payload bytes (schema/input/result) stay compact.
+fn bytes_to_val(bytes: &[u8]) -> Val {
+    Val::List(bytes.iter().map(|b| Val::U8(*b)).collect())
+}
+
+/// Look up a value-form record's field VALUE node by NAME — order-independent, so the producer's field
+/// order (val_to_ast sorts by name) never matters to the decoder. The record is `(record (= name value)…)`.
+fn record_field(a: &Arenas, rec: StructId, field: &str) -> Result<StructId, EventAstError> {
+    let fields = form(a, rec, "record")?;
+    for &f in fields {
+        let [n, v] = form(a, f, "=")? else {
+            return Err(shape("record field is not a (= name value) 3-list"));
+        };
+        if a.as_name(*n) == Some(field) {
+            return Ok(*v);
+        }
+    }
+    Err(shape("record missing an expected field"))
+}
+
+/// Element nodes of a value-form list, tolerating the EMPTY-list encoding: `build_val` renders an empty
+/// `Val::List` as an empty `Bytes` leaf (its `as_u8_list` of `[]` is `Some([])`), NOT `(list)`. A non-empty
+/// list of compounds is always `(list …)`. So an empty messages/tools/content reads from the empty leaf.
+fn list_items(a: &Arenas, id: StructId) -> Result<&[StructId], EventAstError> {
+    if let Some(items) = a.as_form(id, "list") {
+        Ok(items)
+    } else if matches!(read_bytes(a, id), Ok(ref b) if b.is_empty()) {
+        Ok(&[])
+    } else {
+        Err(shape("expected a list (or the empty-list bytes leaf)"))
+    }
+}
+
+/// Read an `option<u64>` value-form ctor: `(Some <int>)` → `Some`, `(None unit)` → `None`.
+fn read_opt_u64(a: &Arenas, id: StructId) -> Result<Option<u64>, EventAstError> {
+    match head_of(a, id)? {
+        "Some" => {
+            let [v] = form(a, id, "Some")? else {
+                return Err(shape("Some arity"));
+            };
+            Ok(Some(read_u64(a, *v)?))
+        }
+        "None" => Ok(None),
+        _ => Err(shape("expected Some/None for an optional")),
+    }
+}
+
+/// Decode one [`ContentBlock`] from its value-form ctor — the dual of [`content_block_val`]. An unknown case
+/// head is a `Shape` error (the codec pins the M1 block set: Text/ToolCall/ToolResult).
 fn read_content_block(a: &Arenas, id: StructId) -> Result<ContentBlock, EventAstError> {
     match head_of(a, id)? {
-        "text" => {
-            let [v] = a.as_form(id, "text").ok_or(shape("text form"))? else {
-                return Err(shape("text arity"));
+        "Text" => {
+            let [v] = form(a, id, "Text")? else {
+                return Err(shape("Text arity"));
             };
             Ok(ContentBlock::Text(read_str(a, *v)?))
         }
-        "tool-call" => {
-            let [id_f, name_f, input_f] =
-                a.as_form(id, "tool-call").ok_or(shape("tool-call form"))?
-            else {
-                return Err(shape("tool-call arity (want (id)(name)(input))"));
-            };
-            let [iv] = a.as_form(*id_f, "id").ok_or(shape("tool-call id form"))? else {
-                return Err(shape("tool-call id arity"));
-            };
-            let [nv] = a
-                .as_form(*name_f, "name")
-                .ok_or(shape("tool-call name form"))?
-            else {
-                return Err(shape("tool-call name arity"));
-            };
-            let [pv] = a.as_form(*input_f, "input").ok_or(shape("input form"))? else {
-                return Err(shape("input arity"));
+        "ToolCall" => {
+            let [rec] = form(a, id, "ToolCall")? else {
+                return Err(shape("ToolCall arity"));
             };
             Ok(ContentBlock::ToolCall {
-                id: read_str(a, *iv)?,
-                name: read_str(a, *nv)?,
-                input: read_bytes(a, *pv)?,
+                id: read_str(a, record_field(a, *rec, "id")?)?,
+                name: read_str(a, record_field(a, *rec, "name")?)?,
+                input: read_bytes(a, record_field(a, *rec, "input")?)?,
             })
         }
-        "tool-result" => {
-            let [id_f, result_f] = a
-                .as_form(id, "tool-result")
-                .ok_or(shape("tool-result form"))?
-            else {
-                return Err(shape("tool-result arity (want (id)(result))"));
-            };
-            let [iv] = a.as_form(*id_f, "id").ok_or(shape("tool-result id form"))? else {
-                return Err(shape("tool-result id arity"));
-            };
-            let [rv] = a.as_form(*result_f, "result").ok_or(shape("result form"))? else {
-                return Err(shape("result arity"));
+        "ToolResult" => {
+            let [rec] = form(a, id, "ToolResult")? else {
+                return Err(shape("ToolResult arity"));
             };
             Ok(ContentBlock::ToolResult {
-                id: read_str(a, *iv)?,
-                result: read_bytes(a, *rv)?,
+                id: read_str(a, record_field(a, *rec, "id")?)?,
+                result: read_bytes(a, record_field(a, *rec, "result")?)?,
             })
         }
-        _ => Err(shape("unknown content-block head")),
+        _ => Err(shape(
+            "unknown content-block ctor (want Text/ToolCall/ToolResult)",
+        )),
     }
 }
 
-/// Encode a §GAP-1 M1 tool-calling [`ModelRequest`] as canonical AST — the `model` effect's structured
-/// payload. Shape:
-///
-///   `(model-request (model <str>)
-///      (messages (message (role <str>) (content <block> …)) …)
-///      (tools (tool (name <str>) (schema <bytes>)) …) (opts (max-tokens <int>)?))`
-///
-/// where `<block>` = `(text <str>)` | `(tool-call (id)(name)(input <bytes>))` | `(tool-result (id)(result
-/// <bytes>))` — so an assistant turn carries tool-CALLs and a tool turn carries tool-RESULTs, and the
-/// tool-use `id` ROUND-TRIPS through the conversation (v-agent-harness-host constraint: Bedrock toolUseId
-/// must correlate result→call). The reducer builds it; the host transport decodes it
-/// ([`decode_model_request`]) and maps to Bedrock Converse + toolConfig. `schema`/`input`/`result` ride as
-/// opaque bytes (kernel doesn't interpret — O4). `opts` is a headed form so it grows additively (only
-/// `max-tokens` in M1). Same shared-codec + total-decode discipline as the other event_ast codecs.
-pub fn encode_model_request(req: &ModelRequest) -> Vec<u8> {
-    let mut b = Builder::new();
-    let head = b.name("model-request");
-    let model_form = {
-        let h = b.name("model");
-        let v = str_leaf(&mut b, &req.model);
-        b.list(vec![h, v])
-    };
-    let messages_form = {
-        let h = b.name("messages");
-        let mut items = vec![h];
-        for m in &req.messages {
-            let mh = b.name("message");
-            let role = {
-                let rh = b.name("role");
-                let rv = str_leaf(&mut b, &m.role);
-                b.list(vec![rh, rv])
-            };
-            let content = {
-                let ch = b.name("content");
-                let mut blocks = vec![ch];
-                for blk in &m.content {
-                    blocks.push(content_block_form(&mut b, blk));
-                }
-                b.list(blocks)
-            };
-            items.push(b.list(vec![mh, role, content]));
-        }
-        b.list(items)
-    };
-    let tools_form = {
-        let h = b.name("tools");
-        let mut items = vec![h];
-        for t in &req.tools {
-            let th = b.name("tool");
-            let name = {
-                let nh = b.name("name");
-                let nv = str_leaf(&mut b, &t.name);
-                b.list(vec![nh, nv])
-            };
-            let schema = {
-                let sh = b.name("schema");
-                let sv = bytes_leaf(&mut b, &t.schema);
-                b.list(vec![sh, sv])
-            };
-            items.push(b.list(vec![th, name, schema]));
-        }
-        b.list(items)
-    };
-    let opts_form = {
-        let h = b.name("opts");
-        let mut items = vec![h];
-        if let Some(mt) = req.max_tokens {
-            let mth = b.name("max-tokens");
-            let mtv = u64_leaf(&mut b, mt);
-            items.push(b.list(vec![mth, mtv]));
-        }
-        b.list(items)
-    };
-    let root = b.list(vec![head, model_form, messages_form, tools_form, opts_form]);
-    codec::encode(&b.finish(root))
+/// One conversation turn as a value-form record `{content, role}` (`val_to_ast` sorts the fields by name).
+fn chat_message_val(m: &ChatMessage) -> Val {
+    Val::Record(vec![
+        ("role".into(), Val::String(m.role.clone())),
+        (
+            "content".into(),
+            Val::List(m.content.iter().map(content_block_val).collect()),
+        ),
+    ])
 }
 
-/// Decode a `model-request` frame encoded by [`encode_model_request`] → a [`ModelRequest`]. Total,
-/// distinguishing the two [`EventAstError`] classes: non-parseable codec bytes → [`EventAstError::Codec`];
-/// a well-formed frame with a bad head/arity / non-string field / bad opt → [`EventAstError::Shape`]. Never
-/// a panic (the bytes ride the durable effect log / a guest reducer). An absent `max-tokens` (empty `opts`)
-/// decodes to `None`.
+/// One offered tool as a value-form record `{name, schema}` (schema = opaque `list<u8>`).
+fn tool_def_val(t: &ToolDef) -> Val {
+    Val::Record(vec![
+        ("name".into(), Val::String(t.name.clone())),
+        ("schema".into(), bytes_to_val(&t.schema)),
+    ])
+}
+
+/// Encode a §GAP-1 M1 tool-calling [`ModelRequest`] as the canonical VALUE-FORM — the deterministic form
+/// [`val_to_ast`] produces from the record `{model, messages, tools, max-tokens}` (fields sorted by name),
+/// BYTE-IDENTICAL to what a reducer's Structured payload marshals through `parse_effect_list`, so the
+/// reducer's emitted M1 and this codec's [`decode_model_request`] agree BY CONSTRUCTION. `messages` is a
+/// `list` of `{content, role}` records; `content` a `list` of the shared [`content_block_val`] ctors
+/// (`Text`/`ToolCall`/`ToolResult`); `tools` a `list` of `{name, schema}` records; `max-tokens` an
+/// `option<u64>` ctor. `schema`/`input`/`result` ride as opaque `list<u8>` (→ a `Bytes` leaf; kernel
+/// doesn't interpret — O4). The host transport decodes it and maps to Bedrock Converse + toolConfig.
+pub fn encode_model_request(req: &ModelRequest) -> Vec<u8> {
+    let v = Val::Record(vec![
+        ("model".into(), Val::String(req.model.clone())),
+        (
+            "messages".into(),
+            Val::List(req.messages.iter().map(chat_message_val).collect()),
+        ),
+        (
+            "tools".into(),
+            Val::List(req.tools.iter().map(tool_def_val).collect()),
+        ),
+        (
+            "max-tokens".into(),
+            Val::Option(req.max_tokens.map(|n| Box::new(Val::U64(n)))),
+        ),
+    ]);
+    // A ModelRequest is only strings/bytes/ints/records/variants/options/lists — all in build_val's TOTAL
+    // set (the Unmarshallable arms are float/resource/handle only), so this can never err.
+    val_to_ast(&v).expect("a ModelRequest is always marshallable to the value-form")
+}
+
+/// Decode a value-form [`ModelRequest`] frame (the dual of [`encode_model_request`]) → a [`ModelRequest`].
+/// Reads record fields BY NAME (order-independent — the producer's field order never matters). Total:
+/// non-parseable codec bytes → [`EventAstError::Codec`]; a wrong shape (missing field / bad ctor /
+/// non-string field) → [`EventAstError::Shape`]. Never a panic (the bytes ride the durable effect log / a
+/// guest reducer). An absent max-tokens is the `(None unit)` ctor; empty messages/tools decode from the
+/// empty-list bytes leaf ([`list_items`]).
 pub fn decode_model_request(bytes: &[u8]) -> Result<ModelRequest, EventAstError> {
     let a = codec::decode_detailed(bytes).map_err(EventAstError::Codec)?;
-    let [model_f, messages_f, tools_f, opts_f] = a
-        .as_form(a.root, "model-request")
-        .ok_or(shape("model-request head"))?
-    else {
-        return Err(shape("model-request arity"));
-    };
-    let model = {
-        let [mv] = a.as_form(*model_f, "model").ok_or(shape("model form"))? else {
-            return Err(shape("model arity"));
-        };
-        read_str(&a, *mv)?
-    };
-    // messages: (messages (message (role <str>) (content <str>)) …)
+    let root = a.root;
+    let model = read_str(&a, record_field(&a, root, "model")?)?;
+    let max_tokens = read_opt_u64(&a, record_field(&a, root, "max-tokens")?)?;
     let messages = {
-        let msg_forms = a
-            .as_form(*messages_f, "messages")
-            .ok_or(shape("messages form"))?;
-        let mut out = Vec::with_capacity(msg_forms.len());
-        for &mf in msg_forms {
-            let [role_f, content_f] = a.as_form(mf, "message").ok_or(shape("message form"))? else {
-                return Err(shape("message arity (want (role)(content))"));
-            };
-            let [rv] = a.as_form(*role_f, "role").ok_or(shape("role form"))? else {
-                return Err(shape("role arity"));
-            };
-            // content is a variable-length list of blocks: (content <block> …)
-            let block_forms = a
-                .as_form(*content_f, "content")
-                .ok_or(shape("content form"))?;
-            let mut content = Vec::with_capacity(block_forms.len());
-            for &bf in block_forms {
+        let msgs = list_items(&a, record_field(&a, root, "messages")?)?;
+        let mut out = Vec::with_capacity(msgs.len());
+        for &mf in msgs {
+            let role = read_str(&a, record_field(&a, mf, "role")?)?;
+            let blocks = list_items(&a, record_field(&a, mf, "content")?)?;
+            let mut content = Vec::with_capacity(blocks.len());
+            for &bf in blocks {
                 content.push(read_content_block(&a, bf)?);
             }
-            out.push(ChatMessage {
-                role: read_str(&a, *rv)?,
-                content,
-            });
+            out.push(ChatMessage { role, content });
         }
         out
     };
-    // tools: (tools (tool (name <str>) (schema <bytes>)) …)
     let tools = {
-        let tool_forms = a.as_form(*tools_f, "tools").ok_or(shape("tools form"))?;
-        let mut out = Vec::with_capacity(tool_forms.len());
-        for &tf in tool_forms {
-            let [name_f, schema_f] = a.as_form(tf, "tool").ok_or(shape("tool form"))? else {
-                return Err(shape("tool arity (want (name)(schema))"));
-            };
-            let [nv] = a.as_form(*name_f, "name").ok_or(shape("tool name form"))? else {
-                return Err(shape("tool name arity"));
-            };
-            let [sv] = a.as_form(*schema_f, "schema").ok_or(shape("schema form"))? else {
-                return Err(shape("schema arity"));
-            };
+        let tls = list_items(&a, record_field(&a, root, "tools")?)?;
+        let mut out = Vec::with_capacity(tls.len());
+        for &tf in tls {
             out.push(ToolDef {
-                name: read_str(&a, *nv)?,
-                schema: read_bytes(&a, *sv)?,
+                name: read_str(&a, record_field(&a, tf, "name")?)?,
+                schema: read_bytes(&a, record_field(&a, tf, "schema")?)?,
             });
         }
         out
-    };
-    // opts: (opts (max-tokens <int>)?) — only max-tokens in M1; an absent child = None.
-    let max_tokens = {
-        let opt_forms = a.as_form(*opts_f, "opts").ok_or(shape("opts form"))?;
-        let mut mt = None;
-        for &of in opt_forms {
-            if let Some([v]) = a.as_form(of, "max-tokens") {
-                mt = Some(read_u64(&a, *v)?);
-            }
-            // Unknown opt heads are IGNORED (additive-forward: an older decoder tolerates a newer opt).
-        }
-        mt
     };
     Ok(ModelRequest {
         model,
@@ -901,62 +839,34 @@ pub struct ModelResponse {
     pub content: Vec<ContentBlock>,
 }
 
-/// Encode a §GAP-1 M2 [`ModelResponse`] as canonical AST — the `model` effect's structured RESULT payload
-/// (the host builds it from the LLM; the reducer folds it). Shape:
-///
-///   `(model-response (stop-reason <str>) (content <block> …))`
-///
-/// where `<block>` is the SHARED `content_block_form` grammar (`(text …)` / `(tool-call (id)(name)(input
-/// <bytes>))`; a response won't emit `(tool-result …)` but the codec accepts the shared set). `stop-reason`
-/// is a RAW STRING — never narrowed to an enum, so a future transport stop-reason decodes fine and the
-/// reducer folds it. Same shared-codec + total-decode discipline as the other event_ast codecs.
+/// Encode a §GAP-1 M2 [`ModelResponse`] as the canonical VALUE-FORM — the `model` effect's structured RESULT
+/// payload (the host builds it from the LLM via `to_model_response`; the reducer folds it). The record
+/// `{stop-reason, content}` marshalled through [`val_to_ast`], sharing the ONE [`content_block_val`] ctor
+/// codec with the M1 request (the no-adapter collapse: one block form for request AND response). `stop-reason`
+/// is a RAW STRING — never narrowed to an enum, so a future transport stop-reason decodes fine.
 pub fn encode_model_response(resp: &ModelResponse) -> Vec<u8> {
-    let mut b = Builder::new();
-    let head = b.name("model-response");
-    let stop_form = {
-        let h = b.name("stop-reason");
-        let v = str_leaf(&mut b, &resp.stop_reason);
-        b.list(vec![h, v])
-    };
-    let content_form = {
-        let h = b.name("content");
-        let mut blocks = vec![h];
-        for blk in &resp.content {
-            blocks.push(content_block_form(&mut b, blk));
-        }
-        b.list(blocks)
-    };
-    let root = b.list(vec![head, stop_form, content_form]);
-    codec::encode(&b.finish(root))
+    let v = Val::Record(vec![
+        ("stop-reason".into(), Val::String(resp.stop_reason.clone())),
+        (
+            "content".into(),
+            Val::List(resp.content.iter().map(content_block_val).collect()),
+        ),
+    ]);
+    val_to_ast(&v).expect("a ModelResponse is always marshallable to the value-form")
 }
 
-/// Decode a `model-response` frame encoded by [`encode_model_response`] → a [`ModelResponse`]. Total,
-/// distinguishing the two [`EventAstError`] classes: non-parseable codec bytes → [`EventAstError::Codec`];
-/// a well-formed frame with a bad head/arity / non-string stop-reason / bad content block →
-/// [`EventAstError::Shape`]. Never a panic (the bytes ride the durable effect-result log / the host).
+/// Decode a value-form [`ModelResponse`] frame (the dual of [`encode_model_response`]) → a [`ModelResponse`].
+/// Reads the `{stop-reason, content}` record fields BY NAME. Total: non-parseable codec bytes →
+/// [`EventAstError::Codec`]; a wrong shape → [`EventAstError::Shape`]. Never a panic (the bytes ride the
+/// durable effect-result log / the host). Empty content decodes from the empty-list bytes leaf.
 pub fn decode_model_response(bytes: &[u8]) -> Result<ModelResponse, EventAstError> {
     let a = codec::decode_detailed(bytes).map_err(EventAstError::Codec)?;
-    let [stop_f, content_f] = a
-        .as_form(a.root, "model-response")
-        .ok_or(shape("model-response head"))?
-    else {
-        return Err(shape("model-response arity"));
-    };
-    let stop_reason = {
-        let [sv] = a
-            .as_form(*stop_f, "stop-reason")
-            .ok_or(shape("stop-reason form"))?
-        else {
-            return Err(shape("stop-reason arity"));
-        };
-        read_str(&a, *sv)?
-    };
+    let root = a.root;
+    let stop_reason = read_str(&a, record_field(&a, root, "stop-reason")?)?;
     let content = {
-        let block_forms = a
-            .as_form(*content_f, "content")
-            .ok_or(shape("content form"))?;
-        let mut out = Vec::with_capacity(block_forms.len());
-        for &bf in block_forms {
+        let blocks = list_items(&a, record_field(&a, root, "content")?)?;
+        let mut out = Vec::with_capacity(blocks.len());
+        for &bf in blocks {
             out.push(read_content_block(&a, bf)?);
         }
         out
