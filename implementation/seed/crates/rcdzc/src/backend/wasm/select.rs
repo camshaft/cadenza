@@ -15644,11 +15644,24 @@ fn emit_checked_arith_to(
     // scratch slot (source = that slot). `$r` (the result) always needs its own scratch. Scratch slots
     // are claimed from `base`; the operand recursion floats ABOVE whatever scratch is actually used, so
     // an operand that needs no copy also frees the slot it would have occupied.
+    // WIDTH-PARTITIONED CLAIM (finding #21 — arm-inline computed-perform-key slot-width alias): every scratch
+    // slot this checked-arith claims is stored at `m.slot()` (the op's machine width). SKIP any slot
+    // `scratch_ty` already records at a DIFFERENT width — a live let-binder / handle temp holds it (e.g. an
+    // i32 `Map.lookup`-match result `m2` bound in the enclosing arm, still live across the re-materialized
+    // `(+ n 1)` perform key in the resume value). Reusing it for this i64 guard would declare one wasm local
+    // at two widths → `local.tee` i32 into an i64-declared slot → validator reject (`expected i64, found i32`,
+    // breaker finding #21 mmlminT func[10] @0x343). Same-width reuse preserved (no local-count growth); only a
+    // genuine width conflict advances past the occupied slot. The claim records the slot's type itself.
+    let want = m.slot();
     let mut next_scratch = base;
-    let mut claim = |high: &mut u32| {
+    let mut claim = |high: &mut u32, scratch_ty: &mut HashMap<u32, ValType>| {
+        while matches!(scratch_ty.get(&next_scratch), Some(&w) if w != want) {
+            next_scratch += 1;
+        }
         let s = next_scratch;
         next_scratch += 1;
         *high = (*high).max(s + 1);
+        scratch_ty.insert(s, want);
         s
     };
     // A reusable source is settled now; a non-reusable operand claims a scratch slot to be stored into.
@@ -15656,8 +15669,7 @@ fn emit_checked_arith_to(
     let sa = match sa_src {
         Some(src) => src,
         None => {
-            let s = claim(high);
-            scratch_ty.insert(s, m.slot());
+            let s = claim(high, scratch_ty);
             OperandSrc::Slot(s)
         }
     };
@@ -15681,8 +15693,7 @@ fn emit_checked_arith_to(
             sa
         }
         None => {
-            let s = claim(high);
-            scratch_ty.insert(s, m.slot());
+            let s = claim(high, scratch_ty);
             OperandSrc::Slot(s)
         }
     };
@@ -15693,11 +15704,7 @@ fn emit_checked_arith_to(
     // `base` up) never collides with it.
     let sr = match dest {
         ResultDest::Slot(d) => d,
-        ResultDest::Stack => {
-            let s = claim(high);
-            scratch_ty.insert(s, m.slot());
-            s
-        }
+        ResultDest::Stack => claim(high, scratch_ty),
     };
     // Operands that DO need a copy recurse above the scratch slots claimed so far; A is stored before
     // B runs, so B may reuse A's operand scratch (the liveness the high-water mark captures).
