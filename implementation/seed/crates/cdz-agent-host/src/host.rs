@@ -2086,40 +2086,87 @@ mod tests {
     /// BYTES fold boundary on wasmtime — the smallest Cadenza guest that exercises the whole
     /// `apply(list<u8>) -> list<u8>` round-trip: the kernel `build_event_document`s the Event to bytes, the
     /// guest decodes it, folds, and encodes its effect-list back, and `parse_effect_list` decodes the result.
-    /// Where the kv-genesis E2E above needs a bytes-shape kv reducer + `CDZ_STORE` dep-compose (deferred behind
-    /// `CDZ_KERNEL_BYTES_ABI` until v-cml's kv.get emit lands), THIS reducer is PURE — `fold.apply` only, NO
-    /// kv import, no deps, no store — so it proves the A1 bytes boundary END-TO-END with the minimal surface.
+    /// Where the kv-genesis E2E above drives a KV-using reducer (deferred behind `CDZ_KERNEL_BYTES_ABI` until
+    /// v-cml's kv.get emit lands), THIS reducer is PURE — `fold.apply` only, NO kv import and NO host
+    /// capabilities — so it proves the A1 bytes boundary END-TO-END with the minimal EFFECT-emitting surface.
+    /// "PURE" ≠ zero component imports though: reducer_pure.cdz CONSTRUCTS values (structural records +
+    /// `String.to-bytes`), so — like any value-building Cadenza reducer — it imports the value-heap runtime
+    /// (`cadenza:runtime/heap`, ONE dep), resolved from `CDZ_STORE` exactly as the genesis reducer's deps are.
     ///
     /// The contract (`reducer_pure.cdz`): a PAYLOADED event folds to ONE `emit` effect echoing the payload
     /// (target = the bytes `"out"`, correlation none); a payload-free event folds to no effects.
     ///
-    /// Env-gated skip-on-unset (own env `PURE_GENESIS_REDUCER_COMPONENT`, no `CDZ_STORE` — the pure component
-    /// imports NOTHING): a bare `cargo test` stays green; v-nix's pure-reducer precompile derivation sets the
-    /// env in the native-check (pure-genesis co-land step 2/3). NOTE this test does NOT go through the
-    /// `require_reducer_and_store_or_skip` helper (+ its `CDZ_KERNEL_BYTES_ABI` transition guard): it is the
-    /// bytes-boundary proof itself + needs no store, so it gates directly on its own env being set — meaning it
-    /// runs the moment v-nix wires `PURE_GENESIS_REDUCER_COMPONENT`, post-A1, no flag needed.
+    /// Env-gated on `PURE_GENESIS_REDUCER_COMPONENT` ALONE (skip when unset); `CDZ_STORE` is the SHARED store
+    /// the agentHostEnvSetup exports for the genesis e2e too, so it may be present before the pure component is
+    /// wired — gating on the pair (and fail-loud on a half-wired env) wrongly PANICKED when CDZ_STORE was set
+    /// but the pure component absent, which is why cc51998e6 was rejected. So: unset pure component → skip;
+    /// pure component set but CDZ_STORE missing → fail loud (the heap dep needs the store). A bare `cargo test`
+    /// stays green; v-nix's pure-reducer precompile derivation exports `PURE_GENESIS_REDUCER_COMPONENT` in the
+    /// native-check and the e2e runs against the real component. It does NOT go through
+    /// `require_reducer_and_store_or_skip` (+ its `CDZ_KERNEL_BYTES_ABI` transition guard): this test IS the
+    /// bytes-boundary proof + gates on its own component env, no flag needed.
     #[tokio::test]
     async fn real_pure_reducer_folds_an_event_through_the_a1_bytes_boundary() {
         use cdz_kernel::wasm_host::AsyncComponentReducer;
 
-        let Some(reducer_path) = std::env::var("PURE_GENESIS_REDUCER_COMPONENT")
-            .ok()
-            .filter(|v| !v.is_empty())
-        else {
+        // Gate on BOTH the component path AND CDZ_STORE: "PURE" means no kv + no host capabilities, NOT zero
+        // component imports — reducer_pure.cdz CONSTRUCTS values (structural records + String.to-bytes to echo
+        // the payload), and any value-building Cadenza reducer imports the value-heap runtime
+        // (`cadenza:runtime/heap`), which is resolved from the store like the genesis reducer's deps.
+        //
+        // GATING: skip solely on THIS test's own env, `PURE_GENESIS_REDUCER_COMPONENT`. `CDZ_STORE` is a
+        // SHARED resource the nix agentHostEnvSetup exports for the genesis e2e too, so it is often present
+        // even when the pure component is NOT yet wired (v-nix lands the PURE_GENESIS_REDUCER_COMPONENT export
+        // in a separate MR). Gating on the PAIR (and fail-loud on a half-wired env, as the genesis helper does)
+        // was WRONG here: with CDZ_STORE set globally but the pure component absent, it PANICKED
+        // (`None, Some`) instead of skipping (the reject on cc51998e6). So: unset pure component → SKIP
+        // (regardless of CDZ_STORE); pure component SET but CDZ_STORE missing → fail loud (the pure reducer's
+        // heap dep genuinely needs the store, so a set-without-store is a broken pure-genesis wiring).
+        let non_empty = |var: &str| std::env::var(var).ok().filter(|v| !v.is_empty());
+        let Some(reducer_path) = non_empty("PURE_GENESIS_REDUCER_COMPONENT") else {
             eprintln!(
                 "SKIP real_pure_reducer_folds_an_event_through_the_a1_bytes_boundary: \
                  PURE_GENESIS_REDUCER_COMPONENT unset (or empty)"
             );
             return;
         };
+        let store_dir = non_empty("CDZ_STORE").unwrap_or_else(|| {
+            panic!(
+                "real_pure_reducer_...: PURE_GENESIS_REDUCER_COMPONENT is set but CDZ_STORE is not — the pure \
+                 reducer imports cadenza:runtime/heap, whose bytes resolve from the component store"
+            )
+        });
         let bytes = std::fs::read(&reducer_path).unwrap_or_else(|e| {
             panic!("PURE_GENESIS_REDUCER_COMPONENT={reducer_path:?} set but unreadable: {e}")
         });
         let reducer = AsyncComponentReducer::from_component_bytes(&bytes)
             .unwrap_or_else(|e| panic!("reducer_pure must be a valid component: {e:?}"));
-        // Pure: imports NOTHING → no dep resolution, no ComponentStore. Drive apply directly across the A1
-        // bytes boundary (kernel encodes the Event to bytes IN, decodes the effect-list bytes OUT).
+        // Resolve the reducer's declared component deps (the value-heap runtime) from CDZ_STORE via
+        // `get_by_hash` (the production content-addressed reader — same content-verify the fold uses), then
+        // attach the store so the §23 compose can resolve the runtime's OWN transitive bare imports by name.
+        // Identical to the genesis reducer's dep-resolve path above.
+        let store = cdz_kernel::component_store::ComponentStore::open(&store_dir);
+        let deps = reducer.deps().to_vec();
+        assert!(
+            !deps.is_empty(),
+            "the pure reducer must declare a cadenza:runtime/heap dep (it constructs values via the heap)"
+        );
+        let mut resolved = Vec::with_capacity(deps.len());
+        for dep in &deps {
+            let dep_bytes = store.get_by_hash(&dep.hash).unwrap_or_else(|e| {
+                panic!(
+                    "CDZ_STORE={store_dir:?} could not resolve pure reducer dep {:?} (hash {}): {e:?}",
+                    dep.import_name,
+                    dep.hash.to_hex()
+                )
+            });
+            resolved.push((dep.clone(), dep_bytes));
+        }
+        let reducer = reducer
+            .with_resolved_deps(resolved)
+            .with_component_store(store);
+        // Drive apply across the A1 bytes boundary (kernel encodes the Event to bytes IN, decodes the
+        // effect-list bytes OUT).
         let ct = cdz_kernel::event::ContentType {
             family: "message".into(),
             version: 1,
