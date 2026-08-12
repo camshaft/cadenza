@@ -3138,6 +3138,68 @@ fn reducer_kv_put_world_bytes() -> Vec<u8> {
     crate::codec::encode(&a)
 }
 
+/// A KIND_WIT_WORLD declaring the kv-GET world (B1b): export interface `fold` member `apply`
+/// (list<u8>->list<u8>) AND import interface `cadenza:agent-kernel/kv` member `get`
+/// (key: list<u8> -> option<list<u8>>). This is the world v-ah's `reducer_world_artifact` declares via
+/// `opt_bytes_desc`; the `option<list<u8>>` result descriptor decodes to `WitType::Option(List(U8))` in
+/// `parse_wit_type`. Drives the kv.get emit slice (S0): the guest lifts the host's `option<list<u8>>`
+/// result into a value-heap `Option<Bytes>` (Some = a Bytes leaf, None = absent).
+fn reducer_kv_get_world_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let byte_list = |b: &mut Builder| {
+        let hh = b.atom_leaf(Leaf::Str("list".into()));
+        let uh = b.name("u8");
+        let u = b.list(vec![uh]);
+        b.list(vec![hh, u])
+    };
+    // export fold { apply: func(input: list<u8>) -> list<u8> }
+    let a_in = byte_list(&mut b);
+    let a_out = byte_list(&mut b);
+    let apply = {
+        let func_h = b.name("func");
+        let param_h = b.name("param");
+        let pn = b.name("input");
+        let pnode = b.list(vec![param_h, pn, a_in]);
+        let result_h = b.name("result");
+        let rnode = b.list(vec![result_h, a_out]);
+        let func = b.list(vec![func_h, pnode, rnode]);
+        let member_h = b.name("member");
+        let mn = b.name("apply");
+        b.list(vec![member_h, mn, func])
+    };
+    let exp_h = b.name("export");
+    let ename = b.name("fold");
+    let fold = b.list(vec![exp_h, ename, apply]);
+    // import cadenza:agent-kernel/kv { get: func(key: list<u8>) -> option<list<u8>> }
+    let g_key = byte_list(&mut b);
+    let opt_bytes = {
+        let opt_h = b.atom_leaf(Leaf::Str("option".into()));
+        let inner = byte_list(&mut b);
+        b.list(vec![opt_h, inner])
+    };
+    let get = {
+        let func_h = b.name("func");
+        let p1h = b.name("param");
+        let p1n = b.name("key");
+        let p1 = b.list(vec![p1h, p1n, g_key]);
+        let result_h = b.name("result");
+        let rnode = b.list(vec![result_h, opt_bytes]);
+        let func = b.list(vec![func_h, p1, rnode]);
+        let member_h = b.name("member");
+        let mn = b.name("get");
+        b.list(vec![member_h, mn, func])
+    };
+    let imp_h = b.name("import");
+    let kv_name = b.name("cadenza:agent-kernel/kv");
+    let kv = b.list(vec![imp_h, kv_name, get]);
+    let world_h = b.name("world");
+    let wn = b.name("reducer");
+    let world = b.list(vec![world_h, wn, fold, kv]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
 /// §3c GAP B (host-fused, put-only): a reducer whose `apply` body calls the HOST `kv.put` (an UNHANDLED
 /// effect → escapes as a host import) EMITS through the host-fused path and the assembled component
 /// wasmparser-validates AND LOADS on the pinned wasmtime. The world declares `import cadenza:agent-kernel/kv`
@@ -3651,6 +3713,64 @@ fn a_host_fused_reducer_performs_multiple_puts_in_order_with_independent_args() 
     assert!(
         !k0.is_empty() && !v0.is_empty() && !k1.is_empty() && !v1.is_empty(),
         "every marshaled put arg is non-empty"
+    );
+}
+
+/// §3c GAP B B1b DECLINE-DON'T-MISCOMPILE (the pre-emit fence): a reducer whose `apply` calls the HOST
+/// `kv.get` — declared result `option<list<u8>>` (guest `Option<Bytes>`) — must DECLINE cleanly today:
+/// NO wasm artifact, an honest feature-limitation diagnostic, no panic/ICE and no miscompiled component.
+/// `first_unrepresentable_host_op` flags the non-scalar `Option<Bytes>` host result — the host-fused
+/// envelope does not yet lift an `option<list<u8>>` host result into a value-heap `Option<Bytes>` handle
+/// (the kv.get emit slice S0 will: Some = a Bytes leaf, None = absent). This pins the reject-don't-
+/// miscompile invariant as the regression anchor: when the emit lands it FLIPS this to emits+loads+
+/// invokes; until then a silent mis-emit of an unliftable option result must never ship. The get result
+/// is CONSUMED by a `match` so lazy-effect-elision cannot drop the call before the representability check.
+#[test]
+fn a_host_kv_get_option_bytes_result_declines_cleanly_no_miscompile() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (effect kv (op get (-> Bytes (Option Bytes)))) \
+                 (def (apply (: e (Record (ct String) (pl Bytes)))) \
+                   (host (kv) \
+                     (match (kv.get (. e pl)) \
+                       ((Some b) (list (record (op (. e ct)) (arg b)))) \
+                       ((None) (list (record (op (. e ct)) (arg (. e pl)))))))) \
+                 (export apply))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:agent-kernel/fold"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                reducer_kv_get_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    // DECLINE, not miscompile: an honest error diagnostic AND no wasm artifact.
+    assert!(
+        out.has_error(),
+        "kv.get with an option<list<u8>> result must decline until the host compound-result ABI lands"
+    );
+    assert!(
+        out.artifact(crate::backend::Target::Wasm.artifact_kind())
+            .is_none(),
+        "a declined kv.get reducer must emit NO wasm component (reject, do not miscompile)"
+    );
+    // The diagnostic names kv.get and its option/compound RESULT as the current limitation (not an
+    // unrelated error). Either decline site's wording qualifies: the guest type renders `(Option Bytes)`
+    // and both call it a "compound"/option result that "no ... boundary form" emits "yet".
+    let msgs: Vec<&String> = out.diagnostics.iter().map(|d| &d.message).collect();
+    assert!(
+        msgs.iter().any(|m| m.contains("get")
+            && m.contains("result")
+            && (m.contains("Option") || m.contains("compound") || m.contains("option<list<u8>>"))),
+        "the decline diagnostic names kv.get's option/compound result as the current limitation: {msgs:?}"
     );
 }
 
