@@ -81,7 +81,10 @@ struct Args {
     /// session `<peer>`'s deterministic SessionId HEX (MD1 peer-addressing: a case names peers by ALIAS and
     /// the runner threads the resolved id in, so a reducer can `Emit` to `<peer>` without an author ever
     /// writing a content-derived hash). Delivered as a `platform/peers` CONFIGURATION inbound (folded into
-    /// KV, distinct from the one kick-off stimulus — session setup, not the interaction). Repeatable.
+    /// KV, distinct from the one kick-off stimulus — session setup, not the interaction). Repeatable: MULTIPLE
+    /// edges for one holder (`--peer A=B --peer A=C`) concatenate their 64-char hexes in edge order into the
+    /// one payload, so a fan-out reducer slices peer `i` at `[64*i .. 64*i+64]`. A single edge = one 64-char
+    /// hex, byte-identical to the pre-fan-out payload.
     #[arg(long = "peer", value_name = "HOLDER=PEER")]
     peers: Vec<String>,
     /// Content-addressed store dir the reducers' `cadenza:runtime/heap` dep resolves from.
@@ -207,10 +210,15 @@ async fn main() -> Result<()> {
         family_handler.insert(family, id);
     }
 
-    // The peer map: holder alias → the peer's SessionId-HEX (MD1). Resolved from `--peer HOLDER=PEER`
-    // through the deterministic alias→id table, so a holder reducer can `Emit` to the peer by reading the
-    // hex from its seeded KV — the author names peers by alias, never by a content-derived hash. Seeded
-    // pre-kick-off as a `platform/peers` configuration inbound (below), distinct from the one stimulus.
+    // The peer map: holder alias → the CONCATENATION of its peers' SessionId-HEX (MD1), in `--peer` order.
+    // Resolved from `--peer HOLDER=PEER` through the deterministic alias→id table, so a holder reducer can
+    // `Emit` to a peer by reading the hex from its seeded KV — the author names peers by alias, never by a
+    // content-derived hash. Seeded pre-kick-off as a `platform/peers` configuration inbound (below).
+    //
+    // FAN-OUT: a holder may carry MULTIPLE `--peer` edges (`--peer A=B --peer A=C`); their 64-char hexes are
+    // APPENDED in edge order into one payload, so a fan-out reducer slices peer i out at `[64*i .. 64*i+64]`
+    // (`Bytes.slice`). A single-edge holder yields exactly one 64-char hex — BYTE-IDENTICAL to the pre-fan-out
+    // payload — so every existing case that reads the whole `KV["peer"]` as one id is unchanged.
     let mut peer_of: HashMap<String, String> = HashMap::new();
     for p in &args.peers {
         let (holder, peer) = split_pair(p)?;
@@ -229,7 +237,11 @@ async fn main() -> Result<()> {
             SessionId::new(Hash::of(&seed))
         });
         alias_of.entry(peer_id).or_insert_with(|| peer.clone());
-        peer_of.insert(holder, peer_id.to_hex().to_string());
+        // Append (not overwrite): a holder's multiple edges concatenate their hexes in `--peer` order.
+        peer_of
+            .entry(holder)
+            .or_default()
+            .push_str(&peer_id.to_hex());
     }
 
     // The shared collaborators the round-trip binds through: ONE reply-token registry (minted by each
