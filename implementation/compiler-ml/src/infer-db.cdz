@@ -82,6 +82,9 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
     // arith/relational op (via arith-result-type), or to Int64 at the root if never constrained. Was t-int64().
     | Option.Some(Node.NLit(_)) => Map.insert(tcol, id, t-int-deferred())
     | Option.Some(Node.NBoolLit(_)) => Map.insert(tcol, id, Ty.TyBool)
+    // COMPOUND-VALUE slice stage-1: a tuple literal has no type fact YET (TTuple is a later stage), so it is
+    // TyErr — run-src DECLINES cleanly (coverage-not-yet). Recognize-but-decline; NOT a miscompile.
+    | Option.Some(Node.NTuple(_)) => Map.insert(tcol, id, Ty.TyErr)
     | Option.Some(Node.NAnnLit(_, sflag, w)) =>
         // a width-annotated literal `(: v IntN)` has the ANNOTATED type TIntW(signed, width) — the narrow
         // type flows from here (sread already fits-width-checked the value). signed rides as 1|0.

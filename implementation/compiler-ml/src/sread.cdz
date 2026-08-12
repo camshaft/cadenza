@@ -162,7 +162,8 @@ def read-paren-form(s: String, i: Int64, tree: Tree) =
       else (if (sym == "or") then read-or-form(s, a0, tree)
       else (if (sym == "not") then read-not-form(s, a0, tree)
       else (if (sym == "match") then read-match-form(s, a0, tree)   // M1-a: integer match → NMatch
-      else read-app-or-bin(s, sym, a0, tree)))))))))))
+      else (if (sym == "tuple") then read-tuple-form(s, a0, tree)   // COMPOUND: positional tuple → NTuple
+      else read-app-or-bin(s, sym, a0, tree))))))))))))
 
 /// The paren-form fallthrough head `sym` (not a keyword/op-symbol): either a CALL to a def-name or a binary
 /// op. The discriminator is `op-code-of(sym)`: `None` (not an operator) → a CALL — a NULLARY form (the atom is
@@ -255,6 +256,28 @@ def read-bin-form(s: String, op: Int64, a0: Int64, tree: Tree) =
      else (match read-form(s, a1, t1) with | (rightId, a2, t2) =>
             (let a3 = close-paren(s, a2) in
              (match add-node(t2, Node.NBin(op, leftId, rightId)) with | (id, t3) => (id, a3, t3))))))
+
+/// COMPOUND-VALUE slice (stage 1, READER): a positional tuple literal `(tuple e0 e1 …)` → `NTuple([id0,id1,…])`.
+/// `i` is just past the `tuple` head atom. Read each element as an expression FORM (so `(tuple 1 (+ 2 3) x)`
+/// nests), positionally, until the closing `)`. Arbitrary arity (a List, like a ctor pattern's binder list); an
+/// empty `(tuple)` reads as `NTuple([])`. Only the reader + parse node land here — resolve/infer/lower/eval/emit
+/// have no NTuple arm yet, so a tuple falls to infer's `_ => TyErr` catch-all and `run-src` DECLINES cleanly
+/// (coverage-not-yet, never a miscompile); the type + lowering + value + emit are later stages. Part of the
+/// `read-form`↔`read-paren-form` recursion group (each element is a `read-form` call), like `read-if-form` et al.
+def read-tuple-form(s: String, i: Int64, tree: Tree) =
+  (match read-tuple-elems(s, i, ([] : List(Int64)), tree) with | (elemIds, e, t1) =>
+    (let close = close-paren(s, e) in
+     (match add-node(t1, Node.NTuple(elemIds)) with | (id, t2) => (id, close, t2))))
+
+/// Loop the tuple's element FORMS into a positional `List(Int64)` (mirrors `read-ctor-pattern-binders`): stop at
+/// the closing `)` (or end-of-input, tolerated), otherwise read one element form and recurse, `List.push`ing its
+/// node-id so the list is in source order.
+def read-tuple-elems(s: String, i: Int64, acc: List(Int64), tree: Tree) =
+  (let q = skip-space(s, i) in
+   (if ((char-at(s, q) == ")") or (char-at(s, q) == ""))
+    then (acc, q, tree)
+    else (match read-form(s, q, tree) with | (elemId, k1, t1) =>
+           read-tuple-elems(s, k1, List.push(acc, elemId), t1))))
 
 /// After `(:` (index `i` past the `:` head): a TYPE ANNOTATION `(: <literal> TypeName)` — the range-check
 /// an integer annotation performs. This slice (2a-ii) handles a LITERAL operand at a fixed-width integer
@@ -1145,6 +1168,33 @@ def sr-negative-literal-operand() =
       | Option.Some(Node.NBin(op, l, r)) =>
         (if op == 43 then (if is-lit(tree, l, 0 - 5) then (if is-lit(tree, r, 3) then unit else trap("right NLit 3")) else trap("left NLit -5")) else trap("op is +"))
       | _ => trap("root is a + Bin over a negative literal")))
+
+@test
+def sr-tuple-reads-positional-elements() =
+  // "(tuple 1 2 3)" → NTuple([id0,id1,id2]): the reader collects each element form positionally into the
+  // element list (arbitrary arity). Stage-1 reader slice; downstream has no NTuple arm yet, so run-src on a
+  // tuple declines — this test pins the READER shape (the node + element count), not an end-to-end value.
+  (match read-source("(tuple 1 2 3)") with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NTuple(elems)) =>
+        (match List.at(elems, 0) with
+          | Option.Some(e0) =>
+            (if ((List.len(elems) == 3) and is-lit(tree, e0, 1)) then unit else trap("3 elements, first NLit 1"))
+          | Option.None(_) => trap("tuple has a first element"))
+      | _ => trap("root reads as an NTuple")))
+
+@test
+def sr-tuple-nests-element-forms() =
+  // "(tuple (+ 1 2) x)" → NTuple([binNode, varNode]): each element is a full expression FORM, so a nested
+  // arithmetic op and a variable read are valid tuple elements (2 elements).
+  (match read-source("(tuple (+ 1 2) x)") with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NTuple(elems)) =>
+        (match List.at(elems, 0) with
+          | Option.Some(e0) =>
+            (if ((List.len(elems) == 2) and is-bin-op(tree, e0, 43)) then unit else trap("2 elements, first a + Bin"))
+          | Option.None(_) => trap("tuple has a first element"))
+      | _ => trap("root reads as an NTuple")))
 
 @test
 def sr-subtraction-still-binop() =

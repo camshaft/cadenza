@@ -121,6 +121,7 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
   match node-at(tree, id) with
     | Option.Some(Node.NLit(v)) => Option.Some(cnum64(v))
     | Option.Some(Node.NBoolLit(b)) => Option.Some(cnum64(b))   // Bool is Int 0/1 in Core (i64)
+    | Option.Some(Node.NTuple(_)) => Option.None(unit)          // COMPOUND stage-1: no Core form yet → declines (unreachable via the TyErr type-gate, but the match must be total)
     | Option.Some(Node.NAnnLit(v, sflag, w)) =>
         // a width-annotated literal lowers to a NARROW CNum carrying its (signed, width) — emit reads the
         // width to pick i32-vs-i64 codegen. signed rides as 1|0.
