@@ -5589,6 +5589,7 @@ pass	nm1 NEGATIVE remainder is TRUNCATED (sign of the dividend) uniformly — ba
 pass	nm2 NEGATIVE division TRUNCATES toward zero uniformly — bare and through a handler arm
 pass	nm3 the only overflowing DIVISION (Int64.min / -1) is a CONSTANT-fold reject — the runtime-divisor form runs for every other divisor
 pass	nm4 Int64.min divided by RUNTIME divisors — every non-(-1) divisor has an exact Int64 quotient
+pass	noo1 an op whose result is NESTED Option (Option Int64) — the arm classifies the state into None / Some None / Some (Some s), the body's nested match distinguishes all three in one run
 pass	np1 a NESTED record value built from one draw — projections through two levels read the same drawn base
 pass	ns1 a RECORD rides inside a sum payload through dispatch — the arm builds it from two draws, the body matches then projects
 pass	ns2 the sum-wrapped record round-trips FLATTENED — matched, field-updated with a draw, re-wrapped, echoed, re-matched at top level
@@ -6044,6 +6045,7 @@ pass	slicing with a negative start yields None
 pass	slicing with a start near i64::MAX is out of range, not a trap
 pass	slicing with start+len overflowing i64 is out of range, not a wrong slice
 pass	slmin11 tuple(scalar,string) state, put rebuilds the tuple with a branch-picked String.concat suffix, 2 puts + 2 reads (invalid-wasm slot-clobber: the rope-retain dup and the counter step must not share a scratch slot at two widths)
+pass	smk1 a STRING-KEYED Map state whose keys are BUILT IN THE ARM — parity routes each value to a concat-computed bucket, accumulate-or-insert answers the bucket total
 pass	sn1 a snapshot op resumes the WHOLE tuple state as a value — the body destructures the live pair after mixed bumps
 pass	sn2 TWO whole-state snapshots straddle interleaved bumps — the first snapshot is IMMUTABLE, the pair differ by exactly the bumps between them
 pass	sn3 the snapshot crosses to a DEF helper — the crossed state tuple is consumed by a function parameter, not a body match
@@ -6060,6 +6062,7 @@ pass	sqm1 SQUARE-AND-MULTIPLY over the state — (base,acc) squares every dispat
 pass	sr1 a performing self-recursive walk's result SEEDS an inner handle, then a trailing outer draw
 pass	sr2 a Result-typed op whose Err carries a STRING reason — the body matches Ok payload vs the reason by string equality
 pass	sr3 the Err reason is BUILT in the arm — String.concat of a prefix and a sign-picked tag, matched against literals in the body
+pass	srw1 a GROWING STRING state with a computed slice window per dispatch — each grow appends two chars, the arm answers the byte-len of an interior window built from the drawn offset
 pass	ss1 a STRING handler state grows per dispatch — each arm returns the pre-growth length, growth is op-arg-branchy
 pass	ss2 a STRING state GROWS by a parity-picked suffix per dispatch — byte-len pins the concatenation history
 pass	ss2 string state grows across a DO sequence — discarded draws still advance the rope

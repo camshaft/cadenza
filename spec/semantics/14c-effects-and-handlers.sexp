@@ -8655,3 +8655,65 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 125020 Int64))
   (call   main (: 98 Int64)) (output (: 125027 Int64)))
+
+; --- breaker batch 242: growing-string slice windows, nested Option (Option _) op result, arm-built string-keyed buckets ---
+(case "srw1 a GROWING STRING state with a computed slice window per dispatch — each grow appends two chars, the arm answers the byte-len of an interior window built from the drawn offset"
+  (input  (do
+            (effect S (op grow (-> String Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S "ab"
+                ((grow (add lo) s
+                  (let ((s2 (String.concat s add)))
+                    (resume (match (String.slice s2 lo (- (String.byte-len s2) 1))
+                              ((Some w) (String.byte-len w))
+                              ((None u) -1))
+                            s2))))
+                (let ((a (S.grow "cd" (+ n 1))))
+                  (let ((b (S.grow "ef" (+ n 2))))
+                    (+ (* 100 a) (* 10 b))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 230 Int64))
+  (call   main (: 1 Int64)) (output (: 120 Int64)))
+
+(case "noo1 an op whose result is NESTED Option (Option Int64) — the arm classifies the state into None / Some None / Some (Some s), the body's nested match distinguishes all three in one run"
+  (input  (do
+            (effect S (op draw (-> (Option (Option Int64)))))
+            (def (main (: n Int64))
+              (handle S n
+                ((draw () s
+                  (resume (if (< s 0)
+                              (: (None unit) (Option (Option Int64)))
+                              (if (= s 0)
+                                  (Some (: (None unit) (Option Int64)))
+                                  (Some (Some s))))
+                          (- s 1))))
+                (let ((f (fn ((: o (Option (Option Int64))))
+                           (match o
+                             ((Some inner) (match inner ((Some x) (* x 10)) ((None _u) 0)))
+                             ((None _u) -5)))))
+                  (let ((a (f (S.draw))))
+                    (let ((b (f (S.draw))))
+                      (let ((c (f (S.draw))))
+                        (+ (* 10000 (+ a 9)) (+ (* 100 (+ b 9)) (+ c 9)))))))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 190904 Int64))
+  (call   main (: 2 Int64)) (output (: 291909 Int64)))
+
+(case "smk1 a STRING-KEYED Map state whose keys are BUILT IN THE ARM — parity routes each value to a concat-computed bucket, accumulate-or-insert answers the bucket total"
+  (input  (do
+            (effect S (op tag (-> String Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S Map.empty
+                ((tag (pre v) m
+                  (let ((key (String.concat pre (if (= (% v 2) 0) "-e" "-o"))))
+                    (let ((total (match (Map.lookup m key)
+                                   ((Some x) (+ x v))
+                                   ((None u) v))))
+                      (resume total (Map.insert m key total))))))
+                (let ((a (S.tag "a" n)))
+                  (let ((b (S.tag "a" (+ n 2))))
+                    (let ((c (S.tag "b" (+ n 1))))
+                      (+ (* 10000 a) (+ (* 100 b) c)))))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 41005 Int64))
+  (call   main (: 7 Int64)) (output (: 71608 Int64)))
