@@ -15,6 +15,7 @@ pass	a session writes TWO kv keys on its kick-off (multi-key end-state)
 pass	a worker performs a userspace effect served by a handler session, and resumes on the reply
 pass	an effect no session serves is a permanent error that resumes the caller (no hang, no silent drop)
 pass	an unanswered deferred effect leaves the caller active (blocked), the handler quiescent
+pass	an unbounded effect/reply ping-pong is caught as a SettleUnbounded fault, not a hang
 pass	one handler session serves two effect families; a caller performs both and resumes
 pass	the effect correlation token is echoed to the caller on the effect-result (observed as e.resumes)
 pass	the same counter IGNORES a non-message kick-off (else-branch writes no state)

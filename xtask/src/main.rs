@@ -4388,6 +4388,10 @@ struct PlatformCaseRecord {
     end_status: Vec<(String, String)>,
     /// `(events-processed <alias> <n>)` → `(alias, n)`.
     events_processed: Vec<(String, String)>,
+    /// `(expect-fault <kind>)` (0-or-1) → the whole run must FAULT (cdz-session-run exits nonzero) with a
+    /// stderr marker containing `<kind>` (e.g. `SettleUnbounded`). `None` = the run must exit cleanly (a
+    /// nonzero exit is a Fail, as for every other case).
+    expect_fault: Option<String>,
 }
 
 /// One expected dispatched effect (I2): session `from` performed effect `family`, optionally carrying a
@@ -4422,6 +4426,7 @@ fn parse_platform_records(text: &str) -> Vec<PlatformCaseRecord> {
     let mut end_kv: Vec<(String, String, String)> = Vec::new();
     let mut end_status: Vec<(String, String)> = Vec::new();
     let mut events_processed: Vec<(String, String)> = Vec::new();
+    let mut expect_fault: Option<String> = None;
     for line in text.lines() {
         if line == "---" {
             records.push(PlatformCaseRecord {
@@ -4434,6 +4439,7 @@ fn parse_platform_records(text: &str) -> Vec<PlatformCaseRecord> {
                 end_kv: std::mem::take(&mut end_kv),
                 end_status: std::mem::take(&mut end_status),
                 events_processed: std::mem::take(&mut events_processed),
+                expect_fault: expect_fault.take(),
             });
             continue;
         }
@@ -4524,6 +4530,9 @@ fn parse_platform_records(text: &str) -> Vec<PlatformCaseRecord> {
                     expect_delivery_failures.push((from.to_string(), to.to_string()));
                 }
             }
+            // `expect-fault\t<kind>` (0-or-1) — the whole run must fault with a stderr marker containing
+            // `<kind>` (e.g. `SettleUnbounded`). A later line overrides an earlier one (matches the reader).
+            "expect-fault" => expect_fault = Some(val.to_string()),
             _ => {}
         }
     }
@@ -4759,7 +4768,40 @@ fn grade_platform_case(
         .args(["--kickoff-family", &rec.kickoff.1])
         // I1/I2 kick-offs are payload-less (unit); a typed kick-off payload is a later increment.
         .args(["--kickoff-value", ""]);
+    // A fault-expecting case (an unbounded effect/reply ping-pong) would otherwise run to the runner's default
+    // 1000-delivery budget — 1000 wasm instantiations, far too slow for the gate. Cap it low: a genuine
+    // divergence trips the SettleUnbounded fault within a handful of deliveries (each fold re-performs), so a
+    // small budget proves it fast, while a case that would actually settle in ≤ this many steps has no
+    // business asserting expect-fault. 8 is a couple of ping-pong cycles past the kick-off — plenty to
+    // establish the loop, cheap enough for the gate (each delivery is a full wasm instantiate + fold).
+    if rec.expect_fault.is_some() {
+        cmd.args(["--step-budget", "8"]);
+    }
     let run = cmd.output();
+    // `(expect-fault <kind>)` inverts the exit contract: the run MUST fault (cdz-session-run exits nonzero)
+    // with a stderr marker containing `<kind>` — e.g. an unbounded effect/reply ping-pong that trips the
+    // step-budget bails `SettleUnbounded: …`. A faulting run has no meaningful end-state to grade further
+    // (the drive never reached a fixpoint), so a matching fault is the whole assertion: Pass. A clean exit
+    // (the run settled when it should have diverged) or a fault with the wrong marker is a Fail.
+    if let Some(kind) = &rec.expect_fault {
+        return match run {
+            Ok(o) if o.status.success() => Grade::Fail(format!(
+                "expect-fault {kind}: the run exited cleanly (expected a {kind} fault, but the drive settled)"
+            )),
+            Ok(o) => {
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                if stderr.contains(kind.as_str()) {
+                    Grade::Pass
+                } else {
+                    Grade::Fail(format!(
+                        "expect-fault {kind}: the run faulted but its stderr marker did not contain {kind}: {}",
+                        first_line(&o.stderr)
+                    ))
+                }
+            }
+            Err(e) => Grade::Fail(format!("cdz-session-run failed to launch: {e}")),
+        };
+    }
     let run = match run {
         Ok(o) if o.status.success() => o,
         Ok(o) => {
