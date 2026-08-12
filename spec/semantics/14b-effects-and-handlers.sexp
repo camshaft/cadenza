@@ -8503,3 +8503,34 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 9 Int64))
   (call   main (: 3 Int64)) (output (: 109 Int64)))
+
+(case "a THREE-phase state machine — Idle to Running(count,peak) to Done(total), the sentinel input drives the final transition"
+  (doc    "A user 3-variant SUM as the handler state — `(type Phase (Idle) (Running Int64 Int64) (Done Int64))`
+           — driven through its lifecycle by dispatches: the landed variant-transition pins are Option/Result
+           TWO-phase; this pins a THREE-phase machine with per-phase payload arithmetic and an absorbing
+           terminal. The `step` arm matches the current phase and transitions: Idle -> Running(v,v); Running(c,p)
+           accumulates `count += v` and tracks `peak = max`, or on a NEGATIVE sentinel input transitions to
+           Done(count+peak); Done is absorbing (threads unchanged). `query` decodes whichever phase holds.
+           `main(3)`: step(3) Idle->Running(3,3); step(7) Running->Running(10,7); step(-1) sentinel ->
+           Done(10+7=17); query Done -> 10000+17 = 10017. `main(9)`: Running(9,9)->Running(16,9)->Done(25) ->
+           10025. Uniform on all 3 backends, opt-sweep 0-divergence. Breaker phase-machine probe ph1
+           (2026-08-12).")
+  (input  (do
+            (type Phase (Idle) (Running Int64 Int64) (Done Int64))
+            (effect M (op step (-> Int64 Int64)) (op query (-> Int64)))
+            (def (main (: n Int64))
+              (handle M (Idle)
+                ((step (v) st
+                  (match st
+                    ((Idle) (resume 0 (Running v v)))
+                    ((Running c p) (resume c (if (< v 0) (Done (+ c p)) (Running (+ c v) (if (> v p) v p)))))
+                    ((Done t) (resume t st))))
+                 (query () st
+                  (resume (match st ((Idle) -1) ((Running c p) (+ (* 100 c) p)) ((Done t) (+ 10000 t))) st)))
+                (let ((_a (M.step n)))
+                  (let ((_b (M.step 7)))
+                    (let ((_c (M.step -1)))
+                      (M.query))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 10017 Int64))
+  (call   main (: 9 Int64)) (output (: 10025 Int64)))
