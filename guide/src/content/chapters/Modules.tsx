@@ -2,6 +2,7 @@ import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
 import { Exercise } from "../../components/Exercise.tsx";
 import { Why } from "../../components/Why.tsx";
+import { Link } from "react-router-dom";
 
 export default function Modules() {
   return (
@@ -94,6 +95,63 @@ export default function Modules() {
         then <C>area</C>, and gives <C>25</C>. It's the same field access as a record inside a record;
         nesting modules is nothing new, because a module was a record all along.
       </P>
+
+      <H2>Declaring the world a module targets</H2>
+      <P>
+        A module that compiles to a WebAssembly component targets a <em>WIT world</em>: the set of
+        interfaces it <C>import</C>s from its host and <C>export</C>s back, each with typed members. You can
+        name that world inline, right in the source, with a <C>world</C> declaration, so the compile target
+        is self-contained and reads the same as the WIT world it corresponds to. Here a <C>Reducer</C> world
+        exports a <C>fold</C> interface (the guest provides <C>apply</C>) and imports a <C>kv</C> interface
+        (the host provides <C>get</C> and <C>put</C>):
+      </P>
+      <Note>
+        world Reducer =
+        <br />
+        &nbsp;&nbsp;| export fold =
+        <br />
+        &nbsp;&nbsp;&nbsp;&nbsp;| apply : (event : Bytes) -&gt; Bytes
+        <br />
+        &nbsp;&nbsp;| import kv =
+        <br />
+        &nbsp;&nbsp;&nbsp;&nbsp;| get : (key : String) -&gt; Bytes
+        <br />
+        &nbsp;&nbsp;&nbsp;&nbsp;| put : (key : String, value : Bytes) -&gt; Unit
+      </Note>
+      <P>
+        Read it top-down: <C>world Name =</C> heads the declaration, then one or more bar-led interfaces;
+        each is <C>import</C> or <C>export</C> followed by the interface name and one or more bar-led
+        members; each member is <C>name : (param : Type, ...) -&gt; ResultType</C>. An <C>export</C> is what
+        the guest provides (here the reducer's <C>apply</C>); an <C>import</C> is what the host provides and
+        the world therefore depends on (the key-value store). The vocabulary is kept deliberately close to
+        WIT, so the correspondence to the world the component targets is meant to be obvious on sight.
+      </P>
+      <P>
+        Two small rules are worth stating. A member's result is <em>always</em> present, so an operation
+        that returns nothing writes <C>-&gt; Unit</C> rather than omitting the arrow; and a member with no
+        parameters elides the parameter list, as in <C>now : () -&gt; Timestamp</C>. The <C>world</C> keyword
+        is also <em>contextual</em>: it only heads a declaration in the <C>world Name =</C> position, so{" "}
+        <C>world</C> stays an ordinary name everywhere else, and{" "}
+        <C>(let ((world 5)) (+ world 1))</C> still reads <C>world</C> as a plain variable.
+      </P>
+      <Why tenet="One world, however you spell it">
+        The inline <C>world</C> declaration isn't a second, parallel notion of a compile target. It names
+        the <em>same</em> WIT world a component targets, and it lowers to the very same internal world
+        description the compiler would build from an external world artifact, so an inline declaration and a
+        separate artifact are interchangeable inputs to the same compile. One concept, two spellings: you
+        reach for the inline form when you want the target to be self-evident in the source, and neither
+        spelling teaches the compiler anything the other couldn't.
+      </Why>
+      <Note>
+        This chapter shows the <C>world</C> declaration's <em>surface</em>. The compiler already parses it,
+        prints it back identically, and lowers it to its canonical world description; wiring that
+        description through as the target that drives a component's emit is in progress, so the examples
+        here are illustrative rather than runnable for now. The{" "}
+        <Link to="/writing-a-reducer" className="text-cadenza-300 underline-offset-2 hover:underline">
+          reducer
+        </Link>{" "}
+        chapter puts a <C>world Reducer</C> to work as the target of a real fold.
+      </Note>
 
       <Why tenet="A module is a record of its exports">
         Cadenza doesn't bolt on a separate "module system" with its own rules, since a module is just a{" "}

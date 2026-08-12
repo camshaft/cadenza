@@ -100,6 +100,16 @@ def main() = apply({ family = "message", version = 1 }, None(), None())`}
         the kernel's side of the boundary; the examples on this page run <C>apply</C>'s logic directly, the
         way you'd unit-test it, rather than through the component interface.)
       </P>
+      <P>
+        That reducer interface is one interface of a WIT <em>world</em>, the target the component compiles
+        against: it <em>exports</em> the <C>fold</C> interface (this <C>apply</C>) and <em>imports</em> the
+        host interfaces it uses, like the key-value store below. A module can name that world inline with a{" "}
+        <Link to="/modules" className="text-cadenza-300 underline-offset-2 hover:underline">
+          <C>world</C> declaration
+        </Link>{" "}
+        (its example is exactly a <C>world Reducer</C>), so the compile target is spelled out in the source
+        instead of supplied separately.
+      </P>
 
       <H2>Emitting an effect</H2>
       <P>
