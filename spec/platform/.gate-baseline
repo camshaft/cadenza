@@ -12,6 +12,7 @@ pass	a sender emits two messages to one peer in a single fold; the peer folds bo
 pass	a session stores a fixed mid-range byte value (decoder past the counter's 1)
 pass	a session writes TWO kv keys on its kick-off (multi-key end-state)
 pass	a worker performs a userspace effect served by a handler session, and resumes on the reply
+pass	an effect no session serves is a permanent error that resumes the caller (no hang, no silent drop)
 pass	an unanswered deferred effect leaves the caller active (blocked), the handler quiescent
 pass	one handler session serves two effect families; a caller performs both and resumes
 pass	the effect correlation token is echoed to the caller on the effect-result (observed as e.resumes)
