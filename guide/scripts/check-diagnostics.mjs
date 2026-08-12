@@ -44,7 +44,9 @@ try {
 
 /// Each PIN: a snippet that MUST decline, its expected diagnostic code, and the load-bearing phrases its message
 /// MUST contain (case-insensitive substring). `chapter` documents which prose depends on it. Add a pin whenever a
-/// chapter QUOTES or PARAPHRASES a specific diagnostic's wording.
+/// chapter QUOTES or PARAPHRASES a specific diagnostic's wording. `noWrap: true` compiles the snippet AS-IS (a
+/// TOP-LEVEL construct like a `(world …)` declaration can't sit inside the `(def (main) …)` wrapper — wrapping it
+/// would fire the wrong diagnostic, e.g. unbound-name, instead of the top-level rule the prose depends on).
 const PINS = [
   {
     name: "bare Int in type position → CDZ0203 width-constructor",
@@ -102,6 +104,18 @@ const PINS = [
     code: "CDZ0407",
     phrases: ["side-effect-free", "speculatively or repeatedly", "lift it to a `let`"],
   },
+  {
+    name: "two top-level world decls → CDZ0201 at-most-one-world",
+    // Modules.tsx "Declaring the world a module targets" states a module may declare AT MOST ONE top-level
+    // world (a reducer targets a single world). This is a TOP-LEVEL rule, so the snippet is noWrap — wrapping
+    // two `(world …)` forms inside `(def (main) …)` fires unbound-name/more-than-one-body instead of the rule.
+    chapter: "Modules.tsx — 'Declaring the world a module targets'",
+    snippet: `(world Reducer (export fold (member apply (func (param event Bytes) (result Bytes)))))
+(world Other (export fold (member apply (func (param event Bytes) (result Bytes)))))`,
+    code: "CDZ0201",
+    phrases: ["at most one world", "top-level"],
+    noWrap: true,
+  },
 ];
 
 // Vacuous-pass floor: this gate's whole job is to pin diagnostics, so a run with ZERO pins (a botched edit
@@ -114,7 +128,8 @@ if (PINS.length === 0) {
 
 const failures = [];
 for (const pin of PINS) {
-  const program = wrapModule(pin.snippet, "sexpr");
+  // A top-level construct (e.g. a `(world …)` decl) is compiled AS-IS; everything else wraps in `(def (main) …)`.
+  const program = pin.noWrap ? pin.snippet : wrapModule(pin.snippet, "sexpr");
   let r;
   try { r = compile(program, "sexpr"); }
   catch (e) { failures.push(`${pin.name}: expected a ${pin.code} DIAGNOSTIC but parse threw — ${String(e.message || e).slice(0, 80)}`); continue; }

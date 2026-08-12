@@ -142,11 +142,24 @@ export default function Modules() {
         reach for the inline form when you want the target to be self-evident in the source, and neither
         spelling teaches the compiler anything the other couldn't.
       </Why>
+      <P>
+        Two rules keep the declaration unambiguous as a compile target. First, an <em>external</em> world
+        artifact wins: if a component is compiled with a separate WIT world <em>and</em> the source also
+        carries an inline <C>world</C> declaration, the external artifact overrides the in-source one, the
+        same way a bound effect request overrides the source's own declaration. Second, a module may name{" "}
+        <em>at most one</em> world, because a component targets exactly one: two top-level <C>world</C>{" "}
+        declarations are rejected outright.
+      </P>
+      <Runnable
+        expect="error"
+        wrap={false}
+        source={`(world Reducer (export fold (member apply (func (param event Bytes) (result Bytes)))))
+(world Other (export fold (member apply (func (param event Bytes) (result Bytes)))))`}
+      />
       <Note>
-        This chapter shows the <C>world</C> declaration's <em>surface</em>. The compiler already parses it,
-        prints it back identically, and lowers it to its canonical world description; wiring that
-        description through as the target that drives a component's emit is in progress, so the examples
-        here are illustrative rather than runnable for now. The{" "}
+        The compiler parses a <C>world</C> declaration, prints it back identically, and lowers it to the same
+        canonical world description it would build from an external artifact, so a top-level <C>world</C>{" "}
+        declaration now drives a component's emit directly. The{" "}
         <Link to="/writing-a-reducer" className="text-cadenza-300 underline-offset-2 hover:underline">
           reducer
         </Link>{" "}
