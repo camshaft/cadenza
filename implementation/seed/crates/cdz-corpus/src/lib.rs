@@ -159,6 +159,11 @@ pub struct PlatformRecord {
     /// Per-alias `(events-processed <alias> <n>)` — the total processed-log length the session must reach
     /// (grades `Session::event_count()`).
     pub events_processed: Vec<(String, String)>,
+    /// Optional `(expect-fault <kind>)` — the run must FAULT with a stderr marker containing `<kind>`
+    /// (a bare token like `SettleUnbounded`), rather than exit cleanly. Absent = today's behavior (a
+    /// clean run graded normally, any nonzero exit a plain Fail). The grade-side arm lives in xtask
+    /// (v-platform-conformance's domain); the reader only carries the token.
+    pub expect_fault: Option<String>,
 }
 
 /// One `(session <alias> (reducer <prog>) (serves <family>…))` block of a platform case.
@@ -364,7 +369,8 @@ pub fn to_records(text: &str) -> Result<String, String> {
 ///   `expect-effect\t<from>\t<family>[\t<value>]` (0+, order) ·
 ///   `expect-message\t<from>\t<to>\t<family>\t<value>` (0+, order) ·
 ///   `expect-delivery-failure\t<from>\t<to>` (0+) · `end-kv\t<alias>\t<key>\t<value>` (0+) ·
-///   `end-status\t<alias>\t<status>` (0+) · `events-processed\t<alias>\t<n>` (0+) · `---` terminator.
+///   `end-status\t<alias>\t<status>` (0+) · `events-processed\t<alias>\t<n>` (0+) ·
+///   `expect-fault\t<kind>` (0-or-1) · `---` terminator.
 pub fn render_platform(records: &[PlatformRecord]) -> String {
     let mut out = String::new();
     for r in records {
@@ -446,6 +452,11 @@ pub fn render_platform(records: &[PlatformRecord]) -> String {
             out.push_str(alias);
             out.push('\t');
             out.push_str(n);
+            out.push('\n');
+        }
+        if let Some(kind) = &r.expect_fault {
+            out.push_str("expect-fault\t");
+            out.push_str(kind);
             out.push('\n');
         }
         out.push_str("---\n");
@@ -695,7 +706,8 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
 ///   `(expect-effects (effect (from <a>) (family <f>) <value>?)…)` (ordered) ·
 ///   `(expect-messages (message (from <a>) (to <b>) (family <f>) <value>)…)` (ordered) ·
 ///   `(expect-delivery-failure (from <a>) (to <b>))` (0+) ·
-///   `(end-state <alias> (kv <key> <value>)… (status <state>)?)` · `(events-processed <alias> <n>)`.
+///   `(end-state <alias> (kv <key> <value>)… (status <state>)?)` · `(events-processed <alias> <n>)` ·
+///   `(expect-fault <kind>)` (0-or-1 — the run must fault with a stderr marker containing `<kind>`).
 fn parse_platform_case(a: &Arenas, case_id: StructId) -> Result<PlatformRecord, String> {
     let items = match a.get(case_id) {
         cadenza_syntax::ast::Struct::List(items) => items,
@@ -715,6 +727,7 @@ fn parse_platform_case(a: &Arenas, case_id: StructId) -> Result<PlatformRecord, 
     let mut end_kv: Vec<(String, String, String)> = Vec::new();
     let mut end_status: Vec<(String, String)> = Vec::new();
     let mut events_processed: Vec<(String, String)> = Vec::new();
+    let mut expect_fault: Option<String> = None;
 
     for &clause in &items[2..] {
         match a.head_name(clause) {
@@ -887,6 +900,17 @@ fn parse_platform_case(a: &Arenas, case_id: StructId) -> Result<PlatformRecord, 
                     events_processed.push((alias, value_of(a, n_id)));
                 }
             }
+            // `(expect-fault <kind>)` — a single bare token (e.g. `SettleUnbounded`); the run must fault
+            // with a stderr marker containing this kind. At most one; a later one overrides. The reader
+            // only carries the token — grading is xtask's (v-platform-conformance's domain).
+            Some("expect-fault") => {
+                if let Some(tail) = a.as_form(clause, "expect-fault")
+                    && let Some(&kind_id) = tail.first()
+                    && let Some(kind) = atom_text(a, kind_id)
+                {
+                    expect_fault = Some(kind);
+                }
+            }
             _ => {}
         }
     }
@@ -907,6 +931,7 @@ fn parse_platform_case(a: &Arenas, case_id: StructId) -> Result<PlatformRecord, 
         end_kv,
         end_status,
         events_processed,
+        expect_fault,
     })
 }
 
@@ -1141,6 +1166,33 @@ mod tests {
         assert!(out.contains("end-kv\treporter\tseen\t(: 1 Int64)\n"));
         assert!(out.contains("end-status\tworker\tquiescent\n"));
         assert!(out.contains("events-processed\tworker\t3\n"));
+        // No (expect-fault …) clause → the record carries None and no line is rendered.
+        assert_eq!(r.expect_fault, None);
+        assert!(!out.contains("expect-fault"));
+    }
+
+    /// An optional `(expect-fault <kind>)` clause carries a single bare token through to the record and
+    /// renders one `expect-fault\t<kind>` line (v-platform-conformance grades the fault on the xtask side).
+    /// The reader is order-insensitive to the clause and round-trips it via the sexp form.
+    #[test]
+    fn platform_case_carries_an_expect_fault_kind_through_read_and_render() {
+        let src = r#"(platform-case "an unbounded ping-pong is a graded fault, never a hang"
+                 (session "a" (reducer (do (def (main) 0) (export main))) (serves "ping"))
+                 (session "b" (reducer (do (def (main) 0) (export main))) (serves "pong"))
+                 (kickoff "a" (inbound "start" (: unit Unit)))
+                 (expect-fault SettleUnbounded))"#;
+        let recs = read_platform(src).unwrap();
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].expect_fault.as_deref(), Some("SettleUnbounded"));
+
+        // Renders exactly one fixed-arity line, after events-processed and before the terminator.
+        let out = render_platform(&recs);
+        assert!(out.contains("expect-fault\tSettleUnbounded\n"));
+
+        // The clause round-trips through the sexp form (parse → render-to-sexp → re-parse is stable);
+        // here we assert the rendered stream is fixed-point under a re-read of the ORIGINAL sexp.
+        let recs2 = read_platform(src).unwrap();
+        assert_eq!(render_platform(&recs2), out);
     }
 
     /// A platform-case MUST carry a kickoff and at least one session — the fixpoint has nothing to run
