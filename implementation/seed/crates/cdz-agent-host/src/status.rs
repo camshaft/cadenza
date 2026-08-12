@@ -89,7 +89,7 @@ fn state_str(state: SessionState) -> &'static str {
 
 fn render(id: &SessionId, snap: &StatusSnapshot, errored: Option<std::sync::Arc<str>>) -> String {
     let mut out = String::from("{");
-    out.push_str(&format!("\"session_id\":{},", escape(&id.to_hex())));
+    out.push_str(&format!("\"session_id\":{},", escape(&id.to_base64url())));
     out.push_str(&format!("\"state\":{},", escape(state_str(snap.state))));
     // A just-faulted session (tip = FoldFailed) is `errored:true` with the trap reason — the kernel's
     // structural `state` can't express this (no Errored variant), so a supervisor/concierge reads this
@@ -234,7 +234,7 @@ mod tests {
             .expect("session exists");
         // Structural facts: an armed timer → Active; the published view is exposed.
         assert!(
-            json.contains(&format!("\"session_id\":\"{}\"", id.to_hex())),
+            json.contains(&format!("\"session_id\":\"{}\"", id.to_base64url())),
             "{json}"
         );
         assert!(json.contains("\"state\":\"Active\""), "{json}");

@@ -300,7 +300,7 @@ impl AgentHost {
                     return AdminResponse::Error {
                         message: format!(
                             "no session factory available to install {}",
-                            spec.id.to_hex()
+                            spec.id.to_base64url()
                         ),
                     };
                 };
@@ -308,7 +308,7 @@ impl AgentHost {
                 // spawn() itself would REPLACE, so we guard here before building/registering).
                 if self.contains(&spec.id) {
                     return AdminResponse::Error {
-                        message: format!("session already installed: {}", spec.id.to_hex()),
+                        message: format!("session already installed: {}", spec.id.to_base64url()),
                     };
                 }
                 match factory.build(&spec).await {
@@ -319,7 +319,7 @@ impl AgentHost {
                     }
                     // Build failed → registry untouched, error surfaced.
                     Err(e) => AdminResponse::Error {
-                        message: format!("install failed for {}: {e}", spec.id.to_hex()),
+                        message: format!("install failed for {}: {e}", spec.id.to_base64url()),
                     },
                 }
             }
@@ -331,13 +331,13 @@ impl AgentHost {
                     json: session_status_json(&id, hosted, now_ms, DEFAULT_STALL_AFTER_MS),
                 },
                 None => AdminResponse::Error {
-                    message: format!("unknown session: {}", id.to_hex()),
+                    message: format!("unknown session: {}", id.to_base64url()),
                 },
             },
             AdminCommand::StopSession { id } => match self.remove(&id) {
                 Some(_) => AdminResponse::Stopped { id },
                 None => AdminResponse::Error {
-                    message: format!("unknown session: {}", id.to_hex()),
+                    message: format!("unknown session: {}", id.to_base64url()),
                 },
             },
         }
@@ -563,7 +563,7 @@ mod tests {
                 assert!(
                     json.contains(&format!(
                         "\"session_id\":\"{}\"",
-                        SessionId::new(Hash::of(b"s1")).to_hex()
+                        SessionId::new(Hash::of(b"s1")).to_base64url()
                     )),
                     "{json}"
                 );
@@ -582,7 +582,7 @@ mod tests {
             )
             .await;
         assert!(
-            matches!(missing, AdminResponse::Error { message } if message.contains("unknown session") && message.contains(&SessionId::new(Hash::of(b"ghost")).to_hex())),
+            matches!(missing, AdminResponse::Error { message } if message.contains("unknown session") && message.contains(&SessionId::new(Hash::of(b"ghost")).to_base64url())),
         );
     }
 

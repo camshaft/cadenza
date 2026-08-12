@@ -567,7 +567,7 @@ mod tests {
                 AdminResponseWire::Status { status } => {
                     assert_eq!(
                         status.get("session_id").and_then(|v| v.as_str()),
-                        Some(SessionId::new(Hash::of(b"w1")).to_hex().as_str()),
+                        Some(SessionId::new(Hash::of(b"w1")).to_base64url().as_str()),
                         "the status snapshot names the session: {status}"
                     );
                 }
@@ -584,7 +584,7 @@ mod tests {
             )
             .await;
             assert!(
-                matches!(&unknown, AdminResponseWire::Error { message } if message.contains(&SessionId::new(Hash::of(b"nope")).to_hex())),
+                matches!(&unknown, AdminResponseWire::Error { message } if message.contains(&SessionId::new(Hash::of(b"nope")).to_base64url())),
                 "status of an unknown session is a clean error over the socket, got {unknown:?}"
             );
 
