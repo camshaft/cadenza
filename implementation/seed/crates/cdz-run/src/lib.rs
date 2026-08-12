@@ -529,6 +529,72 @@ pub fn run_reducer_bytes_with_puts(
     Ok((out, recorded))
 }
 
+/// Invoke a host-fused reducer's bytes member while binding its host `get`-style op (one `list<u8>` param,
+/// `option<list<u8>>` result) to a closure that returns a FIXED `reply` (`Some(bytes)` or `None`) — the
+/// deep behavioral proof of the kv.get OPTION-RESULT LIFT (§3c GAP C). The reducer's `apply` decodes the
+/// Event, calls `get`, and the guest lift reconstructs a value-heap `Option<Bytes>` from the host's spilled
+/// `(disc, ptr, len)` result; this drives it on the real runtime and returns the effect-list document, so a
+/// test can assert the `Some` inner bytes actually round-trip through the lift. Generic — the interface/op
+/// names come from the compiled world.
+#[allow(clippy::too_many_arguments)]
+pub fn run_reducer_bytes_with_get(
+    provider_bytes: &[u8],
+    iface: &str,
+    member: &str,
+    input: &[u8],
+    host_iface: &str,
+    host_op: &str,
+    reply: Option<Vec<u8>>,
+    opts: &RunOpts,
+) -> Result<Vec<u8>> {
+    let engine = engine();
+    let component =
+        Component::new(&engine, provider_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
+    let mut store = new_store(&engine);
+    let mut linker: Linker<()> = Linker::new(&engine);
+    if let Some(req) = find_runtime_req(&engine, &component) {
+        let (rt_instance, heap_names) = instantiate_runtime(&engine, &mut store, &req, opts)?;
+        bind_runtime_into(
+            &engine,
+            &mut store,
+            &mut linker,
+            &req.import_name,
+            &rt_instance,
+            &heap_names,
+        )?;
+    }
+    {
+        let mut iface_linker = linker
+            .instance(host_iface)
+            .map_err(|e| anyhow!("linker instance {host_iface}: {e}"))?;
+        // `get(key: list<u8>) -> option<list<u8>>`: the closure ignores the key and returns the fixed `reply`
+        // (Some(bytes) → `Val::Option(Some(list<u8>))`, None → `Val::Option(None)`).
+        iface_linker.func_new(host_op, move |_ctx, _params, results| {
+            let v = reply.clone().map(|b| Box::new(list_u8_val(&b)));
+            results[0] = Val::Option(v);
+            Ok(())
+        })?;
+    }
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .map_err(|e| anyhow!("instantiate component: {e}"))?;
+    let iface_idx = instance
+        .get_export_index(&mut store, None, iface)
+        .ok_or_else(|| anyhow!("reducer provider does not export interface `{iface}`"))?;
+    let member_idx = instance
+        .get_export_index(&mut store, Some(&iface_idx), member)
+        .ok_or_else(|| anyhow!("reducer interface `{iface}` has no member `{member}`"))?;
+    let func = instance
+        .get_func(&mut store, member_idx)
+        .ok_or_else(|| anyhow!("reducer member `{member}` is not a func"))?;
+    let mut results = [Val::Bool(false)];
+    func.call(&mut store, &[list_u8_val(input)], &mut results)
+        .map_err(|e| anyhow!("reducer `{member}` call failed: {e:#}"))?;
+    func.post_return(&mut store)
+        .map_err(|e| anyhow!("reducer `{member}` post_return failed: {e:#}"))?;
+    val_list_u8(&results[0])
+}
+
 /// CAPTURE a program's escaping compound result as its RAW canonical value-form `list<u8>` document (the
 /// bytes, NOT the decoded text [`run`] renders). A program whose top-level export returns a runtime
 /// compound (record/tuple/sum/collection) publishes it through the `cadenza:run/run` instance as a

@@ -219,6 +219,16 @@ fn instr(i: &Lir, import_index: &std::collections::HashMap<&str, u32>, out: &mut
             uleb128(0, out); // align (log2) = 0
             uleb128(*offset as u64, out); // offset
         }
+        Lir::I32Load { offset } => {
+            out.push(op::I32_LOAD);
+            uleb128(2, out); // align (log2) = 2 (natural i32 alignment)
+            uleb128(*offset as u64, out); // offset
+        }
+        Lir::I32Load8U { offset } => {
+            out.push(op::I32_LOAD8_U);
+            uleb128(0, out); // align (log2) = 0
+            uleb128(*offset as u64, out); // offset
+        }
         Lir::LocalTee(idx) => {
             out.push(op::LOCAL_TEE);
             uleb128(*idx as u64, out);
@@ -7556,13 +7566,21 @@ pub fn bytes_roundtrip_host_core_module(
         t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
         type_items.extend_from_slice(&t);
     }
-    // NO realloc type/func/global here — the guest does not allocate linear memory itself (the apply body
-    // writes its result at the fixed OUT=8 retarea; the input is lowered in by the adapter). The ONE bump
-    // `cabi_realloc` lives in the shared mem module (S0): the apply canon-LIFT and the kv.get canon-LOWER
-    // both use THAT single allocator over memory 0 (no dual-allocator conflict, no lower-realloc circularity).
+    // A host op that RETURNS `option<list<u8>>` (kv.get) needs the guest to IMPORT the shared `cabi_realloc`
+    // — the select lift allocates the spilled-result retptr area with it (the apply body itself allocates
+    // nothing; it writes its result at the fixed OUT=8 retarea). Import its `(i32×4)->i32` functype here at
+    // type index `h+k+n+1`. A set with NO option-result op (e.g. kv.put) imports no realloc → byte-identical.
+    let needs_realloc = host_fns.iter().any(|f| f.result_option_bytes);
+    let realloc_type_idx = (h + k + n + 1) as u32;
+    if needs_realloc {
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(4, &[wasm_abi::CORE_I32; 4]));
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        type_items.extend_from_slice(&t);
+    }
     let type_sec = section(
         wasm_abi::CORE_SEC_TYPE,
-        &wasm_vec(h + k + n + 1, &type_items),
+        &wasm_vec(h + k + n + 1 + needs_realloc as usize, &type_items),
     );
 
     // ── Import section ── host func imports (module "host", 0..h), runtime ops (module "heap", h..h+k),
@@ -7578,6 +7596,19 @@ pub fn bytes_roundtrip_host_core_module(
         import_items.extend_from_slice(&import_item(o.name, ti));
         import_index.insert(o.name, ti);
     }
+    // The shared `cabi_realloc` FUNC import (module "mem", func index h+k) — present iff a host op returns
+    // an option<list<u8>>. The select lift calls it (via `import_index`) to allocate the retptr area; it
+    // shifts the DEFINED funcs to `h+k+1..`. `mem` also exports the memory (below); both come from instance 0.
+    if needs_realloc {
+        let mut it = uleb_bytes("mem".len() as u64);
+        it.extend_from_slice(b"mem");
+        it.extend_from_slice(&uleb_bytes("cabi_realloc".len() as u64));
+        it.extend_from_slice(b"cabi_realloc");
+        it.push(0x00); // import desc: func
+        uleb128(realloc_type_idx as u64, &mut it);
+        import_items.extend_from_slice(&it);
+        import_index.insert("cabi_realloc", (h + k) as u32);
+    }
     // The `mem`.`mem` memory import (desc 0x02, limits flag 0x00 min-only, min 1 page).
     let mut mem_import = uleb_bytes("mem".len() as u64);
     mem_import.extend_from_slice(b"mem");
@@ -7587,16 +7618,21 @@ pub fn bytes_roundtrip_host_core_module(
     mem_import.push(0x00);
     uleb128(1, &mut mem_import);
     import_items.extend_from_slice(&mem_import);
-    let import_sec = section(2, &wasm_vec(h + k + 1, &import_items));
+    let import_sec = section(
+        2,
+        &wasm_vec(h + k + 1 + needs_realloc as usize, &import_items),
+    );
 
-    // ── Function section ── defined bodies (types h+k..h+k+n), apply (h+k+n). NO realloc func.
+    // ── Function section ── defined bodies + apply (TYPE indices unchanged). The cabi_realloc import (when
+    // present) shifts the DEFINED FUNC indices by +1 — so `apply_abs` (and `member_body_abs` from the caller)
+    // account for `needs_realloc`. func_sec still lists the same n+1 type indices.
     let mut func_items = Vec::new();
     for i in 0..n {
         uleb128((h + k + i) as u64, &mut func_items);
     }
     uleb128(apply_type_idx as u64, &mut func_items);
     let func_sec = section(wasm_abi::CORE_SEC_FUNCTION, &wasm_vec(n + 1, &func_items));
-    let apply_abs = (h + k + n) as u32;
+    let apply_abs = (h + k + n + needs_realloc as usize) as u32;
 
     // NO memory section — memory 0 is the imported shared `mem`. NO global section — the removed realloc was
     // its only user; the shared mem module owns the bump cursor now.

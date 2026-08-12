@@ -157,6 +157,17 @@ pub enum Lir {
     I32Store8 {
         offset: u32,
     },
+    /// `i32.load (align=2, offset=O)` — pop `[addr:i32]`, push the i32 read from linear memory 0 at `addr+O`.
+    /// The kv.get lift reads the spilled `option<list<u8>>` result struct a host import wrote at the caller-
+    /// provided retptr (disc@0, list-ptr@4, list-len@8). Memory index 0; natural i32 alignment (2).
+    I32Load {
+        offset: u32,
+    },
+    /// `i32.load8_u (align=0, offset=O)` — pop `[addr:i32]`, push the zero-extended BYTE at `addr+O`. The
+    /// copy-loop read that lifts a host result's `list<u8>` bytes out of shared memory into a value-heap Bytes.
+    I32Load8U {
+        offset: u32,
+    },
     /// `call F` — call wasm function index `F` (its arguments already pushed in order). The index is a
     /// definition's ABSOLUTE emission position (`layout.abs`), resolved at selection.
     Call(u32),

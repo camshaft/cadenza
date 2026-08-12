@@ -160,10 +160,16 @@ pub fn emit(
     // String-RESULT op used AS the export routed to `emit_runtime_resource` (the value-escape path) and hit
     // it THERE, ahead of the post-collection check further down. Checking here covers all paths uniformly.
     // (`ty_undetermined`-gated inside, so a fold-synthesized `Ty::Any` HostCall is not falsely flagged.)
-    // NOTE (S0 in progress): an `option<list<u8>>` host result is lifted by the host-fused bytes-provider
-    // path, so it WILL be allowed here once the lift + envelope land — gated on being that provider. Until
-    // the emit is wired, this stays `false` (every path declines the compound result, byte-identical).
-    let allow_option_bytes = false;
+    // A WORLD-DRIVEN bytes provider (a reducer whose target WIT world names a `list<u8>`-crossing member)
+    // takes the host-fused bytes path, which now LIFTS an `option<list<u8>>` host result into a value-heap
+    // `Option<Bytes>` (the kv.get select lift, GAP C) — so that result is representable HERE. Every OTHER
+    // emit path lacks the lift, so it stays a decline. Gate on being that provider (component-name + a world
+    // bytes member).
+    let allow_option_bytes = db.component_name.is_some()
+        && db
+            .wit_world
+            .clone()
+            .is_some_and(|wb| world_bytes_crossing_export(layout, &wb).is_some());
     for &def in &layout.order {
         let body = def_body(db, def)?;
         if let Some((op, pos, ty)) =
@@ -7934,6 +7940,19 @@ fn emit_bytes_provider_member(
     ] {
         used.insert(op);
     }
+    // The kv.get option-result LIFT (select.rs) CONSTRUCTS the value-heap `Option<Bytes>` via `sum-new`
+    // (Some/None) — an op the reducer's own Core may never use (it only destructures via sum-disc/payload),
+    // so `collect_module_used_ops` misses it. Add it when a host op returns `option<list<u8>>`.
+    {
+        let mut host_probe: Vec<host::HostImport> = Vec::new();
+        for &def in &layout.order {
+            let body = def_body(db, def)?;
+            host::collect_host_imports(db, body, &mut host_probe);
+        }
+        if host_probe.iter().any(|hi| hi.result_option_bytes) {
+            used.insert("sum-new");
+        }
+    }
     let imports: Vec<&runtime_abi::RtOp> = used
         .iter()
         .map(|name| {
@@ -7951,12 +7970,12 @@ fn emit_bytes_provider_member(
              bytes-roundtrip path handles host imports, not peer-bound effects)",
         ));
     }
-    // A HOST op whose DECLARED signature has no host-boundary form declines. (S0 in progress: the
-    // host-fused path will LIFT an `option<list<u8>>` result into a value-heap `Option<Bytes>` and pass
-    // `true` here once the lift + envelope land; until then it declines like every other compound result.)
+    // A HOST op whose DECLARED signature has no host-boundary form declines. The host-fused path LIFTS an
+    // `option<list<u8>>` result into a value-heap `Option<Bytes>` (the kv.get select lift), so it is ALLOWED
+    // here (`true`); a String result or any OTHER compound result/argument still declines.
     for &def in &layout.order {
         let body = def_body(db, def)?;
-        if let Some((op, _, ty)) = host::first_unrepresentable_host_op(db, body, false) {
+        if let Some((op, _, ty)) = host::first_unrepresentable_host_op(db, body, true) {
             return Err(Reject::decline(format!(
                 "a bytes-crossing member calls host op `{op}` whose `{ty}` signature has no host-boundary \
                  form yet (a compound host result like `option<list<u8>>` needs the host compound-result \
@@ -7975,8 +7994,13 @@ fn emit_bytes_provider_member(
     // memory, so a host-fused reducer's layout carries `host_needs_memory`.
     let h = host_imports.len() as u32;
     let k = imports.len() as u32;
+    // A host op returning `option<list<u8>>` (kv.get) makes the guest core module IMPORT `cabi_realloc`
+    // (func index h+k) for the select lift's retptr alloc — shifting the DEFINED funcs by +1, so the import
+    // base (which `member_body_abs`/self-calls resolve against) must account for it. No option-result op
+    // (kv.put) → base h+k, byte-identical.
+    let needs_realloc = host_imports.iter().any(|hi| hi.result_option_bytes) as u32;
     let layout = layout
-        .with_import_base(h + k)
+        .with_import_base(h + k + needs_realloc)
         .with_host_needs_memory(host::set_needs_memory(&host_imports));
     let layout = &layout;
     let mut funcs: Vec<SelectedFunc> = Vec::new();

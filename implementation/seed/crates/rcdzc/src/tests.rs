@@ -3757,17 +3757,15 @@ fn a_host_fused_reducer_performs_multiple_puts_in_order_with_independent_args() 
     );
 }
 
-/// §3c GAP B B1b DECLINE-DON'T-MISCOMPILE (the pre-emit fence): a reducer whose `apply` calls the HOST
-/// `kv.get` — declared result `option<list<u8>>` (guest `Option<Bytes>`) — must DECLINE cleanly today:
-/// NO wasm artifact, an honest feature-limitation diagnostic, no panic/ICE and no miscompiled component.
-/// `first_unrepresentable_host_op` flags the non-scalar `Option<Bytes>` host result — the host-fused
-/// envelope does not yet lift an `option<list<u8>>` host result into a value-heap `Option<Bytes>` handle
-/// (the kv.get emit slice S0 will: Some = a Bytes leaf, None = absent). This pins the reject-don't-
-/// miscompile invariant as the regression anchor: when the emit lands it FLIPS this to emits+loads+
-/// invokes; until then a silent mis-emit of an unliftable option result must never ship. The get result
-/// is CONSUMED by a `match` so lazy-effect-elision cannot drop the call before the representability check.
+/// §3c GAP C: a reducer whose `apply` calls the HOST `kv.get` — declared result `option<list<u8>>` (guest
+/// `Option<Bytes>`) — now EMITS a host-fused bytes-roundtrip provider and LOADS on the pinned wasmtime. The
+/// select lift allocates the spilled-result retptr via the shared `cabi_realloc`, calls `kv.get` (core sig
+/// `(keyptr, keylen, retptr) -> ()`), then lifts `(disc, list-ptr, list-len)` into a value-heap
+/// `Option<Bytes>`: `disc==1` → `Some(bytes-alloc + copy-loop from list-ptr)`, else the nullary `None`. The
+/// component imports the kv host interface at the world's FQ name + the value-heap runtime. (Flipped from
+/// the earlier reject-don't-miscompile sentinel now that the option-result emit lands.)
 #[test]
-fn a_host_kv_get_option_bytes_result_declines_cleanly_no_miscompile() {
+fn a_host_fused_kv_get_reducer_emits_and_loads() {
     use crate::testkit::parse;
     let src = "(module m \
                  (effect kv (op get (-> Bytes (Option Bytes)))) \
@@ -3793,25 +3791,122 @@ fn a_host_kv_get_option_bytes_result_declines_cleanly_no_miscompile() {
         ],
         &[crate::backend::Target::Wasm],
     );
-    // DECLINE, not miscompile: an honest error diagnostic AND no wasm artifact.
     assert!(
-        out.has_error(),
-        "kv.get with an option<list<u8>> result must decline until the host compound-result ABI lands"
+        !out.has_error(),
+        "the host-fused kv.get reducer must emit (the option<list<u8>> result lift): {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("the host-fused kv.get reducer emits a component");
+    let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+    v.validate_all(bytes)
+        .expect("the host-fused kv.get provider component validates");
+    // Loads on the pinned wasmtime (Component::new type-checks the host+runtime+mem+lift wiring; kv is
+    // declared-but-unsatisfied at load, which is fine).
+    let req = cdz_run::required_runtime(bytes)
+        .expect("the host-fused kv.get provider component loads on the pinned wasmtime");
+    assert!(
+        req.is_some_and(|r| r.import_name.contains("cadenza:runtime/heap")),
+        "a kv.get reducer marshals its Event/effect-list through the value-heap runtime"
     );
     assert!(
-        out.artifact(crate::backend::Target::Wasm.artifact_kind())
-            .is_none(),
-        "a declined kv.get reducer must emit NO wasm component (reject, do not miscompile)"
+        String::from_utf8_lossy(bytes).contains("cadenza:agent-kernel/kv"),
+        "the kv.get reducer imports the kv host interface at the world's FQ name"
     );
-    // The diagnostic names kv.get and its option/compound RESULT as the current limitation (not an
-    // unrelated error). Either decline site's wording qualifies: the guest type renders `(Option Bytes)`
-    // and both call it a "compound"/option result that "no ... boundary form" emits "yet".
-    let msgs: Vec<&String> = out.diagnostics.iter().map(|d| &d.message).collect();
+}
+
+/// §3c GAP C INVOKE (the deep runtime proof of the option-result LIFT): a kv.get reducer is INVOKED on the
+/// pinned wasmtime with its host `cadenza:agent-kernel/kv` `get` bound to a closure returning `Some(bytes)`,
+/// and the returned bytes must round-trip through the guest lift into the effect-list. The reducer matches
+/// `kv.get(pl)` → `Some(b)` echoes `b` into the effect's `arg`; binding get → `Some("echoval")` must make
+/// the result carry `echoval` (proving the retptr read + `bytes-alloc` copy loop + `Some` cell are correct,
+/// not just that the component loads). The `None` reply drives the other arm (falls back to the Event's pl).
+#[test]
+fn a_host_fused_kv_get_reducer_lifts_the_some_bytes_when_invoked() {
+    use crate::testkit::parse;
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("[3c] runtime wasm not found; skipping kv.get invoke");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: None,
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    let builder = "(module m \
+                 (def (mk (: n Int64)) \
+                   (if (= n 0) (record (ct \"wasm\") (pl (Bytes.of (list 1 2 3)))) (mk (- n 1)))) \
+                 (def (main) (mk 2)) (export main))";
+    let bb =
+        compile_component(&crate::codec::encode(&parse(builder))).expect("the builder compiles");
+    let event = bare_value_doc(
+        &cdz_run::capture_escaped_value_doc(&bb, &[], &opts).expect("capture the Event doc"),
+    );
+    let src = "(module m \
+                 (effect kv (op get (-> Bytes (Option Bytes)))) \
+                 (def (apply (: e (Record (ct String) (pl Bytes)))) \
+                   (host (kv) \
+                     (match (kv.get (. e pl)) \
+                       ((Some b) (list (record (op (. e ct)) (arg b)))) \
+                       ((None) (list (record (op (. e ct)) (arg (. e pl)))))))) \
+                 (export apply))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:agent-kernel/fold"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                reducer_kv_get_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    let reducer = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("the kv.get reducer emits");
+    // Bind kv.get → Some("echoval"); the reducer echoes it into the effect `arg`.
+    let result = cdz_run::run_reducer_bytes_with_get(
+        reducer,
+        "cadenza:agent-kernel/fold",
+        "apply",
+        &event,
+        "cadenza:agent-kernel/kv",
+        "get",
+        Some(b"echoval".to_vec()),
+        &opts,
+    )
+    .expect("the kv.get reducer applies with a Some reply on the real runtime");
     assert!(
-        msgs.iter().any(|m| m.contains("get")
-            && m.contains("result")
-            && (m.contains("Option") || m.contains("compound") || m.contains("option<list<u8>>"))),
-        "the decline diagnostic names kv.get's option/compound result as the current limitation: {msgs:?}"
+        result.windows(7).any(|w| w == b"echoval"),
+        "the Some(bytes) that kv.get returned must round-trip through the guest lift into the \
+         effect-list (proving the retptr read + copy loop + Some cell): {result:02x?}"
+    );
+    // The None reply drives the other match arm (arg falls back to the Event's pl); still a non-empty list.
+    let result_none = cdz_run::run_reducer_bytes_with_get(
+        reducer,
+        "cadenza:agent-kernel/fold",
+        "apply",
+        &event,
+        "cadenza:agent-kernel/kv",
+        "get",
+        None,
+        &opts,
+    )
+    .expect("the kv.get reducer applies with a None reply on the real runtime");
+    assert!(
+        !result_none.is_empty(),
+        "the None arm still produces an effect-list document"
     );
 }
 

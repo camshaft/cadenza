@@ -11470,7 +11470,10 @@ fn emit(
         //= spec/capabilities/capabilities-and-effects.md#a-host-call-returns-a-response
         //# The program MUST NOT observe or encode how a host call is resolved, so that whether the host answers inline, suspends the run and resumes it later, or aborts it is invisible to the program and not part of the program's meaning.
         Core::HostCall {
-            effect, op, args, ..
+            effect,
+            op,
+            args,
+            result,
         } => {
             // EFFECTS-UNIFICATION (U2): an escaping effect BOUND to a peer contract
             // (`db.effect_bindings`) is a PEER call — resolve it against the extern-import set and emit a
@@ -11629,6 +11632,107 @@ fn emit(
                 // Raise the floor past ANY scratch this arg consumed, so the NEXT arg allocates fresh slots
                 // (never reusing — and thus never re-typing — a slot a prior marshal/checked-op still owns).
                 arg_base = (*high).max(arg_base);
+            }
+            // OPTION-RESULT LIFT (kv.get, S0): a host op returning `option<list<u8>>` is canon-lowered with a
+            // spilled result — its core sig is `(args…, retptr) -> ()`, the host writing `(disc, list-ptr,
+            // list-len)` into a CALLER-provided 12-byte retptr. Allocate the retptr via the shared
+            // `cabi_realloc`, pass it as the trailing arg, call, then LIFT the result into a value-heap
+            // `Option<Bytes>`: disc==1 → `Some(bytes-alloc + copy-loop from list-ptr)`, else the nullary `None`.
+            if crate::backend::wasm::host::is_option_bytes(db, &result) {
+                let (disc_some, disc_none) = {
+                    let crate::ty::Ty::Sum { decl, .. } = result.strip_nominal() else {
+                        return Err(Reject::decline(
+                            "a kv.get-style host result is not a sum type",
+                        ));
+                    };
+                    let d = db.type_decl_by_occ(*decl).ok_or_else(|| {
+                        Reject::decline("the option-result sum decl was not found")
+                    })?;
+                    let mut s = None;
+                    let mut n = None;
+                    for (i, v) in d.variants.iter().enumerate() {
+                        match v.name.as_str() {
+                            "Some" => s = Some(i as u32),
+                            "None" => n = Some(i as u32),
+                            _ => {}
+                        }
+                    }
+                    (
+                        s.ok_or_else(|| Reject::decline("option result has no Some variant"))?,
+                        n.ok_or_else(|| Reject::decline("option result has no None variant"))?,
+                    )
+                };
+                // Scratch (i32) above the arg high-water: retptr, list-ptr, list-len, the Bytes handle, a loop i.
+                let retptr = (*high).max(base);
+                let (lptr, llen, handle, ii) = (retptr + 1, retptr + 2, retptr + 3, retptr + 4);
+                *high = (*high).max(ii + 1);
+                for s in [retptr, lptr, llen, handle, ii] {
+                    scratch_ty.insert(s, ValType::I32);
+                }
+                // retptr = cabi_realloc(0, 0, align=4, size=12); leave it as the trailing call arg (tee-stash).
+                out.push(Lir::ConstI32(0));
+                out.push(Lir::ConstI32(0));
+                out.push(Lir::ConstI32(4));
+                out.push(Lir::ConstI32(12));
+                out.push(Lir::CallImport("cabi_realloc"));
+                out.push(Lir::LocalTee(retptr)); // [args…, retptr]
+                out.push(Lir::CallHostImport(index)); // (args…, retptr) -> () ; host wrote the struct
+                // list-ptr = mem[retptr+4]; list-len = mem[retptr+8].
+                out.push(Lir::LocalGet(retptr));
+                out.push(Lir::I32Load { offset: 4 });
+                out.push(Lir::LocalSet(lptr));
+                out.push(Lir::LocalGet(retptr));
+                out.push(Lir::I32Load { offset: 8 });
+                out.push(Lir::LocalSet(llen));
+                // if disc(mem[retptr]) == 1 { Some(bytes) } else { None } — leaves the Option<Bytes> handle.
+                out.push(Lir::LocalGet(retptr));
+                out.push(Lir::I32Load { offset: 0 });
+                out.push(Lir::ConstI32(1));
+                out.push(Lir::I32Eq);
+                out.push(Lir::If(BlockType::Val(ValType::I32)));
+                {
+                    // handle = bytes-alloc(list-len)
+                    out.push(Lir::LocalGet(llen));
+                    out.push(Lir::CallImport(OP_BYTES_ALLOC));
+                    out.push(Lir::LocalSet(handle));
+                    // for ii in 0..list-len { handle = bytes-set(handle, ii, mem8[list-ptr + ii]) }
+                    out.push(Lir::ConstI32(0));
+                    out.push(Lir::LocalSet(ii));
+                    out.push(Lir::Block(BlockType::Empty));
+                    out.push(Lir::Loop(BlockType::Empty));
+                    out.push(Lir::LocalGet(ii));
+                    out.push(Lir::LocalGet(llen));
+                    out.push(Lir::I32GeU);
+                    out.push(Lir::BrIf(1));
+                    out.push(Lir::LocalGet(handle));
+                    out.push(Lir::LocalGet(ii));
+                    out.push(Lir::LocalGet(lptr));
+                    out.push(Lir::LocalGet(ii));
+                    out.push(Lir::I32Add);
+                    out.push(Lir::I32Load8U { offset: 0 });
+                    out.push(Lir::CallImport(OP_BYTES_SET));
+                    out.push(Lir::LocalSet(handle));
+                    out.push(Lir::LocalGet(ii));
+                    out.push(Lir::ConstI32(1));
+                    out.push(Lir::I32Add);
+                    out.push(Lir::LocalSet(ii));
+                    out.push(Lir::Br(0));
+                    out.push(Lir::End); // loop
+                    out.push(Lir::End); // block
+                    // sum-new(disc_some, handle)
+                    out.push(Lir::ConstI32(disc_some as i32));
+                    out.push(Lir::LocalGet(handle));
+                    out.push(Lir::CallImport(OP_SUM_NEW));
+                }
+                out.push(Lir::Else);
+                {
+                    // None: sum-new(disc_none, IMM_UNIT) — the proper 2-child nullary (payload = inline unit).
+                    out.push(Lir::ConstI32(disc_none as i32));
+                    out.push(Lir::ConstI32(super::runtime_abi::IMM_UNIT as i32));
+                    out.push(Lir::CallImport(OP_SUM_NEW));
+                }
+                out.push(Lir::End); // if
+                return Ok(());
             }
             out.push(Lir::CallHostImport(index));
             Ok(())
