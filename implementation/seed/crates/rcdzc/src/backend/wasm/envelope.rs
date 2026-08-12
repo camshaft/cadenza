@@ -335,20 +335,7 @@ pub fn assemble_bytes_roundtrip_provider(
 
     // sec 7 (first): the import instance-type — component type 0. A `ty` decl (the op's component functype)
     // then an `export` decl naming the op, INTERLEAVED per op — mirrors `assemble_with_imports`.
-    let instance_type = {
-        let mut decls = Vec::new();
-        for (i, op) in imports.iter().enumerate() {
-            decls.push(0x01); // ty decl
-            decls.extend_from_slice(&op_comp_functype(op));
-            decls.push(0x04); // export decl
-            decls.extend_from_slice(&extern_name(op.name));
-            decls.push(0x01); // sort: component func
-            uleb128(i as u64, &mut decls);
-        }
-        let mut it = vec![0x42]; // instance type form
-        it.extend_from_slice(&wasm_vec(2 * k, &decls));
-        it
-    };
+    let instance_type = runtime_op_instance_type(imports);
     let import_type_sec = section(sec::COMPONENT_TYPE, &wasm_vec(1, &instance_type));
 
     // sec 10: import the runtime interface as an instance of component type 0.
@@ -560,22 +547,7 @@ fn assemble_with_imports(
     // sec 7: the import instance-type — component type 0. `0x42` then a vec of 2k declarations,
     // INTERLEAVED per op: a `ty` decl (the op's component functype) then an `export` decl naming the
     // op and referencing that func type by index.
-    let instance_type = {
-        let mut decls = Vec::new();
-        for (i, op) in imports.iter().enumerate() {
-            // ty decl: `01` <component-functype>.
-            decls.push(0x01);
-            decls.extend_from_slice(&op_comp_functype(op));
-            // export decl: `04` <export-name> <ComponentTypeRef::Func(i)>.
-            decls.push(0x04);
-            decls.extend_from_slice(&extern_name(op.name));
-            decls.push(0x01); // sort: component func
-            uleb128(i as u64, &mut decls);
-        }
-        let mut it = vec![0x42]; // instance type form
-        it.extend_from_slice(&wasm_vec(2 * k, &decls));
-        it
-    };
+    let instance_type = runtime_op_instance_type(imports);
     let type_sec = section(sec::COMPONENT_TYPE, &wasm_vec(1, &instance_type));
 
     // sec 10: import the runtime interface as an instance of component type 0.
@@ -711,20 +683,10 @@ pub fn assemble_provider_runtime(
     let m = exports.len();
 
     // sec 7: import instance-type (comp type 0) — the runtime ops.
-    let type_sec = {
-        let mut decls = Vec::new();
-        for (i, op) in imports.iter().enumerate() {
-            decls.push(0x01);
-            decls.extend_from_slice(&op_comp_functype(op));
-            decls.push(0x04);
-            decls.extend_from_slice(&extern_name(op.name));
-            decls.push(0x01);
-            uleb128(i as u64, &mut decls);
-        }
-        let mut it = vec![0x42];
-        it.extend_from_slice(&wasm_vec(2 * k, &decls));
-        section(sec::COMPONENT_TYPE, &wasm_vec(1, &it))
-    };
+    let type_sec = section(
+        sec::COMPONENT_TYPE,
+        &wasm_vec(1, &runtime_op_instance_type(imports)),
+    );
     // sec 10: import the runtime interface (comp instance 0).
     let import_sec = {
         let mut item = extern_name(import_name);
@@ -1350,20 +1312,7 @@ pub fn assemble_extern_runtime(
             it.extend_from_slice(&wasm_vec(2 * ops.len(), &decls));
             items.extend_from_slice(&it);
         }
-        let rt_it = {
-            let mut decls = Vec::new();
-            for (i, op) in imports.iter().enumerate() {
-                decls.push(0x01);
-                decls.extend_from_slice(&op_comp_functype(op));
-                decls.push(0x04);
-                decls.extend_from_slice(&extern_name(op.name));
-                decls.push(0x01);
-                uleb128(i as u64, &mut decls);
-            }
-            let mut it = vec![0x42];
-            it.extend_from_slice(&wasm_vec(2 * k, &decls));
-            it
-        };
+        let rt_it = runtime_op_instance_type(imports);
         items.extend_from_slice(&rt_it);
         section(sec::COMPONENT_TYPE, &wasm_vec(g + 1, &items))
     };
@@ -1580,20 +1529,7 @@ pub fn assemble_host_runtime(
     // is `0x42` + a vec of 2*count interleaved (ty, export) decls, exactly as the single-import shapes.
     let type_sec = {
         let host_it = host_effect_instance_type(host_fns, false, false);
-        let rt_it = {
-            let mut decls = Vec::new();
-            for (i, op) in imports.iter().enumerate() {
-                decls.push(0x01);
-                decls.extend_from_slice(&op_comp_functype(op));
-                decls.push(0x04);
-                decls.extend_from_slice(&extern_name(op.name));
-                decls.push(0x01);
-                uleb128(i as u64, &mut decls);
-            }
-            let mut it = vec![0x42];
-            it.extend_from_slice(&wasm_vec(2 * k, &decls));
-            it
-        };
+        let rt_it = runtime_op_instance_type(imports);
         let mut items = host_it;
         items.extend_from_slice(&rt_it);
         section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
@@ -1778,20 +1714,7 @@ pub fn assemble_host_runtime_mem(
     // memoryless host+runtime shape (the shared memory is a CORE detail, invisible to the component types).
     let type_sec = {
         let host_it = host_effect_instance_type(host_fns, false, false);
-        let rt_it = {
-            let mut decls = Vec::new();
-            for (i, op) in imports.iter().enumerate() {
-                decls.push(0x01);
-                decls.extend_from_slice(&op_comp_functype(op));
-                decls.push(0x04);
-                decls.extend_from_slice(&extern_name(op.name));
-                decls.push(0x01);
-                uleb128(i as u64, &mut decls);
-            }
-            let mut it = vec![0x42];
-            it.extend_from_slice(&wasm_vec(2 * k, &decls));
-            it
-        };
+        let rt_it = runtime_op_instance_type(imports);
         let mut items = host_it;
         items.extend_from_slice(&rt_it);
         section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
@@ -1996,19 +1919,8 @@ pub fn assemble_bytes_roundtrip_host_provider(
     let type_sec = {
         let host_it =
             host_effect_instance_type(host_fns, needs_option_bytes, needs_list_byte_pairs);
-        let mut rt_decls = Vec::new();
-        for (i, op) in imports.iter().enumerate() {
-            rt_decls.push(0x01);
-            rt_decls.extend_from_slice(&op_comp_functype(op));
-            rt_decls.push(0x04);
-            rt_decls.extend_from_slice(&extern_name(op.name));
-            rt_decls.push(0x01);
-            uleb128(i as u64, &mut rt_decls);
-        }
-        let mut rt_it = vec![0x42];
-        rt_it.extend_from_slice(&wasm_vec(2 * k, &rt_decls));
         let mut items = host_it;
-        items.extend_from_slice(&rt_it);
+        items.extend_from_slice(&runtime_op_instance_type(imports));
         section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
     };
 
@@ -2591,20 +2503,7 @@ pub fn assemble_runtime_resource(
 
     // sec 7: the import instance-type declaring the k used runtime ops (component type 0). Identical to
     // the import shape's instance-type: 2k interleaved (ty, export) decls.
-    let instance_type = {
-        let mut decls = Vec::new();
-        for (i, op) in imports.iter().enumerate() {
-            decls.push(0x01);
-            decls.extend_from_slice(&op_comp_functype(op));
-            decls.push(0x04);
-            decls.extend_from_slice(&extern_name(op.name));
-            decls.push(0x01);
-            uleb128(i as u64, &mut decls);
-        }
-        let mut it = vec![0x42];
-        it.extend_from_slice(&wasm_vec(2 * k, &decls));
-        it
-    };
+    let instance_type = runtime_op_instance_type(imports);
     out.extend_from_slice(&section(sec::COMPONENT_TYPE, &wasm_vec(1, &instance_type)));
 
     // sec 10: import the runtime interface as an instance of component type 0.
@@ -2842,20 +2741,7 @@ pub fn assemble_extern_runtime_resource(
             it.extend_from_slice(&wasm_vec(2 * ops.len(), &decls));
             items.extend_from_slice(&it);
         }
-        let rt_it = {
-            let mut decls = Vec::new();
-            for (i, op) in imports.iter().enumerate() {
-                decls.push(0x01);
-                decls.extend_from_slice(&op_comp_functype(op));
-                decls.push(0x04);
-                decls.extend_from_slice(&extern_name(op.name));
-                decls.push(0x01);
-                uleb128(i as u64, &mut decls);
-            }
-            let mut it = vec![0x42];
-            it.extend_from_slice(&wasm_vec(2 * k, &decls));
-            it
-        };
+        let rt_it = runtime_op_instance_type(imports);
         items.extend_from_slice(&rt_it);
         section(sec::COMPONENT_TYPE, &wasm_vec(g + 1, &items))
     };
@@ -3103,20 +2989,7 @@ pub fn assemble_host_runtime_resource(
     // its k ops).
     let type_sec = {
         let host_it = host_effect_instance_type(host_fns, false, false);
-        let rt_it = {
-            let mut decls = Vec::new();
-            for (i, op) in imports.iter().enumerate() {
-                decls.push(0x01);
-                decls.extend_from_slice(&op_comp_functype(op));
-                decls.push(0x04);
-                decls.extend_from_slice(&extern_name(op.name));
-                decls.push(0x01);
-                uleb128(i as u64, &mut decls);
-            }
-            let mut it = vec![0x42];
-            it.extend_from_slice(&wasm_vec(2 * k, &decls));
-            it
-        };
+        let rt_it = runtime_op_instance_type(imports);
         let mut items = host_it;
         items.extend_from_slice(&rt_it);
         section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
@@ -3406,20 +3279,7 @@ pub fn assemble_runtime_resource_with_scalar_methods(
     // prologue: import instance-type, runtime import, op aliases + lowers, dtor instance/module/instance,
     // t-dtor alias, resource type, resource.new/rep canons, heap instance, program module/instance).
     // Re-emitted here rather than factored to keep each hand-emit a single auditable byte stream.
-    let instance_type = {
-        let mut decls = Vec::new();
-        for (i, op) in imports.iter().enumerate() {
-            decls.push(0x01);
-            decls.extend_from_slice(&op_comp_functype(op));
-            decls.push(0x04);
-            decls.extend_from_slice(&extern_name(op.name));
-            decls.push(0x01);
-            uleb128(i as u64, &mut decls);
-        }
-        let mut it = vec![0x42];
-        it.extend_from_slice(&wasm_vec(2 * k, &decls));
-        it
-    };
+    let instance_type = runtime_op_instance_type(imports);
     out.extend_from_slice(&section(sec::COMPONENT_TYPE, &wasm_vec(1, &instance_type)));
     let import_sec = {
         let mut item = extern_name(import_name);
@@ -3623,20 +3483,7 @@ pub fn assemble_extern_runtime_resource_with_scalar_methods(
             it.extend_from_slice(&wasm_vec(2 * ops.len(), &decls));
             items.extend_from_slice(&it);
         }
-        let rt_it = {
-            let mut decls = Vec::new();
-            for (i, op) in imports.iter().enumerate() {
-                decls.push(0x01);
-                decls.extend_from_slice(&op_comp_functype(op));
-                decls.push(0x04);
-                decls.extend_from_slice(&extern_name(op.name));
-                decls.push(0x01);
-                uleb128(i as u64, &mut decls);
-            }
-            let mut it = vec![0x42];
-            it.extend_from_slice(&wasm_vec(2 * k, &decls));
-            it
-        };
+        let rt_it = runtime_op_instance_type(imports);
         items.extend_from_slice(&rt_it);
         section(sec::COMPONENT_TYPE, &wasm_vec(g + 1, &items))
     };
@@ -3881,20 +3728,7 @@ pub fn assemble_host_runtime_resource_with_scalar_methods(
     // sec 7: TWO instance-types — the host effect (comp type 0, its h ops) then the runtime (comp type 1).
     let type_sec = {
         let host_it = host_effect_instance_type(host_fns, false, false);
-        let rt_it = {
-            let mut decls = Vec::new();
-            for (i, op) in imports.iter().enumerate() {
-                decls.push(0x01);
-                decls.extend_from_slice(&op_comp_functype(op));
-                decls.push(0x04);
-                decls.extend_from_slice(&extern_name(op.name));
-                decls.push(0x01);
-                uleb128(i as u64, &mut decls);
-            }
-            let mut it = vec![0x42];
-            it.extend_from_slice(&wasm_vec(2 * k, &decls));
-            it
-        };
+        let rt_it = runtime_op_instance_type(imports);
         let mut items = host_it;
         items.extend_from_slice(&rt_it);
         section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
@@ -4214,20 +4048,7 @@ pub fn assemble_closure_resource_borrow_tuple(
     out.extend_from_slice(COMPONENT_MAGIC);
 
     // sec 7: the import instance-type declaring the k used runtime ops (component type 0).
-    let instance_type = {
-        let mut decls = Vec::new();
-        for (i, op) in imports.iter().enumerate() {
-            decls.push(0x01);
-            decls.extend_from_slice(&op_comp_functype(op));
-            decls.push(0x04);
-            decls.extend_from_slice(&extern_name(op.name));
-            decls.push(0x01);
-            uleb128(i as u64, &mut decls);
-        }
-        let mut it = vec![0x42];
-        it.extend_from_slice(&wasm_vec(2 * k, &decls));
-        it
-    };
+    let instance_type = runtime_op_instance_type(imports);
     out.extend_from_slice(&section(sec::COMPONENT_TYPE, &wasm_vec(1, &instance_type)));
 
     // sec 10: import the runtime interface as an instance of component type 0.
@@ -4474,20 +4295,7 @@ pub fn assemble_closure_host_runtime_resource(
             it.extend_from_slice(&wasm_vec(2 * h, &decls));
             it
         };
-        let rt_it = {
-            let mut decls = Vec::new();
-            for (i, op) in imports.iter().enumerate() {
-                decls.push(0x01);
-                decls.extend_from_slice(&op_comp_functype(op));
-                decls.push(0x04);
-                decls.extend_from_slice(&extern_name(op.name));
-                decls.push(0x01);
-                uleb128(i as u64, &mut decls);
-            }
-            let mut it = vec![0x42];
-            it.extend_from_slice(&wasm_vec(2 * k, &decls));
-            it
-        };
+        let rt_it = runtime_op_instance_type(imports);
         let mut items = host_it;
         items.extend_from_slice(&rt_it);
         section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
@@ -4749,20 +4557,7 @@ pub fn assemble_closure_bytes_resource_borrow_tuple(
     out.extend_from_slice(COMPONENT_MAGIC);
 
     // sec 7: import instance-type (component type 0). — identical prologue to `assemble_closure_resource`.
-    let instance_type = {
-        let mut decls = Vec::new();
-        for (i, op) in imports.iter().enumerate() {
-            decls.push(0x01);
-            decls.extend_from_slice(&op_comp_functype(op));
-            decls.push(0x04);
-            decls.extend_from_slice(&extern_name(op.name));
-            decls.push(0x01);
-            uleb128(i as u64, &mut decls);
-        }
-        let mut it = vec![0x42];
-        it.extend_from_slice(&wasm_vec(2 * k, &decls));
-        it
-    };
+    let instance_type = runtime_op_instance_type(imports);
     out.extend_from_slice(&section(sec::COMPONENT_TYPE, &wasm_vec(1, &instance_type)));
     out.extend_from_slice(&{
         let mut item = extern_name(import_name);
@@ -5139,20 +4934,7 @@ pub fn assemble_mixed_closure_resource_borrow_tuple(
     out.extend_from_slice(COMPONENT_MAGIC);
 
     // sec 7: the import instance-type declaring the k used runtime ops (component type 0).
-    let instance_type = {
-        let mut decls = Vec::new();
-        for (i, op) in imports.iter().enumerate() {
-            decls.push(0x01);
-            decls.extend_from_slice(&op_comp_functype(op));
-            decls.push(0x04);
-            decls.extend_from_slice(&extern_name(op.name));
-            decls.push(0x01);
-            uleb128(i as u64, &mut decls);
-        }
-        let mut it = vec![0x42];
-        it.extend_from_slice(&wasm_vec(2 * k, &decls));
-        it
-    };
+    let instance_type = runtime_op_instance_type(imports);
     out.extend_from_slice(&section(sec::COMPONENT_TYPE, &wasm_vec(1, &instance_type)));
 
     // sec 10: import the runtime interface as an instance of component type 0.
@@ -5488,20 +5270,7 @@ pub fn assemble_multi_closure_bytes_resource_borrow_tuple(
 
     // Shared prologue with the scalar multi envelope: import instance-type, runtime import, op alias/lower,
     // dtor, resource type, resource.new/rep, heap instance, program module/instance.
-    let instance_type = {
-        let mut decls = Vec::new();
-        for (i, op) in imports.iter().enumerate() {
-            decls.push(0x01);
-            decls.extend_from_slice(&op_comp_functype(op));
-            decls.push(0x04);
-            decls.extend_from_slice(&extern_name(op.name));
-            decls.push(0x01);
-            uleb128(i as u64, &mut decls);
-        }
-        let mut it = vec![0x42];
-        it.extend_from_slice(&wasm_vec(2 * k, &decls));
-        it
-    };
+    let instance_type = runtime_op_instance_type(imports);
     out.extend_from_slice(&section(sec::COMPONENT_TYPE, &wasm_vec(1, &instance_type)));
     out.extend_from_slice(&{
         let mut item = extern_name(import_name);
@@ -6085,20 +5854,7 @@ pub fn assemble_distinct_sig_resource_mixed_borrow(
     out.extend_from_slice(COMPONENT_MAGIC);
 
     // sec 7: import instance-type (component type 0).
-    let instance_type = {
-        let mut decls = Vec::new();
-        for (i, op) in imports.iter().enumerate() {
-            decls.push(0x01);
-            decls.extend_from_slice(&op_comp_functype(op));
-            decls.push(0x04);
-            decls.extend_from_slice(&extern_name(op.name));
-            decls.push(0x01);
-            uleb128(i as u64, &mut decls);
-        }
-        let mut it = vec![0x42];
-        it.extend_from_slice(&wasm_vec(2 * k, &decls));
-        it
-    };
+    let instance_type = runtime_op_instance_type(imports);
     out.extend_from_slice(&section(sec::COMPONENT_TYPE, &wasm_vec(1, &instance_type)));
     // sec 10: import the runtime interface (component instance 0).
     out.extend_from_slice(&{
@@ -6498,20 +6254,7 @@ pub fn assemble_distinct_sig_roundtrip_resource_mixed(
     out.extend_from_slice(COMPONENT_MAGIC);
 
     // sec 7/10/6/8: import instance-type, import runtime, alias+lower the ops (identical to distinct-sig).
-    let instance_type = {
-        let mut decls = Vec::new();
-        for (i, op) in imports.iter().enumerate() {
-            decls.push(0x01);
-            decls.extend_from_slice(&op_comp_functype(op));
-            decls.push(0x04);
-            decls.extend_from_slice(&extern_name(op.name));
-            decls.push(0x01);
-            uleb128(i as u64, &mut decls);
-        }
-        let mut it = vec![0x42];
-        it.extend_from_slice(&wasm_vec(2 * k, &decls));
-        it
-    };
+    let instance_type = runtime_op_instance_type(imports);
     out.extend_from_slice(&section(sec::COMPONENT_TYPE, &wasm_vec(1, &instance_type)));
     out.extend_from_slice(&{
         let mut item = extern_name(import_name);
@@ -6827,20 +6570,7 @@ pub fn assemble_roundtrip_resource_mixed(
     out.extend_from_slice(COMPONENT_MAGIC);
 
     // sec 7: the import instance-type declaring the k used runtime ops (component type 0).
-    let instance_type = {
-        let mut decls = Vec::new();
-        for (i, op) in imports.iter().enumerate() {
-            decls.push(0x01);
-            decls.extend_from_slice(&op_comp_functype(op));
-            decls.push(0x04);
-            decls.extend_from_slice(&extern_name(op.name));
-            decls.push(0x01);
-            uleb128(i as u64, &mut decls);
-        }
-        let mut it = vec![0x42];
-        it.extend_from_slice(&wasm_vec(2 * k, &decls));
-        it
-    };
+    let instance_type = runtime_op_instance_type(imports);
     out.extend_from_slice(&section(sec::COMPONENT_TYPE, &wasm_vec(1, &instance_type)));
 
     // sec 10: import the runtime interface.
@@ -9370,6 +9100,29 @@ fn op_comp_functype(op: &RtOp) -> Vec<u8> {
         None => item.extend_from_slice(&[0x01, 0x00]),
     }
     item
+}
+
+/// The runtime-import INSTANCE TYPE (component type form `0x42`) for a set of runtime ops: per op, a `ty`
+/// decl (`0x01` + the op's component functype) then an `export` decl (`0x04` + the op's extern name +
+/// sort `0x01` + the op's component-func index `i`), all `2*k` decls wrapped as one instance type. This is
+/// the shape every `assemble_*` variant open-codes to build the imported runtime interface's component
+/// type 0 — factored here (the runtime-op twin of [`host_effect_instance_type`]) so the ~20 assemblers
+/// share one source of truth for the import shape. Byte-identical to the inlined loop; callers that
+/// COMPOSE it with prepended defined types (a host-fused list/option type) build their decls directly
+/// rather than calling this.
+fn runtime_op_instance_type(imports: &[&RtOp]) -> Vec<u8> {
+    let mut decls = Vec::new();
+    for (i, op) in imports.iter().enumerate() {
+        decls.push(0x01); // ty decl
+        decls.extend_from_slice(&op_comp_functype(op));
+        decls.push(0x04); // export decl
+        decls.extend_from_slice(&extern_name(op.name));
+        decls.push(0x01); // sort: component func
+        uleb128(i as u64, &mut decls);
+    }
+    let mut it = vec![0x42]; // instance type form
+    it.extend_from_slice(&wasm_vec(2 * imports.len(), &decls));
+    it
 }
 
 /// A sec-7 component functype item for a BOUNDARY export: `<func:0x40> <params-vec> <result-form>`. The
