@@ -2342,6 +2342,120 @@ mod tests {
         );
     }
 
+    /// END-TO-END: drive the REAL `reducer_kv.cdz` kv-DELETE branch through the A1 BYTES boundary, proving
+    /// the `kv.delete` BOOL-lift path round-trips through the host — the third kv host op (put + get + delete)
+    /// and the only one returning a FLAT SCALAR (`bool`, no retptr, unlike get's `option<bytes>`) that the
+    /// reducer branches on. The kv-genesis E2E above proves put+get; THIS proves delete's existed/absent bool.
+    ///
+    /// The contract (`reducer_kv.cdz` kv-del branch): a `kv-del`-family event folds to `kv.delete("kv-genesis/slot")`
+    /// → on `true` (the key EXISTED) ONE emit effect `{kind=emit, target="deleted", payload=None}`; on `false`
+    /// (absent) NO effects. Two arms make it non-vacuous: (1) SEED then DELETE → the slot exists → delete
+    /// returns true → one "deleted" emit; (2) DELETE with no prior seed → the slot is absent → false → zero
+    /// effects. The KV is THREADED across the seed→delete folds (the kernel loop's fold contract), so the
+    /// delete sees the seed's committed write. Same component + env as the kv-genesis E2E
+    /// (`CDZ_KV_GENESIS_REDUCER_COMPONENT` + `CDZ_STORE`) — it is the SAME reducer_kv component (kv-del was
+    /// appended, kv-seed/kv-read byte-intact).
+    #[tokio::test]
+    async fn real_kv_reducer_delete_branch_emits_iff_the_key_existed() {
+        use cdz_kernel::wasm_host::AsyncComponentReducer;
+
+        let non_empty = |var: &str| std::env::var(var).ok().filter(|v| !v.is_empty());
+        let Some(reducer_path) = non_empty("CDZ_KV_GENESIS_REDUCER_COMPONENT") else {
+            eprintln!(
+                "SKIP real_kv_reducer_delete_branch_emits_iff_the_key_existed: \
+                 CDZ_KV_GENESIS_REDUCER_COMPONENT unset (or empty)"
+            );
+            return;
+        };
+        let store_dir = non_empty("CDZ_STORE").unwrap_or_else(|| {
+            panic!(
+                "real_kv_reducer_delete_...: CDZ_KV_GENESIS_REDUCER_COMPONENT is set but CDZ_STORE is not — \
+                 the kv reducer imports cadenza:runtime/heap, whose bytes resolve from the component store"
+            )
+        });
+        let bytes = std::fs::read(&reducer_path).unwrap_or_else(|e| {
+            panic!("CDZ_KV_GENESIS_REDUCER_COMPONENT={reducer_path:?} set but unreadable: {e}")
+        });
+        let reducer = AsyncComponentReducer::from_component_bytes(&bytes)
+            .unwrap_or_else(|e| panic!("reducer_kv must be a valid component: {e:?}"));
+        // Resolve the value-heap runtime dep from CDZ_STORE + attach the store — same path as kv-genesis.
+        let store = cdz_kernel::component_store::ComponentStore::open(&store_dir);
+        let deps = reducer.deps().to_vec();
+        assert!(
+            !deps.is_empty(),
+            "the kv reducer must declare a cadenza:runtime/heap dep (it constructs values via the heap)"
+        );
+        let mut resolved = Vec::with_capacity(deps.len());
+        for dep in &deps {
+            let dep_bytes = store.get_by_hash(&dep.hash).unwrap_or_else(|e| {
+                panic!(
+                    "CDZ_STORE={store_dir:?} could not resolve kv reducer dep {:?} (hash {}): {e:?}",
+                    dep.import_name,
+                    dep.hash.to_hex()
+                )
+            });
+            resolved.push((dep.clone(), dep_bytes));
+        }
+        let reducer = reducer
+            .with_resolved_deps(resolved)
+            .with_component_store(store);
+
+        // ARM 1 (key EXISTED): SEED the slot, then DELETE it — thread the seed fold's Kv into the delete fold
+        // so the delete sees the committed write. delete returns true → one "deleted" emit, no payload.
+        let seed_ct = cdz_kernel::event::ContentType {
+            family: "kv-seed".into(),
+            version: 1,
+        };
+        let (_seed_effects, kv_after_seed) = reducer
+            .apply(
+                cdz_kernel::kv::Kv::new(),
+                seed_ct,
+                Some(b"to-be-deleted".to_vec()),
+                None,
+            )
+            .await
+            .expect("the kv reducer folds the seed event (kv.put) through the A1 bytes boundary");
+        let del_ct = cdz_kernel::event::ContentType {
+            family: "kv-del".into(),
+            version: 1,
+        };
+        let (del_effects, _kv_after_del) = reducer
+            .apply(kv_after_seed, del_ct.clone(), None, None)
+            .await
+            .expect(
+                "the kv reducer folds the delete event (kv.delete) through the A1 bytes boundary",
+            );
+        assert_eq!(
+            del_effects.len(),
+            1,
+            "deleting an EXISTING key folds to one emit (kv.delete returned true)"
+        );
+        assert_eq!(
+            del_effects[0].request.content_type.family, "emit",
+            "the folded effect's kind crosses the bytes boundary as the family string"
+        );
+        assert_eq!(
+            del_effects[0].request.target_str().unwrap(),
+            "deleted",
+            "the delete emit's target is the opaque bytes \"deleted\""
+        );
+        assert!(
+            del_effects[0].request.payload.is_none(),
+            "the delete emit carries no payload (the kv-del branch emits target-only)"
+        );
+
+        // ARM 2 (key ABSENT): DELETE with no prior seed — the slot doesn't exist → kv.delete returns false →
+        // zero effects. Proves the false arm of the bool lift (not just the true arm).
+        let (absent_del_effects, _kv3) = reducer
+            .apply(cdz_kernel::kv::Kv::new(), del_ct, None, None)
+            .await
+            .expect("the kv reducer folds a delete-of-absent-key without trapping");
+        assert!(
+            absent_del_effects.is_empty(),
+            "deleting an ABSENT key requests no effects (kv.delete returned false)"
+        );
+    }
+
     #[tokio::test]
     async fn with_sink_persists_a_sessions_events_durably() {
         // with_sink attaches a durable LogStore: the events a session appends during a turn are persisted,
