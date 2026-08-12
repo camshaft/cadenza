@@ -14449,6 +14449,11 @@ pub fn value_cmp_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec
 /// makes it emit the bare form, byte-matching the kernel. `sum_shape_descriptor` (the ESCAPE path) keeps
 /// the frame — that path crosses to an untyped host that renders `(: value Type)`; this boundary does not.
 pub fn bare_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> {
+    // Same DOMAIN as `sum_shape_descriptor` — only a value-form COMPOUND (sum/collection/record/tuple/
+    // bignum) has a value-form descriptor; a bare scalar/function/etc. has NONE and must decline (the bytes
+    // boundary requires a value-decodable compound param + a value-encodable compound result). `shape_of`
+    // alone would accept a scalar, so gate on `sum_shape_descriptor` first, then emit the UNFRAMED shape.
+    sum_shape_descriptor(db, ty)?;
     let mut builder = ShapeTableBuilder::default();
     let root = builder.shape_of(db, ty)?;
     Some(builder.encode(root))

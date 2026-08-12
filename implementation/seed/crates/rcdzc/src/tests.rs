@@ -841,6 +841,23 @@ fn call_trap_reason(
 /// reproducing storeless CI; a prepend-then-fallback would instead fall through to the real store and
 /// defeat the rerun. When UNSET, searches the content-addressed store and the `cargo component` build
 /// output, relative to the repo root.
+/// Strip the `(: value Type)` typed-document FRAME from a captured value doc, returning the BARE value
+/// form (root = the value child). `capture_escaped_value_doc` produces the framed escape form, but the
+/// reducer fold boundary is BARE both directions (the kernel's `build_event_document` emits bare) — so an
+/// invoke test must feed the reducer the BARE Event doc, matching the kernel, now that the param descriptor
+/// is `bare_shape_descriptor`. The value child IS the bare value form (value-encode's inner == kernel
+/// val_to_ast), so re-rooting there yields the exact bare doc the kernel would send.
+fn bare_value_doc(framed: &[u8]) -> Vec<u8> {
+    let mut a = crate::codec::decode(framed).expect("decode the captured value doc");
+    if a.head_name(a.root) == Some(":")
+        && let crate::ast::Struct::List(items) = a.get(a.root).clone()
+        && items.len() >= 2
+    {
+        a.root = items[1]; // (: value Type) → value
+    }
+    crate::codec::encode(&a)
+}
+
 fn find_runtime_wasm() -> Option<Vec<u8>> {
     use crate::backend::wasm::runtime_abi::REQUIRED_RUNTIME_HASH;
     let candidates: Vec<std::path::PathBuf> = if let Ok(dir) = std::env::var("CADENZA_STORE") {
@@ -3468,8 +3485,12 @@ fn a_pure_reducer_apply_round_trips_an_event_document_end_to_end() {
                  (def (main) (mk 2)) (export main))";
     let builder_bytes =
         compile_component(&crate::codec::encode(&parse(builder))).expect("the builder compiles");
-    let event_doc = cdz_run::capture_escaped_value_doc(&builder_bytes, &[], &opts)
-        .expect("capture the Event value-form document");
+    // Strip the `(:` escape frame → the BARE Event doc the kernel's build_event_document sends (the reducer
+    // param descriptor is now `bare_shape_descriptor`, so value-decode reads the bare form).
+    let event_doc = bare_value_doc(
+        &cdz_run::capture_escaped_value_doc(&builder_bytes, &[], &opts)
+            .expect("capture the Event value-form document"),
+    );
     assert!(
         !event_doc.is_empty(),
         "the captured Event value-form document is non-empty"
@@ -3558,8 +3579,12 @@ fn a_host_fused_kv_put_reducer_performs_its_put_when_invoked() {
                  (def (main) (mk 2)) (export main))";
     let builder_bytes =
         compile_component(&crate::codec::encode(&parse(builder))).expect("the builder compiles");
-    let event_doc = cdz_run::capture_escaped_value_doc(&builder_bytes, &[], &opts)
-        .expect("capture the Event value-form document");
+    // Strip the `(:` escape frame → the BARE Event doc the kernel's build_event_document sends (the reducer
+    // param descriptor is now `bare_shape_descriptor`, so value-decode reads the bare form).
+    let event_doc = bare_value_doc(
+        &cdz_run::capture_escaped_value_doc(&builder_bytes, &[], &opts)
+            .expect("capture the Event value-form document"),
+    );
 
     // (2) The host-fused reducer: `apply` performs `kv.put(pl, pl)` (unhandled → host import) then returns
     // an effect-list. The world declares `import cadenza:agent-kernel/kv` (put) — routed to the host path.
@@ -3650,8 +3675,12 @@ fn a_host_fused_reducer_performs_multiple_puts_in_order_with_independent_args() 
                  (def (main) (mk 2)) (export main))";
     let builder_bytes =
         compile_component(&crate::codec::encode(&parse(builder))).expect("the builder compiles");
-    let event_doc = cdz_run::capture_escaped_value_doc(&builder_bytes, &[], &opts)
-        .expect("capture the Event value-form document");
+    // Strip the `(:` escape frame → the BARE Event doc the kernel's build_event_document sends (the reducer
+    // param descriptor is now `bare_shape_descriptor`, so value-decode reads the bare form).
+    let event_doc = bare_value_doc(
+        &cdz_run::capture_escaped_value_doc(&builder_bytes, &[], &opts)
+            .expect("capture the Event value-form document"),
+    );
 
     // apply performs two puts with distinct args, THEN returns an effect-list:
     //   kv.put(pl, [7,7])   then   kv.put([9,9], pl)

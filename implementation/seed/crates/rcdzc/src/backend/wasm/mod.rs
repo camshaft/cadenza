@@ -7901,10 +7901,13 @@ fn emit_bytes_provider_member(
         ));
     };
     let param_ty = param_ty.clone();
-    // PARAM side: value-DECODE the incoming document. Keep `sum_shape_descriptor` here (unchanged) — the
-    // param decode already round-trips (v-ah ruled only the RESULT descriptor needs the bare root; a
-    // separate param-side change is deferred until proven needed against the kernel's bare Event).
-    let param_desc = crate::lower::sum_shape_descriptor(db, &param_ty).ok_or_else(|| {
+    // PARAM side (SYMMETRIC with the result): value-DECODE the incoming BARE Event document. The kernel's
+    // `build_event_document` (val_to_ast) emits the BARE value form (name-head `record`, `= name value`
+    // fields), so the param descriptor must root at the BARE inner shape too — NOT `sum_shape_descriptor`'s
+    // `Framed` wrap (which a Record CONTAINING a sum/option field takes), against which value-decode would
+    // expect the `(: value Type)` typed-doc and reconstruct EMPTY fields from the kernel's bare Event
+    // (v-pc issue 035391). The fold boundary is bare BOTH directions (v-ah+v-runtime ruling 2026-08-12).
+    let param_desc = crate::lower::bare_shape_descriptor(db, &param_ty).ok_or_else(|| {
         Reject::decline(
             "a bytes-crossing provider export's parameter has no value-form shape descriptor (not a \
              sum/collection/compound the runtime value-decode walker reconstructs)",
