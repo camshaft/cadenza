@@ -968,6 +968,17 @@ pub fn reducer_world_artifact() -> Vec<u8> {
     // `kv.delete`'s scalar result (present-or-removed). No retptr lift needed (a flat scalar, unlike
     // `option<list<u8>>`), so it emits like `put`'s unit result.
     let bool_desc = |b: &mut Builder| b.wit_type_prim("bool");
+    // `kv.prefix-scan`'s result `list<tuple<list<u8>, list<u8>>>` — the key-value pairs. STR-head compounds
+    // (build_type form): `("list" ("tuple" ("list" (u8)) ("list" (u8))))`. `tuple` has no shared builder
+    // (MVP is prim/list/option), so its str head is built inline like `unit`. The nested list-of-byte-pairs
+    // is a genuine compound host result (rcdzc's GAP-C+ lift, landed) — not a flat scalar.
+    let scan_pairs_desc = |b: &mut Builder| {
+        let k = bytes_desc(b);
+        let v = bytes_desc(b);
+        let tuple_head = b.atom_leaf(Leaf::Str("tuple".into()));
+        let pair = b.list(vec![tuple_head, k, v]);
+        b.wit_type_list(pair)
+    };
 
     // export `fold`: `apply(event: list<u8>) -> list<u8>`
     let apply_sig = {
@@ -981,10 +992,11 @@ pub fn reducer_world_artifact() -> Vec<u8> {
         &[("apply", apply_sig)],
     );
 
-    // import `kv`: `get(key: list<u8>) -> option<list<u8>>`, `put(key: list<u8>, value: list<u8>)` (unit),
-    // `delete(key: list<u8>) -> bool`. `prefix-scan` (result `list<tuple<list<u8>, list<u8>>>`) is still
-    // deferred until the emit reader lifts the nested list-of-byte-pairs; `delete`'s bool result is a flat
-    // scalar the emit already handles, so it is a real (not fake) member. Member order matches reducer.wit.
+    // import `kv`: the full reducer.wit interface — `get(key) -> option<list<u8>>`,
+    // `put(key, value)` (unit), `delete(key) -> bool`, `prefix-scan(prefix) -> list<tuple<list<u8>,
+    // list<u8>>>`. Member order matches reducer.wit (get, put, delete, prefix-scan). All four now emit:
+    // get's option + prefix-scan's nested list-of-pairs are compound (retptr) lifts, put's unit +
+    // delete's bool are flat scalars.
     let get_sig = {
         let key = bytes_desc(&mut b);
         let res = opt_bytes_desc(&mut b);
@@ -1001,10 +1013,20 @@ pub fn reducer_world_artifact() -> Vec<u8> {
         let res = bool_desc(&mut b);
         b.wit_func_sig(&[("key", key)], res)
     };
+    let prefix_scan_sig = {
+        let prefix = bytes_desc(&mut b);
+        let res = scan_pairs_desc(&mut b);
+        b.wit_func_sig(&[("prefix", prefix)], res)
+    };
     let kv = b.wit_interface(
         WitDir::Import,
         "cadenza:agent-kernel/kv",
-        &[("get", get_sig), ("put", put_sig), ("delete", delete_sig)],
+        &[
+            ("get", get_sig),
+            ("put", put_sig),
+            ("delete", delete_sig),
+            ("prefix-scan", prefix_scan_sig),
+        ],
     );
 
     let world = b.world_schema_tree("reducer", &[fold, kv]);
@@ -1788,9 +1810,11 @@ mod tests {
             "get",
             "put",
             "delete",
+            "prefix-scan",
             "event",
             "key",
             "value",
+            "prefix",
             "u8",
             "bool",
         ] {
@@ -1800,8 +1824,9 @@ mod tests {
             );
         }
         // build_type-form descriptor heads are STR atoms: list<u8> -> ("list" (u8)); option -> ("option" ..);
-        // unit -> ("unit"). Their presence proves the param/result descriptors are the shared build_type form.
-        for expect in ["list", "option", "unit"] {
+        // unit -> ("unit"); tuple -> ("tuple" ..). Their presence proves the param/result descriptors are
+        // the shared build_type form.
+        for expect in ["list", "option", "unit", "tuple"] {
             assert!(
                 strs.iter().any(|s| s == expect),
                 "missing STR head {expect}"

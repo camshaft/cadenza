@@ -13,6 +13,9 @@
 //   delete event  { content-type.family = "kv-del" }                     -> kv.delete(KEY) ->
 //                     true  => [ emit { target "deleted" } ]   (the key existed; exercises the bool lift)
 //                     false => []
+//   scan event    { content-type.family = "kv-scan" }                    -> kv.prefix-scan(PREFIX) ->
+//                     len>0 => [ emit { target "scanned" } ]   (exercises the list<tuple<bytes,bytes>> lift)
+//                     len=0 => []
 //   anything else -> [] (no effects)
 // The kv-genesis e2e delivers seed then trigger and asserts exactly ONE emit effect whose payload equals
 // the seeded bytes (get read back what put wrote), via the value-heap runtime + the host kv import.
@@ -37,10 +40,14 @@ effect Kv =
   | put : `->`(Bytes, Bytes, Unit)
   | get : `->`(Bytes, Option(Bytes))
   | delete : `->`(Bytes, Bool)
+  | prefix-scan : `->`(Bytes, List(Tuple(Bytes, Bytes)))
 
 // The one KV slot this reducer seeds + reads (its own §4 KV schema; opaque to the kernel). A def so put
 // and get use the byte-identical key.
 def slot() -> Bytes = String.to-bytes("kv-genesis/slot")
+
+// The prefix the kv-scan branch scans (the slot's namespace) — the slot() key lives under it.
+def scan-prefix() -> Bytes = String.to-bytes("kv-genesis/")
 
 def apply(
   event: Record(
@@ -80,6 +87,19 @@ def apply(
         correlation = None(),
       }]
       else [])
+  else if family == "kv-scan" then
+    // Scan the slot's namespace and emit one "scanned" effect iff any pairs exist (exercises the
+    // kv.prefix-scan lift: the host returns list<tuple<list<u8>,list<u8>>>, lifted to a value-heap
+    // List of Tuple of Bytes that List.len forces).
+    host Kv in (
+      let pairs = Kv.prefix-scan(scan-prefix()) in
+      if List.len(pairs) == 0 then []
+      else [{
+        kind = "emit",
+        target = String.to-bytes("scanned"),
+        payload = None(),
+        correlation = None(),
+      }])
   else
     // Any other event folds to nothing.
     []
