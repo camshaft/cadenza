@@ -741,7 +741,12 @@
         # built bytes → byte-identical early-cutoff AND correct rebuild-on-bump, which a fixed pin
         # structurally cannot), NOT a hand-pinned outputHash. Dropping the param makes reintroducing the bug
         # an eval error (unexpected argument), not a silent runtime BlobMissing.
-        mkCadenzaComponent = { name, cdzFile, componentName ? "cadenza:agent-kernel/fold", contentAddressed ? false }:
+        # `witWorld` (null | "pure" | "full"): when set, the reducer TARGETS a WIT world — materialize the
+        # world artifact via the `emit-wit-world` bin and pass it as the `wit-world:reducer-world=<path>`
+        # compile input (KIND_WIT_WORLD), so rcdzc's world-driven emit bytes-wraps the reducer to a
+        # bytes-provider component (DESIGN-binary-ast-abi §3b). Absent (B1-B3/genesis) → the ordinary
+        # handle-shaped fold emit, byte-identical to before.
+        mkCadenzaComponent = { name, cdzFile, componentName ? "cadenza:agent-kernel/fold", contentAddressed ? false, witWorld ? null }:
           pkgs.stdenvNoCC.mkDerivation ({
             pname = name;
             version = "0.0.0";
@@ -750,8 +755,13 @@
             buildPhase = ''
               runHook preBuild
               export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+              ${pkgs.lib.optionalString (witWorld != null) ''
+              # Materialize the ${witWorld}-fold WIT world (KIND_WIT_WORLD binary-AST) via the prebuilt
+              # emit-wit-world bin, then feed it as the wit-world:reducer-world input below.
+              ${emitWitWorld} ${witWorld} world.bin
+              ''}
               # compile the single reducer .cdz → a wasm component (emitted to component.wasm in the cwd).
-              cdz compile ${cdzFile} --target wasm --component-name ${componentName} -o component.wasm
+              cdz compile ${cdzFile}${pkgs.lib.optionalString (witWorld != null) " wit-world:reducer-world=world.bin"} --target wasm --component-name ${componentName} -o component.wasm
               runHook postBuild
             '';
             # match the flake's other single-wasm derivations (reducer-guest/rcdzc-wasm): write $out in
@@ -801,6 +811,22 @@
         reducerCadenzaGenesis = mkCadenzaComponent {
           name = "reducer-cadenza-genesis";
           cdzFile = "reducer_genesis.cdz";
+          contentAddressed = true;
+        };
+        # PURE-GENESIS (A1 bytes fold boundary, DESIGN-binary-ast-abi §3b): the smallest REAL Cadenza reducer
+        # that exercises the WHOLE bytes round-trip — `apply(list<u8>) -> list<u8>` decoding a value-form Event
+        # doc and encoding a value-form effect-list doc — by TARGETING the pure-fold WIT world (fold.apply only,
+        # NO kv import). `witWorld = "pure"` materializes that world (186 B) via emit-wit-world + drives rcdzc's
+        # world-driven bytes emit, so the built component exports `cadenza:agent-kernel/fold`'s
+        # apply(list<u8>)->list<u8> and imports ONLY cadenza:runtime/heap (verified: no kv). Consumed by the
+        # cdz-agent-host pure-genesis E2E via env PURE_GENESIS_REDUCER_COMPONENT (the E2E lands in a later
+        # co-land step; the component + validComponent check are the nix half, ready ahead of it). CA for the
+        # same batch-gate early-cutoff reason as genesis (byte-identical hit across inert compiler edits).
+        reducerCadenzaPureGenesis = mkCadenzaComponent {
+          name = "reducer-cadenza-pure-genesis";
+          cdzFile = "reducer_pure.cdz";
+          componentName = "cadenza:agent-kernel/fold";
+          witWorld = "pure";
           contentAddressed = true;
         };
 
@@ -1301,6 +1327,54 @@
           artifact = "cdz_nfc";
           src = nfcSrc;
           vendor = nfcVendor;
+        };
+
+        # ── emit-wit-world: the pure/full WIT-world binary-AST materializer (cdz-kernel tool) ──────
+        #
+        # A small dedicated derivation building JUST the `emit-wit-world` bin (cdz-kernel/src/bin), which
+        # writes a `KIND_WIT_WORLD` binary-AST world artifact (from the shared `cadenza-ast` builders) that
+        # `rcdzc` ingests as the `wit-world:reducer-world=<path>` input when precompiling a reducer to a
+        # bytes-provider component (DESIGN-binary-ast-abi §3b, pure-genesis co-land). Kept OUT of the
+        # seedCompiler set (it is a kernel tool, not the compiler; v-agent-harness agreed 2026-08-12).
+        #   - cdz-kernel is ROOT-EXCLUDED from the seed [workspace] with its OWN empty [workspace] + own
+        #     Cargo.lock (like reducer-guest/cedar-guest), so this builds standalone from the crate dir,
+        #     NOT `-p cdz-kernel` from the repo root (which fails — not a workspace member).
+        #   - it path-deps ONLY `cadenza-ast` (a leaf, no further path deps), so the fileset is exactly
+        #     the cdz-kernel dir + the cadenza-ast dir + rust-toolchain.toml; registry deps vendor from
+        #     cdz-kernel's own Cargo.lock via importCargoLock.
+        #   - 🪤 HEAVY BUILD: cdz-kernel UNCONDITIONALLY deps `wasmtime = "37"` + cranelift ("NOT optional
+        #     — the kernel's engine"), so even this tiny bin compiles the whole wasmtime/cranelift tree.
+        #     Pure-Rust (no aws-lc/ring/cmake — stdenvNoCC + rustToolchain suffices), but it rebuilds
+        #     whenever cdz-kernel's closure rotates. That is why it feeds only the (rebuild-anyway) genesis
+        #     component build, NOT the per-MR hot path directly.
+        emitWitWorldVendor = pkgs.rustPlatform.importCargoLock {
+          lockFile = ./implementation/seed/crates/cdz-kernel/Cargo.lock;
+        };
+        emitWitWorldSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [
+            ./implementation/seed/crates/cdz-kernel
+            ./implementation/seed/crates/cadenza-ast
+            ./rust-toolchain.toml
+          ];
+        };
+        emitWitWorld = pkgs.stdenvNoCC.mkDerivation {
+          pname = "emit-wit-world";
+          version = "0.0.0";
+          src = emitWitWorldSrc;
+          nativeBuildInputs = [ rustToolchain ];
+          buildPhase = ''
+            runHook preBuild
+            ${mkCargoVendorEnv { vendor = emitWitWorldVendor; }}
+            cd implementation/seed/crates/cdz-kernel
+            cargo build --release --locked --offline --bin emit-wit-world
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            cp target/release/emit-wit-world "$out"
+            runHook postInstall
+          '';
         };
 
         # ── N2: the reducer-guest wasm COMPONENT as a content-addressed derivation ────────────────
@@ -2027,10 +2101,13 @@
         packages.reducer-cadenza-b2 = reducerCadenzaB2;
         packages.reducer-cadenza-b3 = reducerCadenzaB3;
         packages.reducer-cadenza-genesis = reducerCadenzaGenesis;
+        packages.reducer-cadenza-pure-genesis = reducerCadenzaPureGenesis;
+        packages.emit-wit-world = emitWitWorld;
         packages.reducer-cadenza-b1-hash = hashOf reducerCadenzaB1 "reducer-cadenza-b1-hash";
         packages.reducer-cadenza-b2-hash = hashOf reducerCadenzaB2 "reducer-cadenza-b2-hash";
         packages.reducer-cadenza-b3-hash = hashOf reducerCadenzaB3 "reducer-cadenza-b3-hash";
         packages.reducer-cadenza-genesis-hash = hashOf reducerCadenzaGenesis "reducer-cadenza-genesis-hash";
+        packages.reducer-cadenza-pure-genesis-hash = hashOf reducerCadenzaPureGenesis "reducer-cadenza-pure-genesis-hash";
 
         # PARITY CHECK (not a pin): assert the DERIVED hash of the nix-built runtime equals the hash
         # `xtask codegen` already recorded in runtime_abi.rs. This reads the committed value only to
@@ -2216,6 +2293,7 @@
                 inherit runtimeHashParity runtimeDebugHashParity nfcHashParity
                   reducerGuestValid cedarGuestValid
                   reducerCadenzaB1Valid reducerCadenzaB2Valid reducerCadenzaB3Valid reducerCadenzaGenesisValid
+                  reducerCadenzaPureGenesisValid
                   exampleProjectTests reducerCadenzaTests crateClosureAssert;
               } ''
               echo "ok: flake reproducibility-backstop — hash-parity + component-validity + project-@tests + closure-assert" > $out
@@ -2233,6 +2311,7 @@
             reducerCadenzaB2Valid = validComponent { name = "reducer-cadenza-b2"; drv = reducerCadenzaB2; };
             reducerCadenzaB3Valid = validComponent { name = "reducer-cadenza-b3"; drv = reducerCadenzaB3; };
             reducerCadenzaGenesisValid = validComponent { name = "reducer-cadenza-genesis"; drv = reducerCadenzaGenesis; };
+            reducerCadenzaPureGenesisValid = validComponent { name = "reducer-cadenza-pure-genesis"; drv = reducerCadenzaPureGenesis; };
 
             # LOCAL-GATE bindings (v-nix+v-fleet-tooling 2026-08-06, GHA-outage fallback). The 3 required
             # checks that were inline `cargoWorkspaceCheck {…}` at their attr get `let`-bound here so BOTH
@@ -2370,6 +2449,7 @@
             reducer-cadenza-b2-valid = reducerCadenzaB2Valid;
             reducer-cadenza-b3-valid = reducerCadenzaB3Valid;
             reducer-cadenza-genesis-valid = reducerCadenzaGenesisValid;
+            reducer-cadenza-pure-genesis-valid = reducerCadenzaPureGenesisValid;
 
             # Full-CI-in-nix increment 1: the LINT pair, mirroring checks.yml `fmt` + `clippy` exactly.
             # `nix flake check` now runs them; the checks.yml jobs stay in place (advisory overlap) until
