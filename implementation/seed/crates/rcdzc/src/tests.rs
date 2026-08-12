@@ -3546,6 +3546,114 @@ fn a_host_fused_kv_put_reducer_performs_its_put_when_invoked() {
     );
 }
 
+/// §3c GAP B INVOKE — MULTIPLE performs, DISTINCT args (the arg-marshaling + ordering guard): the twin
+/// `a_host_fused_kv_put_reducer_performs_its_put_when_invoked` calls `kv.put(pl, pl)`, so its recorded
+/// key == value from a SINGLE source — which cannot distinguish correct two-arg marshaling from an
+/// arg-aliasing / arg-swap bug. This reducer performs TWO puts in sequence with DISTINCT args:
+/// `kv.put(pl, [7,7])` then `kv.put([9,9], pl)`. Invoked with a real Event, the recording closure must
+/// see exactly two puts IN ORDER, each with its two `list<u8>` args marshaled INDEPENDENTLY: within a
+/// call key != value, `pl` appears consistently (as put0's key AND put1's value), and the two distinct
+/// byte literals ([7,7] vs [9,9]) are distinguishable and in the right slots. Proves host-effect
+/// SEQUENCING across multiple performs in one `apply` plus per-call independent arg marshaling.
+#[test]
+fn a_host_fused_reducer_performs_multiple_puts_in_order_with_independent_args() {
+    use crate::testkit::parse;
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("[3c] runtime wasm not found; skipping multi-put invoke");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: None,
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    // A real Event `{ct: "wasm", pl: Bytes[1,2,3]}` captured as its canonical value-form document.
+    let builder = "(module m \
+                 (def (mk (: n Int64)) \
+                   (if (= n 0) (record (ct \"wasm\") (pl (Bytes.of (list 1 2 3)))) (mk (- n 1)))) \
+                 (def (main) (mk 2)) (export main))";
+    let builder_bytes =
+        compile_component(&crate::codec::encode(&parse(builder))).expect("the builder compiles");
+    let event_doc = cdz_run::capture_escaped_value_doc(&builder_bytes, &[], &opts)
+        .expect("capture the Event value-form document");
+
+    // apply performs two puts with distinct args, THEN returns an effect-list:
+    //   kv.put(pl, [7,7])   then   kv.put([9,9], pl)
+    let src = "(module m \
+                 (effect kv (op put (-> Bytes Bytes Unit))) \
+                 (def (apply (: e (Record (ct String) (pl Bytes)))) \
+                   (host (kv) \
+                     (do (kv.put (. e pl) (Bytes.of (list 7 7))) \
+                         (do (kv.put (Bytes.of (list 9 9)) (. e pl)) \
+                             (list (record (op (. e ct)) (arg (. e pl)))))))) \
+                 (export apply))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:agent-kernel/fold"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                reducer_kv_put_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    let reducer = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("the multi-put host-fused reducer emits");
+
+    let (_result, puts) = cdz_run::run_reducer_bytes_with_puts(
+        reducer,
+        "cadenza:agent-kernel/fold",
+        "apply",
+        &event_doc,
+        "cadenza:agent-kernel/kv",
+        "put",
+        &opts,
+    )
+    .expect("the multi-put reducer applies and performs both kv.puts on the real runtime");
+
+    // Exactly two puts, in the order the reducer performed them.
+    assert_eq!(
+        puts.len(),
+        2,
+        "apply performs exactly two kv.puts, in order"
+    );
+    let (k0, v0) = &puts[0];
+    let (k1, v1) = &puts[1];
+    // `pl` marshals CONSISTENTLY across calls and arg positions: it is put0's key AND put1's value.
+    assert_eq!(
+        k0, v1,
+        "the Event's `pl` marshals identically whether it is the first put's key or the second put's value"
+    );
+    // Within a call the two args are INDEPENDENT (not aliased): put0's key (pl) differs from its value
+    // (the [7,7] literal), and put1's args likewise differ.
+    assert_ne!(
+        k0, v0,
+        "put0's two args are marshaled independently — its key (pl) is not aliased to its value ([7,7])"
+    );
+    assert_ne!(
+        k1, v1,
+        "put1's two args are marshaled independently — its key ([9,9]) is not aliased to its value (pl)"
+    );
+    // The two DISTINCT byte literals land in the right slots and are distinguishable ([7,7] vs [9,9]).
+    assert_ne!(
+        v0, k1,
+        "the two distinct byte-literal args ([7,7] as put0's value, [9,9] as put1's key) are not conflated"
+    );
+    assert!(
+        !k0.is_empty() && !v0.is_empty() && !k1.is_empty() && !v1.is_empty(),
+        "every marshaled put arg is non-empty"
+    );
+}
+
 /// R2 NESTED: a runtime tuple whose element is ITSELF a runtime tuple escapes — the inner compound is
 /// built on the heap as its own array, and the outer `arr-set`s the inner HANDLE directly (no box), so
 /// the outer array holds a handle to the inner array. `encode()` walks the nested `arr-get` path and
