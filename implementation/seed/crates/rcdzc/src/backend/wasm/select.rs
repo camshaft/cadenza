@@ -8227,7 +8227,18 @@ fn emit(
                 emit(db, list, slots, floor, high, scratch_ty, layout, out)?; // [list]
                 out.push(Lir::LocalSet(list_slot));
             }
-            emit(db, index, slots, floor, high, scratch_ty, layout, out)?; // [index:i64]
+            // Float the index operand's scratch floor ABOVE the running high-water (breaker #23, the INVERSE
+            // face of #18 — the SAME seam the sibling `Core::BytesAt` already fixes). When the `list` operand
+            // is a LIVE handle threaded across handler dispatches (a `List.push`-grown next-state `pre`, an
+            // i32 vec handle whose emit — or an enclosing dispatch's — raised `*high` and typed intervening
+            // slots i32), a COMPUTED index (`(- (List.len pre) 1)` = i64 checked-arith) reset to the STALE
+            // `floor` reuses one of those i32-typed slots → one wasm local declared at two widths → "expected
+            // i32, found i64", invalid component (breaker #23 pfxmin5: 3 `add` dispatches through a
+            // computed-index `List.at`+`List.push` arm, func[13] @0x4fd; the 3rd dispatch pushes allocation
+            // onto the live handle slot). Advancing to `floor.max(*high)` hands the index fresh slots.
+            // Harmless when nothing above `floor` was claimed (`*high == floor`).
+            let index_floor = floor.max(*high);
+            emit(db, index, slots, index_floor, high, scratch_ty, layout, out)?; // [index:i64]
             out.push(Lir::LocalSet(index_slot));
             // in_bounds = (index >= 0) & (index < len), all in i64. Each half is INDEPENDENTLY elidable when
             // provably true:
