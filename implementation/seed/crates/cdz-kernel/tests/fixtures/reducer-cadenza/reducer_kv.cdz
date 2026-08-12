@@ -1,0 +1,79 @@
+// reducer_kv.cdz — the KV-GENESIS kv.get ROUND-TRIP reducer for the A1 bytes fold boundary.
+//
+// The sibling of reducer_pure.cdz (pure-genesis, no kv), this one exercises the kv IMPORT end-to-end
+// over the bytes boundary: it PUTs a value under a fixed key on a seed event, then GETs it back on a
+// trigger event and echoes it in an emit effect — proving BOTH kv.put AND the NEW kv.get option<list<u8>>
+// host-result lift (rcdzc §3c GAP C, de24e9011) round-trip the SAME bytes through the host.
+//
+// SHAPE (v-agent-harness-host-agreed, for their kv-genesis e2e):
+//   seed event    { content-type.family = "kv-seed", payload = Some(v) } -> kv.put(KEY, v), returns []
+//   trigger event { content-type.family = "kv-read" }                    -> kv.get(KEY) ->
+//                     Some(got) => [ emit { target "out", payload Some(got) } ]  (echo the stored value)
+//                     None()    => []
+//   anything else -> [] (no effects)
+// The kv-genesis e2e delivers seed then trigger and asserts exactly ONE emit effect whose payload equals
+// the seeded bytes (get read back what put wrote), via the value-heap runtime + the host kv import.
+//
+// Targets the REDUCER world (reducer_world_artifact — export fold.apply(list<u8>)->list<u8> + import
+// cadenza:agent-kernel/kv). Inline structural record types match the locked Event + EffectRequest
+// value-form contract (same as reducer_pure). A Cadenza reducer that constructs values imports the
+// value-heap runtime, so the built component needs CDZ_STORE at run time (the e2e resolves that dep).
+//
+// BUILD: emit-wit-world full -> reducer-world.bin; then
+//   cdz compile reducer_kv.cdz wit-world:reducer-world=reducer-world.bin
+//     --component-name cadenza:agent-kernel/fold -o reducer_kv.wasm
+//   -> exports fold.apply(list<u8>)->list<u8>, imports cadenza:agent-kernel/kv (+ runtime/heap); VALID.
+
+// The kv host import (bound peer interface, §4b handle ABI over the shared value-heap runtime). get is the
+// NEW GAP C path: key -> option<bytes> (present/absent), lifted to Option(Bytes) via the host-result lift.
+// NO `bind` — under the world-driven bytes emit the kv calls are UNHANDLED effects that ESCAPE as HOST
+// imports (fused against the world's `cadenza:agent-kernel/kv` import at its FQ name); a `bind` would make
+// it a PEER interface (handle over a shared runtime), which the host-fused bytes-roundtrip path declines.
+// The `host Kv in (…)` block routes the kv effect to the host; the effect decl just names the ops.
+effect Kv =
+  | put : `->`(Bytes, Bytes, Unit)
+  | get : `->`(Bytes, Option(Bytes))
+
+// The one KV slot this reducer seeds + reads (its own §4 KV schema; opaque to the kernel). A def so put
+// and get use the byte-identical key.
+def slot() -> Bytes = String.to-bytes("kv-genesis/slot")
+
+def apply(
+  event: Record(
+    content-type: Record(family: String, version: UInt(32)),
+    payload: Option(Bytes),
+    resumes: Option(Bytes),
+  ),
+) -> List(Record(
+  kind: String,
+  target: Bytes,
+  payload: Option(Bytes),
+  correlation: Option(Bytes),
+)) =
+  let family = event.content-type.family in
+  if family == "kv-seed" then
+    // Seed: write the payload under the fixed slot; no effects.
+    (match event.payload with
+       | Some(v) => host Kv in ( Kv.put(slot(), v); [] )
+       | None() => [])
+  else if family == "kv-read" then
+    // Trigger: read the slot back + echo it in one emit effect (exercises the kv.get lift).
+    host Kv in (match Kv.get(slot()) with
+       | Some(got) => [{
+           kind = "emit",
+           target = String.to-bytes("out"),
+           payload = Some(got),
+           correlation = None(),
+         }]
+       | None() => [])
+  else
+    // Any other event folds to nothing.
+    []
+
+// No `@test` here: a host-fused reducer (unhandled kv effects escape to host imports) cannot build a
+// standalone test component on the seed VM (no kv host), and `cdz test` would fail to inspect it. This
+// fixture is gated by the WORLD-DRIVEN compile (v-nix's precompile derivation) + v-agent-harness-host's
+// kv-genesis e2e (env CDZ_KV_GENESIS_REDUCER_COMPONENT + CDZ_STORE), NOT by cdz test. So it is also NOT
+// registered in Project.cdz `tests` (that would break reducerCadenzaTests trying to build a test component).
+
+export { apply }
