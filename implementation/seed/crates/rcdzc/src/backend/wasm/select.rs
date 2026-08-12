@@ -377,6 +377,42 @@ const NULL_HANDLE: i32 = 0;
 /// it just was a spurious candidate that emits nothing. Import-collection (`collect_used_ops_into`) uses this
 /// too so the `dup`/`drop` ops are declared when a candidate does turn out heap (a declared-unused import is
 /// harmless if it turns out scalar).
+/// Emit the shared "copy `len` host bytes into a fresh value-heap `Bytes`" loop that a host-result lift uses
+/// to reconstruct a `list<u8>` the host wrote into the guest's linear memory: `bytes-alloc(len) -> handle`,
+/// then `for i in 0..len { handle = bytes-set(handle, i, mem8[ptr + i]) }`, leaving the Bytes handle in the
+/// `handle` local. `len`/`ptr`/`handle`/`i` are caller-owned i32 scratch locals. Shared by the kv.get option
+/// lift (`option<list<u8>>` Some-arm) and the kv.prefix-scan lift (each pair's key + value) — the LIR is
+/// byte-identical, differing only in which scratch slots the caller allocates. Emits the SAME instruction
+/// sequence both sites inlined before, so the emitted wasm is byte-for-byte unchanged (a pure dedup).
+fn emit_host_bytes_to_value_heap(out: &mut Vec<Lir>, len: u32, ptr: u32, handle: u32, i: u32) {
+    out.push(Lir::LocalGet(len));
+    out.push(Lir::CallImport(OP_BYTES_ALLOC));
+    out.push(Lir::LocalSet(handle));
+    out.push(Lir::ConstI32(0));
+    out.push(Lir::LocalSet(i));
+    out.push(Lir::Block(BlockType::Empty));
+    out.push(Lir::Loop(BlockType::Empty));
+    out.push(Lir::LocalGet(i));
+    out.push(Lir::LocalGet(len));
+    out.push(Lir::I32GeU);
+    out.push(Lir::BrIf(1));
+    out.push(Lir::LocalGet(handle));
+    out.push(Lir::LocalGet(i));
+    out.push(Lir::LocalGet(ptr));
+    out.push(Lir::LocalGet(i));
+    out.push(Lir::I32Add);
+    out.push(Lir::I32Load8U { offset: 0 });
+    out.push(Lir::CallImport(OP_BYTES_SET));
+    out.push(Lir::LocalSet(handle));
+    out.push(Lir::LocalGet(i));
+    out.push(Lir::ConstI32(1));
+    out.push(Lir::I32Add);
+    out.push(Lir::LocalSet(i));
+    out.push(Lir::Br(0));
+    out.push(Lir::End); // loop
+    out.push(Lir::End); // block
+}
+
 fn is_heap_type_for_retain(ty: &Ty) -> bool {
     is_heap_type(ty) || ty.has_free_var()
 }
@@ -11691,34 +11727,8 @@ fn emit(
                 out.push(Lir::I32Eq);
                 out.push(Lir::If(BlockType::Val(ValType::I32)));
                 {
-                    // handle = bytes-alloc(list-len)
-                    out.push(Lir::LocalGet(llen));
-                    out.push(Lir::CallImport(OP_BYTES_ALLOC));
-                    out.push(Lir::LocalSet(handle));
-                    // for ii in 0..list-len { handle = bytes-set(handle, ii, mem8[list-ptr + ii]) }
-                    out.push(Lir::ConstI32(0));
-                    out.push(Lir::LocalSet(ii));
-                    out.push(Lir::Block(BlockType::Empty));
-                    out.push(Lir::Loop(BlockType::Empty));
-                    out.push(Lir::LocalGet(ii));
-                    out.push(Lir::LocalGet(llen));
-                    out.push(Lir::I32GeU);
-                    out.push(Lir::BrIf(1));
-                    out.push(Lir::LocalGet(handle));
-                    out.push(Lir::LocalGet(ii));
-                    out.push(Lir::LocalGet(lptr));
-                    out.push(Lir::LocalGet(ii));
-                    out.push(Lir::I32Add);
-                    out.push(Lir::I32Load8U { offset: 0 });
-                    out.push(Lir::CallImport(OP_BYTES_SET));
-                    out.push(Lir::LocalSet(handle));
-                    out.push(Lir::LocalGet(ii));
-                    out.push(Lir::ConstI32(1));
-                    out.push(Lir::I32Add);
-                    out.push(Lir::LocalSet(ii));
-                    out.push(Lir::Br(0));
-                    out.push(Lir::End); // loop
-                    out.push(Lir::End); // block
+                    // handle = a value-heap Bytes copied from the host's `list<u8>` at (lptr, llen).
+                    emit_host_bytes_to_value_heap(out, llen, lptr, handle, ii);
                     // sum-new(disc_some, handle)
                     out.push(Lir::ConstI32(disc_some as i32));
                     out.push(Lir::LocalGet(handle));
@@ -11808,32 +11818,7 @@ fn emit(
                 }
                 // kh = bytes-alloc(klen)+copy ; vh = bytes-alloc(vlen)+copy (j = shared inner byte counter).
                 for (len_slot, ptr_slot, handle_slot) in [(klen, kptr, kh), (vlen, vptr, vh)] {
-                    out.push(Lir::LocalGet(len_slot));
-                    out.push(Lir::CallImport(OP_BYTES_ALLOC));
-                    out.push(Lir::LocalSet(handle_slot));
-                    out.push(Lir::ConstI32(0));
-                    out.push(Lir::LocalSet(j));
-                    out.push(Lir::Block(BlockType::Empty));
-                    out.push(Lir::Loop(BlockType::Empty));
-                    out.push(Lir::LocalGet(j));
-                    out.push(Lir::LocalGet(len_slot));
-                    out.push(Lir::I32GeU);
-                    out.push(Lir::BrIf(1));
-                    out.push(Lir::LocalGet(handle_slot));
-                    out.push(Lir::LocalGet(j));
-                    out.push(Lir::LocalGet(ptr_slot));
-                    out.push(Lir::LocalGet(j));
-                    out.push(Lir::I32Add);
-                    out.push(Lir::I32Load8U { offset: 0 });
-                    out.push(Lir::CallImport(OP_BYTES_SET));
-                    out.push(Lir::LocalSet(handle_slot));
-                    out.push(Lir::LocalGet(j));
-                    out.push(Lir::ConstI32(1));
-                    out.push(Lir::I32Add);
-                    out.push(Lir::LocalSet(j));
-                    out.push(Lir::Br(0));
-                    out.push(Lir::End); // inner loop
-                    out.push(Lir::End); // inner block
+                    emit_host_bytes_to_value_heap(out, len_slot, ptr_slot, handle_slot, j);
                 }
                 // arr-set(outer, i, tuple) where tuple = arr-alloc(2)+arr-set(0,kh)+arr-set(1,vh), built on
                 // the stack between [outer, i] and the outer arr-set (arr-set returns the array handle).
