@@ -5933,7 +5933,32 @@ mod tests {
     #[test]
     fn never_panics() {
         for src in [
-            "", "(", ")", "let", "match {", "1 +", ".", "=>", "fn(", "if then", "`", "\"",
+            "",
+            "(",
+            ")",
+            "let",
+            "match {",
+            "1 +",
+            ".",
+            "=>",
+            "fn(",
+            "if then",
+            "`",
+            "\"",
+            // Malformed / incomplete inline `world` decls: the world_expr/world_interface/world_member
+            // paths must recover (a diagnostic), never panic — the crate's totality invariant extended
+            // to the new surface. Empty interface (no members), missing `=`, dangling direction, a
+            // member with no arrow/result, an unterminated param list, a non-import/export interface head.
+            "world W =",
+            "world W = | export i =",
+            "world W = | export i",
+            "world W = | export i = | m",
+            "world W = | export i = | m :",
+            "world W = | export i = | m : (p : u8)",
+            "world W = | export i = | m : (p :",
+            "world W = | frobnicate i = | m : () -> u8",
+            "world W = | export = | m : () -> u8",
+            "world W = | export i = | m : () ->",
         ] {
             let _ = read_ml(src); // must not panic
         }
