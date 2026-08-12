@@ -964,6 +964,10 @@ pub fn reducer_world_artifact() -> Vec<u8> {
         let head = b.atom_leaf(Leaf::Str("unit".into()));
         b.list(vec![head])
     };
+    // `bool` is a NAME-head primitive descriptor `(bool)`, like `(u8)` — the faithful boundary form of
+    // `kv.delete`'s scalar result (present-or-removed). No retptr lift needed (a flat scalar, unlike
+    // `option<list<u8>>`), so it emits like `put`'s unit result.
+    let bool_desc = |b: &mut Builder| b.wit_type_prim("bool");
 
     // export `fold`: `apply(event: list<u8>) -> list<u8>`
     let apply_sig = {
@@ -977,7 +981,10 @@ pub fn reducer_world_artifact() -> Vec<u8> {
         &[("apply", apply_sig)],
     );
 
-    // import `kv`: `get(key: list<u8>) -> option<list<u8>>`, `put(key: list<u8>, value: list<u8>)` (unit)
+    // import `kv`: `get(key: list<u8>) -> option<list<u8>>`, `put(key: list<u8>, value: list<u8>)` (unit),
+    // `delete(key: list<u8>) -> bool`. `prefix-scan` (result `list<tuple<list<u8>, list<u8>>>`) is still
+    // deferred until the emit reader lifts the nested list-of-byte-pairs; `delete`'s bool result is a flat
+    // scalar the emit already handles, so it is a real (not fake) member. Member order matches reducer.wit.
     let get_sig = {
         let key = bytes_desc(&mut b);
         let res = opt_bytes_desc(&mut b);
@@ -989,10 +996,15 @@ pub fn reducer_world_artifact() -> Vec<u8> {
         let res = unit_desc(&mut b);
         b.wit_func_sig(&[("key", key), ("value", value)], res)
     };
+    let delete_sig = {
+        let key = bytes_desc(&mut b);
+        let res = bool_desc(&mut b);
+        b.wit_func_sig(&[("key", key)], res)
+    };
     let kv = b.wit_interface(
         WitDir::Import,
         "cadenza:agent-kernel/kv",
-        &[("get", get_sig), ("put", put_sig)],
+        &[("get", get_sig), ("put", put_sig), ("delete", delete_sig)],
     );
 
     let world = b.world_schema_tree("reducer", &[fold, kv]);
@@ -1775,10 +1787,12 @@ mod tests {
             "cadenza:agent-kernel/kv",
             "get",
             "put",
+            "delete",
             "event",
             "key",
             "value",
             "u8",
+            "bool",
         ] {
             assert!(
                 names.iter().any(|n| n == expect),

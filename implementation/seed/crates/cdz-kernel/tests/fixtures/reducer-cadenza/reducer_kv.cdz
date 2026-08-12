@@ -10,6 +10,9 @@
 //   trigger event { content-type.family = "kv-read" }                    -> kv.get(KEY) ->
 //                     Some(got) => [ emit { target "out", payload Some(got) } ]  (echo the stored value)
 //                     None()    => []
+//   delete event  { content-type.family = "kv-del" }                     -> kv.delete(KEY) ->
+//                     true  => [ emit { target "deleted" } ]   (the key existed; exercises the bool lift)
+//                     false => []
 //   anything else -> [] (no effects)
 // The kv-genesis e2e delivers seed then trigger and asserts exactly ONE emit effect whose payload equals
 // the seeded bytes (get read back what put wrote), via the value-heap runtime + the host kv import.
@@ -33,6 +36,7 @@
 effect Kv =
   | put : `->`(Bytes, Bytes, Unit)
   | get : `->`(Bytes, Option(Bytes))
+  | delete : `->`(Bytes, Bool)
 
 // The one KV slot this reducer seeds + reads (its own §4 KV schema; opaque to the kernel). A def so put
 // and get use the byte-identical key.
@@ -66,6 +70,16 @@ def apply(
            correlation = None(),
          }]
        | None() => [])
+  else if family == "kv-del" then
+    // Delete the slot; emit one "deleted" effect iff the key existed (exercises the kv.delete bool lift,
+    // a flat-scalar host result the reducer branches on — no retptr, unlike get's option<bytes>).
+    host Kv in (if Kv.delete(slot()) then [{
+        kind = "emit",
+        target = String.to-bytes("deleted"),
+        payload = None(),
+        correlation = None(),
+      }]
+      else [])
   else
     // Any other event folds to nothing.
     []
