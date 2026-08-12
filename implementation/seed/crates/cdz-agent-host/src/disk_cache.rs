@@ -35,13 +35,29 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
-/// The in-memory index over the cache dir: byte size per cached hash + FIFO insertion order + the running
-/// total. A hash in `sizes` has a file on disk and appears once in `order`.
+/// The in-memory index over the cache dir: byte size per cached entry + FIFO insertion order + the running
+/// total. The KEY is the cache FILE NAME — the base64url rendering of the content hash, which IS the on-disk
+/// filename. Keying by the filename (not the `Hash`) is deliberate: the boot scan rebuilds the index from
+/// directory names WITHOUT ever parsing a name back into a `Hash` (no `from_hex`/decode — a hash is raw bytes
+/// produced only by hashing, per the operator hash-encoding directive). A query `Hash` is matched by ENCODING
+/// it to its base64url name and looking that up. An entry in `sizes` has a file on disk and appears once in
+/// `order`.
 struct Index {
-    sizes: HashMap<Hash, u64>,
-    /// Insertion order (front = oldest = next eviction victim). Each cached hash appears exactly once.
-    order: VecDeque<Hash>,
+    sizes: HashMap<String, u64>,
+    /// Insertion order (front = oldest = next eviction victim). Each cache-file name appears exactly once.
+    order: VecDeque<String>,
     total_bytes: u64,
+}
+
+/// Is `name` a cache-file name — the base64url rendering of a 32-byte content hash? A structural check ONLY
+/// (exactly 43 url-safe-base64 chars: `A-Z a-z 0-9 - _`), NOT a decode: it produces no `Hash`, so it holds
+/// the no-`from_hex` invariant while still skipping foreign files and `.tmp` scratch (47 chars) during the
+/// boot scan. 32 bytes → 43 base64url chars with no padding (see `Hash::to_base64url`).
+fn is_cache_file_name(name: &str) -> bool {
+    name.len() == 43
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 /// A bounded on-disk cache tier in front of an inner [`BlobStore`] `B`. Caches blobs as content-hash-named
@@ -87,10 +103,12 @@ impl<B> DiskCacheTier<B> {
         }
     }
 
-    /// Rebuild the index by listing `dir`: each entry whose filename is a valid hash-hex is a cached blob;
-    /// record its size. Order across a scan is filesystem-arbitrary (a cold-start detail — FIFO order only has
-    /// to be SOME consistent order; fresh inserts append in real order). A non-hex / unreadable entry is
-    /// skipped (foreign files don't corrupt the index).
+    /// Rebuild the index by listing `dir`: each entry whose filename is a valid cache-file name (the base64url
+    /// rendering of a content hash — see [`is_cache_file_name`]) is a cached blob; record its size KEYED BY
+    /// THE FILENAME. Order across a scan is filesystem-arbitrary (a cold-start detail — FIFO order only has to
+    /// be SOME consistent order; fresh inserts append in real order). A foreign / temp (`.tmp`) / unreadable
+    /// entry is skipped (foreign files don't corrupt the index). NOTE: the name is used AS-IS — it is never
+    /// decoded back into a `Hash` (no `from_hex`), so this scan holds the no-decode invariant.
     fn scan_dir(dir: &Path) -> Index {
         let mut sizes = HashMap::new();
         let mut order = VecDeque::new();
@@ -99,16 +117,16 @@ impl<B> DiskCacheTier<B> {
             for entry in entries.flatten() {
                 let name = entry.file_name();
                 let Some(name) = name.to_str() else { continue };
-                let Some(hash) = Hash::from_hex(name) else {
+                if !is_cache_file_name(name) {
                     continue;
-                };
+                }
                 let Ok(meta) = entry.metadata() else { continue };
                 if !meta.is_file() {
                     continue;
                 }
                 let len = meta.len();
-                sizes.insert(hash, len);
-                order.push_back(hash);
+                sizes.insert(name.to_string(), len);
+                order.push_back(name.to_string());
                 total_bytes += len;
             }
         }
@@ -119,10 +137,11 @@ impl<B> DiskCacheTier<B> {
         }
     }
 
-    /// The cache file path for `hash` — a flat `<dir>/<hex>` (the cache is a single dir; unlike `DiskBlobStore`
-    /// it isn't sharded since it's bounded/evicted, not a large durable keyspace).
-    fn path_for(&self, hash: &Hash) -> PathBuf {
-        self.dir.join(hash.to_hex())
+    /// The cache file name for `hash` — the base64url rendering of the content hash (the index key AND the
+    /// on-disk filename, in a flat single dir; unlike `DiskBlobStore` this bounded/evicted cache isn't
+    /// sharded). Encode-only: a `Hash` renders to its name; a name is NEVER parsed back to a `Hash`.
+    fn cache_name(hash: &Hash) -> String {
+        hash.to_base64url()
     }
 
     /// Current cached file count — for tests/inspection.
@@ -143,16 +162,17 @@ impl<B> DiskCacheTier<B> {
         if self.budget == 0 || len > self.budget {
             return;
         }
+        let name = Self::cache_name(hash);
         {
-            if self.index.borrow().sizes.contains_key(hash) {
+            if self.index.borrow().sizes.contains_key(&name) {
                 return;
             }
         }
         // Evict oldest until the newcomer fits.
         self.evict_to_fit(len);
         // Atomic write: temp file in the same dir, then rename (intra-dir rename is atomic).
-        let final_path = self.path_for(hash);
-        let tmp_path = self.dir.join(format!("{}.tmp", hash.to_hex()));
+        let final_path = self.dir.join(&name);
+        let tmp_path = self.dir.join(format!("{name}.tmp"));
         if std::fs::write(&tmp_path, bytes).is_err() {
             let _ = std::fs::remove_file(&tmp_path);
             return;
@@ -162,8 +182,8 @@ impl<B> DiskCacheTier<B> {
             return;
         }
         let mut idx = self.index.borrow_mut();
-        idx.sizes.insert(*hash, len);
-        idx.order.push_back(*hash);
+        idx.sizes.insert(name.clone(), len);
+        idx.order.push_back(name);
         idx.total_bytes += len;
     }
 
@@ -176,7 +196,7 @@ impl<B> DiskCacheTier<B> {
             };
             if let Some(len) = idx.sizes.remove(&victim) {
                 idx.total_bytes -= len;
-                let _ = std::fs::remove_file(self.dir.join(victim.to_hex()));
+                let _ = std::fs::remove_file(self.dir.join(&victim));
             }
         }
     }
@@ -185,15 +205,16 @@ impl<B> DiskCacheTier<B> {
     /// read error is treated as a MISS (returns None) AND the bad file is removed + de-indexed, so a re-fetch
     /// repopulates it cleanly. Only called when the index says the hash is present.
     fn cache_read(&self, hash: &Hash) -> Option<Vec<u8>> {
-        let path = self.path_for(hash);
+        let name = Self::cache_name(hash);
+        let path = self.dir.join(&name);
         match std::fs::read(&path) {
             Ok(bytes) if Hash::of(&bytes) == *hash => Some(bytes),
             _ => {
                 // Corrupt/absent/mismatch: drop it from the cache so a re-fetch rewrites it.
                 let mut idx = self.index.borrow_mut();
-                if let Some(len) = idx.sizes.remove(hash) {
+                if let Some(len) = idx.sizes.remove(&name) {
                     idx.total_bytes -= len;
-                    if let Some(pos) = idx.order.iter().position(|h| h == hash) {
+                    if let Some(pos) = idx.order.iter().position(|n| n == &name) {
                         idx.order.remove(pos);
                     }
                 }
@@ -216,7 +237,13 @@ impl<B: BlobStore> BlobStore for DiskCacheTier<B> {
     /// Serve from the disk cache on a hit (verified); on a miss, fetch from the inner store and populate the
     /// cache (promote-on-hit). Content-addressed → a cached file is always valid for its key, no invalidation.
     async fn get(&self, hash: &Hash) -> std::io::Result<Option<bytes::Bytes>> {
-        if self.budget > 0 && self.index.borrow().sizes.contains_key(hash) {
+        if self.budget > 0
+            && self
+                .index
+                .borrow()
+                .sizes
+                .contains_key(&Self::cache_name(hash))
+        {
             if let Some(bytes) = self.cache_read(hash) {
                 return Ok(Some(bytes.into()));
             }
@@ -232,7 +259,13 @@ impl<B: BlobStore> BlobStore for DiskCacheTier<B> {
     /// Existence probe: a cached file trivially exists; otherwise defer to the inner store's probe (cheaper
     /// than a fetch on a real backend). Doesn't populate (a `has` fetches no bytes).
     async fn has(&self, hash: &Hash) -> std::io::Result<bool> {
-        if self.budget > 0 && self.index.borrow().sizes.contains_key(hash) {
+        if self.budget > 0
+            && self
+                .index
+                .borrow()
+                .sizes
+                .contains_key(&Self::cache_name(hash))
+        {
             return Ok(true);
         }
         self.inner.has(hash).await
@@ -327,7 +360,7 @@ mod tests {
         let _hc = put_blob(&mut c, &cc).await;
         assert_eq!(c.cached_bytes(), 200, "stayed within the 250 budget");
         assert!(
-            !dir.join(ha.to_hex()).exists(),
+            !dir.join(ha.to_base64url()).exists(),
             "A (oldest) was evicted — its file is gone"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -401,12 +434,59 @@ mod tests {
         assert_eq!(c.get(&hash).await.unwrap().as_deref(), Some(&bytes[..]));
         assert_eq!(c.cached_bytes(), 100);
         // Corrupt the on-disk file.
-        std::fs::write(dir.join(hash.to_hex()), b"tampered bytes").unwrap();
+        std::fs::write(dir.join(hash.to_base64url()), b"tampered bytes").unwrap();
         // A get re-hashes, detects the mismatch, removes it, and re-fetches from the inner store.
         assert_eq!(
             c.get(&hash).await.unwrap().as_deref(),
             Some(&bytes[..]),
             "a corrupt cache file is a miss that re-fetches the real bytes"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn is_cache_file_name_accepts_base64url_rejects_foreign() {
+        // A real content-hash name is accepted (43 url-safe chars, no padding).
+        assert!(is_cache_file_name(&Hash::of(b"blob").to_base64url()));
+        assert!(is_cache_file_name(&"A".repeat(43)));
+        assert!(is_cache_file_name(
+            &"-_9".repeat(15).chars().take(43).collect::<String>()
+        ));
+        // Wrong length, foreign chars, and a `.tmp` scratch name are all rejected — no decode needed.
+        assert!(!is_cache_file_name(""));
+        assert!(!is_cache_file_name("README.md"));
+        assert!(!is_cache_file_name(&"a".repeat(42)));
+        assert!(!is_cache_file_name(&"a".repeat(44)));
+        assert!(!is_cache_file_name(&format!("{}.tmp", "a".repeat(43)))); // 47 chars
+        assert!(!is_cache_file_name(&format!("{}=", "a".repeat(42)))); // '=' padding not url-safe
+    }
+
+    #[tokio::test]
+    async fn boot_scan_skips_foreign_files_and_indexes_only_cache_files() {
+        // A dir with one real cache file + assorted foreign entries: the boot scan indexes ONLY the cache
+        // file (by its base64url name), never parsing a name back to a Hash.
+        let dir = cache_dir("diskcache-foreign");
+        std::fs::create_dir_all(&dir).unwrap();
+        let bytes = blob(3, 77);
+        let name = Hash::of(&bytes).to_base64url();
+        std::fs::write(dir.join(&name), &bytes[..]).unwrap();
+        // Foreign clutter that must be skipped: wrong length, temp scratch, a human file.
+        std::fs::write(dir.join("README"), b"hi").unwrap();
+        std::fs::write(dir.join(format!("{name}.tmp")), b"scratch").unwrap();
+        std::fs::write(dir.join("short"), b"x").unwrap();
+
+        let c = DiskCacheTier::new(MemBlobStore::new(), &dir, 4096);
+        assert_eq!(
+            c.cached_entries(),
+            1,
+            "only the real cache file was indexed"
+        );
+        assert_eq!(c.cached_bytes(), 77, "size taken from the cache file alone");
+        // And it serves from the warm scan (blinded inner store can't have supplied it).
+        assert_eq!(
+            c.get(&Hash::of(&bytes)).await.unwrap().as_deref(),
+            Some(&bytes[..]),
+            "the indexed cache file is served after a boot scan"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
