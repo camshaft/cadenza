@@ -8856,3 +8856,55 @@
             (export main)))
   (call   main (: 100 Int64)) (output (: -55956 Int64))
   (call   main (: -28 Int64)) (output (: 71916 Int64)))
+
+; --- breaker batch 245: Duration-newtype accumulator, UInt64 overflow trap at the state top, lexicographic high-water string ---
+(case "du1 a DURATION newtype state accumulates seconds across dispatches — the arm unwraps, adds at nanosecond scale, rewraps"
+  (input  (do
+            (type Duration (Duration UInt64))
+            (effect T (op tick (-> Int64 Int64)))
+            (def (secs (: n UInt64)) (Duration.Duration (* n 1000000000)))
+            (def (dur-ns (: d Duration)) (match d ((Duration.Duration ns) ns)))
+            (def (main (: n Int64))
+              (handle T (secs (UInt64.wrap 0))
+                ((tick (v) s
+                  (let ((nxt (Duration.Duration (+ (dur-ns s) (dur-ns (secs (UInt64.wrap v)))))))
+                    (resume (Int64.of (/ (dur-ns nxt) 1000000000)) nxt))))
+                (+ (T.tick 3) (* 100 (T.tick 4)))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 703 Int64)))
+
+(case "du2 UInt64 overflow at the top of a DURATION state traps at RUNTIME — the second dispatch crosses MAX, n=0 threads unchanged"
+  (input  (do
+            (type Duration (Duration UInt64))
+            (effect T (op probe (-> Int64 Int64)))
+            (def (dur-ns (: d Duration)) (match d ((Duration.Duration ns) ns)))
+            (def (main (: n Int64))
+              (handle T (Duration.Duration (- UInt64.max (UInt64.wrap 1)))
+                ((probe (v) s
+                  (let ((nxt (Duration.Duration (+ (dur-ns s) (UInt64.wrap v)))))
+                    (resume (if (= (dur-ns nxt) UInt64.max) 1 0) nxt))))
+                (+ (T.probe n) (* 10 (T.probe n)))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 0 Int64))
+  (call   main (: 1 Int64)) (trap "integer overflow"))
+
+(case "scc1 a HIGH-WATER STRING state — the arm compares each drawn string lexicographically against the champion, keeps the max, and the final read exposes the winner's length"
+  (input  (do
+            (effect S
+              (op put (-> String Int64))
+              (op len (-> Int64)))
+            (def (main (: n Int64))
+              (handle S ""
+                ((put (s) hw
+                  (if (< hw s)
+                      (resume 1 s)
+                      (resume 0 hw)))
+                 (len () hw (resume (String.byte-len hw) hw)))
+                (let ((a (S.put "banana")))
+                  (let ((b (S.put "apple")))
+                    (let ((c (S.put (String.concat "cherry" (if (> n 0) "x" "")))))
+                      (let ((d (S.len)))
+                        (+ (* 100 (+ (* 10 (+ (* 10 a) b)) c)) d)))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 10106 Int64))
+  (call   main (: 1 Int64)) (output (: 10107 Int64)))

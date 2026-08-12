@@ -5081,6 +5081,8 @@ pass	ds1 FOUR discarded draws in a do-chain before the kept one — every discar
 pass	ds2 the DISCARDED statement is itself an op-result chain — both hops advance the thread even though the value dies
 pass	ds3 a DISCARDED handle expression whose interior draws from the outer thread — the frame opens, draws, closes, and the value dies
 pass	ds4 a DISCARDED if whose arms draw DIFFERENT counts — the taken branch's advances survive the discard
+pass	du1 a DURATION newtype state accumulates seconds across dispatches — the arm unwraps, adds at nanosecond scale, rewraps
+pass	du2 UInt64 overflow at the top of a DURATION state traps at RUNTIME — the second dispatch crosses MAX, n=0 threads unchanged
 pass	dv1 truncated division and dividend-sign modulo over DRAWS — negative dividends exercise the toward-zero rule through dispatch
 pass	dv2 the DIVISOR comes from the arm with a state-dependent sign — quotient and remainder track the alternating divisor exactly
 pass	dv3 division by -1 of a RUNTIME draw — negation across the full non-MIN range, the MIN draw guarded to its own branch
@@ -5992,6 +5994,7 @@ pass	scan emits the seed plus one accumulator per element (n+1 outputs)
 pass	scan over an empty iterator emits just the seed
 pass	scan threads its accumulator left-to-right (an order-sensitive folder)
 pass	scan's kth emitted accumulator is the running fold of the first k elements
+pass	scc1 a HIGH-WATER STRING state — the arm compares each drawn string lexicographically against the champion, keeps the max, and the final read exposes the winner's length
 pass	sd1 a draw COUNT drives string repetition through a recursion — String.byte-len pins how many times the thread said to concat
 pass	sd2 draw parity picks WHICH string each op returns — the concat order of two draws is visible in content equality
 pass	sd3 a draw-bounded String.slice window — start and end both come from the thread, byte-len pins the window width
