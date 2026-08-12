@@ -290,6 +290,29 @@ pub fn assemble_provider(core: &[u8], exports: &[BoundaryExport], iface: &str) -
 /// A bytes-roundtrip member ALWAYS imports the runtime (value-decode of the param + value-encode of the
 /// result), so `imports` is never empty here; the wiring below is unconditional.
 ///
+/// The bytes-roundtrip boundary type section (component type section, the "second" one): the shared
+/// `list<u8>` defined type followed by the `apply(input: list<u8>) -> list<u8>` component functype whose
+/// param and result reference that list type BY INDEX (its valtype is the uleb type index, not an inline
+/// primitive byte). `list_type_idx` is the caller's component-type index for the `list<u8>` defined type —
+/// it differs between providers (1 in the pure provider, 2 in the host-fused provider, which has an extra
+/// preceding import instance-type), so the caller passes its own. Shared by
+/// [`assemble_bytes_roundtrip_provider`] and [`assemble_bytes_roundtrip_host_provider`] (identical functype
+/// form, only the index differs); mirrors the [`host_effect_instance_type`] extraction precedent.
+fn bytes_roundtrip_boundary_type_sec(list_type_idx: u32) -> Vec<u8> {
+    let mut type_items = list_u8_defined_type();
+    let mut t = vec![wasm_abi::COMP_FUNCTYPE_FORM];
+    let mut params = Vec::new();
+    let pname = "input";
+    params.extend_from_slice(&uleb_bytes(pname.len() as u64));
+    params.extend_from_slice(pname.as_bytes());
+    uleb128(list_type_idx as u64, &mut params); // param valtype = the list<u8> defined-type index
+    t.extend_from_slice(&wasm_vec(1, &params));
+    t.push(0x00); // result-form: one result
+    uleb128(list_type_idx as u64, &mut t); // result valtype = the list<u8> defined-type index
+    type_items.extend_from_slice(&t);
+    section(sec::COMPONENT_TYPE, &wasm_vec(2, &type_items))
+}
+
 /// Index spaces (with `k = imports.len()`):
 ///   * lowered ops → core funcs `0..k`; `apply` alias → core func `k`; `cabi_realloc` alias → core func
 ///     `k+1`; `memory` alias → memory 0 (a memory alias takes no func index).
@@ -394,20 +417,7 @@ pub fn assemble_bytes_roundtrip_provider(
     // sec 7 (second): the shared `list<u8>` defined type (component type 1), then the member functype
     // (component type 2): `(input: list<u8>) -> list<u8>` — the defined-type param/result reference the
     // list type by INDEX (its valtype is the uleb type index), not an inline primitive byte.
-    let boundary_type_sec = {
-        let mut type_items = list_u8_defined_type();
-        let mut t = vec![wasm_abi::COMP_FUNCTYPE_FORM];
-        let mut params = Vec::new();
-        let pname = "input";
-        params.extend_from_slice(&uleb_bytes(pname.len() as u64));
-        params.extend_from_slice(pname.as_bytes());
-        uleb128(list_type_idx as u64, &mut params); // param valtype = the list<u8> defined-type index
-        t.extend_from_slice(&wasm_vec(1, &params));
-        t.push(0x00); // result-form: one result
-        uleb128(list_type_idx as u64, &mut t); // result valtype = the list<u8> defined-type index
-        type_items.extend_from_slice(&t);
-        section(sec::COMPONENT_TYPE, &wasm_vec(2, &type_items))
-    };
+    let boundary_type_sec = bytes_roundtrip_boundary_type_sec(list_type_idx);
 
     // sec 8 (second): lift apply (core func k) with Memory(0) + Realloc(core func k+1), apply functype
     // (component type 2) → component func k.
@@ -2125,20 +2135,7 @@ pub fn assemble_bytes_roundtrip_host_provider(
     };
 
     // sec 7 (second): the shared list<u8> defined type (comp type 2) + the apply functype (comp type 3).
-    let boundary_type_sec = {
-        let mut type_items = list_u8_defined_type();
-        let mut t = vec![wasm_abi::COMP_FUNCTYPE_FORM];
-        let mut params = Vec::new();
-        let pname = "input";
-        params.extend_from_slice(&uleb_bytes(pname.len() as u64));
-        params.extend_from_slice(pname.as_bytes());
-        uleb128(list_type_idx as u64, &mut params);
-        t.extend_from_slice(&wasm_vec(1, &params));
-        t.push(0x00);
-        uleb128(list_type_idx as u64, &mut t);
-        type_items.extend_from_slice(&t);
-        section(sec::COMPONENT_TYPE, &wasm_vec(2, &type_items))
-    };
+    let boundary_type_sec = bytes_roundtrip_boundary_type_sec(list_type_idx);
 
     // sec 8 (second): lift apply with Memory(0) + Realloc. Core func 0 = shared cabi_realloc alias, lowered
     // ops = `1..1+h+k`, apply alias = `1+h+k`. So apply is core func `1+h+k` and realloc is core func 0.
