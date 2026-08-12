@@ -7,5 +7,6 @@ pass	a sender emits two messages to one peer in a single fold; the peer folds bo
 pass	a session stores a fixed mid-range byte value (decoder past the counter's 1)
 pass	a session writes TWO kv keys on its kick-off (multi-key end-state)
 pass	a worker performs a userspace effect served by a handler session, and resumes on the reply
+pass	one handler session serves two effect families; a caller performs both and resumes
 pass	the same counter IGNORES a non-message kick-off (else-branch writes no state)
 pass	two sessions ping-pong: a emits to b, b replies to a, a folds the reply and stops
