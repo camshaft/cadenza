@@ -9135,3 +9135,83 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 11212 Int64))
   (call   main (: 5 Int64)) (output (: 11222 Int64)))
+
+; --- breaker batch 250: negative-mod rotation cipher, prefix-sum table (the finding-23 rich form,
+; both ListAt/ListUpdate index fixes in), sorted enumeration after remove-churn ---
+(case "rot1 a ROTATION-CIPHER state — enc shifts a letter index with the double-mod negative-normalization idiom in the arm, tune drives the shift NEGATIVE and the normalization recovers the canonical class"
+  (input  (do
+            (effect S
+              (op enc (-> Int64 Int64))
+              (op tune (-> Int64 Int64)))
+            (def (norm (: x Int64))
+              (% (+ (% x 26) 26) 26))
+            (def (main (: n Int64))
+              (handle S n
+                ((enc (i) sh (resume (norm (+ i sh)) sh))
+                 (tune (d) sh
+                  (let ((sh2 (+ sh d)))
+                    (resume (norm sh2) sh2))))
+                (let ((a (S.enc 3)))
+                  (let ((b (S.tune -30)))
+                    (let ((c (S.enc 3)))
+                      (+ (* 10000 a) (+ (* 100 b) c)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 80104 Int64))
+  (call   main (: 0 Int64)) (output (: 32225 Int64)))
+
+(case "pfx1 a PREFIX-SUM table state — add appends the running total to the list, range answers pre[j]-pre[i] via two fallible reads with an out-of-bounds sentinel"
+  (input  (do
+            (effect S
+              (op add (-> Int64 Int64))
+              (op range (-> Int64 Int64 Int64)))
+            (def (last (: xs (List Int64)))
+              (match (List.at xs (- (List.len xs) 1)) ((Some v) v) ((None u) 0)))
+            (def (main (: n Int64))
+              (handle S (list 0)
+                ((add (v) pre
+                  (let ((t (+ (last pre) v)))
+                    (resume t (List.push pre t))))
+                 (range (i j) pre
+                  (resume (match (List.at pre i)
+                            ((Some a) (match (List.at pre j)
+                                        ((Some b) (- b a))
+                                        ((None u) -1)))
+                            ((None u) -1))
+                          pre)))
+                (let ((_a (S.add n)))
+                  (let ((_b (S.add 4)))
+                    (let ((_c (S.add (+ n 1))))
+                      (let ((d (S.range 0 3)))
+                        (let ((e (S.range 1 3)))
+                          (let ((f (S.range 2 9)))
+                            (+ (* 10000 d) (+ (* 100 e) (+ f 2)))))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 110801 Int64))
+  (call   main (: 10 Int64)) (output (: 251501 Int64)))
+
+(case "mec1 sorted enumeration AFTER remove-churn — five keyed inserts (one seed-colliding overwrite), two removes, the surviving key walk pins order and count"
+  (input  (do
+            (effect S
+              (op put (-> Int64 Int64 Int64))
+              (op del (-> Int64 Int64))
+              (op walk (-> Int64)))
+            (def (fold-keys (: xs (List (Tuple Int64 Int64))) (: i Int64) (: acc Int64))
+              (match (List.at xs i)
+                ((Some e) (match e ((tuple k _v) (fold-keys xs (+ i 1) (+ (* 100 acc) k)))))
+                ((None u) acc)))
+            (def (main (: n Int64))
+              (handle S Map.empty
+                ((put (k v) m (resume (Map.len m) (Map.insert m k v)))
+                 (del (k) m (resume (Map.len m) (Map.remove m k)))
+                 (walk () m (resume (+ (* 10 (fold-keys (Map.to-list m) 0 0)) (Map.len m)) m)))
+                (let ((_a (S.put n 0)))
+                  (let ((_b (S.put (+ n 1) 1)))
+                    (let ((_c (S.put 3 2)))
+                      (let ((_d (S.put 9 3)))
+                        (let ((_e (S.put (+ n 2) 4)))
+                          (let ((_f (S.del (+ n 1))))
+                            (let ((_g (S.del 9)))
+                              (S.walk))))))))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 304063 Int64))
+  (call   main (: 1 Int64)) (output (: 1032 Int64)))

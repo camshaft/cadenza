@@ -5439,6 +5439,7 @@ pass	md2 the arm DRAINS a Map entry per dispatch — Map.remove keyed by the op 
 pass	md3 the drained value RE-FILES under a shifted key — the third take HITS the re-filed entry, the final take finds it moved on
 pass	me1 a MIXED-endian frame crosses the dispatch boundary as an op ARGUMENT — the arm decodes big and little fields independently
 pass	me2 the arm RE-ENCODES its two decoded fields with SWAPPED endianness and the body decodes the swap
+pass	mec1 sorted enumeration AFTER remove-churn — five keyed inserts (one seed-colliding overwrite), two removes, the surviving key walk pins order and count
 pass	member access chains through a nested record
 pass	member access is written explicitly as the dot form in the canonical tree
 pass	member access of a field the record does not have is a type error
@@ -5688,6 +5689,7 @@ pass	performs in the VALUES of a MAP constructor thread and the entry reads back
 pass	permutation invariance of a commutative fold holds for generated runtime inputs
 pass	permutation invariance of a commutative fold holds — the property oracle passes
 pass	pf1 an AGGREGATOR arm — the op returns the running sum of every value fed to it, three feeds pin the accumulation
+pass	pfx1 a PREFIX-SUM table state — add appends the running total to the list, range answers pre[j]-pre[i] via two fallible reads with an out-of-bounds sentinel
 pass	pg1 a PUT/GET store — put returns the value it displaces, a counter tracks writes, get reads the survivor
 pass	pk1 a BEGIN/END protocol arm — a Bool flag rejects double-begin and end-without-begin, the sequence encodes the violations
 pass	pm1 LITERAL match arms grade the state INSIDE the handler arm — a mod-4 walker crosses all four literal rows
@@ -5854,6 +5856,7 @@ pass	rg2 the rotation DIRECTION flips on the evicted head's parity — even rota
 pass	rle1 RUN-LENGTH tracking — the 3-tuple state carries (last,run,best); the n=5 seed extends one run to five, n=7 breaks it at two
 pass	rmp1 a RECORD state wrapping a Map plus a counter — computed perform keys; the arm answers 10*lookup + the ADVANCED counter so both fields are observed
 pass	rn1 a RUNNING-AVERAGE state (sum,count) — three feeds then a truncating divide read, negative total exercises toward-zero
+pass	rot1 a ROTATION-CIPHER state — enc shifts a letter index with the double-mod negative-normalization idiom in the arm, tune drives the shift NEGATIVE and the normalization recovers the canonical class
 pass	round-trip byte-rope consumer alongside a plain export — the consumer
 pass	round-trip byte-rope consumer alongside a plain export — the plain
 pass	round-trip: a HIGHER-ORDER closure arg composed with a SUM result
