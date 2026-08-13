@@ -79,7 +79,7 @@ pub fn decode(bytes: &[u8]) -> Result<Event, EventAstError> {
 ///     `(requestable …)` split + future fields append with NO wire break (open sums; a tolerant guest
 ///     matches the head and ignores/denies an unknown one).
 ///   `<scope>` = `(none)` | `(some <predicate>)`; `<predicate>` = `(any)` | `(exact <str>)` |
-///     `(one-of <str>…)` | `(host-in <str>…)` | `(prefix <str>)` | `(descendant-of <controller-hex>)` (I6
+///     `(one-of <str>…)` | `(host-in <str>…)` | `(prefix <str>)` | `(descendant-of <controller-bytes>)` (I6
 ///     supervision marker) — mirrors [`crate::effect::ResourcePredicate`].
 /// Entries are emitted in the manifest's order (the projection uses `effect_ct::ALL` order) so the bytes
 /// are stable/replay-safe. The leading `<version:int>` INSIDE the payload (=1) lets a decoder range-check
@@ -140,13 +140,15 @@ pub fn encode_capability_manifest(manifest: &crate::effect::CapabilityManifest) 
                         b.list(vec![h, v])
                     }
                     ResourcePredicate::DescendantOf(controller) => {
-                        // I6 supervision-tree marker: ride the controller's hash as its hex string, so a
+                        // I6 supervision-tree marker: ride the controller's hash as RAW 32 bytes, so a
                         // discovery reader sees which controller a lifecycle/* grant is scoped under (the
                         // kernel's own admits() never green-lights it — the host freezes the descendant set).
                         let h = b.name("descendant-of");
-                        // Build the leaf from the OWNED hex directly — str_leaf(&str) would re-clone it via
-                        // to_string(), a needless second alloc of the 64-char hex (github-liaison #2443 c2).
-                        let v = b.atom_leaf(Leaf::Str(controller.to_hex().into()));
+                        // hashes-everywhere (concierge ruling 036281, RAW): the manifest is MACHINE-CONSUMED
+                        // (delivered to the guest reducer as the Ok payload of a capabilities effect,
+                        // kernel.rs:1145), so the controller hash rides as RAW bytes (Leaf::Bytes) like every
+                        // other hash on this wire — not a 64-char hex Str a raw-bytes reader would mismatch.
+                        let v = b.atom_leaf(Leaf::Bytes(controller.as_bytes().to_vec().into()));
                         b.list(vec![h, v])
                     }
                 };
@@ -3910,13 +3912,14 @@ mod tests {
         // (prefix <str>)
         let prefix = a.as_form(pred_of(4), "prefix").expect("(prefix ..)");
         assert_eq!(a.as_str(prefix[0]), Some("pre/"));
-        // (descendant-of <controller-hex>) — I6 supervision marker; the controller rides as its hex string.
+        // (descendant-of <controller-bytes>) — I6 supervision marker; the controller hash rides as RAW bytes
+        // (hashes-everywhere: machine-consumed manifest, concierge ruling 036281), like every other hash here.
         let desc = a
             .as_form(pred_of(5), "descendant-of")
             .expect("(descendant-of ..)");
         assert_eq!(
-            a.as_str(desc[0]),
-            Some(crate::hash::Hash::of(b"controller").to_hex().as_str())
+            read_bytes(&a, desc[0]).expect("descendant-of controller is a raw bytes leaf"),
+            crate::hash::Hash::of(b"controller").as_bytes().to_vec()
         );
     }
 }
