@@ -34,6 +34,9 @@ def can-emit-d(c: Core, defidx: Map(Int64, Int64)) = match c with
   | Core.CCall(name, args) => (match Map.lookup(defidx, name) with
       | Option.Some(_) => can-call-args(args, 0, defidx)
       | Option.None(_) => false)
+  // W-enum: an ENUM-DISC bare-tag match emits (emit-db's emit-instrs-d handles CMatchEnum as a tag-equality
+  // if/else). Emittable iff scrutinee + both branches are (nested N-arm enum match = nested CMatchEnum in els).
+  | Core.CMatchEnum(scrut, _, thn, els) => can-emit-d(scrut, defidx) and (can-emit-d(thn, defidx) and can-emit-d(els, defidx))
   | _ => false
 
 /// Are all a CCall's arg terms in the emit subset (under `defidx`)? Index recursion.

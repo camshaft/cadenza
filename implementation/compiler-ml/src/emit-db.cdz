@@ -194,8 +194,10 @@ def can-emit(c: Core) = match c with
       // M2-b-2b user sum PAYLOAD ctor is EVAL-ONLY for now (emit(B) = rcdzc's SumNew{disc,payloads} heap layout).
   | Core.CMatchSum(_, _, _, _, _) => false
       // M2-b-2b sum deconstruct is EVAL-ONLY for now (emit(B) = a MatchSum decision tree on the disc + payload loads).
-  | Core.CMatchEnum(_, _, _, _) => false
-      // ii-c2b-2 enum-disc deconstruct is EVAL-ONLY for now (emit(B) = a MatchSum on a bare i32 disc, deferred).
+  // ii-c2b-2 enum-disc deconstruct EMITS (W-enum): the scrutinee is a BARE i64 tag, so the arm is just a
+  // tag-equality branch (`scrut == tag ? then : else`) reusing the CIf/CBin(eq) machinery — no heap. Emittable
+  // iff the scrutinee + both branches are (a nested N-arm enum match = nested CMatchEnum in `els`, recursed).
+  | Core.CMatchEnum(scrut, _, thn, els) => can-emit(scrut) and (can-emit(thn) and can-emit(els))
   | Core.CProj(_, _) => false
       // tuple PROJECTION is EVAL-ONLY for now (emit(B) = a store-payload load off the CCtor heap layout, deferred with CCtor).
 
@@ -222,6 +224,9 @@ def collect-binders(c: Core) = match c with
   | Core.CLet(b, v, body) => List.push(List.concat(collect-binders(v), collect-binders(body)), b)
   | Core.CBin(_, _, _, l, r) => List.concat(collect-binders(l), collect-binders(r))
   | Core.CIf(cond, thn, els) => List.concat(collect-binders(cond), List.concat(collect-binders(thn), collect-binders(els)))
+  // W-enum: a CMatchEnum introduces NO binders (nullary enum-disc, no payload), but its scrutinee + branches
+  // may contain CLets — recurse so their locals are counted (else a let inside a match arm gets no slot).
+  | Core.CMatchEnum(scrut, _, thn, els) => List.concat(collect-binders(scrut), List.concat(collect-binders(thn), collect-binders(els)))
   | _ => []
 
 /// Emit the INSTRUCTION bytes for a Core term onto the i64 operand stack — TOTAL (`Bytes`, never `Option`).
@@ -270,6 +275,19 @@ def emit-instrs-d(c: Core, binders: List(Int64), defidx: Map(Int64, Int64)) = ma
       // being an emitted recursive def, so lookup-idx always hits here (a miss traps — corrupt lowering).
       Bytes.concat(emit-call-args(args, 0, binders, defidx),
         Bytes.concat(b1(16), uleb(lookup-idx(defidx, name))))              // 0x10 call <funcidx>
+  | Core.CMatchEnum(scrut, tag, thn, els) =>
+      // W-enum: an ENUM-DISC (all-nullary sum) match. The scrutinee is a BARE i64 tag (a CNum, no heap cell),
+      // so the arm is a tag-EQUALITY branch — the SAME shape as CIf but the i32 predicate is `scrut == tag`
+      // (i64.eq 0xad→no, 0x51) instead of CIf's `cond != 0`. Emit `scrut ; i64.const <tag> ; i64.eq` (→ i32
+      // 1/0) then `if (result i64) <then> else <else> end`. Mirrors eval-db's CMatchEnum (v == tag → thn : els).
+      // A nested N-arm enum match lives in `els` (recursed). Opcodes: i64.const 0x42, i64.eq 0x51, if 0x04,
+      // blocktype i64 0x7e, else 0x05, end 0x0b.
+      Bytes.concat(emit-instrs-d(scrut, binders, defidx),
+        Bytes.concat(Bytes.concat(b1(66), Bytes.concat(sleb(tag), b1(81))),      // i64.const <tag> ; i64.eq → i32
+          Bytes.concat(b1(4), Bytes.concat(b1(126),                             // if (result i64)
+            Bytes.concat(emit-instrs-d(thn, binders, defidx),
+              Bytes.concat(b1(5),                                               // else
+                Bytes.concat(emit-instrs-d(els, binders, defidx), b1(11))))))))  // <else> ; end
   | _ => Bytes.of([])
 
 /// slice-B'(Bp3): emit a CCall's arg terms left-to-right (index recursion, the emit idiom), each onto the i64
@@ -502,6 +520,19 @@ def em-cnum-emits-a-module() =
   (match emit-module(cnum64(42)) with
     | Option.Some(_) => (match emit-module(Core.CBin(0, true, 64, cnum64(1), cnum64(2))) with | Option.None(_) => unit | _ => trap("unknown-op CBin out of subset"))
     | Option.None(_) => trap("CNum emits a module"))
+
+@test
+def em-cmatchenum-emits-a-module() =
+  // W-enum: an ENUM-DISC bare-tag match `CMatchEnum(scrut, tag, then, else)` is now in the emit subset (a
+  // tag-equality if/else reusing the CIf machinery — no heap). A NESTED N-arm match (a CMatchEnum in `else`)
+  // also emits. Direct-Core mirror of `(match (Green) (Red 100) (Green 200) (_ 300))`: CMatchEnum(scrut=1,
+  // tag 0 → 100, else CMatchEnum(scrut=1, tag 1 → 200, else 300)); scrut==1 ≠ 0 → inner, ==1 → 200. can-emit
+  // + has-value (eval-db oracle → Some 200) both hold → emit-module returns Some. run-emitted matches run-ml
+  // on this shape end-to-end (verified: 100/200/300 for the three arms).
+  (match emit-module(Core.CMatchEnum(cnum64(1), 0, cnum64(100),
+                       Core.CMatchEnum(cnum64(1), 1, cnum64(200), cnum64(300)))) with
+    | Option.Some(_) => unit
+    | Option.None(_) => trap("a bare-tag enum-disc CMatchEnum emits a module"))
 
 @test
 def em-module-has-wasm-magic-and-version() =
