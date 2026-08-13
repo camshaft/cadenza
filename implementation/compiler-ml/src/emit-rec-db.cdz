@@ -59,9 +59,8 @@ def can-emit-d(c: Core, defidx: Map(Int64, Int64)) = match c with
 def ctor-args-emittable-d(args: List(Core), i: Int64, defidx: Map(Int64, Int64)) =
   (if i == List.len(args) then true
    else (match List.at(args, i) with
-     | Option.Some(a) => (match a with
-         | Core.CCtor(_, _) => false
-         | _ => (if can-emit-d(a, defidx) then ctor-args-emittable-d(args, i + 1, defidx) else false))
+     // NESTED compounds now emit (depth-distinct scratch in emit-instrs-d) — a CCtor arg no longer clobbers.
+     | Option.Some(a) => (if can-emit-d(a, defidx) then ctor-args-emittable-d(args, i + 1, defidx) else false)
      | Option.None(_) => false))
 
 /// Are all a CCall's arg terms in the emit subset (under `defidx`)? Index recursion.
@@ -246,14 +245,14 @@ def er-can-emit-d-allows-known-ccall() =
 
 @test
 def er-can-emit-d-allows-compound-construct-project() =
-  // W-compound (recursive/do-def path): a FLAT tuple CCtor + CProj is now emittable via can-emit-d (the gate
-  // run-emitted uses for a `(do (def (main) …) (export main))` program). A NESTED ctor arg is not flat → declines
-  // (coverage-not-yet, safe). Direct-Core: CProj(CCtor(0,[10,20]), 1) emits; CCtor(0,[CCtor(0,[1]),3]) declines.
+  // W-compound (recursive/do-def path): a FLAT tuple CCtor + CProj is emittable via can-emit-d. A NESTED ctor
+  // arg is NOW emittable too (depth-distinct scratch + bump-early). Direct-Core: CProj(CCtor(0,[10,20]), 1)
+  // emits; CCtor(0,[CCtor(0,[1]),3]) (nested) also emits.
   (let de = (Map.empty : Map(Int64, Int64)) in
    (if can-emit-d(Core.CProj(Core.CCtor(0, List.concat(List.push([], Core.CNum(10, true, 64)), List.push([], Core.CNum(20, true, 64)))), 1), de)
     then (if can-emit-d(Core.CCtor(0, List.concat(List.push([], Core.CCtor(0, List.push([], Core.CNum(1, true, 64)))), List.push([], Core.CNum(3, true, 64)))), de)
-          then trap("a nested compound ctor arg must decline (flat-args gate)")
-          else unit)
+          then unit
+          else trap("a nested compound ctor arg must now be emittable (depth-scratch + bump-early)"))
     else trap("a flat tuple construct+project must be emittable in the recursive path")))
 
 @test

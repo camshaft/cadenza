@@ -177,6 +177,31 @@ def has-fnref-list(args: List(Core), i: Int64) =
      | Option.Some(a) => (if has-fnref(a) then true else has-fnref-list(args, i + 1))
      | Option.None(_) => false))
 
+def imax(a: Int64, b: Int64) = (if a > b then a else b)
+
+/// W-compound nested: how many i32 SCRATCH locals a body needs. A CCtor keeps its alloc base in a scratch local
+/// ACROSS its arg emission, so a CCtor arg that is itself a CCtor (or a CMatchSum, which also uses a scratch for
+/// the scrut handle) needs a DISTINCT slot — one per nesting level. `depth` = the count of CCtor-arg levels
+/// entered so far; a CCtor/CMatchSum here uses slot `depth`, so the body needs `max(depth+1)` over all such
+/// nodes. Only a CCtor's ARGS increment depth (base must persist across them); every other child stays at
+/// `depth`. `emit-instrs-d` uses the SAME depth arithmetic (scratch = #binders + depth), so this count matches.
+def scratch-need(c: Core, depth: Int64) = match c with
+  | Core.CCtor(_, args) => imax(depth + 1, scratch-need-list(args, depth + 1, 0))
+  | Core.CMatchSum(s, _, _, t, e) => imax(depth + 1, imax(scratch-need(s, depth), imax(scratch-need(t, depth), scratch-need(e, depth))))
+  | Core.CBin(_, _, _, l, r) => imax(scratch-need(l, depth), scratch-need(r, depth))
+  | Core.CLet(_, v, b) => imax(scratch-need(v, depth), scratch-need(b, depth))
+  | Core.CIf(cc, t, e) => imax(scratch-need(cc, depth), imax(scratch-need(t, depth), scratch-need(e, depth)))
+  | Core.CProj(op, _) => scratch-need(op, depth)
+  | Core.CMatchEnum(s, _, t, e) => imax(scratch-need(s, depth), imax(scratch-need(t, depth), scratch-need(e, depth)))
+  | Core.CCall(_, args) => scratch-need-list(args, depth, 0)
+  | Core.CFnRefVar(_, args) => scratch-need-list(args, depth, 0)
+  | _ => 0
+def scratch-need-list(args: List(Core), depth: Int64, i: Int64) =
+  (if i == List.len(args) then 0
+   else (match List.at(args, i) with
+     | Option.Some(a) => imax(scratch-need(a, depth), scratch-need-list(args, depth, i + 1))
+     | Option.None(_) => scratch-need-list(args, depth, i + 1)))
+
 /// W-compound: are a CCtor's payload args each EMITTABLE and FLAT (no nested CCtor)? A single i32 scratch
 /// local holds the alloc base, so SEQUENTIAL ctors reuse it safely (base is dead once the handle is pushed),
 /// but a NESTED ctor arg would clobber the outer base mid-store. So gate emit to flat, emittable args (a
@@ -185,9 +210,9 @@ def has-fnref-list(args: List(Core), i: Int64) =
 def ctor-args-emittable(args: List(Core), i: Int64) =
   (if i == List.len(args) then true
    else (match List.at(args, i) with
-     | Option.Some(a) => (match a with
-         | Core.CCtor(_, _) => false                                    // nested ctor arg: not flat → decline
-         | _ => (if can-emit(a) then ctor-args-emittable(args, i + 1) else false))
+     // NESTED compounds now emit: depth-distinct scratch (scratch-need + the `depth` thread in emit-instrs-d)
+     // gives each nesting level its own alloc-base local, so a CCtor arg no longer clobbers the outer base.
+     | Option.Some(a) => (if can-emit(a) then ctor-args-emittable(args, i + 1) else false)
      | Option.None(_) => false))
 
 /// slice-B'(Bp4b-ii): export section exporting "main" as the function at INDEX `funcidx` — the recursive-module
@@ -325,41 +350,41 @@ def collect-binders-args(args: List(Core), i: Int64, acc: List(Int64)) =
 /// (the single-main / W1-W3 path: no CCall, so no funcidx lookups needed). Every existing caller is unchanged;
 /// the recursion path (Bp4) threads a real `defidx` through `emit-instrs-d`. Mirrors eval-db's eval-core/-d split.
 def emit-instrs(c: Core, binders: List(Int64)) =
-  emit-instrs-d(c, binders, (Map.empty : Map(Int64, Int64)))
+  emit-instrs-d(c, binders, (Map.empty : Map(Int64, Int64)), 0)
 
 /// slice-B'(Bp3): emit instruction bytes, threading a `defidx` map (recursive-def NAME → wasm FUNCTION INDEX)
 /// so a `CCall(name, args)` emits `<args> ; call <funcidx>` (0x10). All other arms are the W1-W3 emitter,
 /// unchanged except they forward `defidx` to recursive calls. A CCall to an unknown name (empty/missing) emits
 /// nothing usable — but `can-emit` gates a CCall program on the def being present, so this is unreached there.
-def emit-instrs-d(c: Core, binders: List(Int64), defidx: Map(Int64, Int64)) = match c with
+def emit-instrs-d(c: Core, binders: List(Int64), defidx: Map(Int64, Int64), depth: Int64) = match c with
   | Core.CNum(v, _, _) => Bytes.concat(b1(66), sleb(v))                 // 0x42 i64.const <sleb v> (width read in 2b-ii for i32)
   | Core.CVar(b) => Bytes.concat(b1(32), uleb(index-of(binders, b)))    // 0x20 local.get <idx>
   | Core.CBin(op, _, _, l, r) =>
       // arith: left, right, i64-op (result already i64). comparison: left, right, i64-relational (→ i32),
       // then i64.extend_i32_u (0xad) so the Bool is an i64 0/1 (eval-db's Bool-as-Int64 convention).
-      (let operands = Bytes.concat(emit-instrs-d(l, binders, defidx), emit-instrs-d(r, binders, defidx)) in
+      (let operands = Bytes.concat(emit-instrs-d(l, binders, defidx, depth), emit-instrs-d(r, binders, defidx, depth)) in
        (if is-cmp-op(op)
         then Bytes.concat(operands, Bytes.concat(b1(cmp-op(op)), b1(173)))    // <cmp> ; 0xad extend_i32_u
         else Bytes.concat(operands, b1(wasm-op(op)))))
   | Core.CLet(b, v, body) =>
       // eval `v`, store into the binder's local, then eval `body` (which reads the local via CVar).
-      Bytes.concat(emit-instrs-d(v, binders, defidx),
-        Bytes.concat(b1(33), Bytes.concat(uleb(index-of(binders, b)), emit-instrs-d(body, binders, defidx))))  // 0x21 local.set
+      Bytes.concat(emit-instrs-d(v, binders, defidx, depth),
+        Bytes.concat(b1(33), Bytes.concat(uleb(index-of(binders, b)), emit-instrs-d(body, binders, defidx, depth))))  // 0x21 local.set
   | Core.CIf(cond, thn, els) =>
       // Core cond is an i64 0/1; wasm `if` consumes an i32, so convert via `i64.const 0 ; i64.ne` (→ i32:
       // 1 iff cond ≠ 0). Then `if (result i64) <then> else <else> end` — the taken branch's i64 is the value.
       // Opcodes: i64.const 0x42, i64.ne 0x52, if 0x04, blocktype i64 0x7e, else 0x05, end 0x0b.
-      Bytes.concat(emit-instrs-d(cond, binders, defidx),
+      Bytes.concat(emit-instrs-d(cond, binders, defidx, depth),
         Bytes.concat(Bytes.concat(b1(66), Bytes.concat(sleb(0), b1(82))),      // i64.const 0 ; i64.ne → i32
           Bytes.concat(b1(4), Bytes.concat(b1(126),                            // if (result i64)
-            Bytes.concat(emit-instrs-d(thn, binders, defidx),
+            Bytes.concat(emit-instrs-d(thn, binders, defidx, depth),
               Bytes.concat(b1(5),                                              // else
-                Bytes.concat(emit-instrs-d(els, binders, defidx), b1(11))))))))  // <else> ; end
+                Bytes.concat(emit-instrs-d(els, binders, defidx, depth), b1(11))))))))  // <else> ; end
   | Core.CCall(name, args) =>
       // slice-B'(Bp3): a recursive call. Emit each arg onto the stack (left→right, wasm call convention), then
       // `call <funcidx>` (0x10). funcidx from the def-index map; can-emit gates a CCall program on the callee
       // being an emitted recursive def, so lookup-idx always hits here (a miss traps — corrupt lowering).
-      Bytes.concat(emit-call-args(args, 0, binders, defidx),
+      Bytes.concat(emit-call-args(args, 0, binders, defidx, depth),
         Bytes.concat(b1(16), uleb(lookup-idx(defidx, name))))              // 0x10 call <funcidx>
   | Core.CMatchEnum(scrut, tag, thn, els) =>
       // W-enum: an ENUM-DISC (all-nullary sum) match. The scrutinee is a BARE i64 tag (a CNum, no heap cell),
@@ -368,17 +393,17 @@ def emit-instrs-d(c: Core, binders: List(Int64), defidx: Map(Int64, Int64)) = ma
       // 1/0) then `if (result i64) <then> else <else> end`. Mirrors eval-db's CMatchEnum (v == tag → thn : els).
       // A nested N-arm enum match lives in `els` (recursed). Opcodes: i64.const 0x42, i64.eq 0x51, if 0x04,
       // blocktype i64 0x7e, else 0x05, end 0x0b.
-      Bytes.concat(emit-instrs-d(scrut, binders, defidx),
+      Bytes.concat(emit-instrs-d(scrut, binders, defidx, depth),
         Bytes.concat(Bytes.concat(b1(66), Bytes.concat(sleb(tag), b1(81))),      // i64.const <tag> ; i64.eq → i32
           Bytes.concat(b1(4), Bytes.concat(b1(126),                             // if (result i64)
-            Bytes.concat(emit-instrs-d(thn, binders, defidx),
+            Bytes.concat(emit-instrs-d(thn, binders, defidx, depth),
               Bytes.concat(b1(5),                                               // else
-                Bytes.concat(emit-instrs-d(els, binders, defidx), b1(11))))))))  // <else> ; end
+                Bytes.concat(emit-instrs-d(els, binders, defidx, depth), b1(11))))))))  // <else> ; end
   | Core.CProj(operand, index) =>
       // W-compound: read element `index` from the operand's heap block. operand → i64 HANDLE (a byte offset) ;
       // i32.wrap_i64 (0xa7) → i32 addr ; i64.load (0x29) align=3 (0x03) offset=8*(index+1) (tag at handle+0,
       // element i at handle+8*(i+1)). Mirrors eval's store-payload(handle, index).
-      Bytes.concat(emit-instrs-d(operand, binders, defidx),
+      Bytes.concat(emit-instrs-d(operand, binders, defidx, depth),
         Bytes.concat(b1(167),                                                  // i32.wrap_i64
           Bytes.concat(b1(41), Bytes.concat(b1(3), uleb(8 * (index + 1))))))   // i64.load align=3 offset
   | Core.CCtor(tag, args) =>
@@ -388,29 +413,33 @@ def emit-instrs-d(c: Core, binders: List(Int64), defidx: Map(Int64, Int64)) = ma
       // i64.const tag ; i64.store 0) ; store each elem (local.get scratch ; <elem> ; i64.store 8*(i+1)) ; bump
       // (local.get scratch ; i32.const blocksize ; i32.add ; global.set 0) ; push handle (local.get scratch ;
       // i64.extend_i32_u). Args are FLAT (can-emit gate) so no nested ctor clobbers the single scratch.
-      (let scratch = List.len(binders) in
+      (let scratch = List.len(binders) + depth in
        (let blocksize = 8 * (1 + List.len(args)) in
         (let save = Bytes.concat(b1(35), Bytes.concat(uleb(0), Bytes.concat(b1(33), uleb(scratch)))) in
          (let store-tag = Bytes.concat(b1(32), Bytes.concat(uleb(scratch), Bytes.concat(b1(66), Bytes.concat(sleb(tag), Bytes.concat(b1(55), Bytes.concat(b1(3), uleb(0))))))) in
-          (let store-elems = emit-ctor-stores(args, 0, scratch, binders, defidx) in
+          (let store-elems = emit-ctor-stores(args, 0, scratch, binders, defidx, depth + 1) in
            (let bump = Bytes.concat(b1(32), Bytes.concat(uleb(scratch), Bytes.concat(b1(65), Bytes.concat(sleb(blocksize), Bytes.concat(b1(106), Bytes.concat(b1(36), uleb(0))))))) in
             (let push-handle = Bytes.concat(b1(32), Bytes.concat(uleb(scratch), b1(173))) in
-             Bytes.concat(save, Bytes.concat(store-tag, Bytes.concat(store-elems, Bytes.concat(bump, push-handle)))))))))))
+             // BUMP EARLY (before storing elems): a NESTED CCtor arg allocates from `global 0`, so `global` must
+             // already point PAST this block or the inner alloc lands on this block's base. save→scratch, bump
+             // global, THEN store tag+elems into [scratch..], push scratch as the handle. (Depth-distinct scratch
+             // keeps the base LOCAL from being clobbered; bumping early keeps the ADDRESS from being reused.)
+             Bytes.concat(save, Bytes.concat(bump, Bytes.concat(store-tag, Bytes.concat(store-elems, push-handle)))))))))))
   | Core.CMatchSum(scrut, tag, bs, thn, els) =>
       // W-compound: PAYLOAD-sum deconstruct. Save the scrut handle's wrapped addr in the i32 scratch, load its
       // tag (heap+0), compare to this arm's `tag`, and `if (result i64)`: THEN bind each payload elem (heap+
       // 8*(i+1)) into its local + eval `then`; ELSE eval `else` (the next arm — nested CMatchSum). Scrut is
       // always a boxed handle so the tag-load is sound. Opcodes: i32.wrap_i64 0xa7, local.set 0x21, local.get
       // 0x20, i64.load 0x29, i64.const 0x42, i64.eq 0x51, if 0x04, i64 0x7e, else 0x05, end 0x0b.
-      (let scratch = List.len(binders) in
-       (let setup = Bytes.concat(emit-instrs-d(scrut, binders, defidx), Bytes.concat(b1(167), Bytes.concat(b1(33), uleb(scratch)))) in  // scrut ; i32.wrap_i64 ; local.set scratch
+      (let scratch = List.len(binders) + depth in
+       (let setup = Bytes.concat(emit-instrs-d(scrut, binders, defidx, depth), Bytes.concat(b1(167), Bytes.concat(b1(33), uleb(scratch)))) in  // scrut ; i32.wrap_i64 ; local.set scratch
         (let load-tag = Bytes.concat(b1(32), Bytes.concat(uleb(scratch), Bytes.concat(b1(41), Bytes.concat(b1(3), uleb(0))))) in         // local.get scratch ; i64.load 0
          (let cmp = Bytes.concat(b1(66), Bytes.concat(sleb(tag), b1(81))) in                                                            // i64.const tag ; i64.eq
-          (let then-part = Bytes.concat(emit-payload-binds(bs, 0, scratch, binders, defidx), emit-instrs-d(thn, binders, defidx)) in    // <bind payloads> ; <then>
+          (let then-part = Bytes.concat(emit-payload-binds(bs, 0, scratch, binders, defidx), emit-instrs-d(thn, binders, defidx, depth)) in    // <bind payloads> ; <then>
            Bytes.concat(setup, Bytes.concat(load-tag, Bytes.concat(cmp,
              Bytes.concat(b1(4), Bytes.concat(b1(126),                                                                                  // if (result i64)
                Bytes.concat(then-part, Bytes.concat(b1(5),                                                                             // else
-                 Bytes.concat(emit-instrs-d(els, binders, defidx), b1(11))))))))))))))
+                 Bytes.concat(emit-instrs-d(els, binders, defidx, depth), b1(11))))))))))))))
   | Core.CFnRef(name) =>
       // W-HO: a def-name used as a first-class fn VALUE → its FUNCIDX as an i64 const (0x42 i64.const <funcidx>).
       // The identity elem segment maps table[funcidx] = funcidx, so this value doubles as the call_indirect index.
@@ -420,7 +449,7 @@ def emit-instrs-d(c: Core, binders: List(Int64), defidx: Map(Int64, Int64)) = ma
       // (local.get fb = an i64 funcidx) ; i32.wrap_i64 (→ i32 table index) ; call_indirect <typeidx> <table 0>.
       // typeidx is COMPUTED, no threading: emit-recursive-module appends functype-bytes(1..4) after main (which
       // is at typeidx k = Map.len(defidx)), so the functype for arity A sits at typeidx k+A → Map.len(defidx)+len(args).
-      Bytes.concat(emit-call-args(args, 0, binders, defidx),
+      Bytes.concat(emit-call-args(args, 0, binders, defidx, depth),
         Bytes.concat(b1(32), Bytes.concat(uleb(index-of(binders, fb)),
           Bytes.concat(b1(167),                                                                    // i32.wrap_i64
             Bytes.concat(b1(17), Bytes.concat(uleb(Map.len(defidx) + List.len(args)), b1(0)))))))  // 0x11 call_indirect <typeidx> <table 0>
@@ -428,15 +457,15 @@ def emit-instrs-d(c: Core, binders: List(Int64), defidx: Map(Int64, Int64)) = ma
 /// W-compound: emit a CCtor's payload-store sequence — for each arg i: `local.get scratch ; <emit arg> ;
 /// i64.store align=3 offset=8*(i+1)` (element i after the tag). Index recursion; scratch (i32 local) holds the
 /// alloc base. Args are flat (can-emit gate), so emitting an arg never touches the scratch local.
-def emit-ctor-stores(args: List(Core), i: Int64, scratch: Int64, binders: List(Int64), defidx: Map(Int64, Int64)) =
+def emit-ctor-stores(args: List(Core), i: Int64, scratch: Int64, binders: List(Int64), defidx: Map(Int64, Int64), depth: Int64) =
   (if i == List.len(args) then Bytes.of([])
    else (match List.at(args, i) with
      | Option.Some(a) => Bytes.concat(
          Bytes.concat(b1(32), Bytes.concat(uleb(scratch),
-           Bytes.concat(emit-instrs-d(a, binders, defidx),
+           Bytes.concat(emit-instrs-d(a, binders, defidx, depth),
              Bytes.concat(b1(55), Bytes.concat(b1(3), uleb(8 * (i + 1))))))),
-         emit-ctor-stores(args, i + 1, scratch, binders, defidx))
-     | Option.None(_) => emit-ctor-stores(args, i + 1, scratch, binders, defidx)))
+         emit-ctor-stores(args, i + 1, scratch, binders, defidx, depth))
+     | Option.None(_) => emit-ctor-stores(args, i + 1, scratch, binders, defidx, depth)))
 
 /// W-compound: bind a CMatchSum's payload elements into their locals — for each binder bs[i] that is not the
 /// -1 wildcard: `local.get scratch ; i64.load align=3 offset=8*(i+1) ; local.set (index-of binders bs[i])`
@@ -457,11 +486,11 @@ def emit-payload-binds(bs: List(Int64), i: Int64, scratch: Int64, binders: List(
 
 /// slice-B'(Bp3): emit a CCall's arg terms left-to-right (index recursion, the emit idiom), each onto the i64
 /// stack, concatenated — the wasm call convention (args pushed in order before `call`).
-def emit-call-args(args: List(Core), i: Int64, binders: List(Int64), defidx: Map(Int64, Int64)) =
+def emit-call-args(args: List(Core), i: Int64, binders: List(Int64), defidx: Map(Int64, Int64), depth: Int64) =
   (if i == List.len(args) then Bytes.of([])
    else (match List.at(args, i) with
-     | Option.Some(a) => Bytes.concat(emit-instrs-d(a, binders, defidx), emit-call-args(args, i + 1, binders, defidx))
-     | Option.None(_) => emit-call-args(args, i + 1, binders, defidx)))
+     | Option.Some(a) => Bytes.concat(emit-instrs-d(a, binders, defidx, depth), emit-call-args(args, i + 1, binders, defidx, depth))
+     | Option.None(_) => emit-call-args(args, i + 1, binders, defidx, depth)))
 
 /// slice-B'(Bp3): a def-name's wasm function index from the def-index map; TRAPS on a missing name (a
 /// checked-get, not a `-1`). A MISS cannot legitimately happen — `can-emit` gates a `CCall` program on the callee
@@ -522,7 +551,7 @@ def emit-def-body-d(params: List(Int64), bodyCore: Core, defidx: Map(Int64, Int6
     // W-compound: a body that constructs a compound (has-ctor) needs one i32 scratch local (the CCtor alloc
     // base), declared AFTER the params + i64 clet-locals — index List.len(binders), which emit-instrs-d's CCtor
     // uses. A scalar/recursive body declares no scratch (body-of-scratch with nscratch 0 == the old body-of).
-    body-of-scratch(emit-instrs-d(bodyCore, binders, defidx), List.len(clets), (if has-ctor(bodyCore) then 1 else 0))))
+    body-of-scratch(emit-instrs-d(bodyCore, binders, defidx, 0), List.len(clets), scratch-need(bodyCore, 0))))
 
 /// Code section wrapping a single function body: `01`=one body, `<uleb bodylen>`, `<body>`.
 def code-section(body: Bytes) =
@@ -728,11 +757,12 @@ def em-compound-construct-project-emits-a-module() =
   (match emit-module(Core.CLet(100, Core.CCtor(0, List.concat(List.push([], cnum64(10)), List.push([], cnum64(20)))),
                        Core.CProj(Core.CVar(100), 1))) with
     | Option.Some(_) =>
-        // a NESTED ctor arg is NOT flat → the single alloc-base scratch would clobber → DECLINES (coverage-
-        // not-yet, safe: run-emitted declines while run-ml runs it, never a value disagreement).
+        // a NESTED ctor arg now EMITS too: depth-distinct scratch (scratch-need + the `depth` thread) gives each
+        // nesting level its own alloc-base local, and bumping the global BEFORE storing elems keeps the inner
+        // alloc from landing on the outer base. So a ctor-in-ctor assembles a module (was a decline pre-fix).
         (match emit-module(Core.CCtor(0, List.concat(List.push([], Core.CCtor(0, List.push([], cnum64(1)))), List.push([], cnum64(3))))) with
-          | Option.None(_) => unit
-          | Option.Some(_) => trap("a NESTED compound ctor must decline emit (flat-args gate)"))
+          | Option.Some(_) => unit
+          | Option.None(_) => trap("a nested compound ctor must now EMIT (depth-scratch + bump-early)"))
     | Option.None(_) => trap("a flat tuple construct+project emits a module"))
 
 @test
@@ -1290,7 +1320,7 @@ def em-ccall-emits-args-then-call() =
   // CCall(900, [CNum 5]) under defidx {900→0}: emit the arg (`42 05` i64.const 5) then `10 00` (call funcidx 0).
   // Expected: 42 05 10 00 (4 bytes).
   (let defidx = Map.insert((Map.empty : Map(Int64, Int64)), 900, 0) in
-   (let bs = emit-instrs-d(Core.CCall(900, List.push([], Core.CNum(5, true, 64))), [], defidx) in
+   (let bs = emit-instrs-d(Core.CCall(900, List.push([], Core.CNum(5, true, 64))), [], defidx, 0) in
     (if Bytes.len(bs) == 4 then
      (if (byte-of(bs, 0) == 66) then                                 // 0x42 i64.const
       (if (byte-of(bs, 1) == 5) then                                 // value 5
@@ -1303,7 +1333,7 @@ def em-ccall-funcidx-from-map() =
   // the funcidx comes from the def-index map: CCall(900,[]) under {900→3} → `10 03` (call funcidx 3). Nullary
   // recursive call (no args) — just the call opcode + index.
   (let defidx = Map.insert((Map.empty : Map(Int64, Int64)), 900, 3) in
-   (let bs = emit-instrs-d(Core.CCall(900, ([] : List(Core))), [], defidx) in
+   (let bs = emit-instrs-d(Core.CCall(900, ([] : List(Core))), [], defidx, 0) in
     (if Bytes.len(bs) == 2 then
      (if (byte-of(bs, 0) == 16) then
       (if (byte-of(bs, 1) == 3) then unit else trap("funcidx 3")) else trap("call opcode")) else trap("nullary CCall = 2 bytes"))))
@@ -1395,5 +1425,24 @@ def em-lookup-idx-resolves-present-funcidx() =
   // This witnesses only the legitimate present-lookup path.
   (let m = defenv-funcidx-map(Map.to-list(Map.insert((Map.empty : Map(Int64, Tuple(List(Int64), Core))), 42, ([], Core.CNum(0, true, 64))))) in
    (if (lookup-idx(m, 42) == 0) then unit else trap("lookup-idx resolves a present name to its funcidx 0")))
+
+@test
+def em-scratch-need-counts-ctor-nesting() =
+  // W-compound nested: scratch-need = # simultaneously-live alloc-base locals. A scalar → 0; a FLAT ctor → 1;
+  // a ctor whose arg is a ctor → 2 (outer base must persist while the inner allocates its own base).
+  (let flat = Core.CCtor(0, List.concat(List.push([], Core.CNum(1, true, 64)), List.push([], Core.CNum(2, true, 64)))) in
+   (let nested = Core.CCtor(0, List.concat(List.push([], flat), List.push([], Core.CNum(3, true, 64)))) in
+    (if (scratch-need(Core.CNum(5, true, 64), 0) == 0) then
+      (if (scratch-need(flat, 0) == 1) then
+        (if (scratch-need(nested, 0) == 2) then unit else trap("nested ctor-in-ctor needs 2 scratch locals"))
+       else trap("a flat ctor needs 1 scratch local"))
+     else trap("a scalar needs 0 scratch locals"))))
+
+@test
+def em-ctor-args-emittable-allows-nested() =
+  // the flat-args gate was RELAXED (depth-distinct scratch + bump-early make nested compounds emit): a CCtor
+  // arg that is itself a CCtor is now emittable, not declined.
+  (let nested = Core.CCtor(0, List.concat(List.push([], Core.CCtor(0, List.push([], Core.CNum(1, true, 64)))), List.push([], Core.CNum(2, true, 64)))) in
+   (if can-emit(nested) then unit else trap("a nested-compound CCtor must now be emittable")))
 
 export { Target.*, target-emit, emit-wasm-module, emit-src-for, emit-module, emit-src, emit-text, render-core, render-core-list, int-to-decimal, emit-src-bytes, bytes-to-list, emit-instrs, emit-instrs-d, emit-call-args, lookup-idx, emit-def-body, emit-def-body-d, defenv-funcidx-map, export-section-idx, can-emit, collect-binders, is-arith-op, is-cmp-op, wasm-op, cmp-op, uleb, sleb, functype-bytes, type-section-multi, func-section-multi, code-section-multi, uleb-each, preamble, has-ctor, has-fnref, section, b1, memory-section, global-section }
