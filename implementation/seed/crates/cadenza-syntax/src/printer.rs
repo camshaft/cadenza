@@ -1997,11 +1997,20 @@ impl<'a> Printer<'a> {
         for &op in ops {
             self.doc.hardbreak();
             self.doc.word("| ");
-            // op = (op <name> <ty>)
+            // op = (op <name> <ty> (resource <idx>)?). The optional trailing `(resource N)` is the
+            // SEC-F1 resource-marker decl-metadata the parser LIFTED off the N-th param's `@resource`; on
+            // print we RE-INJECT `(@ resource …)` around that param into a temp type tree, then print via
+            // the normal op-type path (which renders the `@`-annotation as `@resource T`), so it
+            // round-trips. No resource sibling => print the type as-is.
             if let Some(o) = self.a.as_form(op, "op") {
                 self.expr(o[0], 0); // operation name
                 self.doc.word(" : ");
-                self.print_op_type(o[1]);
+                let resource_idx = o
+                    .get(2)
+                    .and_then(|&sib| self.a.as_form(sib, "resource"))
+                    .and_then(|r| r.first().copied())
+                    .and_then(|idx| self.a.as_int_usize(idx));
+                self.print_op_type_with_resource(o[1], resource_idx);
             }
         }
         self.doc.end();
@@ -2152,6 +2161,58 @@ impl<'a> Printer<'a> {
             return;
         }
         self.expr(ty, 0);
+    }
+
+    /// Print an effect-op type, re-injecting the SEC-F1 `@resource` marker before the param at
+    /// `resource_idx` (the position the parser LIFTED it from into the `(resource N)` sibling). With
+    /// `None` this is exactly [`print_op_type`]. With `Some(n)`, walk the curried-arrow operand spine
+    /// (mirroring [`Self::arrow`]) and prefix `@resource ` on the n-th PARAM operand, so the surface
+    /// round-trips (`write : @resource Bytes -> Bytes -> Unit`). A `resource_idx` past the param count
+    /// (shouldn't happen — the parser only records a real param index) degrades to the plain form.
+    fn print_op_type_with_resource(&mut self, ty: StructId, resource_idx: Option<usize>) {
+        let Some(n) = resource_idx else {
+            return self.print_op_type(ty);
+        };
+        // Collect the flat operand spine `[P0, P1, …, R]` — the same walk `arrow()` does. A leading-arrow
+        // nullary op-type `(-> R)` has no params, so the marker can't apply; fall back.
+        if self.a.as_form(ty, "->").map(|a| a.len()) == Some(1) {
+            return self.print_op_type(ty);
+        }
+        let mut operands = Vec::new();
+        let mut cur = ty;
+        loop {
+            if let Struct::List(items) = self.a.get(cur)
+                && items.len() == 3
+                && self.head_name(items[0]).as_deref() == Some("->")
+            {
+                operands.push(items[1]);
+                cur = items[2];
+                continue;
+            }
+            break;
+        }
+        operands.push(cur); // the result
+        // If the recorded index isn't a param position, degrade to the plain type.
+        if n + 1 >= operands.len() {
+            return self.print_op_type(ty);
+        }
+        self.doc.ibox(INDENT);
+        for (i, &operand) in operands.iter().enumerate() {
+            if i > 0 {
+                self.doc.space();
+                self.doc.word("-> ");
+            }
+            if i == n {
+                self.doc.word("@resource ");
+            }
+            let operand_prec = if i + 1 < operands.len() {
+                PREC_ARROW + 1
+            } else {
+                PREC_ARROW
+            };
+            self.expr(operand, operand_prec);
+        }
+        self.doc.end();
     }
 
     /// Render a first-class embedded-syntax region `(embedded #<grammar> <subtree>)` as its SURFACE
@@ -2357,7 +2418,14 @@ impl<'a> Printer<'a> {
         let ops = &args[docs_end..];
         !ops.is_empty()
             && ops.iter().all(|&op| match self.a.as_form(op, "op") {
-                Some(o) => o.len() == 2 && self.head_name(o[0]).is_some(),
+                // `(op <name> <ty>)` OR `(op <name> <ty> (resource N))` — the optional trailing
+                // `(resource N)` is the SEC-F1 marker the op printer resugars as `@resource` (it must not
+                // knock the effect decl back to the generic call form).
+                Some(o) => {
+                    self.head_name(o[0]).is_some()
+                        && (o.len() == 2
+                            || (o.len() == 3 && self.a.as_form(o[2], "resource").is_some()))
+                }
                 None => false,
             })
     }
@@ -4634,6 +4702,31 @@ mod tests {
                 .collect();
             format!("(effect E {})", ops.join(" "))
         }
+    }
+
+    #[test]
+    fn effect_op_resource_marker_round_trips_through_the_ml_surface() {
+        // SEC-F1 `@resource` marker (concierge-ruled, v-agent-harness coord 2026-08-13). The parser LIFTS
+        // `@resource T` off the marked param into a `(resource N)` decl-sibling (hash-clean); the printer
+        // RE-INJECTS `@resource ` before the N-th param, so the surface round-trips ML->ML. Cover the
+        // marker on the 1st + 2nd param, and confirm a no-marker effect is unchanged (regression).
+        let printed =
+            assert_roundtrip("effect Fs = | write : @resource Bytes -> Bytes -> Unit", 80);
+        assert!(
+            printed.contains("write : @resource Bytes -> Bytes -> Unit"),
+            "1st-param resource marker round-trips: {printed}"
+        );
+        let p2 = assert_roundtrip("effect Fs = | store : Bytes -> @resource Bytes -> Unit", 80);
+        assert!(
+            p2.contains("store : Bytes -> @resource Bytes -> Unit"),
+            "2nd-param resource marker round-trips: {p2}"
+        );
+        // A no-marker effect op is unaffected (no spurious @resource).
+        let plain = assert_roundtrip("effect Fs = | read : Bytes -> Bytes", 80);
+        assert!(
+            !plain.contains("@resource"),
+            "no marker => no @resource: {plain}"
+        );
     }
 
     #[test]

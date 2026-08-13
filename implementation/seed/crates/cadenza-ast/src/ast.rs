@@ -608,6 +608,18 @@ impl Arenas {
         }
     }
 
+    /// The value of an `Int` leaf as a `usize`, if `id` is an atom of a non-negative `Int` that fits.
+    /// Used to read small index metadata (e.g. the SEC-F1 `(resource N)` param index) off the tree.
+    pub fn as_int_usize(&self, id: StructId) -> Option<usize> {
+        match self.get(id) {
+            Struct::Atom(l) => match self.leaf(*l) {
+                Leaf::Int { value, .. } => usize::try_from(value).ok(),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// The head name of a `List` occurrence, if its first child is an `Atom(Name)`.
     pub fn head_name(&self, id: StructId) -> Option<&str> {
         match self.get(id) {

@@ -2547,8 +2547,97 @@ impl<'a> Parser<'a> {
         } else {
             self.type_ref()
         };
+        // SEC-F1 RESOURCE MARKER (concierge-ruled, coordinated w/ v-agent-harness 2026-08-13): a param
+        // written `@resource T` designates the SEC-F1 resource arg the kernel/executor extracts for
+        // routing + Cedar authz. `@resource T` parses as an `(@ resource T)`-wrapped param in the op-type
+        // arrow spine; here we LIFT it OUT — unwrap the wrapped param to its bare type (so the op TYPE the
+        // schema-hash is built from carries NO marker → hash-invariant BY CONSTRUCTION) and record its
+        // POSITION as a decl-level `(resource <index>)` sibling on the op node. The kernel reads that
+        // sibling off the descriptor; rcdzc reify stays capability-blind. At most one resource per op.
         let span = start.merge(self.prev_span());
-        self.list(vec![op_head, op_name, ty], span)
+        let (ty, resource_idx) = self.lift_resource_marker(ty, span);
+        let mut items = vec![op_head, op_name, ty];
+        if let Some(idx) = resource_idx {
+            let resource_head = self.name("resource", span);
+            let idx_atom = self.atom(
+                Leaf::Int {
+                    value: num_bigint::BigInt::from(idx),
+                    radix: crate::ast::Radix::Dec,
+                },
+                span,
+            );
+            items.push(self.list(vec![resource_head, idx_atom], span));
+        }
+        self.list(items, span)
+    }
+
+    /// Scan an effect-op TYPE (a curried arrow `(-> P0 (-> P1 … R))`, or a bare non-arrow) for a param
+    /// written `@resource T` (an `(@ resource T)` wrapper). If found, return a marker-FREE copy of the
+    /// type (the wrapped param unwrapped to its bare `T`) plus the resource param's 0-based POSITION;
+    /// otherwise return the type unchanged and `None`. Only the FIRST `@resource` is honored (at most one
+    /// resource per op); a `@resource` on the result position is ignored (a result is not an arg). Keeping
+    /// the marker OUT of the returned op-type is what makes the schema-hash resource-marker-invariant.
+    fn lift_resource_marker(&mut self, ty: StructId, span: Span) -> (StructId, Option<usize>) {
+        // Collect the curried-arrow params (left of each `->`) + the final result, so we can rebuild.
+        let mut params: Vec<StructId> = Vec::new();
+        let mut cur = ty;
+        loop {
+            // An arrow node is `(-> P rest)` (2-param) or the nullary-elided `(-> R)` (1-param = result).
+            let arrow = match self.builder.get(cur) {
+                crate::ast::Struct::List(kids)
+                    if kids.len() == 3 && self.builder.as_name(kids[0]) == Some("->") =>
+                {
+                    Some((kids[1], kids[2]))
+                }
+                _ => None,
+            };
+            match arrow {
+                Some((p, rest)) => {
+                    params.push(p);
+                    cur = rest;
+                }
+                None => break, // `cur` is the result (a bare type or a nullary `(-> R)` handled by caller)
+            }
+        }
+        let result = cur;
+        // Find the first param that is `(@ resource T)`; unwrap it, record its index.
+        let mut resource_idx = None;
+        let mut new_params = Vec::with_capacity(params.len());
+        for (i, &p) in params.iter().enumerate() {
+            if resource_idx.is_none()
+                && let Some(inner) = self.unwrap_resource_param(p)
+            {
+                resource_idx = Some(i);
+                new_params.push(inner);
+            } else {
+                new_params.push(p);
+            }
+        }
+        if resource_idx.is_none() {
+            return (ty, None); // no marker — return the original type untouched
+        }
+        // Rebuild the curried arrow `(-> P0 (-> P1 … result))` from the marker-free params.
+        let mut rebuilt = result;
+        for &p in new_params.iter().rev() {
+            let arrow_head = self.name("->", span);
+            rebuilt = self.list(vec![arrow_head, p, rebuilt], span);
+        }
+        (rebuilt, resource_idx)
+    }
+
+    /// If `p` is an `(@ resource T)` param-marker wrapper, return the inner `T`; else `None`. The marker
+    /// is the general `@`-annotation form `(@ <name> <form>)` with the name `resource`.
+    fn unwrap_resource_param(&self, p: StructId) -> Option<StructId> {
+        match self.builder.get(p) {
+            crate::ast::Struct::List(kids)
+                if kids.len() == 3
+                    && self.builder.as_name(kids[0]) == Some("@")
+                    && self.builder.as_name(kids[1]) == Some("resource") =>
+            {
+                Some(kids[2])
+            }
+            _ => None,
+        }
     }
 
     /// `world Name = | import Iface = | member : Sig … | export Iface = … `  ->
@@ -4815,6 +4904,48 @@ mod tests {
             panic!()
         };
         assert_eq!(a.head_name(arm0[0]), Some("guard"));
+    }
+
+    #[test]
+    fn effect_op_resource_marker_lifts_to_a_hash_clean_sibling() {
+        // SEC-F1 resource marker (concierge-ruled, v-agent-harness coord 2026-08-13): `@resource T` on an
+        // op param designates the resource arg. It must lift OUT of the op TYPE (so the schema-hash is
+        // marker-invariant) into a decl-level `(resource <idx>)` sibling on the op. Here: `write` marks
+        // its FIRST param (index 0) as the resource; the op TYPE is marker-FREE (bare Bytes, NOT
+        // `(@ resource Bytes)`), and a `(resource 0)` sibling records the position.
+        let a = parse_ok("effect Fs = | write : @resource Bytes -> Bytes -> Unit");
+        let op = a
+            .as_form(a.as_form(a.root, "effect").unwrap()[1], "op")
+            .unwrap();
+        assert_eq!(a.as_name(op[0]), Some("write"));
+        // op[1] = the op TYPE; op[2] = the (resource 0) sibling.
+        let ty_sexp = crate::sexpr::print_from(&a, op[1]);
+        assert!(
+            ty_sexp.contains("(-> Bytes (-> Bytes Unit))") && !ty_sexp.contains("resource"),
+            "op type is marker-FREE (hash-clean): {ty_sexp}"
+        );
+        assert_eq!(
+            crate::sexpr::print_from(&a, op[2]),
+            "(resource 0)",
+            "resource marks param index 0"
+        );
+
+        // The SECOND param can be the resource (index 1); a no-marker op has NO resource sibling.
+        let b = parse_ok("effect Fs = | write : Bytes -> @resource Bytes -> Unit");
+        let opb = b
+            .as_form(b.as_form(b.root, "effect").unwrap()[1], "op")
+            .unwrap();
+        assert_eq!(crate::sexpr::print_from(&b, opb[2]), "(resource 1)");
+
+        let c = parse_ok("effect Fs = | read : Bytes -> Bytes");
+        let opc = c
+            .as_form(c.as_form(c.root, "effect").unwrap()[1], "op")
+            .unwrap();
+        assert_eq!(
+            opc.len(),
+            2,
+            "no resource marker => no (resource N) sibling (name + type only)"
+        );
     }
 
     #[test]
