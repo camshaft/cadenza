@@ -129,7 +129,7 @@ metrics-export-prometheus = ["metrics-export", "tokio/net", "tokio/io-util"]
 # types`, and adds `aws-sdk-s3`. Credentials come from the environment via the SDK default provider (same
 # contract as the Bedrock transport). The trait stays the seam: a consumer holds `Box<dyn BlobStore>` and never
 # sees an AWS type — the daemon just selects the S3 backend by config when this feature is compiled.
-live-aws-storage = ["dep:aws-config", "dep:aws-smithy-types", "dep:aws-sdk-s3", "dep:aws-sdk-dynamodb"]
+live-aws-storage = ["dep:aws-config", "dep:aws-smithy-types", "dep:aws-sdk-s3", "dep:aws-sdk-dynamodb", "dep:zstd"]
 
 [dependencies]
 # The kernel whose Executor/Authorize traits + effect/event types we implement. Path dep across the
@@ -248,6 +248,12 @@ aws-sdk-s3 = { version = "1", default-features = false, features = ["rustls", "d
 # dynamodb tree). Same `default-features = false` + rustls / default-https-client / rt-tokio set as the other
 # aws-sdk crates. Credentials from the SDK default provider chain (env/profile/IMDS) via the shared aws-config.
 aws-sdk-dynamodb = { version = "1", default-features = false, features = ["rustls", "default-https-client", "rt-tokio"], optional = true }
+# zstd — the compression codec for GAP-4 D2 cold-log compression (compress DynamoLogSink event bodies on
+# append, decompress on read). HOST-side only (the kernel stays codec-free per the concierge Option-B ruling),
+# behind `live-aws-storage` (the dynamo log is the D2 backend). OPTIONAL. The crate vendors libzstd via zstd-sys
+# (a bundled C build) — the cdz-agent-host nix derivation already carries the full stdenv+cmake+cc (for
+# aws-lc-sys), so the native build resolves offline (v-nix confirmed; flate2 is the pure-Rust fallback if not).
+zstd = { version = "0.13", optional = true }
 # aws-sdk-cloudwatch — the CloudWatch `PutMetricData` client behind `metrics-export-cloudwatch` (the AWS-native
 # metrics export backend, I3). OPTIONAL (default + a plain `metrics-export` build compile no cloudwatch tree).
 # Same `default-features = false` + rustls / default-https-client / rt-tokio enabled set as the other aws-sdk

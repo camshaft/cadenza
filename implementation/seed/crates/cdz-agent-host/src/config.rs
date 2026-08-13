@@ -108,6 +108,13 @@ pub enum LogConfig {
         table: String,
         #[serde(default)]
         offload_threshold: Option<usize>,
+        /// `compress_threshold` (GAP-4 D2, optional): compress an event body larger than this many bytes with
+        /// zstd before storing it in the Dynamo item (a small `z` marker attribute records that the body is
+        /// compressed; a read decompresses transparently), shrinking Dynamo storage for cold logs. Composes
+        /// with `offload_threshold` (offload runs first; a small `(blob-ptr)` frame is left uncompressed by the
+        /// threshold, a larger inline body compresses). Absent = no compression (bodies stored raw).
+        #[serde(default)]
+        compress_threshold: Option<usize>,
     },
 }
 
@@ -1221,6 +1228,7 @@ mod tests {
             LogConfig::Dynamo {
                 table: "cdz-agent-log".into(),
                 offload_threshold: None,
+                compress_threshold: None,
             }
         );
         assert_eq!(
@@ -1320,15 +1328,16 @@ mod tests {
     }
 
     #[test]
-    fn a_dynamo_log_backend_parses_its_offload_threshold() {
-        // GAP-4 D1 dynamo: the Dynamo backend carries the SAME optional snake_case `offload_threshold` key as
-        // the File backend (pins the wire name the operator writes in [log] for Dynamo item-body offload).
+    fn a_dynamo_log_backend_parses_its_offload_and_compress_thresholds() {
+        // GAP-4 D1 offload_threshold + GAP-4 D2 compress_threshold: both optional snake_case keys parse on the
+        // Dynamo backend (pins the wire names the operator writes in [log] for item-body offload + compression).
         let cfg = DaemonConfig::from_toml_str(
             r#"
             [log]
             backend = "dynamo"
             table = "cdz-agent-log"
             offload_threshold = 300000
+            compress_threshold = 8192
             "#,
         )
         .unwrap();
@@ -1337,6 +1346,7 @@ mod tests {
             LogConfig::Dynamo {
                 table: "cdz-agent-log".into(),
                 offload_threshold: Some(300_000),
+                compress_threshold: Some(8192),
             }
         );
     }

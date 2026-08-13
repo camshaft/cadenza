@@ -207,11 +207,17 @@ async fn main() -> std::process::ExitCode {
             LogConfig::Dynamo {
                 table,
                 offload_threshold,
+                compress_threshold,
             } => {
                 let builder = cdz_agent_host::DynamoLogSinkBuilder::new(table.clone()).await;
                 let builder = match (offload_threshold, blob_offload_source.clone()) {
                     (Some(threshold), Some(source)) => builder.with_offload(source, *threshold),
                     _ => builder,
+                };
+                // GAP-4 D2: enable item-body compression when [log].compress_threshold is set.
+                let builder = match compress_threshold {
+                    Some(threshold) => builder.with_compression(*threshold),
+                    None => builder,
                 };
                 Some(Box::new(builder))
             }
@@ -242,11 +248,17 @@ async fn main() -> std::process::ExitCode {
             LogConfig::Dynamo {
                 table,
                 offload_threshold,
+                compress_threshold,
             } => {
                 let builder = cdz_agent_host::DynamoLogSinkBuilder::new(table.clone()).await;
                 let builder = match (offload_threshold, blob_offload_source.clone()) {
                     (Some(threshold), Some(source)) => builder.with_offload(source, *threshold),
                     _ => builder,
+                };
+                // GAP-4 D2: the recovery reader decompresses what the append side compressed (same threshold).
+                let builder = match compress_threshold {
+                    Some(threshold) => builder.with_compression(*threshold),
+                    None => builder,
                 };
                 Some(Box::new(builder))
             }
@@ -470,7 +482,6 @@ async fn main() -> std::process::ExitCode {
             (session_registry.as_ref(), recovery_log_reader.as_ref())
         {
             use cdz_agent_host::SessionId;
-            use cdz_kernel::hash::Hash;
             match registry.list_all().await {
                 Ok(records) => {
                     let mut recovered_count = 0usize;

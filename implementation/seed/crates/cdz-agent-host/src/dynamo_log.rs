@@ -42,6 +42,9 @@ use std::io;
 const ATTR_SESSION: &str = "session_id";
 const ATTR_SEQ: &str = "seq";
 const ATTR_EVENT: &str = "event";
+/// GAP-4 D2 marker (present + `N=1` only when the `event` bytes are zstd-compressed). Absent = the body is
+/// stored raw. Self-describing per item so a read knows whether to decompress without external config.
+const ATTR_COMPRESSED: &str = "z";
 
 /// Decode a session's stored event blobs (already read in ascending `seq` order) into a kernel
 /// [`Recovered`] — the pure, backend-agnostic core of the Dynamo recovery-read (I4b slice 1). Kept
@@ -102,6 +105,13 @@ pub struct DynamoLogSink {
     /// owns its handle (`append` + `maybe_offload` are `&mut self`/`&mut blob`); the builder opens a fresh one
     /// per session over the SAME `[blob]` root — one physical CAS, matching the File-backend D1 wiring.
     offload: Option<(Box<dyn BlobStore>, usize)>,
+    /// GAP-4 D2 log-body COMPRESSION (opt-in): when `Some(threshold)`, the bytes that would be stored in the
+    /// `event` attribute (AFTER any offload) are zstd-compressed when larger than `threshold`, and the
+    /// [`ATTR_COMPRESSED`] marker is set; a read decompresses transparently. `None` = bodies stored raw.
+    /// Composes with `offload`: append order is encode -> maybe_offload -> maybe_compress -> put; read order is
+    /// decompress -> rehydrate -> decode (so a compressed inline body shrinks Dynamo storage, while an
+    /// offloaded body's tiny `(blob-ptr)` frame stays under the threshold and is left raw).
+    compress_threshold: Option<usize>,
 }
 
 impl DynamoLogSink {
@@ -118,6 +128,7 @@ impl DynamoLogSink {
             table: table.into(),
             session_id,
             offload: None,
+            compress_threshold: None,
         }
     }
 
@@ -127,6 +138,41 @@ impl DynamoLogSink {
     pub fn with_offload(mut self, blob: Box<dyn BlobStore>, threshold: usize) -> Self {
         self.offload = Some((blob, threshold));
         self
+    }
+
+    /// Enable GAP-4 D2 log-body compression on this sink: the bytes stored in the `event` attribute (after any
+    /// offload) are zstd-compressed when larger than `threshold`, with the [`ATTR_COMPRESSED`] marker set; a
+    /// read decompresses transparently.
+    pub fn with_compression(mut self, threshold: usize) -> Self {
+        self.compress_threshold = Some(threshold);
+        self
+    }
+
+    /// GAP-4 D2 append side: the bytes to STORE for `body` + whether they are compressed. When compression is
+    /// configured AND `body` exceeds the threshold, zstd-compress it (returns `(compressed, true)`); otherwise
+    /// store it raw (`(body, false)`). A sub-threshold body — including an offloaded `(blob-ptr)` frame, which
+    /// is tiny — stays raw, so compression never bloats a small item.
+    fn maybe_compress(&self, body: Vec<u8>) -> io::Result<(Vec<u8>, bool)> {
+        match self.compress_threshold {
+            Some(threshold) if body.len() > threshold => {
+                // Level 0 selects zstd's default level (currently 3) — a good ratio/speed balance for a
+                // durable-store codec.
+                let compressed = zstd::encode_all(body.as_slice(), 0)?;
+                Ok((compressed, true))
+            }
+            _ => Ok((body, false)),
+        }
+    }
+
+    /// GAP-4 D2 read side (the DUAL of [`maybe_compress`]): the real stored bytes for `stored`, zstd-decoded
+    /// when the item's [`ATTR_COMPRESSED`] marker said it was compressed, else `stored` unchanged. Runs BEFORE
+    /// [`rehydrate_body`] on the read path (append compressed AFTER offloading, so read decompresses first).
+    fn maybe_decompress(stored: Vec<u8>, compressed: bool) -> io::Result<Vec<u8>> {
+        if compressed {
+            zstd::decode_all(stored.as_slice())
+        } else {
+            Ok(stored)
+        }
     }
 
     /// The REAL event body for the bytes `stored` in a Dynamo item — [`rehydrate`]d from the blob CAS when
@@ -183,8 +229,11 @@ impl DynamoLogSink {
                         ));
                     }
                 };
-                // GAP-4 D1: rehydrate an offloaded body (a (blob-ptr) frame derefs from the CAS) before decode;
-                // an inline body passes through unchanged. A pointer whose blob is absent is a hard io error.
+                // GAP-4 D2: decompress FIRST (the ATTR_COMPRESSED marker says whether the body was zstd'd),
+                // then GAP-4 D1: rehydrate an offloaded (blob-ptr) frame from the CAS — read reverses the
+                // append order (encode->offload->compress). An absent offloaded blob is a hard io error.
+                let compressed = item.get(ATTR_COMPRESSED).is_some();
+                let stored = Self::maybe_decompress(stored, compressed)?;
                 let blob = self.rehydrate_body(stored).await?;
                 let event = event_ast::decode(&blob).map_err(|e| {
                     io::Error::new(
@@ -245,10 +294,13 @@ impl DynamoLogSink {
             for item in resp.items() {
                 match item.get(ATTR_EVENT) {
                     Some(aws_sdk_dynamodb::types::AttributeValue::B(b)) => {
-                        // GAP-4 D1: rehydrate an offloaded body from the CAS before the recovery adapter sees
-                        // it (so the good-prefix/corrupt discrimination runs on the REAL event bytes). A
-                        // pointer whose blob is absent is a hard io error (data loss), NOT a decode-corruption.
-                        let real = self.rehydrate_body(b.as_ref().to_vec()).await?;
+                        // GAP-4 D2 decompress FIRST (per the ATTR_COMPRESSED marker), then GAP-4 D1 rehydrate an
+                        // offloaded body from the CAS before the recovery adapter sees it (so the
+                        // good-prefix/corrupt discrimination runs on the REAL event bytes). An absent offloaded
+                        // blob is a hard io error (data loss), NOT a decode-corruption.
+                        let compressed = item.get(ATTR_COMPRESSED).is_some();
+                        let decompressed = Self::maybe_decompress(b.as_ref().to_vec(), compressed)?;
+                        let real = self.rehydrate_body(decompressed).await?;
                         blobs.push(real);
                     }
                     // A missing/mis-typed event attribute is a schema break, not a benign decode failure —
@@ -288,7 +340,12 @@ impl LogSink for DynamoLogSink {
             Some((blob, threshold)) => maybe_offload(&body, blob.as_mut(), *threshold).await?,
             None => body,
         };
-        self.client
+        // GAP-4 D2: compress the stored bytes (post-offload) when over the compress threshold; the
+        // ATTR_COMPRESSED marker records it so a read decompresses. A sub-threshold body (incl. a tiny
+        // offloaded blob-ptr frame) stays raw.
+        let (stored, compressed) = self.maybe_compress(stored)?;
+        let mut req = self
+            .client
             .put_item()
             .table_name(&self.table)
             .item(
@@ -306,8 +363,14 @@ impl LogSink for DynamoLogSink {
                 aws_sdk_dynamodb::types::AttributeValue::B(
                     aws_sdk_dynamodb::primitives::Blob::new(stored),
                 ),
-            )
-            .send()
+            );
+        if compressed {
+            req = req.item(
+                ATTR_COMPRESSED,
+                aws_sdk_dynamodb::types::AttributeValue::N("1".to_string()),
+            );
+        }
+        req.send()
             .await
             .map(|_| ())
             // §16c-S1: an append failure means the event did NOT reach stable storage → Err, and the caller
@@ -336,6 +399,9 @@ pub struct DynamoLogSinkBuilder {
     /// `build`/`recover` (the sink owns it; `append`/`maybe_offload` are `&mut`), matching the File-backend D1
     /// wiring. `None` = bodies stay inline. Dir OR S3 — the prod pairing is a Dynamo log + an S3 offload store.
     offload: Option<(crate::factory::OffloadSource, usize)>,
+    /// GAP-4 D2 log-body compression (opt-in): when `Some(threshold)`, each per-session sink compresses event
+    /// bodies over `threshold` bytes (after any offload) with zstd. `None` = bodies stored raw.
+    compress_threshold: Option<usize>,
 }
 
 impl DynamoLogSinkBuilder {
@@ -348,6 +414,7 @@ impl DynamoLogSinkBuilder {
             config,
             table: table.into(),
             offload: None,
+            compress_threshold: None,
         }
     }
 
@@ -358,7 +425,15 @@ impl DynamoLogSinkBuilder {
             config,
             table: table.into(),
             offload: None,
+            compress_threshold: None,
         }
+    }
+
+    /// Enable GAP-4 D2 log-body compression for every sink this builder makes: bodies over `threshold` bytes
+    /// compress with zstd (after any offload). The daemon calls this when `[log].compress_threshold` is set.
+    pub fn with_compression(mut self, threshold: usize) -> Self {
+        self.compress_threshold = Some(threshold);
+        self
     }
 
     /// Enable GAP-4 D1 log-body offload for every sink this builder makes: bodies over `threshold` bytes
@@ -384,6 +459,12 @@ impl crate::factory::LogSinkBuilder for DynamoLogSinkBuilder {
             Some((source, threshold)) => sink.with_offload(source.materialize()?, *threshold),
             None => sink,
         };
+        // GAP-4 D2: attach body-compression when configured (composes with offload; append compresses AFTER
+        // the offload step, read decompresses BEFORE rehydrate).
+        let sink = match self.compress_threshold {
+            Some(threshold) => sink.with_compression(threshold),
+            None => sink,
+        };
         Ok(Some(Box::new(sink)))
     }
 
@@ -402,6 +483,12 @@ impl crate::factory::LogSinkBuilder for DynamoLogSinkBuilder {
         // handle over the shared `[blob]` CAS; get-only on the read path, but the sink field holds a Box).
         let sink = match &self.offload {
             Some((source, threshold)) => sink.with_offload(source.materialize()?, *threshold),
+            None => sink,
+        };
+        // GAP-4 D2: the recovery reader must decompress the bodies the append side compressed (same threshold
+        // config; the per-item ATTR_COMPRESSED marker drives the actual decompress).
+        let sink = match self.compress_threshold {
+            Some(threshold) => sink.with_compression(threshold),
             None => sink,
         };
         sink.read_recovered().await.map(Some).map_err(|e| {
@@ -582,5 +669,49 @@ mod tests {
             .with_offload(Box::new(MemBlobStore::new()), 8);
         let err = sink.rehydrate_body(ptr).await.unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn compress_round_trips_over_threshold_and_leaves_sub_threshold_raw() {
+        // GAP-4 D2 compress seam (hermetic, no live DynamoDB): maybe_compress zstd-compresses an over-threshold
+        // body (marked compressed) and maybe_decompress recovers it BYTE-IDENTICAL; a sub-threshold body stays
+        // raw (unmarked, unchanged) so compression never bloats a small item.
+        let sink =
+            DynamoLogSink::from_conf(&test_cfg(), "cdz-log", Hash::of(b"w")).with_compression(16);
+
+        let big = vec![7u8; 4096]; // > 16 and highly compressible
+        let (stored_big, c_big) = sink.maybe_compress(big.clone()).unwrap();
+        assert!(c_big, "an over-threshold body is compressed (marked)");
+        assert!(
+            stored_big.len() < big.len(),
+            "zstd shrank the compressible body ({} -> {})",
+            big.len(),
+            stored_big.len()
+        );
+        assert_eq!(
+            DynamoLogSink::maybe_decompress(stored_big, c_big).unwrap(),
+            big,
+            "decompress recovers the body byte-identical"
+        );
+
+        let small = b"tiny".to_vec(); // <= 16
+        let (stored_small, c_small) = sink.maybe_compress(small.clone()).unwrap();
+        assert!(!c_small, "a sub-threshold body stays raw (unmarked)");
+        assert_eq!(stored_small, small, "the raw body is unchanged");
+        assert_eq!(
+            DynamoLogSink::maybe_decompress(stored_small, c_small).unwrap(),
+            small,
+            "an unmarked body passes through decompress unchanged"
+        );
+    }
+
+    #[test]
+    fn no_compression_config_leaves_bodies_raw() {
+        // Without compression configured, maybe_compress never marks/compresses (pre-D2 behavior).
+        let sink = DynamoLogSink::from_conf(&test_cfg(), "cdz-log", Hash::of(b"w"));
+        let body = vec![9u8; 4096];
+        let (stored, compressed) = sink.maybe_compress(body.clone()).unwrap();
+        assert!(!compressed, "no compression config → never marked");
+        assert_eq!(stored, body, "the body is stored raw");
     }
 }
