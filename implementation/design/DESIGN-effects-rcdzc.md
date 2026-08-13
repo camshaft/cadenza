@@ -204,6 +204,21 @@ degenerate zero-cost case (`Ty::Unit` occupies no slot). No continuation object,
 evidence vector. **`select` sees only plain `Mir`.** Covers corpus Groups 1–3 (11 cases) once §4.3's inline
 trigger lands.
 
+> **Known limitation — handler-dispatch-count ceiling (Finding #24, deferred).** Because the threaded state
+> is spliced as an *explicit value* (above), a handler whose arm builds its next-state as a **compound of the
+> prior state** (e.g. a `Map`-state handler resuming `(Map.insert prior k v)`) grows that state EXPRESSION by
+> one arm per dispatch, and the fold's `deep_fresh_copy` of the threaded state re-materializes the whole
+> accumulated expression each dispatch → the emitted Core is **O(kᴺ)** in the number `N` of sequential
+> dispatches to one handler. This is a compile-time SIZE blow-up, not a miscompile: all backends emit the
+> correct value, and wasm tolerates the size, but a deep async **rust** emit can exceed rustc's recursion
+> limit (SIGSEGV) at large `N`. In practice only a handler driven through **many** sequential same-effect
+> performs with a compound accumulating state hits this; a bounded/typical reducer is fine. The root is the
+> per-dispatch copy of the shared state subtree (`effects.rs` perform-arm reify); a within-fold fix is
+> exhausted (the substituted state loses node-identity through `beta_reduce`'s structural-copy paths, so it
+> cannot be shared back at the reify site), so the durable fix is a **Core-level threaded-state primitive**
+> (an explicit shared binding the fold emits and lowering understands, keeping the chain linear) — a funded
+> feature to be built when a real reducer actually reaches this ceiling, not to satisfy the synthetic probe.
+
 ### 4.2 Abortive → non-local exit carrying a value (E4; *you asked for this*)
 
 Arm **never resumes**: its body's value *becomes the handle's value*, discarding the rest of the
