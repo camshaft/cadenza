@@ -19,7 +19,8 @@
       (effect kv (op put (-> Bytes Bytes Unit)))
       (type ReplyPayload (Inline Bytes) (Blob Bytes))
       (type Outcome (Ok ReplyPayload) (Err (Record (: message Bytes) (: retryable Bool))) (TimedOut))
-      (def (apply (: e (Record (: content-type (Record (: family String) (: version (UInt 32)))) (: payload (Option Bytes)) (: resumes (Option Bytes)) (: outcome (Option Outcome)))))
+      (type ChildOutcome (Success ReplyPayload) (Failure Bytes))
+      (def (apply (: e (Record (: content-type (Record (: family String) (: version (UInt 32)))) (: payload (Option Bytes)) (: resumes (Option Bytes)) (: outcome (Option Outcome)) (: child-completed (Option (Record (: child Bytes) (: outcome ChildOutcome)))))))
         (: (if (= (. (. e content-type) family) "effect-result")
              (host (kv)
                (do
