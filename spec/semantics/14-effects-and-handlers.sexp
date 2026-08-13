@@ -7789,3 +7789,29 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 16 Int64)))
 
+(case "a computed-index List.update then push across three dispatches emits valid wasm (ListUpdate index scratch width-partitioned)"
+  (doc    "regression guard for breaker finding-23 residual (case pfxH): a handler arm that updates the
+           threaded list at a COMPUTED index ((- (List.len pre) 1)) via List.update AND List.push-es to
+           the grown list, dispatched three times. Sibling of the finding-23 ListAt face: the ListAt
+           fix (d52544411) floated the ListAt index scratch, but Core::ListUpdate stashed its index in
+           idx_slot=high with NO width-partition guard, so a floor reset landing high onto a live i32
+           SumExpect-shell handle slot let the i64 index re-declare that local -> one wasm local two
+           widths -> validator expected i64 found i32 (wasm-only; rust/rust-async passed). Fixed by
+           v-effects width-partitioning the ListUpdate index scratch slot (f15cfb605, backend/wasm/select.rs,
+           like ListAt/Let/emit_checked_arith_to). Now valid + passes x3: main 3 = 123. A revert
+           reintroduces the invalid-component wasm reject, caught here.")
+  (input  (do
+            (effect S (op add (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S (list 7)
+                ((add (v) pre
+                  (let ((i (- (List.len pre) 1)))
+                    (let ((up (List.update pre i v)))
+                      (resume (List.len up) (List.push up v))))))
+                (let ((a (S.add n)))
+                  (let ((b (S.add 4)))
+                    (let ((c (S.add 9)))
+                      (+ (* 100 a) (+ (* 10 b) c)))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 123 Int64)))
+
