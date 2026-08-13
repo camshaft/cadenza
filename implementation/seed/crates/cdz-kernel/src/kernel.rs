@@ -2895,6 +2895,66 @@ mod status_snapshot_tests {
         );
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_recovered_closed_session_stays_closed_with_its_outcome_and_refuses_appends() {
+        // §6 replay-stability: a self-closed session must RECOVER from its durable log still closed, with its
+        // CloseOutcome reconstructed (the Closed event's replay-apply re-captures close_outcome), so the
+        // is_closed guards fire on the RECOVERED session too — a closed log is frozen across recovery, not
+        // just live. (Pins the recovery side of the terminal-tip guard.)
+        let mut exec = RecordingExecutor::new();
+        let mut s = Session::genesis(
+            Hash::of(b"recover-closed-v1"),
+            Hash::of(b"test-spawn-nonce"),
+        );
+        let captured = attach_recording_sink(&mut s);
+        s.deliver(
+            inbound(),
+            None,
+            &mut ClosingReducer,
+            &Authorizer::deny_all(),
+            &mut exec,
+        )
+        .await
+        .unwrap();
+        let expected = s.close_outcome().cloned().expect("self-closed live");
+
+        // Recover from the durable log (tail = Closed).
+        let mut replayed = Session::replay(replay_input(&captured), &mut ClosingReducer)
+            .await
+            .expect("replay");
+        assert!(
+            replayed.is_closed(),
+            "a recovered self-closed session is still closed"
+        );
+        assert_eq!(
+            replayed.close_outcome(),
+            Some(&expected),
+            "the CloseOutcome is reconstructed on recovery, not just live"
+        );
+        let count_after_recover = replayed.event_count();
+
+        // The is_closed guards fire on the RECOVERED session too — a further deliver is refused.
+        let mut exec2 = RecordingExecutor::new();
+        let refused = replayed
+            .deliver(
+                inbound(),
+                None,
+                &mut ClosingReducer,
+                &Authorizer::deny_all(),
+                &mut exec2,
+            )
+            .await;
+        assert!(
+            matches!(refused, Err(KernelError::FoldRefused)),
+            "a recovered closed session refuses further delivery"
+        );
+        assert_eq!(
+            replayed.event_count(),
+            count_after_recover,
+            "no event was appended past Closed on the recovered session"
+        );
+    }
+
     // A report-aware reducer (the fork-for-query summarize protocol, operator ruling (a)): on an ordinary
     // message it does work + publishes status; on the well-known `report` content-type it describes ITSELF
     // from LOCAL STATE (no model call — the operator's preferred path) by writing a summary to `public/`.
