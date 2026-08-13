@@ -796,6 +796,26 @@ pub fn family_effect_schema_hash_memo(family: &str) -> Option<crate::hash::Hash>
     MEMO.get(family).copied()
 }
 
+/// The schema-hash of ANY well-known effect, keyed UNIFORMLY by its FAMILY STRING — the single host-callable
+/// reflection a host executor (cdz-agent-host) uses to DECLARE its served schema-hash without knowing whether
+/// its family happens to be an [`crate::effect::EffectKind`] built-in or a non-kind family. This is the
+/// slice-B seam: an executor serving `"model"` or `"fs/read"` or `"store/set"` calls this once per served
+/// family and matches `req.schema_hash` against the result — it never branches on `EffectKind`, so the
+/// EffectKind-as-identity distinction the schema-hash-only removal is ELIMINATING does not leak into the host.
+///
+/// Resolves a built-in family via [`EffectKind::from_family`] → [`builtin_effect_schema_hash_memo`], else a
+/// non-kind family via [`family_effect_schema_hash_memo`]. `Some` for EVERY family a host executor serves (all
+/// 6 built-in families + the 22 declared non-kind families); `None` ONLY for a family with no declared schema —
+/// a register-by-string EXTENSION unknown to the kernel, or an inbound-only name (`ws/connect`) no executor
+/// dispatches — so a `None` can never strand a dispatch (an executor never serves a schemaless family).
+pub fn effect_family_schema_hash(family: &str) -> Option<crate::hash::Hash> {
+    use crate::effect::EffectKind;
+    match EffectKind::from_family(family) {
+        Some(k) => Some(builtin_effect_schema_hash_memo(&k)),
+        None => family_effect_schema_hash_memo(family),
+    }
+}
+
 /// Build the type-descriptor for `ty` INTO an existing arena `b`, returning the root node id — the
 /// node-emitting core [`type_to_ast`] wraps. Exposed `pub` so a caller assembling a LARGER AST can emit
 /// type nodes DIRECTLY into its own [`Builder`] (one shared arena, encoded ONCE) rather than nesting
@@ -3540,6 +3560,82 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn effect_family_schema_hash_is_uniform_by_family_string_over_builtins_and_non_kind_families() {
+        use crate::effect::{effect_ct, EffectKind};
+        // The uniform host-callable seam: keyed by FAMILY STRING, it returns the SAME hash whether the family
+        // is an EffectKind built-in or a non-kind family — so a host executor never branches on EffectKind.
+        // (1) each of the 6 built-in families resolves, and AGREES with builtin_effect_schema_hash(kind).
+        for k in [
+            EffectKind::Shell,
+            EffectKind::Http,
+            EffectKind::Model,
+            EffectKind::Now,
+            EffectKind::Timer,
+            EffectKind::Emit,
+        ] {
+            assert_eq!(
+                effect_family_schema_hash(k.family()),
+                Some(builtin_effect_schema_hash(&k)),
+                "built-in family {} resolves to its built-in hash",
+                k.family()
+            );
+        }
+        // (2) a non-kind family resolves, and AGREES with family_effect_schema_hash.
+        for fam in [
+            effect_ct::FS_READ,
+            effect_ct::STORE_SET,
+            effect_ct::EFFECT_REPLY,
+            effect_ct::CLOSE,
+            effect_ct::SIGNATURE,
+        ] {
+            assert_eq!(
+                effect_family_schema_hash(fam),
+                family_effect_schema_hash(fam),
+                "non-kind family {fam} resolves via the family path"
+            );
+            assert!(effect_family_schema_hash(fam).is_some());
+        }
+        // (3) EVERY served family — all 6 built-ins + all declared non-kind — is Some (no host executor is
+        // ever left without a served hash). An extension family unknown to the kernel is None.
+        for fam in [
+            effect_ct::SHELL,
+            effect_ct::HTTP,
+            effect_ct::MODEL,
+            effect_ct::NOW,
+            effect_ct::TIMER,
+            effect_ct::EMIT,
+            effect_ct::FS_READ,
+            effect_ct::FS_WRITE,
+            effect_ct::FS_GLOB,
+            effect_ct::BLOB_PUT,
+            effect_ct::BLOB_GET,
+            effect_ct::METRIC_PUBLISH,
+            effect_ct::WS_SEND,
+            effect_ct::WS_DIAL,
+            effect_ct::LIFECYCLE_SPAWN,
+            effect_ct::LIFECYCLE_SUSPEND,
+            effect_ct::LIFECYCLE_RESUME,
+            effect_ct::LIFECYCLE_TERMINATE,
+            effect_ct::CAPABILITIES,
+            effect_ct::SUMMARY,
+            effect_ct::SIGNATURE,
+            effect_ct::STORE_SET,
+            effect_ct::STORE_RESOLVE,
+            effect_ct::STORE_ADD,
+            effect_ct::STORE_REMOVE,
+            effect_ct::STORE_RESOLVE_ALL,
+            effect_ct::EFFECT_REPLY,
+            effect_ct::CLOSE,
+        ] {
+            assert!(
+                effect_family_schema_hash(fam).is_some(),
+                "served family {fam} must have a schema-hash"
+            );
+        }
+        assert_eq!(effect_family_schema_hash("custom/extension"), None);
     }
 
     #[test]
