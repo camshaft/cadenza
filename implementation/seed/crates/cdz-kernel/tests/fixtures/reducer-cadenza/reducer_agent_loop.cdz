@@ -88,12 +88,19 @@ type Outcome =
   | Err(Record(message: Bytes, retryable: Bool))
   | TimedOut
 
+// §6 V2 per-child supervision: a ChildCompleted event surfaces the completed child's terminal outcome as a
+// first-class typed field. Success|Failure (the CloseOutcome value-form), Success reusing ReplyPayload.
+type ChildOutcome =
+  | Success(ReplyPayload)
+  | Failure(Bytes)
+
 def apply(
   event: Record(
     content-type: Record(family: String, version: UInt(32)),
     payload: Option(Bytes),
     resumes: Option(Bytes),
     outcome: Option(Outcome),
+    child-completed: Option(Record(child: Bytes, outcome: ChildOutcome)),
   ),
 ) -> List(Record(
   kind: String,

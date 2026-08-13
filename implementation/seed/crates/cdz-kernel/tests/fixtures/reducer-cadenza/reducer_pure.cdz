@@ -41,12 +41,19 @@ type Outcome =
   | Err(Record(message: Bytes, retryable: Bool))
   | TimedOut
 
+// §6 V2 per-child supervision: a ChildCompleted event surfaces the completed child's terminal outcome as a
+// first-class typed field. Success|Failure (the CloseOutcome value-form), Success reusing ReplyPayload.
+type ChildOutcome =
+  | Success(ReplyPayload)
+  | Failure(Bytes)
+
 def apply(
   event: Record(
     content-type: Record(family: String, version: UInt(32)),
     payload: Option(Bytes),
     resumes: Option(Bytes),
     outcome: Option(Outcome),
+    child-completed: Option(Record(child: Bytes, outcome: ChildOutcome)),
   ),
 ) -> List(Record(
   kind: String,
@@ -75,6 +82,7 @@ def pure_payloaded_event_folds_to_one_emit() =
     payload = Some(String.to-bytes("hello")),
     resumes = None(),
     outcome = None(),
+    child-completed = None(),
   } in
   match List.at(apply(evt), 0) with
     | Some(eff) =>
@@ -92,6 +100,7 @@ def pure_payloadless_event_folds_to_nothing() =
     payload = None(),
     resumes = None(),
     outcome = None(),
+    child-completed = None(),
   } in
   if List.len(apply(evt)) == 0 then unit
   else trap("a payload-free event must request no effects")

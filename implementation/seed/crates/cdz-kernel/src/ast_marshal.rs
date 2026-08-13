@@ -1127,12 +1127,21 @@ fn read_err_reply_record(a: &Arenas, id: StructId) -> Result<(String, bool), Mar
 /// REUSES the reply-outcome payload discriminant so a blob-ref success payload survives (no-capability-drop);
 /// Failure carries the reason bytes. `child` is the completed child's 32-byte SessionId (= genesis hash).
 pub fn encode_child_completed(child: &crate::hash::Hash, outcome: &CloseOutcome) -> Vec<u8> {
+    val_to_ast(&child_completed_val(child, outcome))
+        .expect("the child-completed value is always marshallable")
+}
+
+/// The `child-completed` value-form NODE `(record (= child <bytes>) (= outcome <CloseOutcome>))` — the same
+/// record [`encode_child_completed`] marshals, exposed as a `Val` so [`build_event_document`] can surface it
+/// as a FIRST-CLASS TYPED Event field (the §6 V2 per-child seam) rather than an opaque payload a `.cdz` guest
+/// can't value-decode. `child` = the completed child's 32-byte genesis hash; `outcome` reuses the shared
+/// [`CloseOutcome`] value-form (Success(ReplyPayload)|Failure(bytes)).
+pub fn child_completed_val(child: &crate::hash::Hash, outcome: &CloseOutcome) -> Val {
     let bytes = |b: &[u8]| Val::List(b.iter().copied().map(Val::U8).collect());
-    let record = Val::Record(vec![
+    Val::Record(vec![
         ("child".into(), bytes(child.as_bytes())),
         ("outcome".into(), close_outcome_val(outcome)),
-    ]);
-    val_to_ast(&record).expect("the child-completed value is always marshallable")
+    ])
 }
 
 /// The shared `CloseOutcome` value-form node `(Success <ReplyPayload>) | (Failure <bytes>)` — the `outcome`
@@ -1716,13 +1725,15 @@ pub fn build_event_document(
     payload: Option<&[u8]>,
     resumes: Option<&[u8]>,
     outcome: Option<Val>,
+    child_completed: Option<Val>,
 ) -> Vec<u8> {
     // Build the Event as a wasmtime `Val` and marshal it via the SHARED canonical codec ([`val_to_ast`]),
     // so the bytes are the deterministic value-form the guest's `value-decode` (op 90) reconstructs the
     // Event from — byte-identical to what `value-encode` produces (record-type Phase B; the ad-hoc named
     // form is gone). The Event is `record { content-type: record { family: string, version: u32 },
     // payload: option<list<u8>>, resumes: option<list<u8>>, outcome: option<Ok(list<u8>) | Err{message:
-    // list<u8>, retryable: bool} | TimedOut> }`; the kebab field names match the guest reducer's Event type
+    // list<u8>, retryable: bool} | TimedOut>, child-completed: option<record { child: list<u8>, outcome:
+    // Success(<ReplyPayload>) | Failure(list<u8>) }> }`; the kebab field names match the guest reducer's Event type
     // (Cadenza allows kebab identifiers). `list<u8>` marshals to a `Bytes` leaf; an `option` present/absent
     // (incl. an empty `Some []`) distinguishes an empty payload from an absent one. Record fields are matched
     // by NAME on decode (order-independent), but the field SET must match the guest's Event type exactly.
@@ -1745,6 +1756,13 @@ pub fn build_event_document(
         ("payload".to_string(), opt_bytes(payload)),
         ("resumes".to_string(), opt_bytes(resumes)),
         ("outcome".to_string(), Val::Option(outcome.map(Box::new))),
+        // §6 V2 per-child: `Some(record{child,outcome})` ONLY for a ChildCompleted event, `None` otherwise —
+        // so a `.cdz` supervisor reads `(. e child-completed)` and gets the typed child id + CloseOutcome
+        // directly (child = the completed child's genesis hash), rather than value-decoding an opaque payload.
+        (
+            "child-completed".to_string(),
+            Val::Option(child_completed.map(Box::new)),
+        ),
     ]);
     // The Event's shape is fixed (record/option/list<u8>/string/u32 + the outcome sum — all marshallable),
     // so `val_to_ast` never errors here.
@@ -3897,6 +3915,8 @@ mod tests {
                     ("resumes".into(), opt(resumes)),
                     // These non-EffectResult docs carry no outcome — the field is present as (None unit).
                     ("outcome".into(), Val::Option(None)),
+                    // Non-ChildCompleted docs carry no child-completed record — present as (None unit).
+                    ("child-completed".into(), Val::Option(None)),
                 ])
             };
         assert_eq!(
@@ -3906,6 +3926,7 @@ mod tests {
                     version: 1
                 },
                 Some(b"hi"),
+                None,
                 None,
                 None
             ),
@@ -3922,12 +3943,14 @@ mod tests {
             Some(b""),
             None,
             None,
+            None,
         );
         let absent = build_event_document(
             ContentTypeRef {
                 family: "m",
                 version: 1,
             },
+            None,
             None,
             None,
             None,

@@ -1361,12 +1361,13 @@ impl ComponentReducer {
         payload: Option<Vec<u8>>,
         resumes: Option<Vec<u8>>,
     ) -> Result<(Vec<crate::reducer::Effect>, Kv), (ComponentError, Kv)> {
-        self.apply_with_outcome(kv, content_type, payload, resumes, None)
+        self.apply_with_outcome(kv, content_type, payload, resumes, None, None)
     }
 
-    /// Apply an event, additionally surfacing the discriminated effect-result `outcome` on the Event the
-    /// guest decodes (err-reply co-land). `outcome` is `Some(Ok|Err|TimedOut)` for an `EffectResult`, `None`
-    /// otherwise (see [`event_to_guest_inputs`] / [`effect_outcome_view`]).
+    /// Apply an event, additionally surfacing the discriminated effect-result `outcome` AND the §6 V2
+    /// `child_completed` record on the Event the guest decodes. `outcome` is `Some(Ok|Err|TimedOut)` for an
+    /// `EffectResult`; `child_completed` is `Some(record{child,outcome})` for a `ChildCompleted`; both `None`
+    /// otherwise (see [`event_to_guest_inputs`] / [`effect_outcome_view`] / [`crate::ast_marshal::child_completed_val`]).
     pub fn apply_with_outcome(
         &self,
         kv: Kv,
@@ -1374,6 +1375,7 @@ impl ComponentReducer {
         payload: Option<Vec<u8>>,
         resumes: Option<Vec<u8>>,
         outcome: Option<wasmtime::component::Val>,
+        child_completed: Option<wasmtime::component::Val>,
     ) -> Result<(Vec<crate::reducer::Effect>, Kv), (ComponentError, Kv)> {
         let mut store = wasmtime::Store::new(&self.engine, ReducerHost::new(kv));
         // Fuel metering is enabled on the engine (§22d). Instantiation isn't the DoS surface — a
@@ -1459,6 +1461,7 @@ impl ComponentReducer {
             payload.as_deref(),
             resumes.as_deref(),
             outcome,
+            child_completed,
         );
         let result = match instance
             .cadenza_agent_kernel_fold()
@@ -1570,7 +1573,8 @@ impl crate::reducer::Reducer for ComponentReducer {
         // cross-call state outside it), so fold stays a PURE FUNCTION of (event, kv) and replay reconstructs
         // identical kv. The `&mut self` here is unused by the guest path; it exists only to satisfy the norm.
         // Map the kernel event → the guest's (content_type, payload, resumes) inputs.
-        let (content_type, payload, resumes, outcome) = event_to_guest_inputs(&event.body);
+        let (content_type, payload, resumes, outcome, child_completed) =
+            event_to_guest_inputs(&event.body);
 
         // Move the session KV into the fold WITHOUT cloning (PR#1076 perf): `Kv` is a `BTreeMap`, so a
         // `clone()` would deep-copy the whole session state every event → O(KV size) per fold. `mem::take`
@@ -1580,7 +1584,14 @@ impl crate::reducer::Reducer for ComponentReducer {
         // that `apply` discarded), so a trapped/fuel-exhausted fold leaves the session KV ATOMICALLY
         // untouched (PR#1076/#1150 error-atomicity — now a real guarantee, not just a comment).
         let taken = std::mem::take(kv);
-        match self.apply_with_outcome(taken, content_type, payload, resumes, outcome) {
+        match self.apply_with_outcome(
+            taken,
+            content_type,
+            payload,
+            resumes,
+            outcome,
+            child_completed,
+        ) {
             Ok((effects, new_kv)) => {
                 *kv = new_kv;
                 // A `.cdz` guest self-completes by EMITTING a `control/close` effect (it can't return
@@ -1786,12 +1797,13 @@ impl AsyncComponentReducer {
         payload: Option<Vec<u8>>,
         resumes: Option<Vec<u8>>,
     ) -> Result<(Vec<crate::reducer::Effect>, Kv), (ComponentError, Kv)> {
-        self.apply_with_outcome(kv, content_type, payload, resumes, None)
+        self.apply_with_outcome(kv, content_type, payload, resumes, None, None)
             .await
     }
 
-    /// Async apply surfacing the discriminated effect-result `outcome` on the guest's Event (err-reply
-    /// co-land). `Some(Ok|Err|TimedOut)` for an `EffectResult`, `None` otherwise.
+    /// Async apply surfacing the discriminated effect-result `outcome` AND the §6 V2 `child_completed`
+    /// record on the guest's Event. `Some` respectively for an `EffectResult` / a `ChildCompleted`, `None`
+    /// otherwise.
     pub async fn apply_with_outcome(
         &self,
         kv: Kv,
@@ -1799,6 +1811,7 @@ impl AsyncComponentReducer {
         payload: Option<Vec<u8>>,
         resumes: Option<Vec<u8>>,
         outcome: Option<wasmtime::component::Val>,
+        child_completed: Option<wasmtime::component::Val>,
     ) -> Result<(Vec<crate::reducer::Effect>, Kv), (ComponentError, Kv)> {
         // Build the ONE event AST document the bytes boundary carries IN (DESIGN-binary-ast-abi §3a):
         // (content-type, payload, resumes) fold into a single value-form document. Both a Cadenza and a
@@ -1814,6 +1827,7 @@ impl AsyncComponentReducer {
             payload.as_deref(),
             resumes.as_deref(),
             outcome,
+            child_completed,
         );
         let mut store = wasmtime::Store::new(&self.engine, ReducerHost::new(kv));
         // Cooperative yield: the guest yields control every `fuel_yield_interval` fuel so a long fold
@@ -1944,10 +1958,18 @@ impl crate::reducer::Reducer for AsyncComponentReducer {
     /// state is `kv`, so fold is a pure function of (event, kv) and replay reconstructs identical kv. See
     /// [`ComponentReducer::fold`] for the full rationale; the `&mut self` is unused by the guest path.
     async fn fold(&mut self, event: &Event, kv: &mut Kv) -> crate::reducer::FoldOutput {
-        let (content_type, payload, resumes, outcome) = event_to_guest_inputs(&event.body);
+        let (content_type, payload, resumes, outcome, child_completed) =
+            event_to_guest_inputs(&event.body);
         let taken = std::mem::take(kv);
         match self
-            .apply_with_outcome(taken, content_type, payload, resumes, outcome)
+            .apply_with_outcome(
+                taken,
+                content_type,
+                payload,
+                resumes,
+                outcome,
+                child_completed,
+            )
             .await
         {
             Ok((effects, new_kv)) => {
@@ -2129,6 +2151,9 @@ type GuestFoldInputs = (
     Option<Vec<u8>>,
     Option<Vec<u8>>,
     Option<wasmtime::component::Val>,
+    // §6 V2: the typed child-completed record (child + CloseOutcome) surfaced on the Event's `child-completed`
+    // field — `Some` only for a ChildCompleted event, `None` otherwise.
+    Option<wasmtime::component::Val>,
 );
 
 fn event_to_guest_inputs(body: &EventBody) -> GuestFoldInputs {
@@ -2139,7 +2164,17 @@ fn event_to_guest_inputs(body: &EventBody) -> GuestFoldInputs {
         family: std::borrow::Cow::Owned(family.to_string()),
         version: 1,
     };
-    match body {
+    // §6 V2: the typed child-completed record (child + CloseOutcome) — `Some` ONLY for a ChildCompleted
+    // event, surfaced on the Event's `child-completed` field so a `.cdz` supervisor reads child + outcome
+    // directly. Computed alongside the content-type/payload below (which keep the opaque form for the
+    // escalate-only v1 path — both coexist, like the EffectResult payload+outcome pair).
+    let child_completed = match body {
+        EventBody::ChildCompleted { child, outcome } => {
+            Some(crate::ast_marshal::child_completed_val(child, outcome))
+        }
+        _ => None,
+    };
+    let (content_type, payload, resumes, outcome) = match body {
         EventBody::Inbound {
             content_type,
             payload,
@@ -2207,7 +2242,8 @@ fn event_to_guest_inputs(body: &EventBody) -> GuestFoldInputs {
         // Spawned is a recorded parent→child edge (§I2), never folded (observable()=false) — map
         // defensively rather than panic.
         EventBody::Spawned { .. } => (synthetic("spawned"), None, None, None),
-    }
+    };
+    (content_type, payload, resumes, outcome, child_completed)
 }
 
 /// Opaque bytes of a kernel payload (inline bytes verbatim; a blob-by-hash surfaces its 32 hash bytes —
@@ -2388,7 +2424,7 @@ mod tests {
         // An EffectResult carries the discriminated outcome view — byte-identical (through val_to_ast) to
         // effect_outcome_view of its result.
         let result = EffectOutcome::Ok(Some(Payload::Inline(b"resp".to_vec().into())));
-        let (_, _, _, outcome) = event_to_guest_inputs(&EventBody::EffectResult {
+        let (_, _, _, outcome, child_of_result) = event_to_guest_inputs(&EventBody::EffectResult {
             id: EffectId(1),
             result: result.clone(),
             token: None,
@@ -2398,6 +2434,30 @@ mod tests {
             val_to_ast(&outcome).unwrap(),
             val_to_ast(&effect_outcome_view(&result)).unwrap(),
             "the outcome is exactly effect_outcome_view of the result"
+        );
+        assert!(
+            child_of_result.is_none(),
+            "an EffectResult carries no child-completed (that's only for a ChildCompleted event)"
+        );
+
+        // Symmetric §6 V2 wiring: a ChildCompleted event surfaces the typed child-completed record (5th
+        // element) — byte-identical (through val_to_ast) to child_completed_val of (child, outcome) — and NO
+        // effect outcome. Every OTHER event kind carries None child-completed (checked below).
+        let child = crate::hash::Hash::of(b"the-child");
+        let close = crate::event::CloseOutcome::Failure("child gave up".to_string());
+        let (_, _, _, cc_outcome, cc) = event_to_guest_inputs(&EventBody::ChildCompleted {
+            child,
+            outcome: close.clone(),
+        });
+        let cc = cc.expect("a ChildCompleted surfaces Some(child-completed)");
+        assert_eq!(
+            val_to_ast(&cc).unwrap(),
+            val_to_ast(&crate::ast_marshal::child_completed_val(&child, &close)).unwrap(),
+            "the child-completed field is exactly child_completed_val of (child, outcome)"
+        );
+        assert!(
+            cc_outcome.is_none(),
+            "a ChildCompleted carries no effect-result outcome"
         );
 
         // Every NON-result event kind carries NO outcome (None): Inbound, timer, denial are not effect results.
@@ -2419,10 +2479,14 @@ mod tests {
             token: None,
         };
         for (label, body) in [("inbound", inbound), ("timer", timer), ("denied", denied)] {
-            let (_, _, _, outcome) = event_to_guest_inputs(&body);
+            let (_, _, _, outcome, child_completed) = event_to_guest_inputs(&body);
             assert!(
                 outcome.is_none(),
                 "a {label} event carries no outcome (only an EffectResult does)"
+            );
+            assert!(
+                child_completed.is_none(),
+                "a {label} event carries no child-completed (only a ChildCompleted does)"
             );
         }
     }
