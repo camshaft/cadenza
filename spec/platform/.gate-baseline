@@ -16,6 +16,7 @@ pass	a worker performs a userspace effect served by a handler session, and resum
 pass	an effect no session serves is a permanent error that resumes the caller (no hang, no silent drop)
 pass	an unanswered deferred effect leaves the caller active (blocked), the handler quiescent
 pass	an unbounded effect/reply ping-pong is caught as a SettleUnbounded fault, not a hang
+pass	an unhandled effect resumes the caller with an Err outcome (retryable false), observable via the Event outcome child
 pass	one fold emits a message to a peer and performs a userspace effect; both are routed in one drive
 pass	one handler session serves two effect families; a caller performs both and resumes
 pass	one sender fans a distinct message out to two different peers in a single fold
