@@ -818,27 +818,47 @@ pub enum ResourcePredicate {
 }
 
 impl ResourcePredicate {
-    /// Does `target` satisfy this predicate? Total, pure, cheap. This is the SEC-F1 enforcement point.
-    pub fn admits(&self, target: &str) -> bool {
+    /// Does `target` (as RAW BYTES) satisfy this predicate? Total, pure, cheap. This is the SEC-F1
+    /// enforcement point — the operator ruling (2026-08-13, "hashes everywhere, authz binds to the hash, no
+    /// string decode"): the effect target is OPAQUE BYTES ([`EffectRequest::target`] is `Arc<[u8]>`), and
+    /// authz matches those bytes DIRECTLY — a hash-shaped target (a 32-byte blob address / session-id /
+    /// conn-id) stays raw bytes through the gate, with NO UTF-8 requirement (the old `target_str` gate
+    /// denied every non-UTF-8 target, which blocked raw-bytes hash targets — breaker/v-hash-encoding finding).
+    /// The value-comparing predicates (`Exact`/`OneOf`/`Prefix`) compare bytes; only `HostIn` is intrinsically
+    /// TEXTUAL (a URL host allow-list), so it attempts a UTF-8 decode INTERNALLY and FAILS CLOSED on non-UTF-8
+    /// — a hash target can never satisfy `HostIn` anyway, and a real URL target is always UTF-8, so no grant
+    /// is weakened. Fail-closed end-to-end: an unmatched target is never admitted.
+    pub fn admits_bytes(&self, target: &[u8]) -> bool {
         match self {
             ResourcePredicate::Any => true,
-            ResourcePredicate::Exact(s) => target == s.as_ref(),
-            ResourcePredicate::OneOf(set) => set.iter().any(|s| s.as_ref() == target),
-            ResourcePredicate::HostIn(hosts) => match host_of(target) {
-                // Host comparison is case- and trailing-dot-insensitive (RFC 3986 §3.2.2: host is
-                // case-insensitive; `ok.host.` is the same host as `ok.host`). Exact-string `==` here
-                // was a bug: it wrongly DENIED `OK.host`/`ok.host.` (fail-closed, but a real
-                // correctness gap). Still fail-closed — normalization only ever makes the SAME host
-                // match, never widens to a different one.
-                Some(h) => hosts.iter().any(|allowed| host_eq(allowed, &h)),
-                None => false, // unparseable target → deny (fail closed)
-            },
-            ResourcePredicate::Prefix(p) => target.starts_with(p.as_ref()),
+            ResourcePredicate::Exact(s) => s.as_bytes() == target,
+            ResourcePredicate::OneOf(set) => set.iter().any(|s| s.as_bytes() == target),
+            // HostIn is a URL host allow-list — intrinsically textual. A non-UTF-8 target has no URL host, so
+            // fail closed (a hash target never matches HostIn; only a URL string does, and URLs are UTF-8).
+            ResourcePredicate::HostIn(hosts) => {
+                match std::str::from_utf8(target).ok().and_then(host_of) {
+                    // Host comparison is case- and trailing-dot-insensitive (RFC 3986 §3.2.2: host is
+                    // case-insensitive; `ok.host.` is the same host as `ok.host`). Exact-string `==` here
+                    // was a bug: it wrongly DENIED `OK.host`/`ok.host.` (fail-closed, but a real
+                    // correctness gap). Still fail-closed — normalization only ever makes the SAME host
+                    // match, never widens to a different one.
+                    Some(h) => hosts.iter().any(|allowed| host_eq(allowed, &h)),
+                    None => false, // non-UTF-8 or unparseable target → deny (fail closed)
+                }
+            }
+            ResourcePredicate::Prefix(p) => target.starts_with(p.as_bytes()),
             // A DECLARATIVE MARKER (I6): the kernel has no registry here to walk the spawn tree, so this
             // fails closed — the host re-bakes it into a concrete OneOf(descendant-set) at set_authorizer
             // time (see the variant doc). A `DescendantOf` grant that reaches `admits` unfrozen denies.
             ResourcePredicate::DescendantOf(_) => false,
         }
+    }
+
+    /// The UTF-8-string view of [`admits_bytes`] — delegates to the raw-bytes matcher via the target's bytes.
+    /// Kept for the string-target call sites + tests that hold a `&str` (a URL/path/id); the byte matcher is
+    /// the authoritative SEC-F1 enforcement point (`permits` feeds it the opaque `Arc<[u8]>` target directly).
+    pub fn admits(&self, target: &str) -> bool {
+        self.admits_bytes(target.as_bytes())
     }
 }
 
@@ -860,11 +880,12 @@ impl Capability {
     /// identical to the old `kind ==` check (a request built via [`EffectRequest::new`] has
     /// `content_type.family == kind.family()` by construction).
     pub fn permits(&self, req: &EffectRequest) -> bool {
-        // Feed the predicate the fail-closed UTF-8 view of the opaque byte target (operator Target=Bytes
-        // ruling): a non-UTF-8 target admits nothing (SEC-F1 stays fail-closed — a malformed target is
-        // never granted).
+        // Match the predicate against the RAW opaque byte target (operator ruling 2026-08-13: authz matches
+        // raw bytes, no UTF-8 requirement — a hash-shaped target stays 32 raw bytes through the gate). The
+        // value predicates compare bytes; `HostIn` fail-closes internally on non-UTF-8. SEC-F1 stays
+        // fail-closed — an unmatched/malformed target is never granted.
         req.content_type.matches_family(self.kind.family())
-            && req.target_str().is_ok_and(|t| self.predicate.admits(t))
+            && self.predicate.admits_bytes(&req.target)
     }
 
     /// Grant an effect FAMILY that has no built-in [`EffectKind`] — the register-by-string authz seam
@@ -905,9 +926,9 @@ impl FamilyGrant {
     /// Does this family-grant permit `req`? Family STRING match AND predicate admits the resolved target —
     /// the same SEC-F1 two-condition rule [`Capability::permits`] applies, keyed on the family string.
     pub fn permits(&self, req: &EffectRequest) -> bool {
-        // Fail-closed UTF-8 view (operator Target=Bytes ruling): a non-UTF-8 target satisfies no predicate.
-        req.content_type.matches_family(&self.family)
-            && req.target_str().is_ok_and(|t| self.predicate.admits(t))
+        // Match the predicate against the RAW opaque byte target (operator ruling 2026-08-13: authz matches
+        // raw bytes — a hash-shaped target stays raw bytes through the gate). SEC-F1 stays fail-closed.
+        req.content_type.matches_family(&self.family) && self.predicate.admits_bytes(&req.target)
     }
 }
 
@@ -1927,6 +1948,50 @@ mod tests {
         assert!(
             !grant.permits(&req),
             "an unfrozen DescendantOf grant admits no lifecycle target in the kernel"
+        );
+    }
+
+    #[test]
+    fn authz_matches_a_raw_bytes_target_not_utf8() {
+        // Operator ruling 2026-08-13 (hashes everywhere, authz binds to the hash, no string decode): the
+        // predicate matches the effect TARGET as RAW BYTES. A hash-shaped target (a 32-byte blob address /
+        // session-id / conn-id) is NOT valid UTF-8, and the OLD gate (`target_str().is_ok_and(admits)`)
+        // DENIED every non-UTF-8 target — blocking raw-bytes hash targets entirely. Pin the new behavior.
+        let hash = Hash::of(b"a-blob-address");
+        let raw: &[u8] = hash.as_bytes(); // 32 raw bytes, (essentially always) not valid UTF-8
+        assert!(
+            std::str::from_utf8(raw).is_err(),
+            "a content hash is non-UTF-8 — the exact case the old target_str gate denied"
+        );
+        // `Any` reaches the predicate with the raw bytes (no UTF-8 gate short-circuits it to deny).
+        assert!(
+            ResourcePredicate::Any.admits_bytes(raw),
+            "Any admits a raw-bytes target"
+        );
+        // `HostIn` is intrinsically textual (a URL host allow-list) → FAILS CLOSED on a non-UTF-8 target.
+        assert!(
+            !ResourcePredicate::HostIn(vec!["ok.host".into()]).admits_bytes(raw),
+            "HostIn fail-closes on a non-UTF-8 (hash) target — no URL host to match"
+        );
+        // END-TO-END: a family-grant with `Any` over a raw-bytes hash target now PERMITS — the whole point.
+        // A blob/get whose target is the raw content hash is authorized, where the old target_str gate Err'd
+        // on the non-UTF-8 bytes → denied.
+        let grant = Capability::for_family(effect_ct::BLOB_GET, ResourcePredicate::Any);
+        let req =
+            EffectRequest::new_with_family(effect_ct::BLOB_GET, raw, None, Timeliness::Interactive);
+        assert!(
+            grant.permits(&req),
+            "a blob/get with a raw-bytes hash target is now permitted (was denied by the UTF-8 target_str gate)"
+        );
+        // BEHAVIOR-PRESERVED for text grants: an ASCII target compares byte-identically to the old str path.
+        let ascii = ResourcePredicate::Exact("model-x".into());
+        assert!(
+            ascii.admits_bytes(b"model-x"),
+            "ASCII Exact still matches (byte-identical to the str path)"
+        );
+        assert!(
+            !ascii.admits_bytes(b"model-y"),
+            "ASCII Exact still denies a different target"
         );
     }
 
