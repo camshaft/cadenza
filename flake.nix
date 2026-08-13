@@ -1217,15 +1217,15 @@
         # clippy pass closes that un-gated invariant fleet-wide. Lands on the LIVE-NET half because
         # live-aws-storage shares the heavy aws-sdk/aws-lc-sys chain the half already compiles, so the marginal
         # cost is ~the zstd-sys build, not a second aws-chain (proven green offline, ref 966bd2eff).
-        #   🪤 COMPILE+CLIPPY ONLY, no `cargo test --features live-aws-storage`: 8 live-aws-storage lib tests
-        #   (dynamo_log::* / s3_blob::* / factory::offload_source_s3 / name_snapshot::s3::*) CONSTRUCT a real
-        #   aws-smithy TLS client, which panics in the hermetic sandbox — "TrustStore configured to enable native
-        #   roots but no valid root certificates parsed" (no /etc/ssl CA bundle in the nix build). That is an
-        #   environment limitation, not a code fault (they pass on a dev box with system CA certs). Running them
-        #   would need cacert + SSL_CERT_FILE AND a guarantee they make no real network call — out of scope for a
-        #   compile-coverage gate. clippy --all-targets still TYPE-CHECKS the test bodies (compile breaks caught),
-        #   which is the invariant that was un-gated. v-ah-host flagged to env-gate/`#[ignore]` those 8 so a
-        #   future `cargo test` pass here could run the rest (their side).
+        #   Both a clippy AND a test pass: originally clippy-only because 8 live-aws-storage lib tests
+        #   (dynamo_log::* / s3_blob::* / factory::offload_source_s3 / name_snapshot::s3::*) CONSTRUCTED a real
+        #   aws-smithy TLS client at from_conf, which panicked in the hermetic sandbox ("TrustStore … no valid
+        #   root certificates parsed" — no /etc/ssl CA bundle). v-ah-host then made all 3 live-aws-storage stores
+        #   (DynamoLogSink + S3BlobStore + S3NameStoreSnapshot) build their aws Client LAZILY (OnceCell, on first
+        #   I/O not from_conf), so the seam/key-format/offload/compress tests no longer touch TLS at construction
+        #   and run hermetically (v-nix re-verified 371/0 in the CA-less sandbox). So the test pass now gives
+        #   BEHAVIORAL coverage (offload/compress/snapshot round-trips), not just compile. Depends on the lazy
+        #   fix being in the same tree — it is on fleet-trunk (my base) so pr-sync merges it ahead of this.
         cdzAgentHostNativeLiveNet = mkAgentHostNative {
           pname = "cdz-agent-host-native-live-net";
           passes = ''
@@ -1233,6 +1233,7 @@
             cargo clippy --all-targets --locked --features admin,live-net -- -D warnings
             cargo test --locked --features live-net
             cargo clippy --all-targets --locked --features live-aws-storage -- -D warnings
+            cargo test --locked --features live-aws-storage
           '';
         };
         # ── N1: the value-heap runtime components AS input-addressed derivations (hash from output) ─
