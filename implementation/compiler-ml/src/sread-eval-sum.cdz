@@ -144,15 +144,47 @@ def ss-match-on-ctor-pattern-wildcard() =
 
 @test
 def ss-ctor-pattern-match-no-wildcard-declines-cleanly() =
-  // READER TOTALITY: a ctor-pattern match with NO terminal `_` wildcard `(match (Red) (Red 100))` must DECLINE
-  // cleanly (None), NOT hang. Before the read-match-arms totality guard, a nullary ctor-name arm reader reached
-  // at the match's `)` scanned an empty atom + read a non-advancing body → INFINITE LOOP (wasm interrupt/timeout).
-  // The guard declines when the arms are exhausted with no wildcard. Pins the reader is TOTAL on this malformed shape.
+  // READER TOTALITY + EXHAUSTIVENESS: a NON-EXHAUSTIVE no-wildcard ctor match `(match (Red) (Red 100))` (only 1
+  // of Color's 3 ctors, no `_`) must DECLINE cleanly (None), NOT hang — matching the reference, which rejects a
+  // non-exhaustive no-wildcard match. (An EXHAUSTIVE no-wildcard match now RUNS — see the ss-exhaustive-* tests
+  // below.) Before the read-match-arms totality guard, a nullary ctor-name arm reader reached at the match's `)`
+  // scanned an empty atom + read a non-advancing body → INFINITE LOOP; the guard makes the reader TOTAL here.
   match run-src(
       "(do (type Color (Red) (Green) (Blue)) (def (main) (match (Red) (Red 100))) (export main))"
     ) with
-    | Option.Some(_) => trap("a wildcard-less ctor-pattern match must DECLINE (a match chain must end in _)")
+    | Option.Some(_) => trap("a NON-exhaustive wildcard-less ctor-pattern match must DECLINE")
     | Option.None(_) => unit
+
+@test
+def ss-exhaustive-enum-disc-match-no-wildcard-runs() =
+  // EXHAUSTIVE no-wildcard enum-disc match: all 3 Color ctors covered, no `_`. The reader rewrites the last arm
+  // (Blue) to an unconditional else (finalize-exhaustive-match), so it lowers + runs. (Blue)=tag 2 → Blue arm → 3.
+  match run-src(
+      "(do (type Color (Red) (Green) (Blue)) (def (main) (match (Blue) (Red 1) (Green 2) (Blue 3))) (export main))"
+    ) with
+    | Option.Some(v) => (if v == 3 then unit else trap("exhaustive enum-disc match (Blue) → 3"))
+    | Option.None(_) => trap("an EXHAUSTIVE no-wildcard enum-disc match must RUN, not decline")
+
+@test
+def ss-exhaustive-enum-disc-match-first-arm-runs() =
+  // the SAME exhaustive match, scrut = the FIRST ctor (Red) → 1. Pins that the rewrite of the last arm does not
+  // disturb the earlier arms' tag-checks.
+  match run-src(
+      "(do (type Color (Red) (Green) (Blue)) (def (main) (match (Red) (Red 1) (Green 2) (Blue 3))) (export main))"
+    ) with
+    | Option.Some(v) => (if v == 1 then unit else trap("exhaustive enum-disc match (Red) → 1"))
+    | Option.None(_) => trap("exhaustive enum-disc match, first-arm scrutinee, must run")
+
+@test
+def ss-exhaustive-sum-match-nullary-last-arm-runs() =
+  // EXHAUSTIVE no-wildcard sum match with a PAYLOAD arm + a NULLARY last arm: `((Some x) x) (None 0)` covers both
+  // Opt ctors. The last arm (None, nullary) is rewritten to an unconditional else — safe because a nullary body
+  // has no binders to re-poison. (Some 9) → the Some arm binds x=9 → 9.
+  match run-src(
+      "(do (type Opt (Some Int64) (None)) (def (main) (match (Some 9) ((Some x) x) (None 0))) (export main))"
+    ) with
+    | Option.Some(v) => (if v == 9 then unit else trap("exhaustive sum match (Some 9) → 9"))
+    | Option.None(_) => trap("an EXHAUSTIVE no-wildcard sum match with a nullary last arm must run")
 
 @test
 def ss-match-ctor-pattern-over-bound-var() =

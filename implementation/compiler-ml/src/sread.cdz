@@ -11,7 +11,7 @@
 /// `read-form` + a test here. Reuses `strlex`'s char helpers (`char-at`, `is-digit`, `scan-number`) and
 /// `parse-db`'s `Node`/`Tree`/`add-node`/`empty-tree`.
 
-import { Node, Tree, empty-tree, add-node, node-at, record-def, def-body-of, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, record-param3, param3-of, record-arg3, arg3-of, record-param4, param4-of, record-arg4, arg4-of, record-param-type, param-type-of, record-ctor-tag, record-ctor-tag-typed, record-ctor-tag-typed-list, ctor-tag-of, ctor-argtype-of, ctor-argtypes-of, decl-name-registered, encode-param-type, encode-bool-type, pt-width, pt-signed, is-lit, is-bool-lit, is-bin-op, is-if, is-var, is-let, is-annlit, is-app } from "parse-db"
+import { Node, Tree, empty-tree, add-node, node-at, record-def, def-body-of, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, record-param3, param3-of, record-arg3, arg3-of, record-param4, param4-of, record-arg4, arg4-of, record-param-type, param-type-of, record-ctor-tag, record-ctor-tag-typed, record-ctor-tag-typed-list, ctor-tag-of, ctor-decl-of, decl-ctor-count, set-node, ctor-argtype-of, ctor-argtypes-of, decl-name-registered, encode-param-type, encode-bool-type, pt-width, pt-signed, is-lit, is-bool-lit, is-bin-op, is-if, is-var, is-let, is-annlit, is-app } from "parse-db"
 import { recognize, is-int-type, ty-signed, ty-width } from "int-type"
 import { fits-width } from "int-width"
 
@@ -946,7 +946,71 @@ def read-match-form(s: String, i: Int64, tree: Tree) =
   (match read-form(s, i, tree) with | (scrutId, a1, t1) =>          // the scrutinee, then the arm sequence
     (match read-match-arms(s, a1, scrutId, t1) with | (armsId, a2, t2) =>
       (let a3 = close-paren(s, a2) in                                // close the (match …)
-       (armsId, a3, t2))))
+       // EXHAUSTIVE no-wildcard ctor-match: rewrite the last arm to an unconditional else (see
+       // finalize-exhaustive-match). A wildcard match / int match / non-exhaustive match is left untouched.
+       (let t3 = finalize-exhaustive-match(t2, armsId) in
+        (armsId, a3, t3)))))
+
+/// After a ctor-match CHAIN is read, make an EXHAUSTIVE no-wildcard match LOWER (idiomatic `match c (A …)(B …)`
+/// covering every ctor with no trailing `_`). The reader terminates a no-wildcard chain with `unsupported()` =
+/// `NVar(0)` — an unbound-name poison that every downstream gate (all-defs-well-scoped, resolve, infer, lower)
+/// rejects, so such a match declines. If the chain's DISTINCT arm ctors cover the decl AND the LAST arm is
+/// NULLARY (no binders), REWRITE that arm's poison rest to its OWN body: `NMatchCtor(scrut,tag,[],body,body)` =
+/// an unconditional else (no poison node survives → no gate trips; eval never takes the dead else since the
+/// match is exhaustive). A NON-exhaustive no-wildcard match keeps the poison → declines (matches the reference,
+/// which rejects a non-exhaustive no-wildcard match). Restricted to a NULLARY last arm because resolve is NOT
+/// memoized: reusing a PAYLOAD body node as the else would re-resolve its binders in the outer (binder-free)
+/// env and RE-POISON them — a nullary body has no binders, so bodyEnv == env and the re-resolve is idempotent.
+def finalize-exhaustive-match(tree: Tree, armsId: Int64) =
+  (match collect-ctor-arms(tree, armsId, ([] : List(Int64)), (-1)) with | (ctorNames, lastArmId, terminalId) =>
+    (if (lastArmId == (-1)) then tree                                // not a ctor-match chain (int match / single wildcard)
+     else (match node-at(tree, terminalId) with
+       | Option.Some(Node.NVar(nm)) =>
+           (if (if (nm == 0) then false else true) then tree         // a real-name wildcard else terminal → leave
+            else (match List.at(ctorNames, 0) with                   // NVar(0) = no-wildcard terminal
+              | Option.None(_) => tree
+              | Option.Some(firstCtor) => (match ctor-decl-of(tree, firstCtor) with
+                  | Option.None(_) => tree
+                  | Option.Some(declName) =>
+                      (if (distinct-count(ctorNames) == decl-ctor-count(tree, declName))
+                       then rewrite-nullary-last-arm(tree, lastArmId)   // EXHAUSTIVE → unconditional last arm
+                       else tree))))                                    // non-exhaustive → keep poison (declines)
+       | _ => tree)))                                                   // any other terminal = wildcard else body → leave
+
+/// Walk a ctor-match chain from `nodeId` following restId through NMatchCtor nodes, collecting each arm's ctor
+/// NAME into `acc` and tracking the LAST NMatchCtor's id. Stops at the first non-NMatchCtor node. Returns
+/// (ctorNames, lastArmId, terminalId); lastArmId is -1 if `nodeId` is not an NMatchCtor.
+def collect-ctor-arms(tree: Tree, nodeId: Int64, acc: List(Int64), lastArmId: Int64) =
+  (match node-at(tree, nodeId) with
+    | Option.Some(Node.NMatchCtor(_scrut, ctorName, _binders, _body, restId)) =>
+        collect-ctor-arms(tree, restId, List.push(acc, ctorName), nodeId)
+    | _ => (acc, lastArmId, nodeId))
+
+/// Rewrite a NULLARY last arm's rest (the poison terminal) to its OWN body → an unconditional else. No-op if the
+/// arm has binders (payload) — see finalize-exhaustive-match for why (resolve is not memoized).
+def rewrite-nullary-last-arm(tree: Tree, armId: Int64) =
+  (match node-at(tree, armId) with
+    | Option.Some(Node.NMatchCtor(scrutId, ctorName, binderIds, bodyId, _restId)) =>
+        (if (List.len(binderIds) == 0)
+         then set-node(tree, armId, Node.NMatchCtor(scrutId, ctorName, binderIds, bodyId, bodyId))
+         else tree)
+    | _ => tree)
+
+/// Count DISTINCT elements of `xs` (no List.contains — a positional membership scan over the seen prefix).
+def distinct-count(xs: List(Int64)) = distinct-count-go(xs, 0, 0)
+def distinct-count-go(xs: List(Int64), i: Int64, n: Int64) =
+  (if (i == List.len(xs)) then n
+   else (match List.at(xs, i) with
+     | Option.None(_) => n
+     | Option.Some(x) => (if seen-before(xs, x, 0, i)
+                          then distinct-count-go(xs, i + 1, n)
+                          else distinct-count-go(xs, i + 1, n + 1))))
+/// Is `x` present in `xs[0 .. i)` (the prefix before index i)?
+def seen-before(xs: List(Int64), x: Int64, j: Int64, i: Int64) =
+  (if (i == j) then false
+   else (match List.at(xs, j) with
+     | Option.None(_) => false
+     | Option.Some(y) => (if (y == x) then true else seen-before(xs, x, j + 1, i))))
 
 /// M1-b N-ARM match: read the arm sequence `(L1 b1) (L2 b2) … (_ else)` into a RIGHT-NESTED chain of 2-arm
 /// NMatch nodes — `(match scrut (L1 b1) REST…)` → `NMatch(scrut, L1, b1, <chain of REST>)`, bottoming at the

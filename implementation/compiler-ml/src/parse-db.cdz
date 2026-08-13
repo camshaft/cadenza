@@ -171,6 +171,12 @@ def add-node(tree: Tree, n: Node) = match tree with
 def node-at(tree: Tree, id: Int64) = match tree with
   | Tree.Arena(m, _, _, _, _, _, _, _, _, _, _, _) => Map.lookup(m, id)
 
+/// REPLACE the node at an EXISTING `id` (Map.insert over the node map — NOT a fresh append like add-node).
+/// Used by the reader to rewrite an exhaustive no-wildcard match's last arm in place (its poison rest → its
+/// own body = an unconditional else). `id` must already exist; a fresh id would just add a detached node.
+def set-node(tree: Tree, id: Int64, n: Node) = match tree with
+  | Tree.Arena(m, next, dt, pt, p2, a2, ptty, p3, a3, p4, a4, ct) => Tree.Arena(Map.insert(m, id, n), next, dt, pt, p2, a2, ptty, p3, a3, p4, a4, ct)
+
 /// How many nodes the arena holds (also the next fresh id).
 def node-count(tree: Tree) = match tree with | Tree.Arena(m, _, _, _, _, _, _, _, _, _, _, _) => Map.len(m)
 
@@ -522,6 +528,22 @@ def decl-enum-disc-go(tree: Tree, entries: List(Tuple(Int64, Tuple(Int64, Int64,
                   | Option.Some(_) => decl-enum-disc-go(tree, entries, declName, i + 1, nullary + 1, payload)
                   | Option.None(_) => decl-enum-disc-go(tree, entries, declName, i + 1, nullary, payload + 1))
            else decl-enum-disc-go(tree, entries, declName, i + 1, nullary, payload))))))
+
+/// Count the ctors DECLARED for `declName` (nullary + payload). Mirrors decl-enum-disc-go's ct-table scan but
+/// just totals entries whose declName matches. The reader uses it for EXHAUSTIVENESS of a no-wildcard sum/enum
+/// match (distinct arm ctors == this count → covers every variant → last arm needs no fall-through).
+def decl-ctor-count(tree: Tree, declName: Int64) = match tree with
+  | Tree.Arena(_, _, _, _, _, _, _, _, _, _, _, ct) => decl-ctor-count-go(tree, Map.to-list(ct), declName, 0, 0)
+
+/// Index fold for decl-ctor-count: count ct-entries whose declName == `declName` (mirrors decl-enum-disc-go).
+def decl-ctor-count-go(tree: Tree, entries: List(Tuple(Int64, Tuple(Int64, Int64, List(Int64)))), declName: Int64, i: Int64, n: Int64) =
+  (if (i == List.len(entries)) then n
+   else (match List.at(entries, i) with
+     | Option.None(_) => n
+     | Option.Some(e) => (match e with | (_ctorName, dt) => (match dt with | (dn, _tag, _argTypes) =>
+          (if (dn == declName)
+           then decl-ctor-count-go(tree, entries, declName, i + 1, n + 1)
+           else decl-ctor-count-go(tree, entries, declName, i + 1, n))))))
 
 /// gap-B-C registry: is `nameId` the name of a DECLARED type? Every `(type Name …)` records its `Name` name-id
 /// as the `declName` VALUE of each of its ctors' ct-entries (record-ctor-tag[-typed-list]), so the set of
@@ -1375,4 +1397,4 @@ def pd-ctor-argtype-unrecorded-none() =
     | Option.None(_) => unit
     | Option.Some(_) => trap("an unrecorded ctor has no argType"))
 
-export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, record-def, def-body-of, def-table-entries, call-is-recursive, call-is-self-recursive, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, record-param3, param3-of, record-arg3, arg3-of, record-param4, param4-of, record-arg4, arg4-of, record-param-type, param-type-of, record-ctor-tag, record-ctor-tag-typed, record-ctor-tag-typed-list, ctor-tag-of, ctor-decl-of, ctor-argtype-of, ctor-argtypes-of, decl-is-enum-disc, decl-name-registered, encode-param-type, encode-bool-type, argtype-is-bool, pt-width, pt-signed, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if, is-bool-lit, is-annlit, is-app }
+export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, set-node, node-count, record-def, def-body-of, def-table-entries, call-is-recursive, call-is-self-recursive, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, record-param3, param3-of, record-arg3, arg3-of, record-param4, param4-of, record-arg4, arg4-of, record-param-type, param-type-of, record-ctor-tag, record-ctor-tag-typed, record-ctor-tag-typed-list, ctor-tag-of, ctor-decl-of, ctor-argtype-of, ctor-argtypes-of, decl-is-enum-disc, decl-ctor-count, decl-name-registered, encode-param-type, encode-bool-type, argtype-is-bool, pt-width, pt-signed, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if, is-bool-lit, is-annlit, is-app }
