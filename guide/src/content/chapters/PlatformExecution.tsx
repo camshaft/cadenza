@@ -9,12 +9,14 @@ import { Link } from "react-router-dom";
 /// multiplexed), §22c (async must NOT break replay-determinism — determinism lives in the LOG not the
 /// scheduler). DELIBERATELY DEFERS the in-flight impl: §22b async-blob-API, §22d/§22e gas/fuel mechanics
 /// (v-agent-harness flagged these as still churning — do not pin their surface). Follows PlatformSafety.
-/// The supervision/self-heal section (§6/§6a) is fact-confirmed by v-agent-harness (2026-08-07): spawn +
-/// parent-link + child-exited auto-delivery are BUILT + E2E on trunk (present-tense); the currently
-/// auto-delivered outcome on terminate is the Failure case (Success-close delivery is forward-tense, so
-/// the outcome variants are stated as what the platform MODELS, not both auto-delivered today); retryability
-/// is the typed EffectOutcome::Err{retryability} enum (#2554). OPEN + NOT stated: the orphan rule. The
-/// supervisor LIBRARY + a worked multi-level subtree stay forward-tense.
+/// The supervision/self-heal section (§6/§6a) is fact-confirmed by v-agent-harness + v-agent-harness-host:
+/// spawn + parent-link + child-exited auto-delivery are BUILT + E2E on trunk (present-tense); child-COMPLETED
+/// self-close delivery is now ALSO landed (v-agent-harness-host note 2026-08-13; host commit f118eb368 "reap
+/// self-closed sessions + notify parents (child-completed)" + rcdzc ddb4a3b2c codec / b3aa9e76c self-close /
+/// 4af66ddd2 FoldOutput.close), so the section states BOTH paths present-tense: terminate→child-exited (always
+/// a Failure close), self-close→child-completed (Success payload OR Failure reason); a root self-close is
+/// reaped with no signal. retryability is the typed EffectOutcome::Err{retryability} enum (#2554). OPEN + NOT
+/// stated: nothing outstanding here now. The supervisor LIBRARY + a worked multi-level subtree stay forward-tense.
 /// The agent-loop MULTI-FILE <Runnable files=/> (events.cdz data + reducer.cdz fold, entry=reducer) is
 /// operator-directed (decouple events from the reducer so the boundary is explicit) and rides v-guide-infra's
 /// explorer seam (compileWithPreloaded); it replaces the withdrawn single-file #2616. The split uses
@@ -192,27 +194,35 @@ export default function PlatformExecution() {
         Because a failure is an event, another agent can watch for it. An agent can <em>spawn</em> a child,
         and the child's identity is fixed the moment it's born: its id is a content hash of its starting
         state, so it can never be confused with another. The parent-child link is recorded on both sides.
-        When a child is terminated, the platform delivers a <C>child-exited</C> message to the parent, which
-        its reducer folds like any other event, so it lands on the parent's log carrying the child's
-        outcome. That outcome is a structured value the platform models as either a success with a payload
-        or a failure with a reason; the signal delivered on termination today is the failure case, and the
-        parent's reducer folds it and decides what to do next: re-spawn, retry, escalate, or give up. That
-        is a supervision tree, and unlike the in-memory restart tables of older systems it's durable and
-        replayable: the whole parent-and-children engagement is one causally-linked history you can migrate,
-        sandbox, or audit as a unit.
+        A child ends its life one of two ways, and the platform delivers a matching message to the parent,
+        which its reducer folds like any other event so it lands on the parent's log carrying the child's
+        outcome. When a child is <em>terminated</em> from outside, the parent receives a{" "}
+        <C>child-exited</C> message, always a failure close, since a termination is not a completion. When a
+        child <em>self-closes</em>, its own reducer returning a close outcome, the platform reaps it and
+        delivers a <C>child-completed</C> message instead, carrying either a success with a payload or a
+        failure with a reason. Both outcomes are the same structured value; the difference is only which
+        signal fires, so a supervisor can tell an orderly finish from a forced kill. The parent's reducer
+        folds whichever it gets and decides what to do next: re-spawn, retry, escalate, aggregate, or give
+        up. That is a supervision tree, and unlike the in-memory restart tables of older systems it's
+        durable and replayable: the whole parent-and-children engagement is one causally-linked history you
+        can migrate, sandbox, or audit as a unit. (A root session with no parent that self-closes is simply
+        reaped, with no signal to deliver.)
       </P>
       <Note>
         a fold that traps → recorded as a FoldFailed event (not a lost session), readable by a supervisor
         <br />
-        a child that dies → a child-exited message delivered to its parent, folded onto the parent's log as its outcome
+        a child TERMINATED from outside → a child-exited message (always a failure close) on its parent's log
         <br />
-        the parent's reducer folds the failure and chooses: re-spawn · retry · escalate · give up
+        a child that SELF-CLOSES → a child-completed message carrying its outcome (success payload or failure reason)
+        <br />
+        the parent's reducer folds the outcome and chooses: re-spawn · retry · escalate · aggregate · give up
       </Note>
       <P>
         Notice the line between what the platform provides and what it doesn't. The platform makes every
         failure an ordered, foldable event a supervisor can see, an in-session trap becomes a{" "}
-        <C>FoldFailed</C> event, a dead child becomes a <C>child-exited</C> event on its parent, so nothing
-        fails silently into the void and nothing needs a human to jump-start it. But <em>what to do</em>{" "}
+        <C>FoldFailed</C> event, a terminated child becomes a <C>child-exited</C> event and a self-closed one
+        a <C>child-completed</C> event on its parent, so nothing fails silently into the void and nothing
+        needs a human to jump-start it. But <em>what to do</em>{" "}
         about a failure, back off and retry a transient error, escalate a permanent one, restart from a clean
         checkpoint, is ordinary reducer logic the supervisor's author writes; the kernel hardcodes no
         strategy. So the platform is the self-heal <em>substrate</em>, a system where a supervisor{" "}
