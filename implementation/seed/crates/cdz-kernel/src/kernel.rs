@@ -727,6 +727,16 @@ impl Session {
         if self.is_terminated() {
             return Err(KernelError::FoldRefused);
         }
+        // §6 self-close is terminal too (symmetric with the is_terminated guard above): a CLOSED session (a
+        // reducer's `FoldOutput::close` appended a terminal `Closed`) refuses every further fold. Without this,
+        // an Inbound delivered to a closed-but-not-terminated session would fold + append PAST the `Closed`
+        // event, un-tailing it (a recovered session's tip would be that Inbound, not `Closed`) and breaking
+        // the terminal-tip / replay-stability invariant `FoldOutput::close` introduced. Checked BEFORE the
+        // append so a closed log stays frozen exactly like a terminated one — a first-class kernel guard, not
+        // a host convention (even a buggy/hostile driver, or a supervisor mid-reap, can't re-drive it).
+        if self.is_closed() {
+            return Err(KernelError::FoldRefused);
+        }
         self.append(body, cause).await;
         let control = self.drive(reducer, authz, executor).await;
         Ok(control)
@@ -938,6 +948,13 @@ impl Session {
         // back to false, breaking the invariant). Return 0 (nothing fired), mirroring the deliver_control
         // refusal. See the guard-every-append-path invariant (github-liaison #2381 review).
         if self.is_terminated() {
+            return 0;
+        }
+        // §6: a CLOSED session likewise fires no timers (symmetric with the is_terminated guard) — a timer
+        // armed by a PRIOR fold must not fire a `TimerFired` past the terminal `Closed` event (same un-tailing
+        // class). Return 0. Defense-in-depth: the host reaps closed sessions, but the kernel guard doesn't
+        // rely on that.
+        if self.is_closed() {
             return 0;
         }
         // The armed timers are the `is_timer` obligations in the open table (log-decouple I2 folded the old
@@ -2711,6 +2728,97 @@ mod status_snapshot_tests {
             snap.close_outcome,
             Some(failure),
             "the snapshot distinguishes a Failure close from a Success close"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_closed_session_refuses_further_delivery_keeping_the_terminal_tip_frozen() {
+        // §6 terminal-tip invariant: once a reducer self-closes (FoldOutput::close → terminal Closed), a
+        // further deliver() must be REFUSED (FoldRefused) — mirroring the is_terminated guard. Without it an
+        // Inbound would fold + append PAST the Closed event, un-tailing it (a recovered tip would be that
+        // Inbound, not Closed) and breaking replay-stability. (Reviewer finding on the supervision reap.)
+        let mut exec = RecordingExecutor::new();
+        let mut s = Session::genesis(Hash::of(b"close-guard-v1"), Hash::of(b"test-spawn-nonce"));
+        s.deliver(
+            inbound(),
+            None,
+            &mut ClosingReducer,
+            &Authorizer::deny_all(),
+            &mut exec,
+        )
+        .await
+        .unwrap();
+        assert!(s.is_closed(), "the fold self-closed the session");
+        let count_at_close = s.event_count();
+
+        // A second delivery to the CLOSED session is refused — no event appended, the Closed tip stays frozen.
+        let refused = s
+            .deliver(
+                inbound(),
+                None,
+                &mut ClosingReducer,
+                &Authorizer::deny_all(),
+                &mut exec,
+            )
+            .await;
+        assert!(
+            matches!(refused, Err(KernelError::FoldRefused)),
+            "deliver to a closed session is refused (FoldRefused), like a terminated one"
+        );
+        assert_eq!(
+            s.event_count(),
+            count_at_close,
+            "no event was appended past the terminal Closed"
+        );
+        assert!(
+            s.is_closed(),
+            "still closed — the terminal tip is unchanged"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_closed_session_fires_no_pre_armed_timer_keeping_the_terminal_tip_frozen() {
+        // §6: a timer armed by a PRIOR fold must not fire a TimerFired past the terminal Closed (same
+        // un-tailing class as deliver). fire_due_timers refuses on a closed session, mirroring is_terminated.
+        let mut exec = RecordingExecutor::new();
+        let mut s = Session::genesis(Hash::of(b"close-timer-v1"), Hash::of(b"test-spawn-nonce"));
+        // Arm a timer (StatusReducer arms one with absolute deadline 1000ms), then self-close.
+        s.deliver(inbound(), None, &mut StatusReducer, &timer_cap(), &mut exec)
+            .await
+            .unwrap();
+        assert!(
+            s.status_snapshot(Some(2000), 60_000).armed_timers >= 1,
+            "a timer is armed before the close"
+        );
+        s.deliver(
+            inbound(),
+            None,
+            &mut ClosingReducer,
+            &Authorizer::deny_all(),
+            &mut exec,
+        )
+        .await
+        .unwrap();
+        assert!(
+            s.is_closed(),
+            "the session self-closed with a timer still armed"
+        );
+        let count_at_close = s.event_count();
+
+        // The armed timer is now DUE (2000 >= 1000), but the closed session fires nothing.
+        let fired = s
+            .fire_due_timers(
+                2000,
+                &mut crate::reducer::InertReducer,
+                &Authorizer::deny_all(),
+                &mut exec,
+            )
+            .await;
+        assert_eq!(fired, 0, "a closed session fires no timers");
+        assert_eq!(
+            s.event_count(),
+            count_at_close,
+            "no TimerFired was appended past the terminal Closed"
         );
     }
 
