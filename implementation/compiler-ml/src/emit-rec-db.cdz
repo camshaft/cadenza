@@ -18,7 +18,7 @@ import { Core, lower-tree, lower-def-env } from "lower-db"
 import { read-source } from "sread"
 import { Value, eval-core-d } from "eval-db"
 import { Tree } from "parse-db"
-import { functype-bytes, type-section-multi, func-section-multi, code-section-multi, emit-def-body-d, defenv-funcidx-map, export-section-idx, preamble, emit-src-bytes, bytes-to-list, is-arith-op, is-cmp-op, has-ctor, memory-section, global-section } from "emit-db"
+import { functype-bytes, type-section-multi, func-section-multi, code-section-multi, emit-def-body-d, defenv-funcidx-map, export-section-idx, preamble, emit-src-bytes, bytes-to-list, is-arith-op, is-cmp-op, has-ctor, has-fnref, section, b1, uleb, uleb-each, memory-section, global-section } from "emit-db"
 
 /// Is `c` in the emit subset GIVEN a def-index map? Like emit-db's `can-emit` but a `CCall` is ALLOWED when its
 /// callee is in `defidx` (an emitted recursive def) — so a recursive program (fac) can emit; a CCall to a name
@@ -45,7 +45,13 @@ def can-emit-d(c: Core, defidx: Map(Int64, Int64)) = match c with
   // W-compound: a payload-sum deconstruct emits (emit-instrs-d handles CMatchSum: load tag + bind payloads off
   // the heap). Emittable iff scrutinee + both branches are (nested N-arm match = nested CMatchSum in else).
   | Core.CMatchSum(scrut, _, _, thn, els) => can-emit-d(scrut, defidx) and (can-emit-d(thn, defidx) and can-emit-d(els, defidx))
-  | _ => false
+  // W-HO: a def-name-as-fn-value `CFnRef(name)` emits `i64.const funcidx` (funcidx from defidx) — emittable iff
+  // the name is a known recursive def (it MUST be in the table for call_indirect). A `CFnRefVar(fBinder, args)`
+  // apply emits `<args> ; local.get fBinder ; i32.wrap_i64 ; call_indirect <typeidx> 0` — emittable iff the args
+  // are (fBinder is a local holding a funcidx, always fine). emit-recursive-module adds the table+elem sections
+  // + the HO-arity functypes when any body carries a CFnRef/CFnRefVar.
+  | Core.CFnRef(name) => (match Map.lookup(defidx, name) with | Option.Some(_) => true | Option.None(_) => false)
+  | Core.CFnRefVar(_, args) => can-call-args(args, 0, defidx)
 
 /// W-compound (recursive path): are a CCtor's payload args each EMITTABLE (can-emit-d) and FLAT (no nested
 /// CCtor — a single i32 scratch holds the alloc base, so a nested ctor arg would clobber it mid-store)? The
@@ -130,15 +136,22 @@ def emit-recursive-module(mainCore: Core, tree: Tree) =
    (let k = List.len(entries) in
     (let fmap = defenv-funcidx-map(entries) in
       (if can-emit-d(mainCore, fmap) and all-defs-emittable(entries, 0, fmap) and has-value-d(mainCore, entries)
-       then (let mem = (if any-body-has-ctor(entries, mainCore) then Bytes.concat(memory-section(), global-section()) else Bytes.of([])) in
-             // W-compound: memory + bump-ptr global (module-wide, once) between func-section and export when
-             // any body constructs/reads a compound. Section order: type(1) func(3) MEM(5) GLOBAL(6) export(7) code(10).
+       then (let hasho = any-body-has-fnref(entries, mainCore) in
+             (let mem = (if any-body-has-ctor(entries, mainCore) then Bytes.concat(memory-section(), global-section()) else Bytes.of([])) in
+              (let table = (if hasho then table-section(k) else Bytes.of([])) in
+               (let elem = (if hasho then elem-section(k) else Bytes.of([])) in
+                (let types = (if hasho then List.concat(recursive-types(entries), ho-functypes()) else recursive-types(entries)) in
+             // W-compound: memory + bump-ptr global when any body builds/reads a compound. W-HO: funcref table +
+             // identity elem + HO-arity functypes when any body carries a fn-value. Section order (ascending id,
+             // elem before code): type(1) func(3) TABLE(4) MEM(5) GLOBAL(6) export(7) ELEM(9) code(10).
              Option.Some(Bytes.concat(preamble(),
-              Bytes.concat(type-section-multi(recursive-types(entries)),
+              Bytes.concat(type-section-multi(types),
                 Bytes.concat(func-section-multi(range-list(k)),
-                  Bytes.concat(mem,
-                    Bytes.concat(export-section-idx(k),
-                      code-section-multi(recursive-bodies(entries, mainCore, fmap)))))))))
+                  Bytes.concat(table,
+                    Bytes.concat(mem,
+                      Bytes.concat(export-section-idx(k),
+                        Bytes.concat(elem,
+                          code-section-multi(recursive-bodies(entries, mainCore, fmap)))))))))))))))
        else Option.None(unit)))))
 
 /// W-compound: does the recursive module need the linear-memory heap (does main OR any def body construct/read
@@ -151,6 +164,33 @@ def any-body-has-ctor-go(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), 
      | Option.Some(e) => (match e with | (_, pb) => (match pb with | (_, body) =>
          (if has-ctor(body) then true else any-body-has-ctor-go(entries, i + 1))))
      | Option.None(_) => false))
+
+/// W-HO: does main OR any def body carry a fn-value (CFnRef/CFnRefVar)? Gates the funcref TABLE + ELEM sections
+/// + the appended HO-arity functypes (call_indirect needs a table + a matching functype). Mirrors any-body-has-ctor.
+def any-body-has-fnref(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), mainCore: Core) =
+  (if has-fnref(mainCore) then true else any-body-has-fnref-go(entries, 0))
+def any-body-has-fnref-go(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), i: Int64) =
+  (if i == List.len(entries) then false
+   else (match List.at(entries, i) with
+     | Option.Some(e) => (match e with | (_, pb) => (match pb with | (_, body) =>
+         (if has-fnref(body) then true else any-body-has-fnref-go(entries, i + 1))))
+     | Option.None(_) => false))
+
+/// W-HO: the funcref TABLE section (id 4) sized to hold every def funcidx (0..k-1): 1 table, elemtype funcref
+/// (0x70), limits flag 0x00 + min k. call_indirect dispatches through table 0.
+def table-section(k: Int64) = section(4, Bytes.concat(b1(1), Bytes.concat(b1(112), Bytes.concat(b1(0), uleb(k)))))
+
+/// W-HO: the ELEM section (id 9) — one ACTIVE segment into table 0 at offset 0, an IDENTITY map table[i]=funcidx i
+/// for i in 0..k-1 (so a CFnRef's i64 funcidx doubles as the call_indirect table index). flag 0x00, offset expr
+/// `i32.const 0` (0x41 0x00) end (0x0b), count k, then funcidxs 0..k-1.
+def elem-section(k: Int64) = section(9, Bytes.concat(b1(1), Bytes.concat(b1(0), Bytes.concat(b1(65), Bytes.concat(b1(0), Bytes.concat(b1(11), Bytes.concat(uleb(k), uleb-each(range-list-excl(k)))))))))
+
+/// [0,1,…,k-1] — the funcidx vector for the elem identity map (range-list is [0..n] inclusive → pass k-1).
+def range-list-excl(k: Int64) = range-list-go(0, k - 1, ([] : List(Int64)))
+
+/// W-HO: functype-bytes(1..4) appended AFTER main (typeidx k) so call_indirect's typeidx = Map.len(defidx)+arity
+/// (arity 1..4) resolves to a matching (arity i64 → i64) functype. Emitted only when the module has a fn-value.
+def ho-functypes() = List.push(List.push(List.push(List.push(([] : List(Bytes)), functype-bytes(1)), functype-bytes(2)), functype-bytes(3)), functype-bytes(4))
 
 /// SOURCE → recursive wasm module. read → lower main Core → assemble the multi-function module. `Some(bytes)` =
 /// a runnable module exporting `main` (which calls the emitted recursive defs); `None` = ill-typed / out-of-subset
@@ -286,3 +326,31 @@ def er-def-env-empty-detects-single-main() =
      then unit else trap("non-empty def-env → false")) else trap("empty def-env → true"))
 
 export { emit-recursive-module, emit-rec-src, emit-any-src-bytes, is-def-env-empty, can-emit-d, recursive-types, recursive-bodies, range-list, entries-to-defs, has-value-d }
+
+@test
+def er-can-emit-d-allows-fnref-and-fnrefvar() =
+  // W-HO: a CFnRef to a KNOWN def is emittable (→ i64.const funcidx); to an unknown name it declines. A
+  // CFnRefVar apply is emittable iff its args are (the fBinder is a local holding a funcidx).
+  (let de = Map.insert((Map.empty : Map(Int64, Int64)), 900, 0) in
+   (if can-emit-d(Core.CFnRef(900), de) then
+     (if can-emit-d(Core.CFnRef(901), de) then trap("CFnRef to an unknown def must decline")
+      else (if can-emit-d(Core.CFnRefVar(5, List.push([], Core.CNum(41, true, 64))), de) then unit
+            else trap("CFnRefVar with an emittable arg must be emittable")))
+    else trap("CFnRef to a known def must be emittable")))
+
+@test
+def er-has-fnref-detects-ho() =
+  // has-fnref finds a fn-value nested in a CLet; a plain arith has none.
+  (if has-fnref(Core.CLet(0, Core.CFnRef(900), Core.CNum(1, true, 64))) then
+     (if has-fnref(Core.CBin(43, true, 64, Core.CNum(1, true, 64), Core.CNum(2, true, 64)))
+      then trap("plain arith has no fn-value") else unit)
+   else trap("has-fnref must find a CFnRef in a CLet value"))
+
+@test
+def er-table-and-elem-section-bytes() =
+  // W-HO section shapes for k=2 defs: TABLE(4) = `04 04 01 70 00 02` (6 bytes: id, len, 1 table, funcref 0x70,
+  // limits flag 0 min 2); ELEM(9) = `09 08 01 00 41 00 0b 02 00 01` (10 bytes: id, len, 1 seg, flag 0, i32.const
+  // 0, end, count 2, funcidx 0 1). Pin the lengths (encode the exact section framing).
+  (if Bytes.len(table-section(2)) == 6 then
+     (if Bytes.len(elem-section(2)) == 10 then unit else trap("elem-section(2) = 10 bytes"))
+   else trap("table-section(2) = 6 bytes"))

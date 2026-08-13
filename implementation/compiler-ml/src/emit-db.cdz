@@ -156,6 +156,27 @@ def has-ctor(c: Core) = match c with
   | Core.CMatchSum(_, _, _, _, _) => true
   | _ => false
 
+/// W-HO: does `c` carry a higher-order fn-value (a CFnRef def-name-as-value, or a CFnRefVar apply)? Gates the
+/// recursive module's TABLE+ELEM sections + the HO-arity functypes (call_indirect needs a table + a matching
+/// functype). Recurses structural children incl. CCall/CCtor arg lists. Mirrors has-ctor.
+def has-fnref(c: Core) = match c with
+  | Core.CFnRef(_) => true
+  | Core.CFnRefVar(_, _) => true
+  | Core.CBin(_, _, _, l, r) => has-fnref(l) or has-fnref(r)
+  | Core.CLet(_, v, body) => has-fnref(v) or has-fnref(body)
+  | Core.CIf(cond, thn, els) => has-fnref(cond) or (has-fnref(thn) or has-fnref(els))
+  | Core.CProj(op, _) => has-fnref(op)
+  | Core.CMatchEnum(s, _, thn, els) => has-fnref(s) or (has-fnref(thn) or has-fnref(els))
+  | Core.CMatchSum(s, _, _, thn, els) => has-fnref(s) or (has-fnref(thn) or has-fnref(els))
+  | Core.CCall(_, args) => has-fnref-list(args, 0)
+  | Core.CCtor(_, args) => has-fnref-list(args, 0)
+  | _ => false
+def has-fnref-list(args: List(Core), i: Int64) =
+  (if i == List.len(args) then false
+   else (match List.at(args, i) with
+     | Option.Some(a) => (if has-fnref(a) then true else has-fnref-list(args, i + 1))
+     | Option.None(_) => false))
+
 /// W-compound: are a CCtor's payload args each EMITTABLE and FLAT (no nested CCtor)? A single i32 scratch
 /// local holds the alloc base, so SEQUENTIAL ctors reuse it safely (base is dead once the handle is pushed),
 /// but a NESTED ctor arg would clobber the outer base mid-store. So gate emit to flat, emittable args (a
@@ -390,7 +411,19 @@ def emit-instrs-d(c: Core, binders: List(Int64), defidx: Map(Int64, Int64)) = ma
              Bytes.concat(b1(4), Bytes.concat(b1(126),                                                                                  // if (result i64)
                Bytes.concat(then-part, Bytes.concat(b1(5),                                                                             // else
                  Bytes.concat(emit-instrs-d(els, binders, defidx), b1(11))))))))))))))
-  | _ => Bytes.of([])
+  | Core.CFnRef(name) =>
+      // W-HO: a def-name used as a first-class fn VALUE → its FUNCIDX as an i64 const (0x42 i64.const <funcidx>).
+      // The identity elem segment maps table[funcidx] = funcidx, so this value doubles as the call_indirect index.
+      Bytes.concat(b1(66), sleb(lookup-idx(defidx, name)))
+  | Core.CFnRefVar(fb, args) =>
+      // W-HO: apply the fn-value in local `fb` to `args`. Emit args (call convention), then the fn-value
+      // (local.get fb = an i64 funcidx) ; i32.wrap_i64 (→ i32 table index) ; call_indirect <typeidx> <table 0>.
+      // typeidx is COMPUTED, no threading: emit-recursive-module appends functype-bytes(1..4) after main (which
+      // is at typeidx k = Map.len(defidx)), so the functype for arity A sits at typeidx k+A → Map.len(defidx)+len(args).
+      Bytes.concat(emit-call-args(args, 0, binders, defidx),
+        Bytes.concat(b1(32), Bytes.concat(uleb(index-of(binders, fb)),
+          Bytes.concat(b1(167),                                                                    // i32.wrap_i64
+            Bytes.concat(b1(17), Bytes.concat(uleb(Map.len(defidx) + List.len(args)), b1(0)))))))  // 0x11 call_indirect <typeidx> <table 0>
 
 /// W-compound: emit a CCtor's payload-store sequence — for each arg i: `local.get scratch ; <emit arg> ;
 /// i64.store align=3 offset=8*(i+1)` (element i after the tag). Index recursion; scratch (i32 local) holds the
@@ -1363,4 +1396,4 @@ def em-lookup-idx-resolves-present-funcidx() =
   (let m = defenv-funcidx-map(Map.to-list(Map.insert((Map.empty : Map(Int64, Tuple(List(Int64), Core))), 42, ([], Core.CNum(0, true, 64))))) in
    (if (lookup-idx(m, 42) == 0) then unit else trap("lookup-idx resolves a present name to its funcidx 0")))
 
-export { Target.*, target-emit, emit-wasm-module, emit-src-for, emit-module, emit-src, emit-text, render-core, render-core-list, int-to-decimal, emit-src-bytes, bytes-to-list, emit-instrs, emit-instrs-d, emit-call-args, lookup-idx, emit-def-body, emit-def-body-d, defenv-funcidx-map, export-section-idx, can-emit, collect-binders, is-arith-op, is-cmp-op, wasm-op, cmp-op, uleb, sleb, functype-bytes, type-section-multi, func-section-multi, code-section-multi, uleb-each, preamble, has-ctor, memory-section, global-section }
+export { Target.*, target-emit, emit-wasm-module, emit-src-for, emit-module, emit-src, emit-text, render-core, render-core-list, int-to-decimal, emit-src-bytes, bytes-to-list, emit-instrs, emit-instrs-d, emit-call-args, lookup-idx, emit-def-body, emit-def-body-d, defenv-funcidx-map, export-section-idx, can-emit, collect-binders, is-arith-op, is-cmp-op, wasm-op, cmp-op, uleb, sleb, functype-bytes, type-section-multi, func-section-multi, code-section-multi, uleb-each, preamble, has-ctor, has-fnref, section, b1, memory-section, global-section }
