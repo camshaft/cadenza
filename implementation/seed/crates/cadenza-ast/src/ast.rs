@@ -425,6 +425,38 @@ impl Builder {
         self.list(children)
     }
 
+    /// Build a NAME-FREE operation-signature node `(func (param Desc)… (result Desc))` — the func shape an
+    /// EFFECT-OPERATION schema uses, distinct from [`wit_func_sig`]'s named-param `(param PName Desc)`. The
+    /// difference is deliberate and load-bearing for effect IDENTITY: a Cadenza effect operation is declared
+    /// with a POSITIONAL, ANONYMOUS arrow `(op send (-> Bytes Unit))` — there is no param name to recover — so
+    /// an effect op's schema-hash MUST NOT include param names, or a userspace effect could never
+    /// content-address to a same-shape built-in (the whole schema-hash-identity premise; concierge ruling
+    /// 2026-08-13, constraint-forced). Identity is `(effect-name, op-name, POSITIONAL param-type shape, result
+    /// shape)` — the effect/op names ride [`effect_schema_tree`], the positional param + result types ride
+    /// here. A param node is `(param <desc>)` (the `param` head is a NAME atom, head-kind-fixed like
+    /// `wit_func_sig`), carrying ONLY the type descriptor, in declaration (positional) order. The `result` is
+    /// always present (a no-return op passes a `unit` descriptor), so the shape is uniform.
+    ///
+    /// This is the SHARED convention for EVERY effect-op-schema producer: the kernel built-in/family schemas
+    /// AND rcdzc's userspace `ty_to_wit_desc` both build op sigs through this, so the same declared shape
+    /// content-addresses to the same schema-hash regardless of producer. [`wit_func_sig`] stays NAMED and is
+    /// used ONLY by the WIT-WORLD path ([`world_schema_tree`]), where a member's param names ARE the `.wit`
+    /// contract (e.g. `fold.apply(event)`, `kv.get(key)`) that a component reader reads from the declaration.
+    pub fn wit_op_sig(&mut self, params: &[StructId], result: StructId) -> StructId {
+        let mut children = Vec::with_capacity(1 + params.len() + 1);
+        let func_head = self.name("func");
+        children.push(func_head);
+        for &desc in params {
+            let param_head = self.name("param");
+            let param_node = self.list(vec![param_head, desc]);
+            children.push(param_node);
+        }
+        let result_head = self.name("result");
+        let result_node = self.list(vec![result_head, result]);
+        children.push(result_node);
+        self.list(children)
+    }
+
     /// Build a WIT interface node `(<dir> IfaceName (member MName FuncSig)…)` where `dir` is `import` or
     /// `export` — the direction is STRUCTURAL (a NAME-atom sub-head), not a member attribute, because the
     /// compiler emits a different value-bridge per direction (an export-side bridge for an exported member,

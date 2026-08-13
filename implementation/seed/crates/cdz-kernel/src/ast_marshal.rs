@@ -419,7 +419,7 @@ pub fn builtin_effect_schema_hash(kind: &crate::effect::EffectKind) -> crate::ha
                 &mut b,
                 &[("stop-reason", stop_reason), ("content", content)],
             );
-            let sig = b.wit_func_sig(&[("request", request)], response);
+            let sig = b.wit_op_sig(&[request], response);
             ("model", "invoke", sig)
         }
         // http.request(method: string, headers: list<tuple<string,string>>, body: option<list<u8>>)
@@ -452,10 +452,7 @@ pub fn builtin_effect_schema_hash(kind: &crate::effect::EffectKind) -> crate::ha
                     ("body", resp_body),
                 ],
             );
-            let sig = b.wit_func_sig(
-                &[("method", method), ("headers", req_headers), ("body", body)],
-                response,
-            );
+            let sig = b.wit_op_sig(&[method, req_headers, body], response);
             ("http", "request", sig)
         }
         // shell.run(pipeline: list<record{program: string, args: list<string>}>) -> unit. The outcome folds
@@ -472,7 +469,7 @@ pub fn builtin_effect_schema_hash(kind: &crate::effect::EffectKind) -> crate::ha
             };
             let pipeline = b.wit_type_list(stage);
             let unit = b.wit_type_unit();
-            let sig = b.wit_func_sig(&[("pipeline", pipeline)], unit);
+            let sig = b.wit_op_sig(&[pipeline], unit);
             ("shell", "run", sig)
         }
         // now.read() -> record{ms: u64}. No params (unit-arg-free); the wall-clock ms anchor folds back as a
@@ -480,7 +477,7 @@ pub fn builtin_effect_schema_hash(kind: &crate::effect::EffectKind) -> crate::ha
         EffectKind::Now => {
             let ms = b.wit_type_prim("u64");
             let time = wit_type_record(&mut b, &[("ms", ms)]);
-            let sig = b.wit_func_sig(&[], time);
+            let sig = b.wit_op_sig(&[], time);
             ("now", "read", sig)
         }
         // timer.arm(deadline-ms: u64) -> unit. The fire arrives as a separate injected timer-fired event, not
@@ -488,7 +485,7 @@ pub fn builtin_effect_schema_hash(kind: &crate::effect::EffectKind) -> crate::ha
         EffectKind::Timer => {
             let deadline = b.wit_type_prim("u64");
             let unit = b.wit_type_unit();
-            let sig = b.wit_func_sig(&[("deadline-ms", deadline)], unit);
+            let sig = b.wit_op_sig(&[deadline], unit);
             ("timer", "arm", sig)
         }
         // emit.send(payload: list<u8>) -> unit. target-OUT: the peer session id rides `req.target` (the
@@ -502,7 +499,7 @@ pub fn builtin_effect_schema_hash(kind: &crate::effect::EffectKind) -> crate::ha
                 b.wit_type_list(u8_ty)
             };
             let unit = b.wit_type_unit();
-            let sig = b.wit_func_sig(&[("payload", payload)], unit);
+            let sig = b.wit_op_sig(&[payload], unit);
             ("emit", "send", sig)
         }
     };
@@ -573,30 +570,33 @@ pub fn family_effect_schema_hash(family: &str) -> Option<crate::hash::Hash> {
     // per-arm code built, so `family_effect_schema_hash` is byte-identical for every family (the identity is
     // frozen). The 6 STRUCTURALLY-COMPLEX families (blob/get option, metric/publish record, store/add|remove
     // MemberOp, store/resolve-all list, control/close variant) stay bespoke in the `match` below the table.
-    // The four shapes (`bytes` = `list<u8>`, target-out means no target param — the target rides req.target):
-    //   UnitToBytes   `()          -> bytes`   ·  BytesToUnit  `(<p>: bytes) -> unit`
-    //   UnitToUnit    `()          -> unit`    ·  BytesToBytes `(<p>: bytes) -> bytes`
+    // The four shapes (`bytes` = `list<u8>`, target-out means no target param — the target rides req.target).
+    // Op-param names are NOT part of effect identity (concierge ruling 2026-08-13, [`wit_op_sig`]) — a
+    // Cadenza effect op arrow is positional/anonymous — so the shapes carry ONLY the positional param/result
+    // type structure, no param-name string:
+    //   UnitToBytes   `()      -> bytes`   ·  BytesToUnit  `(bytes) -> unit`
+    //   UnitToUnit    `()      -> unit`    ·  BytesToBytes `(bytes) -> bytes`
     enum SimpleShape {
         UnitToBytes,
-        BytesToUnit(&'static str),
+        BytesToUnit,
         UnitToUnit,
-        BytesToBytes(&'static str),
+        BytesToBytes,
     }
     use SimpleShape::*;
-    // (family const, effect-name, op-name, shape). Param names are load-bearing (they participate in the
-    // hash) — kept EXACTLY as the prior per-arm code spelled them.
+    // (family const, effect-name, op-name, shape). Identity = effect-name + op-name + positional param/result
+    // shape (NO param names — see `wit_op_sig`).
     const SIMPLE: &[(&str, &str, &str, SimpleShape)] = &[
         (effect_ct::FS_READ, "fs", "read", UnitToBytes),
-        (effect_ct::FS_WRITE, "fs", "write", BytesToUnit("content")),
+        (effect_ct::FS_WRITE, "fs", "write", BytesToUnit),
         (effect_ct::FS_GLOB, "fs", "glob", UnitToBytes),
-        (effect_ct::BLOB_PUT, "blob", "put", BytesToBytes("content")),
-        (effect_ct::WS_SEND, "ws", "send", BytesToUnit("frame")),
+        (effect_ct::BLOB_PUT, "blob", "put", BytesToBytes),
+        (effect_ct::WS_SEND, "ws", "send", BytesToUnit),
         (effect_ct::WS_DIAL, "ws", "dial", UnitToUnit),
         (
             effect_ct::LIFECYCLE_SPAWN,
             "lifecycle",
             "spawn",
-            BytesToBytes("reducer-hash"),
+            BytesToBytes,
         ),
         (
             effect_ct::LIFECYCLE_SUSPEND,
@@ -620,43 +620,33 @@ pub fn family_effect_schema_hash(family: &str) -> Option<crate::hash::Hash> {
             effect_ct::CAPABILITIES,
             "control",
             "capabilities",
-            BytesToUnit("manifest"),
+            BytesToUnit,
         ),
-        (
-            effect_ct::SUMMARY,
-            "control",
-            "summary",
-            BytesToUnit("summary"),
-        ),
+        (effect_ct::SUMMARY, "control", "summary", BytesToUnit),
         (effect_ct::SIGNATURE, "control", "signature", UnitToBytes),
-        (effect_ct::STORE_SET, "store", "set", BytesToUnit("pointer")),
+        (effect_ct::STORE_SET, "store", "set", BytesToUnit),
         (effect_ct::STORE_RESOLVE, "store", "resolve", UnitToBytes),
-        (
-            effect_ct::EFFECT_REPLY,
-            "effect",
-            "reply",
-            BytesToUnit("response"),
-        ),
+        (effect_ct::EFFECT_REPLY, "effect", "reply", BytesToUnit),
     ];
     if let Some((_, name, op_name, shape)) = SIMPLE.iter().find(|(fam, ..)| *fam == family) {
         let sig = match shape {
             UnitToBytes => {
                 let result = bytes(&mut b);
-                b.wit_func_sig(&[], result)
+                b.wit_op_sig(&[], result)
             }
-            BytesToUnit(p) => {
+            BytesToUnit => {
                 let param = bytes(&mut b);
                 let unit = b.wit_type_unit();
-                b.wit_func_sig(&[(p, param)], unit)
+                b.wit_op_sig(&[param], unit)
             }
             UnitToUnit => {
                 let unit = b.wit_type_unit();
-                b.wit_func_sig(&[], unit)
+                b.wit_op_sig(&[], unit)
             }
-            BytesToBytes(p) => {
+            BytesToBytes => {
                 let param = bytes(&mut b);
                 let result = bytes(&mut b);
-                b.wit_func_sig(&[(p, param)], result)
+                b.wit_op_sig(&[param], result)
             }
         };
         return Some(effect_schema_hash_from_nodes(b, name, &[(op_name, sig)]));
@@ -669,7 +659,7 @@ pub fn family_effect_schema_hash(family: &str) -> Option<crate::hash::Hash> {
         effect_ct::BLOB_GET => {
             let content = bytes(&mut b);
             let maybe = b.wit_type_option(content);
-            let sig = b.wit_func_sig(&[], maybe);
+            let sig = b.wit_op_sig(&[], maybe);
             ("blob", "get", sig)
         }
         // metric/publish(sample: record -> unit): the MetricSample shape (name/kind/value/unit/labels).
@@ -695,7 +685,7 @@ pub fn family_effect_schema_hash(family: &str) -> Option<crate::hash::Hash> {
                 ],
             );
             let unit = b.wit_type_unit();
-            let sig = b.wit_func_sig(&[("sample", sample)], unit);
+            let sig = b.wit_op_sig(&[sample], unit);
             ("metric", "publish", sig)
         }
         // store/add | store/remove(op: member-op record -> unit): target = the group name (target-out);
@@ -711,7 +701,7 @@ pub fn family_effect_schema_hash(family: &str) -> Option<crate::hash::Hash> {
             };
             let op = wit_type_record(&mut b, &[("add", add), ("member", member), ("tag", tag)]);
             let unit = b.wit_type_unit();
-            let sig = b.wit_func_sig(&[("op", op)], unit);
+            let sig = b.wit_op_sig(&[op], unit);
             if family == effect_ct::STORE_ADD {
                 ("store", "add", sig)
             } else {
@@ -725,7 +715,7 @@ pub fn family_effect_schema_hash(family: &str) -> Option<crate::hash::Hash> {
                 let member = bytes(&mut b);
                 b.wit_type_list(member)
             };
-            let sig = b.wit_func_sig(&[], members);
+            let sig = b.wit_op_sig(&[], members);
             ("store", "resolve-all", sig)
         }
         // effect/reply(response: bytes -> unit): target = the opaque 32-byte reply TOKEN (target-out); payload
@@ -733,7 +723,7 @@ pub fn family_effect_schema_hash(family: &str) -> Option<crate::hash::Hash> {
         effect_ct::EFFECT_REPLY => {
             let response = bytes(&mut b);
             let unit = b.wit_type_unit();
-            let sig = b.wit_func_sig(&[("response", response)], unit);
+            let sig = b.wit_op_sig(&[response], unit);
             ("effect", "reply", sig)
         }
         // control/close(outcome: CloseOutcome -> unit): NO target; payload = the close outcome, a variant
@@ -749,7 +739,7 @@ pub fn family_effect_schema_hash(family: &str) -> Option<crate::hash::Hash> {
                 ],
             );
             let unit = b.wit_type_unit();
-            let sig = b.wit_func_sig(&[("outcome", outcome)], unit);
+            let sig = b.wit_op_sig(&[outcome], unit);
             ("control", "close", sig)
         }
         _ => return None,
@@ -3552,7 +3542,9 @@ mod tests {
                 b.wit_type_list(u8_ty)
             };
             let unit = b.wit_type_unit();
-            let sig = b.wit_func_sig(&[("payload", payload)], unit);
+            // NAME-FREE op sig (wit_op_sig): op-param names are NOT part of effect identity, so a userspace
+            // producer's anonymous `(-> Bytes Unit)` arrow content-addresses to the built-in.
+            let sig = b.wit_op_sig(&[payload], unit);
             effect_schema_hash_from_nodes(b, "emit", &[("send", sig)])
         };
         assert_eq!(
@@ -3610,7 +3602,7 @@ mod tests {
                     &[("content", content), ("stop-reason", stop_reason)],
                 )
             };
-            let sig = b.wit_func_sig(&[("request", request)], response);
+            let sig = b.wit_op_sig(&[request], response);
             effect_schema_hash_from_nodes(b, "model", &[("invoke", sig)])
         };
         assert_eq!(
