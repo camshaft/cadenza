@@ -27,3 +27,4 @@ pass	the effect correlation token is echoed to the caller on the effect-result (
 pass	the same counter IGNORES a non-message kick-off (else-branch writes no state)
 pass	two independent senders converge on one receiver which accumulates both messages (fan-in)
 pass	two sessions ping-pong: a emits to b, b replies to a, a folds the reply and stops
+pass	two sessions self-close with distinct outcomes — one Success, one Failure — each observable

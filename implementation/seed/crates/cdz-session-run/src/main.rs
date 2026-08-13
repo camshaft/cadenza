@@ -690,6 +690,16 @@ async fn main() -> Result<()> {
         }
         let snap = session.status_snapshot(None, args.stall_after_ms);
         out.push_str(&format!("end-status\t{alias}\t{}\n", state_str(snap.state)));
+        // §6 close outcome: a CLOSED session carries its reducer's chosen CloseOutcome — Success (clean self-
+        // completion) vs Failure (self-close with a reason). Both report `status closed`, so the OUTCOME is
+        // only observable here. `end-close-outcome\t<alias>\tSuccess|Failure` (present only when closed).
+        if let Some(outcome) = &snap.close_outcome {
+            let kind = match outcome {
+                cdz_kernel::event::CloseOutcome::Success(_) => "Success",
+                cdz_kernel::event::CloseOutcome::Failure(_) => "Failure",
+            };
+            out.push_str(&format!("end-close-outcome\t{alias}\t{kind}\n"));
+        }
         out.push_str(&format!(
             "events-processed\t{alias}\t{}\n",
             session.event_count()

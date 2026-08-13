@@ -4387,6 +4387,10 @@ struct PlatformCaseRecord {
     end_kv: Vec<(String, String, String)>,
     /// `(end-state <alias> (status <state>))` → `(alias, status)`.
     end_status: Vec<(String, String)>,
+    /// `(end-state <alias> (close-outcome <kind>))` → `(alias, kind)` where kind ∈ {Success, Failure} — the
+    /// §6 close-outcome distinction (a self-closed session's chosen outcome; both report `status closed`, so
+    /// the outcome is only observable via the runner's `end-close-outcome` line).
+    close_outcome: Vec<(String, String)>,
     /// `(events-processed <alias> <n>)` → `(alias, n)`.
     events_processed: Vec<(String, String)>,
     /// `(expect-fault <kind>)` (0-or-1) → the whole run must FAULT (cdz-session-run exits nonzero) with a
@@ -4431,6 +4435,7 @@ fn parse_platform_records(text: &str) -> Vec<PlatformCaseRecord> {
     let mut expect_delivery_failures: Vec<(String, String)> = Vec::new();
     let mut end_kv: Vec<(String, String, String)> = Vec::new();
     let mut end_status: Vec<(String, String)> = Vec::new();
+    let mut close_outcome: Vec<(String, String)> = Vec::new();
     let mut events_processed: Vec<(String, String)> = Vec::new();
     let mut expect_fault: Option<String> = None;
     let mut children: Vec<(String, String)> = Vec::new();
@@ -4445,6 +4450,7 @@ fn parse_platform_records(text: &str) -> Vec<PlatformCaseRecord> {
                 expect_delivery_failures: std::mem::take(&mut expect_delivery_failures),
                 end_kv: std::mem::take(&mut end_kv),
                 end_status: std::mem::take(&mut end_status),
+                close_outcome: std::mem::take(&mut close_outcome),
                 events_processed: std::mem::take(&mut events_processed),
                 expect_fault: expect_fault.take(),
                 children: std::mem::take(&mut children),
@@ -4499,6 +4505,12 @@ fn parse_platform_records(text: &str) -> Vec<PlatformCaseRecord> {
             "end-status" => {
                 if let Some((a, s)) = val.split_once('\t') {
                     end_status.push((a.to_string(), s.to_string()));
+                }
+            }
+            // `end-close-outcome\t<alias>\t<Success|Failure>` — the §6 close-outcome distinction assertion.
+            "end-close-outcome" => {
+                if let Some((a, k)) = val.split_once('\t') {
+                    close_outcome.push((a.to_string(), k.to_string()));
                 }
             }
             // `events-processed\t<alias>\t<n>`.
@@ -4559,6 +4571,8 @@ struct ObservedSession {
     /// An `end-fault` line — set iff the fold trapped/failed (grades the case Fail).
     fault: Option<String>,
     status: Option<String>,
+    /// An `end-close-outcome` line — `Success`/`Failure` for a closed session (§6); `None` otherwise.
+    close_outcome: Option<String>,
     events_processed: Option<String>,
     /// `end-kv` lines: `key → value-render` (value is `hex:<hex>` per cdz-session-run's wire).
     kv: std::collections::BTreeMap<String, String>,
@@ -4620,6 +4634,12 @@ fn parse_observed_run(stdout: &str) -> ObservedRun {
             ["end-status", alias, state] => {
                 run.sessions.entry((*alias).to_string()).or_default().status =
                     Some((*state).to_string());
+            }
+            ["end-close-outcome", alias, kind] => {
+                run.sessions
+                    .entry((*alias).to_string())
+                    .or_default()
+                    .close_outcome = Some((*kind).to_string());
             }
             ["events-processed", alias, n] => {
                 run.sessions
@@ -4883,6 +4903,27 @@ fn grade_platform_case(
                 return Grade::Fail(format!("{alias} status: expected {status}, observed {s}"));
             }
             None => return Grade::Fail(format!("{alias}: no end-status observed")),
+        }
+    }
+    // §6 close-outcome: a self-closed session's Success vs Failure (both report `status closed`; the outcome
+    // is observable only via the runner's `end-close-outcome` line). String-eq, like end-status.
+    for (alias, kind) in &rec.close_outcome {
+        match obs
+            .sessions
+            .get(alias)
+            .and_then(|s| s.close_outcome.as_ref())
+        {
+            Some(k) if k == kind => {}
+            Some(k) => {
+                return Grade::Fail(format!(
+                    "{alias} close-outcome: expected {kind}, observed {k}"
+                ));
+            }
+            None => {
+                return Grade::Fail(format!(
+                    "{alias}: no end-close-outcome observed (is the session actually closed?)"
+                ));
+            }
         }
     }
     for (alias, n) in &rec.events_processed {
