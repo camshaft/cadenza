@@ -1806,6 +1806,10 @@ fn body_form(b: &mut Builder, body: &EventBody) -> StructId {
             idempotency_key,
             deadline_ms,
             token,
+            // schema_hash is a fresh ADDITIVE field; this event_ast durable-frame codec does not yet
+            // serialize it (wiring encode/decode of the raw 32-byte child is v-compiler-ml's follow-up on
+            // top of this field-add). Ignored here for now so the frame format is byte-unchanged.
+            schema_hash: _,
         } => {
             let head = b.name("dispatched");
             let idv = u64_leaf(b, id.0);
@@ -2198,6 +2202,9 @@ fn read_body(a: &Arenas, id: StructId) -> Result<EventBody, EventAstError> {
                     idempotency_key: read_hash(a, *idem)?,
                     deadline_ms: read_opt_ms(a, *dl)?,
                     token: read_opt_bytes(a, *tok)?,
+                    // No schema_hash element in the current 7/6-arity wire → None (the field-add is
+                    // additive; v-compiler-ml adds the schema_hash-carrying arity + its read on top).
+                    schema_hash: None,
                 },
                 [idv, k, t, idem, dl, tok] => EventBody::Dispatched {
                     id: EffectId(read_u64(a, *idv)?),
@@ -2207,6 +2214,9 @@ fn read_body(a: &Arenas, id: StructId) -> Result<EventBody, EventAstError> {
                     idempotency_key: read_hash(a, *idem)?,
                     deadline_ms: read_opt_ms(a, *dl)?,
                     token: read_opt_bytes(a, *tok)?,
+                    // No schema_hash element in the current 7/6-arity wire → None (the field-add is
+                    // additive; v-compiler-ml adds the schema_hash-carrying arity + its read on top).
+                    schema_hash: None,
                 },
                 _ => return Err(shape("dispatched arity")),
             }
@@ -2396,6 +2406,7 @@ mod tests {
                     idempotency_key: h,
                     deadline_ms: Some(12345),
                     token: Some(b"resume-tok".to_vec()),
+                    schema_hash: None,
                 },
             },
             Event {
@@ -2409,6 +2420,7 @@ mod tests {
                     idempotency_key: h,
                     deadline_ms: None,
                     token: None,
+                    schema_hash: None,
                 },
             },
             // A dispatch whose family DIVERGES from kind.family(): kind is the `Emit` placeholder, the
@@ -2425,6 +2437,7 @@ mod tests {
                     idempotency_key: h,
                     deadline_ms: None,
                     token: None,
+                    schema_hash: None,
                 },
             },
             Event {

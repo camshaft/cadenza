@@ -1127,6 +1127,7 @@ impl Session {
                                 idempotency_key,
                                 deadline_ms: None,
                                 token,
+                                schema_hash: req.schema_hash,
                             },
                             Some(cause),
                         )
@@ -1186,6 +1187,7 @@ impl Session {
                             idempotency_key,
                             deadline_ms: None,
                             token: token.clone(),
+                            schema_hash: req.schema_hash,
                         },
                         Some(cause),
                     )
@@ -1293,6 +1295,7 @@ impl Session {
                             idempotency_key,
                             deadline_ms: None,
                             token,
+                            schema_hash: req.schema_hash,
                         },
                         Some(cause),
                     )
@@ -1390,6 +1393,7 @@ impl Session {
                         idempotency_key,
                         deadline_ms: None,
                         token,
+                        schema_hash: req.schema_hash,
                     },
                     Some(cause),
                 )

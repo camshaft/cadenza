@@ -154,6 +154,16 @@ pub enum EventBody {
         /// reducer that doesn't use a token (e.g. the in-process Rust `Reducer` trait), which is every
         /// dispatch until the wasm-reducer bridge (§19e slice 2) populates it.
         token: Option<Vec<u8>>,
+        /// The dispatched effect's SCHEMA-HASH identity (schema-hash-only effect model): the durable-frame
+        /// mirror of [`crate::effect::EffectRequest::schema_hash`], copied straight from the effect at
+        /// dispatch. `Some(hash)` for an effect whose family has a built-in schema (the [`EffectKind`]
+        /// verbs, slice-1); `None` for a control/store/register-by-string family with no schema (its
+        /// `EffectKind` is the `Emit` PLACEHOLDER, so `family` — not this — is its identity there). Recorded
+        /// alongside `kind`/`family` so recovery + a future schema-keyed router read the effect's schema
+        /// identity straight off the log rather than re-deriving it. ADDITIVE / backward-compatible: the
+        /// `event_ast` wire-codec for this field (raw 32-byte child when `Some`, omitted when `None`,
+        /// absence-tolerant decode) is v-compiler-ml's lane and lands ON TOP of this field.
+        schema_hash: Option<Hash>,
     },
 
     /// The result of a previously-`Dispatched` effect, correlated by `id` (§16c-S4). The reducer
@@ -549,6 +559,11 @@ fn decode_body(c: &mut Cursor) -> Result<EventBody, DecodeError> {
                 idempotency_key,
                 deadline_ms,
                 token,
+                // This event.rs binary codec (the identity codec behind `Event::hash`) does NOT yet carry
+                // `schema_hash` on the wire, so a decoded frame has none — `None`. Persisting it belongs to
+                // the `event_ast` durable-frame codec (v-compiler-ml's lane); keeping it OUT of the identity
+                // encoding leaves `Event::hash` byte-stable (schema_hash is redundant with kind/family here).
+                schema_hash: None,
             }
         }
         3 => EventBody::EffectResult {
@@ -734,6 +749,9 @@ fn encode_body(body: &EventBody, out: &mut Vec<u8>) {
             idempotency_key,
             deadline_ms,
             token,
+            // NOT written by this identity codec (see the decode counterpart): schema_hash stays out of
+            // `Event::hash`'s bytes so the hash is byte-stable; the durable `event_ast` frame carries it.
+            schema_hash: _,
         } => {
             out.push(2);
             out.extend_from_slice(&id.0.to_le_bytes());
@@ -1019,6 +1037,7 @@ mod tests {
                 idempotency_key: Hash::from_bytes([0xCDu8; 32]),
                 deadline_ms: Some(1000),
                 token: Some(b"step-1".to_vec()),
+                schema_hash: None,
             },
         }
     }
@@ -1179,6 +1198,7 @@ mod tests {
                     idempotency_key: h,
                     deadline_ms: Some(12345),
                     token: Some(b"resume-tok".to_vec()),
+                    schema_hash: None,
                 },
             },
             Event {
@@ -1192,6 +1212,7 @@ mod tests {
                     idempotency_key: h,
                     deadline_ms: None,
                     token: None,
+                    schema_hash: None,
                 },
             },
             Event {

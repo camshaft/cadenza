@@ -456,6 +456,7 @@ mod tests {
                 idempotency_key: Hash::of(b"k"),
                 deadline_ms: None,
                 token: None,
+                schema_hash: None,
             },
         }
     }
