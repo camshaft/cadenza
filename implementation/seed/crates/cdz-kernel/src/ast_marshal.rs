@@ -588,6 +588,12 @@ pub fn family_effect_schema_hash(family: &str) -> Option<crate::hash::Hash> {
     // type structure, no param-name string:
     //   UnitToBytes   `()      -> bytes`   ·  BytesToUnit  `(bytes) -> unit`
     //   UnitToUnit    `()      -> unit`    ·  BytesToBytes `(bytes) -> bytes`
+    // Each row also carries `has_target`: a REDUCER-CHOSEN-target effect (concierge target-as-op-arg ruling
+    // 2026-08-13, same as emit) declares its target as a LEADING `bytes` op-arg the reducer passes at the
+    // perform site (so it rides args->ast->wire); target stays OUT of identity because the hash is over the
+    // op TYPE SIGNATURE (target-TYPE-shaped, value-independent). A FIXED-route/no-target effect (target rides
+    // req.target as a fixed executor route, or has no target) has `has_target = false`. The `bytes`
+    // arg is PREPENDED (position 0) to the shape's params below when `has_target`.
     enum SimpleShape {
         UnitToBytes,
         BytesToUnit,
@@ -595,70 +601,107 @@ pub fn family_effect_schema_hash(family: &str) -> Option<crate::hash::Hash> {
         BytesToBytes,
     }
     use SimpleShape::*;
-    // (family const, effect-name, op-name, shape). Identity = effect-name + op-name + positional param/result
-    // shape (NO param names — see `wit_op_sig`).
-    const SIMPLE: &[(&str, &str, &str, SimpleShape)] = &[
-        (effect_ct::FS_READ, "fs", "read", UnitToBytes),
-        (effect_ct::FS_WRITE, "fs", "write", BytesToUnit),
-        (effect_ct::FS_GLOB, "fs", "glob", UnitToBytes),
-        (effect_ct::BLOB_PUT, "blob", "put", BytesToBytes),
-        (effect_ct::WS_SEND, "ws", "send", BytesToUnit),
-        (effect_ct::WS_DIAL, "ws", "dial", UnitToUnit),
+    // (family const, effect-name, op-name, shape, has_target). Identity = effect-name + op-name + positional
+    // param/result shape (NO param names — see `wit_op_sig`; the resource-designation MARKER is UNHASHED decl
+    // metadata, v-ah ruling 2026-08-13 — it does NOT enter this hash, only whether a target TYPE-arg is present).
+    // has_target = the target is REDUCER-CHOSEN (a leading bytes arg): fs/ws/store/lifecycle-suspend|resume|
+    // terminate/control-signature/effect-reply. has_target=false (FIXED route / no target): blob.put (result=
+    // hash, content-addressed — no reducer-chosen target), lifecycle.spawn (reducer-hash is the PAYLOAD arg +
+    // child-id is the RESULT — no target), control.capabilities/summary (self-directed, the reducer BUILDS the
+    // payload — no target).
+    const SIMPLE: &[(&str, &str, &str, SimpleShape, bool)] = &[
+        (effect_ct::FS_READ, "fs", "read", UnitToBytes, true),
+        (effect_ct::FS_WRITE, "fs", "write", BytesToUnit, true),
+        (effect_ct::FS_GLOB, "fs", "glob", UnitToBytes, true),
+        (effect_ct::BLOB_PUT, "blob", "put", BytesToBytes, false),
+        (effect_ct::WS_SEND, "ws", "send", BytesToUnit, true),
+        (effect_ct::WS_DIAL, "ws", "dial", UnitToUnit, true),
         (
             effect_ct::LIFECYCLE_SPAWN,
             "lifecycle",
             "spawn",
             BytesToBytes,
+            false,
         ),
         (
             effect_ct::LIFECYCLE_SUSPEND,
             "lifecycle",
             "suspend",
             UnitToUnit,
+            true,
         ),
         (
             effect_ct::LIFECYCLE_RESUME,
             "lifecycle",
             "resume",
             UnitToUnit,
+            true,
         ),
         (
             effect_ct::LIFECYCLE_TERMINATE,
             "lifecycle",
             "terminate",
             UnitToUnit,
+            true,
         ),
         (
             effect_ct::CAPABILITIES,
             "control",
             "capabilities",
             BytesToUnit,
+            false,
         ),
-        (effect_ct::SUMMARY, "control", "summary", BytesToUnit),
-        (effect_ct::SIGNATURE, "control", "signature", UnitToBytes),
-        (effect_ct::STORE_SET, "store", "set", BytesToUnit),
-        (effect_ct::STORE_RESOLVE, "store", "resolve", UnitToBytes),
-        (effect_ct::EFFECT_REPLY, "effect", "reply", BytesToUnit),
+        (effect_ct::SUMMARY, "control", "summary", BytesToUnit, false),
+        (
+            effect_ct::SIGNATURE,
+            "control",
+            "signature",
+            UnitToBytes,
+            true,
+        ),
+        (effect_ct::STORE_SET, "store", "set", BytesToUnit, true),
+        (
+            effect_ct::STORE_RESOLVE,
+            "store",
+            "resolve",
+            UnitToBytes,
+            true,
+        ),
+        (
+            effect_ct::EFFECT_REPLY,
+            "effect",
+            "reply",
+            BytesToUnit,
+            true,
+        ),
     ];
-    if let Some((_, name, op_name, shape)) = SIMPLE.iter().find(|(fam, ..)| *fam == family) {
+    if let Some((_, name, op_name, shape, has_target)) =
+        SIMPLE.iter().find(|(fam, ..)| *fam == family)
+    {
+        // A reducer-chosen-target effect PREPENDS a leading `bytes` target arg (position 0), the reducer-passed
+        // resource that rides the ast; target stays out of identity (sig hashed, value-independent).
+        let mut params: Vec<StructId> = Vec::new();
+        if *has_target {
+            params.push(bytes(&mut b));
+        }
         let sig = match shape {
             UnitToBytes => {
                 let result = bytes(&mut b);
-                b.wit_op_sig(&[], result)
+                b.wit_op_sig(&params, result)
             }
             BytesToUnit => {
-                let param = bytes(&mut b);
+                params.push(bytes(&mut b));
                 let unit = b.wit_type_unit();
-                b.wit_op_sig(&[param], unit)
+                b.wit_op_sig(&params, unit)
             }
             UnitToUnit => {
                 let unit = b.wit_type_unit();
-                b.wit_op_sig(&[], unit)
+                b.wit_op_sig(&params, unit)
             }
             BytesToBytes => {
-                let param = bytes(&mut b);
+                params.push(bytes(&mut b));
                 let result = bytes(&mut b);
-                b.wit_op_sig(&[param], result)
+                b.wit_op_sig(&params, result)
             }
         };
         return Some(effect_schema_hash_from_nodes(b, name, &[(op_name, sig)]));
@@ -666,12 +709,14 @@ pub fn family_effect_schema_hash(family: &str) -> Option<crate::hash::Hash> {
     // The 6 STRUCTURALLY-COMPLEX families — bespoke op-sig shapes (option/record/tuple/variant/list) that do
     // not fit the four simple shapes above; kept as explicit arms.
     let (name, op_name, sig): (&str, &str, StructId) = match family {
-        // blob/get(-> option<bytes>): target = the content hash (target-out); result = the content if present
-        // (CAS hit = Some, miss = None — a normal answer, not an error).
+        // blob/get(target: bytes -> option<bytes>): target = the content hash the reducer NAMES (reducer-chosen
+        // -> a leading target op-arg, target-as-op-arg ruling); result = the content if present (CAS hit = Some,
+        // miss = None — a normal answer, not an error).
         effect_ct::BLOB_GET => {
+            let target = bytes(&mut b);
             let content = bytes(&mut b);
             let maybe = b.wit_type_option(content);
-            let sig = b.wit_op_sig(&[], maybe);
+            let sig = b.wit_op_sig(&[target], maybe);
             ("blob", "get", sig)
         }
         // metric/publish(sample: record -> unit): the MetricSample shape (name/kind/value/unit/labels).
@@ -703,7 +748,11 @@ pub fn family_effect_schema_hash(family: &str) -> Option<crate::hash::Hash> {
         // store/add | store/remove(op: member-op record -> unit): target = the group name (target-out);
         // payload = the OR-set MemberOp {add: bool, member: hash-bytes, tag: tuple<hash-bytes, u64>}. Distinct
         // identities via the OP NAME (add vs remove), both carrying the same MemberOp shape.
+        // store/add | store/remove(target: bytes, op: member-op record -> unit): target = the group name the
+        // reducer NAMES (reducer-chosen -> a leading target op-arg); payload = the OR-set MemberOp {add: bool,
+        // member: hash-bytes, tag: tuple<hash-bytes, u64>}. Distinct identities via the OP NAME (add vs remove).
         effect_ct::STORE_ADD | effect_ct::STORE_REMOVE => {
+            let target = bytes(&mut b);
             let add = b.wit_type_prim("bool");
             let member = bytes(&mut b);
             let tag = {
@@ -713,21 +762,22 @@ pub fn family_effect_schema_hash(family: &str) -> Option<crate::hash::Hash> {
             };
             let op = wit_type_record(&mut b, &[("add", add), ("member", member), ("tag", tag)]);
             let unit = b.wit_type_unit();
-            let sig = b.wit_op_sig(&[op], unit);
+            let sig = b.wit_op_sig(&[target, op], unit);
             if family == effect_ct::STORE_ADD {
                 ("store", "add", sig)
             } else {
                 ("store", "remove", sig)
             }
         }
-        // store/resolve-all(-> list<hash-bytes>): target = the group name (target-out); result = the current
-        // member set (a list of member hashes).
+        // store/resolve-all(target: bytes -> list<hash-bytes>): target = the group name the reducer NAMES
+        // (reducer-chosen -> a leading target op-arg); result = the current member set (a list of member hashes).
         effect_ct::STORE_RESOLVE_ALL => {
+            let target = bytes(&mut b);
             let members = {
                 let member = bytes(&mut b);
                 b.wit_type_list(member)
             };
-            let sig = b.wit_op_sig(&[], members);
+            let sig = b.wit_op_sig(&[target], members);
             ("store", "resolve-all", sig)
         }
         // effect/reply(response: bytes -> unit): target = the opaque 32-byte reply TOKEN (target-out); payload
