@@ -5400,6 +5400,7 @@ pass	lam1 INLINE and LET-BOUND lambdas applied to one draw — both closure form
 pass	large-set algebra over a multi-level CHAMP trie computes correct union/intersection/difference
 pass	lba1 an op taking a LIST argument — the arm folds the batch into the scalar state by recursion; the second batch is BUILT FROM the first's answer and the empty batch is a no-op
 pass	lc1 SELF-CONCAT sharing — the same list appears twice in one concat, then the original grows and is re-read unchanged
+pass	lcs1 an LCS DP-ROW state — each fed character rebuilds the whole dynamic-programming row against the fixed pattern via a recursive fold reading the OLD row while writing the NEW
 pass	ldd1 an EVENT-LEDGER state — a List of (tag,value) tuples appends per log dispatch, and replay folds only the MATCHING tag's values (absent tag folds to zero)
 pass	le multi-byte fields read little-endian at runtime offsets, unsigned and signed
 pass	le-ax of a ground add that OVERFLOWS Int64 traps during evaluation — it cannot wrap to forge a false bound
@@ -5882,7 +5883,9 @@ pass	resuming with a value of the wrong type for the operation's result is a typ
 pass	resuming with a wrong-type value for a compound result type is a type error
 pass	rg1 the arm ROTATES the tuple state (a b c)->(b c a) per dispatch and returns the evicted head — four weighted reads wrap the ring
 pass	rg2 the rotation DIRECTION flips on the evicted head's parity — even rotates left, odd rotates right, negative-odd exercises truncated mod
+pass	rhe1 a ROUND-HALF-TO-EVEN halving accumulator — each dispatch adds v/2 rounded half-to-even, the parity of the truncated quotient decides which halves bump
 pass	rle1 RUN-LENGTH tracking — the 3-tuple state carries (last,run,best); the n=5 seed extends one run to five, n=7 breaks it at two
+pass	rlm1 a SLIDING-WINDOW rate limiter — allow prunes expired timestamps then admits only under the cap of two per ten ticks; the seeded third request either bounces inside the window or lands beyond it and steals a later slot
 pass	rmp1 a RECORD state wrapping a Map plus a counter — computed perform keys; the arm answers 10*lookup + the ADVANCED counter so both fields are observed
 pass	rn1 a RUNNING-AVERAGE state (sum,count) — three feeds then a truncating divide read, negative total exercises toward-zero
 pass	rot1 a ROTATION-CIPHER state — enc shifts a letter index with the double-mod negative-normalization idiom in the arm, tune drives the shift NEGATIVE and the normalization recovers the canonical class

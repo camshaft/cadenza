@@ -9855,3 +9855,76 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 20306 Int64))
   (call   main (: 1 Int64)) (output (: 20407 Int64)))
+
+; --- breaker batch 260: sliding-window rate limiter, LCS DP-row state, round-half-to-even accumulator ---
+(case "rlm1 a SLIDING-WINDOW rate limiter — allow prunes expired timestamps then admits only under the cap of two per ten ticks; the seeded third request either bounces inside the window or lands beyond it and steals a later slot"
+  (input  (do
+            (effect S (op allow (-> Int64 Int64)))
+            (def (prune (: xs (List Int64)) (: cutoff Int64) (: i Int64) (: acc (List Int64)))
+              (match (List.at xs i)
+                ((Some x) (prune xs cutoff (+ i 1) (if (> x cutoff) (List.push acc x) acc)))
+                ((None u) acc)))
+            (def (main (: n Int64))
+              (handle S (: (list) (List Int64))
+                ((allow (t) w
+                  (let ((w2 (prune w (- t 10) 0 (: (list) (List Int64)))))
+                    (if (< (List.len w2) 2)
+                        (resume 1 (List.push w2 t))
+                        (resume 0 w2)))))
+                (let ((a (S.allow 10)))
+                  (let ((b (S.allow 11)))
+                    (let ((c (S.allow n)))
+                      (let ((d (S.allow 25)))
+                        (let ((e (S.allow 26)))
+                          (+ (* 10 (+ (* 10 (+ (* 10 (+ (* 10 (+ a 1)) (+ b 1))) (+ c 1))) (+ d 1))) (+ e 1)))))))))
+            (export main)))
+  (call   main (: 13 Int64)) (output (: 22122 Int64))
+  (call   main (: 22 Int64)) (output (: 22221 Int64)))
+
+(case "lcs1 an LCS DP-ROW state — each fed character rebuilds the whole dynamic-programming row against the fixed pattern via a recursive fold reading the OLD row while writing the NEW"
+  (input  (do
+            (effect S (op feed (-> Int64 Int64)))
+            (def (at0 (: xs (List Int64)) (: i Int64))
+              (match (List.at xs i) ((Some v) v) ((None u) 0)))
+            (def (imax (: a Int64) (: b Int64)) (if (> a b) a b))
+            (def (build (: pat (List Int64)) (: old (List Int64)) (: new (List Int64)) (: j Int64) (: c Int64))
+              (if (> j (List.len pat))
+                  new
+                  (let ((cell (if (= (at0 pat (- j 1)) c)
+                                  (+ (at0 old (- j 1)) 1)
+                                  (imax (at0 new (- j 1)) (at0 old j)))))
+                    (build pat old (List.push new cell) (+ j 1) c))))
+            (def (main (: n Int64))
+              (handle S (list 0 0 0 0)
+                ((feed (c) row
+                  (let ((row2 (build (list 1 2 3) row (list 0) 1 c)))
+                    (resume (at0 row2 3) row2))))
+                (let ((a (S.feed 1)))
+                  (let ((b (S.feed n)))
+                    (let ((c (S.feed 3)))
+                      (+ (* 10 (+ (* 10 a) b)) c))))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 123 Int64))
+  (call   main (: 9 Int64)) (output (: 112 Int64)))
+
+(case "rhe1 a ROUND-HALF-TO-EVEN halving accumulator — each dispatch adds v/2 rounded half-to-even, the parity of the truncated quotient decides which halves bump"
+  (input  (do
+            (effect S (op add (-> Int64 Int64)))
+            (def (rhe (: x Int64))
+              (let ((q (/ x 2)))
+                (if (= (% x 2) 0)
+                    q
+                    (if (= (% q 2) 0) q (+ q 1)))))
+            (def (main (: n Int64))
+              (handle S 0
+                ((add (v) s
+                  (let ((s2 (+ s (rhe v))))
+                    (resume s2 s2))))
+                (let ((a (S.add n)))
+                  (let ((b (S.add 5)))
+                    (let ((c (S.add 7)))
+                      (let ((d (S.add 2)))
+                        (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 2040809 Int64))
+  (call   main (: 6 Int64)) (output (: 3050910 Int64)))
