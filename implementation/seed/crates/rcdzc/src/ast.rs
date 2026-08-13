@@ -1022,6 +1022,136 @@ impl Builder {
         self.atom_leaf(Leaf::Name(name.into()))
     }
 
+    // ── Canonical WIT schema-descriptor builders (schema-hash-only effect identity) ──────────────
+    //
+    // COPY, DON'T DEPEND (rcdzc/Cargo.toml directive): these are a VERBATIM copy of the WIT-descriptor
+    // builders that produce an effect's schema-hash-bearing tree, NOT a re-implementation and NOT a
+    // dependency. `effect_schema_tree`/`wit_func_sig`/`wit_type_{prim,list,option,unit,tuple}` are copied
+    // byte-for-byte from `cadenza-ast/src/ast.rs` (the builder the kernel builds its built-in descriptors
+    // with); `wit_type_{record,variant}` are copied from `cdz-kernel/src/ast_marshal.rs` (the kernel's
+    // directly-built forms, byte-identical to what `build_type` reflects off a component). rcdzc reifies a
+    // USERSPACE effect's descriptor here (its own arena) so `Hash::of(codec::encode(tree))` matches the
+    // kernel's built-in identity by CONSTRUCTION — same node shapes, same head-kinds (Name vs Str is
+    // load-bearing), same order. A dev-test bridge (`tests.rs`) asserts these copies stay byte-identical to
+    // their originals, exactly as the copied `codec.rs` byte-identity discipline does.
+    //
+    // Field/case ORDER is the identity (concierge ruling 2026-08-13): records NAME-SORTED, tuples
+    // positional, variant cases DECL-ORDER. The caller (`lower::ty_to_wit_desc`) passes fields already in
+    // name-sorted order (it iterates the `Ty::Record` BTreeMap in natural order) and cases in decl order —
+    // these builders preserve the caller's order and never re-sort, so a caller cannot drift the identity.
+
+    /// Build the effect SCHEMA tree `(effect Name (op OpName Sig)…)` — the tree whose
+    /// `Hash::of(codec::encode(root))` is the effect's schema-hash identity. Structural heads
+    /// (`effect`/`op`) are NAME atoms; each per-op `Sig` is a `wit_func_sig` node. `ops` is
+    /// `(op_name, signature_node)` in the caller's order (op order participates in the hash — the caller
+    /// sorts if it wants order-independent identity). No authz node: the schema is data-shape only.
+    pub fn effect_schema_tree(&mut self, name: &str, ops: &[(&str, StructId)]) -> StructId {
+        let mut children = Vec::with_capacity(2 + ops.len());
+        let effect_head = self.name("effect");
+        children.push(effect_head);
+        let ename = self.name(name);
+        children.push(ename);
+        for &(op_name, sig) in ops {
+            let op_head = self.name("op");
+            let opn = self.name(op_name);
+            let op_node = self.list(vec![op_head, opn, sig]);
+            children.push(op_node);
+        }
+        self.list(children)
+    }
+
+    /// Build a WIT function-signature node `(func (param PName Desc)… (result Desc))`. Params are
+    /// `(param_name, type_descriptor_node)` in declaration order (positional-and-named — order and name
+    /// participate in the identity); `result` is the ALWAYS-present result descriptor (a no-return member
+    /// passes a `unit` descriptor, never an omitted slot). `func`/`param`/`result` heads are NAME atoms.
+    pub fn wit_func_sig(&mut self, params: &[(&str, StructId)], result: StructId) -> StructId {
+        let mut children = Vec::with_capacity(1 + params.len() + 1);
+        let func_head = self.name("func");
+        children.push(func_head);
+        for &(param_name, desc) in params {
+            let param_head = self.name("param");
+            let pn = self.name(param_name);
+            let param_node = self.list(vec![param_head, pn, desc]);
+            children.push(param_node);
+        }
+        let result_head = self.name("result");
+        let result_node = self.list(vec![result_head, result]);
+        children.push(result_node);
+        self.list(children)
+    }
+
+    /// Build a PRIMITIVE WIT type descriptor `(kind)` — a one-element list whose sole child is a NAME atom
+    /// naming the primitive (`u8`, `string`, `bool`, `s64`, `f64`, …). A primitive is a NAME-head one-element
+    /// list, a compound is a STRING-head form — so a `Name` vs `Str` head DISTINGUISHES prim from compound,
+    /// and the codec's distinct Name/Str bytes make the choice load-bearing for identity.
+    pub fn wit_type_prim(&mut self, kind: &str) -> StructId {
+        let head = self.name(kind);
+        self.list(vec![head])
+    }
+
+    /// Build a `list<T>` WIT type descriptor `("list" <elem>)` — a STRING-atom head `list` then the element
+    /// type descriptor.
+    pub fn wit_type_list(&mut self, elem: StructId) -> StructId {
+        let head = self.atom_leaf(Leaf::Str("list".into()));
+        self.list(vec![head, elem])
+    }
+
+    /// Build an `option<T>` WIT type descriptor `("option" <inner>)` — a STRING-atom head `option` then the
+    /// inner type descriptor (the TYPE-side option, distinct from a value's `Some`/`None` ctor).
+    pub fn wit_type_option(&mut self, inner: StructId) -> StructId {
+        let head = self.atom_leaf(Leaf::Str("option".into()));
+        self.list(vec![head, inner])
+    }
+
+    /// Build a `unit` WIT type descriptor `("unit")` — a STRING-atom head `unit`, no children (a STR-head
+    /// marker, not a component-model scalar).
+    pub fn wit_type_unit(&mut self) -> StructId {
+        let head = self.atom_leaf(Leaf::Str("unit".into()));
+        self.list(vec![head])
+    }
+
+    /// Build a `tuple<A, B, …>` WIT type descriptor `("tuple" <a> <b> …)` — a STRING-atom head `tuple` then
+    /// each element type descriptor in positional order (order is identity).
+    pub fn wit_type_tuple(&mut self, elems: &[StructId]) -> StructId {
+        let mut children = Vec::with_capacity(1 + elems.len());
+        children.push(self.atom_leaf(Leaf::Str("tuple".into())));
+        children.extend_from_slice(elems);
+        self.list(children)
+    }
+
+    /// Build a `record{field: ty…}` WIT type descriptor `("record" (fname <ty>)…)` — a STRING-atom head
+    /// `record`, then one `(name-node ty-node)` 2-list per field. Fields are passed in the caller's order
+    /// (the caller iterates a name-sorted `Ty::Record` BTreeMap, so fields arrive NAME-SORTED, matching the
+    /// kernel's now-name-sorted record descriptor). Copied from `cdz-kernel/src/ast_marshal.rs`.
+    pub fn wit_type_record(&mut self, fields: &[(&str, StructId)]) -> StructId {
+        let mut children = Vec::with_capacity(1 + fields.len());
+        children.push(self.atom_leaf(Leaf::Str("record".into())));
+        for &(name, ty) in fields {
+            let name_node = self.name(name);
+            let entry = self.list(vec![name_node, ty]);
+            children.push(entry);
+        }
+        self.list(children)
+    }
+
+    /// Build a `variant{Case(T)?…}` WIT type descriptor `("variant" (Case <T>?)…)` — a STRING-atom head
+    /// `variant`, then one `(CaseName ty?)` entry per case (a payload-bearing case is a 2-list `(CaseName
+    /// ty)`, a payload-less case a 1-list `(CaseName)`). Cases are passed in the caller's DECL order (order
+    /// participates in the identity). Copied from `cdz-kernel/src/ast_marshal.rs`.
+    pub fn wit_type_variant(&mut self, cases: &[(&str, Option<StructId>)]) -> StructId {
+        let mut children = Vec::with_capacity(1 + cases.len());
+        children.push(self.atom_leaf(Leaf::Str("variant".into())));
+        for &(case, ty) in cases {
+            let case_head = self.name(case);
+            let entry = match ty {
+                Some(t) => self.list(vec![case_head, t]),
+                None => self.list(vec![case_head]),
+            };
+            children.push(entry);
+        }
+        self.list(children)
+    }
+
     fn push(&mut self, s: Struct) -> StructId {
         let id = StructId(self.structure.len() as u32);
         self.structure.push(s);

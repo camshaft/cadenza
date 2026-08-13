@@ -99444,3 +99444,107 @@ fn a_host_fused_kv_delete_bool_reducer_emits_and_loads() {
     v.validate_all(bytes)
         .expect("the delete provider component validates");
 }
+
+// ── COPY-DON'T-DEPEND byte-identity bridge for the WIT schema-descriptor builders ────────────────
+//
+// The schema-hash-only effect identity requires that rcdzc's VERBATIM-COPIED WIT builders
+// (`ast::Builder::{effect_schema_tree,wit_func_sig,wit_type_*}`) encode BYTE-IDENTICALLY to the
+// originals in `cadenza-ast` (the builder the kernel builds its built-in descriptors with) — a
+// userspace effect rcdzc reifies must hash to the same value the kernel computes for the same shape.
+// This is the descriptor-builder analogue of the existing `codec.rs` byte-identity discipline: build
+// the SAME schema tree with rcdzc's copy AND with cadenza-ast's original (reachable via the
+// `cadenza-syntax` dev-dep, which re-exports `cadenza_ast::{ast, codec}`), encode each with its own
+// crate's codec, and assert the bytes are equal. Any drift in a copied builder (a flipped head-kind,
+// a reordered child, a dropped wrapper) reds here instead of silently splitting the effect identity.
+//
+// Coverage: the builders reachable from cadenza-ast (prim/list/option/unit/tuple + effect_schema_tree
+// + wit_func_sig). `wit_type_record`/`wit_type_variant` are copied from the kernel (their originals are
+// private to `cdz-kernel::ast_marshal`, not reachable here) — those are cross-checked by the
+// vs-built-in schema-hash gate once the kernel field-order fix (v-effects MR 0cbebf470) lands on origin.
+//
+// This compares the LOGICAL TREE (a canonical render walked from root), NOT the raw `codec::encode`
+// bytes. cadenza-ast's `encode` runs a `canon::canonicalize` pre-order-renumber pass before serializing
+// (byte identity is a property of that normal form, not the codec); rcdzc's copied `encode` has NO canon
+// pass (rcdzc's s-expr reader always builds pre-order, so it never needed one — and a hand-built
+// bottom-up descriptor is NOT in pre-order). So the two crates' raw bytes differ even for an identical
+// tree — that's a codec-normal-form question (escalated to v-effects: does the kernel canonicalize the
+// descriptor it ingests from rcdzc before hashing?), separate from whether the BUILDERS are a faithful
+// copy. This test pins the latter: same builder calls → structurally identical tree + identical head
+// kinds (Name vs Str is load-bearing for the prim-vs-compound distinction).
+#[test]
+fn copied_wit_builders_produce_the_same_logical_tree_as_cadenza_ast_originals() {
+    // Canonical render of an rcdzc arena subtree: `(head child…)`, each atom tagged by head kind
+    // (`N:` a Name, `S:` a Str) so a flipped head-kind — which changes the hash — shows as a diff.
+    fn render_ours(a: &crate::ast::Arenas, id: crate::ast::StructId) -> String {
+        match a.get(id) {
+            crate::ast::Struct::Atom(_) => {
+                if let Some(n) = a.as_name(id) {
+                    format!("N:{n}")
+                } else if let Some(s) = a.as_str(id) {
+                    format!("S:{s}")
+                } else {
+                    panic!("WIT descriptor atom is neither Name nor Str")
+                }
+            }
+            crate::ast::Struct::List(children) => {
+                let parts: Vec<String> = children.iter().map(|&c| render_ours(a, c)).collect();
+                format!("({})", parts.join(" "))
+            }
+        }
+    }
+    fn render_theirs(a: &cadenza_syntax::ast::Arenas, id: cadenza_syntax::ast::StructId) -> String {
+        match a.get(id) {
+            cadenza_syntax::ast::Struct::Atom(_) => {
+                if let Some(n) = a.as_name(id) {
+                    format!("N:{n}")
+                } else if let Some(s) = a.as_str(id) {
+                    format!("S:{s}")
+                } else {
+                    panic!("WIT descriptor atom is neither Name nor Str")
+                }
+            }
+            cadenza_syntax::ast::Struct::List(children) => {
+                let parts: Vec<String> = children.iter().map(|&c| render_theirs(a, c)).collect();
+                format!("({})", parts.join(" "))
+            }
+        }
+    }
+    // rcdzc's copied builders → an effect schema tree exercising every copied form.
+    let ours = {
+        let mut b = crate::ast::Builder::new();
+        let s64 = b.wit_type_prim("s64");
+        let string = b.wit_type_prim("string");
+        let u8 = b.wit_type_prim("u8");
+        let bytes = b.wit_type_list(u8); // list<u8> — the "bytes-is-list<u8>" spelling
+        let opt_string = b.wit_type_option(string);
+        let unit = b.wit_type_unit();
+        let pair = b.wit_type_tuple(&[s64, bytes]);
+        // op `run`: (param k string) (param v tuple<s64, list<u8>>) (param meta option<string>) -> unit
+        let sig = b.wit_func_sig(&[("k", string), ("v", pair), ("meta", opt_string)], unit);
+        let root = b.effect_schema_tree("demo", &[("run", sig)]);
+        let arenas = b.finish(root);
+        render_ours(&arenas, arenas.root)
+    };
+    // cadenza-ast's ORIGINAL builders (via the cadenza-syntax re-export) → the same tree.
+    let theirs = {
+        use cadenza_syntax::ast::Builder as AstBuilder;
+        let mut b = AstBuilder::default();
+        let s64 = b.wit_type_prim("s64");
+        let string = b.wit_type_prim("string");
+        let u8 = b.wit_type_prim("u8");
+        let bytes = b.wit_type_list(u8);
+        let opt_string = b.wit_type_option(string);
+        let unit = b.wit_type_unit();
+        let pair = b.wit_type_tuple(&[s64, bytes]);
+        let sig = b.wit_func_sig(&[("k", string), ("v", pair), ("meta", opt_string)], unit);
+        let root = b.effect_schema_tree("demo", &[("run", sig)]);
+        let arenas = b.finish(root);
+        render_theirs(&arenas, arenas.root)
+    };
+    assert_eq!(
+        ours, theirs,
+        "rcdzc's verbatim-copied WIT schema-descriptor builders drifted from cadenza-ast's originals — \
+         the effect schema tree differs in shape or a head kind (Name vs Str), which would split the \
+         effect schema-hash. Re-sync the copy in ast.rs with cadenza-ast/src/ast.rs."
+    );
+}
