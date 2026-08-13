@@ -1271,6 +1271,41 @@ mod tests {
     }
 
     #[test]
+    fn with_correlation_perform_round_trips_through_the_sexpr_surface() {
+        // Gate-protect the WITH-CORRELATION perform surface (coordinated w/ v-effects 2026-08-13, phase-2
+        // schema-hash effect-identity; v-platform-conformance case-15 correlation-echo makes it
+        // load-bearing). A correlation-carrying perform is spelled `(with-correlation <tok> (. E op
+        // <args>))` — a CONTEXTUAL head-form (NOT a reserved keyword, NO parser change): v-effects'
+        // reify-to-output lowering pattern-matches the `with-correlation` head at the reducer-output
+        // boundary and sets EffectReify.correlation = Some(tok); a bare `(. E op <args>)` stays None. Since
+        // it's a plain `(head child…)` node, the generic s-expr reader/printer handles it; this pins the
+        // round-trip so a future surface change can't silently break the correlation channel. (This is the
+        // SURFACE-fidelity pin; v-pc's suite pins the runtime echo behavior — complementary.)
+        let cases = [
+            "(with-correlation c1 (. E op a b))", // correlation-carrying perform
+            "(. E op a b)",                       // the bare sibling (correlation=None)
+            "(with-correlation (. Tok mk 7) (. Kv get k))", // a computed correlation token + real perform
+            "(with-correlation c (. E op))", // nullary-arg perform under a correlation
+        ];
+        for src in cases {
+            let a = read(src).unwrap_or_else(|e| panic!("read {src:?}: {e:?}"));
+            let printed = print(&a);
+            assert_eq!(
+                printed.trim(),
+                src,
+                "with-correlation form must round-trip: {src:?}"
+            );
+            // Idempotence: re-reading the printed form yields the same bytes again.
+            let b = read(&printed).unwrap_or_else(|e| panic!("reread {printed:?}: {e:?}"));
+            assert_eq!(
+                print(&b).trim(),
+                src,
+                "with-correlation round-trip not idempotent: {src:?}"
+            );
+        }
+    }
+
+    #[test]
     fn print_reads_back() {
         for src in [
             "(+ 1 2)",
