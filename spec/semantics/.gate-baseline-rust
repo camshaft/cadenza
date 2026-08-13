@@ -5232,6 +5232,7 @@ pass	floating-point uses the fixed rounding mode
 pass	four nested frames dispatched OUTERMOST-first — every outer perform escapes live inner frames
 pass	four same-signature closure exports share one resource
 pass	fr1 a TRIPLING Float64 thread crosses a fixed threshold — three compares catch the crossing depth, exact integer-valued floats
+pass	frm1 a LENGTH-PREFIXED frame protocol over a Bytes state — writers append [len,payload..] frames, the reader pops exactly one frame by its prefix and the drained read answers a sentinel
 pass	from-bytes decodes a 3-byte scalar split across BOTH seams of a 3-leaf rope
 pass	from-bytes rejects a torn sequence whose invalid continuation sits in the NEXT leaf
 pass	fs1 the SAME handle expression re-entered per recursion round — a FRESH region each iteration, seeds keyed by depth
@@ -5429,6 +5430,7 @@ pass	ll1 a LIST-OF-LISTS handler state — each dispatch appends a fresh row, th
 pass	lo1 THIRTY dispatches in one region — the fold scales past the corpus's usual handful, arithmetic sum exact
 pass	lo2 a NINE-level shadow tower (outer + eight) — one draw per level, the deepest doubling, strides 1-8
 pass	lo3 EIGHT ops in one effect, called in shuffled order — dispatch-table width, one op advancing mid-sequence
+pass	loc1 a LIST-OF-CLOSURES pipeline state — each add pushes a stage function, run folds the input through every staged closure in order, later stages compose after earlier runs
 pass	looking up an absent key yields None
 pass	lp1 a LIST handler state — each feed pushes and returns the pre-push length, a summing walk reads the final list
 pass	ls1 a LIST-state snapshot crosses mid-growth — the held list is immutable while the state keeps growing, sum and final length both pinned
@@ -6783,6 +6785,7 @@ pass	wx4 the ARM doubles its argument with wrapping-mul — MAX wraps to -2, MIN
 pass	wx5 the state STEPS by wrapping-sub of MAX each draw — two hops cross the seam in opposite directions
 pass	wx6 wrapping increments CHAINED hop-to-hop — MAX-1 crosses the seam inside a nested three-op chain, count pins the trips
 pass	xh1 the INNER arm performs the OUTER op with a COMPUTED key and the outer arm is the two-lookup-match Map shape — the width-partition crosses a handler boundary
+pass	xsw1 a CROSS-SWAPPING scalar pair — each dispatch computes both successors then installs them SWAPPED (a gets the b-derived value, b the a-derived), lineage crosses sides every step
 pass	za1 literal-arm dispatch on a draw — the MATCHED arm performs again, both calls exercised
 pass	za2 a COMPUTED scrutinee (difference of two draws) selects the performing arm at one input only
 pass	za3 NESTED literal-arm dispatch — each level matches a let-bound draw, the innermost arm reads a third

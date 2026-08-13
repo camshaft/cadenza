@@ -9541,3 +9541,88 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 21300441 Int64))
   (call   main (: 1 Int64)) (output (: 21300400 Int64)))
+
+; --- breaker batch 256: list-of-closures pipeline, cross-swapping scalar pair, length-prefixed frame protocol ---
+(case "loc1 a LIST-OF-CLOSURES pipeline state — each add pushes a stage function, run folds the input through every staged closure in order, later stages compose after earlier runs"
+  (input  (do
+            (effect S
+              (op addmul (-> Int64 Int64))
+              (op addadd (-> Int64 Int64))
+              (op run (-> Int64 Int64)))
+            (def (fold-run (: fs (List (-> Int64 Int64))) (: i Int64) (: x Int64))
+              (match (List.at fs i)
+                ((Some f) (fold-run fs (+ i 1) (f x)))
+                ((None u) x)))
+            (def (main (: n Int64))
+              (handle S (: (list) (List (-> Int64 Int64)))
+                ((addmul (k) fs
+                  (let ((fs2 (List.push fs (fn ((: x Int64)) (* x k)))))
+                    (resume (List.len fs2) fs2)))
+                 (addadd (k) fs
+                  (let ((fs2 (List.push fs (fn ((: x Int64)) (+ x k)))))
+                    (resume (List.len fs2) fs2)))
+                 (run (v) fs (resume (fold-run fs 0 v) fs)))
+                (let ((a (S.addmul 2)))
+                  (let ((b (S.addadd n)))
+                    (let ((c (S.run 5)))
+                      (let ((d (S.addmul 3)))
+                        (let ((e (S.run 5)))
+                          (+ (* 100 (+ (* 10 (+ (* 100 (+ (* 10 a) b)) c)) d)) e))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 1213339 Int64))
+  (call   main (: 10 Int64)) (output (: 1220360 Int64)))
+
+(case "xsw1 a CROSS-SWAPPING scalar pair — each dispatch computes both successors then installs them SWAPPED (a gets the b-derived value, b the a-derived), lineage crosses sides every step"
+  (input  (do
+            (effect S (op step (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S (tuple n 2)
+                ((step (v) st
+                  (match st
+                    ((tuple a b)
+                      (let ((na (+ a v)))
+                        (let ((nb (* b v)))
+                          (resume (+ (* 100 na) nb) (tuple nb na))))))))
+                (let ((r1 (S.step 2)))
+                  (let ((r2 (S.step 3)))
+                    (+ (* 100000 r1) r2)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 50400715 Int64))
+  (call   main (: 0 Int64)) (output (: 20400706 Int64)))
+
+(case "frm1 a LENGTH-PREFIXED frame protocol over a Bytes state — writers append [len,payload..] frames, the reader pops exactly one frame by its prefix and the drained read answers a sentinel"
+  (input  (do
+            (effect S
+              (op frame2 (-> Int64 Int64 Int64))
+              (op frame1 (-> Int64 Int64))
+              (op popf (-> Int64)))
+            (def (bat (: b Bytes) (: i Int64))
+              (match (Bytes.at b i) ((Some v) v) ((None u) 0)))
+            (def (sum-body (: b Bytes) (: i Int64) (: end Int64) (: acc Int64))
+              (if (< i end) (sum-body b (+ i 1) end (+ acc (bat b i))) acc))
+            (def (main (: n Int64))
+              (handle S (Bytes.of (list))
+                ((frame2 (x y) bs
+                  (let ((b2 (Bytes.concat bs (Bytes.of (list (UInt8.wrap 2) (UInt8.wrap x) (UInt8.wrap y))))))
+                    (resume (Bytes.len b2) b2)))
+                 (frame1 (x) bs
+                  (let ((b2 (Bytes.concat bs (Bytes.of (list (UInt8.wrap 1) (UInt8.wrap x))))))
+                    (resume (Bytes.len b2) b2)))
+                 (popf () bs
+                  (if (= (Bytes.len bs) 0)
+                      (resume -1 bs)
+                      (let ((ln (bat bs 0)))
+                        (let ((body-sum (sum-body bs 1 (+ 1 ln) 0)))
+                          (let ((rest (match (Bytes.slice bs (+ 1 ln) (- (Bytes.len bs) (+ 1 ln)))
+                                        ((Some r) r)
+                                        ((None u) (Bytes.of (list))))))
+                            (resume (+ (* 10 body-sum) ln) rest)))))))
+                (let ((a (S.frame2 n 4)))
+                  (let ((b (S.frame1 9)))
+                    (let ((c (S.popf)))
+                      (let ((d (S.popf)))
+                        (let ((e (S.popf)))
+                          (+ (* 10 (+ (* 100 (+ (* 100 (+ (* 10 a) b)) c)) d)) (+ e 2)))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 3572911 Int64))
+  (call   main (: 30 Int64)) (output (: 3842911 Int64)))
