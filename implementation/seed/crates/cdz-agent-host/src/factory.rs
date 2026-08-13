@@ -1097,6 +1097,51 @@ mod tests {
         Box::new(Authorizer::deny_all())
     }
 
+    #[test]
+    fn every_family_the_host_executor_suite_serves_resolves_to_a_schema_hash() {
+        // PHASE-3 PRECONDITION PIN + kernel-refactor drift guard. The schema-hash effect-identity removal
+        // (workstream: schema-hash-only effect identity) re-keys each host executor's family self-guard +
+        // handles_family OFF content_type.family and ONTO the schema-hash, declared uniformly via
+        // `cdz_kernel::ast_marshal::effect_family_schema_hash(family)` (that accessor's own doc names
+        // cdz-agent-host as the consumer). That re-key REQUIRES every family this host's executors DISPATCH
+        // to resolve to `Some(hash)` — a family resolving to `None` would STRAND that executor's re-key. This
+        // enumerates the exact families the executor suite serves (one per leaf executor's `handles_family`)
+        // and pins that all resolve, so a kernel change to the reflection table (e.g. the
+        // `family_effect_schema_hash` arm-collapse `0a4d87a43`) that accidentally dropped one to `None` reds
+        // HERE — a fast local signal in my own gate, before the phase-3 re-key ever hits it. Always-compiled
+        // (pure const strings + a pure reflection call, no feature gates): the family→hash mapping is kernel-
+        // static, independent of whether a given executor is compiled in.
+        use cdz_kernel::ast_marshal::effect_family_schema_hash;
+        use cdz_kernel::effect::effect_ct;
+        for fam in [
+            effect_ct::NOW,            // ClockExecutor
+            effect_ct::HTTP,           // HttpExecutor
+            effect_ct::MODEL,          // ModelExecutor
+            effect_ct::EMIT,           // EmitExecutor
+            effect_ct::SHELL,          // ShellExecutor (live-exec)
+            effect_ct::METRIC_PUBLISH, // MetricExecutor
+            effect_ct::FS_READ,        // FsExecutor (live-fs)
+            effect_ct::FS_WRITE,
+            effect_ct::FS_GLOB,
+            effect_ct::BLOB_PUT, // BlobExecutor (live-aws-storage)
+            effect_ct::BLOB_GET,
+            effect_ct::LIFECYCLE_SPAWN, // LifecycleExecutor
+            effect_ct::LIFECYCLE_SUSPEND,
+            effect_ct::LIFECYCLE_RESUME,
+            effect_ct::LIFECYCLE_TERMINATE,
+            effect_ct::EFFECT_REPLY, // ReplyExecutor
+            effect_ct::WS_SEND,      // WsSendExecutor (live-ws)
+            effect_ct::WS_DIAL,      // WsDialExecutor (live-ws)
+        ] {
+            assert!(
+                effect_family_schema_hash(fam).is_some(),
+                "family {fam:?} — dispatched by a cdz-agent-host executor — must resolve to a schema-hash \
+                 (the phase-3 re-key precondition); effect_family_schema_hash returned None, so a kernel \
+                 reflection-table change dropped it and would strand that executor's re-key"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn install_of_an_absent_reducer_hash_is_a_clean_error() {
         // The blob store is empty → get returns None → build errors cleanly (no panic), and apply_admin
