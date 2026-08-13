@@ -1593,6 +1593,11 @@ impl Session {
         if self.is_terminated() {
             return false;
         }
+        // §6: a CLOSED session times out nothing either — a timeout EffectResult appended after a self-close's
+        // terminal Closed would un-tail it (same class). Return false, mirroring the is_terminated guard.
+        if self.is_closed() {
+            return false;
+        }
         // Idempotent: only an OPEN id can be timed out. Settled (or never-dispatched) → no-op, so a late
         // real result and a timeout can't both settle one id (§16c-S4 at-most-once).
         if !self.open.contains_key(&id.0) {
@@ -1648,6 +1653,13 @@ impl Session {
         // A TERMINATED session settles nothing — appending an EffectResult after the terminal marker would
         // un-tail it + flip is_terminated() back to false (same guard as time_out_effect/deliver_control).
         if self.is_terminated() {
+            return false;
+        }
+        // §6: a CLOSED session likewise settles nothing — a self-close (FoldOutput::close → terminal Closed)
+        // may leave an effect in-flight (Dispatched pre-close); settling its late result here would append an
+        // EffectResult PAST the Closed event, un-tailing it (same terminal-tip un-tailing class as the
+        // deliver/fire_due_timers guards). Guard EVERY append path (github-liaison #2381).
+        if self.is_closed() {
             return false;
         }
         // Settling WITH Deferred is a no-op: Deferred is a "not answered yet" signal, never a real outcome —
@@ -5333,6 +5345,91 @@ mod monotonic_now_tests {
             )
             .await,
             "settling an unknown/never-dispatched id is a no-op"
+        );
+    }
+
+    // §6 terminal-tip completeness: settle_effect_result AND time_out_effect must refuse a CLOSED session
+    // (like deliver/fire_due_timers) — a self-close can leave an effect in-flight, and settling or timing out
+    // its late result would append an EffectResult PAST the terminal Closed event, un-tailing it. This
+    // completes the is_closed guard across EVERY append path (github-liaison #2381 guard-every-entry-point).
+    struct SelfCloseOnInbound;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for SelfCloseOnInbound {
+        async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => {
+                    FoldOutput::close(crate::event::CloseOutcome::Success(
+                        crate::effect::Payload::Inline(Vec::new().into()),
+                    ))
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_closed_session_settles_and_times_out_no_in_flight_effect() {
+        let authz = Authorizer::new(vec![Capability {
+            kind: EffectKind::Http,
+            predicate: ResourcePredicate::Any,
+        }]);
+        let mut exec = DeferringExecutor;
+        let mut s = Session::genesis(Hash::of(b"close-settle-v1"), Hash::of(b"nonce"));
+        let captured = attach_recording_sink(&mut s);
+        // Dispatch an Http effect that stays OPEN (Deferred), then self-close with it in-flight.
+        s.deliver(
+            inbound(),
+            None,
+            &mut HttpThenRecordOkReducer,
+            &authz,
+            &mut exec,
+        )
+        .await
+        .unwrap();
+        let id = replay_input(&captured)
+            .iter()
+            .find_map(|e| match &e.body {
+                EventBody::Dispatched { id, .. } => Some(*id),
+                _ => None,
+            })
+            .expect("http dispatched + open");
+        s.deliver(
+            inbound(),
+            None,
+            &mut SelfCloseOnInbound,
+            &Authorizer::deny_all(),
+            &mut exec,
+        )
+        .await
+        .unwrap();
+        assert!(
+            s.is_closed(),
+            "self-closed with the Http effect still in-flight"
+        );
+        let count_at_close = s.event_count();
+
+        // Settling the in-flight effect's late result is REFUSED — no EffectResult past the terminal Closed.
+        assert!(
+            !s.settle_effect_result(
+                id,
+                EffectOutcome::Ok(None),
+                &mut HttpThenRecordOkReducer,
+                &authz,
+                &mut exec
+            )
+            .await,
+            "a closed session settles no in-flight effect result"
+        );
+        // Timing it out is likewise REFUSED.
+        assert!(
+            !s.time_out_effect(id, &mut HttpThenRecordOkReducer, &authz, &mut exec)
+                .await,
+            "a closed session times out no in-flight effect"
+        );
+        assert_eq!(
+            s.event_count(),
+            count_at_close,
+            "no event was appended past the terminal Closed"
         );
     }
 
