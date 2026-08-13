@@ -461,6 +461,109 @@ pub fn ast_to_val(bytes: &[u8], ty: &Type) -> Result<Val, MarshalError> {
     build_from_ast(&arenas, arenas.root, ty)
 }
 
+/// Decode a HANDLER REPLY's outcome value-form back into a kernel [`EffectOutcome`] — the DUAL of the
+/// encode side (`wasm_host::effect_outcome_view`), restricted to the Ok/Err SUBSET a handler can reply. A
+/// handler NEVER replies `TimedOut` (the kernel injects that on a deadline) and `Deferred` is a transient
+/// executor signal, never a wire value — so this decodes only `Ok`/`Err`; any other ctor head is a
+/// TypeMismatch. The host's `ReplyExecutor` calls this on the reply payload bytes and settles the resulting
+/// `EffectOutcome`; it maps an `Err(_)` from here fail-closed to a PERMANENT error (a reply that can't be
+/// read as a well-formed outcome must not be mistaken for a spurious success — same untrusted-input posture
+/// as [`ast_to_val`]). Keeping the decode HERE, beside the value-form pin and the encode, keeps the codec in
+/// one place so the two halves cannot drift.
+///
+/// The reply form is the bare ctor pinned by `val_to_ast_pins_the_err_reply_outcome_value_form`:
+/// - `(Ok <bytes>)` → `EffectOutcome::Ok(Some(Payload::Inline(bytes)))` (an empty-bytes Ok is still a Some);
+/// - `(Err (record (= message <bytes>) (= retryable <bool>)))` → `EffectOutcome::Err { message, retryability }`,
+///   `retryable` the TYPED retryability (true = `Retryable`, false = `Permanent` — the reducer folds on the
+///   bool, not a parsed token). The record is STRICT: exactly `message` (valid utf-8 bytes) + `retryable`;
+///   an extra/missing/duplicate field is a TypeMismatch.
+pub fn decode_reply_outcome(bytes: &[u8]) -> Result<EffectOutcome, MarshalError> {
+    let a = codec::decode(bytes).ok_or(MarshalError::Undecodable)?;
+    let (case, payload) = ctor(&a, a.root)?;
+    match case {
+        "Ok" => {
+            let node =
+                payload.ok_or_else(|| type_mismatch("reply-outcome", "Ok without a payload"))?;
+            let response = read_bytes(&a, node)?;
+            Ok(EffectOutcome::Ok(Some(Payload::Inline(response.into()))))
+        }
+        "Err" => {
+            let node =
+                payload.ok_or_else(|| type_mismatch("reply-outcome", "Err without a payload"))?;
+            let (message, retryable) = read_err_reply_record(&a, node)?;
+            Ok(EffectOutcome::Err {
+                message,
+                retryability: if retryable {
+                    Retryability::Retryable
+                } else {
+                    Retryability::Permanent
+                },
+            })
+        }
+        // TimedOut is caller-side only (kernel-injected); a handler replying it — or any other head — is a
+        // malformed reply the host maps fail-closed to a permanent Err.
+        other => Err(type_mismatch(
+            "reply-outcome",
+            format!("unexpected ctor {}", bounded_name(other)),
+        )),
+    }
+}
+
+/// Read the err-reply `(record (= message <bytes>) (= retryable <bool>))` → (message, retryable). STRICT
+/// against UNTRUSTED reply bytes (mirrors [`ast_to_val`]'s exact-record hardening): exactly the two fields,
+/// no extra / missing / duplicate; the message bytes must be valid utf-8. Accepts the canonical `(= name
+/// value)` 3-list and the legacy `(name value)` 2-list field spelling, the same tolerance `build_from_ast`
+/// keeps.
+fn read_err_reply_record(a: &Arenas, id: StructId) -> Result<(String, bool), MarshalError> {
+    let field_nodes = form(a, id, "record")?;
+    let mut message: Option<Vec<u8>> = None;
+    let mut retryable: Option<bool> = None;
+    for &fnode in field_nodes {
+        let (name, val_node) = match a.get(fnode) {
+            Struct::List(kids) if kids.len() == 3 && a.as_name(kids[0]) == Some("=") => {
+                match a.as_name(kids[1]) {
+                    Some(n) => (n, kids[2]),
+                    None => return Err(type_mismatch("reply-outcome", "field name is not a name")),
+                }
+            }
+            Struct::List(kids) if kids.len() == 2 => match a.as_name(kids[0]) {
+                Some(n) => (n, kids[1]),
+                None => return Err(type_mismatch("reply-outcome", "field name is not a name")),
+            },
+            _ => {
+                return Err(type_mismatch(
+                    "reply-outcome",
+                    "Err field is not a (= name value) or (name value) form",
+                ))
+            }
+        };
+        match name {
+            "message" => {
+                if message.replace(read_bytes(a, val_node)?).is_some() {
+                    return Err(type_mismatch("reply-outcome", "duplicate message field"));
+                }
+            }
+            "retryable" => {
+                if retryable.replace(read_bool(a, val_node)?).is_some() {
+                    return Err(type_mismatch("reply-outcome", "duplicate retryable field"));
+                }
+            }
+            other => {
+                return Err(type_mismatch(
+                    "reply-outcome",
+                    format!("unknown Err field {}", bounded_name(other)),
+                ))
+            }
+        }
+    }
+    let message = message.ok_or_else(|| type_mismatch("reply-outcome", "Err missing message"))?;
+    let retryable =
+        retryable.ok_or_else(|| type_mismatch("reply-outcome", "Err missing retryable"))?;
+    let message = String::from_utf8(message)
+        .map_err(|_| type_mismatch("reply-outcome", "message is not valid utf-8"))?;
+    Ok((message, retryable))
+}
+
 /// Build the `Val` at arena node `id` per the target WIT `ty`. Recursive: a compound type reads its
 /// children by the sub-types `ty` exposes (via wasmtime's `Type` reflection) and recurses. The form
 /// rules mirror [`build_val`] (name-head record/tuple/list/flags AND option/result/variant/enum ctors,
@@ -886,6 +989,7 @@ fn unmarshallable(kind: &str) -> MarshalError {
 // content-type/effect-kind/effect-request records as value-form AST rather than WIT records.
 
 use crate::effect::{EffectRequest, Payload, Timeliness};
+use crate::event::{EffectOutcome, Retryability};
 use crate::reducer::Effect;
 
 /// A borrowed content-type view for [`build_event_document`] — `(family, version)` — so the caller passes
@@ -1665,6 +1769,72 @@ mod tests {
             Some("None"),
             "absent outcome is (None unit)"
         );
+    }
+
+    // decode_reply_outcome is the DUAL of the handler-reply encode: it recovers a kernel EffectOutcome from
+    // the Ok/Err-subset value-form pinned above, and is fail-closed on any malformed / non-reply shape (the
+    // host maps its Err → a permanent EffectOutcome::Err). Round-trips the Ok + both Err retryabilities, and
+    // pins the fail-closed rejections (TimedOut is caller-side only; unknown ctor; missing/extra/duplicate
+    // Err field; non-utf-8 message). This + the encode-side wasm_host test lock the codec pair end to end.
+    #[test]
+    fn decode_reply_outcome_round_trips_the_ok_err_subset_and_is_fail_closed() {
+        let bytes = |s: &[u8]| Val::List(s.iter().copied().map(Val::U8).collect());
+        // The reply payload is the BARE outcome ctor (no Option wrapper — that's the caller-side Event child).
+        let wire = |v: &Val| val_to_ast(v).expect("reply marshals");
+        let ok = Val::Variant("Ok".into(), Some(Box::new(bytes(b"response-bytes"))));
+        let err = |msg: &[u8], retryable: bool| {
+            Val::Variant(
+                "Err".into(),
+                Some(Box::new(Val::Record(vec![
+                    ("message".into(), bytes(msg)),
+                    ("retryable".into(), Val::Bool(retryable)),
+                ]))),
+            )
+        };
+
+        // Ok(bytes) → EffectOutcome::Ok(Some(Inline(bytes))).
+        assert_eq!(
+            decode_reply_outcome(&wire(&ok)).expect("Ok decodes"),
+            EffectOutcome::Ok(Some(Payload::Inline(b"response-bytes".to_vec().into()))),
+        );
+        // Err Permanent (retryable=false) and Err Retryable (retryable=true) recover the TYPED retryability.
+        assert_eq!(
+            decode_reply_outcome(&wire(&err(b"boom", false))).expect("Err decodes"),
+            EffectOutcome::err("boom"),
+        );
+        assert_eq!(
+            decode_reply_outcome(&wire(&err(b"throttled", true))).expect("Err decodes"),
+            EffectOutcome::err_retryable("throttled"),
+        );
+
+        // Fail-closed: a handler never replies TimedOut (kernel-injected) — decoding it is an error.
+        assert!(decode_reply_outcome(&wire(&Val::Variant("TimedOut".into(), None))).is_err());
+        // An unknown ctor head is rejected.
+        assert!(decode_reply_outcome(&wire(&Val::Variant(
+            "Deferred".into(),
+            Some(Box::new(bytes(b"x")))
+        )))
+        .is_err());
+        // A missing Err field (only message) is rejected.
+        let missing = Val::Variant(
+            "Err".into(),
+            Some(Box::new(Val::Record(vec![("message".into(), bytes(b"m"))]))),
+        );
+        assert!(decode_reply_outcome(&wire(&missing)).is_err());
+        // An EXTRA Err field beyond {message, retryable} is rejected.
+        let extra = Val::Variant(
+            "Err".into(),
+            Some(Box::new(Val::Record(vec![
+                ("message".into(), bytes(b"m")),
+                ("retryable".into(), Val::Bool(true)),
+                ("code".into(), Val::U8(7)),
+            ]))),
+        );
+        assert!(decode_reply_outcome(&wire(&extra)).is_err());
+        // A non-utf-8 message is rejected (EffectOutcome.message is a String).
+        assert!(decode_reply_outcome(&wire(&err(&[0xff, 0xfe], false))).is_err());
+        // Undecodable bytes are rejected (not a panic).
+        assert!(decode_reply_outcome(b"\xff\x00not-ast").is_err());
     }
 
     // ast_to_val decodes UNTRUSTED arg bytes, so a record must EXACTLY match the WIT shape (github-liaison
