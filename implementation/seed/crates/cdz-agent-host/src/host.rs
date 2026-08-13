@@ -3852,6 +3852,141 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// §6 supervision test reducer: self-completes on its first inbound with a FAILURE outcome (a worker that
+    /// finishes unsuccessfully and reports why). Contrast `SelfClosingChildReducer` (Success) — this pins that
+    /// the reap propagates the reducer's VERBATIM CloseOutcome, not a hard-coded success.
+    struct SelfClosingFailureChildReducer;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for SelfClosingFailureChildReducer {
+        async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+            if let EventBody::Inbound { .. } = &event.body {
+                FoldOutput::close(cdz_kernel::event::CloseOutcome::Failure("boom".into()))
+            } else {
+                FoldOutput::none()
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_self_closed_child_propagates_its_failure_outcome_to_the_parent() {
+        // §6 supervision edge: a child that self-closes with CloseOutcome::Failure(reason) delivers that
+        // VERBATIM outcome to the parent via child-completed (not a flattened "it closed"). Pins that the reap
+        // carries the reducer's real outcome — a supervisor must tell an unsuccessful finish from a clean one.
+        let mut host = AgentHost::new();
+        let supervisor = HostedSession::genesis(
+            Hash::of(b"supervisor-fail-v1"),
+            Box::new(ChildCompletedFoldingReducer),
+            Box::new(Authorizer::deny_all()),
+            CompositeExecutor::new(),
+        );
+        let parent = SessionId::new(Hash::of(b"orchestrator-fail"));
+        host.spawn(parent, supervisor);
+
+        let child_id = host
+            .spawn_child(
+                &parent,
+                Hash::of(b"failing-child-v1"),
+                Box::new(SelfClosingFailureChildReducer),
+                Box::new(Authorizer::deny_all()),
+                CompositeExecutor::new(),
+            )
+            .await
+            .expect("parent present")
+            .expect("child spawned");
+        let child_hash = child_id.hash();
+
+        host.deliver(
+            &child_id,
+            EventBody::Inbound {
+                content_type: cdz_kernel::event::ContentType {
+                    family: "task/go".into(),
+                    version: 1,
+                },
+                payload: Payload::Inline(b"work".to_vec().into()),
+            },
+            None,
+        )
+        .await
+        .expect("child present")
+        .expect("delivered");
+        host.reap_closed_and_notify().await;
+
+        assert!(!host.contains(&child_id), "the failed child is reaped");
+        let kv = host.get(&parent).unwrap();
+        let kv = kv.session().kv();
+        assert_eq!(
+            kv.get(b"completed-child").map(|v| v.to_vec()),
+            Some(child_hash.to_hex().into_bytes()),
+            "the parent folded child-completed for the failed child"
+        );
+        assert_eq!(
+            kv.get(b"completed-outcome").map(|v| v.to_vec()),
+            Some(b"boom".to_vec()),
+            "the child's Failure(reason) round-trips VERBATIM to the supervisor (not flattened to success)"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_self_closed_child_whose_parent_is_gone_is_reaped_with_no_notify() {
+        // §6 supervision edge (mirrors the §I7 parent-gone terminate test): if a child self-closes AFTER its
+        // parent was already terminated + removed, the reap resolves the parent to None → no notify, and the
+        // child is still cleanly reaped (no panic, no stray delivery to a nonexistent session).
+        let mut host = AgentHost::new();
+        // A ROOT parent (no grandparent → terminating it emits no child-exited).
+        let parent_hosted = HostedSession::genesis(
+            Hash::of(b"soon-gone-parent-v1"),
+            Box::new(SelfClosingChildReducer),
+            Box::new(Authorizer::deny_all()),
+            CompositeExecutor::new(),
+        );
+        let parent = SessionId::new(parent_hosted.genesis_hash());
+        host.spawn(parent, parent_hosted);
+        let child_id = host
+            .spawn_child(
+                &parent,
+                Hash::of(b"orphan-child-v1"),
+                Box::new(SelfClosingChildReducer),
+                Box::new(Authorizer::deny_all()),
+                CompositeExecutor::new(),
+            )
+            .await
+            .expect("parent present")
+            .expect("child spawned");
+
+        // Terminate + remove the parent BEFORE the child closes → the child is now orphaned (its `parent()`
+        // edge points at a hash no registered session carries).
+        host.terminate(&parent, Hash::of(b"ctl"), "parent done".into())
+            .await
+            .expect("parent present")
+            .expect("fresh terminate");
+        assert!(!host.contains(&parent), "parent terminated + removed");
+
+        host.deliver(
+            &child_id,
+            EventBody::Inbound {
+                content_type: cdz_kernel::event::ContentType {
+                    family: "task/go".into(),
+                    version: 1,
+                },
+                payload: Payload::Inline(b"work".to_vec().into()),
+            },
+            None,
+        )
+        .await
+        .expect("child present")
+        .expect("delivered");
+        // Reap must not panic resolving a gone parent; the orphaned child is reaped with no notify.
+        host.reap_closed_and_notify().await;
+        assert!(
+            !host.contains(&child_id),
+            "the orphaned self-closed child is reaped even though its parent is gone"
+        );
+        assert!(
+            host.is_empty(),
+            "no lingering sessions after reaping the orphan"
+        );
+    }
+
     #[test]
     fn session_id_by_genesis_hash_resolves_a_vanity_id_by_content_not_hex() {
         // #2484 c-a happy path: the resolver finds a session under an OPAQUE (vanity) id by matching its
