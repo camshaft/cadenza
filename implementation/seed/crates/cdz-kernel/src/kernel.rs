@@ -538,6 +538,15 @@ impl Session {
         self.open.len()
     }
 
+    /// Whether this session has CLOSED — its log carries a terminal [`EventBody::Closed`] (a reducer's
+    /// clean self-completion via [`crate::reducer::FoldOutput::close`]). A cheap field read (resident flag,
+    /// log-decouple I3) so a driver can observe a session transitioning to closed right after a `deliver`
+    /// fold — the hook for §6 supervision's parent routing (the host sees a child close here and delivers the
+    /// child-completed signal to its parent). Distinct from a `Terminated` session (ended by another).
+    pub fn is_closed(&self) -> bool {
+        self.closed
+    }
+
     /// Assemble a structural [`StatusSnapshot`] — the CHEAP, non-interfering session-debug read (operator
     /// session-query design). Reads ONLY already-materialized state (the log, the open-obligation set, the
     /// armed-timer table, the published KV view): it appends NO event, runs NO fold, so the session can't
@@ -1469,6 +1478,16 @@ impl Session {
                 Some(cause),
             )
             .await;
+            return Vec::new();
+        }
+        // §6 supervision self-close: the reducer signaled CLEAN COMPLETION — append the durable Closed{outcome}
+        // (its state-apply sets `self.closed`, so `is_closed()` flips), then stop. Terminal like FoldFailed:
+        // a closing fold's effects are ignored (the session is ending). This is the TRIGGER for
+        // `EventBody::Closed` — a session reaches it by a reducer returning `close = Some(..)` (self-close),
+        // distinct from `Terminated` (another session ending it via `lifecycle/terminate`).
+        if let Some(outcome) = out.close {
+            self.append(EventBody::Closed { outcome }, Some(cause))
+                .await;
             return Vec::new();
         }
         let mut v: Vec<(Effect, Hash)> = out.effects.into_iter().map(|e| (e, cause)).collect();
@@ -2539,6 +2558,66 @@ mod status_snapshot_tests {
             s.last_fault_reason(),
             None,
             "a FoldFailed the session progressed past is NOT reported — only the tip is the fresh signal"
+        );
+    }
+
+    // A reducer that signals CLEAN SELF-COMPLETION on an inbound via FoldOutput::close(Success(payload)).
+    struct ClosingReducer;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for ClosingReducer {
+        async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => {
+                    FoldOutput::close(crate::event::CloseOutcome::Success(
+                        crate::effect::Payload::Inline(b"done".to_vec().into()),
+                    ))
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_reducer_close_signal_appends_closed_and_flips_is_closed() {
+        // §6 supervision self-close TRIGGER: a reducer returning FoldOutput::close(outcome) makes the kernel
+        // append a durable EventBody::Closed{outcome} — the ONLY production path to Closed (otherwise the
+        // kernel recognizes it only on recovery) — and flips is_closed(), the hook a driver uses to route the
+        // child-completed signal to a parent (§6). Terminal like FoldFailed: a closing fold routes no effects.
+        let mut exec = RecordingExecutor::new();
+        let mut s = Session::genesis(Hash::of(b"close-v1"), Hash::of(b"test-spawn-nonce"));
+        let captured = attach_recording_sink(&mut s);
+
+        assert!(!s.is_closed(), "a fresh session is not closed");
+        s.deliver(
+            inbound(),
+            None,
+            &mut ClosingReducer,
+            &Authorizer::deny_all(),
+            &mut exec,
+        )
+        .await
+        .unwrap(); // deliver succeeds — a clean close is data, not a kernel error.
+
+        assert!(s.is_closed(), "a close-signalling fold flips is_closed()");
+        assert!(
+            exec.seen.is_empty(),
+            "a closing fold routes no effects (terminal)"
+        );
+        let durable = replay_input(&captured);
+        let outcome = durable
+            .iter()
+            .rev()
+            .find_map(|e| match &e.body {
+                EventBody::Closed { outcome } => Some(outcome.clone()),
+                _ => None,
+            })
+            .expect("a close-signalling fold appends a Closed event");
+        assert_eq!(
+            outcome,
+            crate::event::CloseOutcome::Success(crate::effect::Payload::Inline(
+                b"done".to_vec().into()
+            )),
+            "the Closed event carries the reducer's CloseOutcome verbatim"
         );
     }
 

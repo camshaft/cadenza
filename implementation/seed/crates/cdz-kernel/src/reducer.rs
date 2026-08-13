@@ -19,7 +19,7 @@
 //! resumed at most once (by a result OR a timeout, never both).
 
 use crate::effect::EffectRequest;
-use crate::event::{Event, EventBody};
+use crate::event::{CloseOutcome, Event, EventBody};
 use crate::kv::Kv;
 
 /// One effect a fold emits: the request itself plus the reducer's OWN optional continuation token for it
@@ -63,6 +63,16 @@ pub struct FoldOutput {
     /// resilience / supervision direction — a failure is CAPTURED on the log for a supervisor to see,
     /// NOT silently swallowed into an empty fold "into the void"). A failed fold carries no effects.
     pub failure: Option<String>,
+    /// Set when the reducer signals CLEAN SELF-COMPLETION (§6 supervision): the session has reached its
+    /// goal and should CLOSE, carrying a structured [`CloseOutcome`] (success-with-payload vs
+    /// failure-with-reason) the kernel appends as a durable [`crate::event::EventBody::Closed`] (which sets
+    /// `is_closed()`). `None` = a normal ongoing fold. This is the SYMMETRIC sibling of `failure`: `failure`
+    /// captures an involuntary fold error as `FoldFailed`; `close` is the reducer VOLUNTARILY ending ITSELF
+    /// (self-close — distinct from `Terminated`, which is another session ending it via `lifecycle/terminate`).
+    /// Terminal like `failure`: a closing fold's effects are ignored (the session is ending). The trigger for
+    /// `EventBody::Closed`, which the kernel otherwise only recognizes on recovery — a session reaches it by a
+    /// reducer returning `close = Some(..)`.
+    pub close: Option<CloseOutcome>,
 }
 
 impl FoldOutput {
@@ -76,6 +86,7 @@ impl FoldOutput {
         FoldOutput {
             effects: effects.into_iter().map(Effect::new).collect(),
             failure: None,
+            close: None,
         }
     }
 
@@ -85,6 +96,7 @@ impl FoldOutput {
         FoldOutput {
             effects,
             failure: None,
+            close: None,
         }
     }
 
@@ -96,6 +108,19 @@ impl FoldOutput {
         FoldOutput {
             effects: Vec::new(),
             failure: Some(reason.into()),
+            close: None,
+        }
+    }
+
+    /// A CLEAN SELF-COMPLETION fold (§6 supervision): no effects, signaling the session should CLOSE with the
+    /// given [`CloseOutcome`]. The kernel appends a durable `Closed{outcome}` (setting `is_closed()`) — the
+    /// symmetric sibling of [`FoldOutput::failed`]. This is how a reducer VOLUNTARILY ends its own session
+    /// (self-close), distinct from being `Terminated` by another via `lifecycle/terminate`.
+    pub fn close(outcome: CloseOutcome) -> Self {
+        FoldOutput {
+            effects: Vec::new(),
+            failure: None,
+            close: Some(outcome),
         }
     }
 }
