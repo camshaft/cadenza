@@ -601,6 +601,94 @@ mod tests {
         let _ = std::fs::remove_dir_all(&blob_dir);
     }
 
+    // recover_rehydrated must preserve the SAME torn-tail / corrupt classification as `recover`, even when the
+    // good prefix contains an OFFLOADED (blob-ptr) frame — the rehydration is inserted BEFORE decode, so a
+    // torn final frame is still TornTail (the good offloaded event survives, rehydrated) and a complete-but-
+    // invalid frame is still Corrupt. Guards that the async rehydrating framing loop didn't drift from
+    // decode_frames' tail handling.
+    #[tokio::test(flavor = "current_thread")]
+    async fn recover_rehydrated_preserves_torn_tail_and_corrupt() {
+        use crate::blob::DiskBlobStore;
+        let blob_dir = {
+            let mut p = std::env::temp_dir();
+            p.push(format!("cdz-kernel-rehy-tail-blob-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&p);
+            p
+        };
+        let big = Event {
+            seq: 1,
+            cause: None,
+            body: EventBody::Inbound {
+                content_type: ContentType {
+                    family: "m".into(),
+                    version: 1,
+                },
+                payload: Payload::Inline(vec![0xEEu8; 512].into()),
+            },
+        };
+
+        // TORN TAIL: one offloaded event, then a truncated final frame (len prefix over-claims).
+        let torn_path = temp_path("rehy-torn");
+        {
+            let mut log = LogStore::open(&torn_path)
+                .unwrap()
+                .with_offload(Box::new(DiskBlobStore::open(&blob_dir).unwrap()), 64);
+            LogSink::append(&mut log, &big).await.unwrap();
+        }
+        {
+            let mut f = OpenOptions::new().append(true).open(&torn_path).unwrap();
+            f.write_all(&100u32.to_le_bytes()).unwrap(); // claims 100 bytes...
+            f.write_all(&[1, 2, 3]).unwrap(); // ...but only 3 present → torn
+        }
+        let blob = DiskBlobStore::open(&blob_dir).unwrap();
+        let rec = LogStore::recover_rehydrated(&torn_path, &blob)
+            .await
+            .unwrap();
+        assert_eq!(
+            rec.kind,
+            RecoveryKind::TornTail,
+            "a torn final frame after an offloaded event is still TornTail"
+        );
+        assert_eq!(
+            rec.events,
+            vec![big.clone()],
+            "the offloaded good-prefix event survives + rehydrates"
+        );
+
+        // CORRUPT: one offloaded event, then a COMPLETE frame whose body is neither a blob-ptr nor a valid
+        // event → Corrupt (rehydrate passes the non-pointer body through, decode fails).
+        let corrupt_path = temp_path("rehy-corrupt");
+        {
+            let mut log = LogStore::open(&corrupt_path)
+                .unwrap()
+                .with_offload(Box::new(DiskBlobStore::open(&blob_dir).unwrap()), 64);
+            LogSink::append(&mut log, &big).await.unwrap();
+        }
+        {
+            let garbage = b"not-an-event-and-not-a-blob-ptr";
+            let mut f = OpenOptions::new().append(true).open(&corrupt_path).unwrap();
+            f.write_all(&(garbage.len() as u32).to_le_bytes()).unwrap();
+            f.write_all(garbage).unwrap();
+        }
+        let rec2 = LogStore::recover_rehydrated(&corrupt_path, &blob)
+            .await
+            .unwrap();
+        assert_eq!(
+            rec2.kind,
+            RecoveryKind::Corrupt,
+            "a complete-but-invalid frame after an offloaded event is Corrupt"
+        );
+        assert_eq!(
+            rec2.events,
+            vec![big],
+            "the good-prefix offloaded event survives"
+        );
+
+        let _ = std::fs::remove_file(&torn_path);
+        let _ = std::fs::remove_file(&corrupt_path);
+        let _ = std::fs::remove_dir_all(&blob_dir);
+    }
+
     #[test]
     fn append_then_recover_round_trips_in_order() {
         let path = temp_path("roundtrip");
