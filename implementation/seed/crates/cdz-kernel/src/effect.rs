@@ -1473,7 +1473,7 @@ mod tests {
         assert!(control.schema_hash.is_some());
         // placeholder kind — but the hash came from the FAMILY, never the (wrong) Emit identity.
         assert_eq!(control.kind, EffectKind::Emit);
-        // A well-known family with NO declared schema yet (store/*) is still None.
+        // store/* gained declared schemas → store/set now carries its family schema-hash.
         let store = EffectRequest::new_with_family(
             effect_ct::STORE_SET,
             "k",
@@ -1481,7 +1481,20 @@ mod tests {
             Timeliness::Interactive,
         );
         assert_eq!(
-            store.schema_hash, None,
+            store.schema_hash,
+            crate::ast_marshal::family_effect_schema_hash(effect_ct::STORE_SET),
+            "a declared store family carries its family schema-hash",
+        );
+        assert!(store.schema_hash.is_some());
+        // A well-known family with NO declared schema yet (control/signature, deliberately deferred) is None.
+        let deferred = EffectRequest::new_with_family(
+            effect_ct::SIGNATURE,
+            "q",
+            None,
+            Timeliness::Interactive,
+        );
+        assert_eq!(
+            deferred.schema_hash, None,
             "an as-yet-undeclared well-known family must be None"
         );
         // A register-by-string extension family (also Emit placeholder) is likewise None.

@@ -334,6 +334,27 @@ fn wit_type_record(b: &mut Builder, fields: &[(&str, StructId)]) -> StructId {
     b.list(children)
 }
 
+/// Build a `variant{Case(T)?…}` WIT type descriptor node directly into `b` — the `("variant" (Case <T>?)…)`
+/// form [`build_type`]'s `Type::Variant` arm emits (a `Str("variant")` head, then one `(CaseName ty?)` entry
+/// per case — a payload-bearing case is a 2-list `(CaseName ty)`, a payload-less case a 1-list `(CaseName)`).
+/// Used by a built-in/family effect schema whose op result/arg is a SUM (e.g. control/close's CloseOutcome
+/// `Success(payload)|Failure(string)`) that has no reflected wasmtime [`Type`]. The head is a `Str` (matching
+/// `build_type`, NOT a `Name`) so a directly-built variant hashes identically to the same variant reflected
+/// off a component. Cases are passed in the caller's order (order participates in the identity).
+fn wit_type_variant(b: &mut Builder, cases: &[(&str, Option<StructId>)]) -> StructId {
+    let mut children = Vec::with_capacity(1 + cases.len());
+    children.push(b.atom_leaf(Leaf::Str("variant".into())));
+    for &(case, ty) in cases {
+        let case_head = b.name(case);
+        let entry = match ty {
+            Some(t) => b.list(vec![case_head, t]),
+            None => b.list(vec![case_head]),
+        };
+        children.push(entry);
+    }
+    b.list(children)
+}
+
 /// The canonical schema-hash of a BUILT-IN effect ([`crate::effect::EffectKind`]) — its identity under the
 /// schema-hash-only effect model (operator directive 2026-08-12: effect identity is the schema-hash, computed
 /// over the AST-typed schema, for EVERY effect including built-ins, hashed by the SAME [`effect_schema_hash`]
@@ -524,8 +545,9 @@ pub fn builtin_effect_schema_hash_memo(kind: &crate::effect::EffectKind) -> crat
 /// schema tree (so lifecycle/suspend != resume != terminate though all are unit->unit).
 ///
 /// A family string `"x/y"` decomposes to effect name `x`, op name `y`. `None` for a register-by-string
-/// EXTENSION family, or a well-known family whose schema is a later slice (store/*, control/signature,
-/// control/close, effect/reply) — those keep `EffectRequest::schema_hash = None` until declared.
+/// EXTENSION family, or a well-known family whose schema is not yet declared — currently only
+/// `control/signature` (a fold-back query whose payload/result shape is deliberately deferred until nailed;
+/// freezing a permanent identity on a guessed shape is what this `None` avoids).
 pub fn family_effect_schema_hash(family: &str) -> Option<crate::hash::Hash> {
     use crate::effect::effect_ct;
     let mut b = Builder::new();
@@ -652,6 +674,74 @@ pub fn family_effect_schema_hash(family: &str) -> Option<crate::hash::Hash> {
             let sig = b.wit_func_sig(&[("summary", summary)], unit);
             ("control", "summary", sig)
         }
+        // store/set(pointer: hash-bytes -> unit): target = the name (target-out); payload = the pointer hash
+        // the name now points at. The §4c mutable-name store pointer write.
+        effect_ct::STORE_SET => {
+            let pointer = bytes(&mut b);
+            let unit = b.wit_type_unit();
+            let sig = b.wit_func_sig(&[("pointer", pointer)], unit);
+            ("store", "set", sig)
+        }
+        // store/resolve(-> hash-bytes): target = the name (target-out); result = the frozen current hash.
+        effect_ct::STORE_RESOLVE => {
+            let hash = bytes(&mut b);
+            let sig = b.wit_func_sig(&[], hash);
+            ("store", "resolve", sig)
+        }
+        // store/add | store/remove(op: member-op record -> unit): target = the group name (target-out);
+        // payload = the OR-set MemberOp {add: bool, member: hash-bytes, tag: tuple<hash-bytes, u64>}. Distinct
+        // identities via the OP NAME (add vs remove), both carrying the same MemberOp shape.
+        effect_ct::STORE_ADD | effect_ct::STORE_REMOVE => {
+            let add = b.wit_type_prim("bool");
+            let member = bytes(&mut b);
+            let tag = {
+                let tag_hash = bytes(&mut b);
+                let tag_seq = b.wit_type_prim("u64");
+                b.wit_type_tuple(&[tag_hash, tag_seq])
+            };
+            let op = wit_type_record(&mut b, &[("add", add), ("member", member), ("tag", tag)]);
+            let unit = b.wit_type_unit();
+            let sig = b.wit_func_sig(&[("op", op)], unit);
+            if family == effect_ct::STORE_ADD {
+                ("store", "add", sig)
+            } else {
+                ("store", "remove", sig)
+            }
+        }
+        // store/resolve-all(-> list<hash-bytes>): target = the group name (target-out); result = the current
+        // member set (a list of member hashes).
+        effect_ct::STORE_RESOLVE_ALL => {
+            let members = {
+                let member = bytes(&mut b);
+                b.wit_type_list(member)
+            };
+            let sig = b.wit_func_sig(&[], members);
+            ("store", "resolve-all", sig)
+        }
+        // effect/reply(response: bytes -> unit): target = the opaque 32-byte reply TOKEN (target-out); payload
+        // = the response bytes. The host ReplyExecutor validates+consumes the token and settles the request.
+        effect_ct::EFFECT_REPLY => {
+            let response = bytes(&mut b);
+            let unit = b.wit_type_unit();
+            let sig = b.wit_func_sig(&[("response", response)], unit);
+            ("effect", "reply", sig)
+        }
+        // control/close(outcome: CloseOutcome -> unit): NO target; payload = the close outcome, a variant
+        // Success(payload-bytes) | Failure(message-string). The §6 self-close signal.
+        effect_ct::CLOSE => {
+            let success_payload = bytes(&mut b);
+            let failure_msg = b.wit_type_prim("string");
+            let outcome = wit_type_variant(
+                &mut b,
+                &[
+                    ("Success", Some(success_payload)),
+                    ("Failure", Some(failure_msg)),
+                ],
+            );
+            let unit = b.wit_type_unit();
+            let sig = b.wit_func_sig(&[("outcome", outcome)], unit);
+            ("control", "close", sig)
+        }
         _ => return None,
     };
     Some(effect_schema_hash_from_nodes(b, name, &[(op_name, sig)]))
@@ -680,6 +770,13 @@ pub fn family_effect_schema_hash_memo(family: &str) -> Option<crate::hash::Hash>
                 effect_ct::LIFECYCLE_TERMINATE,
                 effect_ct::CAPABILITIES,
                 effect_ct::SUMMARY,
+                effect_ct::STORE_SET,
+                effect_ct::STORE_RESOLVE,
+                effect_ct::STORE_ADD,
+                effect_ct::STORE_REMOVE,
+                effect_ct::STORE_RESOLVE_ALL,
+                effect_ct::EFFECT_REPLY,
+                effect_ct::CLOSE,
             ] {
                 if let Some(h) = family_effect_schema_hash(fam) {
                     m.insert(fam, h);
@@ -3361,7 +3458,7 @@ mod tests {
     fn family_effect_schema_hashes_are_stable_declared_set_pairwise_distinct_and_distinct_from_builtins(
     ) {
         use crate::effect::{effect_ct, EffectKind};
-        // The 14 well-known non-EffectKind families that have a DECLARED schema (target-OUT).
+        // The 21 well-known non-EffectKind families that have a DECLARED schema (target-OUT).
         let families = [
             effect_ct::FS_READ,
             effect_ct::FS_WRITE,
@@ -3377,6 +3474,13 @@ mod tests {
             effect_ct::LIFECYCLE_TERMINATE,
             effect_ct::CAPABILITIES,
             effect_ct::SUMMARY,
+            effect_ct::STORE_SET,
+            effect_ct::STORE_RESOLVE,
+            effect_ct::STORE_ADD,
+            effect_ct::STORE_REMOVE,
+            effect_ct::STORE_RESOLVE_ALL,
+            effect_ct::EFFECT_REPLY,
+            effect_ct::CLOSE,
         ];
         // (1) each is declared (Some), stable, and the memo agrees with the pure recompute.
         for f in &families {
@@ -3392,11 +3496,12 @@ mod tests {
                 "memo agrees for {f}"
             );
         }
-        // (2) a family with no declared schema yet, and an extension family, are None.
-        assert_eq!(family_effect_schema_hash(effect_ct::STORE_SET), None);
+        // (2) a family with no declared schema yet (control/signature — deliberately deferred), and an
+        // extension family, are None.
+        assert_eq!(family_effect_schema_hash(effect_ct::SIGNATURE), None);
         assert_eq!(family_effect_schema_hash("custom/metrics"), None);
-        assert_eq!(family_effect_schema_hash_memo(effect_ct::STORE_SET), None);
-        // (3) THE IDENTITY GUARD: all 6 built-ins + 14 families = 20 PAIRWISE-DISTINCT hashes. This proves
+        assert_eq!(family_effect_schema_hash_memo(effect_ct::SIGNATURE), None);
+        // (3) THE IDENTITY GUARD: all 6 built-ins + 21 families = 27 PAIRWISE-DISTINCT hashes. This proves
         // target-OUT is safe — the unit->unit families (ws/dial, lifecycle/suspend|resume|terminate) do NOT
         // collide with each other despite identical signatures, because the effect NAME + OP NAME are hashed.
         let builtins = [
@@ -3414,7 +3519,7 @@ mod tests {
                 .iter()
                 .map(|f| family_effect_schema_hash(f).unwrap()),
         );
-        assert_eq!(all.len(), 20);
+        assert_eq!(all.len(), 27);
         for i in 0..all.len() {
             for j in (i + 1)..all.len() {
                 assert_ne!(
