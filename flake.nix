@@ -521,6 +521,17 @@
             version = "0.0.0";
             inherit cargoArtifacts;
             cargoVendorDir = seedCargoVendor;
+            # CDZ_RUN_TIMEOUT_SECS=300 (default 30): cdz-run arms a WALL-CLOCK epoch deadline (a background
+            # thread bumps the wasmtime engine epoch every 100ms regardless of guest CPU — cdz-run arm_epoch_ticker).
+            # Under heavy parallel cargo test, a correct + terminating rcdzc match_engine constant-stack-loop test
+            # (a_tail_recursive_list_fold / a_non_tail_list_fold / a_tail_recursive_sum_consumer) gets starved
+            # off-core past the 30s WALL bound and traps `interrupt` → a false-red MERGE gate (148-172s loaded vs
+            # 76-98s unloaded; 3/0 isolated). xtask's `test` step already sets 300 (main.rs), but the nix localGate
+            # runs the per-crate craneLib.cargoTest checks, not that step — so it hit the 30s default. Set here on
+            # the SHARED base so every per-crate test derivation gets it at once (clippy ignores it). 300s still
+            # catches a genuine infinite loop (blows 300s wall too); harness-only, prod/CI cdz-run keeps 30s.
+            # Cross-owner fold: v-fleet-tooling owns gate policy + the sibling xtask fix, v-nix owns the flake.
+            CDZ_RUN_TIMEOUT_SECS = "300";
             src = pkgs.lib.fileset.toSource {
               root = ./.;
               fileset = pkgs.lib.fileset.unions (
