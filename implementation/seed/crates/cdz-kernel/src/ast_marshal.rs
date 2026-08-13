@@ -3706,6 +3706,34 @@ mod tests {
             "a model-shaped userspace effect hashes to the built-in model identity regardless of the field \
              WRITING order — the schema descriptor's record fields are name-sorted (content-address holds)"
         );
+
+        // A FAMILY effect with a REDUCER-CHOSEN TARGET — the target-as-op-arg cross-producer property. Rebuild
+        // fs/write's shape as a userspace producer would: fs.write declares a LEADING target op-arg (the path
+        // the reducer names) + a content payload, `(target: bytes, content: bytes) -> unit`. Assert it hashes
+        // to `family_effect_schema_hash("fs/write")` — i.e. a userspace effect declaring the same
+        // target-having shape content-addresses to the built-in FAMILY identity. This guards the target-as-op-arg
+        // family sweep (1a8970726): the target rides as a leading TYPE arg (so it's in the sig/ast) but the
+        // identity is target-VALUE-independent (the hash is over the TYPE sig).
+        let userspace_fs_write = {
+            let mut b = Builder::new();
+            let target = {
+                let u8 = b.wit_type_prim("u8");
+                b.wit_type_list(u8)
+            };
+            let content = {
+                let u8 = b.wit_type_prim("u8");
+                b.wit_type_list(u8)
+            };
+            let unit = b.wit_type_unit();
+            let sig = b.wit_op_sig(&[target, content], unit);
+            effect_schema_hash_from_nodes(b, "fs", &[("write", sig)])
+        };
+        assert_eq!(
+            Some(userspace_fs_write),
+            family_effect_schema_hash(crate::effect::effect_ct::FS_WRITE),
+            "a userspace effect declaring fs/write's (target, content) -> unit shape hashes to the built-in \
+             fs/write FAMILY identity (target-as-op-arg content-addresses across producers)"
+        );
     }
 
     #[test]
