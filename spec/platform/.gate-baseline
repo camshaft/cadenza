@@ -14,6 +14,8 @@ pass	a sender emits a message to a peer session, which the peer receives and fol
 pass	a sender emits two messages to one peer in a single fold; the peer folds both in order
 pass	a session stores a fixed mid-range byte value (decoder past the counter's 1)
 pass	a session writes TWO kv keys on its kick-off (multi-key end-state)
+pass	a supervisor DECODES the typed child-completed field and branches on the terminal outcome (Success)
+pass	a supervisor routes two children by their typed terminal outcome — one Success, one Failure — to distinct state
 pass	a supervisor spawns a child, messages it, the child self-closes, and the supervisor observes child-completed
 pass	a worker performs a userspace effect served by a handler session, and resumes on the reply
 pass	an effect no session serves is a permanent error that resumes the caller (no hang, no silent drop)
