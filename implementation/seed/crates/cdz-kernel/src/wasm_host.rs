@@ -2315,6 +2315,58 @@ mod tests {
         );
     }
 
+    // The WIRING invariant of the err-reply caller-side seam: `event_to_guest_inputs` surfaces the `outcome`
+    // (4th tuple element) ONLY for an `EffectResult` event — and there it is exactly `effect_outcome_view` of
+    // the result — while EVERY other event kind carries `None` (Inbound/timer/denial/etc. are not effect
+    // results, so the guest sees no outcome). This pins the discriminant-carrying rule end to end from the
+    // kernel `EventBody`, complementing the per-variant mapping test above.
+    #[test]
+    fn event_to_guest_inputs_surfaces_outcome_only_for_effect_result() {
+        use crate::ast_marshal::val_to_ast;
+        use crate::effect::{EffectId, Payload};
+
+        // An EffectResult carries the discriminated outcome view — byte-identical (through val_to_ast) to
+        // effect_outcome_view of its result.
+        let result = EffectOutcome::Ok(Some(Payload::Inline(b"resp".to_vec().into())));
+        let (_, _, _, outcome) = event_to_guest_inputs(&EventBody::EffectResult {
+            id: EffectId(1),
+            result: result.clone(),
+            token: None,
+        });
+        let outcome = outcome.expect("an EffectResult surfaces Some(outcome)");
+        assert_eq!(
+            val_to_ast(&outcome).unwrap(),
+            val_to_ast(&effect_outcome_view(&result)).unwrap(),
+            "the outcome is exactly effect_outcome_view of the result"
+        );
+
+        // Every NON-result event kind carries NO outcome (None): Inbound, timer, denial are not effect results.
+        let inbound = EventBody::Inbound {
+            content_type: crate::event::ContentType {
+                family: std::borrow::Cow::Borrowed("message"),
+                version: 1,
+            },
+            payload: Payload::Inline(b"hi".to_vec().into()),
+        };
+        let timer = EventBody::TimerFired {
+            id: EffectId(2),
+            fired_ms: 123,
+            token: None,
+        };
+        let denied = EventBody::AuthzDenied {
+            id: EffectId(3),
+            reason: "nope".to_string(),
+            token: None,
+        };
+        for (label, body) in [("inbound", inbound), ("timer", timer), ("denied", denied)] {
+            let (_, _, _, outcome) = event_to_guest_inputs(&body);
+            assert!(
+                outcome.is_none(),
+                "a {label} event carries no outcome (only an EffectResult does)"
+            );
+        }
+    }
+
     // §directory-D5: subject_of surfaces the MEMBER VALUE of a group membership op (store/add|remove) as the
     // auth-request `subject`, so a wasm policy can express self-vs-other; every other effect (and a
     // malformed/absent payload) yields None (the policy then gates on principal×action×target alone).
