@@ -1503,6 +1503,37 @@ impl ComponentReducer {
     }
 }
 
+/// Intercept a `.cdz` GUEST reducer's SELF-CLOSE signal (§6 supervision). A Rust reducer self-completes by
+/// returning [`crate::reducer::FoldOutput::close`] directly, but a wasm guest's `apply` only returns a
+/// value-form effect-list, so it signals a clean self-close by EMITTING a
+/// [`control/close`](crate::effect::effect_ct::CLOSE) effect whose payload is a `CloseOutcome` value-form.
+/// The fold adapter calls this on the guest's emitted effects: a `control/close` present → map its decoded
+/// outcome to a terminal `FoldOutput::close` (a closing fold's OTHER effects are ignored — the session is
+/// ending — symmetric with the answer-path interception of the other `control/*` families), so the signal is
+/// CONSUMED at the reducer seam and never routed to the drive loop. Returns `None` for the normal ongoing
+/// fold (no `control/close` → the caller uses `with_effects`). A `control/close` carrying a malformed or
+/// non-inline `CloseOutcome` payload is a FOLD FAILURE (fail-closed): a guest asking to close must carry a
+/// well-formed outcome, so it is surfaced as `FoldOutput::failed` rather than silently closing or ignored.
+fn guest_self_close(effects: &[crate::reducer::Effect]) -> Option<crate::reducer::FoldOutput> {
+    let close = effects
+        .iter()
+        .find(|e| e.request.content_type.family == crate::effect::effect_ct::CLOSE)?;
+    let out = match &close.request.payload {
+        Some(crate::effect::Payload::Inline(bytes)) => {
+            match crate::ast_marshal::decode_close_outcome(bytes) {
+                Ok(outcome) => crate::reducer::FoldOutput::close(outcome),
+                Err(e) => crate::reducer::FoldOutput::failed(format!(
+                    "guest control/close carried a malformed CloseOutcome payload: {e:?}"
+                )),
+            }
+        }
+        _ => crate::reducer::FoldOutput::failed(
+            "guest control/close without an inline CloseOutcome payload",
+        ),
+    };
+    Some(out)
+}
+
 /// Drive a WASM `ComponentReducer` through the kernel's [`crate::reducer::Reducer`] loop (§19b/§19e
 /// slice 2b-ii). This adapter is the bridge: it translates a kernel [`Event`] into the guest's `apply`
 /// inputs `(content_type, payload, resumes)`, runs the fold, and maps the guest's returned effect
@@ -1552,6 +1583,12 @@ impl crate::reducer::Reducer for ComponentReducer {
         match self.apply_with_outcome(taken, content_type, payload, resumes, outcome) {
             Ok((effects, new_kv)) => {
                 *kv = new_kv;
+                // A `.cdz` guest self-completes by EMITTING a `control/close` effect (it can't return
+                // `FoldOutput::close` like a Rust reducer); intercept it here → terminal close (§6), the
+                // other effects ignored. Absent → the normal ongoing fold.
+                if let Some(closed) = guest_self_close(&effects) {
+                    return closed;
+                }
                 // `apply` now returns kernel `Effect`s directly — `parse_effect_list` decoded the guest's
                 // value-form effect-list document into `Vec<Effect>`, so there is no per-effect WIT→kernel
                 // bridge at this seam anymore (the bytes boundary carries the value-form AST).
@@ -1915,6 +1952,12 @@ impl crate::reducer::Reducer for AsyncComponentReducer {
         {
             Ok((effects, new_kv)) => {
                 *kv = new_kv;
+                // Guest self-close (§6): a `control/close` effect maps to a terminal `FoldOutput::close`,
+                // ignoring the fold's other effects. Absent → the normal ongoing fold. See
+                // [`guest_self_close`] + [`ComponentReducer::fold`] for the rationale.
+                if let Some(closed) = guest_self_close(&effects) {
+                    return closed;
+                }
                 // `apply` returns kernel `Effect`s directly (parse_effect_list decoded the guest's
                 // value-form effect-list document) — no per-effect WIT→kernel bridge at this seam anymore.
                 crate::reducer::FoldOutput::with_effects(effects)
@@ -2425,6 +2468,63 @@ mod tests {
             Timeliness::Interactive,
         );
         assert_eq!(subject_of(&http), None);
+    }
+
+    // §6 WASM-guest SELF-CLOSE interception: a guest that EMITS a `control/close` effect carrying a
+    // CloseOutcome value-form maps to a terminal `FoldOutput::close` (its OTHER effects ignored — a closing
+    // fold's effects don't run), so a `.cdz` reducer can self-complete despite `apply` only returning an
+    // effect-list. No `control/close` → None (a normal ongoing fold → the caller uses `with_effects`). A
+    // `control/close` with a malformed / non-inline payload is a FOLD FAILURE (a guest asking to close must
+    // carry a well-formed outcome — never a silent close or a silent ignore).
+    #[test]
+    fn guest_self_close_intercepts_control_close_and_fails_closed_on_a_bad_payload() {
+        use crate::effect::{effect_ct, EffectKind, EffectRequest, Payload, Timeliness};
+        use crate::event::CloseOutcome;
+        use crate::reducer::{Effect, FoldOutput};
+        let close_effect = |payload: Option<Payload>| {
+            Effect::new(EffectRequest::new_with_family(
+                effect_ct::CLOSE,
+                "",
+                payload,
+                Timeliness::Interactive,
+            ))
+        };
+        // A non-close effect the guest also emitted (must be ignored when a close is present).
+        let other = Effect::new(EffectRequest::new(
+            EffectKind::Http,
+            "https://ok/x",
+            None,
+            Timeliness::Interactive,
+        ));
+
+        // No control/close → None (normal ongoing fold).
+        assert!(guest_self_close(std::slice::from_ref(&other)).is_none());
+        assert!(guest_self_close(&[]).is_none());
+
+        // control/close with a well-formed CloseOutcome → terminal close carrying that exact outcome; the
+        // co-emitted effect is ignored (a closing fold's other effects don't run).
+        for outcome in [
+            CloseOutcome::Success(Payload::Inline(b"done".to_vec().into())),
+            CloseOutcome::Failure("gave up".to_string()),
+        ] {
+            let bytes = crate::ast_marshal::encode_close_outcome(&outcome);
+            let out = guest_self_close(&[
+                other.clone(),
+                close_effect(Some(Payload::Inline(bytes.into()))),
+            ])
+            .expect("control/close present → Some");
+            assert_eq!(out, FoldOutput::close(outcome));
+        }
+
+        // Fail-closed: a control/close with a malformed outcome payload, or with no inline payload, is a
+        // FOLD FAILURE (surfaced, not a silent close/ignore).
+        let malformed = guest_self_close(&[close_effect(Some(Payload::Inline(
+            b"\xffnope".to_vec().into(),
+        )))])
+        .expect("Some (control/close present)");
+        assert!(malformed.failure.is_some() && malformed.close.is_none());
+        let no_payload = guest_self_close(&[close_effect(None)]).expect("Some");
+        assert!(no_payload.failure.is_some() && no_payload.close.is_none());
     }
 
     // `bare_iface_name` strips BOTH `+<hash>` and `@<semver>`, and the runtime-dep selection must agree with

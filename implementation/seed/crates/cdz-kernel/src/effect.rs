@@ -91,6 +91,18 @@ pub mod effect_ct {
     /// wit-types to a Cadenza-decodable Ast (v-metaprogramming owns that type mapping).
     pub const SIGNATURE: &str = "control/signature";
 
+    /// The well-known `control/close` family — the WASM-GUEST SELF-CLOSE signal (§6 supervision). A Rust
+    /// reducer self-completes by returning [`crate::reducer::FoldOutput::close`] directly, but a `.cdz`
+    /// GUEST reducer's `apply` only returns a value-form effect-list, so it signals a clean self-close by
+    /// EMITTING a `control/close` effect whose payload is a `CloseOutcome` value-form (`(Success
+    /// <ReplyPayload>) | (Failure <bytes>)`, [`crate::ast_marshal::decode_close_outcome`]). The wasm fold
+    /// adapter ([`crate::wasm_host::ComponentReducer`] / `AsyncComponentReducer`) INTERCEPTS it at the fold
+    /// boundary → returns `FoldOutput::close(outcome)` (a closing fold's other effects are ignored, the
+    /// session is ending), so it is CONSUMED at the reducer seam and never reaches the drive loop — the same
+    /// answer-path interception as the other `control/*` families. CONTROL-PLANE (authz-EXEMPT; self-close is
+    /// not a world-action). Distinct from `lifecycle/terminate` (another session ending this one).
+    pub const CLOSE: &str = "control/close";
+
     /// The `store/*` namespace PREFIX — the §4c global-store WRITE layer (mutable name→hash pointers). A
     /// family whose string starts with this is a STORE effect: unlike `control/*` (authz-EXEMPT), a store
     /// effect is AUTHZ-GATED — a `store/set` is the anti-hijack surface (repointing `system/compiler/latest`
@@ -419,13 +431,15 @@ pub mod effect_ct {
     /// If `family` is a WELL-KNOWN control-plane family, return its `&'static str` const (so a caller can
     /// hold it as a zero-alloc `Cow::Borrowed` instead of owning the string). `None` for an unknown/
     /// ad-hoc control family. The control-plane analogue of [`super::EffectKind::from_family`] — used by
-    /// [`super::EffectRequest::new_with_family`] to keep the #1563/#1722 zero-alloc invariant for
-    /// `control/capabilities` and `control/summary`, which have no `EffectKind`.
+    /// [`super::EffectRequest::new_with_family`] to keep the #1563/#1722 zero-alloc invariant for the
+    /// control families (`control/capabilities`, `control/summary`, `control/signature`, `control/close`),
+    /// which have no `EffectKind`.
     pub fn wellknown_control(family: &str) -> Option<&'static str> {
         match family {
             CAPABILITIES => Some(CAPABILITIES),
             SUMMARY => Some(SUMMARY),
             SIGNATURE => Some(SIGNATURE),
+            CLOSE => Some(CLOSE),
             _ => None,
         }
     }
@@ -458,7 +472,8 @@ pub mod effect_ct {
 
     /// If `family` is a WELL-KNOWN family whose string is a FIXED, kernel-defined `&'static` — one of the
     /// built-in effect verbs ([`ALL`], via [`super::EffectKind::from_family`]) or the exact control/store/fs/
-    /// metric families (`control/capabilities`, `control/summary`, `store/set`, `store/resolve`, `store/add`,
+    /// metric families (`control/capabilities`, `control/summary`, `control/signature`, `control/close`,
+    /// `store/set`, `store/resolve`, `store/add`,
     /// `store/remove`, `store/resolve-all`, `fs/read`, `fs/write`, `fs/glob`, `metric/publish`, `blob/put`,
     /// `blob/get`, `ws/send`, `ws/connect`, `ws/disconnect`, `effect/reply`) — return that canonical
     /// `&'static str`. `None` for an EXTENSION family (register-by-string). (`ws/connect`/`ws/disconnect` are
@@ -480,6 +495,7 @@ pub mod effect_ct {
             CAPABILITIES => Some(CAPABILITIES),
             SUMMARY => Some(SUMMARY),
             SIGNATURE => Some(SIGNATURE),
+            CLOSE => Some(CLOSE),
             STORE_SET => Some(STORE_SET),
             STORE_RESOLVE => Some(STORE_RESOLVE),
             STORE_ADD => Some(STORE_ADD),
@@ -1149,6 +1165,7 @@ mod tests {
         assert_eq!(wellknown_static_str(SHELL), Some(SHELL));
         assert_eq!(wellknown_static_str(EMIT), Some(EMIT));
         assert_eq!(wellknown_static_str(CAPABILITIES), Some(CAPABILITIES));
+        assert_eq!(wellknown_static_str(CLOSE), Some(CLOSE)); // §6 self-close is a well-known control family
         assert_eq!(wellknown_static_str(STORE_SET), Some(STORE_SET));
         assert_eq!(wellknown_static_str(STORE_ADD), Some(STORE_ADD));
         assert_eq!(wellknown_static_str(STORE_REMOVE), Some(STORE_REMOVE));
@@ -1183,6 +1200,7 @@ mod tests {
         assert!(is_authz_exempt(EFFECT_REPLY));
         // Control families are exempt (host-answered, never capability-gated).
         assert!(is_authz_exempt(CAPABILITIES));
+        assert!(is_authz_exempt(CLOSE)); // §6 self-close is control-plane: never authz-gated, never routed
         assert!(is_authz_exempt("control/anything"));
         // Ordinary executor-routed effects are NOT exempt — they take the SEC-F1 gate.
         assert!(!is_authz_exempt(HTTP));
@@ -1416,6 +1434,7 @@ mod tests {
         assert!(effect_ct::is_control_family(effect_ct::CAPABILITIES));
         assert!(effect_ct::is_control_family(effect_ct::SUMMARY));
         assert!(effect_ct::is_control_family(effect_ct::SIGNATURE));
+        assert!(effect_ct::is_control_family(effect_ct::CLOSE));
         assert!(effect_ct::is_control_family("control/anything"));
         // Every well-known EFFECT family stays BARE — NOT in the control namespace (durable-wire constraint:
         // they can't gain an "effect/" prefix, and must never be misclassified as control).
@@ -1430,6 +1449,14 @@ mod tests {
         assert!(effect_ct::CAPABILITIES.starts_with(effect_ct::CONTROL_PREFIX));
         assert!(effect_ct::SUMMARY.starts_with(effect_ct::CONTROL_PREFIX));
         assert!(effect_ct::SIGNATURE.starts_with(effect_ct::CONTROL_PREFIX));
+        assert!(effect_ct::CLOSE.starts_with(effect_ct::CONTROL_PREFIX));
+        // control/close (§6 WASM-guest self-close) is a well-known control family: exact string +
+        // canonicalized zero-alloc by wellknown_control (so its family logs verbatim, not redacted).
+        assert_eq!(effect_ct::CLOSE, "control/close");
+        assert_eq!(
+            effect_ct::wellknown_control(effect_ct::CLOSE),
+            Some(effect_ct::CLOSE)
+        );
         // control/signature is a well-known control family: exact string, safe-logging, and wellknown_control
         // canonicalizes it (zero-alloc Borrowed) — the composable-component-calls signature-query (v0).
         assert_eq!(effect_ct::SIGNATURE, "control/signature");

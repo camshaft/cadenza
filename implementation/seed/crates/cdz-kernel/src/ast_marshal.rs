@@ -800,21 +800,52 @@ fn read_err_reply_record(a: &Arenas, id: StructId) -> Result<(String, bool), Mar
 /// Failure carries the reason bytes. `child` is the completed child's 32-byte SessionId (= genesis hash).
 pub fn encode_child_completed(child: &crate::hash::Hash, outcome: &CloseOutcome) -> Vec<u8> {
     let bytes = |b: &[u8]| Val::List(b.iter().copied().map(Val::U8).collect());
+    let record = Val::Record(vec![
+        ("child".into(), bytes(child.as_bytes())),
+        ("outcome".into(), close_outcome_val(outcome)),
+    ]);
+    val_to_ast(&record).expect("the child-completed value is always marshallable")
+}
+
+/// The shared `CloseOutcome` value-form node `(Success <ReplyPayload>) | (Failure <bytes>)` — the `outcome`
+/// field of [`encode_child_completed`] AND the whole payload of a `control/close` self-close signal
+/// ([`encode_close_outcome`]). Success REUSES the reply-outcome payload discriminant (`(Inline <bytes>) |
+/// (Blob <32-hash>)`) so a blob-ref success payload survives (no-capability-drop); Failure carries the
+/// reason bytes. One builder so the child-completed and self-close forms cannot drift.
+fn close_outcome_val(outcome: &CloseOutcome) -> Val {
+    let bytes = |b: &[u8]| Val::List(b.iter().copied().map(Val::U8).collect());
     let payload_view = |p: &Payload| match p {
         Payload::Inline(b) => Val::Variant("Inline".into(), Some(Box::new(bytes(b)))),
         Payload::Blob(h) => Val::Variant("Blob".into(), Some(Box::new(bytes(h.as_bytes())))),
     };
-    let outcome_view = match outcome {
+    match outcome {
         CloseOutcome::Success(p) => Val::Variant("Success".into(), Some(Box::new(payload_view(p)))),
         CloseOutcome::Failure(reason) => {
             Val::Variant("Failure".into(), Some(Box::new(bytes(reason.as_bytes()))))
         }
-    };
-    let record = Val::Record(vec![
-        ("child".into(), bytes(child.as_bytes())),
-        ("outcome".into(), outcome_view),
-    ]);
-    val_to_ast(&record).expect("the child-completed value is always marshallable")
+    }
+}
+
+/// Encode a bare `CloseOutcome` value-form — the payload a `.cdz` guest reducer emits on a `control/close`
+/// effect to SELF-COMPLETE (§6 supervision). The DUAL of [`decode_close_outcome`], and the same node
+/// [`encode_child_completed`] nests under its `outcome` field. Provided for the Rust reducer / host path +
+/// round-trip testing; a guest builds these bytes via rcdzc instead.
+pub fn encode_close_outcome(outcome: &CloseOutcome) -> Vec<u8> {
+    val_to_ast(&close_outcome_val(outcome)).expect("the close-outcome value is always marshallable")
+}
+
+/// Decode a bare `CloseOutcome` value-form `(Success <ReplyPayload>) | (Failure <bytes>)` from bytes — the
+/// payload a `.cdz` GUEST reducer emits on a [`control/close`](crate::effect::effect_ct::CLOSE) effect to
+/// SELF-COMPLETE. A guest reducer's `apply` can only return a value-form effect-list (it can't return
+/// [`crate::reducer::FoldOutput::close`] like a Rust reducer), so it signals a clean self-close through the
+/// effect-list; the wasm fold adapter value-decodes the outcome HERE and maps it to `FoldOutput::close`.
+/// The top-level entry point onto the same `(Success|Failure)` decode [`decode_child_completed`] runs on
+/// its nested `outcome` field. STRICT / fail-closed against untrusted guest bytes: undecodable bytes, an
+/// unknown outcome/payload head, a wrong-length blob hash, or a non-utf-8 Failure reason is a `TypeMismatch`
+/// (a guest asking to close with a malformed outcome is a fold failure, not a silent success).
+pub fn decode_close_outcome(bytes: &[u8]) -> Result<CloseOutcome, MarshalError> {
+    let a = codec::decode(bytes).ok_or(MarshalError::Undecodable)?;
+    read_child_outcome(&a, a.root)
 }
 
 /// Decode a [`encode_child_completed`] value-form back into `(child SessionId, CloseOutcome)` — the DUAL of
@@ -2340,6 +2371,40 @@ mod tests {
             val_to_ast(&rec).unwrap()
         };
         assert!(decode_child_completed(&bad).is_err());
+    }
+
+    // The bare CloseOutcome value-form (the payload a `.cdz` guest emits on a `control/close` self-close)
+    // round-trips (encode∘decode = id) for all three shapes — Success(Inline), Success(Blob) (blob-ref
+    // success survives), Failure(reason) — and is the SAME node child-completed nests, so a guest's
+    // self-close outcome and a supervisor's child-completed outcome are byte-identical. Fail-closed on
+    // undecodable bytes + an unknown ctor head.
+    #[test]
+    fn close_outcome_value_form_round_trips_and_matches_child_completed_nested_form() {
+        use crate::hash::Hash;
+        let round_trips = |o: CloseOutcome| {
+            let bytes = encode_close_outcome(&o);
+            assert_eq!(
+                decode_close_outcome(&bytes).expect("decodes"),
+                o.clone(),
+                "encode∘decode = id"
+            );
+            // The self-close encoding is byte-identical to child-completed's nested `outcome` field: the
+            // child-completed record embeds exactly `encode_close_outcome(&o)` under `outcome`.
+            let child = Hash::of(b"c");
+            let (decoded_child, decoded_outcome) =
+                decode_child_completed(&encode_child_completed(&child, &o)).expect("decodes");
+            assert_eq!((decoded_child, decoded_outcome), (child, o));
+        };
+        round_trips(CloseOutcome::Success(Payload::Inline(
+            b"done".to_vec().into(),
+        )));
+        round_trips(CloseOutcome::Success(Payload::Blob(Hash::of(b"blob"))));
+        round_trips(CloseOutcome::Failure("gave up".to_string()));
+
+        // Fail-closed: undecodable bytes, and an unknown outcome ctor head.
+        assert!(decode_close_outcome(b"\xff\x00nope").is_err());
+        let bad = val_to_ast(&Val::Variant("Weird".into(), Some(Box::new(Val::U8(1))))).unwrap();
+        assert!(decode_close_outcome(&bad).is_err());
     }
 
     // ast_to_val decodes UNTRUSTED arg bytes, so a record must EXACTLY match the WIT shape (github-liaison
