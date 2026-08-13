@@ -15,6 +15,7 @@ pass	a sender emits two messages to one peer in a single fold; the peer folds bo
 pass	a session stores a fixed mid-range byte value (decoder past the counter's 1)
 pass	a session writes TWO kv keys on its kick-off (multi-key end-state)
 pass	a supervisor DECODES the typed child-completed field and branches on the terminal outcome (Success)
+pass	a supervisor caps restarts and gives up — a repeatedly-failing child is restarted once then abandoned, the drive settles
 pass	a supervisor restarts a child on Failure — a Failure outcome drives a corrective re-spawn that then succeeds
 pass	a supervisor routes two children by their typed terminal outcome — one Success, one Failure — to distinct state
 pass	a supervisor spawns a child, messages it, the child self-closes, and the supervisor observes child-completed
