@@ -182,7 +182,8 @@ def read-paren-form(s: String, i: Int64, tree: Tree) =
       else (if (sym == "tuple") then read-tuple-form(s, a0, tree)   // COMPOUND: positional tuple → NTuple
       else (if (sym == "record") then read-record-form(s, a0, tree) // COMPOUND: named-field record → NRecord
       else (if (sym == ".") then read-proj-form(s, a0, tree)        // PROJECTION: (. t i) → NProj(operand, index)
-      else read-app-or-bin(s, sym, a0, tree))))))))))))))
+      else (if (sym == "String.byte-len") then read-strlen-form(s, a0, tree)  // STRINGS S1c: const-fold byte-len of a literal → NLit
+      else read-app-or-bin(s, sym, a0, tree)))))))))))))))
 
 /// The paren-form fallthrough head `sym` (not a keyword/op-symbol): either a CALL to a def-name or a binary
 /// op. The discriminator is `op-code-of(sym)`: `None` (not an operator) → a CALL — a NULLARY form (the atom is
@@ -197,6 +198,18 @@ def read-paren-form(s: String, i: Int64, tree: Tree) =
 /// read-order dependency that made forward refs decline. An unknown name still declines LATE (resolve finds no
 /// def-body → no callee). The single `op-code-of` MATCH here threads the resolved `op` into `read-bin-form`,
 /// so the operator lookup happens exactly once per form (no re-call).
+/// STRINGS S1c: `(String.byte-len "…")` — CONSTANT-FOLD the byte length of a STRING LITERAL to an `NLit`, so
+/// the whole downstream (infer int, lower CNum, eval) runs it with NO new node/op. Reads the arg form; if it is
+/// an `NStr` literal, emits `NLit(String.byte-len content)`; any non-literal arg → `unsupported` (decline — a
+/// runtime byte-len over a non-literal is coverage-not-yet). `String.byte-len` matches the rcdzc oracle's method.
+def read-strlen-form(s: String, i: Int64, tree: Tree) =
+  (match read-form(s, i, tree) with | (aId, a1, t1) =>
+    (let a2 = close-paren(s, a1) in
+     (match node-at(t1, aId) with
+       | Option.Some(Node.NStr(content)) =>
+           (match add-node(t1, Node.NLit(String.byte-len(content))) with | (id, t2) => (id, a2, t2))
+       | _ => (match unsupported(t1) with | (id, t2) => (id, a2, t2)))))
+
 def read-app-or-bin(s: String, sym: String, a0: Int64, tree: Tree) =
   (match op-code-of(sym) with
    | Option.None(_) =>

@@ -125,6 +125,19 @@ def se-string-literal-reads-and-declines() =
     | Option.None(_) => unit
 
 @test
+def se-string-byte-len-runs-to-length() =
+  // STRINGS S1c: (String.byte-len "hi") CONST-FOLDS the literal's byte length to 2 (an Int64 scalar verdict) —
+  // the reader folds it to NLit(2), so infer/lower/eval run it exactly like a bare int literal. A 5-char
+  // literal folds to 5. Matches the rcdzc oracle's String.byte-len. The FIRST runnable string program.
+  match run-src("(String.byte-len \"hi\")") with
+    | Option.Some(v) => (if v == 2 then
+        (match run-src("(String.byte-len \"hello\")") with
+          | Option.Some(w) => (if w == 5 then unit else trap("byte-len hello = 5"))
+          | Option.None(_) => trap("byte-len hello runs"))
+      else trap("byte-len hi = 2"))
+    | Option.None(_) => trap("(String.byte-len hi) runs to 2")
+
+@test
 def se-record-field-access-runs-to-value() =
   // RECORD field access `(. r fieldname)` runs to the named field's value (a SCALAR verdict, differential-safe):
   // a record lowers to CCtor(0, field values in field order) and CProj reads the field's slot found by name.
