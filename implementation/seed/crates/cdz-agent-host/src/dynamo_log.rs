@@ -11,7 +11,8 @@
 //!
 //! **Item schema (one item per event).** A session's log is a partition; each event is one item keyed by
 //! `(session_id, seq)`:
-//! - `session_id` (S) — the HASH key: the session this event belongs to (the log partition).
+//! - `session_id` (B) — the HASH key: the session this event belongs to (the log partition), carried as the
+//!   RAW 32 genesis-hash bytes (matching the SessionRegistry Binary key — no hex string; hashes-everywhere).
 //! - `seq` (N) — the RANGE key: the event's monotonic sequence number (`Event::seq`), so a session's events
 //!   sort + scan in order (the recovery read walks the partition by ascending `seq`).
 //! - `event` (B) — the event bytes, encoded through the SAME shared `event_ast::encode` canonical codec the
@@ -89,7 +90,9 @@ fn recovered_from_event_blobs<'a>(blobs: impl IntoIterator<Item = &'a [u8]>) -> 
 pub struct DynamoLogSink {
     client: aws_sdk_dynamodb::Client,
     table: String,
-    session_id: String,
+    /// The log partition key = this session's genesis hash as RAW 32 bytes (stored as a Dynamo Binary `B`
+    /// attribute, matching the SessionRegistry key — no hex string; hashes ride raw everywhere).
+    session_id: cdz_kernel::hash::Hash,
 }
 
 impl DynamoLogSink {
@@ -99,12 +102,12 @@ impl DynamoLogSink {
     pub fn from_conf(
         config: &aws_config::SdkConfig,
         table: impl Into<String>,
-        session_id: impl Into<String>,
+        session_id: cdz_kernel::hash::Hash,
     ) -> Self {
         DynamoLogSink {
             client: aws_sdk_dynamodb::Client::new(config),
             table: table.into(),
-            session_id: session_id.into(),
+            session_id,
         }
     }
 
@@ -126,7 +129,11 @@ impl DynamoLogSink {
                 .expression_attribute_names("#s", ATTR_SESSION)
                 .expression_attribute_values(
                     ":sid",
-                    aws_sdk_dynamodb::types::AttributeValue::S(self.session_id.clone()),
+                    aws_sdk_dynamodb::types::AttributeValue::B(
+                        aws_sdk_dynamodb::primitives::Blob::new(
+                            self.session_id.as_bytes().to_vec(),
+                        ),
+                    ),
                 )
                 .scan_index_forward(true) // ascending seq
                 .set_exclusive_start_key(last_key)
@@ -188,7 +195,11 @@ impl DynamoLogSink {
                 .expression_attribute_names("#s", ATTR_SESSION)
                 .expression_attribute_values(
                     ":sid",
-                    aws_sdk_dynamodb::types::AttributeValue::S(self.session_id.clone()),
+                    aws_sdk_dynamodb::types::AttributeValue::B(
+                        aws_sdk_dynamodb::primitives::Blob::new(
+                            self.session_id.as_bytes().to_vec(),
+                        ),
+                    ),
                 )
                 .scan_index_forward(true) // ascending seq
                 .set_exclusive_start_key(last_key)
@@ -238,7 +249,9 @@ impl LogSink for DynamoLogSink {
             .table_name(&self.table)
             .item(
                 ATTR_SESSION,
-                aws_sdk_dynamodb::types::AttributeValue::S(self.session_id.clone()),
+                aws_sdk_dynamodb::types::AttributeValue::B(
+                    aws_sdk_dynamodb::primitives::Blob::new(self.session_id.as_bytes().to_vec()),
+                ),
             )
             .item(
                 ATTR_SEQ,
@@ -258,7 +271,7 @@ impl LogSink for DynamoLogSink {
             .map_err(|e| {
                 io::Error::other(format!(
                     "DynamoLogSink append (session {}, seq {}) failed: {}",
-                    self.session_id,
+                    self.session_id.to_base64url(),
                     event.seq,
                     aws_sdk_dynamodb::error::DisplayErrorContext(&e)
                 ))
@@ -305,7 +318,7 @@ impl crate::factory::LogSinkBuilder for DynamoLogSinkBuilder {
         Ok(Some(Box::new(DynamoLogSink::from_conf(
             &self.config,
             self.table.clone(),
-            id.to_hex(),
+            id.hash(),
         ))))
     }
 
@@ -319,11 +332,11 @@ impl crate::factory::LogSinkBuilder for DynamoLogSinkBuilder {
         &self,
         id: &crate::host::SessionId,
     ) -> Result<Option<cdz_kernel::log_store::Recovered>, String> {
-        let sink = DynamoLogSink::from_conf(&self.config, self.table.clone(), id.to_hex());
+        let sink = DynamoLogSink::from_conf(&self.config, self.table.clone(), id.hash());
         sink.read_recovered().await.map(Some).map_err(|e| {
             format!(
                 "could not recover Dynamo log for session {}: {e}",
-                id.to_hex()
+                id.to_base64url()
             )
         })
     }
@@ -360,9 +373,9 @@ mod tests {
 
     #[test]
     fn sink_holds_the_table_and_session_partition() {
-        let sink = DynamoLogSink::from_conf(&test_cfg(), "cdz-log", "worker-1");
+        let sink = DynamoLogSink::from_conf(&test_cfg(), "cdz-log", Hash::of(b"worker-1"));
         assert_eq!(sink.table, "cdz-log");
-        assert_eq!(sink.session_id, "worker-1");
+        assert_eq!(sink.session_id, Hash::of(b"worker-1"));
     }
 
     #[tokio::test]
