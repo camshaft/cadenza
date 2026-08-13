@@ -640,6 +640,23 @@ pub struct EffectRequest {
     /// `EffectKind` variant at all. The `family` is the seam [`crate::authz::Authorizer`] and the executor
     /// router match on (via [`ContentType::matches_family`]).
     pub content_type: ContentType,
+    /// The effect's SCHEMA-HASH identity (schema-hash-only effect model, D14=A) — the raw 32-byte
+    /// content-hash of the effect's AST-typed schema, the identity a router/authz grant will key on once the
+    /// wire flips off `kind`/`content_type`. This is the PRODUCER half: the request carries the hash the
+    /// kernel/host computed at construction, so a downstream codec (v-cml's event_ast) can write it onto the
+    /// durable frame without re-deriving a type it no longer has (the wire-encode site sees only family +
+    /// payload — [`crate::ast_marshal::effect_schema_hash`] needs the op-signature set the constructor has).
+    ///
+    /// `Option` because only the six well-known built-ins ([`EffectKind`]) have a declared schema today
+    /// (slice-1, [`crate::ast_marshal::builtin_effect_schema_hash`]); a control/store/fs/blob/metric/ws/
+    /// lifecycle family or a register-by-string EXTENSION reaches [`EffectRequest::new_with_family`] with no
+    /// [`EffectKind`] of its own (it takes the `Emit` PLACEHOLDER `kind`), so there is no schema to hash yet —
+    /// `None`, honestly, rather than baking the PLACEHOLDER's hash as a WRONG permanent identity. Those
+    /// families get their schema in a later slice; the field then fills in additively. Behavior-neutral for
+    /// now: nothing reads it (routing/authz still key on `kind`/`content_type`); it is the field the codec
+    /// slice consumes next. Computed from the effect's REAL kind (via [`EffectKind::from_family`] in
+    /// `new_with_family`), never the collapsed placeholder.
+    pub schema_hash: Option<Hash>,
 }
 
 impl EffectRequest {
@@ -659,6 +676,8 @@ impl EffectRequest {
         payload: Option<Payload>,
         timeliness: Timeliness,
     ) -> Self {
+        // `kind` is always a well-known built-in here, so its schema-hash exists (slice-1) — memoized O(1).
+        let schema_hash = Some(crate::ast_marshal::builtin_effect_schema_hash_memo(&kind));
         EffectRequest {
             content_type: ContentType {
                 // `family()` is a `&'static str` → `Cow::Borrowed`, ZERO alloc (the per-effect String this
@@ -667,6 +686,7 @@ impl EffectRequest {
                 version: 1,
             },
             kind,
+            schema_hash,
             // `impl AsRef<[u8]>` so `&str`/`String`/`&[u8]`/`Vec<u8>` all pass unchanged (the operator
             // Target=Bytes ruling); `Arc::from(&[u8])` is the one heap copy at construction, then O(1) clones.
             target: std::sync::Arc::from(target.as_ref()),
@@ -702,20 +722,26 @@ impl EffectRequest {
         // (inert — dispatch/idempotency key on family). Only a genuine register-by-string EXTENSION family
         // (unknown to both) keeps an owned string — and reuses the INPUT Cow, so a caller that already owns it
         // doesn't re-allocate.
-        let (kind, family) = match EffectKind::from_family(&family) {
+        // `schema_hash` keys off the REAL kind (the `Some(k)` arm), NEVER the `Emit` PLACEHOLDER a control /
+        // extension family collapses to: only a genuine built-in has a declared schema (slice-1), so a
+        // control/store/fs/blob/metric/ws/lifecycle or register-by-string family is `None` (no schema yet) —
+        // baking the placeholder's hash would be a WRONG permanent identity.
+        let (kind, family, schema_hash) = match EffectKind::from_family(&family) {
             Some(k) => {
                 let fam = std::borrow::Cow::Borrowed(k.family());
-                (k, fam)
+                let hash = crate::ast_marshal::builtin_effect_schema_hash_memo(&k);
+                (k, fam, Some(hash))
             }
             None => match effect_ct::wellknown_control(&family) {
-                Some(c) => (EffectKind::Emit, std::borrow::Cow::Borrowed(c)),
+                Some(c) => (EffectKind::Emit, std::borrow::Cow::Borrowed(c), None),
                 // Extension family: keep the caller's Cow as-is (Borrowed stays borrowed, Owned isn't cloned).
-                None => (EffectKind::Emit, family),
+                None => (EffectKind::Emit, family, None),
             },
         };
         EffectRequest {
             content_type: ContentType { family, version: 1 },
             kind,
+            schema_hash,
             target: std::sync::Arc::from(target.as_ref()),
             payload,
             timeliness,
@@ -1377,6 +1403,10 @@ mod tests {
                 family: EffectKind::Http.family().into(),
                 version: 1,
             },
+            // `new` fills schema_hash from the kind's built-in schema (slice-1); the literal spells it out.
+            schema_hash: Some(crate::ast_marshal::builtin_effect_schema_hash_memo(
+                &EffectKind::Http,
+            )),
         };
         assert_eq!(via_new, via_literal);
         // The `impl Into<Arc<str>>` target arg accepts both &str and String uniformly.
@@ -1388,6 +1418,57 @@ mod tests {
                 Timeliness::Interactive
             ),
             EffectRequest::new(EffectKind::Now, "", None, Timeliness::Interactive),
+        );
+    }
+
+    #[test]
+    fn schema_hash_is_the_built_in_identity_and_none_for_a_schemaless_family() {
+        // The PRODUCER contract (schema-hash-only effect model, D14=A): a constructed request carries the
+        // schema-hash identity of its effect when — and ONLY when — a declared schema exists.
+        // `new` always takes a well-known EffectKind, so its schema_hash is the built-in hash (slice-1).
+        for kind in [
+            EffectKind::Shell,
+            EffectKind::Http,
+            EffectKind::Model,
+            EffectKind::Now,
+            EffectKind::Timer,
+            EffectKind::Emit,
+        ] {
+            let req = EffectRequest::new(kind.clone(), "t", None, Timeliness::Interactive);
+            assert_eq!(
+                req.schema_hash,
+                Some(crate::ast_marshal::builtin_effect_schema_hash(&kind)),
+                "new({kind:?}) must carry the built-in schema-hash",
+            );
+        }
+        // new_with_family on a built-in family resolves the real kind → carries its hash.
+        let via_family =
+            EffectRequest::new_with_family(effect_ct::HTTP, "t", None, Timeliness::Interactive);
+        assert_eq!(
+            via_family.schema_hash,
+            Some(crate::ast_marshal::builtin_effect_schema_hash(
+                &EffectKind::Http
+            )),
+        );
+        // A control family (Emit placeholder kind, no declared schema) is None — NOT the placeholder's hash.
+        let control = EffectRequest::new_with_family(
+            effect_ct::CAPABILITIES,
+            "t",
+            None,
+            Timeliness::Interactive,
+        );
+        assert_eq!(
+            control.schema_hash, None,
+            "a schemaless control family must be None"
+        );
+        // placeholder kind — but we did NOT hash it into a (wrong) identity
+        assert_eq!(control.kind, EffectKind::Emit);
+        // A register-by-string extension family (also Emit placeholder) is likewise None.
+        let ext =
+            EffectRequest::new_with_family("custom/metrics", "m", None, Timeliness::Interactive);
+        assert_eq!(
+            ext.schema_hash, None,
+            "a register-by-string extension family must be None"
         );
     }
 

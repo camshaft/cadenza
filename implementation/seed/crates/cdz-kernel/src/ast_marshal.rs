@@ -479,6 +479,39 @@ pub fn builtin_effect_schema_hash(kind: &crate::effect::EffectKind) -> crate::ha
     effect_schema_hash_from_nodes(b, name, &[(op_name, sig)])
 }
 
+/// The MEMOIZED schema-hash of a built-in effect — the accessor `EffectRequest::new` uses on the
+/// construction path. [`builtin_effect_schema_hash`] is a PURE recompute (builds the schema tree, encodes
+/// it, blake3-hashes it) that is far from free; a built-in's identity is FIXED (content-addressed over a
+/// schema that never changes at runtime), so the operator model is that the kernel computes each built-in's
+/// schema-hash ONCE and HOLDS it. This computes all six the first time it's called and returns an O(1) copy
+/// thereafter — so threading a `schema_hash` onto every constructed [`crate::effect::EffectRequest`] costs a
+/// slice-index, not a re-hash. The value is identical to [`builtin_effect_schema_hash`] by construction (it
+/// just caches it), so the identity contract that function's test pins covers this too.
+pub fn builtin_effect_schema_hash_memo(kind: &crate::effect::EffectKind) -> crate::hash::Hash {
+    use crate::effect::EffectKind;
+    // Order matches the index match below; a built-in's identity is frozen, so a `LazyLock` array is the
+    // whole cache (six [u8;32] hashes, computed on first touch).
+    static MEMO: std::sync::LazyLock<[crate::hash::Hash; 6]> = std::sync::LazyLock::new(|| {
+        [
+            builtin_effect_schema_hash(&EffectKind::Shell),
+            builtin_effect_schema_hash(&EffectKind::Http),
+            builtin_effect_schema_hash(&EffectKind::Model),
+            builtin_effect_schema_hash(&EffectKind::Now),
+            builtin_effect_schema_hash(&EffectKind::Timer),
+            builtin_effect_schema_hash(&EffectKind::Emit),
+        ]
+    });
+    let idx = match kind {
+        EffectKind::Shell => 0,
+        EffectKind::Http => 1,
+        EffectKind::Model => 2,
+        EffectKind::Now => 3,
+        EffectKind::Timer => 4,
+        EffectKind::Emit => 5,
+    };
+    MEMO[idx]
+}
+
 /// Build the type-descriptor for `ty` INTO an existing arena `b`, returning the root node id — the
 /// node-emitting core [`type_to_ast`] wraps. Exposed `pub` so a caller assembling a LARGER AST can emit
 /// type nodes DIRECTLY into its own [`Builder`] (one shared arena, encoded ONCE) rather than nesting
