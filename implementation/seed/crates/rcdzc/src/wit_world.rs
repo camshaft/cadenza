@@ -305,6 +305,44 @@ pub fn parse_target_world(a: &Arenas, root: StructId) -> Option<TargetWorld> {
     })
 }
 
+/// Whether a performed effect operation binds to a world-IMPORT interface member — the schema-hash
+/// phase-1a SYNC-vs-ASYNC perform discriminator (effects fold-purity boundary). The target WIT world
+/// (`db.wit_world` bytes) declares the reducer's imports; a delegated effect whose op is a member of an
+/// import interface (today `cadenza:agent-kernel/kv`) has a SYNCHRONOUS backing import to call, so it
+/// stays a `Core::HostCall` (the kv path). A world-touching effect (Model/Tool/Emit) has NO import
+/// binding — by the contract biconditional (v-ah, confirmed firm): a world-touching effect MUST defer
+/// its result to a later `apply` for fold-purity, so it can NEVER be import-backed; import-backed ⟺ sync.
+/// So a non-member perform is ASYNC and reifies into the returned effect-list (a `Core::EffectReify`
+/// tuple), never a synchronous import call. This reads the DECLARED contract (zero hard-coded
+/// Model/Tool/Emit vocabulary — GENERIC-COMPILER-clean): the emit observes that no synchronous target
+/// exists, it does not know a capability taxonomy. `iface` is the effect's declaring name — the SHORT
+/// name a source `(effect kv …)` declares (matching `backend::wasm::host::HostImport::effect`); the world
+/// declares its import interface at the FULLY-QUALIFIED WIT name (`cadenza:agent-kernel/kv`), so the match
+/// is on the FQ name's LAST `/`-segment (its interface short-name) — `kv` binds `cadenza:agent-kernel/kv`,
+/// the same short-name↔FQ mapping the HostCall→component-import emit uses. `None`/false when the world is
+/// absent or does not decode (no world ⟹ no host-fused imports ⟹ nothing is a sync import).
+pub fn is_world_import_op(world_bytes: Option<&[u8]>, iface: &str, op: &str) -> bool {
+    let Some(bytes) = world_bytes else {
+        return false;
+    };
+    let Some(arenas) = crate::codec::decode(bytes) else {
+        return false;
+    };
+    let Some(world) = parse_target_world(&arenas, arenas.root) else {
+        return false;
+    };
+    // The world's import interface `name` is the FQ WIT name (`cadenza:agent-kernel/kv`); the perform's
+    // `iface` is the source effect short-name (`kv`). Match on the FQ name's last `/`-segment so the short
+    // effect name binds its FQ import interface (a bare short-name world also matches — no `/` = itself).
+    fn short(fq: &str) -> &str {
+        fq.rsplit('/').next().unwrap_or(fq)
+    }
+    world
+        .imports
+        .iter()
+        .any(|i| short(&i.name) == iface && i.members.iter().any(|m| m.name == op))
+}
+
 fn parse_wit_interface(a: &Arenas, id: StructId) -> Option<WitInterface> {
     let Struct::List(items) = a.get(id) else {
         return None;
@@ -674,5 +712,63 @@ mod tests {
         assert_eq!(tw.imports[0].members[1].name, "set");
         assert_eq!(tw.imports[0].members[1].func.result, WitType::Unit);
         assert_eq!(tw.imports[0].members[1].func.params.len(), 2);
+    }
+
+    #[test]
+    fn is_world_import_op_discriminates_kv_sync_from_world_effect_async() {
+        // Schema-hash phase-1a SYNC/ASYNC perform discriminator (the emit-side membership fork). Build the
+        // reducer world (export fold{apply}, import kv{get,set}), codec-encode it to the `db.wit_world` byte
+        // shape, and assert: a kv op (get/set) BINDS to the `kv` import interface → SYNC (stays Core::HostCall);
+        // a world-touching op (no import binding) → ASYNC (reifies to output). Proves the membership logic
+        // before the fork wires into `lower`.
+        let mut b = Builder::new();
+        let ev = byte_list(&mut b);
+        let res = byte_list(&mut b);
+        let apply = member(&mut b, "apply", vec![("event", ev)], res);
+        let eh = b.name("export");
+        let en = b.name("fold");
+        let fold = b.list(vec![eh, en, apply]);
+        let gk = byte_list(&mut b);
+        let ginner = byte_list(&mut b);
+        let gres = opt(&mut b, ginner);
+        let get = member(&mut b, "get", vec![("key", gk)], gres);
+        let sk = byte_list(&mut b);
+        let sv = byte_list(&mut b);
+        let sres = unit(&mut b);
+        let set = member(&mut b, "set", vec![("key", sk), ("value", sv)], sres);
+        let ih = b.name("import");
+        let inm = b.name("kv");
+        let kv = b.list(vec![ih, inm, get, set]);
+        let wh = b.name("world");
+        let wn = b.name("reducer");
+        let world = b.list(vec![wh, wn, fold, kv]);
+        let a = b.finish(world);
+        // Encode to the `db.wit_world: Option<Vec<u8>>` byte shape the emit consults.
+        let bytes = crate::codec::encode(&a);
+
+        // kv ops BIND to the `kv` import interface → SYNC (Core::HostCall).
+        assert!(
+            is_world_import_op(Some(&bytes), "kv", "get"),
+            "kv.get is a world-import member → sync"
+        );
+        assert!(
+            is_world_import_op(Some(&bytes), "kv", "set"),
+            "kv.set is a world-import member → sync"
+        );
+        // A world-touching effect op has NO import binding → ASYNC (reify-to-output, never a HostCall).
+        assert!(
+            !is_world_import_op(Some(&bytes), "model", "generate"),
+            "a world-effect op is NOT an import member → async reify-to-output"
+        );
+        // An op name that exists on kv but under a DIFFERENT interface name does NOT match (interface-scoped).
+        assert!(
+            !is_world_import_op(Some(&bytes), "tool", "get"),
+            "op membership is interface-scoped: `get` under `tool` (no such import) → async"
+        );
+        // No world at all → nothing is a sync import (a bare-perform program with no host-fused world).
+        assert!(
+            !is_world_import_op(None, "kv", "get"),
+            "no target world → no sync imports"
+        );
     }
 }
