@@ -3563,6 +3563,30 @@
   (call   main (: -5 Int64))
   (trap   "unreachable"))
 
+(case "TWO distinct @invariant-typed PARAMETERS of one def each establish at their OWN argument construction site"
+  (doc    "The CO-PARAMETER companion of the CROSS-TYPE case above (there one value flows sequentially Nat→Pct;
+           here two DIFFERENT invariant types are DISTINCT parameters of a single def, each built independently
+           at the call). `Pct` has `@invariant(0 <= self <= 100)`, `Pos` has `@invariant(>= self 1)`. `(f a b)`
+           takes `a : Pct` and `b : Pos` and sums their payloads; `main` builds BOTH arguments — `(Pct.P x)` and
+           `(Pos.Q y)` — at the call site, so each establish fires at its own construction. main(50, 5): Pct.P 50
+           establishes (0..100) AND Pos.Q 5 establishes (>=1) → 55. main(150, 5): the `(Pct.P 150)` construction
+           VIOLATES `<= self 100` → traps at the Pct argument's establish. main(50, 0): Pct.P 50 is fine, but
+           `(Pos.Q 0)` VIOLATES `>= self 1` → traps at the Pos argument's establish. Pins that a def with several
+           invariant-typed parameters gets an INDEPENDENT establish per argument at its own construction site —
+           the two invariants do not interfere, and whichever argument is built-invalid traps. Runtime args via
+           main's params so nothing folds.")
+  (input  (do
+            (@ (invariant (and (>= self 0) (<= self 100))) (type Pct (P Int64)))
+            (@ (invariant (>= self 1)) (type Pos (Q Int64)))
+            (def (up (: p Pct)) (match p (((. Pct P) n) n)))
+            (def (uq (: q Pos)) (match q (((. Pos Q) n) n)))
+            (def (f (: a Pct) (: b Pos)) (+ (up a) (uq b)))
+            (def (main (: x Int64) (: y Int64)) (f (Pct.P x) (Pos.Q y)))
+            (export main)))
+  (call main (: 50 Int64) (: 5 Int64))   (output (: 55 Int64))
+  (call main (: 150 Int64) (: 5 Int64))  (trap "unreachable")
+  (call main (: 50 Int64) (: 0 Int64))   (trap "unreachable"))
+
 (case "@ensures over a BIGINT (arbitrary-precision heap) result checks it with structural equality — the postcondition reads a non-scalar heap value"
   (doc    "The enforcement predicate operates on a BigInt result — a heap-allocated arbitrary-precision value, a
            distinct representation from an Int64 scalar — using structural `=` (BigInt has no `>=` prelude op;

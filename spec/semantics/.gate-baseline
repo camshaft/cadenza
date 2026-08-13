@@ -421,6 +421,7 @@ pass	TWO closures capturing one let-bound host call share ONE firing (in the exp
 pass	TWO closures escaping one handle carry DISTINCT captured state reads
 pass	TWO closures minted by the same op at DIFFERENT states each keep their own snapshot
 pass	TWO different two-site ops dispatched in segments fold (multi-multi mixing, A A B B)
+pass	TWO distinct @invariant-typed PARAMETERS of one def each establish at their OWN argument construction site
 pass	TWO distinct nonzero BigInt literal probes dispatch in one recursive fn
 pass	TWO guarded map arms over a PARTIAL-CONST map fall through, each re-resolving its value binder
 pass	TWO loop-carried ropes each rebind to derived strings every recursion step
