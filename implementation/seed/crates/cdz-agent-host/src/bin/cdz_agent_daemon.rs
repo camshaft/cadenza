@@ -187,10 +187,24 @@ async fn main() -> std::process::ExitCode {
             // DynamoDB-backed durable session log (I2, behind `live-aws-storage`). Loads the ambient AWS
             // config ONCE here (boot path). A build WITHOUT the feature reports a clean "not compiled in"
             // boot error rather than silently degrading to in-memory (config validates regardless of feature).
+            // GAP-4 D1: like the File backend, a Dynamo log offloads over-threshold event bodies to the shared
+            // `[blob]` CAS when `[log].offload_threshold` is set AND `[blob].backend = dir` (keeps items small,
+            // under the Dynamo item-size ceiling). A non-dir blob backend or an absent threshold = no offload
+            // (an S3 offload backend for the prod Dynamo+S3 pairing is a follow-on slice).
             #[cfg(feature = "live-aws-storage")]
-            LogConfig::Dynamo { table } => Some(Box::new(
-                cdz_agent_host::DynamoLogSinkBuilder::new(table.clone()).await,
-            )),
+            LogConfig::Dynamo {
+                table,
+                offload_threshold,
+            } => {
+                let builder = cdz_agent_host::DynamoLogSinkBuilder::new(table.clone()).await;
+                let builder = match (offload_threshold, &config.blob) {
+                    (Some(threshold), BlobConfig::Dir { dir: blob_dir }) => {
+                        builder.with_offload(blob_dir, *threshold)
+                    }
+                    _ => builder,
+                };
+                Some(Box::new(builder))
+            }
             #[cfg(not(feature = "live-aws-storage"))]
             LogConfig::Dynamo { .. } => {
                 eprintln!(
@@ -212,10 +226,22 @@ async fn main() -> std::process::ExitCode {
                 dir,
                 offload_threshold,
             } => Some(Box::new(file_log_builder(dir, *offload_threshold))),
+            // GAP-4 D1: same offload wiring as the append-side builder above (a recovery reader must rehydrate
+            // the bodies the append side offloaded — the same `[blob]` root, same threshold).
             #[cfg(feature = "live-aws-storage")]
-            LogConfig::Dynamo { table } => Some(Box::new(
-                cdz_agent_host::DynamoLogSinkBuilder::new(table.clone()).await,
-            )),
+            LogConfig::Dynamo {
+                table,
+                offload_threshold,
+            } => {
+                let builder = cdz_agent_host::DynamoLogSinkBuilder::new(table.clone()).await;
+                let builder = match (offload_threshold, &config.blob) {
+                    (Some(threshold), BlobConfig::Dir { dir: blob_dir }) => {
+                        builder.with_offload(blob_dir, *threshold)
+                    }
+                    _ => builder,
+                };
+                Some(Box::new(builder))
+            }
             #[cfg(not(feature = "live-aws-storage"))]
             LogConfig::Dynamo { .. } => None,
             LogConfig::Memory => None,

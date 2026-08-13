@@ -32,9 +32,10 @@
 //! `LogSink` trait. Wiring boot-recovery-from-Dynamo into the daemon is a follow-on slice (the daemon does no
 //! recovery regardless today).
 
+use cdz_kernel::blob::BlobStore;
 use cdz_kernel::event::Event;
 use cdz_kernel::event_ast;
-use cdz_kernel::log_store::{LogSink, Recovered, RecoveryKind};
+use cdz_kernel::log_store::{maybe_offload, rehydrate, LogSink, Recovered, RecoveryKind};
 use std::io;
 
 /// Dynamo attribute names — one place so `append` + `read_all` agree.
@@ -93,6 +94,14 @@ pub struct DynamoLogSink {
     /// The log partition key = this session's genesis hash as RAW 32 bytes (stored as a Dynamo Binary `B`
     /// attribute, matching the SessionRegistry key — no hex string; hashes ride raw everywhere).
     session_id: cdz_kernel::hash::Hash,
+    /// GAP-4 D1 log-body OFFLOAD (opt-in), the SAME shared seam the disk `LogStore` uses: when
+    /// `Some((blob, threshold))`, an encoded event body larger than `threshold` bytes is offloaded to the
+    /// content-addressed [`BlobStore`] (a tiny `(blob-ptr)` frame is stored as the Dynamo item's `event`
+    /// attribute instead of the body) via [`maybe_offload`], keeping items small + under Dynamo's item-size
+    /// ceiling; a read [`rehydrate`]s it back byte-identical. `None` = bodies stay inline (pre-D1). Each sink
+    /// owns its handle (`append` + `maybe_offload` are `&mut self`/`&mut blob`); the builder opens a fresh one
+    /// per session over the SAME `[blob]` root — one physical CAS, matching the File-backend D1 wiring.
+    offload: Option<(Box<dyn BlobStore>, usize)>,
 }
 
 impl DynamoLogSink {
@@ -108,6 +117,25 @@ impl DynamoLogSink {
             client: aws_sdk_dynamodb::Client::new(config),
             table: table.into(),
             session_id,
+            offload: None,
+        }
+    }
+
+    /// Enable GAP-4 D1 log-body offload on this sink: an encoded event body over `threshold` bytes offloads to
+    /// `blob` (the content-addressed store) as a `(blob-ptr)` frame; recovery rehydrates it. The sink OWNS the
+    /// handle (`append`/`maybe_offload` need `&mut`), so the builder hands each per-session sink its own.
+    pub fn with_offload(mut self, blob: Box<dyn BlobStore>, threshold: usize) -> Self {
+        self.offload = Some((blob, threshold));
+        self
+    }
+
+    /// The REAL event body for the bytes `stored` in a Dynamo item — [`rehydrate`]d from the blob CAS when
+    /// offload is configured (a `(blob-ptr)` frame derefs; an inline body passes through), or `stored`
+    /// unchanged when there is no offload. Get-only, so `&self` suffices (unlike append's `&mut`).
+    async fn rehydrate_body(&self, stored: Vec<u8>) -> io::Result<Vec<u8>> {
+        match &self.offload {
+            Some((blob, _threshold)) => rehydrate(&stored, blob.as_ref()).await,
+            None => Ok(stored),
         }
     }
 
@@ -146,8 +174,8 @@ impl DynamoLogSink {
                     ))
                 })?;
             for item in resp.items() {
-                let blob = match item.get(ATTR_EVENT) {
-                    Some(aws_sdk_dynamodb::types::AttributeValue::B(b)) => b.as_ref(),
+                let stored = match item.get(ATTR_EVENT) {
+                    Some(aws_sdk_dynamodb::types::AttributeValue::B(b)) => b.as_ref().to_vec(),
                     _ => {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
@@ -155,7 +183,10 @@ impl DynamoLogSink {
                         ));
                     }
                 };
-                let event = event_ast::decode(blob).map_err(|e| {
+                // GAP-4 D1: rehydrate an offloaded body (a (blob-ptr) frame derefs from the CAS) before decode;
+                // an inline body passes through unchanged. A pointer whose blob is absent is a hard io error.
+                let blob = self.rehydrate_body(stored).await?;
+                let event = event_ast::decode(&blob).map_err(|e| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!("DynamoLogSink read_all: an event failed to decode: {e:?}"),
@@ -214,7 +245,11 @@ impl DynamoLogSink {
             for item in resp.items() {
                 match item.get(ATTR_EVENT) {
                     Some(aws_sdk_dynamodb::types::AttributeValue::B(b)) => {
-                        blobs.push(b.as_ref().to_vec())
+                        // GAP-4 D1: rehydrate an offloaded body from the CAS before the recovery adapter sees
+                        // it (so the good-prefix/corrupt discrimination runs on the REAL event bytes). A
+                        // pointer whose blob is absent is a hard io error (data loss), NOT a decode-corruption.
+                        let real = self.rehydrate_body(b.as_ref().to_vec()).await?;
+                        blobs.push(real);
                     }
                     // A missing/mis-typed event attribute is a schema break, not a benign decode failure —
                     // the item exists but has no readable body. Treat it as the read failing (hard Err),
@@ -244,6 +279,15 @@ impl LogSink for DynamoLogSink {
         // Encode through the SHARED cadenza-ast canonical codec — the SAME wire format the on-disk LogStore
         // frames (language-native, not bespoke). Stored as a binary attribute.
         let body = event_ast::encode(event);
+        // GAP-4 D1: when offload is configured, an over-threshold body is written to the blob CAS FIRST and
+        // replaced by a tiny (blob-ptr) frame here (`maybe_offload` does the content-addressed put + returns
+        // the pointer bytes); the item then carries the pointer, not the body. The CAS write-through happening
+        // BEFORE the put_item is what keeps the pointer from ever out-living its body (no dangling ptr on a
+        // crash between the two). No offload = the body is stored inline verbatim (pre-D1 behavior).
+        let stored = match &mut self.offload {
+            Some((blob, threshold)) => maybe_offload(&body, blob.as_mut(), *threshold).await?,
+            None => body,
+        };
         self.client
             .put_item()
             .table_name(&self.table)
@@ -260,7 +304,7 @@ impl LogSink for DynamoLogSink {
             .item(
                 ATTR_EVENT,
                 aws_sdk_dynamodb::types::AttributeValue::B(
-                    aws_sdk_dynamodb::primitives::Blob::new(body),
+                    aws_sdk_dynamodb::primitives::Blob::new(stored),
                 ),
             )
             .send()
@@ -286,6 +330,13 @@ impl LogSink for DynamoLogSink {
 pub struct DynamoLogSinkBuilder {
     config: aws_config::SdkConfig,
     table: String,
+    /// GAP-4 D1 log-body offload (opt-in): when `Some((blob_dir, threshold))`, each per-session sink this
+    /// builder makes offloads over-threshold event bodies to a content-addressed [`DiskBlobStore`] rooted at
+    /// `blob_dir` (the SAME `[blob]` dir the effect-blob path uses — one physical CAS). A FRESH handle is
+    /// opened per `build`/`recover` (the sink owns it; `append`/`maybe_offload` are `&mut`), matching the
+    /// File-backend D1 wiring. `None` = bodies stay inline. (Dir-backed today, like the File path; an S3
+    /// offload backend for the prod Dynamo+S3 pairing is a follow-on slice.)
+    offload: Option<(std::path::PathBuf, usize)>,
 }
 
 impl DynamoLogSinkBuilder {
@@ -297,6 +348,7 @@ impl DynamoLogSinkBuilder {
         DynamoLogSinkBuilder {
             config,
             table: table.into(),
+            offload: None,
         }
     }
 
@@ -306,7 +358,34 @@ impl DynamoLogSinkBuilder {
         DynamoLogSinkBuilder {
             config,
             table: table.into(),
+            offload: None,
         }
+    }
+
+    /// Enable GAP-4 D1 log-body offload for every sink this builder makes: bodies over `threshold` bytes
+    /// offload to a [`DiskBlobStore`](cdz_kernel::blob::DiskBlobStore) rooted at `blob_dir` (the SAME `[blob]`
+    /// dir the effect-blob path uses — one physical CAS). Recovery rehydrates. The daemon calls this when
+    /// `[log].backend = dynamo` AND `[blob].backend = dir` AND `[log].offload_threshold` is set.
+    pub fn with_offload(
+        mut self,
+        blob_dir: impl Into<std::path::PathBuf>,
+        threshold: usize,
+    ) -> Self {
+        self.offload = Some((blob_dir.into(), threshold));
+        self
+    }
+
+    /// Open a FRESH raw [`DiskBlobStore`](cdz_kernel::blob::DiskBlobStore) over the configured offload dir — a
+    /// separate handle over the same physical CAS (`put` is `&mut self`, so each `build`/`recover` owns one).
+    fn open_offload_blob(
+        blob_dir: &std::path::Path,
+    ) -> Result<cdz_kernel::blob::DiskBlobStore, String> {
+        cdz_kernel::blob::DiskBlobStore::open(blob_dir).map_err(|e| {
+            format!(
+                "could not open Dynamo-log-offload blob store {}: {e}",
+                blob_dir.display()
+            )
+        })
     }
 }
 
@@ -315,11 +394,16 @@ impl crate::factory::LogSinkBuilder for DynamoLogSinkBuilder {
     async fn build(&self, id: &crate::host::SessionId) -> Result<Option<Box<dyn LogSink>>, String> {
         // Cheap per-session sink: clone the shared config into a fresh client keyed to this session's
         // partition. No network here (client construction is local; the AWS load happened once in `new`).
-        Ok(Some(Box::new(DynamoLogSink::from_conf(
-            &self.config,
-            self.table.clone(),
-            id.hash(),
-        ))))
+        let sink = DynamoLogSink::from_conf(&self.config, self.table.clone(), id.hash());
+        // GAP-4 D1: attach body-offload when configured — a fresh raw DiskBlobStore handle over the shared
+        // `[blob]` CAS root (own handle per build, since `append`/`maybe_offload` are `&mut`).
+        let sink = match &self.offload {
+            Some((blob_dir, threshold)) => {
+                sink.with_offload(Box::new(Self::open_offload_blob(blob_dir)?), *threshold)
+            }
+            None => sink,
+        };
+        Ok(Some(Box::new(sink)))
     }
 
     /// Read back this session's Dynamo-partition log for boot-recovery (§lifecycle I4b). Builds the same
@@ -333,6 +417,14 @@ impl crate::factory::LogSinkBuilder for DynamoLogSinkBuilder {
         id: &crate::host::SessionId,
     ) -> Result<Option<cdz_kernel::log_store::Recovered>, String> {
         let sink = DynamoLogSink::from_conf(&self.config, self.table.clone(), id.hash());
+        // GAP-4 D1: rehydrate offloaded bodies on recovery — attach the same offload handle (get-only on the
+        // read path, but the sink field holds a Box either way) over the shared `[blob]` CAS root.
+        let sink = match &self.offload {
+            Some((blob_dir, threshold)) => {
+                sink.with_offload(Box::new(Self::open_offload_blob(blob_dir)?), *threshold)
+            }
+            None => sink,
+        };
         sink.read_recovered().await.map(Some).map_err(|e| {
             format!(
                 "could not recover Dynamo log for session {}: {e}",
@@ -455,5 +547,61 @@ mod tests {
             (ATTR_SESSION, ATTR_SEQ, ATTR_EVENT),
             ("session_id", "seq", "event")
         );
+    }
+
+    #[tokio::test]
+    async fn offload_rehydrate_body_round_trips_inline_and_blob_ptr() {
+        // GAP-4 D1 Dynamo offload seam (hermetic — no live DynamoDB): `maybe_offload` writes an over-threshold
+        // body to the content-addressed CAS + returns a (blob-ptr) frame; a sink configured with the SAME
+        // store rehydrates it BYTE-IDENTICAL on the read path, and passes a sub-threshold body through inline.
+        use cdz_kernel::blob::MemBlobStore;
+        let mut blob = MemBlobStore::new();
+        let threshold = 8usize;
+
+        let big = vec![7u8; 64];
+        let stored_big = maybe_offload(&big, &mut blob, threshold).await.unwrap();
+        assert_ne!(
+            stored_big, big,
+            "an over-threshold body offloads to a (blob-ptr) frame, not stored inline"
+        );
+        let small = b"tiny".to_vec();
+        let stored_small = maybe_offload(&small, &mut blob, threshold).await.unwrap();
+        assert_eq!(stored_small, small, "a sub-threshold body stays inline");
+
+        // The same store, moved into a sink, rehydrates both on the read path.
+        let sink = DynamoLogSink::from_conf(&test_cfg(), "cdz-log", Hash::of(b"w"))
+            .with_offload(Box::new(blob), threshold);
+        assert_eq!(
+            sink.rehydrate_body(stored_big).await.unwrap(),
+            big,
+            "the offloaded body derefs byte-identical from the CAS"
+        );
+        assert_eq!(
+            sink.rehydrate_body(stored_small).await.unwrap(),
+            small,
+            "an inline body passes through rehydrate unchanged"
+        );
+    }
+
+    #[tokio::test]
+    async fn rehydrate_body_without_offload_is_identity() {
+        // A sink with NO offload returns the stored bytes verbatim (pre-D1: nothing to deref).
+        let sink = DynamoLogSink::from_conf(&test_cfg(), "cdz-log", Hash::of(b"w"));
+        let bytes = b"an inline event body".to_vec();
+        assert_eq!(sink.rehydrate_body(bytes.clone()).await.unwrap(), bytes);
+    }
+
+    #[tokio::test]
+    async fn rehydrate_body_with_a_missing_offloaded_blob_is_a_hard_not_found() {
+        // A (blob-ptr) frame whose body is ABSENT from the CAS is a hard NotFound (data loss — never a silent
+        // empty body), pinning the rehydrate contract on the Dynamo read/recovery path.
+        use cdz_kernel::blob::MemBlobStore;
+        let mut src = MemBlobStore::new();
+        let ptr = maybe_offload(&[9u8; 64], &mut src, 8).await.unwrap();
+        // A DIFFERENT, empty store has no such blob → rehydrate errors NotFound.
+        let sink = DynamoLogSink::from_conf(&test_cfg(), "cdz-log", Hash::of(b"w"))
+            .with_offload(Box::new(MemBlobStore::new()), 8);
+        let err = sink.rehydrate_body(ptr).await.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
     }
 }

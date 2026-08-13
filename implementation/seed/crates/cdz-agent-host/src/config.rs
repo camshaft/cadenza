@@ -98,8 +98,17 @@ pub enum LogConfig {
         offload_threshold: Option<usize>,
     },
     /// DynamoDB-backed durable log in `table` (region from the ambient AWS env, like the Bedrock creds).
-    /// The distributed prod target the operator flagged.
-    Dynamo { table: String },
+    /// The distributed prod target the operator flagged. `offload_threshold` (GAP-4 D1, optional) enables the
+    /// SAME log-body offload the `File` backend has: an event body larger than this many bytes is offloaded to
+    /// the content-addressed `[blob]` store (a tiny `(blob-ptr)` frame is stored in the Dynamo item instead of
+    /// the body), keeping Dynamo items small + under the item-size ceiling; boot-recovery rehydrates it. Absent
+    /// = no offload (bodies stay inline). The prod pairing is a Dynamo log + an `[blob]` backend = `s3` (one
+    /// content-addressed store), but any `[blob]` backend works — the offload reuses whatever `[blob]` selects.
+    Dynamo {
+        table: String,
+        #[serde(default)]
+        offload_threshold: Option<usize>,
+    },
 }
 
 /// Observability config — the daemon's metrics integration (the operator's `s2n-quic-dc-metrics` crate,
@@ -675,7 +684,7 @@ impl DaemonConfig {
                     "[log] backend=file needs a non-empty dir".into(),
                 ));
             }
-            LogConfig::Dynamo { table } if table.trim().is_empty() => {
+            LogConfig::Dynamo { table, .. } if table.trim().is_empty() => {
                 return Err(ConfigError(
                     "[log] backend=dynamo needs a non-empty table".into(),
                 ));
@@ -1210,7 +1219,8 @@ mod tests {
         assert_eq!(
             cfg.log,
             LogConfig::Dynamo {
-                table: "cdz-agent-log".into()
+                table: "cdz-agent-log".into(),
+                offload_threshold: None,
             }
         );
         assert_eq!(
@@ -1305,6 +1315,28 @@ mod tests {
             LogConfig::File {
                 dir: "/var/lib/cdz/log".into(),
                 offload_threshold: Some(4096),
+            }
+        );
+    }
+
+    #[test]
+    fn a_dynamo_log_backend_parses_its_offload_threshold() {
+        // GAP-4 D1 dynamo: the Dynamo backend carries the SAME optional snake_case `offload_threshold` key as
+        // the File backend (pins the wire name the operator writes in [log] for Dynamo item-body offload).
+        let cfg = DaemonConfig::from_toml_str(
+            r#"
+            [log]
+            backend = "dynamo"
+            table = "cdz-agent-log"
+            offload_threshold = 300000
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.log,
+            LogConfig::Dynamo {
+                table: "cdz-agent-log".into(),
+                offload_threshold: Some(300_000),
             }
         );
     }
