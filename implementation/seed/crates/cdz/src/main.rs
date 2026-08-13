@@ -686,7 +686,15 @@ fn looks_in_ml_subset(src: &str) -> bool {
     // (flanked by `(` and whitespace, never a digit), IS in subset now that the port lowers `(. tuple i)` to a
     // scalar element read. So decline `"` and a float-`.`, but admit a projection-`.` (a record/non-tuple
     // operand or non-int index still declines in the port — coverage-not-yet — so admitting it is sound).
-    if s.contains('"') {
+    // STRINGS S1: a SCALAR-STRING form `(String.byte-len "…")` / `(String.scalar-len "…")` CONST-FOLDS to an
+    // Int and runs to the same value the rcdzc oracle produces, so admit it — the differential then exercises
+    // the landed string-length ops (they render as a plain Int, which the differential already handles). Any
+    // OTHER quoted string — a bare string, or a string-RESULT op the port can't render as a scalar — is still
+    // out of the scalar subset → decline (else the oracle renders a string the port declines, a false
+    // differential disagreement).
+    let scalar_string_form =
+        s.starts_with("(String.byte-len \"") || s.starts_with("(String.scalar-len \"");
+    if s.contains('"') && !scalar_string_form {
         return false;
     }
     let b = s.as_bytes();
