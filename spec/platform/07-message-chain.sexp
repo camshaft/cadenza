@@ -13,7 +13,9 @@
   (session "a" (reducer
     (do
       (effect kv (op get (-> Bytes (Option Bytes))) (op put (-> Bytes Bytes Unit)))
-      (def (apply (: e (Record (: content-type (Record (: family String) (: version (UInt 32)))) (: payload (Option Bytes)) (: resumes (Option Bytes)))))
+      (type ReplyPayload (Inline Bytes) (Blob Bytes))
+      (type Outcome (Ok ReplyPayload) (Err (Record (: message Bytes) (: retryable Bool))) (TimedOut))
+      (def (apply (: e (Record (: content-type (Record (: family String) (: version (UInt 32)))) (: payload (Option Bytes)) (: resumes (Option Bytes)) (: outcome (Option Outcome)))))
         (: (if (= (. (. e content-type) family) "platform/peers")
              (match (. e payload) ((Some ph) (host (kv) (do (kv.put ((. String to-bytes) "peer") ph) (list)))) ((None) (list)))
              (if (= (. (. e content-type) family) "start")
@@ -26,7 +28,9 @@
   (session "b" (reducer
     (do
       (effect kv (op get (-> Bytes (Option Bytes))) (op put (-> Bytes Bytes Unit)))
-      (def (apply (: e (Record (: content-type (Record (: family String) (: version (UInt 32)))) (: payload (Option Bytes)) (: resumes (Option Bytes)))))
+      (type ReplyPayload (Inline Bytes) (Blob Bytes))
+      (type Outcome (Ok ReplyPayload) (Err (Record (: message Bytes) (: retryable Bool))) (TimedOut))
+      (def (apply (: e (Record (: content-type (Record (: family String) (: version (UInt 32)))) (: payload (Option Bytes)) (: resumes (Option Bytes)) (: outcome (Option Outcome)))))
         (: (if (= (. (. e content-type) family) "platform/peers")
              (match (. e payload) ((Some ph) (host (kv) (do (kv.put ((. String to-bytes) "peer") ph) (list)))) ((None) (list)))
              (if (= (. (. e content-type) family) "message")
@@ -39,7 +43,9 @@
   (session "c" (reducer
     (do
       (effect kv (op put (-> Bytes Bytes Unit)))
-      (def (apply (: e (Record (: content-type (Record (: family String) (: version (UInt 32)))) (: payload (Option Bytes)) (: resumes (Option Bytes)))))
+      (type ReplyPayload (Inline Bytes) (Blob Bytes))
+      (type Outcome (Ok ReplyPayload) (Err (Record (: message Bytes) (: retryable Bool))) (TimedOut))
+      (def (apply (: e (Record (: content-type (Record (: family String) (: version (UInt 32)))) (: payload (Option Bytes)) (: resumes (Option Bytes)) (: outcome (Option Outcome)))))
         (: (if (= (. (. e content-type) family) "message")
              (host (kv) (do (kv.put ((. String to-bytes) "arrived") ((. Bytes of) ("list" ((. UInt8 wrap) 1)))) (list)))
              (list))

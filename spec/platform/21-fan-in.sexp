@@ -18,7 +18,9 @@
   (session "s1" (reducer
     (do
       (effect kv (op get (-> Bytes (Option Bytes))) (op put (-> Bytes Bytes Unit)))
-      (def (apply (: e (Record (: content-type (Record (: family String) (: version (UInt 32)))) (: payload (Option Bytes)) (: resumes (Option Bytes)))))
+      (type ReplyPayload (Inline Bytes) (Blob Bytes))
+      (type Outcome (Ok ReplyPayload) (Err (Record (: message Bytes) (: retryable Bool))) (TimedOut))
+      (def (apply (: e (Record (: content-type (Record (: family String) (: version (UInt 32)))) (: payload (Option Bytes)) (: resumes (Option Bytes)) (: outcome (Option Outcome)))))
         (: (if (= (. (. e content-type) family) "platform/peers")
              (match (. e payload) ((Some ph) (host (kv) (do (kv.put ((. String to-bytes) "peer") ph) (list)))) ((None) (list)))
              (if (= (. (. e content-type) family) "go")
@@ -31,7 +33,9 @@
   (session "s2" (reducer
     (do
       (effect kv (op get (-> Bytes (Option Bytes))) (op put (-> Bytes Bytes Unit)))
-      (def (apply (: e (Record (: content-type (Record (: family String) (: version (UInt 32)))) (: payload (Option Bytes)) (: resumes (Option Bytes)))))
+      (type ReplyPayload (Inline Bytes) (Blob Bytes))
+      (type Outcome (Ok ReplyPayload) (Err (Record (: message Bytes) (: retryable Bool))) (TimedOut))
+      (def (apply (: e (Record (: content-type (Record (: family String) (: version (UInt 32)))) (: payload (Option Bytes)) (: resumes (Option Bytes)) (: outcome (Option Outcome)))))
         (: (if (= (. (. e content-type) family) "platform/peers")
              (match (. e payload) ((Some ph) (host (kv) (do (kv.put ((. String to-bytes) "peer") ph) (list)))) ((None) (list)))
              (if (= (. (. e content-type) family) "go")
@@ -44,7 +48,9 @@
   (session "r" (reducer
     (do
       (effect kv (op get (-> Bytes (Option Bytes))) (op put (-> Bytes Bytes Unit)))
-      (def (apply (: e (Record (: content-type (Record (: family String) (: version (UInt 32)))) (: payload (Option Bytes)) (: resumes (Option Bytes)))))
+      (type ReplyPayload (Inline Bytes) (Blob Bytes))
+      (type Outcome (Ok ReplyPayload) (Err (Record (: message Bytes) (: retryable Bool))) (TimedOut))
+      (def (apply (: e (Record (: content-type (Record (: family String) (: version (UInt 32)))) (: payload (Option Bytes)) (: resumes (Option Bytes)) (: outcome (Option Outcome)))))
         (: (if (= (. (. e content-type) family) "message")
              (host (kv)
                (let ((prev (match (kv.get ((. String to-bytes) "count"))

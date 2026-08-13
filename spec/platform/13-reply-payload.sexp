@@ -16,7 +16,9 @@
   (session "caller" (reducer
     (do
       (effect kv (op put (-> Bytes Bytes Unit)))
-      (def (apply (: e (Record (: content-type (Record (: family String) (: version (UInt 32)))) (: payload (Option Bytes)) (: resumes (Option Bytes)))))
+      (type ReplyPayload (Inline Bytes) (Blob Bytes))
+      (type Outcome (Ok ReplyPayload) (Err (Record (: message Bytes) (: retryable Bool))) (TimedOut))
+      (def (apply (: e (Record (: content-type (Record (: family String) (: version (UInt 32)))) (: payload (Option Bytes)) (: resumes (Option Bytes)) (: outcome (Option Outcome)))))
         (: (if (= (. (. e content-type) family) "effect-result")
              (match (. e payload)
                ((Some p) (host (kv) (do (kv.put ((. String to-bytes) "gotreply") p) (list))))
@@ -29,7 +31,9 @@
   (session "handler" (reducer
     (do
       (effect kv (op put (-> Bytes Bytes Unit)))
-      (def (apply (: e (Record (: content-type (Record (: family String) (: version (UInt 32)))) (: payload (Option Bytes)) (: resumes (Option Bytes)))))
+      (type ReplyPayload (Inline Bytes) (Blob Bytes))
+      (type Outcome (Ok ReplyPayload) (Err (Record (: message Bytes) (: retryable Bool))) (TimedOut))
+      (def (apply (: e (Record (: content-type (Record (: family String) (: version (UInt 32)))) (: payload (Option Bytes)) (: resumes (Option Bytes)) (: outcome (Option Outcome)))))
         (: (if (= (. (. e content-type) family) "effect-request/ask")
              (match (. e payload)
                ((Some frame) (match ((. Bytes slice) frame 40 32)
