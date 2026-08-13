@@ -16,7 +16,7 @@
 
 import { Core, lower-tree, lower-def-env } from "lower-db"
 import { read-source } from "sread"
-import { eval-core-d } from "eval-db"
+import { Value, eval-core-d } from "eval-db"
 import { Tree } from "parse-db"
 import { functype-bytes, type-section-multi, func-section-multi, code-section-multi, emit-def-body-d, defenv-funcidx-map, export-section-idx, preamble, emit-src-bytes, bytes-to-list, is-arith-op, is-cmp-op } from "emit-db"
 
@@ -96,7 +96,7 @@ def entries-to-defs-go(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), i:
 /// Does the recursive program interpret to a value? Runs main via eval-core-d under the eval def-env — the SAME
 /// oracle as run-of-db, so emit declines exactly what eval declines.
 def has-value-d(mainCore: Core, entries: List(Tuple(Int64, Tuple(List(Int64), Core)))) =
-  (match eval-core-d(mainCore, (Map.empty : Map(Int64, Int64)), entries-to-defs(entries)) with
+  (match eval-core-d(mainCore, (Map.empty : Map(Int64, Value)), entries-to-defs(entries)) with
     | Option.Some(_) => true
     | Option.None(_) => false)
 

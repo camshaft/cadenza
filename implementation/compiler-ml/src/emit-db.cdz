@@ -23,7 +23,7 @@
 
 import { Core, lower-tree, lower-def-env, cnum64 } from "lower-db"
 import { read-source } from "sread"
-import { eval-core } from "eval-db"
+import { Value, eval-core } from "eval-db"
 
 /// A one-byte `Bytes` holding the low 8 bits of `x` (mirrors `encode.cdz`'s `b1`).
 def b1(x: Int64) = Bytes.of([UInt8.wrap(x)])
@@ -429,7 +429,7 @@ def emit-wasm-module(c: Core) =
 /// `Bool` off the heap-`Bytes` path (mirrors `can-emit`) — `eval-core` under the empty env is the oracle's
 /// own decline decision (overflow / divide-by-zero / mod-by-zero → `None`), so gating emit on it makes emit
 /// decline EXACTLY the programs the interpreter declines.
-def has-value(c: Core) = match eval-core(c, (Map.empty : Map(Int64, Int64))) with
+def has-value(c: Core) = match eval-core(c, (Map.empty : Map(Int64, Value))) with
   | Option.Some(_) => true
   | Option.None(_) => false
 

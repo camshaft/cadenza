@@ -9,7 +9,7 @@
 /// caller can inspect the memo or run further queries off the same Db.
 
 import { Tok, Tree, parse-tokens } from "parse-db"
-import { eval-core, eval-core-d, run } from "eval-db"
+import { Value, eval-core, eval-core-d, run } from "eval-db"
 import { Db, db-of, db-tree } from "db"
 import { lower-of-db } from "db-lower"
 import { lower-def-env } from "lower-db"
@@ -22,7 +22,7 @@ def run-of-db(db: Db, root: Int64) =
     // slice-B1b-p3: eval under a DEF-ENV (name → (params, bodyCore)) built from the tree's recursive defs, so
     // a CCall to a recursive callee runs via eval-core-d's def-env dispatch (was declining at eval). A
     // non-recursive program has an empty def-env and behaves exactly as the old eval-core(core, empty).
-    | (db1, Option.Some(core)) => (db1, eval-core-d(core, (Map.empty : Map(Int64, Int64)), lower-def-env(db-tree(db1))))
+    | (db1, Option.Some(core)) => (db1, eval-core-d(core, (Map.empty : Map(Int64, Value)), lower-def-env(db-tree(db1))))
     | (db1, Option.None(_)) => (db1, Option.None(unit)))
 
 /// The Db RUN driver from a token program: parse → Db → run over the memoized pipeline → value. The
