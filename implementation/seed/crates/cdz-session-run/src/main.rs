@@ -42,6 +42,7 @@ use cdz_agent_host::async_host::Inbound;
 use cdz_agent_host::effect_reply::ReplyTokenRegistry;
 use cdz_agent_host::emit::EmitExecutor;
 use cdz_agent_host::host::{AgentHost, HostedSession, SessionId};
+use cdz_agent_host::lifecycle::{LifecycleExecutor, LifecycleOp};
 use cdz_agent_host::reply_exec::{reply_settle_channel, ReplyExecutor};
 use cdz_agent_host::userspace_effect_exec::{HandlerResolver, UserspaceEffectExecutor};
 use cdz_kernel::component_store::ComponentStore;
@@ -87,6 +88,15 @@ struct Args {
     /// convention is raw bytes (dual-land with the host's `Hash::from_bytes` target read), NOT hex.
     #[arg(long = "peer", value_name = "HOLDER=PEER")]
     peers: Vec<String>,
+    /// A spawnable CHILD reducer: `<alias>=<path>` — a component REGISTERED (loadable by content-hash) but
+    /// NOT spawned or kicked. Before the kick-off, the runner computes the child's reducer content-hash and
+    /// seeds EVERY session's KV["child/<alias>"] with those raw 32 bytes (§lifecycle, symmetric with the
+    /// `--peer` KV["peer"] seed): a child reducer-hash is a build-time identity a real supervisor receives as
+    /// config, exactly like a peer session id, so a parent reads KV["child/<alias>"] and emits a
+    /// `lifecycle/spawn` effect with that hash. When a parent spawns it, the runner materializes the child
+    /// from this registered component (resolved by that hash). Repeatable.
+    #[arg(long = "child-reducer", value_name = "ALIAS=PATH")]
+    children: Vec<String>,
     /// Content-addressed store dir the reducers' `cadenza:runtime/heap` dep resolves from.
     #[arg(long)]
     store: std::path::PathBuf,
@@ -207,6 +217,26 @@ async fn main() -> Result<()> {
         session_specs.push((alias, path.into()));
     }
 
+    // Spawnable CHILD reducers (§lifecycle): alias → path, plus the child reducer content-hash used both to
+    // seed the parent's KV["child/<alias>"] and to resolve the child at spawn time. Registered-but-not-spawned:
+    // loaded lazily when a parent emits lifecycle/spawn(child_hash), materialized via spawn_child_with_nonce.
+    let mut child_paths: HashMap<String, std::path::PathBuf> = HashMap::new(); // alias → path
+    let mut child_hash_of: HashMap<String, Hash> = HashMap::new(); // alias → reducer content-hash
+    let mut child_path_by_hash: HashMap<Hash, std::path::PathBuf> = HashMap::new(); // reducer-hash → path (spawn resolve)
+    for c in &args.children {
+        let (alias, path) = split_pair(c)?;
+        let p: std::path::PathBuf = path.into();
+        // The child reducer content-hash = Hash::of(component bytes) (same as load_reducer's second return),
+        // which is the identity a lifecycle/spawn effect carries + spawn_child_with_nonce materializes from.
+        let bytes = std::fs::read(&p)
+            .with_context(|| format!("reading child reducer {alias:?} at {}", p.display()))?;
+        let hash = Hash::of(&bytes);
+        child_hash_of.insert(alias.clone(), hash);
+        child_path_by_hash.insert(hash, p.clone());
+        child_paths.insert(alias, p);
+    }
+    let _ = &child_paths; // (alias→path retained for diagnostics/future symmetry with session_specs)
+
     // The serves map: family → handler SessionId (resolved through the alias). Shared by every caller's
     // resolver (a MapResolver is cloned-by-rebuild per session below, all from this table).
     let mut family_handler: HashMap<String, SessionId> = HashMap::new();
@@ -260,6 +290,11 @@ async fn main() -> Result<()> {
     let reply_tokens = Rc::new(ReplyTokenRegistry::new());
     let (inbox_tx, mut inbox_rx) = tokio::sync::mpsc::unbounded_channel();
     let (settle_tx, mut settle_rx) = reply_settle_channel();
+    // §lifecycle: the ONE LifecycleChannel every session's LifecycleExecutor records `lifecycle/spawn` ops
+    // onto; the FIFO drive drains it after each deliver and applies each op via `spawn_child_with_nonce`
+    // (mirrors the daemon's defer-to-loop: the executor pre-computes the child id + returns it synchronously,
+    // the loop — which owns `&mut host` — does the actual instantiate+register+edge).
+    let (lifecycle_tx, mut lifecycle_rx) = tokio::sync::mpsc::unbounded_channel::<LifecycleOp>();
 
     // Build the host + spawn every session with its own CompositeExecutor:
     //  - EVERY session gets a ReplyExecutor (family effect/reply) so it can REPLY when it serves an effect,
@@ -270,9 +305,15 @@ async fn main() -> Result<()> {
         let (reducer, reducer_hash) = load_reducer(path, &store)?;
         let owner = id_of[alias];
         let nonce = owner.hash(); // the nonce IS Hash::of(salt++alias); the id is its genesis hash
-                                  // The suite authorizer is permissive (conformance, not policy) + admits effect/reply's raw-bytes
-                                  // token target (see SuiteAuthorizer). Under B2 a reducer emits an arbitrary `kind` STRING, so a
-                                  // served family is register-by-string; there is no capability-shape distinction to make here.
+                                  // The session's REAL genesis hash (what `spawn_child_with_nonce` reads as parent_genesis when this
+                                  // session spawns a child) = derive_genesis_hash(reducer_hash, nonce, None) — NOT the registry id
+                                  // `owner` (which is Hash::of(salt++alias)). The LifecycleExecutor must pre-compute the child id with
+                                  // THIS genesis hash so the id it returns to the parent's fold matches the id the loop registers.
+        let owner_genesis =
+            cdz_kernel::kernel::Session::derive_genesis_hash(reducer_hash, nonce, None);
+        // The suite authorizer is permissive (conformance, not policy) + admits effect/reply's raw-bytes
+        // token target (see SuiteAuthorizer). Under B2 a reducer emits an arbitrary `kind` STRING, so a
+        // served family is register-by-string; there is no capability-shape distinction to make here.
         let authz = SuiteAuthorizer;
         let executor = cdz_kernel::executor::CompositeExecutor::new()
             .with_effect(
@@ -286,6 +327,18 @@ async fn main() -> Result<()> {
             .with_effect(
                 effect_ct::EMIT,
                 Box::new(EmitExecutor::new(inbox_tx.clone(), owner)),
+            )
+            // §lifecycle: `lifecycle/spawn` records a `LifecycleOp::Spawn` on the shared channel (the executor
+            // pre-computes the child id from (reducer_hash, nonce, parent_genesis) + returns it synchronously;
+            // the FIFO loop applies the op via `spawn_child_with_nonce`). owner_genesis = the genesis hash;
+            // for a genesis session the id IS its genesis hash (nonce == owner.hash()).
+            .with_effect(
+                effect_ct::LIFECYCLE_SPAWN,
+                Box::new(LifecycleExecutor::new(
+                    lifecycle_tx.clone(),
+                    owner,
+                    owner_genesis,
+                )),
             )
             .with_fallback(Box::new(UserspaceEffectExecutor::new(
                 MapResolver(family_handler.clone()),
@@ -334,6 +387,33 @@ async fn main() -> Result<()> {
         host.deliver(&holder_id, config, None).await;
     }
 
+    // §lifecycle CHILD-HASH pre-seed (symmetric with the peer-seed above): deliver every session a
+    // `platform/children` config inbound carrying the CONCATENATION of the declared child reducer-hashes (raw
+    // 32 bytes each, in `--child-reducer` order), which the supervisor reducer folds into KV["child"]. A
+    // child reducer-hash is a build-time identity a real supervisor receives as config (like a peer id), so
+    // the parent reads it from KV and emits `lifecycle/spawn(child_hash)` without hardcoding a content-hash.
+    // A single `--child-reducer` yields one 32-byte hash; multiple concatenate (slice child i at [32*i..]).
+    if !child_hash_of.is_empty() {
+        // Deterministic order: sort by alias so the concatenation is stable across runs.
+        let mut aliases: Vec<&String> = child_hash_of.keys().collect();
+        aliases.sort();
+        let mut payload: Vec<u8> = Vec::with_capacity(aliases.len() * 32);
+        for a in aliases {
+            payload.extend_from_slice(child_hash_of[a].as_bytes());
+        }
+        for (alias, _) in &session_specs {
+            let sid = id_of[alias];
+            let config = EventBody::Inbound {
+                content_type: ContentType {
+                    family: "platform/children".into(),
+                    version: 1,
+                },
+                payload: Payload::Inline(payload.clone().into()),
+            };
+            host.deliver(&sid, config, None).await;
+        }
+    }
+
     // Resolve the kick-off seed list. FAN-IN: any `--kickoff <alias>=<family>=<value>` entries are the seeds
     // (in the order given); otherwise the single `--kickoff-alias/family/value` is the one seed. Each is
     // `(alias, family, value)`. All are enqueued in declared order BEFORE the FIFO drive loop below, so a
@@ -376,6 +456,90 @@ async fn main() -> Result<()> {
     // caller) in arrival order until both queues are empty and nothing new is produced. Each drained item is
     // one delivery against the step budget.
     loop {
+        // §lifecycle: apply any `lifecycle/spawn` ops recorded during the prior deliver(s) — the executor
+        // pre-computed each child id + returned it to the parent's fold; here (owning `&mut host`) we do the
+        // actual instantiate+register+edge via `spawn_child_with_nonce`, resolving the child reducer by its
+        // content-hash from the `--child-reducer` registrations. Then reap any self-closed child, which
+        // delivers a `lifecycle/child-completed` inbound to its parent (host.deliver, feeding the fold).
+        let mut did_lifecycle = false;
+        while let Ok(op) = lifecycle_rx.try_recv() {
+            did_lifecycle = true;
+            if let LifecycleOp::Spawn {
+                parent,
+                reducer_hash,
+                spawn_nonce,
+                child_id,
+            } = op
+            {
+                let Some(child_path) = child_path_by_hash.get(&reducer_hash).cloned() else {
+                    // No registered child reducer for this hash — a case emitted lifecycle/spawn for an
+                    // unregistered child. Skip (the parent already folded the pre-computed id; the child
+                    // just never materializes, which a case's end-state on the child would surface).
+                    continue;
+                };
+                let (child_reducer, child_hash) = load_reducer(&child_path, &store)?;
+                debug_assert_eq!(child_hash, reducer_hash, "child content-hash mismatch");
+                // Build the child's CompositeExecutor with the SAME uniform wiring as a declared session, so a
+                // spawned child can reply/emit/perform/spawn/self-close like any session.
+                // The child's executor `owner` is the CHILD's own id (the pre-computed `child_id`) — its emit
+                // return-address + the genesis its own LifecycleExecutor derives grandchildren from.
+                let child_exec = cdz_kernel::executor::CompositeExecutor::new()
+                    .with_effect(
+                        effect_ct::EFFECT_REPLY,
+                        Box::new(ReplyExecutor::new(reply_tokens.clone(), settle_tx.clone())),
+                    )
+                    .with_effect(
+                        effect_ct::EMIT,
+                        Box::new(EmitExecutor::new(inbox_tx.clone(), child_id)),
+                    )
+                    .with_effect(
+                        effect_ct::LIFECYCLE_SPAWN,
+                        Box::new(LifecycleExecutor::new(
+                            lifecycle_tx.clone(),
+                            child_id,
+                            child_id.hash(),
+                        )),
+                    )
+                    .with_fallback(Box::new(UserspaceEffectExecutor::new(
+                        MapResolver(family_handler.clone()),
+                        inbox_tx.clone(),
+                        reply_tokens.clone(),
+                        child_id,
+                    )));
+                let spawned = host
+                    .spawn_child_with_nonce(
+                        &parent,
+                        reducer_hash,
+                        spawn_nonce,
+                        Box::new(child_reducer),
+                        Box::new(SuiteAuthorizer),
+                        child_exec,
+                    )
+                    .await;
+                // Record the spawned child's id → a stable alias for labelling (child of the parent's alias).
+                if let Some(Ok(child_sid)) = spawned {
+                    let parent_alias = alias_of
+                        .get(&parent)
+                        .cloned()
+                        .unwrap_or_else(|| "?".to_string());
+                    alias_of
+                        .entry(child_sid)
+                        .or_insert_with(|| format!("{parent_alias}.child"));
+                }
+            }
+        }
+        let _ = did_lifecycle;
+        // Reap ONLY when this case spawns children (`--child-reducer` present): a child self-closes on ANY
+        // delivery it folds (e.g. the parent messages a live child a later iteration), and reap drops it +
+        // delivers `lifecycle/child-completed` to its parent. CRUCIALLY reap removes EVERY closed session
+        // (parented or not), so a case whose ROOT session self-closes for a `(status closed)` assertion
+        // (24-self-close) must NOT be reaped — else its closed session is dropped and its status is
+        // unobservable. A child-less case never spawns, so gating on children preserves the self-close case
+        // while enabling the parent↔child completion flow.
+        if !child_hash_of.is_empty() {
+            host.reap_closed_and_notify().await;
+        }
+
         // A forwarded effect-request: route it to its handler session (and record the observed effect).
         if let Ok(inbound) = inbox_rx.try_recv() {
             if steps >= args.step_budget {

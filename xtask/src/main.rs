@@ -4393,6 +4393,11 @@ struct PlatformCaseRecord {
     /// stderr marker containing `<kind>` (e.g. `SettleUnbounded`). `None` = the run must exit cleanly (a
     /// nonzero exit is a Fail, as for every other case).
     expect_fault: Option<String>,
+    /// `(child <alias> (reducer <prog>))` (0-or-more) → `(alias, program)` — a SPAWNABLE child reducer,
+    /// registered-but-not-kicked (§lifecycle). The grade path compiles each like a session + passes it as
+    /// `--child-reducer <alias>=<path>`; the runner content-hashes it + seeds KV["child"] so a supervisor
+    /// reads the hash and emits `lifecycle/spawn`. Distinct from a `session` (a live, kickable session).
+    children: Vec<(String, String)>,
 }
 
 /// One expected dispatched effect (I2): session `from` performed effect `family`, optionally carrying a
@@ -4428,6 +4433,7 @@ fn parse_platform_records(text: &str) -> Vec<PlatformCaseRecord> {
     let mut end_status: Vec<(String, String)> = Vec::new();
     let mut events_processed: Vec<(String, String)> = Vec::new();
     let mut expect_fault: Option<String> = None;
+    let mut children: Vec<(String, String)> = Vec::new();
     for line in text.lines() {
         if line == "---" {
             records.push(PlatformCaseRecord {
@@ -4441,6 +4447,7 @@ fn parse_platform_records(text: &str) -> Vec<PlatformCaseRecord> {
                 end_status: std::mem::take(&mut end_status),
                 events_processed: std::mem::take(&mut events_processed),
                 expect_fault: expect_fault.take(),
+                children: std::mem::take(&mut children),
             });
             continue;
         }
@@ -4458,6 +4465,12 @@ fn parse_platform_records(text: &str) -> Vec<PlatformCaseRecord> {
                         program: program.to_string(),
                         serves: Vec::new(),
                     });
+                }
+            }
+            // `child\t<alias>\t<program>` — a spawnable child reducer (registered-but-not-kicked, §lifecycle).
+            "child" => {
+                if let Some((alias, program)) = val.split_once('\t') {
+                    children.push((alias.to_string(), program.to_string()));
                 }
             }
             // `serves\t<alias>\t<family>` — attach a served family to its session.
@@ -4730,13 +4743,50 @@ fn grade_platform_case(
         }
         session_args.push(format!("{}={}", s.alias, out.display()));
     }
+    // Compile each SPAWNABLE CHILD reducer the same way (§lifecycle) — registered-but-not-kicked; passed as
+    // `--child-reducer <alias>=<path>` so the runner content-hashes it + seeds KV["child"] for a supervisor
+    // to read + spawn. A child that can't yet emit → Todo (same as a session).
+    let mut child_args: Vec<String> = Vec::new();
+    for (alias, program) in &rec.children {
+        let src = tmp.join(format!("child-{alias}.sexp"));
+        let out = tmp.join(format!("child-{alias}.wasm"));
+        if std::fs::write(&src, program).is_err() {
+            return Grade::Fail(format!(
+                "could not write child reducer for {alias} to a temp file"
+            ));
+        }
+        let world_arg = format!("wit-world:reducer-world={}", world_file.display());
+        let compile = std::process::Command::new(cdz)
+            .arg("compile")
+            .arg(&src)
+            .arg(&world_arg)
+            .args([
+                "--target",
+                "wasm",
+                "--component-name",
+                "cadenza:agent-kernel/fold",
+            ])
+            .arg("-o")
+            .arg(&out)
+            .output();
+        match compile {
+            Ok(o) if o.status.success() => {}
+            Ok(_) => return Grade::Todo,
+            Err(e) => return Grade::Fail(format!("cdz compile (child) failed to launch: {e}")),
+        }
+        child_args.push(format!("{}={}", alias, out.display()));
+    }
     // Drive the constellation through the kernel via cdz-session-run: one --session per reducer, one
-    // --serves per handler binding, and the single kick-off (target alias + family). The runner drives the
-    // deterministic FIFO fixpoint and prints observed effects + per-session end-state.
+    // --serves per handler binding, one --child-reducer per spawnable child, and the single kick-off (target
+    // alias + family). The runner drives the deterministic FIFO fixpoint and prints observed effects +
+    // per-session end-state.
     let mut cmd = std::process::Command::new(session_run);
     cmd.arg("--store").arg(store);
     for sa in &session_args {
         cmd.args(["--session", sa]);
+    }
+    for ca in &child_args {
+        cmd.args(["--child-reducer", ca]);
     }
     for s in &rec.sessions {
         for family in &s.serves {
