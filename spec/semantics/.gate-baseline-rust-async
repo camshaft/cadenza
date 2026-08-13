@@ -5300,6 +5300,7 @@ pass	hc4 a performing helper COMPOSED with itself — probe(probe(draw)), three 
 pass	hc5 a helper RETURNS a tuple of two draws — the caller destructures it and re-performs
 pass	heap string elements of a hoisted list if select by branch
 pass	heap-valued handler state above an inner abort keeps threading
+pass	het1 ONE effect with THREE result types — Int64, Bool, and String ops share a single scalar thread, each consumed by its own idiom in one run
 pass	heterogeneous constructions take ONE malformed-collection code across list, map, and set
 pass	hex and binary literals drive a runtime mask-extract across radix notations
 pass	hexadecimal, binary, and decimal spellings of one value are equal
@@ -5566,6 +5567,7 @@ pass	mx1 a THREE-arg op mixing Int64/String/Bool — one arm consumes all three 
 pass	mx1 mutual recursion with a (List Int64) accumulator (scalar element control)
 pass	mx2 mixed-arg op with BOTH args draw-derived — the int arg is a draw, the string arg branches on a second draw
 pass	mx3 a TUPLE-arg op chained through a tuple RESULT — the second dispatch consumes the first's destructured output
+pass	mx4 a FOUR-param op mixing two Int64s, a NARROW UInt8, and a Bool — the narrow slot rides between wide ones and the flag doubles the first argument
 pass	narrow unsigned comparison division and remainder compose unsigned over a high-bit operand
 pass	narrowing a BigInt-valued if back to Int64 works over both branches
 pass	narrowing a constant BigInt out of the target range is rejected at compile time
@@ -6723,6 +6725,7 @@ pass	updating a record field changes its type to the new value's
 pass	updating a record field preserves the other fields' values
 pass	updating a record field replaces its value
 pass	updating an absent record field is rejected
+pass	utf1 the THREADED Bytes state goes UTF-8-invalid mid-run — a lead byte alone flips decode to None, the completion byte restores it and a bad continuation leaves it broken
 pass	uv2 a @requires-guarded fn fed by DRAWS — the contract checks effectful argument values at each call
 pass	uv3 the handler ARM calls a @requires-guarded helper — the contract checks the live state per dispatch
 pass	uv4 a RELATIONAL @ensures (ret > x) over a TWO-draw body — the postcondition compares the effectful result to the arg, twice

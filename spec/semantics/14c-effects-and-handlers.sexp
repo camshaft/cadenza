@@ -9478,3 +9478,66 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 13051 Int64))
   (call   main (: 1 Int64)) (output (: 35071 Int64)))
+
+; --- breaker batch 255: mixed-width four-param op, three result types on one thread, UTF-8 validity flip mid-run ---
+(case "mx4 a FOUR-param op mixing two Int64s, a NARROW UInt8, and a Bool — the narrow slot rides between wide ones and the flag doubles the first argument"
+  (input  (do
+            (effect E (op mix (-> Int64 UInt8 Bool Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((mix (a b flag d) s
+                  (resume (+ (if flag (* a 2) a) (+ (Int64.of b) (+ (* d 100) s)))
+                          (+ s 1))))
+                (let ((x (E.mix 5 (UInt8.wrap 200) (= (% n 2) 1) 3)))
+                  (let ((y (E.mix 5 (UInt8.wrap 200) (= (% n 2) 0) 3)))
+                    (+ (* 10000 x) y)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 5130509 Int64))
+  (call   main (: 4 Int64)) (output (: 5090515 Int64)))
+
+(case "het1 ONE effect with THREE result types — Int64, Bool, and String ops share a single scalar thread, each consumed by its own idiom in one run"
+  (input  (do
+            (effect S
+              (op num (-> Int64))
+              (op flag (-> Bool))
+              (op name (-> String)))
+            (def (main (: n Int64))
+              (handle S n
+                ((num () s (resume (* s 2) (+ s 1)))
+                 (flag () s (resume (= (% s 2) 0) (+ s 1)))
+                 (name () s (resume (if (= (% s 3) 0) "hi" "wxyz") (+ s 1))))
+                (let ((a (S.num)))
+                  (let ((b (S.flag)))
+                    (let ((c (S.name)))
+                      (let ((d (S.num)))
+                        (+ (* 100000 a)
+                           (+ (* 10000 (if b 1 0))
+                              (+ (* 1000 (String.byte-len c)) d)))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 614012 Int64))
+  (call   main (: 4 Int64)) (output (: 802014 Int64)))
+
+(case "utf1 the THREADED Bytes state goes UTF-8-invalid mid-run — a lead byte alone flips decode to None, the completion byte restores it and a bad continuation leaves it broken"
+  (input  (do
+            (effect S
+              (op push (-> Int64 Int64))
+              (op dec (-> Int64)))
+            (def (main (: n Int64))
+              (handle S (String.to-bytes "ab")
+                ((push (b) bs
+                  (let ((b2 (Bytes.concat bs (Bytes.of (list (UInt8.wrap b))))))
+                    (resume (Bytes.len b2) b2)))
+                 (dec () bs
+                  (resume (match (String.from-bytes bs)
+                            ((Some w) (+ (* 10 (String.byte-len w)) 1))
+                            ((None u) 0))
+                          bs)))
+                (let ((a (S.dec)))
+                  (let ((b (S.push 195)))
+                    (let ((c (S.dec)))
+                      (let ((d (S.push (if (= n 0) 169 65))))
+                        (let ((e (S.dec)))
+                          (+ (* 100 (+ (* 10 (+ (* 100 (+ (* 10 a) b)) c)) d)) e))))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 21300441 Int64))
+  (call   main (: 1 Int64)) (output (: 21300400 Int64)))
