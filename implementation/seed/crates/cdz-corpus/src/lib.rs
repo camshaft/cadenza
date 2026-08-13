@@ -164,6 +164,11 @@ pub struct PlatformRecord {
     /// Per-alias end-state status: `(end-state <alias> … (status <state>))` → one `(alias, status)` each
     /// (status in active/quiescent/stalled/closed).
     pub end_status: Vec<(String, String)>,
+    /// Per-alias end-state close-outcome: `(end-state <alias> … (close-outcome <kind>))` → one
+    /// `(alias, kind)` each, `<kind>` a bare token `Success`|`Failure`. Distinguishes HOW a self-closed
+    /// session closed (both report `status closed` otherwise). The grade side compares this against the
+    /// runner's observed `end-close-outcome` line (string eq, like `status`).
+    pub close_outcome: Vec<(String, String)>,
     /// Per-alias `(events-processed <alias> <n>)` — the total processed-log length the session must reach
     /// (grades `Session::event_count()`).
     pub events_processed: Vec<(String, String)>,
@@ -378,7 +383,8 @@ pub fn to_records(text: &str) -> Result<String, String> {
 ///   `expect-effect\t<from>\t<family>[\t<value>]` (0+, order) ·
 ///   `expect-message\t<from>\t<to>\t<family>\t<value>` (0+, order) ·
 ///   `expect-delivery-failure\t<from>\t<to>` (0+) · `end-kv\t<alias>\t<key>\t<value>` (0+) ·
-///   `end-status\t<alias>\t<status>` (0+) · `events-processed\t<alias>\t<n>` (0+) ·
+///   `end-status\t<alias>\t<status>` (0+) · `end-close-outcome\t<alias>\t<kind>` (0+) ·
+///   `events-processed\t<alias>\t<n>` (0+) ·
 ///   `expect-fault\t<kind>` (0-or-1) · `---` terminator.
 pub fn render_platform(records: &[PlatformRecord]) -> String {
     let mut out = String::new();
@@ -463,6 +469,13 @@ pub fn render_platform(records: &[PlatformRecord]) -> String {
             out.push_str(alias);
             out.push('\t');
             out.push_str(status);
+            out.push('\n');
+        }
+        for (alias, kind) in &r.close_outcome {
+            out.push_str("end-close-outcome\t");
+            out.push_str(alias);
+            out.push('\t');
+            out.push_str(kind);
             out.push('\n');
         }
         for (alias, n) in &r.events_processed {
@@ -725,7 +738,8 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
 ///   `(expect-effects (effect (from <a>) (family <f>) <value>?)…)` (ordered) ·
 ///   `(expect-messages (message (from <a>) (to <b>) (family <f>) <value>)…)` (ordered) ·
 ///   `(expect-delivery-failure (from <a>) (to <b>))` (0+) ·
-///   `(end-state <alias> (kv <key> <value>)… (status <state>)?)` · `(events-processed <alias> <n>)` ·
+///   `(end-state <alias> (kv <key> <value>)… (status <state>)? (close-outcome <kind>)?)` ·
+///   `(events-processed <alias> <n>)` ·
 ///   `(expect-fault <kind>)` (0-or-1 — the run must fault with a stderr marker containing `<kind>`).
 fn parse_platform_case(a: &Arenas, case_id: StructId) -> Result<PlatformRecord, String> {
     let items = match a.get(case_id) {
@@ -746,6 +760,7 @@ fn parse_platform_case(a: &Arenas, case_id: StructId) -> Result<PlatformRecord, 
     let mut expect_delivery_failures: Vec<(String, String)> = Vec::new();
     let mut end_kv: Vec<(String, String, String)> = Vec::new();
     let mut end_status: Vec<(String, String)> = Vec::new();
+    let mut close_outcome: Vec<(String, String)> = Vec::new();
     let mut events_processed: Vec<(String, String)> = Vec::new();
     let mut expect_fault: Option<String> = None;
 
@@ -902,7 +917,7 @@ fn parse_platform_case(a: &Arenas, case_id: StructId) -> Result<PlatformRecord, 
                     expect_delivery_failures.push((from, to));
                 }
             }
-            // `(end-state <alias> (kv <key> <value>)… (status <state>)?)` — per-session end assertions.
+            // `(end-state <alias> (kv <key> <value>)… (status <state>)? (close-outcome <kind>)?)` — per-session end assertions.
             Some("end-state") => {
                 if let Some(tail) = a.as_form(clause, "end-state")
                     && let Some(&alias_id) = tail.first()
@@ -925,6 +940,16 @@ fn parse_platform_case(a: &Arenas, case_id: StructId) -> Result<PlatformRecord, 
                                     && let Some(st) = atom_text(a, st_id)
                                 {
                                     end_status.push((alias.clone(), st));
+                                }
+                            }
+                            // `(close-outcome <kind>)` — a bare token Success|Failure distinguishing how a
+                            // self-closed session closed (both otherwise report `status closed`).
+                            Some("close-outcome") => {
+                                if let Some(ctail) = a.as_form(child, "close-outcome")
+                                    && let Some(&kind_id) = ctail.first()
+                                    && let Some(kind) = atom_text(a, kind_id)
+                                {
+                                    close_outcome.push((alias.clone(), kind));
                                 }
                             }
                             _ => {}
@@ -975,6 +1000,7 @@ fn parse_platform_case(a: &Arenas, case_id: StructId) -> Result<PlatformRecord, 
         expect_delivery_failures,
         end_kv,
         end_status,
+        close_outcome,
         events_processed,
         expect_fault,
     })
@@ -1306,6 +1332,47 @@ mod tests {
         .unwrap();
         assert!(no_child[0].children.is_empty());
         assert!(!render_platform(&no_child).contains("child\t"));
+    }
+
+    /// An optional `(close-outcome <kind>)` sub-clause under `(end-state <alias> …)` records how a
+    /// self-closed session closed (Success vs Failure — both otherwise report `status closed`). It
+    /// collects into `close_outcome` (alias, kind) and renders one `end-close-outcome\t<alias>\t<kind>`
+    /// line, mirroring the `(status …)` sub-clause. Absent = no line (byte-identical).
+    #[test]
+    fn platform_case_end_state_carries_a_close_outcome() {
+        let src = r#"(platform-case "two self-closing sessions distinguish Success vs Failure close"
+                 (session "ok"  (reducer (do (def (main) 0) (export main))))
+                 (session "bad" (reducer (do (def (main) 0) (export main))))
+                 (kickoff "ok" (inbound "start" (: unit Unit)))
+                 (end-state "ok"  (status "closed") (close-outcome Success))
+                 (end-state "bad" (status "closed") (close-outcome Failure)))"#;
+        let recs = read_platform(src).unwrap();
+        assert_eq!(recs.len(), 1);
+        // Both closed (status), but distinct close-outcomes.
+        assert_eq!(recs[0].end_status.len(), 2);
+        assert_eq!(
+            recs[0].close_outcome,
+            vec![
+                ("ok".to_string(), "Success".to_string()),
+                ("bad".to_string(), "Failure".to_string()),
+            ]
+        );
+        let out = render_platform(&recs);
+        assert!(out.contains("end-close-outcome\tok\tSuccess\n"));
+        assert!(out.contains("end-close-outcome\tbad\tFailure\n"));
+        // Fixed-point under a re-read of the original sexp.
+        assert_eq!(render_platform(&read_platform(src).unwrap()), out);
+
+        // An end-state with no close-outcome renders no end-close-outcome line (byte-identical to today).
+        let no_co = read_platform(
+            r#"(platform-case "no close-outcome"
+                 (session "w" (reducer (do (def (main) 0) (export main))))
+                 (kickoff "w" (inbound "start" (: unit Unit)))
+                 (end-state "w" (status "quiescent")))"#,
+        )
+        .unwrap();
+        assert!(no_co[0].close_outcome.is_empty());
+        assert!(!render_platform(&no_co).contains("end-close-outcome"));
     }
 
     /// A platform-case MUST carry a kickoff and at least one session — the fixpoint has nothing to run
