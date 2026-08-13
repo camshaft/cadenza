@@ -785,6 +785,129 @@ fn read_err_reply_record(a: &Arenas, id: StructId) -> Result<(String, bool), Mar
     Ok((message, retryable))
 }
 
+/// Encode the §6 CHILD-COMPLETED signal to its value-form bytes — the Inbound payload a session's PARENT
+/// folds when a child reaches a terminal outcome. ONE value-form covers BOTH close-classes: a self-close
+/// (a reducer's `FoldOutput::close`, CloseOutcome Success|Failure) AND a terminate (`lifecycle/terminate`,
+/// CloseOutcome::Failure(reason)) — the [`CloseOutcome`] discriminates the cause, so a guest supervisor folds
+/// both uniformly. The host's supervision routing calls this + delivers the bytes to the parent inbox; the
+/// parent's GUEST supervisor reducer `value-decode`s it. It is a VALUE-FORM (guest-decodable), NOT the durable
+/// `event_ast::encode_child_exited` bytes (which a guest can't value-decode — same durable-vs-value-form
+/// distinction as the err-reply outcome; migrate the terminate-I7 path onto THIS builder for a real guest).
+///
+/// Value-form: `(record (= child <bytes>) (= outcome <ChildOutcome>))` where `ChildOutcome = (Success
+/// <ReplyPayload>) | (Failure <bytes>)` and `ReplyPayload = (Inline <bytes>) | (Blob <32-hash>)` — Success
+/// REUSES the reply-outcome payload discriminant so a blob-ref success payload survives (no-capability-drop);
+/// Failure carries the reason bytes. `child` is the completed child's 32-byte SessionId (= genesis hash).
+pub fn encode_child_completed(child: &crate::hash::Hash, outcome: &CloseOutcome) -> Vec<u8> {
+    let bytes = |b: &[u8]| Val::List(b.iter().copied().map(Val::U8).collect());
+    let payload_view = |p: &Payload| match p {
+        Payload::Inline(b) => Val::Variant("Inline".into(), Some(Box::new(bytes(b)))),
+        Payload::Blob(h) => Val::Variant("Blob".into(), Some(Box::new(bytes(h.as_bytes())))),
+    };
+    let outcome_view = match outcome {
+        CloseOutcome::Success(p) => Val::Variant("Success".into(), Some(Box::new(payload_view(p)))),
+        CloseOutcome::Failure(reason) => {
+            Val::Variant("Failure".into(), Some(Box::new(bytes(reason.as_bytes()))))
+        }
+    };
+    let record = Val::Record(vec![
+        ("child".into(), bytes(child.as_bytes())),
+        ("outcome".into(), outcome_view),
+    ]);
+    val_to_ast(&record).expect("the child-completed value is always marshallable")
+}
+
+/// Decode a [`encode_child_completed`] value-form back into `(child SessionId, CloseOutcome)` — the DUAL of
+/// the encode (for the host's Rust supervisor path + round-trip testing; a guest supervisor value-decodes it
+/// via rcdzc instead). STRICT (untrusted-input posture): exactly `child` (32 bytes) + `outcome`; extra /
+/// missing / duplicate field, a non-32-byte child, an unknown outcome/payload head, or a non-utf-8 Failure
+/// reason is a TypeMismatch. `Hash::from_bytes` is a raw-bytes constructor, not a forbidden hex decode.
+pub fn decode_child_completed(
+    bytes: &[u8],
+) -> Result<(crate::hash::Hash, CloseOutcome), MarshalError> {
+    let a = codec::decode(bytes).ok_or(MarshalError::Undecodable)?;
+    let field_nodes = form(&a, a.root, "record")?;
+    let mut child: Option<Vec<u8>> = None;
+    let mut outcome: Option<CloseOutcome> = None;
+    for &fnode in field_nodes {
+        let (name, val_node) = read_named_field(&a, fnode, "child-completed")?;
+        match name {
+            "child" => {
+                if child.replace(read_bytes(&a, val_node)?).is_some() {
+                    return Err(type_mismatch("child-completed", "duplicate child field"));
+                }
+            }
+            "outcome" => {
+                if outcome.replace(read_child_outcome(&a, val_node)?).is_some() {
+                    return Err(type_mismatch("child-completed", "duplicate outcome field"));
+                }
+            }
+            other => {
+                return Err(type_mismatch(
+                    "child-completed",
+                    format!("unknown field {}", bounded_name(other)),
+                ))
+            }
+        }
+    }
+    let child = child.ok_or_else(|| type_mismatch("child-completed", "missing child field"))?;
+    let hash: [u8; 32] = child
+        .as_slice()
+        .try_into()
+        .map_err(|_| type_mismatch("child-completed", "child is not a 32-byte hash"))?;
+    let outcome =
+        outcome.ok_or_else(|| type_mismatch("child-completed", "missing outcome field"))?;
+    Ok((crate::hash::Hash::from_bytes(hash), outcome))
+}
+
+/// The child-completed outcome value-form `(Success <ReplyPayload>)` | `(Failure <bytes>)` → [`CloseOutcome`].
+/// Success reuses [`read_reply_payload`] (Inline|Blob) so a blob-ref success payload survives; Failure's
+/// reason bytes must be valid utf-8. Any other head is a TypeMismatch (fail-closed).
+fn read_child_outcome(a: &Arenas, id: StructId) -> Result<CloseOutcome, MarshalError> {
+    let (case, node) = ctor(a, id)?;
+    match case {
+        "Success" => {
+            let n =
+                node.ok_or_else(|| type_mismatch("child-outcome", "Success without a payload"))?;
+            Ok(CloseOutcome::Success(read_reply_payload(a, n)?))
+        }
+        "Failure" => {
+            let n =
+                node.ok_or_else(|| type_mismatch("child-outcome", "Failure without a reason"))?;
+            let reason = String::from_utf8(read_bytes(a, n)?)
+                .map_err(|_| type_mismatch("child-outcome", "Failure reason is not valid utf-8"))?;
+            Ok(CloseOutcome::Failure(reason))
+        }
+        other => Err(type_mismatch(
+            "child-outcome",
+            format!("unexpected outcome ctor {}", bounded_name(other)),
+        )),
+    }
+}
+
+/// Extract `(name, value-node)` from a record field entry — the canonical `(= name value)` 3-list or the
+/// legacy `(name value)` 2-list (the same tolerance `build_from_ast` keeps). `ctx` labels the error.
+fn read_named_field<'a>(
+    a: &'a Arenas,
+    fnode: StructId,
+    ctx: &'static str,
+) -> Result<(&'a str, StructId), MarshalError> {
+    match a.get(fnode) {
+        Struct::List(kids) if kids.len() == 3 && a.as_name(kids[0]) == Some("=") => a
+            .as_name(kids[1])
+            .map(|n| (n, kids[2]))
+            .ok_or_else(|| type_mismatch(ctx, "field name is not a name")),
+        Struct::List(kids) if kids.len() == 2 => a
+            .as_name(kids[0])
+            .map(|n| (n, kids[1]))
+            .ok_or_else(|| type_mismatch(ctx, "field name is not a name")),
+        _ => Err(type_mismatch(
+            ctx,
+            "field is not a (= name value) or (name value) form",
+        )),
+    }
+}
+
 /// Build the `Val` at arena node `id` per the target WIT `ty`. Recursive: a compound type reads its
 /// children by the sub-types `ty` exposes (via wasmtime's `Type` reflection) and recurses. The form
 /// rules mirror [`build_val`] (name-head record/tuple/list/flags AND option/result/variant/enum ctors,
@@ -1210,7 +1333,7 @@ fn unmarshallable(kind: &str) -> MarshalError {
 // content-type/effect-kind/effect-request records as value-form AST rather than WIT records.
 
 use crate::effect::{EffectRequest, Payload, Timeliness};
-use crate::event::{EffectOutcome, Retryability};
+use crate::event::{CloseOutcome, EffectOutcome, Retryability};
 use crate::reducer::Effect;
 
 /// A borrowed content-type view for [`build_event_document`] — `(family, version)` — so the caller passes
@@ -2176,6 +2299,47 @@ mod tests {
         // Not handler-repliable → encode errors (never emits a decodable-but-illegal TimedOut/Deferred reply).
         assert!(encode_reply_outcome(&EffectOutcome::TimedOut).is_err());
         assert!(encode_reply_outcome(&EffectOutcome::Deferred).is_err());
+    }
+
+    // The §6 CHILD-COMPLETED value-form round-trips (encode∘decode = id) for BOTH close-classes: a Success
+    // with an Inline OR Blob payload (blob-ref survives, reusing the reply ReplyPayload discriminant) and a
+    // Failure(reason). Fail-closed on undecodable bytes + an unknown outcome ctor. One value-form covers
+    // self-close (Success|Failure) AND terminate (Failure(reason)) — the CloseOutcome discriminates the cause.
+    #[test]
+    fn child_completed_value_form_round_trips_both_close_classes() {
+        use crate::hash::Hash;
+        let child = Hash::of(b"child-session");
+        let round_trips = |o: CloseOutcome| {
+            let bytes = encode_child_completed(&child, &o);
+            assert_eq!(
+                decode_child_completed(&bytes).expect("decodes"),
+                (child, o),
+                "encode∘decode = id (child + outcome)"
+            );
+        };
+        round_trips(CloseOutcome::Success(Payload::Inline(
+            b"result".to_vec().into(),
+        )));
+        round_trips(CloseOutcome::Success(Payload::Blob(Hash::of(
+            b"a-big-result-blob",
+        ))));
+        round_trips(CloseOutcome::Failure("goal unreachable".to_string()));
+
+        // Fail-closed: undecodable bytes.
+        assert!(decode_child_completed(b"\xff\x00not-ast").is_err());
+        // An unknown outcome ctor (neither Success nor Failure) is rejected.
+        let bad = {
+            let bytes = |b: &[u8]| Val::List(b.iter().copied().map(Val::U8).collect());
+            let rec = Val::Record(vec![
+                ("child".into(), bytes(child.as_bytes())),
+                (
+                    "outcome".into(),
+                    Val::Variant("Weird".into(), Some(Box::new(bytes(b"x")))),
+                ),
+            ]);
+            val_to_ast(&rec).unwrap()
+        };
+        assert!(decode_child_completed(&bad).is_err());
     }
 
     // ast_to_val decodes UNTRUSTED arg bytes, so a record must EXACTLY match the WIT shape (github-liaison
