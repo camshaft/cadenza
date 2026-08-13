@@ -1210,12 +1210,29 @@
         # Runs CONCURRENTLY with the core half. The live-net TEST (below) COMPILES the live-net test targets
         # (the real GAP-2 coverage — a live-net-only compile break like the CanonicalResolver E0433 reds
         # here); the network tests are ENV-GATED (CDZ_LIVE_HTTP_URL / AWS creds) so they SKIP without egress.
+        # live-aws-storage COVERAGE (v-nix + v-agent-harness-host 2026-08-13): the ENTIRE AWS-native storage
+        # backend — DynamoLogSink, the D1 log-body offload, and the D2 zstd cold-log compression — is behind the
+        # `live-aws-storage` feature, which NO other gate pass compiled, so a peer could break any of it (or its
+        # zstd-sys bundled-C vendor) and CI stayed green while only v-ah-host's local build caught it. This
+        # clippy pass closes that un-gated invariant fleet-wide. Lands on the LIVE-NET half because
+        # live-aws-storage shares the heavy aws-sdk/aws-lc-sys chain the half already compiles, so the marginal
+        # cost is ~the zstd-sys build, not a second aws-chain (proven green offline, ref 966bd2eff).
+        #   🪤 COMPILE+CLIPPY ONLY, no `cargo test --features live-aws-storage`: 8 live-aws-storage lib tests
+        #   (dynamo_log::* / s3_blob::* / factory::offload_source_s3 / name_snapshot::s3::*) CONSTRUCT a real
+        #   aws-smithy TLS client, which panics in the hermetic sandbox — "TrustStore configured to enable native
+        #   roots but no valid root certificates parsed" (no /etc/ssl CA bundle in the nix build). That is an
+        #   environment limitation, not a code fault (they pass on a dev box with system CA certs). Running them
+        #   would need cacert + SSL_CERT_FILE AND a guarantee they make no real network call — out of scope for a
+        #   compile-coverage gate. clippy --all-targets still TYPE-CHECKS the test bodies (compile breaks caught),
+        #   which is the invariant that was un-gated. v-ah-host flagged to env-gate/`#[ignore]` those 8 so a
+        #   future `cargo test` pass here could run the rest (their side).
         cdzAgentHostNativeLiveNet = mkAgentHostNative {
           pname = "cdz-agent-host-native-live-net";
           passes = ''
             cargo clippy --all-targets --locked --features live-net -- -D warnings
             cargo clippy --all-targets --locked --features admin,live-net -- -D warnings
             cargo test --locked --features live-net
+            cargo clippy --all-targets --locked --features live-aws-storage -- -D warnings
           '';
         };
         # ── N1: the value-heap runtime components AS input-addressed derivations (hash from output) ─
