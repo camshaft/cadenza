@@ -65,12 +65,16 @@ interface fold {
   // §3a — the kernel host never constructs or inspects a value-heap handle):
   //
   //   IN  `event`: the whole event as one AST document folding the former three args into named children,
-  //        e.g. `(event (content-type <ct>) (payload <bytes-or-absent>) (resumes <bytes-or-absent>))`.
+  //        e.g. `(record (= content-type <ct>) (= payload <bytes-or-absent>) (= resumes <bytes-or-absent>)
+  //        (= outcome <outcome-or-absent>))`.
   //        `content-type` is the routing/filtering hint; `payload` is the opaque request body; `resumes`
   //        is — for a result/timer event — the guest's OWN continuation token, echoed verbatim from the
   //        originating effect-request's `correlation` (the single resume mechanism), absent for inbound
-  //        messages / genesis / denials / fire-and-forget. The kernel builds this document
-  //        (`ast_marshal::build_event_document`); the guest decodes it.
+  //        messages / genesis / denials / fire-and-forget. `outcome` is the DISCRIMINATED effect-result view
+  //        `option<Ok(list<u8>) | Err{message:list<u8>, retryable:bool} | TimedOut>` — present (`Some`) ONLY
+  //        on an effect-result event so the guest can tell a successful reply from a failure (the raw
+  //        `payload` bytes drop that discriminant), `None` for every other event kind. The kernel builds this
+  //        document (`ast_marshal::build_event_document`); the guest decodes it.
   //   OUT `list<u8>`: the requested effects as one AST document — a value-form list of effect-request
   //        records `(correlation? kind:string payload? target:bytes)`. The kernel parses it
   //        (`ast_marshal::parse_effect_list`). `kind` is the family STRING (never a closed enum), so a

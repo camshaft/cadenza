@@ -49,11 +49,26 @@ def slot() -> Bytes = String.to-bytes("kv-genesis/slot")
 // The prefix the kv-scan branch scans (the slot's namespace) — the slot() key lives under it.
 def scan-prefix() -> Bytes = String.to-bytes("kv-genesis/")
 
+// The discriminated effect-result OUTCOME the kernel surfaces on an EffectResult event (err-reply co-land):
+// Some(Ok|Err|TimedOut) for an effect result, None otherwise. This reducer folds no results, but the shared
+// Event value-form is strict, so the field must be declared.
+// The reply payload is DISCRIMINATED so a blob-ref reply (large response settled by hash, not inlined)
+// survives the outcome value-form (operator ruling: no-capability-drop): Inline bytes OR a Blob hash.
+type ReplyPayload =
+  | Inline(Bytes)
+  | Blob(Bytes)
+
+type Outcome =
+  | Ok(ReplyPayload)
+  | Err(Record(message: Bytes, retryable: Bool))
+  | TimedOut
+
 def apply(
   event: Record(
     content-type: Record(family: String, version: UInt(32)),
     payload: Option(Bytes),
     resumes: Option(Bytes),
+    outcome: Option(Outcome),
   ),
 ) -> List(Record(
   kind: String,

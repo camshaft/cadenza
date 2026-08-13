@@ -73,11 +73,27 @@ type Payload =
       max-tokens: Option(UInt(64)),
     ))
 
+// The discriminated effect-result OUTCOME the kernel surfaces on an EffectResult event (err-reply co-land):
+// Some(Ok|Err|TimedOut) for an effect result, None for every other event kind. The agent loop resumes on a
+// result's `resumes` token today; surfacing the outcome lets a later slice branch success-vs-failure (e.g.
+// record a model error rather than a reply). Declared now so the shared strict Event value-form matches.
+// The reply payload is DISCRIMINATED so a blob-ref reply (large response settled by hash, not inlined)
+// survives the outcome value-form (operator ruling: no-capability-drop): Inline bytes OR a Blob hash.
+type ReplyPayload =
+  | Inline(Bytes)
+  | Blob(Bytes)
+
+type Outcome =
+  | Ok(ReplyPayload)
+  | Err(Record(message: Bytes, retryable: Bool))
+  | TimedOut
+
 def apply(
   event: Record(
     content-type: Record(family: String, version: UInt(32)),
     payload: Option(Bytes),
     resumes: Option(Bytes),
+    outcome: Option(Outcome),
   ),
 ) -> List(Record(
   kind: String,

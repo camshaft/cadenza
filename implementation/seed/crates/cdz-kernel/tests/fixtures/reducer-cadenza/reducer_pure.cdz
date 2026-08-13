@@ -27,11 +27,26 @@
 //     --component-name cadenza:agent-kernel/fold -o reducer_pure.wasm
 //   -> exports fold.apply(list<u8>) -> list<u8>; imports NOTHING; VALID component.
 
+// The discriminated effect-result OUTCOME the kernel surfaces on an EffectResult event (err-reply co-land):
+// Some(Ok|Err|TimedOut) for an effect result, None for every other event kind. This pure reducer folds no
+// results, so it never inspects it — but the shared Event value-form is strict, so the field must be declared.
+// The reply payload is DISCRIMINATED so a blob-ref reply (large response settled by hash, not inlined)
+// survives the outcome value-form (operator ruling: no-capability-drop): Inline bytes OR a Blob hash.
+type ReplyPayload =
+  | Inline(Bytes)
+  | Blob(Bytes)
+
+type Outcome =
+  | Ok(ReplyPayload)
+  | Err(Record(message: Bytes, retryable: Bool))
+  | TimedOut
+
 def apply(
   event: Record(
     content-type: Record(family: String, version: UInt(32)),
     payload: Option(Bytes),
     resumes: Option(Bytes),
+    outcome: Option(Outcome),
   ),
 ) -> List(Record(
   kind: String,
@@ -50,17 +65,27 @@ def apply(
     // A payload-free event requests no effects — the fold is empty.
     | None() => []
 
+// A typed `None` for the outcome field. A bare `None()` inside a record literal does NOT receive its
+// element type from the expected record field (the checker infers the literal bottom-up, leaving the
+// sum-typed field an unsolved `Option(_)` that then fails to match `Option(Outcome)`); a return-annotated
+// def gives the `None()` its type directly. The production fold never constructs an event, so this is only
+// needed by the @tests below.
+def no-outcome() -> Option(Outcome) = None()
+
 // Standalone behavioral coverage (`cdz test`, INDEPENDENT of the kernel host adapter; plain `cdz compile`
 // ignores @test). The real bytes round-trip proof is the cdz-agent-host e2e (env PURE_GENESIS_REDUCER
 // _COMPONENT, driving call_apply on wasmtime); these @tests pin the pure fold semantics on the seed VM.
 @test
 def pure_payloaded_event_folds_to_one_emit() =
-  let evt = {
+  // Inline the Event literal as a DIRECT arg so apply's param type flows in (bidirectional): a bare `None()`
+  // for the sum-typed `outcome` (and `resumes`) gets its type from the expected field, which a `let`-bound
+  // literal does not (it infers bottom-up, leaving an unsolved `Option(_)`).
+  match List.at(apply({
     content-type = { family = "message", version = 1 },
     payload = Some(String.to-bytes("hello")),
     resumes = None(),
-  } in
-  match List.at(apply(evt), 0) with
+    outcome = no-outcome(),
+  }), 0) with
     | Some(eff) =>
       (if eff.kind == "emit" then
          (match eff.payload with
@@ -71,12 +96,13 @@ def pure_payloaded_event_folds_to_one_emit() =
 
 @test
 def pure_payloadless_event_folds_to_nothing() =
-  let evt = {
+  // Inline (see the sibling test) so the bare `None()` fields get their type from apply's expected param.
+  if List.len(apply({
     content-type = { family = "message", version = 1 },
     payload = None(),
     resumes = None(),
-  } in
-  if List.len(apply(evt)) == 0 then unit
+    outcome = no-outcome(),
+  })) == 0 then unit
   else trap("a payload-free event must request no effects")
 
 export { apply }

@@ -1344,12 +1344,30 @@ impl ComponentReducer {
     /// KV exactly as it was (all-or-nothing atomicity), because its uncommitted overlay writes are
     /// discarded when the host drops. Only the write-set is buffered (O(writes)), never an O(KV size)
     /// full copy (the PR#1076 perf trap).
+    /// Apply an event with NO effect-result outcome — the common entry (inbound / timer / synthetic test
+    /// events). Delegates to [`ComponentReducer::apply_with_outcome`] with `outcome = None`; kept as the
+    /// stable 4-arg signature so direct callers (and cdz-agent-host's drivers) are unaffected by the
+    /// err-reply co-land. Only `fold` on a real `EffectResult` supplies a `Some(outcome)`.
     pub fn apply(
         &self,
         kv: Kv,
         content_type: crate::event::ContentType,
         payload: Option<Vec<u8>>,
         resumes: Option<Vec<u8>>,
+    ) -> Result<(Vec<crate::reducer::Effect>, Kv), (ComponentError, Kv)> {
+        self.apply_with_outcome(kv, content_type, payload, resumes, None)
+    }
+
+    /// Apply an event, additionally surfacing the discriminated effect-result `outcome` on the Event the
+    /// guest decodes (err-reply co-land). `outcome` is `Some(Ok|Err|TimedOut)` for an `EffectResult`, `None`
+    /// otherwise (see [`event_to_guest_inputs`] / [`effect_outcome_view`]).
+    pub fn apply_with_outcome(
+        &self,
+        kv: Kv,
+        content_type: crate::event::ContentType,
+        payload: Option<Vec<u8>>,
+        resumes: Option<Vec<u8>>,
+        outcome: Option<wasmtime::component::Val>,
     ) -> Result<(Vec<crate::reducer::Effect>, Kv), (ComponentError, Kv)> {
         let mut store = wasmtime::Store::new(&self.engine, ReducerHost::new(kv));
         // Fuel metering is enabled on the engine (§22d). Instantiation isn't the DoS surface — a
@@ -1434,6 +1452,7 @@ impl ComponentReducer {
             },
             payload.as_deref(),
             resumes.as_deref(),
+            outcome,
         );
         let result = match instance
             .cadenza_agent_kernel_fold()
@@ -1514,7 +1533,7 @@ impl crate::reducer::Reducer for ComponentReducer {
         // cross-call state outside it), so fold stays a PURE FUNCTION of (event, kv) and replay reconstructs
         // identical kv. The `&mut self` here is unused by the guest path; it exists only to satisfy the norm.
         // Map the kernel event → the guest's (content_type, payload, resumes) inputs.
-        let (content_type, payload, resumes) = event_to_guest_inputs(&event.body);
+        let (content_type, payload, resumes, outcome) = event_to_guest_inputs(&event.body);
 
         // Move the session KV into the fold WITHOUT cloning (PR#1076 perf): `Kv` is a `BTreeMap`, so a
         // `clone()` would deep-copy the whole session state every event → O(KV size) per fold. `mem::take`
@@ -1524,7 +1543,7 @@ impl crate::reducer::Reducer for ComponentReducer {
         // that `apply` discarded), so a trapped/fuel-exhausted fold leaves the session KV ATOMICALLY
         // untouched (PR#1076/#1150 error-atomicity — now a real guarantee, not just a comment).
         let taken = std::mem::take(kv);
-        match self.apply(taken, content_type, payload, resumes) {
+        match self.apply_with_outcome(taken, content_type, payload, resumes, outcome) {
             Ok((effects, new_kv)) => {
                 *kv = new_kv;
                 // `apply` now returns kernel `Effect`s directly — `parse_effect_list` decoded the guest's
@@ -1715,12 +1734,28 @@ impl AsyncComponentReducer {
     /// writes hit the [`ReducerHost`] overlay, committed only on success (a trapped/fuel-exhausted fold
     /// leaves KV atomically untouched). The difference is the guest call `.await`s (`call_apply_async`) and
     /// the store is armed with `fuel_async_yield_interval` so a long fold yields cooperatively.
+    /// Async twin of [`AsyncComponentReducer::apply_with_outcome`] with `outcome = None` — the stable 4-arg
+    /// entry the existing callers use (unaffected by the err-reply co-land).
     pub async fn apply(
         &self,
         kv: Kv,
         content_type: crate::event::ContentType,
         payload: Option<Vec<u8>>,
         resumes: Option<Vec<u8>>,
+    ) -> Result<(Vec<crate::reducer::Effect>, Kv), (ComponentError, Kv)> {
+        self.apply_with_outcome(kv, content_type, payload, resumes, None)
+            .await
+    }
+
+    /// Async apply surfacing the discriminated effect-result `outcome` on the guest's Event (err-reply
+    /// co-land). `Some(Ok|Err|TimedOut)` for an `EffectResult`, `None` otherwise.
+    pub async fn apply_with_outcome(
+        &self,
+        kv: Kv,
+        content_type: crate::event::ContentType,
+        payload: Option<Vec<u8>>,
+        resumes: Option<Vec<u8>>,
+        outcome: Option<wasmtime::component::Val>,
     ) -> Result<(Vec<crate::reducer::Effect>, Kv), (ComponentError, Kv)> {
         // Build the ONE event AST document the bytes boundary carries IN (DESIGN-binary-ast-abi §3a):
         // (content-type, payload, resumes) fold into a single value-form document. Both a Cadenza and a
@@ -1735,6 +1770,7 @@ impl AsyncComponentReducer {
             },
             payload.as_deref(),
             resumes.as_deref(),
+            outcome,
         );
         let mut store = wasmtime::Store::new(&self.engine, ReducerHost::new(kv));
         // Cooperative yield: the guest yields control every `fuel_yield_interval` fuel so a long fold
@@ -1865,9 +1901,12 @@ impl crate::reducer::Reducer for AsyncComponentReducer {
     /// state is `kv`, so fold is a pure function of (event, kv) and replay reconstructs identical kv. See
     /// [`ComponentReducer::fold`] for the full rationale; the `&mut self` is unused by the guest path.
     async fn fold(&mut self, event: &Event, kv: &mut Kv) -> crate::reducer::FoldOutput {
-        let (content_type, payload, resumes) = event_to_guest_inputs(&event.body);
+        let (content_type, payload, resumes, outcome) = event_to_guest_inputs(&event.body);
         let taken = std::mem::take(kv);
-        match self.apply(taken, content_type, payload, resumes).await {
+        match self
+            .apply_with_outcome(taken, content_type, payload, resumes, outcome)
+            .await
+        {
             Ok((effects, new_kv)) => {
                 *kv = new_kv;
                 // `apply` returns kernel `Effect`s directly (parse_effect_list decoded the guest's
@@ -2027,12 +2066,23 @@ impl crate::authz::Authorize for ComponentAuthorizer {
     }
 }
 
-/// Map a kernel [`EventBody`] to the guest `fold.apply` inputs `(content_type, payload, resumes)`.
+/// Map a kernel [`EventBody`] to the guest `fold.apply` inputs `(content_type, payload, resumes, outcome)`.
 /// `resumes` (§19e ruling B) is the event's continuation token, already copied onto result/timer events
 /// from their originating `Dispatched` frame (slice-2b-i) — so this reads it off the event, never a map.
-fn event_to_guest_inputs(
-    body: &EventBody,
-) -> (crate::event::ContentType, Option<Vec<u8>>, Option<Vec<u8>>) {
+/// `outcome` is the discriminated effect-result view (`Some(Ok|Err|TimedOut)`) — present ONLY for an
+/// `EffectResult`, `None` for every other event kind — so the guest can tell a successful reply from a
+/// failure that the raw `payload` bytes alone can't express (see [`effect_outcome_view`] /
+/// [`effect_outcome_bytes`]).
+/// The guest `fold.apply` inputs mapped from an [`EventBody`]: `(content_type, payload, resumes, outcome)`
+/// — a type alias so the 4-tuple stays under clippy's `type_complexity` bar while keeping the tuple ABI.
+type GuestFoldInputs = (
+    crate::event::ContentType,
+    Option<Vec<u8>>,
+    Option<Vec<u8>>,
+    Option<wasmtime::component::Val>,
+);
+
+fn event_to_guest_inputs(body: &EventBody) -> GuestFoldInputs {
     // A synthetic content-type for the kernel-internal event kinds the guest folds (results, timers,
     // denials): the guest matches on `family` to know what arrived. Inbound carries its OWN content-type.
     // These feed `ast_marshal::build_event_document` (the kernel's own `ContentType`, no WIT boundary type).
@@ -2044,11 +2094,20 @@ fn event_to_guest_inputs(
         EventBody::Inbound {
             content_type,
             payload,
-        } => (content_type.clone(), Some(payload_bytes(payload)), None),
+        } => (
+            content_type.clone(),
+            Some(payload_bytes(payload)),
+            None,
+            None,
+        ),
+        // The ONLY event carrying an outcome: the discriminated Ok/Err/TimedOut view rides alongside the
+        // flattened `payload` bytes (kept for the raw-content path) so the guest can branch on success vs
+        // failure without parsing bytes.
         EventBody::EffectResult { result, token, .. } => (
             synthetic("effect-result"),
             effect_outcome_bytes(result),
             token.clone(),
+            Some(effect_outcome_view(result)),
         ),
         // TimerFired / AuthzDenied are ALSO terminal outcomes a guest resumes on (resumes_effect
         // recognizes all three), so they carry the guest's continuation token too, via the same (B)
@@ -2056,35 +2115,38 @@ fn event_to_guest_inputs(
         // `TimerArmed` frame when it fires; a denial's token is moved from the requesting effect (a
         // denial has no prior durable frame). `fold` reads it straight off the event as `resumes`,
         // staying pure. The full effect→result / timer→fire / request→denial resume cycle is now wired.
+        // These are not effect RESULTS, so they carry no `outcome`.
         EventBody::TimerFired {
             fired_ms, token, ..
         } => (
             synthetic("timer-fired"),
             Some(fired_ms.to_le_bytes().to_vec()),
             token.clone(),
+            None,
         ),
         EventBody::AuthzDenied { reason, token, .. } => (
             synthetic("authz-denied"),
             Some(reason.clone().into_bytes()),
             token.clone(),
+            None,
         ),
         // Genesis / Dispatched / TimerArmed / Closed are not folded by the reducer (they're kernel
         // bookkeeping or setup — see the kernel's `observable()` predicate); the loop never calls fold
         // on them, but map defensively to an empty-payload synthetic content-type rather than panic.
-        EventBody::Genesis { .. } => (synthetic("genesis"), None, None),
-        EventBody::Dispatched { .. } => (synthetic("dispatched"), None, None),
-        EventBody::TimerArmed { .. } => (synthetic("timer-armed"), None, None),
-        EventBody::Closed { .. } => (synthetic("closed"), None, None),
+        EventBody::Genesis { .. } => (synthetic("genesis"), None, None, None),
+        EventBody::Dispatched { .. } => (synthetic("dispatched"), None, None, None),
+        EventBody::TimerArmed { .. } => (synthetic("timer-armed"), None, None, None),
+        EventBody::Closed { .. } => (synthetic("closed"), None, None, None),
         // FoldFailed is a kernel-recorded failure event, not a fold input (the loop never folds it —
         // `observable()` excludes it); map defensively rather than panic.
-        EventBody::FoldFailed { .. } => (synthetic("fold-failed"), None, None),
+        EventBody::FoldFailed { .. } => (synthetic("fold-failed"), None, None, None),
         // Terminated is the durable terminal marker (§lifecycle I1); it is never folded (a terminated
         // session refuses all folds via the FoldRefused guard, and `observable()` excludes it) — map
         // defensively rather than panic.
-        EventBody::Terminated { .. } => (synthetic("terminated"), None, None),
+        EventBody::Terminated { .. } => (synthetic("terminated"), None, None, None),
         // Spawned is a recorded parent→child edge (§I2), never folded (observable()=false) — map
         // defensively rather than panic.
-        EventBody::Spawned { .. } => (synthetic("spawned"), None, None),
+        EventBody::Spawned { .. } => (synthetic("spawned"), None, None, None),
     }
 }
 
@@ -2117,7 +2179,11 @@ fn effect_outcome_bytes(o: &EffectOutcome) -> Option<Vec<u8>> {
 /// flattens away — it hands the guest raw bytes with the Ok/Err/TimedOut discriminant DROPPED). This is the
 /// PRODUCTION mapping from the kernel [`EffectOutcome`] to the exact value-form pinned by
 /// `ast_marshal::tests::val_to_ast_pins_the_err_reply_outcome_value_form`:
-/// - `Ok(payload)` → `Ok(bytes)` (an empty `Ok(None)` success renders `Ok []`, mirroring `effect_outcome_bytes`);
+/// - `Ok(payload)` → `Ok(<ReplyPayload>)` where the payload is DISCRIMINATED so a blob-ref reply survives
+///   (operator ruling: no-capability-drop): `Payload::Inline(b)` → `Ok(Inline(b))`, `Payload::Blob(h)` →
+///   `Ok(Blob(h.as_bytes))`, and an empty `Ok(None)` success → `Ok(Inline([]))` (a payload-less success is a
+///   zero-length inline reply). Flattening to bare bytes would lose the Inline/Blob distinction (a Blob's
+///   hash would masquerade as the response), so we match `Payload` directly — NOT `payload_bytes`;
 /// - `Err { message, retryability }` → `Err(record { message: bytes, retryable: bool })`, where `retryable`
 ///   is the TYPED retryability (`Retryable` = true, `Permanent` = false — the reducer folds on the bool, not
 ///   a parsed token); the record fields are message + retryable (val_to_ast sorts by name: message < retryable);
@@ -2128,17 +2194,22 @@ fn effect_outcome_bytes(o: &EffectOutcome) -> Option<Vec<u8>> {
 /// Staged as the kernel half of the co-land (host `ReplyExecutor` decodes the reply's Ok/Err subset — no
 /// `TimedOut`, which is kernel-injected only); wired into `build_event_document` when the guest Event type
 /// and the reducer world grow the `outcome` field in lockstep (a strict-record value-form flag-day).
-#[allow(dead_code)] // wired by the err-reply co-land; the value-form it builds is pinned by the ast_marshal test above.
+/// Wired: `event_to_guest_inputs` calls this for an `EffectResult` and `build_event_document` surfaces it as
+/// the Event's `outcome` child.
 fn effect_outcome_view(o: &EffectOutcome) -> wasmtime::component::Val {
+    use crate::effect::Payload;
     use wasmtime::component::Val;
     let bytes = |b: &[u8]| Val::List(b.iter().copied().map(Val::U8).collect());
+    // The reply payload, discriminated so a blob-ref reply is not flattened to opaque bytes: an inline
+    // payload carries its bytes; a blob carries its 32 hash bytes under a distinct `Blob` head; a payload-less
+    // success is a zero-length inline.
+    let reply_payload = |p: &Option<Payload>| match p {
+        Some(Payload::Inline(b)) => Val::Variant("Inline".into(), Some(Box::new(bytes(b)))),
+        Some(Payload::Blob(h)) => Val::Variant("Blob".into(), Some(Box::new(bytes(h.as_bytes())))),
+        None => Val::Variant("Inline".into(), Some(Box::new(bytes(&[])))),
+    };
     match o {
-        EffectOutcome::Ok(p) => Val::Variant(
-            "Ok".into(),
-            Some(Box::new(bytes(
-                &p.as_ref().map(payload_bytes).unwrap_or_default(),
-            ))),
-        ),
+        EffectOutcome::Ok(p) => Val::Variant("Ok".into(), Some(Box::new(reply_payload(p)))),
         EffectOutcome::Err {
             message,
             retryability,
@@ -2171,9 +2242,10 @@ mod tests {
     // `EffectOutcome`, byte-identical (through the canonical `val_to_ast` codec) to the value-form pinned by
     // `ast_marshal::tests::val_to_ast_pins_the_err_reply_outcome_value_form`. That test pins the SHAPE from
     // hand-built Vals; this pins the MAPPING — the parts a hand-built Val can't witness: the typed
-    // Retryability collapses to the `retryable` bool (Retryable=true, Permanent=false), the Ok Payload's
-    // bytes are extracted, and an empty `Ok(None)` success renders `Ok []` (not a dropped outcome). Any drift
-    // in the ctor heads, the Err field set/order, or the retryability polarity is caught here.
+    // Retryability collapses to the `retryable` bool (Retryable=true, Permanent=false), the Ok Payload keeps
+    // its Inline-vs-Blob discriminant (a blob-ref reply survives, not flattened), and an empty `Ok(None)`
+    // success renders `Ok(Inline [])`. Any drift in the ctor heads, the Err field set/order, or the
+    // retryability polarity is caught here.
     #[test]
     fn effect_outcome_view_maps_each_variant_to_the_pinned_value_form() {
         use crate::ast_marshal::val_to_ast;
@@ -2188,22 +2260,31 @@ mod tests {
         let expect =
             |v: Val| val_to_ast(&Val::Option(Some(Box::new(v)))).expect("expected marshals");
 
-        // Ok(Some payload) → Ok(<payload bytes>).
+        // The Ok payload is DISCRIMINATED (blob-ref must survive — operator ruling): Ok(Inline b) / Ok(Blob h).
+        let ok = |inner: Val| Val::Variant("Ok".into(), Some(Box::new(inner)));
+        let inline = |b: &[u8]| Val::Variant("Inline".into(), Some(Box::new(bytes(b))));
+        let blob = |h: &[u8]| Val::Variant("Blob".into(), Some(Box::new(bytes(h))));
+
+        // Ok(Inline payload) → Ok(Inline(<bytes>)).
         assert_eq!(
             wrap(&EffectOutcome::Ok(Some(Payload::Inline(
                 b"reply-ok".to_vec().into()
             )))),
-            expect(Val::Variant(
-                "Ok".into(),
-                Some(Box::new(bytes(b"reply-ok")))
-            )),
-            "Ok carries the payload bytes"
+            expect(ok(inline(b"reply-ok"))),
+            "Ok carries an INLINE payload discriminated"
         );
-        // Ok(None) → Ok [] (a payload-less success is still a first-class Ok, not a dropped outcome).
+        // Ok(Blob hash) → Ok(Blob(<32 hash bytes>)) — the blob-ref survives, NOT flattened to opaque bytes.
+        let h = crate::hash::Hash::of(b"a-large-response-blob");
+        assert_eq!(
+            wrap(&EffectOutcome::Ok(Some(Payload::Blob(h)))),
+            expect(ok(blob(h.as_bytes()))),
+            "Ok carries a BLOB-REF discriminated (hash bytes under a Blob head)"
+        );
+        // Ok(None) → Ok(Inline []) (a payload-less success is a zero-length inline reply).
         assert_eq!(
             wrap(&EffectOutcome::Ok(None)),
-            expect(Val::Variant("Ok".into(), Some(Box::new(bytes(b""))))),
-            "Ok(None) renders an empty-bytes Ok"
+            expect(ok(inline(b""))),
+            "Ok(None) renders a zero-length inline Ok"
         );
         // Err Permanent → Err{message, retryable=false}.
         let err_rec = |msg: &[u8], retryable: bool| {

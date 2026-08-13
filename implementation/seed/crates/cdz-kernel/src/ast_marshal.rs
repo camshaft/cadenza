@@ -472,7 +472,11 @@ pub fn ast_to_val(bytes: &[u8], ty: &Type) -> Result<Val, MarshalError> {
 /// one place so the two halves cannot drift.
 ///
 /// The reply form is the bare ctor pinned by `val_to_ast_pins_the_err_reply_outcome_value_form`:
-/// - `(Ok <bytes>)` → `EffectOutcome::Ok(Some(Payload::Inline(bytes)))` (an empty-bytes Ok is still a Some);
+/// - `(Ok <ReplyPayload>)` where the payload is DISCRIMINATED so a blob-ref reply survives (operator ruling:
+///   no-capability-drop): `(Ok (Inline <bytes>))` → `EffectOutcome::Ok(Some(Payload::Inline(bytes)))`;
+///   `(Ok (Blob <32-hash-bytes>))` → `EffectOutcome::Ok(Some(Payload::Blob(hash)))` (a handler replies a
+///   blob-ref for a large response so it need not inline into the durable log). A wrong-length blob hash or
+///   an unknown payload head is a TypeMismatch (fail-closed);
 /// - `(Err (record (= message <bytes>) (= retryable <bool>)))` → `EffectOutcome::Err { message, retryability }`,
 ///   `retryable` the TYPED retryability (true = `Retryable`, false = `Permanent` — the reducer folds on the
 ///   bool, not a parsed token). The record is STRICT: exactly `message` (valid utf-8 bytes) + `retryable`;
@@ -484,8 +488,7 @@ pub fn decode_reply_outcome(bytes: &[u8]) -> Result<EffectOutcome, MarshalError>
         "Ok" => {
             let node =
                 payload.ok_or_else(|| type_mismatch("reply-outcome", "Ok without a payload"))?;
-            let response = read_bytes(&a, node)?;
-            Ok(EffectOutcome::Ok(Some(Payload::Inline(response.into()))))
+            Ok(EffectOutcome::Ok(Some(read_reply_payload(&a, node)?)))
         }
         "Err" => {
             let node =
@@ -505,6 +508,35 @@ pub fn decode_reply_outcome(bytes: &[u8]) -> Result<EffectOutcome, MarshalError>
         other => Err(type_mismatch(
             "reply-outcome",
             format!("unexpected ctor {}", bounded_name(other)),
+        )),
+    }
+}
+
+/// Decode the Ok arm's DISCRIMINATED reply payload `(Inline <bytes>)` | `(Blob <32-hash-bytes>)` →
+/// [`Payload::Inline`] / [`Payload::Blob`]. Preserving the discriminant is what keeps a blob-ref reply from
+/// being flattened to opaque bytes (operator ruling). A `Blob` payload MUST be exactly 32 bytes (a
+/// [`crate::hash::Hash`]); a wrong length, or any other payload head, is a TypeMismatch (fail-closed).
+/// `Hash::from_bytes` is a raw-bytes constructor, not a forbidden hex `from_hex` decode.
+fn read_reply_payload(a: &Arenas, id: StructId) -> Result<Payload, MarshalError> {
+    let (case, node) = ctor(a, id)?;
+    match case {
+        "Inline" => {
+            let n = node
+                .ok_or_else(|| type_mismatch("reply-payload", "Inline without a bytes payload"))?;
+            Ok(Payload::Inline(read_bytes(a, n)?.into()))
+        }
+        "Blob" => {
+            let n = node.ok_or_else(|| type_mismatch("reply-payload", "Blob without a hash"))?;
+            let raw = read_bytes(a, n)?;
+            let hash: [u8; 32] = raw
+                .as_slice()
+                .try_into()
+                .map_err(|_| type_mismatch("reply-payload", "Blob hash is not 32 bytes"))?;
+            Ok(Payload::Blob(crate::hash::Hash::from_bytes(hash)))
+        }
+        other => Err(type_mismatch(
+            "reply-payload",
+            format!("unexpected payload ctor {}", bounded_name(other)),
         )),
     }
 }
@@ -1000,20 +1032,29 @@ pub struct ContentTypeRef<'a> {
 }
 
 /// Build the ONE event document the fold boundary passes IN (B1): fold the content-type, the optional
-/// payload, and the optional resume token into a single value-form AST, returning its canonical bytes. The
-/// guest `value-decode`s these bytes against the event descriptor. Reuses the shared `cadenza-ast` codec.
+/// payload, the optional resume token, and the optional effect `outcome` into a single value-form AST,
+/// returning its canonical bytes. The guest `value-decode`s these bytes against the event descriptor.
+/// Reuses the shared `cadenza-ast` codec.
+///
+/// `outcome` is the discriminated effect-result view (`Some(Ok|Err|TimedOut)` for an `EffectResult` event,
+/// `None` for every other event kind) — the caller (`wasm_host::event_to_guest_inputs`) builds it via
+/// `effect_outcome_view` so the guest can tell a successful reply from a failure, which the raw `payload`
+/// bytes alone cannot express (the discriminant is dropped by `effect_outcome_bytes`).
 pub fn build_event_document(
     content_type: ContentTypeRef,
     payload: Option<&[u8]>,
     resumes: Option<&[u8]>,
+    outcome: Option<Val>,
 ) -> Vec<u8> {
     // Build the Event as a wasmtime `Val` and marshal it via the SHARED canonical codec ([`val_to_ast`]),
     // so the bytes are the deterministic value-form the guest's `value-decode` (op 90) reconstructs the
     // Event from — byte-identical to what `value-encode` produces (record-type Phase B; the ad-hoc named
     // form is gone). The Event is `record { content-type: record { family: string, version: u32 },
-    // payload: option<list<u8>>, resumes: option<list<u8>> }`; the kebab field names match the guest
-    // reducer's Event type (Cadenza allows kebab identifiers). `list<u8>` marshals to a `Bytes` leaf; an
-    // `option` present/absent (incl. an empty `Some []`) distinguishes an empty payload from an absent one.
+    // payload: option<list<u8>>, resumes: option<list<u8>>, outcome: option<Ok(list<u8>) | Err{message:
+    // list<u8>, retryable: bool} | TimedOut> }`; the kebab field names match the guest reducer's Event type
+    // (Cadenza allows kebab identifiers). `list<u8>` marshals to a `Bytes` leaf; an `option` present/absent
+    // (incl. an empty `Some []`) distinguishes an empty payload from an absent one. Record fields are matched
+    // by NAME on decode (order-independent), but the field SET must match the guest's Event type exactly.
     let opt_bytes = |v: Option<&[u8]>| {
         Val::Option(
             v.map(|bytes| Box::new(Val::List(bytes.iter().copied().map(Val::U8).collect()))),
@@ -1032,9 +1073,10 @@ pub fn build_event_document(
         ),
         ("payload".to_string(), opt_bytes(payload)),
         ("resumes".to_string(), opt_bytes(resumes)),
+        ("outcome".to_string(), Val::Option(outcome.map(Box::new))),
     ]);
-    // The Event's shape is fixed (record/option/list<u8>/string/u32 — all marshallable), so `val_to_ast`
-    // never errors here.
+    // The Event's shape is fixed (record/option/list<u8>/string/u32 + the outcome sum — all marshallable),
+    // so `val_to_ast` never errors here.
     val_to_ast(&event).expect("the Event value is always marshallable")
 }
 
@@ -1690,10 +1732,15 @@ mod tests {
         }
         let bytes = |s: &[u8]| Val::List(s.iter().copied().map(Val::U8).collect());
 
-        // (Some (Ok <response-bytes>)) — a successful reply carrying the response.
+        // (Some (Ok (Inline <response-bytes>))) — a successful reply carrying the response INLINE. The Ok
+        // payload is DISCRIMINATED (Inline | Blob) so a blob-ref reply survives (operator ruling:
+        // no-capability-drop) — NOT flattened to bare bytes.
         let ok = Val::Option(Some(Box::new(Val::Variant(
             "Ok".into(),
-            Some(Box::new(bytes(b"reply-ok"))),
+            Some(Box::new(Val::Variant(
+                "Inline".into(),
+                Some(Box::new(bytes(b"reply-ok"))),
+            ))),
         ))));
         let a = decode(&val_to_ast(&ok).expect("val_to_ast"));
         let some = kids(&a, a.root);
@@ -1713,10 +1760,45 @@ mod tests {
             matches!(leaf_at(&a, ok_ctor[0]), Leaf::Name(_)),
             "outcome ctor head is a NAME leaf (value-decode reads a case by name-head)"
         );
+        let inline_ctor = kids(&a, ok_ctor[1]);
         assert_eq!(
-            leaf_at(&a, ok_ctor[1]),
+            a.as_name(inline_ctor[0]),
+            Some("Inline"),
+            "Ok's payload is the Inline ReplyPayload ctor"
+        );
+        assert!(
+            matches!(leaf_at(&a, inline_ctor[0]), Leaf::Name(_)),
+            "Inline head is a NAME leaf"
+        );
+        assert_eq!(
+            leaf_at(&a, inline_ctor[1]),
             &Leaf::Bytes(b"reply-ok".to_vec().into()),
-            "Ok carries the response bytes"
+            "Inline carries the response bytes"
+        );
+
+        // (Some (Ok (Blob <32-hash-bytes>))) — a LARGE response replied as a blob-ref, NOT inlined. Pin that
+        // the Blob arm carries the 32 hash bytes under its own NAME head so the discriminant survives.
+        let hash = [7u8; 32];
+        let ok_blob = Val::Option(Some(Box::new(Val::Variant(
+            "Ok".into(),
+            Some(Box::new(Val::Variant(
+                "Blob".into(),
+                Some(Box::new(bytes(&hash))),
+            ))),
+        ))));
+        let a = decode(&val_to_ast(&ok_blob).expect("val_to_ast"));
+        let blob_ctor = kids(&a, kids(&a, a.root)[1]);
+        assert_eq!(a.as_name(blob_ctor[0]), Some("Ok"), "the Ok ctor");
+        let blob_inner = kids(&a, blob_ctor[1]);
+        assert_eq!(
+            a.as_name(blob_inner[0]),
+            Some("Blob"),
+            "Ok's payload is the Blob ReplyPayload ctor (blob-ref survives)"
+        );
+        assert_eq!(
+            leaf_at(&a, blob_inner[1]),
+            &Leaf::Bytes(hash.to_vec().into()),
+            "Blob carries the 32 hash bytes"
         );
 
         // (Some (Err (record (= message <bytes>) (= retryable <bool>)))) — a failed reply; the Err arm carries
@@ -1781,7 +1863,25 @@ mod tests {
         let bytes = |s: &[u8]| Val::List(s.iter().copied().map(Val::U8).collect());
         // The reply payload is the BARE outcome ctor (no Option wrapper — that's the caller-side Event child).
         let wire = |v: &Val| val_to_ast(v).expect("reply marshals");
-        let ok = Val::Variant("Ok".into(), Some(Box::new(bytes(b"response-bytes"))));
+        // The Ok payload is DISCRIMINATED (Inline | Blob) so a blob-ref reply survives (operator ruling).
+        let ok_inline = |b: &[u8]| {
+            Val::Variant(
+                "Ok".into(),
+                Some(Box::new(Val::Variant(
+                    "Inline".into(),
+                    Some(Box::new(bytes(b))),
+                ))),
+            )
+        };
+        let ok_blob = |h: &[u8]| {
+            Val::Variant(
+                "Ok".into(),
+                Some(Box::new(Val::Variant(
+                    "Blob".into(),
+                    Some(Box::new(bytes(h))),
+                ))),
+            )
+        };
         let err = |msg: &[u8], retryable: bool| {
             Val::Variant(
                 "Err".into(),
@@ -1792,11 +1892,28 @@ mod tests {
             )
         };
 
-        // Ok(bytes) → EffectOutcome::Ok(Some(Inline(bytes))).
+        // Ok(Inline bytes) → EffectOutcome::Ok(Some(Payload::Inline(bytes))).
         assert_eq!(
-            decode_reply_outcome(&wire(&ok)).expect("Ok decodes"),
+            decode_reply_outcome(&wire(&ok_inline(b"response-bytes"))).expect("Ok(Inline) decodes"),
             EffectOutcome::Ok(Some(Payload::Inline(b"response-bytes".to_vec().into()))),
         );
+        // Ok(Blob <32 hash bytes>) → EffectOutcome::Ok(Some(Payload::Blob(hash))) — the blob-ref survives.
+        let hash = [9u8; 32];
+        assert_eq!(
+            decode_reply_outcome(&wire(&ok_blob(&hash))).expect("Ok(Blob) decodes"),
+            EffectOutcome::Ok(Some(Payload::Blob(crate::hash::Hash::from_bytes(hash)))),
+        );
+        // A Blob whose payload is NOT 32 bytes is fail-closed (a hash is exactly 32 bytes).
+        assert!(decode_reply_outcome(&wire(&ok_blob(b"too-short"))).is_err());
+        // An unknown Ok payload head (neither Inline nor Blob) is fail-closed.
+        assert!(decode_reply_outcome(&wire(&Val::Variant(
+            "Ok".into(),
+            Some(Box::new(Val::Variant(
+                "Raw".into(),
+                Some(Box::new(bytes(b"x")))
+            )))
+        )))
+        .is_err());
         // Err Permanent (retryable=false) and Err Retryable (retryable=true) recover the TYPED retryability.
         assert_eq!(
             decode_reply_outcome(&wire(&err(b"boom", false))).expect("Err decodes"),
@@ -2801,6 +2918,8 @@ mod tests {
                     ),
                     ("payload".into(), opt(payload)),
                     ("resumes".into(), opt(resumes)),
+                    // These non-EffectResult docs carry no outcome — the field is present as (None unit).
+                    ("outcome".into(), Val::Option(None)),
                 ])
             };
         assert_eq!(
@@ -2810,6 +2929,7 @@ mod tests {
                     version: 1
                 },
                 Some(b"hi"),
+                None,
                 None
             ),
             val_to_ast(&event_val("message", 1, Some(b"hi"), None)).unwrap(),
@@ -2824,12 +2944,14 @@ mod tests {
             },
             Some(b""),
             None,
+            None,
         );
         let absent = build_event_document(
             ContentTypeRef {
                 family: "m",
                 version: 1,
             },
+            None,
             None,
             None,
         );
