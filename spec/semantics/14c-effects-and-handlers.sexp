@@ -10298,3 +10298,80 @@
             (export main)))
   (call   main (: 4 Int64)) (output (: 303071191 Int64))
   (call   main (: 1 Int64)) (output (: 303040161 Int64)))
+
+; --- breaker batch 265: Lamport clock, debounce gate, op-log replay ---
+(case "lpc1 a LAMPORT CLOCK — local events tick the counter, receives jump it to max(local,remote)+1; the stale remote (already-past timestamp) still ticks by one through the max"
+  (input  (do
+            (effect S
+              (op event (-> Int64))
+              (op recv (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S 0
+                ((event () c (resume (+ c 1) (+ c 1)))
+                 (recv (ts) c
+                  (let ((c2 (+ (if (> ts c) ts c) 1)))
+                    (resume c2 c2))))
+                (let ((a (S.event)))
+                  (let ((b (S.recv n)))
+                    (let ((c (S.event)))
+                      (let ((d (S.recv 2)))
+                        (let ((e (S.event)))
+                          (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 106070809 Int64))
+  (call   main (: 0 Int64)) (output (: 102030405 Int64)))
+
+(case "dbn1 a DEBOUNCE gate — emits fire only when the gap since the last fire is met, suppressed emits stash their value in the pending slot, and flush releases whatever the last suppression left"
+  (input  (do
+            (effect S
+              (op emit (-> Int64 Int64 Int64))
+              (op flush (-> Int64)))
+            (def (main (: n Int64))
+              (handle S (tuple -100 0)
+                ((emit (t v) st
+                  (match st
+                    ((tuple last pending)
+                      (if (>= (- t last) 10)
+                          (resume v (tuple t 0))
+                          (resume 0 (tuple last v))))))
+                 (flush () st
+                  (match st
+                    ((tuple last pending) (resume pending (tuple last 0))))))
+                (let ((a (S.emit 0 7)))
+                  (let ((b (S.emit n 8)))
+                    (let ((c (S.emit 15 9)))
+                      (let ((d (S.flush)))
+                        (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 7000900 Int64))
+  (call   main (: 12 Int64)) (output (: 7080009 Int64)))
+
+(case "rpl1 an OP-LOG REPLAY state — apply advances the value and logs its delta, replay re-applies the WHOLE log to the current value keeping the log intact, so a second replay after more logging compounds"
+  (input  (do
+            (effect S
+              (op apply (-> Int64 Int64))
+              (op replay (-> Int64)))
+            (def (sum-log (: ds (List Int64)) (: i Int64) (: acc Int64))
+              (match (List.at ds i)
+                ((Some d) (sum-log ds (+ i 1) (+ acc d)))
+                ((None u) acc)))
+            (def (main (: n Int64))
+              (handle S (tuple n (: (list) (List Int64)))
+                ((apply (d) st
+                  (match st
+                    ((tuple v log)
+                      (resume (+ v d) (tuple (+ v d) (List.push log d))))))
+                 (replay () st
+                  (match st
+                    ((tuple v log)
+                      (let ((v2 (+ v (sum-log log 0 0))))
+                        (resume v2 (tuple v2 log)))))))
+                (let ((a (S.apply 3)))
+                  (let ((b (S.apply 4)))
+                    (let ((c (S.replay)))
+                      (let ((d (S.apply 1)))
+                        (let ((e (S.replay)))
+                          (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e))))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 307141523 Int64))
+  (call   main (: 5 Int64)) (output (: 812192028 Int64)))
