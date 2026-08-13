@@ -138,6 +138,15 @@ def se-string-byte-len-runs-to-length() =
     | Option.None(_) => trap("(String.byte-len hi) runs to 2")
 
 @test
+def se-string-scalar-len-runs-to-length() =
+  // STRINGS S1d: (String.scalar-len "hi") CONST-FOLDS the unicode-scalar count to 2, same reader-fold path as
+  // byte-len but selecting scalar length. For an ASCII literal scalar-len == byte-len; the point is the second
+  // Int-returning string op runs. Matches the rcdzc oracle's String.scalar-len.
+  match run-src("(String.scalar-len \"hi\")") with
+    | Option.Some(v) => (if v == 2 then unit else trap("scalar-len hi = 2"))
+    | Option.None(_) => trap("(String.scalar-len hi) runs to 2")
+
+@test
 def se-record-field-access-runs-to-value() =
   // RECORD field access `(. r fieldname)` runs to the named field's value (a SCALAR verdict, differential-safe):
   // a record lowers to CCtor(0, field values in field order) and CProj reads the field's slot found by name.
