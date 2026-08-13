@@ -973,7 +973,7 @@ def finalize-exhaustive-match(tree: Tree, armsId: Int64) =
                   | Option.None(_) => tree
                   | Option.Some(declName) =>
                       (if (distinct-count(ctorNames) == decl-ctor-count(tree, declName))
-                       then rewrite-nullary-last-arm(tree, lastArmId)   // EXHAUSTIVE → unconditional last arm
+                       then rewrite-last-arm-unconditional(tree, lastArmId)   // EXHAUSTIVE → unconditional last arm
                        else tree))))                                    // non-exhaustive → keep poison (declines)
        | _ => tree)))                                                   // any other terminal = wildcard else body → leave
 
@@ -986,14 +986,14 @@ def collect-ctor-arms(tree: Tree, nodeId: Int64, acc: List(Int64), lastArmId: In
         collect-ctor-arms(tree, restId, List.push(acc, ctorName), nodeId)
     | _ => (acc, lastArmId, nodeId))
 
-/// Rewrite a NULLARY last arm's rest (the poison terminal) to its OWN body → an unconditional else. No-op if the
-/// arm has binders (payload) — see finalize-exhaustive-match for why (resolve is not memoized).
-def rewrite-nullary-last-arm(tree: Tree, armId: Int64) =
+/// Rewrite an exhaustive match's last arm's rest (the poison terminal) to its OWN body node → an unconditional
+/// else. Safe for a PAYLOAD arm (binders) because resolve-node is MEMOIZED: the shared body node resolves ONCE
+/// (in the body scope, binders bound); the else's re-resolve is skipped, so the binder refs stay RBound (no
+/// re-poison in the outer binder-free env). The dead else is never taken (the match is exhaustive).
+def rewrite-last-arm-unconditional(tree: Tree, armId: Int64) =
   (match node-at(tree, armId) with
     | Option.Some(Node.NMatchCtor(scrutId, ctorName, binderIds, bodyId, _restId)) =>
-        (if (List.len(binderIds) == 0)
-         then set-node(tree, armId, Node.NMatchCtor(scrutId, ctorName, binderIds, bodyId, bodyId))
-         else tree)
+        set-node(tree, armId, Node.NMatchCtor(scrutId, ctorName, binderIds, bodyId, bodyId))
     | _ => tree)
 
 /// Count DISTINCT elements of `xs` (no List.contains — a positional membership scan over the seen prefix).

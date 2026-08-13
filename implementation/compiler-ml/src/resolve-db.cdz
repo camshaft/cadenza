@@ -60,6 +60,13 @@ def bind-ctor-binders(tree: Tree, env: Map(Int64, Int64), binderIds: List(Int64)
   bind-ctor-binders-go(tree, env, binderIds, 0)
 
 def resolve-node(tree: Tree, id: Int64, env: Map(Int64, Int64), col: Map(Int64, Resolved)) =
+  // MEMOIZE: a node already in the column is resolved — return unchanged. resolve is idempotent per node (each
+  // node has ONE proper scope), so this is a no-op for a normal tree; it is LOAD-BEARING for a SHARED node (an
+  // exhaustive match's last arm reuses its body node as the else, finalize-exhaustive-match) — without it the
+  // second resolve (the else, in the OUTER binder-free env) would OVERWRITE the body's binder refs with RPoison.
+  (match Map.lookup(col, id) with
+    | Option.Some(_) => col
+    | Option.None(_) =>
   match node-at(tree, id) with
     | Option.Some(Node.NLit(_)) => col
     | Option.Some(Node.NStr(_)) => col            // STRING literal binds nothing (like NLit); infer types it TyString
@@ -178,7 +185,7 @@ def resolve-node(tree: Tree, id: Int64, env: Map(Int64, Int64), col: Map(Int64, 
                                                 | Option.None(_) => scope3) in
                              resolve-node(tree, calleeBody, bodyScope, colC)))))
                      | Option.None(_) => resolve-node(tree, calleeBody, (Map.empty : Map(Int64, Int64)), colC)))))))))
-    | Option.None(_) => col   // an id not in the arena (a malformed tree) resolves to nothing
+    | Option.None(_) => col)   // an id not in the arena (a malformed tree) resolves to nothing
 
 /// The resolve COLUMN builder: resolve the whole tree from `root`, starting with an empty scope + column.
 def resolve-tree(tree: Tree, root: Int64) =

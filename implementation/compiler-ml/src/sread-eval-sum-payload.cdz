@@ -326,3 +326,36 @@ def ss-int-payload-binder-still-runs() =
     ) with
     | Option.Some(v) => (if v == 8 then unit else trap("Int payload (BI 7), x+1 → 8"))
     | Option.None(_) => trap("an Int payload binder used as Int must still run")
+
+@test
+def ss-exhaustive-payload-last-arm-runs() =
+  // EXHAUSTIVE no-wildcard sum match whose LAST arm is a PAYLOAD ctor: `(None 0) ((Some x) x)` covers both Opt
+  // ctors, no `_`. The reader rewrites the last (Some) arm to an unconditional else (rewrite-last-arm-unconditional,
+  // safe now that resolve-node is memoized so the shared body node's binder `x` is not re-poisoned). scrut None →
+  // the None arm → 0.
+  match run-src(
+      "(do (type Opt (Some Int64) (None)) (def (main) (match (None) (None 0) ((Some x) x))) (export main))"
+    ) with
+    | Option.Some(v) => (if v == 0 then unit else trap("exhaustive payload-last-arm match (None) → 0"))
+    | Option.None(_) => trap("an EXHAUSTIVE no-wildcard sum match with a PAYLOAD last arm must run (memoized resolve)")
+
+@test
+def ss-exhaustive-payload-last-arm-binds-payload() =
+  // the same shape, scrut = the PAYLOAD ctor (Some 5) → the Some arm binds x=5 → 5. Pins that the last (payload)
+  // arm still binds its payload correctly after the unconditional-else rewrite (the tag-check still runs; the
+  // dead else is never taken).
+  match run-src(
+      "(do (type Opt (Some Int64) (None)) (def (main) (match (Some 5) (None 0) ((Some x) x))) (export main))"
+    ) with
+    | Option.Some(v) => (if v == 5 then unit else trap("exhaustive payload-last-arm match (Some 5) → 5"))
+    | Option.None(_) => trap("exhaustive payload-last-arm, payload-ctor scrutinee, must bind + run")
+
+@test
+def ss-exhaustive-single-payload-ctor-runs() =
+  // a SINGLE-ctor decl matched with its one (payload) ctor, no wildcard: `(match (Pt 3 4) ((Pt x y) (+ x y)))`
+  // is exhaustive (Pt is the only ctor). Multi-field payload binder x=3,y=4 → 7.
+  match run-src(
+      "(do (type P (Pt Int64 Int64)) (def (main) (match (Pt 3 4) ((Pt x y) (+ x y)))) (export main))"
+    ) with
+    | Option.Some(v) => (if v == 7 then unit else trap("exhaustive single-payload-ctor match (Pt 3 4) → 7"))
+    | Option.None(_) => trap("an exhaustive single-payload-ctor no-wildcard match must run")
