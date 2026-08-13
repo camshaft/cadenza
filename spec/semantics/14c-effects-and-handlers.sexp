@@ -9279,3 +9279,58 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 12207112 Int64))
   (call   main (: 10 Int64)) (output (: 19272312 Int64)))
+
+; --- breaker batch 252: generic at two instantiations in one arm, compose-accumulating closure state, body-built snapshot closures ---
+(case "gsx1 ONE arm instantiates the same generic sum at TWO types — a Container Int64 and a Container String built, unwrapped, and combined per dispatch"
+  (input  (do
+            (type (Container a) (Full a))
+            (effect S (op mix (-> Int64)))
+            (def (main (: n Int64))
+              (handle S n
+                ((mix () s
+                  (let ((ci (: (Full s) (Container Int64))))
+                    (let ((cs (: (Full "abc") (Container String))))
+                      (resume (+ (* 10 (match ci ((Full v) v)))
+                                 (match cs ((Full w) (String.byte-len w))))
+                              (+ s 1))))))
+                (let ((a (S.mix)))
+                  (let ((b (S.mix)))
+                    (+ (* 1000 a) b)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 33043 Int64))
+  (call   main (: 20 Int64)) (output (: 203213 Int64)))
+
+(case "cmp1 a COMPOSE-ACCUMULATING closure state — each dispatch replaces the state with a new closure wrapping the OLD one (double-then-add over the previous function), applied at 1 per step"
+  (input  (do
+            (effect S (op wrap (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S (fn ((: x Int64)) (+ x n))
+                ((wrap (d) f
+                  (let ((f2 (fn ((: x Int64)) (+ (* (f x) 2) d))))
+                    (resume (f2 1) f2))))
+                (let ((a (S.wrap 0)))
+                  (let ((b (S.wrap 5)))
+                    (+ (* 1000 a) b)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 8021 Int64))
+  (call   main (: 0 Int64)) (output (: 2009 Int64)))
+
+(case "fac2 the BODY manufactures snapshot closures from op-answered values — two factories at different drawn states, both applied after the state moved on"
+  (input  (do
+            (effect S
+              (op snap (-> Int64))
+              (op bump (-> Int64)))
+            (def (main (: n Int64))
+              (handle S n
+                ((snap () s (resume s s))
+                 (bump () s (resume (+ s 1) (+ s 1))))
+                (let ((c1 (S.snap)))
+                  (let ((f1 (fn ((: x Int64)) (+ (* x 10) c1))))
+                    (let ((_a (S.bump)))
+                      (let ((_b (S.bump)))
+                        (let ((c2 (S.snap)))
+                          (let ((f2 (fn ((: x Int64)) (+ (* x 10) c2))))
+                            (+ (* 1000 (f1 5)) (f2 5))))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 53055 Int64))
+  (call   main (: 40 Int64)) (output (: 90092 Int64)))
