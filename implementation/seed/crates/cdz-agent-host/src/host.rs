@@ -929,7 +929,7 @@ impl AgentHost {
         // dependence). `replaced` distinguishes a fresh install from a restart.
         tracing::info!(
             target: "cdz_agent_host::session",
-            session_id = id.to_hex(),
+            session_id = id.to_base64url(),
             replaced,
             "session installed"
         );
@@ -1094,7 +1094,7 @@ impl AgentHost {
             self.metrics.record_delivery_to_unknown_session();
             tracing::warn!(
                 target: "cdz_agent_host::session",
-                session_id = id.to_hex(),
+                session_id = id.to_base64url(),
                 "delivery to unknown session (routed nowhere)"
             );
             return None;
@@ -1131,7 +1131,7 @@ impl AgentHost {
             self.metrics.record_delivery_to_unknown_session();
             tracing::warn!(
                 target: "cdz_agent_host::session",
-                session_id = id.to_hex(),
+                session_id = id.to_base64url(),
                 "delivery to unknown session (routed nowhere)"
             );
             return None;
@@ -1195,12 +1195,12 @@ impl AgentHost {
         match outcome {
             Ok(()) => tracing::debug!(
                 target: "cdz_agent_host::session",
-                session_id = id.to_hex(),
+                session_id = id.to_base64url(),
                 "turn ok"
             ),
             Err(e) => tracing::warn!(
                 target: "cdz_agent_host::session",
-                session_id = id.to_hex(),
+                session_id = id.to_base64url(),
                 error = ?e,
                 "turn errored"
             ),
@@ -1229,7 +1229,7 @@ impl AgentHost {
                         if let Err(e) = snapshot_store.save(&bytes).await {
                             tracing::warn!(
                                 target: "cdz_agent_host::name_snapshot",
-                                session_id = id.to_hex(),
+                                session_id = id.to_base64url(),
                                 error = %e,
                                 "failed to snapshot the canonical name store (durability best-effort; \
                                  the in-memory store is still authoritative for this run)"
