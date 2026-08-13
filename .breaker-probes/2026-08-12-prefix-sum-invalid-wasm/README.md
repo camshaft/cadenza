@@ -47,3 +47,10 @@ must cross the length-4 boundary (RRB tail→node transition?). A single dispatc
 crossing it is fine; the fold only mis-slots when the arm both RE-enters (≥2) and
 the list crosses the depth threshold. Strengthens the fold-depth-dependent
 slot-allocation hypothesis.
+
+## Tick 1368 — FINDING #23 FULLY CLOSED (both faces)
+ListUpdate residual fixed (v-effects f15cfb605, width-partition Core::ListUpdate
+index scratch); corpus-bugfix pinned pfxH (MR c2eebcecd). My fresh-binary verify:
+pfxH + pfx1 + pfxmin5 + pfxG all PASS ×3. Both #23 faces (ListAt d52544411,
+ListUpdate f15cfb605) fixed and pinned. pfx1 (the rich prefix-sum table) remains
+MY pin candidate — fold into a future batch with a distinct title.

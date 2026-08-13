@@ -9051,3 +9051,87 @@
             (export main)))
   (call   main (: 37 Int64)) (output (: 13224 Int64))
   (call   main (: 50 Int64)) (output (: 300 Int64)))
+
+; --- breaker batch 249: lazy-init extrema tracker, decade-bucket histogram with mode walk, sliding-window dedup ---
+(case "mmx1 a LAZY-INIT extrema tracker — Option (Tuple min max) state starts None, the first feed initializes both bounds to the value, later feeds widen, range reads answer max-min with the uninitialized read answering zero"
+  (input  (do
+            (effect S
+              (op feed (-> Int64 Int64))
+              (op range (-> Int64)))
+            (def (main (: n Int64))
+              (handle S (: (None unit) (Option (Tuple Int64 Int64)))
+                ((feed (v) st
+                  (let ((p2 (match st
+                              ((Some p) (match p
+                                          ((tuple lo hi) (tuple (if (< v lo) v lo) (if (> v hi) v hi)))))
+                              ((None u) (tuple v v)))))
+                    (match p2
+                      ((tuple lo2 hi2) (resume (- hi2 lo2) (Some p2))))))
+                 (range () st
+                  (resume (match st
+                            ((Some p) (match p ((tuple lo hi) (- hi lo))))
+                            ((None u) 0))
+                          st)))
+                (let ((a (S.range)))
+                  (let ((b (S.feed n)))
+                    (let ((c (S.feed 3)))
+                      (let ((d (S.feed 10)))
+                        (let ((e (S.range)))
+                          (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 10 a) b)) c)) d)) e))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 20707 Int64))
+  (call   main (: 0 Int64)) (output (: 31010 Int64)))
+
+(case "hst1 a HISTOGRAM state with in-arm BUCKETING — observe divides into decade buckets and counts, mode walks the sorted enumeration to answer the densest bucket"
+  (input  (do
+            (effect S
+              (op obs (-> Int64 Int64))
+              (op mode (-> Int64)))
+            (def (best (: xs (List (Tuple Int64 Int64))) (: i Int64) (: bk Int64) (: bc Int64))
+              (match (List.at xs i)
+                ((Some e) (match e
+                            ((tuple k c) (if (> c bc) (best xs (+ i 1) k c) (best xs (+ i 1) bk bc)))))
+                ((None u) (+ (* 10 bk) bc))))
+            (def (main (: n Int64))
+              (handle S (: Map.empty (Map Int64 Int64))
+                ((obs (v) m
+                  (let ((b (/ v 10)))
+                    (let ((c2 (match (Map.lookup m b) ((Some c) (+ c 1)) ((None u) 1))))
+                      (resume c2 (Map.insert m b c2)))))
+                 (mode () m
+                  (resume (if (= (Map.len m) 0) -1 (best (Map.to-list m) 0 -1 -1)) m)))
+                (let ((a (S.obs n)))
+                  (let ((b (S.obs (+ n 1))))
+                    (let ((c (S.obs 35)))
+                      (let ((d (S.obs (+ n 2))))
+                        (let ((e (S.mode)))
+                          (+ (* 1000 (+ (* 10 (+ (* 10 (+ (* 10 a) b)) c)) d)) e))))))))
+            (export main)))
+  (call   main (: 12 Int64)) (output (: 1213013 Int64))
+  (call   main (: 33 Int64)) (output (: 1234034 Int64)))
+
+(case "swd1 a SLIDING-WINDOW dedup state — the last-three list slides via push-and-drop-head rebuilt in the arm, membership answers flip as elements age out"
+  (input  (do
+            (effect S (op feed (-> Int64 Int64)))
+            (def (has (: xs (List Int64)) (: v Int64) (: i Int64))
+              (match (List.at xs i)
+                ((Some x) (if (= x v) 1 (has xs v (+ i 1))))
+                ((None u) 0)))
+            (def (slide (: xs (List Int64)) (: v Int64))
+              (let ((g (List.push xs v)))
+                (match g
+                  ((list _h .. t) (if (> (List.len g) 3) t g))
+                  (_ g))))
+            (def (main (: n Int64))
+              (handle S (: (list) (List Int64))
+                ((feed (v) w
+                  (resume (has w v 0) (slide w v))))
+                (let ((a (S.feed n)))
+                  (let ((b (S.feed (+ n 1))))
+                    (let ((c (S.feed n)))
+                      (let ((d (S.feed 5)))
+                        (let ((e (S.feed n)))
+                          (+ (* 10000 (+ a 1)) (+ (* 1000 (+ b 1)) (+ (* 100 (+ c 1)) (+ (* 10 (+ d 1)) (+ e 1))))))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 11212 Int64))
+  (call   main (: 5 Int64)) (output (: 11222 Int64)))
