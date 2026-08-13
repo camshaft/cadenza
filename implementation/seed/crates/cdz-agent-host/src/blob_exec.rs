@@ -192,6 +192,94 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn a_non_blob_family_is_a_permanent_error() {
+        // Structural self-guard (mirrors shell/fs/model/http/emit/lifecycle/ws/metric): a CompositeExecutor
+        // routes by family, so a request whose family is NEITHER blob/put NOR blob/get reaching this executor
+        // is a mis-route → PERMANENT (an observable Err, never a panic; a supervisor must not retry it). This
+        // pins the `else` arm the schema-hash router flip interacts with.
+        use cdz_kernel::event::Retryability;
+        let mut exec = BlobExecutor::new(MemBlobStore::new());
+        let req = EffectRequest::new_with_family(
+            effect_ct::HTTP,
+            String::new(),
+            None,
+            Timeliness::Interactive,
+        );
+        match exec.perform(EffectId(0), &req, Hash::of(b"k")).await {
+            EffectOutcome::Err {
+                message,
+                retryability: Retryability::Permanent,
+            } => assert!(
+                message.contains("only handles"),
+                "the mis-route Err names the served family: {message}"
+            ),
+            other => panic!("a non-blob family must be a permanent Err, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_payloadless_blob_put_is_a_permanent_error() {
+        // blob/put with NO inline payload has nothing to store → PERMANENT fail-closed (a re-drive of the same
+        // payloadless request re-fails identically; the reducer decides what to do).
+        use cdz_kernel::event::Retryability;
+        let mut exec = BlobExecutor::new(MemBlobStore::new());
+        let req = EffectRequest::new_with_family(
+            effect_ct::BLOB_PUT,
+            String::new(),
+            None,
+            Timeliness::Interactive,
+        );
+        match exec.perform(EffectId(0), &req, Hash::of(b"k")).await {
+            EffectOutcome::Err {
+                message,
+                retryability: Retryability::Permanent,
+            } => assert!(
+                message.contains("no payload bytes"),
+                "a payloadless blob/put names the missing bytes: {message}"
+            ),
+            other => panic!("a payloadless blob/put must be a permanent Err, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_blob_ref_put_payload_is_a_permanent_error() {
+        // A blob/put whose payload is itself a blob-ref would require this executor to already resolve a hash
+        // (circular) → unsupported, PERMANENT. Pins the fail-closed branch (inline the bytes to store instead).
+        use cdz_kernel::event::Retryability;
+        let mut exec = BlobExecutor::new(MemBlobStore::new());
+        let req = EffectRequest::new_with_family(
+            effect_ct::BLOB_PUT,
+            String::new(),
+            Some(Payload::Blob(Hash::of(b"big"))),
+            Timeliness::Interactive,
+        );
+        match exec.perform(EffectId(0), &req, Hash::of(b"k")).await {
+            EffectOutcome::Err {
+                message,
+                retryability: Retryability::Permanent,
+            } => assert!(
+                message.contains("blob-ref payload is unsupported"),
+                "a blob-ref blob/put payload fails closed: {message}"
+            ),
+            other => panic!("a blob-ref blob/put payload must be a permanent Err, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handles_family_reports_both_blob_verbs_and_nothing_else() {
+        // The capability-manifest mechanism dimension: this executor serves EXACTLY blob/put + blob/get (both
+        // share it), and NOTHING else. Pins the handles_family probe the host manifest builds over.
+        let exec = BlobExecutor::new(MemBlobStore::new());
+        assert!(exec.handles_family(effect_ct::BLOB_PUT), "serves blob/put");
+        assert!(exec.handles_family(effect_ct::BLOB_GET), "serves blob/get");
+        assert!(!exec.handles_family(effect_ct::HTTP), "does not serve http");
+        assert!(
+            !exec.handles_family(effect_ct::BLOB_PREFIX),
+            "the bare blob/ prefix is not a served family"
+        );
+    }
+
     #[test]
     fn an_authorized_blob_get_to_a_raw_bytes_hash_target_is_admitted() {
         // Regression pin: blob/get is Cedar-authorized on its target = content hash BEFORE dispatch. Before
