@@ -15207,6 +15207,39 @@ fn ty_to_wit_desc(
     }
 }
 
+/// Reduce an effect operation's declared arrow-type occurrence (`OpDecl.ty`, the `(-> P… R)` written after
+/// the op name) to `(param-types, result-type)` — the shape an op's `wit_func_sig` schema node needs. The
+/// arrow is curried (`(-> A B C)` = `(-> A (-> B (-> C)))`), so peel every `Ty::Fn` to collect the params
+/// in declaration (positional) order and take the final non-arrow as the result.
+///
+/// The ELIDED-UNIT convention (mirrors `effects.rs` arm-arity handling): a `(-> Unit R)` operation takes NO
+/// value parameter — a bare unit is "no argument", not a unit-typed one — so a single `Unit` param is
+/// dropped to an empty param list (matching the kernel's `UnitToBytes`/`UnitToUnit` built-in shapes, which
+/// emit `wit_func_sig(&[], …)`). A `Unit` in any OTHER position is a real positional param and kept.
+///
+/// `None` if the op has no declared type (a malformed `(op NAME)`) or the type does not reduce to an arrow
+/// (a nullary op with a bare result type — no params, but then there is no arrow to peel; handled by the
+/// caller as a 0-param op). Takes `&mut Db` because `typeval_of` reduces the type occurrence.
+#[cfg_attr(not(test), allow(dead_code))]
+fn op_arrow_param_result_tys(
+    db: &mut Db,
+    ty_occ: StructId,
+) -> Option<(Vec<crate::ty::Ty>, crate::ty::Ty)> {
+    use crate::ty::Ty;
+    let mut ty = crate::eval::typeval_of(db, ty_occ)?;
+    let mut params = Vec::new();
+    while let Ty::Fn(param, result) = ty {
+        params.push(*param);
+        ty = *result;
+    }
+    // ELIDED UNIT: `(-> Unit R)` is a no-parameter op (a unit arg is "nothing"), so a lone `Unit` param
+    // drops to zero params — matching the kernel's Unit-arg built-in ops (`wit_func_sig(&[], …)`).
+    if params.len() == 1 && params[0] == Ty::Unit {
+        params.clear();
+    }
+    Some((params, ty))
+}
+
 /// The variants of a `Ty::Sum` as `(head-name, payload-types)` pairs at this instantiation — the head
 /// spelled as the runtime template writes it (a BARE variant name; the value form renders variants bare,
 /// e.g. `(Cons …)`, `(None unit)`). Mirrors `sum_form_template`'s variant/payload recovery.
@@ -27731,5 +27764,38 @@ mod tests {
             }
             other => panic!("expected a record descriptor, got {other:?}"),
         }
+    }
+
+    /// The (params, result) an effect op's declared arrow reduces to — used to build its schema `wit_func_sig`.
+    fn op_arrow_tys(src_effect_decl: &str, op_idx: usize) -> (Vec<crate::ty::Ty>, crate::ty::Ty) {
+        let src = format!("(module m {src_effect_decl} (def (f) 0) (export f))");
+        let mut db = Db::load(crate::testkit::parse(&src));
+        // `effect_decl_by_name` returns the effect's SYNTH RECORD occurrence; `effect_decl_by_synth` maps
+        // that back to the EffectDecl (whose `occ` is the decl occurrence, distinct from the synth record).
+        let synth = db.effect_decl_by_name("E").expect("effect E declared");
+        let ty_occ = db
+            .effect_decl_by_synth(synth)
+            .expect("effect decl present")
+            .ops[op_idx]
+            .ty
+            .expect("op has a declared type");
+        op_arrow_param_result_tys(&mut db, ty_occ).expect("arrow reduces")
+    }
+
+    #[test]
+    fn op_arrow_param_result_tys_peels_curried_params_and_elides_a_unit_arg() {
+        use crate::ty::Ty;
+        // `(op emit (-> Int64 Bytes Unit))` — two positional params, Unit result.
+        let (params, result) = op_arrow_tys("(effect E (op emit (-> Int64 Bytes Unit)))", 0);
+        assert_eq!(params.len(), 2, "two positional params");
+        assert!(matches!(params[0], Ty::Int(_)), "param 0 is Int");
+        assert_eq!(params[1], Ty::Bytes, "param 1 is Bytes");
+        assert_eq!(result, Ty::Unit, "result is Unit");
+
+        // ELIDED UNIT: `(op poll (-> Unit Bytes))` is a NO-parameter op (a unit arg is "nothing") — the
+        // lone Unit param drops, matching the kernel's Unit-arg built-in shapes (wit_func_sig(&[], …)).
+        let (params, result) = op_arrow_tys("(effect E (op poll (-> Unit Bytes)))", 0);
+        assert!(params.is_empty(), "a lone Unit param elides to zero params");
+        assert_eq!(result, Ty::Bytes, "result is Bytes");
     }
 }
