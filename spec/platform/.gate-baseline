@@ -17,6 +17,7 @@ pass	a session writes TWO kv keys on its kick-off (multi-key end-state)
 pass	a supervisor DECODES the typed child-completed field and branches on the terminal outcome (Success)
 pass	a supervisor caps restarts and gives up — a repeatedly-failing child is restarted once then abandoned, the drive settles
 pass	a supervisor restarts a child on Failure — a Failure outcome drives a corrective re-spawn that then succeeds
+pass	a supervisor routes per-child by the child identity field — two distinct child ids yield two distinct keyed slots
 pass	a supervisor routes two children by their typed terminal outcome — one Success, one Failure — to distinct state
 pass	a supervisor spawns a child, messages it, the child self-closes, and the supervisor observes child-completed
 pass	a worker performs a userspace effect served by a handler session, and resumes on the reply
