@@ -4821,6 +4821,7 @@ pass	checked multiplication reports the Int64.min * -1 overflow as None (the che
 pass	checked multiplication yields Some when it fits
 pass	checked subtraction yields None on underflow instead of trapping
 pass	checked subtraction yields Some of the difference when it fits
+pass	ckp1 a CHECKPOINT/RESTORE protocol — save copies the live slot into the shadow slot, work mutates only the live one, restore copies the shadow back and later work resumes from the checkpoint
 pass	cl1 a NARROWING clamp arm — the [lo,hi] window shrinks by one each side per dispatch, three args meet three windows
 pass	cla1 the arm runs a PURE data-dependent-depth recursion on the crossed ARGUMENT — collatz length computed wholly inside one dispatch frame, the state accumulates the lengths and a final read exposes the total
 pass	closures built one per iteration each capture their OWN loop value
@@ -5540,6 +5541,7 @@ pass	mr2 the mutual pair draws from DIFFERENT effects — ev advances P, od adva
 pass	mr3 the NEXT callee in the mutual group is picked by draw parity — the descent path itself follows the thread
 pass	mr4 an ACCUMULATOR threads the mutual pair — ev doubles it plus a draw, od triples it plus a draw, alternating scales
 pass	mr5 TWENTY alternating mutual levels with the scaling accumulator — depth stress on the cross-function fold
+pass	mrg1 a TWO-POINTER MERGE across two handlers — each holds a sorted list, the body pulls whichever head is smaller each step, and the sentinel head lets one side drain
 pass	mrv1 REMOVE-then-REINSERT churn on a Map state — del answers the removed value (0 when absent); for n=98 the second del hits the n+1 key it planted
 pass	ms1 a WHOLE nested handle expression as a MATCH's SCRUTINEE — the region builds an Option, the chosen arm draws again
 pass	ms1 an op returns a THREE-variant sum built from state parity — two sequential performing scrutinees, the second sees the advanced state
@@ -5727,6 +5729,7 @@ pass	popping a tuple with a runtime element separates the head from the rest
 pass	popping a tuple yields element zero and the remaining tuple
 pass	popping an absent field is rejected
 pass	pp1 a PING-PONG data thread across two handlers — A's answer feeds B's argument and B's answer feeds A's next argument, additive and modular-multiplicative arms advance independently
+pass	pq1 a PRIORITY-POP protocol — pushes append unsorted (priority,value) pairs, popmin scans for the strict minimum priority (first-of-equals wins) answers its value and removes it by filtered rebuild
 pass	pr1 List.prepend onto a MERGED vector grows the front without disturbing the seam
 pass	prepend across the RRB 32→33 boundary front-inserts and reads back at every index
 pass	prepend leaves the original list binding unchanged (persistent, copy-on-write)

@@ -10015,3 +10015,102 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 1112213132 Int64))
   (call   main (: 5 Int64)) (output (: 1112131415 Int64)))
+
+; --- breaker batch 262: priority-pop selection, two-pointer merge across handlers, checkpoint/restore pair ---
+(case "pq1 a PRIORITY-POP protocol — pushes append unsorted (priority,value) pairs, popmin scans for the strict minimum priority (first-of-equals wins) answers its value and removes it by filtered rebuild"
+  (input  (do
+            (effect S
+              (op push (-> Int64 Int64 Int64))
+              (op popmin (-> Int64)))
+            (def (find-min (: q (List (Tuple Int64 Int64))) (: i Int64) (: bi Int64) (: bp Int64))
+              (match (List.at q i)
+                ((Some p) (match p
+                            ((tuple pri _v)
+                              (if (< pri bp)
+                                  (find-min q (+ i 1) i pri)
+                                  (find-min q (+ i 1) bi bp)))))
+                ((None u) bi)))
+            (def (drop-at (: q (List (Tuple Int64 Int64))) (: i Int64) (: k Int64) (: acc (List (Tuple Int64 Int64))))
+              (match (List.at q i)
+                ((Some p) (drop-at q (+ i 1) k (if (= i k) acc (List.push acc p))))
+                ((None u) acc)))
+            (def (main (: n Int64))
+              (handle S (: (list) (List (Tuple Int64 Int64)))
+                ((push (pri v) q
+                  (let ((q2 (List.push q (tuple pri v))))
+                    (resume (List.len q2) q2)))
+                 (popmin () q
+                  (if (= (List.len q) 0)
+                      (resume -1 q)
+                      (let ((k (find-min q 0 0 1000000)))
+                        (let ((val (match (List.at q k)
+                                     ((Some p) (match p ((tuple _pri v) v)))
+                                     ((None u) -1))))
+                          (resume val (drop-at q 0 k (: (list) (List (Tuple Int64 Int64))))))))))
+                (let ((a (S.push 5 10)))
+                  (let ((b (S.push n 20)))
+                    (let ((c (S.push 7 30)))
+                      (let ((d (S.popmin)))
+                        (let ((e (S.popmin)))
+                          (+ (* 100 (+ (* 100 (+ (* 10 (+ (* 10 a) b)) c)) d)) e))))))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 1232010 Int64))
+  (call   main (: 9 Int64)) (output (: 1231030 Int64)))
+
+(case "mrg1 a TWO-POINTER MERGE across two handlers — each holds a sorted list, the body pulls whichever head is smaller each step, and the sentinel head lets one side drain"
+  (input  (do
+            (effect A
+              (op head (-> Int64))
+              (op pop (-> Int64)))
+            (effect B
+              (op head (-> Int64))
+              (op pop (-> Int64)))
+            (def (hd (: xs (List Int64)))
+              (match (List.at xs 0) ((Some v) v) ((None u) 999)))
+            (def (tl (: xs (List Int64)))
+              (match xs ((list _h .. t) t) (_ xs)))
+            (def (main (: n Int64))
+              (handle A (list 1 4 9)
+                ((head () xs (resume (hd xs) xs))
+                 (pop () xs (resume (hd xs) (tl xs))))
+                (handle B (list n 5 8)
+                  ((head () ys (resume (hd ys) ys))
+                   (pop () ys (resume (hd ys) (tl ys))))
+                  (let ((m1 (if (<= (A.head) (B.head)) (A.pop) (B.pop))))
+                    (let ((m2 (if (<= (A.head) (B.head)) (A.pop) (B.pop))))
+                      (let ((m3 (if (<= (A.head) (B.head)) (A.pop) (B.pop))))
+                        (let ((m4 (if (<= (A.head) (B.head)) (A.pop) (B.pop))))
+                          (+ (* 1000 m1) (+ (* 100 m2) (+ (* 10 m3) m4))))))))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 1245 Int64))
+  (call   main (: 6 Int64)) (output (: 1465 Int64)))
+
+(case "ckp1 a CHECKPOINT/RESTORE protocol — save copies the live slot into the shadow slot, work mutates only the live one, restore copies the shadow back and later work resumes from the checkpoint"
+  (input  (do
+            (effect S
+              (op work (-> Int64 Int64))
+              (op save (-> Int64))
+              (op restore (-> Int64)))
+            (def (main (: n Int64))
+              (handle S (tuple n 0)
+                ((work (v) st
+                  (match st
+                    ((tuple live sv)
+                      (let ((l2 (+ (* live 2) v)))
+                        (resume l2 (tuple l2 sv))))))
+                 (save () st
+                  (match st
+                    ((tuple live _sv) (resume live (tuple live live)))))
+                 (restore () st
+                  (match st
+                    ((tuple _live sv) (resume sv (tuple sv sv))))))
+                (let ((a (S.work 1)))
+                  (let ((b (S.save)))
+                    (let ((c (S.work 5)))
+                      (let ((d (S.work 2)))
+                        (let ((e (S.restore)))
+                          (let ((f (S.work 0)))
+                            (+ (* 100 (+ (* 100 (+ (* 1000 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 707190400714 Int64))
+  (call   main (: 0 Int64)) (output (: 101070160102 Int64)))
