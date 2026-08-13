@@ -222,6 +222,37 @@ def se-under-application-zero-args-body-ignores-params-declines() =
     | Option.Some(_) => trap("(f) with zero args to a 2-param def → under-applied → declines")
 
 @test
+def se-recursive-under-application-body-ignores-missing-param-declines() =
+  // RECURSIVE twin of the inline under-app guard: a self-recursive 2-param def whose body IGNORES b, called
+  // `(f 3)`. The recursive path (CCall) used to run it ragged to `value 0`; ref/run-rust declines (arity).
+  match run-src("(do (def (f a b) (if (< a 1) 0 (f (- a 1)))) (def (main) (f 3)) (export main))") with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("recursive (f 3) under-applies a 2-param def whose body ignores b → declines")
+
+@test
+def se-recursive-over-application-declines() =
+  // the recursive path must ALSO decline OVER-application (the inline path pre-guarded this; the recursive
+  // path did not): `(f 3 9)` supplies 2 args to a 1-param recursive def. Used to run to `value 0`.
+  match run-src("(do (def (f a) (if (< a 1) 0 (f (- a 1)))) (def (main) (f 3 9)) (export main))") with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("recursive (f 3 9) over-applies a 1-param def → declines")
+
+@test
+def se-recursive-nullary-def-over-applied-declines() =
+  // a NULLARY recursive def over-applied `(f 3)`: arg-count 1 ≠ param-count 0. Used to run to `value 0`;
+  // ref/run-rust declines. Pins the argId==-1-callee vs supplied-arg branch of the arity gate.
+  match run-src("(do (def (f) (if (< 0 1) 0 (f))) (def (main) (f 3)) (export main))") with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("recursive nullary def (f) over-applied (f 3) → declines")
+
+@test
+def se-recursive-saturated-still-runs() =
+  // control: a SATURATED recursive call must still lower + run unchanged (the gate fires only on mismatch).
+  match run-src("(do (def (f a b) (if (< a 1) b (f (- a 1) b))) (def (main) (f 3 7)) (export main))") with
+    | Option.Some(v) => (if v == 7 then unit else trap("recursive saturated (f 3 7) → 7"))
+    | Option.None(_) => trap("recursive saturated (f 3 7) must lower and run, not decline")
+
+@test
 def se-helper-calls-earlier-helper() =
   // a BACKWARD reference: a helper calls an EARLIER-defined helper. `(def (inc x) (+ x 1))` then
   // `(def (inc2 x) (inc (inc x)))` — inc2's body calls inc (defined before it) twice. inc2(5) → 7. Pins that

@@ -414,9 +414,32 @@ def inner-body-with-param4(tree: Tree, id: Int64, calleeId: Int64, bodyCore: Cor
 /// from lower-ok's NApp arm to keep that arm small. Lowers the arg slots into a List(Core); any ill-typed arg
 /// declines the whole call (None). A LEAF w.r.t. lowering — does NOT descend the callee body.
 def lower-recursive-call(tree: Tree, id: Int64, calleeId: Int64, argId: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Ty)) =
-  (match lower-rec-args(tree, id, argId, rcol, tcol) with
-    | Option.Some(args) => Option.Some(Core.CCall(calleeId, args))
-    | Option.None(_) => Option.None(unit))
+  // ARITY GATE (the recursive twin of the inline NApp path's guards): the recursive path routes here BEFORE
+  // the inline arity guards, and lower-rec-args lowers whatever slots are present with NO param check, so a
+  // wrong-arity self/mutual call (under- OR over-application) would build a ragged CCall that eval runs. Decline
+  // unless the supplied arg count EXACTLY matches the callee's declared param count. A correct recursive def's
+  // self-call is saturated, so this only fires on a genuine mismatch (ref/run-rust declines it as an arity error).
+  (if (if rec-arg-count(tree, id, argId) == callee-param-count(tree, calleeId) then false else true)
+   then Option.None(unit)
+   else (match lower-rec-args(tree, id, argId, rcol, tcol) with
+          | Option.Some(args) => Option.Some(Core.CCall(calleeId, args))
+          | Option.None(_) => Option.None(unit)))
+
+/// Count the args SUPPLIED at recursive call `id`: 0 for a nullary call (argId -1), else 1 (argId) plus each
+/// present higher slot (arg2/3/4-of). Contiguous — arg3 present implies arg2 present.
+def rec-arg-count(tree: Tree, id: Int64, argId: Int64) =
+  (if (argId == -1) then 0
+   else (let n1 = 1 in
+         (let n2 = (match arg2-of(tree, id) with | Option.Some(_) => n1 + 1 | Option.None(_) => n1) in
+          (let n3 = (match arg3-of(tree, id) with | Option.Some(_) => n2 + 1 | Option.None(_) => n2) in
+           (match arg4-of(tree, id) with | Option.Some(_) => n3 + 1 | Option.None(_) => n3)))))
+
+/// Count the params the callee (by NAME `calleeId`) DECLARES: param-of..param4-of presence. Contiguous.
+def callee-param-count(tree: Tree, calleeId: Int64) =
+  (let p1 = (match param-of(tree, calleeId) with | Option.Some(_) => 1 | Option.None(_) => 0) in
+   (let p2 = (match param2-of(tree, calleeId) with | Option.Some(_) => p1 + 1 | Option.None(_) => p1) in
+    (let p3 = (match param3-of(tree, calleeId) with | Option.Some(_) => p2 + 1 | Option.None(_) => p2) in
+     (match param4-of(tree, calleeId) with | Option.Some(_) => p3 + 1 | Option.None(_) => p3))))
 
 /// slice-B1a: lower a RECURSIVE call's argument nodes into a `List(Core)` for `CCall(calleeName, args)`. The
 /// args are the SAME slots the inline path reads — `argId` (the first arg, or -1 for a nullary call) plus
@@ -760,16 +783,22 @@ def lw-recursive-call-splices-arg-into-ccall-slice-b1a() =
   // `CCall(f, [CNum 42])` — lower-rec-args lowers the single arg node into the args List. Body = NApp(900,
   // litId) with litId = NLit(42); record-def keys 900 → that call node so call-is-recursive fires. Synthetic
   // tcol types BOTH the call node and the literal TIntW(true,64) (real infer declines recursion until B2).
-  (match add-node(empty-tree(), Node.NLit(42)) with | (litId, t1) =>
-    (match add-node(t1, Node.NApp(900, litId)) with | (callId, t2) =>
-      (let tree = record-def(t2, 900, callId) in
-       (let tcol = Map.insert(Map.insert((Map.empty : Map(Int64, Ty)), callId, mk-int(true, 64)), litId, mk-int(true, 64)) in
-        (match lower-node(tree, callId, (Map.empty : Map(Int64, Resolved)), tcol) with
-          | Option.Some(Core.CCall(name, args)) =>
-              (if (name == 900) and (List.len(args) == 1)
-               then (match args with | [a1, .. _] => (if is-cnum(a1, 42) then unit else trap("arg1 is CNum 42")) | [] => trap("args has one element"))
-               else trap("1-arg self-call → CCall(900, [CNum 42])"))
-          | _ => trap("a recursive call with an arg lowers to CCall with the arg spliced"))))))
+  // record-param 900 → n (paramId): f DECLARES one param, so this 1-arg call is SATURATED (arity gate:
+  // rec-arg-count 1 == callee-param-count 1). The parser ALWAYS records a def's params, so a real `f(n)=…`
+  // tree carries this; the fixture records it too, else the arity gate reads 0 params and declines a
+  // correctly-applied call.
+  (match add-node(empty-tree(), Node.NVar(1)) with | (paramId, t0) =>
+    (match add-node(t0, Node.NLit(42)) with | (litId, t1) =>
+      (match add-node(t1, Node.NApp(900, litId)) with | (callId, t2) =>
+        (let treeD = record-def(t2, 900, callId) in
+         (let tree = record-param(treeD, 900, paramId) in
+          (let tcol = Map.insert(Map.insert((Map.empty : Map(Int64, Ty)), callId, mk-int(true, 64)), litId, mk-int(true, 64)) in
+           (match lower-node(tree, callId, (Map.empty : Map(Int64, Resolved)), tcol) with
+             | Option.Some(Core.CCall(name, args)) =>
+                 (if (name == 900) and (List.len(args) == 1)
+                  then (match args with | [a1, .. _] => (if is-cnum(a1, 42) then unit else trap("arg1 is CNum 42")) | [] => trap("args has one element"))
+                  else trap("1-arg self-call → CCall(900, [CNum 42])"))
+             | _ => trap("a recursive call with an arg lowers to CCall with the arg spliced"))))))))
 
 /// Test helper (slice-B1b): build a hand-arena `fac` def — body `if (n < 1) then 1 else (n * (fac (n-1)))`,
 /// param n = NVar(1), self-call NApp(900, sub); record-def 900 → body + record-param 900 → n. Kept as a
