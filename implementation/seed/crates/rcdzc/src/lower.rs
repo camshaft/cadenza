@@ -15315,6 +15315,21 @@ fn effect_schema_descriptor(
     Some(b.effect_schema_tree(&effect_name, &op_refs))
 }
 
+/// The FAMILY STRING an async (non-import) perform reifies its effect-request `kind` field to, for the
+/// effect whose declaration occurrence is `decl` — `"effect/" + <declared effect name>` (schema-hash
+/// phase-1a reify, v-effects ruling A 2026-08-13). The kernel's `parse_effect_request` reads `kind` as a
+/// register-by-string family (`new_with_family`); a userspace effect routes via this `effect/<name>` family
+/// (a handler session claims `effect/weather` etc. at runtime, dispatched by the `UserspaceEffectExecutor`
+/// fallback). This is the family string TODAY — phase-2 flips `kind` to the schema-hash (`effect_schema_
+/// descriptor` becomes the identity carrier); this helper's caller (`reify_effect_to_tuple`) swaps to the
+/// hash at that flip. The op name is NOT in the family (the op is implicit in the payload shape today;
+/// phase-2's schema-hash carries op identity). `None` if `decl` names no effect declaration.
+#[cfg_attr(not(test), allow(dead_code))]
+fn userspace_effect_family_kind(db: &Db, decl: StructId) -> Option<String> {
+    let name = &db.effect_decl_by_occ(decl)?.name;
+    Some(format!("effect/{name}"))
+}
+
 /// The variants of a `Ty::Sum` as `(head-name, payload-types)` pairs at this instantiation — the head
 /// spelled as the runtime template writes it (a BARE variant name; the value form renders variants bare,
 /// e.g. `(Cons …)`, `(None unit)`). Mirrors `sum_form_template`'s variant/payload recovery.
@@ -27919,6 +27934,23 @@ mod tests {
              (N:op N:collect (N:func (N:result (S:list (N:u8))))) \
              (N:op N:send (N:func (N:param (S:list (N:u8))) (N:result (S:unit)))))",
             "name-free positional op sigs, ops sorted by name, Bytes as list<u8>, Unit result/elided arg"
+        );
+    }
+
+    #[test]
+    fn userspace_effect_family_kind_is_effect_slash_name() {
+        // The async-reify `kind` family string for a userspace effect = "effect/" + the declared name
+        // (ruling A — the register-by-string family a handler claims; the op is implicit in the payload).
+        let src = "(module m (effect Weather (op fetch (-> Bytes Bytes))) (def (f) 0) (export f))";
+        let db = Db::load(crate::testkit::parse(src));
+        let synth = db
+            .effect_decl_by_name("Weather")
+            .expect("effect Weather declared");
+        let decl = db.effect_decl_by_synth(synth).expect("effect decl").occ;
+        assert_eq!(
+            userspace_effect_family_kind(&db, decl).as_deref(),
+            Some("effect/Weather"),
+            "kind = effect/<effect-name>"
         );
     }
 }
