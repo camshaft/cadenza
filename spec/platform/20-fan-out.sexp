@@ -1,14 +1,14 @@
 ; Platform-conformance suite — I3 slice-7: FAN-OUT — one sender emits to TWO distinct peers in a single fold,
 ; on the A1 bytes fold boundary. Complements 06 (one sender, two messages to the SAME peer): here the two
 ; messages go to DIFFERENT receivers. The runner seeds a holder's multiple `--peer` edges as a concatenation of
-; their 64-char SessionId hexes into one `platform/peers` payload (edge order), so the origin's fold slices
-; peer 0 at [0..64] and peer 1 at [64..128] with Bytes.slice and emits a distinct payload to each. Asserts both
+; their raw 32-byte SessionId ids into one `platform/peers` payload (edge order), so the origin's fold slices
+; peer 0 at [0..32] and peer 1 at [32..64] with Bytes.slice and emits a distinct payload to each. Asserts both
 ; routed messages (origin->r1 carrying 1, origin->r2 carrying 2, in order) and each receiver's own end-state.
 ; Pins that a single fold can address several distinct peers and the runner routes each to its own session.
 
 (platform-case "one sender fans a distinct message out to two different peers in a single fold"
   (doc "The fan-out round-trip: config seeds origin.KV[peer] = r1-hex ++ r2-hex (two --peer edges concatenated,
-        64 chars each); kickoff message -> origin's one fold slices peer 0 ([0..64]) and peer 1 ([64..128]) and
+        32 bytes each); kickoff message -> origin's one fold slices peer 0 ([0..32]) and peer 1 ([32..64]) and
         emits payload 1 to r1 and payload 2 to r2. The runner routes each emit as a message inbound to its own
         receiver; r1 folds got=1, r2 folds got=2. Asserts both routed messages in order (origin->r1 carrying 1,
         origin->r2 carrying 2), r1 got=1, r2 got=2, and all three quiescent. Pins that a single fold addresses
@@ -24,8 +24,8 @@
              (if (= (. (. e content-type) family) "message")
                (host (kv) (match (kv.get ((. String to-bytes) "peer"))
                  ((Some peers)
-                   (match ((. Bytes slice) peers 0 64)
-                     ((Some p0) (match ((. Bytes slice) peers 64 64)
+                   (match ((. Bytes slice) peers 0 32)
+                     ((Some p0) (match ((. Bytes slice) peers 32 32)
                        ((Some p1) (list
                          (record (correlation (None)) (kind "emit") (payload (Some ((. Bytes of) ("list" ((. UInt8 wrap) 1))))) (target p0))
                          (record (correlation (None)) (kind "emit") (payload (Some ((. Bytes of) ("list" ((. UInt8 wrap) 2))))) (target p1))))

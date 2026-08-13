@@ -82,9 +82,9 @@ struct Args {
     /// the runner threads the resolved id in, so a reducer can `Emit` to `<peer>` without an author ever
     /// writing a content-derived hash). Delivered as a `platform/peers` CONFIGURATION inbound (folded into
     /// KV, distinct from the one kick-off stimulus — session setup, not the interaction). Repeatable: MULTIPLE
-    /// edges for one holder (`--peer A=B --peer A=C`) concatenate their 64-char hexes in edge order into the
-    /// one payload, so a fan-out reducer slices peer `i` at `[64*i .. 64*i+64]`. A single edge = one 64-char
-    /// hex, byte-identical to the pre-fan-out payload.
+    /// edges for one holder (`--peer A=B --peer A=C`) concatenate their RAW 32-byte ids in edge order into the
+    /// one payload, so a fan-out reducer slices peer `i` at `[32*i .. 32*i+32]`. The session-id emit-target
+    /// convention is raw bytes (dual-land with the host's `Hash::from_bytes` target read), NOT hex.
     #[arg(long = "peer", value_name = "HOLDER=PEER")]
     peers: Vec<String>,
     /// Content-addressed store dir the reducers' `cadenza:runtime/heap` dep resolves from.
@@ -227,7 +227,7 @@ async fn main() -> Result<()> {
     // APPENDED in edge order into one payload, so a fan-out reducer slices peer i out at `[64*i .. 64*i+64]`
     // (`Bytes.slice`). A single-edge holder yields exactly one 64-char hex — BYTE-IDENTICAL to the pre-fan-out
     // payload — so every existing case that reads the whole `KV["peer"]` as one id is unchanged.
-    let mut peer_of: HashMap<String, String> = HashMap::new();
+    let mut peer_of: HashMap<String, Vec<u8>> = HashMap::new();
     for p in &args.peers {
         let (holder, peer) = split_pair(p)?;
         let _ = *id_of
@@ -245,11 +245,13 @@ async fn main() -> Result<()> {
             SessionId::new(Hash::of(&seed))
         });
         alias_of.entry(peer_id).or_insert_with(|| peer.clone());
-        // Append (not overwrite): a holder's multiple edges concatenate their hexes in `--peer` order.
+        // Append (not overwrite): a holder's multiple edges concatenate their RAW 32-byte ids in `--peer`
+        // order (the session-id emit-target convention is raw bytes, not hex — dual-land with the host's
+        // `Hash::from_bytes` target read). A fan-out reducer slices peer i out at `[32*i .. 32*i+32]`.
         peer_of
             .entry(holder)
             .or_default()
-            .push_str(&peer_id.to_hex());
+            .extend_from_slice(peer_id.hash().as_bytes());
     }
 
     // The shared collaborators the round-trip binds through: ONE reply-token registry (minted by each
@@ -316,18 +318,18 @@ async fn main() -> Result<()> {
     let mut budget_exceeded = false;
 
     // MD1 CONFIGURATION pre-seed (distinct from the one kick-off stimulus): before the interaction starts,
-    // deliver each peer-holder a `platform/peers` inbound carrying the resolved peer SessionId-hex, which
-    // the holder reducer folds into KV["peer"]. This threads the deterministic id in so a reducer can `Emit`
-    // to a peer by alias-resolution without an author ever writing a content-derived hash. Config, not the
-    // interaction: it sets the constellation up; the single kick-off below starts the interaction.
-    for (holder, peer_hex) in &peer_of {
+    // deliver each peer-holder a `platform/peers` inbound carrying the resolved peer SessionId RAW 32 bytes
+    // (the emit-target convention), which the holder reducer folds into KV["peer"]. This threads the
+    // deterministic id in so a reducer can `Emit` to a peer by alias-resolution without an author ever writing
+    // a content-derived hash. Config, not the interaction: it sets the constellation up; the kick-off starts it.
+    for (holder, peer_ids) in &peer_of {
         let holder_id = id_of[holder];
         let config = EventBody::Inbound {
             content_type: ContentType {
                 family: "platform/peers".into(),
                 version: 1,
             },
-            payload: Payload::Inline(peer_hex.clone().into_bytes().into()),
+            payload: Payload::Inline(peer_ids.clone().into()),
         };
         host.deliver(&holder_id, config, None).await;
     }
