@@ -375,6 +375,12 @@ fn declared_deps(
         let Some((_iface, hash_hex)) = name.rsplit_once('+') else {
             continue;
         };
+        // ACCEPTED hash-encoding exception (concierge scope ruling 2026-08-13): the content-address rides
+        // as HEX because it is embedded in a WIT component-model import NAME as `+<hash>` semver
+        // build-metadata, whose grammar permits ONLY `[0-9A-Za-z-]` — base64url `_` is illegal and raw
+        // bytes are impossible in a WIT identifier, so hex is the grammar-appropriate encoding here. This
+        // from_hex parses a NAME (produced by rcdzc-emit), not a runtime/wire DATA value, so it is outside
+        // the blanket raw-bytes directive, not a violation.
         let hash = Hash::from_hex(hash_hex).ok_or_else(|| {
             ComponentError::InvalidComponent(format!(
                 "component dependency import {name:?} has a malformed content-address hash {hash_hex:?}"

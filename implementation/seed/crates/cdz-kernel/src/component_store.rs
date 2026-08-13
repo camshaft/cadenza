@@ -120,6 +120,11 @@ impl ComponentStore {
             })?;
         let hex = manifest_hash_for(&manifest, name)
             .ok_or_else(|| StoreError::NameNotInManifest { name: name.into() })?;
+        // ACCEPTED hash-encoding exception (concierge scope ruling 2026-08-13): `runtime.toml` is a
+        // BUILD/human-authored config manifest (written by v-nix/xtask/cdz-run), so parsing its
+        // `<name> = "<hash>"` value is a permitted config-LOAD decode — the same input-edge class as the
+        // sanctioned `outpost_session` config value, NOT a runtime/wire from_hex violation. The blanket
+        // raw-bytes directive covers runtime/wire/storage DATA values, not build-config inputs.
         let hash = Hash::from_hex(&hex).ok_or_else(|| StoreError::MalformedHash {
             name: name.into(),
             value: hex.as_str().into(),
