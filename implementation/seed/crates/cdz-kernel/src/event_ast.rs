@@ -1904,6 +1904,21 @@ fn body_form(b: &mut Builder, body: &EventBody) -> StructId {
             let ch = hash_form(b, child_hash);
             b.list(vec![head, ch])
         }
+        EventBody::ChildCompleted { child, outcome } => {
+            let head = b.name("child-completed");
+            let ch = hash_form(b, child);
+            // Outcome form is IDENTICAL to Closed's: Success = the bare payload form (inline/blob), Failure =
+            // `(failure <str>)`. Reusing it keeps the one CloseOutcome wire shape across both events.
+            let of = match outcome {
+                crate::event::CloseOutcome::Success(p) => payload_form(b, p),
+                crate::event::CloseOutcome::Failure(reason) => {
+                    let h = b.name("failure");
+                    let r = str_leaf(b, reason);
+                    b.list(vec![h, r])
+                }
+            };
+            b.list(vec![head, ch, of])
+        }
     }
 }
 
@@ -2314,6 +2329,15 @@ fn read_body(a: &Arenas, id: StructId) -> Result<EventBody, EventAstError> {
                 child_hash: read_hash(a, *ch)?,
             }
         }
+        "child-completed" => {
+            let [ch, of] = form(a, id, "child-completed")? else {
+                return Err(shape("child-completed arity"));
+            };
+            EventBody::ChildCompleted {
+                child: read_hash(a, *ch)?,
+                outcome: read_close_outcome(a, *of)?,
+            }
+        }
         _ => return Err(shape("unknown event body tag")),
     })
 }
@@ -2552,6 +2576,28 @@ mod tests {
                 body: EventBody::Terminated {
                     by: Hash::of(b"controller-session"),
                     reason: "operator kill".to_string(),
+                },
+            },
+            // ChildCompleted, both CloseOutcome arms — exercises the new (child-completed <child> <outcome>)
+            // event_ast form through the exhaustive round-trip net.
+            Event {
+                seq: 17,
+                cause: Some(Hash::of(b"reap-cause")),
+                body: EventBody::ChildCompleted {
+                    child: Hash::of(b"child-genesis"),
+                    outcome: crate::event::CloseOutcome::Success(crate::effect::Payload::Inline(
+                        b"child-result".to_vec().into(),
+                    )),
+                },
+            },
+            Event {
+                seq: 18,
+                cause: Some(Hash::of(b"reap-cause")),
+                body: EventBody::ChildCompleted {
+                    child: Hash::of(b"failed-child"),
+                    outcome: crate::event::CloseOutcome::Failure(
+                        "child goal unreachable".to_string(),
+                    ),
                 },
             },
         ]

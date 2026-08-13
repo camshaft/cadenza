@@ -265,6 +265,18 @@ pub enum EventBody {
     /// the parent enumerate its children. Purely a recorded fact (like `FoldFailed`): it is NOT folded
     /// through the reducer (see `observable`) — a supervisor reads it from the log.
     Spawned { child_hash: Hash },
+
+    /// **DURABLE child→parent terminal signal (§6 supervision, V2 per-child).** Recorded in the PARENT's log
+    /// when one of its children reaches a terminal outcome — delivered by the host's reap of a self-CLOSED
+    /// child AND the `lifecycle/terminate` path (child-exited); ONE variant covers both, the [`CloseOutcome`]
+    /// discriminates (self-close = Success|Failure, terminate = Failure(reason)). The symmetric bookend of
+    /// [`Spawned`](Self::Spawned) (born → done) on the parent's log. UNLIKE `Spawned` (a recorded fact), this
+    /// IS folded through the parent's SUPERVISOR reducer (see `observable`) so it can react PER CHILD —
+    /// restart the failed one, count success vs failure, route by `child`. Carrying `child` + `outcome` as
+    /// FIRST-CLASS typed fields (surfaced by `build_event_document`) is what lets a `.cdz` guest supervisor
+    /// read them directly, rather than value-decoding an opaque `encode_child_completed` payload (which a
+    /// guest can't do). `child` is the completed child's genesis hash (= its SessionId).
+    ChildCompleted { child: Hash, outcome: CloseOutcome },
 }
 
 /// How a session CLOSED — the structured terminal outcome a supervisor acts on (§6 supervision, operator
@@ -600,6 +612,10 @@ fn decode_body(c: &mut Cursor) -> Result<EventBody, DecodeError> {
         10 => EventBody::Spawned {
             child_hash: Hash::from_bytes(c.hash()?),
         },
+        11 => EventBody::ChildCompleted {
+            child: Hash::from_bytes(c.hash()?),
+            outcome: decode_close_outcome(c)?,
+        },
         t => {
             return Err(DecodeError::BadTag {
                 field: "body",
@@ -814,6 +830,11 @@ fn encode_body(body: &EventBody, out: &mut Vec<u8>) {
         EventBody::Spawned { child_hash } => {
             out.push(10);
             out.extend_from_slice(child_hash.as_bytes());
+        }
+        EventBody::ChildCompleted { child, outcome } => {
+            out.push(11);
+            out.extend_from_slice(child.as_bytes());
+            encode_close_outcome(outcome, out);
         }
     }
 }
@@ -1320,6 +1341,26 @@ mod tests {
                 body: EventBody::Terminated {
                     by: Hash::of(b"controller-session"),
                     reason: "operator kill".to_string(),
+                },
+            },
+            // ChildCompleted, both CloseOutcome arms (self-close Success + terminate/failure), so both
+            // codecs (event.rs + event_ast) round-trip the new variant across the exhaustive nets.
+            Event {
+                seq: 16,
+                cause: Some(Hash::of(b"reap-cause")),
+                body: EventBody::ChildCompleted {
+                    child: Hash::of(b"child-genesis"),
+                    outcome: CloseOutcome::Success(Payload::Inline(
+                        b"child-result".to_vec().into(),
+                    )),
+                },
+            },
+            Event {
+                seq: 17,
+                cause: Some(Hash::of(b"reap-cause")),
+                body: EventBody::ChildCompleted {
+                    child: Hash::of(b"failed-child"),
+                    outcome: CloseOutcome::Failure("child goal unreachable".to_string()),
                 },
             },
         ]

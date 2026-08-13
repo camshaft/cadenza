@@ -2179,6 +2179,17 @@ fn event_to_guest_inputs(body: &EventBody) -> GuestFoldInputs {
             token.clone(),
             None,
         ),
+        // ChildCompleted IS folded by the parent's supervisor. For now it surfaces as the SAME opaque form
+        // the host previously delivered — family `lifecycle/child-completed` + the `encode_child_completed`
+        // value-form payload — so an escalate-only supervisor (branching on family) is behavior-unchanged as
+        // the host switches from delivering an ad-hoc Inbound to emitting the first-class variant. A follow-up
+        // surfaces `child` + `outcome` as first-class TYPED Event fields (the V2 per-child supervision seam).
+        EventBody::ChildCompleted { child, outcome } => (
+            synthetic("lifecycle/child-completed"),
+            Some(crate::ast_marshal::encode_child_completed(child, outcome)),
+            None,
+            None,
+        ),
         // Genesis / Dispatched / TimerArmed / Closed are not folded by the reducer (they're kernel
         // bookkeeping or setup — see the kernel's `observable()` predicate); the loop never calls fold
         // on them, but map defensively to an empty-payload synthetic content-type rather than panic.

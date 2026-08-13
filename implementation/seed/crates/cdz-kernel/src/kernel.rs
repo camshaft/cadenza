@@ -2364,6 +2364,7 @@ fn event_body_name(body: &EventBody) -> &'static str {
         EventBody::Closed { .. } => "Closed",
         EventBody::Terminated { .. } => "Terminated",
         EventBody::Spawned { .. } => "Spawned",
+        EventBody::ChildCompleted { .. } => "ChildCompleted",
     }
 }
 
@@ -2423,6 +2424,9 @@ fn observable(body: &EventBody) -> bool {
         | EventBody::EffectResult { .. }
         | EventBody::TimerFired { .. }
         | EventBody::AuthzDenied { .. }
+        // ChildCompleted IS folded — the parent's SUPERVISOR reducer reacts to it per-child (restart /
+        // count / route by child), unlike `Spawned` (a recorded edge, read from the log, not folded).
+        | EventBody::ChildCompleted { .. }
         | EventBody::Closed { .. } => true,
         // FoldFailed is NOT folded (v0 records it for a supervisor to observe, but re-handing a failed
         // fold to the same failing reducer would recurse — a supervisor reacting is a later slice).
