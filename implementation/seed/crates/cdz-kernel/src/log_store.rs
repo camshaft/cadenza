@@ -24,8 +24,11 @@
 //! in the concatenated stream. The length prefix lets the reader know a frame's extent before trusting
 //! its contents.
 
+use crate::blob::BlobStore;
 use crate::event::Event;
 use crate::event_ast;
+use crate::hash::Hash;
+use bytes::Bytes;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -243,9 +246,50 @@ fn decode_frames(bytes: &[u8]) -> Recovered {
     }
 }
 
+// ── GAP-4 D1: the backend-agnostic log-body OFFLOAD helpers (Model D — bound the working set, preserve the
+// full lossless log). A large ENCODED EVENT BODY is stored in the blob CAS and the log frame carries a
+// reserved `(blob-ptr hash)` pointer instead (see `event_ast::encode_blob_ptr`); recovery derefs it back to
+// the identical body, so the fold sees the EXACT original event stream (replay's genesis+contiguous-seq+
+// genesis_hash contract untouched). These two are the SHARED seam: the disk `LogStore` (append/recover) and
+// the host's `dynamo_log` (write/read) call the SAME helpers, so the offload semantics live in one place.
+
+/// The offloaded bytes to STORE in a log frame for an event's encoded `body`: the body UNCHANGED when it is
+/// `<= threshold`, or a `(blob-ptr hash)` pointer (after storing `body` in `blob` under its content hash)
+/// when it exceeds the threshold. The hash is `Hash::of(body)` (blake3), so the CAS entry is
+/// content-addressed + idempotent. Backend-agnostic — the disk log and dynamo_log offload identically.
+pub async fn maybe_offload<B: BlobStore>(
+    body: &[u8],
+    blob: &mut B,
+    threshold: usize,
+) -> io::Result<Vec<u8>> {
+    if body.len() <= threshold {
+        return Ok(body.to_vec());
+    }
+    let hash = Hash::of(body);
+    blob.put(hash, Bytes::copy_from_slice(body)).await?;
+    Ok(event_ast::encode_blob_ptr(&hash))
+}
+
+/// The DUAL of [`maybe_offload`]: the REAL event body for the bytes `stored` in a log frame — deref'd from
+/// `blob` when `stored` is a `(blob-ptr hash)` pointer, else `stored` unchanged. Round-trip:
+/// `rehydrate(maybe_offload(body, ..), ..) == body` (fold-transparent). A pointer whose blob is ABSENT is a
+/// hard `NotFound` io error (the CAS lost the offloaded body — data loss, NOT a silent empty body).
+pub async fn rehydrate<B: BlobStore>(stored: &[u8], blob: &B) -> io::Result<Vec<u8>> {
+    match event_ast::decode_blob_ptr(stored) {
+        Some(hash) => blob.get(&hash).await?.map(|b| b.to_vec()).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "offloaded log body absent from blob store (CAS lost an offloaded event body)",
+            )
+        }),
+        None => Ok(stored.to_vec()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::blob::MemBlobStore;
     use crate::effect::{EffectId, Payload};
     use crate::event::{ContentType, EventBody};
     use crate::hash::Hash;
@@ -299,6 +343,78 @@ mod tests {
                 token: None,
             },
         }
+    }
+
+    // GAP-4 D1 slice-1b: the offload helpers. A sub-threshold body stays INLINE (no CAS write); an
+    // over-threshold body offloads to a (blob-ptr hash) pointer + stores the body content-addressed, and
+    // rehydrate recovers the BYTE-IDENTICAL body (fold-transparent). A missing blob is a hard NotFound.
+    #[tokio::test(flavor = "current_thread")]
+    async fn maybe_offload_and_rehydrate_round_trip_byte_identical() {
+        let mut blob = MemBlobStore::new();
+        let threshold = 16usize;
+
+        // Sub-threshold: stored == body verbatim (no offload), and the CAS is untouched.
+        let small = b"tiny body".to_vec();
+        assert!(small.len() <= threshold);
+        let stored_small = maybe_offload(&small, &mut blob, threshold).await.unwrap();
+        assert_eq!(
+            stored_small, small,
+            "a sub-threshold body is stored inline, unchanged"
+        );
+        assert_eq!(
+            event_ast::decode_blob_ptr(&stored_small),
+            None,
+            "an inline frame is not a blob-ptr"
+        );
+        assert_eq!(
+            rehydrate(&stored_small, &blob).await.unwrap(),
+            small,
+            "rehydrating an inline frame is the identity"
+        );
+
+        // Over-threshold: stored is a (blob-ptr hash) pointer, the body is in the CAS content-addressed,
+        // and rehydrate recovers the byte-identical body.
+        // A genuinely large body (>> the ~50-byte pointer frame) so offload actually bounds the hot frame.
+        let big = vec![0xABu8; 4096];
+        let stored_big = maybe_offload(&big, &mut blob, threshold).await.unwrap();
+        let ptr_hash = event_ast::decode_blob_ptr(&stored_big)
+            .expect("an over-threshold body is stored as a blob-ptr pointer frame");
+        assert_eq!(
+            ptr_hash,
+            Hash::of(&big),
+            "the pointer hash is the body's content hash"
+        );
+        assert!(
+            stored_big.len() < big.len(),
+            "the hot frame (pointer, ~50B) is far smaller than the 4KB offloaded body"
+        );
+        assert_eq!(
+            rehydrate(&stored_big, &blob).await.unwrap(),
+            big,
+            "rehydrating a blob-ptr frame recovers the byte-identical body"
+        );
+
+        // A real encoded event body offloads + rehydrates to bytes that decode to the same event.
+        let ev = inbound(7);
+        let body = event_ast::encode(&ev);
+        let stored_ev = maybe_offload(&body, &mut blob, 0).await.unwrap(); // threshold 0 forces offload
+        assert!(event_ast::decode_blob_ptr(&stored_ev).is_some());
+        let rehydrated = rehydrate(&stored_ev, &blob).await.unwrap();
+        assert_eq!(
+            rehydrated, body,
+            "the event body round-trips byte-identical through offload"
+        );
+        assert_eq!(
+            event_ast::decode(&rehydrated).unwrap(),
+            ev,
+            "and decodes to the same event"
+        );
+
+        // A pointer whose blob is absent is a hard NotFound (data loss), not a silent empty body.
+        let absent = event_ast::encode_blob_ptr(&Hash::of(b"never-stored"));
+        let empty = MemBlobStore::new();
+        let err = rehydrate(&absent, &empty).await.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
     }
 
     #[test]
