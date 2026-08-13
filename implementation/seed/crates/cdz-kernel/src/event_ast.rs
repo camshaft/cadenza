@@ -1806,10 +1806,7 @@ fn body_form(b: &mut Builder, body: &EventBody) -> StructId {
             idempotency_key,
             deadline_ms,
             token,
-            // schema_hash is a fresh ADDITIVE field; this event_ast durable-frame codec does not yet
-            // serialize it (wiring encode/decode of the raw 32-byte child is v-compiler-ml's follow-up on
-            // top of this field-add). Ignored here for now so the frame format is byte-unchanged.
-            schema_hash: _,
+            schema_hash,
         } => {
             let head = b.name("dispatched");
             let idv = u64_leaf(b, id.0);
@@ -1823,7 +1820,17 @@ fn body_form(b: &mut Builder, body: &EventBody) -> StructId {
             let tok = opt_bytes_form(b, token.as_deref());
             // family rides AFTER kind (seq-39 identity). A pre-family log has a 6-element `dispatched`
             // form (no `fam`); the decoder tolerates both arities for backward compat.
-            b.list(vec![head, idv, k, fam, t, idem, dl, tok])
+            // schema_hash (durable-frame effect identity): when Some, append a raw-32-byte `(hash …)` child
+            // → the 8-element form; when None (control/store/register-by-string effects), omit it → the
+            // 7-element form, byte-identical to a pre-schema_hash log. Decode is absence-tolerant, so old
+            // logs and None frames read back None (never a zero hash).
+            match schema_hash {
+                Some(sh) => {
+                    let shc = hash_form(b, sh);
+                    b.list(vec![head, idv, k, fam, t, idem, dl, tok, shc])
+                }
+                None => b.list(vec![head, idv, k, fam, t, idem, dl, tok]),
+            }
         }
         EventBody::EffectResult { id, result, token } => {
             let head = b.name("effect-result");
@@ -2189,11 +2196,24 @@ fn read_body(a: &Arenas, id: StructId) -> Result<EventBody, EventAstError> {
             }
         }
         "dispatched" => {
-            // Two arities for backward compat: 7 = the current `(dispatched id kind FAMILY target idem
-            // deadline token)`, 6 = a pre-family log `(dispatched id kind target idem deadline token)`,
-            // whose family is derived from the kind (a pre-family log only ever held built-in kinds — no
-            // register-by-string/control dispatch existed before the family field, so kind→family is exact).
+            // Three arities: 8 = the schema_hash-carrying form `(dispatched id kind FAMILY target idem
+            // deadline token HASH)`, 7 = `(… token)` with no schema_hash, 6 = a pre-family log `(dispatched
+            // id kind target idem deadline token)` whose family is derived from the kind (a pre-family log
+            // only ever held built-in kinds — no register-by-string/control dispatch existed before the
+            // family field, so kind→family is exact). Absence-tolerant: 7/6 → schema_hash None (never a zero hash).
             match form(a, id, "dispatched")? {
+                [idv, k, fam, t, idem, dl, tok, sh] => EventBody::Dispatched {
+                    id: EffectId(read_u64(a, *idv)?),
+                    kind: read_kind(a, *k)?,
+                    family: read_str(a, *fam)?.into(),
+                    target: std::sync::Arc::from(read_target_bytes(a, *t)?.as_slice()),
+                    idempotency_key: read_hash(a, *idem)?,
+                    deadline_ms: read_opt_ms(a, *dl)?,
+                    token: read_opt_bytes(a, *tok)?,
+                    // 8-arity carries the durable-frame effect identity — a raw-32-byte `(hash …)` child.
+                    // Only present for built-in-schema effects; control/store/register-by-string omit it.
+                    schema_hash: Some(read_hash(a, *sh)?),
+                },
                 [idv, k, fam, t, idem, dl, tok] => EventBody::Dispatched {
                     id: EffectId(read_u64(a, *idv)?),
                     kind: read_kind(a, *k)?,
@@ -2202,8 +2222,7 @@ fn read_body(a: &Arenas, id: StructId) -> Result<EventBody, EventAstError> {
                     idempotency_key: read_hash(a, *idem)?,
                     deadline_ms: read_opt_ms(a, *dl)?,
                     token: read_opt_bytes(a, *tok)?,
-                    // No schema_hash element in the current 7/6-arity wire → None (the field-add is
-                    // additive; v-compiler-ml adds the schema_hash-carrying arity + its read on top).
+                    // No schema_hash element in the 7-arity wire → None (a None-schema_hash frame or an old log).
                     schema_hash: None,
                 },
                 [idv, k, t, idem, dl, tok] => EventBody::Dispatched {
@@ -2545,6 +2564,71 @@ mod tests {
             let back = decode(&bytes).unwrap_or_else(|err| panic!("decode {e:?}: {err:?}"));
             assert_eq!(back, e, "round-trip mismatch for {e:?}");
         }
+    }
+
+    #[test]
+    fn dispatched_schema_hash_round_trips_some_and_none() {
+        // The durable-frame effect identity: a Dispatched frame carries its effect's schema_hash when the
+        // effect had one (built-in-schema effects), and omits it otherwise (control/store/register-by-string).
+        // Some → the 8-arity `(dispatched … HASH)` form; None → the 7-arity form, byte-identical to a
+        // pre-schema_hash log so old frames stay decodable. Round-trip BOTH.
+        let idem = Hash::of(b"idem");
+        let sh = Hash::of(b"effect-schema-identity");
+
+        let some = Event {
+            seq: 1,
+            cause: None,
+            body: EventBody::Dispatched {
+                id: EffectId(1),
+                kind: EffectKind::Http,
+                family: EffectKind::Http.family().into(),
+                target: "https://ok.host/p".as_bytes().into(),
+                idempotency_key: idem,
+                deadline_ms: Some(9),
+                token: Some(b"tok".to_vec()),
+                schema_hash: Some(sh),
+            },
+        };
+        let back_some = decode(&encode(&some)).expect("Some schema_hash decodes");
+        assert_eq!(back_some, some, "schema_hash Some round-trips exactly");
+        match back_some.body {
+            EventBody::Dispatched { schema_hash, .. } => {
+                assert_eq!(
+                    schema_hash,
+                    Some(sh),
+                    "the raw 32-byte hash reads back intact"
+                )
+            }
+            other => panic!("expected Dispatched, got {other:?}"),
+        }
+
+        let none = Event {
+            seq: 2,
+            cause: None,
+            body: EventBody::Dispatched {
+                id: EffectId(2),
+                kind: EffectKind::Shell,
+                family: EffectKind::Shell.family().into(),
+                target: "cargo test".as_bytes().into(),
+                idempotency_key: idem,
+                deadline_ms: None,
+                token: None,
+                schema_hash: None,
+            },
+        };
+        // A None frame encodes to the 7-arity form and decodes back to None (never a zero hash) — the same
+        // absence-tolerant path an old pre-schema_hash log takes.
+        let none_bytes = encode(&none);
+        assert_eq!(
+            decode(&none_bytes).expect("None schema_hash decodes"),
+            none,
+            "schema_hash None round-trips (7-arity, absence-tolerant)"
+        );
+        // And the Some encoding is genuinely a distinct (longer) wire than None — the 8th child is emitted.
+        assert!(
+            encode(&some).len() > none_bytes.len(),
+            "the Some frame carries an extra hash child on the wire"
+        );
     }
 
     #[test]
