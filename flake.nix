@@ -532,6 +532,16 @@
             # catches a genuine infinite loop (blows 300s wall too); harness-only, prod/CI cdz-run keeps 30s.
             # Cross-owner fold: v-fleet-tooling owns gate policy + the sibling xtask fix, v-nix owns the flake.
             CDZ_RUN_TIMEOUT_SECS = "300";
+            # RUST_MIN_STACK=64M — the SIBLING of the timeout env (xtask's test step sets both; main.rs). A
+            # deep-but-finite recursion test running on libtest's own ~2MB worker thread (NOT wrapped in rcdzc's
+            # explicit-stack host::run_with_compiler_stack) nondeterministically SIGABRTs on stack overflow under
+            # fleet build load — a recurring false-red class point-fixed across v-diagnostics/v-syntax/v-runtime.
+            # Some rcdzc tests EXPLICITLY depend on the floor (tests.rs comments "RUST_MIN_STACK=64M passes":
+            # they terminate but are deep). Only benchCheck set it before; the per-crate cargoTest path ran at
+            # the ~2MB default → the merge gate could still SIGABRT-false-red under load, parallel to the timeout
+            # hole. v-ft diffed the full xtask-test-step env vs the nix path: this + the timeout are the ENTIRE
+            # delta, so this closes the whole xtask-env-not-mirrored-onto-nix-per-crate-cargoTest class.
+            RUST_MIN_STACK = "67108864";
             src = pkgs.lib.fileset.toSource {
               root = ./.;
               fileset = pkgs.lib.fileset.unions (
