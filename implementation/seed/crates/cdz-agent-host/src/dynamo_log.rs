@@ -714,4 +714,51 @@ mod tests {
         assert!(!compressed, "no compression config → never marked");
         assert_eq!(stored, body, "the body is stored raw");
     }
+
+    #[tokio::test]
+    async fn d1_offload_and_d2_compression_compose_losslessly() {
+        // GAP-4 D1 + D2 INTERACTION (the composition neither seam test alone covers): with BOTH offload and
+        // compression configured, a large body's append path is encode -> maybe_offload -> maybe_compress. The
+        // offload runs FIRST, replacing the big body with a tiny (blob-ptr) frame; that frame is UNDER the
+        // compress threshold, so compression leaves it raw (offload takes precedence, no double-handling). The
+        // read path (maybe_decompress -> rehydrate) then recovers the body byte-identical. This pins the
+        // order-of-operations + the "offloaded ptr is never compressed" invariant the two features rely on.
+        use cdz_kernel::blob::MemBlobStore;
+        let mut blob = MemBlobStore::new();
+        // A realistic prod-shaped config: offload large bodies (low threshold), and set the compress threshold
+        // ABOVE the (blob-ptr) frame size so an offloaded pointer is not needlessly compressed. The encoded
+        // (blob-ptr) frame is ~75 bytes (a hash + framing), so 128 keeps it raw while a real inline body would
+        // still compress.
+        let offload_threshold = 32usize;
+        let compress_threshold = 128usize;
+
+        let big = vec![0xcdu8; 4096];
+        // Append step 1 (offload): the big body offloads to a small (blob-ptr) frame.
+        let after_offload = maybe_offload(&big, &mut blob, offload_threshold)
+            .await
+            .unwrap();
+        assert!(
+            after_offload.len() < compress_threshold,
+            "the offloaded (blob-ptr) frame is under the compress threshold (got {} bytes, threshold {})",
+            after_offload.len(),
+            compress_threshold
+        );
+        // Append step 2 (compress): a sink with BOTH features; the tiny ptr stays raw (under the threshold).
+        let sink = DynamoLogSink::from_conf(&test_cfg(), "cdz-log", Hash::of(b"w"))
+            .with_offload(Box::new(blob), offload_threshold)
+            .with_compression(compress_threshold);
+        let (stored, compressed) = sink.maybe_compress(after_offload).unwrap();
+        assert!(
+            !compressed,
+            "an offloaded (blob-ptr) frame is under the compress threshold → left raw (offload takes precedence)"
+        );
+
+        // Read path: decompress (a no-op here, unmarked) then rehydrate the ptr from the CAS → the real body.
+        let decompressed = DynamoLogSink::maybe_decompress(stored, compressed).unwrap();
+        let recovered = sink.rehydrate_body(decompressed).await.unwrap();
+        assert_eq!(
+            recovered, big,
+            "offload+compression compose losslessly: the body round-trips byte-identical"
+        );
+    }
 }
