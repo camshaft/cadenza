@@ -2913,7 +2913,19 @@ pub fn reflected_ty(db: &mut Db, id: StructId) -> Ty {
         // `f : Int64 → Int64` reflects `(Tuple (-> Int64 Int64) Int64)`, distinguishable from a `(tuple g
         // 0)` whose `g : Bool → Int64`. A malformed record field list has no type (`Any`), as in `type_of`.
         Resolved::Apply { head, args } => match crate::eval::meta_apply_of(db, head) {
-            Some(Prim::TupleNew) => Ty::Tuple(args.iter().map(|&e| reflected_ty(db, e)).collect()),
+            // Each element is an INDEPENDENT type position — freshen its free vars into a disjoint block
+            // off a shared counter so two elements that each reflect a colliding var (two bare `None()`,
+            // each `Option(?0)`) do NOT cross-contaminate when the tuple unifies against an expected type
+            // in one `Subst`. The same disjoint-freshening `compound_ctor_type` applies; this is the
+            // reflection twin, reached when the tuple is checked via a synthesized `(: arg paramtype)`.
+            Some(Prim::TupleNew) => {
+                let mut fresh = crate::unify::Fresh::new();
+                Ty::Tuple(
+                    args.iter()
+                        .map(|&e| crate::unify::freshen_free(&reflected_ty(db, e), &mut fresh))
+                        .collect(),
+                )
+            }
             Some(Prim::ListNew) => {
                 let mut elem_ty = Ty::Any;
                 for &e in args.iter() {
@@ -2924,9 +2936,15 @@ pub fn reflected_ty(db: &mut Db, id: StructId) -> Ty {
             }
             Some(Prim::RecordNew) => match crate::resolve::read_record_fields(db, &args) {
                 Ok(fields) => {
+                    // Freshen per field so sibling fields' vars are disjoint (see the TupleNew note): two
+                    // bare `None()` fields must NOT share an `Option` element var, or one borrows the
+                    // other's element type when the record is checked against the expected param type via
+                    // the synthesized annotation. The reflection twin of `compound_ctor_type`'s RecordNew.
+                    let mut fresh = crate::unify::Fresh::new();
                     let mut field_tys = std::collections::BTreeMap::new();
                     for (label, &value) in fields.iter() {
-                        field_tys.insert(label.clone(), reflected_ty(db, value));
+                        let ft = crate::unify::freshen_free(&reflected_ty(db, value), &mut fresh);
+                        field_tys.insert(label.clone(), ft);
                     }
                     Ty::Record(std::rc::Rc::new(field_tys))
                 }

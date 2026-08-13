@@ -56083,6 +56083,46 @@ mod diagnostics {
     }
 
     #[test]
+    fn two_bare_none_record_fields_passed_as_a_direct_arg_do_not_cross_contaminate() {
+        // REGRESSION (residual of the let-bound fix above): the SAME two-bare-`None()` record, passed as a
+        // DIRECT call argument instead of `let`-bound, took a DIFFERENT type-building path — the call's
+        // synthesized `(: arg paramtype)` check reflects a compound-literal arg via `reflected_ty`, whose
+        // RecordNew arm rebuilt field types WITHOUT the disjoint-freshening the `compound_ctor_type` /
+        // `Resolved::Record` paths got. So both `None()` fields reflected `Option(?0)` sharing var 0 and
+        // the record unify hit `Bytes` vs `Outcome` on the shared var — a spurious CDZ0203, even though the
+        // let-bound twin type-checked. FIX: freshen each field/element into a disjoint block in
+        // `reflected_ty`'s RecordNew + TupleNew arms too. Same shape as the let-bound test, arg inlined.
+        let src = "(module m \
+           (type Outcome (Ok Int64) (Err Int64)) \
+           (def (apply (: evt (Record (: a (Option Bytes)) (: b (Option Outcome)) (: c Int64)))) (. evt c)) \
+           (def (main) (apply (record (= a (None)) (= b (None)) (= c 9)))) \
+           (export main))";
+        let all = diags_of(src);
+        assert!(
+            all.iter().all(|d| d.code.as_deref() != Some("CDZ0203")),
+            "two bare None() record fields passed as a direct arg must not cross-contaminate (no CDZ0203): {all:?}"
+        );
+    }
+
+    #[test]
+    fn a_wrong_typed_option_field_in_a_direct_record_arg_still_rejects() {
+        // SOUNDNESS guard for the direct-arg reflection freshening above: freshening must only stop the
+        // shared-unsolved-var FALSE reject, never mask a GENUINE field-type mismatch. A record arg whose
+        // `b` field is `(Some 5)` (`Option Int64`) where the param wants `(Option Outcome)` must STILL
+        // reject CDZ0203 — the disjoint vars solve independently, and this one solves to the wrong type.
+        let src = "(module m \
+           (type Outcome (Ok Int64) (Err Int64)) \
+           (def (apply (: evt (Record (: b (Option Outcome)) (: c Int64)))) (. evt c)) \
+           (def (main) (apply (record (= b (Some 5)) (= c 9)))) \
+           (export main))";
+        let all = diags_of(src);
+        assert!(
+            all.iter().any(|d| d.code.as_deref() == Some("CDZ0203")),
+            "a wrong-typed Option field in a direct record arg must still reject CDZ0203: {all:?}"
+        );
+    }
+
+    #[test]
     fn a_def_named_quote_binds_its_parameter_and_is_not_hijacked_by_reification() {
         // `quote`/`quasiquote` are grammar heads recognized STRUCTURALLY only when they head an
         // EXPRESSION — like `if`/`match`/`bin`, all freely definable as ordinary function names because
