@@ -4727,6 +4727,7 @@ pass	bg4 BIGINT comparison in the arm routes tri-band verdicts — doubling walk
 pass	bin-encode segment ORDER holds for runtime-swapped operand values
 pass	binary operator operands are evaluated left to right
 pass	binding the same effect to a peer twice is rejected
+pass	bis1 BINARY SEARCH against an ORACLE effect — the arm only answers -1/0/1 vs the hidden target, the body's recursive driver narrows (lo,hi) from the verdicts, dispatch count is data-dependent
 pass	bit-field segments pack sub-byte values into one byte
 pass	bit-field segments spanning a rope seam split the stitched 16 bits, not a leaf's
 pass	bitwise AND masks bits
@@ -5387,6 +5388,7 @@ pass	lam1 INLINE and LET-BOUND lambdas applied to one draw — both closure form
 pass	large-set algebra over a multi-level CHAMP trie computes correct union/intersection/difference
 pass	lba1 an op taking a LIST argument — the arm folds the batch into the scalar state by recursion; the second batch is BUILT FROM the first's answer and the empty batch is a no-op
 pass	lc1 SELF-CONCAT sharing — the same list appears twice in one concat, then the original grows and is re-read unchanged
+pass	ldd1 an EVENT-LEDGER state — a List of (tag,value) tuples appends per log dispatch, and replay folds only the MATCHING tag's values (absent tag folds to zero)
 pass	le multi-byte fields read little-endian at runtime offsets, unsigned and signed
 pass	le-ax of a ground add that OVERFLOWS Int64 traps during evaluation — it cannot wrap to forge a false bound
 pass	left shift
@@ -6056,6 +6058,7 @@ pass	slicing with a start near i64::MAX is out of range, not a trap
 pass	slicing with start+len overflowing i64 is out of range, not a wrong slice
 pass	slmin11 tuple(scalar,string) state, put rebuilds the tuple with a branch-picked String.concat suffix, 2 puts + 2 reads (invalid-wasm slot-clobber: the rope-retain dup and the counter step must not share a scratch slot at two widths)
 pass	smk1 a STRING-KEYED Map state whose keys are BUILT IN THE ARM — parity routes each value to a concat-computed bucket, accumulate-or-insert answers the bucket total
+pass	smy1 a SYMBOL-KEYED Map state — the op takes a Symbol and routes accumulation by interned identity, the same label from two different dispatches lands in one bucket
 pass	sn1 a snapshot op resumes the WHOLE tuple state as a value — the body destructures the live pair after mixed bumps
 pass	sn2 TWO whole-state snapshots straddle interleaved bumps — the first snapshot is IMMUTABLE, the pair differ by exactly the bumps between them
 pass	sn3 the snapshot crosses to a DEF helper — the crossed state tuple is consumed by a function parameter, not a body match

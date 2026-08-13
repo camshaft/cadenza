@@ -8983,3 +8983,71 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 10.0 Float64))
   (call   main (: 5 Int64)) (output (: 54.0 Float64)))
+
+; --- breaker batch 248: symbol-keyed buckets, tag-filtered event ledger, binary-search oracle inversion ---
+(case "smy1 a SYMBOL-KEYED Map state — the op takes a Symbol and routes accumulation by interned identity, the same label from two different dispatches lands in one bucket"
+  (input  (do
+            (effect S (op acc (-> Symbol Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S (: Map.empty (Map Symbol Int64))
+                ((acc (k v) m
+                  (let ((total (match (Map.lookup m k)
+                                 ((Some x) (+ x v))
+                                 ((None u) v))))
+                    (resume total (Map.insert m k total)))))
+                (let ((a (S.acc (Symbol.of "hot") n)))
+                  (let ((b (S.acc (Symbol.of "cold") (+ n 1))))
+                    (let ((c (S.acc (Symbol.of "hot") 10)))
+                      (+ (* 10000 a) (+ (* 100 b) c)))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 30413 Int64))
+  (call   main (: 40 Int64)) (output (: 404150 Int64)))
+
+(case "ldd1 an EVENT-LEDGER state — a List of (tag,value) tuples appends per log dispatch, and replay folds only the MATCHING tag's values (absent tag folds to zero)"
+  (input  (do
+            (effect S
+              (op log (-> Int64 Int64 Int64))
+              (op replay (-> Int64 Int64)))
+            (def (fold-tag (: xs (List (Tuple Int64 Int64))) (: t Int64) (: i Int64) (: acc Int64))
+              (match (List.at xs i)
+                ((Some e) (match e
+                            ((tuple tt v) (fold-tag xs t (+ i 1) (if (= tt t) (+ acc v) acc)))))
+                ((None u) acc)))
+            (def (main (: n Int64))
+              (handle S (: (list) (List (Tuple Int64 Int64)))
+                ((log (t v) led
+                  (let ((led2 (List.push led (tuple t v))))
+                    (resume (List.len led2) led2)))
+                 (replay (t) led (resume (fold-tag led t 0 0) led)))
+                (let ((a (S.log 1 n)))
+                  (let ((b (S.log 2 7)))
+                    (let ((c (S.log 1 (+ n 2))))
+                      (let ((d (S.replay 1)))
+                        (let ((e (S.replay 2)))
+                          (let ((f (S.replay 9)))
+                            (+ (* 10 (+ (* 100 (+ (* 1000 (+ (* 10 (+ (* 10 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 123008070 Int64))
+  (call   main (: 20 Int64)) (output (: 123042070 Int64)))
+
+(case "bis1 BINARY SEARCH against an ORACLE effect — the arm only answers -1/0/1 vs the hidden target, the body's recursive driver narrows (lo,hi) from the verdicts, dispatch count is data-dependent"
+  (input  (do
+            (effect O (op probe (-> Int64 Int64)))
+            (def (search (: lo Int64) (: hi Int64) (: k Int64) (: acc Int64))
+              (if (or (> lo hi) (= k 0))
+                  (+ (* 100 acc) (- hi lo))
+                  (let ((mid (/ (+ lo hi) 2)))
+                    (let ((v (O.probe mid)))
+                      (if (= v 0)
+                          (+ (* 100 (+ (* 10 acc) 2)) (- hi lo))
+                          (if (> v 0)
+                              (search (+ mid 1) hi (- k 1) (+ (* 10 acc) 3))
+                              (search lo (- mid 1) (- k 1) (+ (* 10 acc) 1))))))))
+            (def (main (: n Int64))
+              (handle O n
+                ((probe (mid) t
+                  (resume (if (= mid t) 0 (if (< mid t) 1 -1)) t)))
+                (search 0 100 5 0)))
+            (export main)))
+  (call   main (: 37 Int64)) (output (: 13224 Int64))
+  (call   main (: 50 Int64)) (output (: 300 Int64)))
