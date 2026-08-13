@@ -8062,7 +8062,19 @@ fn emit(
             // than routing to a default. The index sub-value is kept in a scratch local across the test —
             // claimed at `idx_base` (above `list`'s scratch) so it can't alias a scratch slot `list`'s emit
             // typed differently.
-            let idx_slot = idx_base;
+            // WIDTH-PARTITIONED CLAIM (breaker #23 RESIDUAL): the index sub-value is kept in a scratch local
+            // across the bounds test. `idx_base = *high` is normally free, BUT a floor-reset across a fold's
+            // handler arms can leave `*high` pointing back at a slot a LIVE i32 handle still holds — e.g. a
+            // `SumExpect` shell (a fold-forced `Option.expect`, breaker pfxH func[9] slot 6) recorded that slot
+            // I32 and raised `*high`, then a sibling-arm reset dropped `*high` back onto it. Blindly teeing the
+            // i64 index there (`scratch_ty.insert(idx_slot, I64)`, last-writer-wins) re-declares that wasm
+            // local i64 → the earlier i32 handle `tee` is invalid ("expected i32, found i64"), invalid
+            // component. SKIP forward over any slot `scratch_ty` records at a NON-i64 width, the same
+            // width-partition discipline `Core::ListAt`/`Core::Let`/`emit_checked_arith_to` already apply.
+            let mut idx_slot = idx_base;
+            while matches!(scratch_ty.get(&idx_slot), Some(&w) if w != ValType::I64) {
+                idx_slot += 1;
+            }
             *high = (*high).max(idx_slot + 1);
             scratch_ty.insert(idx_slot, ValType::I64);
             out.push(Lir::LocalTee(idx_slot)); // [list, index] — keep a copy in the slot
