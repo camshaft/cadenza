@@ -401,9 +401,16 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             if crate::eval::typeval_of(db, id).is_some() {
                 Ty::Type
             } else {
+                // Each field is an INDEPENDENT type position: freshen its free vars into a disjoint block
+                // off a SHARED counter so sibling fields never share a var. Two bare `None()` fields each
+                // `type_of` to `Option(?0)` (the nullary-variant scheme var, memoized per node), so without
+                // this they'd share `?0` and cross-contaminate when the record unifies against an expected
+                // type (`?0 := Bytes` for one field then `?0 := Outcome` for its sibling — a spurious
+                // mismatch). Mirrors the `Apply(RecordNew)` build in `compound_ctor_type`.
+                let mut fresh = crate::unify::Fresh::new();
                 let mut field_tys = std::collections::BTreeMap::new();
                 for (label, &value) in fields.iter() {
-                    let t = type_of(db, value);
+                    let t = crate::unify::freshen_free(&type_of(db, value), &mut fresh);
                     field_tys.insert(label.clone(), t);
                 }
                 Ty::Record(std::rc::Rc::new(field_tys))
@@ -4869,12 +4876,30 @@ fn compute_def_scheme(db: &mut Db, def: usize) -> Option<Scheme> {
 fn compound_ctor_type(db: &mut Db, prim: crate::resolved::Prim, args: &[StructId]) -> Ty {
     use crate::resolved::Prim;
     match prim {
-        Prim::TupleNew => Ty::Tuple(args.iter().map(|&e| type_of(db, e)).collect()),
+        // Each element is an INDEPENDENT type position, so its type's free vars must be DISJOINT from its
+        // siblings' — otherwise two elements that each `type_of` to a colliding var (a bare `None()` types
+        // `Option(?0)` from its own `Fresh::new()`, so two of them share `?0`) would cross-contaminate when
+        // the whole tuple/record type unifies against an expected type in ONE `Subst` (unifying `?0 := A`
+        // for one element then `?0 := B` for the sibling — a spurious mismatch). Freshen each element's free
+        // vars into a fresh disjoint block off a SHARED counter (the same `freshen_free` the arg-check uses).
+        Prim::TupleNew => {
+            let mut fresh = crate::unify::Fresh::new();
+            Ty::Tuple(
+                args.iter()
+                    .map(|&e| crate::unify::freshen_free(&type_of(db, e), &mut fresh))
+                    .collect(),
+            )
+        }
         Prim::RecordNew => match crate::resolve::read_record_fields(db, args) {
             Ok(fields) => {
+                let mut fresh = crate::unify::Fresh::new();
                 let mut field_tys = std::collections::BTreeMap::new();
                 for (label, &value) in fields.iter() {
-                    field_tys.insert(label.clone(), type_of(db, value));
+                    // Freshen per field so sibling fields' vars are independent (see the TupleNew note): two
+                    // bare `None()` fields must NOT share an `Option` element var, or one field borrows the
+                    // other's element type when the record unifies against its expected type.
+                    let ft = crate::unify::freshen_free(&type_of(db, value), &mut fresh);
+                    field_tys.insert(label.clone(), ft);
                 }
                 Ty::Record(std::rc::Rc::new(field_tys))
             }

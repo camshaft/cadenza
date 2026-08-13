@@ -56058,6 +56058,31 @@ mod diagnostics {
     }
 
     #[test]
+    fn two_bare_none_record_fields_do_not_cross_contaminate_via_a_let_bound_record() {
+        // REGRESSION (v-agent-harness report): TWO bare `None()` fields in one LET-BOUND record literal used
+        // to cross-contaminate their `Option` element vars. Each `None()` types as `Option(?0)` (the
+        // nullary-variant scheme var, memoized per node), so both fields SHARED `?0`; when the record's type
+        // (built by the `Resolved::Record` field loop) unified against the expected param type in one
+        // `Subst`, one field borrowed its sibling's element type — `resumes : Option Bytes` was inferred
+        // `Option Outcome`, a spurious CDZ0203. FIX: each record field's free vars are freshened into a
+        // DISJOINT block, so sibling `None()` fields solve independently against their own expected field
+        // type. `apply` takes a record with two DIFFERENTLY-typed Option fields, both bound `None` via a
+        // `let`, then applied — must type-check with NO CDZ0203 field-mismatch (the cross-contamination
+        // fault). Asserts the diagnostics are clean rather than running it (a `Bytes`-bearing record needs
+        // the value-heap runtime the lib-test linker doesn't stage).
+        let src = "(module m \
+           (type Outcome (Ok Int64) (Err Int64)) \
+           (def (apply (: evt (Record (: a (Option Bytes)) (: b (Option Outcome)) (: c Int64)))) (. evt c)) \
+           (def (main) (let ((evt (record (= a (None)) (= b (None)) (= c 9)))) (apply evt))) \
+           (export main))";
+        let all = diags_of(src);
+        assert!(
+            all.iter().all(|d| d.code.as_deref() != Some("CDZ0203")),
+            "two bare None() record fields must not cross-contaminate (no CDZ0203 field mismatch): {all:?}"
+        );
+    }
+
+    #[test]
     fn a_def_named_quote_binds_its_parameter_and_is_not_hijacked_by_reification() {
         // `quote`/`quasiquote` are grammar heads recognized STRUCTURALLY only when they head an
         // EXPRESSION — like `if`/`match`/`bin`, all freely definable as ordinary function names because
