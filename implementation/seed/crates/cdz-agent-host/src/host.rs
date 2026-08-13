@@ -1415,12 +1415,14 @@ impl AgentHost {
             self.retract_dead_member_from_groups(id);
             self.remove(id);
             // §lifecycle I7 host-mechanism half: after the durable Terminated marker + the I5 group-evict,
-            // emit a `ChildExited` INBOUND into the PARENT's inbox (host-as-sender, reusing the deliver/inbox
-            // path — NOT an authz-gated `lifecycle/*` EFFECT the parent performs; the family string is just
-            // the Inbound content-type the prelude I7 supervisor matches on before `decode_child_exited`).
-            // A terminate is a FAILURE close, so the outcome is `CloseOutcome::Failure(reason)`. Fire only
-            // when the child HAS a parent that is STILL registered — a root session (`None`) or a gone/
-            // already-terminated parent = no-op, no bounce (the supervisor, if any, is gone too).
+            // deliver a first-class `EventBody::ChildCompleted { child, outcome }` into the PARENT's log
+            // (host-as-sender, reusing the deliver/fold path — NOT an authz-gated `lifecycle/*` EFFECT the
+            // parent performs). §6 V2: this is the SAME unified variant the reap self-close path emits; a
+            // terminate is a FAILURE close, so the outcome is `CloseOutcome::Failure(reason)`, which is what
+            // the supervisor's fold discriminates on. (event_to_guest_inputs maps the variant to the SAME
+            // opaque guest form the escalate-only v1 supervisor folds today, so this is behavior-preserving
+            // until v-ah's slice-B surfaces typed child+outcome fields.) Fire only when the child HAS a parent
+            // that is STILL registered — a root session (`None`) or a gone/terminated parent = no-op.
             //
             // WARNING: Resolve the parent by its GENESIS HASH, not by `hex(parent_hash)` as a SessionId: the id is
             // OPAQUE host metadata (a spawned child gets genesis-hash-hex, but a top-level NAMED supervisor
@@ -1430,16 +1432,9 @@ impl AgentHost {
             // same SessionId-is-opaque root cause as the §I5 bounce arc).
             if let Some(parent_hash) = parent {
                 if let Some(parent_id) = self.session_id_by_genesis_hash(&parent_hash) {
-                    let payload = cdz_kernel::event_ast::encode_child_exited(
-                        &child_hash,
-                        &cdz_kernel::event::CloseOutcome::Failure(i7_reason),
-                    );
-                    let body = EventBody::Inbound {
-                        content_type: cdz_kernel::event::ContentType {
-                            family: "lifecycle/child-exited".into(),
-                            version: 1,
-                        },
-                        payload: cdz_kernel::effect::Payload::Inline(payload.into()),
+                    let body = EventBody::ChildCompleted {
+                        child: child_hash,
+                        outcome: cdz_kernel::event::CloseOutcome::Failure(i7_reason),
                     };
                     // `cause = None` (v1) — a provenance link to the terminate is a cheap later add. The
                     // parent's turn outcome is not surfaced here: a supervisor fold that errors is the
@@ -1522,24 +1517,21 @@ impl AgentHost {
                 // Finalize: evict from groups + drop from the registry (same as terminate's §I5 + `remove`).
                 self.retract_dead_member_from_groups(&id);
                 self.remove(&id);
-                // Notify the parent (if any is still registered AND not itself closing this batch) via a
-                // `lifecycle/child-completed` INBOUND.
+                // Notify the parent (if any is still registered AND not itself closing this batch) with a
+                // first-class `EventBody::ChildCompleted { child, outcome }` — the §6 V2 unified variant (the
+                // terminate-I7 path emits the same one; CloseOutcome discriminates self-close Success|Failure
+                // vs a terminate Failure). Behavior-preserving today: event_to_guest_inputs maps the variant to
+                // the same opaque guest form the escalate-only supervisor folds, until v-ah's slice-B surfaces
+                // typed child+outcome fields.
                 if let Some(parent_hash) = parent {
                     if !closing_this_batch.contains(&parent_hash) {
                         if let Some(parent_id) = self.session_id_by_genesis_hash(&parent_hash) {
-                            let payload = cdz_kernel::ast_marshal::encode_child_completed(
-                                &child_hash,
-                                &outcome,
-                            );
-                            let body = EventBody::Inbound {
-                                content_type: cdz_kernel::event::ContentType {
-                                    family: "lifecycle/child-completed".into(),
-                                    version: 1,
-                                },
-                                payload: cdz_kernel::effect::Payload::Inline(payload.into()),
+                            let body = EventBody::ChildCompleted {
+                                child: child_hash,
+                                outcome,
                             };
-                            // `cause = None` (v1) — mirrors the §I7 child-exited notify. A supervisor fold
-                            // that errors on the notify is its own concern, logged at the deliver boundary.
+                            // `cause = None` (v1). A supervisor fold that errors on the notify is its own
+                            // concern, logged at the deliver boundary.
                             let _ = self.deliver(&parent_id, body, None).await;
                         }
                     }
@@ -3404,39 +3396,21 @@ mod tests {
         );
     }
 
-    /// §lifecycle I7 test reducer: a parent supervisor that folds a `lifecycle/child-exited` Inbound. It
-    /// decodes the canonical codec payload and records the exited child's hash + the failure reason into KV,
-    /// so a test can observe that the host actually delivered the supervision signal. Any other inbound is a
+    /// §lifecycle I7 test reducer: a parent supervisor that folds the first-class `EventBody::ChildCompleted`
+    /// variant (terminate delivers it with a `Failure` outcome) and records the child's hash + failure reason
+    /// into KV, so a test can observe the host actually delivered the supervision signal. Any other event is a
     /// no-op (a real supervisor would also decide restart/escalate — out of scope for the host-mechanism E2E).
     struct ChildExitedFoldingReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for ChildExitedFoldingReducer {
         async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
-            if let EventBody::Inbound {
-                content_type,
-                payload,
-            } = &event.body
-            {
-                if content_type.matches_family("lifecycle/child-exited") {
-                    // Pin the v1 wire contract: a silent version bump/drop (family+payload unchanged) must
-                    // NOT pass unnoticed (PR #2481 c2 — value-assert the contract, not just the family).
-                    kv.put(
-                        b"exit-version".to_vec(),
-                        content_type.version.to_string().into_bytes(),
-                    );
-                    if let Payload::Inline(bytes) = payload {
-                        if let Ok((child, outcome)) =
-                            cdz_kernel::event_ast::decode_child_exited(bytes)
-                        {
-                            kv.put(b"exited-child".to_vec(), child.to_hex().into_bytes());
-                            let reason = match outcome {
-                                cdz_kernel::event::CloseOutcome::Failure(r) => r.into_bytes(),
-                                cdz_kernel::event::CloseOutcome::Success(_) => b"success".to_vec(),
-                            };
-                            kv.put(b"exit-reason".to_vec(), reason);
-                        }
-                    }
-                }
+            if let EventBody::ChildCompleted { child, outcome } = &event.body {
+                kv.put(b"exited-child".to_vec(), child.to_hex().into_bytes());
+                let reason = match outcome {
+                    cdz_kernel::event::CloseOutcome::Failure(r) => r.clone().into_bytes(),
+                    cdz_kernel::event::CloseOutcome::Success(_) => b"success".to_vec(),
+                };
+                kv.put(b"exit-reason".to_vec(), reason);
             }
             FoldOutput::none()
         }
@@ -3514,12 +3488,6 @@ mod tests {
             Some(b"boom".to_vec()),
             "a terminate is a Failure close — the reason round-trips to the supervisor"
         );
-        // Pin the v1 wire contract: the emitted ContentType.version is 1 (PR #2481 c2).
-        assert_eq!(
-            kv.get(b"exit-version").map(|v| v.to_vec()),
-            Some(b"1".to_vec()),
-            "the ChildExited Inbound carries content_type.version == 1 (v1 wire contract)"
-        );
         // The child itself is gone from the registry (terminate removed it).
         assert!(
             !host.contains(&child_id),
@@ -3544,37 +3512,20 @@ mod tests {
         }
     }
 
-    /// §6 supervision test reducer (PARENT): folds a `lifecycle/child-completed` Inbound, decodes the
-    /// canonical codec payload, and records the completed child's hash + a success/failure marker into KV so
-    /// the test can observe the host delivered the normal-completion signal. Any other inbound is a no-op.
+    /// §6 supervision test reducer (PARENT): folds the first-class `EventBody::ChildCompleted` variant and
+    /// records the completed child's hash + a success/failure marker into KV so the test can observe the host
+    /// delivered the completion signal. Any other event is a no-op.
     struct ChildCompletedFoldingReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for ChildCompletedFoldingReducer {
         async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
-            if let EventBody::Inbound {
-                content_type,
-                payload,
-            } = &event.body
-            {
-                if content_type.matches_family("lifecycle/child-completed") {
-                    // Pin the v1 wire contract (family+payload unchanged must not mask a version bump).
-                    kv.put(
-                        b"completed-version".to_vec(),
-                        content_type.version.to_string().into_bytes(),
-                    );
-                    if let Payload::Inline(bytes) = payload {
-                        if let Ok((child, outcome)) =
-                            cdz_kernel::ast_marshal::decode_child_completed(bytes)
-                        {
-                            kv.put(b"completed-child".to_vec(), child.to_hex().into_bytes());
-                            let marker = match outcome {
-                                cdz_kernel::event::CloseOutcome::Success(_) => b"success".to_vec(),
-                                cdz_kernel::event::CloseOutcome::Failure(r) => r.into_bytes(),
-                            };
-                            kv.put(b"completed-outcome".to_vec(), marker);
-                        }
-                    }
-                }
+            if let EventBody::ChildCompleted { child, outcome } = &event.body {
+                kv.put(b"completed-child".to_vec(), child.to_hex().into_bytes());
+                let marker = match outcome {
+                    cdz_kernel::event::CloseOutcome::Success(_) => b"success".to_vec(),
+                    cdz_kernel::event::CloseOutcome::Failure(r) => r.clone().into_bytes(),
+                };
+                kv.put(b"completed-outcome".to_vec(), marker);
             }
             FoldOutput::none()
         }
@@ -3664,12 +3615,7 @@ mod tests {
         assert_eq!(
             kv.get(b"completed-outcome").map(|v| v.to_vec()),
             Some(b"success".to_vec()),
-            "a self-close Success round-trips to the supervisor via the canonical codec"
-        );
-        assert_eq!(
-            kv.get(b"completed-version").map(|v| v.to_vec()),
-            Some(b"1".to_vec()),
-            "the ChildCompleted Inbound carries content_type.version == 1 (v1 wire contract)"
+            "a self-close Success round-trips to the supervisor via the ChildCompleted variant"
         );
     }
 
@@ -3831,12 +3777,11 @@ mod tests {
             recovered.events.last().map(|e| &e.body)
         );
         assert!(
-            !recovered.events.iter().any(|e| matches!(
-                &e.body,
-                EventBody::Inbound { content_type, .. }
-                    if content_type.matches_family("lifecycle/child-completed")
-            )),
-            "no child-completed Inbound was ever delivered to the closing parent"
+            !recovered
+                .events
+                .iter()
+                .any(|e| matches!(&e.body, EventBody::ChildCompleted { .. })),
+            "no ChildCompleted was ever delivered to the closing parent"
         );
 
         // P's OWN completion still propagated UP to the grandparent G (P is not in the closed set from G's
