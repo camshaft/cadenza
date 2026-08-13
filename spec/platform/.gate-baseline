@@ -9,6 +9,7 @@ pass	a message to an absent peer bounces a delivery-failure back to the sender, 
 pass	a reducer deletes KV slots and branches on the delete bool: true for a present key, false for an absent one
 pass	a reducer prefix-scans a namespaced key range and counts exactly the in-prefix pairs
 pass	a reducer reads an absent key (kv.get None) and a just-put key (kv.get Some) and witnesses both option arms
+pass	a reducer self-closes its session with a control/close Success signal, ending status closed
 pass	a sender emits a message to a peer session, which the peer receives and folds
 pass	a sender emits two messages to one peer in a single fold; the peer folds both in order
 pass	a session stores a fixed mid-range byte value (decoder past the counter's 1)
