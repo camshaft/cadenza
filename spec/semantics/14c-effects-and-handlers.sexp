@@ -9774,3 +9774,84 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 902 Int64))
   (call   main (: 7 Int64)) (output (: 31803 Int64)))
+
+; --- breaker batch 259: 2D grid nested-update, role-inverting parity splitter, separator-join builder ---
+(case "grd1 a 2D GRID state — set rebuilds one CELL via List.update-within-List.update (row carved out, cell replaced, row reinstalled), the answer re-sums the whole grid and reads bound-check both levels"
+  (input  (do
+            (effect S
+              (op setc (-> Int64 Int64 Int64 Int64))
+              (op getc (-> Int64 Int64 Int64)))
+            (def (row-sum (: xs (List Int64)) (: i Int64) (: acc Int64))
+              (match (List.at xs i)
+                ((Some v) (row-sum xs (+ i 1) (+ acc v)))
+                ((None u) acc)))
+            (def (grid-sum (: g (List (List Int64))) (: r Int64) (: acc Int64))
+              (match (List.at g r)
+                ((Some row) (grid-sum g (+ r 1) (+ acc (row-sum row 0 0))))
+                ((None u) acc)))
+            (def (main (: n Int64))
+              (handle S (list (list 1 2) (list 3 4))
+                ((setc (r c v) g
+                  (let ((g2 (match (List.at g r)
+                              ((Some row) (List.update g r (List.update row c v)))
+                              ((None u) g))))
+                    (resume (grid-sum g2 0 0) g2)))
+                 (getc (r c) g
+                  (resume (match (List.at g r)
+                            ((Some row) (match (List.at row c) ((Some v) v) ((None u) -1)))
+                            ((None u) -1))
+                          g)))
+                (let ((a (S.setc 0 1 n)))
+                  (let ((b (S.getc 0 1)))
+                    (let ((c (S.setc 1 0 (+ n 5))))
+                      (let ((d (S.getc 1 0)))
+                        (let ((e (S.getc 9 9)))
+                          (+ (* 10 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) (+ e 2)))))))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 150724121 Int64))
+  (call   main (: 0 Int64)) (output (: 80010051 Int64)))
+
+(case "rsp1 a ROLE-INVERTING parity splitter — feed routes each value to the even or odd accumulator, flip INVERTS the routing so post-flip evens land in the odd bucket, the flip answers the packed snapshot"
+  (input  (do
+            (effect S
+              (op feed (-> Int64 Int64))
+              (op flip (-> Int64)))
+            (def (main (: n Int64))
+              (handle S (tuple 0 0 0)
+                ((feed (v) st
+                  (match st
+                    ((tuple ev od f)
+                      (if (= (= (% v 2) 0) (= f 0))
+                          (resume (+ ev v) (tuple (+ ev v) od f))
+                          (resume (+ od v) (tuple ev (+ od v) f))))))
+                 (flip () st
+                  (match st
+                    ((tuple ev od f)
+                      (resume (+ (* 100 ev) od) (tuple ev od (- 1 f)))))))
+                (let ((a (S.feed 4)))
+                  (let ((b (S.feed n)))
+                    (let ((c (S.flip)))
+                      (let ((d (S.feed 6)))
+                        (let ((e (S.feed 3)))
+                          (+ (* 10000 (+ (* 10000 (+ (* 100 a) b)) c)) (+ (* 100 d) e)))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 40304030907 Int64))
+  (call   main (: 8 Int64)) (output (: 41212000615 Int64)))
+
+(case "jin1 a SEPARATOR-JOIN builder — the comma inserts only BETWEEN elements via the count field, and an EMPTY piece still consumes a separator slot"
+  (input  (do
+            (effect S (op add (-> String Int64)))
+            (def (main (: n Int64))
+              (handle S (tuple "" 0)
+                ((add (p) st
+                  (match st
+                    ((tuple s cnt)
+                      (let ((s2 (String.concat (if (> cnt 0) (String.concat s ",") s) p)))
+                        (resume (String.byte-len s2) (tuple s2 (+ cnt 1))))))))
+                (let ((a (S.add "ab")))
+                  (let ((b (S.add (if (= n 0) "" "x"))))
+                    (let ((c (S.add "cd")))
+                      (+ (* 100 (+ (* 100 a) b)) c))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 20306 Int64))
+  (call   main (: 1 Int64)) (output (: 20407 Int64)))

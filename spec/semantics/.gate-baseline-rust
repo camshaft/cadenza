@@ -5275,6 +5275,7 @@ pass	gp8 a THREE-arm same-ctor ladder (two literals + general) selects each arm 
 pass	gr2 guarded match on a perform result INSIDE a two-site arm's served branch
 pass	grafting through a DAG-shared user-sum subtree rebuilds one path and leaves the shared original intact
 pass	graph REACHABILITY drains a worklist against a visited-set over a Map adjacency list
+pass	grd1 a 2D GRID state — set rebuilds one CELL via List.update-within-List.update (row carved out, cell replaced, row reinstalled), the answer re-sums the whole grid and reads bound-check both levels
 pass	greater-than at the integer extremes is signed
 pass	greater-than comparison
 pass	greater-than of an integer and a float is rejected
@@ -5395,6 +5396,7 @@ pass	is2 the ARM's resume-value is a nested SAME-effect handle — a fresh shado
 pass	is3 the ARM's NEXT-STATE is computed by a nested SAME-effect handle — the shadow feeds the outer state thread
 pass	iwr1 a SIGNED Int8 handler state — wrapping-add crosses the sign boundary through the thread, the widened answers expose the sign-extension
 pass	ix1 the op argument INDEXES a list held in a two-slot state — in-range reads project, out-of-range yields the arm's fallback
+pass	jin1 a SEPARATOR-JOIN builder — the comma inserts only BETWEEN elements via the count field, and an EMPTY piece still consumes a separator slot
 pass	jointly-total guards over one variant are still non-exhaustive (guards are opaque to the checker)
 pass	keyed lookups at different keys are not shared
 pass	lam1 INLINE and LET-BOUND lambdas applied to one draw — both closure forms read the same drawn value
@@ -5944,6 +5946,7 @@ pass	rs1 a RESULT built from draw parity crosses dispatch as an op ARGUMENT — 
 pass	rs2 the arm updates the record state via Record.with — field b is held by the functional update across dispatches
 pass	rs3 a NESTED record state — the arm functionally updates the inner record's x by y and bumps the outer counter
 pass	rsl1 a Result whose Ok payload is a HEAP LIST snapshot of the state — the first snap Errs on the empty list, the second Oks the grown snapshot, both cross resume
+pass	rsp1 a ROLE-INVERTING parity splitter — feed routes each value to the even or odd accumulator, flip INVERTS the routing so post-flip evens land in the odd bucket, the flip answers the packed snapshot
 pass	rsw1 the arm's Ok/Err verdict FLIPS between two identical performs as the state passes the payload — both variants cross and unwrap
 pass	rt1 Ok/Err resume values with a DEPENDENT second dispatch — the sign of the falling state flips Ok to Err
 pass	rt2 an Err SHORT-CIRCUITS a recursive Result walk — Ok accumulates, the first Err multiplies out and stops
