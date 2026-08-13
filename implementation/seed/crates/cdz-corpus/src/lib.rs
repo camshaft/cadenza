@@ -138,6 +138,11 @@ pub struct PlatformRecord {
     /// carries its alias, its reducer program (normalized one-line like a `(case (input …))` program —
     /// the reader does NOT compile it), and the effect families it serves as a handler.
     pub sessions: Vec<PlatformSession>,
+    /// `(child <alias> (reducer <prog>))` blocks — registered-but-not-kicked SPAWNABLE child reducers, in
+    /// declaration order, as `(alias, normalized-program)`. Structurally like a `session` (the reducer
+    /// program is normalized one-line, NOT compiled here) but a child declares a spawn target rather than
+    /// a live seeded session — the grade side compiles it and hands the runner `--child-reducer alias=path`.
+    pub children: Vec<(String, String)>,
     /// The `(kickoff <alias> (inbound <family> <value>))` seed events, in DECLARATION ORDER (1+). A
     /// single-kickoff case (the common one) carries exactly one; the multi-kickoff fan-in shape carries
     /// several, all enqueued in this order before the FIFO drive loop (single-fixpoint-deterministic,
@@ -368,7 +373,8 @@ pub fn to_records(text: &str) -> Result<String, String> {
 /// FIXED-ARITY tab lines + one line per element of an ordered list (mirrors `host-call`/`module`), so
 /// v-platform-conformance's `run_platform_case` parses with the same split-on-tab loop, no s-expr parser:
 ///   `platform-case\t<title>` · `doc\t<text>`? · `session\t<alias>\t<program>` (1+) ·
-///   `serves\t<alias>\t<family>` (0+) · `kickoff\t<alias>\t<inbound>\t<value>` (1+, declaration order) ·
+///   `serves\t<alias>\t<family>` (0+) · `child\t<alias>\t<program>` (0+) ·
+///   `kickoff\t<alias>\t<inbound>\t<value>` (1+, declaration order) ·
 ///   `expect-effect\t<from>\t<family>[\t<value>]` (0+, order) ·
 ///   `expect-message\t<from>\t<to>\t<family>\t<value>` (0+, order) ·
 ///   `expect-delivery-failure\t<from>\t<to>` (0+) · `end-kv\t<alias>\t<key>\t<value>` (0+) ·
@@ -397,6 +403,13 @@ pub fn render_platform(records: &[PlatformRecord]) -> String {
                 out.push_str(family);
                 out.push('\n');
             }
+        }
+        for (alias, program) in &r.children {
+            out.push_str("child\t");
+            out.push_str(alias);
+            out.push('\t');
+            out.push_str(program);
+            out.push('\n');
         }
         for k in &r.kickoffs {
             out.push_str("kickoff\t");
@@ -707,6 +720,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
 /// Parse a `(platform-case "title" <clause>…)` into a [`PlatformRecord`]. Mirrors [`parse_case`]'s
 /// clause walk. Clauses (all optional except a kickoff, which the fixpoint needs to start):
 ///   `(doc "…")` · `(session <alias> (reducer <prog>) (serves <family>…)?)` (1+) ·
+///   `(child <alias> (reducer <prog>))` (0+ — a spawnable child reducer, not a live session) ·
 ///   `(kickoff <alias> (inbound <family> <value>))` (1+, declaration order — repeatable for fan-in) ·
 ///   `(expect-effects (effect (from <a>) (family <f>) <value>?)…)` (ordered) ·
 ///   `(expect-messages (message (from <a>) (to <b>) (family <f>) <value>)…)` (ordered) ·
@@ -725,6 +739,7 @@ fn parse_platform_case(a: &Arenas, case_id: StructId) -> Result<PlatformRecord, 
 
     let mut doc: Option<String> = None;
     let mut sessions: Vec<PlatformSession> = Vec::new();
+    let mut children: Vec<(String, String)> = Vec::new();
     let mut kickoffs: Vec<Kickoff> = Vec::new();
     let mut expect_effects: Vec<ExpectEffect> = Vec::new();
     let mut expect_messages: Vec<ExpectMessage> = Vec::new();
@@ -778,6 +793,26 @@ fn parse_platform_case(a: &Arenas, case_id: StructId) -> Result<PlatformRecord, 
                         program,
                         serves,
                     });
+                }
+            }
+            // `(child <alias> (reducer <prog>))` — a registered-but-not-kicked SPAWNABLE child reducer.
+            // Same reducer-program normalization as `session` (NOT compiled here); no `serves` — a child
+            // declares a spawn target, not a live handler. Collected in declaration order.
+            Some("child") => {
+                if let Some(tail) = a.as_form(clause, "child")
+                    && let Some(&alias_id) = tail.first()
+                    && let Some(alias) = atom_text(a, alias_id)
+                {
+                    let mut program = String::new();
+                    for &c in &tail[1..] {
+                        if a.head_name(c) == Some("reducer")
+                            && let Some(prog) =
+                                a.as_form(c, "reducer").and_then(|t| t.first().copied())
+                        {
+                            program = normalize_program(a, prog);
+                        }
+                    }
+                    children.push((alias, program));
                 }
             }
             // `(kickoff <alias> (inbound <family> <value>))` — a seed event. Repeatable: every clause is
@@ -933,6 +968,7 @@ fn parse_platform_case(a: &Arenas, case_id: StructId) -> Result<PlatformRecord, 
         title,
         doc,
         sessions,
+        children,
         kickoffs,
         expect_effects,
         expect_messages,
@@ -1231,6 +1267,45 @@ mod tests {
         assert_eq!(out.matches("kickoff\t").count(), 2);
         // Re-read of the same sexp renders identically (fixed-point).
         assert_eq!(render_platform(&read_platform(src).unwrap()), out);
+    }
+
+    /// An optional `(child <alias> (reducer <prog>))` clause registers a spawnable child reducer: it
+    /// collects into `children` (alias, normalized-program) in declaration order and renders one
+    /// `child\t<alias>\t<program>` line, structurally mirroring `session` but with no `serves`. Absent =
+    /// no line, so existing cases stay byte-identical. Grading (compile + `--child-reducer`) is xtask's.
+    #[test]
+    fn platform_case_registers_spawnable_children() {
+        let src = r#"(platform-case "a supervisor spawns a worker child"
+                 (session "sup" (reducer (do (def (main) 0) (export main))) (serves "spawn"))
+                 (child "worker" (reducer (do (def (main) 1) (export main))))
+                 (kickoff "sup" (inbound "start" (: unit Unit))))"#;
+        let recs = read_platform(src).unwrap();
+        assert_eq!(recs.len(), 1);
+        // One live session, one registered (not kicked) child.
+        assert_eq!(recs[0].sessions.len(), 1);
+        assert_eq!(recs[0].children.len(), 1);
+        assert_eq!(recs[0].children[0].0, "worker");
+        assert!(recs[0].children[0].1.contains("(def (main) 1)"));
+        // Renders one child line (program normalized one-line), distinct from the session line.
+        let out = render_platform(&recs);
+        assert!(out.contains("child\tworker\t"));
+        assert_eq!(
+            out.matches("\nchild\t").count() + out.starts_with("child\t") as usize,
+            1
+        );
+        assert!(out.contains("session\tsup\t"));
+        // Fixed-point under a re-read of the original sexp.
+        assert_eq!(render_platform(&read_platform(src).unwrap()), out);
+
+        // A case with NO child clause renders no child line (byte-identical to today).
+        let no_child = read_platform(
+            r#"(platform-case "no child"
+                 (session "w" (reducer (do (def (main) 0) (export main))))
+                 (kickoff "w" (inbound "start" (: unit Unit))))"#,
+        )
+        .unwrap();
+        assert!(no_child[0].children.is_empty());
+        assert!(!render_platform(&no_child).contains("child\t"));
     }
 
     /// A platform-case MUST carry a kickoff and at least one session — the fixpoint has nothing to run
