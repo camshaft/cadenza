@@ -1504,7 +1504,7 @@ impl AgentHost {
             );
         }
         tracing::info!(
-            dead = %dead.to_hex(),
+            dead = %dead.to_base64url(),
             groups = retract.len(),
             "session-directory I5: auto-evicted a terminated session from its groups (scan-on-death)"
         );
