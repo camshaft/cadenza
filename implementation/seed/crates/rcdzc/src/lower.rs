@@ -1025,11 +1025,32 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 if let Some((effect, op, result)) =
                     crate::effects::perform_host_target(db, id, head)
                 {
-                    trace!(target: "rcdzc::lower", node = id.0, %effect, %op, "apply: host-delegated perform → Core::HostCall");
+                    // SCHEMA-HASH PHASE-1a FORK (sync-vs-async perform discriminator) — fires ONLY in a
+                    // REDUCER-WORLD compile (`db.wit_world` present): the target world declares the reducer's
+                    // synchronous IMPORTS (kv). A host-delegated perform whose op is a func member of an
+                    // import interface has a synchronous backing import → stays a `Core::HostCall` (the kv
+                    // path). A perform whose op is NOT an import member is a WORLD-effect (Model/Tool/Emit)
+                    // with no synchronous result — by the fold-purity contract its result defers to a later
+                    // `apply`, so it REIFIES into the returned effect-list as an effect-request `Core::Record`
+                    // (v-ah ruling: apply returns the effect-list; the reify is capability-blind — all args
+                    // ride the payload, no target split). With NO target world (a PLAIN module's `(host (E)
+                    // (E.op …))` — no reducer world), there is no import/world split: the perform is the
+                    // ordinary host-delegated `Core::HostCall` exactly as before (the reify is a reducer-world
+                    // concept). Reads the DECLARED world contract (`is_world_import_op`), zero hard-coded
+                    // capability vocabulary (GENERIC-COMPILER-clean).
+                    let args_vec = args.to_vec();
+                    let world = db.wit_world.clone();
+                    if let Some(world_bytes) = &world
+                        && !crate::wit_world::is_world_import_op(Some(world_bytes), &effect, &op)
+                    {
+                        trace!(target: "rcdzc::lower", node = id.0, %effect, %op, "apply: reducer-world NON-import world-effect → reify to effect-request record (async)");
+                        return reify_effect_to_tuple(db, &effect, &args_vec);
+                    }
+                    trace!(target: "rcdzc::lower", node = id.0, %effect, %op, "apply: host-delegated perform → Core::HostCall (sync import / plain host-delegation)");
                     return Core::HostCall {
                         effect: effect.into(),
                         op: op.into(),
-                        args: args.to_vec(),
+                        args: args_vec,
                         result,
                     };
                 }
@@ -15315,6 +15336,86 @@ fn effect_schema_descriptor(
     Some(b.effect_schema_tree(&effect_name, &op_refs))
 }
 
+/// Lower a NON-import (world-effect) perform `(E.op args…)` to its reified EFFECT-REQUEST record — the
+/// entry a reducer's `apply` returns in its effect-list (schema-hash phase-1a; v-ah ruling: apply returns
+/// the effect-list, a world-effect perform reifies into it, NO result-threading — the result arrives as a
+/// later event). The record is the canonical value-form the kernel's `parse_effect_request` decodes — a
+/// 3-field record (v-ah ruling S2, 2026-08-14), NO target column:
+///   `("record" (= correlation (None)) (= kind "effect/<name>") (= payload <Option>))`
+/// fields NAME-SORTED (correlation < kind < payload — the sorted-slot order value-encode and the kernel
+/// both read; a `Record` BTreeMap sorts them, so building via the record AST is inherently sorted).
+///
+/// CAPABILITY-BLIND (v-ah G3-reify ruling, GENERIC-COMPILER-clean): the reify does NOT split a "target"
+/// arg out, and there is NO target column at all (that would need to know which effects are target-chosen
+/// = a baked capability vocabulary, forbidden). Every arg rides the payload value-form; the DOWNSTREAM
+/// kernel/executor extracts the SEC-F1 resource — an arg INSIDE the payload — via the effect DECL's
+/// `(resource N)` marker, not a wire field. Target-free effects (model/now/timer) carry no resource, so a
+/// no-target-column record is uniformly correct.
+///
+/// `kind` = `"effect/<effect-name>"` (the register-by-string family; String for phase-1a — v-effects flips
+/// it to the schema-hash at their phase-2 core-flip, a one-line change here). `correlation` = `None` (a
+/// concurrency token is a later slice). The PAYLOAD, for the Bytes-payload effects unblocked now (v-ah's
+/// decomposition — the arg is already `Bytes`, e.g. `Tool.run(call: Bytes)`): `Some(<the single Bytes
+/// arg>)` for one arg, `None` for zero args. A structured (non-Bytes) arg (`Model.request(mr: ModelRequest)`)
+/// needs an in-fold value-encode primitive that does not exist yet (R2, escalated to concierge) — DECLINE
+/// it cleanly here until that lands; a multi-arg perform likewise declines (the value-form-of-args tupling
+/// rides the same value-encode). Built by synthesizing the record AST + `resolve_subtree` + `core_of`, so
+/// all the typed `Some`/`None`/record-value machinery is reused (no hand-built typed `Core::SumNew`).
+fn reify_effect_to_tuple(db: &mut Db, effect: &str, args: &[StructId]) -> Core {
+    // PAYLOAD (capability-blind, Bytes-only for now): one Bytes arg → Some(arg); zero args → None; anything
+    // else (multi-arg, or a structured single arg) needs the not-yet-existing in-fold value-encode → decline.
+    let payload_field = match args {
+        [] => {
+            let none_h = db.push_name("None");
+            db.push_list(vec![none_h]) // (None) — the payload-free effect
+        }
+        [only] if matches!(crate::infer::type_of(db, *only), crate::ty::Ty::Bytes) => {
+            let some_h = db.push_name("Some");
+            db.push_list(vec![some_h, *only]) // (Some <bytes-arg>) — the arg IS the payload, no encode
+        }
+        _ => {
+            return Core::Poison(Reject::decline(
+                "reifying a world-effect perform with a non-Bytes or multi-argument payload needs an \
+                 in-fold value-encode primitive (schema-hash phase-1a: only Bytes-payload effects reify \
+                 today; the structured/multi-arg payload rides the deferred Value.encode primitive)",
+            ));
+        }
+    };
+    // kind = "effect/<name>" (String for phase-1a; isolated for the phase-2 String→schema-hash flip).
+    let kind_field = db.push_str(&format!("effect/{effect}"));
+    // correlation = None (a concurrency token is a later slice).
+    let correlation_field = {
+        let none_h = db.push_name("None");
+        db.push_list(vec![none_h])
+    };
+    // NO target field (v-ah ruling S2, 2026-08-14): the reified record is 3-field {correlation, kind,
+    // payload} — NO target column. The resource (for a target-chosen effect) is an arg INSIDE the payload
+    // value-form; the kernel/executor extracts it via the effect DECL's `(resource N)` marker, NOT a wire
+    // field. A vestigial always-empty `target=b""` field is a half-collapse (no-adapter directive: drop it,
+    // don't keep it empty); target-free effects (model/now/timer) have no resource, so no target column is
+    // uniformly correct. The kernel's ingest drops the target-field read in the same flip window.
+
+    // Synthesize the record AST `("record" (= correlation …) (= kind …) (= payload …))`. A record VALUE is
+    // a STR-head `("record" …)` form; each field the canonical `(= name value)` triple. `resolve_record`
+    // reads the fields into a name-SORTED BTreeMap, so the slot order is canonical (correlation < kind <
+    // payload) regardless of the order written here.
+    let field = |db: &mut Db, name: &str, val: StructId| -> StructId {
+        let eq = db.push_name("=");
+        let n = db.push_name(name);
+        db.push_list(vec![eq, n, val])
+    };
+    let record_head = db.push_str("record");
+    let corr = field(db, "correlation", correlation_field);
+    let kind = field(db, "kind", kind_field);
+    let payload = field(db, "payload", payload_field);
+    let record = db.push_list(vec![record_head, corr, kind, payload]);
+    // Re-resolve the synthesized subtree (binds `Some`/`None`/the field spellings) then lower it — reusing
+    // the typed record/sum-value machinery so the `Core::Record` + its `Some`/`None` payloads are built +
+    // typed exactly as a source-written record would be.
+    crate::resolve::resolve_subtree(db, record);
+    core_of(db, record)
+}
+
 /// The FAMILY STRING an async (non-import) perform reifies its effect-request `kind` field to, for the
 /// effect whose declaration occurrence is `decl` — `"effect/" + <declared effect name>` (schema-hash
 /// phase-1a reify, v-effects ruling A 2026-08-13). The kernel's `parse_effect_request` reads `kind` as a
@@ -27951,6 +28052,108 @@ mod tests {
             userspace_effect_family_kind(&db, decl).as_deref(),
             Some("effect/Weather"),
             "kind = effect/<effect-name>"
+        );
+    }
+
+    #[test]
+    fn reify_effect_to_tuple_builds_the_3_field_record_for_a_single_bytes_arg() {
+        // reify_effect_to_tuple lowers a NON-import world-effect perform to its 3-field effect-request
+        // record (v-ah ruling S2): { correlation = None, kind = "effect/<name>", payload = Some(<arg>) },
+        // NO target column. Unit-test the lowering directly (the end-to-end perform fixture is gated on
+        // v-inference's typing branch): feed a Bytes-typed arg node + call reify, assert the Core::Record's
+        // three fields carry the right values. A Bytes arg reifies with NO encode (the arg IS the payload).
+        let mut db = Db::load(crate::testkit::parse(
+            "(module m (def (f) b\"hi\") (export f))",
+        ));
+        let arg = body_of(&mut db, "f"); // a Bytes-typed node (b"hi")
+        assert!(
+            matches!(crate::infer::type_of(&mut db, arg), crate::ty::Ty::Bytes),
+            "the test arg is Bytes-typed"
+        );
+        let core = reify_effect_to_tuple(&mut db, "model", &[arg]);
+        let Core::Record { fields } = core else {
+            panic!("reify must build a Core::Record, got {core:?}");
+        };
+        // Exactly three fields, name-sorted: correlation, kind, payload — NO target column (S2).
+        let names: Vec<&str> = fields.keys().map(|s| s.name.as_ref()).collect();
+        assert_eq!(
+            names,
+            vec!["correlation", "kind", "payload"],
+            "3-field record, name-sorted, NO target column (ruling S2)"
+        );
+        // kind = the ConstStr "effect/model".
+        let kind_occ = *fields
+            .iter()
+            .find(|(s, _)| s.name.as_ref() == "kind")
+            .unwrap()
+            .1;
+        assert!(
+            matches!(core_of(&mut db, kind_occ), Core::ConstStr(s) if &*s == "effect/model"),
+            "kind = \"effect/model\""
+        );
+        // payload = Some(<the bytes arg>) — a SumNew (the Some variant) carrying the arg; a Bytes arg
+        // reifies with no encode, so the payload's inner IS the arg node. correlation = None (a nullary
+        // SumNew). Both lower to Core::SumNew (the Option variants).
+        let payload_occ = *fields
+            .iter()
+            .find(|(s, _)| s.name.as_ref() == "payload")
+            .unwrap()
+            .1;
+        assert!(
+            matches!(core_of(&mut db, payload_occ), Core::SumNew { payloads, .. } if payloads.len() == 1),
+            "payload = Some(<arg>): a single-payload SumNew (the Some variant)"
+        );
+        let corr_occ = *fields
+            .iter()
+            .find(|(s, _)| s.name.as_ref() == "correlation")
+            .unwrap()
+            .1;
+        assert!(
+            matches!(core_of(&mut db, corr_occ), Core::SumNew { payloads, .. } if payloads.is_empty()),
+            "correlation = None: a nullary SumNew (the None variant)"
+        );
+    }
+
+    #[test]
+    fn reify_effect_to_tuple_declines_a_multi_arg_or_structured_payload() {
+        // The Bytes-payload decomposition: a MULTI-arg perform (needs a value-form-of-args tuple = the
+        // in-fold value-encode, R2, not built) declines cleanly. Two Bytes args → decline.
+        let mut db = Db::load(crate::testkit::parse(
+            "(module m (def (f) b\"a\") (def (g) b\"b\") (export f))",
+        ));
+        let a = body_of(&mut db, "f");
+        let b = body_of(&mut db, "g");
+        let core = reify_effect_to_tuple(&mut db, "emit", &[a, b]);
+        assert!(
+            matches!(core, Core::Poison(_)),
+            "a multi-arg world-effect payload needs the R2 in-fold value-encode → declines cleanly, got {core:?}"
+        );
+    }
+
+    #[test]
+    fn reify_effect_to_tuple_zero_arg_perform_reifies_with_payload_none() {
+        // A payload-FREE world-effect (a zero-arg perform, e.g. a fire-and-forget `Now.now()`) reifies with
+        // payload = None — the 3-field record still builds, just with the None payload variant. Pins the
+        // zero-arg arm ([] => (None)) alongside the single-Bytes-arg (Some) + multi-arg (decline) cases.
+        let mut db = Db::load(crate::testkit::parse("(module m (def (f) 0) (export f))"));
+        let core = reify_effect_to_tuple(&mut db, "now", &[]);
+        let Core::Record { fields } = core else {
+            panic!("a zero-arg reify still builds a Core::Record, got {core:?}");
+        };
+        let names: Vec<&str> = fields.keys().map(|s| s.name.as_ref()).collect();
+        assert_eq!(
+            names,
+            vec!["correlation", "kind", "payload"],
+            "3-field record even for a zero-arg (payload-free) effect"
+        );
+        let payload_occ = *fields
+            .iter()
+            .find(|(s, _)| s.name.as_ref() == "payload")
+            .unwrap()
+            .1;
+        assert!(
+            matches!(core_of(&mut db, payload_occ), Core::SumNew { payloads, .. } if payloads.is_empty()),
+            "payload = None: a nullary SumNew (the None variant) for a payload-free effect"
         );
     }
 }
