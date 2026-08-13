@@ -132,6 +132,40 @@ def export-section() =
   section(7, Bytes.of([UInt8.wrap(1), UInt8.wrap(4), UInt8.wrap(109), UInt8.wrap(97), UInt8.wrap(105), UInt8.wrap(110),
                        UInt8.wrap(0), UInt8.wrap(0)]))
 
+/// W-compound: a MEMORY section declaring ONE memory with min 1 page (64KiB), no max — the SumStore heap a
+/// compound value (tuple/record/sum payload) lives in. `05`=section id, body `01 00 01`: 1 memory, limits
+/// flag 0x00 (min only), min = 1 page. Only emitted when the program CONSTRUCTS a compound (has-ctor).
+def memory-section() = section(5, Bytes.of([UInt8.wrap(1), UInt8.wrap(0), UInt8.wrap(1)]))
+
+/// W-compound: a GLOBAL section declaring ONE mutable i32 global initialized to 0 — the BUMP POINTER (next
+/// free heap byte offset). `06`=section id, body `01 7f 01 41 00 0b`: 1 global, type i32(0x7f) MUTABLE(0x01),
+/// init expr `i32.const 0`(0x41 0x00) `end`(0x0b). CCtor reads/advances it; the handle is the pre-bump offset.
+def global-section() = section(6, Bytes.of([UInt8.wrap(1), UInt8.wrap(127), UInt8.wrap(1), UInt8.wrap(65), UInt8.wrap(0), UInt8.wrap(11)]))
+
+/// W-compound: does `c` CONSTRUCT a compound (contain a CCtor)? Gates whether the module needs the memory +
+/// global (bump-pointer) sections and an i32 scratch local. Recurses every child so a CCtor anywhere counts.
+def has-ctor(c: Core) = match c with
+  | Core.CCtor(_, _) => true
+  | Core.CBin(_, _, _, l, r) => has-ctor(l) or has-ctor(r)
+  | Core.CLet(_, v, body) => has-ctor(v) or has-ctor(body)
+  | Core.CIf(cond, thn, els) => has-ctor(cond) or (has-ctor(thn) or has-ctor(els))
+  | Core.CProj(op, _) => has-ctor(op)
+  | Core.CMatchEnum(s, _, thn, els) => has-ctor(s) or (has-ctor(thn) or has-ctor(els))
+  | _ => false
+
+/// W-compound: are a CCtor's payload args each EMITTABLE and FLAT (no nested CCtor)? A single i32 scratch
+/// local holds the alloc base, so SEQUENTIAL ctors reuse it safely (base is dead once the handle is pushed),
+/// but a NESTED ctor arg would clobber the outer base mid-store. So gate emit to flat, emittable args (a
+/// nested compound declines — coverage-not-yet, safe; a later slice adds a scratch-per-nesting-level). Index
+/// recursion; part of can-emit's SCC (calls can-emit on each arg).
+def ctor-args-emittable(args: List(Core), i: Int64) =
+  (if i == List.len(args) then true
+   else (match List.at(args, i) with
+     | Option.Some(a) => (match a with
+         | Core.CCtor(_, _) => false                                    // nested ctor arg: not flat → decline
+         | _ => (if can-emit(a) then ctor-args-emittable(args, i + 1) else false))
+     | Option.None(_) => false))
+
 /// slice-B'(Bp4b-ii): export section exporting "main" as the function at INDEX `funcidx` — the recursive-module
 /// generalization of `export-section()` (which hard-codes index 0). `01`=one export, `04 6d 61 69 6e`="main",
 /// `00`=kind func, `<uleb funcidx>`. In a recursive module the recursive defs take funcidxs 0..k-1 and main is
@@ -190,16 +224,18 @@ def can-emit(c: Core) = match c with
       // higher-order fn-value slice: a def-name-as-value is EVAL-ONLY for now (emit(B'') = a funcidx const).
   | Core.CFnRefVar(_, _) => false
       // higher-order apply (call a fn-value param) is EVAL-ONLY for now (emit(B'') = call_indirect via a table).
-  | Core.CCtor(_, _) => false
-      // M2-b-2b user sum PAYLOAD ctor is EVAL-ONLY for now (emit(B) = rcdzc's SumNew{disc,payloads} heap layout).
+  // W-compound: a PAYLOAD ctor (tuple/record/sum-payload) EMITS to a linear-memory heap block (bump-alloc +
+  // i64.store tag+elems). Gated to FLAT emittable args (nested ctor args clobber the single scratch → decline).
+  | Core.CCtor(_, args) => ctor-args-emittable(args, 0)
   | Core.CMatchSum(_, _, _, _, _) => false
       // M2-b-2b sum deconstruct is EVAL-ONLY for now (emit(B) = a MatchSum decision tree on the disc + payload loads).
   // ii-c2b-2 enum-disc deconstruct EMITS (W-enum): the scrutinee is a BARE i64 tag, so the arm is just a
   // tag-equality branch (`scrut == tag ? then : else`) reusing the CIf/CBin(eq) machinery — no heap. Emittable
   // iff the scrutinee + both branches are (a nested N-arm enum match = nested CMatchEnum in `els`, recursed).
   | Core.CMatchEnum(scrut, _, thn, els) => can-emit(scrut) and (can-emit(thn) and can-emit(els))
-  | Core.CProj(_, _) => false
-      // tuple PROJECTION is EVAL-ONLY for now (emit(B) = a store-payload load off the CCtor heap layout, deferred with CCtor).
+  // W-compound: tuple/record PROJECTION EMITS as a heap load — `<operand→handle> ; i32.wrap_i64 ; i64.load
+  // offset=8*(index+1)` (element i sits after the tag at handle+8*(i+1)). Emittable iff the operand is.
+  | Core.CProj(operand, _) => can-emit(operand)
 
 /// The position of `x` in `xs` (0-based). Used to map a CLet binder node-id to its wasm LOCAL INDEX
 /// (index = the binder's position in the `collect-binders` list). That list's ORDER is arbitrary-but-
@@ -227,7 +263,17 @@ def collect-binders(c: Core) = match c with
   // W-enum: a CMatchEnum introduces NO binders (nullary enum-disc, no payload), but its scrutinee + branches
   // may contain CLets — recurse so their locals are counted (else a let inside a match arm gets no slot).
   | Core.CMatchEnum(scrut, _, thn, els) => List.concat(collect-binders(scrut), List.concat(collect-binders(thn), collect-binders(els)))
+  // W-compound: CCtor/CProj bind nothing themselves but their payload args / operand may hold CLets — recurse.
+  | Core.CCtor(_, args) => collect-binders-args(args, 0, ([] : List(Int64)))
+  | Core.CProj(operand, _) => collect-binders(operand)
   | _ => []
+
+/// W-compound: collect CLet binders across a CCtor's payload arg list (index recursion, concatenated).
+def collect-binders-args(args: List(Core), i: Int64, acc: List(Int64)) =
+  (if i == List.len(args) then acc
+   else (match List.at(args, i) with
+     | Option.Some(a) => collect-binders-args(args, i + 1, List.concat(acc, collect-binders(a)))
+     | Option.None(_) => acc))
 
 /// Emit the INSTRUCTION bytes for a Core term onto the i64 operand stack — TOTAL (`Bytes`, never `Option`).
 /// `binders` is the `collect-binders` CLet-binder list (index = local slot). `CNum` → i64.const; `CBin` → postfix
@@ -288,7 +334,42 @@ def emit-instrs-d(c: Core, binders: List(Int64), defidx: Map(Int64, Int64)) = ma
             Bytes.concat(emit-instrs-d(thn, binders, defidx),
               Bytes.concat(b1(5),                                               // else
                 Bytes.concat(emit-instrs-d(els, binders, defidx), b1(11))))))))  // <else> ; end
+  | Core.CProj(operand, index) =>
+      // W-compound: read element `index` from the operand's heap block. operand → i64 HANDLE (a byte offset) ;
+      // i32.wrap_i64 (0xa7) → i32 addr ; i64.load (0x29) align=3 (0x03) offset=8*(index+1) (tag at handle+0,
+      // element i at handle+8*(i+1)). Mirrors eval's store-payload(handle, index).
+      Bytes.concat(emit-instrs-d(operand, binders, defidx),
+        Bytes.concat(b1(167),                                                  // i32.wrap_i64
+          Bytes.concat(b1(41), Bytes.concat(b1(3), uleb(8 * (index + 1))))))   // i64.load align=3 offset
+  | Core.CCtor(tag, args) =>
+      // W-compound: bump-allocate a heap block [tag, elem0, elem1, …] (each i64, 8 bytes) and return its byte
+      // offset as the i64 HANDLE. scratch = an i32 local (index = #binders, declared by body-of when has-ctor)
+      // holding the alloc base. save (global.get 0 ; local.set scratch) ; store tag (local.get scratch ;
+      // i64.const tag ; i64.store 0) ; store each elem (local.get scratch ; <elem> ; i64.store 8*(i+1)) ; bump
+      // (local.get scratch ; i32.const blocksize ; i32.add ; global.set 0) ; push handle (local.get scratch ;
+      // i64.extend_i32_u). Args are FLAT (can-emit gate) so no nested ctor clobbers the single scratch.
+      (let scratch = List.len(binders) in
+       (let blocksize = 8 * (1 + List.len(args)) in
+        (let save = Bytes.concat(b1(35), Bytes.concat(uleb(0), Bytes.concat(b1(33), uleb(scratch)))) in
+         (let store-tag = Bytes.concat(b1(32), Bytes.concat(uleb(scratch), Bytes.concat(b1(66), Bytes.concat(sleb(tag), Bytes.concat(b1(55), Bytes.concat(b1(3), uleb(0))))))) in
+          (let store-elems = emit-ctor-stores(args, 0, scratch, binders, defidx) in
+           (let bump = Bytes.concat(b1(32), Bytes.concat(uleb(scratch), Bytes.concat(b1(65), Bytes.concat(sleb(blocksize), Bytes.concat(b1(106), Bytes.concat(b1(36), uleb(0))))))) in
+            (let push-handle = Bytes.concat(b1(32), Bytes.concat(uleb(scratch), b1(173))) in
+             Bytes.concat(save, Bytes.concat(store-tag, Bytes.concat(store-elems, Bytes.concat(bump, push-handle)))))))))))
   | _ => Bytes.of([])
+
+/// W-compound: emit a CCtor's payload-store sequence — for each arg i: `local.get scratch ; <emit arg> ;
+/// i64.store align=3 offset=8*(i+1)` (element i after the tag). Index recursion; scratch (i32 local) holds the
+/// alloc base. Args are flat (can-emit gate), so emitting an arg never touches the scratch local.
+def emit-ctor-stores(args: List(Core), i: Int64, scratch: Int64, binders: List(Int64), defidx: Map(Int64, Int64)) =
+  (if i == List.len(args) then Bytes.of([])
+   else (match List.at(args, i) with
+     | Option.Some(a) => Bytes.concat(
+         Bytes.concat(b1(32), Bytes.concat(uleb(scratch),
+           Bytes.concat(emit-instrs-d(a, binders, defidx),
+             Bytes.concat(b1(55), Bytes.concat(b1(3), uleb(8 * (i + 1))))))),
+         emit-ctor-stores(args, i + 1, scratch, binders, defidx))
+     | Option.None(_) => emit-ctor-stores(args, i + 1, scratch, binders, defidx)))
 
 /// slice-B'(Bp3): emit a CCall's arg terms left-to-right (index recursion, the emit idiom), each onto the i64
 /// stack, concatenated — the wasm call convention (args pushed in order before `call`).
@@ -313,6 +394,16 @@ def body-of(instrs: Bytes, nlocals: Int64) =
   (let locals = (if nlocals == 0 then b1(0)                              // 00: zero local groups
                  else Bytes.concat(b1(1), Bytes.concat(uleb(nlocals), b1(126)))) in  // 1 group: <n> i64(0x7e)
    Bytes.concat(locals, Bytes.concat(instrs, b1(11))))
+
+/// W-compound: like `body-of` but declares `nscratch` i32 scratch locals (0x7f) AFTER the `nlocals` i64
+/// locals (the CCtor alloc-base scratch, index = nlocals). Local-group vector: `<ngroups>` then a `<n> 0x7e`
+/// i64 group (if nlocals>0) then a `<nscratch> 0x7f` i32 group (if nscratch>0). ngroups=0 → `00`. body-of is
+/// the nscratch=0 special case (kept for the recursive-def caller, which has no compounds yet).
+def body-of-scratch(instrs: Bytes, nlocals: Int64, nscratch: Int64) =
+  (let i64grp = (if nlocals > 0 then Bytes.concat(uleb(nlocals), b1(126)) else Bytes.of([])) in
+   (let i32grp = (if nscratch > 0 then Bytes.concat(uleb(nscratch), b1(127)) else Bytes.of([])) in
+    (let ngroups = (if nlocals > 0 then 1 else 0) + (if nscratch > 0 then 1 else 0) in
+     Bytes.concat(Bytes.concat(uleb(ngroups), Bytes.concat(i64grp, i32grp)), Bytes.concat(instrs, b1(11))))))
 
 /// slice-B'(Bp4b-ii): assign a wasm FUNCTION INDEX to each recursive def in the def-env, by its position in
 /// the (canonically-ordered) entry list: the i-th def-env entry → funcidx i. Returns a `Map(name, funcidx)`
@@ -437,10 +528,17 @@ def target-emit(target: Target, c: Core) = match target with
 def emit-wasm-module(c: Core) =
   (if can-emit(c) and has-value(c)
    then (let binders = collect-binders(c) in
-         Option.Some(Bytes.concat(preamble(),
-           Bytes.concat(type-section(),
-             Bytes.concat(func-section(),
-               Bytes.concat(export-section(), code-section(body-of(emit-instrs(c, binders), List.len(binders)))))))))
+         (let hc = has-ctor(c) in
+          // W-compound: a program that CONSTRUCTS a compound needs the linear-memory heap + the bump-pointer
+          // global (inserted after func-section, before export-section per wasm section order) and one i32
+          // scratch local. A scalar program emits the lean module UNCHANGED (byte-identical, no mem/global).
+          (let mem = (if hc then Bytes.concat(memory-section(), global-section()) else Bytes.of([])) in
+           (let nscratch = (if hc then 1 else 0) in
+            Option.Some(Bytes.concat(preamble(),
+              Bytes.concat(type-section(),
+                Bytes.concat(func-section(),
+                  Bytes.concat(mem,
+                    Bytes.concat(export-section(), code-section(body-of-scratch(emit-instrs(c, binders), List.len(binders), nscratch))))))))))))
    else Option.None(unit))
 
 /// Does the (nullary, compile-time-constant) subset program `c` have a DEFINED interpreted value? A scalar
@@ -533,6 +631,22 @@ def em-cmatchenum-emits-a-module() =
                        Core.CMatchEnum(cnum64(1), 1, cnum64(200), cnum64(300)))) with
     | Option.Some(_) => unit
     | Option.None(_) => trap("a bare-tag enum-disc CMatchEnum emits a module"))
+
+@test
+def em-compound-construct-project-emits-a-module() =
+  // W-compound: a FLAT tuple construct + project emits (linear-memory heap: bump-alloc + i64.store/load).
+  // Direct-Core mirror of `(let ((p (tuple 10 20))) (. p 1))`: CLet(p, CCtor(0, [10, 20]), CProj(CVar p, 1)).
+  // can-emit (flat ctor args) + has-value (eval-db oracle → Some 20) hold → emit-module Some. run-emitted
+  // matches run-ml end-to-end (verified: element 0/1/2 of tuples + record field access → the right scalar).
+  (match emit-module(Core.CLet(100, Core.CCtor(0, List.concat(List.push([], cnum64(10)), List.push([], cnum64(20)))),
+                       Core.CProj(Core.CVar(100), 1))) with
+    | Option.Some(_) =>
+        // a NESTED ctor arg is NOT flat → the single alloc-base scratch would clobber → DECLINES (coverage-
+        // not-yet, safe: run-emitted declines while run-ml runs it, never a value disagreement).
+        (match emit-module(Core.CCtor(0, List.concat(List.push([], Core.CCtor(0, List.push([], cnum64(1)))), List.push([], cnum64(3))))) with
+          | Option.None(_) => unit
+          | Option.Some(_) => trap("a NESTED compound ctor must decline emit (flat-args gate)"))
+    | Option.None(_) => trap("a flat tuple construct+project emits a module"))
 
 @test
 def em-module-has-wasm-magic-and-version() =
