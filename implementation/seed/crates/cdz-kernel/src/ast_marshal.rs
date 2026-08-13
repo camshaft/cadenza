@@ -322,11 +322,22 @@ pub fn effect_schema_hash_from_nodes(
 /// (e.g. a model request) that have NO reflected wasmtime [`Type`] to feed [`build_type`] — a KERNEL-authored
 /// schema builds its descriptor nodes directly, exactly as [`effect_schema_hash_from_nodes`]'s doc prescribes.
 /// The head is a `Str` (matching `build_type`, NOT a `Name`), so a built-in record schema hashes identically
-/// to the same record reflected off a component. Fields are passed in the caller's order.
+/// to the same record reflected off a component. Fields are emitted NAME-SORTED (see below), so the caller
+/// may pass them in any order.
+///
+/// CANONICAL FIELD ORDER = NAME-SORTED (concierge ruling 2026-08-13, constraint-forced): a record schema's
+/// fields are emitted in field-NAME order, NOT the caller's declaration order. This is the ONLY order under
+/// which all three schema-descriptor producers agree — the wasmtime-reflected [`build_type`] (which sorts its
+/// `rt.fields()` for the same reason), a kernel built-in decl (here), and the rcdzc userspace producer (whose
+/// `Ty::Record` is a name-sorted `BTreeMap` and can emit NO other order) — so the same record shape is
+/// content-addressed to the SAME schema-hash regardless of who produced it. It also matches the value-form's
+/// already-canonical field order (`val_to_ast` sorts record fields by name), removing an intra-kernel skew.
 fn wit_type_record(b: &mut Builder, fields: &[(&str, StructId)]) -> StructId {
-    let mut children = Vec::with_capacity(1 + fields.len());
+    let mut sorted: Vec<(&str, StructId)> = fields.to_vec();
+    sorted.sort_by(|x, y| x.0.cmp(y.0));
+    let mut children = Vec::with_capacity(1 + sorted.len());
     children.push(b.atom_leaf(Leaf::Str("record".into())));
-    for &(name, ty) in fields {
+    for (name, ty) in sorted {
         let name_node = b.name(name);
         let entry = b.list(vec![name_node, ty]);
         children.push(entry);
@@ -847,10 +858,17 @@ pub fn build_type(b: &mut Builder, ty: &Type) -> Result<StructId, MarshalError> 
             let elem = build_type(b, &lt.ty())?;
             b.wit_type_list(elem)
         }
-        // record → ("record" (fieldname <T>)…): string head, each field a (name type) 2-list.
+        // record → ("record" (fieldname <T>)…): string head, each field a (name type) 2-list, NAME-SORTED.
+        // Fields are emitted in field-NAME order (concierge ruling 2026-08-13, constraint-forced) so a
+        // reflected component's record hashes identically to the same record from a kernel built-in decl
+        // (`wit_type_record`, name-sorted) and from the rcdzc userspace producer (a name-sorted `BTreeMap` that
+        // can emit no other order) — the one canonical order all three schema producers agree on, matching the
+        // value-form's already-name-sorted fields (`val_to_ast`).
         Type::Record(rt) => {
             let mut children = vec![b.atom_leaf(Leaf::Str("record".into()))];
-            for field in rt.fields() {
+            let mut sorted: Vec<_> = rt.fields().collect();
+            sorted.sort_by(|x, y| x.name.cmp(y.name));
+            for field in sorted {
                 let name_node = b.name(field.name);
                 let ty_node = build_type(b, &field.ty)?;
                 let entry = b.list(vec![name_node, ty_node]);
@@ -3399,6 +3417,23 @@ mod tests {
         let list_h = schema_hash(&param_type(&probe_component("(list u32)"))).expect("list schema");
         assert_ne!(rec_h, u32_a, "record (field a u32) is not u32");
         assert_ne!(rec_h, list_h, "record (field a u32) is not (list u32)");
+        // FIELD ORDER IS NOT IDENTITY — a record's schema-hash is NAME-SORTED (concierge ruling 2026-08-13),
+        // so the SAME field-set in a DIFFERENT declaration order hashes IDENTICALLY. This is the invariant that
+        // lets the three producers (reflected `build_type`, kernel built-in decls, rcdzc's name-sorted-BTreeMap
+        // userspace) content-address the same record shape. Without the sort in `build_type`'s record arm these
+        // two would hash differently (a silent cross-producer divergence).
+        let ab = schema_hash(&param_type(&probe_component(
+            r#"(record (field "a" u32) (field "b" string))"#,
+        )))
+        .expect("record a,b schema");
+        let ba = schema_hash(&param_type(&probe_component(
+            r#"(record (field "b" string) (field "a" u32))"#,
+        )))
+        .expect("record b,a schema");
+        assert_eq!(
+            ab, ba,
+            "a record's schema-hash is field-name-sorted: {{a,b}} and {{b,a}} are the same shape → same hash"
+        );
         // And it's exactly Hash::of(type_to_ast(ty)) — the schema-hash IS the descriptor's content address.
         let u32_ty = param_type(&probe_component("u32"));
         assert_eq!(
