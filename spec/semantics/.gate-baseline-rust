@@ -4726,6 +4726,7 @@ pass	bg1 a BOOL op result is the recursion CONDITION itself — the walk continu
 pass	bg2 the recursion guard is an AND of a bool draw and a pure bound check — short-circuit must not skip the draw's state advance observation
 pass	bg3 a BIGINT handler state — tripling per dispatch crosses the i64 boundary mid-thread, the exact multi-limb value survives
 pass	bg4 BIGINT comparison in the arm routes tri-band verdicts — doubling walks past both thresholds, one row compares a genuine multi-limb value
+pass	bhw1 a HIGH-WATER BYTES state — byte-lexicographic max through the thread; the multibyte lead 0xC3 must rank UNSIGNED above ASCII z, and the seeded third put only wins past 0xC3
 pass	bin-encode segment ORDER holds for runtime-swapped operand values
 pass	binary operator operands are evaluated left to right
 pass	binding the same effect to a peer twice is rejected
@@ -5641,6 +5642,7 @@ pass	oc6 an Option-of-TUPLE state — the Some payload is a (total,count) pair u
 pass	odd-width CHECKED arithmetic traps at the odd boundary, not the machine slot (Int24 max + 1)
 pass	odd-width values as Set keys dedupe at their own width (UInt4: wrap 3 = wrap 19)
 pass	odd-width wrap lands exactly at its own boundary (UInt4 16->0, Int24 2^23 -> -2^23)
+pass	odo1 a BASE-100 ODOMETER — the list of wheels absorbs each tick with a CASCADING CARRY that rebuilds cells by List.update and GROWS the list when the top wheel overflows
 pass	olc1 an Option-of-LIST handler state lifecycle — None is uninitialized, push initializes-or-appends, take scores and RESETS to None, a later push re-initializes
 pass	one @param accessor performed TWICE consumes two host responses in order
 pass	one @param read bound ONCE fans out to a map key, a set probe, and arithmetic
@@ -6166,6 +6168,7 @@ pass	sw5 DISTINCT-count over the window — a Set built per dispatch from the la
 pass	swapped-operand complements do not fold — less-than or flipped greater-equal is not a tautology
 pass	swd1 a SLIDING-WINDOW dedup state — the last-three list slides via push-and-drop-head rebuilt in the arm, membership answers flip as elements age out
 pass	swp1 an ATOMIC slot swap — the swap dispatch exchanges both tuple fields in one transition, reads before and after pin the exchange
+pass	swt1 VALUE-YIELDING map ops in the arm — Map.swap answers the PRIOR value it replaced and Map.take answers the value it removed, both tuple-projected in the arm with absent-key sentinels
 pass	sy2 a SYMBOL toggle state — equality routes the resume value while the arm flips fast/slow per dispatch
 pass	sy3 the SYMBOL state is a MAP KEY per dispatch — the a→b→c walk ends at a missing key
 pass	sy4 sequential draws written into record FIELDS via Record.with symbol selectors — chained functional updates

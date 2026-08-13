@@ -9626,3 +9626,75 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 3572911 Int64))
   (call   main (: 30 Int64)) (output (: 3842911 Int64)))
+
+; --- breaker batch 257: base-100 odometer carry cascade, value-yielding map ops, unsigned bytes high-water ---
+(case "odo1 a BASE-100 ODOMETER — the list of wheels absorbs each tick with a CASCADING CARRY that rebuilds cells by List.update and GROWS the list when the top wheel overflows"
+  (input  (do
+            (effect S (op tick (-> Int64 Int64)))
+            (def (carry-add (: w (List Int64)) (: i Int64) (: c Int64))
+              (if (= c 0)
+                  w
+                  (if (= i (List.len w))
+                      (carry-add (List.push w 0) i c)
+                      (let ((t (+ (match (List.at w i) ((Some x) x) ((None u) 0)) c)))
+                        (carry-add (List.update w i (% t 100)) (+ i 1) (/ t 100))))))
+            (def (main (: n Int64))
+              (handle S (list n)
+                ((tick (k) w
+                  (let ((w2 (carry-add w 0 k)))
+                    (resume (+ (* 100 (List.len w2))
+                               (match (List.at w2 0) ((Some x) x) ((None u) -1)))
+                            w2))))
+                (let ((a (S.tick 50)))
+                  (let ((b (S.tick 60)))
+                    (let ((c (S.tick 9990)))
+                      (+ (* 1000 (+ (* 1000 a) b)) c))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 153213303 Int64))
+  (call   main (: 95 Int64)) (output (: 245205395 Int64)))
+
+(case "swt1 VALUE-YIELDING map ops in the arm — Map.swap answers the PRIOR value it replaced and Map.take answers the value it removed, both tuple-projected in the arm with absent-key sentinels"
+  (input  (do
+            (effect S
+              (op put (-> Int64 Int64 Int64))
+              (op del (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S Map.empty
+                ((put (k v) m
+                  (match (Map.swap m k v)
+                    ((tuple prior m2)
+                      (resume (match prior ((Some p) p) ((None u) -1)) m2))))
+                 (del (k) m
+                  (match (Map.take m k)
+                    ((tuple taken m2)
+                      (resume (match taken ((Some t) t) ((None u) -1)) m2)))))
+                (let ((a (S.put n n)))
+                  (let ((b (S.put n 8)))
+                    (let ((c (S.del n)))
+                      (let ((d (S.del n)))
+                        (let ((e (S.put (+ n 1) 9)))
+                          (+ (* 100 (+ (* 10 (+ (* 100 (+ (* 100 (+ a 2)) (+ b 2))) (+ c 2))) (+ d 2))) (+ e 2)))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 10510101 Int64))
+  (call   main (: 40 Int64)) (output (: 14210101 Int64)))
+
+(case "bhw1 a HIGH-WATER BYTES state — byte-lexicographic max through the thread; the multibyte lead 0xC3 must rank UNSIGNED above ASCII z, and the seeded third put only wins past 0xC3"
+  (input  (do
+            (effect S
+              (op put (-> Bytes Int64))
+              (op wlen (-> Int64)))
+            (def (main (: n Int64))
+              (handle S (Bytes.of (list))
+                ((put (bs) hw
+                  (if (< hw bs)
+                      (resume 1 bs)
+                      (resume 0 hw)))
+                 (wlen () hw (resume (Bytes.len hw) hw)))
+                (let ((a (S.put (Bytes.of (list (UInt8.wrap 122))))))
+                  (let ((b (S.put (Bytes.of (list (UInt8.wrap 195) (UInt8.wrap 169))))))
+                    (let ((c (S.put (Bytes.of (list (UInt8.wrap n) (UInt8.wrap 200))))))
+                      (let ((d (S.wlen)))
+                        (+ (* 10 (+ (* 10 (+ (* 10 a) b)) c)) d)))))))
+            (export main)))
+  (call   main (: 50 Int64)) (output (: 1102 Int64))
+  (call   main (: 250 Int64)) (output (: 1112 Int64)))
