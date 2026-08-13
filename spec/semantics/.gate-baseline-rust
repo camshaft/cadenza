@@ -4934,6 +4934,7 @@ pass	cr3 a BOUNDED retry budget — two attempts then give up, the fallback nega
 pass	cross-unit Qty host results reject at the guest-side add
 pass	cross-width widening a runtime narrow int with .of (UInt16.of a UInt8) emits (total)
 pass	cs1 a COLLATZ-step arm — even states halve, odd states triple-plus-one, low digits of four reads trace the orbit
+pass	cst1 a CURSOR-STACK state — the tuple (buf,top) pushes by List.update-or-append at the cursor and pops by decrement, stale slots above the cursor are overwritten, the over-pop answers a sentinel
 pass	ct1 the LOOP BOUND is itself a draw — a first dispatch sizes the walk, the walk then draws that many times
 pass	cv1 an inner arm resumes with a CHAIN of two outer ops — O.b of O.a evaluated inside the arm, probe pins the double advance
 pass	cv2 TWO asks each running the in-arm chain — the second chain starts where the first left the outer thread
@@ -5387,6 +5388,7 @@ pass	jointly-total guards over one variant are still non-exhaustive (guards are 
 pass	keyed lookups at different keys are not shared
 pass	lam1 INLINE and LET-BOUND lambdas applied to one draw — both closure forms read the same drawn value
 pass	large-set algebra over a multi-level CHAMP trie computes correct union/intersection/difference
+pass	lba1 an op taking a LIST argument — the arm folds the batch into the scalar state by recursion; the second batch is BUILT FROM the first's answer and the empty batch is a no-op
 pass	lc1 SELF-CONCAT sharing — the same list appears twice in one concat, then the original grows and is re-read unchanged
 pass	le multi-byte fields read little-endian at runtime offsets, unsigned and signed
 pass	le-ax of a ground add that OVERFLOWS Int64 traps during evaluation — it cannot wrap to forge a false bound
@@ -5590,6 +5592,7 @@ pass	nested quasiquote: a level-2 deferred unquote is INDEPENDENT of the enclosi
 pass	nested quasiquote: an inner unquote at level 2 is deferred, not spliced (exact structure)
 pass	nested same-direction shifts by constants combine into one shift by the sum, keeping the left-shift overflow trap
 pass	nested-Option equality observes the OUTER variant and matches identical nesting
+pass	neu1 KAHAN COMPENSATED SUMMATION as a handler state — the (sum,comp) pair recovers a small addend that naive summation absorbs at the 2^53 boundary, the naive control confirms the absorption
 pass	ng1 the arm NEGATES alternate draws — a Bool flip in a tuple state signs the rising thread (+,-,+)
 pass	nl2 the nested-record binder in LIST-ELEMENT pattern position — the head record's field binds, the rest carries full records
 pass	nm1 NEGATIVE remainder is TRUNCATED (sign of the dividend) uniformly — bare and through a handler arm

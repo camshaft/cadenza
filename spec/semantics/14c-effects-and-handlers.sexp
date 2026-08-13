@@ -8908,3 +8908,78 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 10106 Int64))
   (call   main (: 1 Int64)) (output (: 10107 Int64)))
+
+; --- breaker batch 247: cursor-stack in-place overwrite, list-argument batch fold, Kahan compensated summation ---
+(case "cst1 a CURSOR-STACK state — the tuple (buf,top) pushes by List.update-or-append at the cursor and pops by decrement, stale slots above the cursor are overwritten, the over-pop answers a sentinel"
+  (input  (do
+            (effect S
+              (op push (-> Int64 Int64))
+              (op pop (-> Int64)))
+            (def (main (: n Int64))
+              (handle S (tuple (: (list) (List Int64)) 0)
+                ((push (v) st
+                  (match st
+                    ((tuple buf top)
+                      (let ((buf2 (if (< top (List.len buf))
+                                      (List.update buf top v)
+                                      (List.push buf v))))
+                        (resume (+ top 1) (tuple buf2 (+ top 1)))))))
+                 (pop () st
+                  (match st
+                    ((tuple buf top)
+                      (if (= top 0)
+                          (resume -1 st)
+                          (resume (match (List.at buf (- top 1)) ((Some x) x) ((None u) -99))
+                                  (tuple buf (- top 1))))))))
+                (let ((a (S.push n)))
+                  (let ((b (S.push (+ n 1))))
+                    (let ((c (S.pop)))
+                      (let ((d (S.push 50)))
+                        (let ((e (S.pop)))
+                          (let ((f (S.pop)))
+                            (let ((g (S.pop)))
+                              (+ (* 10 (+ (* 100 (+ (* 100 (+ (* 10 (+ (* 100 (+ (* 10 a) b)) c)) d)) e)) f)) (+ g 2)))))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 1204250031 Int64))
+  (call   main (: 6 Int64)) (output (: 1207250061 Int64)))
+
+(case "lba1 an op taking a LIST argument — the arm folds the batch into the scalar state by recursion; the second batch is BUILT FROM the first's answer and the empty batch is a no-op"
+  (input  (do
+            (effect S (op batch (-> (List Int64) Int64)))
+            (def (sum-l (: xs (List Int64)) (: i Int64) (: acc Int64))
+              (match (List.at xs i)
+                ((Some v) (sum-l xs (+ i 1) (+ acc v)))
+                ((None u) acc)))
+            (def (main (: n Int64))
+              (handle S n
+                ((batch (xs) s
+                  (let ((s2 (+ s (sum-l xs 0 0))))
+                    (resume s2 s2))))
+                (let ((a (S.batch (list 1 2 3))))
+                  (let ((b (S.batch (list a (+ a 1)))))
+                    (let ((c (S.batch (list))))
+                      (+ (* 100000 a) (+ (* 100 b) c)))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 601919 Int64))
+  (call   main (: 5 Int64)) (output (: 1103434 Int64)))
+
+(case "neu1 KAHAN COMPENSATED SUMMATION as a handler state — the (sum,comp) pair recovers a small addend that naive summation absorbs at the 2^53 boundary, the naive control confirms the absorption"
+  (input  (do
+            (effect S (op feed (-> Float64 Float64)))
+            (def (main (: n Int64))
+              (handle S (tuple 0.0 0.0)
+                ((feed (v) st
+                  (match st
+                    ((tuple sm comp)
+                      (let ((y (- v comp)))
+                        (let ((t (+ sm y)))
+                          (resume t (tuple t (- (- t sm) y)))))))))
+                (let ((big 9007199254740992.0))
+                  (let ((_a (S.feed big)))
+                    (let ((_b (S.feed (Float64.of-int n))))
+                      (let ((k (S.feed (- 0.0 big))))
+                        (let ((naive (- (+ big (Float64.of-int n)) big)))
+                          (+ (* 10.0 k) naive))))))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 10.0 Float64))
+  (call   main (: 5 Int64)) (output (: 54.0 Float64)))

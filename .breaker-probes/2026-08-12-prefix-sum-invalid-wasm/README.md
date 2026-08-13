@@ -25,3 +25,25 @@ MINIMAL: an arm that (a) reads the threaded list at a COMPUTED index (len-1),
 (b) pushes to the same list, and (c) is dispatched THREE times. Computed-index
 read xor push alone is fine; two dispatches fine. #18's computed-index class x
 state-thread growth x dispatch count.
+
+## Tick 1362 — family boundary
+- `pfxG.sexp` — BYTES twin (computed-index Bytes.at + Bytes.concat append ×3) → **PASS**.
+  The trigger is LIST-specific (RRB heap path), not a general rope/growth shape.
+- `pfxH.sexp` — List.update at computed index (instead of at-read) + push ×3 → **FAIL**
+  (function[9], same class). So ANY computed-index LIST access (read OR write) + push
+  ×3 dispatches trips it. Both are held-back pin candidates on fix.
+
+## Tick 1363 — threshold matrix
+| seed len | dispatches | final len | wasm |
+|---|---|---|---|
+| 1 | 2 | 3 | PASS (pfxmin4) |
+| 3 | 1 | 4 | PASS (pfxL) |
+| 1 | 3 | 4 | FAIL (pfxmin5/pfxC) |
+| 2 | 2 | 4 | FAIL (pfxK) |
+| 3 | 2 | 5 | FAIL (pfxI) |
+| 1 | 4 | 5 | FAIL (pfxJ) |
+Trigger = dispatches ≥ 2 AND (seed+dispatches) ≥ 4 — i.e. the RE-DISPATCHED arm
+must cross the length-4 boundary (RRB tail→node transition?). A single dispatch
+crossing it is fine; the fold only mis-slots when the arm both RE-enters (≥2) and
+the list crosses the depth threshold. Strengthens the fold-depth-dependent
+slot-allocation hypothesis.
