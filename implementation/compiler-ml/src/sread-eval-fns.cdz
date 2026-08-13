@@ -195,6 +195,33 @@ def se-three-param-under-application-declines() =
     | Option.Some(_) => trap("(f 1 2) under-applies a 3-param def → declines")
 
 @test
+def se-under-application-body-ignores-missing-param-declines() =
+  // arity edge the poison-only check MISSED: an under-applied call whose body does NOT reference the missing
+  // param used to lower fine (no unbound NVar to poison) and silently RAN at the callee's lower arity. rcdzc
+  // rejects it (CDZ0201 arity, differential = declined). A direct param-vs-arg count guard in lower's NApp arm
+  // now declines it regardless of whether the body uses the missing param. `(f a b)` body `(+ a a)` ignores b;
+  // `(f 1)` under-applies → declines (used to run to 2).
+  match run-src("(do (def (f a b) (+ a a)) (def (main) (f 1)) (export main))") with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("(f 1) under-applies a 2-param def whose body ignores b → declines")
+
+@test
+def se-under-application-three-param-body-ignores-third-declines() =
+  // the leaf-2 mirror: a 3-param def whose body ignores the 3rd param, called with 2 args. Used to run to 3.
+  match run-src("(do (def (f a b c) (+ a b)) (def (main) (f 1 2)) (export main))") with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("(f 1 2) under-applies a 3-param def whose body ignores c → declines")
+
+@test
+def se-under-application-zero-args-body-ignores-params-declines() =
+  // the leaf-0 mirror: a def WITH params called with ZERO args `(f)`; the body ignores both params. A genuine
+  // nullary def still inlines (see se- nullary tests); a params-def called nullary under-applies → declines.
+  // Used to run to 5.
+  match run-src("(do (def (f a b) 5) (def (main) (f)) (export main))") with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("(f) with zero args to a 2-param def → under-applied → declines")
+
+@test
 def se-helper-calls-earlier-helper() =
   // a BACKWARD reference: a helper calls an EARLIER-defined helper. `(def (inc x) (+ x 1))` then
   // `(def (inc2 x) (inc (inc x)))` — inc2's body calls inc (defined before it) twice. inc2(5) → 7. Pins that

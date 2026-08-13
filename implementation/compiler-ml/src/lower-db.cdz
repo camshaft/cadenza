@@ -322,7 +322,13 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
                    | Option.None(_) => Option.None(unit))
                | _ => Option.None(unit))
            | Option.Some(calleeBody) =>
-             (if (argId == -1) then lower-node(tree, calleeBody, rcol, tcol)
+             (if (argId == -1)
+              // NULLARY call `(mk)`. A genuine nullary def (param-of None) inlines its body. But a def WITH
+              // params called with ZERO args (`(f)` where f takes a,b) is UNDER-APPLIED → decline (mirror of the
+              // over-application guards below). Without this, a body that ignores the missing params silently runs.
+              then (match param-of(tree, calleeId) with
+                     | Option.Some(_) => Option.None(unit)             // params but no args → under-applied → decline
+                     | Option.None(_) => lower-node(tree, calleeBody, rcol, tcol))
               else (match param-of(tree, calleeId) with
                 | Option.Some(paramId) =>
                     (match lower-node(tree, argId, rcol, tcol) with
@@ -347,7 +353,13 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
                                                     | Option.None(_) => Option.None(unit))       // arg3 but no param3 → over-applied → decline
                                               | Option.None(_) => Option.None(unit))
                                         | Option.None(_) => Option.None(unit))       // arg2 but no param2 → over-applied → decline
-                                  | Option.None(_) => Option.Some(Core.CLet(paramId, argCore, bodyCore)))  // 1-arg
+                                  | Option.None(_) =>
+                                      // 1-arg call. Saturated ONLY if the callee has no 2nd param; if param2-of
+                                      // is Some the call is UNDER-applied → decline (mirror of the arg2/no-param2
+                                      // over-application guard). Else the single CLet (slice-3c, exactly saturated).
+                                      (match param2-of(tree, calleeId) with
+                                        | Option.Some(_) => Option.None(unit)                                // param2 but no arg2 → under-applied → decline
+                                        | Option.None(_) => Option.Some(Core.CLet(paramId, argCore, bodyCore))))  // 1-arg saturated
                             | Option.None(_) => Option.None(unit))
                       | Option.None(_) => Option.None(unit))
                 | Option.None(_) => Option.None(unit)))))))
@@ -361,7 +373,12 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
 /// `CLet(p3,a3, CLet(p4,a4, body))`. Keeps the lower-node NApp arm flat.
 def inner-body-with-param3(tree: Tree, id: Int64, calleeId: Int64, bodyCore: Core, rcol: Map(Int64, Resolved), tcol: Map(Int64, Ty)) =
   (match arg3-of(tree, id) with
-    | Option.None(_) => Option.Some(bodyCore)                        // 2-arg call — no 3rd CLet
+    | Option.None(_) =>
+        // 2-arg call, no 3rd arg. Saturated ONLY if the callee has no 3rd param; a Some param3-of means the
+        // call is UNDER-applied → decline (mirror of the arg3/no-param3 over-application guard below).
+        (match param3-of(tree, calleeId) with
+          | Option.Some(_) => Option.None(unit)                       // param3 but no arg3 → under-applied → decline
+          | Option.None(_) => Option.Some(bodyCore))                  // 2-arg saturated — no 3rd CLet
     | Option.Some(arg3Id) =>
         (match param3-of(tree, calleeId) with
           | Option.None(_) => Option.None(unit)                       // arg3 but no param3 → over-applied → decline
@@ -379,7 +396,12 @@ def inner-body-with-param3(tree: Tree, id: Int64, calleeId: Int64, bodyCore: Cor
 /// An arg4 with NO param4 (over-applied) → `None` (declines). The mirror of inner-body-with-param3.
 def inner-body-with-param4(tree: Tree, id: Int64, calleeId: Int64, bodyCore: Core, rcol: Map(Int64, Resolved), tcol: Map(Int64, Ty)) =
   (match arg4-of(tree, id) with
-    | Option.None(_) => Option.Some(bodyCore)                        // ≤3-arg call — no 4th CLet
+    | Option.None(_) =>
+        // 3-arg call, no 4th arg. Saturated ONLY if the callee has no 4th param; a Some param4-of means the
+        // call is UNDER-applied → decline (mirror of the arg4/no-param4 over-application guard below).
+        (match param4-of(tree, calleeId) with
+          | Option.Some(_) => Option.None(unit)                       // param4 but no arg4 → under-applied → decline
+          | Option.None(_) => Option.Some(bodyCore))                  // 3-arg saturated — no 4th CLet
     | Option.Some(arg4Id) =>
         (match param4-of(tree, calleeId) with
           | Option.None(_) => Option.None(unit)                       // arg4 but no param4 → over-applied → decline
