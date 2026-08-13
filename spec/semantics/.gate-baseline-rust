@@ -406,6 +406,7 @@ pass	TRANS should match its middle term up to α-equivalence: aconv-TRANS chains
 pass	TRANS unions its operands' hypotheses — an assumption threaded through TRANS survives (soundness)
 pass	TRANS unions the hypotheses of BOTH operands when each carries a distinct assumption
 pass	TRIAL-DIVISION primality steps odd candidates to the square bound and reports the witness divisor
+pass	TWO @ensures-guarded defs COMPOSE along a tail call — the inner postcondition fires on the returned value, the outer on the same value at its own exit
 pass	TWO Bytes fields project from a record and re-concat into a frame (the packet idiom)
 pass	TWO Map-stated handlers stacked route each op to its own Map with no cross-contamination
 pass	TWO Record args cross the direct-call boundary

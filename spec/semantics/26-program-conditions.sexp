@@ -3494,6 +3494,28 @@
   (call   main (: -3 Int64))
   (trap   "unreachable"))
 
+(case "TWO @ensures-guarded defs COMPOSE along a tail call — the inner postcondition fires on the returned value, the outer on the same value at its own exit"
+  (doc    "Distinct from the NESTED CONTRACT case above (there an @ensures PREDICATE calls a @requires-guarded
+           helper): here TWO defs each carry an @ensures, and `outer`'s body is a TAIL CALL to `inner`, so the
+           value `outer` returns IS `inner`'s already-checked result. Both postconditions are injected
+           independently — `inner` wraps its body as `(let ((ret (+ x 1))) (if (>= ret 0) ret trap))`, and
+           `outer` wraps ITS body (the call `(inner y)`) as `(let ((ret (inner y))) (if (< ret 100) ret trap))`.
+           So the value passes through inner's exit check THEN outer's exit check. main(5): inner returns 6 (6 >=
+           0 holds), outer sees 6 (6 < 100 holds) → 6. main(-3): inner computes -2, its OWN @ensures(>= ret 0)
+           FAILS → trap inside inner, before outer's postcondition is reached. main(200): inner returns 201 (201
+           >= 0 holds, passes inner), but outer's @ensures(< ret 100) FAILS on 201 → trap at outer's exit. That
+           -3 traps in inner and 200 traps in outer proves the two postconditions fire at their OWN exit sites
+           along the call chain — each def's verify_enforce wrapper is independent, composing through the tail
+           call. Runtime arg via main's param so nothing folds.")
+  (input  (do
+            (@ (ensures (>= ret 0)) (def (inner (: x Int64)) (+ x 1)))
+            (@ (ensures (< ret 100)) (def (outer (: y Int64)) (inner y)))
+            (def (main (: k Int64)) (outer k))
+            (export main)))
+  (call main (: 5 Int64))   (output (: 6 Int64))
+  (call main (: -3 Int64))  (trap "unreachable")
+  (call main (: 200 Int64)) (trap "unreachable"))
+
 (case "CROSS-TYPE @invariant: a value deconstructed from one @invariant newtype and RE-constructed into ANOTHER establishes BOTH invariants at their own sites"
   (doc    "Two DISTINCT @invariant types, and a value flowing from one into the other through a helper — each
            establish check fires at its own construction site. `Nat` has `@invariant(>= self 0)`, `Pct` has
