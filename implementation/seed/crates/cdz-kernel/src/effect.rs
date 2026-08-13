@@ -1486,18 +1486,21 @@ mod tests {
             "a declared store family carries its family schema-hash",
         );
         assert!(store.schema_hash.is_some());
-        // A well-known family with NO declared schema yet (control/signature, deliberately deferred) is None.
-        let deferred = EffectRequest::new_with_family(
+        // control/signature was the last well-known non-kind family to gain a schema → now Some.
+        let signature = EffectRequest::new_with_family(
             effect_ct::SIGNATURE,
-            "q",
+            "component-hash",
             None,
             Timeliness::Interactive,
         );
         assert_eq!(
-            deferred.schema_hash, None,
-            "an as-yet-undeclared well-known family must be None"
+            signature.schema_hash,
+            crate::ast_marshal::family_effect_schema_hash(effect_ct::SIGNATURE),
+            "control/signature now carries its family schema-hash",
         );
-        // A register-by-string extension family (also Emit placeholder) is likewise None.
+        assert!(signature.schema_hash.is_some());
+        // A register-by-string extension family (Emit placeholder, unknown to the table) is None — the only
+        // remaining None case now that every well-known non-kind family is declared.
         let ext =
             EffectRequest::new_with_family("custom/metrics", "m", None, Timeliness::Interactive);
         assert_eq!(

@@ -544,10 +544,9 @@ pub fn builtin_effect_schema_hash_memo(kind: &crate::effect::EffectKind) -> crat
 /// param list — it stays distinct from its siblings via the effect NAME + OP NAME, both hashed into the
 /// schema tree (so lifecycle/suspend != resume != terminate though all are unit->unit).
 ///
-/// A family string `"x/y"` decomposes to effect name `x`, op name `y`. `None` for a register-by-string
-/// EXTENSION family, or a well-known family whose schema is not yet declared — currently only
-/// `control/signature` (a fold-back query whose payload/result shape is deliberately deferred until nailed;
-/// freezing a permanent identity on a guessed shape is what this `None` avoids).
+/// A family string `"x/y"` decomposes to effect name `x`, op name `y`. `None` ONLY for a register-by-string
+/// EXTENSION family (unknown to the kernel) — every WELL-KNOWN non-`EffectKind` family now carries a declared
+/// schema (control/signature was the last to land). An exact-match table, not a prefix match.
 pub fn family_effect_schema_hash(family: &str) -> Option<crate::hash::Hash> {
     use crate::effect::effect_ct;
     let mut b = Builder::new();
@@ -674,6 +673,15 @@ pub fn family_effect_schema_hash(family: &str) -> Option<crate::hash::Hash> {
             let sig = b.wit_func_sig(&[("summary", summary)], unit);
             ("control", "summary", sig)
         }
+        // control/signature(-> bytes): target = the component to introspect (hash/name, target-out); NO
+        // payload (the target IS the query subject); result = that component's descriptor bytes. The fold-back
+        // query seam (surfaced + Dispatched, resumed by the host's answer). Its DATA shape is the identity —
+        // the resume/fold-back mechanism is orthogonal — so it's a target-only bytes-result effect like fs/read.
+        effect_ct::SIGNATURE => {
+            let descriptor = bytes(&mut b);
+            let sig = b.wit_func_sig(&[], descriptor);
+            ("control", "signature", sig)
+        }
         // store/set(pointer: hash-bytes -> unit): target = the name (target-out); payload = the pointer hash
         // the name now points at. The §4c mutable-name store pointer write.
         effect_ct::STORE_SET => {
@@ -770,6 +778,7 @@ pub fn family_effect_schema_hash_memo(family: &str) -> Option<crate::hash::Hash>
                 effect_ct::LIFECYCLE_TERMINATE,
                 effect_ct::CAPABILITIES,
                 effect_ct::SUMMARY,
+                effect_ct::SIGNATURE,
                 effect_ct::STORE_SET,
                 effect_ct::STORE_RESOLVE,
                 effect_ct::STORE_ADD,
@@ -3458,7 +3467,8 @@ mod tests {
     fn family_effect_schema_hashes_are_stable_declared_set_pairwise_distinct_and_distinct_from_builtins(
     ) {
         use crate::effect::{effect_ct, EffectKind};
-        // The 21 well-known non-EffectKind families that have a DECLARED schema (target-OUT).
+        // The 22 well-known non-EffectKind families that have a DECLARED schema (target-OUT) — every
+        // well-known non-kind family now carries one (control/signature was the last to land).
         let families = [
             effect_ct::FS_READ,
             effect_ct::FS_WRITE,
@@ -3474,6 +3484,7 @@ mod tests {
             effect_ct::LIFECYCLE_TERMINATE,
             effect_ct::CAPABILITIES,
             effect_ct::SUMMARY,
+            effect_ct::SIGNATURE,
             effect_ct::STORE_SET,
             effect_ct::STORE_RESOLVE,
             effect_ct::STORE_ADD,
@@ -3496,12 +3507,13 @@ mod tests {
                 "memo agrees for {f}"
             );
         }
-        // (2) a family with no declared schema yet (control/signature — deliberately deferred), and an
-        // extension family, are None.
-        assert_eq!(family_effect_schema_hash(effect_ct::SIGNATURE), None);
+        // (2) a register-by-string EXTENSION family is None (every well-known non-kind family is now
+        // declared; only an unknown extension has no schema). An exact-match table, not a prefix match — a
+        // "store/whatever" extension the kernel doesn't know is still None.
         assert_eq!(family_effect_schema_hash("custom/metrics"), None);
-        assert_eq!(family_effect_schema_hash_memo(effect_ct::SIGNATURE), None);
-        // (3) THE IDENTITY GUARD: all 6 built-ins + 21 families = 27 PAIRWISE-DISTINCT hashes. This proves
+        assert_eq!(family_effect_schema_hash("store/whatever"), None);
+        assert_eq!(family_effect_schema_hash_memo("custom/metrics"), None);
+        // (3) THE IDENTITY GUARD: all 6 built-ins + 22 families = 28 PAIRWISE-DISTINCT hashes. This proves
         // target-OUT is safe — the unit->unit families (ws/dial, lifecycle/suspend|resume|terminate) do NOT
         // collide with each other despite identical signatures, because the effect NAME + OP NAME are hashed.
         let builtins = [
@@ -3519,7 +3531,7 @@ mod tests {
                 .iter()
                 .map(|f| family_effect_schema_hash(f).unwrap()),
         );
-        assert_eq!(all.len(), 27);
+        assert_eq!(all.len(), 28);
         for i in 0..all.len() {
             for j in (i + 1)..all.len() {
                 assert_ne!(
