@@ -768,6 +768,12 @@ impl Session {
         if self.is_terminated() {
             return Err(KernelError::FoldRefused);
         }
+        // §6: a self-CLOSED session is already terminal — appending `Terminated` past the terminal `Closed`
+        // would un-tail it (double-terminal, and it would CLOBBER the observable self-close `CloseOutcome`).
+        // Refuse, mirroring the is_terminated guard: a session that ended itself is done, not re-terminable.
+        if self.is_closed() {
+            return Err(KernelError::FoldRefused);
+        }
         let cause = Some(self.tip_hash());
         Ok(self
             .append(EventBody::Terminated { by, reason }, cause)
@@ -783,6 +789,11 @@ impl Session {
     /// can't spawn.
     pub async fn record_spawn(&mut self, child_hash: Hash) -> Result<Hash, KernelError> {
         if self.is_terminated() {
+            return Err(KernelError::FoldRefused);
+        }
+        // §6: likewise refuse a self-CLOSED session — appending a `Spawned` edge past the terminal `Closed`
+        // would un-tail it. A session that ended itself can't spawn (mirrors the is_terminated guard).
+        if self.is_closed() {
             return Err(KernelError::FoldRefused);
         }
         let cause = Some(self.tip_hash());
@@ -2831,6 +2842,56 @@ mod status_snapshot_tests {
             s.event_count(),
             count_at_close,
             "no TimerFired was appended past the terminal Closed"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_closed_session_refuses_terminate_and_record_spawn_preserving_the_close_outcome() {
+        // §6 terminal-tip completeness: a self-CLOSED session must also refuse terminate() and record_spawn()
+        // (the two fold-free append seams) — appending Terminated or a Spawned edge past the terminal Closed
+        // would un-tail it (double-terminal / clobbered CloseOutcome). This completes the is_closed guard
+        // across ALL 6 is_terminated append sites.
+        let mut exec = RecordingExecutor::new();
+        let mut s = Session::genesis(Hash::of(b"close-term-v1"), Hash::of(b"test-spawn-nonce"));
+        s.deliver(
+            inbound(),
+            None,
+            &mut ClosingReducer,
+            &Authorizer::deny_all(),
+            &mut exec,
+        )
+        .await
+        .unwrap();
+        assert!(s.is_closed(), "the session self-closed");
+        let count_at_close = s.event_count();
+        let outcome_at_close = s.close_outcome().cloned();
+
+        // terminate() on a closed session is refused — no Terminated marker past Closed.
+        assert!(
+            matches!(
+                s.terminate(Hash::of(b"controller"), "cleanup".to_string())
+                    .await,
+                Err(KernelError::FoldRefused)
+            ),
+            "terminate() on a self-closed session is refused"
+        );
+        // record_spawn() likewise — no Spawned edge past Closed.
+        assert!(
+            matches!(
+                s.record_spawn(Hash::of(b"a-child")).await,
+                Err(KernelError::FoldRefused)
+            ),
+            "record_spawn() on a self-closed session is refused"
+        );
+        assert_eq!(
+            s.event_count(),
+            count_at_close,
+            "no event was appended past the terminal Closed"
+        );
+        assert_eq!(
+            s.close_outcome().cloned(),
+            outcome_at_close,
+            "the self-close CloseOutcome is preserved (terminate did not clobber it)"
         );
     }
 
