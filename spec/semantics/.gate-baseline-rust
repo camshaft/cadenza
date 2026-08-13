@@ -5095,6 +5095,7 @@ pass	dv1 truncated division and dividend-sign modulo over DRAWS — negative div
 pass	dv2 the DIVISOR comes from the arm with a state-dependent sign — quotient and remainder track the alternating divisor exactly
 pass	dv3 division by -1 of a RUNTIME draw — negation across the full non-MIN range, the MIN draw guarded to its own branch
 pass	dw1 a list literal mixing an Int32-annotated element with a wider-inferred literal unifies to (List Int32) — every element renders at the unified element width, uniform across backends (fuzzer cdz-smith differential: rust once emitted a heterogeneous vec![i32,i64])
+pass	dxb1 modular exponentiation with the EXPONENT BITS drawn from the handler — the body's square-and-multiply loop consumes the bit stream LSB-first while the arm peels the threaded exponent
 pass	each definition in a module registers a reachable export field
 pass	each literal kind quotes to its own single Ast leaf that escapes and renders
 pass	each multi-shot branch OBSERVES its own divergent state via a trailing peek
@@ -5214,6 +5215,7 @@ pass	fa4 the accumulator IS a sum — each level's draw moves it around an A->B-
 pass	fa5 a TWO-effect fold — each level's step multiplies a draw from each thread, both threads advancing independently
 pass	fac2 the BODY manufactures snapshot closures from op-answered values — two factories at different drawn states, both applied after the state moved on
 pass	false is less than true
+pass	fan1 a PUBLISH FAN-OUT — publish walks the subscriber map's enumeration and bumps EVERY value by rebuilding the whole map, a mid-run subscribe grows the fan and later publishes reach it
 pass	fe1 a Float64 handler state HALVING per dispatch — three draws sum to exactly 1.75x the seed (exact binary fractions)
 pass	fe2 a CLAMP-style Float64 arm (single-site resume) — below-state args are lifted to the rising floor
 pass	fe3 an Int64 handler and a Float64 handler INTERLEAVED — integer ticks and exact float halving thread independently
@@ -5520,6 +5522,7 @@ pass	mk1 a MAP handler state keyed by the op ARGUMENT — per-key counters, look
 pass	mk2 map keys DERIVED from prior draws — n=1 collides the derived key with the first insert, shrinking the map
 pass	mk21 a scalar-map handler whose second put uses a COMPUTED key — the checked-add scratch and the Option-handle slot stay width-partitioned
 pass	mk3 the arm SHRINKS the map state via remove — re-removing the same key is idempotent, a missing key is a no-op
+pass	mki1 a MAP+KEYSET invariant pair — every put and remove maintains set = keys(map) across both structures in one transition, and paired membership checks verify both sides agree; the n=5 seed collapses the two puts into one key
 pass	ml1 a Map whose VALUES are tuples — a draw-keyed insert of a drawn pair, lookups destructure both hit and neighbor
 pass	mm1 a MIN/MAX tracking arm — three feeds tighten the (lo,hi) tuple state, readers project the final spread
 pass	mml1 a MULTIMAP handler state — (Map Int64 (List Int64)) buckets grow per-key across dispatches; put answers the new bucket length and total sums a bucket later

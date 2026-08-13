@@ -10114,3 +10114,93 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 707190400714 Int64))
   (call   main (: 0 Int64)) (output (: 101070160102 Int64)))
+
+; --- breaker batch 263: drawn-exponent modexp, map+keyset invariant pair, publish fan-out rewrite ---
+(case "dxb1 modular exponentiation with the EXPONENT BITS drawn from the handler — the body's square-and-multiply loop consumes the bit stream LSB-first while the arm peels the threaded exponent"
+  (input  (do
+            (effect S (op bit (-> Int64)))
+            (def (powstep (: k Int64) (: result Int64) (: power Int64))
+              (if (< k 1)
+                  result
+                  (let ((b (S.bit)))
+                    (powstep (- k 1)
+                             (if (= b 1) (% (* result power) 101) result)
+                             (% (* power power) 101)))))
+            (def (main (: n Int64))
+              (handle S n
+                ((bit () s (resume (% s 2) (/ s 2))))
+                (powstep 4 1 3)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 41 Int64))
+  (call   main (: 12 Int64)) (output (: 80 Int64)))
+
+(case "mki1 a MAP+KEYSET invariant pair — every put and remove maintains set = keys(map) across both structures in one transition, and paired membership checks verify both sides agree; the n=5 seed collapses the two puts into one key"
+  (input  (do
+            (effect S
+              (op put (-> Int64 Int64 Int64))
+              (op rm (-> Int64 Int64))
+              (op chk (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S (tuple Map.empty (Set.of (list)))
+                ((put (k v) st
+                  (match st
+                    ((tuple m ks)
+                      (let ((m2 (Map.insert m k v)))
+                        (let ((ks2 (Set.insert ks k)))
+                          (resume (+ (* 10 (Map.len m2)) (Set.len ks2)) (tuple m2 ks2)))))))
+                 (rm (k) st
+                  (match st
+                    ((tuple m ks)
+                      (let ((m2 (Map.remove m k)))
+                        (let ((ks2 (Set.remove ks k)))
+                          (resume (+ (* 10 (Map.len m2)) (Set.len ks2)) (tuple m2 ks2)))))))
+                 (chk (k) st
+                  (match st
+                    ((tuple m ks)
+                      (resume (+ (* 10 (match (Map.lookup m k) ((Some _v) 1) ((None _u) 0)))
+                                 (if (Set.contains ks k) 1 0))
+                              st)))))
+                (let ((a (S.put n 1)))
+                  (let ((b (S.put 5 2)))
+                    (let ((c (S.rm n)))
+                      (let ((d (S.chk n)))
+                        (let ((e (S.chk 5)))
+                          (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 1122110011 Int64))
+  (call   main (: 5 Int64)) (output (: 1111000000 Int64)))
+
+(case "fan1 a PUBLISH FAN-OUT — publish walks the subscriber map's enumeration and bumps EVERY value by rebuilding the whole map, a mid-run subscribe grows the fan and later publishes reach it"
+  (input  (do
+            (effect S
+              (op sub (-> Int64 Int64))
+              (op publish (-> Int64 Int64))
+              (op read (-> Int64 Int64)))
+            (def (bump-all (: src (List (Tuple Int64 Int64))) (: i Int64) (: v Int64) (: acc (Map Int64 Int64)))
+              (match (List.at src i)
+                ((Some p) (match p
+                            ((tuple k old) (bump-all src (+ i 1) v (Map.insert acc k (+ old v))))))
+                ((None u) acc)))
+            (def (sum-vals (: src (List (Tuple Int64 Int64))) (: i Int64) (: acc Int64))
+              (match (List.at src i)
+                ((Some p) (match p ((tuple _k vv) (sum-vals src (+ i 1) (+ acc vv)))))
+                ((None u) acc)))
+            (def (main (: n Int64))
+              (handle S (Map.insert (Map.insert Map.empty 1 0) 2 0)
+                ((sub (k) m
+                  (let ((m2 (Map.insert m k 0)))
+                    (resume (Map.len m2) m2)))
+                 (publish (v) m
+                  (let ((m2 (bump-all (Map.to-list m) 0 v Map.empty)))
+                    (resume (sum-vals (Map.to-list m2) 0 0) m2)))
+                 (read (k) m
+                  (resume (match (Map.lookup m k) ((Some x) x) ((None u) -1)) m)))
+                (let ((a (S.publish n)))
+                  (let ((b (S.sub 7)))
+                    (let ((c (S.publish 2)))
+                      (let ((d (S.read 1)))
+                        (let ((e (S.read 7)))
+                          (+ (* 10 (+ (* 100 (+ (* 100 (+ (* 10 a) b)) c)) d)) e))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 6312052 Int64))
+  (call   main (: 0 Int64)) (output (: 306022 Int64)))
