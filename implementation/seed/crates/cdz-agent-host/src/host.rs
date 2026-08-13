@@ -1451,6 +1451,83 @@ impl AgentHost {
         Some(outcome)
     }
 
+    /// §6 supervision — REAP every self-CLOSED session and notify its parent. This is the normal-completion
+    /// counterpart to the terminate-path §lifecycle I7 `child-exited` notify above: a reducer self-closes by
+    /// returning [`FoldOutput::close`](cdz_kernel::reducer::FoldOutput::close), and the kernel appends the
+    /// terminal [`EventBody::Closed`] INSIDE `deliver` + flips the resident [`Session::is_closed`] flag but
+    /// does NOT touch the host registry (the host owns it) — so a closed session LINGERS registered until this
+    /// reap drops it. The loop calls this once per iteration AFTER the deliver/lifecycle/reply-settle apply
+    /// steps, so a session that self-closed during ANY deliver this turn (an external inbound, a resumed
+    /// held-inbound replay, or a `child-completed` cascade) is caught in one place.
+    ///
+    /// For each closed session: snapshot its child hash + parent link + the reducer's verbatim
+    /// [`CloseOutcome`](cdz_kernel::event::CloseOutcome) off the terminal `Closed` tip BEFORE mutating; evict
+    /// it from every group (§I5 death-retract, same as terminate); remove it from the registry; then — if it
+    /// had a parent STILL registered — deliver a `lifecycle/child-completed` INBOUND into the parent carrying
+    /// [`encode_child_completed`](cdz_kernel::ast_marshal::encode_child_completed)`(child, outcome)`. A ROOT
+    /// close (`parent == None`) is just reaped, no notify.
+    ///
+    /// Resolve the parent by GENESIS HASH via [`session_id_by_genesis_hash`](Self::session_id_by_genesis_hash),
+    /// NEVER hex-as-`SessionId` — a vanity-id supervisor (e.g. `"concierge"`) would be missed and the signal
+    /// silently dropped (same SessionId-is-opaque root cause as the §I7 arm + the §I5 bounce, PR#2481 c1).
+    ///
+    /// FIXPOINT: delivering `child-completed` may itself close the PARENT (a supervisor that completes when its
+    /// last child does), so this loops until no registered session is closed — the whole close-cascade drains
+    /// in one call. Bounded: each pass removes at least one session, and `deliver` never adds a closed one.
+    pub async fn reap_closed_and_notify(&mut self) {
+        loop {
+            // Immutable snapshot pass — collect (id, child-hash, parent, outcome) for every closed session
+            // BEFORE any mutation (the notify `deliver` below needs `&mut self`, and `remove` moves entries).
+            let closed: Vec<(
+                SessionId,
+                Hash,
+                Option<Hash>,
+                cdz_kernel::event::CloseOutcome,
+            )> = self
+                .sessions
+                .iter()
+                .filter_map(|(id, s)| {
+                    if !s.session().is_closed() {
+                        return None;
+                    }
+                    // The terminal tip of a closed session IS `EventBody::Closed{outcome}` (the only path the
+                    // flag flips); read the reducer's verbatim outcome off it. Skip defensively otherwise.
+                    match &s.session().tip().body {
+                        EventBody::Closed { outcome } => {
+                            Some((*id, s.genesis_hash(), s.session().parent(), outcome.clone()))
+                        }
+                        _ => None,
+                    }
+                })
+                .collect();
+            if closed.is_empty() {
+                return;
+            }
+            for (id, child_hash, parent, outcome) in closed {
+                // Finalize: evict from groups + drop from the registry (same as terminate's §I5 + `remove`).
+                self.retract_dead_member_from_groups(&id);
+                self.remove(&id);
+                // Notify the parent (if any is still registered) via a `lifecycle/child-completed` INBOUND.
+                if let Some(parent_hash) = parent {
+                    if let Some(parent_id) = self.session_id_by_genesis_hash(&parent_hash) {
+                        let payload =
+                            cdz_kernel::ast_marshal::encode_child_completed(&child_hash, &outcome);
+                        let body = EventBody::Inbound {
+                            content_type: cdz_kernel::event::ContentType {
+                                family: "lifecycle/child-completed".into(),
+                                version: 1,
+                            },
+                            payload: cdz_kernel::effect::Payload::Inline(payload.into()),
+                        };
+                        // `cause = None` (v1) — mirrors the §I7 child-exited notify. A supervisor fold that
+                        // errors on the notify is its own concern, logged at the deliver boundary.
+                        let _ = self.deliver(&parent_id, body, None).await;
+                    }
+                }
+            }
+        }
+    }
+
     /// §session-directory I5 — evict a dead member from every group in the host-owned CANONICAL name store
     /// (concierge-ruled OPTION B, SCAN-ON-DEATH). For each group where `dead`'s SessionId (= its genesis
     /// hash) has a live add-tag, append an observed-`remove` carrying that exact tag (add-wins: retracts
@@ -3427,6 +3504,201 @@ mod tests {
         assert!(
             !host.contains(&child_id),
             "the terminated child is unregistered"
+        );
+    }
+
+    /// §6 supervision test reducer (CHILD): self-completes on its first inbound by returning
+    /// [`FoldOutput::close`] with `CloseOutcome::Success` carrying a small result payload — a worker that
+    /// finishes its task and hands a value back to its supervisor. Non-inbound events are a no-op.
+    struct SelfClosingChildReducer;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for SelfClosingChildReducer {
+        async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+            if let EventBody::Inbound { .. } = &event.body {
+                FoldOutput::close(cdz_kernel::event::CloseOutcome::Success(Payload::Inline(
+                    b"done".to_vec().into(),
+                )))
+            } else {
+                FoldOutput::none()
+            }
+        }
+    }
+
+    /// §6 supervision test reducer (PARENT): folds a `lifecycle/child-completed` Inbound, decodes the
+    /// canonical codec payload, and records the completed child's hash + a success/failure marker into KV so
+    /// the test can observe the host delivered the normal-completion signal. Any other inbound is a no-op.
+    struct ChildCompletedFoldingReducer;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for ChildCompletedFoldingReducer {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            if let EventBody::Inbound {
+                content_type,
+                payload,
+            } = &event.body
+            {
+                if content_type.matches_family("lifecycle/child-completed") {
+                    // Pin the v1 wire contract (family+payload unchanged must not mask a version bump).
+                    kv.put(
+                        b"completed-version".to_vec(),
+                        content_type.version.to_string().into_bytes(),
+                    );
+                    if let Payload::Inline(bytes) = payload {
+                        if let Ok((child, outcome)) =
+                            cdz_kernel::ast_marshal::decode_child_completed(bytes)
+                        {
+                            kv.put(b"completed-child".to_vec(), child.to_hex().into_bytes());
+                            let marker = match outcome {
+                                cdz_kernel::event::CloseOutcome::Success(_) => b"success".to_vec(),
+                                cdz_kernel::event::CloseOutcome::Failure(r) => r.into_bytes(),
+                            };
+                            kv.put(b"completed-outcome".to_vec(), marker);
+                        }
+                    }
+                }
+            }
+            FoldOutput::none()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_self_closed_child_delivers_child_completed_into_the_parents_inbox_supervision() {
+        // §6 supervision (the normal-close counterpart to the §I7 child-exited path): when a child SELF-CLOSES
+        // (its reducer returns FoldOutput::close), the reap drops it from the registry and delivers a
+        // `lifecycle/child-completed` Inbound (canonical codec payload) into its PARENT's inbox — the
+        // supervisor's completion signal. E2E: spawn a supervisor under a VANITY id (pins the resolve-by-
+        // genesis-hash contract), spawn a child under it, deliver an inbound that makes the child self-close
+        // Success, reap, and observe the parent folded the child hash + success marker.
+        let mut host = AgentHost::new();
+        let supervisor = HostedSession::genesis(
+            Hash::of(b"supervisor-completed-v1"),
+            Box::new(ChildCompletedFoldingReducer),
+            Box::new(Authorizer::deny_all()),
+            CompositeExecutor::new(),
+        );
+        let parent = SessionId::new(Hash::of(b"orchestrator")); // vanity id != hex(genesis_hash)
+        assert_ne!(
+            parent.to_hex(),
+            supervisor.genesis_hash().to_hex(),
+            "the parent is registered under a vanity id, not its genesis-hash hex"
+        );
+        host.spawn(parent, supervisor);
+
+        let child_id = host
+            .spawn_child(
+                &parent,
+                Hash::of(b"self-closing-child-v1"),
+                Box::new(SelfClosingChildReducer),
+                Box::new(Authorizer::deny_all()),
+                CompositeExecutor::new(),
+            )
+            .await
+            .expect("parent present")
+            .expect("child spawned");
+        let child_hash = child_id.hash();
+
+        // Deliver an inbound to the child → its fold returns close(Success) → the kernel appends the terminal
+        // Closed event + flips is_closed(); the child LINGERS registered (the host owns removal) until reap.
+        host.deliver(
+            &child_id,
+            EventBody::Inbound {
+                content_type: cdz_kernel::event::ContentType {
+                    family: "task/go".into(),
+                    version: 1,
+                },
+                payload: Payload::Inline(b"work".to_vec().into()),
+            },
+            None,
+        )
+        .await
+        .expect("child present")
+        .expect("delivered");
+
+        assert!(
+            host.get(&child_id).unwrap().session().is_closed(),
+            "the child self-closed but is still registered before the reap (kernel doesn't touch the registry)"
+        );
+        assert!(
+            host.get(&parent)
+                .unwrap()
+                .session()
+                .kv()
+                .get(b"completed-child")
+                .is_none(),
+            "no child-completed folded before the reap runs"
+        );
+
+        // Reap → drop the closed child from the registry + deliver child-completed into the supervisor.
+        host.reap_closed_and_notify().await;
+
+        assert!(
+            !host.contains(&child_id),
+            "the self-closed child is reaped from the registry"
+        );
+        let kv = host.get(&parent).unwrap();
+        let kv = kv.session().kv();
+        assert_eq!(
+            kv.get(b"completed-child").map(|v| v.to_vec()),
+            Some(child_hash.to_hex().into_bytes()),
+            "the parent folded ChildCompleted carrying the self-closed child's hash"
+        );
+        assert_eq!(
+            kv.get(b"completed-outcome").map(|v| v.to_vec()),
+            Some(b"success".to_vec()),
+            "a self-close Success round-trips to the supervisor via the canonical codec"
+        );
+        assert_eq!(
+            kv.get(b"completed-version").map(|v| v.to_vec()),
+            Some(b"1".to_vec()),
+            "the ChildCompleted Inbound carries content_type.version == 1 (v1 wire contract)"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_self_closed_root_session_is_reaped_with_no_notify_supervision() {
+        // §6 supervision edge (mirrors the §I7 root test): a ROOT session (no parent) that self-closes is
+        // just REAPED from the registry — there is no parent to notify, and the reap is a clean no-op on the
+        // notify path (no panic, no stray delivery).
+        let mut host = AgentHost::new();
+        let root = HostedSession::genesis(
+            Hash::of(b"root-self-close-v1"),
+            Box::new(SelfClosingChildReducer),
+            Box::new(Authorizer::deny_all()),
+            CompositeExecutor::new(),
+        );
+        let root_id = SessionId::new(root.genesis_hash());
+        assert!(
+            root.session().parent().is_none(),
+            "a genesis session with no spawn edge is a root (parent == None)"
+        );
+        host.spawn(root_id, root);
+
+        host.deliver(
+            &root_id,
+            EventBody::Inbound {
+                content_type: cdz_kernel::event::ContentType {
+                    family: "task/go".into(),
+                    version: 1,
+                },
+                payload: Payload::Inline(b"work".to_vec().into()),
+            },
+            None,
+        )
+        .await
+        .expect("root present")
+        .expect("delivered");
+
+        assert!(
+            host.get(&root_id).unwrap().session().is_closed(),
+            "the root self-closed but lingers registered until reap"
+        );
+        host.reap_closed_and_notify().await;
+        assert!(
+            !host.contains(&root_id),
+            "the self-closed root is reaped (no parent to notify, clean removal)"
+        );
+        assert!(
+            host.is_empty(),
+            "no stray sessions remain after reaping the root"
         );
     }
 

@@ -875,6 +875,16 @@ impl AsyncAgentHost {
             // deferred-effect settle can't corrupt the log; an absent/settled id is a benign no-op).
             apply_reply_settles(&mut host, &mut reply_settle_rx).await;
 
+            // §6 supervision — REAP any session that SELF-CLOSED during this iteration's delivers (the kernel
+            // appends EventBody::Closed inside `deliver` + flips is_closed() but leaves the session registered;
+            // the host owns removal). Drops each closed session from the registry and delivers a
+            // `lifecycle/child-completed` INBOUND into its parent (the normal-close counterpart to the
+            // terminate-path §I7 `child-exited` notify). Runs after the lifecycle/reply-settle applies so a
+            // session that closed during a resumed-replay or a child-completed cascade is caught here too; the
+            // reap itself is a fixpoint, so a supervisor that closes on its last child's completion drains in
+            // one call.
+            host.reap_closed_and_notify().await;
+
             // Apply any ws connection-registry mutations the listener/dialer or a ws/dial dispatch produced
             // this iteration (THE OUTPOST federation, live-ws): a Register (new hub/peer conn on accept/connect)
             // or Deregister (conn closed) was routed here rather than touching the `!Send` registry off-task.
