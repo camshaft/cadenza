@@ -115,6 +115,11 @@ type Node =
                                   // TyString; the reader produces it; lower declines it (no Core string rep yet).
                                   // Placed LAST so this new variant does NOT shift the discriminant tags of the
                                   // existing variants (a mid-enum insert regressed the resolve RBound path).
+  | NCharLit(Int64)               // STRINGS frontier (S-w2a): a CHARACTER literal carrying its Unicode CODEPOINT
+                                  // inline. infer types it TyChar; lower emits CNum(codepoint) (a char rides as
+                                  // its codepoint Int at runtime, like Bool as 0/1 — no Core/Value char variant).
+                                  // The reader const-folds `(String.at <str-lit> <idx-lit>)` to it (S-w2a producer,
+                                  // next slice). Placed LAST (after NStr) so no existing discriminant tag shifts.
 
 /// The arena: nodes keyed by NodeId, the next fresh id, a DEF-TABLE (`Map(nameId, bodyNodeId)`), AND a
 /// PARAM-TABLE (`Map(nameId, paramNodeId)`) — the module's `(def (name) body)` / `(def (name p) body)` forms,

@@ -118,6 +118,7 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
     // arith/relational op (via arith-result-type), or to Int64 at the root if never constrained. Was t-int64().
     | Option.Some(Node.NLit(_)) => Map.insert(tcol, id, t-int-deferred())
     | Option.Some(Node.NStr(_)) => Map.insert(tcol, id, Ty.TyString)   // STRINGS S1: a string literal's type fact
+    | Option.Some(Node.NCharLit(_)) => Map.insert(tcol, id, Ty.TyChar) // STRINGS S-w2a: a char literal's type fact
     | Option.Some(Node.NBoolLit(_)) => Map.insert(tcol, id, Ty.TyBool)
     // COMPOUND-VALUE slice: a tuple literal `(tuple e0 e1 …)` has type `TyTuple([T0, T1, …])` — infer each
     // element (threading tcol), then read the elements' types back and build the positional tuple type.
@@ -745,6 +746,7 @@ def typed-to-ty-defer(t: Ty) = match t with
   // unify-ty(TyBool,TyBool)=TyBool flow through the arith arm, mis-accepting `(+ true false)` as Bool.)
   | Ty.TyBool => Option.None(unit)
   | Ty.TyString => Option.None(unit)  // a string value is not an arith operand → None (like TyBool)
+  | Ty.TyChar => Option.None(unit)    // a char value is not an arith operand → None (like TyBool/TyString)
   | Ty.TyErr => Option.None(unit)
   // ARC-B5 B1: a TyVar is not a concrete arith operand → None (like TyFn/TySum/TyBool). A TyVar never reaches
   // this live-infer path today (the descent driver that produces TyVars isn't wired in); arm is for exhaustiveness.

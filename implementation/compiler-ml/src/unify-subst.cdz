@@ -104,6 +104,9 @@ def unify-ty-concrete(su: Subst, a: Ty, b: Ty) = match a with
   | Ty.TyString => (match b with
     | Ty.TyString => Option.Some(su)
     | _ => Option.None(unit))
+  | Ty.TyChar => (match b with
+    | Ty.TyChar => Option.Some(su)
+    | _ => Option.None(unit))
   | Ty.TyErr => Option.None(unit)
   | Ty.TyFn(psa, ra) => (match b with
     | Ty.TyFn(psb, rb) => (if List.len(psa) == List.len(psb)

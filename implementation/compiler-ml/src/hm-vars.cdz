@@ -64,6 +64,7 @@ def ty-occurs-go(su: Subst, v: Int64, t: Ty, fuel: Int64) =
      | Ty.TyInt(_) => false                                         // int's sign/width vars are a different axis
      | Ty.TyBool => false
      | Ty.TyString => false                                         // a string holds no whole-type var (like TyBool)
+     | Ty.TyChar => false                                           // a char holds no whole-type var (like TyBool)
      | Ty.TyErr => false
      | Ty.TySum(_) => false))
 

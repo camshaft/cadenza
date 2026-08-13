@@ -139,6 +139,9 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
     // scalar op like String.length). It types as TyString, but the lower type-gate does not admit TyString,
     // so a raw string program declines here BEFORE reaching this arm; this defensive arm declines it too.
     | Option.Some(Node.NStr(_)) => Option.None(unit)
+    // STRINGS S-w2a: a char literal lowers to its Unicode CODEPOINT as a CNum (a char rides as its codepoint
+    // Int at runtime, like Bool as 0/1 — no Core char rep). TyChar (the type) drives the char verdict render.
+    | Option.Some(Node.NCharLit(cp)) => Option.Some(cnum64(cp))
     | Option.Some(Node.NBoolLit(b)) => Option.Some(cnum64(b))   // Bool is Int 0/1 in Core (i64)
     // COMPOUND-VALUE slice: a tuple literal lowers to `CCtor(0, elems)` — REUSE the SumStore product rep (a
     // tuple is a single tag-0 product; eval store-allocs it to a handle, projection reads store-payload[i]).

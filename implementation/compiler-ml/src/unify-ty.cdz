@@ -68,6 +68,9 @@ def unify-ty(a: Ty, b: Ty) = match a with
     | Ty.TyBool => Option.Some(Ty.TyBool)
     | _ => Option.None(unit)
   )
+  | Ty.TyChar => (match b with
+    | Ty.TyChar => Option.Some(Ty.TyChar)
+    | _ => Option.None(unit))
   | Ty.TyString => (match b with
     | Ty.TyString => Option.Some(Ty.TyString)
     | _ => Option.None(unit)

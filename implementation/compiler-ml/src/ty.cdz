@@ -90,6 +90,12 @@
                                    // literals). Field order is the source order in the type stage (dormant); the
                                    // CONSTRUCT stage canonicalizes to sorted-by-name so field access maps a name
                                    // to a positional slot.
+  | TyChar                         // STRINGS frontier (S-w2a): the CHARACTER type — a payload-free nominal like
+                                   // TyBool/TyString. `String.at` yields a Char; its runtime VALUE is the
+                                   // Unicode codepoint carried as an Int (no VChar Value variant needed — like
+                                   // Bool rides as Int 0/1), and TyChar is the TYPE fact that drives the char
+                                   // verdict render. The type-algorithm walkers mirror the TyBool arm. Placed
+                                   // LAST so this new variant does not shift existing discriminant tags.
 
 /// A bare integer literal's type: BOTH axes deferred (rcdzc `IntType::deferred`) — grounds to the default via
 /// unification/root-defaulting. This is the type a literal STARTS as; an annotation or operator fixes it.
@@ -199,6 +205,10 @@ def ty-eq(a: Ty, b: Ty) = match a with
   )
   | Ty.TyString => (match b with
     | Ty.TyString => true
+    | _ => false
+  )
+  | Ty.TyChar => (match b with
+    | Ty.TyChar => true
     | _ => false
   )
   | Ty.TyErr => false
