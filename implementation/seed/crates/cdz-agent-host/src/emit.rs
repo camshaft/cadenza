@@ -16,10 +16,11 @@
 //! `EffectResult` on the sender's log.
 //!
 //! WIRE CONTRACT (agreed with v-agent-harness, the kernel-side authority):
-//! - `target` is the host [`SessionId`] (the [`AgentHost`](crate::AgentHost) registry key), carried in the
-//!   effect's opaque byte target ([`EffectRequest::target`] is `Arc<[u8]>`) and read as UTF-8 via
-//!   [`EffectRequest::target_str`]; the kernel treats it as an opaque routing hint (§9b), no namespacing. A
-//!   non-UTF-8 target is a fail-closed PERMANENT error.
+//! - `target` is the host [`SessionId`] (the [`AgentHost`](crate::AgentHost) registry key) = the peer's RAW
+//!   32 genesis-hash bytes, carried in the effect's opaque byte target ([`EffectRequest::target`] is
+//!   `Arc<[u8]>`) and reconstructed via [`Hash::from_bytes`] (NOT from_hex — no string parse; the authz gate
+//!   matches the target as raw bytes). The kernel treats it as an opaque routing hint (§9b), no namespacing.
+//!   A wrong-length target is a fail-closed PERMANENT error.
 //! - the routed [`Inbound`] carries `content_type.family = "message"` (the same family an ordinary inbound
 //!   message uses, so a receiver reducer folds it with the existing pattern) + the sender's `payload`
 //!   VERBATIM (opaque — the reducer defines the message schema, §4; a sender that wants to prove provenance
@@ -85,24 +86,21 @@ impl Executor for EmitExecutor {
             ));
         }
 
-        // `target` is the peer session id (opaque routing hint). The target is now opaque Arc<[u8]>; a peer
-        // session id is UTF-8, so a non-UTF-8 target is malformed → structural PERMANENT (fail-closed).
-        let Ok(target_str) = req.target_str() else {
-            return EffectOutcome::err(
-                "EmitExecutor: an Emit target must be a valid UTF-8 peer session id",
-            );
-        };
-        // An empty target has no peer to route to — structural PERMANENT.
-        if target_str.is_empty() {
+        // `target` is the peer session id = its RAW 32 genesis-hash bytes (opaque Arc<[u8]> the reducer
+        // echoed). An empty target has no peer to route to — structural PERMANENT (fail-closed).
+        if req.target.is_empty() {
             return EffectOutcome::err(
                 "EmitExecutor: an Emit effect requires a non-empty target (the peer session id to route to)",
             );
         }
-        // The target is the peer session id = its genesis Hash, carried as hex on the wire. Parse it back; a
-        // non-hex target names no session (a reducer sent a malformed target) → structural PERMANENT.
-        let Some(target) = Hash::from_hex(target_str).map(SessionId::new) else {
+        // Reconstruct the peer SessionId from the raw bytes via from_bytes (NOT from_hex — no string parse; the
+        // authz gate matches the target as raw bytes). A wrong-length target names no session → PERMANENT.
+        let Ok(target) = <[u8; 32]>::try_from(req.target.as_ref())
+            .map(Hash::from_bytes)
+            .map(SessionId::new)
+        else {
             return EffectOutcome::err(
-                "EmitExecutor: an Emit target must be a canonical session-id hex (the peer's genesis hash)",
+                "EmitExecutor: an Emit target must be the peer's raw 32-byte genesis-hash session id",
             );
         };
 
@@ -165,7 +163,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     /// Build an Emit effect request to `target` with an inline `payload` (or none).
-    fn emit_req(target: &str, payload: Option<&[u8]>) -> EffectRequest {
+    fn emit_req(target: &[u8], payload: Option<&[u8]>) -> EffectRequest {
         EffectRequest::new_with_family(
             effect_ct::EMIT,
             target,
@@ -185,7 +183,7 @@ mod tests {
         let out = exec
             .perform(
                 EffectId(0),
-                &emit_req(&target.to_hex(), Some(b"hello-peer")),
+                &emit_req(target.hash().as_bytes(), Some(b"hello-peer")),
                 Hash::of(b"k"),
             )
             .await;
@@ -226,7 +224,7 @@ mod tests {
         let out = exec
             .perform(
                 EffectId(0),
-                &emit_req(&SessionId::new(Hash::of(b"b")).to_hex(), None),
+                &emit_req(SessionId::new(Hash::of(b"b")).hash().as_bytes(), None),
                 Hash::of(b"k"),
             )
             .await;
@@ -249,7 +247,7 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel();
         let mut exec = EmitExecutor::new(tx, SessionId::new(Hash::of(b"sender-a")));
         let out = exec
-            .perform(EffectId(0), &emit_req("", Some(b"x")), Hash::of(b"k"))
+            .perform(EffectId(0), &emit_req(b"", Some(b"x")), Hash::of(b"k"))
             .await;
         match out {
             EffectOutcome::Err {
@@ -268,31 +266,51 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_non_hex_target_is_a_permanent_error_and_routes_nothing() {
-        // Fail-closed target parsing (the sessionid-hash sweep): a target is the peer's genesis-hash HEX, so a
-        // non-canonical-hex target (a reducer sent a vanity label, a truncated/over-long id, or non-hex
-        // chars) names NO session and is a STRUCTURAL error → PERMANENT, and NOTHING is routed (no Inbound
-        // leaks to a bogus peer). Distinct from the empty-target case (also permanent, different message).
+    async fn a_wrong_length_target_is_a_permanent_error_and_routes_nothing() {
+        // Fail-closed target parsing: a target is the peer's raw 32-byte genesis hash, so a wrong-length
+        // target (a vanity label, a truncated/over-long id, or the pre-sweep 64-char hex form) names NO
+        // session and is a STRUCTURAL error → PERMANENT, and NOTHING is routed (no Inbound leaks to a bogus
+        // peer). Distinct from the empty-target case (also permanent, different message).
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut exec = EmitExecutor::new(tx, SessionId::new(Hash::of(b"sender-a")));
+        let short = [0u8; 31];
+        let long = [0u8; 33];
+        let old_hex = Hash::of(b"peer").to_hex(); // the pre-sweep 64-byte hex form — now wrong-length
         for bad in [
-            "not-a-hash",
-            "victim",
-            "xyz",
-            "deadbeef", /* too short */
+            b"not-a-hash".as_slice(),
+            b"victim".as_slice(),
+            short.as_slice(),
+            long.as_slice(),
+            old_hex.as_bytes(),
         ] {
             let out = exec
                 .perform(EffectId(0), &emit_req(bad, Some(b"x")), Hash::of(b"k"))
                 .await;
             assert!(
                 matches!(&out, EffectOutcome::Err { message, retryability }
-                    if *retryability == Retryability::Permanent && message.contains("canonical session-id hex")),
-                "a non-hex target {bad:?} is PERMANENT, got {out:?}"
+                    if *retryability == Retryability::Permanent && message.contains("raw 32-byte")),
+                "a wrong-length target {bad:?} is PERMANENT, got {out:?}"
             );
         }
         assert!(
             matches!(rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
-            "a rejected non-hex target routes NO Inbound (nothing leaked to a bogus peer)"
+            "a rejected wrong-length target routes NO Inbound (nothing leaked to a bogus peer)"
+        );
+    }
+
+    #[test]
+    fn an_authorized_emit_to_a_raw_bytes_session_id_target_is_admitted() {
+        // Regression pin: an Emit is Cedar-authorized on its target = peer session-id BEFORE dispatch. Before
+        // the operator's raw-bytes-authz ruling a raw 32-byte session-id target was DENIED (the gate fed
+        // target_str UTF-8 to admits and a non-UTF-8 target failed closed). Now ResourcePredicate matches the
+        // target as RAW BYTES, so an Any-granted emit to a raw session-id target is ADMITTED — the
+        // executor-side raw-bytes target (this slice) composes with the authz gate. Runs in the DEFAULT gate.
+        use cdz_kernel::effect::{Capability, ResourcePredicate};
+        let peer = SessionId::new(Hash::of(b"peer"));
+        let grant = Capability::for_family(effect_ct::EMIT, ResourcePredicate::Any);
+        assert!(
+            grant.permits(&emit_req(peer.hash().as_bytes(), Some(b"x"))),
+            "an Any-granted emit to a raw-bytes session-id target is admitted (was DENIED pre-ruling)"
         );
     }
 
@@ -320,7 +338,7 @@ mod tests {
         let mut exec = EmitExecutor::new(tx, SessionId::new(Hash::of(b"sender-a")));
         let req = EffectRequest::new_with_family(
             effect_ct::EMIT,
-            SessionId::new(Hash::of(b"b")).to_hex(),
+            SessionId::new(Hash::of(b"b")).hash().as_bytes(),
             Some(Payload::Blob(Hash::of(b"some-blob-ref"))),
             Timeliness::Interactive,
         );
@@ -341,7 +359,7 @@ mod tests {
         let out = exec
             .perform(
                 EffectId(0),
-                &emit_req(&SessionId::new(Hash::of(b"b")).to_hex(), Some(b"x")),
+                &emit_req(SessionId::new(Hash::of(b"b")).hash().as_bytes(), Some(b"x")),
                 Hash::of(b"k"),
             )
             .await;
@@ -416,7 +434,7 @@ mod tests {
                                 .map(|m| {
                                     EffectRequest::new_with_family(
                                         effect_ct::EMIT,
-                                        m.to_hex(),
+                                        m.as_bytes(),
                                         Some(Payload::Inline(self.message.clone().into())),
                                         Timeliness::Interactive,
                                     )

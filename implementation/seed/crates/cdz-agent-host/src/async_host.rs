@@ -1228,11 +1228,12 @@ mod tests {
     }
 
     /// An EMITTER agent (cross-session messaging, sender half): on an inbound "trigger" it performs an
-    /// `Emit` effect to a fixed peer session id, carrying a fixed message payload. `target` is the raw peer
-    /// SessionId string (the wire contract); the emit is fire-and-forget (the result folds to nothing).
+    /// `Emit` effect to a fixed peer session id, carrying a fixed message payload. `victim` is the peer
+    /// SessionId as RAW 32 genesis-hash bytes (the wire contract — the LifecycleExecutor reconstructs it via
+    /// Hash::from_bytes, no hex parse); the emit is fire-and-forget (the result folds to nothing).
     /// On "go", performs a `lifecycle/terminate` targeting `victim` (the peer-control path, §lifecycle I5).
     struct TerminatorAgent {
-        victim: String,
+        victim: Vec<u8>,
     }
     #[async_trait::async_trait(?Send)]
     impl Reducer for TerminatorAgent {
@@ -1284,7 +1285,7 @@ mod tests {
     }
 
     struct EmitterAgent {
-        peer: String,
+        peer: Vec<u8>,
         message: Vec<u8>,
     }
     #[async_trait::async_trait(?Send)]
@@ -1337,23 +1338,25 @@ mod tests {
         // constructs the peer Inbound + sends it on the real Inbox), and B's real fold of the routed message.
         let (tx, mut rx) = mpsc::unbounded_channel::<Inbound>();
 
-        // The two peers, addressed by their canonical genesis-hash hex (the emit target + authz predicate
-        // are the same hex the EmitExecutor parses back to a SessionId).
+        // The two peers, addressed by their canonical genesis-hash RAW BYTES (the emit target the EmitExecutor
+        // reconstructs via Hash::from_bytes — no hex parse).
         let session_a = SessionId::new(Hash::of(b"session-a"));
         let session_b = SessionId::new(Hash::of(b"session-b"));
 
         // A: EmitterAgent → emits to B on its trigger, dispatched by the REAL EmitExecutor over `tx`.
-        // AUTHORIZED to Emit exactly to B (the kernel gates the emit before dispatch, SEC-F1 — an un-granted
-        // target would be DENIED, and this proves the AUTHORIZED path).
+        // AUTHORIZED to Emit (the kernel gates the emit before dispatch, SEC-F1 — a deny-all authz would DENY).
+        // The grant is `Any`: a raw-bytes hash target is capability-like and `Exact(Arc<str>)` cannot hold the
+        // non-UTF-8 hash bytes — matching the landed emit/blob raw-bytes authz pins (scoped-target discrimination
+        // is proven by the effect.rs `admits_bytes` unit tests, not this routing e2e).
         let mut a = HostedSession::genesis(
             Hash::of(b"emitter-v1"),
             Box::new(EmitterAgent {
-                peer: session_b.to_hex(),
+                peer: session_b.hash().as_bytes().to_vec(),
                 message: b"hello-from-a".to_vec(),
             }),
             Box::new(Authorizer::new(vec![Capability {
                 kind: EffectKind::Emit,
-                predicate: ResourcePredicate::Exact(session_b.to_hex().into()),
+                predicate: ResourcePredicate::Any,
             }])),
             CompositeExecutor::new().with_effect(
                 effect_ct::EMIT,
@@ -1554,19 +1557,23 @@ mod tests {
         );
         // The CONTROLLER: a LifecycleExecutor over THIS loop's lifecycle channel (owner = "controller"),
         // authorized to lifecycle/terminate the victim. Fetched after wrapping (the channel lives on the loop).
-        let victim_hex = SessionId::new(Hash::of(b"victim")).to_hex();
+        let victim_bytes = SessionId::new(Hash::of(b"victim"))
+            .hash()
+            .as_bytes()
+            .to_vec();
         let controller = HostedSession::genesis(
             Hash::of(b"controller-v1"),
             Box::new(TerminatorAgent {
-                victim: victim_hex.clone(),
+                victim: victim_bytes,
             }),
             // lifecycle/* is a register-by-string family (no dedicated EffectKind) → grant it via a
             // FAMILY grant (Capability::for_family), not a kind-based Capability. Authorized to
-            // lifecycle/terminate exactly the victim (by its canonical genesis-hash hex).
+            // lifecycle/terminate: the grant is `Any` (a raw-bytes hash target is capability-like; Exact(str)
+            // cannot hold the non-UTF-8 hash bytes — same as the landed lifecycle raw-bytes authz pins).
             Box::new(
                 Authorizer::new(vec![]).with_family_grants(vec![Capability::for_family(
                     effect_ct::LIFECYCLE_TERMINATE,
-                    ResourcePredicate::Exact(victim_hex.into()),
+                    ResourcePredicate::Any,
                 )]),
             ),
             CompositeExecutor::new().with_effect(
@@ -1642,12 +1649,12 @@ mod tests {
         let controller = HostedSession::genesis(
             Hash::of(b"controller-i5-v1"),
             Box::new(TerminatorAgent {
-                victim: victim_id.to_hex(),
+                victim: victim_id.hash().as_bytes().to_vec(),
             }),
             Box::new(
                 Authorizer::new(vec![]).with_family_grants(vec![Capability::for_family(
                     effect_ct::LIFECYCLE_TERMINATE,
-                    ResourcePredicate::Exact(victim_id.to_hex().into()),
+                    ResourcePredicate::Any,
                 )]),
             ),
             CompositeExecutor::new().with_effect(
@@ -1794,7 +1801,7 @@ mod tests {
     /// `b"suspend"` emits `lifecycle/suspend(target)`, `b"resume"` emits `lifecycle/resume(target)` (any other
     /// payload is a no-op). Lets one controller drive a full suspend→(held)→resume arc through the loop.
     struct SuspendResumeController {
-        target: String,
+        target: Vec<u8>,
     }
     #[async_trait::async_trait(?Send)]
     impl Reducer for SuspendResumeController {
@@ -1823,23 +1830,20 @@ mod tests {
     /// Build a controller session wired to suspend/resume `target` through THIS loop's lifecycle channel,
     /// authorized on both families for exactly that target.
     fn suspend_resume_controller(async_host: &AsyncAgentHost, target: &str) -> HostedSession {
-        // `target` is a test label; the controller addresses the peer by its canonical genesis-hash hex (the
-        // same id the peer is spawned under, `Hash::of(label)`), which the LifecycleExecutor parses back.
-        let target = SessionId::new(Hash::of(target.as_bytes())).to_hex();
+        // `target` is a test label; the controller addresses the peer by its canonical genesis-hash RAW BYTES
+        // (the same id the peer is spawned under, `Hash::of(label)`), which the LifecycleExecutor reconstructs
+        // via Hash::from_bytes (no hex parse). The grants are `Any` (a raw-bytes hash target is capability-like;
+        // Exact(str) cannot hold the non-UTF-8 hash bytes — same as the landed lifecycle raw-bytes authz pins).
+        let target = SessionId::new(Hash::of(target.as_bytes()))
+            .hash()
+            .as_bytes()
+            .to_vec();
         HostedSession::genesis(
             Hash::of(b"suspend-resume-controller-v1"),
-            Box::new(SuspendResumeController {
-                target: target.clone(),
-            }),
+            Box::new(SuspendResumeController { target }),
             Box::new(Authorizer::new(vec![]).with_family_grants(vec![
-                Capability::for_family(
-                    effect_ct::LIFECYCLE_SUSPEND,
-                    ResourcePredicate::Exact(target.clone().into()),
-                ),
-                Capability::for_family(
-                    effect_ct::LIFECYCLE_RESUME,
-                    ResourcePredicate::Exact(target.into()),
-                ),
+                Capability::for_family(effect_ct::LIFECYCLE_SUSPEND, ResourcePredicate::Any),
+                Capability::for_family(effect_ct::LIFECYCLE_RESUME, ResourcePredicate::Any),
             ])),
             // One LifecycleExecutor per family key (CompositeExecutor dispatches by family string); both feed
             // the same loop channel.
@@ -2085,16 +2089,19 @@ mod tests {
         // host_mut() spawn — they borrow `&async_host` (for the lifecycle channel), which can't overlap the
         // `&mut` from host_mut().
         let controller_a = suspend_resume_controller(&async_host, "victim-a");
-        let victim_b_hex = SessionId::new(Hash::of(b"victim-b")).to_hex();
+        let victim_b_bytes = SessionId::new(Hash::of(b"victim-b"))
+            .hash()
+            .as_bytes()
+            .to_vec();
         let controller_b = HostedSession::genesis(
             Hash::of(b"suspend-b-controller-v1"),
             Box::new(SuspendResumeController {
-                target: victim_b_hex.clone(),
+                target: victim_b_bytes,
             }),
             Box::new(
                 Authorizer::new(vec![]).with_family_grants(vec![Capability::for_family(
                     effect_ct::LIFECYCLE_SUSPEND,
-                    ResourcePredicate::Exact(victim_b_hex.into()),
+                    ResourcePredicate::Any,
                 )]),
             ),
             CompositeExecutor::new().with_effect(
@@ -2201,16 +2208,19 @@ mod tests {
             .host_mut()
             .spawn(SessionId::new(Hash::of(b"controller")), sr_controller);
         // A controller that terminates victim (on b"go"), addressing it by its canonical genesis-hash hex.
-        let victim_hex = SessionId::new(Hash::of(b"victim")).to_hex();
+        let victim_bytes = SessionId::new(Hash::of(b"victim"))
+            .hash()
+            .as_bytes()
+            .to_vec();
         let killer = HostedSession::genesis(
             Hash::of(b"killer-v1"),
             Box::new(TerminatorAgent {
-                victim: victim_hex.clone(),
+                victim: victim_bytes,
             }),
             Box::new(
                 Authorizer::new(vec![]).with_family_grants(vec![Capability::for_family(
                     effect_ct::LIFECYCLE_TERMINATE,
-                    ResourcePredicate::Exact(victim_hex.into()),
+                    ResourcePredicate::Any,
                 )]),
             ),
             CompositeExecutor::new().with_effect(

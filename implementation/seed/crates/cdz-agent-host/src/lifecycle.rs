@@ -196,23 +196,21 @@ impl Executor for LifecycleExecutor {
                 "LifecycleExecutor handles only lifecycle/spawn|terminate|suspend|resume, got {family}"
             ));
         }
-        // `target` is the peer session id. The target is now opaque Arc<[u8]>; a session id is UTF-8, so a
-        // non-UTF-8 target is malformed → structural PERMANENT (fail-closed). Empty = also PERMANENT.
-        let Ok(target_str) = req.target_str() else {
-            return EffectOutcome::err(format!(
-                "LifecycleExecutor: {family} target must be a valid UTF-8 peer session id"
-            ));
-        };
-        if target_str.is_empty() {
+        // `target` is the peer session id = its RAW 32 genesis-hash bytes (opaque Arc<[u8]>). Empty = no peer
+        // → structural PERMANENT (fail-closed).
+        if req.target.is_empty() {
             return EffectOutcome::err(format!(
                 "LifecycleExecutor: {family} requires a non-empty target (the peer session id)"
             ));
         }
-        // The target is the peer session id = its genesis Hash, carried as hex on the wire. Parse it back; a
-        // non-hex target names no session → structural PERMANENT (fail-closed).
-        let Some(target) = Hash::from_hex(target_str).map(SessionId::new) else {
+        // Reconstruct the peer SessionId from the raw bytes via from_bytes (NOT from_hex — no string parse; the
+        // authz gate matches the target as raw bytes). A wrong-length target names no session → PERMANENT.
+        let Ok(target) = <[u8; 32]>::try_from(req.target.as_ref())
+            .map(Hash::from_bytes)
+            .map(SessionId::new)
+        else {
             return EffectOutcome::err(format!(
-                "LifecycleExecutor: {family} target must be a canonical session-id hex (the peer's genesis hash)"
+                "LifecycleExecutor: {family} target must be the peer's raw 32-byte genesis-hash session id"
             ));
         };
         // A session controlling ITSELF via lifecycle/* is rejected — self-lifecycle is the `close`/own-loop
@@ -286,7 +284,7 @@ mod tests {
     use cdz_kernel::effect::{Payload, Timeliness};
     use cdz_kernel::event::Retryability;
 
-    fn terminate_req(target: &str, reason: Option<&[u8]>) -> EffectRequest {
+    fn terminate_req(target: &[u8], reason: Option<&[u8]>) -> EffectRequest {
         EffectRequest::new_with_family(
             effect_ct::LIFECYCLE_TERMINATE,
             target,
@@ -438,7 +436,7 @@ mod tests {
         let out = exec
             .perform(
                 EffectId(0),
-                &terminate_req(&victim.to_hex(), Some(b"operator kill")),
+                &terminate_req(victim.hash().as_bytes(), Some(b"operator kill")),
                 Hash::of(b"k"),
             )
             .await;
@@ -464,7 +462,7 @@ mod tests {
         let out = exec
             .perform(
                 EffectId(0),
-                &terminate_req(&SessionId::new(Hash::of(b"b")).to_hex(), None),
+                &terminate_req(SessionId::new(Hash::of(b"b")).hash().as_bytes(), None),
                 Hash::of(b"k"),
             )
             .await;
@@ -489,7 +487,7 @@ mod tests {
 
         let suspend = EffectRequest::new_with_family(
             effect_ct::LIFECYCLE_SUSPEND,
-            victim.to_hex(),
+            victim.hash().as_bytes(),
             None,
             Timeliness::Interactive,
         );
@@ -505,7 +503,7 @@ mod tests {
 
         let resume = EffectRequest::new_with_family(
             effect_ct::LIFECYCLE_RESUME,
-            victim.to_hex(),
+            victim.hash().as_bytes(),
             None,
             Timeliness::Interactive,
         );
@@ -527,12 +525,12 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel();
         let mut exec =
             LifecycleExecutor::new(tx, SessionId::new(Hash::of(b"ctl")), Hash::of(b"ctl"));
-        let victim = SessionId::new(Hash::of(b"victim")).to_hex();
+        let victim = SessionId::new(Hash::of(b"victim"));
         for family in [effect_ct::LIFECYCLE_SUSPEND, effect_ct::LIFECYCLE_RESUME] {
             // Inline payload → PERMANENT.
             let inline = EffectRequest::new_with_family(
                 family,
-                victim.clone(),
+                victim.hash().as_bytes(),
                 Some(Payload::Inline(b"unexpected".to_vec().into())),
                 Timeliness::Interactive,
             );
@@ -544,7 +542,7 @@ mod tests {
             // Blob-ref payload → PERMANENT (the specific silent-drop the finding called out).
             let blob = EffectRequest::new_with_family(
                 family,
-                victim.clone(),
+                victim.hash().as_bytes(),
                 Some(Payload::Blob(Hash::of(b"some-blob"))),
                 Timeliness::Interactive,
             );
@@ -562,7 +560,7 @@ mod tests {
         let mut exec = LifecycleExecutor::new(tx, SessionId::new(Hash::of(b"me")), Hash::of(b"me"));
         let req = EffectRequest::new_with_family(
             effect_ct::LIFECYCLE_SUSPEND,
-            SessionId::new(Hash::of(b"me")).to_hex(),
+            SessionId::new(Hash::of(b"me")).hash().as_bytes(),
             None,
             Timeliness::Interactive,
         );
@@ -582,7 +580,7 @@ mod tests {
             LifecycleExecutor::new(tx, SessionId::new(Hash::of(b"ctl")), Hash::of(b"ctl"));
         let req = EffectRequest::new_with_family(
             effect_ct::LIFECYCLE_TERMINATE,
-            SessionId::new(Hash::of(b"victim")).to_hex(),
+            SessionId::new(Hash::of(b"victim")).hash().as_bytes(),
             Some(Payload::Blob(Hash::of(b"some-blob"))),
             Timeliness::Interactive,
         );
@@ -600,7 +598,7 @@ mod tests {
         let out = exec
             .perform(
                 EffectId(0),
-                &terminate_req(&SessionId::new(Hash::of(b"me")).to_hex(), None),
+                &terminate_req(SessionId::new(Hash::of(b"me")).hash().as_bytes(), None),
                 Hash::of(b"k"),
             )
             .await;
@@ -616,7 +614,7 @@ mod tests {
         let mut exec =
             LifecycleExecutor::new(tx, SessionId::new(Hash::of(b"ctl")), Hash::of(b"ctl"));
         let out = exec
-            .perform(EffectId(0), &terminate_req("", None), Hash::of(b"k"))
+            .perform(EffectId(0), &terminate_req(b"", None), Hash::of(b"k"))
             .await;
         assert!(
             matches!(&out, EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("non-empty target")),
@@ -625,15 +623,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_non_hex_target_is_a_permanent_error_and_records_no_op() {
-        // Fail-closed target parsing (the sessionid-hash sweep): a lifecycle target is the peer's genesis-hash
-        // HEX, so a non-canonical-hex target (vanity label, truncated/over-long, non-hex chars) names NO
+    async fn a_wrong_length_target_is_a_permanent_error_and_records_no_op() {
+        // Fail-closed target parsing: a lifecycle target is the peer's raw 32-byte genesis hash, so a
+        // wrong-length target (vanity label, truncated/over-long, or the pre-sweep 64-char hex form) names NO
         // session → structural PERMANENT, and NO LifecycleOp is recorded (a malformed control target must not
         // enqueue a registry mutation the loop would try to apply against a bogus id).
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut exec =
             LifecycleExecutor::new(tx, SessionId::new(Hash::of(b"ctl")), Hash::of(b"ctl"));
-        for bad in ["victim", "not-hex", "deadbeef" /* too short */] {
+        let short = [0u8; 31];
+        let long = [0u8; 33];
+        let old_hex = Hash::of(b"peer").to_hex(); // the pre-sweep 64-byte hex form — now wrong-length
+        for bad in [
+            b"not-a-hash".as_slice(),
+            b"victim".as_slice(),
+            short.as_slice(),
+            long.as_slice(),
+            old_hex.as_bytes(),
+        ] {
             let out = exec
                 .perform(
                     EffectId(0),
@@ -643,13 +650,29 @@ mod tests {
                 .await;
             assert!(
                 matches!(&out, EffectOutcome::Err { message, retryability }
-                    if *retryability == Retryability::Permanent && message.contains("canonical session-id hex")),
-                "a non-hex terminate target {bad:?} is PERMANENT, got {out:?}"
+                    if *retryability == Retryability::Permanent && message.contains("raw 32-byte")),
+                "a wrong-length terminate target {bad:?} is PERMANENT, got {out:?}"
             );
         }
         assert!(
             rx.try_recv().is_err(),
-            "a rejected non-hex target records NO LifecycleOp (nothing enqueued for a bogus id)"
+            "a rejected wrong-length target records NO LifecycleOp (nothing enqueued for a bogus id)"
+        );
+    }
+
+    #[test]
+    fn an_authorized_lifecycle_to_a_raw_bytes_session_id_target_is_admitted() {
+        // Regression pin: lifecycle/* is Cedar-authorized on its target = peer session-id BEFORE dispatch.
+        // Before the operator's raw-bytes-authz ruling a raw 32-byte session-id target was DENIED (the gate
+        // fed target_str UTF-8 to admits and a non-UTF-8 target failed closed). Now ResourcePredicate matches
+        // the target as RAW BYTES, so an Any-granted lifecycle/terminate to a raw session-id target is
+        // ADMITTED — the executor-side raw-bytes target (this slice) composes with the authz gate. DEFAULT-gate.
+        use cdz_kernel::effect::{Capability, ResourcePredicate};
+        let peer = SessionId::new(Hash::of(b"peer"));
+        let grant = Capability::for_family(effect_ct::LIFECYCLE_TERMINATE, ResourcePredicate::Any);
+        assert!(
+            grant.permits(&terminate_req(peer.hash().as_bytes(), None)),
+            "an Any-granted lifecycle/terminate to a raw-bytes session-id target is admitted"
         );
     }
 
@@ -662,7 +685,7 @@ mod tests {
         let out = exec
             .perform(
                 EffectId(0),
-                &terminate_req(&SessionId::new(Hash::of(b"b")).to_hex(), None),
+                &terminate_req(SessionId::new(Hash::of(b"b")).hash().as_bytes(), None),
                 Hash::of(b"k"),
             )
             .await;
