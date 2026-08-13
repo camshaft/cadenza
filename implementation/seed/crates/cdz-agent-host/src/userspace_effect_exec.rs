@@ -582,8 +582,14 @@ mod tests {
             "opaque request rides verbatim"
         );
 
-        // 3. HANDLER answers via effect/reply, echoing the RAW token bytes as the target. The I4 executor
-        // validates + consumes it against the SAME registry and enqueues the settle.
+        // 3. HANDLER answers via effect/reply, echoing the RAW token bytes as the target. Its PAYLOAD is the
+        // reply outcome value-form (err-reply seam): a success reply encodes `Ok(Inline(response))` via
+        // `encode_reply_outcome`, which the I4 ReplyExecutor decodes back to the caller's `EffectOutcome`. The
+        // I4 executor validates + consumes the token against the SAME registry and enqueues the settle.
+        let reply_payload = cdz_kernel::ast_marshal::encode_reply_outcome(&EffectOutcome::Ok(
+            Some(Payload::Inline(b"sunny-and-72".to_vec().into())),
+        ))
+        .expect("encode the handler's Ok reply outcome");
         let mut i4 = ReplyExecutor::new(reply_tokens.clone(), settle_tx);
         let reply_out = i4
             .perform(
@@ -591,7 +597,7 @@ mod tests {
                 &EffectRequest::new_with_family(
                     effect_ct::EFFECT_REPLY,
                     token_bytes.clone(),
-                    Some(Payload::Inline(b"sunny-and-72".to_vec().into())),
+                    Some(Payload::Inline(reply_payload.into())),
                     Timeliness::Interactive,
                 ),
                 Hash::of(b"idem2"),

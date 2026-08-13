@@ -16,17 +16,21 @@
 //! (`settle_effect_result` per command, like [`settle_signature_query`](crate::host)) is the wiring slice.
 //!
 //! **HOST = PLUMBING.** A reply is fire-and-forget from the handler's view: this executor acks `Ok(None)` (the
-//! reply was accepted + routed for settle) the moment the command is enqueued; it does NOT interpret the
-//! response bytes. A v1 reply always settles the caller with a SUCCESS `Ok(payload)` — a handler that wants to
-//! signal a failure encodes it IN the payload (the caller's reducer folds the semantics), keeping the host
-//! oblivious to the effect's meaning. The response [`Payload`](cdz_kernel::effect::Payload) passes through
-//! VERBATIM: Inline OR Blob (unlike
-//! the I3 forward, which folds into a byte envelope + can't carry a blob-ref — an [`EffectOutcome`] holds a
-//! `Payload` natively, so a blob-ref reply settles the caller with that blob ref unchanged).
+//! reply was accepted + routed for settle) the moment the command is enqueued. The reply PAYLOAD is a value-form
+//! OUTCOME the handler emits (err-reply seam, v-pc #1): the Ok/Err subset of the pinned
+//! `outcome: option<Ok(Inline(bytes) | Blob(hash)) | Err{message,retryable}>` — decoded here via
+//! [`decode_reply_outcome`](cdz_kernel::ast_marshal::decode_reply_outcome) and settled onto the caller as the
+//! recovered [`EffectOutcome`]. So a handler can signal SUCCESS (`Ok`, carrying an `Inline` or `Blob` response
+//! `Payload` — a large response need not inline) OR FAILURE (`Err` with a typed retryability the caller's reducer
+//! folds). The host stays oblivious to the effect's MEANING (it never interprets the response bytes), but it
+//! faithfully surfaces the ok/err/retryability DISCRIMINANT. FAIL-CLOSED: a reply whose payload is not a
+//! well-formed outcome value-form (absent/blob-ref effect payload, `TimedOut`/unknown ctor, malformed record,
+//! non-utf-8) is a malformed handler reply → a PERMANENT `Err` settle, never a spurious `Ok` (the outcome
+//! value-form IS the reply contract — no legacy bare-payload success path).
 
 use crate::effect_reply::ReplyTokenRegistry;
 use crate::host::SessionId;
-use cdz_kernel::effect::{effect_ct, EffectId, EffectRequest};
+use cdz_kernel::effect::{effect_ct, EffectId, EffectRequest, Payload};
 use cdz_kernel::event::EffectOutcome;
 use cdz_kernel::executor::Executor;
 use cdz_kernel::hash::Hash;
@@ -43,8 +47,9 @@ pub struct ReplySettle {
     pub caller: SessionId,
     /// The caller's open [`EffectId`] to settle (the `settle_effect_result` key).
     pub effect_id: EffectId,
-    /// The outcome to fold onto the caller's continuation — a v1 reply is always `Ok(payload)` (success; a
-    /// handler encodes any failure in the payload for the caller's reducer to interpret).
+    /// The outcome to fold onto the caller's continuation — the [`EffectOutcome`] the [`ReplyExecutor`]
+    /// recovered from the handler's reply outcome value-form (`Ok(Inline|Blob)` success or `Err{..}` failure;
+    /// a malformed reply fail-closes to a permanent `Err`).
     pub outcome: EffectOutcome,
 }
 
@@ -127,10 +132,34 @@ impl Executor for ReplyExecutor {
             }
         };
 
-        // The response payload settles the caller VERBATIM. A v1 reply is a SUCCESS outcome; the payload
-        // passes through as-is — Inline OR Blob (an EffectOutcome carries a Payload natively, so unlike the
-        // I3 forward this need not inline a blob-ref). A payload-less reply settles the caller `Ok(None)`.
-        let outcome = EffectOutcome::Ok(req.payload.clone());
+        // The reply PAYLOAD is a value-form OUTCOME the handler emits (err-reply seam, v-pc #1): the Ok/Err
+        // subset of the pinned `outcome: option<Ok(bytes) | Err{message,retryable} | TimedOut>` value-form
+        // (no TimedOut — a handler never replies it; the kernel injects TimedOut). Decode it via the kernel's
+        // `decode_reply_outcome` (the codec lives in one place, symmetric with `effect_outcome_view` encode)
+        // and settle the caller with the recovered `EffectOutcome`: an Ok arm → `Ok(Some(Inline(response)))`,
+        // an Err arm → `Err{message, retryability}` (typed retryability recovered from the value-form). This
+        // is what lets a handler signal a FAILURE reply (not just success), surfaced on the caller reducer's
+        // outcome child once the caller-side wiring lands; today it already reaches the caller via the
+        // effect-outcome flatten.
+        //
+        // FAIL-CLOSED (contract): the outcome value-form IS the reply contract, so a reply that does NOT
+        // decode as it — an absent/blob payload (a value-form outcome is inline bytes), a `TimedOut`/unknown
+        // ctor, a malformed Err record, or non-utf-8 — is a malformed handler reply, NOT a legacy success.
+        // Settle a PERMANENT `Err` (never a spurious `Ok`), matching the token-invalid fail-closed posture;
+        // the token is already consumed, so a redrive is refused (a handler must send a well-formed reply).
+        let outcome = match &req.payload {
+            Some(Payload::Inline(bytes)) => cdz_kernel::ast_marshal::decode_reply_outcome(bytes)
+                .unwrap_or_else(|e| {
+                    EffectOutcome::err(format!(
+                        "ReplyExecutor: the reply payload is not a well-formed outcome value-form \
+                         (Ok(bytes) | Err{{message,retryable}}) — malformed handler reply: {e:?}"
+                    ))
+                }),
+            _ => EffectOutcome::err(
+                "ReplyExecutor: an effect/reply requires an inline outcome value-form payload \
+                 (Ok(bytes) | Err{message,retryable}); an absent or blob-ref reply payload is malformed",
+            ),
+        };
 
         let settle = ReplySettle {
             caller: target.caller,
@@ -164,6 +193,8 @@ mod tests {
     use cdz_kernel::event::Retryability;
 
     /// An effect/reply request echoing the raw `token_bytes` as its target with an inline `payload` (or none).
+    /// The `payload` bytes ARE the reply's outcome value-form (built by `reply_outcome_req` below); a `None`
+    /// payload is a malformed (outcome-less) reply.
     fn reply_req(token_bytes: &[u8], payload: Option<&[u8]>) -> EffectRequest {
         EffectRequest::new_with_family(
             effect_ct::EFFECT_REPLY,
@@ -171,6 +202,15 @@ mod tests {
             payload.map(|b| Payload::Inline(b.to_vec().into())),
             Timeliness::Interactive,
         )
+    }
+
+    /// An effect/reply request whose payload is the value-form encoding of `outcome` — what a handler emits
+    /// (the Ok/Err subset). Built via the kernel's `encode_reply_outcome` (the exact inverse of the executor's
+    /// `decode_reply_outcome`), so a round-trip through the executor recovers the same `EffectOutcome`.
+    fn reply_outcome_req(token_bytes: &[u8], outcome: &EffectOutcome) -> EffectRequest {
+        let payload = cdz_kernel::ast_marshal::encode_reply_outcome(outcome)
+            .expect("encode_reply_outcome for a handler-repliable Ok/Err outcome");
+        reply_req(token_bytes, Some(&payload))
     }
 
     #[tokio::test]
@@ -185,7 +225,10 @@ mod tests {
         let out = exec
             .perform(
                 EffectId(7), // the handler's own effect-id — irrelevant to the settle
-                &reply_req(token.as_bytes(), Some(b"the-answer")),
+                &reply_outcome_req(
+                    token.as_bytes(),
+                    &EffectOutcome::Ok(Some(Payload::Inline(b"the-answer".to_vec().into()))),
+                ),
                 Hash::of(b"k"),
             )
             .await;
@@ -215,7 +258,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_payloadless_reply_settles_the_caller_with_ok_none() {
+    async fn a_payloadless_reply_is_malformed_and_settles_a_permanent_err() {
+        // Under the err-reply value-form contract the reply payload IS the outcome value-form; a payload-LESS
+        // reply carries no outcome → malformed → fail-closed PERMANENT Err (never a spurious Ok). The token is
+        // still consumed so the caller's open effect settles (with an Err) rather than hanging.
         let tokens = Rc::new(ReplyTokenRegistry::new());
         let token = tokens.mint(SessionId::new(Hash::of(b"c")), EffectId(1));
         let (settle_tx, mut settle_rx) = reply_settle_channel();
@@ -227,35 +273,108 @@ mod tests {
                 Hash::of(b"k"),
             )
             .await;
-        assert!(matches!(out, EffectOutcome::Ok(None)));
+        assert!(
+            matches!(out, EffectOutcome::Ok(None)),
+            "still routed for settle (fire-and-forget ack)"
+        );
         let settle = settle_rx.try_recv().expect("a settle was enqueued");
         assert!(
-            matches!(settle.outcome, EffectOutcome::Ok(None)),
-            "a payload-less reply settles Ok(None)"
+            matches!(&settle.outcome, EffectOutcome::Err { retryability: Retryability::Permanent, .. }),
+            "a payload-less reply carries no outcome value-form → permanent Err (fail-closed), got {:?}",
+            settle.outcome
         );
     }
 
     #[tokio::test]
     async fn a_blob_ref_reply_payload_passes_through_to_the_settle() {
-        // Unlike the I3 forward (which folds into a byte envelope + rejects a blob-ref), the settle carries a
-        // Payload natively, so a blob-ref reply settles the caller with that blob ref unchanged.
+        // Blob-ref replies are PRESERVED (operator Option B): the handler encodes an `Ok(Blob(hash))` outcome
+        // value-form, `decode_reply_outcome` recovers `Ok(Some(Payload::Blob(hash)))`, and the settle carries
+        // that blob ref to the caller unchanged — a large response need not inline. The reply PAYLOAD is the
+        // outcome value-form (inline bytes encoding Ok(Blob h)); the Blob lives INSIDE the decoded Ok arm.
         let tokens = Rc::new(ReplyTokenRegistry::new());
         let token = tokens.mint(SessionId::new(Hash::of(b"c")), EffectId(3));
         let (settle_tx, mut settle_rx) = reply_settle_channel();
         let mut exec = ReplyExecutor::new(tokens, settle_tx);
         let blob = Hash::of(b"a-big-response-blob");
-        let req = EffectRequest::new_with_family(
-            effect_ct::EFFECT_REPLY,
-            token.as_bytes(),
-            Some(Payload::Blob(blob)),
-            Timeliness::Interactive,
-        );
-        let out = exec.perform(EffectId(0), &req, Hash::of(b"k")).await;
+        let out = exec
+            .perform(
+                EffectId(0),
+                &reply_outcome_req(
+                    token.as_bytes(),
+                    &EffectOutcome::Ok(Some(Payload::Blob(blob))),
+                ),
+                Hash::of(b"k"),
+            )
+            .await;
         assert!(matches!(out, EffectOutcome::Ok(None)));
         let settle = settle_rx.try_recv().expect("a settle was enqueued");
         assert!(
             matches!(settle.outcome, EffectOutcome::Ok(Some(Payload::Blob(h))) if h == blob),
-            "a blob-ref reply passes through to the caller's settle verbatim, got {:?}",
+            "a blob-ref reply passes through to the caller's settle verbatim (Option B preserve), got {:?}",
+            settle.outcome
+        );
+    }
+
+    #[tokio::test]
+    async fn an_err_reply_settles_the_caller_with_a_typed_err_outcome() {
+        // The err-reply raison d'être: a handler signals FAILURE. It encodes `Err{message, retryable}` in the
+        // reply outcome value-form; the ReplyExecutor recovers `EffectOutcome::Err{message, retryability}` with
+        // the retryability typed from the bool (true → Retryable), so the caller's reducer folds retry logic.
+        let tokens = Rc::new(ReplyTokenRegistry::new());
+        let token = tokens.mint(SessionId::new(Hash::of(b"c")), EffectId(9));
+        let (settle_tx, mut settle_rx) = reply_settle_channel();
+        let mut exec = ReplyExecutor::new(tokens, settle_tx);
+        let out = exec
+            .perform(
+                EffectId(0),
+                &reply_outcome_req(
+                    token.as_bytes(),
+                    &EffectOutcome::Err {
+                        message: "upstream timeout".into(),
+                        retryability: Retryability::Retryable,
+                    },
+                ),
+                Hash::of(b"k"),
+            )
+            .await;
+        assert!(matches!(out, EffectOutcome::Ok(None)));
+        let settle = settle_rx.try_recv().expect("a settle was enqueued");
+        assert!(
+            matches!(&settle.outcome,
+                EffectOutcome::Err { message, retryability: Retryability::Retryable }
+                if message == "upstream timeout"),
+            "an Err reply settles a typed Retryable Err with the handler's message, got {:?}",
+            settle.outcome
+        );
+    }
+
+    #[tokio::test]
+    async fn a_malformed_reply_payload_settles_a_permanent_err_fail_closed() {
+        // Fail-closed: a reply payload that is NOT a well-formed outcome value-form (raw bytes that don't
+        // decode as the outcome sum) is a malformed handler reply → PERMANENT Err, NEVER a spurious Ok(payload)
+        // legacy path (the no-adapter directive: the outcome value-form IS the contract).
+        let tokens = Rc::new(ReplyTokenRegistry::new());
+        let token = tokens.mint(SessionId::new(Hash::of(b"c")), EffectId(11));
+        let (settle_tx, mut settle_rx) = reply_settle_channel();
+        let mut exec = ReplyExecutor::new(tokens, settle_tx);
+        let out = exec
+            .perform(
+                EffectId(0),
+                &reply_req(token.as_bytes(), Some(b"not a value-form outcome doc")),
+                Hash::of(b"k"),
+            )
+            .await;
+        assert!(matches!(out, EffectOutcome::Ok(None)));
+        let settle = settle_rx.try_recv().expect("a settle was enqueued");
+        assert!(
+            matches!(
+                &settle.outcome,
+                EffectOutcome::Err {
+                    retryability: Retryability::Permanent,
+                    ..
+                }
+            ),
+            "a non-value-form reply payload is malformed → permanent Err (fail-closed), got {:?}",
             settle.outcome
         );
     }
