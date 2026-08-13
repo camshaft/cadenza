@@ -435,7 +435,10 @@ def emit-def-body(params: List(Int64), bodyCore: Core) =
 def emit-def-body-d(params: List(Int64), bodyCore: Core, defidx: Map(Int64, Int64)) =
   (let clets = collect-binders(bodyCore) in
    (let binders = List.concat(params, clets) in
-    body-of(emit-instrs-d(bodyCore, binders, defidx), List.len(clets))))
+    // W-compound: a body that constructs a compound (has-ctor) needs one i32 scratch local (the CCtor alloc
+    // base), declared AFTER the params + i64 clet-locals — index List.len(binders), which emit-instrs-d's CCtor
+    // uses. A scalar/recursive body declares no scratch (body-of-scratch with nscratch 0 == the old body-of).
+    body-of-scratch(emit-instrs-d(bodyCore, binders, defidx), List.len(clets), (if has-ctor(bodyCore) then 1 else 0))))
 
 /// Code section wrapping a single function body: `01`=one body, `<uleb bodylen>`, `<body>`.
 def code-section(body: Bytes) =
@@ -1297,4 +1300,4 @@ def em-lookup-idx-resolves-present-funcidx() =
   (let m = defenv-funcidx-map(Map.to-list(Map.insert((Map.empty : Map(Int64, Tuple(List(Int64), Core))), 42, ([], Core.CNum(0, true, 64))))) in
    (if (lookup-idx(m, 42) == 0) then unit else trap("lookup-idx resolves a present name to its funcidx 0")))
 
-export { Target.*, target-emit, emit-wasm-module, emit-src-for, emit-module, emit-src, emit-text, render-core, render-core-list, int-to-decimal, emit-src-bytes, bytes-to-list, emit-instrs, emit-instrs-d, emit-call-args, lookup-idx, emit-def-body, emit-def-body-d, defenv-funcidx-map, export-section-idx, can-emit, collect-binders, is-arith-op, is-cmp-op, wasm-op, cmp-op, uleb, sleb, functype-bytes, type-section-multi, func-section-multi, code-section-multi, uleb-each, preamble }
+export { Target.*, target-emit, emit-wasm-module, emit-src-for, emit-module, emit-src, emit-text, render-core, render-core-list, int-to-decimal, emit-src-bytes, bytes-to-list, emit-instrs, emit-instrs-d, emit-call-args, lookup-idx, emit-def-body, emit-def-body-d, defenv-funcidx-map, export-section-idx, can-emit, collect-binders, is-arith-op, is-cmp-op, wasm-op, cmp-op, uleb, sleb, functype-bytes, type-section-multi, func-section-multi, code-section-multi, uleb-each, preamble, has-ctor, memory-section, global-section }
