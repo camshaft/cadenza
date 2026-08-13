@@ -456,11 +456,30 @@ async fn main() -> Result<()> {
     // caller) in arrival order until both queues are empty and nothing new is produced. Each drained item is
     // one delivery against the step budget.
     loop {
-        // §lifecycle: apply any `lifecycle/spawn` ops recorded during the prior deliver(s) — the executor
-        // pre-computed each child id + returned it to the parent's fold; here (owning `&mut host`) we do the
-        // actual instantiate+register+edge via `spawn_child_with_nonce`, resolving the child reducer by its
-        // content-hash from the `--child-reducer` registrations. Then reap any self-closed child, which
-        // delivers a `lifecycle/child-completed` inbound to its parent (host.deliver, feeding the fold).
+        // §lifecycle: REAP first, THEN apply pending `lifecycle/spawn` ops — the order is load-bearing for a
+        // RESTART (a spawn emitted from a `lifecycle/child-completed` fold). `reap_closed_and_notify` delivers
+        // child-completed to a parent, whose fold may emit a fresh `lifecycle/spawn` (of a replacement child)
+        // AND a message to that new child (via the spawn's synchronous effect-result). Both land THIS
+        // iteration — the spawn op on `lifecycle_rx`, the message on the inbox. Draining lifecycle AFTER reap
+        // (below) materializes the replacement before the inbox step pops its message, so the message finds a
+        // live target instead of bouncing. (The real async host registers a child synchronously in
+        // `perform_spawn`; the runner defers spawn to the loop for the `&mut host`, so this reap→drain order
+        // is what preserves that same-fold spawn-then-address faithfulness. Reaping before this iteration's
+        // spawns is harmless: a freshly-materialized child has folded nothing and is never closed yet.)
+        // Reap ONLY when this case spawns children (`--child-reducer` present): a child self-closes on ANY
+        // delivery it folds (e.g. the parent messages a live child a later iteration), and reap drops it +
+        // delivers `lifecycle/child-completed` to its parent. CRUCIALLY reap removes EVERY closed session
+        // (parented or not), so a case whose ROOT session self-closes for a `(status closed)` assertion
+        // (24-self-close) must NOT be reaped — else its closed session is dropped and its status is
+        // unobservable. A child-less case never spawns, so gating on children preserves the self-close case
+        // while enabling the parent↔child completion flow.
+        if !child_hash_of.is_empty() {
+            host.reap_closed_and_notify().await;
+        }
+        // Apply any `lifecycle/spawn` ops recorded during the prior deliver(s) OR the reap above — the
+        // executor pre-computed each child id + returned it to the parent's fold; here (owning `&mut host`) we
+        // do the actual instantiate+register+edge via `spawn_child_with_nonce`, resolving the child reducer by
+        // its content-hash from the `--child-reducer` registrations.
         let mut did_lifecycle = false;
         while let Ok(op) = lifecycle_rx.try_recv() {
             did_lifecycle = true;
@@ -529,16 +548,6 @@ async fn main() -> Result<()> {
             }
         }
         let _ = did_lifecycle;
-        // Reap ONLY when this case spawns children (`--child-reducer` present): a child self-closes on ANY
-        // delivery it folds (e.g. the parent messages a live child a later iteration), and reap drops it +
-        // delivers `lifecycle/child-completed` to its parent. CRUCIALLY reap removes EVERY closed session
-        // (parented or not), so a case whose ROOT session self-closes for a `(status closed)` assertion
-        // (24-self-close) must NOT be reaped — else its closed session is dropped and its status is
-        // unobservable. A child-less case never spawns, so gating on children preserves the self-close case
-        // while enabling the parent↔child completion flow.
-        if !child_hash_of.is_empty() {
-            host.reap_closed_and_notify().await;
-        }
 
         // A forwarded effect-request: route it to its handler session (and record the observed effect).
         if let Ok(inbound) = inbox_rx.try_recv() {
