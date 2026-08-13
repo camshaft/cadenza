@@ -1628,6 +1628,36 @@ fn hash_form(b: &mut Builder, h: &Hash) -> StructId {
     b.list(vec![head, bytes])
 }
 
+/// GAP-4 D1 (context-compaction, Model D): the reserved log-FRAME body form for an OFFLOADED event —
+/// `(blob-ptr (hash <32-bytes>))`. When an event's encoded body exceeds the offload threshold, the body is
+/// stored in the blob CAS and the log frame carries THIS pointer form instead; the rehydrating recover
+/// detects it (via [`decode_blob_ptr`]) and derefs the hash back to the real body before `event_ast::decode`.
+///
+/// It is a STORAGE-LAYER tag, NEVER a real Event: the frame BYTE layout `[u32 len][body]` is unchanged and
+/// the Event decoder never sees `blob-ptr` (an offloaded frame is resolved to its real body first). This
+/// keeps the offload BACKWARD-COMPATIBLE — an existing log carries no `blob-ptr` frame, so it recovers
+/// byte-identically; only the recover layer learns to deref this form. Bounds the WORKING SET (hot log =
+/// small pointer frames) while preserving the FULL lossless log in CAS (operator Model D ruling).
+pub fn encode_blob_ptr(hash: &Hash) -> Vec<u8> {
+    let mut b = Builder::new();
+    let head = b.name("blob-ptr");
+    let hf = hash_form(&mut b, hash);
+    let root = b.list(vec![head, hf]);
+    codec::encode(&b.finish(root))
+}
+
+/// `Some(hash)` iff `body` is EXACTLY a [`encode_blob_ptr`] pointer frame `(blob-ptr (hash <32-bytes>))`,
+/// else `None` — a normal event body (which the caller decodes as an Event) OR a `blob-ptr`-headed form with
+/// the wrong arity / a non-32-byte hash (falls through to the normal decode path, which classifies it as
+/// corrupt). Total, never panics — the body rides the durable log.
+pub fn decode_blob_ptr(body: &[u8]) -> Option<Hash> {
+    let a = codec::decode(body)?;
+    let [hf] = a.as_form(a.root, "blob-ptr")? else {
+        return None;
+    };
+    read_hash(&a, *hf).ok()
+}
+
 fn payload_form(b: &mut Builder, p: &Payload) -> StructId {
     match p {
         Payload::Inline(bytes) => {
@@ -2277,6 +2307,49 @@ fn read_event(a: &Arenas, id: StructId) -> Result<Event, EventAstError> {
 mod tests {
     use super::*;
     use crate::event::CloseOutcome;
+
+    // GAP-4 D1 slice-1a: the reserved (blob-ptr (hash ..)) log-frame body codec round-trips, and — CRUCIAL
+    // for backward-compat — a REAL event body is NEVER mistaken for a blob-ptr pointer frame, so an existing
+    // log recovers unchanged. Malformed input is total (None, never a panic).
+    #[test]
+    fn blob_ptr_frame_round_trips_and_never_collides_with_a_real_event() {
+        // Round-trip: encode_blob_ptr then decode_blob_ptr recovers the exact hash.
+        for seed in [&b"tiny"[..], &b"a-large-response-blob"[..], &[0u8; 1][..]] {
+            let h = Hash::of(seed);
+            assert_eq!(
+                decode_blob_ptr(&encode_blob_ptr(&h)),
+                Some(h),
+                "encode∘decode = id for the blob-ptr frame"
+            );
+        }
+        // NO FALSE POSITIVE: every real event body encodes to something decode_blob_ptr rejects (None), so
+        // the rehydrating recover never derefs a genuine event as a pointer (backward-compat with old logs).
+        for ev in all_variants() {
+            assert_eq!(
+                decode_blob_ptr(&encode(&ev)),
+                None,
+                "a real event body must not be read as a blob-ptr: {:?}",
+                ev.body
+            );
+        }
+        // Total on malformed input: undecodable bytes, and a blob-ptr-headed form with a non-32-byte hash,
+        // both yield None (fall through to the normal decode path) rather than panicking.
+        assert_eq!(decode_blob_ptr(b"\xff\x00not-a-frame"), None);
+        let bad_hash = {
+            let mut b = Builder::new();
+            let head = b.name("blob-ptr");
+            let inner_head = b.name("hash");
+            let short = b.atom_leaf(Leaf::Bytes(b"short".to_vec().into()));
+            let hf = b.list(vec![inner_head, short]);
+            let root = b.list(vec![head, hf]);
+            codec::encode(&b.finish(root))
+        };
+        assert_eq!(
+            decode_blob_ptr(&bad_hash),
+            None,
+            "a blob-ptr with a non-32-byte hash is not a valid pointer frame"
+        );
+    }
 
     fn all_variants() -> Vec<Event> {
         let h = Hash::of(b"x");
