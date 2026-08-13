@@ -9215,3 +9215,67 @@
             (export main)))
   (call   main (: 4 Int64)) (output (: 304063 Int64))
   (call   main (: 1 Int64)) (output (: 1032 Int64)))
+
+; --- breaker batch 251: rover nested-record with chained Record.with, ping-pong cross-feed, sticky-Err failure machine ---
+(case "nrs1 a ROVER state — nested record {pos:{x,y}, steps}; each move applies SIGNED deltas to both inner fields via Record.with and answers the manhattan distance"
+  (input  (do
+            (effect S (op move (-> Int64 Int64 Int64)))
+            (def (iabs (: v Int64)) (if (< v 0) (- 0 v) v))
+            (def (main (: n Int64))
+              (handle S (record (= pos (record (= x n) (= y 0))) (= steps 0))
+                ((move (dx dy) s
+                  (let ((p2 (Record.with (Record.with (. s pos) #"x" (+ (. (. s pos) x) dx))
+                                         #"y" (+ (. (. s pos) y) dy))))
+                    (resume (+ (iabs (. p2 x)) (iabs (. p2 y)))
+                            (record (= pos p2) (= steps (+ (. s steps) 1)))))))
+                (let ((a (S.move 2 3)))
+                  (let ((b (S.move -1 4)))
+                    (let ((c (S.move 0 -7)))
+                      (+ (* 10000 a) (+ (* 100 b) c)))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 50801 Int64))
+  (call   main (: 5 Int64)) (output (: 101306 Int64)))
+
+(case "pp1 a PING-PONG data thread across two handlers — A's answer feeds B's argument and B's answer feeds A's next argument, additive and modular-multiplicative arms advance independently"
+  (input  (do
+            (effect A (op step (-> Int64 Int64)))
+            (effect B (op step (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle A n
+                ((step (v) s (resume (+ s v) (+ s 1))))
+                (handle B 3
+                  ((step (v) t (resume (% (* v t) 97) (+ t 2))))
+                  (let ((x1 (A.step 1)))
+                    (let ((y1 (B.step x1)))
+                      (let ((x2 (A.step y1)))
+                        (let ((y2 (B.step x2)))
+                          (+ (* 100 (+ (* 1000 (+ (* 100 x1) y1)) x2)) y2))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 41201680 Int64))
+  (call   main (: 50 Int64)) (output (: 515610750 Int64)))
+
+(case "stk2 a STICKY-ERR Result state — pushes accumulate while Ok, the over-20 sum flips the state to an absorbing Err whose pushes answer the negated code, reset reports-and-restores"
+  (input  (do
+            (effect S
+              (op push (-> Int64 Int64))
+              (op reset (-> Int64)))
+            (def (main (: n Int64))
+              (handle S (: (Ok n) (Result Int64 Int64))
+                ((push (v) st
+                  (match st
+                    ((Ok s)
+                      (let ((s2 (+ s v)))
+                        (resume s2 (if (> s2 20) (Err s2) (Ok s2)))))
+                    ((Err e) (resume (- 0 e) st))))
+                 (reset () st
+                  (resume (match st ((Ok _s) 0) ((Err _e) 1))
+                          (: (Ok 0) (Result Int64 Int64)))))
+                (let ((a (S.push 9)))
+                  (let ((b (S.push 8)))
+                    (let ((c (S.push 1)))
+                      (let ((d (S.reset)))
+                        (let ((e (S.push 2)))
+                          (+ (* 10 (+ (* 10 (+ (* 100 (+ (* 100 a) b)) (+ c 50))) d)) e))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 12207112 Int64))
+  (call   main (: 10 Int64)) (output (: 19272312 Int64)))

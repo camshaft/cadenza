@@ -5604,6 +5604,7 @@ pass	nm3 the only overflowing DIVISION (Int64.min / -1) is a CONSTANT-fold rejec
 pass	nm4 Int64.min divided by RUNTIME divisors — every non-(-1) divisor has an exact Int64 quotient
 pass	noo1 an op whose result is NESTED Option (Option Int64) — the arm classifies the state into None / Some None / Some (Some s), the body's nested match distinguishes all three in one run
 pass	np1 a NESTED record value built from one draw — projections through two levels read the same drawn base
+pass	nrs1 a ROVER state — nested record {pos:{x,y}, steps}; each move applies SIGNED deltas to both inner fields via Record.with and answers the manhattan distance
 pass	ns1 a RECORD rides inside a sum payload through dispatch — the arm builds it from two draws, the body matches then projects
 pass	ns2 the sum-wrapped record round-trips FLATTENED — matched, field-updated with a draw, re-wrapped, echoed, re-matched at top level
 pass	ns3 TWO record-payload variants selected by state parity — each arm projects its own record shape
@@ -5708,6 +5709,7 @@ pass	popping a field yields its value and the remaining record
 pass	popping a tuple with a runtime element separates the head from the rest
 pass	popping a tuple yields element zero and the remaining tuple
 pass	popping an absent field is rejected
+pass	pp1 a PING-PONG data thread across two handlers — A's answer feeds B's argument and B's answer feeds A's next argument, additive and modular-multiplicative arms advance independently
 pass	pr1 List.prepend onto a MERGED vector grows the front without disturbing the seam
 pass	prepend across the RRB 32→33 boundary front-inserts and reads back at every index
 pass	prepend leaves the original list binding unchanged (persistent, copy-on-write)
@@ -6095,6 +6097,7 @@ pass	st2 TWO sibling handle expressions as operands of one sum — independent r
 pass	st2 draws BETWEEN the installs of a three-deep tower — each thread advances only while it is the innermost, sum pins the interleave
 pass	st3 the SHADOWING frame's arm draws the SAME effect — its dispatch escapes its own extent and lands on the frame it shadows
 pass	stacked line comments on a top-level form are all seen through
+pass	stk2 a STICKY-ERR Result state — pushes accumulate while Ok, the over-20 sum flips the state to an absorbing Err whose pushes answer the negated code, reset reports-and-restores
 pass	straight-line add-then-subtract keeps the value but is not cancelled to the operand
 pass	string REVERSE walks scalars back-to-front and anti-commutes with concatenation
 pass	string concatenation
