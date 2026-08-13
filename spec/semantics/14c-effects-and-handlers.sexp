@@ -9698,3 +9698,79 @@
             (export main)))
   (call   main (: 50 Int64)) (output (: 1102 Int64))
   (call   main (: 250 Int64)) (output (: 1112 Int64)))
+
+; --- breaker batch 258: nested-Option state ladder, arg-driven arm recursion, take-while pull stream ---
+(case "oos1 a NESTED-Option STATE ladder — None to Some None to Some Some v and back, advance climbs one rung per dispatch and classify decodes all three inhabitants between steps"
+  (input  (do
+            (effect S
+              (op adv (-> Int64 Int64))
+              (op cls (-> Int64)))
+            (def (main (: n Int64))
+              (handle S (: (None unit) (Option (Option Int64)))
+                ((adv (v) st
+                  (match st
+                    ((Some inner)
+                      (match inner
+                        ((Some _x) (resume 0 (: (None unit) (Option (Option Int64)))))
+                        ((None _u) (resume 2 (Some (Some v))))))
+                    ((None _u) (resume 1 (Some (: (None unit) (Option Int64)))))))
+                 (cls () st
+                  (resume (match st
+                            ((Some inner) (match inner ((Some x) (+ 30 x)) ((None _u) 1)))
+                            ((None _u) 0))
+                          st)))
+                (let ((a (S.cls)))
+                  (let ((b (S.adv n)))
+                    (let ((c (S.cls)))
+                      (let ((d (S.adv n)))
+                        (let ((e (S.cls)))
+                          (let ((f (S.adv 9)))
+                            (let ((g (S.cls)))
+                              (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g))))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 10102350000 Int64))
+  (call   main (: 7 Int64)) (output (: 10102370000 Int64)))
+
+(case "cla1 the arm runs a PURE data-dependent-depth recursion on the crossed ARGUMENT — collatz length computed wholly inside one dispatch frame, the state accumulates the lengths and a final read exposes the total"
+  (input  (do
+            (effect S
+              (op probe (-> Int64 Int64))
+              (op total (-> Int64)))
+            (def (colen (: x Int64) (: k Int64) (: acc Int64))
+              (if (< k 1)
+                  acc
+                  (if (= x 1)
+                      acc
+                      (colen (if (= (% x 2) 0) (/ x 2) (+ (* 3 x) 1)) (- k 1) (+ acc 1)))))
+            (def (main (: n Int64))
+              (handle S 0
+                ((probe (v) s
+                  (let ((c (colen v 64 0)))
+                    (resume c (+ s c))))
+                 (total () s (resume s s)))
+                (let ((a (S.probe n)))
+                  (let ((b (S.probe 6)))
+                    (let ((c (S.probe 1)))
+                      (let ((d (S.total)))
+                        (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 7080015 Int64))
+  (call   main (: 27 Int64)) (output (: 64080072 Int64)))
+
+(case "twl1 a TAKE-WHILE pull stream — the body's recursive driver keeps drawing until the arm hands back a divisible-by-four value, accumulating the survivors and counting all pulls including the terminator"
+  (input  (do
+            (effect S (op pull (-> Int64)))
+            (def (drive (: k Int64) (: acc Int64) (: cnt Int64))
+              (if (< k 1)
+                  (+ (* 100 acc) cnt)
+                  (let ((v (S.pull)))
+                    (if (= (% v 4) 0)
+                        (+ (* 100 acc) (+ cnt 1))
+                        (drive (- k 1) (+ (* 100 acc) v) (+ cnt 1))))))
+            (def (main (: n Int64))
+              (handle S n
+                ((pull () s (resume (% (* s s) 23) (+ s 1))))
+                (drive 8 0 0)))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 902 Int64))
+  (call   main (: 7 Int64)) (output (: 31803 Int64)))

@@ -4809,6 +4809,7 @@ pass	checked multiplication yields Some when it fits
 pass	checked subtraction yields None on underflow instead of trapping
 pass	checked subtraction yields Some of the difference when it fits
 pass	cl1 a NARROWING clamp arm — the [lo,hi] window shrinks by one each side per dispatch, three args meet three windows
+pass	cla1 the arm runs a PURE data-dependent-depth recursion on the crossed ARGUMENT — collatz length computed wholly inside one dispatch frame, the state accumulates the lengths and a final read exposes the total
 pass	closures built one per iteration each capture their OWN loop value
 pass	closures capture successive SNAPSHOTS of a growing heap list
 pass	closures extracted from a list by RUNTIME index and applied dispatch correctly
@@ -5647,6 +5648,7 @@ pass	one performing closure applied twice observes the handler state stepping be
 pass	one staged partial application fans out to TWO second stages sharing the first capture
 pass	one string content hashes identically from flat, rope, and view reps in one program
 pass	one type parameter used at several depths in one multi-payload variant
+pass	oos1 a NESTED-Option STATE ladder — None to Some None to Some Some v and back, advance climbs one rung per dispatch and classify decodes all three inhabitants between steps
 pass	op1 a WHOLE nested handle expression as an op's ARGUMENT beside an outer draw
 pass	op1 the STD Option as handler state — None seeds to Some on first feed, the payload accumulates thereafter
 pass	op2 an Option RESUME value from a single-site arm — Some carries the excess, None answers the shortfall row
@@ -6555,6 +6557,7 @@ pass	tuples are deconstructed by pattern matching
 pass	tv1 tuple VALUES with scalar keys across three arms — element propagation is value-position too
 pass	tw1 arms of TWO different effects call one shared PURE helper — square-plus-one applied to each live state
 pass	tw2 an explicit FEEDBACK loop — each call feeds the previous result back as the op's first argument beside a fresh draw
+pass	twl1 a TAKE-WHILE pull stream — the body's recursive driver keeps drawing until the arm hands back a divisible-by-four value, accumulating the survivors and counting all pulls including the terminator
 pass	two @param accessors INTERLEAVED (a b a) consume per-op response queues in perform order
 pass	two @param sites generate two accessors under one Param effect
 pass	two @param sites with the same name are rejected as a duplicate effect operation
