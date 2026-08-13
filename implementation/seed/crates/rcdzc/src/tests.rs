@@ -56123,6 +56123,28 @@ mod diagnostics {
     }
 
     #[test]
+    fn nested_and_sibling_bare_none_compounds_in_a_direct_arg_do_not_cross_contaminate() {
+        // COVERAGE hardening for the direct-arg `reflected_ty` freshening: the fix freshens RECURSIVELY
+        // (each RecordNew/TupleNew arm freshens its already-reflected element), so a bare `None()` nested
+        // inside a compound-inside-a-compound must also solve independently of its siblings. The flat
+        // regression above only exercises one record level; this locks the RECURSIVE path. A record arg
+        // carries: a `(tuple (None) (None))` field (two Option siblings inside a nested TUPLE), a sibling
+        // top-level `(None)` field of a THIRD Option type, and a plain field — every `None` must ground to
+        // its own expected element type with NO CDZ0203 cross-contamination. Diagnostics-only (a
+        // `Bytes`-bearing record needs the value-heap runtime the lib-test linker doesn't stage).
+        let src = "(module m \
+           (type Outcome (Ok Int64) (Err Int64)) \
+           (def (apply (: e (Record (: pair (Tuple (Option Bytes) (Option Outcome))) (: d (Option Int64)) (: c Int64)))) (. e c)) \
+           (def (main) (apply (record (= pair (tuple (None) (None))) (= d (None)) (= c 9)))) \
+           (export main))";
+        let all = diags_of(src);
+        assert!(
+            all.iter().all(|d| d.code.as_deref() != Some("CDZ0203")),
+            "nested + sibling bare None() compounds in a direct arg must not cross-contaminate (no CDZ0203): {all:?}"
+        );
+    }
+
+    #[test]
     fn a_def_named_quote_binds_its_parameter_and_is_not_hijacked_by_reification() {
         // `quote`/`quasiquote` are grammar heads recognized STRUCTURALLY only when they head an
         // EXPRESSION — like `if`/`match`/`bin`, all freely definable as ordinary function names because
