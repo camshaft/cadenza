@@ -15240,6 +15240,81 @@ fn op_arrow_param_result_tys(
     Some((params, ty))
 }
 
+/// Build a NAME-FREE effect-op function-signature node `(func (param Desc)… (result Desc))` — the op-sig
+/// shape the EFFECT-schema path uses (schema-hash ruling B, concierge-confirmed 2026-08-13): op-param NAMES
+/// are NOT part of an effect's identity (a userspace op arrow is POSITIONAL and anonymous — there is no name
+/// to recover — so a name-bearing identity would make a userspace effect un-matchable to a built-in and
+/// defeat content-address routing). So each param node is a 2-list `(param Desc)`, NOT the name-bearing
+/// 3-list `(param Name Desc)` the SHARED `Builder::wit_func_sig` emits for the WIT-WORLD path (where WIT
+/// member param names ARE the contract). rcdzc only READS world descriptors, never builds them, so its
+/// effect path uses this name-free form exclusively. `params` are the positional type descriptors in arrow
+/// order; `result` is the always-present result descriptor (a no-return op passes `unit`). Heads are NAME
+/// atoms (head-kind-fixed, matching `effect_schema_tree`), so identical op sigs encode byte-identically.
+#[cfg_attr(not(test), allow(dead_code))]
+fn effect_op_sig_name_free(
+    b: &mut crate::ast::Builder,
+    params: &[StructId],
+    result: StructId,
+) -> StructId {
+    let mut children = Vec::with_capacity(1 + params.len() + 1);
+    let func_head = b.name("func");
+    children.push(func_head);
+    for &desc in params {
+        let param_head = b.name("param");
+        let param_node = b.list(vec![param_head, desc]);
+        children.push(param_node);
+    }
+    let result_head = b.name("result");
+    let result_node = b.list(vec![result_head, result]);
+    children.push(result_node);
+    b.list(children)
+}
+
+/// Build the full effect SCHEMA-descriptor tree `(effect Name (op OpName Sig)…)` for `decl` into `b` — the
+/// tree whose canonical-encode content-hash is the effect's schema-hash identity (the schema-hash-only
+/// effect model). Each op's `Sig` is a NAME-FREE `(func (param Desc)… (result Desc))` (ruling B — op-param
+/// names are not identity) over its arrow's positional param types + result, each mapped by `ty_to_wit_desc`.
+///
+/// Ops are sorted by name (matching the kernel's `effect_schema_hash_from_nodes`, which re-sorts on ingest)
+/// so the identity is the SET of ops, order-independent — and so this descriptor's OWN hash matches the
+/// built-in without relying on the kernel's re-sort. `None` (DECLINE) if any op's type is missing or a
+/// param/result type has no WIT form (a still-generic op, an unsupported type) — never emits a partial
+/// descriptor that would bake a wrong identity. Every node is FRESH (no sharing) so the descriptor is a
+/// genuine tree the kernel `codec::decode`s without a `NotATree` rejection (ruling A).
+#[cfg_attr(not(test), allow(dead_code))]
+fn effect_schema_descriptor(
+    db: &mut Db,
+    b: &mut crate::ast::Builder,
+    decl: StructId,
+) -> Option<StructId> {
+    // Snapshot (name, ty-occ) per op so the borrow of `db`'s EffectDecl ends before the ty_to_wit_desc calls
+    // (which take `&mut db`). Op order is the declaration order; we sort by name below.
+    let ops: Vec<(String, Option<StructId>)> = db
+        .effect_decl_by_occ(decl)?
+        .ops
+        .iter()
+        .map(|op| (op.name.clone(), op.ty))
+        .collect();
+    let effect_name = db.effect_decl_by_occ(decl)?.name.clone();
+
+    let mut built: Vec<(String, StructId)> = Vec::with_capacity(ops.len());
+    for (op_name, ty_occ) in ops {
+        let ty_occ = ty_occ?; // a malformed `(op NAME)` with no type → DECLINE the whole effect
+        let (params, result) = op_arrow_param_result_tys(db, ty_occ)?;
+        let mut param_descs = Vec::with_capacity(params.len());
+        for p in &params {
+            param_descs.push(ty_to_wit_desc(db, b, p)?);
+        }
+        let result_desc = ty_to_wit_desc(db, b, &result)?;
+        let sig = effect_op_sig_name_free(b, &param_descs, result_desc);
+        built.push((op_name, sig));
+    }
+    // Sort by op-name (order-independent identity — matches the kernel's effect_schema_hash_from_nodes).
+    built.sort_by(|a, c| a.0.cmp(&c.0));
+    let op_refs: Vec<(&str, StructId)> = built.iter().map(|(n, s)| (n.as_str(), *s)).collect();
+    Some(b.effect_schema_tree(&effect_name, &op_refs))
+}
+
 /// The variants of a `Ty::Sum` as `(head-name, payload-types)` pairs at this instantiation — the head
 /// spelled as the runtime template writes it (a BARE variant name; the value form renders variants bare,
 /// e.g. `(Cons …)`, `(None unit)`). Mirrors `sum_form_template`'s variant/payload recovery.
@@ -27797,5 +27872,53 @@ mod tests {
         let (params, result) = op_arrow_tys("(effect E (op poll (-> Unit Bytes)))", 0);
         assert!(params.is_empty(), "a lone Unit param elides to zero params");
         assert_eq!(result, Ty::Bytes, "result is Bytes");
+    }
+
+    /// Render an rcdzc descriptor subtree as `(head child…)`, atoms tagged by head kind (`N:`/`S:`), so an
+    /// op sig's exact shape (name-free `(param desc)`, head kinds) is visible in the assertion.
+    fn render_desc(a: &crate::ast::Arenas, id: StructId) -> String {
+        match a.get(id) {
+            crate::ast::Struct::Atom(_) => {
+                if let Some(n) = a.as_name(id) {
+                    format!("N:{n}")
+                } else if let Some(s) = a.as_str(id) {
+                    format!("S:{s}")
+                } else {
+                    panic!("descriptor atom is neither Name nor Str")
+                }
+            }
+            crate::ast::Struct::List(children) => {
+                let parts: Vec<String> = children.iter().map(|&c| render_desc(a, c)).collect();
+                format!("({})", parts.join(" "))
+            }
+        }
+    }
+
+    #[test]
+    fn effect_schema_descriptor_builds_name_free_op_sigs_sorted_by_op_name() {
+        // A userspace effect with two ops declared in NON-sorted order (send before collect... actually
+        // `send` > `collect`, so declaration order != name order). Bytes → list<u8>, Unit result elides.
+        let src = "(module m (effect E (op send (-> Bytes Unit)) (op collect (-> Unit Bytes))) (def (f) 0) (export f))";
+        let mut db = Db::load(crate::testkit::parse(src));
+        let synth = db.effect_decl_by_name("E").expect("effect E declared");
+        let decl = db
+            .effect_decl_by_synth(synth)
+            .expect("effect decl present")
+            .occ;
+        let mut b = crate::ast::Builder::new();
+        let root = effect_schema_descriptor(&mut db, &mut b, decl).expect("descriptor builds");
+        let arenas = b.finish(root);
+        // Expected: (effect E (op collect (func (result (list u8)))) (op send (func (param (list u8)) (result unit))))
+        //  - ops SORTED by name: collect before send (declaration order was send, collect).
+        //  - collect: (-> Unit Bytes) → no params (Unit elides), result = list<u8>.
+        //  - send: (-> Bytes Unit) → one positional param (list<u8>), NO param name (ruling B), result unit.
+        //  - Bytes → ("list" (u8)); the "list" head is a Str (S:), u8 a Name prim (N:).
+        assert_eq!(
+            render_desc(&arenas, arenas.root),
+            "(N:effect N:E \
+             (N:op N:collect (N:func (N:result (S:list (N:u8))))) \
+             (N:op N:send (N:func (N:param (S:list (N:u8))) (N:result (S:unit)))))",
+            "name-free positional op sigs, ops sorted by name, Bytes as list<u8>, Unit result/elided arg"
+        );
     }
 }
