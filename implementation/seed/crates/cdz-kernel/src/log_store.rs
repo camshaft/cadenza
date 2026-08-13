@@ -55,14 +55,27 @@ pub trait LogSink {
 pub struct LogStore {
     path: PathBuf,
     file: File,
+    /// GAP-4 D1 offload: when `Some`, an appended event whose ENCODED body exceeds `offload_threshold`
+    /// is stored in this blob CAS and the log frame carries a `(blob-ptr hash)` pointer instead (see
+    /// [`maybe_offload`]); recovery via [`LogStore::recover_rehydrated`] derefs it back. `None` = no offload
+    /// (every body inline — the pre-D1 behavior), so existing callers are unchanged.
+    blob: Option<Box<dyn BlobStore>>,
+    offload_threshold: usize,
 }
 
 #[async_trait::async_trait(?Send)]
 impl LogSink for LogStore {
-    /// The disk backend is synchronous under the hood (std `File` write+flush); it satisfies the async
-    /// trait by returning a ready future (no `.await` — an in-process file append never yields).
+    /// The disk backend's append. When offload is enabled ([`LogStore::with_offload`]) a large body is
+    /// offloaded to the blob CAS and the frame carries a pointer; otherwise the body is framed inline (the
+    /// std `File` write+flush is synchronous, so with offload disabled this still never actually `.await`s).
     async fn append(&mut self, event: &Event) -> io::Result<()> {
-        LogStore::append(self, event)
+        let body = event_ast::encode(event);
+        let threshold = self.offload_threshold;
+        let stored = match &mut self.blob {
+            Some(blob) => maybe_offload(&body, blob.as_mut(), threshold).await?,
+            None => body,
+        };
+        self.append_framed(&stored)
     }
 }
 
@@ -118,7 +131,22 @@ impl LogStore {
             .append(true)
             .read(true)
             .open(&path)?;
-        Ok(LogStore { path, file })
+        Ok(LogStore {
+            path,
+            file,
+            blob: None,
+            offload_threshold: 0,
+        })
+    }
+
+    /// Enable GAP-4 D1 body-offload (Model D — bound the hot log, preserve the full lossless log in CAS):
+    /// an appended event whose ENCODED body exceeds `threshold` bytes is stored in `blob` and the log frame
+    /// carries a `(blob-ptr hash)` pointer; [`LogStore::recover_rehydrated`] derefs it back. Opt-in builder —
+    /// a `LogStore::open` without this offloads nothing (every body inline, the pre-D1 contract).
+    pub fn with_offload(mut self, blob: Box<dyn BlobStore>, threshold: usize) -> Self {
+        self.blob = Some(blob);
+        self.offload_threshold = threshold;
+        self
     }
 
     /// Append one event, length-framed, and flush to the OS. Returns once the bytes are handed to the
@@ -128,16 +156,23 @@ impl LogStore {
     /// after this returns route the effect to an executor.
     pub fn append(&mut self, event: &Event) -> io::Result<()> {
         // Encode through the SHARED cadenza-ast canonical codec (§19a/§S5) — the language-native wire
-        // format, not a bespoke one. The u32 length frame stays (cadenza-ast's decode is consume-whole,
-        // no bytes-consumed — v-syntax confirmed — so the frame layer, not the codec, delimits records).
-        let body = event_ast::encode(event);
+        // format, not a bespoke one. This SYNC path frames inline with NO offload (test / non-offloading
+        // callers); the async `LogSink::append` applies GAP-4 D1 offload when a blob is attached.
+        self.append_framed(&event_ast::encode(event))
+    }
+
+    /// Frame + durably write PRE-ENCODED body bytes (the `u32` little-endian length prefix + the body). The
+    /// body is EITHER an `event_ast::encode` document OR a `(blob-ptr hash)` pointer (GAP-4 D1 offload) —
+    /// the frame layer is body-agnostic. The u32 length frame stays (cadenza-ast's decode is consume-whole,
+    /// so the frame layer, not the codec, delimits records).
+    fn append_framed(&mut self, body: &[u8]) -> io::Result<()> {
         let len = u32::try_from(body.len())
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "event too large to frame"))?;
         // One write of a contiguous buffer (len prefix + body) so a frame is as atomic as the OS
         // makes a single write — minimizing the torn-frame window.
         let mut frame = Vec::with_capacity(4 + body.len());
         frame.extend_from_slice(&len.to_le_bytes());
-        frame.extend_from_slice(&body);
+        frame.extend_from_slice(body);
         self.file.write_all(&frame)?;
         self.file.flush()
     }
@@ -187,6 +222,33 @@ impl LogStore {
             Err(e) => return Err(e),
         }
         Ok(decode_frames(&bytes))
+    }
+
+    /// The GAP-4 D1 rehydrating recover: like [`LogStore::recover`], but each frame body is first passed
+    /// through [`rehydrate`] (deref a `(blob-ptr hash)` pointer back to the real body via `blob`) BEFORE
+    /// decode — so an OFFLOADED log recovers to the byte-identical event stream (fold-transparent; replay's
+    /// genesis+contiguous-seq+genesis_hash contract is untouched). Framing/torn-tail/corrupt semantics are
+    /// identical to `recover`; a `(blob-ptr)` frame whose CAS body is ABSENT/unreadable is a HARD io error
+    /// (data loss — an offloaded body vanished), distinct from `Corrupt` (a present-but-invalid frame).
+    pub async fn recover_rehydrated<B: BlobStore + ?Sized>(
+        path: impl AsRef<Path>,
+        blob: &B,
+    ) -> io::Result<Recovered> {
+        let mut bytes = Vec::new();
+        match File::open(path.as_ref()) {
+            Ok(mut f) => {
+                f.read_to_end(&mut bytes)?;
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return Ok(Recovered {
+                    events: Vec::new(),
+                    kind: RecoveryKind::Clean,
+                    good_prefix_len: 0,
+                });
+            }
+            Err(e) => return Err(e),
+        }
+        decode_frames_rehydrating(&bytes, blob).await
     }
 }
 
@@ -246,6 +308,59 @@ fn decode_frames(bytes: &[u8]) -> Recovered {
     }
 }
 
+/// The async, rehydrating twin of [`decode_frames`] (mirrors its framing/torn-tail/corrupt logic exactly —
+/// kept a separate fn because `rehydrate` is async and the sync `decode_frames` is on the hot no-offload
+/// path). Per frame: deref the body via [`rehydrate`] (a `(blob-ptr)` pointer → its CAS body; else the body
+/// unchanged) BEFORE `event_ast::decode`. A rehydrate failure (absent/unreadable blob) is a hard io error
+/// (propagated); a decode failure on a full, rehydrated frame is `Corrupt` (as in `decode_frames`).
+async fn decode_frames_rehydrating<B: BlobStore + ?Sized>(
+    bytes: &[u8],
+    blob: &B,
+) -> io::Result<Recovered> {
+    let mut events = Vec::new();
+    let mut pos = 0usize;
+    loop {
+        let Some(len_bytes) = bytes.get(pos..pos + 4) else {
+            let kind = if pos < bytes.len() {
+                RecoveryKind::TornTail
+            } else {
+                RecoveryKind::Clean
+            };
+            return Ok(Recovered {
+                events,
+                kind,
+                good_prefix_len: pos as u64,
+            });
+        };
+        let len =
+            u32::from_le_bytes([len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3]]) as usize;
+        let body_start = pos + 4;
+        let Some(body) = bytes.get(body_start..body_start + len) else {
+            return Ok(Recovered {
+                events,
+                kind: RecoveryKind::TornTail,
+                good_prefix_len: pos as u64,
+            });
+        };
+        // GAP-4 D1: deref a blob-ptr pointer frame to the real body BEFORE decode. A missing blob is a hard
+        // io error (data loss), NOT a Corrupt classification (the frame itself is well-formed).
+        let real = rehydrate(body, blob).await?;
+        match event_ast::decode(&real) {
+            Ok(event) => {
+                events.push(event);
+                pos = body_start + len;
+            }
+            Err(_) => {
+                return Ok(Recovered {
+                    events,
+                    kind: RecoveryKind::Corrupt,
+                    good_prefix_len: pos as u64,
+                });
+            }
+        }
+    }
+}
+
 // ── GAP-4 D1: the backend-agnostic log-body OFFLOAD helpers (Model D — bound the working set, preserve the
 // full lossless log). A large ENCODED EVENT BODY is stored in the blob CAS and the log frame carries a
 // reserved `(blob-ptr hash)` pointer instead (see `event_ast::encode_blob_ptr`); recovery derefs it back to
@@ -257,7 +372,7 @@ fn decode_frames(bytes: &[u8]) -> Recovered {
 /// `<= threshold`, or a `(blob-ptr hash)` pointer (after storing `body` in `blob` under its content hash)
 /// when it exceeds the threshold. The hash is `Hash::of(body)` (blake3), so the CAS entry is
 /// content-addressed + idempotent. Backend-agnostic — the disk log and dynamo_log offload identically.
-pub async fn maybe_offload<B: BlobStore>(
+pub async fn maybe_offload<B: BlobStore + ?Sized>(
     body: &[u8],
     blob: &mut B,
     threshold: usize,
@@ -274,7 +389,7 @@ pub async fn maybe_offload<B: BlobStore>(
 /// `blob` when `stored` is a `(blob-ptr hash)` pointer, else `stored` unchanged. Round-trip:
 /// `rehydrate(maybe_offload(body, ..), ..) == body` (fold-transparent). A pointer whose blob is ABSENT is a
 /// hard `NotFound` io error (the CAS lost the offloaded body — data loss, NOT a silent empty body).
-pub async fn rehydrate<B: BlobStore>(stored: &[u8], blob: &B) -> io::Result<Vec<u8>> {
+pub async fn rehydrate<B: BlobStore + ?Sized>(stored: &[u8], blob: &B) -> io::Result<Vec<u8>> {
     match event_ast::decode_blob_ptr(stored) {
         Some(hash) => blob.get(&hash).await?.map(|b| b.to_vec()).ok_or_else(|| {
             io::Error::new(
@@ -415,6 +530,75 @@ mod tests {
         let empty = MemBlobStore::new();
         let err = rehydrate(&absent, &empty).await.unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::NotFound);
+    }
+
+    // slice-1c end-to-end: an offloading LogStore writes a small event inline + a large event as a blob-ptr
+    // pointer; a PLAIN recover stops Corrupt at the pointer (proving offload happened), while
+    // recover_rehydrated (a fresh handle to the SAME content-addressed blob dir) reconstructs BOTH events
+    // byte-identical — fold-transparent, so replay sees the exact stream it always did.
+    #[tokio::test(flavor = "current_thread")]
+    async fn logstore_offload_round_trips_through_recover_rehydrated() {
+        use crate::blob::DiskBlobStore;
+
+        let log_path = temp_path("offload-log");
+        let blob_dir = {
+            let mut p = std::env::temp_dir();
+            p.push(format!("cdz-kernel-offload-blob-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&p);
+            p
+        };
+        let threshold = 256usize;
+
+        let small = inbound(1); // ~tiny encoded body → stays inline
+        let big = Event {
+            seq: 2,
+            cause: None,
+            body: EventBody::Inbound {
+                content_type: ContentType {
+                    family: "m".into(),
+                    version: 1,
+                },
+                payload: Payload::Inline(vec![0xCDu8; 512].into()), // body >> threshold → offloaded
+            },
+        };
+
+        // Append through the ASYNC offloading path (disambiguate from the inherent sync `append`).
+        {
+            let mut log = LogStore::open(&log_path)
+                .unwrap()
+                .with_offload(Box::new(DiskBlobStore::open(&blob_dir).unwrap()), threshold);
+            LogSink::append(&mut log, &small).await.unwrap();
+            LogSink::append(&mut log, &big).await.unwrap();
+        }
+
+        // PLAIN recover: decodes the inline small event, then hits the big event's (blob-ptr) pointer frame —
+        // not a valid event → Corrupt (this is exactly why an offloaded log needs recover_rehydrated).
+        let plain = LogStore::recover(&log_path).unwrap();
+        assert_eq!(
+            plain.kind,
+            RecoveryKind::Corrupt,
+            "plain recover stops Corrupt at the offloaded pointer frame"
+        );
+        assert_eq!(
+            plain.events,
+            vec![small.clone()],
+            "plain recover gets the inline small event, then can't decode the pointer"
+        );
+
+        // REHYDRATING recover (fresh handle to the same blob dir): both events, byte-identical.
+        let blob = DiskBlobStore::open(&blob_dir).unwrap();
+        let rec = LogStore::recover_rehydrated(&log_path, &blob)
+            .await
+            .unwrap();
+        assert_eq!(rec.kind, RecoveryKind::Clean);
+        assert_eq!(
+            rec.events,
+            vec![small, big],
+            "rehydrating recover reconstructs the identical event stream (offload is fold-transparent)"
+        );
+
+        let _ = std::fs::remove_file(&log_path);
+        let _ = std::fs::remove_dir_all(&blob_dir);
     }
 
     #[test]
