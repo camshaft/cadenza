@@ -556,34 +556,103 @@ pub fn family_effect_schema_hash(family: &str) -> Option<crate::hash::Hash> {
         let u8_ty = b.wit_type_prim("u8");
         b.wit_type_list(u8_ty)
     }
+    // The 16 STRUCTURALLY-SIMPLE families collapse to a data table (family → name/op/one of four op-sig
+    // SHAPES over `bytes`/`unit`), driven by one build loop below. HASH-PRESERVING: each row reconstructs the
+    // EXACT same `wit_func_sig` (same op-name, same param-NAME where present, same result descriptor) the old
+    // per-arm code built, so `family_effect_schema_hash` is byte-identical for every family (the identity is
+    // frozen). The 6 STRUCTURALLY-COMPLEX families (blob/get option, metric/publish record, store/add|remove
+    // MemberOp, store/resolve-all list, control/close variant) stay bespoke in the `match` below the table.
+    // The four shapes (`bytes` = `list<u8>`, target-out means no target param — the target rides req.target):
+    //   UnitToBytes   `()          -> bytes`   ·  BytesToUnit  `(<p>: bytes) -> unit`
+    //   UnitToUnit    `()          -> unit`    ·  BytesToBytes `(<p>: bytes) -> bytes`
+    enum SimpleShape {
+        UnitToBytes,
+        BytesToUnit(&'static str),
+        UnitToUnit,
+        BytesToBytes(&'static str),
+    }
+    use SimpleShape::*;
+    // (family const, effect-name, op-name, shape). Param names are load-bearing (they participate in the
+    // hash) — kept EXACTLY as the prior per-arm code spelled them.
+    const SIMPLE: &[(&str, &str, &str, SimpleShape)] = &[
+        (effect_ct::FS_READ, "fs", "read", UnitToBytes),
+        (effect_ct::FS_WRITE, "fs", "write", BytesToUnit("content")),
+        (effect_ct::FS_GLOB, "fs", "glob", UnitToBytes),
+        (effect_ct::BLOB_PUT, "blob", "put", BytesToBytes("content")),
+        (effect_ct::WS_SEND, "ws", "send", BytesToUnit("frame")),
+        (effect_ct::WS_DIAL, "ws", "dial", UnitToUnit),
+        (
+            effect_ct::LIFECYCLE_SPAWN,
+            "lifecycle",
+            "spawn",
+            BytesToBytes("reducer-hash"),
+        ),
+        (
+            effect_ct::LIFECYCLE_SUSPEND,
+            "lifecycle",
+            "suspend",
+            UnitToUnit,
+        ),
+        (
+            effect_ct::LIFECYCLE_RESUME,
+            "lifecycle",
+            "resume",
+            UnitToUnit,
+        ),
+        (
+            effect_ct::LIFECYCLE_TERMINATE,
+            "lifecycle",
+            "terminate",
+            UnitToUnit,
+        ),
+        (
+            effect_ct::CAPABILITIES,
+            "control",
+            "capabilities",
+            BytesToUnit("manifest"),
+        ),
+        (
+            effect_ct::SUMMARY,
+            "control",
+            "summary",
+            BytesToUnit("summary"),
+        ),
+        (effect_ct::SIGNATURE, "control", "signature", UnitToBytes),
+        (effect_ct::STORE_SET, "store", "set", BytesToUnit("pointer")),
+        (effect_ct::STORE_RESOLVE, "store", "resolve", UnitToBytes),
+        (
+            effect_ct::EFFECT_REPLY,
+            "effect",
+            "reply",
+            BytesToUnit("response"),
+        ),
+    ];
+    if let Some((_, name, op_name, shape)) = SIMPLE.iter().find(|(fam, ..)| *fam == family) {
+        let sig = match shape {
+            UnitToBytes => {
+                let result = bytes(&mut b);
+                b.wit_func_sig(&[], result)
+            }
+            BytesToUnit(p) => {
+                let param = bytes(&mut b);
+                let unit = b.wit_type_unit();
+                b.wit_func_sig(&[(p, param)], unit)
+            }
+            UnitToUnit => {
+                let unit = b.wit_type_unit();
+                b.wit_func_sig(&[], unit)
+            }
+            BytesToBytes(p) => {
+                let param = bytes(&mut b);
+                let result = bytes(&mut b);
+                b.wit_func_sig(&[(p, param)], result)
+            }
+        };
+        return Some(effect_schema_hash_from_nodes(b, name, &[(op_name, sig)]));
+    }
+    // The 6 STRUCTURALLY-COMPLEX families — bespoke op-sig shapes (option/record/tuple/variant/list) that do
+    // not fit the four simple shapes above; kept as explicit arms.
     let (name, op_name, sig): (&str, &str, StructId) = match family {
-        // fs/read(-> bytes): target = the path (target-out, no param); result = the file content bytes.
-        effect_ct::FS_READ => {
-            let content = bytes(&mut b);
-            let sig = b.wit_func_sig(&[], content);
-            ("fs", "read", sig)
-        }
-        // fs/write(content: bytes -> unit): target = the path; payload = the content to write.
-        effect_ct::FS_WRITE => {
-            let content = bytes(&mut b);
-            let unit = b.wit_type_unit();
-            let sig = b.wit_func_sig(&[("content", content)], unit);
-            ("fs", "write", sig)
-        }
-        // fs/glob(-> bytes): target = the pattern (target-out); result = newline-joined matching paths (v0
-        // bytes; a typed list<string> is a later additive refinement, per the executor's own note).
-        effect_ct::FS_GLOB => {
-            let paths = bytes(&mut b);
-            let sig = b.wit_func_sig(&[], paths);
-            ("fs", "glob", sig)
-        }
-        // blob/put(content: bytes -> hash): payload = the content; result = its 32-byte content hash (bytes).
-        effect_ct::BLOB_PUT => {
-            let content = bytes(&mut b);
-            let hash = bytes(&mut b);
-            let sig = b.wit_func_sig(&[("content", content)], hash);
-            ("blob", "put", sig)
-        }
         // blob/get(-> option<bytes>): target = the content hash (target-out); result = the content if present
         // (CAS hit = Some, miss = None — a normal answer, not an error).
         effect_ct::BLOB_GET => {
@@ -617,84 +686,6 @@ pub fn family_effect_schema_hash(family: &str) -> Option<crate::hash::Hash> {
             let unit = b.wit_type_unit();
             let sig = b.wit_func_sig(&[("sample", sample)], unit);
             ("metric", "publish", sig)
-        }
-        // ws/send(frame: bytes -> unit): target = the peer conn-id (target-out); payload = the outbound frame.
-        effect_ct::WS_SEND => {
-            let frame = bytes(&mut b);
-            let unit = b.wit_type_unit();
-            let sig = b.wit_func_sig(&[("frame", frame)], unit);
-            ("ws", "send", sig)
-        }
-        // ws/dial(-> unit): target = the hub url (target-out); the connection surfaces as a separate
-        // ws/connect inbound event, so the op result is unit.
-        effect_ct::WS_DIAL => {
-            let unit = b.wit_type_unit();
-            let sig = b.wit_func_sig(&[], unit);
-            ("ws", "dial", sig)
-        }
-        // lifecycle/spawn(reducer-hash: bytes -> session-id): NO peer target; payload = the child's reducer
-        // hash; result = the new child's session id (bytes).
-        effect_ct::LIFECYCLE_SPAWN => {
-            let reducer_hash = bytes(&mut b);
-            let session_id = bytes(&mut b);
-            let sig = b.wit_func_sig(&[("reducer-hash", reducer_hash)], session_id);
-            ("lifecycle", "spawn", sig)
-        }
-        // lifecycle/suspend|resume|terminate(-> unit): target = the controlled session id (target-out); the
-        // effect records a lifecycle op the loop applies. Distinct identities via the OP NAME (all unit->unit).
-        effect_ct::LIFECYCLE_SUSPEND => {
-            let unit = b.wit_type_unit();
-            let sig = b.wit_func_sig(&[], unit);
-            ("lifecycle", "suspend", sig)
-        }
-        effect_ct::LIFECYCLE_RESUME => {
-            let unit = b.wit_type_unit();
-            let sig = b.wit_func_sig(&[], unit);
-            ("lifecycle", "resume", sig)
-        }
-        effect_ct::LIFECYCLE_TERMINATE => {
-            let unit = b.wit_type_unit();
-            let sig = b.wit_func_sig(&[], unit);
-            ("lifecycle", "terminate", sig)
-        }
-        // control/capabilities(manifest: bytes -> unit): the projected capability manifest rides as encoded
-        // bytes; a typed manifest record is a later additive refinement (slice-1 deepened nested types the
-        // same way). Control-plane, authz-exempt — the schema gives it a uniform identity, not a grant gate.
-        effect_ct::CAPABILITIES => {
-            let manifest = bytes(&mut b);
-            let unit = b.wit_type_unit();
-            let sig = b.wit_func_sig(&[("manifest", manifest)], unit);
-            ("control", "capabilities", sig)
-        }
-        // control/summary(summary: bytes -> unit): fire-and-forget; the summary payload rides as bytes.
-        effect_ct::SUMMARY => {
-            let summary = bytes(&mut b);
-            let unit = b.wit_type_unit();
-            let sig = b.wit_func_sig(&[("summary", summary)], unit);
-            ("control", "summary", sig)
-        }
-        // control/signature(-> bytes): target = the component to introspect (hash/name, target-out); NO
-        // payload (the target IS the query subject); result = that component's descriptor bytes. The fold-back
-        // query seam (surfaced + Dispatched, resumed by the host's answer). Its DATA shape is the identity —
-        // the resume/fold-back mechanism is orthogonal — so it's a target-only bytes-result effect like fs/read.
-        effect_ct::SIGNATURE => {
-            let descriptor = bytes(&mut b);
-            let sig = b.wit_func_sig(&[], descriptor);
-            ("control", "signature", sig)
-        }
-        // store/set(pointer: hash-bytes -> unit): target = the name (target-out); payload = the pointer hash
-        // the name now points at. The §4c mutable-name store pointer write.
-        effect_ct::STORE_SET => {
-            let pointer = bytes(&mut b);
-            let unit = b.wit_type_unit();
-            let sig = b.wit_func_sig(&[("pointer", pointer)], unit);
-            ("store", "set", sig)
-        }
-        // store/resolve(-> hash-bytes): target = the name (target-out); result = the frozen current hash.
-        effect_ct::STORE_RESOLVE => {
-            let hash = bytes(&mut b);
-            let sig = b.wit_func_sig(&[], hash);
-            ("store", "resolve", sig)
         }
         // store/add | store/remove(op: member-op record -> unit): target = the group name (target-out);
         // payload = the OR-set MemberOp {add: bool, member: hash-bytes, tag: tuple<hash-bytes, u64>}. Distinct
