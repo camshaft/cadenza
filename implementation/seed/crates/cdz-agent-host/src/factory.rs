@@ -598,22 +598,75 @@ pub trait LogSinkBuilder {
     }
 }
 
+/// Where a GAP-4 D1 log-body OFFLOAD store is rooted — the content-addressed backing a `[log]` offload writes
+/// over-threshold event bodies to (and rehydrates from on recovery). Mirrors the `[blob]` effect-store
+/// backends so the log offload reuses the SAME physical CAS: `Dir` (a local [`DiskBlobStore`]) or `S3` (the
+/// prod pairing with a Dynamo/File log). [`materialize`](Self::materialize)d to a FRESH raw `Box<dyn BlobStore>`
+/// per `build`/`recover` — `put` is `&mut self`, so each per-session sink owns its own handle over the one
+/// physical store, not a shared object. RAW backing, NOT the read-cache wrapper: a log-body offload put must
+/// write-through to be as durable as the log frame that points at it (`recover_rehydrated` treats an absent
+/// CAS body as a HARD io error). `Clone` (an `SdkConfig` is a cheap handle) so the daemon can hand the same
+/// source to a session's append builder AND its recovery reader.
+// `large_enum_variant`: the S3 variant (an SdkConfig handle + two strings) is larger than Dir, but an
+// OffloadSource is a CONFIG-time value built once per `[log]` backend and cloned a handful of times per
+// session build — never held in bulk or on a hot path — so boxing the variant would only add a pointless
+// heap indirection. The size asymmetry is immaterial here.
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone)]
+pub enum OffloadSource {
+    /// A local content-addressed [`DiskBlobStore`](cdz_kernel::blob::DiskBlobStore) rooted at this dir (the
+    /// SAME `[blob]` dir the effect path uses — one physical CAS).
+    Dir(std::path::PathBuf),
+    /// An [`S3BlobStore`](crate::S3BlobStore) over `(bucket, prefix)` — the prod pairing with a Dynamo/File
+    /// log. Holds the ambient `SdkConfig` (loaded ONCE on the daemon boot path) so per-session materialization
+    /// is a cheap client clone via `S3BlobStore::from_conf`, not a fresh IMDS probe.
+    #[cfg(feature = "live-aws-storage")]
+    S3 {
+        config: aws_config::SdkConfig,
+        bucket: String,
+        prefix: String,
+    },
+}
+
+impl OffloadSource {
+    /// Open a FRESH raw `Box<dyn BlobStore>` over this source — a separate handle over the one physical CAS
+    /// (`put` is `&mut self`, so each `build`/`recover` owns its handle). Raw backing, no read cache: an
+    /// offloaded log body must write-through to be as durable as the log frame that points at it.
+    pub(crate) fn materialize(&self) -> Result<Box<dyn cdz_kernel::blob::BlobStore>, String> {
+        match self {
+            OffloadSource::Dir(dir) => cdz_kernel::blob::DiskBlobStore::open(dir)
+                .map(|s| Box::new(s) as Box<dyn cdz_kernel::blob::BlobStore>)
+                .map_err(|e| {
+                    format!(
+                        "could not open log-offload blob store {}: {e}",
+                        dir.display()
+                    )
+                }),
+            #[cfg(feature = "live-aws-storage")]
+            OffloadSource::S3 {
+                config,
+                bucket,
+                prefix,
+            } => Ok(Box::new(crate::S3BlobStore::from_conf(
+                config,
+                bucket.clone(),
+                prefix.clone(),
+            ))),
+        }
+    }
+}
+
 /// A [`LogSinkBuilder`] that opens a per-session file-backed [`LogStore`](cdz_kernel::log_store::LogStore)
 /// under a root directory — the `[log].backend = file` durable log. Each session's log is
 /// `<root>/<session-id>.log`; the session id is sanitized (path separators → `_`) so an id can't escape the
 /// root. The deployed daemon installs this when the log config selects a file backend.
 pub struct FileLogSinkBuilder {
     root: std::path::PathBuf,
-    /// GAP-4 D1 log-body OFFLOAD (opt-in): when `Some((blob_dir, threshold))`, a persisted event body larger
-    /// than `threshold` is offloaded to a content-addressed [`DiskBlobStore`] rooted at `blob_dir` (a tiny
-    /// `(blob-ptr)` frame replaces the body in the log), and boot-recovery rehydrates it. `None` = pre-D1
-    /// behavior (bodies stay inline). The offload store is a SEPARATE handle over the SAME `[blob]` root the
-    /// effect-blob path uses — one physical content-addressed store, so a blob-ptr derefs the same CAS on
-    /// replay (v-agent-harness D1: `put` is `&mut self`, so each consumer owns its handle over one store, not
-    /// one shared object). It is the RAW backing `DiskBlobStore`, NOT the read-cache wrapper: a log-body
-    /// offload put must be as durable as the log frame that points at it — `recover_rehydrated` treats an
-    /// absent CAS body as a HARD io error (data loss), so the put must write-through, never sit in a cache.
-    offload: Option<(std::path::PathBuf, usize)>,
+    /// GAP-4 D1 log-body OFFLOAD (opt-in): when `Some((source, threshold))`, a persisted event body larger
+    /// than `threshold` is offloaded to the content-addressed [`OffloadSource`] (a tiny `(blob-ptr)` frame
+    /// replaces the body in the log), and boot-recovery rehydrates it. `None` = pre-D1 behavior (bodies stay
+    /// inline). A fresh raw handle over the SAME `[blob]` store is opened per `build`/`recover`.
+    offload: Option<(OffloadSource, usize)>,
 }
 
 impl FileLogSinkBuilder {
@@ -625,31 +678,13 @@ impl FileLogSinkBuilder {
         }
     }
 
-    /// Enable GAP-4 D1 log-body offload: bodies over `threshold` bytes offload to a content-addressed
-    /// [`DiskBlobStore`] rooted at `blob_dir` (the SAME `[blob]` dir the effect-blob path uses — one physical
-    /// CAS). Recovery rehydrates. The daemon calls this when `[log].backend = file` AND `[blob].backend = dir`
-    /// AND `[log].offload_threshold` is set (or defaults to the effect-blob threshold).
-    pub fn with_offload(
-        mut self,
-        blob_dir: impl Into<std::path::PathBuf>,
-        threshold: usize,
-    ) -> Self {
-        self.offload = Some((blob_dir.into(), threshold));
+    /// Enable GAP-4 D1 log-body offload: bodies over `threshold` bytes offload to the content-addressed
+    /// [`OffloadSource`] (the SAME `[blob]` store the effect-blob path uses — one physical CAS). Recovery
+    /// rehydrates. The daemon calls this when `[log].backend = file` AND `[log].offload_threshold` is set,
+    /// passing the `[blob]`-derived source (Dir or S3).
+    pub fn with_offload(mut self, source: OffloadSource, threshold: usize) -> Self {
+        self.offload = Some((source, threshold));
         self
-    }
-
-    /// Open a FRESH raw `DiskBlobStore` over the configured offload dir — a separate handle over the same
-    /// physical CAS (`put` is `&mut self`, so each `build`/`recover` owns its handle). Raw backing, no read
-    /// cache: an offloaded log body must write-through to be as durable as the log frame pointing at it.
-    fn open_offload_blob(
-        blob_dir: &std::path::Path,
-    ) -> Result<cdz_kernel::blob::DiskBlobStore, String> {
-        cdz_kernel::blob::DiskBlobStore::open(blob_dir).map_err(|e| {
-            format!(
-                "could not open log-offload blob store {}: {e}",
-                blob_dir.display()
-            )
-        })
     }
 
     /// The per-session log path for `id`: `<root>/<id-hex>.log`. The id is a genesis [`Hash`] rendered as hex
@@ -678,10 +713,7 @@ impl LogSinkBuilder for FileLogSinkBuilder {
         // `[blob]` CAS root (own handle per build, `put` is `&mut self`; raw backing for write-through
         // durability, not the read cache).
         let store = match &self.offload {
-            Some((blob_dir, threshold)) => {
-                let blob = Self::open_offload_blob(blob_dir)?;
-                store.with_offload(Box::new(blob), *threshold)
-            }
+            Some((source, threshold)) => store.with_offload(source.materialize()?, *threshold),
             None => store,
         };
         Ok(Some(Box::new(store)))
@@ -703,9 +735,9 @@ impl LogSinkBuilder for FileLogSinkBuilder {
         // derefs its body from the same CAS root (`recover_rehydrated` takes `&blob`, get-only, so a borrow of
         // a fresh raw handle suffices). Without offload, the plain sync `recover` (no blob) is the hot path.
         match &self.offload {
-            Some((blob_dir, _threshold)) => {
-                let blob = Self::open_offload_blob(blob_dir)?;
-                cdz_kernel::log_store::LogStore::recover_rehydrated(&path, &blob)
+            Some((source, _threshold)) => {
+                let blob = source.materialize()?;
+                cdz_kernel::log_store::LogStore::recover_rehydrated(&path, blob.as_ref())
                     .await
                     .map(Some)
                     .map_err(|e| format!("could not recover durable log {}: {e}", path.display()))
@@ -1315,6 +1347,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn offload_source_dir_materializes_a_working_cas() {
+        // GAP-4 D1: OffloadSource::Dir materializes a raw DiskBlobStore that round-trips a put/get — the handle
+        // each per-session sink opens over the shared [blob] dir. (The end-to-end offload path is exercised by
+        // the round-trip test below; this pins the source->store materialization in isolation.)
+        let dir = crate::testutil::unique_temp_dir("offload-src-dir");
+        let mut blob = OffloadSource::Dir(dir.clone())
+            .materialize()
+            .expect("Dir source materializes a blob store");
+        let h = cdz_kernel::hash::Hash::of(b"body");
+        blob.put(h, bytes::Bytes::from_static(b"body"))
+            .await
+            .expect("put");
+        assert_eq!(
+            blob.get(&h).await.expect("get").as_deref(),
+            Some(&b"body"[..]),
+            "the materialized Dir CAS round-trips a blob"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "live-aws-storage")]
+    #[test]
+    fn offload_source_s3_materializes_a_blob_store() {
+        // GAP-4 D1 S3 offload (the prod Dynamo+S3 / File+S3 pairing): OffloadSource::S3 materializes an
+        // S3BlobStore from a shared SdkConfig — a cheap client clone (from_conf), no live call to CONSTRUCT.
+        // (A real put/get would hit S3, out of scope for a hermetic test; this pins the source wiring.)
+        let config = aws_config::SdkConfig::builder()
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        let source = OffloadSource::S3 {
+            config,
+            bucket: "cdz-blobs".into(),
+            prefix: "logs/".into(),
+        };
+        assert!(
+            source.materialize().is_ok(),
+            "S3 offload source materializes a blob store handle from a shared SdkConfig"
+        );
+    }
+
+    #[tokio::test]
     async fn file_log_sink_builder_offload_round_trips_byte_identical() {
         // GAP-4 D1 slice-1 PIN: with body-offload configured, an OVER-threshold event body is offloaded to the
         // content-addressed blob store (a tiny (blob-ptr) frame replaces it in the log), and recover()
@@ -1329,7 +1402,8 @@ mod tests {
         let root = crate::testutil::unique_temp_dir("filelog-offload");
         let blob_dir = crate::testutil::unique_temp_dir("filelog-offload-cas");
         // Threshold 64 bytes: the big Inbound body offloads, the small one stays inline.
-        let builder = FileLogSinkBuilder::new(&root).with_offload(&blob_dir, 64);
+        let builder =
+            FileLogSinkBuilder::new(&root).with_offload(OffloadSource::Dir(blob_dir.clone()), 64);
         let id = SessionId::new(Hash::of(b"sess-offload"));
 
         let genesis = Event {

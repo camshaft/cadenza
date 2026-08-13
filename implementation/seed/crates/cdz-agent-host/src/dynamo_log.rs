@@ -330,13 +330,12 @@ impl LogSink for DynamoLogSink {
 pub struct DynamoLogSinkBuilder {
     config: aws_config::SdkConfig,
     table: String,
-    /// GAP-4 D1 log-body offload (opt-in): when `Some((blob_dir, threshold))`, each per-session sink this
-    /// builder makes offloads over-threshold event bodies to a content-addressed [`DiskBlobStore`] rooted at
-    /// `blob_dir` (the SAME `[blob]` dir the effect-blob path uses — one physical CAS). A FRESH handle is
-    /// opened per `build`/`recover` (the sink owns it; `append`/`maybe_offload` are `&mut`), matching the
-    /// File-backend D1 wiring. `None` = bodies stay inline. (Dir-backed today, like the File path; an S3
-    /// offload backend for the prod Dynamo+S3 pairing is a follow-on slice.)
-    offload: Option<(std::path::PathBuf, usize)>,
+    /// GAP-4 D1 log-body offload (opt-in): when `Some((source, threshold))`, each per-session sink this builder
+    /// makes offloads over-threshold event bodies to the content-addressed [`OffloadSource`](crate::factory::OffloadSource)
+    /// (the SAME `[blob]` store the effect-blob path uses — one physical CAS). A FRESH raw handle is opened per
+    /// `build`/`recover` (the sink owns it; `append`/`maybe_offload` are `&mut`), matching the File-backend D1
+    /// wiring. `None` = bodies stay inline. Dir OR S3 — the prod pairing is a Dynamo log + an S3 offload store.
+    offload: Option<(crate::factory::OffloadSource, usize)>,
 }
 
 impl DynamoLogSinkBuilder {
@@ -363,29 +362,13 @@ impl DynamoLogSinkBuilder {
     }
 
     /// Enable GAP-4 D1 log-body offload for every sink this builder makes: bodies over `threshold` bytes
-    /// offload to a [`DiskBlobStore`](cdz_kernel::blob::DiskBlobStore) rooted at `blob_dir` (the SAME `[blob]`
-    /// dir the effect-blob path uses — one physical CAS). Recovery rehydrates. The daemon calls this when
-    /// `[log].backend = dynamo` AND `[blob].backend = dir` AND `[log].offload_threshold` is set.
-    pub fn with_offload(
-        mut self,
-        blob_dir: impl Into<std::path::PathBuf>,
-        threshold: usize,
-    ) -> Self {
-        self.offload = Some((blob_dir.into(), threshold));
+    /// offload to the content-addressed [`OffloadSource`](crate::factory::OffloadSource) (the SAME `[blob]`
+    /// store the effect-blob path uses — one physical CAS). Recovery rehydrates. The daemon calls this when
+    /// `[log].backend = dynamo` AND `[log].offload_threshold` is set, passing the `[blob]`-derived source
+    /// (Dir or S3 — the prod pairing is a Dynamo log + an S3 offload store).
+    pub fn with_offload(mut self, source: crate::factory::OffloadSource, threshold: usize) -> Self {
+        self.offload = Some((source, threshold));
         self
-    }
-
-    /// Open a FRESH raw [`DiskBlobStore`](cdz_kernel::blob::DiskBlobStore) over the configured offload dir — a
-    /// separate handle over the same physical CAS (`put` is `&mut self`, so each `build`/`recover` owns one).
-    fn open_offload_blob(
-        blob_dir: &std::path::Path,
-    ) -> Result<cdz_kernel::blob::DiskBlobStore, String> {
-        cdz_kernel::blob::DiskBlobStore::open(blob_dir).map_err(|e| {
-            format!(
-                "could not open Dynamo-log-offload blob store {}: {e}",
-                blob_dir.display()
-            )
-        })
     }
 }
 
@@ -395,12 +378,10 @@ impl crate::factory::LogSinkBuilder for DynamoLogSinkBuilder {
         // Cheap per-session sink: clone the shared config into a fresh client keyed to this session's
         // partition. No network here (client construction is local; the AWS load happened once in `new`).
         let sink = DynamoLogSink::from_conf(&self.config, self.table.clone(), id.hash());
-        // GAP-4 D1: attach body-offload when configured — a fresh raw DiskBlobStore handle over the shared
-        // `[blob]` CAS root (own handle per build, since `append`/`maybe_offload` are `&mut`).
+        // GAP-4 D1: attach body-offload when configured — a fresh raw Box<dyn BlobStore> over the shared
+        // `[blob]` CAS (own handle per build, since `append`/`maybe_offload` are `&mut`).
         let sink = match &self.offload {
-            Some((blob_dir, threshold)) => {
-                sink.with_offload(Box::new(Self::open_offload_blob(blob_dir)?), *threshold)
-            }
+            Some((source, threshold)) => sink.with_offload(source.materialize()?, *threshold),
             None => sink,
         };
         Ok(Some(Box::new(sink)))
@@ -417,12 +398,10 @@ impl crate::factory::LogSinkBuilder for DynamoLogSinkBuilder {
         id: &crate::host::SessionId,
     ) -> Result<Option<cdz_kernel::log_store::Recovered>, String> {
         let sink = DynamoLogSink::from_conf(&self.config, self.table.clone(), id.hash());
-        // GAP-4 D1: rehydrate offloaded bodies on recovery — attach the same offload handle (get-only on the
-        // read path, but the sink field holds a Box either way) over the shared `[blob]` CAS root.
+        // GAP-4 D1: rehydrate offloaded bodies on recovery — attach the same offload source (a fresh raw
+        // handle over the shared `[blob]` CAS; get-only on the read path, but the sink field holds a Box).
         let sink = match &self.offload {
-            Some((blob_dir, threshold)) => {
-                sink.with_offload(Box::new(Self::open_offload_blob(blob_dir)?), *threshold)
-            }
+            Some((source, threshold)) => sink.with_offload(source.materialize()?, *threshold),
             None => sink,
         };
         sink.read_recovered().await.map(Some).map_err(|e| {

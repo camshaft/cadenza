@@ -140,7 +140,7 @@ pub use export::{run_otlp_forwarder, ChannelOtlpSink, OtlpTarget};
 pub use factory::LiveExecutorSet;
 pub use factory::{
     AuthorizerBuilder, ComponentSessionFactory, ExecutorSetBuilder, FileLogSinkBuilder,
-    LogSinkBuilder, MeteredExecutor,
+    LogSinkBuilder, MeteredExecutor, OffloadSource,
 };
 #[cfg(feature = "live-fs")]
 pub use fs_exec::FsExecutor;
