@@ -15053,6 +15053,160 @@ impl ShapeTableBuilder {
     }
 }
 
+/// Map a solved [`Ty`] to its WIT SCHEMA-DESCRIPTOR node in `b`'s arena — the byte-exact per-`Ty` rule
+/// (v-effects spec, 2026-08-13) that makes a userspace effect's op-signature descriptor hash IDENTICALLY
+/// to a built-in of the same shape (the schema-hash-only effect identity). Returns `None` (DECLINE) for a
+/// type with no WIT form or a still-unground numeric width — never guesses, since a wrong descriptor would
+/// bake a wrong effect identity.
+///
+/// The descriptor MUST be a genuine TREE: this builds a FRESH node per occurrence (a recursive call per
+/// constituent), never a memoized/shared node — because the kernel `codec::decode`s the descriptor on
+/// ingest (ruling A) and rejects a shared subtree as `NotATree` (a decode-bomb guard). Do NOT add
+/// memoization here (unlike the value-encode `ShapeTableBuilder`, whose sharing is internal and never
+/// crosses the codec).
+///
+/// The per-`Ty` mapping (matches the kernel's built-in decls + `build_type`):
+///  - `Bool`/`Char`/`String` → `wit_type_prim`; `Unit` → `wit_type_unit`.
+///  - `Int{sign,width}` → `wit_type_prim` of `u8/u16/u32/u64` (unsigned) or `s8/s16/s32/s64` (signed),
+///    GROUNDING the sign+width exactly as the value boundary does (`ty_natural_wit`/`valtype_of`): a
+///    still-deferred axis defaults (signed, 64) so an effect op's integer always lowers to a definite wit
+///    prim, matching how the built-ins' integer types ground. A non-{8,16,32,64} width has no prim → DECLINE.
+///  - `Float{width}` → `wit_type_prim` `f32`/`f64` by ground width; a non-{32,64} width → DECLINE.
+///  - `List(e)` → `wit_type_list(rec e)`; `Bytes` → `wit_type_list(prim u8)` (NOT a `bytes` prim — the
+///    built-ins spell bytes as `list<u8>`, and a `bytes` prim would hash-diverge).
+///  - `Tuple(elems)` → `wit_type_tuple([rec e…])` (POSITIONAL — order is identity).
+///  - `Record(BTreeMap)` → `wit_type_record([(name, rec t)…])` iterating the BTreeMap in NATURAL order,
+///    which is name-lexicographic (the `Symbol` key orders by its `str`) = the canonical NAME-SORTED order
+///    the kernel now emits — so the sort is FREE, never applied here.
+///  - `Sum{decl=Option, args=[i]}` → `wit_type_option(rec i)`. rcdzc has NO `Ty::Option` — Option is an
+///    ordinary sum over the prelude `Option` decl — but the built-ins reflect an optional value as WIT
+///    `option<T>`, so this ONE sum is special-cased to the option form (detected by decl name); a bare
+///    `Some|None` variant would hash-diverge from a built-in's `option<T>`.
+///  - `Sum{decl}` (any other) → `wit_type_variant([(CaseName, payload?)…])` in DECL order
+///    (`sum_variant_payload_types` returns cases in `decl.variants` order); a case's payload is `None`
+///    (nullary), the single payload's desc (1), or a `tuple` desc (multiple — the value side reps a
+///    multi-payload variant as a tuple).
+///  - `Nominal{inner}` → recurse on `inner` (nominal is ERASED at the wire — its machine rep IS `inner`).
+///  - `Map`/`Set`/`Symbol`/`Qty`/`BigInt`/`Rational`/`Fn`/`Type`/`Any`/… → DECLINE (no built-in effect
+///    op-sig uses them yet; inventing a wit form would bake a wrong identity).
+// STAGED: the production caller is the schema-hash phase-1a perform-fork at lower.rs:1026 (non-import-member
+// effect → reify_effect_to_tuple → this descriptor build), landing in the NEXT slice. Until that fork wires
+// it, the only callers are the unit tests below, so the non-test lib build sees it as unused — the allow is
+// removed when the fork lands (it is genuinely live then). Not hiding dead code: this is a tested, complete
+// function staged one slice ahead of its production call site.
+#[cfg_attr(not(test), allow(dead_code))]
+fn ty_to_wit_desc(
+    db: &mut Db,
+    b: &mut crate::ast::Builder,
+    ty: &crate::ty::Ty,
+) -> Option<StructId> {
+    use crate::ty::Ty;
+    match ty {
+        Ty::Bool => Some(b.wit_type_prim("bool")),
+        Ty::Char => Some(b.wit_type_prim("char")),
+        Ty::String => Some(b.wit_type_prim("string")),
+        Ty::Unit => Some(b.wit_type_unit()),
+        Ty::Int(int_ty) => {
+            // GROUND the sign+width the same way the value boundary does (`ty_natural_wit`,
+            // `valtype_of`): a still-deferred axis defaults (signed, 64), never declines — an effect op's
+            // integer must lower to a definite wit prim, matching how the built-ins' integer types ground.
+            let kind = match (int_ty.ground_signed(), int_ty.ground_width()) {
+                (true, 8) => "s8",
+                (true, 16) => "s16",
+                (true, 32) => "s32",
+                (true, 64) => "s64",
+                (false, 8) => "u8",
+                (false, 16) => "u16",
+                (false, 32) => "u32",
+                (false, 64) => "u64",
+                _ => return None, // a non-{8,16,32,64} width has no wit prim
+            };
+            Some(b.wit_type_prim(kind))
+        }
+        Ty::Float(float_ty) => {
+            let kind = match float_ty.ground_width() {
+                32 => "f32",
+                64 => "f64",
+                _ => return None,
+            };
+            Some(b.wit_type_prim(kind))
+        }
+        Ty::List(elem) => {
+            let e = ty_to_wit_desc(db, b, elem)?;
+            Some(b.wit_type_list(e))
+        }
+        Ty::Bytes => {
+            let u8 = b.wit_type_prim("u8");
+            Some(b.wit_type_list(u8))
+        }
+        Ty::Tuple(elems) => {
+            let mut descs = Vec::with_capacity(elems.len());
+            for e in elems.iter() {
+                descs.push(ty_to_wit_desc(db, b, e)?);
+            }
+            Some(b.wit_type_tuple(&descs))
+        }
+        Ty::Record(fields) => {
+            // Iterate the BTreeMap in natural (name-lexicographic) order = the canonical NAME-SORTED order.
+            // Collect names first so the &str borrows outlive the builder calls.
+            let entries: Vec<(std::sync::Arc<str>, crate::ty::Ty)> = fields
+                .iter()
+                .map(|(sym, t)| (sym.name.clone(), t.clone()))
+                .collect();
+            let mut built = Vec::with_capacity(entries.len());
+            for (name, t) in &entries {
+                let desc = ty_to_wit_desc(db, b, t)?;
+                built.push((&**name, desc));
+            }
+            Some(b.wit_type_record(&built))
+        }
+        Ty::Sum { decl, args } => {
+            // OPTION is spelled `("option" <inner>)`, NOT an inlined `Some|None` variant — rcdzc has no
+            // `Ty::Option` (Option is an ordinary sum over the prelude `Option` decl), but the built-ins
+            // reflect an optional value as WIT `option<T>` (`build_type`'s `Type::Option` → wit_type_option),
+            // so a userspace effect taking an Option must hash to THAT, not to a variant. Detect the prelude
+            // Option decl by name (the established precedent, infer.rs `option_payload_mismatch_hint`) and
+            // emit the option form; every OTHER sum (a user CloseOutcome-style variant) → wit_type_variant.
+            let is_option = db.name_ctx().name_of(*decl) == Some("Option");
+            if is_option {
+                let [inner] = &args[..] else {
+                    return None; // a malformed Option instantiation — decline rather than guess
+                };
+                let inner = inner.clone();
+                let i = ty_to_wit_desc(db, b, &inner)?;
+                return Some(b.wit_type_option(i));
+            }
+            // Cases in DECL order, each with its payload types at this instantiation.
+            let variants = sum_variant_payload_types(db, ty)?;
+            let mut cases: Vec<(String, Option<StructId>)> = Vec::with_capacity(variants.len());
+            for (name, payloads) in variants {
+                let payload_desc = match payloads.len() {
+                    0 => None,
+                    1 => Some(ty_to_wit_desc(db, b, &payloads[0])?),
+                    // A multi-payload variant reps as a tuple (matching the value side, lower.rs:15120).
+                    // No built-in effect exercises this yet, so it is an emit-only extrapolation of the
+                    // spec's single-`payload?` rule; the kernel does not currently reflect it.
+                    _ => {
+                        let mut descs = Vec::with_capacity(payloads.len());
+                        for p in &payloads {
+                            descs.push(ty_to_wit_desc(db, b, p)?);
+                        }
+                        Some(b.wit_type_tuple(&descs))
+                    }
+                };
+                cases.push((name, payload_desc));
+            }
+            let case_refs: Vec<(&str, Option<StructId>)> =
+                cases.iter().map(|(n, d)| (n.as_str(), *d)).collect();
+            Some(b.wit_type_variant(&case_refs))
+        }
+        // Nominal is erased at the wire — its machine rep IS `inner`, so hash through `inner`.
+        Ty::Nominal { inner, .. } => ty_to_wit_desc(db, b, inner),
+        // No built-in effect op-sig uses these yet — DECLINE rather than invent a (wrong) identity.
+        _ => None,
+    }
+}
+
 /// The variants of a `Ty::Sum` as `(head-name, payload-types)` pairs at this instantiation — the head
 /// spelled as the runtime template writes it (a BARE variant name; the value form renders variants bare,
 /// e.g. `(Cons …)`, `(None unit)`). Mirrors `sum_form_template`'s variant/payload recovery.
@@ -27501,5 +27655,81 @@ mod tests {
             SexprReader::new("-5").read_node(),
             Some(SNode::Int(_))
         ));
+    }
+
+    // ── ty_to_wit_desc: the Ty → WIT schema-descriptor mapping (schema-hash phase-1a emit) ───────────
+
+    /// Build the WIT descriptor for the solved type of expression `expr` (in a def `(f) EXPR`) and read it
+    /// back through `wit_world::parse_wit_type` — a compact readable assertion that reuses the landed
+    /// descriptor reader (the same reader the kernel-shape `parse_target_world` composes).
+    fn desc_wit(src_expr: &str) -> Option<crate::wit_world::WitType> {
+        let src = format!("(module m (def (f) {src_expr}) (export f))");
+        let mut db = Db::load(crate::testkit::parse(&src));
+        let body = body_of(&mut db, "f");
+        let ty = crate::infer::type_of(&mut db, body);
+        let mut b = crate::ast::Builder::new();
+        let root = ty_to_wit_desc(&mut db, &mut b, &ty)?;
+        let arenas = b.finish(root);
+        crate::wit_world::parse_wit_type(&arenas, arenas.root)
+    }
+
+    #[test]
+    fn ty_to_wit_desc_maps_prims_and_compounds_to_the_kernel_descriptor_forms() {
+        use crate::wit_world::WitType as W;
+        // Scalars.
+        assert_eq!(
+            desc_wit("42"),
+            Some(W::S64),
+            "a bare int literal grounds to s64"
+        );
+        assert_eq!(desc_wit("true"), Some(W::Bool));
+        assert_eq!(desc_wit("\"hi\""), Some(W::String));
+        // List<T> and the Bytes-is-list<u8> spelling (NOT a bytes prim — would hash-diverge).
+        assert_eq!(
+            desc_wit("(list 1 2 3)"),
+            Some(W::List(Box::new(W::S64))),
+            "list<s64>"
+        );
+        assert_eq!(
+            desc_wit("b\"\\x00\""),
+            Some(W::List(Box::new(W::U8))),
+            "Bytes emits list<u8>, never a bytes primitive"
+        );
+        // A tuple is positional.
+        assert_eq!(
+            desc_wit("(tuple 1 true)"),
+            Some(W::Tuple(vec![W::S64, W::Bool])),
+            "tuple<s64, bool>, positional"
+        );
+    }
+
+    #[test]
+    fn ty_to_wit_desc_spells_option_as_option_not_a_some_none_variant() {
+        use crate::wit_world::WitType as W;
+        // Option is a Ty::Sum over the prelude Option decl — but it MUST emit ("option" <inner>), matching a
+        // built-in's wasmtime-reflected option<T>. A bare (Some|None) variant would hash-diverge. `(Some 5)`
+        // has type `Option Int64`.
+        assert_eq!(
+            desc_wit("(Some 5)"),
+            Some(W::Option(Box::new(W::S64))),
+            "Option Int64 emits option<s64>, not a Some|None variant"
+        );
+    }
+
+    #[test]
+    fn ty_to_wit_desc_records_are_name_sorted_matching_the_kernel() {
+        use crate::wit_world::WitType as W;
+        // A record's fields must be NAME-SORTED (the canonical order all 3 producers agree on). rcdzc's
+        // Ty::Record is a name-sorted BTreeMap, so iterating it in natural order already emits sorted fields
+        // — the sort is free. Declared here in NON-sorted order (`z` before `a`) to prove the emit sorts.
+        match desc_wit("(record (z 1) (a true))") {
+            Some(W::Record(fields)) => {
+                let names: Vec<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(names, vec!["a", "z"], "record fields emit name-sorted");
+                assert_eq!(fields[0].1, W::Bool, "field a: bool");
+                assert_eq!(fields[1].1, W::S64, "field z: s64");
+            }
+            other => panic!("expected a record descriptor, got {other:?}"),
+        }
     }
 }
