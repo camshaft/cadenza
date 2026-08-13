@@ -92,7 +92,13 @@ fn recovered_from_event_blobs<'a>(blobs: impl IntoIterator<Item = &'a [u8]>) -> 
 /// so the session id — the log partition key — is fixed at construction, matching the `LogSink` trait whose
 /// `append` gets only `&Event`). Holds the shared dynamodb client + the table + this session's partition key.
 pub struct DynamoLogSink {
-    client: aws_sdk_dynamodb::Client,
+    /// The ambient SDK config, cloned per session (a cheap handle). The real dynamodb `Client` is built LAZILY
+    /// from it on first I/O (see [`client`](Self::client)) — NOT at construction — so a sink can be built
+    /// (and its pure seam/key-format logic exercised) WITHOUT constructing an aws-smithy TLS client, which
+    /// panics in a CA-less hermetic sandbox. Prod is unaffected (the first `append`/`read` builds the client
+    /// under the system roots, as before).
+    config: aws_config::SdkConfig,
+    client: std::cell::OnceCell<aws_sdk_dynamodb::Client>,
     table: String,
     /// The log partition key = this session's genesis hash as RAW 32 bytes (stored as a Dynamo Binary `B`
     /// attribute, matching the SessionRegistry key — no hex string; hashes ride raw everywhere).
@@ -124,12 +130,22 @@ impl DynamoLogSink {
         session_id: cdz_kernel::hash::Hash,
     ) -> Self {
         DynamoLogSink {
-            client: aws_sdk_dynamodb::Client::new(config),
+            config: config.clone(),
+            client: std::cell::OnceCell::new(),
             table: table.into(),
             session_id,
             offload: None,
             compress_threshold: None,
         }
+    }
+
+    /// The dynamodb `Client`, built LAZILY from the stored config on first use + cached. Deferring client
+    /// construction to actual I/O (not `from_conf`) keeps sink construction hermetic — the aws-smithy rustls
+    /// client, which panics without system CA roots, is only built when a real `append`/`read` runs (never in
+    /// a CA-less test sandbox). `get_or_init` takes `&self`, so both `&self` reads and `&mut self` append use it.
+    fn client(&self) -> &aws_sdk_dynamodb::Client {
+        self.client
+            .get_or_init(|| aws_sdk_dynamodb::Client::new(&self.config))
     }
 
     /// Enable GAP-4 D1 log-body offload on this sink: an encoded event body over `threshold` bytes offloads to
@@ -196,7 +212,7 @@ impl DynamoLogSink {
         let mut last_key = None;
         loop {
             let resp = self
-                .client
+                .client()
                 .query()
                 .table_name(&self.table)
                 .key_condition_expression("#s = :sid")
@@ -268,7 +284,7 @@ impl DynamoLogSink {
         let mut last_key = None;
         loop {
             let resp = self
-                .client
+                .client()
                 .query()
                 .table_name(&self.table)
                 .key_condition_expression("#s = :sid")
@@ -345,7 +361,7 @@ impl LogSink for DynamoLogSink {
         // offloaded blob-ptr frame) stays raw.
         let (stored, compressed) = self.maybe_compress(stored)?;
         let mut req = self
-            .client
+            .client()
             .put_item()
             .table_name(&self.table)
             .item(
@@ -534,6 +550,18 @@ mod tests {
         let sink = DynamoLogSink::from_conf(&test_cfg(), "cdz-log", Hash::of(b"worker-1"));
         assert_eq!(sink.table, "cdz-log");
         assert_eq!(sink.session_id, Hash::of(b"worker-1"));
+    }
+
+    #[test]
+    fn from_conf_defers_client_construction() {
+        // The lazy-client invariant: from_conf builds NO dynamodb client — the OnceCell stays empty until
+        // first I/O (append/read). This is what keeps sink construction + the seam/config tests hermetic:
+        // building the aws-smithy rustls client eagerly panics in a CA-less sandbox.
+        let sink = DynamoLogSink::from_conf(&test_cfg(), "cdz-log", Hash::of(b"w"));
+        assert!(
+            sink.client.get().is_none(),
+            "from_conf must NOT eagerly build the dynamodb client (deferred to first I/O)"
+        );
     }
 
     #[tokio::test]

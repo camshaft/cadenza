@@ -84,7 +84,12 @@ mod s3 {
     /// mapping mirror [`S3BlobStore`](crate::s3_blob) exactly — no broker, no hardcoded creds. Because the key
     /// is FIXED (not a content hash), there is no sharding / `key_for`: it's a single overwrite target.
     pub struct S3NameStoreSnapshot {
-        client: aws_sdk_s3::Client,
+        /// The ambient SDK config; the real S3 `Client` is built LAZILY from it on first I/O (see
+        /// [`client`](Self::client)) — NOT at construction — so the store can be built (and its
+        /// snapshot-key-format logic tested) WITHOUT an aws-smithy TLS client, which panics in a CA-less
+        /// hermetic sandbox. Prod is unaffected (first `save`/`load` builds the client under system roots).
+        config: aws_config::SdkConfig,
+        client: std::cell::OnceCell<aws_sdk_s3::Client>,
         bucket: String,
         /// Key prefix, normalized to end with `/` when non-empty (empty = bucket root). The snapshot object's
         /// key is `{prefix}{SNAPSHOT_LEAF}`.
@@ -112,10 +117,19 @@ mod s3 {
             prefix: impl Into<String>,
         ) -> Self {
             S3NameStoreSnapshot {
-                client: aws_sdk_s3::Client::new(config),
+                config: config.clone(),
+                client: std::cell::OnceCell::new(),
                 bucket: bucket.into(),
                 prefix: normalize_prefix(prefix.into()),
             }
+        }
+
+        /// The S3 `Client`, built LAZILY from the stored config on first use + cached (mirrors
+        /// [`S3BlobStore::client`](crate::s3_blob::S3BlobStore)). Deferring construction to actual I/O keeps
+        /// store construction hermetic — the aws-smithy rustls client panics without system CA roots.
+        fn client(&self) -> &aws_sdk_s3::Client {
+            self.client
+                .get_or_init(|| aws_sdk_s3::Client::new(&self.config))
         }
 
         /// The full S3 object key for the snapshot: `{prefix}{SNAPSHOT_LEAF}` (a fixed key, not a content
@@ -146,7 +160,7 @@ mod s3 {
             // Unconditional PutObject overwrites the fixed key — the "latest snapshot" is whatever was last
             // written (S3 PutObject is atomic, so there's no torn-write window).
             let key = self.snapshot_key();
-            self.client
+            self.client()
                 .put_object()
                 .bucket(&self.bucket)
                 .key(&key)
@@ -160,7 +174,7 @@ mod s3 {
         async fn load(&self) -> io::Result<Option<Vec<u8>>> {
             let key = self.snapshot_key();
             let resp = match self
-                .client
+                .client()
                 .get_object()
                 .bucket(&self.bucket)
                 .key(&key)
@@ -213,6 +227,20 @@ mod s3 {
             // No prefix → bucket root, still the fixed leaf.
             let rooted = S3NameStoreSnapshot::from_conf(&cfg, "my-bucket", "");
             assert_eq!(rooted.snapshot_key(), "namestore/canonical.snapshot");
+        }
+
+        #[test]
+        fn from_conf_defers_client_construction() {
+            // The lazy-client invariant (mirrors s3_blob/dynamo_log): from_conf builds NO aws client — the
+            // OnceCell stays empty until first I/O — so this snapshot store is hermetically constructible.
+            let cfg = aws_config::SdkConfig::builder()
+                .behavior_version(aws_config::BehaviorVersion::latest())
+                .build();
+            let store = S3NameStoreSnapshot::from_conf(&cfg, "my-bucket", "names");
+            assert!(
+                store.client.get().is_none(),
+                "from_conf must NOT eagerly build the S3 client (deferred to first I/O)"
+            );
         }
     }
 }

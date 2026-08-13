@@ -29,7 +29,12 @@ use std::io;
 /// prefix (so multiple logical stores can share a bucket under distinct prefixes, e.g. `reducers/`). Cheap to
 /// clone conceptually (the client is `Arc`-backed), though the trait takes `&mut self` only for `put`.
 pub struct S3BlobStore {
-    client: aws_sdk_s3::Client,
+    /// The ambient SDK config; the real S3 `Client` is built LAZILY from it on first I/O (see
+    /// [`client`](Self::client)) — NOT at construction — so the store can be built (and its pure key-sharding
+    /// logic exercised) WITHOUT constructing an aws-smithy TLS client, which panics in a CA-less hermetic
+    /// sandbox. Prod is unaffected (the first `get`/`put`/`has` builds the client under the system roots).
+    config: aws_config::SdkConfig,
+    client: std::cell::OnceCell<aws_sdk_s3::Client>,
     bucket: String,
     /// Key prefix prepended to every blob's content-hash hex (empty = bucket root). A non-empty prefix is
     /// stored already-normalized to end with `/` so `key_for` is a plain concat.
@@ -55,10 +60,20 @@ impl S3BlobStore {
         prefix: impl Into<String>,
     ) -> Self {
         S3BlobStore {
-            client: aws_sdk_s3::Client::new(config),
+            config: config.clone(),
+            client: std::cell::OnceCell::new(),
             bucket: bucket.into(),
             prefix: normalize_prefix(prefix.into()),
         }
+    }
+
+    /// The S3 `Client`, built LAZILY from the stored config on first use + cached. Deferring construction to
+    /// actual I/O (not `from_conf`) keeps store construction hermetic — the aws-smithy rustls client, which
+    /// panics without system CA roots, is only built when a real `get`/`put`/`has` runs. `get_or_init` takes
+    /// `&self`, so both `&self` (get/has) and `&mut self` (put) use it.
+    fn client(&self) -> &aws_sdk_s3::Client {
+        self.client
+            .get_or_init(|| aws_sdk_s3::Client::new(&self.config))
     }
 
     /// The S3 object key for a blob: `{prefix}{hh}/{hh}/{rest}` — the content-hash hex SHARDED into a fanned
@@ -100,7 +115,7 @@ impl BlobStore for S3BlobStore {
         // re-put writes byte-identical content — never a mutation. (We don't HEAD-then-skip: an unconditional
         // put is one round-trip + self-heals a corrupted object, mirroring DiskBlobStore's heal-on-put intent
         // without the extra GET; S3 PutObject is atomic, so there's no torn-write window to guard.)
-        self.client
+        self.client()
             .put_object()
             .bucket(&self.bucket)
             .key(&key)
@@ -114,7 +129,7 @@ impl BlobStore for S3BlobStore {
     async fn get(&self, hash: &Hash) -> io::Result<Option<bytes::Bytes>> {
         let key = self.key_for(hash);
         let resp = match self
-            .client
+            .client()
             .get_object()
             .bucket(&self.bucket)
             .key(&key)
@@ -158,7 +173,7 @@ impl BlobStore for S3BlobStore {
         // A real existence probe (HEAD), cheaper than a full GET — override the trait's get-based default.
         let key = self.key_for(hash);
         match self
-            .client
+            .client()
             .head_object()
             .bucket(&self.bucket)
             .key(&key)
@@ -212,6 +227,21 @@ mod tests {
         // No prefix → bucket root, still sharded.
         let rooted = S3BlobStore::from_conf(&cfg, "my-bucket", "");
         assert_eq!(rooted.key_for(&h), shard_suffix(&hex));
+    }
+
+    #[test]
+    fn from_conf_defers_client_construction() {
+        // The lazy-client invariant: from_conf builds NO aws-smithy client — the OnceCell stays empty until
+        // first I/O. This is what keeps store construction + key-format assertions hermetic: building the
+        // rustls client eagerly panics in a CA-less sandbox, so the store must be usable without one.
+        let cfg = aws_config::SdkConfig::builder()
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        let store = S3BlobStore::from_conf(&cfg, "my-bucket", "reducers");
+        assert!(
+            store.client.get().is_none(),
+            "from_conf must NOT eagerly build the S3 client (deferred to first I/O)"
+        );
     }
 
     /// The sharded suffix `{hex[0..2]}/{hex[2..4]}/{hex[4..]}` — test helper mirroring `key_for`'s fan-out.
