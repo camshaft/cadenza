@@ -137,12 +137,11 @@ async fn bounce_delivery_failure(
 /// was already terminated (benign double-terminate); `None` = no such session (benign — already gone). A
 /// REAL `KernelError` (not `FoldRefused`) is corruption → propagate (fail fast, like the deliver arm).
 ///
-/// The `by` on the op is the controller's SessionId string, which IS its genesis-hash-HEX (operator ruling).
-/// The durable `Terminated{by}` marker wants the controller's actual genesis `Hash` — so PARSE the hex back
-/// with `Hash::from_hex` (round-trips the id to the real Hash), NOT `Hash::of` (which would HASH the hex TEXT
-/// → a different Hash no consumer/authz could match against the controller's identity). A non-hex SessionId
-/// (a test/legacy string id, not a genesis hash) can't round-trip → fall back to `Hash::of` of its bytes (a
-/// stable opaque tag; those ids aren't real genesis hashes anyone matches against anyway).
+/// The `by`/`parent` on a lifecycle op IS the controller's/parent's genesis `Hash` — a `SessionId` IS the
+/// genesis Hash (operator ruling), so the durable `Terminated{by}` marker and the spawned-child provenance
+/// read it DIRECTLY via `by.hash()` / `parent.hash()`. No hex parse, no registry lookup, no `Hash::of`
+/// fallback: those were the pre-Rule-A dance for an opaque string id that might be a vanity name or a
+/// hex-encoded hash, all removed once the id became the genesis Hash itself.
 async fn apply_lifecycle_ops(
     host: &mut AgentHost,
     lifecycle_rx: &mut mpsc::UnboundedReceiver<LifecycleOp>,
