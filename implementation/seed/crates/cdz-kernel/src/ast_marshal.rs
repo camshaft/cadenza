@@ -461,6 +461,32 @@ pub fn ast_to_val(bytes: &[u8], ty: &Type) -> Result<Val, MarshalError> {
     build_from_ast(&arenas, arenas.root, ty)
 }
 
+/// Encode a HANDLER REPLY outcome to its value-form bytes — the exact INVERSE of [`decode_reply_outcome`]
+/// (`encode` then `decode` is the identity on the Ok/Err subset). A caller that builds a reply payload
+/// (the host's `ReplyExecutor` + its tests) hands in a kernel [`EffectOutcome`] and gets the canonical
+/// value-form bytes, WITHOUT touching wasmtime `Val`s directly (cdz-agent-host deliberately doesn't dep
+/// wasmtime) — mirroring the other kernel encode helpers (`encode_name_set`, `encode_model_request`).
+///
+/// Restricted to the Ok/Err subset a handler can reply: `Ok(Some(Inline b))` → `(Ok (Inline b))`,
+/// `Ok(Some(Blob h))` → `(Ok (Blob <hash>))`, `Ok(None)` → `(Ok (Inline []))`, `Err{message,retryability}`
+/// → `(Err (record (= message ..) (= retryable ..)))`. `TimedOut`/`Deferred` are NOT handler-repliable
+/// (kernel-injected / transient) — encoding one is a programming error, surfaced as `Unmarshallable`. Reuses
+/// the SINGLE outcome-view builder (`wasm_host::effect_outcome_view`) so encode + the guest-Event outcome
+/// child can never drift.
+pub fn encode_reply_outcome(o: &EffectOutcome) -> Result<Vec<u8>, MarshalError> {
+    match o {
+        EffectOutcome::Ok(_) | EffectOutcome::Err { .. } => {
+            val_to_ast(&crate::wasm_host::effect_outcome_view(o))
+        }
+        EffectOutcome::TimedOut => Err(unmarshallable(
+            "EffectOutcome::TimedOut (not handler-repliable)",
+        )),
+        EffectOutcome::Deferred => Err(unmarshallable(
+            "EffectOutcome::Deferred (not handler-repliable)",
+        )),
+    }
+}
+
 /// Decode a HANDLER REPLY's outcome value-form back into a kernel [`EffectOutcome`] — the DUAL of the
 /// encode side (`wasm_host::effect_outcome_view`), restricted to the Ok/Err SUBSET a handler can reply. A
 /// handler NEVER replies `TimedOut` (the kernel injects that on a deadline) and `Deferred` is a transient
@@ -1952,6 +1978,41 @@ mod tests {
         assert!(decode_reply_outcome(&wire(&err(&[0xff, 0xfe], false))).is_err());
         // Undecodable bytes are rejected (not a panic).
         assert!(decode_reply_outcome(b"\xff\x00not-ast").is_err());
+    }
+
+    // encode_reply_outcome is the exact INVERSE of decode_reply_outcome: encode-then-decode is the identity
+    // over the Ok/Err subset a handler can reply (Ok Inline / Ok Blob / Err both retryabilities), and the two
+    // never drift because encode reuses the single outcome-view builder. TimedOut/Deferred are not
+    // handler-repliable → encode errors rather than emitting a decodable-but-illegal reply.
+    #[test]
+    fn encode_reply_outcome_is_the_inverse_of_decode() {
+        use crate::hash::Hash;
+        let round_trips = |o: EffectOutcome| {
+            let bytes = encode_reply_outcome(&o).expect("encodes");
+            assert_eq!(
+                decode_reply_outcome(&bytes).expect("decodes"),
+                o,
+                "encode∘decode = id"
+            );
+        };
+        round_trips(EffectOutcome::Ok(Some(Payload::Inline(
+            b"resp".to_vec().into(),
+        ))));
+        round_trips(EffectOutcome::Ok(Some(Payload::Blob(Hash::from_bytes(
+            [5u8; 32],
+        )))));
+        round_trips(EffectOutcome::err("boom"));
+        round_trips(EffectOutcome::err_retryable("throttled"));
+        // Ok(None) encodes as Ok(Inline []) → decodes to Ok(Some(Inline empty)) (a payload-less success is a
+        // zero-length inline reply); assert the concrete decoded shape.
+        let empty = encode_reply_outcome(&EffectOutcome::Ok(None)).expect("encodes");
+        assert_eq!(
+            decode_reply_outcome(&empty).expect("decodes"),
+            EffectOutcome::Ok(Some(Payload::Inline(Vec::new().into()))),
+        );
+        // Not handler-repliable → encode errors (never emits a decodable-but-illegal TimedOut/Deferred reply).
+        assert!(encode_reply_outcome(&EffectOutcome::TimedOut).is_err());
+        assert!(encode_reply_outcome(&EffectOutcome::Deferred).is_err());
     }
 
     // ast_to_val decodes UNTRUSTED arg bytes, so a record must EXACTLY match the WIT shape (github-liaison

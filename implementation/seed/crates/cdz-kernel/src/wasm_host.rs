@@ -2196,7 +2196,7 @@ fn effect_outcome_bytes(o: &EffectOutcome) -> Option<Vec<u8>> {
 /// and the reducer world grow the `outcome` field in lockstep (a strict-record value-form flag-day).
 /// Wired: `event_to_guest_inputs` calls this for an `EffectResult` and `build_event_document` surfaces it as
 /// the Event's `outcome` child.
-fn effect_outcome_view(o: &EffectOutcome) -> wasmtime::component::Val {
+pub(crate) fn effect_outcome_view(o: &EffectOutcome) -> wasmtime::component::Val {
     use crate::effect::Payload;
     use wasmtime::component::Val;
     let bytes = |b: &[u8]| Val::List(b.iter().copied().map(Val::U8).collect());
