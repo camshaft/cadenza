@@ -68,6 +68,10 @@ def unify-ty(a: Ty, b: Ty) = match a with
     | Ty.TyBool => Option.Some(Ty.TyBool)
     | _ => Option.None(unit)
   )
+  | Ty.TyString => (match b with
+    | Ty.TyString => Option.Some(Ty.TyString)
+    | _ => Option.None(unit)
+  )
   | Ty.TyErr => Option.None(unit)
   // HIGHER-ORDER: two function types unify iff SAME arity, params unify PAIRWISE, and results unify (rcdzc
   // unify.rs:209 `(Fn(pa,ra),Fn(pb,rb)) => unify(pa,pb); unify(ra,rb)`, generalized to N-ary). Any arity/param/

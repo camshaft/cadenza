@@ -62,6 +62,7 @@ def bind-ctor-binders(tree: Tree, env: Map(Int64, Int64), binderIds: List(Int64)
 def resolve-node(tree: Tree, id: Int64, env: Map(Int64, Int64), col: Map(Int64, Resolved)) =
   match node-at(tree, id) with
     | Option.Some(Node.NLit(_)) => col
+    | Option.Some(Node.NStr(_)) => col            // STRING literal binds nothing (like NLit); infer types it TyString
     | Option.Some(Node.NBoolLit(_)) => col
     | Option.Some(Node.NAnnLit(_, _, _)) => col   // an annotated literal binds nothing (like NLit)
     | Option.Some(Node.NTuple(_)) => col          // COMPOUND stage-1: NTuple resolves nothing (infer TyErrs it → run-src declines)

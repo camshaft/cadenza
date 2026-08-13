@@ -47,6 +47,10 @@
   type Ty =
   | TyInt(IntType)
   | TyBool
+  | TyString                       // STRINGS frontier (S1): the string type — a payload-free nominal like
+                                   // TyBool. A string LITERAL's infer fact; unifies/eq only with TyString (no
+                                   // sub-structure). The type-algorithm walkers mirror the TyBool arm. Nothing
+                                   // constructs it until the reader NStr + infer land (stage 1b).
   | TyErr
   | TyFn(List(Ty), Ty)             // HIGHER-ORDER (fn-value slice): a FUNCTION type `(a, b, …) -> r`. N-ARY
                                    // (params list + result) to mirror compiler-ml's N-ary NApp arity model
@@ -191,6 +195,10 @@ def ty-eq(a: Ty, b: Ty) = match a with
   )
   | Ty.TyBool => (match b with
     | Ty.TyBool => true
+    | _ => false
+  )
+  | Ty.TyString => (match b with
+    | Ty.TyString => true
     | _ => false
   )
   | Ty.TyErr => false

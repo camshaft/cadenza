@@ -87,6 +87,7 @@ def apply-go(su: Subst, t: Ty, fuel: Int64) = match t with
   | Ty.TyInt(it) => (match it with
     | IntType.IntType(s, w) => Ty.TyInt(IntType.IntType(apply-sign(su, s), apply-width(su, w))))
   | Ty.TyBool => Ty.TyBool
+  | Ty.TyString => Ty.TyString
   | Ty.TyErr => Ty.TyErr
   | Ty.TySum(n) => Ty.TySum(n)
   | Ty.TyFn(ps, r) => Ty.TyFn(apply-list(su, ps, 0, ([] : List(Ty))), apply-go(su, r, fuel))

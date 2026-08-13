@@ -67,6 +67,17 @@ def scan-atom(s: String, i: Int64, acc: String) =
       else (if (c == ")") then (acc, i)
       else scan-atom(s, i + 1, String.concat(acc, c)))))))
 
+/// STRINGS S1 stage 1b-ii: scan a string-literal BODY from index `i` (just past the opening `"`), accumulating
+/// chars into `acc` until the closing `"`. Returns `(content, nextIndex)` with nextIndex PAST the close quote.
+/// An unterminated string (end-of-input before a `"`) returns what it has (nextIndex = end), so the reader
+/// stays TOTAL — never loops or traps. NO escape handling yet (a `"` always closes; `\"` is a later slice) —
+/// simple literals only, matching the initial scalar-string subset.
+def scan-string(s: String, i: Int64, acc: String) =
+  (if i == String.byte-len(s) then (acc, i)
+   else (let c = char-at(s, i) in
+     (if (c == "\"") then (acc, i + 1)
+      else scan-string(s, i + 1, String.concat(acc, c)))))
+
 /// The op-code for a binary operator SYMBOL, matching parse-db's codes (43 + / 45 - / 42 * / 47 / / 37 % /
 /// 60 < / 61 = (equality) / 62 > / 63 <= / 64 >= / 65 !=). Returns `Option.None` for an unrecognized symbol —
 /// a plain NAME is a legitimate "not an operator" MISS (a call to a def), not a corruption, so the miss is a
@@ -96,7 +107,8 @@ def name-id(name: String) = name-id-fold(String.to-bytes(name), 0, 7)
 
 /// Read ONE form starting at index `i` (leading space skipped here). Returns `(rootId, nextIndex, tree')`.
 /// Reads: non-negative INT literal; `true`/`false`; a bare identifier → `NVar`; a parenthesised prefix form
-/// (`if`/`let`/`(op a b)`). An UNSUPPORTED lead char (e.g. a string `"…"`, a float, `-`, a radix literal)
+/// (`if`/`let`/`(op a b)`). A string literal `"…"` reads as `NStr` (STRINGS S1; types TyString, declines at
+/// lower until the scalar-op stage). An UNSUPPORTED lead char (a float, a radix literal) still
 /// reads as `unsupported()` — an UNBOUND `NVar` (name-id 0, unreachable by `name-id`) → resolve `RPoison` →
 /// infer `TErr` → eval `None` → the driver reports `declined`. This is the KEY totality+soundness rule: an
 /// out-of-subset program must DECLINE, never fabricate a bogus value (an `NLit 0` recovery would make
@@ -135,6 +147,11 @@ def read-form(s: String, i: Int64, tree: Tree) =
           then (match add-node(tree, Node.NLit(0 - mag)) with | (id, t1) => (id, k, t1))
           else (match scan-atom(s, k, "") with | (_junk, k2) => (match unsupported(tree) with | (id, t1) => (id, k2, t1)))))
      else (if (c == "(") then read-paren-form(s, j + 1, tree)
+     else (if (c == "\"") then
+        // STRINGS S1 stage 1b-ii: a string literal `"…"` → NStr carrying its content. scan-string reads the
+        // body from past the opening quote to the closing quote (no escapes yet — a `"` always closes).
+        (match scan-string(s, j + 1, "") with | (content, k) =>
+          (match add-node(tree, Node.NStr(content)) with | (id, t1) => (id, k, t1)))
      else (if (is-alpha(c)) then
         (match scan-atom(s, j, "") with | (atom, k) =>
           (if (atom == "true") then (match add-node(tree, Node.NBoolLit(1)) with | (id, t1) => (id, k, t1))
@@ -142,7 +159,7 @@ def read-form(s: String, i: Int64, tree: Tree) =
            else
              // a bare identifier is a VARIABLE reference → NVar keyed by the name's deterministic id.
              (match add-node(tree, Node.NVar(name-id(atom))) with | (id, t1) => (id, k, t1)))))
-     else (match unsupported(tree) with | (id, t1) => (id, j + 1, t1))))))))
+     else (match unsupported(tree) with | (id, t1) => (id, j + 1, t1)))))))))
 
 /// Consume a `)` at/after index `i` (skipping space); tolerate a missing one. Returns the next index.
 def close-paren(s: String, i: Int64) =

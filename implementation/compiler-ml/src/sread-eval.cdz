@@ -115,6 +115,16 @@ def se-tuple-projection-rejects-decline() =
         | Option.None(_) => unit)
 
 @test
+def se-string-literal-reads-and-declines() =
+  // STRINGS S1 stage 1b: a bare string literal `"hi"` READS (reader → NStr, not the old unsupported NVar-0
+  // path) and infer types it TyString, but lower does not admit TyString yet (no scalar Core string rep until
+  // the String-op stage), so run-src DECLINES (None) — NEVER a fabricated value. This pins the reader→infer→
+  // lower NStr path end-to-end at the decline boundary (soundness: decline≠value, the differential's core rule).
+  match run-src("\"hi\"") with
+    | Option.Some(_) => trap("a bare string literal must DECLINE (no scalar verdict), not run to a value")
+    | Option.None(_) => unit
+
+@test
 def se-record-field-access-runs-to-value() =
   // RECORD field access `(. r fieldname)` runs to the named field's value (a SCALAR verdict, differential-safe):
   // a record lowers to CCtor(0, field values in field order) and CProj reads the field's slot found by name.

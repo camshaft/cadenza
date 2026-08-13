@@ -135,6 +135,10 @@ def lower-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
 def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Ty)) =
   match node-at(tree, id) with
     | Option.Some(Node.NLit(v)) => Option.Some(cnum64(v))
+    // STRINGS S1 stage 1b: a string literal has NO Core scalar rep yet (stage 1c adds a Core string + a
+    // scalar op like String.length). It types as TyString, but the lower type-gate does not admit TyString,
+    // so a raw string program declines here BEFORE reaching this arm; this defensive arm declines it too.
+    | Option.Some(Node.NStr(_)) => Option.None(unit)
     | Option.Some(Node.NBoolLit(b)) => Option.Some(cnum64(b))   // Bool is Int 0/1 in Core (i64)
     // COMPOUND-VALUE slice: a tuple literal lowers to `CCtor(0, elems)` — REUSE the SumStore product rep (a
     // tuple is a single tag-0 product; eval store-allocs it to a handle, projection reads store-payload[i]).
