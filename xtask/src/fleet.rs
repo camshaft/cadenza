@@ -1281,6 +1281,38 @@ fn reference_transaction_hook_body(log_path: &str) -> String {
     )
 }
 
+/// What `install_git_hooks` should DO with an existing hook file, decided purely from its content vs
+/// the desired body. Split out so the "when do we (over)write" policy is unit-testable without touching
+/// the filesystem — and so the caller can distinguish a fresh install from a DRIFT-HEAL (an
+/// already-ours hook whose body no longer matches source, e.g. because a hook-body fix landed on trunk
+/// but the running fleet never re-ran `fleet up`, so the installed hook stayed stale — the exact bug
+/// that let pr-sync's own base-resets keep getting logged as trunk-clobbers).
+#[derive(Debug, PartialEq, Eq)]
+enum HookInstallAction {
+    /// A foreign hook (no fleet marker) is present — leave it untouched, warn.
+    LeaveForeign,
+    /// An ours-marked hook is already byte-identical to the desired body — no write needed.
+    AlreadyCurrent,
+    /// No hook yet — a fresh install.
+    Install,
+    /// An ours-marked hook exists but its body drifted from source — re-write it (drift-heal).
+    Heal,
+}
+
+/// Pure policy for `install_git_hooks`: given the current hook file content (None if absent) and the
+/// desired body, decide the action. Only ever (over)writes a hook carrying OUR marker — a pre-existing
+/// foreign hook of the same name is left alone (we never clobber a hand-placed hook). An ours-marked
+/// hook whose body no longer matches source is HEALED (the self-heal that stops a landed hook-body fix
+/// from silently failing to reach the running fleet).
+fn hook_install_action(existing: Option<&str>, desired: &str) -> HookInstallAction {
+    match existing {
+        None => HookInstallAction::Install,
+        Some(cur) if !cur.contains(REF_TXN_HOOK_MARKER) => HookInstallAction::LeaveForeign,
+        Some(cur) if cur == desired => HookInstallAction::AlreadyCurrent,
+        Some(_) => HookInstallAction::Heal,
+    }
+}
+
 /// Install the fleet's git hooks into the hub's shared hooks dir (idempotent, best-effort). Today:
 /// the fail-open `reference-transaction` clobber logger. Hooks live under `<git-common-dir>/hooks/`
 /// (shared by all worktrees). We only ever (over)write a hook that carries OUR marker line — a
@@ -1288,6 +1320,15 @@ fn reference_transaction_hook_body(log_path: &str) -> String {
 /// clobber a hand-placed hook (e.g. the existing `pre-commit` trunk guard). This makes the hook
 /// REPRODUCIBLE via `fleet up` rather than hand-placed (the pre-commit guard currently is not).
 fn install_git_hooks(fleet: &Fleet) {
+    install_git_hooks_inner(fleet, true);
+}
+
+/// The install worker. `verbose` (explicit `install-hooks`/`up`) prints on every outcome; when quiet
+/// (the watchdog's periodic self-heal sweep) it stays SILENT on the common already-current case and
+/// prints ONLY when it actually heals drift or freshly installs — so a routine sweep is noise-free but
+/// a hook that drifted from source (a landed body-fix that never reached the live fleet) is surfaced +
+/// repaired without waiting for a manual `fleet up`. Returns the action taken so callers can react.
+fn install_git_hooks_inner(fleet: &Fleet, verbose: bool) -> HookInstallAction {
     // Resolve the shared hooks dir: `<git-common-dir>/hooks`. The hub is bare; its common dir is
     // `<hub>/.git`. Ask git so we're robust to a non-standard layout.
     let common = Command::new("git")
@@ -1305,40 +1346,65 @@ fn install_git_hooks(fleet: &Fleet) {
             "fleet: WARNING — could not create hooks dir {}; skipping git-hook install.",
             hooks.display()
         );
-        return;
+        return HookInstallAction::LeaveForeign;
     }
     let log_path = fleet.root.join("trunk-clobber.log");
     let hook_path = hooks.join("reference-transaction");
-    // Don't clobber a foreign hook of the same name — only overwrite one we own (marker present).
-    if let Ok(existing) = std::fs::read_to_string(&hook_path)
-        && !existing.contains(REF_TXN_HOOK_MARKER)
-    {
-        eprintln!(
-            "fleet: WARNING — a non-fleet `reference-transaction` hook already exists at {}; leaving \
-             it (not installing the clobber logger). Merge it by hand if you want clobber logging.",
-            hook_path.display()
-        );
-        return;
-    }
     let body = reference_transaction_hook_body(&log_path.to_string_lossy());
-    if std::fs::write(&hook_path, &body).is_err() {
-        eprintln!(
-            "fleet: WARNING — could not write the reference-transaction hook to {}.",
-            hook_path.display()
-        );
-        return;
+    let existing = std::fs::read_to_string(&hook_path).ok();
+    let action = hook_install_action(existing.as_deref(), &body);
+    match action {
+        HookInstallAction::LeaveForeign => {
+            // Don't clobber a foreign hook of the same name — only overwrite one we own.
+            eprintln!(
+                "fleet: WARNING — a non-fleet `reference-transaction` hook already exists at {}; \
+                 leaving it (not installing the clobber logger). Merge it by hand if you want \
+                 clobber logging.",
+                hook_path.display()
+            );
+        }
+        HookInstallAction::AlreadyCurrent => {
+            if verbose {
+                println!(
+                    "fleet: reference-transaction clobber logger already up to date at {}.",
+                    hook_path.display()
+                );
+            }
+        }
+        HookInstallAction::Install | HookInstallAction::Heal => {
+            if std::fs::write(&hook_path, &body).is_err() {
+                eprintln!(
+                    "fleet: WARNING — could not write the reference-transaction hook to {}.",
+                    hook_path.display()
+                );
+                return HookInstallAction::LeaveForeign;
+            }
+            // Make it executable (0o755); a non-executable hook is silently ignored by git.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ =
+                    std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755));
+            }
+            // A HEAL is always surfaced (even when quiet): a drifted hook means a landed body-fix never
+            // reached the live fleet — the operator/agent should know the self-heal fired. A fresh
+            // Install prints only when verbose (a first-time `up` is expected, not a signal).
+            if verbose || action == HookInstallAction::Heal {
+                let what = if action == HookInstallAction::Heal {
+                    "re-installed (drift-healed — the installed hook body no longer matched source)"
+                } else {
+                    "installed"
+                };
+                println!(
+                    "fleet: {what} the fail-open trunk-clobber logger at {} (logs backward trunk \
+                     moves to {}).",
+                    hook_path.display(),
+                    log_path.display()
+                );
+            }
+        }
     }
-    // Make it executable (0o755); a non-executable hook is silently ignored by git.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755));
-    }
-    println!(
-        "fleet: installed the fail-open trunk-clobber logger at {} (logs backward trunk moves to {}).",
-        hook_path.display(),
-        log_path.display()
-    );
+    action
 }
 
 fn register_merge_drivers(fleet: &Fleet) {
@@ -3223,6 +3289,17 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
         .unwrap_or(0);
     if let Some(warning) = stale_watchdog_warning(self_stale_behind) {
         eprintln!("  ! {warning}");
+    }
+
+    // Periodic git-hook self-heal (quiet). `install_git_hooks` only runs on `fleet up` / the explicit
+    // `install-hooks` command, so a hook-body fix that landed on trunk but never triggered an `up`
+    // leaves the LIVE fleet running the stale installed hook — exactly how pr-sync's own base-resets
+    // kept getting logged as trunk-clobbers after the pr-sync-worktree skip had already landed. The
+    // watchdog runs every sweep from a (self-staleness-checked) current binary, so it's the natural
+    // point to re-assert the desired hook body: no-op + silent when already current, prints + repairs
+    // only on genuine drift. Skip under --dry-run (preview must not mutate the hooks dir).
+    if !dry_run {
+        install_git_hooks_inner(fleet, false);
     }
 
     let mut rearmed = 0usize;
@@ -16858,6 +16935,39 @@ mod tests {
         // The skip is a `continue` (skip THIS ref), never an `exit` (which would abort the whole hook
         // and could suppress a genuine clobber logged later in the same transaction batch).
         assert!(body.contains("*/worktrees/pr-sync/*) continue ;;"));
+    }
+
+    #[test]
+    fn hook_install_action_heals_a_drifted_ours_hook_but_never_clobbers_a_foreign_one() {
+        let desired = reference_transaction_hook_body("/hub/.claude/fleet/trunk-clobber.log");
+        // No hook file yet → fresh install.
+        assert_eq!(
+            hook_install_action(None, &desired),
+            HookInstallAction::Install
+        );
+        // Byte-identical ours-hook → no write (the common sweep case must be a silent no-op).
+        assert_eq!(
+            hook_install_action(Some(&desired), &desired),
+            HookInstallAction::AlreadyCurrent
+        );
+        // An OURS-marked hook whose body drifted from source → HEAL. This is the reported bug: a stale
+        // installed hook (marker present, but missing a later-landed skip line) must be re-written, not
+        // left as-is — otherwise a landed hook-body fix never reaches the running fleet.
+        let stale_ours = format!(
+            "#!/usr/bin/env bash\n{REF_TXN_HOOK_MARKER}\n# old body, no pr-sync skip\nexit 0\n"
+        );
+        assert!(stale_ours.contains(REF_TXN_HOOK_MARKER));
+        assert_ne!(stale_ours, desired);
+        assert_eq!(
+            hook_install_action(Some(&stale_ours), &desired),
+            HookInstallAction::Heal
+        );
+        // A foreign hook (no marker) is NEVER touched, even if its body differs — hand-placed hooks win.
+        let foreign = "#!/usr/bin/env bash\n# someone's hand-rolled pre-receive guard\nexit 0\n";
+        assert_eq!(
+            hook_install_action(Some(foreign), &desired),
+            HookInstallAction::LeaveForeign
+        );
     }
 
     #[test]
