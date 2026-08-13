@@ -29,6 +29,24 @@ bounding both the working set and the durable log (+ replay cost).
   bytes. The one BUILD-TIME seam to coordinate (flag to v-ah-host at build, NOT now): my prune defines the
   new "log prefix = summary checkpoint" shape, and D1/D2 must operate on that shape.
 
+### Checkpoint-persistence SPLIT — semantics (KERNEL, mine) vs physical-I/O (HOST, D3)
+v-ah-host confirmed the split MIRRORS D1's offload layering EXACTLY (copy that precedent):
+- **KERNEL (v-agent-harness, MINE):** the checkpoint DESCRIPTOR `{seq,kv_root,reducer}` (`kernel.rs:376`,
+  exists) + the PRUNE-SUBSUMPTION rule (which pre-checkpoint frames a checkpoint@N subsumes / when it is safe
+  to drop) + recover-FROM-checkpoint SEMANTICS + the I6 equivalence. 🔑 CONCRETE kernel change: recovery TODAY
+  REQUIRES `EventBody::Genesis` at `events[0]`, so a checkpoint-ROOTED `Recovered` is a `Session::recover_from`/
+  `replay` change (accept a checkpoint-rooted log, seed state from the checkpoint, not genesis+full). The
+  log/replay/fold model is the kernel-seam — mine.
+- **HOST (v-ah-host, a NEW D3 slice after D1/D2):** WHERE the KV-snapshot + descriptor physically live (reuse
+  D1's `OffloadSource` Dir/S3 backends + the `LogSink`/`LogSinkBuilder` seam); the durable WRITE of the
+  checkpoint frame + snapshot; the PHYSICAL prune/rewrite of subsumed frames; extending
+  `LogSinkBuilder::recover` to surface `{checkpoint, tail}` (not genesis+full) into the `Recovered` the kernel
+  folds. Composes with D1/D2 (the surviving tail still rehydrates/decompresses).
+- **THE SEAM (mirrors D1 `maybe_offload`/`rehydrate`):** the KERNEL provides a PURE prune/checkpoint helper
+  over a log + snapshot-store ABSTRACTION (as D1's blob-ptr codec is pure over a `BlobStore` trait); the HOST
+  provides the backend impl + the `LogSink` wiring that calls it. Kernel-half spec'd here; host-half handed to
+  v-ah-host as D3.
+
 ## What already exists (do NOT rebuild)
 - **Snapshot descriptor** `Snapshot { seq, kv_root, reducer }` (`kernel.rs:376`, "the free per-event
   checkpoint") — the content-hash identity of the materialized KV state at a seq.
@@ -69,18 +87,24 @@ any still-open obligations) and folds only the tail.
    prefix — never prune ahead of a durable checkpoint (a crash mid-prune must recover to either pre- or
    post-checkpoint, never a torn state with the prefix gone but no checkpoint).
 
-## Increment plan (post-flip, confirmed mine)
-1. `EventBody::Checkpoint { seq, kv_root, watermark, open }` variant + its `event.rs`/`event_ast.rs` codecs +
-   is_closed/terminal-tip interaction. Behavior-neutral: nothing writes it yet. (Mirrors the §6 ChildCompleted
-   additive-variant pattern.)
-2. Persist the KV-at-N snapshot (content-addressed) + write a Checkpoint frame on a trigger. Still no prune.
-3. `recover_from` learns to start from the latest Checkpoint (seed KV + watermark + open) + fold only the tail;
-   PIN the I6 equivalence test: state-hash of `recover(checkpoint@N + tail)` == `replay(full)`.
-4. The PRUNE: truncate frames `<= N` after the Checkpoint is durable (safety conditions 1-5). Gate the
-   open-obligation + terminal-tip + torn-prune recovery cases.
-5. TRIGGER policy: `control/summary`-carried checkpoint intent (reducer-driven) and/or a host size/count
-   policy; the reducer's KV is the compacted state.
-6. Compose-with-storage co-land: flag the "log prefix = Checkpoint" shape to v-ah-host so D1/D2 operate on it.
+## Increment plan (post-flip) — [K]=kernel/mine, [H-D3]=host/v-ah-host
+1. **[K]** `EventBody::Checkpoint { seq, kv_root, watermark, open }` variant + its `event.rs`/`event_ast.rs`
+   codecs + is_closed/terminal-tip interaction. Behavior-neutral: nothing writes it yet. (Mirrors the §6
+   ChildCompleted additive-variant pattern.)
+2. **[K]** define the checkpoint DESCRIPTOR + what it must carry (kv_root, watermark+exceptions, still-open
+   obligations) + the PURE prune/checkpoint helper over a snapshot-store abstraction. **[H-D3]** the physical
+   durable WRITE of the Checkpoint frame + KV-snapshot (reusing D1's `OffloadSource` backends + `LogSink`).
+   Still no prune.
+3. **[K]** `Session::recover_from`/`replay` learn to start from the latest Checkpoint (seed KV + watermark +
+   open, NOT require `Genesis` at events[0]) + fold only the tail; PIN the I6 equivalence test:
+   state-hash of `recover(checkpoint@N + tail)` == `replay(full)`. **[H-D3]** `LogSinkBuilder::recover`
+   surfaces `{checkpoint, tail}` (not genesis+full) into the `Recovered` the kernel folds.
+4. **[K]** the PRUNE-SUBSUMPTION rule + safety conditions 1-5 (when a checkpoint@N safely subsumes/drops the
+   prefix). **[H-D3]** the physical truncate/rewrite of subsumed frames, after the Checkpoint is durable.
+   Gate the open-obligation + terminal-tip + torn-prune recovery cases.
+5. **[K]** TRIGGER handling: `control/summary`-carried checkpoint intent (reducer-driven) and/or a host
+   size/count policy; the reducer's KV is the compacted state.
+6. **[H-D3 co-land]** flag the "log prefix = Checkpoint" shape to v-ah-host so D1/D2 operate on it.
 
 ## Not doing / deferred
 - Facet-1 KV/prompt compaction: DONE (reducer policy). No work.
