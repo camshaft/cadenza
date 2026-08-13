@@ -2527,6 +2527,54 @@ mod tests {
         assert!(no_payload.failure.is_some() && no_payload.close.is_none());
     }
 
+    // The FULL guest self-close path through the REAL parse_effect_list. A wasm guest returns its effect-
+    // list as value-form BYTES, so the interception only fires in production if a control/close effect
+    // SURVIVES parse_effect_list with its family INTACT (== effect_ct::CLOSE) and its CloseOutcome payload
+    // still decodable. The guest_self_close unit test above hand-builds the Effect vec (bypassing the parse),
+    // so it can't catch a parse that drops/renames the family — this drives REAL guest bytes end-to-end:
+    // encode an (emit + control/close) effect-list -> parse_effect_list -> guest_self_close -> close.
+    #[test]
+    fn control_close_survives_parse_effect_list_so_the_interception_fires_end_to_end() {
+        use crate::effect::effect_ct;
+        use crate::event::CloseOutcome;
+        use wasmtime::component::Val;
+        let bytes_val = |b: &[u8]| Val::List(b.iter().copied().map(Val::U8).collect());
+        let opt = |v: Option<&[u8]>| Val::Option(v.map(|x| Box::new(bytes_val(x))));
+        // A guest effect-request value-form: {kind=family, target, payload (bare bytes-leaf), correlation}.
+        let req = |family: &str, target: &[u8], payload: Option<&[u8]>| {
+            Val::Record(vec![
+                ("kind".into(), Val::String(family.to_string())),
+                ("target".into(), bytes_val(target)),
+                ("payload".into(), opt(payload)),
+                ("correlation".into(), opt(None)),
+            ])
+        };
+        // The guest emits a normal effect PLUS a control/close whose payload IS the CloseOutcome value-form.
+        let outcome = CloseOutcome::Failure("guest asked to close".to_string());
+        let close_payload = crate::ast_marshal::encode_close_outcome(&outcome);
+        let list = Val::List(vec![
+            req(effect_ct::EMIT, b"peer", Some(b"hi")),
+            req(effect_ct::CLOSE, b"", Some(&close_payload)),
+        ]);
+        let effect_list_bytes =
+            crate::ast_marshal::val_to_ast(&list).expect("effect-list marshals");
+
+        // The REAL parse the wasm fold runs on the guest's returned bytes.
+        let effects = crate::ast_marshal::parse_effect_list(&effect_list_bytes).expect("parses");
+        // The control/close family survives the parse verbatim — the precondition guest_self_close matches on.
+        assert!(
+            effects
+                .iter()
+                .any(|e| e.request.content_type.family == effect_ct::CLOSE),
+            "parse_effect_list must preserve the control/close family byte-for-byte"
+        );
+        // End-to-end: the interception fires and yields the guest's exact CloseOutcome; the emit is ignored.
+        assert_eq!(
+            guest_self_close(&effects),
+            Some(crate::reducer::FoldOutput::close(outcome)),
+        );
+    }
+
     // `bare_iface_name` strips BOTH `+<hash>` and `@<semver>`, and the runtime-dep selection must agree with
     // `declared_deps`' `rsplit_once('+')` parse for EVERY import-name form — including the `+<hash>`-with-no-`@`
     // form that a `split('@')`-only strip under-matched (#2219). Pins all forms + a sibling non-match.
