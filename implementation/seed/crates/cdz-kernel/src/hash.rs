@@ -175,6 +175,19 @@ mod tests {
     }
 
     #[test]
+    fn base64url_matches_an_independent_reference_for_a_mixed_vector() {
+        // Cross-validate the hand-rolled encoder against an INDEPENDENT reference: the bytes 0..=31 encode
+        // (per Python's stdlib `base64.urlsafe_b64encode(bytes(range(32)))`, padding stripped) to this exact
+        // string. A non-trivial mixed vector guards the group/tail bit-order + alphabet mapping against a
+        // subtle regression that the all-zero / all-0xFF vectors (uniform bit patterns) would miss.
+        let mixed: [u8; 32] = std::array::from_fn(|i| i as u8);
+        assert_eq!(
+            Hash::from_bytes(mixed).to_base64url(),
+            "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+        );
+    }
+
+    #[test]
     fn base64url_distinguishes_and_is_stable() {
         let a = Hash::of(b"alpha").to_base64url();
         let b = Hash::of(b"beta").to_base64url();
