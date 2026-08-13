@@ -3187,6 +3187,28 @@
   (call mk (: 50 Int64))   (output (: 50 Int64))
   (call mk (: 150 Int64))  (trap "unreachable"))
 
+(case "@invariant ESTABLISH fires when the constructor is inside a @requires PREDICATE — the divert reaches predicate-position code"
+  (doc    "Extends the establish-divert reachability set to a CONTRACT-PREDICATE construction site. All divert
+           cases so far construct in ordinary value positions (def body, lambda, list, match arm, cross-module
+           entry); this pins that the divert also fires inside the injected `(if PRE BODY (trap …))` test when
+           PRE itself constructs an @invariant value. `Pct = P Int64` has `@invariant(0 <= self <= 100)`; `f`
+           carries `@requires((>= (unp (Pct.P x)) 0))` — the precondition CONSTRUCTS `(Pct.P x)`, unwraps it, and
+           compares. The key: the comparison `(>= … 0)` is true for BOTH inputs (unp returns x, and both 50 and
+           150 are >= 0), so if the establish did NOT fire the predicate would pass for 150. f(50): `(Pct.P 50)`
+           establishes (50 in 0..100) → unp → 50 >= 0 → precondition holds → 50. f(150): `(Pct.P 150)` VIOLATES
+           `<= self 100` → the establish check inside the predicate traps BEFORE the comparison is reached. That
+           150 traps THOUGH `150 >= 0` is true proves the establish divert reached the constructor in predicate
+           position — the construction-site rewrite walks contract-predicate code too, not only value-position
+           bodies. Runtime arg via main's param so nothing folds.")
+  (input  (do
+            (@ (invariant (and (>= self 0) (<= self 100))) (type Pct (P Int64)))
+            (def (unp (: p Pct)) (match p (((. Pct P) n) n)))
+            (@ (requires (>= (unp (Pct.P x)) 0)) (def (f (: x Int64)) x))
+            (def (main (: k Int64)) (f k))
+            (export main)))
+  (call main (: 50 Int64))   (output (: 50 Int64))
+  (call main (: 150 Int64))  (trap "unreachable"))
+
 (case "@invariant ESTABLISH fires when the constructor is directly a MATCH ARM's selected result (v-patterns divert site)"
   (doc    "An escape-face pin extending the divert-reachability set (lambda / reconstruct / list-element) with
            a MATCH-ARM construction site: the constructor call is the RESULT EXPRESSION of a match arm the

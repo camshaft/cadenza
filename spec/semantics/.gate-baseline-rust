@@ -22,6 +22,7 @@ pass	@invariant ESTABLISH divert reaches a Set ELEMENT and a Map VALUE construct
 pass	@invariant ESTABLISH divert reaches indirect construction sites: a lambda body, a reconstruct-after-update, and a list element all establish
 pass	@invariant ESTABLISH fires through a ROW-OP re-wrap (Record.without + Record.extend rebuild the payload)
 pass	@invariant ESTABLISH fires when the constructor is directly a MATCH ARM's selected result (v-patterns divert site)
+pass	@invariant ESTABLISH fires when the constructor is inside a @requires PREDICATE — the divert reaches predicate-position code
 pass	@invariant ESTABLISH fires when the type is IMPORTED from another module and constructed in the entry (cross-package divert site)
 pass	@invariant ESTABLISH over a multi-variant sum: each variant's construction auto-establishes — a satisfying value constructs, a violating one traps (design §10.2, (D))
 pass	@invariant ESTABLISH over a nullary variant: a rejected nullary variant traps at construction, an accepted payload variant constructs (design §10.2, (D))
