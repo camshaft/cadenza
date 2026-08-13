@@ -10204,3 +10204,97 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 6312052 Int64))
   (call   main (: 0 Int64)) (output (: 306022 Int64)))
+
+; --- breaker batch 264: base-7 codec round-trip, escrow conservation pair, weighted quorum vote ---
+(case "bas1 a BASE-7 codec state — encode peels a value's digits MSB-first onto the list (recursive prepend-peel), decode folds the WHOLE accumulated digit run back and clears; concatenated encodes decode as positional composition"
+  (input  (do
+            (effect S
+              (op enc (-> Int64 Int64))
+              (op dec (-> Int64)))
+            (def (peel (: x Int64) (: acc (List Int64)))
+              (if (= x 0) acc (peel (/ x 7) (List.prepend acc (% x 7)))))
+            (def (fold7 (: ds (List Int64)) (: i Int64) (: acc Int64))
+              (match (List.at ds i)
+                ((Some d) (fold7 ds (+ i 1) (+ (* acc 7) d)))
+                ((None u) acc)))
+            (def (cat (: a (List Int64)) (: b (List Int64)) (: i Int64))
+              (match (List.at b i)
+                ((Some v) (cat (List.push a v) b (+ i 1)))
+                ((None u) a)))
+            (def (main (: n Int64))
+              (handle S (: (list) (List Int64))
+                ((enc (v) digs
+                  (let ((ds (if (= v 0) (list 0) (peel v (: (list) (List Int64))))))
+                    (let ((d2 (cat digs ds 0)))
+                      (resume (List.len d2) d2))))
+                 (dec () digs
+                  (resume (fold7 digs 0 0) (: (list) (List Int64)))))
+                (let ((a (S.enc n)))
+                  (let ((b (S.enc 3)))
+                    (let ((c (S.dec)))
+                      (let ((d (S.enc 50)))
+                        (let ((e (S.dec)))
+                          (+ (* 1000 (+ (* 10 (+ (* 1000 (+ (* 10 a) b)) c)) d)) e))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 230733050 Int64))
+  (call   main (: 48 Int64)) (output (: 233393050 Int64)))
+
+(case "esc1 an ESCROW protocol — hold moves funds from balance to escrow only when covered, rollback returns the whole escrow to balance, and the over-balance hold bounces without touching either slot"
+  (input  (do
+            (effect S
+              (op hold (-> Int64 Int64))
+              (op commit (-> Int64))
+              (op rollback (-> Int64)))
+            (def (main (: n Int64))
+              (handle S (tuple n 0)
+                ((hold (v) st
+                  (match st
+                    ((tuple bal esc)
+                      (if (<= v bal)
+                          (resume (+ (* 10 (- bal v)) (+ esc v)) (tuple (- bal v) (+ esc v)))
+                          (resume -1 st)))))
+                 (commit () st
+                  (match st
+                    ((tuple bal esc) (resume esc (tuple bal 0)))))
+                 (rollback () st
+                  (match st
+                    ((tuple bal esc)
+                      (resume (+ (* 10 (+ bal esc)) esc) (tuple (+ bal esc) 0))))))
+                (let ((a (S.hold 4)))
+                  (let ((b (S.hold 3)))
+                    (let ((c (S.rollback)))
+                      (let ((d (S.hold 20)))
+                        (let ((e (S.commit)))
+                          (+ (* 100 (+ (* 100 (+ (* 1000 (+ (* 100 (+ a 2)) (+ b 2))) c)) (+ d 2))) e))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 66391070100 Int64))
+  (call   main (: 5 Int64)) (output (: 16010540100 Int64)))
+
+(case "quo1 a WEIGHTED QUORUM vote — each member's weight tallies ONCE (revotes no-op via the voted set), unknown members answer a sentinel, and the pass bit flips when the tally crosses the quorum"
+  (input  (do
+            (effect S (op vote (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S (tuple (Map.insert (Map.insert (Map.insert Map.empty 1 3) 2 n) 3 2)
+                               (tuple (Set.of (list 0)) 0))
+                ((vote (k) st
+                  (match st
+                    ((tuple w inner)
+                      (match inner
+                        ((tuple voted tally)
+                          (if (Set.contains voted k)
+                              (resume (* tally 10) st)
+                              (match (Map.lookup w k)
+                                ((Some wt)
+                                  (let ((t2 (+ tally wt)))
+                                    (resume (+ (* t2 10) (if (>= t2 6) 1 0))
+                                            (tuple w (tuple (Set.insert voted k) t2)))))
+                                ((None u) (resume -1 st))))))))))
+                (let ((a (S.vote 1)))
+                  (let ((b (S.vote 1)))
+                    (let ((c (S.vote 2)))
+                      (let ((d (S.vote 9)))
+                        (let ((e (S.vote 3)))
+                          (+ (* 100 (+ (* 10 (+ (* 100 (+ (* 100 a) b)) c)) (+ d 2))) e))))))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 303071191 Int64))
+  (call   main (: 1 Int64)) (output (: 303040161 Int64)))

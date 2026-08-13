@@ -4700,6 +4700,7 @@ pass	b4c(proven): @requires(<= x 100)/@ensures(<= ret MAXINT) on (f x)=x+1 disch
 pass	b4c(unprovable): @ensures(<= ret MAXINT) on unbounded (f x)=x+1 is NOT dischargeable — the proof tier correctly MISSES (CDZ-VERIFY)
 pass	ba1 an EMPTY Bytes arg crosses the wasm host boundary
 pass	bare patterns on a CONCRETELY-exported type stay legal for importers
+pass	bas1 a BASE-7 codec state — encode peels a value's digits MSB-first onto the list (recursive prepend-peel), decode folds the WHOLE accumulated digit run back and clears; concatenated encodes decode as positional composition
 pass	bc1 a comparison of a draw feeds a BOOL-taking op whose arm NEGATES the state — the bool crosses the dispatch boundary
 pass	bc1 short-circuit AND over two draws — the false-first row skips the second draw, observed by the branch draw
 pass	bc2 monotonicity of THREE draws under a parity-dependent step — the and of two comparisons decides, the final state rides along
@@ -5123,6 +5124,7 @@ pass	equality over a Rational carried in a SUM payload respects normalization
 pass	equality over a compound mixing a float and a Bytes leaf walks both
 pass	equality over a partly-un-built sum with a free Err type compiles on every backend
 pass	equality over a runtime float in a SUM payload compares by the float leaf
+pass	esc1 an ESCROW protocol — hold moves funds from balance to escrow only when covered, rollback returns the whole escrow to balance, and the over-balance hold bounces without touching either slot
 pass	eval does not execute an Ast selected from a collection at run time
 pass	eval does not execute the result of a nested eval — no runtime AST interpreter
 pass	eval does not execute the result of read — even over a constant string
@@ -5799,6 +5801,7 @@ pass	quasiquote constructs AST with selective evaluation
 pass	quasiquote makes AST construction readable
 pass	quasiquote nests with inner unquote evaluated
 pass	quasiquotes unquoting a runtime variable and a literal build equal ASTs
+pass	quo1 a WEIGHTED QUORUM vote — each member's weight tallies ONCE (revotes no-op via the voted set), unknown members answer a sentinel, and the pass bit flips when the tally crosses the quorum
 pass	quote of a byte-string literal reifies to an Ast.Bytes node
 pass	quote of a let reifies as an Ast.List with a let head and round-trips
 pass	quote of a nested quote form is inert — the inner quote is not evaluated
