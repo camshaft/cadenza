@@ -3528,6 +3528,100 @@ mod tests {
     }
 
     #[test]
+    fn a_userspace_effect_declared_same_shape_as_a_builtin_hashes_identically() {
+        // CONTENT-ADDRESS GATE (schema-hash effect-identity phase-1a, the KERNEL side of the byte-identity
+        // gate co-owned with v-rust-backend): a schema-hash must CONTENT-ADDRESS — an effect declared with
+        // the SAME shape by a DIFFERENT producer resolves to the SAME identity. Phase-1a's router/authz key
+        // on the schema-hash, so a userspace reducer performing an effect whose declared shape MATCHES a
+        // built-in MUST hash to the built-in's identity — else the same shape from two producers would route/
+        // authorize differently (the divergence the whole removal exists to prevent).
+        //
+        // Here the KERNEL side: rebuild `emit.send`'s descriptor exactly as a USERSPACE producer would — via
+        // `effect_schema_hash_from_nodes` (the &Type-free core), building the op-sig nodes by hand with the
+        // shared WIT builders — and assert it EQUALS `builtin_effect_schema_hash(EffectKind::Emit)`. This is
+        // the assertion rcdzc's byte-identity gate mirrors on its side (its copied builders + `ty_to_wit_desc`
+        // must produce the identical descriptor bytes for the same Cadenza `Ty` shape). emit.send is
+        // `(effect "emit" (op "send" (func (param "payload" (list u8)) (result unit))))`.
+        use crate::effect::EffectKind;
+        let userspace_emit = {
+            let mut b = Builder::new();
+            // payload: list<u8> — a Cadenza `Bytes` maps to `list<u8>` at the boundary (NOT a "bytes" prim);
+            // this exercises the exact Ty::Bytes -> wit_type_list(wit_type_prim("u8")) mapping rcdzc must use.
+            let payload = {
+                let u8_ty = b.wit_type_prim("u8");
+                b.wit_type_list(u8_ty)
+            };
+            let unit = b.wit_type_unit();
+            let sig = b.wit_func_sig(&[("payload", payload)], unit);
+            effect_schema_hash_from_nodes(b, "emit", &[("send", sig)])
+        };
+        assert_eq!(
+            userspace_emit,
+            builtin_effect_schema_hash(&EffectKind::Emit),
+            "a userspace effect declared with emit.send's shape must hash to the built-in emit identity \
+             (content-address: same shape -> same identity across producers)"
+        );
+
+        // A MULTI-FIELD RECORD op — the field-order trap. Build `model.invoke`'s request record shape as a
+        // userspace producer would, with the fields in a DIFFERENT (non-name-sorted) declaration order than
+        // the built-in decl lists them, and assert it STILL hashes to the built-in model identity. This pins
+        // the name-sorted canonical order (0cbebf470): `wit_type_record` sorts by field name, so the caller's
+        // field order does not affect identity — the exact cross-producer property (rcdzc's `Ty::Record` is a
+        // name-sorted BTreeMap, so it can only emit sorted; the built-in decl and this reconstruction must
+        // match it regardless of the order the fields are written).
+        let userspace_model = {
+            let mut b = Builder::new();
+            // model.invoke(request: {model:string, messages:list<unit>, tools:list<unit>, max-tokens:option<u64>})
+            //   -> {stop-reason:string, content:list<unit>}. Fields written in a SCRAMBLED order on purpose.
+            let request = {
+                let messages = {
+                    let e = b.wit_type_unit();
+                    b.wit_type_list(e)
+                };
+                let max_tokens = {
+                    let u64_ty = b.wit_type_prim("u64");
+                    b.wit_type_option(u64_ty)
+                };
+                let model = b.wit_type_prim("string");
+                let tools = {
+                    let e = b.wit_type_unit();
+                    b.wit_type_list(e)
+                };
+                // SCRAMBLED order (max-tokens, tools, model, messages) — name-sort must normalize it.
+                wit_type_record(
+                    &mut b,
+                    &[
+                        ("max-tokens", max_tokens),
+                        ("tools", tools),
+                        ("model", model),
+                        ("messages", messages),
+                    ],
+                )
+            };
+            let response = {
+                let content = {
+                    let e = b.wit_type_unit();
+                    b.wit_type_list(e)
+                };
+                let stop_reason = b.wit_type_prim("string");
+                // SCRAMBLED (content, stop-reason) vs the decl's (stop-reason, content).
+                wit_type_record(
+                    &mut b,
+                    &[("content", content), ("stop-reason", stop_reason)],
+                )
+            };
+            let sig = b.wit_func_sig(&[("request", request)], response);
+            effect_schema_hash_from_nodes(b, "model", &[("invoke", sig)])
+        };
+        assert_eq!(
+            userspace_model,
+            builtin_effect_schema_hash(&EffectKind::Model),
+            "a model-shaped userspace effect hashes to the built-in model identity regardless of the field \
+             WRITING order — the schema descriptor's record fields are name-sorted (content-address holds)"
+        );
+    }
+
+    #[test]
     fn family_effect_schema_hashes_are_stable_declared_set_pairwise_distinct_and_distinct_from_builtins(
     ) {
         use crate::effect::{effect_ct, EffectKind};
