@@ -2845,15 +2845,17 @@ mod status_snapshot_tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn dispatched_frame_mirrors_the_effect_schema_hash_some_for_real_none_for_control() {
+    async fn dispatched_frame_mirrors_the_effect_schema_hash_builtin_and_declared_family() {
         // schema-hash-only effect model: the durable Dispatched FRAME must MIRROR the effect's schema_hash
         // (populated at the kernel dispatch sites straight from `req.schema_hash`) — `Some(built-in hash)`
-        // for a real EffectKind effect, `None` for a control/register-by-string family (Emit-placeholder
-        // kind, no built-in schema). Pins that population so a refactor can't silently drop the schema
-        // identity off the durable frame (the model keys the effect's identity on it). In-memory frame
-        // inspection = the fast regression guard; v-compiler-ml's event_ast codec round-trip is the
-        // wire-level complement. Covers a REAL routed dispatch (Emit) + a CONTROL inline dispatch (the
-        // capability seed) — both go through the same `schema_hash: req.schema_hash` population arm.
+        // for a real EffectKind effect, and `Some(family hash)` for a well-known family with a DECLARED
+        // schema. Pins that population so a refactor can't silently drop the schema identity off the durable
+        // frame (the model keys the effect's identity on it). In-memory frame inspection = the fast
+        // regression guard; v-compiler-ml's event_ast codec round-trip is the wire-level complement. Covers a
+        // REAL routed dispatch (Emit) + a CONTROL inline dispatch (the capability seed) — both go through the
+        // same `schema_hash: req.schema_hash` population arm. (control/capabilities gained a declared schema
+        // in the 13-family target-OUT slice, so its frame now carries Some, not None — a family with NO
+        // declared schema yet, e.g. store/*, would still be None.)
 
         // (1) REAL effect (routed dispatch): a peer-directed Emit → frame schema_hash = Some(built-in Emit).
         let peer = "session-B";
@@ -2892,8 +2894,10 @@ mod status_snapshot_tests {
             "a real effect's Dispatched frame mirrors its built-in schema_hash"
         );
 
-        // (2) CONTROL family (register-by-string, inline dispatch): the capability seed's
-        // control/capabilities frame → schema_hash None (Emit-placeholder kind carries no built-in schema).
+        // (2) CONTROL family with a DECLARED schema (inline dispatch): the capability seed's
+        // control/capabilities frame → schema_hash Some(family hash). control/capabilities gained a schema in
+        // the 13-family target-OUT slice, so the frame now mirrors it (computed from the FAMILY, not the
+        // Emit-placeholder kind). Populated straight from req.schema_hash, same as the real-effect arm.
         let mut exec2 = RecordingExecutor::new();
         let mut s2 = Session::genesis(Hash::of(b"seeded-v1"), Hash::of(b"test-spawn-nonce"));
         let captured2 = attach_recording_sink(&mut s2);
@@ -2916,9 +2920,16 @@ mod status_snapshot_tests {
                 _ => None,
             })
             .expect("a control/capabilities Dispatched frame was recorded by the seed");
+        // `caps_schema` is the frame's Option<Hash> (find_map + expect unwrapped the outer find). The family
+        // hash is itself Option<Hash>, so they compare directly; it must be Some (a declared schema).
         assert_eq!(
-            caps_schema, None,
-            "a control/register-by-string family carries no schema_hash on its durable frame"
+            caps_schema,
+            crate::ast_marshal::family_effect_schema_hash(crate::effect::effect_ct::CAPABILITIES),
+            "a declared control family mirrors its family schema_hash on the durable frame"
+        );
+        assert!(
+            caps_schema.is_some(),
+            "control/capabilities now has a declared schema"
         );
     }
 

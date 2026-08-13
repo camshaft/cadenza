@@ -722,21 +722,28 @@ impl EffectRequest {
         // (inert — dispatch/idempotency key on family). Only a genuine register-by-string EXTENSION family
         // (unknown to both) keeps an owned string — and reuses the INPUT Cow, so a caller that already owns it
         // doesn't re-allocate.
-        // `schema_hash` keys off the REAL kind (the `Some(k)` arm), NEVER the `Emit` PLACEHOLDER a control /
-        // extension family collapses to: only a genuine built-in has a declared schema (slice-1), so a
-        // control/store/fs/blob/metric/ws/lifecycle or register-by-string family is `None` (no schema yet) —
-        // baking the placeholder's hash would be a WRONG permanent identity.
+        // `schema_hash` is the effect's DECLARED schema identity, computed from the FAMILY (never from the
+        // `Emit` PLACEHOLDER a control/extension family collapses to — that would be a WRONG permanent
+        // identity). A built-in kind hashes via `builtin_effect_schema_hash_memo`; a well-known non-kind
+        // family (fs/blob/metric/ws/lifecycle/control-capabilities/control-summary) hashes via
+        // `family_effect_schema_hash_memo`; a family with no declared schema yet (store/*, control/signature,
+        // control/close, effect/reply) and any register-by-string EXTENSION is `None` — filled additively later.
         let (kind, family, schema_hash) = match EffectKind::from_family(&family) {
             Some(k) => {
                 let fam = std::borrow::Cow::Borrowed(k.family());
                 let hash = crate::ast_marshal::builtin_effect_schema_hash_memo(&k);
                 (k, fam, Some(hash))
             }
-            None => match effect_ct::wellknown_control(&family) {
-                Some(c) => (EffectKind::Emit, std::borrow::Cow::Borrowed(c), None),
-                // Extension family: keep the caller's Cow as-is (Borrowed stays borrowed, Owned isn't cloned).
-                None => (EffectKind::Emit, family, None),
-            },
+            None => {
+                // Compute the family's schema-hash BEFORE the placeholder-kind collapse (keys on the family
+                // string, which carries the true identity). `None` for an as-yet-undeclared/extension family.
+                let hash = crate::ast_marshal::family_effect_schema_hash_memo(&family);
+                match effect_ct::wellknown_control(&family) {
+                    Some(c) => (EffectKind::Emit, std::borrow::Cow::Borrowed(c), hash),
+                    // Extension family: keep the caller's Cow as-is (Borrowed stays borrowed, Owned isn't cloned).
+                    None => (EffectKind::Emit, family, hash),
+                }
+            }
         };
         EffectRequest {
             content_type: ContentType { family, version: 1 },
@@ -1450,7 +1457,8 @@ mod tests {
                 &EffectKind::Http
             )),
         );
-        // A control family (Emit placeholder kind, no declared schema) is None — NOT the placeholder's hash.
+        // A well-known non-kind family (control/capabilities, Emit placeholder kind) now carries its DECLARED
+        // family schema-hash — computed from the FAMILY, not the placeholder kind.
         let control = EffectRequest::new_with_family(
             effect_ct::CAPABILITIES,
             "t",
@@ -1458,11 +1466,24 @@ mod tests {
             Timeliness::Interactive,
         );
         assert_eq!(
-            control.schema_hash, None,
-            "a schemaless control family must be None"
+            control.schema_hash,
+            crate::ast_marshal::family_effect_schema_hash(effect_ct::CAPABILITIES),
+            "a declared control family carries its family schema-hash",
         );
-        // placeholder kind — but we did NOT hash it into a (wrong) identity
+        assert!(control.schema_hash.is_some());
+        // placeholder kind — but the hash came from the FAMILY, never the (wrong) Emit identity.
         assert_eq!(control.kind, EffectKind::Emit);
+        // A well-known family with NO declared schema yet (store/*) is still None.
+        let store = EffectRequest::new_with_family(
+            effect_ct::STORE_SET,
+            "k",
+            None,
+            Timeliness::Interactive,
+        );
+        assert_eq!(
+            store.schema_hash, None,
+            "an as-yet-undeclared well-known family must be None"
+        );
         // A register-by-string extension family (also Emit placeholder) is likewise None.
         let ext =
             EffectRequest::new_with_family("custom/metrics", "m", None, Timeliness::Interactive);

@@ -459,20 +459,18 @@ pub fn builtin_effect_schema_hash(kind: &crate::effect::EffectKind) -> crate::ha
             let sig = b.wit_func_sig(&[("deadline-ms", deadline)], unit);
             ("timer", "arm", sig)
         }
-        // emit.send(target: list<u8>, payload: list<u8>) -> unit. The target is the peer session id (opaque
-        // bytes); payload is the signal body (opaque bytes). Delivery folds back as a separate ack/failure
-        // event, so the op result is unit.
+        // emit.send(payload: list<u8>) -> unit. target-OUT: the peer session id rides `req.target` (the
+        // RESOURCE a grant gates, SEC-F1), NOT the effect's schema/identity — consistent with the
+        // target-out-of-schema ruling (identity = what-effect; target = which-resource). payload is the
+        // signal body (opaque bytes). Delivery folds back as a separate ack/failure event, so the op result
+        // is unit. (This is the one slice-1 built-in that listed `target` as an op-param; corrected here.)
         EffectKind::Emit => {
-            let target = {
-                let u8_ty = b.wit_type_prim("u8");
-                b.wit_type_list(u8_ty)
-            };
             let payload = {
                 let u8_ty = b.wit_type_prim("u8");
                 b.wit_type_list(u8_ty)
             };
             let unit = b.wit_type_unit();
-            let sig = b.wit_func_sig(&[("target", target), ("payload", payload)], unit);
+            let sig = b.wit_func_sig(&[("payload", payload)], unit);
             ("emit", "send", sig)
         }
     };
@@ -510,6 +508,186 @@ pub fn builtin_effect_schema_hash_memo(kind: &crate::effect::EffectKind) -> crat
         EffectKind::Emit => 5,
     };
     MEMO[idx]
+}
+
+/// The schema-hash of a WELL-KNOWN effect family that has NO [`crate::effect::EffectKind`] variant — the
+/// fs/blob/metric/ws/lifecycle world effects plus the control-plane families — under the schema-hash-only
+/// effect model. Same hashing path as [`builtin_effect_schema_hash`] (`effect_schema_hash_from_nodes` over a
+/// kernel-authored op-signature), reusing each family's landed payload/result shapes.
+///
+/// **target-OUT** (operator ruling via concierge 2026-08-13): the effect TARGET — the fs path, the blob
+/// content-hash, the ws conn-id, the lifecycle session-id — rides `req.target` as the SEC-F1 RESOURCE a grant
+/// gates; it is NOT an op-param of the schema. The schema is the effect's DATA shape only (payload in, result
+/// out): identity = WHAT-effect, target = WHICH-resource, matching the landed authz-raw-bytes ruling. So a
+/// target-only effect (fs/read, fs/glob, blob/get, ws/dial, lifecycle/suspend|resume|terminate) has an EMPTY
+/// param list — it stays distinct from its siblings via the effect NAME + OP NAME, both hashed into the
+/// schema tree (so lifecycle/suspend != resume != terminate though all are unit->unit).
+///
+/// A family string `"x/y"` decomposes to effect name `x`, op name `y`. `None` for a register-by-string
+/// EXTENSION family, or a well-known family whose schema is a later slice (store/*, control/signature,
+/// control/close, effect/reply) — those keep `EffectRequest::schema_hash = None` until declared.
+pub fn family_effect_schema_hash(family: &str) -> Option<crate::hash::Hash> {
+    use crate::effect::effect_ct;
+    let mut b = Builder::new();
+    // `list<u8>` — the uniform opaque-bytes descriptor (file content, blob content, a hash, a ws frame, a
+    // session id). Takes `&mut Builder` as a param so it does not capture `b` (no borrow conflict).
+    fn bytes(b: &mut Builder) -> StructId {
+        let u8_ty = b.wit_type_prim("u8");
+        b.wit_type_list(u8_ty)
+    }
+    let (name, op_name, sig): (&str, &str, StructId) = match family {
+        // fs/read(-> bytes): target = the path (target-out, no param); result = the file content bytes.
+        effect_ct::FS_READ => {
+            let content = bytes(&mut b);
+            let sig = b.wit_func_sig(&[], content);
+            ("fs", "read", sig)
+        }
+        // fs/write(content: bytes -> unit): target = the path; payload = the content to write.
+        effect_ct::FS_WRITE => {
+            let content = bytes(&mut b);
+            let unit = b.wit_type_unit();
+            let sig = b.wit_func_sig(&[("content", content)], unit);
+            ("fs", "write", sig)
+        }
+        // fs/glob(-> bytes): target = the pattern (target-out); result = newline-joined matching paths (v0
+        // bytes; a typed list<string> is a later additive refinement, per the executor's own note).
+        effect_ct::FS_GLOB => {
+            let paths = bytes(&mut b);
+            let sig = b.wit_func_sig(&[], paths);
+            ("fs", "glob", sig)
+        }
+        // blob/put(content: bytes -> hash): payload = the content; result = its 32-byte content hash (bytes).
+        effect_ct::BLOB_PUT => {
+            let content = bytes(&mut b);
+            let hash = bytes(&mut b);
+            let sig = b.wit_func_sig(&[("content", content)], hash);
+            ("blob", "put", sig)
+        }
+        // blob/get(-> option<bytes>): target = the content hash (target-out); result = the content if present
+        // (CAS hit = Some, miss = None — a normal answer, not an error).
+        effect_ct::BLOB_GET => {
+            let content = bytes(&mut b);
+            let maybe = b.wit_type_option(content);
+            let sig = b.wit_func_sig(&[], maybe);
+            ("blob", "get", sig)
+        }
+        // metric/publish(sample: record -> unit): the MetricSample shape (name/kind/value/unit/labels).
+        effect_ct::METRIC_PUBLISH => {
+            let name_ty = b.wit_type_prim("string");
+            let kind_ty = b.wit_type_prim("string");
+            let value_ty = b.wit_type_prim("f64");
+            let unit_ty = b.wit_type_prim("string");
+            let labels = {
+                let k = b.wit_type_prim("string");
+                let v = b.wit_type_prim("string");
+                let pair = b.wit_type_tuple(&[k, v]);
+                b.wit_type_list(pair)
+            };
+            let sample = wit_type_record(
+                &mut b,
+                &[
+                    ("name", name_ty),
+                    ("kind", kind_ty),
+                    ("value", value_ty),
+                    ("unit", unit_ty),
+                    ("labels", labels),
+                ],
+            );
+            let unit = b.wit_type_unit();
+            let sig = b.wit_func_sig(&[("sample", sample)], unit);
+            ("metric", "publish", sig)
+        }
+        // ws/send(frame: bytes -> unit): target = the peer conn-id (target-out); payload = the outbound frame.
+        effect_ct::WS_SEND => {
+            let frame = bytes(&mut b);
+            let unit = b.wit_type_unit();
+            let sig = b.wit_func_sig(&[("frame", frame)], unit);
+            ("ws", "send", sig)
+        }
+        // ws/dial(-> unit): target = the hub url (target-out); the connection surfaces as a separate
+        // ws/connect inbound event, so the op result is unit.
+        effect_ct::WS_DIAL => {
+            let unit = b.wit_type_unit();
+            let sig = b.wit_func_sig(&[], unit);
+            ("ws", "dial", sig)
+        }
+        // lifecycle/spawn(reducer-hash: bytes -> session-id): NO peer target; payload = the child's reducer
+        // hash; result = the new child's session id (bytes).
+        effect_ct::LIFECYCLE_SPAWN => {
+            let reducer_hash = bytes(&mut b);
+            let session_id = bytes(&mut b);
+            let sig = b.wit_func_sig(&[("reducer-hash", reducer_hash)], session_id);
+            ("lifecycle", "spawn", sig)
+        }
+        // lifecycle/suspend|resume|terminate(-> unit): target = the controlled session id (target-out); the
+        // effect records a lifecycle op the loop applies. Distinct identities via the OP NAME (all unit->unit).
+        effect_ct::LIFECYCLE_SUSPEND => {
+            let unit = b.wit_type_unit();
+            let sig = b.wit_func_sig(&[], unit);
+            ("lifecycle", "suspend", sig)
+        }
+        effect_ct::LIFECYCLE_RESUME => {
+            let unit = b.wit_type_unit();
+            let sig = b.wit_func_sig(&[], unit);
+            ("lifecycle", "resume", sig)
+        }
+        effect_ct::LIFECYCLE_TERMINATE => {
+            let unit = b.wit_type_unit();
+            let sig = b.wit_func_sig(&[], unit);
+            ("lifecycle", "terminate", sig)
+        }
+        // control/capabilities(manifest: bytes -> unit): the projected capability manifest rides as encoded
+        // bytes; a typed manifest record is a later additive refinement (slice-1 deepened nested types the
+        // same way). Control-plane, authz-exempt — the schema gives it a uniform identity, not a grant gate.
+        effect_ct::CAPABILITIES => {
+            let manifest = bytes(&mut b);
+            let unit = b.wit_type_unit();
+            let sig = b.wit_func_sig(&[("manifest", manifest)], unit);
+            ("control", "capabilities", sig)
+        }
+        // control/summary(summary: bytes -> unit): fire-and-forget; the summary payload rides as bytes.
+        effect_ct::SUMMARY => {
+            let summary = bytes(&mut b);
+            let unit = b.wit_type_unit();
+            let sig = b.wit_func_sig(&[("summary", summary)], unit);
+            ("control", "summary", sig)
+        }
+        _ => return None,
+    };
+    Some(effect_schema_hash_from_nodes(b, name, &[(op_name, sig)]))
+}
+
+/// Memoized [`family_effect_schema_hash`] — the accessor `EffectRequest::new_with_family` uses on the
+/// construction path (same compute-once-and-hold model as [`builtin_effect_schema_hash_memo`]). The declared
+/// families are hashed on first touch; a family not in the table returns `None`.
+pub fn family_effect_schema_hash_memo(family: &str) -> Option<crate::hash::Hash> {
+    use crate::effect::effect_ct;
+    static MEMO: std::sync::LazyLock<std::collections::HashMap<&'static str, crate::hash::Hash>> =
+        std::sync::LazyLock::new(|| {
+            let mut m = std::collections::HashMap::new();
+            for fam in [
+                effect_ct::FS_READ,
+                effect_ct::FS_WRITE,
+                effect_ct::FS_GLOB,
+                effect_ct::BLOB_PUT,
+                effect_ct::BLOB_GET,
+                effect_ct::METRIC_PUBLISH,
+                effect_ct::WS_SEND,
+                effect_ct::WS_DIAL,
+                effect_ct::LIFECYCLE_SPAWN,
+                effect_ct::LIFECYCLE_SUSPEND,
+                effect_ct::LIFECYCLE_RESUME,
+                effect_ct::LIFECYCLE_TERMINATE,
+                effect_ct::CAPABILITIES,
+                effect_ct::SUMMARY,
+            ] {
+                if let Some(h) = family_effect_schema_hash(fam) {
+                    m.insert(fam, h);
+                }
+            }
+            m
+        });
+    MEMO.get(family).copied()
 }
 
 /// Build the type-descriptor for `ty` INTO an existing arena `b`, returning the root node id — the
@@ -3174,6 +3352,74 @@ mod tests {
                     hashes[i], hashes[j],
                     "built-in {:?} and {:?} must have distinct schema-hashes",
                     kinds[i], kinds[j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn family_effect_schema_hashes_are_stable_declared_set_pairwise_distinct_and_distinct_from_builtins(
+    ) {
+        use crate::effect::{effect_ct, EffectKind};
+        // The 14 well-known non-EffectKind families that have a DECLARED schema (target-OUT).
+        let families = [
+            effect_ct::FS_READ,
+            effect_ct::FS_WRITE,
+            effect_ct::FS_GLOB,
+            effect_ct::BLOB_PUT,
+            effect_ct::BLOB_GET,
+            effect_ct::METRIC_PUBLISH,
+            effect_ct::WS_SEND,
+            effect_ct::WS_DIAL,
+            effect_ct::LIFECYCLE_SPAWN,
+            effect_ct::LIFECYCLE_SUSPEND,
+            effect_ct::LIFECYCLE_RESUME,
+            effect_ct::LIFECYCLE_TERMINATE,
+            effect_ct::CAPABILITIES,
+            effect_ct::SUMMARY,
+        ];
+        // (1) each is declared (Some), stable, and the memo agrees with the pure recompute.
+        for f in &families {
+            let h = family_effect_schema_hash(f).expect("declared family has a schema-hash");
+            assert_eq!(
+                h,
+                family_effect_schema_hash(f).unwrap(),
+                "family {f} deterministic"
+            );
+            assert_eq!(
+                Some(h),
+                family_effect_schema_hash_memo(f),
+                "memo agrees for {f}"
+            );
+        }
+        // (2) a family with no declared schema yet, and an extension family, are None.
+        assert_eq!(family_effect_schema_hash(effect_ct::STORE_SET), None);
+        assert_eq!(family_effect_schema_hash("custom/metrics"), None);
+        assert_eq!(family_effect_schema_hash_memo(effect_ct::STORE_SET), None);
+        // (3) THE IDENTITY GUARD: all 6 built-ins + 14 families = 20 PAIRWISE-DISTINCT hashes. This proves
+        // target-OUT is safe — the unit->unit families (ws/dial, lifecycle/suspend|resume|terminate) do NOT
+        // collide with each other despite identical signatures, because the effect NAME + OP NAME are hashed.
+        let builtins = [
+            EffectKind::Shell,
+            EffectKind::Http,
+            EffectKind::Model,
+            EffectKind::Now,
+            EffectKind::Timer,
+            EffectKind::Emit,
+        ];
+        let mut all: Vec<crate::hash::Hash> =
+            builtins.iter().map(builtin_effect_schema_hash).collect();
+        all.extend(
+            families
+                .iter()
+                .map(|f| family_effect_schema_hash(f).unwrap()),
+        );
+        assert_eq!(all.len(), 20);
+        for i in 0..all.len() {
+            for j in (i + 1)..all.len() {
+                assert_ne!(
+                    all[i], all[j],
+                    "schema-hash collision at indices {i} and {j}"
                 );
             }
         }
