@@ -2684,18 +2684,25 @@ pub struct LocalVar {
 /// `(binder, type)` list the real selection would use; only the value types matter here.
 pub fn stub_function(params: &[(StructId, Ty)], ret: &Ty) -> SelectedFunc {
     let param_vts: Vec<ValType> = params.iter().filter_map(|(_, t)| valtype_of(t)).collect();
-    // A zero of the result's machine slot. A result with no machine rep (should not happen for a lifted
-    // lambda, whose result type was checked at lift time) defaults to an i32 zero — harmless in a
-    // never-called stub.
-    let zero = match valtype_of(ret) {
-        Some(ValType::I64) => Lir::ConstI64(0),
-        Some(ValType::F64) => Lir::F64ConstBits(0),
-        _ => Lir::ConstI32(0),
+    // The stub body pushes ONE value of the result's machine slot to satisfy the functype — EXCEPT a
+    // `Unit` result, which is a ZERO-RESULT functype (the serializer emits `0x60 <params> <>`): its body
+    // must be EMPTY, pushing nothing, or the module is invalid ("values remaining on stack at end of
+    // block"). A non-Unit result with no machine rep should not reach a lifted lambda (its result type was
+    // checked at lift time); it defaults to an i32 zero — harmless in a never-called stub.
+    let code = if matches!(ret, Ty::Unit) {
+        Vec::new()
+    } else {
+        let zero = match valtype_of(ret) {
+            Some(ValType::I64) => Lir::ConstI64(0),
+            Some(ValType::F64) => Lir::F64ConstBits(0),
+            _ => Lir::ConstI32(0),
+        };
+        vec![zero]
     };
     SelectedFunc {
         params: param_vts,
         ret: ret.clone(),
-        code: vec![zero],
+        code,
         declared: Vec::new(),
         src_body: None,
         locals: Vec::new(),

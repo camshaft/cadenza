@@ -12187,7 +12187,13 @@ fn lower_lambda_value(db: &mut Db, id: StructId, params: &[StructId], body: Stru
         crate::ty::Ty::Any => expected_ret.clone().unwrap_or(crate::ty::Ty::Any),
         t => t,
     };
-    if crate::backend::wasm::lir::valtype_of(&ret_ty).is_none() {
+    // A `Unit` result is REPRESENTABLE as a ZERO-RESULT functype (the serializer emits a Unit-returning
+    // lifted lambda as `0x60 <params> <>`, and `closure_type_index` matches it as a zero-result shape), so
+    // it must NOT decline here — mirror the `Unit`-param exception above (a Unit occupies no wasm slot). A
+    // result that is NEITHER machine-repr NOR Unit is genuinely unrepresentable and still declines.
+    if !matches!(ret_ty, crate::ty::Ty::Unit)
+        && crate::backend::wasm::lir::valtype_of(&ret_ty).is_none()
+    {
         return Core::Poison(Reject::decline(crate::diag::CLOSURE_RESULT_NO_REPR_DECLINE));
     }
     // Every captured value must have a machine representation too (it is boxed into the cell).
