@@ -99462,17 +99462,23 @@ fn a_host_fused_kv_delete_bool_reducer_emits_and_loads() {
 // private to `cdz-kernel::ast_marshal`, not reachable here) — those are cross-checked by the
 // vs-built-in schema-hash gate once the kernel field-order fix (v-effects MR 0cbebf470) lands on origin.
 //
-// This compares the LOGICAL TREE (a canonical render walked from root), NOT the raw `codec::encode`
-// bytes. cadenza-ast's `encode` runs a `canon::canonicalize` pre-order-renumber pass before serializing
-// (byte identity is a property of that normal form, not the codec); rcdzc's copied `encode` has NO canon
-// pass (rcdzc's s-expr reader always builds pre-order, so it never needed one — and a hand-built
-// bottom-up descriptor is NOT in pre-order). So the two crates' raw bytes differ even for an identical
-// tree — that's a codec-normal-form question (escalated to v-effects: does the kernel canonicalize the
-// descriptor it ingests from rcdzc before hashing?), separate from whether the BUILDERS are a faithful
-// copy. This test pins the latter: same builder calls → structurally identical tree + identical head
-// kinds (Name vs Str is load-bearing for the prim-vs-compound distinction).
+// Two assertions, because raw `codec::encode` bytes correctly DIFFER between the crates: cadenza-ast's
+// `encode` runs a `canon::canonicalize` pre-order-renumber pass before serializing (byte identity is a
+// property of that normal form, not the codec); rcdzc's copied `encode` has NO canon pass (rcdzc's
+// s-expr reader always builds pre-order, so it never needed one — and a hand-built bottom-up descriptor
+// is NOT in pre-order), and rcdzc emits its descriptor RAW. So raw==raw would (correctly) fail.
+//
+//  (1) LOGICAL TREE: same builder calls → structurally identical tree + identical head kinds (Name vs
+//      Str is load-bearing for the prim-vs-compound distinction). Pins that the copy is faithful.
+//  (2) ROUND-TRIP-THROUGH-CANON: rcdzc's raw descriptor bytes, DECODED then RE-ENCODED through
+//      cadenza-ast's codec (i.e. canonicalized), == cadenza-ast's canonical bytes for the same tree.
+//      This is the exact property the effect-identity design relies on (v-effects ruling A, 2026-08-13):
+//      rcdzc emits RAW; the kernel re-canonicalizes on ingest (it codec::decodes the descriptor subtree
+//      then hashes it through `effect_schema_hash_from_nodes`, which rebuilds + re-encodes via
+//      cadenza-ast's canonicalizing codec), so the producer's build order is ERASED and both producers
+//      hash the same canonical bytes. No `canon.rs` port in rcdzc — the kernel is the one hasher.
 #[test]
-fn copied_wit_builders_produce_the_same_logical_tree_as_cadenza_ast_originals() {
+fn copied_wit_builders_match_cadenza_ast_by_logical_tree_and_through_canon() {
     // Canonical render of an rcdzc arena subtree: `(head child…)`, each atom tagged by head kind
     // (`N:` a Name, `S:` a Str) so a flipped head-kind — which changes the hash — shows as a diff.
     fn render_ours(a: &crate::ast::Arenas, id: crate::ast::StructId) -> String {
@@ -99509,42 +99515,76 @@ fn copied_wit_builders_produce_the_same_logical_tree_as_cadenza_ast_originals() 
             }
         }
     }
-    // rcdzc's copied builders → an effect schema tree exercising every copied form.
-    let ours = {
+    // rcdzc's copied builders → an effect schema tree exercising every copied form. Keep the arena so we
+    // can BOTH render its logical tree (1) AND encode its RAW bytes for the round-trip check (2).
+    //
+    // CRITICAL — a FRESH node per occurrence, never a reused StructId. `string` appears twice (param `k`
+    // and inside `option`), so we call `wit_type_prim("string")` TWICE. Ruling A has the kernel DECODE
+    // rcdzc's descriptor, and `codec::decode` enforces TREE-NESS (a shared subtree — the same StructId
+    // reachable from two parents — is rejected as `NotATree`, a decode-bomb guard). The real emitter
+    // (`ty_to_wit_desc`, recursive) builds fresh nodes per call for free; it MUST NOT memoize/share type
+    // nodes. This test mirrors that: reusing a binding here would (correctly) fail the round-trip decode.
+    let ours_arenas = {
         let mut b = crate::ast::Builder::new();
         let s64 = b.wit_type_prim("s64");
-        let string = b.wit_type_prim("string");
+        let string_k = b.wit_type_prim("string");
         let u8 = b.wit_type_prim("u8");
         let bytes = b.wit_type_list(u8); // list<u8> — the "bytes-is-list<u8>" spelling
-        let opt_string = b.wit_type_option(string);
+        let string_inner = b.wit_type_prim("string");
+        let opt_string = b.wit_type_option(string_inner);
         let unit = b.wit_type_unit();
         let pair = b.wit_type_tuple(&[s64, bytes]);
         // op `run`: (param k string) (param v tuple<s64, list<u8>>) (param meta option<string>) -> unit
-        let sig = b.wit_func_sig(&[("k", string), ("v", pair), ("meta", opt_string)], unit);
+        let sig = b.wit_func_sig(&[("k", string_k), ("v", pair), ("meta", opt_string)], unit);
         let root = b.effect_schema_tree("demo", &[("run", sig)]);
-        let arenas = b.finish(root);
-        render_ours(&arenas, arenas.root)
+        b.finish(root)
     };
-    // cadenza-ast's ORIGINAL builders (via the cadenza-syntax re-export) → the same tree.
-    let theirs = {
+    // cadenza-ast's ORIGINAL builders (via the cadenza-syntax re-export) → the same tree (also fresh-per-occurrence).
+    let theirs_arenas = {
         use cadenza_syntax::ast::Builder as AstBuilder;
         let mut b = AstBuilder::default();
         let s64 = b.wit_type_prim("s64");
-        let string = b.wit_type_prim("string");
+        let string_k = b.wit_type_prim("string");
         let u8 = b.wit_type_prim("u8");
         let bytes = b.wit_type_list(u8);
-        let opt_string = b.wit_type_option(string);
+        let string_inner = b.wit_type_prim("string");
+        let opt_string = b.wit_type_option(string_inner);
         let unit = b.wit_type_unit();
         let pair = b.wit_type_tuple(&[s64, bytes]);
-        let sig = b.wit_func_sig(&[("k", string), ("v", pair), ("meta", opt_string)], unit);
+        let sig = b.wit_func_sig(&[("k", string_k), ("v", pair), ("meta", opt_string)], unit);
         let root = b.effect_schema_tree("demo", &[("run", sig)]);
-        let arenas = b.finish(root);
-        render_theirs(&arenas, arenas.root)
+        b.finish(root)
     };
+
+    // (1) LOGICAL-TREE identity — the copy is faithful (shape + head kinds).
+    let ours_tree = render_ours(&ours_arenas, ours_arenas.root);
+    let theirs_tree = render_theirs(&theirs_arenas, theirs_arenas.root);
     assert_eq!(
-        ours, theirs,
+        ours_tree, theirs_tree,
         "rcdzc's verbatim-copied WIT schema-descriptor builders drifted from cadenza-ast's originals — \
          the effect schema tree differs in shape or a head kind (Name vs Str), which would split the \
          effect schema-hash. Re-sync the copy in ast.rs with cadenza-ast/src/ast.rs."
+    );
+
+    // (2) ROUND-TRIP-THROUGH-CANON identity — the property ruling A relies on. rcdzc emits RAW bytes
+    // (its codec does not canonicalize); the kernel re-canonicalizes on ingest. Model that here: decode
+    // rcdzc's raw bytes into a cadenza-ast arena, then re-encode through cadenza-ast's CANONICALIZING
+    // codec — the result must equal cadenza-ast's own canonical bytes for the same tree. (Raw==raw would
+    // correctly differ — rcdzc's build order is non-canonical — so we assert the canonicalized form, not
+    // the raw form.) Both codecs share the `cdzast\x00\x01` header, so the cross-crate decode is valid.
+    let ours_raw = crate::codec::encode(&ours_arenas);
+    let ours_canon = {
+        let decoded = cadenza_syntax::codec::decode(&ours_raw).expect(
+            "rcdzc's raw descriptor bytes decode under cadenza-ast's codec (shared wire format)",
+        );
+        cadenza_syntax::codec::encode(&decoded)
+    };
+    let theirs_canon = cadenza_syntax::codec::encode(&theirs_arenas);
+    assert_eq!(
+        ours_canon, theirs_canon,
+        "rcdzc's descriptor, once canonicalized through cadenza-ast's codec, must equal cadenza-ast's \
+         canonical bytes for the same tree — this is the invariant ruling A relies on (kernel \
+         re-canonicalizes rcdzc's raw descriptor on ingest, so both producers hash the same bytes). \
+         A mismatch here means the effect schema-hash would split even after canonicalization."
     );
 }
