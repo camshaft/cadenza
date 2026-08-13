@@ -86,8 +86,17 @@ pub enum LogConfig {
     /// In-memory log — non-durable, dev/test only (lost on restart). The default.
     #[default]
     Memory,
-    /// File-backed durable log under `dir` — the single-host durable backend.
-    File { dir: String },
+    /// File-backed durable log under `dir` — the single-host durable backend. `offload_threshold` (GAP-4 D1,
+    /// optional) enables log-body offload: a persisted event body larger than this many bytes is offloaded to
+    /// the content-addressed `[blob]` store (a tiny `(blob-ptr)` frame replaces it in the log), keeping the log
+    /// frames small; boot-recovery rehydrates it. Absent = no offload (bodies stay inline, pre-D1 behavior).
+    /// Only takes effect when the `[blob]` backend is `dir` (the offload store reuses that same CAS root); with
+    /// a non-dir blob backend the threshold is ignored (a later slice wires S3 log-offload).
+    File {
+        dir: String,
+        #[serde(default)]
+        offload_threshold: Option<usize>,
+    },
     /// DynamoDB-backed durable log in `table` (region from the ambient AWS env, like the Bedrock creds).
     /// The distributed prod target the operator flagged.
     Dynamo { table: String },
@@ -661,7 +670,7 @@ impl DaemonConfig {
     /// runtime, not configured here.)
     fn validate(&self) -> Result<(), ConfigError> {
         match &self.log {
-            LogConfig::File { dir } if dir.trim().is_empty() => {
+            LogConfig::File { dir, .. } if dir.trim().is_empty() => {
                 return Err(ConfigError(
                     "[log] backend=file needs a non-empty dir".into(),
                 ));
@@ -1269,7 +1278,33 @@ mod tests {
         assert_eq!(
             cfg.log,
             LogConfig::File {
-                dir: "/var/lib/cdz/log".into()
+                dir: "/var/lib/cdz/log".into(),
+                offload_threshold: None,
+            }
+        );
+    }
+
+    #[test]
+    fn a_file_log_backend_parses_its_offload_threshold() {
+        // GAP-4 D1: the optional body-offload threshold parses from the snake_case `offload_threshold` key.
+        // (The enum's rename_all = "kebab-case" renames the variant TAG values like backend = "file", NOT the
+        // struct-variant fields — those keep their snake_case Rust names in TOML, matching every other
+        // multi-word field here: report_interval_secs, max_attempts, scope_name.) Absent = None (covered by
+        // the sibling test above); present = Some(N).
+        let cfg = DaemonConfig::from_toml_str(
+            r#"
+            [log]
+            backend = "file"
+            dir = "/var/lib/cdz/log"
+            offload_threshold = 4096
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.log,
+            LogConfig::File {
+                dir: "/var/lib/cdz/log".into(),
+                offload_threshold: Some(4096),
             }
         );
     }

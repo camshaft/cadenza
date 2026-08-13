@@ -604,12 +604,52 @@ pub trait LogSinkBuilder {
 /// root. The deployed daemon installs this when the log config selects a file backend.
 pub struct FileLogSinkBuilder {
     root: std::path::PathBuf,
+    /// GAP-4 D1 log-body OFFLOAD (opt-in): when `Some((blob_dir, threshold))`, a persisted event body larger
+    /// than `threshold` is offloaded to a content-addressed [`DiskBlobStore`] rooted at `blob_dir` (a tiny
+    /// `(blob-ptr)` frame replaces the body in the log), and boot-recovery rehydrates it. `None` = pre-D1
+    /// behavior (bodies stay inline). The offload store is a SEPARATE handle over the SAME `[blob]` root the
+    /// effect-blob path uses — one physical content-addressed store, so a blob-ptr derefs the same CAS on
+    /// replay (v-agent-harness D1: `put` is `&mut self`, so each consumer owns its handle over one store, not
+    /// one shared object). It is the RAW backing `DiskBlobStore`, NOT the read-cache wrapper: a log-body
+    /// offload put must be as durable as the log frame that points at it — `recover_rehydrated` treats an
+    /// absent CAS body as a HARD io error (data loss), so the put must write-through, never sit in a cache.
+    offload: Option<(std::path::PathBuf, usize)>,
 }
 
 impl FileLogSinkBuilder {
-    /// Root the per-session logs at `root` (created on first open by `LogStore::open`).
+    /// Root the per-session logs at `root` (created on first open by `LogStore::open`). No body offload.
     pub fn new(root: impl Into<std::path::PathBuf>) -> Self {
-        FileLogSinkBuilder { root: root.into() }
+        FileLogSinkBuilder {
+            root: root.into(),
+            offload: None,
+        }
+    }
+
+    /// Enable GAP-4 D1 log-body offload: bodies over `threshold` bytes offload to a content-addressed
+    /// [`DiskBlobStore`] rooted at `blob_dir` (the SAME `[blob]` dir the effect-blob path uses — one physical
+    /// CAS). Recovery rehydrates. The daemon calls this when `[log].backend = file` AND `[blob].backend = dir`
+    /// AND `[log].offload_threshold` is set (or defaults to the effect-blob threshold).
+    pub fn with_offload(
+        mut self,
+        blob_dir: impl Into<std::path::PathBuf>,
+        threshold: usize,
+    ) -> Self {
+        self.offload = Some((blob_dir.into(), threshold));
+        self
+    }
+
+    /// Open a FRESH raw `DiskBlobStore` over the configured offload dir — a separate handle over the same
+    /// physical CAS (`put` is `&mut self`, so each `build`/`recover` owns its handle). Raw backing, no read
+    /// cache: an offloaded log body must write-through to be as durable as the log frame pointing at it.
+    fn open_offload_blob(
+        blob_dir: &std::path::Path,
+    ) -> Result<cdz_kernel::blob::DiskBlobStore, String> {
+        cdz_kernel::blob::DiskBlobStore::open(blob_dir).map_err(|e| {
+            format!(
+                "could not open log-offload blob store {}: {e}",
+                blob_dir.display()
+            )
+        })
     }
 
     /// The per-session log path for `id`: `<root>/<id-hex>.log`. The id is a genesis [`Hash`] rendered as hex
@@ -634,6 +674,16 @@ impl LogSinkBuilder for FileLogSinkBuilder {
         let path = self.log_path(id);
         let store = cdz_kernel::log_store::LogStore::open(&path)
             .map_err(|e| format!("could not open durable log {}: {e}", path.display()))?;
+        // GAP-4 D1: attach body-offload when configured — a fresh raw DiskBlobStore handle over the shared
+        // `[blob]` CAS root (own handle per build, `put` is `&mut self`; raw backing for write-through
+        // durability, not the read cache).
+        let store = match &self.offload {
+            Some((blob_dir, threshold)) => {
+                let blob = Self::open_offload_blob(blob_dir)?;
+                store.with_offload(Box::new(blob), *threshold)
+            }
+            None => store,
+        };
         Ok(Some(Box::new(store)))
     }
 
@@ -649,9 +699,21 @@ impl LogSinkBuilder for FileLogSinkBuilder {
         if !path.exists() {
             return Ok(None);
         }
-        cdz_kernel::log_store::LogStore::recover(&path)
-            .map(Some)
-            .map_err(|e| format!("could not recover durable log {}: {e}", path.display()))
+        // GAP-4 D1: rehydrate offloaded bodies on recovery when offload is configured — a `(blob-ptr)` frame
+        // derefs its body from the same CAS root (`recover_rehydrated` takes `&blob`, get-only, so a borrow of
+        // a fresh raw handle suffices). Without offload, the plain sync `recover` (no blob) is the hot path.
+        match &self.offload {
+            Some((blob_dir, _threshold)) => {
+                let blob = Self::open_offload_blob(blob_dir)?;
+                cdz_kernel::log_store::LogStore::recover_rehydrated(&path, &blob)
+                    .await
+                    .map(Some)
+                    .map_err(|e| format!("could not recover durable log {}: {e}", path.display()))
+            }
+            None => cdz_kernel::log_store::LogStore::recover(&path)
+                .map(Some)
+                .map_err(|e| format!("could not recover durable log {}: {e}", path.display())),
+        }
     }
 }
 
@@ -1250,6 +1312,95 @@ mod tests {
             "the recovered event is the genesis we appended"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn file_log_sink_builder_offload_round_trips_byte_identical() {
+        // GAP-4 D1 slice-1 PIN: with body-offload configured, an OVER-threshold event body is offloaded to the
+        // content-addressed blob store (a tiny (blob-ptr) frame replaces it in the log), and recover()
+        // REHYDRATES it byte-identical — same event as appended. A SUB-threshold body stays inline. Proves the
+        // FileLogSinkBuilder with_offload + recover_rehydrated wiring end-to-end through the LogSinkBuilder
+        // trait the daemon uses (the offload store is a raw DiskBlobStore over the same [blob] root).
+        use cdz_kernel::effect::Payload;
+        use cdz_kernel::event::{ContentType, Event, EventBody};
+        use cdz_kernel::hash::Hash;
+        use cdz_kernel::log_store::RecoveryKind;
+
+        let root = crate::testutil::unique_temp_dir("filelog-offload");
+        let blob_dir = crate::testutil::unique_temp_dir("filelog-offload-cas");
+        // Threshold 64 bytes: the big Inbound body offloads, the small one stays inline.
+        let builder = FileLogSinkBuilder::new(&root).with_offload(&blob_dir, 64);
+        let id = SessionId::new(Hash::of(b"sess-offload"));
+
+        let genesis = Event {
+            seq: 0,
+            cause: None,
+            body: EventBody::Genesis {
+                reducer: Hash::of(b"reducer"),
+                spawn_nonce: Hash::of(b"nonce"),
+                parent: None,
+            },
+        };
+        // seq 1: a BIG body (256 bytes > 64 threshold) → offloaded to the CAS.
+        let big_payload = vec![0xabu8; 256];
+        let big = Event {
+            seq: 1,
+            cause: None,
+            body: EventBody::Inbound {
+                content_type: ContentType {
+                    family: "message".into(),
+                    version: 1,
+                },
+                payload: Payload::Inline(big_payload.clone().into()),
+            },
+        };
+        // seq 2: a SMALL body (< 64) → stays inline.
+        let small = Event {
+            seq: 2,
+            cause: None,
+            body: EventBody::Inbound {
+                content_type: ContentType {
+                    family: "message".into(),
+                    version: 1,
+                },
+                payload: Payload::Inline(b"small".to_vec().into()),
+            },
+        };
+        {
+            let mut sink = builder
+                .build(&id)
+                .await
+                .expect("build ok")
+                .expect("file backend yields a sink");
+            sink.append(&genesis).await.expect("append genesis");
+            sink.append(&big).await.expect("append big");
+            sink.append(&small).await.expect("append small");
+        } // drop → flush/close before recovery reads it.
+
+        // The over-threshold body was actually OFFLOADED: the CAS dir holds at least one blob (non-vacuous —
+        // if nothing offloaded, the round-trip below would pass trivially with everything inline).
+        let cas_entries = std::fs::read_dir(&blob_dir).map(|d| d.count()).unwrap_or(0);
+        assert!(
+            cas_entries >= 1,
+            "the over-threshold body was offloaded to the CAS (got {cas_entries} blob(s))"
+        );
+
+        // Recovery REHYDRATES: all three events come back byte-identical, including the offloaded big body.
+        let recovered = builder
+            .recover(&id)
+            .await
+            .expect("recover ok")
+            .expect("an existing offloaded log recovers to Some");
+        assert_eq!(
+            recovered.kind,
+            RecoveryKind::Clean,
+            "a whole offloaded+rehydrated log is Clean"
+        );
+        assert_eq!(recovered.events, vec![genesis, big, small],
+            "the offloaded log recovers BYTE-IDENTICAL after rehydrate (the big body derefed from the CAS)");
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&blob_dir);
     }
 
     #[tokio::test]

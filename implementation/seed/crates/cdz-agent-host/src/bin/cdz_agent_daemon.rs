@@ -164,8 +164,26 @@ async fn main() -> std::process::ExitCode {
         // A per-session durable-log sink builder when [log].backend = file (each session's log →
         // <dir>/<id>.log); None for the in-memory log backend. Applied to the factory below.
         use cdz_agent_host::{FileLogSinkBuilder, LogConfig, LogSinkBuilder};
+        // GAP-4 D1: a File log builder wired for body-offload when [log].offload_threshold is set AND the
+        // [blob] backend is `dir` (the log-offload store reuses that same content-addressed root — ONE CAS, so
+        // an offloaded body derefs the same store the effect-blob path writes). A non-dir blob backend or an
+        // absent threshold = no offload (a later slice wires S3 log-offload). Built fresh at both the append
+        // site + the recovery-reader site (each owns its handle; `put` is `&mut self`).
+        let file_log_builder =
+            |dir: &str, offload_threshold: Option<usize>| -> FileLogSinkBuilder {
+                let b = FileLogSinkBuilder::new(dir);
+                match (offload_threshold, &config.blob) {
+                    (Some(threshold), BlobConfig::Dir { dir: blob_dir }) => {
+                        b.with_offload(blob_dir, threshold)
+                    }
+                    _ => b,
+                }
+            };
         let log_sink: Option<Box<dyn LogSinkBuilder>> = match &config.log {
-            LogConfig::File { dir } => Some(Box::new(FileLogSinkBuilder::new(dir))),
+            LogConfig::File {
+                dir,
+                offload_threshold,
+            } => Some(Box::new(file_log_builder(dir, *offload_threshold))),
             // DynamoDB-backed durable session log (I2, behind `live-aws-storage`). Loads the ambient AWS
             // config ONCE here (boot path). A build WITHOUT the feature reports a clean "not compiled in"
             // boot error rather than silently degrading to in-memory (config validates regardless of feature).
@@ -190,7 +208,10 @@ async fn main() -> std::process::ExitCode {
         // a client, a file builder a path), so building a second is fine on the boot path. `None` for the
         // in-memory backend (nothing persisted → nothing to recover).
         let recovery_log_reader: Option<Box<dyn LogSinkBuilder>> = match &config.log {
-            LogConfig::File { dir } => Some(Box::new(FileLogSinkBuilder::new(dir))),
+            LogConfig::File {
+                dir,
+                offload_threshold,
+            } => Some(Box::new(file_log_builder(dir, *offload_threshold))),
             #[cfg(feature = "live-aws-storage")]
             LogConfig::Dynamo { table } => Some(Box::new(
                 cdz_agent_host::DynamoLogSinkBuilder::new(table.clone()).await,
