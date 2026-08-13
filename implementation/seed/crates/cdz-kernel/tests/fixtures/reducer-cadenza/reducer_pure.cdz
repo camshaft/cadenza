@@ -65,27 +65,18 @@ def apply(
     // A payload-free event requests no effects — the fold is empty.
     | None() => []
 
-// A typed `None` for the outcome field. A bare `None()` inside a record literal does NOT receive its
-// element type from the expected record field (the checker infers the literal bottom-up, leaving the
-// sum-typed field an unsolved `Option(_)` that then fails to match `Option(Outcome)`); a return-annotated
-// def gives the `None()` its type directly. The production fold never constructs an event, so this is only
-// needed by the @tests below.
-def no-outcome() -> Option(Outcome) = None()
-
 // Standalone behavioral coverage (`cdz test`, INDEPENDENT of the kernel host adapter; plain `cdz compile`
 // ignores @test). The real bytes round-trip proof is the cdz-agent-host e2e (env PURE_GENESIS_REDUCER
 // _COMPONENT, driving call_apply on wasmtime); these @tests pin the pure fold semantics on the seed VM.
 @test
 def pure_payloaded_event_folds_to_one_emit() =
-  // Inline the Event literal as a DIRECT arg so apply's param type flows in (bidirectional): a bare `None()`
-  // for the sum-typed `outcome` (and `resumes`) gets its type from the expected field, which a `let`-bound
-  // literal does not (it infers bottom-up, leaving an unsolved `Option(_)`).
-  match List.at(apply({
+  let evt = {
     content-type = { family = "message", version = 1 },
     payload = Some(String.to-bytes("hello")),
     resumes = None(),
-    outcome = no-outcome(),
-  }), 0) with
+    outcome = None(),
+  } in
+  match List.at(apply(evt), 0) with
     | Some(eff) =>
       (if eff.kind == "emit" then
          (match eff.payload with
@@ -96,13 +87,13 @@ def pure_payloaded_event_folds_to_one_emit() =
 
 @test
 def pure_payloadless_event_folds_to_nothing() =
-  // Inline (see the sibling test) so the bare `None()` fields get their type from apply's expected param.
-  if List.len(apply({
+  let evt = {
     content-type = { family = "message", version = 1 },
     payload = None(),
     resumes = None(),
-    outcome = no-outcome(),
-  })) == 0 then unit
+    outcome = None(),
+  } in
+  if List.len(apply(evt)) == 0 then unit
   else trap("a payload-free event must request no effects")
 
 export { apply }
