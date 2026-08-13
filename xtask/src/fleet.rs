@@ -3282,13 +3282,57 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
     // `behind` (0 when current / git can't answer) is also recorded in the health log as
     // `self_stale_behind` — the DURABLE twin of this stderr warning, so a stale watchdog is greppable
     // after the terminal scrolls (the recurrence-detection the dead-cron saga lacked).
-    let self_stale_behind = fleet
-        .src
-        .parent()
+    let built_from = fleet.src.parent().map(Path::to_path_buf);
+    let self_stale_behind = built_from
+        .as_deref()
         .and_then(xtask_commits_behind_trunk)
         .unwrap_or(0);
     if let Some(warning) = stale_watchdog_warning(self_stale_behind) {
         eprintln!("  ! {warning}");
+        // ACTIVE escalation, not just the pane warning above. The self-heal brain (this watchdog) is the
+        // one loop nobody else supervises — a stale binary silently runs OLD self-heal logic (the dead-cron
+        // saga's root cause), and the stderr line only helps if a human happens to be watching the pane. So
+        // ALSO put it in the concierge's inbox (which the concierge drains), rate-limited to one note per
+        // grace window via the sat-notify marker family (distinct `watchdog.self-stale` key) so a persistently
+        // stale worktree generates one note per ~30min, not one every sweep. Skip under --dry-run (preview
+        // must not send mail). This is the durable answer to the concierge's 2026-08-13 FYI: the guard fired
+        // but only as passive stderr — an unattended stale watchdog now self-reports to a drained inbox.
+        let key = "watchdog.self-stale";
+        let notified_recently =
+            sat_notify_age_secs(fleet, key, now).is_some_and(|s| s < SAT_NOTIFY_GRACE);
+        if !dry_run && !notified_recently {
+            let where_built = built_from
+                .as_deref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "<unknown worktree>".to_string());
+            deliver(
+                fleet,
+                &Message {
+                    from: "watchdog".to_string(),
+                    to: "concierge".to_string(),
+                    kind: "note".to_string(),
+                    subject: format!(
+                        "self-stale watchdog: its xtask source is {self_stale_behind} commit(s) behind trunk — sync+rebuild the watchdog worktree"
+                    ),
+                    body: format!(
+                        "The running watchdog binary was built from {where_built}, whose `xtask` source is \
+                         {self_stale_behind} commit(s) BEHIND trunk. Its self-heal logic (dead-cron escalation, \
+                         drain-stall nudges, context-wedge restarts, git-hook self-heal) may silently be OLD — a \
+                         rebuild whose mtime is newer than a fix commit does NOT prove the source contained the fix \
+                         (cargo compiles the checked-out source, stale or not). Fix: `cargo xtask fleet sync` that \
+                         worktree onto trunk + rebuild xtask, then the watchdog runs current self-heal. Report-only \
+                         + rate-limited (one note per ~30min until it clears)."
+                    ),
+                    seq: next_seq(),
+                    r#ref: String::new(),
+                    in_reply_to: String::new(),
+                },
+            );
+            stamp_sat_notify(fleet, key);
+            println!(
+                "  + escalated self-stale watchdog ({self_stale_behind} behind, built from {where_built}) to concierge (rate-limited)"
+            );
+        }
     }
 
     // Periodic git-hook self-heal (quiet). `install_git_hooks` only runs on `fleet up` / the explicit
