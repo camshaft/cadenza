@@ -1566,6 +1566,107 @@ mod tests {
         );
     }
 
+    // Pin the CANONICAL val_to_ast value-form of the §err-reply effect-result OUTCOME — the SHARED CONTRACT
+    // the err-reply co-land hangs on. Today event_to_guest_inputs flattens EventBody::EffectResult via
+    // effect_outcome_bytes, DROPPING the Ok/Err/TimedOut discriminant (the guest can't tell a successful
+    // reply from an error). The seam surfaces a first-class `outcome` child on the reducer Event, a value-form
+    // faithfully mirroring the kernel EffectOutcome: `outcome: option<Ok(bytes) | Err{message,retryable} |
+    // TimedOut>` — None for non-EffectResult events, Some(view) for an effect result. The HANDLER's reply
+    // (v-agent-harness-host's ReplyExecutor decodes it from the reply payload) uses the Ok/Err subset
+    // (no TimedOut — kernel-injected only). Pinned so any drift in the sum-ctor heads (must be NAME leaves —
+    // value-decode reads a case by name-head, a Str head decodes to NULL) or the Err record field order
+    // (SORTED by name: message < retryable) is caught. Names are the err-reply contract vocabulary.
+    #[test]
+    fn val_to_ast_pins_the_err_reply_outcome_value_form() {
+        fn kids(a: &Arenas, id: StructId) -> Vec<StructId> {
+            match a.get(id) {
+                Struct::List(k) => k.to_vec(),
+                Struct::Atom(_) => panic!("expected a list at {id:?}"),
+            }
+        }
+        let bytes = |s: &[u8]| Val::List(s.iter().copied().map(Val::U8).collect());
+
+        // (Some (Ok <response-bytes>)) — a successful reply carrying the response.
+        let ok = Val::Option(Some(Box::new(Val::Variant(
+            "Ok".into(),
+            Some(Box::new(bytes(b"reply-ok"))),
+        ))));
+        let a = decode(&val_to_ast(&ok).expect("val_to_ast"));
+        let some = kids(&a, a.root);
+        assert_eq!(some.len(), 2, "outcome option is a 2-list (Some payload)");
+        assert_eq!(a.as_name(some[0]), Some("Some"), "outcome option head");
+        assert!(
+            matches!(leaf_at(&a, some[0]), Leaf::Name(_)),
+            "Some is a NAME leaf"
+        );
+        let ok_ctor = kids(&a, some[1]);
+        assert_eq!(
+            a.as_name(ok_ctor[0]),
+            Some("Ok"),
+            "the outcome view is the Ok ctor"
+        );
+        assert!(
+            matches!(leaf_at(&a, ok_ctor[0]), Leaf::Name(_)),
+            "outcome ctor head is a NAME leaf (value-decode reads a case by name-head)"
+        );
+        assert_eq!(
+            leaf_at(&a, ok_ctor[1]),
+            &Leaf::Bytes(b"reply-ok".to_vec().into()),
+            "Ok carries the response bytes"
+        );
+
+        // (Some (Err (record (= message <bytes>) (= retryable <bool>)))) — a failed reply; the Err arm carries
+        // a record with the message + the typed retryability (retryable Bool: true=Retryable, false=Permanent).
+        let err = Val::Option(Some(Box::new(Val::Variant(
+            "Err".into(),
+            Some(Box::new(Val::Record(vec![
+                ("message".into(), bytes(b"boom")),
+                ("retryable".into(), Val::Bool(false)),
+            ]))),
+        ))));
+        let a = decode(&val_to_ast(&err).expect("val_to_ast"));
+        let err_ctor = kids(&a, kids(&a, a.root)[1]);
+        assert_eq!(a.as_name(err_ctor[0]), Some("Err"), "the Err ctor");
+        let err_rec = kids(&a, err_ctor[1]);
+        assert_eq!(
+            a.as_name(err_rec[0]),
+            Some("record"),
+            "Err carries a record"
+        );
+        let names: Vec<String> = err_rec[1..]
+            .iter()
+            .map(|id| {
+                let f = kids(&a, *id);
+                assert_eq!(a.as_name(f[0]), Some("="), "field head is `=`");
+                a.as_name(f[1]).expect("field name").to_string()
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec!["message", "retryable"],
+            "Err record fields sorted by name"
+        );
+
+        // (Some (TimedOut unit)) — a timeout (caller-side only; the kernel injects it, a handler never replies it).
+        let timed_out = Val::Option(Some(Box::new(Val::Variant("TimedOut".into(), None))));
+        let a = decode(&val_to_ast(&timed_out).expect("val_to_ast"));
+        let to_ctor = kids(&a, kids(&a, a.root)[1]);
+        assert_eq!(
+            a.as_name(to_ctor[0]),
+            Some("TimedOut"),
+            "the TimedOut ctor (nullary)"
+        );
+
+        // (None unit) — a non-effect-result event (Inbound/timer) carries no outcome.
+        let none = Val::Option(None);
+        let a = decode(&val_to_ast(&none).expect("val_to_ast"));
+        assert_eq!(
+            a.as_name(kids(&a, a.root)[0]),
+            Some("None"),
+            "absent outcome is (None unit)"
+        );
+    }
+
     // ast_to_val decodes UNTRUSTED arg bytes, so a record must EXACTLY match the WIT shape (github-liaison
     // #2078): an EXTRA field beyond the declared set, or a DUPLICATE field name, is rejected — not silently
     // accepted. Build the malformed record AST by hand (the LEGACY str-head ("record" (name val)…) 2-list
