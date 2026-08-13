@@ -304,9 +304,16 @@ impl Fleet {
             Err(_) => Roster::default(),
         }
     }
-    /// Copy the tracked role bodies + contract + launcher into the runtime dir, so `window.sh` has a
-    /// stable hub-anchored path and every window reads a consistent snapshot. Mirrors `xtask setup`'s
-    /// tracked→.claude materialization. Idempotent.
+    /// Copy the tracked launcher + role bodies + contract into the hub runtime dir. Idempotent; mirrors
+    /// `xtask setup`'s tracked→.claude materialization.
+    ///
+    /// WHAT ACTUALLY READS WHAT (do not confuse these — a stale belief here bred re-investigation): only
+    /// `window.sh` is READ from the hub copy — tmux launches `<hub>/.claude/fleet/window.sh`
+    /// (`fleet.window_sh()`). The ROLE BODIES (`loops/<role>.md`) + CONTRACT (`AGENTS-fleet.md`) are copied
+    /// here too, but at RUNTIME an agent reads them from its OWN WORKTREE (`$WORKTREE/fleet/...`, so the body
+    /// is git-synced with the code it works on — see window.sh's `SRC=$WORKTREE/fleet`), and `fleet add`
+    /// validates a role against the tracked source (`self.src`), NOT this hub copy. So the hub `loops/` +
+    /// `AGENTS-fleet.md` are a HUMAN-reference snapshot (the paths docs point at), not what windows read.
     fn materialize_source(&self) {
         let loops_dst = self.root.join("loops");
         std::fs::create_dir_all(&loops_dst).ok();
@@ -1700,8 +1707,9 @@ fn add(
     effort: String,
     seed: Option<PathBuf>,
 ) {
-    // Materialize the tracked source so a freshly-added agent's role body is present in the runtime
-    // dir window.sh reads from.
+    // Materialize the tracked source so the hub launcher (window.sh) + the human-reference role-body/
+    // contract snapshot are current (an agent reads its role body from its own worktree at runtime, not
+    // this hub copy — see materialize_source's doc).
     fleet.materialize_source();
     // Validate the role has a body (in the tracked source), so a typo doesn't silently create an
     // agent that can't launch.
