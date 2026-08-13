@@ -4772,6 +4772,7 @@ pass	breaker specsubst: GEN of refl then SPEC substitutes the bound var througho
 pass	bs1 a BOOL toggle state — four draws alternate true/false from an input-dependent seed
 pass	bs2 a LATCH — once an op arg is false, the state stays false and every later check answers false
 pass	bt1 a BOOL handler state TOGGLES per dispatch — three draws read the alternating flag, seeded by input parity
+pass	bud1 a BUDGET-GATED accumulator — two spends consume the budget, the third answers the negated total from exhaustion, a refill re-arms exactly one more spend, the final read exposes the accumulated total
 pass	bw1 BIT operations over draws — mask, set-bit, and a draw-driven shift count all read the live thread
 pass	bw2 an XOR accumulator folds four draws through a recursion — bit-mixing order-sensitive under the stride
 pass	bw3 shift-up then shift-back round trip over MASKED draws — both the value and the shift count come from the thread
@@ -5608,6 +5609,7 @@ pass	nm1 NEGATIVE remainder is TRUNCATED (sign of the dividend) uniformly — ba
 pass	nm2 NEGATIVE division TRUNCATES toward zero uniformly — bare and through a handler arm
 pass	nm3 the only overflowing DIVISION (Int64.min / -1) is a CONSTANT-fold reject — the runtime-divisor form runs for every other divisor
 pass	nm4 Int64.min divided by RUNTIME divisors — every non-(-1) divisor has an exact Int64 quotient
+pass	nmm1 a TWO-LEVEL Map state — group puts lookup-modify-reinsert the inner CHAMP, answers pack both level sizes, reads route through both levels with a miss sentinel
 pass	noo1 an op whose result is NESTED Option (Option Int64) — the arm classifies the state into None / Some None / Some (Some s), the body's nested match distinguishes all three in one run
 pass	np1 a NESTED record value built from one draw — projections through two levels read the same drawn base
 pass	nrs1 a ROVER state — nested record {pos:{x,y}, steps}; each move applies SIGNED deltas to both inner fields via Record.with and answers the manhattan distance
@@ -6694,6 +6696,7 @@ pass	unary negation of an arbitrary-precision integer
 pass	unary negation of an exact rational negates the numerator
 pass	unary negation of an in-range unusual-width value computes at the declared width
 pass	unary negation of an unusual-width minimum overflows its declared range and is rejected CDZ0304
+pass	und1 an IDEMPOTENT-UNDO counter — the tuple state carries (value,last-delta); undo reverses the last delta exactly once and answers it, the second undo answers zero and no-ops
 pass	under-applying a unary constructor is a type error, not a fabricated unit payload
 pass	unequal-depth payload paths bind distinctly
 pass	union cardinality with a runtime-element operand

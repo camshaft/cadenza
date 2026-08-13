@@ -9334,3 +9334,87 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 53055 Int64))
   (call   main (: 40 Int64)) (output (: 90092 Int64)))
+
+; --- breaker batch 253: idempotent-undo counter, two-level Map state, budget-gated accumulator ---
+(case "und1 an IDEMPOTENT-UNDO counter — the tuple state carries (value,last-delta); undo reverses the last delta exactly once and answers it, the second undo answers zero and no-ops"
+  (input  (do
+            (effect S
+              (op apply (-> Int64 Int64))
+              (op undo (-> Int64)))
+            (def (main (: n Int64))
+              (handle S (tuple n 0)
+                ((apply (d) st
+                  (match st
+                    ((tuple v _l) (resume (+ v d) (tuple (+ v d) d)))))
+                 (undo () st
+                  (match st
+                    ((tuple v l)
+                      (if (= l 0)
+                          (resume 0 st)
+                          (resume l (tuple (- v l) 0)))))))
+                (let ((a (S.apply 5)))
+                  (let ((b (S.apply -2)))
+                    (let ((c (S.undo)))
+                      (let ((d (S.undo)))
+                        (let ((e (S.apply 7)))
+                          (+ (* 100 (+ (* 10 (+ (* 100 (+ (* 100 a) (+ b 10))) (+ c 10))) (+ d 1))) e))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 81608115 Int64))
+  (call   main (: 20 Int64)) (output (: 253308132 Int64)))
+
+(case "nmm1 a TWO-LEVEL Map state — group puts lookup-modify-reinsert the inner CHAMP, answers pack both level sizes, reads route through both levels with a miss sentinel"
+  (input  (do
+            (effect S
+              (op put (-> Int64 Int64 Int64 Int64))
+              (op get (-> Int64 Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S (: Map.empty (Map Int64 (Map Int64 Int64)))
+                ((put (g k v) m
+                  (let ((inner (match (Map.lookup m g) ((Some i) i) ((None u) (: Map.empty (Map Int64 Int64))))))
+                    (let ((i2 (Map.insert inner k v)))
+                      (let ((m2 (Map.insert m g i2)))
+                        (resume (+ (* 10 (Map.len m2)) (Map.len i2)) m2)))))
+                 (get (g k) m
+                  (resume (match (Map.lookup m g)
+                            ((Some i) (match (Map.lookup i k) ((Some v) v) ((None u) -1)))
+                            ((None u) -1))
+                          m)))
+                (let ((a (S.put n 1 n)))
+                  (let ((b (S.put n 2 9)))
+                    (let ((c (S.put (+ n 1) 1 4)))
+                      (let ((d (S.get n 1)))
+                        (let ((e (S.get (+ n 1) 9)))
+                          (+ (* 10 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) (+ e 2)))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 111221031 Int64))
+  (call   main (: 0 Int64)) (output (: 111221001 Int64)))
+
+(case "bud1 a BUDGET-GATED accumulator — two spends consume the budget, the third answers the negated total from exhaustion, a refill re-arms exactly one more spend, the final read exposes the accumulated total"
+  (input  (do
+            (effect S
+              (op spend (-> Int64 Int64))
+              (op refill (-> Int64 Int64))
+              (op total (-> Int64)))
+            (def (main (: n Int64))
+              (handle S (tuple 2 n)
+                ((spend (v) st
+                  (match st
+                    ((tuple b t)
+                      (if (> b 0)
+                          (resume (- b 1) (tuple (- b 1) (+ t v)))
+                          (resume (- 0 t) st)))))
+                 (refill (k) st
+                  (match st
+                    ((tuple b t) (resume (+ b k) (tuple (+ b k) t)))))
+                 (total () st
+                  (match st ((tuple _b t) (resume t st)))))
+                (let ((a (S.spend 5)))
+                  (let ((b (S.spend 7)))
+                    (let ((c (S.spend 9)))
+                      (let ((d (S.refill 1)))
+                        (let ((e (S.spend 9)))
+                          (let ((f (S.total)))
+                            (+ (* 100 (+ (* 10 (+ (* 10 (+ (* 100 (+ (* 10 a) b)) (+ c 50))) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 10351024 Int64))
+  (call   main (: 30 Int64)) (output (: 10081051 Int64)))
