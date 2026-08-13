@@ -13,7 +13,7 @@
 //! concierge-ruled Option A) to run `apply` against, and wiring `apply` into the kernel's fold loop.
 //! The in-process Rust [`crate::reducer::Reducer`] trait remains the interim reducer path meanwhile.
 
-use crate::event::{EffectOutcome, Event, EventBody};
+use crate::event::{EffectOutcome, Event, EventBody, Retryability};
 use crate::hash::Hash;
 use crate::kv::Kv;
 
@@ -2111,9 +2111,128 @@ fn effect_outcome_bytes(o: &EffectOutcome) -> Option<Vec<u8>> {
     }
 }
 
+/// The guest-facing VALUE-FORM VIEW of an effect outcome — the discriminated `Ok(bytes) | Err{message,
+/// retryable} | TimedOut` the err-reply co-land surfaces as a first-class `outcome` child on the reducer
+/// Event, so the guest can tell a successful reply from a failure (which today's [`effect_outcome_bytes`]
+/// flattens away — it hands the guest raw bytes with the Ok/Err/TimedOut discriminant DROPPED). This is the
+/// PRODUCTION mapping from the kernel [`EffectOutcome`] to the exact value-form pinned by
+/// `ast_marshal::tests::val_to_ast_pins_the_err_reply_outcome_value_form`:
+/// - `Ok(payload)` → `Ok(bytes)` (an empty `Ok(None)` success renders `Ok []`, mirroring `effect_outcome_bytes`);
+/// - `Err { message, retryability }` → `Err(record { message: bytes, retryable: bool })`, where `retryable`
+///   is the TYPED retryability (`Retryable` = true, `Permanent` = false — the reducer folds on the bool, not
+///   a parsed token); the record fields are message + retryable (val_to_ast sorts by name: message < retryable);
+/// - `TimedOut` → the nullary `TimedOut` ctor.
+///
+/// [`build_event_document`](crate::ast_marshal::build_event_document) wraps this in a `Some(..)` for an
+/// effect-result event and passes `None` for every other event kind (Inbound/timer/denial carry no outcome).
+/// Staged as the kernel half of the co-land (host `ReplyExecutor` decodes the reply's Ok/Err subset — no
+/// `TimedOut`, which is kernel-injected only); wired into `build_event_document` when the guest Event type
+/// and the reducer world grow the `outcome` field in lockstep (a strict-record value-form flag-day).
+#[allow(dead_code)] // wired by the err-reply co-land; the value-form it builds is pinned by the ast_marshal test above.
+fn effect_outcome_view(o: &EffectOutcome) -> wasmtime::component::Val {
+    use wasmtime::component::Val;
+    let bytes = |b: &[u8]| Val::List(b.iter().copied().map(Val::U8).collect());
+    match o {
+        EffectOutcome::Ok(p) => Val::Variant(
+            "Ok".into(),
+            Some(Box::new(bytes(
+                &p.as_ref().map(payload_bytes).unwrap_or_default(),
+            ))),
+        ),
+        EffectOutcome::Err {
+            message,
+            retryability,
+        } => Val::Variant(
+            "Err".into(),
+            Some(Box::new(Val::Record(vec![
+                ("message".into(), bytes(message.as_bytes())),
+                (
+                    "retryable".into(),
+                    Val::Bool(matches!(retryability, Retryability::Retryable)),
+                ),
+            ]))),
+        ),
+        EffectOutcome::TimedOut => Val::Variant("TimedOut".into(), None),
+        // Deferred is never logged (intercepted pre-record), so it never becomes a folded EffectResult whose
+        // outcome we'd view — mirror outcome_form's durable-codec contract and treat it as unreachable.
+        EffectOutcome::Deferred => {
+            unreachable!(
+                "EffectOutcome::Deferred is never folded — no EffectResult, no outcome view"
+            )
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The PRODUCTION mapping `effect_outcome_view` builds the err-reply outcome view from a real kernel
+    // `EffectOutcome`, byte-identical (through the canonical `val_to_ast` codec) to the value-form pinned by
+    // `ast_marshal::tests::val_to_ast_pins_the_err_reply_outcome_value_form`. That test pins the SHAPE from
+    // hand-built Vals; this pins the MAPPING — the parts a hand-built Val can't witness: the typed
+    // Retryability collapses to the `retryable` bool (Retryable=true, Permanent=false), the Ok Payload's
+    // bytes are extracted, and an empty `Ok(None)` success renders `Ok []` (not a dropped outcome). Any drift
+    // in the ctor heads, the Err field set/order, or the retryability polarity is caught here.
+    #[test]
+    fn effect_outcome_view_maps_each_variant_to_the_pinned_value_form() {
+        use crate::ast_marshal::val_to_ast;
+        use crate::effect::Payload;
+        use wasmtime::component::Val;
+
+        let bytes = |b: &[u8]| Val::List(b.iter().copied().map(Val::U8).collect());
+        // The kernel view is the inner ctor; `build_event_document` wraps it in `Some(..)` for a result event.
+        let wrap = |o: &EffectOutcome| {
+            val_to_ast(&Val::Option(Some(Box::new(effect_outcome_view(o))))).expect("view marshals")
+        };
+        let expect =
+            |v: Val| val_to_ast(&Val::Option(Some(Box::new(v)))).expect("expected marshals");
+
+        // Ok(Some payload) → Ok(<payload bytes>).
+        assert_eq!(
+            wrap(&EffectOutcome::Ok(Some(Payload::Inline(
+                b"reply-ok".to_vec().into()
+            )))),
+            expect(Val::Variant(
+                "Ok".into(),
+                Some(Box::new(bytes(b"reply-ok")))
+            )),
+            "Ok carries the payload bytes"
+        );
+        // Ok(None) → Ok [] (a payload-less success is still a first-class Ok, not a dropped outcome).
+        assert_eq!(
+            wrap(&EffectOutcome::Ok(None)),
+            expect(Val::Variant("Ok".into(), Some(Box::new(bytes(b""))))),
+            "Ok(None) renders an empty-bytes Ok"
+        );
+        // Err Permanent → Err{message, retryable=false}.
+        let err_rec = |msg: &[u8], retryable: bool| {
+            Val::Variant(
+                "Err".into(),
+                Some(Box::new(Val::Record(vec![
+                    ("message".into(), bytes(msg)),
+                    ("retryable".into(), Val::Bool(retryable)),
+                ]))),
+            )
+        };
+        assert_eq!(
+            wrap(&EffectOutcome::err("boom")),
+            expect(err_rec(b"boom", false)),
+            "a Permanent Err maps retryable=false"
+        );
+        // Err Retryable → retryable=true (the typed retryability, not a parsed token).
+        assert_eq!(
+            wrap(&EffectOutcome::err_retryable("throttled")),
+            expect(err_rec(b"throttled", true)),
+            "a Retryable Err maps retryable=true"
+        );
+        // TimedOut → the nullary ctor.
+        assert_eq!(
+            wrap(&EffectOutcome::TimedOut),
+            expect(Val::Variant("TimedOut".into(), None)),
+            "TimedOut is the nullary ctor"
+        );
+    }
 
     // §directory-D5: subject_of surfaces the MEMBER VALUE of a group membership op (store/add|remove) as the
     // auth-request `subject`, so a wasm policy can express self-vs-other; every other effect (and a
