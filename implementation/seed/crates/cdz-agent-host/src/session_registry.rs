@@ -333,6 +333,72 @@ mod live {
             format!("corrupt session registry item: {what}"),
         )
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use aws_sdk_dynamodb::primitives::Blob;
+        use cdz_kernel::hash::Hash;
+        use std::collections::HashMap;
+
+        fn b(h: Hash) -> AttributeValue {
+            AttributeValue::B(Blob::new(h.as_bytes().to_vec()))
+        }
+
+        fn item(
+            session_id: AttributeValue,
+            reducer: AttributeValue,
+        ) -> HashMap<String, AttributeValue> {
+            let mut m = HashMap::new();
+            m.insert(ATTR_SESSION.to_string(), session_id);
+            m.insert(
+                ATTR_STATUS.to_string(),
+                AttributeValue::S("active".to_string()),
+            );
+            m.insert(ATTR_REDUCER.to_string(), reducer);
+            m.insert(
+                ATTR_UPDATED_MS.to_string(),
+                AttributeValue::N("123".to_string()),
+            );
+            m
+        }
+
+        #[test]
+        fn decode_record_reads_session_id_and_reducer_from_raw_binary_attrs() {
+            // session_id + reducer_hash ride as Dynamo BINARY (B) attributes (raw 32 bytes), reconstructed via
+            // Hash::from_bytes — NO hex, NO decode. Pins the raw-bytes-at-storage invariant (slice 3e).
+            let sid = Hash::of(b"session");
+            let red = Hash::of(b"reducer");
+            let rec = decode_record(&item(b(sid), b(red))).expect("a well-formed item decodes");
+            assert_eq!(
+                rec.session_id, sid,
+                "session_id round-trips from the B attr via from_bytes"
+            );
+            assert_eq!(
+                rec.reducer_hash, red,
+                "reducer_hash round-trips from the B attr"
+            );
+            assert_eq!(rec.status, SessionStatus::Active);
+            assert_eq!(rec.updated_ms, 123);
+        }
+
+        #[test]
+        fn decode_record_rejects_a_wrong_length_or_non_binary_session_id() {
+            let red = Hash::of(b"reducer");
+            // A wrong-length (31-byte) session-id B attr is corrupt, never silently coerced.
+            let short = AttributeValue::B(Blob::new(vec![0u8; 31]));
+            assert!(decode_record(&item(short, b(red)))
+                .unwrap_err()
+                .to_string()
+                .contains("session_id is not 32 bytes"));
+            // The pre-sweep hex STRING form is no longer accepted (the key is a B attr now).
+            let as_hex = AttributeValue::S(Hash::of(b"x").to_hex());
+            assert!(decode_record(&item(as_hex, b(red)))
+                .unwrap_err()
+                .to_string()
+                .contains("missing session_id"));
+        }
+    }
 }
 
 #[cfg(test)]
