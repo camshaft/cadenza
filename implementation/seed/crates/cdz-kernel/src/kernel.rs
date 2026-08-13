@@ -24,7 +24,7 @@
 
 use crate::authz::Authorize;
 use crate::effect::{EffectId, EffectKind, EffectRequest};
-use crate::event::{EffectOutcome, Event, EventBody};
+use crate::event::{CloseOutcome, EffectOutcome, Event, EventBody};
 use crate::executor::Executor;
 use crate::hash::Hash;
 use crate::kv::Kv;
@@ -144,11 +144,14 @@ pub struct Session {
     /// `Dispatched` frame appends; what [`already_seeded_capabilities`](Self::already_seeded_capabilities)
     /// returns — off THIS bit, not a `self.log` scan. Rebuilt on replay.
     seeded_capabilities: bool,
-    /// Whether this session has appended a `Closed` event (its normal-completion lifecycle flag), held
-    /// resident (log/state-decouple I3). Distinct from `Terminated` (the tip-body check `is_terminated`
-    /// serves). Set true when a `Closed` appends; what the `status_snapshot` `Closed` read uses — off THIS
-    /// bit, not a `self.log` scan. Rebuilt on replay.
-    closed: bool,
+    /// The session's self-close OUTCOME if it has appended a terminal `Closed` event (its normal-completion
+    /// lifecycle state), held resident (log/state-decouple I3). `None` = not closed; `Some(outcome)` = closed,
+    /// carrying the reducer's chosen [`crate::event::CloseOutcome`] (Success-with-payload vs Failure-with-
+    /// reason) so a driver can observe WHICH way it ended, not just THAT it ended. Distinct from `Terminated`
+    /// (the tip-body check `is_terminated` serves). Set from the `Closed` event's outcome when it appends;
+    /// what `is_closed`, `close_outcome`, and the `status_snapshot` `Closed` read use — off THIS field, not a
+    /// `self.log` scan. Rebuilt on replay (the `Closed` apply re-captures it).
+    close_outcome: Option<crate::event::CloseOutcome>,
     kv: Kv,
     /// Next effect id to assign. Monotonic within the session (§16c-S4). Derived from the log on
     /// replay so it never collides after recovery.
@@ -249,7 +252,7 @@ impl Session {
             tip: genesis_event,
             spawned: Vec::new(),
             seeded_capabilities: false,
-            closed: false,
+            close_outcome: None,
             kv: Kv::new(),
             next_effect_id: 0,
             settled: SettledSet::default(),
@@ -544,7 +547,17 @@ impl Session {
     /// fold — the hook for §6 supervision's parent routing (the host sees a child close here and delivers the
     /// child-completed signal to its parent). Distinct from a `Terminated` session (ended by another).
     pub fn is_closed(&self) -> bool {
-        self.closed
+        self.close_outcome.is_some()
+    }
+
+    /// The reducer's chosen [`crate::event::CloseOutcome`] if this session has self-closed — `Some` iff
+    /// [`is_closed`](Self::is_closed), carrying whether it ended in Success (with its payload) or Failure
+    /// (with its reason). `None` for a still-open (or `Terminated`) session. Lets a driver / supervisor /
+    /// conformance harness observe not just THAT a session closed but HOW: a self-close signalling
+    /// `Success(payload)` is distinguishable from one signalling `Failure(reason)` post-close (both otherwise
+    /// collapse to `SessionState::Closed`). Resident + rebuilt on replay, like [`is_closed`](Self::is_closed).
+    pub fn close_outcome(&self) -> Option<&crate::event::CloseOutcome> {
+        self.close_outcome.as_ref()
     }
 
     /// Assemble a structural [`StatusSnapshot`] — the CHEAP, non-interfering session-debug read (operator
@@ -582,8 +595,9 @@ impl Session {
             }
         }
 
-        // Resident `closed` flag (log-decouple I3), not a `self.log` scan.
-        let closed = self.closed;
+        // Resident close state (log-decouple I3), not a `self.log` scan: closed iff a self-close outcome
+        // is present. The outcome itself is surfaced on the snapshot below so an observer sees HOW it closed.
+        let closed = self.close_outcome.is_some();
         let has_work = !self.open.is_empty();
         // Stall: an in-flight effect outstanding longer than the threshold (only derivable with a clock).
         let stalled = match (now_ms, oldest_dispatch_ms) {
@@ -619,6 +633,9 @@ impl Session {
             in_flight,
             armed_timers: self.open.values().filter(|ob| ob.is_timer).count() as u32,
             published,
+            // Surface the self-close outcome (Some iff closed) so an observer distinguishes a Success
+            // close from a Failure close — both otherwise collapse to SessionState::Closed above.
+            close_outcome: self.close_outcome.clone(),
         }
     }
 
@@ -1052,8 +1069,8 @@ impl Session {
             EventBody::Spawned { child_hash } => {
                 self.spawned.push(*child_hash);
             }
-            EventBody::Closed { .. } => {
-                self.closed = true;
+            EventBody::Closed { outcome } => {
+                self.close_outcome = Some(outcome.clone());
             }
             _ => {}
         }
@@ -1929,7 +1946,7 @@ impl Session {
             tip: genesis_event,
             spawned: Vec::new(),
             seeded_capabilities: false,
-            closed: false,
+            close_outcome: None,
             kv: Kv::new(),
             next_effect_id: 0,
             settled: SettledSet::default(),
@@ -2031,8 +2048,8 @@ impl Session {
                 EventBody::Spawned { child_hash } => {
                     s.spawned.push(*child_hash);
                 }
-                EventBody::Closed { .. } => {
-                    s.closed = true;
+                EventBody::Closed { outcome } => {
+                    s.close_outcome = Some(outcome.clone());
                 }
                 _ => {}
             }
@@ -2169,6 +2186,11 @@ pub struct StatusSnapshot {
     /// session CHOSE to expose — §4b tier-1). The full KV is NOT here (higher-privilege access); only what
     /// the session published for observers. Empty if it published nothing (the structural fields still apply).
     pub published: std::collections::BTreeMap<Vec<u8>, Vec<u8>>,
+    /// The self-close [`CloseOutcome`] iff the session has closed (`state == Closed` via a self-close) —
+    /// `Some` carries whether it ended in Success (with payload) or Failure (with reason), so an observer
+    /// distinguishes the two closes that both collapse to `SessionState::Closed`. `None` for any non-closed
+    /// state. Mirrors [`Session::close_outcome`].
+    pub close_outcome: Option<CloseOutcome>,
 }
 
 /// A session's derived liveness state (§4b tier-2 — a structural fact, not something the session writes).
@@ -2622,6 +2644,73 @@ mod status_snapshot_tests {
                 b"done".to_vec().into()
             )),
             "the Closed event carries the reducer's CloseOutcome verbatim"
+        );
+        // The outcome is also OBSERVABLE post-close off resident state (not just the durable log): the
+        // close_outcome() accessor + the status_snapshot both carry it, so a driver sees HOW it closed.
+        let expected = crate::event::CloseOutcome::Success(crate::effect::Payload::Inline(
+            b"done".to_vec().into(),
+        ));
+        assert_eq!(
+            s.close_outcome(),
+            Some(&expected),
+            "close_outcome() surfaces the reducer's chosen outcome post-close"
+        );
+        let snap = s.status_snapshot(None, 60_000);
+        assert_eq!(snap.state, SessionState::Closed, "snapshot state is Closed");
+        assert_eq!(
+            snap.close_outcome,
+            Some(expected),
+            "the status snapshot carries the self-close outcome"
+        );
+    }
+
+    // A reducer that self-closes with a FAILURE outcome — the discriminator that makes close_outcome()
+    // load-bearing: a Success close and a Failure close BOTH collapse to SessionState::Closed, so only the
+    // outcome tells them apart. Pins that a Failure self-close is observable AS a failure post-close
+    // (unblocks the platform-conformance Success-vs-Failure close case).
+    struct FailClosingReducer;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for FailClosingReducer {
+        async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => FoldOutput::close(
+                    crate::event::CloseOutcome::Failure("goal unreachable".to_string()),
+                ),
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_failure_self_close_is_observable_as_failure_distinct_from_success() {
+        let mut exec = RecordingExecutor::new();
+        let mut s = Session::genesis(Hash::of(b"fail-close-v1"), Hash::of(b"test-spawn-nonce"));
+        s.deliver(
+            inbound(),
+            None,
+            &mut FailClosingReducer,
+            &Authorizer::deny_all(),
+            &mut exec,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            s.is_closed(),
+            "a Failure self-close still flips is_closed()"
+        );
+        let failure = crate::event::CloseOutcome::Failure("goal unreachable".to_string());
+        assert_eq!(
+            s.close_outcome(),
+            Some(&failure),
+            "close_outcome() carries the FAILURE outcome verbatim — distinct from a Success close"
+        );
+        let snap = s.status_snapshot(None, 60_000);
+        assert_eq!(snap.state, SessionState::Closed);
+        assert_eq!(
+            snap.close_outcome,
+            Some(failure),
+            "the snapshot distinguishes a Failure close from a Success close"
         );
     }
 
