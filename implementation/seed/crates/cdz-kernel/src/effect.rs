@@ -174,10 +174,14 @@ pub mod effect_ct {
     /// scoped, not tree-scoped. Register-by-string (`Emit` placeholder kind).
     pub const LIFECYCLE_PREFIX: &str = "lifecycle/";
 
-    /// `lifecycle/spawn` — spawn a durable CHILD session (target = the child's reducer hash; the effect
-    /// result is the child's SessionId = its genesis hash). The host executor instantiates the child +
-    /// registers it + records the parent→child [`Spawned`](crate::event::EventBody::Spawned) edge via
-    /// [`Session::record_spawn`](crate::kernel::Session::record_spawn).
+    /// `lifecycle/spawn` — spawn a durable CHILD session. The child's reducer content-hash rides the effect
+    /// PAYLOAD as 32 raw bytes (`Payload::Inline`); spawn takes NO `target` (unlike the other lifecycle verbs,
+    /// which target a SessionId). The effect RESULT is the child's SessionId = its genesis hash. The host
+    /// executor (`cdz-agent-host` `perform_spawn`) reads `reducer_hash` from the payload, materializes +
+    /// registers the child, and records the parent→child [`Spawned`](crate::event::EventBody::Spawned) edge
+    /// via [`Session::record_spawn`](crate::kernel::Session::record_spawn). (A missing / wrong-length / `Blob`
+    /// payload is a structural PERMANENT error.) A reducer authoring a spawn puts the hash on the payload,
+    /// leaving the target empty — NOT on the target (this comment previously mis-stated target-carries-hash).
     pub const LIFECYCLE_SPAWN: &str = "lifecycle/spawn";
 
     /// `lifecycle/suspend` — stop scheduling a target session's ticks (target = SessionId). Durable log
