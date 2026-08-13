@@ -491,15 +491,27 @@ pub fn builtin_effect_schema_hash(kind: &crate::effect::EffectKind) -> crate::ha
         // emit.send(payload: list<u8>) -> unit. target-OUT: the peer session id rides `req.target` (the
         // RESOURCE a grant gates, SEC-F1), NOT the effect's schema/identity — consistent with the
         // target-out-of-schema ruling (identity = what-effect; target = which-resource). payload is the
-        // signal body (opaque bytes). Delivery folds back as a separate ack/failure event, so the op result
-        // is unit. (This is the one slice-1 built-in that listed `target` as an op-param; corrected here.)
+        // emit.send(target: list<u8>, payload: list<u8>) -> unit. TARGET-AS-OP-ARG (concierge ruling
+        // 2026-08-13): emit's target is REDUCER-CHOSEN (the destination session the reducer picks), so it is
+        // a DECLARED op-arg (arg[0]), not carried out-of-band — the reducer passes it at the perform site
+        // (`Emit.send(dest, body)`), and it rides in the args value-form (the ast) on the wire. It stays OUT
+        // of IDENTITY because the schema-hash is over the op's TYPE SIGNATURE (target-TYPE-shaped,
+        // target-VALUE-independent): two emits to DIFFERENT destinations hash IDENTICALLY (same `(list<u8>,
+        // list<u8>) -> unit` sig). So "target folds into the ast" (operator's wire ruling) and "identity =
+        // what-effect, not which-resource" (target-OUT identity) BOTH hold. (This corrects the earlier
+        // target-OUT `(payload) -> unit` shape, which gave a reducer no arg to pass its chosen destination.)
+        // Delivery folds back as a separate ack/failure event, so the op result is unit.
         EffectKind::Emit => {
+            let target = {
+                let u8_ty = b.wit_type_prim("u8");
+                b.wit_type_list(u8_ty)
+            };
             let payload = {
                 let u8_ty = b.wit_type_prim("u8");
                 b.wit_type_list(u8_ty)
             };
             let unit = b.wit_type_unit();
-            let sig = b.wit_op_sig(&[payload], unit);
+            let sig = b.wit_op_sig(&[target, payload], unit);
             ("emit", "send", sig)
         }
     };
@@ -3531,27 +3543,60 @@ mod tests {
         // shared WIT builders — and assert it EQUALS `builtin_effect_schema_hash(EffectKind::Emit)`. This is
         // the assertion rcdzc's byte-identity gate mirrors on its side (its copied builders + `ty_to_wit_desc`
         // must produce the identical descriptor bytes for the same Cadenza `Ty` shape). emit.send is
-        // `(effect "emit" (op "send" (func (param "payload" (list u8)) (result unit))))`.
+        // `(effect "emit" (op "send" (func (param (list u8)) (param (list u8)) (result unit))))` — TWO params:
+        // target (arg[0], the reducer-chosen destination) + payload, both `list<u8>` (Cadenza `Bytes`).
         use crate::effect::EffectKind;
         let userspace_emit = {
             let mut b = Builder::new();
-            // payload: list<u8> — a Cadenza `Bytes` maps to `list<u8>` at the boundary (NOT a "bytes" prim);
-            // this exercises the exact Ty::Bytes -> wit_type_list(wit_type_prim("u8")) mapping rcdzc must use.
+            // target + payload: BOTH list<u8> — a Cadenza `Bytes` maps to `list<u8>` at the boundary (NOT a
+            // "bytes" prim); exercises the exact Ty::Bytes -> wit_type_list(wit_type_prim("u8")) mapping rcdzc
+            // uses. TARGET is arg[0] (reducer-chosen, target-as-op-arg ruling); payload is arg[1].
+            let target = {
+                let u8_ty = b.wit_type_prim("u8");
+                b.wit_type_list(u8_ty)
+            };
             let payload = {
                 let u8_ty = b.wit_type_prim("u8");
                 b.wit_type_list(u8_ty)
             };
             let unit = b.wit_type_unit();
             // NAME-FREE op sig (wit_op_sig): op-param names are NOT part of effect identity, so a userspace
-            // producer's anonymous `(-> Bytes Unit)` arrow content-addresses to the built-in.
-            let sig = b.wit_op_sig(&[payload], unit);
+            // producer's anonymous `(-> Bytes Bytes Unit)` arrow content-addresses to the built-in.
+            let sig = b.wit_op_sig(&[target, payload], unit);
             effect_schema_hash_from_nodes(b, "emit", &[("send", sig)])
         };
         assert_eq!(
             userspace_emit,
             builtin_effect_schema_hash(&EffectKind::Emit),
-            "a userspace effect declared with emit.send's shape must hash to the built-in emit identity \
-             (content-address: same shape -> same identity across producers)"
+            "a userspace effect declared with emit.send's (target, payload) shape must hash to the built-in \
+             emit identity (content-address: same shape -> same identity across producers)"
+        );
+        // TARGET-VALUE-INDEPENDENCE (concierge-asked, target-as-op-arg ruling): target is a DECLARED op-arg
+        // that rides the ast/wire, but the schema-hash is over the op's TYPE SIGNATURE — so two emits to
+        // DIFFERENT target VALUES have the SAME identity. The hasher takes only TYPE descriptors (never a
+        // runtime value), so this is structural: the emit identity is a function of the `(list<u8>, list<u8>)
+        // -> unit` SIG alone. Assert the built-in emit hash is EXACTLY that sig's hash — i.e. adding a concrete
+        // target value nowhere enters the hash (there is no value channel into `effect_schema_hash_from_nodes`).
+        // (This is what lets a grant bind emit-to-ANY-destination as one capability, target gated separately.)
+        let emit_sig_only = {
+            let mut b = Builder::new();
+            let t = {
+                let u8 = b.wit_type_prim("u8");
+                b.wit_type_list(u8)
+            };
+            let p = {
+                let u8 = b.wit_type_prim("u8");
+                b.wit_type_list(u8)
+            };
+            let unit = b.wit_type_unit();
+            let sig = b.wit_op_sig(&[t, p], unit);
+            effect_schema_hash_from_nodes(b, "emit", &[("send", sig)])
+        };
+        assert_eq!(
+            emit_sig_only,
+            builtin_effect_schema_hash(&EffectKind::Emit),
+            "emit identity is the (target-type, payload-type) SIG hash — target VALUE-independent (a grant \
+             binds emit-to-any-destination as one capability; the destination is gated separately, not by identity)"
         );
 
         // A MULTI-FIELD RECORD op — the field-order trap. Build `model.invoke`'s request record shape as a
