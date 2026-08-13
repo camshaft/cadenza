@@ -42,6 +42,9 @@ def can-emit-d(c: Core, defidx: Map(Int64, Int64)) = match c with
   // gets its i32 scratch via body-of-scratch). CCtor args must be FLAT + emittable (nested clobbers the scratch).
   | Core.CCtor(_, args) => ctor-args-emittable-d(args, 0, defidx)
   | Core.CProj(operand, _) => can-emit-d(operand, defidx)
+  // W-compound: a payload-sum deconstruct emits (emit-instrs-d handles CMatchSum: load tag + bind payloads off
+  // the heap). Emittable iff scrutinee + both branches are (nested N-arm match = nested CMatchSum in else).
+  | Core.CMatchSum(scrut, _, _, thn, els) => can-emit-d(scrut, defidx) and (can-emit-d(thn, defidx) and can-emit-d(els, defidx))
   | _ => false
 
 /// W-compound (recursive path): are a CCtor's payload args each EMITTABLE (can-emit-d) and FLAT (no nested
@@ -260,16 +263,18 @@ def er-recursive-bodies-puts-main-last() =
 @test
 def er-all-defs-emittable-gates-out-of-subset-body() =
   // The def-body emit gate: all-defs-emittable is TRUE iff EVERY entry's body is in the emit subset. A def
-  // whose body is an out-of-subset form (CMatchSum — eval-only, not emit-subset) must make it FALSE so
-  // emit-recursive-module declines rather than emitting a malformed body. Pins the gap emit-recursive-module's
-  // main-only gate previously missed. Two entries: one arith body (emittable), one CMatchSum body (not).
+  // whose body is an out-of-subset form must make it FALSE so emit-recursive-module declines rather than
+  // emitting a malformed body. Pins the gap emit-recursive-module's main-only gate previously missed. Uses
+  // CFnRef (a higher-order fn-VALUE — still eval-only, NOT emit-subset) as the out-of-subset example. (Was
+  // CMatchSum, which is now emittable — the W-compound arc; a CMatchSum def body EMITS + runs correctly, so it
+  // no longer gates OUT.) Two entries: one arith body (emittable), one CFnRef body (not).
   (let fmap = (Map.empty : Map(Int64, Int64)) in
    (let arithBody = Core.CBin(43, true, 64, Core.CNum(1, true, 64), Core.CNum(2, true, 64)) in
-    (let sumBody = Core.CMatchSum(Core.CNum(0, true, 64), 1, ([] : List(Int64)), Core.CNum(1, true, 64), Core.CNum(2, true, 64)) in
+    (let hoBody = Core.CFnRef(900) in
      (let okEntries = List.push(([] : List(Tuple(Int64, Tuple(List(Int64), Core)))), (900, (([] : List(Int64)), arithBody))) in
-      (let badEntries = List.push(okEntries, (901, (([] : List(Int64)), sumBody))) in
+      (let badEntries = List.push(okEntries, (901, (([] : List(Int64)), hoBody))) in
        (if all-defs-emittable(okEntries, 0, fmap) then
-         (if all-defs-emittable(badEntries, 0, fmap) then trap("a CMatchSum def body is NOT emit-subset → all-defs-emittable must be false")
+         (if all-defs-emittable(badEntries, 0, fmap) then trap("a CFnRef (higher-order) def body is NOT emit-subset → all-defs-emittable must be false")
           else unit)
         else trap("an arith def body IS emit-subset → all-defs-emittable true")))))))
 

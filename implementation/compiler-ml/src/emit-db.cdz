@@ -151,6 +151,9 @@ def has-ctor(c: Core) = match c with
   | Core.CIf(cond, thn, els) => has-ctor(cond) or (has-ctor(thn) or has-ctor(els))
   | Core.CProj(op, _) => has-ctor(op)
   | Core.CMatchEnum(s, _, thn, els) => has-ctor(s) or (has-ctor(thn) or has-ctor(els))
+  // W-compound: a CMatchSum READS a heap handle (load tag + payloads) so it needs the memory + i32 scratch
+  // (for the wrapped address) — force true (its scrut is always a boxed handle from a CCtor; unused global is harmless).
+  | Core.CMatchSum(_, _, _, _, _) => true
   | _ => false
 
 /// W-compound: are a CCtor's payload args each EMITTABLE and FLAT (no nested CCtor)? A single i32 scratch
@@ -227,8 +230,11 @@ def can-emit(c: Core) = match c with
   // W-compound: a PAYLOAD ctor (tuple/record/sum-payload) EMITS to a linear-memory heap block (bump-alloc +
   // i64.store tag+elems). Gated to FLAT emittable args (nested ctor args clobber the single scratch → decline).
   | Core.CCtor(_, args) => ctor-args-emittable(args, 0)
-  | Core.CMatchSum(_, _, _, _, _) => false
-      // M2-b-2b sum deconstruct is EVAL-ONLY for now (emit(B) = a MatchSum decision tree on the disc + payload loads).
+  // W-compound: a PAYLOAD-sum deconstruct EMITS — load the tag off the handle (heap+0), compare to the arm's
+  // tag, and on match bind each payload elem (heap+8*(i+1)) into a local + eval `then`, else `else`. The
+  // scrutinee is always a boxed handle (payload ctor, or a mixed-decl nullary boxed as CCtor(tag,[])), so the
+  // tag-load is sound. Emittable iff scrutinee + both branches are.
+  | Core.CMatchSum(scrut, _, _, thn, els) => can-emit(scrut) and (can-emit(thn) and can-emit(els))
   // ii-c2b-2 enum-disc deconstruct EMITS (W-enum): the scrutinee is a BARE i64 tag, so the arm is just a
   // tag-equality branch (`scrut == tag ? then : else`) reusing the CIf/CBin(eq) machinery — no heap. Emittable
   // iff the scrutinee + both branches are (a nested N-arm enum match = nested CMatchEnum in `els`, recursed).
@@ -266,7 +272,20 @@ def collect-binders(c: Core) = match c with
   // W-compound: CCtor/CProj bind nothing themselves but their payload args / operand may hold CLets — recurse.
   | Core.CCtor(_, args) => collect-binders-args(args, 0, ([] : List(Int64)))
   | Core.CProj(operand, _) => collect-binders(operand)
+  // W-compound: a CMatchSum BINDS its payload elements (the non-(-1) binder-ids get local slots, like CLet),
+  // plus its scrutinee + branches may hold CLets — collect all. A -1 binder is a wildcard (no local).
+  | Core.CMatchSum(scrut, _, bs, thn, els) =>
+      List.concat(real-binders(bs, 0, ([] : List(Int64))),
+        List.concat(collect-binders(scrut), List.concat(collect-binders(thn), collect-binders(els))))
   | _ => []
+
+/// W-compound: the NON-wildcard payload binder-ids of a CMatchSum (a -1 binder is a `_` wildcard — no local).
+/// Index recursion; these ids get local slots (index-of resolves each payload's set/get to the same slot).
+def real-binders(bs: List(Int64), i: Int64, acc: List(Int64)) =
+  (if i == List.len(bs) then acc
+   else (match List.at(bs, i) with
+     | Option.Some(b) => (if b == -1 then real-binders(bs, i + 1, acc) else real-binders(bs, i + 1, List.concat(acc, List.push([], b))))
+     | Option.None(_) => acc))
 
 /// W-compound: collect CLet binders across a CCtor's payload arg list (index recursion, concatenated).
 def collect-binders-args(args: List(Core), i: Int64, acc: List(Int64)) =
@@ -356,6 +375,21 @@ def emit-instrs-d(c: Core, binders: List(Int64), defidx: Map(Int64, Int64)) = ma
            (let bump = Bytes.concat(b1(32), Bytes.concat(uleb(scratch), Bytes.concat(b1(65), Bytes.concat(sleb(blocksize), Bytes.concat(b1(106), Bytes.concat(b1(36), uleb(0))))))) in
             (let push-handle = Bytes.concat(b1(32), Bytes.concat(uleb(scratch), b1(173))) in
              Bytes.concat(save, Bytes.concat(store-tag, Bytes.concat(store-elems, Bytes.concat(bump, push-handle)))))))))))
+  | Core.CMatchSum(scrut, tag, bs, thn, els) =>
+      // W-compound: PAYLOAD-sum deconstruct. Save the scrut handle's wrapped addr in the i32 scratch, load its
+      // tag (heap+0), compare to this arm's `tag`, and `if (result i64)`: THEN bind each payload elem (heap+
+      // 8*(i+1)) into its local + eval `then`; ELSE eval `else` (the next arm — nested CMatchSum). Scrut is
+      // always a boxed handle so the tag-load is sound. Opcodes: i32.wrap_i64 0xa7, local.set 0x21, local.get
+      // 0x20, i64.load 0x29, i64.const 0x42, i64.eq 0x51, if 0x04, i64 0x7e, else 0x05, end 0x0b.
+      (let scratch = List.len(binders) in
+       (let setup = Bytes.concat(emit-instrs-d(scrut, binders, defidx), Bytes.concat(b1(167), Bytes.concat(b1(33), uleb(scratch)))) in  // scrut ; i32.wrap_i64 ; local.set scratch
+        (let load-tag = Bytes.concat(b1(32), Bytes.concat(uleb(scratch), Bytes.concat(b1(41), Bytes.concat(b1(3), uleb(0))))) in         // local.get scratch ; i64.load 0
+         (let cmp = Bytes.concat(b1(66), Bytes.concat(sleb(tag), b1(81))) in                                                            // i64.const tag ; i64.eq
+          (let then-part = Bytes.concat(emit-payload-binds(bs, 0, scratch, binders, defidx), emit-instrs-d(thn, binders, defidx)) in    // <bind payloads> ; <then>
+           Bytes.concat(setup, Bytes.concat(load-tag, Bytes.concat(cmp,
+             Bytes.concat(b1(4), Bytes.concat(b1(126),                                                                                  // if (result i64)
+               Bytes.concat(then-part, Bytes.concat(b1(5),                                                                             // else
+                 Bytes.concat(emit-instrs-d(els, binders, defidx), b1(11))))))))))))))
   | _ => Bytes.of([])
 
 /// W-compound: emit a CCtor's payload-store sequence — for each arg i: `local.get scratch ; <emit arg> ;
@@ -370,6 +404,23 @@ def emit-ctor-stores(args: List(Core), i: Int64, scratch: Int64, binders: List(I
              Bytes.concat(b1(55), Bytes.concat(b1(3), uleb(8 * (i + 1))))))),
          emit-ctor-stores(args, i + 1, scratch, binders, defidx))
      | Option.None(_) => emit-ctor-stores(args, i + 1, scratch, binders, defidx)))
+
+/// W-compound: bind a CMatchSum's payload elements into their locals — for each binder bs[i] that is not the
+/// -1 wildcard: `local.get scratch ; i64.load align=3 offset=8*(i+1) ; local.set (index-of binders bs[i])`
+/// (element i sits after the tag; scratch holds the wrapped handle addr). A -1 binder is a `_` wildcard — skip
+/// the bind but the FIELD position i still advances (so field 0 as `_` does not shift field 1's offset),
+/// mirroring eval's bind-payload. Index recursion; emits nothing for the empty-binder (nullary boxed) case.
+def emit-payload-binds(bs: List(Int64), i: Int64, scratch: Int64, binders: List(Int64), defidx: Map(Int64, Int64)) =
+  (if i == List.len(bs) then Bytes.of([])
+   else (match List.at(bs, i) with
+     | Option.Some(b) => (if b == -1
+         then emit-payload-binds(bs, i + 1, scratch, binders, defidx)                                 // wildcard: no bind, advance field
+         else Bytes.concat(
+           Bytes.concat(b1(32), Bytes.concat(uleb(scratch),
+             Bytes.concat(b1(41), Bytes.concat(b1(3), Bytes.concat(uleb(8 * (i + 1)),
+               Bytes.concat(b1(33), uleb(index-of(binders, b)))))))),                                 // local.get scratch ; i64.load off ; local.set slot
+           emit-payload-binds(bs, i + 1, scratch, binders, defidx)))
+     | Option.None(_) => emit-payload-binds(bs, i + 1, scratch, binders, defidx)))
 
 /// slice-B'(Bp3): emit a CCall's arg terms left-to-right (index recursion, the emit idiom), each onto the i64
 /// stack, concatenated — the wasm call convention (args pushed in order before `call`).
@@ -650,6 +701,18 @@ def em-compound-construct-project-emits-a-module() =
           | Option.None(_) => unit
           | Option.Some(_) => trap("a NESTED compound ctor must decline emit (flat-args gate)"))
     | Option.None(_) => trap("a flat tuple construct+project emits a module"))
+
+@test
+def em-cmatchsum-payload-deconstruct-emits-a-module() =
+  // W-compound: a PAYLOAD-sum deconstruct emits (load tag off heap+0, compare, bind payloads off heap+8*(i+1)).
+  // Direct-Core mirror of `(match (Some 5) ((Some x) x) (_ 0))`: CMatchSum(CCtor(1,[5]), 1, [100], CVar 100,
+  // CNum 0) — scrut is a boxed handle, tag 1 == 1 → bind payload[0]=5 to binder 100 → CVar 100. can-emit +
+  // has-value (eval-db oracle → Some 5) hold → emit-module Some. run-emitted matches run-ml end-to-end
+  // (verified: Some/Pair bind + None→wildcard → 5/21/99/7).
+  (match emit-module(Core.CMatchSum(Core.CCtor(1, List.push([], cnum64(5))), 1, List.push([], 100),
+                       Core.CVar(100), cnum64(0))) with
+    | Option.Some(_) => unit
+    | Option.None(_) => trap("a payload-sum CMatchSum deconstruct emits a module"))
 
 @test
 def em-module-has-wasm-magic-and-version() =
