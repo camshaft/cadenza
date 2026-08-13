@@ -1,7 +1,8 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
 pass	a counter session bumps kv count on its kick-off message
+pass	a handler replies an Err outcome (retryable false) and the caller observes the failure via the effect-result outcome
 pass	a handler serves two families but replies to only one; the caller resumes one effect and stays active on the other
-pass	a handler's effect/reply payload round-trips to the caller, observed as e.payload on the effect-result
+pass	a handler's effect/reply Ok(Inline) payload round-trips to the caller, observed as the effect-result outcome
 pass	a message carrying a multi-byte String payload round-trips to the receiver intact
 pass	a message chains across three sessions a -> b -> c, each hop emitting to the next
 pass	a message to an absent peer bounces a delivery-failure back to the sender, which folds it
