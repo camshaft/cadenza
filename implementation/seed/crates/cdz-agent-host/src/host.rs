@@ -1159,11 +1159,14 @@ impl AgentHost {
             if !ce.request.content_type.matches_family(effect_ct::SIGNATURE) {
                 continue;
             }
-            // The target rides the effect as a content-hash hex; resolve it to bytes through the factory.
-            // The target is opaque Arc<[u8]>; a non-UTF-8 (or non-hex) target yields no hash → the None arm.
+            // The target rides the effect as the raw content-hash bytes; resolve it to bytes through the
+            // factory. The target is opaque Arc<[u8]>; a wrong-length target yields no hash → the None arm
+            // (reconstruct via from_bytes, NOT from_hex — the hash is raw bytes, never parsed from a string).
             let target_bytes = match (
                 factory.as_deref_mut(),
-                ce.request.target_str().ok().and_then(Hash::from_hex),
+                <[u8; 32]>::try_from(ce.request.target.as_ref())
+                    .ok()
+                    .map(Hash::from_bytes),
             ) {
                 (Some(f), Some(hash)) => f.fetch_blob(&hash).await.ok().flatten(),
                 // No factory, or a non-UTF-8/non-hex target — no bytes to reflect (settle_signature_query

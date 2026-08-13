@@ -8,17 +8,18 @@
 //! a session may put/get is EVOLVABLE POLICY in the Cedar WASM policy on the log (the kernel authorizes each
 //! `blob/*` effect on its resolved target before dispatch, SEC-F1), NOT baked into this inevolvable host code.
 //!
-//! **Wire shape (reconciled with v-agent-harness, the kernel-family owner).** The hash is carried as a HEX
-//! string, because a reducer threads `blob/put`'s result-hash into `blob/get`'s TARGET — and a target is now
-//! opaque bytes ([`EffectRequest::target`] is `Arc<[u8]>`), read as UTF-8 via [`EffectRequest::target_str`], so
-//! a text handle is used (hex is self-evidently the hash; reuses [`Hash::to_hex`]/[`Hash::from_hex`]). A
-//! non-UTF-8 target is a clean fail-closed `Err`. NO event_ast codec — the hex string +
+//! **Wire shape (reconciled with v-agent-harness, the kernel-family owner).** The hash is carried as its RAW
+//! 32 bytes, because a reducer threads `blob/put`'s result-hash into `blob/get`'s TARGET — and a target is
+//! opaque bytes ([`EffectRequest::target`] is `Arc<[u8]>`) the reducer echoes verbatim. NO hex (the runtime
+//! no-hex directive): a hash is raw bytes produced only by hashing, never parsed from a string. The kernel
+//! authz gate matches the target as raw bytes (operator ruling), so a raw content-hash target is admitted. A
+//! wrong-length target is a clean fail-closed `Err`. NO event_ast codec — the raw bytes +
 //! `EffectOutcome`'s `Option<Payload>` cover it:
-//! - `blob/put`: payload = the content bytes (`Payload::Inline`); `Ok` result = `Inline(hash.to_hex())`.
-//! - `blob/get`: target = the hex hash → `Hash::from_hex` it (a bad/non-hex target = a clean `Err`); a HIT =
-//!   `Ok(Some(Inline(bytes)))`, a MISS = `Ok(None)` (a CAS get-miss is a NORMAL answer the reducer folds, not
-//!   an error — mirrors `BlobStore::get`'s own `Ok(None)`); a backend I/O error OR a corrupt-blob integrity
-//!   failure (`BlobStore::get`'s `Err(InvalidData)` on a hash mismatch — tamper-detection) stays `Err`.
+//! - `blob/put`: payload = the content bytes (`Payload::Inline`); `Ok` result = `Inline(hash.as_bytes())`.
+//! - `blob/get`: target = the raw 32 hash bytes → [`Hash::from_bytes`] (a wrong-length target = a clean `Err`,
+//!   NOT a decode); a HIT = `Ok(Some(Inline(bytes)))`, a MISS = `Ok(None)` (a CAS get-miss is a NORMAL answer
+//!   the reducer folds, not an error — mirrors `BlobStore::get`'s own `Ok(None)`); a backend I/O error OR a
+//!   corrupt-blob integrity failure (`BlobStore::get`'s `Err(InvalidData)` on a hash mismatch) stays `Err`.
 //!
 //! **Generic over the [`BlobStore`]** so a test drives a `MemBlobStore` and the deployed daemon selects the
 //! S3 / disk backend by config (the same store the reducer-component blob store uses). NOT feature-gated: the
@@ -55,7 +56,7 @@ impl<B: BlobStore> Executor for BlobExecutor<B> {
     ) -> EffectOutcome {
         let family = req.content_type.family.as_ref();
         if family == effect_ct::BLOB_PUT {
-            // Store the payload bytes → return the content hash as a HEX handle the reducer threads to get.
+            // Store the payload bytes → return the content hash as its RAW bytes, the handle the reducer threads to get.
             let bytes = match &req.payload {
                 Some(Payload::Inline(b)) => b.clone(),
                 // A blob/put with no inline payload has nothing to store; a blob-ref payload would need this
@@ -69,25 +70,19 @@ impl<B: BlobStore> Executor for BlobExecutor<B> {
             };
             // Compute the content hash ONCE here (put no longer computes it — the hash is threaded to each
             // storage tier so a multi-tier write doesn't re-blake3 the same bytes). Move the ref-counted
-            // `Bytes` into `put`; still report the hash to the reducer as the hex handle it threads to get.
+            // `Bytes` into `put`; report the hash to the reducer as its RAW bytes, the handle it threads to get.
             let hash = Hash::of(&bytes);
             match self.store.put(hash, bytes).await {
-                Ok(()) => {
-                    EffectOutcome::Ok(Some(Payload::Inline(hash.to_hex().into_bytes().into())))
-                }
+                Ok(()) => EffectOutcome::Ok(Some(Payload::Inline(hash.as_bytes().to_vec().into()))),
                 Err(e) => EffectOutcome::err(format!("blob/put failed: {e}")),
             }
         } else if family == effect_ct::BLOB_GET {
-            // Target = the hex hash. A non-UTF-8 target (target is now opaque Arc<[u8]>) OR a
-            // bad/non-hex/wrong-length one is a structural error → PERMANENT (fail-closed).
-            let Ok(target) = req.target_str() else {
-                return EffectOutcome::err(
-                    "blob/get: target is not valid UTF-8 (expected a hex content hash)",
-                );
-            };
-            let Some(hash) = Hash::from_hex(target) else {
+            // Target = the RAW 32 hash bytes (opaque Arc<[u8]> the reducer echoed). Reconstruct the `Hash` via
+            // from_bytes (NOT from_hex — no string parse); a wrong-length target is structural → PERMANENT.
+            let Ok(hash) = <[u8; 32]>::try_from(req.target.as_ref()).map(Hash::from_bytes) else {
                 return EffectOutcome::err(format!(
-                    "blob/get: target {target:?} is not a valid hex content hash"
+                    "blob/get: target is not a 32-byte content hash (got {} bytes)",
+                    req.target.len()
                 ));
             };
             match self.store.get(&hash).await {
@@ -129,28 +124,29 @@ mod tests {
         )
     }
 
-    fn get_req(hex: &str) -> EffectRequest {
-        EffectRequest::new_with_family(effect_ct::BLOB_GET, hex, None, Timeliness::Interactive)
+    fn get_req(target: &[u8]) -> EffectRequest {
+        EffectRequest::new_with_family(effect_ct::BLOB_GET, target, None, Timeliness::Interactive)
     }
 
     #[tokio::test]
-    async fn put_returns_a_hex_hash_and_get_round_trips_the_bytes() {
+    async fn put_returns_the_raw_hash_bytes_and_get_round_trips_the_bytes() {
         let mut exec = BlobExecutor::new(MemBlobStore::new());
-        // put → hex hash handle
-        let hex = match exec
+        // put → raw 32-byte hash handle
+        let hash_bytes = match exec
             .perform(EffectId(0), &put_req(b"doc-ast-bytes"), Hash::of(b"k"))
             .await
         {
-            EffectOutcome::Ok(Some(Payload::Inline(b))) => String::from_utf8(b.to_vec()).unwrap(),
-            other => panic!("blob/put should return a hex hash, got {other:?}"),
+            EffectOutcome::Ok(Some(Payload::Inline(b))) => b.to_vec(),
+            other => panic!("blob/put should return the raw hash bytes, got {other:?}"),
         };
-        assert!(
-            Hash::from_hex(&hex).is_some(),
-            "the put result is a valid hex content hash: {hex:?}"
+        assert_eq!(
+            hash_bytes.len(),
+            32,
+            "the put result is the raw 32-byte content hash: {hash_bytes:?}"
         );
         // get(that hash) → the bytes verbatim
         match exec
-            .perform(EffectId(0), &get_req(&hex), Hash::of(b"k"))
+            .perform(EffectId(0), &get_req(&hash_bytes), Hash::of(b"k"))
             .await
         {
             EffectOutcome::Ok(Some(Payload::Inline(b))) => {
@@ -167,10 +163,10 @@ mod tests {
     #[tokio::test]
     async fn get_of_an_absent_blob_is_ok_none_not_err() {
         let mut exec = BlobExecutor::new(MemBlobStore::new());
-        // A valid-hex hash that was never stored → Ok(None), NOT an Err (a CAS miss is a normal fold input).
-        let absent = Hash::of(b"never-stored").to_hex();
+        // A valid hash that was never stored → Ok(None), NOT an Err (a CAS miss is a normal fold input).
+        let absent = Hash::of(b"never-stored");
         match exec
-            .perform(EffectId(0), &get_req(&absent), Hash::of(b"k"))
+            .perform(EffectId(0), &get_req(absent.as_bytes()), Hash::of(b"k"))
             .await
         {
             EffectOutcome::Ok(None) => {}
@@ -179,19 +175,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_with_a_non_hex_target_is_a_permanent_err() {
+    async fn get_with_a_wrong_length_target_is_a_permanent_err() {
         use cdz_kernel::event::Retryability;
         let mut exec = BlobExecutor::new(MemBlobStore::new());
         match exec
-            .perform(EffectId(0), &get_req("not-a-hex-hash"), Hash::of(b"k"))
+            .perform(EffectId(0), &get_req(b"not-32-bytes"), Hash::of(b"k"))
             .await
         {
             EffectOutcome::Err {
                 retryability: Retryability::Permanent,
                 ..
             } => {}
-            other => panic!("a non-hex blob/get target must be a permanent Err, got {other:?}"),
+            other => {
+                panic!("a wrong-length blob/get target must be a permanent Err, got {other:?}")
+            }
         }
+    }
+
+    #[test]
+    fn an_authorized_blob_get_to_a_raw_bytes_hash_target_is_admitted() {
+        // Regression pin: blob/get is Cedar-authorized on its target = content hash BEFORE dispatch. Before
+        // the operator's raw-bytes-authz ruling a raw 32-byte target was DENIED (the gate fed target_str
+        // UTF-8 to admits and a non-UTF-8 target failed closed). Now ResourcePredicate matches the target as
+        // RAW BYTES, so an Any-granted blob/get to a raw content-hash target is ADMITTED — the executor-side
+        // raw-bytes target (this slice) composes with the authz gate. Runs in the DEFAULT gate.
+        use cdz_kernel::effect::{Capability, ResourcePredicate};
+        let target = Hash::of(b"a-blob").as_bytes().to_vec();
+        let grant = Capability::for_family(effect_ct::BLOB_GET, ResourcePredicate::Any);
+        assert!(
+            grant.permits(&get_req(&target)),
+            "an Any-granted blob/get to a raw-bytes hash target is admitted (was DENIED pre-ruling)"
+        );
     }
 
     // ---- doc-publish→query round-trip through the REAL host stack (converted from the deleted
@@ -272,12 +286,11 @@ mod tests {
                     ..
                 } => {
                     if kv.get(b"published").is_none() {
-                        // Phase 1: blob/put returned the hex hash -> register it at the doc name in the index.
+                        // Phase 1: blob/put returned the raw hash bytes -> register it at the doc name in the index.
                         kv.put(b"published".to_vec(), bytes.to_vec());
-                        let hex = String::from_utf8_lossy(bytes).into_owned();
-                        let hash = match Hash::from_hex(&hex) {
-                            Some(h) => h,
-                            None => return FoldOutput::none(),
+                        let hash = match <[u8; 32]>::try_from(bytes.as_ref()) {
+                            Ok(a) => Hash::from_bytes(a),
+                            Err(_) => return FoldOutput::none(),
                         };
                         let payload = encode_name_set(self.name, &hash);
                         FoldOutput::with(vec![EffectRequest::new_with_family(
@@ -290,7 +303,7 @@ mod tests {
                         // Phase 2: store/resolve returned the (name, hash) -> fetch the doc bytes from the CAS.
                         FoldOutput::with(vec![EffectRequest::new_with_family(
                             effect_ct::BLOB_GET,
-                            h.to_hex(),
+                            h.as_bytes(),
                             None,
                             Timeliness::Interactive,
                         )])
