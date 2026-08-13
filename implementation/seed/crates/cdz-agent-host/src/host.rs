@@ -1503,25 +1503,45 @@ impl AgentHost {
             if closed.is_empty() {
                 return;
             }
+            // The set of sessions closing in THIS batch (by genesis hash). A child-completed notify must NOT
+            // be delivered to a parent that is itself in this set: the reap loop removes sessions one-by-one,
+            // so a still-present but already-closed parent would otherwise receive the Inbound and — since the
+            // kernel's `deliver` guards `is_terminated` but NOT `is_closed` — FOLD it PAST its terminal
+            // `Closed` event, corrupting the durable-log terminal-tip invariant (Closed → Inbound) and making
+            // that parent un-reapable on recovery (its tip is no longer `Closed`, so the outcome read misses
+            // it). A closing parent is terminal and doesn't need its children's completions anyway; its OWN
+            // completion propagates to the GRANDPARENT when this same pass processes it (the grandparent is not
+            // in the closed set), so nothing is lost. (Order-independent: if the parent were processed first it
+            // would already be `remove`d and the resolve below would be `None` — this set makes both orders
+            // safe.) Reviewer c267d8431 finding.
+            let closing_this_batch: std::collections::HashSet<Hash> = closed
+                .iter()
+                .map(|(_, child_hash, _, _)| *child_hash)
+                .collect();
             for (id, child_hash, parent, outcome) in closed {
                 // Finalize: evict from groups + drop from the registry (same as terminate's §I5 + `remove`).
                 self.retract_dead_member_from_groups(&id);
                 self.remove(&id);
-                // Notify the parent (if any is still registered) via a `lifecycle/child-completed` INBOUND.
+                // Notify the parent (if any is still registered AND not itself closing this batch) via a
+                // `lifecycle/child-completed` INBOUND.
                 if let Some(parent_hash) = parent {
-                    if let Some(parent_id) = self.session_id_by_genesis_hash(&parent_hash) {
-                        let payload =
-                            cdz_kernel::ast_marshal::encode_child_completed(&child_hash, &outcome);
-                        let body = EventBody::Inbound {
-                            content_type: cdz_kernel::event::ContentType {
-                                family: "lifecycle/child-completed".into(),
-                                version: 1,
-                            },
-                            payload: cdz_kernel::effect::Payload::Inline(payload.into()),
-                        };
-                        // `cause = None` (v1) — mirrors the §I7 child-exited notify. A supervisor fold that
-                        // errors on the notify is its own concern, logged at the deliver boundary.
-                        let _ = self.deliver(&parent_id, body, None).await;
+                    if !closing_this_batch.contains(&parent_hash) {
+                        if let Some(parent_id) = self.session_id_by_genesis_hash(&parent_hash) {
+                            let payload = cdz_kernel::ast_marshal::encode_child_completed(
+                                &child_hash,
+                                &outcome,
+                            );
+                            let body = EventBody::Inbound {
+                                content_type: cdz_kernel::event::ContentType {
+                                    family: "lifecycle/child-completed".into(),
+                                    version: 1,
+                                },
+                                payload: cdz_kernel::effect::Payload::Inline(payload.into()),
+                            };
+                            // `cause = None` (v1) — mirrors the §I7 child-exited notify. A supervisor fold
+                            // that errors on the notify is its own concern, logged at the deliver boundary.
+                            let _ = self.deliver(&parent_id, body, None).await;
+                        }
                     }
                 }
             }
@@ -3700,6 +3720,136 @@ mod tests {
             host.is_empty(),
             "no stray sessions remain after reaping the root"
         );
+    }
+
+    /// §6 supervision test reducer: self-completes ONCE on a `task/go` inbound (Success), and is INERT on any
+    /// other inbound (returns `none`, does NOT re-close). Used as the closing PARENT in the two-self-close reap
+    /// test: unlike `SelfClosingChildReducer` (which closes on ANY inbound), this stays inert on an injected
+    /// `child-completed`, so if the reap ever wrongly delivered one to this closed parent the Inbound would
+    /// land as the terminal tip (past `Closed`) — exactly the corruption the test must catch.
+    struct CloseOnGoThenInertReducer;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for CloseOnGoThenInertReducer {
+        async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+            if let EventBody::Inbound { content_type, .. } = &event.body {
+                if content_type.matches_family("task/go") {
+                    return FoldOutput::close(cdz_kernel::event::CloseOutcome::Success(
+                        Payload::Inline(b"p-done".to_vec().into()),
+                    ));
+                }
+            }
+            FoldOutput::none()
+        }
+    }
+
+    #[tokio::test]
+    async fn reap_does_not_notify_a_parent_that_is_itself_closing_in_the_same_batch() {
+        // §6 supervision — reviewer c267d8431 regression: a parent P and its child C both self-close in the
+        // SAME reap batch. Since the kernel's `deliver` guards `is_terminated` but NOT `is_closed`, delivering
+        // C's `child-completed` onto the still-registered-but-closed P would FOLD it PAST P's terminal `Closed`
+        // event — corrupting the durable-log terminal-tip invariant and making P un-reapable on recovery. The
+        // fix skips the notify to a parent that is itself in the closing set. Here we drive both self-closes,
+        // reap, and assert via P's DURABLE log that its tip stays `Closed` (no child-completed appended past
+        // it), both are reaped, and P's OWN completion still reached the grandparent G.
+        use cdz_kernel::log_store::LogStore;
+
+        let dir = crate::testutil::unique_temp_dir("reap-both-closed");
+        let path = dir.join("parent-durable.log");
+
+        let mut host = AgentHost::new();
+        // Grandparent G — folds child-completed (records the completed child's hash + outcome).
+        let g = HostedSession::genesis(
+            Hash::of(b"grandparent-v1"),
+            Box::new(ChildCompletedFoldingReducer),
+            Box::new(Authorizer::deny_all()),
+            CompositeExecutor::new(),
+        );
+        let g_hash = g.genesis_hash();
+        let g_id = SessionId::new(Hash::of(b"orchestrator-g")); // vanity id (resolve-by-genesis-hash)
+        host.spawn(g_id, g);
+
+        // Parent P — a child of G, self-closes on task/go then INERT, with a DURABLE log so we can inspect its
+        // persisted tail after it's reaped out of the registry.
+        let p = HostedSession::genesis_spawned(
+            Hash::of(b"parent-v1"),
+            g_hash,
+            Box::new(CloseOnGoThenInertReducer),
+            Box::new(Authorizer::deny_all()),
+            CompositeExecutor::new(),
+        );
+        let p_hash = p.genesis_hash();
+        let p = p.with_sink(Box::new(LogStore::open(&path).expect("open parent log")));
+        let p_id = SessionId::new(p_hash);
+        host.spawn(p_id, p);
+
+        // Child C — a child of P, self-closes on any inbound.
+        let c = HostedSession::genesis_spawned(
+            Hash::of(b"child-v1"),
+            p_hash,
+            Box::new(SelfClosingChildReducer),
+            Box::new(Authorizer::deny_all()),
+            CompositeExecutor::new(),
+        );
+        let c_id = SessionId::new(c.genesis_hash());
+        host.spawn(c_id, c);
+
+        let go = || EventBody::Inbound {
+            content_type: cdz_kernel::event::ContentType {
+                family: "task/go".into(),
+                version: 1,
+            },
+            payload: Payload::Inline(b"work".to_vec().into()),
+        };
+        // Close C then P (both now closed + still registered, lingering until the reap).
+        host.deliver(&c_id, go(), None)
+            .await
+            .expect("child present")
+            .expect("child delivered");
+        host.deliver(&p_id, go(), None)
+            .await
+            .expect("parent present")
+            .expect("parent delivered");
+        assert!(host.get(&c_id).unwrap().session().is_closed());
+        assert!(host.get(&p_id).unwrap().session().is_closed());
+
+        host.reap_closed_and_notify().await;
+
+        // Both reaped from the registry.
+        assert!(!host.contains(&c_id), "the self-closed child is reaped");
+        assert!(!host.contains(&p_id), "the self-closed parent is reaped");
+
+        // THE INVARIANT: P's DURABLE log tail is still `Closed` — no `lifecycle/child-completed` Inbound was
+        // folded past it (which would happen if the reap notified the closing parent). Recovering the file is
+        // exactly what a boot-recovery reads, so this pins the recovery-reap contract the reviewer flagged.
+        let recovered = LogStore::recover(&path).expect("recover parent log");
+        assert!(
+            matches!(
+                recovered.events.last().map(|e| &e.body),
+                Some(EventBody::Closed { .. })
+            ),
+            "parent's durable tip stays Closed (no child-completed appended past the terminal event); got {:?}",
+            recovered.events.last().map(|e| &e.body)
+        );
+        assert!(
+            !recovered.events.iter().any(|e| matches!(
+                &e.body,
+                EventBody::Inbound { content_type, .. }
+                    if content_type.matches_family("lifecycle/child-completed")
+            )),
+            "no child-completed Inbound was ever delivered to the closing parent"
+        );
+
+        // P's OWN completion still propagated UP to the grandparent G (P is not in the closed set from G's
+        // perspective as a notify target — G is open — so the fix drops only the child->closing-parent hop).
+        let g_kv = host.get(&g_id).unwrap();
+        let g_kv = g_kv.session().kv();
+        assert_eq!(
+            g_kv.get(b"completed-child").map(|v| v.to_vec()),
+            Some(p_hash.to_hex().into_bytes()),
+            "the grandparent folded child-completed carrying P's hash (P's completion reached G)"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
