@@ -6810,13 +6810,14 @@ mod store_effect_tests {
     // a scripted executor before the host E2E (which needs the real BlobExecutor). corpus-bugfix I3 ruling:
     // docs register at `memory/doc/<pkg>` (memory/ = the promotion authority = the writable scope for durable
     // cross-session artifacts; `doc/` alone is Unscoped→UnscopedNameUnwritable). Effect-wire settled with
-    // v-ah-host: blob/put → Ok(Inline(hash.to_hex())); blob/get(hex target) → Ok(Some(Inline(bytes)))/Ok(None).
+    // v-ah-host: blob/put → Ok(Inline(hash raw bytes)); blob/get(raw-bytes target) → Ok(Some(Inline(bytes)))/Ok(None).
 
-    /// A STUB content-addressed store executor: blob/put stores bytes keyed by content hash + returns the hex
-    /// hash (v-ah-host's BlobExecutor convention); blob/get(hex target) returns the stored bytes (or Ok(None)
-    /// if absent). Stands in for the real host BlobExecutor so the reducer FOLD is provable in-kernel.
+    /// A STUB content-addressed store executor: blob/put stores bytes keyed by content hash + returns the RAW
+    /// hash bytes (v-ah-host's BlobExecutor convention — no hex); blob/get(raw-bytes target) returns the stored
+    /// bytes (or Ok(None) if absent). Stands in for the real host BlobExecutor so the reducer FOLD is provable
+    /// in-kernel.
     struct StubBlobExecutor {
-        blobs: std::collections::HashMap<String, Vec<u8>>,
+        blobs: std::collections::HashMap<Vec<u8>, Vec<u8>>,
     }
     #[async_trait::async_trait(?Send)]
     impl Executor for StubBlobExecutor {
@@ -6837,14 +6838,14 @@ mod store_effect_tests {
                             )
                         }
                     };
-                    let hex = Hash::of(&bytes).to_hex();
-                    self.blobs.insert(hex.clone(), bytes);
-                    EffectOutcome::Ok(Some(Payload::Inline(hex.into_bytes().into())))
+                    let key = Hash::of(&bytes).as_bytes().to_vec();
+                    self.blobs.insert(key.clone(), bytes);
+                    EffectOutcome::Ok(Some(Payload::Inline(key.into())))
                 }
                 effect_ct::BLOB_GET => {
-                    // Target = the hex hash (the handle blob/put returned + the reducer store/resolve'd) —
-                    // a UTF-8 hex string read via the fail-closed byte-target view (Target=Bytes ruling).
-                    match req.target_str().ok().and_then(|h| self.blobs.get(h)) {
+                    // Target = the RAW 32 hash bytes (the handle blob/put returned + the reducer store/resolve'd)
+                    // — read from the opaque byte target directly, no hex (the runtime no-hex directive).
+                    match self.blobs.get(req.target.as_ref()) {
                         Some(bytes) => {
                             EffectOutcome::Ok(Some(Payload::Inline(bytes.clone().into())))
                         }
@@ -6923,16 +6924,15 @@ mod store_effect_tests {
                     ..
                 } => {
                     // Distinguish the results by which phase we're in (recorded in KV):
-                    // 1) blob/put result = the hex hash → store/set the doc name at it.
+                    // 1) blob/put result = the raw hash bytes → store/set the doc name at it.
                     // 2) store/resolve result = a name-set payload (name, hash) → blob/get the hash.
                     // 3) blob/get result = the doc-AST bytes → record recovered.
                     if kv.get(b"published").is_none() {
-                        // Phase 1: blob/put returned the hex hash. Register it in the doc index.
-                        kv.put(b"published".to_vec(), bytes.to_vec()); // remember the hex hash
-                        let hex = String::from_utf8_lossy(bytes).into_owned();
-                        let hash = match Hash::from_hex(&hex) {
-                            Some(h) => h,
-                            None => return FoldOutput::none(),
+                        // Phase 1: blob/put returned the raw hash bytes. Register it in the doc index.
+                        kv.put(b"published".to_vec(), bytes.to_vec()); // remember the raw hash bytes
+                        let hash = match <[u8; 32]>::try_from(bytes.as_ref()) {
+                            Ok(a) => Hash::from_bytes(a),
+                            Err(_) => return FoldOutput::none(),
                         };
                         let payload = crate::event_ast::encode_name_set(self.name, &hash);
                         FoldOutput::with(vec![EffectRequest::new_with_family(
@@ -6945,7 +6945,7 @@ mod store_effect_tests {
                         // Phase 2: store/resolve returned the name-set (name, hash) → fetch the doc bytes.
                         FoldOutput::with(vec![EffectRequest::new_with_family(
                             effect_ct::BLOB_GET,
-                            h.to_hex(), // the hex hash is the blob/get target
+                            h.as_bytes(), // the raw hash bytes are the blob/get target
                             None,
                             Timeliness::Interactive,
                         )])
@@ -6989,15 +6989,15 @@ mod store_effect_tests {
             .expect("publish delivers");
 
         // The doc index now points memory/doc/<pkg> at the content hash (registered via store/set).
-        let published_hex = s
+        let published_bytes = s
             .kv()
             .get(b"published")
-            .expect("published a hex hash")
+            .expect("published the raw hash bytes")
             .to_vec();
         assert_eq!(
-            String::from_utf8_lossy(&published_hex),
-            Hash::of(&doc_ast).to_hex(),
-            "the doc-index registered the content hash of the published doc-AST"
+            published_bytes,
+            Hash::of(&doc_ast).as_bytes().to_vec(),
+            "the doc-index registered the content hash (raw bytes) of the published doc-AST"
         );
 
         // QUERY: deliver a doc/query inbound → resolve the name → blob/get → recover the doc-AST.
