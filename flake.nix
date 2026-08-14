@@ -1231,6 +1231,14 @@
           # env + CDZ_STORE (the reducer imports cadenza:runtime/heap + host-fused kv, resolved from the store).
           # Same pattern as CDZ_KV_GENESIS_REDUCER_COMPONENT above.
           export CDZ_AGENT_LOOP_REDUCER_COMPONENT="${reducerCadenzaAgentLoop}"
+          # WHOLE-LOOP (role-library #5): feed the precompiled composed vertical reducer so v-ah-host's
+          # whole-loop host e2e RUNS instead of skipping — it drives reducer_vertical through the REAL executor
+          # set (timer + emit + git) over the A1 bytes boundary, folding the full tick→inbox-drain→work→MR
+          # self-hosting loop by event-family dispatch (the north-star dogfood). Genesis-seeded via a tick-start
+          # event whose payload is the first-deadline-ms u64 LE (the 900000ms interval is a fixed def in the
+          # reducer for now). Returns effects only (no host import) so it needs only CDZ_STORE for its
+          # cadenza:runtime/heap dep. Same pattern as CDZ_AGENT_LOOP_REDUCER_COMPONENT above.
+          export CDZ_REDUCER_VERTICAL_COMPONENT="${reducerCadenzaVertical}"
           # (The A1 transition arming-switch CDZ_KERNEL_BYTES_ABI was dropped here once v-ah-host collapsed its
           # reader in 813570fa5 — the genesis e2e now gates purely on GENESIS_REDUCER_COMPONENT + CDZ_STORE like
           # pure/kv, so the export was a dead no-op. Dual-land: reader removed on origin FIRST, then this drop.)
