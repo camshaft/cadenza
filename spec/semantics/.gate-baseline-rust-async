@@ -4754,6 +4754,7 @@ pass	bitwise XOR with negative one is the bitwise complement
 pass	bitwise XOR with zero is the operand (identity)
 pass	bms1 a BITMASK SET in one Int64 — set ORs a shifted bit, clear ANDs with the XOR-complement answering whether the bit was live, popcount peels the mask; the clear of an absent high bit is a no-op zero
 pass	bmv1 BOYER-MOORE majority vote — the (leader,votes) state deposes on exhausted votes, the challenger seed flips the winner
+pass	bor1 a TWO-LIMB borrow decrement — subtracting from the low limb borrows from the high one when it underflows, and a borrow with no high limb left SATURATES both to zero
 pass	both elements of a runtime-content fn-return tuple are projected directly and combined
 pass	both same-effect handlers STATEFUL — the outer's advance survives the inner's forwards
 pass	both sibling args consume the same binding independently
@@ -5404,6 +5405,7 @@ pass	intersection is commutative over runtime-element sets
 pass	intersection of a set with itself is the set (idempotent)
 pass	intersection of a trie with its churned-back subset is the subset itself
 pass	intersection with the empty set is the empty set
+pass	inv1 MODULAR INVERSE by extended Euclid in the arm — the iteration count is value-dependent, the Bezout coefficient normalizes through the double-mod idiom, and the body verifies v times inverse is one mod 97
 pass	is1 a draw-SELECTED match arm installs a nested same-effect shadow — outer state resumes after the branch-local region
 pass	is2 the ARM's resume-value is a nested SAME-effect handle — a fresh shadow instantiated per dispatch from the live state
 pass	is3 the ARM's NEXT-STATE is computed by a nested SAME-effect handle — the shadow feeds the outer state thread
@@ -6092,6 +6094,7 @@ pass	sibling patterns over a two-sum tuple diverge on PER-POSITION literals
 pass	sibling performs feeding a subtraction witness the advancing state non-commutatively
 pass	sibling recursive calls sequenced through let bindings thread state
 pass	sibling-recursive effect threading is left-to-right (order-observing)
+pass	sie1 a SIEVE SEGMENT — each sieve dispatch clears every multiple of its prime by STRIDED List.update writes in one recursive walk, count answers survivors, probes read prime and composite slots
 pass	signed 8-bit addition that overflows its width is rejected at compile time
 pass	signed zeros INSIDE a sum payload are DISTINCT Set keys (the ±0.0 edge survives the wrapper)
 pass	signed-zero Float32 tuple-key components stay distinct at binary32 width

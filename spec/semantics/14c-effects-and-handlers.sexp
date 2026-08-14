@@ -10623,3 +10623,82 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 267011 Int64))
   (call   main (: 6 Int64)) (output (: 552011 Int64)))
+
+;; ── Modular inverse (extended Euclid), strided sieve updates, two-limb borrow (breaker batch 269) ──
+(case "inv1 MODULAR INVERSE by extended Euclid in the arm — the iteration count is value-dependent, the Bezout coefficient normalizes through the double-mod idiom, and the body verifies v times inverse is one mod 97"
+  (input  (do
+            (effect S (op inv (-> Int64 Int64)))
+            (def (eg (: or Int64) (: r Int64) (: os Int64) (: s Int64))
+              (if (= r 0)
+                  os
+                  (let ((q (/ or r)))
+                    (eg r (- or (* q r)) s (- os (* q s))))))
+            (def (norm (: x Int64)) (% (+ (% x 97) 97) 97))
+            (def (main (: n Int64))
+              (handle S 0
+                ((inv (v) cnt
+                  (let ((x (norm (eg v 97 1 0))))
+                    (resume (+ (* x 10) (+ cnt 1)) (+ cnt 1)))))
+                (let ((a (S.inv n)))
+                  (let ((b (S.inv 3)))
+                    (let ((ia (/ a 10)))
+                      (let ((chk (% (* n ia) 97)))
+                        (+ (* 100000 a) (+ (* 10 b) chk))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 39106521 Int64))
+  (call   main (: 10 Int64)) (output (: 68106521 Int64)))
+
+(case "sie1 a SIEVE SEGMENT — each sieve dispatch clears every multiple of its prime by STRIDED List.update writes in one recursive walk, count answers survivors, probes read prime and composite slots"
+  (input  (do
+            (effect S
+              (op sieve (-> Int64 Int64))
+              (op probe (-> Int64 Int64)))
+            (def (clear-multiples (: f (List Int64)) (: m Int64) (: p Int64))
+              (if (> m 13)
+                  f
+                  (clear-multiples (List.update f (- m 2) 0) (+ m p) p)))
+            (def (count-flags (: f (List Int64)) (: i Int64) (: acc Int64))
+              (match (List.at f i)
+                ((Some v) (count-flags f (+ i 1) (+ acc v)))
+                ((None u) acc)))
+            (def (main (: n Int64))
+              (handle S (list 1 1 1 1 1 1 1 1 1 1 1 1)
+                ((sieve (p) f
+                  (let ((f2 (clear-multiples f (* 2 p) p)))
+                    (resume (count-flags f2 0 0) f2)))
+                 (probe (x) f
+                  (resume (match (List.at f (- x 2)) ((Some v) v) ((None u) -1)) f)))
+                (let ((a (S.sieve 2)))
+                  (let ((b (S.sieve 3)))
+                    (let ((c (S.probe 9)))
+                      (let ((d (S.probe n)))
+                        (+ (* 10 (+ (* 10 (+ (* 100 a) b)) c)) d)))))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 70601 Int64))
+  (call   main (: 4 Int64)) (output (: 70600 Int64)))
+
+(case "bor1 a TWO-LIMB borrow decrement — subtracting from the low limb borrows from the high one when it underflows, and a borrow with no high limb left SATURATES both to zero"
+  (input  (do
+            (effect S (op dec (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S (tuple n 1)
+                ((dec (k) st
+                  (match st
+                    ((tuple lo hi)
+                      (let ((nl (- lo k)))
+                        (if (>= nl 0)
+                            (resume (+ (* hi 1000) nl) (tuple nl hi))
+                            (let ((nh (- hi 1)))
+                              (if (< nh 0)
+                                  (resume 0 (tuple 0 0))
+                                  (let ((l2 (+ nl 100)))
+                                    (if (< l2 0)
+                                        (resume 0 (tuple 0 0))
+                                        (resume (+ (* nh 1000) l2) (tuple l2 nh))))))))))))
+                (let ((a (S.dec 5)))
+                  (let ((b (S.dec 98)))
+                    (let ((c (S.dec 50)))
+                      (+ (* 10000 (+ (* 10000 a) b)) c))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 9800000000 Int64))
+  (call   main (: 50 Int64)) (output (: 104500470000 Int64)))
