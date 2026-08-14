@@ -11221,3 +11221,94 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 5081215 Int64))
   (call   main (: 0 Int64)) (output (: 2050912 Int64)))
+
+;; ── Sliding-window max, zigzag codec accumulator, clamped two-account transfers (breaker batch 276) ──
+(case "swm1 a SLIDING-WINDOW maximum of width 3 — each push appends and evicts the oldest element once the window is full, answering the max scanned from the LIVE window, and the seeds disagree on which pushes set new maxima"
+  (input  (do
+            (effect W (op push (-> Int64 Int64)))
+            (def (dropf (: xs (List Int64)) (: i Int64) (: acc (List Int64)))
+              (if (< i (List.len xs))
+                  (dropf xs (+ i 1) (List.push acc (match (List.at xs i) ((Some v) v) ((None u) 0))))
+                  acc))
+            (def (maxs (: xs (List Int64)) (: i Int64) (: best Int64))
+              (if (< i (List.len xs))
+                  (maxs xs (+ i 1)
+                        (match (List.at xs i)
+                          ((Some v) (if (< best v) v best))
+                          ((None u) best)))
+                  best))
+            (def (main (: n Int64))
+              (handle W (: (list) (List Int64))
+                ((push (v) st
+                  (let ((grown (List.push st v)))
+                    (if (< 3 (List.len grown))
+                        (let ((trimmed (dropf grown 1 (: (list) (List Int64)))))
+                          (resume (maxs trimmed 0 -999) trimmed))
+                        (resume (maxs grown 0 -999) grown)))))
+                (let ((a (W.push (+ n 2))))
+                  (let ((b (W.push 5)))
+                    (let ((c (W.push (- n 1))))
+                      (let ((d (W.push 8)))
+                        (let ((e (W.push 3)))
+                          (let ((f (W.push (+ n 6))))
+                            (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 121212090916 Int64))
+  (call   main (: 0 Int64)) (output (: 20505080808 Int64)))
+
+(case "zgz1 a ZIGZAG codec accumulator — enc maps signed to unsigned (2v for non-negative, -2v-1 for negative) and folds the code into the state sum, dec UN-zigzags the accumulated sum whose parity decides the sign, and the seeds put the decode answers on opposite signs"
+  (input  (do
+            (effect Z
+              (op enc (-> Int64 Int64))
+              (op dec (-> Int64)))
+            (def (main (: n Int64))
+              (handle Z (: 0 Int64)
+                ((enc (v) s
+                  (let ((z (if (< v 0) (- (* -2 v) 1) (* 2 v))))
+                    (resume z (+ s z))))
+                 (dec () s
+                  (if (= (% s 2) 0)
+                      (resume (/ s 2) s)
+                      (resume (- 0 (/ (+ s 1) 2)) s))))
+                (let ((a (Z.enc (- n 3))))
+                  (let ((b (Z.enc 4)))
+                    (let ((c (Z.dec)))
+                      (let ((d (Z.enc (- 0 (+ n 1)))))
+                        (let ((e (Z.dec)))
+                          (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 1408112078 Int64))
+  (call   main (: 0 Int64)) (output (: 507930107 Int64)))
+
+(case "xfr1 CLAMPED transfers between two accounts — each transfer moves min(requested, available) and answers the amount actually moved, the final draw reads the signed imbalance, and only one seed clamps the last transfer"
+  (input  (do
+            (effect X
+              (op xfer (-> Int64 Int64))
+              (op back (-> Int64 Int64))
+              (op imb (-> Int64)))
+            (def (main (: n Int64))
+              (handle X (tuple (+ n 5) (: 3 Int64))
+                ((xfer (v) st
+                  (match st
+                    ((tuple a b)
+                      (if (< a v)
+                          (resume a (tuple 0 (+ b a)))
+                          (resume v (tuple (- a v) (+ b v)))))))
+                 (back (v) st
+                  (match st
+                    ((tuple a b)
+                      (if (< b v)
+                          (resume b (tuple (+ a b) 0))
+                          (resume v (tuple (+ a v) (- b v)))))))
+                 (imb () st
+                  (match st ((tuple a b) (resume (- a b) st)))))
+                (let ((p (X.xfer 4)))
+                  (let ((q (X.back 9)))
+                    (let ((r (X.xfer 6)))
+                      (let ((s (X.back 2)))
+                        (let ((t (X.xfer 11)))
+                          (let ((u (X.imb)))
+                            (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 p) q)) r)) s)) t)) u)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 40706021088 Int64))
+  (call   main (: 0 Int64)) (output (: 40706020392 Int64)))

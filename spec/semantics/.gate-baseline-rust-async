@@ -6210,6 +6210,7 @@ pass	sw4 windowed AVERAGE with the truncating divide — window sum over live le
 pass	sw5 DISTINCT-count over the window — a Set built per dispatch from the last-3 list measures dedupe, n=7 collides with the constant feed
 pass	swapped-operand complements do not fold — less-than or flipped greater-equal is not a tautology
 pass	swd1 a SLIDING-WINDOW dedup state — the last-three list slides via push-and-drop-head rebuilt in the arm, membership answers flip as elements age out
+pass	swm1 a SLIDING-WINDOW maximum of width 3 — each push appends and evicts the oldest element once the window is full, answering the max scanned from the LIVE window, and the seeds disagree on which pushes set new maxima
 pass	swp1 an ATOMIC slot swap — the swap dispatch exchanges both tuple fields in one transition, reads before and after pin the exchange
 pass	swt1 VALUE-YIELDING map ops in the arm — Map.swap answers the PRIOR value it replaced and Map.take answers the value it removed, both tuple-projected in the arm with absent-key sentinels
 pass	sy2 a SYMBOL toggle state — equality routes the resume value while the arm flips fast/slow per dispatch
@@ -6836,12 +6837,14 @@ pass	wx3 Int64.min and Int64.max ride as SUM payloads through dispatch — varia
 pass	wx4 the ARM doubles its argument with wrapping-mul — MAX wraps to -2, MIN to 0, a small value stays exact, count rides along
 pass	wx5 the state STEPS by wrapping-sub of MAX each draw — two hops cross the seam in opposite directions
 pass	wx6 wrapping increments CHAINED hop-to-hop — MAX-1 crosses the seam inside a nested three-op chain, count pins the trips
+pass	xfr1 CLAMPED transfers between two accounts — each transfer moves min(requested, available) and answers the amount actually moved, the final draw reads the signed imbalance, and only one seed clamps the last transfer
 pass	xh1 the INNER arm performs the OUTER op with a COMPUTED key and the outer arm is the two-lookup-match Map shape — the width-partition crosses a handler boundary
 pass	xsw1 a CROSS-SWAPPING scalar pair — each dispatch computes both successors then installs them SWAPPED (a gets the b-derived value, b the a-derived), lineage crosses sides every step
 pass	za1 literal-arm dispatch on a draw — the MATCHED arm performs again, both calls exercised
 pass	za2 a COMPUTED scrutinee (difference of two draws) selects the performing arm at one input only
 pass	za3 NESTED literal-arm dispatch — each level matches a let-bound draw, the innermost arm reads a third
 pass	zero divided by a runtime value folds to zero but keeps the zero-divisor guard
+pass	zgz1 a ZIGZAG codec accumulator — enc maps signed to unsigned (2v for non-negative, -2v-1 for negative) and folds the code into the state sum, dec UN-zigzags the accumulated sum whose parity decides the sign, and the seeds put the decode answers on opposite signs
 pass	α-equivalence (aconv) recognizes (λx.x) and (λy.y) as the same term up to bound-variable renaming
 pass	α-equivalence handles nesting and distinguishes a bound variable from a same-numbered free variable
 todo	Set.of over runtime lists at two different element types declines pending the recursive-generic tie
