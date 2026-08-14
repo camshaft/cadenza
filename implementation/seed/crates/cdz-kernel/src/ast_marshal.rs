@@ -2104,8 +2104,19 @@ pub fn parse_effect_list(bytes: &[u8]) -> Result<Vec<Effect>, MarshalError> {
     Ok(out)
 }
 
-/// Parse one effect-request from its canonical value-form record `(record (= correlation <opt>) (= kind
-/// <family-string>) (= payload <opt>) (= target <bytes>))` (fields sorted by name) into an [`Effect`].
+/// Parse one effect-request from its canonical value-form record into an [`Effect`]. Two field-set shapes
+/// parse (fields sorted by name in both):
+///   - the pre-reify hand-built record `(record (= correlation <opt>) (= kind <family-string>) (= payload
+///     <opt>) (= target <bytes>))`, and
+///   - the phase-1a REIFY 3-field record `(record (= correlation <opt>) (= kind <family-string>) (= payload
+///     <opt>))` — NO target column (v-rb's reify_effect_to_tuple + the v-ah/concierge target-field drop):
+///     a TARGET-FREE world-effect a reducer performs (phase-1a proof-of-shape = a target-free, Bytes-arg
+///     effect). A reducer-chosen-DESTINATION effect's target is not on this record; it rides the payload +
+///     the `@resource` decl marker and the kernel extracts it in PHASE-2 (kind→schema-hash → resolve
+///     descriptor → read `(resource idx)` → req.target). So here `target` is OPTIONAL: absent → EMPTY (a
+///     target-free effect has no destination). Making it optional is backward-compatible — a present target
+///     still parses; an absent one (the 3-field reify record) now parses target-free instead of erroring.
+///
 /// `kind` is the effect FAMILY STRING (seq-39 identity; register-by-string, NEVER a closed enum) → mapped
 /// via [`EffectRequest::new_with_family`] (a well-known family resolves, an extension family takes the
 /// inert `Emit` placeholder keyed on the family). Timeliness defaults to `Interactive` (not on the wire yet).
@@ -2117,10 +2128,13 @@ fn parse_effect_request(a: &Arenas, id: StructId) -> Result<Effect, MarshalError
         field("kind").ok_or_else(|| type_mismatch("effect-request", "missing kind"))?,
     )?
     .to_string();
-    let target = read_bytes(
-        a,
-        field("target").ok_or_else(|| type_mismatch("effect-request", "missing target"))?,
-    )?;
+    // `target` OPTIONAL: present → its bytes; absent (the phase-1a 3-field reify record for a target-free
+    // effect) → EMPTY. The reducer-chosen-destination target of a target-having effect is extracted in
+    // phase-2 via the `@resource` marker, not carried as a field here.
+    let target = match field("target") {
+        Some(n) => read_bytes(a, n)?,
+        None => Vec::new(),
+    };
     // payload/correlation absent if the field is omitted (a fire-and-forget, payload-free effect).
     // The payload is the b1 self-describing shape (bare bytes = opaque | Structured compound = value-form);
     // correlation stays a bare opaque option<bytes> (a correlation token is never structured).
@@ -4271,6 +4285,46 @@ mod tests {
             parse_effect_list(&wb),
             Err(MarshalError::TypeMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn a_reify_3field_no_target_record_parses_target_free() {
+        // The phase-1a REIFY record is 3-field {correlation, kind, payload} — NO target column (v-rb's
+        // reify_effect_to_tuple + the target-field drop). A TARGET-FREE world-effect a reducer performs.
+        // parse_effect_request must accept the missing target field (→ empty target), not error "missing
+        // target". (A reducer-chosen-destination effect's target rides the payload + @resource marker and is
+        // extracted in PHASE-2; this phase-1a piece just tolerates the target-free 3-field record.)
+        let three_field = |kind: &str, payload: Option<&[u8]>, corr: Option<&[u8]>| {
+            let bytes = |b: &[u8]| Val::List(b.iter().copied().map(Val::U8).collect());
+            let opt = |v: Option<&[u8]>| Val::Option(v.map(|x| Box::new(bytes(x))));
+            // NO ("target", …) field — the reify 3-field shape.
+            Val::Record(vec![
+                ("kind".into(), Val::String(kind.to_string())),
+                ("payload".into(), opt(payload)),
+                ("correlation".into(), opt(corr)),
+            ])
+        };
+        // A target-free Bytes-arg effect (payload=Some) + a zero-arg one (payload=None) — the two phase-1a
+        // proof-of-shape reify cases (single-Bytes-arg / zero-arg).
+        let bytes = effect_list_bytes(vec![
+            three_field("effect/ping", Some(b"pong"), None),
+            three_field("effect/beat", None, None),
+        ]);
+        let effects = parse_effect_list(&bytes).expect("a 3-field no-target reify record parses");
+        assert_eq!(effects.len(), 2);
+        // Both parse target-FREE: target is empty (not an error), payload as given.
+        assert_eq!(effects[0].request.content_type.family, "effect/ping");
+        assert_eq!(
+            effects[0].request.target_str().unwrap(),
+            "",
+            "a missing target field parses to an EMPTY target (target-free), not an error"
+        );
+        assert!(
+            matches!(&effects[0].request.payload, Some(Payload::Inline(p)) if p.as_ref() == b"pong")
+        );
+        assert_eq!(effects[1].request.content_type.family, "effect/beat");
+        assert_eq!(effects[1].request.target_str().unwrap(), "");
+        assert!(effects[1].request.payload.is_none());
     }
 
     #[test]
