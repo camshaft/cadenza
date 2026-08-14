@@ -101,6 +101,31 @@ pub struct OpenObligation {
     pub is_timer: bool,
 }
 
+/// Reconstruct the resident open-obligation table entry `(id, OpenObligation)` from a durable-frame
+/// [`crate::event::CheckpointObligation`] — the recover-from-checkpoint DUAL of the build-direction mapping in
+/// [`Session::build_checkpoint_descriptor`] (GAP-4 increment #3). Together they satisfy the recovery-
+/// equivalence invariant: rebuilding the open table from a checkpoint yields the SAME `BTreeMap<u64,
+/// OpenObligation>` a full replay produces (I6's gate for the open set). The invertibility is pinned by
+/// `checkpoint_open_table_roundtrips_the_resident_open_table`.
+// #[allow(dead_code)]: the non-test consumer is `recover_from`-from-checkpoint (increment #3's next slice);
+// for now it is exercised by the invertibility test that pins the build<->recover equivalence.
+#[allow(dead_code)]
+fn open_obligation_from_checkpoint(
+    co: &crate::event::CheckpointObligation,
+) -> (u64, OpenObligation) {
+    (
+        co.id,
+        OpenObligation {
+            target: co.target.clone(),
+            schema_hash: co.schema_hash,
+            token: co.token.clone(),
+            deadline_ms: co.deadline_ms,
+            dispatch_hash: co.dispatch_hash,
+            is_timer: co.is_timer,
+        },
+    )
+}
+
 /// The set of SETTLED effect ids (terminal outcome recorded), as a WATERMARK + sparse EXCEPTIONS
 /// (log/state-decouple I4, design D3) rather than a per-id `BTreeSet` that grows unboundedly for a
 /// long-lived session. Effect ids are assigned in monotonic issue order, so the CONTIGUOUS settled prefix
@@ -149,6 +174,23 @@ impl SettledSet {
     /// exceptions a checkpoint frame carries alongside the watermark. Bounded by the concurrent open frontier.
     pub fn exceptions(&self) -> impl Iterator<Item = u64> + '_ {
         self.exceptions.iter().copied()
+    }
+
+    /// Reconstruct a settled set from a checkpoint frame's `(watermark, exceptions)` — the recover-from-
+    /// checkpoint DUAL of [`SettledSet::watermark`]/[`SettledSet::exceptions`] (GAP-4 increment #3). Exceptions
+    /// strictly BELOW the watermark are already implied-settled (the contiguous prefix), so they are dropped
+    /// to preserve the invariant "watermark + sparse gaps ABOVE it" — this makes the roundtrip
+    /// `from_parts(s.watermark(), s.exceptions())` reconstruct exactly `s` for any well-formed set (its stored
+    /// exceptions are all `>= watermark` by construction), while a malformed frame can't smuggle a
+    /// below-watermark exception into the reconstructed set.
+    pub fn from_parts(watermark: u64, exceptions: impl IntoIterator<Item = u64>) -> Self {
+        SettledSet {
+            watermark,
+            exceptions: exceptions
+                .into_iter()
+                .filter(|&id| id >= watermark)
+                .collect(),
+        }
     }
 }
 
@@ -4050,6 +4092,88 @@ mod monotonic_now_tests {
                 .into_iter()
                 .map(|EffectId(i)| i)
                 .collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn checkpoint_open_table_roundtrips_the_resident_open_table() {
+        // GAP-4 increment #3 recovery-equivalence FOUNDATION: rebuilding the open table + settled set FROM a
+        // checkpoint (open_obligation_from_checkpoint / SettledSet::from_parts) INVERTS building them FROM the
+        // resident state (the build_checkpoint_descriptor mapping). So recover-from-checkpoint reconstructs the
+        // SAME resident state a full replay produces — the property the I6 equivalence (a later slice) rests on.
+        use crate::event::CheckpointObligation;
+        use std::collections::BTreeMap;
+
+        // A resident open table: a dispatched effect obligation (all-Some) + a timer obligation (deadline-only).
+        let mut open: BTreeMap<u64, OpenObligation> = BTreeMap::new();
+        open.insert(
+            7,
+            OpenObligation {
+                target: b"https://ok.host/x".as_slice().into(),
+                schema_hash: Some(Hash::of(b"http-schema")),
+                token: Some(b"cont-1".to_vec()),
+                deadline_ms: None,
+                dispatch_hash: Some(Hash::of(b"dispatch-7")),
+                is_timer: false,
+            },
+        );
+        open.insert(
+            9,
+            OpenObligation {
+                target: b"".as_slice().into(),
+                schema_hash: None,
+                token: None,
+                deadline_ms: Some(5000),
+                dispatch_hash: None,
+                is_timer: true,
+            },
+        );
+
+        // BUILD direction (mirrors Session::build_checkpoint_descriptor's mapping): resident -> frame.
+        let frame: Vec<CheckpointObligation> = open
+            .iter()
+            .map(|(&id, ob)| CheckpointObligation {
+                id,
+                target: ob.target.clone(),
+                schema_hash: ob.schema_hash,
+                token: ob.token.clone(),
+                deadline_ms: ob.deadline_ms,
+                dispatch_hash: ob.dispatch_hash,
+                is_timer: ob.is_timer,
+            })
+            .collect();
+        // RECOVER direction: frame -> resident. The roundtrip is identity.
+        let rebuilt: BTreeMap<u64, OpenObligation> =
+            frame.iter().map(open_obligation_from_checkpoint).collect();
+        assert_eq!(
+            rebuilt, open,
+            "the open-obligation table survives the checkpoint build->recover roundtrip"
+        );
+
+        // SettledSet: insert out-of-order so it has a watermark AND sparse exceptions, then reconstruct from
+        // its (watermark, exceptions) — the durable-frame encode/decode duals.
+        let mut settled = SettledSet::default();
+        for id in [0u64, 1, 2, 5, 7] {
+            settled.insert(id);
+        }
+        // Contiguous 0..=2 collapses into watermark 3; 5 and 7 remain as exceptions.
+        assert_eq!(settled.watermark(), 3);
+        assert_eq!(settled.exceptions().collect::<Vec<_>>(), vec![5, 7]);
+        let rebuilt_settled = SettledSet::from_parts(settled.watermark(), settled.exceptions());
+        assert_eq!(
+            rebuilt_settled, settled,
+            "the settled set survives the watermark+exceptions roundtrip"
+        );
+        // And the reconstructed set answers is_settled identically across the range.
+        for id in 0..10 {
+            assert_eq!(rebuilt_settled.is_settled(id), settled.is_settled(id));
+        }
+        // from_parts DROPS a malformed below-watermark exception (invariant: watermark + gaps ABOVE it).
+        let defensive = SettledSet::from_parts(3, [1, 5]);
+        assert!(!defensive.exceptions().any(|id| id < 3));
+        assert!(
+            defensive.is_settled(1),
+            "below-watermark id is implied-settled"
         );
     }
 
