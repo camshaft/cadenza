@@ -3643,6 +3643,43 @@ fn a_reified_async_world_effect_perform_types_as_the_request_record_in_effect_li
     );
 }
 
+/// R2 (in-fold `Value.encode`/`decode` — operator-ruled binary-AST canonical encoder; the v-inference
+/// SURFACE + typing half, co-landed with v-rust-backend's `Core::ValueEncode`/`ValueDecode` prims + emit).
+/// `Value.encode : ∀a. a → Bytes` (TOTAL) and `Value.decode : ∀a. Bytes → Option a` (PARTIAL, `a` grounded
+/// by the call-site expected type). Asserts: encoding a STRUCTURED record types clean (`a` = the record,
+/// result Bytes — the whole point, unblocking Model.request's structured payload), and decoding into an
+/// annotated `Option Record` types clean (the annotation grounds `a`). No CDZ0203/CDZ0101.
+#[test]
+fn value_encode_decode_type_a_structured_record_round_trip_surface() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (def (enc (: r (Record (a Int64) (b Int64)))) (Value.encode r)) \
+                 (def (dec (: bs Bytes)) (: (Value.decode bs) (Option (Record (a Int64) (b Int64))))) \
+                 (export enc))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:reducer/api"),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        out.diagnostics
+            .iter()
+            .all(|d| d.code.as_deref() != Some("CDZ0203") && d.code.as_deref() != Some("CDZ0101")),
+        "Value.encode of a structured record + Value.decode into an annotated Option Record must type \
+         clean (encode ∀a.a→Bytes total, decode ∀a.Bytes→Option a grounded by the annotation): {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| (&d.code, &d.message))
+            .collect::<Vec<_>>()
+    );
+}
+
 /// RULING A (2026-08-14, resolving v-effects' freeze-blocking reify/2b crux): a TARGET-HAVING world-effect
 /// — one whose op carries an `@resource` marker (`Emit.send(@resource dest, payload)`) — reifies the dest to
 /// its OWN `target: Bytes` wire field (the dest is a runtime value SEC-F1 authorizes against a resource

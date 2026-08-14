@@ -218,6 +218,7 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     // `of`/`to-string` operation fields. Like `Bytes`/`String`/`Char`, a `(meta t)` type-value and member
     // access coexist.
     names.insert("Symbol".to_string(), symbol_module(ast));
+    names.insert("Value".to_string(), value_module(ast));
 
     // The binary ARITHMETIC operators — records whose META channel carries their type (`(meta t)`, a
     // compile-time type-lambda) and their reduction (`(meta apply)`, the intrinsic). `(+ a b)` is the
@@ -1090,6 +1091,54 @@ fn char_module(ast: &mut Arenas) -> StructId {
     let from_int_key = push_atom(ast, Leaf::Name("from-int".into()));
     children.push(push_list(ast, vec![from_int_key, from_int_op]));
     push_list(ast, children)
+}
+
+/// The `Value` module record — the in-fold canonical encoder/decoder surface (R2). A plain record (no
+/// `(meta t)` type-value: `Value` is a namespace, not a type) whose members project to the `value-encode`
+/// / `value-decode` prims (`Core::ValueEncode`/`ValueDecode`, reusing the runtime `value-encode`/
+/// `value-decode` heap ops IN-FOLD). `encode : ∀a. a → Bytes` is TOTAL — every value has a binary-AST
+/// value-form, so encode never fails. `decode : ∀a. Bytes → Option a` is PARTIAL — the bytes may not
+/// decode to `a`, so `Some` on success / `None` on a shape/type mismatch; `a` is grounded by the call-site
+/// expected type (annotation / param / downstream), and an UNSOLVED `a` at the decode node DECLINES (the
+/// emit needs a concrete descriptor — mirrors the empty-collection-needs-annotation discipline). This is
+/// the operator-ruled binary-AST encoder (R2); `Value.encode`(Ast) equals the internal `ast-encode` bytes,
+/// so it is THE single public canonical encoder (concierge ruling — no parallel `ast-encode` surface).
+fn value_module(ast: &mut Arenas) -> StructId {
+    let head = push_atom(ast, Leaf::Str("record".into()));
+    let mut children = vec![head];
+    // `encode : ∀a. a → Bytes` — total.
+    let encode_ty = value_encode_type_lambda(ast);
+    let encode_op = list_op_record(ast, "value-encode", encode_ty);
+    let encode_key = push_atom(ast, Leaf::Name("encode".into()));
+    children.push(push_list(ast, vec![encode_key, encode_op]));
+    // `decode : ∀a. Bytes → (Option a)` — partial; `a` grounded at the call site.
+    let decode_ty = value_decode_type_lambda(ast);
+    let decode_op = list_op_record(ast, "value-decode", decode_ty);
+    let decode_key = push_atom(ast, Leaf::Name("decode".into()));
+    children.push(push_list(ast, vec![decode_key, decode_op]));
+    push_list(ast, children)
+}
+
+/// The type-lambda `(fn (a) (-> a Bytes))` for `Value.encode` — `∀a. a → Bytes`, total.
+fn value_encode_type_lambda(ast: &mut Arenas) -> StructId {
+    let a = push_atom(ast, Leaf::Name("a".into()));
+    let bytes = push_atom(ast, Leaf::Name("Bytes".into()));
+    let body = arrow_type(ast, a, bytes); // (-> a Bytes)
+    list_type_lambda(ast, body)
+}
+
+/// The type-lambda `(fn (a) (-> Bytes (Option a)))` for `Value.decode` — `∀a. Bytes → (Option a)`,
+/// partial. `(Option a)` reduces via the generic `Option` prelude sum, carrying the target `a` the emit
+/// reads to build the decode descriptor; an unsolved `a` at the decode node declines.
+fn value_decode_type_lambda(ast: &mut Arenas) -> StructId {
+    let bytes = push_atom(ast, Leaf::Name("Bytes".into()));
+    let option_a = {
+        let option = push_atom(ast, Leaf::Name("Option".into()));
+        let a = push_atom(ast, Leaf::Name("a".into()));
+        push_list(ast, vec![option, a]) // (Option a)
+    };
+    let body = arrow_type(ast, bytes, option_a); // (-> Bytes (Option a))
+    list_type_lambda(ast, body)
 }
 
 /// The `Symbol` module record (17-symbols) — a record whose `(meta t)` is the ground `Ty::Symbol`
