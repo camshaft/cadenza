@@ -10702,3 +10702,76 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 9800000000 Int64))
   (call   main (: 50 Int64)) (output (: 104500470000 Int64)))
+
+;; ── Leader election rounds, loop-driven plateau twin, LCG reservoir pick (breaker batch 270) ──
+(case "led1 BULLY leader election — registrations grow the candidate set, elect scans for the highest id, and deregistering the ELECTED leader (its id threaded through the body) forces re-election from the survivors"
+  (input  (do
+            (effect S
+              (op reg (-> Int64 Int64))
+              (op elect (-> Int64))
+              (op dereg (-> Int64 Int64)))
+            (def (maxid (: xs (List Int64)) (: i Int64) (: best Int64))
+              (match (List.at xs i)
+                ((Some v) (maxid xs (+ i 1) (if (> v best) v best)))
+                ((None u) best)))
+            (def (main (: n Int64))
+              (handle S (Set.of (list 0))
+                ((reg (k) c
+                  (let ((c2 (Set.insert c k)))
+                    (resume (- (Set.len c2) 1) c2)))
+                 (elect () c (resume (maxid (Set.to-list c) 0 -1) c))
+                 (dereg (k) c
+                  (let ((c2 (Set.remove c k)))
+                    (resume (- (Set.len c2) 1) c2))))
+                (let ((a (S.reg 5)))
+                  (let ((b (S.reg n)))
+                    (let ((c (S.reg 2)))
+                      (let ((d (S.elect)))
+                        (let ((e (S.dereg d)))
+                          (let ((f (S.elect)))
+                            (+ (* 100 (+ (* 10 (+ (* 100 (+ (* 10 (+ (* 10 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 9 Int64)) (output (: 12309205 Int64))
+  (call   main (: 3 Int64)) (output (: 12305203 Int64)))
+
+(case "plt2 the LOOP-DRIVEN plateau tracker — the same three-let two-if arm that declines straight-line folds fine when one recursive driver walks the feed list"
+  (input  (do
+            (effect S (op feed (-> Int64 Int64)))
+            (def (drive (: vals (List Int64)) (: i Int64) (: acc Int64))
+              (match (List.at vals i)
+                ((Some v) (drive vals (+ i 1) (+ (* acc 100) (S.feed v))))
+                ((None u) acc)))
+            (def (main (: n Int64))
+              (handle S (tuple -999 0 0 -1)
+                ((feed (v) st
+                  (match st
+                    ((tuple prev run bl bv)
+                      (let ((r2 (if (= v prev) (+ run 1) 1)))
+                        (let ((bl2 (if (> r2 bl) r2 bl)))
+                          (let ((bv2 (if (> r2 bl) v bv)))
+                            (resume (+ (* bl2 10) (% bv2 10))
+                                    (tuple v r2 bl2 bv2)))))))))
+                (drive (list 4 4 n n n) 0 0)))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 1424344454 Int64))
+  (call   main (: 7 Int64)) (output (: 1424242437 Int64)))
+
+(case "rsv1 DETERMINISTIC reservoir sampling — an LCG threaded beside the reservoir decides keep-or-replace by count-modulus, seeds route which offers displace the kept element"
+  (input  (do
+            (effect S (op offer (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S (tuple n -1 0)
+                ((offer (v) st
+                  (match st
+                    ((tuple seed kept count)
+                      (let ((c2 (+ count 1)))
+                        (let ((s2 (% (+ (* seed 13) 7) 101)))
+                          (let ((k2 (if (= (% s2 c2) 0) v kept)))
+                            (resume k2 (tuple s2 k2 c2)))))))))
+                (let ((a (S.offer 10)))
+                  (let ((b (S.offer 20)))
+                    (let ((c (S.offer 30)))
+                      (+ (* 10000 a) (+ (* 100 b) c)))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 102020 Int64))
+  (call   main (: 7 Int64)) (output (: 101030 Int64)))

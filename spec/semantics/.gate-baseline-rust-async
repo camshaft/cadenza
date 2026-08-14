@@ -5423,6 +5423,7 @@ pass	lcs1 an LCS DP-ROW state — each fed character rebuilds the whole dynamic-
 pass	ldd1 an EVENT-LEDGER state — a List of (tag,value) tuples appends per log dispatch, and replay folds only the MATCHING tag's values (absent tag folds to zero)
 pass	le multi-byte fields read little-endian at runtime offsets, unsigned and signed
 pass	le-ax of a ground add that OVERFLOWS Int64 traps during evaluation — it cannot wrap to forge a false bound
+pass	led1 BULLY leader election — registrations grow the candidate set, elect scans for the highest id, and deregistering the ELECTED leader (its id threaded through the body) forces re-election from the survivors
 pass	left shift
 pass	less-than at the integer extremes is signed, not unsigned
 pass	less-than compares negative operands by signed order
@@ -5742,6 +5743,7 @@ pass	pf1 an AGGREGATOR arm — the op returns the running sum of every value fed
 pass	pfx1 a PREFIX-SUM table state — add appends the running total to the list, range answers pre[j]-pre[i] via two fallible reads with an out-of-bounds sentinel
 pass	pg1 a PUT/GET store — put returns the value it displaces, a counter tracks writes, get reads the survivor
 pass	pk1 a BEGIN/END protocol arm — a Bool flag rejects double-begin and end-without-begin, the sequence encodes the violations
+pass	plt2 the LOOP-DRIVEN plateau tracker — the same three-let two-if arm that declines straight-line folds fine when one recursive driver walks the feed list
 pass	pm1 LITERAL match arms grade the state INSIDE the handler arm — a mod-4 walker crosses all four literal rows
 pass	popping a field yields its value and the remaining record
 pass	popping a tuple with a runtime element separates the head from the rest
@@ -5969,6 +5971,7 @@ pass	rs2 the arm updates the record state via Record.with — field b is held by
 pass	rs3 a NESTED record state — the arm functionally updates the inner record's x by y and bumps the outer counter
 pass	rsl1 a Result whose Ok payload is a HEAP LIST snapshot of the state — the first snap Errs on the empty list, the second Oks the grown snapshot, both cross resume
 pass	rsp1 a ROLE-INVERTING parity splitter — feed routes each value to the even or odd accumulator, flip INVERTS the routing so post-flip evens land in the odd bucket, the flip answers the packed snapshot
+pass	rsv1 DETERMINISTIC reservoir sampling — an LCG threaded beside the reservoir decides keep-or-replace by count-modulus, seeds route which offers displace the kept element
 pass	rsw1 the arm's Ok/Err verdict FLIPS between two identical performs as the state passes the payload — both variants cross and unwrap
 pass	rt1 Ok/Err resume values with a DEPENDENT second dispatch — the sign of the falling state flips Ok to Err
 pass	rt2 an Err SHORT-CIRCUITS a recursive Result walk — Ok accumulates, the first Err multiplies out and stops
