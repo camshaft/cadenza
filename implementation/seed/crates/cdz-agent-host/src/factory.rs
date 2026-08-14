@@ -1367,6 +1367,53 @@ mod tests {
         }
     }
 
+    #[test]
+    fn an_in_host_requests_schema_hash_equals_effect_family_schema_hash_of_its_family() {
+        // PHASE-3 RE-KEY COMPARISON-BASIS PIN. The re-key rewrites each leaf executor's family self-guard
+        // from `req.content_type.matches_family(effect_ct::X)` to a schema-hash compare
+        // `req.schema_hash == effect_family_schema_hash(effect_ct::X)`. That is only BEHAVIOR-EQUIVALENT if the
+        // schema-hash the kernel BAKES into an in-host request (`EffectRequest::new_with_family`, which the
+        // host + kernel construct every request through) is the SAME hash the guard compares against
+        // (`ast_marshal::effect_family_schema_hash`). They are computed by two separate functions today
+        // (new_with_family's internal `from_family -> builtin/family memo` vs the standalone accessor), so a
+        // future kernel change could silently DESYNC them — which would make a re-keyed guard reject EVERY
+        // request for that family (req.schema_hash != the accessor's hash). Pin the equality for every family
+        // the executor suite serves, so that desync reds HERE, in my gate, before it can strand or break the
+        // re-key. (This is the companion to `every_family..resolves`: that pins Some-ness; this pins that the
+        // request-carried hash and the guard-side hash are the SAME Some.)
+        use cdz_kernel::ast_marshal::effect_family_schema_hash;
+        use cdz_kernel::effect::{effect_ct, EffectRequest, Timeliness};
+        for fam in [
+            effect_ct::NOW,
+            effect_ct::HTTP,
+            effect_ct::MODEL,
+            effect_ct::EMIT,
+            effect_ct::SHELL,
+            effect_ct::METRIC_PUBLISH,
+            effect_ct::FS_READ,
+            effect_ct::FS_WRITE,
+            effect_ct::FS_GLOB,
+            effect_ct::BLOB_PUT,
+            effect_ct::BLOB_GET,
+            effect_ct::LIFECYCLE_SPAWN,
+            effect_ct::LIFECYCLE_SUSPEND,
+            effect_ct::LIFECYCLE_RESUME,
+            effect_ct::LIFECYCLE_TERMINATE,
+            effect_ct::EFFECT_REPLY,
+            effect_ct::WS_SEND,
+            effect_ct::WS_DIAL,
+        ] {
+            let req = EffectRequest::new_with_family(fam, "t", None, Timeliness::Interactive);
+            assert_eq!(
+                req.schema_hash,
+                effect_family_schema_hash(fam),
+                "family {fam:?}: the schema-hash baked into an in-host EffectRequest (new_with_family) must \
+                 equal effect_family_schema_hash(family) — the phase-3 re-keyed guard compares the former \
+                 against the latter, so a desync would make the guard reject every request for this family"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn install_of_an_absent_reducer_hash_is_a_clean_error() {
         // The blob store is empty → get returns None → build errors cleanly (no panic), and apply_admin
