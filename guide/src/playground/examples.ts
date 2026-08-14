@@ -955,6 +955,30 @@ export const EXAMPLES: Example[] = [
     expected: "5",
   },
   {
+    // Shows off: `Char.to-int` / `Char.from-int` — a char IS its Unicode scalar. A Caesar cipher shifts a
+    // letter by n within A..Z: read the code point, shift modulo 26 off 'A' (65), rebuild the letter
+    // (Char.from-int returns Option Char — None on an invalid code point). 'A'+3='D'; 'Y'+3 wraps to 'B'.
+    id: "caesar-cipher-char",
+    name: "Caesar cipher (char arithmetic)",
+    theme: "algorithms",
+    surface: "sexpr",
+    source: `(do
+  ; A char IS its Unicode scalar. Char.to-int reads the code point; Char.from-int
+  ; rebuilds a char (Option Char — None on an invalid code point). Shift an uppercase
+  ; letter by n, wrapping A..Z: work in [0,26) off 'A' (65), then add 65 back.
+  (def (letter s) (match (String.scalar-at s 0) ((Some c) c) ((None) (trap "empty string"))))
+  (def (shift c n)
+    (let ((code (Char.to-int c)))
+      (match (Char.from-int (+ 65 (% (+ (- code 65) n) 26)))
+        ((Some r) r)
+        ((None) (trap "caesar: bad code point")))))
+  (def (main)
+    ; 'A' shifted by 3 -> 'D'; 'Y' shifted by 3 wraps around -> 'B'.
+    (tuple (shift (letter "A") 3) (shift (letter "Y") 3)))
+  (export main))`,
+    expected: "(: (tuple #\\D #\\B) (Tuple Char Char))",
+  },
+  {
     // Shows off: Unicode NFC normalization at string CONSTRUCTION. Concatenating a plain "e" with a lone
     // U+0301 COMBINING ACUTE ACCENT composes them into the single precomposed scalar "é" (U+00E9), so the
     // result reads as 1 scalar / 2 UTF-8 bytes — not 2 scalars / 3 bytes. Strings are normalized as they're built.
