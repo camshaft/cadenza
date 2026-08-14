@@ -64,6 +64,7 @@ pub mod admin_wire;
 pub mod async_host;
 pub mod blob_cache;
 pub mod blob_exec;
+pub mod checkpoint;
 pub mod clock;
 pub mod config;
 pub mod converse;
