@@ -2450,6 +2450,150 @@ mod tests {
         );
     }
 
+    /// END-TO-END (the north-star dogfood): drive the REAL rcdzc-compiled COMPOSED FLEET-LOOP reducer
+    /// (`reducer_vertical.cdz` — v-agent-harness role-library #5) through the A1 BYTES fold boundary, proving a
+    /// self-hosting fleet-agent runs as one pure fold that dispatches the WHOLE loop by event family. Same
+    /// drive pattern as the pure/kv E2Es (`reducer.apply` across the bytes boundary, asserting the emitted
+    /// effect list), env-gated on `CDZ_REDUCER_VERTICAL_COMPONENT` (+ `CDZ_STORE` for the value-heap dep, wired
+    /// by v-nix's `agentHostEnvSetup`); skips when unwired. The reducer is PURE (no kv/host imports — v-ah), so
+    /// each family folds independently. Contract (reducer_vertical.cdz): `tick-start`(payload=LE u64 deadline)
+    /// → one `timer` effect armed at `decimal(deadline)`; `timer-fired`(payload=LE u64 fired_ms) → `timer`
+    /// re-armed at `decimal(fired_ms + 900000)` + `emit "begin-tick"`; `inbox/<informational>` → `emit
+    /// "archive"`; `inbox/<actionable>` → `emit "act"`; `unit-complete` → NO effect (the git-publish step is
+    /// DEFERRED to the GAP-6 C2 git→shell re-point — the timer/inbox branches are unaffected).
+    #[tokio::test]
+    async fn real_vertical_reducer_folds_the_whole_fleet_loop_through_the_a1_bytes_boundary() {
+        use cdz_kernel::wasm_host::AsyncComponentReducer;
+
+        let non_empty = |var: &str| std::env::var(var).ok().filter(|v| !v.is_empty());
+        let Some(reducer_path) = non_empty("CDZ_REDUCER_VERTICAL_COMPONENT") else {
+            eprintln!(
+                "SKIP real_vertical_reducer_folds_the_whole_fleet_loop_through_the_a1_bytes_boundary: \
+                 CDZ_REDUCER_VERTICAL_COMPONENT unset (or empty)"
+            );
+            return;
+        };
+        let store_dir = non_empty("CDZ_STORE").unwrap_or_else(|| {
+            panic!(
+                "real_vertical_reducer_...: CDZ_REDUCER_VERTICAL_COMPONENT is set but CDZ_STORE is not — the \
+                 vertical reducer imports cadenza:runtime/heap, whose bytes resolve from the component store"
+            )
+        });
+        let bytes = std::fs::read(&reducer_path).unwrap_or_else(|e| {
+            panic!("CDZ_REDUCER_VERTICAL_COMPONENT={reducer_path:?} set but unreadable: {e}")
+        });
+        let reducer = AsyncComponentReducer::from_component_bytes(&bytes)
+            .unwrap_or_else(|e| panic!("reducer_vertical must be a valid component: {e:?}"));
+        let store = cdz_kernel::component_store::ComponentStore::open(&store_dir);
+        let deps = reducer.deps().to_vec();
+        let mut resolved = Vec::with_capacity(deps.len());
+        for dep in &deps {
+            let dep_bytes = store.get_by_hash(&dep.hash).unwrap_or_else(|e| {
+                panic!(
+                    "CDZ_STORE={store_dir:?} could not resolve vertical reducer dep {:?} (hash {}): {e:?}",
+                    dep.import_name,
+                    dep.hash.to_hex()
+                )
+            });
+            resolved.push((dep.clone(), dep_bytes));
+        }
+        let reducer = reducer
+            .with_resolved_deps(resolved)
+            .with_component_store(store);
+
+        let ct = |fam: &'static str| cdz_kernel::event::ContentType {
+            family: fam.into(),
+            version: 1,
+        };
+        fn target_of(eff: &cdz_kernel::reducer::Effect) -> &str {
+            eff.request.target_str().expect("effect target is UTF-8")
+        }
+
+        // tick-start(deadline = 5000) → arm the first timer at decimal(5000).
+        let (effs, _kv) = reducer
+            .apply(
+                cdz_kernel::kv::Kv::new(),
+                ct("tick-start"),
+                Some(5000u64.to_le_bytes().to_vec()),
+                None,
+            )
+            .await
+            .expect("tick-start folds through the bytes boundary");
+        assert_eq!(effs.len(), 1, "tick-start arms exactly one timer");
+        assert_eq!(effs[0].request.content_type.family, "timer");
+        assert_eq!(
+            target_of(&effs[0]),
+            "5000",
+            "first timer armed at the seeded deadline"
+        );
+
+        // timer-fired(fired_ms = 1000) → re-arm at decimal(1000 + 900000) + emit begin-tick.
+        let (effs, _kv) = reducer
+            .apply(
+                cdz_kernel::kv::Kv::new(),
+                ct("timer-fired"),
+                Some(1000u64.to_le_bytes().to_vec()),
+                None,
+            )
+            .await
+            .expect("timer-fired folds");
+        assert_eq!(effs.len(), 2, "timer-fired re-arms + begins the tick");
+        assert_eq!(effs[0].request.content_type.family, "timer");
+        assert_eq!(
+            target_of(&effs[0]),
+            "901000",
+            "re-armed at fired_ms + 900000ms interval"
+        );
+        assert_eq!(effs[1].request.content_type.family, "emit");
+        assert_eq!(target_of(&effs[1]), "begin-tick");
+
+        // inbox/reply (informational) → emit "archive".
+        let (effs, _kv) = reducer
+            .apply(cdz_kernel::kv::Kv::new(), ct("inbox/reply"), None, None)
+            .await
+            .expect("inbox/reply folds");
+        assert_eq!(effs.len(), 1);
+        assert_eq!(effs[0].request.content_type.family, "emit");
+        assert_eq!(
+            target_of(&effs[0]),
+            "archive",
+            "an informational inbox event is archived"
+        );
+
+        // inbox/merge-request (actionable) → emit "act".
+        let (effs, _kv) = reducer
+            .apply(
+                cdz_kernel::kv::Kv::new(),
+                ct("inbox/merge-request"),
+                Some(b"body".to_vec()),
+                None,
+            )
+            .await
+            .expect("inbox/merge-request folds");
+        assert_eq!(effs.len(), 1);
+        assert_eq!(effs[0].request.content_type.family, "emit");
+        assert_eq!(
+            target_of(&effs[0]),
+            "act",
+            "an actionable inbox event is acted on"
+        );
+
+        // unit-complete → NO effect (git-publish deferred to the GAP-6 C2 git→shell re-point).
+        let (effs, _kv) = reducer
+            .apply(
+                cdz_kernel::kv::Kv::new(),
+                ct("unit-complete"),
+                Some(b"commit msg".to_vec()),
+                None,
+            )
+            .await
+            .expect("unit-complete folds");
+        assert!(
+            effs.is_empty(),
+            "unit-complete defers to no effect until the git→shell re-point (GAP-6 C2)"
+        );
+    }
+
     /// END-TO-END: drive the REAL rcdzc-compiled KV-GENESIS reducer (`reducer_kv.cdz`) through the A1 BYTES
     /// fold boundary on wasmtime, proving the kv HOST IMPORT round-trips the SAME bytes through the host — the
     /// sibling of the pure-genesis E2E, exercising BOTH `kv.put` AND the new `kv.get` option<list<u8>> lift
