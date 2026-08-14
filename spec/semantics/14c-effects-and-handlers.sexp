@@ -10375,3 +10375,98 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 307141523 Int64))
   (call   main (: 5 Int64)) (output (: 812192028 Int64)))
+
+; --- breaker batch 266: bitmask set in one Int64, digital-root nested recursion, two-phase commit ---
+(case "bms1 a BITMASK SET in one Int64 — set ORs a shifted bit, clear ANDs with the XOR-complement answering whether the bit was live, popcount peels the mask; the clear of an absent high bit is a no-op zero"
+  (input  (do
+            (effect S
+              (op setb (-> Int64 Int64))
+              (op clearb (-> Int64 Int64))
+              (op pop (-> Int64)))
+            (def (count-bits (: b Int64) (: acc Int64))
+              (if (= b 0) acc (count-bits (>> b 1) (+ acc (& b 1)))))
+            (def (main (: n Int64))
+              (handle S 0
+                ((setb (i) bits
+                  (let ((b2 (| bits (<< 1 i))))
+                    (resume (if (= (& b2 (<< 1 i)) 0) 0 1) b2)))
+                 (clearb (i) bits
+                  (let ((was (if (= (& bits (<< 1 i)) 0) 0 1)))
+                    (resume was (& bits (^ (<< 1 i) -1)))))
+                 (pop () bits (resume (count-bits bits 0) bits)))
+                (let ((a (S.setb n)))
+                  (let ((b (S.setb 3)))
+                    (let ((c (S.clearb n)))
+                      (let ((d (S.clearb 60)))
+                        (let ((e (S.pop)))
+                          (+ (* 10 (+ (* 10 (+ (* 10 (+ (* 10 a) b)) c)) d)) e))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 11100 Int64))
+  (call   main (: 7 Int64)) (output (: 11101 Int64)))
+
+(case "dgr1 a DIGITAL-ROOT arm — nested fixed-point recursion (repeat digit-sum until single digit) runs wholly inside each dispatch, the accumulator's low digit rides along in the answer"
+  (input  (do
+            (effect S (op feed (-> Int64 Int64)))
+            (def (dsum (: x Int64) (: acc Int64))
+              (if (= x 0) acc (dsum (/ x 10) (+ acc (% x 10)))))
+            (def (droot (: x Int64))
+              (if (< x 10) x (droot (dsum x 0))))
+            (def (main (: n Int64))
+              (handle S 0
+                ((feed (v) acc
+                  (let ((r (droot v)))
+                    (let ((a2 (+ acc r)))
+                      (resume (+ (* r 10) (% a2 10)) a2)))))
+                (let ((a (S.feed n)))
+                  (let ((b (S.feed 999)))
+                    (let ((c (S.feed 38)))
+                      (+ (* 100 (+ (* 100 a) b)) c))))))
+            (export main)))
+  (call   main (: 47 Int64)) (output (: 229123 Int64))
+  (call   main (: 5 Int64)) (output (: 559426 Int64)))
+
+(case "tpc1 TWO-PHASE COMMIT across two handlers — the coordinator prepares both sides, commits both only when both prepared, otherwise aborts both restoring the balances; the pass and fail paths both verified"
+  (input  (do
+            (effect A
+              (op prep (-> Int64 Int64))
+              (op fin (-> Int64 Int64)))
+            (effect B
+              (op prep (-> Int64 Int64))
+              (op fin (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle A (tuple 10 0)
+                ((prep (v) st
+                  (match st
+                    ((tuple bal _h)
+                      (if (<= v bal)
+                          (resume 1 (tuple (- bal v) v))
+                          (resume 0 st)))))
+                 (fin (ok) st
+                  (match st
+                    ((tuple bal h)
+                      (if (= ok 1)
+                          (resume bal (tuple bal 0))
+                          (resume (+ bal h) (tuple (+ bal h) 0)))))))
+                (handle B (tuple n 0)
+                  ((prep (v) st
+                    (match st
+                      ((tuple bal _h)
+                        (if (<= v bal)
+                            (resume 1 (tuple (- bal v) v))
+                            (resume 0 st)))))
+                   (fin (ok) st
+                    (match st
+                      ((tuple bal h)
+                        (if (= ok 1)
+                            (resume bal (tuple bal 0))
+                            (resume (+ bal h) (tuple (+ bal h) 0)))))))
+                  (let ((pa (A.prep 4)))
+                    (let ((pb (B.prep 6)))
+                      (let ((ok (if (= (+ pa pb) 2) 1 0)))
+                        (let ((ra (A.fin ok)))
+                          (let ((rb (B.fin ok)))
+                            (+ (* 10000 (+ (* 10 (+ (* 10 pa) pb)) ok))
+                               (+ (* 100 ra) rb))))))))))
+            (export main)))
+  (call   main (: 8 Int64)) (output (: 1110602 Int64))
+  (call   main (: 3 Int64)) (output (: 1001003 Int64)))

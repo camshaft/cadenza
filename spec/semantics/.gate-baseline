@@ -4739,6 +4739,7 @@ pass	bitwise XOR of an integer and a float does not silently promote
 pass	bitwise XOR toggles bits
 pass	bitwise XOR with negative one is the bitwise complement
 pass	bitwise XOR with zero is the operand (identity)
+pass	bms1 a BITMASK SET in one Int64 — set ORs a shifted bit, clear ANDs with the XOR-complement answering whether the bit was live, popcount peels the mask; the clear of an absent high bit is a no-op zero
 pass	bmv1 BOYER-MOORE majority vote — the (leader,votes) state deposes on exhausted votes, the challenger seed flips the winner
 pass	both elements of a runtime-content fn-return tuple are projected directly and combined
 pass	both same-effect handlers STATEFUL — the outer's advance survives the inner's forwards
@@ -4985,6 +4986,7 @@ pass	deeply nested pattern matching
 pass	demoting a Float64 to Float32 rounds to the nearest binary32
 pass	dg1 a DIGIT-extractor arm — each dispatch peels the low digit and floors the state by ten, three peels reverse the tail
 pass	dgn1 digit-peel of a NEGATIVE state — truncated division and dividend-sign remainder agree through the thread, three negative digits
+pass	dgr1 a DIGITAL-ROOT arm — nested fixed-point recursion (repeat digit-sum until single digit) runs wholly inside each dispatch, the accumulator's low digit rides along in the answer
 pass	dh1 value-eq on two ARM-BUILT lists inside a dispatch — the borrowed-handle reclaim after = must not double-drop
 pass	difference DISTRIBUTES over union but is NOT associative - both facts witnessed live
 pass	difference cardinality with a runtime-element subtrahend
@@ -6547,6 +6549,7 @@ pass	tp1 TWO ops each own a tuple-state SLOT — lo advances field 0, hi doubles
 pass	tp2 a SWAP op exchanges the tuple-state slots — interleaved readers observe the exchange
 pass	tp3 a NESTED tuple state ((a b) c) — the arm rebuilds the inner Fibonacci pair and bumps the outer counter per dispatch
 pass	tp4 readers and a SPIN writer share one tuple state — sum flows into slot a while old a shifts to b
+pass	tpc1 TWO-PHASE COMMIT across two handlers — the coordinator prepares both sides, commits both only when both prepared, otherwise aborts both restoring the balances; the pass and fail paths both verified
 pass	tq1 a Q-shadow inside a TWO-effect region — P draws thread THROUGH the shadow while Q is locally rebound
 pass	tq2 the Q-shadow's SEED mixes P and Q draws — both outer threads advance before the shadow opens, and resume after
 pass	tq3 a Q-shadow wraps only the MIDDLE argument of a pure call — its neighbors dispatch to the outer P and Q frames
