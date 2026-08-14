@@ -10937,3 +10937,111 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 11121110 Int64))
   (call   main (: 1 Int64)) (output (: 11120101 Int64)))
+
+;; ── Compensating undo-stack, two-stack FIFO refill, token-bucket limiter (breaker batch 273) ──
+(case "cmt1 a COMPENSATING transaction log — each do applies its delta AND pushes the inverse onto the undo stack, each compensate pops the LAST inverse and applies it, unwinding in strict LIFO order back to the seed"
+  (input  (do
+            (effect S
+              (op dotx (-> Int64 Int64))
+              (op comp (-> Int64)))
+            (def (lastv (: xs (List Int64)))
+              (match (List.at xs (- (List.len xs) 1)) ((Some v) v) ((None u) 0)))
+            (def (dropl (: xs (List Int64)) (: i Int64) (: keep Int64) (: acc (List Int64)))
+              (if (< i keep)
+                  (dropl xs (+ i 1) keep (List.push acc (match (List.at xs i) ((Some v) v) ((None u) 0))))
+                  acc))
+            (def (main (: n Int64))
+              (handle S (tuple n (: (list) (List Int64)))
+                ((dotx (v) st
+                  (match st
+                    ((tuple val undos
+                      ) (resume (+ val v) (tuple (+ val v) (List.push undos (- 0 v)))))))
+                 (comp () st
+                  (match st
+                    ((tuple val undos)
+                      (if (= (List.len undos) 0)
+                          (resume -99 st)
+                          (let ((u (lastv undos)))
+                            (resume (+ val u)
+                                    (tuple (+ val u)
+                                           (dropl undos 0 (- (List.len undos) 1) (: (list) (List Int64)))))))))))
+                (let ((a (S.dotx 5)))
+                  (let ((b (S.dotx 3)))
+                    (let ((c (S.comp)))
+                      (let ((d (S.dotx 10)))
+                        (let ((e (S.comp)))
+                          (let ((f (S.comp)))
+                            (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 151815251510 Int64))
+  (call   main (: 0 Int64)) (output (: 50805150500 Int64)))
+
+(case "tsqS a TWO-STACK amortized FIFO queue — enq pushes the in-stack, deq pops the out-stack and reverse-refills from the in-stack only when empty, so an element enqueued between refills never overtakes one already staged"
+  (input  (do
+            (effect Q
+              (op enq (-> Int64 Int64))
+              (op deq (-> Int64)))
+            (def (lastv (: xs (List Int64)))
+              (match (List.at xs (- (List.len xs) 1)) ((Some v) v) ((None u) 0)))
+            (def (dropl (: xs (List Int64)) (: i Int64) (: keep Int64) (: acc (List Int64)))
+              (if (< i keep)
+                  (dropl xs (+ i 1) keep (List.push acc (match (List.at xs i) ((Some v) v) ((None u) 0))))
+                  acc))
+            (def (rev (: xs (List Int64)) (: i Int64) (: acc (List Int64)))
+              (if (< i 0)
+                  acc
+                  (rev xs (- i 1) (List.push acc (match (List.at xs i) ((Some v) v) ((None u) 0))))))
+            (def (main (: n Int64))
+              (handle Q (tuple (: (list) (List Int64)) (: (list) (List Int64)))
+                ((enq (v) st
+                  (match st
+                    ((tuple ins outs) (resume v (tuple (List.push ins v) outs)))))
+                 (deq () st
+                  (match st
+                    ((tuple ins outs)
+                      (if (= (List.len outs) 0)
+                          (let ((r (rev ins (- (List.len ins) 1) (: (list) (List Int64)))))
+                            (resume (lastv r) (tuple (: (list) (List Int64)) (dropl r 0 (- (List.len r) 1) (: (list) (List Int64))))))
+                          (resume (lastv outs) (tuple ins (dropl outs 0 (- (List.len outs) 1) (: (list) (List Int64))))))))))
+                (let ((a (Q.enq (+ n 1))))
+                  (let ((b (Q.enq (+ n 2))))
+                    (let ((c (Q.deq)))
+                      (+ (* 100 (+ (* 100 a) b)) c))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 111211 Int64))
+  (call   main (: 0 Int64)) (output (: 10201 Int64)))
+
+(case "odf1 a TOKEN-BUCKET rate limiter with overdraft penalties — spend succeeds only when the bucket covers it (else a penalty tick and a 0 answer), refill saturates at the cap, and the final draw reads the accumulated penalty count"
+  (input  (do
+            (effect B
+              (op spend (-> Int64 Int64))
+              (op refill (-> Int64 Int64))
+              (op pens (-> Int64)))
+            (def (main (: n Int64))
+              (handle B (tuple n (: 0 Int64))
+                ((spend (v) st
+                  (match st
+                    ((tuple tk pen)
+                      (if (< tk v)
+                          (resume 0 (tuple tk (+ pen 1)))
+                          (resume v (tuple (- tk v) pen))))))
+                 (refill (v) st
+                  (match st
+                    ((tuple tk pen)
+                      (if (< 10 (+ tk v))
+                          (resume 10 (tuple 10 pen))
+                          (resume (+ tk v) (tuple (+ tk v) pen))))))
+                 (pens () st
+                  (match st
+                    ((tuple tk pen) (resume pen st)))))
+                (let ((a (B.spend 4)))
+                  (let ((b (B.spend 8)))
+                    (let ((c (B.refill 5)))
+                      (let ((d (B.spend 8)))
+                        (let ((e (B.spend 3)))
+                          (let ((f (B.refill 9)))
+                            (let ((g (B.pens)))
+                              (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 4001008001002 Int64))
+  (call   main (: 0 Int64)) (output (: 500031003 Int64)))

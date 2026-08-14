@@ -4825,6 +4825,7 @@ pass	closures extracted from a list by RUNTIME index and applied dispatch correc
 pass	closures stored as MAP VALUES dispatch by key with distinct captures
 pass	clp1 a SATURATING counter — the arm clamps every transition to 0..10 via a pure helper, both bounds hit in one run
 pass	cmp1 a COMPOSE-ACCUMULATING closure state — each dispatch replaces the state with a new closure wrapping the OLD one (double-then-add over the previous function), applied at 1 per step
+pass	cmt1 a COMPENSATING transaction log — each do applies its delta AND pushes the inverse onto the undo stack, each compensate pops the LAST inverse and applies it, unwinding in strict LIFO order back to the seed
 pass	cn1 a THREE-deep seed RELAY — each nested shadow's seed is a draw from its parent, strides differ per depth
 pass	cn2 the inner shadow's RESULT flows up into the outer computation — a let-bound region value scaled beside an outer draw
 pass	combining a named rate with a length is a dimensional error
@@ -5659,6 +5660,7 @@ pass	oc6 an Option-of-TUPLE state — the Some payload is a (total,count) pair u
 pass	odd-width CHECKED arithmetic traps at the odd boundary, not the machine slot (Int24 max + 1)
 pass	odd-width values as Set keys dedupe at their own width (UInt4: wrap 3 = wrap 19)
 pass	odd-width wrap lands exactly at its own boundary (UInt4 16->0, Int24 2^23 -> -2^23)
+pass	odf1 a TOKEN-BUCKET rate limiter with overdraft penalties — spend succeeds only when the bucket covers it (else a penalty tick and a 0 answer), refill saturates at the cap, and the final draw reads the accumulated penalty count
 pass	odo1 a BASE-100 ODOMETER — the list of wheels absorbs each tick with a CASCADING CARRY that rebuilds cells by List.update and GROWS the list when the top wheel overflows
 pass	olc1 an Option-of-LIST handler state lifecycle — None is uninitialized, push initializes-or-appends, take scores and RESETS to None, a later push re-initializes
 pass	one @param accessor performed TWICE consumes two host responses in order
@@ -6583,6 +6585,7 @@ pass	true is greater than false
 pass	true is not less than false
 pass	truncating a rational whose integer part exceeds Int64 traps rather than wrapping
 pass	ts1 a tuple-returning op SPLIT-refed — each destructured half feeds a DIFFERENT later op against advancing state
+pass	tsqS a TWO-STACK amortized FIFO queue — enq pushes the in-stack, deq pops the out-stack and reverse-refills from the in-stack only when empty, so an element enqueued between refills never overtakes one already staged
 pass	tt1 a NESTED-tuple op ARG destructured two levels inside the arm — both dispatches read the live state
 pass	tt2 NESTED-tuple resume values across two dispatches — outer destructured by match, inner read by PROJECTION
 pass	tt3 a tuple ROTATED through two chained dispatches — each rotation folds the state into the moved slot
