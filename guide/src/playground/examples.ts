@@ -380,6 +380,33 @@ export const EXAMPLES: Example[] = [
     expected: "(: (tuple (Some 3) (Some 1)) (Tuple (Option Int64) (Option Int64)))",
   },
   {
+    // Shows off: the `Symbol` type — an INTERNED name. Two symbols built from the same text are the SAME
+    // value, so equality is a cheap identity check (not a string compare), which makes symbols good tags
+    // and Map keys. Here a Symbol-keyed palette maps color names to hex codes: green resolves, teal is
+    // absent (None), and `Symbol.of "red" == Symbol.of "red"` is true (interning).
+    id: "symbol-keyed-map",
+    name: "Symbols as Map keys",
+    theme: "data-and-collections",
+    surface: "sexpr",
+    source: `(do
+  ; A Symbol is an INTERNED name: two symbols built from the same text are the SAME
+  ; value, so equality is a cheap identity check (no string compare). That makes
+  ; symbols good keys/tags. Key a Map by symbol to look up a color's hex code.
+  (def (main)
+    (let ((palette
+            (Map.insert
+              (Map.insert
+                (Map.insert (Map.empty) (Symbol.of "red") 16711680)
+                (Symbol.of "green") 65280)
+              (Symbol.of "blue") 255)))
+      (tuple
+        (Map.lookup palette (Symbol.of "green"))
+        (Map.lookup palette (Symbol.of "teal"))
+        (= (Symbol.of "red") (Symbol.of "red")))))
+  (export main))`,
+    expected: "(: (tuple (Some 65280) (None unit) true) (Tuple (Option Int64) (Option Int64) Bool))",
+  },
+  {
     // Shows off: a byte-string literal — b"…" is a Bytes value directly, no String.to-bytes needed.
     // "GIF89a" is the classic GIF magic-number header; its length is 6 and its first byte is 'G' (71).
     id: "byte-string-literal",
