@@ -1281,6 +1281,18 @@
             cargo test --locked --features live-net
             cargo clippy --all-targets --locked --features live-aws-storage -- -D warnings
             cargo test --locked --features live-aws-storage
+            # FULL-FEATURE-UNION clippy leg (v-nix + v-agent-harness-host 2026-08-14): the no-dep executor
+            # features — live-exec (GAP-1 ShellExecutor), live-fs (GAP-3 FsExecutor), live-git (GAP-6
+            # GitExecutor), live-ws (websocket outpost) — each gate ONLY the per-session WIRING in
+            # factory.rs/LiveExecutorSet::build (#[cfg(feature="live-*")] with_effect blocks registering the
+            # always-compiled executor structs). NO other gate pass compiled them, so a peer edit to that
+            # feature-gated wiring or the effect_ct::GIT_*/etc constants compile-broke ONLY under the flag and
+            # slipped past localGate (pr-sync had to hand-validate live-git on the GAP-6 slice-2 land 77acbefba).
+            # ONE union leg suffices: the crate owner (v-ah-host) verified all features are mutually compatible
+            # (admin,live-net,live-aws-storage,live-ws,live-exec,live-fs,live-git clippy GREEN, ~54s warm), and it
+            # rides the live-net half so the heavy aws-sdk/aws-lc-sys chain is already built — the marginal cost is
+            # just the std-only feature modules. --all-targets covers the daemon-bin combo too.
+            cargo clippy --all-targets --locked --features admin,live-net,live-aws-storage,live-ws,live-exec,live-fs,live-git -- -D warnings
           '';
         };
         # ── N1: the value-heap runtime components AS input-addressed derivations (hash from output) ─
