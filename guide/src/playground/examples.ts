@@ -842,6 +842,26 @@ export const EXAMPLES: Example[] = [
     expected: "(: (tuple 1 2) (Tuple Int64 Int64))",
   },
   {
+    // Shows off: `String.slice` — a half-open [start, end) substring by SCALAR index, returning
+    // `Option String` (None when the range is out of bounds). Here we pull the fixed-width fields out
+    // of an ISO date "YYYY-MM-DD", defaulting a bad slice to "" — a tiny, real parsing task.
+    id: "string-slice-date-fields",
+    name: "Substring slicing (ISO date fields)",
+    theme: "data-and-collections",
+    surface: "sexpr",
+    source: `(do
+  ; Pull the fixed-width fields out of an ISO date "YYYY-MM-DD" by scalar range.
+  ; String.slice takes a half-open [start, end) scalar range and returns Option
+  ; String (None if the range is out of bounds) — so we default a bad slice to "".
+  (def (field s lo hi)
+    (match (String.slice s lo hi) ((Some part) part) ((None) "")))
+  (def (main)
+    (let ((d "2026-08-14"))
+      (tuple (field d 0 4) (field d 5 7) (field d 8 10))))
+  (export main))`,
+    expected: "(: (tuple \"2026\" \"08\" \"14\") (Tuple String String String))",
+  },
+  {
     // Shows off: computing a result without a built-in — integer square root by searching upward for the
     // largest g with g*g <= n. isqrt(144) = 12.
     id: "integer-square-root",
