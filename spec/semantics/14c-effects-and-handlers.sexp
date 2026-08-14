@@ -10470,3 +10470,93 @@
             (export main)))
   (call   main (: 8 Int64)) (output (: 1110602 Int64))
   (call   main (: 3 Int64)) (output (: 1001003 Int64)))
+
+; --- breaker batch 267: frequency decay with fixed point, interval overlap counting, RPN stack machine ---
+(case "dcy1 a FREQUENCY-DECAY tracker — every observe first HALVES all counts dropping the zeroed rows, then bumps the observed key by four; the whole-map transform and the single-key update compose in one arm"
+  (input  (do
+            (effect S (op obs (-> Int64 Int64)))
+            (def (decay (: src (List (Tuple Int64 Int64))) (: i Int64) (: acc (Map Int64 Int64)))
+              (match (List.at src i)
+                ((Some p) (match p
+                            ((tuple k v)
+                              (decay src (+ i 1)
+                                     (if (> (/ v 2) 0) (Map.insert acc k (/ v 2)) acc)))))
+                ((None u) acc)))
+            (def (main (: n Int64))
+              (handle S (: Map.empty (Map Int64 Int64))
+                ((obs (k) m
+                  (let ((d (decay (Map.to-list m) 0 Map.empty)))
+                    (let ((c2 (+ (match (Map.lookup d k) ((Some x) x) ((None u) 0)) 4)))
+                      (let ((m2 (Map.insert d k c2)))
+                        (resume (+ (* 100 (Map.len m2)) c2) m2))))))
+                (let ((a (S.obs n)))
+                  (let ((b (S.obs n)))
+                    (let ((c (S.obs 2)))
+                      (let ((d (S.obs n)))
+                        (+ (* 1000 (+ (* 1000 (+ (* 1000 a) b)) c)) d)))))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 104106204205 Int64))
+  (call   main (: 2 Int64)) (output (: 104106107107 Int64)))
+
+(case "ivl1 INTERVAL OVERLAP counting — each add answers how many existing intervals the newcomer overlaps (closed-interval test lo<=b and a<=hi) before inserting itself; the seeded interval slides in or out of range"
+  (input  (do
+            (effect S (op add (-> Int64 Int64 Int64)))
+            (def (count-ovl (: ivs (List (Tuple Int64 Int64))) (: i Int64) (: lo Int64) (: hi Int64) (: acc Int64))
+              (match (List.at ivs i)
+                ((Some p) (match p
+                            ((tuple a b)
+                              (count-ovl ivs (+ i 1) lo hi
+                                         (if (and (<= lo b) (<= a hi)) (+ acc 1) acc)))))
+                ((None u) acc)))
+            (def (main (: n Int64))
+              (handle S (: (list) (List (Tuple Int64 Int64)))
+                ((add (lo hi) ivs
+                  (let ((c (count-ovl ivs 0 lo hi 0)))
+                    (resume c (List.push ivs (tuple lo hi))))))
+                (let ((a (S.add 0 5)))
+                  (let ((b (S.add n (+ n 3))))
+                    (let ((c (S.add 4 10)))
+                      (let ((d (S.add 20 25)))
+                        (+ (* 1000 (+ a 1)) (+ (* 100 (+ b 1)) (+ (* 10 (+ c 1)) (+ d 1))))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 1231 Int64))
+  (call   main (: 8 Int64)) (output (: 1131 Int64)))
+
+(case "rpn1 an RPN EVALUATOR — pushes stack operands, the operator ops pop two and push the result; the (n+3)*2 program evaluates through five dispatches with stack depths and intermediates exposed"
+  (input  (do
+            (effect S
+              (op push (-> Int64 Int64))
+              (op addop (-> Int64))
+              (op mulop (-> Int64)))
+            (def (top2 (: st (List Int64)))
+              (let ((k (List.len st)))
+                (tuple (match (List.at st (- k 2)) ((Some a) a) ((None u) 0))
+                       (match (List.at st (- k 1)) ((Some b) b) ((None u) 0)))))
+            (def (drop2 (: st (List Int64)) (: i Int64) (: keep Int64) (: acc (List Int64)))
+              (if (< i keep)
+                  (drop2 st (+ i 1) keep (List.push acc (match (List.at st i) ((Some v) v) ((None u) 0))))
+                  acc))
+            (def (main (: n Int64))
+              (handle S (: (list) (List Int64))
+                ((push (v) st
+                  (let ((s2 (List.push st v)))
+                    (resume (List.len s2) s2)))
+                 (addop () st
+                  (match (top2 st)
+                    ((tuple a b)
+                      (let ((s2 (List.push (drop2 st 0 (- (List.len st) 2) (: (list) (List Int64))) (+ a b))))
+                        (resume (+ a b) s2)))))
+                 (mulop () st
+                  (match (top2 st)
+                    ((tuple a b)
+                      (let ((s2 (List.push (drop2 st 0 (- (List.len st) 2) (: (list) (List Int64))) (* a b))))
+                        (resume (* a b) s2))))))
+                (let ((a (S.push n)))
+                  (let ((b (S.push 3)))
+                    (let ((c (S.addop)))
+                      (let ((d (S.push 2)))
+                        (let ((e (S.mulop)))
+                          (+ (* 100 (+ (* 10 (+ (* 100 (+ (* 10 a) b)) c)) d)) e))))))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 1207214 Int64))
+  (call   main (: 10 Int64)) (output (: 1213226 Int64)))

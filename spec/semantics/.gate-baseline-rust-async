@@ -4964,6 +4964,7 @@ pass	dc1 a DEEP left-leaning concat chain — ten single-element concats build a
 pass	dc1 a THREE-hop def relay under ONE handler — each def draws then calls the next, weights pin the depth order
 pass	dc2 the relay call's ARGUMENT is a draw — the callee draws again and combines, argument-before-body order pinned
 pass	dc3 the MIDDLE relay hop is chosen by a draw — the branch decides between a two-draw and a one-draw callee, a tail draw pins the total
+pass	dcy1 a FREQUENCY-DECAY tracker — every observe first HALVES all counts dropping the zeroed rows, then bumps the observed key by four; the whole-map transform and the single-key update compose in one arm
 pass	dd1b consecutive do-DEF draws — both binders hold their reads, the tail draw sees the doubled-twice state
 pass	dd1d a bare DISCARDED draw before a let-bound draw — the discard advances the state the binder reads
 pass	dd2 a do-DEF bound to a whole nested SHADOW handle — the def holds the inner region's value, the tail draw reads outer
@@ -5404,6 +5405,7 @@ pass	intersection with the empty set is the empty set
 pass	is1 a draw-SELECTED match arm installs a nested same-effect shadow — outer state resumes after the branch-local region
 pass	is2 the ARM's resume-value is a nested SAME-effect handle — a fresh shadow instantiated per dispatch from the live state
 pass	is3 the ARM's NEXT-STATE is computed by a nested SAME-effect handle — the shadow feeds the outer state thread
+pass	ivl1 INTERVAL OVERLAP counting — each add answers how many existing intervals the newcomer overlaps (closed-interval test lo<=b and a<=hi) before inserting itself; the seeded interval slides in or out of range
 pass	iwr1 a SIGNED Int8 handler state — wrapping-add crosses the sign boundary through the thread, the widened answers expose the sign-extension
 pass	ix1 the op argument INDEXES a list held in a two-slot state — in-range reads project, out-of-range yields the arm's fallback
 pass	jin1 a SEPARATOR-JOIN builder — the comma inserts only BETWEEN elements via the count field, and an EMPTY piece still consumes a separator slot
@@ -5949,6 +5951,7 @@ pass	rp1 two-site arm + a state-REPLACING second op over a SCALAR state
 pass	rp2 a RECORD op argument read by field beside an inner sum-state match — the record-payload face of the per-dispatch arm
 pass	rp3 the record payload carries a NESTED record — two-level field projection inside the arm beside the state match
 pass	rpl1 an OP-LOG REPLAY state — apply advances the value and logs its delta, replay re-applies the WHOLE log to the current value keeping the log intact, so a second replay after more logging compounds
+pass	rpn1 an RPN EVALUATOR — pushes stack operands, the operator ops pop two and push the result; the (n+3)*2 program evaluates through five dispatches with stack depths and intermediates exposed
 pass	rq1 a RATIONAL handler state — three exact fractional adds (1/2 + 1/3 + 1/6) land on a WHOLE value — the canonical n/1 render pinned
 pass	rq2 floor/ceil/numerator/denominator READ a rational state — canonicalization (8/4 to 2/1) and negative rounding both pinned
 pass	rq3 a FRACTIONAL drain with a sign guard — subtracting 1/3 per tick until the rational state crosses zero, the recursion counts full ticks
