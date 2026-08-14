@@ -353,6 +353,27 @@ const OP_MAP_LOOKUP: &str = "map-lookup";
 const OP_MAP_REMOVE: &str = "map-remove";
 const OP_MAP_SIZE: &str = "map-size";
 const OP_MAP_TO_LIST: &str = "map-to-list";
+
+/// The emit-walk INSTRUCTION BUDGET (finding-24 sibling, the K^N DAG-serialized-as-tree explosion). The
+/// Core IR is a compact DAG (a shared threaded-state subtree reached by many branch successors), but the
+/// emit walk re-descends each shared `StructId` reference and re-emits its subtree, so a node reached K^N
+/// times on the walk emits K^N instruction (`Lir`) copies. A handler that both resumes AND advances a
+/// COMPOUND threaded state across K>=3 branches, repeated over N dispatches, grows ~6^N — and past a point
+/// the emitted wasm function body exceeds the engine's function-size limit ("Code for function is too
+/// large" — an INVALID module the guest cannot load, though not a miscompile).
+///
+/// This bound DECLINES cleanly (reject-not-miscompile) once the emitted-`Lir` count crosses it: the guard
+/// at the top of `emit` trips mid-walk, so a run-away body declines rather than serializing the
+/// multi-megabyte code section the loader rejects. The value separates the measured VALID high-water from
+/// the INVALID explosion (`Lir` counts, measured on v-effects' 3-way-partition probe ladder). The largest
+/// VALID emitted body is the `cbk1` circuit-breaker corpus case at ~416K `Lir` (the `sw4`/`sw5` window
+/// cases ~364K, the `isolate-K3` probe ~301K = 593KB wasm, LARGE but loads + runs); the INVALID cases are
+/// `dst1` at ~1.48M `Lir` (2.88MB wasm -> "Code for function is too large") and `dstC` at ~74M.
+/// 1_000_000 clears every valid body with >2x headroom over the ~416K high-water and catches `dst1`/`dstC`
+/// (and any steeper N). A legitimately large LINEAR function is never false-declined; the super-linear one
+/// is. The durable LINEAR fix is sharing-aware emit (emit a 2+-reached node once into a `Core::Let` slot),
+/// a separate increment; this budget is the soundness backstop that stops the invalid wasm now.
+const EMIT_INSTRUCTION_BUDGET: usize = 1_000_000;
 /// Persistent CHAMP set ops (CHAMP-minus-value-column). `set-empty() -> handle`; `set-insert(s, elem) ->
 /// handle` (consumes s, elem); `set-contains(s, elem) -> bool` (BORROWS both); `set-remove(s, elem) ->
 /// handle` (consumes s; borrows elem); `set-size(s) -> u32` (borrows, O(1)); `set-union`/`set-intersection`/
@@ -7274,6 +7295,19 @@ fn emit(
     if let Some(&slot) = slots.get(&id) {
         out.push(Lir::LocalGet(slot));
         return Ok(());
+    }
+    // EMIT-WALK INSTRUCTION BUDGET (finding-24 sibling): the Core IR is a DAG the emit walk serializes as a
+    // TREE (re-descending each shared `StructId`), so a K>=3-branch handler over a compound threaded state
+    // explodes ~6^N. Check the emitted-instruction count on EVERY node entry, so a super-linear body trips
+    // this MID-walk and declines cleanly — before the ~593KB that breaks the engine's function-size/locals
+    // limit ever serializes (reject-not-miscompile). A legitimately large LINEAR function stays well under
+    // the bound; see `EMIT_INSTRUCTION_BUDGET`. The durable linear fix is sharing-aware emit (a follow-up).
+    if out.code.len() > EMIT_INSTRUCTION_BUDGET {
+        return Err(Reject::decline(
+            "emit-walk instruction budget exceeded: a handler-derived Core DAG serializes as a tree \
+             whose expansion exceeds the wasm function-size limit (a K>=3-branch resume/next-state fan-out \
+             over a compound threaded state); pending sharing-aware emit that binds a shared subtree once",
+        ));
     }
     // DEBUG (per-construct line rows): mark this node's first instruction with its source occurrence,
     // so a `.debug_line` row maps the code offset to its line. Recorded for every USER node (a prelude/
