@@ -2106,16 +2106,20 @@ pub fn parse_effect_list(bytes: &[u8]) -> Result<Vec<Effect>, MarshalError> {
 
 /// Parse one effect-request from its canonical value-form record into an [`Effect`]. Two field-set shapes
 /// parse (fields sorted by name in both):
-///   - the pre-reify hand-built record `(record (= correlation <opt>) (= kind <family-string>) (= payload
-///     <opt>) (= target <bytes>))`, and
-///   - the phase-1a REIFY 3-field record `(record (= correlation <opt>) (= kind <family-string>) (= payload
-///     <opt>))` — NO target column (v-rb's reify_effect_to_tuple + the v-ah/concierge target-field drop):
-///     a TARGET-FREE world-effect a reducer performs (phase-1a proof-of-shape = a target-free, Bytes-arg
-///     effect). A reducer-chosen-DESTINATION effect's target is not on this record; it rides the payload +
-///     the `@resource` decl marker and the kernel extracts it in PHASE-2 (kind→schema-hash → resolve
-///     descriptor → read `(resource idx)` → req.target). So here `target` is OPTIONAL: absent → EMPTY (a
-///     target-free effect has no destination). Making it optional is backward-compatible — a present target
-///     still parses; an absent one (the 3-field reify record) now parses target-free instead of erroring.
+///   - a TARGET-HAVING record `(record (= correlation <opt>) (= kind <family-string>) (= payload <opt>)
+///     (= target <bytes>))` — 4 fields, and
+///   - a TARGET-FREE 3-field record `(record (= correlation <opt>) (= kind <family-string>) (= payload
+///     <opt>))` — NO target field (a target-free world-effect: model/now/timer/tool, or the phase-1a
+///     proof-of-shape target-free Bytes-arg probe).
+///
+/// The `target` distinction is the reducer-chosen DESTINATION (v-rb ruling A, 2026-08-14): a target-having
+/// effect (its op carries an `@resource` marker — e.g. `Emit.send(@resource dest, body)`) reifies the dest
+/// as a RUNTIME VALUE riding its own bare-Bytes `target` field, because SEC-F1 authorizes that value against
+/// a resource predicate (`DescendantOf`/`HostIn`/…) and so needs it. `reify_effect_to_tuple` WRITES the field
+/// (skipping the dest only from the payload-encode, so the payload stays the single body arg — no R2); the
+/// kernel reads it HERE, directly, with no schema-descriptor round-trip (this parse has no schema context).
+/// So `target` is OPTIONAL: present → its bytes (a target-having effect); absent → EMPTY (a target-free
+/// effect has no destination). Both shapes parse — a present target reads through, an absent one is target-free.
 ///
 /// `kind` is the effect FAMILY STRING (seq-39 identity; register-by-string, NEVER a closed enum) → mapped
 /// via [`EffectRequest::new_with_family`] (a well-known family resolves, an extension family takes the
@@ -2128,9 +2132,9 @@ fn parse_effect_request(a: &Arenas, id: StructId) -> Result<Effect, MarshalError
         field("kind").ok_or_else(|| type_mismatch("effect-request", "missing kind"))?,
     )?
     .to_string();
-    // `target` OPTIONAL: present → its bytes; absent (the phase-1a 3-field reify record for a target-free
-    // effect) → EMPTY. The reducer-chosen-destination target of a target-having effect is extracted in
-    // phase-2 via the `@resource` marker, not carried as a field here.
+    // `target` OPTIONAL: present → its bytes (a target-having effect — reify WROTE the `@resource` dest here
+    // as a bare-Bytes field, v-rb ruling A); absent (a target-free 3-field reify record) → EMPTY. The dest
+    // rides the wire as this field; the kernel reads it directly (no schema-descriptor index-extraction).
     let target = match field("target") {
         Some(n) => read_bytes(a, n)?,
         None => Vec::new(),
