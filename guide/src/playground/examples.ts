@@ -278,6 +278,30 @@ export const EXAMPLES: Example[] = [
     expected: "42",
   },
   {
+    // Shows off: higher-order functions — `apply-n-times` takes a FUNCTION as an argument and applies it
+    // n times; `adder` RETURNS a closure that captures k. So (apply-n-times (adder 3) 4 10) adds 3 four
+    // times (10→13→16→19→22), and an inline lambda doubling 1 five times gives 32. Functions are values.
+    id: "higher-order-apply-n",
+    name: "Higher-order functions (apply n times)",
+    theme: "basics",
+    surface: "sexpr",
+    source: `(do
+  ; apply-n-times takes a FUNCTION f and applies it n times to x: f(f(...f(x))).
+  ; f is an ordinary value — passed in, then called in the recursion.
+  (def (apply-n-times f n x)
+    (if (= n 0) x (apply-n-times f (- n 1) (f x))))
+  ; adder RETURNS a closure that adds a fixed k to its argument.
+  (def (adder k) (fn (x) (+ x k)))
+  (def (main)
+    (tuple
+      ; add 3, four times: 10 -> 13 -> 16 -> 19 -> 22
+      (apply-n-times (adder 3) 4 10)
+      ; double, five times: 1 -> 2 -> 4 -> 8 -> 16 -> 32
+      (apply-n-times (fn (x) (* x 2)) 5 1)))
+  (export main))`,
+    expected: "(: (tuple 22 32) (Tuple Int64 Int64))",
+  },
+  {
     // Shows off: a Map used as a MEMO CACHE, threaded functionally through the recursion. Each call
     // returns (value, updated-map); the cache turns exponential fib into linear. fib(30) = 832040 —
     // it returns instantly, where naive fib(30) would make >2.7M calls.
