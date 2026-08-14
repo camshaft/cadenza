@@ -3028,6 +3028,13 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 "({b}).to_i64_checked().unwrap_or_else(|| panic!(\"unreachable: BigInt value out of Int64 range\"))"
             ))
         }
+        // `Char.to-int c` on a runtime char (Char-rep 1/N) — the native rust rep of a `Char` is `char`, so
+        // the total scalar-value read `Char -> Int64` is `(c as u32) as i64` (a code point is non-negative
+        // and fits i64). A CONSTANT char folded to a ConstInt in `lower`; this is the runtime operand.
+        Core::CharToInt { operand } => {
+            let c = emit(db, operand, env, ctx)?;
+            Ok(format!("(({c}) as u32 as i64)"))
+        }
         // A runtime BigInt binary op — `+`/`-`/`*`/`/`/`%`. `add`/`sub`/`mul` are total; `div`/`rem` go
         // through `divmod` (returns `None` on a zero divisor → TRAP, matching the wasm `bigint-div`).
         Core::BigIntBinOp { op, lhs, rhs } => {

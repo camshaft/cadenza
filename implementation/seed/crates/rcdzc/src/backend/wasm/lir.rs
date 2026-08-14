@@ -415,10 +415,14 @@ pub fn valtype_of(ty: &Ty) -> Option<ValType> {
         // CONSTANT string folds (no runtime slot); a runtime string handle lives here (its runtime ops
         // arrive with the byte-rope heap ops).
         Ty::String => Some(ValType::I32),
-        // A char has NO runtime machine slot this increment — a constant char folds (equality/ordering
-        // compute at compile time), so no `Char`-typed value reaches a real slot yet. A char at a runtime
-        // slot (a param/local/boundary) declines cleanly until the scalar runtime rep arrives.
-        Ty::Char => None,
+        // A char is a Unicode SCALAR VALUE (`0..=0x10FFFF`, surrogates excluded) — machine-identical to a
+        // 32-bit integer, so a runtime `Char` value occupies an i32 slot exactly as a `UInt32`/`Int32`
+        // does (its code point in the low 21 bits). This is the runtime Char rep (Char-rep 1/N): a char
+        // threaded through a param/local/`if`-branch-join (e.g. `(Char.to-int (if b #\a #\z))`) now has a
+        // real slot instead of declining. A CONSTANT char still folds where it can (equality/ordering at
+        // compile time); the slot is for the genuinely-runtime char. Boxing into a compound / CHAMP key is
+        // a later slice (the `box-int`/`get-int` scalar-cell path over the same i32 rep).
+        Ty::Char => Some(ValType::I32),
         // A symbol is a nominal over a String — at run time an i32 HANDLE to its interned byte leaf, the
         // same slot a `String` uses. A CONSTANT symbol folds (no runtime slot this increment); this is
         // the slot a runtime symbol handle would occupy.

@@ -87,6 +87,7 @@ pass	CROSS-TYPE @invariant: a value deconstructed from one @invariant newtype an
 pass	Char.from-int at U+E000 (first scalar after the surrogate block) is Some
 pass	Char.from-int at the last surrogate U+DFFF is None
 pass	Char.from-int at the maximum valid scalar U+10FFFF is Some
+pass	Char.to-int reads a genuinely-runtime char (if-selected) by scalar value
 pass	DIAMOND effect: two middles each perform base's ONE effect; the entry's single handler serves both
 pass	DIAMOND: two middles import one base; the entry composes both and base's abstract type unifies
 pass	DIFF-WIDTH RESULT: (Result Int32 Int64) — the NARROW side is Ok, negative

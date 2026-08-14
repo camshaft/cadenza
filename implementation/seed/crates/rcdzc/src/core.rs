@@ -563,6 +563,16 @@ pub enum Core {
     BigIntToI64 {
         operand: StructId,
     },
+    /// `Char.to-int c` on a RUNTIME char (Char-rep 1/N) — the TOTAL scalar-value read `Char → Int64`. A
+    /// `Char` occupies an i32 slot holding its Unicode code point (`valtype_of(Ty::Char) == I32`), and the
+    /// result is `Int64` (an i64 slot), so this ZERO-EXTENDS the i32 code point to i64 (`i64.extend_i32_u`
+    /// — a code point is non-negative, `0..=0x10FFFF`). A CONSTANT char folds to a `Core::ConstInt` in
+    /// `lower` and never reaches here; this is the genuinely-runtime char (a param/local, an `if`-join, a
+    /// `Char.from-int` of a runtime int). The dual of a narrow-int widen, but the source is a `Ty::Char`
+    /// (not `Ty::Int`), so it is its own node rather than a `Core::Convert`.
+    CharToInt {
+        operand: StructId,
+    },
     /// A runtime BigInt BINARY op — `+`/`-`/`*`/`/` (the runtime `bigint-add`/`-sub`/`-mul`/`-div`) or a
     /// comparison lowered through `bigint-cmp`. Present when at least one operand is a runtime `BigInt`
     /// (a constant pair folds via `num-bigint` in `lower`). Produces a `BigInt` handle for arithmetic;

@@ -613,6 +613,12 @@ fn binding_escapes_dup_aware(
         Core::ValueEncode { value: operand, .. } | Core::ValueDecode { bytes: operand, .. } => {
             binding_escapes_dup_aware(db, operand, binder, true, dup_sites)
         }
+        // `Char.to-int`'s operand is a `Char` (an i32 SCALAR code point, never a heap handle), so it cannot
+        // retain a heap reference — a binding used as the operand does NOT escape (recurse `tail_borrowed:
+        // true`, like the scalar-yielding `BigIntToI64`).
+        Core::CharToInt { operand } => {
+            binding_escapes_dup_aware(db, operand, binder, true, dup_sites)
+        }
         // The runtime Rational arithmetic/comparison ops BORROW their operand handles (`rational-add`/…/
         // `rational-cmp` unbox-read without consuming; the borrow helpers drop only an OWNED temporary), so
         // a binding used DIRECTLY as an operand does NOT escape (`tail_borrowed: true`, like the BigInt
@@ -1372,6 +1378,7 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
         | Core::BigIntOfI64 { value: operand }
         | Core::RationalOfIntWiden { value: operand }
         | Core::BigIntToI64 { operand }
+        | Core::CharToInt { operand }
         | Core::RationalNum { operand }
         | Core::RationalDen { operand }
         | Core::StrFromBytes { bytes: operand, .. }
@@ -2023,6 +2030,9 @@ fn mark_binder_dups_inner(
         Core::ValueEncode { value: operand, .. } | Core::ValueDecode { bytes: operand, .. } => {
             borrow(db, operand, live_after, sites)
         }
+        // `Char.to-int` reads its i32-scalar Char operand and yields an i64 — a scalar read, no handle
+        // retained, so it BORROWS (like `BigIntToI64`).
+        Core::CharToInt { operand } => borrow(db, operand, live_after, sites),
         // `rational-num`/`rational-den` BORROW the Rational operand (return a fresh BigInt handle).
         Core::RationalNum { operand } | Core::RationalDen { operand } => {
             borrow(db, operand, live_after, sites)
@@ -3461,6 +3471,9 @@ fn collect_used_ops_into(
             insert_const_bigint_materialize_ops(db, operand, out);
             collect_used_ops_into(db, operand, out);
         }
+        // `Char.to-int` uses NO runtime op — it is a pure wasm `i64.extend_i32_u` of the i32 code-point
+        // slot. Just descend into the operand.
+        Core::CharToInt { operand } => collect_used_ops_into(db, operand, out),
         Core::BigIntBinOp { op, lhs, rhs } => {
             out.insert(match op {
                 crate::core::BigIntOp::Add => OP_BIGINT_ADD,
@@ -4972,6 +4985,7 @@ fn param_only_borrowed_or_backedge_rec(
         | Core::BytesLen { operand }
         | Core::StrScalarLen { operand }
         | Core::BigIntToI64 { operand }
+        | Core::CharToInt { operand }
         | Core::RationalNum { operand }
         | Core::RationalDen { operand } => recur(db, operand, true),
         Core::SumPayload { scrutinee, .. } | Core::SumExpect { scrutinee, .. } => {
@@ -7408,12 +7422,17 @@ fn emit(
             }
             Ok(()) // leaves [buf] — the string's flat UTF-8 byte-leaf handle (== str-new's rep)
         }
-        // A constant char reaching `emit` as an in-body VALUE has no runtime slot form yet — its
-        // equality/ordering FOLD in `lower` (never reaching here), and it does not yet cross the boundary.
-        // So a char value used inside a body declines cleanly (the scalar runtime rep is a later increment).
-        Core::ConstChar(_) => Err(Reject::decline(
-            "a runtime char value is not yet built (only a constant char folds; boundary crossing is later)",
-        )),
+        // A constant char reaching `emit` as an in-body runtime VALUE — used where a machine slot is
+        // needed (an `if`-branch join it flows through, a param/local it binds, a `Char.to-int` operand
+        // that could not fold because a sibling arm made the char runtime). A `Char` is a Unicode SCALAR
+        // VALUE, machine-identical to a 32-bit int, so it emits as a bare `i32.const` of its code point —
+        // exactly the narrow-scalar `Core::ConstInt` emit (`valtype_of(Ty::Char) == I32`). Equality/
+        // ordering on two CONSTANT chars still folds in `lower` and never reaches here; this is the
+        // runtime-value use (Char-rep 1/N). The code point fits i32 (`0..=0x10FFFF`, surrogates excluded).
+        Core::ConstChar(c) => {
+            out.push(Lir::ConstI32(c as u32 as i32));
+            Ok(())
+        }
         // A constant `Rational` reaching `emit` as an in-body RUNTIME VALUE (a call arg, a map/set element,
         // an operand of a runtime rational op) MATERIALIZES to a runtime rational node: box each component
         // (num, den) as a BigInt leaf via `bigint-of-i64`, then `rational-of` (which consumes the two
@@ -9456,6 +9475,16 @@ fn emit(
             layout,
             out,
         ),
+        // `Char.to-int c` on a runtime char (Char-rep 1/N) — the `Char` operand is an i32 slot holding its
+        // Unicode code point (`valtype_of(Ty::Char) == I32`), and the result is `Int64` (an i64 slot). Emit
+        // the operand, then ZERO-EXTEND i32→i64 (`i64.extend_i32_u` — a code point is non-negative, so the
+        // unsigned extend gives the exact scalar value). No runtime op, no handle, nothing to reclaim (the
+        // operand is a scalar). This is the whole op: a `Char` IS its code point in the slot.
+        Core::CharToInt { operand } => {
+            emit(db, operand, slots, base, high, scratch_ty, layout, out)?; // [code:i32]
+            out.push(Lir::I64ExtendI32U); // → [code:i64]
+            Ok(())
+        }
         // `Rational.numerator`/`denominator` on a runtime Rational — `rational-num`/`rational-den` BORROW
         // the Rational handle (`unbox` reads without consuming) and return a FRESH owned BigInt handle. Same
         // borrow-and-reclaim shape as `BigIntToI64` (drop an owned-temporary operand after the read); the

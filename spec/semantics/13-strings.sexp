@@ -3108,6 +3108,18 @@
   (input  (Char.to-int #\a))
   (output (: 97 Int64)))
 
+(case "Char.to-int reads a genuinely-runtime char (if-selected) by scalar value"
+  (doc    "The runtime Char rep (Char-rep 1/N): a char chosen at RUN TIME — `(if b #\\a #\\z)` unifies two
+           char literals into ONE `Char` value whose identity is known only at run time, so it is NOT
+           constant-folded — occupies an i32 machine slot holding its Unicode code point. `Char.to-int` on
+           it zero-extends that slot to the `Int64` result. `b`=true -> #\\a -> 97; `b`=false -> #\\z -> 122.
+           Pins that a runtime char has a real scalar slot and `Char.to-int` reads it on every backend
+           (upgrading the long-standing `runtime char declines pending the Char rep` boundary for this
+           read path — the `if`-join char source, distinct from the still-declining runtime `Char.from-int`).")
+  (input  (do (def (main (: b Bool)) (Char.to-int (if b #\a #\z))) (export main)))
+  (call   main (: true Bool)) (output (: 97 Int64))
+  (call   main (: false Bool)) (output (: 122 Int64)))
+
 (case "converting a scalar-valued integer to a char yields Some"
   (doc    "`(Char.from-int 97)` is `(Some #\\a)` — 97 is the scalar value of `a`, a valid Unicode scalar,
            so the conversion succeeds (collections-and-text.md #A Char Converts To And From An Integer

@@ -2011,17 +2011,16 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     }
                 }
                 // `Char.to-int` — the TOTAL scalar-value read `Char → Int64`. FOLD a constant char to a
-                // `Core::ConstInt` of its Unicode scalar value (`c as u32`). A runtime char has no machine
-                // rep this increment, so a non-constant operand declines.
+                // `Core::ConstInt` of its Unicode scalar value (`c as u32`). A RUNTIME char (Char-rep 1/N)
+                // is an i32 code-point slot, so it emits `Core::CharToInt` — a zero-extend to the i64
+                // `Int64` result (the char's slot IS its scalar value; the widen is the whole op).
                 Some(Prim::CharToInt) if args.len() == 1 => match core_of(db, args[0]) {
                     Core::ConstChar(c) => {
                         trace!(target: "rcdzc::fold", node = id.0, "Char.to-int folds to the scalar value");
                         Core::ConstInt(IntValue::from_i64(c as u32 as i64))
                     }
                     Core::Poison(r) => Core::Poison(r),
-                    _ => Core::Poison(Reject::decline(
-                        "Char.to-int on a runtime char is not yet computed (constant chars only)",
-                    )),
+                    _ => Core::CharToInt { operand: args[0] },
                 },
                 // `Char.from-int` — the FALLIBLE conversion `Int64 → (Option Char)`. FOLD a constant int
                 // to `(Some #\c)` when it is a Unicode scalar value, `(None unit)` for a surrogate /

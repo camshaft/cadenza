@@ -1278,6 +1278,7 @@ fn collect_closure_codes_at(db: &mut Db, id: StructId, out: &mut std::collection
         }
         Core::BigIntOfI64 { value } => collect_closure_codes(db, value, out),
         Core::BigIntToI64 { operand } => collect_closure_codes(db, operand, out),
+        Core::CharToInt { operand } => collect_closure_codes(db, operand, out),
         Core::RationalOfIntWiden { value } => collect_closure_codes(db, value, out),
         Core::RationalNum { operand } | Core::RationalDen { operand } => {
             collect_closure_codes(db, operand, out)
@@ -1641,6 +1642,7 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
         }
         crate::core::Core::BigIntOfI64 { value } => collect_call_callees(db, value, out),
         crate::core::Core::BigIntToI64 { operand } => collect_call_callees(db, operand, out),
+        crate::core::Core::CharToInt { operand } => collect_call_callees(db, operand, out),
         crate::core::Core::RationalOfIntWiden { value } => collect_call_callees(db, value, out),
         crate::core::Core::RationalNum { operand } | crate::core::Core::RationalDen { operand } => {
             collect_call_callees(db, operand, out)
@@ -2169,7 +2171,15 @@ pub fn export_params(db: &mut Db, def: usize, name: &str) -> Result<Vec<(StructI
         //     Annotating does NOT help (it is already annotated); the message must NAME the type and say it
         //     has no boundary representation, not "ambiguous — annotate it" (which sends the author to add
         //     an annotation that is already present). The scalar-`Char` export gap (v-property-testing).
-        if crate::backend::wasm::lir::valtype_of(&ty).is_none() {
+        // A `Char` now has a CORE machine slot (`valtype_of(Ty::Char) == I32`, the runtime Char rep) but
+        // still has NO component-BOUNDARY representation (`comp_valtype_of(Ty::Char) == None`, and unlike a
+        // Record/List it does not escape via the resource `encode()` path) — so a Char EXPORT PARAM must
+        // still decline with the NO-BOUNDARY-REP diagnostic (naming the type), NOT slip through the core-slot
+        // gate to a later, worse decline. The runtime Char rep is for IN-BODY chars (an `if`-join, a local);
+        // crossing a Char at the component boundary is a separate later increment.
+        let no_boundary_rep = crate::backend::wasm::lir::valtype_of(&ty).is_none()
+            || matches!(ty.strip_nominal(), Ty::Char);
+        if no_boundary_rep {
             let ambiguous = matches!(ty, Ty::Any) || crate::infer::ty_has_free_var(db, &ty);
             trace!(target: "rcdzc::layout", %name, binder = binder.0, ty = %ty.render_name(&db.name_ctx()), ambiguous, "decline: exported parameter has no boundary machine type");
             let msg = if ambiguous {

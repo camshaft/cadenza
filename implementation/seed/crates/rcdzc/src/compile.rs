@@ -4680,6 +4680,7 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
         }
         Core::BigIntOfI64 { value } => collect_reached_poisons(db, value, out),
         Core::BigIntToI64 { operand } => collect_reached_poisons(db, operand, out),
+        Core::CharToInt { operand } => collect_reached_poisons(db, operand, out),
         Core::RationalOfIntWiden { value } => collect_reached_poisons(db, value, out),
         Core::RationalNum { operand } | Core::RationalDen { operand } => {
             collect_reached_poisons(db, operand, out)
