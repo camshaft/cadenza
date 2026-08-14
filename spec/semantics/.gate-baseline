@@ -5225,6 +5225,7 @@ pass	fe3 an Int64 handler and a Float64 handler INTERLEAVED — integer ticks an
 pass	fe4 float comparisons route an integer match — the sign of the second draw picks the arm, exact identities verify inside
 pass	fe5 Float64 arguments HALVED in the arm — exact binary fractions cross dispatch both directions, count folds in
 pass	fe6 a Float64 TUPLE state — one slot advances additively, the other doubles, both exact across two dispatches
+pass	ffs1 a FIRST-FREE-SLOT allocator over an Int64 bitmask — alloc scans for the lowest clear bit via a recursive probe answering its index, free clears a bit answering whether it was live, and the SEED pre-occupies slots so the two runs allocate around different holes
 pass	fib1 the FIBONACCI recurrence as a state transition — (a,b) becomes (b,a+b) per dispatch, five draws walk the sequence
 pass	filter-via-effects — a STATEFUL predicate dispatch decides each element's survival
 pass	first-match-wins holds with a duplicate string-literal arm
@@ -5812,6 +5813,7 @@ pass	promoting a Float32 literal to Float64 promotes the binary32 VALUE, not the
 pass	promoting a Float32 to Float64 is exact
 pass	ps1 a 100k-iteration tail loop that PERFORMS every iteration — dispatch itself must run in constant stack
 pass	psr1 a PREPEND-rope accumulator — each push prepends its piece so the OLDEST piece rides at the END, the closing slice proves the reversal order and the piece width varies by seed
+pass	pts1 a 2D POINT under quarter-turn rotations and translations — rot maps (x,y) to (y,-x) answering a sign-tagged composite, mv translates answering the Manhattan norm, quad reads the quadrant, and the seeds trace different orbits around the origin
 pass	pure guards on fused-match arms read the payload binder and an enclosing capture
 pass	pushing an element of a different type onto a list is a type error
 pass	pushing an element onto a list appends it
@@ -6790,6 +6792,7 @@ pass	uv3 the handler ARM calls a @requires-guarded helper — the contract check
 pass	uv4 a RELATIONAL @ensures (ret > x) over a TWO-draw body — the postcondition compares the effectful result to the arg, twice
 pass	uwr1 a NARROW UInt8 handler state — wrapping-add accumulates modulo 256 through the thread, each dispatch answers the widened running value
 pass	value-eq CONTROL: a runtime slice compares equal to a flat Bytes of the same content
+pass	vig1 a VIGENERE-style rolling-key cipher — enc adds and dec subtracts the key byte selected by the ADVANCING key index mod 3, both mod 26, so interleaved enc/dec draws consume ONE shared key stream and the seed shapes the middle key byte
 pass	vse1 a record with SIBLING Option-sum and Option-Bytes fields value-encodes the sum payload intact — the Option-Bytes sibling must not alias its bytes descriptor onto the Option-sum field
 pass	vse10 two RESULT fields at different type args each encode their own Err payload — the same generic decl at two instantiations shares no descriptor
 pass	vse11 two LIST fields of different element types encode independently — the list control of the generic-instantiation family

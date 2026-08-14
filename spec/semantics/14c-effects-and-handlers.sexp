@@ -11312,3 +11312,98 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 40706021088 Int64))
   (call   main (: 0 Int64)) (output (: 40706020392 Int64)))
+
+;; ── Rolling-key cipher, first-free-slot bitmask allocator, quarter-turn point orbit (breaker batch 277) ──
+(case "vig1 a VIGENERE-style rolling-key cipher — enc adds and dec subtracts the key byte selected by the ADVANCING key index mod 3, both mod 26, so interleaved enc/dec draws consume ONE shared key stream and the seed shapes the middle key byte"
+  (input  (do
+            (effect V
+              (op encb (-> Int64 Int64))
+              (op decb (-> Int64 Int64)))
+            (def (keyat (: n Int64) (: i Int64))
+              (match (% i 3)
+                (0 3)
+                (1 (+ (% n 4) 1))
+                (_ 7)))
+            (def (main (: n Int64))
+              (handle V (: 0 Int64)
+                ((encb (b) ki
+                  (resume (% (+ b (keyat n ki)) 26) (+ ki 1)))
+                 (decb (b) ki
+                  (resume (% (+ (- b (keyat n ki)) 26) 26) (+ ki 1))))
+                (let ((a (V.encb 7)))
+                  (let ((b (V.encb 24)))
+                    (let ((c (V.decb 4)))
+                      (let ((d (V.encb 0)))
+                        (let ((e (V.decb 19)))
+                          (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 1001230316 Int64))
+  (call   main (: 0 Int64)) (output (: 1025230318 Int64)))
+
+(case "ffs1 a FIRST-FREE-SLOT allocator over an Int64 bitmask — alloc scans for the lowest clear bit via a recursive probe answering its index, free clears a bit answering whether it was live, and the SEED pre-occupies slots so the two runs allocate around different holes"
+  (input  (do
+            (effect A
+              (op alloc (-> Int64))
+              (op freeb (-> Int64 Int64)))
+            (def (lowest0 (: bits Int64) (: i Int64))
+              (if (< 7 i)
+                  -1
+                  (if (= (& (>> bits i) 1) 0)
+                      i
+                      (lowest0 bits (+ i 1)))))
+            (def (main (: n Int64))
+              (handle A (: n Int64)
+                ((alloc () bits
+                  (let ((i (lowest0 bits 0)))
+                    (if (< i 0)
+                        (resume -1 bits)
+                        (resume i (| bits (<< 1 i))))))
+                 (freeb (i) bits
+                  (let ((was (if (= (& bits (<< 1 i)) 0) 0 1)))
+                    (resume was (& bits (^ (<< 1 i) -1))))))
+                (let ((a (A.alloc)))
+                  (let ((b (A.alloc)))
+                    (let ((c (A.freeb 1)))
+                      (let ((d (A.alloc)))
+                        (let ((e (A.alloc)))
+                          (let ((f (A.freeb 6)))
+                            (let ((g (A.alloc)))
+                              (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 20101040005 Int64))
+  (call   main (: 0 Int64)) (output (: 10101020003 Int64)))
+
+(case "pts1 a 2D POINT under quarter-turn rotations and translations — rot maps (x,y) to (y,-x) answering a sign-tagged composite, mv translates answering the Manhattan norm, quad reads the quadrant, and the seeds trace different orbits around the origin"
+  (input  (do
+            (effect P
+              (op rot (-> Int64))
+              (op mv (-> Int64 Int64 Int64))
+              (op quad (-> Int64)))
+            (def (iabs (: v Int64)) (if (< v 0) (- 0 v) v))
+            (def (main (: n Int64))
+              (handle P (tuple n (: 3 Int64))
+                ((rot () st
+                  (match st
+                    ((tuple x y)
+                      (resume (+ (* y 10) (if (< (- 0 x) 0) -1 1)) (tuple y (- 0 x))))))
+                 (mv (dx dy) st
+                  (match st
+                    ((tuple x y)
+                      (resume (+ (iabs (+ x dx)) (iabs (+ y dy))) (tuple (+ x dx) (+ y dy))))))
+                 (quad () st
+                  (match st
+                    ((tuple x y)
+                      (if (< x 0)
+                          (if (< y 0) (resume 3 st) (resume 2 st))
+                          (if (< y 0) (resume 4 st) (resume 1 st)))))))
+                (let ((a (P.rot)))
+                  (let ((b (P.mv 5 -2)))
+                    (let ((c (P.rot)))
+                      (let ((d (P.quad)))
+                        (let ((e (P.mv -1 8)))
+                          (let ((f (P.rot)))
+                            (let ((g (P.quad)))
+                              (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 29187903130101 Int64))
+  (call   main (: 0 Int64)) (output (: 31097903030101 Int64)))
