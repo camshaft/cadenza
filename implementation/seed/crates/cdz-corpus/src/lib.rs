@@ -148,9 +148,10 @@ pub struct PlatformRecord {
     /// several, all enqueued in this order before the FIFO drive loop (single-fixpoint-deterministic,
     /// just N seeds instead of 1). At least one is required — the fixpoint needs a seed.
     pub kickoffs: Vec<Kickoff>,
-    /// Ordered `(expect-effects (effect (from <a>) (family <f>) <value>?)…)` — each emitted effect the
-    /// run must produce, in stream order (order-verified, like `host_calls`). Value-form optional (an
-    /// effect with no payload omits it).
+    /// Ordered `(expect-effects (effect (from <a>) (family <f>) <value>? (schema-hash <tok>)?)…)` — each
+    /// emitted effect the run must produce, in stream order (order-verified, like `host_calls`). Value-form
+    /// optional (an effect with no payload omits it). Optional `(schema-hash present)` sub-clause pins the
+    /// phase-3 reify→descriptor→hash round-trip (present-vs-absent, not a literal hash).
     pub expect_effects: Vec<ExpectEffect>,
     /// Ordered `(expect-messages (message (from <a>) (to <b>) (family <f>) <value>)…)` — the inter-session
     /// messages the run must deliver, in stream order.
@@ -200,11 +201,18 @@ pub struct Kickoff {
 }
 
 /// One expected emitted effect: session `from` performed effect `family`, optionally carrying `value`.
+///
+/// `schema_hash` is the optional phase-3 schema-hash observation: `Some("present")` when the case asserts
+/// `(schema-hash present)` — i.e. the reify emitted a schema_descriptor and the kernel hashed it to a
+/// non-None `EffectRequest.schema_hash`. This is a PRESENT-vs-absent assertion, not a literal hash (a literal
+/// is brittle + is the descriptor-encoding owner's to pin); `None` = the case does not observe it (absent →
+/// byte-identical stream). Rendered as a separate `expect-effect-schema-hash` line, keyed on `(from, family)`.
 #[derive(Debug)]
 pub struct ExpectEffect {
     pub from: String,
     pub family: String,
     pub value: Option<String>,
+    pub schema_hash: Option<String>,
 }
 
 /// One expected inter-session message: `from` sent `to` an effect `family` carrying `value`.
@@ -436,6 +444,19 @@ pub fn render_platform(records: &[PlatformRecord]) -> String {
                 out.push_str(v);
             }
             out.push('\n');
+        }
+        // Phase-3 schema-hash present-vs-absent pin: a separate line per effect that asserts it, keyed on
+        // `(from, family)`. Absent on every effect ⇒ no lines ⇒ stream byte-identical to pre-clause cases.
+        for e in &r.expect_effects {
+            if let Some(sh) = &e.schema_hash {
+                out.push_str("expect-effect-schema-hash\t");
+                out.push_str(&e.from);
+                out.push('\t');
+                out.push_str(&e.family);
+                out.push('\t');
+                out.push_str(sh);
+                out.push('\n');
+            }
         }
         for m in &r.expect_messages {
             out.push_str("expect-message\t");
@@ -735,7 +756,8 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
 ///   `(doc "…")` · `(session <alias> (reducer <prog>) (serves <family>…)?)` (1+) ·
 ///   `(child <alias> (reducer <prog>))` (0+ — a spawnable child reducer, not a live session) ·
 ///   `(kickoff <alias> (inbound <family> <value>))` (1+, declaration order — repeatable for fan-in) ·
-///   `(expect-effects (effect (from <a>) (family <f>) <value>?)…)` (ordered) ·
+///   `(expect-effects (effect (from <a>) (family <f>) <value>? (schema-hash <tok>)?)…)` (ordered;
+///     optional `(schema-hash present)` sub-clause pins the phase-3 reify→descriptor→hash round-trip) ·
 ///   `(expect-messages (message (from <a>) (to <b>) (family <f>) <value>)…)` (ordered) ·
 ///   `(expect-delivery-failure (from <a>) (to <b>))` (0+) ·
 ///   `(end-state <alias> (kv <key> <value>)… (status <state>)? (close-outcome <kind>)?)` ·
@@ -861,17 +883,25 @@ fn parse_platform_case(a: &Arenas, case_id: StructId) -> Result<PlatformRecord, 
                             let from = child_name_arg(a, etail, "from");
                             let family = child_name_arg(a, etail, "family");
                             if let (Some(from), Some(family)) = (from, family) {
+                                // Optional `(schema-hash <tok>)` sub-clause (phase-3 present-vs-absent pin).
+                                let schema_hash = etail
+                                    .iter()
+                                    .find_map(|&c| a.as_form(c, "schema-hash"))
+                                    .and_then(|shtail| shtail.first().copied())
+                                    .and_then(|tok| atom_text(a, tok));
                                 let value = etail
                                     .iter()
                                     .find(|&&c| {
                                         a.head_name(c) != Some("from")
                                             && a.head_name(c) != Some("family")
+                                            && a.head_name(c) != Some("schema-hash")
                                     })
                                     .map(|&v| value_form_text(a, v));
                                 expect_effects.push(ExpectEffect {
                                     from,
                                     family,
                                     value,
+                                    schema_hash,
                                 });
                             }
                         }
@@ -1241,6 +1271,46 @@ mod tests {
         // No (expect-fault …) clause → the record carries None and no line is rendered.
         assert_eq!(r.expect_fault, None);
         assert!(!out.contains("expect-fault"));
+        // No (schema-hash …) sub-clause on any effect → None, and no expect-effect-schema-hash line
+        // (absent ⇒ byte-identical to pre-clause platform cases).
+        assert!(r.expect_effects.iter().all(|e| e.schema_hash.is_none()));
+        assert!(!out.contains("expect-effect-schema-hash"));
+    }
+
+    /// An optional `(schema-hash present)` sub-clause under `(effect …)` carries a present-vs-absent token
+    /// through to `ExpectEffect.schema_hash` and renders a SEPARATE `expect-effect-schema-hash` line keyed on
+    /// `(from, family)` — the phase-3 reify→descriptor→hash round-trip pin (v-platform-conformance case 32).
+    /// A present sub-clause must NOT be mis-read as the effect's value form, and effects without it stay None.
+    #[test]
+    fn platform_case_carries_an_expect_effect_schema_hash_present_pin() {
+        let src = r#"(platform-case "a reified world-effect observes its phase-3 schema-hash"
+                 (session "s" (reducer (do (def (main) 0) (export main))))
+                 (kickoff "s" (inbound "start" (: unit Unit)))
+                 (expect-effects
+                   (effect (from "s") (family "effect/Beat") (schema-hash present))
+                   (effect (from "s") (family "log") (: "t=0" String))))"#;
+        let recs = read_platform(src).unwrap();
+        assert_eq!(recs.len(), 1);
+        let r = &recs[0];
+        assert_eq!(r.expect_effects.len(), 2);
+        // The schema-hash-carrying effect: present, and its value form is NOT the schema-hash sub-clause.
+        assert_eq!(r.expect_effects[0].family, "effect/Beat");
+        assert_eq!(r.expect_effects[0].schema_hash.as_deref(), Some("present"));
+        assert_eq!(r.expect_effects[0].value, None);
+        // The sibling effect keeps its value form and carries no schema-hash.
+        assert_eq!(
+            r.expect_effects[1].value.as_deref(),
+            Some("(: \"t=0\" String)")
+        );
+        assert_eq!(r.expect_effects[1].schema_hash, None);
+
+        // Renders one separate line for the present effect, keyed on (from, family); the sibling emits none.
+        let out = render_platform(&recs);
+        assert!(out.contains("expect-effect-schema-hash\ts\teffect/Beat\tpresent\n"));
+        assert_eq!(out.matches("expect-effect-schema-hash").count(), 1);
+        // Re-read the rendered sexp is a fixed point on the schema-hash observation.
+        let r2 = &read_platform(src).unwrap()[0];
+        assert_eq!(r2.expect_effects[0].schema_hash.as_deref(), Some("present"));
     }
 
     /// An optional `(expect-fault <kind>)` clause carries a single bare token through to the record and
