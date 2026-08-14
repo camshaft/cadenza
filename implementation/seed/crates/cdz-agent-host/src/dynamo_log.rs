@@ -180,6 +180,20 @@ impl DynamoLogSink {
         }
     }
 
+    /// The bytes to STORE in an item's `event` attribute for `event`, plus whether they were zstd-compressed:
+    /// encode -> [`maybe_offload`] (an over-threshold body to the CAS as a tiny `(blob-ptr)` frame) ->
+    /// [`maybe_compress`]. The SHARED append-side storage transform: [`append`](Self::append) writes it, and the
+    /// GAP-4 D3 Dynamo checkpoint reuses it for the checkpoint-frame item, so both frame bodies identically (a
+    /// read reverses it: decompress -> rehydrate -> decode). `&mut self` because the offload put needs it.
+    async fn store_bytes_for(&mut self, event: &Event) -> io::Result<(Vec<u8>, bool)> {
+        let body = event_ast::encode(event);
+        let stored = match &mut self.offload {
+            Some((blob, threshold)) => maybe_offload(&body, blob.as_mut(), *threshold).await?,
+            None => body,
+        };
+        self.maybe_compress(stored)
+    }
+
     /// GAP-4 D2 read side (the DUAL of [`maybe_compress`]): the real stored bytes for `stored`, zstd-decoded
     /// when the item's [`ATTR_COMPRESSED`] marker said it was compressed, else `stored` unchanged. Runs BEFORE
     /// [`rehydrate_body`] on the read path (append compressed AFTER offloading, so read decompresses first).
@@ -339,27 +353,160 @@ impl DynamoLogSink {
             blobs.iter().map(|b| b.as_slice()),
         ))
     }
+
+    /// GAP-4 D3 checkpoint helper: the seqs PRESENT in this session's partition within the subsumed prefix
+    /// `[1, checkpoint_seq)` — exactly the items a checkpoint DELETEs. Genesis (seq 0) is always kept and the
+    /// checkpoint frame Put overwrites seq `checkpoint_seq`, so both are excluded here. A KEY-ONLY query
+    /// (projects just `seq`, range-bounded server-side to `1..=checkpoint_seq-1`): it decodes no bodies, so a
+    /// corrupt or offloaded body can't derail it — it enumerates exactly the keys to remove. A PRIOR checkpoint
+    /// already deleted its own subsumed prefix, so this returns only the seqs STILL present (its checkpoint
+    /// frame + the tail since), keeping the atomic delete set — and the transaction — minimal. Paginated.
+    async fn present_subsumed_seqs(&self, checkpoint_seq: u64) -> io::Result<Vec<u64>> {
+        // `[1, checkpoint_seq)` is empty when the checkpoint is at seq 0 or 1 — nothing to delete.
+        if checkpoint_seq <= 1 {
+            return Ok(Vec::new());
+        }
+        let hi = checkpoint_seq - 1; // DynamoDB BETWEEN is inclusive: [1, checkpoint_seq) == [1, checkpoint_seq-1]
+        let mut seqs = Vec::new();
+        let mut last_key = None;
+        loop {
+            let resp = self
+                .client()
+                .query()
+                .table_name(&self.table)
+                .key_condition_expression("#s = :sid AND #sq BETWEEN :lo AND :hi")
+                .expression_attribute_names("#s", ATTR_SESSION)
+                .expression_attribute_names("#sq", ATTR_SEQ)
+                .expression_attribute_values(
+                    ":sid",
+                    aws_sdk_dynamodb::types::AttributeValue::B(
+                        aws_sdk_dynamodb::primitives::Blob::new(
+                            self.session_id.as_bytes().to_vec(),
+                        ),
+                    ),
+                )
+                .expression_attribute_values(
+                    ":lo",
+                    aws_sdk_dynamodb::types::AttributeValue::N("1".to_string()),
+                )
+                .expression_attribute_values(
+                    ":hi",
+                    aws_sdk_dynamodb::types::AttributeValue::N(hi.to_string()),
+                )
+                .projection_expression("#sq") // key-only: we need the seqs to delete, not the bodies
+                .scan_index_forward(true)
+                .set_exclusive_start_key(last_key)
+                .send()
+                .await
+                .map_err(|e| {
+                    io::Error::other(format!(
+                        "DynamoLogSink present_subsumed_seqs query failed: {}",
+                        aws_sdk_dynamodb::error::DisplayErrorContext(&e)
+                    ))
+                })?;
+            for item in resp.items() {
+                match item.get(ATTR_SEQ) {
+                    Some(aws_sdk_dynamodb::types::AttributeValue::N(n)) => {
+                        let seq: u64 = n.parse().map_err(|_| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!(
+                                    "DynamoLogSink present_subsumed_seqs: unparseable seq {n:?}"
+                                ),
+                            )
+                        })?;
+                        seqs.push(seq);
+                    }
+                    _ => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "DynamoLogSink present_subsumed_seqs: an item is missing the numeric `seq` attribute",
+                        ));
+                    }
+                }
+            }
+            match resp.last_evaluated_key() {
+                Some(k) if !k.is_empty() => last_key = Some(k.clone()),
+                _ => break,
+            }
+        }
+        Ok(seqs)
+    }
+}
+
+/// The hard DynamoDB `TransactWriteItems` cap — at most this many actions in one atomic transaction. A GAP-4
+/// D3 checkpoint compacts the partition in a SINGLE transaction (Put the frame + Delete the present subsumed
+/// prefix), because a torn checkpoint (the frame lands but the prefix survives) would leave a `Checkpoint`
+/// frame mid-stream that a full replay can't recover; so the whole compaction must fit under this cap.
+const MAX_TRANSACT_ITEMS: usize = 100;
+
+/// Assemble the ATOMIC compaction transaction for a Dynamo checkpoint at `checkpoint_seq`: one `Put` of the
+/// checkpoint-frame item at seq `checkpoint_seq` (the SAME `(session_id, seq, event[, z])` item shape `append`
+/// writes, with `frame_stored`/`frame_compressed` the already offloaded+compressed body), plus one `Delete`
+/// per present subsumed seq (`present_subsumed_seqs`, all in `[1, checkpoint_seq)`; genesis@0 is kept and the
+/// frame Put overwrites seq `checkpoint_seq`, so neither is deleted — the Put and the Deletes touch DISJOINT
+/// keys, as `TransactWriteItems` requires). PURE (no client / no I/O) so the exact item set + the cap check are
+/// hermetically testable. `Err` if the transaction would exceed [`MAX_TRANSACT_ITEMS`]: the caller then skips
+/// the checkpoint this cycle (the log stays uncompacted — never torn), and the daemon's checkpoint threshold
+/// keeps steady-state growth well under the cap, so this only trips on a pathological first checkpoint of a
+/// huge pre-existing log.
+fn build_checkpoint_transaction(
+    table: &str,
+    session_id: &cdz_kernel::hash::Hash,
+    checkpoint_seq: u64,
+    frame_stored: Vec<u8>,
+    frame_compressed: bool,
+    present_subsumed_seqs: &[u64],
+) -> Result<Vec<aws_sdk_dynamodb::types::TransactWriteItem>, String> {
+    use aws_sdk_dynamodb::primitives::Blob;
+    use aws_sdk_dynamodb::types::{AttributeValue, Delete, Put, TransactWriteItem};
+
+    let total = 1 + present_subsumed_seqs.len();
+    if total > MAX_TRANSACT_ITEMS {
+        return Err(format!(
+            "checkpoint at seq {checkpoint_seq} needs {total} actions in one atomic transaction, over the \
+             DynamoDB TransactWriteItems limit of {MAX_TRANSACT_ITEMS} — lower [log].checkpoint_threshold so \
+             steady-state growth stays under the cap (log left uncompacted this cycle, never torn)"
+        ));
+    }
+    // The partition key value — a fresh Blob per action (each builder takes an owned AttributeValue).
+    let sid = || AttributeValue::B(Blob::new(session_id.as_bytes().to_vec()));
+
+    let mut put = Put::builder()
+        .table_name(table)
+        .item(ATTR_SESSION, sid())
+        .item(ATTR_SEQ, AttributeValue::N(checkpoint_seq.to_string()))
+        .item(ATTR_EVENT, AttributeValue::B(Blob::new(frame_stored)));
+    if frame_compressed {
+        put = put.item(ATTR_COMPRESSED, AttributeValue::N("1".to_string()));
+    }
+    let put = put
+        .build()
+        .map_err(|e| format!("checkpoint: building the Put frame item failed: {e}"))?;
+
+    let mut items = Vec::with_capacity(total);
+    items.push(TransactWriteItem::builder().put(put).build());
+    for &seq in present_subsumed_seqs {
+        let delete = Delete::builder()
+            .table_name(table)
+            .key(ATTR_SESSION, sid())
+            .key(ATTR_SEQ, AttributeValue::N(seq.to_string()))
+            .build()
+            .map_err(|e| format!("checkpoint: building the Delete for seq {seq} failed: {e}"))?;
+        items.push(TransactWriteItem::builder().delete(delete).build());
+    }
+    Ok(items)
 }
 
 #[async_trait::async_trait(?Send)]
 impl LogSink for DynamoLogSink {
     async fn append(&mut self, event: &Event) -> io::Result<()> {
-        // Encode through the SHARED cadenza-ast canonical codec — the SAME wire format the on-disk LogStore
-        // frames (language-native, not bespoke). Stored as a binary attribute.
-        let body = event_ast::encode(event);
-        // GAP-4 D1: when offload is configured, an over-threshold body is written to the blob CAS FIRST and
-        // replaced by a tiny (blob-ptr) frame here (`maybe_offload` does the content-addressed put + returns
-        // the pointer bytes); the item then carries the pointer, not the body. The CAS write-through happening
-        // BEFORE the put_item is what keeps the pointer from ever out-living its body (no dangling ptr on a
-        // crash between the two). No offload = the body is stored inline verbatim (pre-D1 behavior).
-        let stored = match &mut self.offload {
-            Some((blob, threshold)) => maybe_offload(&body, blob.as_mut(), *threshold).await?,
-            None => body,
-        };
-        // GAP-4 D2: compress the stored bytes (post-offload) when over the compress threshold; the
-        // ATTR_COMPRESSED marker records it so a read decompresses. A sub-threshold body (incl. a tiny
-        // offloaded blob-ptr frame) stays raw.
-        let (stored, compressed) = self.maybe_compress(stored)?;
+        // Frame the body through the SHARED append-side transform (encode via the cadenza-ast canonical codec —
+        // the SAME wire format the on-disk LogStore frames — then GAP-4 D1 offload an over-threshold body to the
+        // blob CAS as a tiny (blob-ptr) frame, then GAP-4 D2 compress the result). The CAS write-through happens
+        // BEFORE the put_item so a pointer never out-lives its body on a crash between the two. The ATTR_COMPRESSED
+        // marker records compression so a read decompresses. Reused verbatim by the D3 checkpoint frame item.
+        let (stored, compressed) = self.store_bytes_for(event).await?;
         let mut req = self
             .client()
             .put_item()
@@ -513,6 +660,107 @@ impl crate::factory::LogSinkBuilder for DynamoLogSinkBuilder {
                 id.to_base64url()
             )
         })
+    }
+
+    /// Load a checkpoint's KV snapshot from the offload store this builder writes checkpoints to (GAP-4 D3).
+    /// A Dynamo [`checkpoint`](Self::checkpoint) persists the snapshot content-addressed by its `kv_root` to
+    /// the SAME [`OffloadSource`](crate::factory::OffloadSource) the D1 body-offload uses, so a fresh handle
+    /// over it resolves the snapshot by that key. No offload configured → this Dynamo log never checkpoints →
+    /// `Ok(None)` (nothing to load). Delegates the get+decode to [`crate::checkpoint::load_kv_snapshot`]
+    /// (absent → `None`; corrupt → `Err`). Mirrors [`FileLogSinkBuilder::load_checkpoint_snapshot`].
+    async fn load_checkpoint_snapshot(
+        &self,
+        kv_root: cdz_kernel::hash::Hash,
+    ) -> Result<Option<cdz_kernel::kv::Kv>, String> {
+        let Some((source, _threshold)) = &self.offload else {
+            return Ok(None);
+        };
+        let blob = source.materialize()?;
+        crate::checkpoint::load_kv_snapshot(blob.as_ref(), kv_root).await
+    }
+
+    /// GAP-4 D3 checkpoint WRITE for the Dynamo backend — the atomic-transaction counterpart to the File
+    /// backend's compact-rewrite. Persist `session`'s KV snapshot to the offload CAS FIRST (crash-safe order:
+    /// the frame's `kv_root` must be resolvable BEFORE the frame is durable), then compact the partition to
+    /// `[Genesis@0, Checkpoint@N, tail]` in ONE atomic `TransactWriteItems`: Put the checkpoint frame at seq N
+    /// (overwriting the tip event that N subsumes) + Delete every present subsumed item in `[1, N)`. Because the
+    /// compaction is atomic, a recovery sees EITHER the intact full log (a crash before the transaction → full
+    /// replay) OR the compacted log (a crash after → `recover_from_checkpoint`), never a torn mix with a
+    /// `Checkpoint` frame mid-stream. A crash after the snapshot but before the transaction just orphans the
+    /// snapshot bytes in the CAS (harmless content-addressed garbage), leaving the full log to replay.
+    ///
+    /// Requires an offload store configured ([`with_offload`](Self::with_offload)) — the snapshot goes to the
+    /// SAME content-addressed store D1 body-offload uses (a checkpoint with no CAS to hold the snapshot is
+    /// unsupported). `Err` if none is set, if the atomic transaction would exceed the DynamoDB 100-item limit
+    /// (the log stays uncompacted this cycle — never torn), or on any store/Dynamo I/O failure (never a panic).
+    async fn checkpoint(
+        &self,
+        id: &crate::host::SessionId,
+        session: &cdz_kernel::kernel::Session,
+    ) -> Result<(), String> {
+        let (source, threshold) = self.offload.as_ref().ok_or_else(|| {
+            "checkpoint requires an offload store (no [blob]/offload configured for this dynamo log)"
+                .to_string()
+        })?;
+
+        // The checkpoint frame at the session's CURRENT tip (seq N), carrying the full descriptor (incl.
+        // kv_root == session.kv().root_hash()). Snapshot FIRST (crash-safe order): persist the KV content the
+        // descriptor's kv_root names to the CAS, so a post-transaction recovery always finds its seed_kv. A
+        // dedicated handle for the snapshot put keeps it independent of the sink's own offload handle.
+        let frame = session.checkpoint_frame();
+        let checkpoint_seq = frame.seq;
+        let mut snapshot_blob = source.materialize()?;
+        crate::checkpoint::persist_kv_snapshot(snapshot_blob.as_mut(), session.kv())
+            .await
+            .map_err(|e| {
+                format!(
+                    "checkpoint: could not persist KV snapshot for session {}: {e}",
+                    id.to_base64url()
+                )
+            })?;
+
+        // The per-session sink over the SAME partition + offload/compression config `build` uses, so the frame
+        // is framed exactly as an appended event (its body offloads/compresses identically → recovery decodes
+        // it the same way). Its own offload handle serves `store_bytes_for` (the frame-body offload put).
+        let mut sink = DynamoLogSink::from_conf(&self.config, self.table.clone(), id.hash())
+            .with_offload(source.materialize()?, *threshold);
+        if let Some(ct) = self.compress_threshold {
+            sink = sink.with_compression(ct);
+        }
+        let (frame_stored, frame_compressed) = sink
+            .store_bytes_for(&frame)
+            .await
+            .map_err(|e| format!("checkpoint: could not frame the checkpoint body: {e}"))?;
+
+        // Enumerate the present items in the subsumed prefix [1, N) — exactly the keys the transaction Deletes.
+        let present = sink
+            .present_subsumed_seqs(checkpoint_seq)
+            .await
+            .map_err(|e| format!("checkpoint: could not enumerate the subsumed prefix: {e}"))?;
+
+        // Compact atomically: Put frame@N + Delete present [1, N). One TransactWriteItems, all-or-nothing.
+        let items = build_checkpoint_transaction(
+            &self.table,
+            &id.hash(),
+            checkpoint_seq,
+            frame_stored,
+            frame_compressed,
+            &present,
+        )?;
+        sink.client()
+            .transact_write_items()
+            .set_transact_items(Some(items))
+            .send()
+            .await
+            .map(|_| ())
+            .map_err(|e| {
+                format!(
+                    "checkpoint: TransactWriteItems (session {}, seq {}) failed: {}",
+                    id.to_base64url(),
+                    checkpoint_seq,
+                    aws_sdk_dynamodb::error::DisplayErrorContext(&e)
+                )
+            })
     }
 }
 
@@ -787,6 +1035,141 @@ mod tests {
         assert_eq!(
             recovered, big,
             "offload+compression compose losslessly: the body round-trips byte-identical"
+        );
+    }
+
+    // ---- GAP-4 D3 checkpoint: the pure compaction-transaction builder (hermetic — no live DynamoDB) ----
+
+    /// The `seq` of a `Put`/`Delete` action's item/key as a u64 — a small accessor so the transaction-shape
+    /// asserts read cleanly.
+    fn action_seq(
+        item: &std::collections::HashMap<String, aws_sdk_dynamodb::types::AttributeValue>,
+    ) -> u64 {
+        match item.get(ATTR_SEQ) {
+            Some(aws_sdk_dynamodb::types::AttributeValue::N(n)) => n.parse().expect("numeric seq"),
+            other => panic!("expected a numeric seq attribute, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_checkpoint_transaction_puts_the_frame_and_deletes_the_present_prefix() {
+        // The core D3 compaction shape: at a checkpoint of seq 4 with present subsumed seqs [1,2,3], the atomic
+        // transaction is ONE Put of the frame item @4 (session_id + seq + event, no compress marker) plus one
+        // Delete per present subsumed seq — genesis@0 and the frame's own seq 4 are NEVER deleted (disjoint from
+        // the Put, as TransactWriteItems requires).
+        let sid = Hash::of(b"worker-ck");
+        let items = build_checkpoint_transaction(
+            "cdz-log",
+            &sid,
+            4,
+            b"frame-body".to_vec(),
+            false,
+            &[1, 2, 3],
+        )
+        .expect("under the item cap");
+        assert_eq!(items.len(), 4, "1 Put + 3 Deletes");
+
+        // Exactly one Put, and it is the frame item at the checkpoint seq.
+        let puts: Vec<_> = items.iter().filter_map(|i| i.put()).collect();
+        assert_eq!(puts.len(), 1, "exactly one Put (the checkpoint frame)");
+        let put = puts[0];
+        assert_eq!(put.table_name(), "cdz-log");
+        assert_eq!(
+            action_seq(put.item()),
+            4,
+            "the frame is Put at the checkpoint seq"
+        );
+        assert!(
+            matches!(put.item().get(ATTR_EVENT), Some(aws_sdk_dynamodb::types::AttributeValue::B(b)) if b.as_ref() == b"frame-body"),
+            "the frame body is stored under the `event` binary attribute"
+        );
+        assert!(
+            matches!(put.item().get(ATTR_SESSION), Some(aws_sdk_dynamodb::types::AttributeValue::B(b)) if b.as_ref() == sid.as_bytes()),
+            "the frame item is keyed to the session partition"
+        );
+        assert!(
+            put.item().get(ATTR_COMPRESSED).is_none(),
+            "an uncompressed frame carries no compression marker"
+        );
+
+        // The Deletes cover exactly the present subsumed prefix {1,2,3} — never 0 (genesis) or 4 (the frame).
+        let mut deleted: Vec<u64> = items
+            .iter()
+            .filter_map(|i| i.delete())
+            .inspect(|d| assert_eq!(d.table_name(), "cdz-log"))
+            .map(|d| action_seq(d.key()))
+            .collect();
+        deleted.sort_unstable();
+        assert_eq!(
+            deleted,
+            vec![1, 2, 3],
+            "the present subsumed prefix is deleted, nothing else"
+        );
+    }
+
+    #[test]
+    fn build_checkpoint_transaction_marks_a_compressed_frame() {
+        // A frame body stored compressed carries the ATTR_COMPRESSED marker on its Put item (a read decompresses
+        // it), exactly like a compressed appended event.
+        let items =
+            build_checkpoint_transaction("t", &Hash::of(b"w"), 2, b"z-bytes".to_vec(), true, &[1])
+                .expect("under the cap");
+        let put = items.iter().find_map(|i| i.put()).expect("a Put");
+        assert!(
+            matches!(put.item().get(ATTR_COMPRESSED), Some(aws_sdk_dynamodb::types::AttributeValue::N(n)) if n == "1"),
+            "a compressed frame is marked so the read decompresses it"
+        );
+    }
+
+    #[test]
+    fn build_checkpoint_transaction_with_an_empty_prefix_is_just_the_put() {
+        // A checkpoint whose subsumed prefix is already empty (e.g. a prior checkpoint deleted it, or a
+        // checkpoint at seq 1) is a single Put of the frame — nothing to delete.
+        let items =
+            build_checkpoint_transaction("t", &Hash::of(b"w"), 1, b"f".to_vec(), false, &[])
+                .expect("under the cap");
+        assert_eq!(items.len(), 1);
+        assert!(items[0].put().is_some(), "the sole action is the frame Put");
+        assert!(items[0].delete().is_none());
+    }
+
+    #[test]
+    fn build_checkpoint_transaction_over_the_item_cap_errs_cleanly() {
+        // The atomic transaction must fit under the DynamoDB 100-item TransactWriteItems cap. A subsumed prefix
+        // of 100 present seqs + the 1 frame Put = 101 actions → a clean Err (the caller skips the checkpoint this
+        // cycle, leaving the log uncompacted-but-intact), NOT a torn partial write.
+        let present: Vec<u64> = (1..=100).collect();
+        let err =
+            build_checkpoint_transaction("t", &Hash::of(b"w"), 101, b"f".to_vec(), false, &present)
+                .expect_err("101 actions is over the 100-item cap");
+        assert!(err.contains("100"), "the error names the cap: {err}");
+        assert!(
+            err.contains("checkpoint_threshold"),
+            "the error points at the fix: {err}"
+        );
+        // The boundary just under the cap (99 deletes + 1 Put = 100) is accepted.
+        let ok = build_checkpoint_transaction(
+            "t",
+            &Hash::of(b"w"),
+            100,
+            b"f".to_vec(),
+            false,
+            &(1..=99).collect::<Vec<_>>(),
+        );
+        assert_eq!(ok.expect("exactly 100 actions fits").len(), 100);
+    }
+
+    #[tokio::test]
+    async fn present_subsumed_seqs_at_seq_0_or_1_short_circuits_without_touching_the_client() {
+        // The subsumed prefix [1, checkpoint_seq) is empty at seq 0 or 1, so present_subsumed_seqs returns empty
+        // WITHOUT issuing a Query — pinned by the lazy-client invariant (the OnceCell stays empty, so no
+        // aws-smithy client is built; keeps this path hermetic).
+        let sink = DynamoLogSink::from_conf(&test_cfg(), "cdz-log", Hash::of(b"w"));
+        assert!(sink.present_subsumed_seqs(0).await.unwrap().is_empty());
+        assert!(sink.present_subsumed_seqs(1).await.unwrap().is_empty());
+        assert!(
+            sink.client.get().is_none(),
+            "an empty subsumed prefix must not build a client (no Query issued)"
         );
     }
 }
