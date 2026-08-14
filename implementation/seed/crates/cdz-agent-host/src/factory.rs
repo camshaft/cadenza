@@ -1161,6 +1161,13 @@ where
     /// [`HostedSession::from_recovered`](crate::host::HostedSession::from_recovered) wraps them (the recovered
     /// session keeps its genesis-hash / SessionId / KV / open obligations — recovery never re-mints).
     ///
+    /// A CHECKPOINT-ROOTED log (GAP-4 D3: `[Genesis, Checkpoint@N, tail]`, written by
+    /// [`FileLogSinkBuilder::checkpoint`]) is fast-forwarded instead: the seed-KV snapshot the checkpoint
+    /// descriptor names is loaded from this backend's checkpoint store ([`load_checkpoint_snapshot`](LogSinkBuilder::load_checkpoint_snapshot))
+    /// and the tail folded via [`Session::recover_from_checkpoint`](cdz_kernel::kernel::Session::recover_from_checkpoint) —
+    /// recovery-equivalent to full replay, without re-folding the subsumed prefix. A plain genesis-rooted log
+    /// takes the full-replay path.
+    ///
     /// The boot-recovery loop calls this per durably-logged session (enumerated via the session-registry /
     /// `DynamoSessionRegistry::list_all`), after skipping any [`is_terminated`](crate::host::HostedSession::is_terminated).
     /// A DENY-ALL authorizer is attached (like a spawned child): a recovered session re-earns caps via its
@@ -1185,6 +1192,37 @@ where
                 )
             }
         };
+        // GAP-4 D3-2b: a CHECKPOINT-ROOTED durable log ([Genesis@0, Checkpoint@N, tail]) recovers by
+        // FAST-FORWARDING from the KV SNAPSHOT the checkpoint descriptor names, then folding only the tail —
+        // NOT a full replay from genesis (the subsumed 1..=N prefix is gone, and a Checkpoint frame is a
+        // recovery SEED, not a foldable event). Detect the Checkpoint at events[1] and resolve its seed-KV
+        // snapshot from THIS backend's checkpoint store (the same builder that wrote it, via
+        // `load_checkpoint_snapshot`) BEFORE the reducer fetch: a checkpoint-rooted log with no snapshot store
+        // configured, or one naming a `kv_root` that isn't present, is a clean Err here rather than a needless
+        // component fetch followed by an unfoldable-Checkpoint replay. A plain full log resolves to `None` and
+        // takes the existing genesis-rooted replay path unchanged.
+        let seed_kv = match recovered.events.get(1).map(|e| &e.body) {
+            Some(EventBody::Checkpoint(desc)) => {
+                let kv_root = desc.kv_root;
+                let builder = self.log_sink.as_ref().ok_or_else(|| {
+                    format!(
+                        "recover_and_build: checkpoint-rooted log (Checkpoint at events[1]) but no log \
+                         sink is configured to load the seed KV snapshot for kv_root {kv_root}"
+                    )
+                })?;
+                let kv = builder
+                    .load_checkpoint_snapshot(kv_root)
+                    .await?
+                    .ok_or_else(|| {
+                        format!(
+                            "recover_and_build: checkpoint-rooted log names kv_root {kv_root} but no \
+                             matching KV snapshot is in the checkpoint store"
+                        )
+                    })?;
+                Some(kv)
+            }
+            _ => None,
+        };
         let bytes = self
             .blob
             .get(&reducer_hash)
@@ -1198,13 +1236,35 @@ where
         let mut reducer = AsyncComponentReducer::from_component_bytes(&bytes).map_err(|e| {
             format!("recovered reducer component for {reducer_hash} did not lift: {e:?}")
         })?;
-        // Fold the recovered log through the kernel's backend-agnostic recovery core with the reloaded
-        // reducer: rebuilds KV + the open-obligation set + reports how the log ended (Clean/TornTail/Corrupt)
-        // and which effects are open (the daemon re-drives those). A reducer-load failure above already
-        // returned; a replay/empty-log failure here maps to a clean Err (never a panic).
-        let (session, report) = cdz_kernel::kernel::Session::recover_from(recovered, &mut reducer)
-            .await
-            .map_err(|e| format!("recover_and_build: recover_from failed: {e:?}"))?;
+        // Fold the recovered log with the reloaded reducer: a checkpoint-rooted log seeds the resident state
+        // from the snapshot at seq N and folds only the tail (recovery-EQUIVALENT to full replay by
+        // construction — kernel-proven in `recover_from_checkpoint_equals_full_replay`); a full log replays
+        // from genesis through the backend-agnostic recovery core. Either way it rebuilds KV + the
+        // open-obligation set and reports how the log ended (Clean/TornTail/Corrupt) + which effects are open
+        // (the daemon re-drives those). `recover_from_checkpoint` returns only a `Session` (no report), so the
+        // checkpoint path constructs the equivalent `RecoveryReport` from the recovered `kind` + open effects.
+        // A reducer-load failure above already returned; a replay / kv-root-mismatch / empty-log failure here
+        // maps to a clean Err (never a panic).
+        let (session, report) = match seed_kv {
+            Some(seed_kv) => {
+                let kind = recovered.kind;
+                let session = cdz_kernel::kernel::Session::recover_from_checkpoint(
+                    recovered.events,
+                    seed_kv,
+                    &mut reducer,
+                )
+                .await
+                .map_err(|e| format!("recover_and_build: recover_from_checkpoint failed: {e:?}"))?;
+                let open_effects = session.open_effect_ids();
+                (
+                    session,
+                    cdz_kernel::kernel::RecoveryReport { kind, open_effects },
+                )
+            }
+            None => cdz_kernel::kernel::Session::recover_from(recovered, &mut reducer)
+                .await
+                .map_err(|e| format!("recover_and_build: recover_from failed: {e:?}"))?,
+        };
         // The recovered session's id/genesis are already fixed by its log; build the executor set against its
         // genesis hash (its spawn-provenance for any executor that needs the session identity).
         let owner_genesis = session.genesis_hash();
@@ -1384,6 +1444,114 @@ mod tests {
             err.contains("no reducer component in the blob store for recovered hash")
                 && err.contains(&reducer_hash.to_hex()),
             "the error names the reducer hash read FROM the recovered genesis: {err}"
+        );
+    }
+
+    /// A `[Genesis, Checkpoint@N]` checkpoint-rooted log for recovery tests — the shape
+    /// [`FileLogSinkBuilder::checkpoint`] leaves on disk. The checkpoint frame comes from the kernel
+    /// (`checkpoint_frame`), so its descriptor's `kv_root` is authoritative.
+    fn checkpoint_rooted_recovered(reducer_hash: Hash) -> cdz_kernel::log_store::Recovered {
+        use cdz_kernel::kernel::Session;
+        use cdz_kernel::log_store::{Recovered, RecoveryKind};
+        let session = Session::genesis(reducer_hash, Hash::of(b"cp-nonce"));
+        Recovered {
+            events: vec![session.genesis_ref().clone(), session.checkpoint_frame()],
+            kind: RecoveryKind::Clean,
+            good_prefix_len: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn recover_and_build_of_a_checkpoint_rooted_log_errors_when_no_snapshot_store_is_configured(
+    ) {
+        // GAP-4 D3-2b: a checkpoint-rooted log ([Genesis, Checkpoint@N, tail]) cannot be recovered by full
+        // replay (the subsumed prefix is gone; a Checkpoint frame is a seed, not a foldable event). If the
+        // factory has NO log sink, there is no checkpoint store to load the seed-KV snapshot from → a clean
+        // Err naming the missing kv_root, resolved BEFORE any reducer fetch (a factory with an empty blob
+        // store must still surface the snapshot-store gap, not a spurious reducer-absent error).
+        let reducer_hash = Hash::of(b"cp-reducer");
+        let recovered = checkpoint_rooted_recovered(reducer_hash);
+        let mut factory =
+            ComponentSessionFactory::new(MemBlobStore::new(), hermetic_executors, deny_all_authz);
+        let err = match factory.recover_and_build(recovered).await {
+            Ok(_) => panic!("a checkpoint-rooted log with no snapshot store must not recover"),
+            Err(e) => e,
+        };
+        assert!(
+            err.contains("no log sink is configured to load the seed KV snapshot"),
+            "the error names the missing checkpoint snapshot store, not a reducer miss: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn recover_and_build_of_a_checkpoint_rooted_log_errors_when_the_snapshot_is_absent() {
+        // GAP-4 D3-2b: the snapshot store is configured but the descriptor's kv_root snapshot isn't present
+        // (declines with None) → a clean Err, again resolved before the reducer fetch. A builder whose
+        // load_checkpoint_snapshot returns None stands in for a checkpoint store missing the named snapshot.
+        struct NoSnapshotBuilder;
+        #[async_trait::async_trait(?Send)]
+        impl LogSinkBuilder for NoSnapshotBuilder {
+            async fn build(
+                &self,
+                _id: &SessionId,
+            ) -> Result<Option<Box<dyn cdz_kernel::log_store::LogSink>>, String> {
+                Ok(None)
+            }
+            // load_checkpoint_snapshot uses the trait default (Ok(None)) — the "snapshot absent" case.
+        }
+        let reducer_hash = Hash::of(b"cp-reducer");
+        let recovered = checkpoint_rooted_recovered(reducer_hash);
+        let mut factory =
+            ComponentSessionFactory::new(MemBlobStore::new(), hermetic_executors, deny_all_authz)
+                .with_log_sink(Box::new(NoSnapshotBuilder));
+        let err = match factory.recover_and_build(recovered).await {
+            Ok(_) => panic!("a checkpoint-rooted log with an absent snapshot must not recover"),
+            Err(e) => e,
+        };
+        assert!(
+            err.contains("no matching KV snapshot"),
+            "the error names the absent checkpoint snapshot: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn recover_and_build_of_a_checkpoint_rooted_log_loads_the_snapshot_then_reaches_the_reducer(
+    ) {
+        // GAP-4 D3-2b: when the snapshot store DOES have the seed KV, resolution succeeds and recovery
+        // threads on to the reducer fetch — proving the checkpoint branch loads the snapshot and proceeds
+        // (rather than short-circuiting). Here the blob store has no reducer, so the NEXT step (reducer load)
+        // is what fails, keyed on the recovered genesis hash — the snapshot resolution itself did NOT error.
+        struct SnapshotPresentBuilder;
+        #[async_trait::async_trait(?Send)]
+        impl LogSinkBuilder for SnapshotPresentBuilder {
+            async fn build(
+                &self,
+                _id: &SessionId,
+            ) -> Result<Option<Box<dyn cdz_kernel::log_store::LogSink>>, String> {
+                Ok(None)
+            }
+            async fn load_checkpoint_snapshot(
+                &self,
+                _kv_root: Hash,
+            ) -> Result<Option<cdz_kernel::kv::Kv>, String> {
+                // A snapshot is present (its exact content is validated against kv_root only once recovery
+                // reaches recover_from_checkpoint — here recovery errors earlier at the reducer fetch).
+                Ok(Some(cdz_kernel::kv::Kv::new()))
+            }
+        }
+        let reducer_hash = Hash::of(b"cp-reducer-not-in-store");
+        let recovered = checkpoint_rooted_recovered(reducer_hash);
+        let mut factory =
+            ComponentSessionFactory::new(MemBlobStore::new(), hermetic_executors, deny_all_authz)
+                .with_log_sink(Box::new(SnapshotPresentBuilder));
+        let err = match factory.recover_and_build(recovered).await {
+            Ok(_) => panic!("the reducer bytes are absent, so recovery must still fail after loading the snapshot"),
+            Err(e) => e,
+        };
+        assert!(
+            err.contains("no reducer component in the blob store for recovered hash")
+                && err.contains(&reducer_hash.to_hex()),
+            "snapshot resolution succeeded and recovery advanced to the reducer fetch: {err}"
         );
     }
 
