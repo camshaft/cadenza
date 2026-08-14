@@ -4954,6 +4954,32 @@ fn ast_sum_ty(db: &Db) -> Option<Ty> {
     Some(db.normalize_sum(occ, Vec::new()))
 }
 
+/// `Option T` for a concrete element `T` — the prelude `Option` sum instantiated at one arg. `None` when
+/// the `Option` declaration is somehow absent (a prelude-less compile). Used to spell the `correlation`
+/// and `payload` fields of a world-effect request record.
+fn option_ty(db: &Db, elem: Ty) -> Option<Ty> {
+    let occ = db.type_decls.iter().find(|t| t.name == "Option")?.occ;
+    Some(db.normalize_sum(occ, vec![elem]))
+}
+
+/// The TYPE a REIFIED async world-effect perform carries in the reducer's returned effect-list — the
+/// effect-request record `{ correlation: Option Bytes, kind: String, payload: Option Bytes }` (schema-hash
+/// phase-1a, the shape v-rust-backend's `reify_effect_to_tuple` emits). Fields are name-sorted
+/// (`correlation < kind < payload`) so the `Ty::Record` `BTreeMap` order matches reify's value-encode
+/// sorted-slot column order; capability-BLIND (no `target` column — the resource arg, when declared, is
+/// extracted host-side off the decl marker, per the concierge resource-designation ruling). Phase-1a is
+/// the single-`Bytes`-arg (or zero-arg) case: `payload` is `Option Bytes`; a STRUCTURED/multi-arg payload
+/// rides R2 (the in-fold value-encode primitive). `None` when the prelude `Option` is absent.
+fn world_effect_request_ty(db: &Db) -> Option<Ty> {
+    let correlation = option_ty(db, Ty::Bytes)?;
+    let payload = option_ty(db, Ty::Bytes)?;
+    let mut fields = std::collections::BTreeMap::new();
+    fields.insert(crate::resolved::Symbol::plain("correlation"), correlation);
+    fields.insert(crate::resolved::Symbol::plain("kind"), Ty::String);
+    fields.insert(crate::resolved::Symbol::plain("payload"), payload);
+    Some(Ty::Record(std::rc::Rc::new(fields)))
+}
+
 /// The result type of `(Qty.pow q n)`: q's inner numeric type carried over, with q's unit raised to the
 /// `n`th power (`Unit::pow`). `None` when arg0 is not a quantity or arg1 is not a compile-time `Int`
 /// literal (the caller then falls through). `#[inline(never)]` so it does NOT enlarge `apply_type`'s
@@ -5615,6 +5641,27 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     // below would wrongly return). Checked before that short-circuit, only for an effect operation, so an
     // ordinary nullary def `(g)` is unaffected. (A non-nullary op reaches the scheme-peeling loop below.)
     if crate::eval::effect_op_of(db, head).is_some() {
+        // A REIFIED ASYNC WORLD-EFFECT perform in a reducer-world compile types as the effect-request
+        // RECORD (schema-hash phase-1a), NOT the op-sig result. The discriminator (agreed with
+        // v-rust-backend, matching its reify fork in `lower`): in a reducer-world compile
+        // (`db.wit_world.is_some()`), a HOST-DELEGATED perform (`perform_host_target` = Some — its
+        // entrypoint `(host …)` block is its CDZ0401 home) whose effect is NOT a declared world IMPORT
+        // (`!is_world_import_op`) is an ASYNC world-effect returned in the effect-list → it reifies. A
+        // world-IMPORT op (`is_world_import_op` TRUE — e.g. `kv.get`/`kv.delete`, the sole `kv` import) is
+        // SYNCHRONOUS: its result is consumed inline, so it keeps its op-sig result type (the fall-through
+        // arms below) — reifying it would break the host-fused kv reducers. Polarity is REIFY-WHEN-FALSE:
+        // the world declares only `kv` as an import, so `Model.request`/`Emit.send`/`Tool.run` are
+        // `is_world_import_op` FALSE and reify, while `kv.*` is TRUE and stays synchronous. Generic-
+        // compiler-clean: reads the declared world imports, zero hard-coded capability vocabulary. A
+        // NON-reducer compile (`wit_world` None) or a homeless perform (`perform_host_target` None → the
+        // CDZ0401 no-home decline) never reaches the record type.
+        if db.wit_world.is_some()
+            && let Some((effect, op, _result)) = crate::effects::perform_host_target(db, head, head)
+            && !crate::wit_world::is_world_import_op(db.wit_world.as_deref(), &effect, &op)
+            && let Some(record) = world_effect_request_ty(db)
+        {
+            return record;
+        }
         let mut fresh = Fresh::new();
         if let Some(scheme) = crate::eval::scheme_of(db, head, &mut fresh) {
             let cur = crate::unify::instantiate(&scheme, &mut fresh);

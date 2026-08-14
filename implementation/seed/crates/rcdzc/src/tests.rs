@@ -3591,6 +3591,66 @@ fn a_reducer_with_a_variant_effect_list_result_emits_a_valid_provider() {
     );
 }
 
+/// SCHEMA-HASH phase-1a TYPING CONTRACT (v-inference↔v-rust-backend co-land): a REIFIED async world-effect
+/// perform types as the effect-request RECORD `{correlation:Option Bytes, kind:String, payload:Option
+/// Bytes}`, so a reducer returning `(list (Model.request e))` type-checks against a `List(Record(...))`
+/// effect-list. The discriminator is REIFY-WHEN-`!is_world_import_op` under a host home: the world imports
+/// ONLY `kv`, so `kv.*` (a world import) stays SYNCHRONOUS (op-sig result, consumed inline — the host-fused
+/// kv reducers), while `Model.request` (NOT a world import, performed under its `(host (Model))` home)
+/// reifies to the record. This asserts the reify perform type-checks in effect-list position with NO
+/// CDZ0203 (the record unifies with the returned list) and NO CDZ0401 (the host block is its home).
+/// Diagnostics-only: the single-`Bytes`-arg case (payload `Option Bytes`); structured/multi-arg rides R2.
+#[test]
+fn a_reified_async_world_effect_perform_types_as_the_request_record_in_effect_list_position() {
+    // The world imports ONLY kv (so Model is NOT a world-import → reifies). `apply` performs Model.request
+    // under its (host (Model)) home and returns it in the one-element effect-list; the declared fold result
+    // is list<u8> (the bytes boundary), and the internal effect-list element is the reified record.
+    use crate::testkit::parse;
+    // The WIT-world artifact imports ONLY `cadenza:agent-kernel/kv` — so `Model` is NOT a world import and
+    // its perform reifies. `apply` performs `Model.request` under its `(host (Model))` home (which gives it
+    // a CDZ0401 home) and returns it in the one-element effect-list. Uses the ARTIFACT world (not an inline
+    // `(world …)` decl) so `db.wit_world` carries the real FQ import set `is_world_import_op` reads.
+    let src = "(module m \
+                 (effect Model (op request (-> Bytes Unit))) \
+                 (def (apply (: e Bytes)) (host (Model) (list (Model.request e)))) \
+                 (export apply))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:reducer/api"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                reducer_kv_put_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        out.diagnostics
+            .iter()
+            .all(|d| d.code.as_deref() != Some("CDZ0203") && d.code.as_deref() != Some("CDZ0401")),
+        "a reified async world-effect perform must type as the request record in effect-list position \
+         (no CDZ0203 list-element mismatch, no CDZ0401 no-home): {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| (&d.code, &d.message))
+            .collect::<Vec<_>>()
+    );
+}
+
+// NOTE: the SYNCHRONOUS-world-import sibling (a `kv.*` perform keeps its op-sig result, NOT the request
+// record) is pinned by the existing host-fused kv reducer tests (`a_host_fused_kv_get/put/delete_*`), which
+// use the real KIND_WIT_WORLD artifact importing `cadenza:agent-kernel/kv` and match on the op result — so
+// a polarity regression (reifying a world-import) breaks them (the 7-test regression that caught the
+// original inverted ruling). An inline `(world … (import kv …))` decl is NOT a reliable witness here (its
+// import interface does not reach `is_world_import_op` the way the artifact does — a separate inline-world
+// import-parse question), so the sync side is covered by the artifact-based kv tests, not a duplicate here.
+
 /// §3c full-A INVOKE-ROUNDTRIP (the real behavioral proof): a compiled pure reducer's `apply` member is
 /// INVOKED on the pinned wasmtime with a real Event value-form document and its effect-list result is read
 /// back — the whole `list<u8>` -> value-decode -> fold -> value-encode -> `list<u8>` pipeline runs on the
