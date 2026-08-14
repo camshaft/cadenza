@@ -8564,3 +8564,73 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 456 Int64))
   (call   main (: 2 Int64)) (output (: 567 Int64)))
+
+(case "a min-heap in a list — push sifts UP, popmin sifts DOWN — the finding-24 match-scrutinee hoist at integration scale"
+  (doc    "The breaker sft1 min-heap in FULL, the integration witness for the finding-24 match-scrutinee
+           coverage-gap fix that the sibling case above pins minimally. TWO compound match-scrutinees over the
+           growing List state feed resume in a single arm each: the `push` arm matches `(siftup (List.push st v) …)`
+           and the `popmin` arm matches `(siftdn (List.update (dropl …) …) 0)`. Before the hoist, the resumptive
+           fold copied each compound scrutinee into every continuation copy — one per dispatch — and the recursive
+           `siftup`/`siftdn`/`smallest`/`getat`/`dropl` heap machinery materialized inside each copy, so a 6-perform
+           drive (push,push,push,popmin,push,popmin) grew SUPER-LINEARLY: 47015 locals in one function, 1.47MB
+           INVALID wasm (`too many locals`), while rust and rust-async — which don't cap locals — passed. The fix
+           canonicalizes each irrefutable single-binder match over a compound scrutinee to a `let`, routing the
+           scrutinee through the per-dispatch `#st` state-bind so it binds ONCE: 38820 bytes VALID, uniform on all
+           three backends. This is the sibling shrink's shape at real scale — two hoist sites, recursion, and live
+           heap ops — catching an integration-scale regression the 3-dispatch shrink cannot. `push v` appends `v`
+           and sifts up answering the new root; `popmin` drops the last element onto the root and sifts down
+           answering the OLD root. `main(10)`: push 12,4,7 -> popmin -> push 7 -> popmin = 120404040707.
+           `main(0)`: push 2,4,7 -> popmin -> push -3 -> popmin = 20202019697. Breaker bank
+           .breaker-probes/2026-08-14-minheap-sift; v-effects finding-24 match-scrutinee fix (2026-08-14).")
+  (input  (do
+            (effect H
+              (op push (-> Int64 Int64))
+              (op popmin (-> Int64)))
+            (def (getat (: xs (List Int64)) (: i Int64))
+              (match (List.at xs i) ((Some v) v) ((None u) 0)))
+            (def (siftup (: xs (List Int64)) (: i Int64))
+              (if (= i 0)
+                  xs
+                  (if (< (getat xs i) (getat xs (/ (- i 1) 2)))
+                      (siftup (List.update (List.update xs (/ (- i 1) 2) (getat xs i)) i (getat xs (/ (- i 1) 2))) (/ (- i 1) 2))
+                      xs)))
+            (def (smallest (: xs (List Int64)) (: i Int64))
+              (if (< (+ (* 2 i) 1) (List.len xs))
+                  (if (< (getat xs (+ (* 2 i) 1)) (getat xs i))
+                      (if (< (+ (* 2 i) 2) (List.len xs))
+                          (if (< (getat xs (+ (* 2 i) 2)) (getat xs (+ (* 2 i) 1))) (+ (* 2 i) 2) (+ (* 2 i) 1))
+                          (+ (* 2 i) 1))
+                      (if (< (+ (* 2 i) 2) (List.len xs))
+                          (if (< (getat xs (+ (* 2 i) 2)) (getat xs i)) (+ (* 2 i) 2) i)
+                          i))
+                  i))
+            (def (siftdn (: xs (List Int64)) (: i Int64))
+              (if (= (smallest xs i) i)
+                  xs
+                  (siftdn (List.update (List.update xs (smallest xs i) (getat xs i)) i (getat xs (smallest xs i))) (smallest xs i))))
+            (def (dropl (: xs (List Int64)) (: i Int64) (: keep Int64) (: acc (List Int64)))
+              (if (< i keep)
+                  (dropl xs (+ i 1) keep (List.push acc (getat xs i)))
+                  acc))
+            (def (main (: n Int64))
+              (handle H (: (list) (List Int64))
+                ((push (v) st
+                  (match (siftup (List.push st v) (- (List.len (List.push st v)) 1))
+                    (h2 (resume (getat h2 0) h2))))
+                 (popmin () st
+                  (if (= (List.len st) 0)
+                      (resume -99 st)
+                      (if (= (List.len st) 1)
+                          (resume (getat st 0) (: (list) (List Int64)))
+                          (match (siftdn (List.update (dropl st 0 (- (List.len st) 1) (: (list) (List Int64))) 0 (getat st (- (List.len st) 1))) 0)
+                            (h2 (resume (getat st 0) h2)))))))
+                (let ((a (H.push (+ n 2))))
+                  (let ((b (H.push 4)))
+                    (let ((c (H.push 7)))
+                      (let ((d (H.popmin)))
+                        (let ((e (H.push (- n 3))))
+                          (let ((f (H.popmin)))
+                            (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 120404040707 Int64))
+  (call   main (: 0 Int64)) (output (: 20202019697 Int64)))

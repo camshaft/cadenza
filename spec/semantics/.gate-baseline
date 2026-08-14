@@ -3085,6 +3085,7 @@ pass	a rest-binder over a runtime-start slice measures the SLICE length, not the
 pass	a rest-pattern head binder read inside an inlined match-arg callee's scrutinee resolves
 pass	a resume outside any handler arm is rejected
 pass	a resume value that MATCHES a COMPOUND scrutinee over the growing state binds it once — finding-24 match-scrutinee face
+pass	a min-heap in a list — push sifts UP, popmin sifts DOWN — the finding-24 match-scrutinee hoist at integration scale
 pass	a resuming arm whose resume VALUE is a transform of state and next-state is a distinct advance, observed twice
 pass	a retired collection-op name is rejected with a rename fix-it (CDZ0603)
 pass	a returned capturing closure bound with let and applied folds like the inline form
