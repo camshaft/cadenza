@@ -344,58 +344,6 @@ pub mod effect_ct {
         family.starts_with(WS_PREFIX)
     }
 
-    /// The `git/*` namespace PREFIX (GAP-6) — a TYPED, per-op git effect family so a self-hosting agent
-    /// drives git as FIRST-CLASS, PER-OP authz-gated effects instead of via a COARSE `shell`-runs-`git`
-    /// allow-list. Mirrors `fs/*` exactly: a HOST-EXECUTOR family the KERNEL declares the contract for — the
-    /// host registers a `GitExecutor` that `handles_family` the git verbs, so the kernel needs NO drive-loop
-    /// arm, only these family consts (one source of truth across a reducer, the host executor, and the
-    /// manifest). It is a BUILT-IN family (an executor-backed capability), NOT a userspace `effect/<name>`
-    /// reify target: its schema-hash is intrinsic (`family_effect_schema_hash`) and `new_with_family` derives
-    /// it from the family string, exactly like `fs/*`/`blob/*`. Authority is a `FamilyGrant`
-    /// (`Capability::for_family`) whose `ResourcePredicate` gates the resolved TARGET (repo/worktree/ref) —
-    /// `permit(action=="git/push") when resource.branch like "fleet/**"`, NOT a host allow-list. Composes
-    /// with the GAP-2 `shell` effect (shell stays the generic exec path; `git/*` is the typed, tightly-gated
-    /// path for the common git ops). It ADDS schema + authz-granularity, NOT host policy (the executor
-    /// decides nothing; WHICH repos/refs a session may touch stays Cedar on the target).
-    pub const GIT_PREFIX: &str = "git/";
-
-    /// `git/status` — working-tree state (target = the worktree; result = the status bytes). No payload.
-    pub const GIT_STATUS: &str = "git/status";
-
-    /// `git/diff` — changes in the working tree or against a ref (target = the worktree/ref; result = the
-    /// diff bytes). No payload.
-    pub const GIT_DIFF: &str = "git/diff";
-
-    /// `git/add` — stage paths (target = the worktree; payload = the pathspec bytes; result = unit).
-    pub const GIT_ADD: &str = "git/add";
-
-    /// `git/commit` — record a commit (target = the worktree; payload = the message bytes; result = the new
-    /// commit sha bytes).
-    pub const GIT_COMMIT: &str = "git/commit";
-
-    /// `git/rev-parse` — resolve a ref to a sha (target = the worktree; payload = the ref bytes, e.g. `HEAD`
-    /// for an MR ref; result = the resolved sha bytes).
-    pub const GIT_REV_PARSE: &str = "git/rev-parse";
-
-    /// `git/checkout` — switch or create a branch (target = the worktree; payload = the ref bytes; result =
-    /// unit).
-    pub const GIT_CHECKOUT: &str = "git/checkout";
-
-    /// `git/fetch` — sync remote refs (target = the remote; no payload; result = unit).
-    pub const GIT_FETCH: &str = "git/fetch";
-
-    /// `git/push` — publish refs (target = the repo; payload = the refspec bytes; result = unit). The most
-    /// authz-sensitive op — a Cedar grant typically scopes `resource.repo`/`resource.branch`.
-    pub const GIT_PUSH: &str = "git/push";
-
-    /// Is `family` in the `git/*` namespace (the GAP-6 typed git partition, authz-gated on the resolved
-    /// repo/worktree/ref TARGET)? A prefix test (like [`is_fs_family`]/[`is_blob_family`]). Executor-routed,
-    /// so the drive loop needs no special arm — here for the manifest + discoverability + one source of truth
-    /// for the partition boundary.
-    pub fn is_git_family(family: &str) -> bool {
-        family.starts_with(GIT_PREFIX)
-    }
-
     /// The `effect/` name-server registration PREFIX (userspace-effects I1) — NOT an effect family itself, but
     /// the GNS namespace where a userspace effect family is registered: `effect/<family>` is a pointer name
     /// whose value is the handler session's `SessionId` (genesis hash). A session Cedar-granted `store/set`
@@ -419,8 +367,8 @@ pub mod effect_ct {
 
     /// Is `family` a candidate USERSPACE-EFFECT family — i.e. NOT one of the built-in well-known partitions
     /// (so it would route to a registered handler, if one is registered)? A SYNTACTIC check: an emitted
-    /// effect whose family is not a kernel built-in (EffectKind / control/store/lifecycle/fs/metric/blob/ws/
-    /// git / the `effect/reply` routed family) is a candidate for `effect/<family>` handler resolution. Whether a
+    /// effect whose family is not a kernel built-in (EffectKind / control/store/lifecycle/fs/metric/blob/ws
+    /// / the `effect/reply` routed family) is a candidate for `effect/<family>` handler resolution. Whether a
     /// handler is ACTUALLY registered is the runtime lookup
     /// [`crate::name_store::NameStore::resolve_effect_handler`] (mechanism = "resolves in the registry"); this
     /// predicate is the partition boundary the drive loop / delegating executor uses to decide "try the
@@ -438,7 +386,6 @@ pub mod effect_ct {
             || is_metric_family(family)
             || is_blob_family(family)
             || is_ws_family(family)
-            || is_git_family(family)
             || family == EFFECT_REPLY;
         !is_builtin && !family.is_empty()
     }
@@ -524,14 +471,6 @@ pub mod effect_ct {
         BLOB_GET,
         WS_SEND,
         WS_DIAL,
-        GIT_STATUS,
-        GIT_DIFF,
-        GIT_ADD,
-        GIT_COMMIT,
-        GIT_REV_PARSE,
-        GIT_CHECKOUT,
-        GIT_FETCH,
-        GIT_PUSH,
         EFFECT_REPLY,
     ];
 
@@ -540,9 +479,8 @@ pub mod effect_ct {
     /// metric families (`control/capabilities`, `control/summary`, `control/signature`, `control/close`,
     /// `store/set`, `store/resolve`, `store/add`,
     /// `store/remove`, `store/resolve-all`, `fs/read`, `fs/write`, `fs/glob`, `metric/publish`, `blob/put`,
-    /// `blob/get`, `ws/send`, `ws/connect`, `ws/disconnect`, `git/status`, `git/diff`, `git/add`,
-    /// `git/commit`, `git/rev-parse`, `git/checkout`, `git/fetch`, `git/push`, `effect/reply`) — return that
-    /// canonical `&'static str`. `None` for an EXTENSION family (register-by-string). (`ws/connect`/`ws/disconnect` are
+    /// `blob/get`, `ws/send`, `ws/connect`, `ws/disconnect`, `effect/reply`) — return that canonical
+    /// `&'static str`. `None` for an EXTENSION family (register-by-string). (`ws/connect`/`ws/disconnect` are
     /// inbound EVENT families, not effects, so they're here for safe-logging but NOT in [`ALL`].)
     ///
     /// The distinction matters for LOGGING (github-liaison #2180 residual): `ContentType.family` is a
@@ -583,14 +521,6 @@ pub mod effect_ct {
             // ALL) — but they're fixed kernel-defined strings, so classify them safe-to-log-verbatim too.
             WS_CONNECT => Some(WS_CONNECT),
             WS_DISCONNECT => Some(WS_DISCONNECT),
-            GIT_STATUS => Some(GIT_STATUS),
-            GIT_DIFF => Some(GIT_DIFF),
-            GIT_ADD => Some(GIT_ADD),
-            GIT_COMMIT => Some(GIT_COMMIT),
-            GIT_REV_PARSE => Some(GIT_REV_PARSE),
-            GIT_CHECKOUT => Some(GIT_CHECKOUT),
-            GIT_FETCH => Some(GIT_FETCH),
-            GIT_PUSH => Some(GIT_PUSH),
             EFFECT_REPLY => Some(EFFECT_REPLY),
             _ => None,
         }
@@ -1880,56 +1810,6 @@ mod tests {
         // The inbound event families are NOT grantable effects → absent from ALL (only ws/send is).
         assert!(!effect_ct::ALL.contains(&effect_ct::WS_CONNECT));
         assert!(!effect_ct::ALL.contains(&effect_ct::WS_DISCONNECT));
-    }
-
-    #[test]
-    fn git_family_is_a_builtin_routed_partition_disjoint_from_the_others() {
-        // GAP-6: git/* is the TYPED, per-op git partition. Executor-routed + authz-gated (register-by-string,
-        // no new EffectKind), a BUILT-IN family like fs/*/blob/* — NOT a userspace effect/<name> reify target
-        // (it has a host GitExecutor, so is_registered_effect_family is false for it — built-ins never route
-        // to userspace handler resolution).
-        assert_eq!(effect_ct::GIT_PREFIX, "git/");
-        let ops = [
-            (effect_ct::GIT_STATUS, "git/status"),
-            (effect_ct::GIT_DIFF, "git/diff"),
-            (effect_ct::GIT_ADD, "git/add"),
-            (effect_ct::GIT_COMMIT, "git/commit"),
-            (effect_ct::GIT_REV_PARSE, "git/rev-parse"),
-            (effect_ct::GIT_CHECKOUT, "git/checkout"),
-            (effect_ct::GIT_FETCH, "git/fetch"),
-            (effect_ct::GIT_PUSH, "git/push"),
-        ];
-        for (fam, s) in ops {
-            assert_eq!(fam, s);
-            assert!(effect_ct::is_git_family(fam));
-            assert!(fam.starts_with(effect_ct::GIT_PREFIX));
-            // SAFE-LOGGING (#2180): each is a kernel-defined fixed &'static → logs VERBATIM (not redacted).
-            assert_eq!(effect_ct::wellknown_static_str(fam), Some(fam));
-            // Each is a grantable capability → in the manifest family set (unlike an inbound event family).
-            assert!(effect_ct::ALL.contains(&fam));
-            // BUILT-IN, not a userspace-effect candidate (it has a host executor — no reify, no shadowing).
-            assert!(!effect_ct::is_registered_effect_family(fam));
-            // Has an intrinsic schema-hash on construction (derived from the family, like fs/*), not None.
-            let req = EffectRequest::new_with_family(fam, "wt", None, Timeliness::Interactive);
-            assert!(
-                req.schema_hash.is_some(),
-                "git op {fam} must carry an intrinsic schema-hash"
-            );
-            // DISJOINT from every other partition prefix.
-            assert!(!effect_ct::is_store_family(fam));
-            assert!(!effect_ct::is_fs_family(fam));
-            assert!(!effect_ct::is_metric_family(fam));
-            assert!(!effect_ct::is_blob_family(fam));
-            assert!(!effect_ct::is_lifecycle_family(fam));
-            assert!(!effect_ct::is_ws_family(fam));
-            assert!(!effect_ct::is_control_family(fam));
-        }
-        // A guest fake git-ish name that isn't an exact const logs redacted (None); prefix still classifies
-        // it as git (so it routes to the GitExecutor's authz, never to userspace handler resolution).
-        assert_eq!(effect_ct::wellknown_static_str("git/secret-x"), None);
-        assert!(effect_ct::is_git_family("git/secret-x"));
-        assert!(!effect_ct::is_git_family("mygit"));
-        assert!(!effect_ct::is_git_family(""));
     }
 
     #[test]

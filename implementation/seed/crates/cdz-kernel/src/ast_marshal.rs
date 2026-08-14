@@ -659,30 +659,6 @@ pub fn family_effect_schema_hash(family: &str) -> Option<crate::hash::Hash> {
             UnitToBytes,
             true,
         ),
-        // git/* (GAP-6): all reducer-chosen-target (worktree/repo/remote is a leading `bytes` target op-arg,
-        // target-out of identity). status/diff read (UnitToBytes); add/checkout/push write args -> unit
-        // (BytesToUnit); commit/rev-parse take args -> a sha result (BytesToBytes); fetch is a no-arg sync
-        // (UnitToUnit). Distinct identities via the OP NAME under effect-name "git".
-        (effect_ct::GIT_STATUS, "git", "status", UnitToBytes, true),
-        (effect_ct::GIT_DIFF, "git", "diff", UnitToBytes, true),
-        (effect_ct::GIT_ADD, "git", "add", BytesToUnit, true),
-        (effect_ct::GIT_COMMIT, "git", "commit", BytesToBytes, true),
-        (
-            effect_ct::GIT_REV_PARSE,
-            "git",
-            "rev-parse",
-            BytesToBytes,
-            true,
-        ),
-        (
-            effect_ct::GIT_CHECKOUT,
-            "git",
-            "checkout",
-            BytesToUnit,
-            true,
-        ),
-        (effect_ct::GIT_FETCH, "git", "fetch", UnitToUnit, true),
-        (effect_ct::GIT_PUSH, "git", "push", BytesToUnit, true),
         (effect_ct::STORE_SET, "store", "set", BytesToUnit, true),
         (
             effect_ct::STORE_RESOLVE,
@@ -864,14 +840,6 @@ pub fn family_effect_schema_hash_memo(family: &str) -> Option<crate::hash::Hash>
                 effect_ct::STORE_RESOLVE_ALL,
                 effect_ct::EFFECT_REPLY,
                 effect_ct::CLOSE,
-                effect_ct::GIT_STATUS,
-                effect_ct::GIT_DIFF,
-                effect_ct::GIT_ADD,
-                effect_ct::GIT_COMMIT,
-                effect_ct::GIT_REV_PARSE,
-                effect_ct::GIT_CHECKOUT,
-                effect_ct::GIT_FETCH,
-                effect_ct::GIT_PUSH,
             ] {
                 if let Some(h) = family_effect_schema_hash(fam) {
                     m.insert(fam, h);
@@ -3855,8 +3823,8 @@ mod tests {
     fn family_effect_schema_hashes_are_stable_declared_set_pairwise_distinct_and_distinct_from_builtins(
     ) {
         use crate::effect::{effect_ct, EffectKind};
-        // The 30 well-known non-EffectKind families that have a DECLARED schema (target-OUT) — every
-        // well-known non-kind family now carries one (the git/* family was the last to land).
+        // The 22 well-known non-EffectKind families that have a DECLARED schema (target-OUT) — every
+        // well-known non-kind family now carries one (control/signature was the last to land).
         let families = [
             effect_ct::FS_READ,
             effect_ct::FS_WRITE,
@@ -3880,14 +3848,6 @@ mod tests {
             effect_ct::STORE_RESOLVE_ALL,
             effect_ct::EFFECT_REPLY,
             effect_ct::CLOSE,
-            effect_ct::GIT_STATUS,
-            effect_ct::GIT_DIFF,
-            effect_ct::GIT_ADD,
-            effect_ct::GIT_COMMIT,
-            effect_ct::GIT_REV_PARSE,
-            effect_ct::GIT_CHECKOUT,
-            effect_ct::GIT_FETCH,
-            effect_ct::GIT_PUSH,
         ];
         // (1) each is declared (Some), stable, and the memo agrees with the pure recompute.
         for f in &families {
@@ -3909,10 +3869,9 @@ mod tests {
         assert_eq!(family_effect_schema_hash("custom/metrics"), None);
         assert_eq!(family_effect_schema_hash("store/whatever"), None);
         assert_eq!(family_effect_schema_hash_memo("custom/metrics"), None);
-        // (3) THE IDENTITY GUARD: all 6 built-ins + 30 families = 36 PAIRWISE-DISTINCT hashes. This proves
-        // target-OUT is safe — the unit->unit families (ws/dial, lifecycle/suspend|resume|terminate,
-        // git/fetch) do NOT collide with each other despite identical signatures, because the effect NAME +
-        // OP NAME are hashed (git/fetch stays distinct from ws/dial and the lifecycle unit->unit trio).
+        // (3) THE IDENTITY GUARD: all 6 built-ins + 22 families = 28 PAIRWISE-DISTINCT hashes. This proves
+        // target-OUT is safe — the unit->unit families (ws/dial, lifecycle/suspend|resume|terminate) do NOT
+        // collide with each other despite identical signatures, because the effect NAME + OP NAME are hashed.
         let builtins = [
             EffectKind::Shell,
             EffectKind::Http,
@@ -3928,7 +3887,7 @@ mod tests {
                 .iter()
                 .map(|f| family_effect_schema_hash(f).unwrap()),
         );
-        assert_eq!(all.len(), 36);
+        assert_eq!(all.len(), 28);
         for i in 0..all.len() {
             for j in (i + 1)..all.len() {
                 assert_ne!(
@@ -4006,14 +3965,6 @@ mod tests {
             effect_ct::STORE_RESOLVE_ALL,
             effect_ct::EFFECT_REPLY,
             effect_ct::CLOSE,
-            effect_ct::GIT_STATUS,
-            effect_ct::GIT_DIFF,
-            effect_ct::GIT_ADD,
-            effect_ct::GIT_COMMIT,
-            effect_ct::GIT_REV_PARSE,
-            effect_ct::GIT_CHECKOUT,
-            effect_ct::GIT_FETCH,
-            effect_ct::GIT_PUSH,
         ] {
             assert!(
                 effect_family_schema_hash(fam).is_some(),
@@ -4705,51 +4656,5 @@ mod tests {
             matches!(&effects[0].request.payload, Some(Payload::Inline(p)) if p.as_ref() == b"answer")
         );
         assert_eq!(effects[0].token.as_deref(), Some(&b"tok-9"[..]));
-    }
-
-    #[test]
-    fn effect_list_carries_the_intrinsic_git_schema_hash_through_the_reducer_dispatch_wire() {
-        // GAP-6 dispatch-wire proof: a reducer performs a built-in git/* op by RETURNING an effect record
-        // whose `kind` is the git family string (exactly like emit/tool — the returned-effect-list path, not
-        // a host import). parse_effect_list must yield an EffectRequest whose family is preserved verbatim
-        // AND whose schema_hash is the INTRINSIC git/* identity (new_with_family derives it from the family
-        // via family_effect_schema_hash), so the kernel dispatches it to the registered GitExecutor by
-        // schema-hash — NOT reified as a userspace effect/<name>. This ties the git family decl (#1) to the
-        // actual reducer->kernel dispatch path; the host GitExecutor keys on this very hash.
-        use crate::effect::effect_ct;
-        // Two shapes: git/status (target-out worktree, no payload) + git/push (target repo/branch + refspec).
-        for (family, target, payload) in [
-            (effect_ct::GIT_STATUS, &b"worktree/x"[..], None),
-            (
-                effect_ct::GIT_PUSH,
-                &b"fleet/v-agent-harness"[..],
-                Some(&b"HEAD:fleet/v-agent-harness"[..]),
-            ),
-        ] {
-            let bytes = effect_list_bytes(vec![effect_req_val(family, target, payload, None)]);
-            let effects = parse_effect_list(&bytes).expect("git effect parses");
-            assert_eq!(effects.len(), 1);
-            let req = &effects[0].request;
-            // Family preserved verbatim (register-by-string wire, never coerced to a closed enum).
-            assert_eq!(req.content_type.family, family);
-            // The INTRINSIC git schema-hash flows through the wire → the effect routes to the GitExecutor by
-            // schema-hash (the built-in identity), NOT a reify.
-            assert_eq!(
-                req.schema_hash,
-                family_effect_schema_hash(family),
-                "parsed git effect must carry the intrinsic git/* schema-hash"
-            );
-            assert!(req.schema_hash.is_some());
-            assert_eq!(req.target_str().unwrap().as_bytes(), target);
-            match payload {
-                Some(p) => {
-                    assert!(matches!(&req.payload, Some(Payload::Inline(b)) if b.as_ref() == p))
-                }
-                None => assert!(req.payload.is_none()),
-            }
-        }
-        // The decisive built-in-vs-reify distinction: git IS a built-in family (executor-backed), so it is
-        // NOT a register-by-string userspace effect that would resolve to an effect/<name> handler.
-        assert!(!effect_ct::is_registered_effect_family(effect_ct::GIT_PUSH));
     }
 }
