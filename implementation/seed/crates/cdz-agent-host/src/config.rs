@@ -712,6 +712,42 @@ impl DaemonConfig {
             }
             _ => {}
         }
+        // GAP-4 D3: checkpointing needs a working offload store — it persists the KV snapshot (and offloads the
+        // compacted checkpoint frame's body) to the [blob] content-addressed store the log-body offload uses. A
+        // `checkpoint_threshold` with no such store makes the per-turn checkpoint fail EVERY time (best-effort:
+        // it is logged and never fails the turn, so the durable log would grow UNBOUNDED despite the operator
+        // setting a bound). Reject that misconfiguration at boot rather than silently never-checkpointing: a
+        // checkpoint_threshold > 0 requires (a) offload_threshold set AND (b) a [blob] backend that provides a
+        // CAS (dir/s3, not memory — memory yields no offload source, so there is nowhere to put the snapshot).
+        if let LogConfig::File {
+            checkpoint_threshold,
+            offload_threshold,
+            ..
+        }
+        | LogConfig::Dynamo {
+            checkpoint_threshold,
+            offload_threshold,
+            ..
+        } = &self.log
+        {
+            if matches!(checkpoint_threshold, Some(t) if *t > 0) {
+                if offload_threshold.is_none() {
+                    return Err(ConfigError(
+                        "[log] checkpoint_threshold needs offload_threshold — checkpointing persists the KV \
+                         snapshot to the [blob] content-addressed store the offload uses; set \
+                         [log].offload_threshold, or remove checkpoint_threshold to keep an unbounded log"
+                            .into(),
+                    ));
+                }
+                if matches!(self.blob, BlobConfig::Memory) {
+                    return Err(ConfigError(
+                        "[log] checkpoint_threshold needs a [blob] backend that provides a content-addressed \
+                         store (dir or s3) to hold the KV snapshot; the memory blob backend has none"
+                            .into(),
+                    ));
+                }
+            }
+        }
         if self.observability.enabled {
             if self.observability.targets.is_empty() {
                 return Err(ConfigError(
@@ -1349,6 +1385,9 @@ mod tests {
         // GAP-4 D3-4: the optional frame-growth checkpoint trigger parses from the snake_case
         // `checkpoint_threshold` key (frames, u64), independently of offload_threshold. Absent = None (covered
         // above); present = Some(N). The consumer (per-turn trigger via CheckpointPolicy) is a follow-on slice.
+        // A [blob] dir backend is required for a checkpoint config to validate (checkpointing needs the CAS to
+        // hold the KV snapshot — see the checkpoint_threshold-requires-offload validation tests below); include
+        // one so this parse test models a VALID config while still exercising the checkpoint_threshold key.
         let cfg = DaemonConfig::from_toml_str(
             r#"
             [log]
@@ -1356,6 +1395,10 @@ mod tests {
             dir = "/var/lib/cdz/log"
             offload_threshold = 4096
             checkpoint_threshold = 512
+
+            [blob]
+            backend = "dir"
+            dir = "/var/lib/cdz/blob"
             "#,
         )
         .unwrap();
@@ -1367,6 +1410,95 @@ mod tests {
                 checkpoint_threshold: Some(512),
             }
         );
+    }
+
+    #[test]
+    fn checkpoint_threshold_without_offload_is_rejected() {
+        // GAP-4 D3 footgun guard: checkpointing persists the KV snapshot to the [blob] CAS the log-body offload
+        // uses, so a checkpoint_threshold with NO offload_threshold would make every per-turn checkpoint fail
+        // (best-effort → logged, never fails the turn), and the durable log would grow UNBOUNDED despite the
+        // operator setting a bound. That misconfiguration is rejected at boot, not silently never-checkpointed.
+        let err = DaemonConfig::from_toml_str(
+            r#"
+            [log]
+            backend = "file"
+            dir = "/var/lib/cdz/log"
+            checkpoint_threshold = 512
+
+            [blob]
+            backend = "dir"
+            dir = "/var/lib/cdz/blob"
+            "#,
+        )
+        .expect_err("checkpoint_threshold with no offload_threshold must be rejected");
+        assert!(err.to_string().contains("offload_threshold"), "{err}");
+    }
+
+    #[test]
+    fn checkpoint_threshold_with_a_memory_blob_backend_is_rejected() {
+        // Even WITH offload_threshold, a memory [blob] backend yields no offload source (the daemon derives one
+        // only for dir/s3), so there is nowhere durable to hold the KV snapshot — checkpointing could never run.
+        // Rejected at boot. (No [blob] section → the default memory backend, which is exactly this case.)
+        let err = DaemonConfig::from_toml_str(
+            r#"
+            [log]
+            backend = "dynamo"
+            table = "cdz-agent-log"
+            offload_threshold = 300000
+            checkpoint_threshold = 1000
+            "#,
+        )
+        .expect_err("checkpoint_threshold with a memory blob backend must be rejected");
+        assert!(err.to_string().contains("content-addressed"), "{err}");
+    }
+
+    #[test]
+    fn checkpoint_threshold_with_offload_and_a_cas_blob_validates() {
+        // The valid checkpoint config: a durable log + offload_threshold + a CAS-providing [blob] backend
+        // (here s3, the prod pairing for a Dynamo log). Validates cleanly.
+        let cfg = DaemonConfig::from_toml_str(
+            r#"
+            [log]
+            backend = "dynamo"
+            table = "cdz-agent-log"
+            offload_threshold = 300000
+            checkpoint_threshold = 1000
+
+            [blob]
+            backend = "s3"
+            bucket = "cdz-agent-blobs"
+            "#,
+        )
+        .expect("a checkpoint config with offload + a CAS blob backend is valid");
+        assert!(matches!(
+            cfg.log,
+            LogConfig::Dynamo {
+                checkpoint_threshold: Some(1000),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn checkpoint_threshold_zero_does_not_require_offload() {
+        // checkpoint_threshold = 0 is DISABLED (== absent), so it imposes no offload requirement — a memory
+        // blob backend with no offload validates, exactly as if checkpoint_threshold were omitted.
+        let cfg = DaemonConfig::from_toml_str(
+            r#"
+            [log]
+            backend = "file"
+            dir = "/var/lib/cdz/log"
+            checkpoint_threshold = 0
+            "#,
+        )
+        .expect("a disabled (0) checkpoint threshold imposes no offload requirement");
+        assert!(matches!(
+            cfg.log,
+            LogConfig::File {
+                checkpoint_threshold: Some(0),
+                ..
+            }
+        ));
     }
 
     #[test]
