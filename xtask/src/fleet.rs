@@ -5565,19 +5565,35 @@ fn capture_pane(session: &str, agent: &str) -> Option<String> {
 }
 
 /// Does a captured pane's TEXT indicate Claude is alive + busy (so re-arming or drain-flagging it would
-/// interrupt real work / misread liveness)? Two signals, pure so both watchdog sites share one rule:
+/// interrupt real work / misread liveness)? Several signals, pure so both watchdog sites share one rule:
 ///   * "esc to interrupt" — a turn is in flight (the normal working affordance).
 ///   * "Retrying in …" / "attempt N/N" — Claude Code is in API-retry BACKOFF (a 429/5xx transient). The
 ///     loop IS alive and will resume when the retry succeeds; the retry status line can momentarily
 ///     REPLACE the "esc to interrupt" affordance, so without this an agent riding out a rate-limit reads
 ///     as idle-at-prompt and gets falsely flagged as a drain-stall (observed: `breaker` under repeated
 ///     429s flagged 2 sweeps running). An API-retry is liveness, not idleness — treat it as working.
+///   * the LONG-TURN GENERATION METER — `<Gerund>… (<elapsed> · ↓ <N> tokens)` (e.g. `Percolating…
+///     (36m 27s · ↓ 95.0k tokens)`). On a LONG model turn the "esc to interrupt" affordance is NOT in the
+///     visible pane (it scrolls above / is replaced by the backgrounding hint), so a genuinely-working
+///     agent mid-generation read as idle-at-prompt and the watchdog RE-ARMED it — injecting `/loop`
+///     keystrokes that pile up UNSUBMITTED behind the busy turn and never cleanly arm a cron (observed:
+///     `v-effects` running 30m+ ticks, re-armed every 1-2 sweeps, "runs one tick then doesn't persist" —
+///     concierge 2026-08-14). The gerund word cycles (Percolating/Thinking/…), so match the STABLE parts:
+///     the streaming-token meter (a `↓`/`↑` arrow with `tokens`) and the backgrounding hint. Both appear
+///     only while a turn is generating; an idle `❯` pane has neither.
 ///
-/// Pure + unit-testable (no tmux).
+/// These track Claude Code's current status-line vocabulary — a future CC UI change is the known
+/// maintenance point for this heuristic. Pure + unit-testable (no tmux).
 fn pane_shows_working(pane_text: &str) -> bool {
     pane_text.contains("esc to interrupt")
         || pane_text.contains("Retrying in ")
         || pane_text.contains("Retrying…")
+        // Backgroundable turn in flight: the "(ctrl+b … to run in background)" hint shows only mid-turn.
+        || pane_text.contains("to run in background")
+        // The live generation meter: a streaming-token counter (`↓`/`↑` arrow + "tokens") that Claude Code
+        // prints while the model is producing output — present through a long percolating turn even when
+        // the "esc to interrupt" affordance is not on the visible pane.
+        || ((pane_text.contains("↓") || pane_text.contains("↑")) && pane_text.contains("tokens"))
 }
 
 /// Does the agent's tmux pane show Claude actively working? Claude Code prints an "esc to interrupt"
@@ -15249,11 +15265,26 @@ mod tests {
         assert!(pane_shows_working(
             "✻ API error · Retrying in 1s · attempt 2/10"
         ));
-        // An idle pane at the bare prompt with NEITHER signal → NOT working (a real idle/stall).
+        // LONG-TURN generation meter → working, EVEN WITHOUT "esc to interrupt" on the pane (the
+        // v-effects re-arm-churn bug, concierge 2026-08-14): a 30m+ percolating turn shows the
+        // streaming-token meter but not the interrupt affordance, so it was misread as idle + re-armed.
+        assert!(pane_shows_working(
+            "✢ Percolating… (36m 27s · ↓ 95.0k tokens)\n  ⎿  Tip: Use /clear to start fresh"
+        ));
+        // The backgrounding hint also shows only mid-turn → working.
+        assert!(pane_shows_working(
+            "     (ctrl+b ctrl+b (twice) to run in background)"
+        ));
+        // A gerund spinner with an UPLOAD-token meter (some turns show ↑) → working.
+        assert!(pane_shows_working("✶ Thinking… (2m 3s · ↑ 12.1k tokens)"));
+        // An idle pane at the bare prompt with NONE of the signals → NOT working (a real idle/stall).
         assert!(!pane_shows_working(
             "❯ \n  ⏵⏵ bypass permissions on (shift+tab to cycle)"
         ));
         assert!(!pane_shows_working(""));
+        // A bare arrow glyph WITHOUT the "tokens" meter must NOT count as working (e.g. prose mentioning
+        // a download arrow) — the meter needs BOTH the arrow AND "tokens", so this stays idle.
+        assert!(!pane_shows_working("❯ see the ↓ section below for details"));
     }
 
     #[test]
