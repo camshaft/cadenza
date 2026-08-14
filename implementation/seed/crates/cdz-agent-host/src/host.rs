@@ -347,6 +347,39 @@ impl HostedSession {
         self.checkpoint_builder.is_some()
     }
 
+    /// GAP-4 D3 boot-recovery RE-DRIVE (timeout-recovery — coordinated with v-agent-harness, ZERO kernel
+    /// change): settle each still-open (dispatched-but-unsettled at crash) effect from a
+    /// [`RecoveryReport`](cdz_kernel::kernel::RecoveryReport)'s `open_effects` as
+    /// [`TimedOut`](cdz_kernel::effect::EffectOutcome::TimedOut) via the kernel's
+    /// [`time_out_effect`](cdz_kernel::kernel::Session::time_out_effect), driving each timeout fold to
+    /// quiescence. The reducer's timeout continuation then RE-EMITS the effect with its payload reconstructed
+    /// by the deterministic fold (the payload is durable NOWHERE by design — the `Dispatched` frame omits it
+    /// to bound log size — so exact re-issue is impossible; the fold is the payload-safe path), idempotency-
+    /// key-deduped against any side effect the pre-crash dispatch already applied. This is the "re-drive OR
+    /// time out" half of the §16c-S4 recovery contract.
+    ///
+    /// Returns the count actually timed out. `time_out_effect` is idempotent + at-most-once: a TIMER id (no
+    /// `Dispatched` frame — timers fire via the scheduler, not a hung call), an already-settled id, or a
+    /// never-dispatched id is a no-op that does not count. REQUIRES the recovered session's authz + sink
+    /// attached ([`recover_and_build`](crate::factory::ComponentSessionFactory) parity) so the re-emitted
+    /// effects authorize + the timeout/re-emit events persist durably.
+    pub async fn redrive_open_effects(
+        &mut self,
+        open_effects: &[cdz_kernel::effect::EffectId],
+    ) -> usize {
+        let mut timed_out = 0;
+        for &id in open_effects {
+            if self
+                .session
+                .time_out_effect(id, &mut *self.reducer, &*self.authz, &mut self.executor)
+                .await
+            {
+                timed_out += 1;
+            }
+        }
+        timed_out
+    }
+
     /// GAP-4 D3-4 per-turn checkpoint TRIGGER — called after each delivered turn. If a checkpoint capability is
     /// attached ([`with_checkpoint`](Self::with_checkpoint)) and its [`CheckpointPolicy`](crate::checkpoint::CheckpointPolicy)
     /// fires (the log has grown past the threshold since the last checkpoint, at a quiescent boundary), compact
@@ -2109,6 +2142,104 @@ mod tests {
         assert!(
             hosted.checkpoint_enabled(),
             "with_checkpoint attaches the capability the factory re-supplies on recovery"
+        );
+    }
+
+    #[tokio::test]
+    async fn redrive_open_effects_times_out_a_dispatched_deferred_effect_so_the_reducer_resumes() {
+        // GAP-4 D3 boot-recovery RE-DRIVE (timeout-recovery): a dispatched-but-unsettled effect (an executor
+        // returned Deferred — the crash scenario: the effect was dispatched, no result ever folded back) is
+        // timed out by redrive_open_effects, settling the open obligation as TimedOut so the reducer's
+        // continuation resumes (and, in prod, re-emits with the payload the fold reconstructs). Pins the
+        // delegation to the kernel's time_out_effect + the returned count. A fresh session carrying an open
+        // dispatched effect is equivalent to a recovered one here — the method drives whatever open-effect ids
+        // it is handed (as the daemon hands it RecoveryReport.open_effects on boot).
+        use cdz_kernel::effect::{Capability, EffectKind};
+
+        // A reducer that dispatches ONE http effect on inbound, and notes a TimedOut result observably.
+        struct HttpThenNote;
+        #[async_trait::async_trait(?Send)]
+        impl Reducer for HttpThenNote {
+            async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
+                match &event.body {
+                    EventBody::Inbound { .. } => {
+                        FoldOutput::with(vec![EffectRequest::new_with_family(
+                            effect_ct::HTTP,
+                            "https://example/x",
+                            None,
+                            Timeliness::Interactive,
+                        )])
+                    }
+                    EventBody::EffectResult { result, .. } => {
+                        if matches!(result, EffectOutcome::TimedOut) {
+                            kv.put(b"http-timed-out".to_vec(), b"1".to_vec());
+                        }
+                        FoldOutput::none()
+                    }
+                    _ => FoldOutput::none(),
+                }
+            }
+        }
+
+        // An executor that DEFERS any effect — the hung/in-flight-at-crash case that leaves the Dispatched
+        // frame OPEN (so time_out_effect has something with a Dispatched frame to time out).
+        struct DeferExecutor;
+        #[async_trait::async_trait(?Send)]
+        impl Executor for DeferExecutor {
+            async fn perform(
+                &mut self,
+                _id: cdz_kernel::effect::EffectId,
+                _req: &EffectRequest,
+                _idempotency_key: Hash,
+            ) -> EffectOutcome {
+                EffectOutcome::Deferred
+            }
+            fn handles_family(&self, _family: &str) -> bool {
+                true
+            }
+        }
+
+        let mut hosted = HostedSession::genesis(
+            Hash::of(b"redrive-agent-v1"),
+            Box::new(HttpThenNote),
+            Box::new(Authorizer::new(vec![Capability {
+                kind: EffectKind::Http,
+                predicate: ResourcePredicate::Any,
+            }])),
+            CompositeExecutor::new().with_effect(effect_ct::HTTP, Box::new(DeferExecutor)),
+        );
+        // Deliver "go" → the reducer dispatches http → DeferExecutor leaves it OPEN (Deferred).
+        hosted
+            .deliver(inbound_go(), None)
+            .await
+            .expect("deliver ok");
+        assert_eq!(
+            hosted.open_effects(),
+            1,
+            "the deferred http effect is dispatched-but-open"
+        );
+        let open = hosted.session().open_effect_ids();
+        assert_eq!(open.len(), 1);
+
+        // Re-drive: time out the open dispatched effect → its TimedOut continuation runs in the reducer.
+        let timed_out = hosted.redrive_open_effects(&open).await;
+        assert_eq!(timed_out, 1, "the one open dispatched effect timed out");
+        assert_eq!(
+            hosted.open_effects(),
+            0,
+            "no open obligations remain after the re-drive"
+        );
+        assert_eq!(
+            hosted.session().kv().get(b"http-timed-out").as_deref(),
+            Some(&b"1"[..]),
+            "the reducer's TimedOut continuation ran (the fold resumes to re-emit in prod)"
+        );
+
+        // Idempotent: re-driving the now-settled ids is a no-op (0), never a second outcome.
+        assert_eq!(
+            hosted.redrive_open_effects(&open).await,
+            0,
+            "re-driving already-settled ids is a no-op"
         );
     }
 

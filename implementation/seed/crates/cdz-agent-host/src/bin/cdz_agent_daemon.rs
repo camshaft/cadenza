@@ -543,7 +543,8 @@ async fn main() -> std::process::ExitCode {
                         };
                         // Fold the log through the factory (reloads the reducer + recover_from). On failure
                         // (absent reducer bytes / a replay error), log + skip that session.
-                        let (hosted, report) = match factory.recover_and_build(recovered).await {
+                        let (mut hosted, report) = match factory.recover_and_build(recovered).await
+                        {
                             Ok(pair) => pair,
                             Err(e) => {
                                 tracing::error!(
@@ -571,16 +572,22 @@ async fn main() -> std::process::ExitCode {
                             );
                             continue;
                         }
-                        // The open effects the kernel reports are dispatched-but-unsettled at crash; a full
-                        // re-drive (re-perform by idempotency key) is a following slice — for now they're
-                        // surfaced so a deployment can see them (never silently dropped).
+                        // GAP-4 D3 open-effect RE-DRIVE (timeout-recovery, coordinated w/ v-agent-harness — no
+                        // kernel change): the effects the kernel reports open are dispatched-but-unsettled at
+                        // crash. Time each out (TimedOut) so the reducer resumes + RE-EMITS it with its payload
+                        // reconstructed by the deterministic fold (the payload is durable nowhere — exact
+                        // re-issue is impossible), idempotency-key-deduped against any side effect the pre-crash
+                        // dispatch already applied. Runs on the freshly recovered session BEFORE it is spawned
+                        // into the loop, using its recovered authz + durable sink (recover_and_build parity).
                         if !report.open_effects.is_empty() {
-                            tracing::warn!(
+                            let timed_out = hosted.redrive_open_effects(&report.open_effects).await;
+                            tracing::info!(
                                 target: "cdz_agent_host::recovery",
                                 session_id = record.session_id.to_base64url(),
                                 open_effects = report.open_effects.len(),
-                                "boot-recovery: recovered a session with open effects (re-drive is a \
-                                 following slice; they are reported, not dropped)"
+                                timed_out,
+                                "boot-recovery: re-drove open effects via timeout (reducer re-emits with \
+                                 payload from the fold, idempotency-deduped)"
                             );
                         }
                         host.host_mut().spawn(id, hosted);
