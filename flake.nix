@@ -876,6 +876,23 @@
           witWorld = "pure";
           contentAddressed = true;
         };
+        # VERTICAL (role-library #5, the COMPOSED self-hosting vertical role): ONE reducer that folds the WHOLE
+        # fleet loop by dispatching on event family — timer-fired -> re-arm + begin-tick, tick-start -> arm first
+        # timer, inbox/<kind> -> classify archive/act, unit-complete -> git add/commit/push. The capstone dogfood
+        # proving a self-hosting fleet agent runs as a single PURE FOLD over the landed timer/emit/git effects.
+        # Returns effects only (NO host import) -> targets the pure-fold world like reducer_pure/reify, so
+        # `witWorld = "pure"` reuses the same pure-fold artifact. Consumed by v-agent-harness-host's WHOLE-LOOP
+        # host e2e — driven through the REAL executor set (timer + emit + GitExecutor) over the A1 bytes boundary
+        # as the full tick->inbox-drain->work->MR self-hosting proof (genesis-seeded via a tick-start event whose
+        # payload is the first-deadline-ms u64 LE; the 900000ms interval is a fixed def in the reducer for now).
+        # CA like the siblings.
+        reducerCadenzaVertical = mkCadenzaComponent {
+          name = "reducer-cadenza-vertical";
+          cdzFile = "reducer_vertical.cdz";
+          componentName = "cadenza:agent-kernel/fold";
+          witWorld = "pure";
+          contentAddressed = true;
+        };
         # KV-GENESIS (A1 bytes fold boundary): the sibling of pure-genesis that exercises the kv IMPORT end-to-end
         # — reducer_kv.cdz PUTs a value under a fixed key on a seed event then GETs it back on a trigger event and
         # echoes it, proving BOTH kv.put AND the kv.get option<list<u8>> host-result lift (rcdzc §3c GAP C,
@@ -2254,6 +2271,7 @@
         packages.reducer-cadenza-genesis = reducerCadenzaGenesis;
         packages.reducer-cadenza-pure-genesis = reducerCadenzaPureGenesis;
         packages.reducer-cadenza-reify = reducerCadenzaReify;
+        packages.reducer-cadenza-vertical = reducerCadenzaVertical;
         packages.reducer-cadenza-kv = reducerCadenzaKv;
         packages.reducer-cadenza-agent-loop = reducerCadenzaAgentLoop;
         packages.emit-wit-world = emitWitWorld;
@@ -2263,6 +2281,7 @@
         packages.reducer-cadenza-genesis-hash = hashOf reducerCadenzaGenesis "reducer-cadenza-genesis-hash";
         packages.reducer-cadenza-pure-genesis-hash = hashOf reducerCadenzaPureGenesis "reducer-cadenza-pure-genesis-hash";
         packages.reducer-cadenza-reify-hash = hashOf reducerCadenzaReify "reducer-cadenza-reify-hash";
+        packages.reducer-cadenza-vertical-hash = hashOf reducerCadenzaVertical "reducer-cadenza-vertical-hash";
         packages.reducer-cadenza-kv-hash = hashOf reducerCadenzaKv "reducer-cadenza-kv-hash";
         packages.reducer-cadenza-agent-loop-hash = hashOf reducerCadenzaAgentLoop "reducer-cadenza-agent-loop-hash";
 
@@ -2450,7 +2469,7 @@
                 inherit runtimeHashParity runtimeDebugHashParity nfcHashParity
                   reducerGuestValid cedarGuestValid
                   reducerCadenzaB1Valid reducerCadenzaB2Valid reducerCadenzaB3Valid reducerCadenzaGenesisValid
-                  reducerCadenzaPureGenesisValid reducerCadenzaReifyValid reducerCadenzaKvValid reducerCadenzaAgentLoopValid
+                  reducerCadenzaPureGenesisValid reducerCadenzaReifyValid reducerCadenzaVerticalValid reducerCadenzaKvValid reducerCadenzaAgentLoopValid
                   exampleProjectTests reducerCadenzaTests crateClosureAssert;
               } ''
               echo "ok: flake reproducibility-backstop — hash-parity + component-validity + project-@tests + closure-assert" > $out
@@ -2470,6 +2489,7 @@
             reducerCadenzaGenesisValid = validComponent { name = "reducer-cadenza-genesis"; drv = reducerCadenzaGenesis; };
             reducerCadenzaPureGenesisValid = validComponent { name = "reducer-cadenza-pure-genesis"; drv = reducerCadenzaPureGenesis; };
             reducerCadenzaReifyValid = validComponent { name = "reducer-cadenza-reify"; drv = reducerCadenzaReify; };
+            reducerCadenzaVerticalValid = validComponent { name = "reducer-cadenza-vertical"; drv = reducerCadenzaVertical; };
             reducerCadenzaKvValid = validComponent { name = "reducer-cadenza-kv"; drv = reducerCadenzaKv; };
             reducerCadenzaAgentLoopValid = validComponent { name = "reducer-cadenza-agent-loop"; drv = reducerCadenzaAgentLoop; };
 
@@ -2611,6 +2631,7 @@
             reducer-cadenza-genesis-valid = reducerCadenzaGenesisValid;
             reducer-cadenza-pure-genesis-valid = reducerCadenzaPureGenesisValid;
             reducer-cadenza-reify-valid = reducerCadenzaReifyValid;
+            reducer-cadenza-vertical-valid = reducerCadenzaVerticalValid;
             reducer-cadenza-kv-valid = reducerCadenzaKvValid;
             reducer-cadenza-agent-loop-valid = reducerCadenzaAgentLoopValid;
 
