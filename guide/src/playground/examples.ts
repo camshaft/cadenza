@@ -195,6 +195,25 @@ export const EXAMPLES: Example[] = [
     expected: "(: (list 1 2 3 4 5) (List Int64))",
   },
   {
+    // Shows off: `List.update` — a FUNCTIONAL element update: `(List.update xs i v)` returns a NEW list
+    // with index i replaced by v, leaving the original untouched (indices must be in [0, len)). We update
+    // index 0 and index 4 of the same list, then show the ORIGINAL is unchanged — lists are persistent.
+    id: "list-update-functional",
+    name: "Functional list update",
+    theme: "basics",
+    surface: "sexpr",
+    source: `(do
+  ; List.update xs i v : return a NEW list with index i replaced by v (a functional
+  ; update — the original list is unchanged). Indices must be in [0, len).
+  (def (set-at xs i v) (List.update xs i v))
+  (def (main)
+    (let ((xs (list 10 20 30 40 50)))
+      ; Update index 0 and index 4 of xs; then show xs ITSELF is untouched.
+      (tuple (set-at xs 0 99) (set-at xs 4 99) xs)))
+  (export main))`,
+    expected: "(: (tuple (list 99 20 30 40 50) (list 10 20 30 40 99) (list 10 20 30 40 50)) (Tuple (List Int64) (List Int64) (List Int64)))",
+  },
+  {
     // Shows off: a recursive sum type + structural pattern matching = a real (if tiny) interpreter.
     // Each `match` arm destructures one Expr shape; `eval` recurses into the subtrees. This is the
     // "look what you can build" hook — an AST evaluator in a dozen lines. Computes (2 + 3) * -(4) = -20.
