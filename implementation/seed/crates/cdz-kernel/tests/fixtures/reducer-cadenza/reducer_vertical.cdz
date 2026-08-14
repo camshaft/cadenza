@@ -1,0 +1,253 @@
+// reducer_vertical.cdz — ROLE LIBRARY increment #5: the COMPOSED self-hosting vertical role.
+//
+// The capstone dogfood: ONE reducer that folds the WHOLE fleet loop by dispatching on the event family —
+// the realistic deployment shape (a vertical is a single reducer handling all its event kinds), composing
+// the tick (#1), inbox-drain (#2), and MR/publish (#4) steps that landed as separate reference reducers:
+//   timer-fired   -> re-arm the next timer (fired_ms + interval) + emit "begin-tick"          (self-schedule)
+//   tick-start    -> arm the first timer at the seeded deadline                               (self-schedule)
+//   inbox/<kind>  -> classify: informational -> "archive"; else -> "act" (carry payload)      (inbox-drain)
+//   unit-complete -> the git publish sequence git/add -> git/commit -> git/push               (MR/publish)
+//   anything else -> nothing
+// This proves a self-hosting fleet agent runs as a single pure fold over the landed effects (timer / emit
+// / git). Returns effects only (no host import) -> cdz-test-gated. State (kv-backed inbox dedup, agent-loop
+// tool-calling for the WORK step, the genesis KV-SEED of interval/first-deadline) is folded in by later
+// host-fused increments; this pins the composed pure dispatch.
+
+// Shared strict Event value-form fields.
+type ReplyPayload =
+  | Inline(Bytes)
+  | Blob(Bytes)
+
+type Outcome =
+  | Ok(ReplyPayload)
+  | Err(Record(message: Bytes, retryable: Bool))
+  | TimedOut
+
+type ChildOutcome =
+  | Success(ReplyPayload)
+  | Failure(Bytes)
+
+// --- self-schedule (from reducer_tick) ---
+def interval-ms() -> Int64 = 900000
+
+def byte-at(b: Bytes, i: Int64) -> Int64 =
+  match Bytes.at(b, i) with
+    | Some(v) => v
+    | None() => 0
+
+def le-u64(b: Bytes) -> Int64 =
+  byte-at(b, 0)
+  + byte-at(b, 1) * 256
+  + byte-at(b, 2) * 65536
+  + byte-at(b, 3) * 16777216
+  + byte-at(b, 4) * 4294967296
+  + byte-at(b, 5) * 1099511627776
+  + byte-at(b, 6) * 281474976710656
+
+def digit-char(d: Int64) -> String =
+  match String.from-bytes(Bytes.of([UInt8.wrap(d + 48)])) with
+    | Some(s) => s
+    | None() => trap("a decimal digit byte is always valid ascii")
+
+def u64-decimal(n: Int64) -> String =
+  if n < 10 then digit-char(n)
+  else String.concat(u64-decimal(n / 10), digit-char(n % 10))
+
+// --- inbox-drain (from reducer_inbox) ---
+def is-inbox(fam: String) -> Bool =
+  match String.slice(fam, 0, 6) with
+    | Some(p) => p == "inbox/"
+    | None() => false
+
+def is-informational(fam: String) -> Bool =
+  fam == "inbox/note"
+  or fam == "inbox/merged"
+  or fam == "inbox/backlog"
+  or fam == "inbox/status"
+  or fam == "inbox/reply"
+  or fam == "inbox/answer"
+
+// --- MR/publish (from reducer_mr) ---
+def worktree() -> Bytes = String.to-bytes(".")
+def remote() -> Bytes = String.to-bytes("origin")
+def push-refspec() -> Bytes = String.to-bytes("HEAD:fleet/v-agent-harness")
+
+def apply(
+  event: Record(
+    content-type: Record(family: String, version: UInt(32)),
+    payload: Option(Bytes),
+    resumes: Option(Bytes),
+    outcome: Option(Outcome),
+    child-completed: Option(Record(child: Bytes, outcome: ChildOutcome)),
+  ),
+) -> List(Record(
+  kind: String,
+  target: Bytes,
+  payload: Option(Bytes),
+  correlation: Option(Bytes),
+)) =
+  let fam = event.content-type.family in
+  if fam == "timer-fired" then
+    // Self-schedule: re-arm at fired_ms + interval + begin the tick.
+    (match event.payload with
+       | Some(p) =>
+         [
+           {
+             kind = "timer",
+             target = String.to-bytes(u64-decimal(le-u64(p) + interval-ms())),
+             payload = None(),
+             correlation = None(),
+           },
+           {
+             kind = "emit",
+             target = String.to-bytes("begin-tick"),
+             payload = None(),
+             correlation = None(),
+           },
+         ]
+       | None() => [])
+  else if fam == "tick-start" then
+    // Arm the first timer at the seeded deadline.
+    (match event.payload with
+       | Some(p) =>
+         [{
+           kind = "timer",
+           target = String.to-bytes(u64-decimal(le-u64(p))),
+           payload = None(),
+           correlation = None(),
+         }]
+       | None() => [])
+  else if is-inbox(fam) then
+    // Inbox-drain: informational -> archive; else (actionable, default) -> act (carry payload).
+    (if is-informational(fam) then
+       [{
+         kind = "emit",
+         target = String.to-bytes("archive"),
+         payload = None(),
+         correlation = None(),
+       }]
+     else
+       [{
+         kind = "emit",
+         target = String.to-bytes("act"),
+         payload = event.payload,
+         correlation = None(),
+       }])
+  else if fam == "unit-complete" then
+    // MR/publish: stage all -> commit with the carried message -> push HEAD to the fleet branch.
+    (match event.payload with
+       | Some(msg) =>
+         [
+           {
+             kind = "git/add",
+             target = worktree(),
+             payload = Some(String.to-bytes(".")),
+             correlation = None(),
+           },
+           {
+             kind = "git/commit",
+             target = worktree(),
+             payload = Some(msg),
+             correlation = None(),
+           },
+           {
+             kind = "git/push",
+             target = remote(),
+             payload = Some(push-refspec()),
+             correlation = None(),
+           },
+         ]
+       | None() => [])
+  else
+    // Not a fleet-loop event -> nothing.
+    []
+
+// Standalone behavioral coverage (`cdz test`) — one per dispatch branch, proving the composed loop.
+@test
+def dispatches_timer_fired_to_rearm_and_begin_tick() =
+  let evt = {
+    content-type = { family = "timer-fired", version = 1 },
+    payload = Some(Bytes.of([232, 3])),  // fired_ms = 1000
+    resumes = None(),
+    outcome = None(),
+    child-completed = None(),
+  } in
+  let effs = apply(evt) in
+  if List.len(effs) == 2 then
+    (match List.at(effs, 0) with
+       | Some(t) => (if t.kind == "timer" and t.target == String.to-bytes("901000") then unit
+                     else trap("timer-fired must re-arm at fired+interval"))
+       | None() => trap("timer-fired must re-arm"))
+  else trap("timer-fired must fold to two effects")
+
+@test
+def dispatches_tick_start_to_first_arm() =
+  let evt = {
+    content-type = { family = "tick-start", version = 1 },
+    payload = Some(Bytes.of([232, 3])),
+    resumes = None(),
+    outcome = None(),
+    child-completed = None(),
+  } in
+  match List.at(apply(evt), 0) with
+    | Some(t) => (if t.kind == "timer" and t.target == String.to-bytes("1000") then unit
+                  else trap("tick-start must arm the first timer at the seed"))
+    | None() => trap("tick-start must arm")
+
+@test
+def dispatches_informational_inbox_to_archive() =
+  let evt = {
+    content-type = { family = "inbox/reply", version = 1 },
+    payload = Some(String.to-bytes("x")),
+    resumes = None(),
+    outcome = None(),
+    child-completed = None(),
+  } in
+  match List.at(apply(evt), 0) with
+    | Some(e) => (if e.kind == "emit" and e.target == String.to-bytes("archive") then unit
+                  else trap("informational inbox must archive"))
+    | None() => trap("inbox must fold")
+
+@test
+def dispatches_actionable_inbox_to_act() =
+  let evt = {
+    content-type = { family = "inbox/merge-request", version = 1 },
+    payload = Some(String.to-bytes("ref abc")),
+    resumes = None(),
+    outcome = None(),
+    child-completed = None(),
+  } in
+  match List.at(apply(evt), 0) with
+    | Some(e) => (if e.kind == "emit" and e.target == String.to-bytes("act") then unit
+                  else trap("actionable inbox must act"))
+    | None() => trap("inbox must fold")
+
+@test
+def dispatches_unit_complete_to_publish_sequence() =
+  let evt = {
+    content-type = { family = "unit-complete", version = 1 },
+    payload = Some(String.to-bytes("land it")),
+    resumes = None(),
+    outcome = None(),
+    child-completed = None(),
+  } in
+  let effs = apply(evt) in
+  if List.len(effs) == 3 then
+    (match List.at(effs, 2) with
+       | Some(p) => (if p.kind == "git/push" then unit else trap("publish must end with git/push"))
+       | None() => trap("publish must have three effects"))
+  else trap("unit-complete must fold to the three-op publish sequence")
+
+@test
+def a_non_loop_event_drives_nothing() =
+  let evt = {
+    content-type = { family = "message", version = 1 },
+    payload = Some(String.to-bytes("ignored")),
+    resumes = None(),
+    outcome = None(),
+    child-completed = None(),
+  } in
+  if List.len(apply(evt)) == 0 then unit
+  else trap("a non-loop event must drive nothing")
+
+export { apply }
