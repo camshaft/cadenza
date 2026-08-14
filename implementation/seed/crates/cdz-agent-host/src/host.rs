@@ -338,6 +338,15 @@ impl HostedSession {
         self
     }
 
+    /// Whether a checkpoint capability is attached ([`with_checkpoint`](Self::with_checkpoint)) — true iff this
+    /// session can compact its own durable log per the policy. The factory attaches the checkpoint builder in
+    /// the SAME `[log]`-durable branch it attaches the sink, so this also witnesses that the durable-log wiring
+    /// ran (used by the boot-recovery parity test to assert a RECOVERED session is wired durably like a fresh
+    /// one, not sink-less/checkpoint-less).
+    pub fn checkpoint_enabled(&self) -> bool {
+        self.checkpoint_builder.is_some()
+    }
+
     /// GAP-4 D3-4 per-turn checkpoint TRIGGER — called after each delivered turn. If a checkpoint capability is
     /// attached ([`with_checkpoint`](Self::with_checkpoint)) and its [`CheckpointPolicy`](crate::checkpoint::CheckpointPolicy)
     /// fires (the log has grown past the threshold since the last checkpoint, at a quiescent boundary), compact
@@ -2046,6 +2055,60 @@ mod tests {
         assert!(
             !hosted.is_suspended(),
             "a recovered session starts schedulable (suspension does not survive recovery)"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_recovered_session_reports_checkpoint_enabled_only_once_a_capability_is_attached() {
+        // GAP-4 D3 boot-recovery PARITY invariant: `from_recovered` starts a recovered session with NO
+        // checkpoint capability — the durable log carries none, so the factory's `recover_and_build` MUST
+        // re-attach it (in the same `[log]`-durable branch it re-attaches the sink), exactly as a fresh
+        // `build` does. This pins that invariant + the `checkpoint_enabled()` accessor that witnesses the
+        // recovered-session durable wiring ran (a sink-less/checkpoint-less recovered session would lose
+        // every post-recovery event on the next crash + grow unbounded).
+        use cdz_kernel::kernel::Session;
+        use cdz_kernel::log_store::{Recovered, RecoveryKind};
+
+        let original = now_host();
+        let recovered = Recovered {
+            events: vec![original.session().genesis_ref().clone()],
+            kind: RecoveryKind::Clean,
+            good_prefix_len: 0,
+        };
+        let (session, _report) = Session::recover_from(recovered, &mut ClockAgent)
+            .await
+            .expect("a clean genesis log recovers");
+        let hosted = HostedSession::from_recovered(
+            session,
+            Box::new(ClockAgent),
+            Box::new(Authorizer::deny_all()),
+            CompositeExecutor::new(),
+        );
+        assert!(
+            !hosted.checkpoint_enabled(),
+            "a freshly-recovered session has NO checkpoint capability until one is attached"
+        );
+
+        // Attaching a capability (as recover_and_build now does in its durable branch) enables it.
+        struct StubBuilder;
+        #[async_trait::async_trait(?Send)]
+        impl crate::factory::LogSinkBuilder for StubBuilder {
+            async fn build(
+                &self,
+                _id: &SessionId,
+            ) -> Result<Option<Box<dyn cdz_kernel::log_store::LogSink>>, String> {
+                Ok(None)
+            }
+        }
+        let hosted = hosted.with_checkpoint(
+            std::rc::Rc::new(StubBuilder),
+            crate::checkpoint::CheckpointPolicy {
+                threshold_frames: 4,
+            },
+        );
+        assert!(
+            hosted.checkpoint_enabled(),
+            "with_checkpoint attaches the capability the factory re-supplies on recovery"
         );
     }
 

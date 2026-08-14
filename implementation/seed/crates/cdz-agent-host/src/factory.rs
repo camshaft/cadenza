@@ -1314,12 +1314,30 @@ where
         let owner_genesis = session.genesis_hash();
         let id = crate::host::SessionId::new(owner_genesis);
         let executors = self.executors.build(&id, owner_genesis).await;
-        let hosted = HostedSession::from_recovered(
+        // Re-supply the per-session collaborators EXACTLY as a fresh install (`build`) does — the durable log
+        // carries none of them (`from_recovered`'s contract). A recovered session must have the SAME capability
+        // grant as a fresh one (the original per-session grant isn't in the log, like the effect payload isn't;
+        // `self.authz.build()` is the factory's configured grant — NOT `deny_all`, which would leave the
+        // recovered session inert, unable to perform any effect its reducer re-emits, contradicting
+        // `from_recovered`'s "re-supply exactly as for a fresh session" contract).
+        let mut hosted = HostedSession::from_recovered(
             session,
             Box::new(reducer),
-            Box::new(cdz_kernel::authz::Authorizer::deny_all()),
+            self.authz.build(),
             executors,
         );
+        // Re-attach the durable log sink + checkpoint capability so the recovered session keeps PERSISTING new
+        // events (inbound folds, timeout re-drives, re-emitted effects) — a recovered durable session that ran
+        // sink-less would lose everything after recovery on the next crash — and keeps its log BOUNDED via the
+        // per-turn checkpoint policy. Mirrors `build`'s attach block over the SAME builder; `None` (memory
+        // backend) leaves the recovered session in-memory, as it was. A fresh sink over the SAME session id
+        // APPENDS to the existing durable log (the log we just recovered from), continuing it.
+        if let Some(builder) = &self.log_sink {
+            if let Some(sink) = builder.build(&id).await? {
+                hosted = hosted.with_sink(sink);
+            }
+            hosted = hosted.with_checkpoint(builder.clone(), self.checkpoint_policy);
+        }
         Ok((hosted, report))
     }
 
