@@ -296,6 +296,104 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn git_family_grants_are_per_op_and_scope_the_repo_branch_target() {
+        // GAP-6: git/* is a per-op typed family with NO EffectKind, so (like store/*) only a FamilyGrant
+        // (Capability::for_family + with_family_grants) can permit it. This pins the authz-GRANULARITY the
+        // typed family adds over the coarse `shell`-runs-`git` allow-list: a grant permits ONE verb
+        // (git/status) without permitting another (git/commit), and a git/push grant is SCOPED to a
+        // repo/branch target via a ResourcePredicate (the design's
+        // `permit(action=="git/push") when resource.branch like "fleet/**"`).
+        use crate::effect::{effect_ct, EffectRequest};
+        let git = |family: &'static str, target: &str| {
+            EffectRequest::new_with_family(
+                family,
+                target,
+                None,
+                crate::effect::Timeliness::Interactive,
+            )
+        };
+        // Grant git/status on any worktree + git/push ONLY to fleet/ branches.
+        let authz = Authorizer::new(vec![]).with_family_grants(vec![
+            Capability::for_family(effect_ct::GIT_STATUS, ResourcePredicate::Any),
+            Capability::for_family(
+                effect_ct::GIT_PUSH,
+                ResourcePredicate::Prefix("fleet/".into()),
+            ),
+        ]);
+        // PER-OP: git/status is permitted on any target...
+        assert!(authz
+            .authorize(&git(effect_ct::GIT_STATUS, "worktree/x"))
+            .await
+            .is_ok());
+        // ...but git/commit is DENIED — the grants named status + push, not commit (per-verb granularity,
+        // exactly what git/* buys over a single coarse `shell like "git *"` rule).
+        assert!(authz
+            .authorize(&git(effect_ct::GIT_COMMIT, "worktree/x"))
+            .await
+            .is_err());
+        // SCOPED PUSH: git/push to a fleet/ branch rides the grant...
+        assert!(authz
+            .authorize(&git(effect_ct::GIT_PUSH, "fleet/v-agent-harness"))
+            .await
+            .is_ok());
+        // ...but git/push to another branch is denied (target outside the granted prefix).
+        assert!(authz
+            .authorize(&git(effect_ct::GIT_PUSH, "main"))
+            .await
+            .is_err());
+        // A Capability-only authorizer (no family grants) CANNOT grant git/* at all (git has no EffectKind
+        // — the same register-by-string gap for_family closes for store/*).
+        let no_git = Authorizer::new(vec![Capability {
+            kind: EffectKind::Http,
+            predicate: ResourcePredicate::Any,
+        }]);
+        assert!(no_git
+            .authorize(&git(effect_ct::GIT_STATUS, "worktree/x"))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_deny_rule_carves_a_protected_branch_out_of_a_broad_git_push_grant() {
+        // The most authz-sensitive git op: a broad git/push grant with a deny rule protecting a branch (the
+        // fs/http deny-overrides-allow precedent applied to git). Grant git/push to ANY target, deny
+        // git/push to `main` — a feature-branch push rides the grant, a push to main is refused.
+        use crate::effect::{effect_ct, EffectRequest};
+        let push = |target: &str| {
+            EffectRequest::new_with_family(
+                effect_ct::GIT_PUSH,
+                target,
+                None,
+                crate::effect::Timeliness::Interactive,
+            )
+        };
+        let authz = Authorizer::new(vec![])
+            .with_family_grants(vec![Capability::for_family(
+                effect_ct::GIT_PUSH,
+                ResourcePredicate::Any,
+            )])
+            .with_deny_rules(vec![Capability::for_family(
+                effect_ct::GIT_PUSH,
+                ResourcePredicate::Exact("main".into()),
+            )]);
+        // A feature-branch push is permitted (grant applies, deny doesn't match)...
+        assert!(authz
+            .authorize(&push("fleet/v-agent-harness"))
+            .await
+            .is_ok());
+        // ...but pushing to the protected main branch is refused despite the broad grant (deny overrides).
+        let denied = authz.authorize(&push("main")).await;
+        assert!(
+            denied.is_err(),
+            "push to main is denied despite the broad git/push grant"
+        );
+        assert!(
+            denied.unwrap_err().contains("DENIED"),
+            "the denial names the explicit deny, not a missing grant"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn no_deny_rules_is_unchanged_behavior() {
         // Additive guarantee: an authorizer with no deny rules behaves EXACTLY as before — a grant permits,
         // absence denies, nothing new engages.
