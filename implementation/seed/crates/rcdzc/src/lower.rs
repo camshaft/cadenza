@@ -15302,6 +15302,27 @@ fn ty_to_wit_desc(
         }
         // Nominal is erased at the wire — its machine rep IS `inner`, so hash through `inner`.
         Ty::Nominal { inner, .. } => ty_to_wit_desc(db, b, inner),
+        // A MAP reflects as `list<tuple<K, V>>` — the canonical value-form a Map crosses/encodes as (a
+        // sorted-key list of key/value pairs, matching `map_shape_descriptor` + the runtime value-encode
+        // walker). A userspace effect op CAN be Map-typed (e.g. `(op vars (-> Unit (Map Int64 Int64)))`,
+        // `(op stamp (-> (Map String Int64) (Map String Int64)))`) — 15 such op decls in the corpus — so the
+        // schema-hash descriptor MUST cover it or v-effects' mandatory-schema_hash flip regresses those cases
+        // (S3 hard gate). Self-consistent + rcdzc-only: the kernel HASHES the descriptor nodes emitted here
+        // (`effect_schema_hash_from_nodes` canonicalizes + hashes the tree; it does not re-derive via
+        // `build_type`), so this node shape IS the identity — no kernel Map/Set reflection needed.
+        Ty::Map(k, v) => {
+            let kd = ty_to_wit_desc(db, b, k)?;
+            let vd = ty_to_wit_desc(db, b, v)?;
+            let pair = b.wit_type_tuple(&[kd, vd]);
+            Some(b.wit_type_list(pair))
+        }
+        // A SET reflects as `list<E>` — the canonical value-form a Set crosses/encodes as (a sorted list of
+        // its elements, matching `set_shape_descriptor` + the value-encode walker). Reachable as an effect-op
+        // type (`(op check (-> (Set (Tuple Int64 Int64)) Int64))`), so covered alongside Map (S3 hard gate).
+        Ty::Set(elem) => {
+            let e = ty_to_wit_desc(db, b, elem)?;
+            Some(b.wit_type_list(e))
+        }
         // No built-in effect op-sig uses these yet — DECLINE rather than invent a (wrong) identity.
         _ => None,
     }
@@ -28140,6 +28161,20 @@ mod tests {
             desc_wit("(tuple 1 true)"),
             Some(W::Tuple(vec![W::S64, W::Bool])),
             "tuple<s64, bool>, positional"
+        );
+        // A MAP reflects as list<tuple<K,V>> (the sorted-key value-form) — reachable as an effect-op type, so
+        // covered for the schema-hash S3 hard gate. `WitType` has no Map variant, so it reads back as the
+        // list<tuple> it emits.
+        assert_eq!(
+            desc_wit("(map (1 2))"),
+            Some(W::List(Box::new(W::Tuple(vec![W::S64, W::S64])))),
+            "Map<s64,s64> emits list<tuple<s64,s64>>"
+        );
+        // A SET reflects as list<E> (the sorted-element value-form) — reachable as an effect-op type.
+        assert_eq!(
+            desc_wit("(Set.of (list 1))"),
+            Some(W::List(Box::new(W::S64))),
+            "Set<s64> emits list<s64>"
         );
     }
 
