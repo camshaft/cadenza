@@ -4164,8 +4164,8 @@ fn lower_let(
     }
     let uses = enclosing_or_collected_region_uses(db, node, bindings, body);
     let mut kept: Vec<(StructId, StructId)> = Vec::new();
-    for &(_name_occ, init) in bindings.iter() {
-        if should_keep_binding(db, init, &uses) {
+    for &(name_occ, init) in bindings.iter() {
+        if should_keep_binding(db, name_occ, init, &uses) {
             // Record the keep BEFORE lowering the body/later inits — their references to this init read
             // `db.kept_bindings` to decide `LocalRef` vs follow-through.
             db.kept_bindings.insert(init);
@@ -13782,7 +13782,12 @@ fn lambda_is_capturing(db: &mut Db, init: StructId) -> bool {
 /// `uses` carries the per-binding use facts collected in ONE walk of the whole `let` region (see
 /// [`BindingUses`]); the whole-value-escape and use-count queries are O(1) lookups into it rather than an
 /// O(scope) walk per binding (the O(N²) a wide `let` otherwise pays).
-fn should_keep_binding(db: &mut Db, init: StructId, uses: &BindingUses) -> bool {
+fn should_keep_binding(
+    db: &mut Db,
+    name_occ: StructId,
+    init: StructId,
+    uses: &BindingUses,
+) -> bool {
     // A CAPTURING lambda whose HANDLE ESCAPES WHOLE (stored into a heap collection / sum payload / passed
     // / returned) AND is ALSO DIRECTLY CALLED — the adv-50 CALL-BOTH-WAYS shape — must be FORCE-KEPT as
     // ONE materialized runtime closure. This is the DUAL of the copy-propagate short-circuit just below.
@@ -13931,6 +13936,33 @@ fn should_keep_binding(db: &mut Db, init: StructId, uses: &BindingUses) -> bool 
             core_of(db, init),
             Core::Tuple { .. } | Core::Record { .. } | Core::ListNew { .. }
         )
+    {
+        return true;
+    }
+    // FINDING-24: a per-dispatch `#st`-prefixed slot-state binding (the effects fold emits `#st{node}_{slot}`
+    // for a GROWING threaded state — `(List.push pre t)` / `(Map.insert m k v)` / a `(let … growing)` wrapping
+    // one — whose init transitively references the PRIOR dispatch's slot value) is FORCE-KEPT regardless of
+    // use-count. Otherwise copy-prop re-inlines it PER DISPATCH — via the `is_compound_value` projection
+    // propagate-arm below (force-propagates a projected Tuple/Record regardless of count) AND the `count < 2`
+    // gate (an `#st` state is read once, by the next dispatch's init) — and the emitted Core/artifact is
+    // O(k^N) again (rustc SIGSEGVs on the deeply-nested async emit). Naming it materializes the state ONCE per
+    // dispatch and threads the name forward, so the fold is LINEAR in the dispatch count. Same
+    // keep-regardless-of-count shape as the host-effect arm above, but for a compile-time SIZE reason.
+    //
+    // Keys on the `#st` PREFIX ALONE (collision-free — the effects fold's synthetic prefixes are
+    // `#cv`/`#kv`/`#seed`/`#st`, and `#st` is emitted ONLY for a `next_state_is_growing_compound` state, so
+    // the prefix is a sufficient, fold-guaranteed witness of the shape). Deliberately NOT gated on
+    // `is_runtime_computation`: the F24 growing states lower to `Core::ListPush` / `Core::MapInsert` /
+    // `Core::ListConcat` / `Core::Let`, NONE of which `is_runtime_computation` matches (it lists
+    // Arith/Compare/Record/Tuple/ListNew/Call/Str*/BytesConcat only) — so an `is_runtime_computation` conjunct
+    // would make this arm a NO-OP for exactly the list/map/let-wrapped shapes the finding is about (it would
+    // fire ONLY for a scalar `(+ s 1)` state). The fold's own guard is the correctness gate; here the prefix
+    // is the whole test. Placed BEFORE the `is_compound_value`/count propagate-arms so those cannot
+    // re-propagate it.
+    if db
+        .ast
+        .as_name(name_occ)
+        .is_some_and(|n| n.starts_with("#st"))
     {
         return true;
     }

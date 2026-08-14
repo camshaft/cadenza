@@ -441,6 +441,16 @@ struct HandlerCtx {
     pending: std::cell::RefCell<Vec<(String, StructId)>>,
     /// A monotonic counter for fresh self-call temp names (`{spec}$t{k}`), unique within one specialization.
     temp_ctr: std::cell::Cell<u32>,
+    /// FINDING-24: whether the growing-state per-dispatch `#st` let-bind may fire on THIS thread pass. TRUE on
+    /// the paths that DRAIN `pending` — the straight-line handle body (`reduce_handle`'s `drain_and_wrap` at
+    /// the top) and multi-value specialization (`thread_returning_tuple` drains per leaf). FALSE for
+    /// SINGLE-RETURN specialization (`specialize_recursive`'s bare `thread`, which has no `drain_and_wrap`): a
+    /// `#st` pushed there would never materialize → an orphan `#st..` CDZ0101 reference in the specialized
+    /// body. That path is ALSO immune to the exponential (finding-24 tick 1369: a LOOP-driven single static
+    /// call site threads the state as a fn PARAMETER, not by re-substituting a growing expr per dispatch), so
+    /// suppressing the bind there loses no size win — it is pure harm to fire. Interior-mutable so the
+    /// specialize path can flip it around its own thread without rebuilding the ctx.
+    bind_growing_state: std::cell::Cell<bool>,
 }
 
 /// One handler's state in a (possibly merged) [`HandlerCtx`]: the effect declaration whose operations
@@ -486,6 +496,7 @@ impl HandlerCtx {
             abort_value: std::cell::Cell::new(None),
             pending: std::cell::RefCell::new(Vec::new()),
             temp_ctr: std::cell::Cell::new(0),
+            bind_growing_state: std::cell::Cell::new(true),
         }
     }
 
@@ -2699,10 +2710,29 @@ pub fn reduce_handle(
             // CDZ0101 / no-machine-representation. `drain_and_wrap` is a no-op when nothing is pending (the
             // common case — a plain `(do (A.tick) (B.bail 99))` has no self-call temp), so this is a strict
             // hardening: byte-identical when `ctx.pending` is empty, correct when it is not.
+            // ONLY the `#st` drained inits (the FINDING-24 per-dispatch state binds) — NOT every pending
+            // entry. `ctx.pending` ALSO holds self-call `#t` temps (a `f#ctx` self-call arm pushes `(#t,
+            // call_node)`); forgetting THOSE re-resolves a `call_node` subtree that can hold a BODY binder
+            // (a match/let binder like `root`) → CDZ0101 unbound `root` (the compiler-ml self-host reject:
+            // db-query-diff where NO `#st` fires, only self-call temps). The forget is FOR the `#st` seed-memo
+            // only; filter by the `#st` name prefix so a non-`#st` temp is never touched.
+            let do_pending_inits: Vec<StructId> = ctx
+                .pending
+                .borrow()
+                .iter()
+                .filter(|(name, _)| name.starts_with("#st"))
+                .map(|(_, init)| *init)
+                .collect();
             let drained = drain_and_wrap(db, &ctx, 0, rewritten);
             // Wrap in the seed let-lift (heap seed → the do-prefix / abort value may read `#seed`).
             let drained = apply_seed_wrap(db, drained);
             reparent_under_handle_site(db, drained, body);
+            // FINDING-24 stale-memo clear (see the resumptive-return twin below): forget ONLY the drained `#st`
+            // init subtrees so their `#seed`/`#st` refs re-resolve against the grafted chain (a blanket
+            // `forget_subtree(drained)` regressed a live pin — see the twin). Empty unless an `#st` bind drained.
+            for &init in &do_pending_inits {
+                crate::resolve::forget_subtree(db, init);
+            }
             return Some(drained);
         }
         // Re-anchor the abort value under the handle site BEFORE returning — the SAME reparent the normal
@@ -2727,6 +2757,20 @@ pub fn reduce_handle(
     // projection); the temp is not yet bound. Drain any pending temps into wrapping `let`s so the handle
     // value is `(let ((t (f#ctx … init))) (. t 0))`. (The self-call arm already discards each spec's
     // OUT-state at the top level — the handle observes only the value.) Nothing pending → returns `rewritten`.
+    // Capture the pending drain-init node ids BEFORE draining (FINDING-24 stale-memo clear, below): these are
+    // the `#st` per-dispatch state binds, pre-existing resolved subtrees whose `#seed` refs need re-resolution
+    // once the seed-wrap grafts the binder. Empty in the common case (nothing pending → no-op forget).
+    // ONLY the `#st` drained inits — NOT every pending entry (see the do-form twin above): `ctx.pending`
+    // also holds self-call `#t` temps whose `call_node` can transitively hold a body binder (`root`);
+    // forgetting a non-`#st` temp re-resolves it → CDZ0101 unbound `root` (the self-host reject where no
+    // `#st` fires). Filter by the `#st` name prefix.
+    let pending_inits: Vec<StructId> = ctx
+        .pending
+        .borrow()
+        .iter()
+        .filter(|(name, _)| name.starts_with("#st"))
+        .map(|(_, init)| *init)
+        .collect();
     let wrapped = drain_and_wrap(db, &ctx, 0, rewritten);
     // Apply the SEED LET-LIFT decided above: `(let ((#seed init)) wrapped)`. Every `#seed` occurrence
     // threaded into the body re-resolves to this binding; `init` (carrying the live capture) is evaluated
@@ -2746,6 +2790,23 @@ pub fn reduce_handle(
     // an arithmetic op — `(+ s 1)` or a compound body — already re-parents its operands, which is why those
     // faces did not exhibit the leak; the bare pass-through is the gap.)
     reparent_under_handle_site(db, wrapped, body);
+    // FINDING-24 stale-memo clear: when the seed was let-lifted (`seed_wrap` present) AND the fold drained a
+    // per-dispatch `#st` state bind (v-effects' fold half), that `#st` let-init is a PRE-EXISTING resolved
+    // program subtree (e.g. `(List.push #seed22 t)`) whose `#seed` reference was memoized at THREADING time —
+    // before `apply_seed_wrap` (above) minted the `#seed` binder. `resolved_of` memoizes against the position
+    // at first resolve, so that `#seed` occurrence stays memoized UNBOUND and the just-grafted `#seed` let is
+    // never consulted → CDZ0101 `unbound #seed`. Forget ONLY the drained `#st` init subtrees (`pending_inits`)
+    // so the next `resolved_of` recomputes their `#seed`/`#st` references against the FINAL `#seed`-outer /
+    // `#st`-inner chain this function just built. Same stale-memo-after-reparent class the copied-binder paths
+    // clear via `forget_subtree`. TARGETED (not a blanket `forget_subtree(wrapped)`): a whole-tree forget
+    // re-resolves correctly-pinned nodes too and regressed 1 case (the `il2` data-driven-interleave-width
+    // handler — a live pin shifted). Forgetting only the drained inits clears exactly the stale `#st`/`#seed`
+    // memos and leaves every other pin intact → the seed-wrap corpus stays byte-identical (verified 0-regress).
+    // `pending_inits` is empty unless the fold drained an `#st` bind, so this is a no-op for every existing
+    // handle (constant OR heap seed) — it engages only once v-effects' fold half emits an `#st` state bind.
+    for &init in &pending_inits {
+        crate::resolve::forget_subtree(db, init);
+    }
     Some(wrapped)
 }
 
@@ -5307,6 +5368,182 @@ fn contains_cv_ref(db: &Db, node: StructId) -> bool {
     }
 }
 
+/// Whether `prim` is an ACCUMULATING collection operation — one that takes a prior collection as its FIRST
+/// operand and produces a new collection embedding it (`prelude-and-resolution.md`; the set v-rust-backend
+/// root-caused as the O(k^N) shapes). Each re-substitutes the prior slot-state per dispatch, so a fold that
+/// threads its result blows the Core up exponentially unless the state is per-dispatch let-bound. This is the
+/// GENERIC axis — the compiler's own `Prim` intrinsics, NOT operator spelling (a user op coincidentally named
+/// `push` resolves to no `Prim` and is excluded, per the no-hard-coded-capabilities rule). EXCLUDES fresh
+/// constructors (`ListNew`/`MapNew`/`SetOf` — don't embed a prior), reads (`ListAt`/`MapLookup`/`*Len`),
+/// removes (`MapRemove`/`SetRemove` — the shrink twin, not the shipping blow-up surface), and every scalar/
+/// plain-compound op (`Add`/`Record`/`Tuple`/…): those keep the state O(1) and stay byte-identical.
+fn is_accumulating_collection_prim(prim: crate::resolved::Prim) -> bool {
+    use crate::resolved::Prim;
+    matches!(
+        prim,
+        Prim::ListPush
+            | Prim::ListPrepend
+            | Prim::ListConcat
+            | Prim::ListUpdate
+            | Prim::MapInsert
+            | Prim::SetInsert
+            | Prim::SetUnion
+            | Prim::SetIntersection
+            | Prim::SetDifference
+            | Prim::BytesConcat
+    )
+}
+
+/// FINDING-24 guard: does a threaded slot-state GROW a collection off the prior state — i.e. does evaluating
+/// it PRODUCE the result of an accumulating collection op (`(List.push pre t)`, `(Map.insert m k v)`, a
+/// `Bytes.concat`), possibly THROUGH a `let`/`match`/`if`/name that forwards to one? Only such a state
+/// re-embeds the prior slot per dispatch (each dispatch the body reads state k times, each read re-substitutes
+/// the growing expr → O(k^N) Core, `core_of`'s memo can't collapse the StructId-distinct `deep_fresh_copy`
+/// trees → rustc SIGSEGVs the async emit). Those states get the per-dispatch `#st` sibling let-bind (the fix);
+/// EVERY OTHER shape — a bare name / prior `#st` ref, a tuple PROJECTION `(. t 1)`, a scalar counter `(+ s 1)`,
+/// a plain record/tuple, a fresh-constant collection — keeps the state O(1) and stays byte-identical.
+///
+/// NARROWED (was: fire on ANY compound) to the accumulating-collection `Prim` set — matching a `Prim`, not a
+/// spelling, is the generic axis (`is_accumulating_collection_prim`) and drops the benign compounds (counter
+/// folds, projections, records, plain calls) that the broad guard over-fired on. The mk21 shape threads the
+/// grown collection through a `let`-bound `match` (`(let ((m2 (match … (Map.insert m k v) …))) m2)`), so the
+/// reach follows `Ref`/`Let`-body/`Match`-arms/`If`-branches to find the producing op — a top-level shape
+/// match alone would miss it.
+///
+/// ⚠ EXCLUDES a next-state that REACHES A PERFORM (`reaches_any_perform`): a host/foreign perform in the
+/// next-state slot must be discharged IN PLACE by the enclosing fold (it is the effect the dispatch runs) —
+/// hoisting it into an `#st` let-init reorders/elides it (breaker: `(host (ask) …)` next-state call trapped
+/// "host-call ask.ask" + a final-dispatch state-call elided). Binding is for a PURE growing state only; a
+/// perform-bearing state stays where it is regardless of size (correctness over the size win).
+/// Correctness-safe either way for the pure case: a false "not growing" only leaves the exponential in place
+/// (no miscompile); a false "growing" only adds a redundant kept binding (behavior-preserving, same value +
+/// eval order). Keeps the common corpus byte-identical — the bind fires ONLY on a growing-collection state.
+fn next_state_is_growing_compound(db: &mut Db, next_state: StructId) -> bool {
+    // A perform-bearing state must NOT be hoisted into a let-init (it would reorder/elide the effect).
+    // NOTE: a state carrying a `#seed` ref IS a valid F24 target (the growing states ARE seed-derived, e.g.
+    // `(List.push #seed22 t)`); it binds correctly BECAUSE the #st let nests INNER to the #seed wrap and the
+    // single reparent_under_handle_site resolves the whole tree in one pass (seed-graft contract, v-rb) — the
+    // #st init must be registered BY REFERENCE to the original node (attached #seed), never deep_fresh_copy'd.
+    if reaches_any_perform(db, next_state) {
+        return false;
+    }
+    next_state_produces_accumulating_op(db, next_state, 0)
+}
+
+/// Recursion bound for the accumulating-op reach — a threaded state forwards through at most a few
+/// `let`/`match`/`if`/name hops before its producing op; well above any real fold shape (mk21 is depth 3:
+/// `let` → binder `Ref` → `match` arm). A deeper chain declines to fire (leaves the exponential in place —
+/// the safe floor, never a miscompile).
+const F24_REACH_LIMIT: u32 = 16;
+
+/// Does evaluating `node` PRODUCE the result of an accumulating collection op (`is_accumulating_collection_prim`)?
+/// Follows the value-producing spine only — an application HEAD that is an accumulating `Prim`, or a
+/// `Ref`/`Let`-body/`Match`-arm/`If`-branch that forwards to one — so a growing op reached through the mk21
+/// `let`-bound `match` fires while a benign compound (arith, record, projection, a plain call whose callee we
+/// don't follow) does not. Bounded by `F24_REACH_LIMIT`.
+/// Does an accumulating op's ELEMENT arg reference a name bound to a PRIOR DISPATCH RESULT — a body
+/// let/do-binding the fold FRESHENED to `#{userletter}{id}` (`freshen_walk`, effects.rs ~7043/7076, which
+/// renames every body-lifted binder to `#{name}{arena-id}` as it inlines the interposing let/do)? Such a
+/// binding's value came from an EARLIER dispatch of this handler (mk2: `a = (Reg.touch n)`, referenced by
+/// dispatch-2's op-arg `(+ #a64 1)`), so the growth is DATA-CHAINED on a prior dispatch's OUTPUT, not a
+/// straight-line accumulator: it does not multiplicatively re-embed (mk2 baseline 4838 bytes, no blowup),
+/// and firing the `#st` bind ORPHANS that resume-value binding when the drain re-scopes the body (CDZ0101
+/// `#a…`).
+///
+/// SYNTACTIC signal (resolution is unavailable — at the arm-return thread site a body binder resolves to
+/// `Poison(Unbound)`, indistinguishable from an outer param, so a resolve/reach test can't separate them):
+/// a `#`-prefixed name that is NOT one of the KNOWN accumulation synthetics (`#st` slot bind, `#seed` handle
+/// seed, `#cv` op-arg lift, `#kv` perform-result lift) is a `freshen_walk`-renamed BODY binding = a prior
+/// dispatch result. A plain outer PARAM (`n`) stays a BARE name (never `#`-prefixed), so a real grower whose
+/// op-arg reads `n` (bf1 `(+ 10 n)`) still fires — and its free-var aliasing is handled by the selective
+/// copy. Every prelude/user op name (`+`, `UInt8`, `wrap`, `bin`) is bare too. Bounded by `F24_REACH_LIMIT`.
+fn element_arg_reaches_prior_dispatch_result(db: &mut Db, node: StructId, depth: u32) -> bool {
+    if depth > F24_REACH_LIMIT {
+        return false; // too deep — do NOT over-exclude (a missed exclusion only leaves a benign case firing;
+        // over-exclusion would disable the fix on a real accumulator — the worse failure)
+    }
+    if let Some(nm) = db.ast.as_name(node) {
+        // Two `#`-prefixed shapes in an ELEMENT-arg position (elem/val/key — NOT the collection operand
+        // args[0], which the caller skips) mean the growth is NOT a straight-line accumulator, so decline:
+        //   (a) a `#seed` — a HANDLE SEED threaded as DATA. In a straight-line accumulator the only `#seed`
+        //       is the collection operand (args[0], the accumulation itself — pfxM/f24-list `(Map.insert
+        //       #seed30 …)`). A `#seed` in an ELEMENT arg is a CROSS-HANDLER seed woven into the added value
+        //       (xh1: an inner `put` dispatched inside an outer `S` arm, `(Map.insert #st (+ #seed103 1)
+        //       #seed103)` — `#seed103` is the OUTER S-handler's seed). The inner `#st` embeds the outer
+        //       `#seed` whose binder is grafted only when the OUTER handler returns (AFTER the inner drain), so
+        //       the bind orphans it (CDZ0101 `#seed`); and the bind does not even linearize the nested shape
+        //       (still exponential) — trunk emits xh1 correctly (219KB, no rustc-SIGSEGV), so declining loses
+        //       nothing. `#cv`/`#kv` (op-arg / perform-result lifts) are likewise not straight-line accumulation.
+        //   (b) any OTHER `#`-prefixed name — a `freshen_walk`-renamed BODY binding (`#a64`, mk2's `a` = a prior
+        //       dispatch's resume value), the data-chained-dispatch case.
+        // The ONLY `#`-name that is NOT a decline signal here is `#st` (a PRIOR slot bind threaded forward as
+        // the accumulation — but that too is normally the collection operand; in an element arg it would be a
+        // slot read, still fine to keep). So: decline on any `#`-name EXCEPT `#st`.
+        return nm.starts_with('#') && !nm.starts_with("#st");
+    }
+    match db.ast.get(node).clone() {
+        Struct::Atom(_) => false,
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| element_arg_reaches_prior_dispatch_result(db, c, depth + 1)),
+    }
+}
+
+fn next_state_produces_accumulating_op(db: &mut Db, node: StructId, depth: u32) -> bool {
+    if depth > F24_REACH_LIMIT {
+        return false;
+    }
+    match resolved_of(db, node) {
+        // An accumulating op is applied as `(Map.insert m k v)` etc. Its HEAD is a member access
+        // (`Map.insert` → `Resolved::Member`), whose intrinsic is read off the `(meta apply)` channel by
+        // `meta_apply_of`; a direct `Prim` head (a desugared intrinsic) is read by `prim_of`. Consult both,
+        // exactly as `lower.rs`'s application dispatch does (`meta_apply_of(head).or_else(prim_of(head))`).
+        Resolved::Apply { head, args } => {
+            let is_accum = crate::eval::meta_apply_of(db, head)
+                .or_else(|| crate::eval::prim_of(db, head))
+                .is_some_and(is_accumulating_collection_prim);
+            // DATA-CHAINED-DISPATCH EXCLUSION (mk2): if an ELEMENT arg (any arg after the first — the
+            // collection operand) reaches a name whose BINDING is a PRIOR DISPATCH RESULT (a resume-value
+            // let-binding of THIS handler — its init reaches a discharged perform), the growth is data-chained
+            // on a prior dispatch's OUTPUT, not a straight-line accumulator: (i) it does not multiplicatively
+            // re-embed (mk2 baseline 4838 bytes, no blowup), and (ii) firing the `#st` bind orphans that
+            // resume-value binding when the drain re-scopes the body (CDZ0101 `#a…`). EXEMPT: the collection
+            // operand `args[0]` (it IS the accumulation — the slot/seed), a plain outer PARAM like main's `n`
+            // (bf1's `(+ 10 n)` — `n` has no init/no perform, so a real bytes-frame grower still FIRES + is
+            // fixed by the selective-copy), and any arm-inner pure let (`kk`=`Map.len`, `t`=`prev+v` — no
+            // perform behind them). The signal is precise: a PERFORM behind an element-arg name = a prior
+            // dispatch's resume value.
+            is_accum
+                && !args
+                    .iter()
+                    .skip(1)
+                    .any(|&a| element_arg_reaches_prior_dispatch_result(db, a, 0))
+        }
+        // A bare name / prior `#st` ref → follow to its bound value (mk21's `m2` → the `match`).
+        Resolved::Ref { value } => next_state_produces_accumulating_op(db, value, depth + 1),
+        // A `let` forwards its VALUE from the body; the body is typically the binder name, resolved via `Ref`.
+        Resolved::Let { body, .. } => next_state_produces_accumulating_op(db, body, depth + 1),
+        // A `match`/`if` produces a grown collection if ANY reachable branch does — but ONLY when reached
+        // DEEPER (depth > 0), i.e. inside a `let`-binding init whose RESULT is bound and threaded as a name
+        // (mk21: `(let ((m2 (match … (Map.insert …) …))) m2)` — the match is bound to `m2` atomically). A
+        // TOP-LEVEL conditional-valued next-state `(if c (List.push s v) s)` / `(match … (grow) (s))` is the
+        // two-hole IF/MATCH-PEEL shape (`peel_resume_from_arm_body`): it already threads correctly, and the
+        // refold REBUILDS its condition/scrutinee via push_list — so registering it BY REFERENCE for the `#st`
+        // bind detaches a shared op-arg node (the `(> v 10)`, `v`↦body-free-var `n`) → a false CDZ0101 unbound
+        // (breaker ts1, #2336). Declining to fire on a top-level conditional leaves the (small, non-blown-up)
+        // peel shape byte-identical — the safe floor (a top-level `if` where BOTH branches grow would miss the
+        // size win, but no such shape blows up in the corpus, and a false "not growing" is never a miscompile).
+        Resolved::Match { arms, .. } if depth > 0 => arms
+            .iter()
+            .any(|&(_, body)| next_state_produces_accumulating_op(db, body, depth + 1)),
+        Resolved::If { then_, else_, .. } if depth > 0 => {
+            next_state_produces_accumulating_op(db, then_, depth + 1)
+                || next_state_produces_accumulating_op(db, else_, depth + 1)
+        }
+        _ => false,
+    }
+}
+
 /// Thread a conditional BRANCH / match ARM body, returning its rewrite AND its OUT-STATE (per slot) — the threaded
 /// state each slot has after the branch runs. The `If`/`Match` arms use this to MERGE per-branch out-states
 /// into a conditional-valued out-state so a SIBLING that reads state after the conditional (a recursive-call
@@ -5614,7 +5851,44 @@ fn thread_bounded(
             // EVERY node fresh (no shared leaf), so each splice gets its own subtree that re-resolves against
             // the specialized def's sig (which carries the driver's own params).
             let value = deep_fresh_copy(db, value);
-            let next_state = deep_fresh_copy(db, next_state);
+            // FINDING-24 (exponential fold-lowering): when the perform advances a slot's threaded state to a
+            // GROWING COMPOUND ((List.push pre t) / (Map.insert m k v) / (+ s 1)), the NEXT dispatch's init +
+            // the body SUBSTITUTE that state expr, and each dispatch re-embeds the prior → O(k^N) Core
+            // (`deep_fresh_copy` bakes N distinct fresh trees; `core_of` memo can't collapse StructId-distinct
+            // copies; reproduced N=3..7 ~3x/dispatch, rustc SIGSEGVs the async emit). FIX (per-dispatch state
+            // let-bind — the #seed-graft principle per dispatch): bind the grown state to a fresh
+            // `#st{node}_{slot}` name (into `ctx.pending`, materialized once by `drain_and_wrap`, INNER to the
+            // `#seed` wrap at reduce_handle:2736) and thread the NAME forward via `cur[slot]`, so the next
+            // dispatch substitutes the SMALL name, not the growing expr → Core LINEAR. NOTE the #st bind must
+            // be force-KEPT through emit (should_keep_binding #st-prefix carve-out, v-rust-backend's lower.rs
+            // piece) — else copy-prop re-inlines the single-use binding and the blow-up returns; this fold-side
+            // emission + that keep co-land as a co-gated pair.
+            //
+            // ⚠ SEED-GRAFT CONTRACT (v-rb): the growing state may carry a `#seed` ref (a heap handle-seed
+            // let-lift, bound OUTER by apply_seed_wrap; e.g. `(List.push #seed22 t)`). Register the state
+            // BY REFERENCE to the ORIGINAL (pre-`deep_fresh_copy`) node so its `#seed` ref stays ATTACHED —
+            // a `deep_fresh_copy` here would re-push the `#seed` ref DETACHED (orphan → CDZ0101 unbound
+            // `#seed`). Do NOT resolve the #st init now; the single `reparent_under_handle_site` (2748)
+            // resolves the whole wrapped tree (#st lets inner + #seed wrap outer) in one pass, so the #st
+            // init's #seed ref binds up exactly like the body's own #seed refs. The threaded `#st` NAME is
+            // single-use (one occurrence in the next dispatch), so it needs no fresh-copy sharing guard — the
+            // deep_fresh_copy the pre-fix code did on next_state is only needed on the NON-bound path.
+            let next_state =
+                if ctx.bind_growing_state.get() && next_state_is_growing_compound(db, next_state) {
+                    let sname = format!("#st{}_{slot}", node.0);
+                    let sref = db.push_name(&sname);
+                    // SELECTIVE copy: fresh-copy the init so an outer FREE-VAR the op-arg carries (bf1/bf2/bf3:
+                    // `v`↦`(+ 10 n)`) is not ALIASED into two arena positions (→ CDZ0101 unbound `n`), while
+                    // PRESERVING the `#seed` ref by-reference so a grafted handle-seed (incl a NESTED handler's,
+                    // which piece-3's forget snapshot does not reach — xh1) stays attached and resolves as before.
+                    // A full deep_fresh_copy fixes the free-var but re-orphans a nested `#seed`; the by-reference
+                    // original fixes `#seed` but aliases the free-var — `deep_fresh_copy_keep_seed` does both.
+                    let init = deep_fresh_copy_keep_seed(db, next_state);
+                    ctx.pending.borrow_mut().push((sname, init));
+                    sref
+                } else {
+                    deep_fresh_copy(db, next_state)
+                };
             cur[slot] = next_state;
             // Wrap the perform's result VALUE in the op-arg `#cv` let-lifts (innermost binding = last lifted
             // arg, so bindings evaluate in arg order): `(let ((#cv (A.get))) <value with v↦#cv>)`. The foreign
@@ -8540,7 +8814,17 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
         *ctx.pending.borrow_mut() = saved_pending;
         threaded?
     } else {
-        let (b, _out) = thread(db, orig_body, state_refs, ctx)?;
+        // SINGLE-RETURN specialization: the ordinary `thread` with NO `drain_and_wrap` after it. SUPPRESS the
+        // FINDING-24 growing-state `#st` bind here — a `#st` pushed to `ctx.pending` on this path would never
+        // materialize (nothing drains it) → an orphan `#st..` reference in the spec body (CDZ0101). This path
+        // is immune to the exponential anyway: a recursive callee threads the state as a fn PARAMETER through
+        // the self-call (one static site), not by re-substituting a growing expr per dispatch, so the bind
+        // wins no size here. Restore the flag after (the shared `ctx` may thread other, drainable, bodies).
+        let saved_bind = ctx.bind_growing_state.get();
+        ctx.bind_growing_state.set(false);
+        let threaded = thread(db, orig_body, state_refs, ctx);
+        ctx.bind_growing_state.set(saved_bind);
+        let (b, _out) = threaded?;
         b
     };
 
@@ -10286,6 +10570,45 @@ fn deep_fresh_copy(db: &mut Db, node: StructId) -> StructId {
         }
         Struct::List(children) => {
             let copied: Vec<StructId> = children.iter().map(|&c| deep_fresh_copy(db, c)).collect();
+            db.push_list(copied)
+        }
+    }
+}
+
+/// FINDING-24 `#st` init copy: a [`deep_fresh_copy`] that PRESERVES a `#seed` ref BY REFERENCE (returns the
+/// original atom) while re-pushing every OTHER node fresh. The `#st` per-dispatch state bind needs BOTH
+/// invariants at once, which neither a full fresh-copy nor a by-reference registration alone gives:
+///   - An OUTER FREE-VAR the growing op-arg carries (`(Bytes.concat fr (bin (u8 (UInt8.wrap v))))`, `v` ↦
+///     `(+ 10 n)` — main's param `n`) must be FRESH-copied: a by-reference registration ALIASES the shared
+///     `n` occurrence (single-parent arena → the other occurrence orphans, CDZ0101 unbound `n`; bf1/bf2/bf3).
+///   - The handle-seed `#seed` ref (`(Map.insert #seed k v)`, bound OUTER by `apply_seed_wrap`) must stay
+///     ATTACHED to its ORIGINAL atom: fresh-copying it re-pushes it UNPINNED, and piece-3's `forget_subtree`
+///     only clears the memo for the CURRENT handle's drained inits — a NESTED handler's inner `#seed`
+///     (xh1: an inner `put`-handler seed reached across a handler boundary) is NOT in that snapshot, so a
+///     fresh `#seed` re-resolves UNBOUND (CDZ0101 `#seed`). Keeping the original `#seed` atom preserves its
+///     grafted parent chain, so it resolves exactly as the by-reference path did.
+///
+/// A `#seed` ref occurs ONCE in a next-state (one handle-seed splice), so sharing that single atom into the
+/// fresh parent is arena-safe (one position, one parent). Every non-`#seed` leaf — including the free-var —
+/// is genuinely fresh, so nothing else is aliased.
+fn deep_fresh_copy_keep_seed(db: &mut Db, node: StructId) -> StructId {
+    match db.ast.get(node).clone() {
+        Struct::Atom(lid) => {
+            // A `#seed`-named atom is returned BY REFERENCE (keeps its grafted attachment); any other leaf
+            // (a free-var name, a literal) is re-pushed fresh so it cannot alias its origin occurrence.
+            if let Leaf::Name(nm) = db.ast.leaf(lid)
+                && nm.starts_with("#seed")
+            {
+                return node;
+            }
+            let leaf = db.ast.leaf(lid).clone();
+            db.push_atom(leaf)
+        }
+        Struct::List(children) => {
+            let copied: Vec<StructId> = children
+                .iter()
+                .map(|&c| deep_fresh_copy_keep_seed(db, c))
+                .collect();
             db.push_list(copied)
         }
     }
