@@ -503,6 +503,36 @@ impl Session {
         }
     }
 
+    /// Build the durable CHECKPOINT frame for this session's CURRENT tip — GAP-4 increment #4 (the kernel
+    /// half of log-prune-to-checkpoint; the host does the physical persist/truncate). The frame sits at the
+    /// current tip seq and carries the full log-derived resident state ([`Session::build_checkpoint_descriptor`]).
+    /// The host's crash-safe prune protocol (safety condition 5): persist the KV snapshot (root == the
+    /// descriptor's `kv_root`), APPEND this frame, THEN truncate the subsumed prefix
+    /// ([`Session::checkpoint_subsumed_prefix`]) — never truncate ahead of a durable checkpoint. The pruned
+    /// log `[Genesis(0), <this frame>, tail(> tip.seq)]` recovers via [`Session::recover_from_checkpoint`] to
+    /// the IDENTICAL state a full replay produces (the I6 equivalence). Safety conditions 1/2/4
+    /// (open-obligation integrity, settled-watermark carry-forward, KV carry-forward) hold by CONSTRUCTION —
+    /// the descriptor carries the open table + settled watermark/exceptions + kv_root, so dropping the prefix
+    /// loses nothing. Condition 3 (terminal-tip): a CLOSED session's frame carries its `close_outcome`, so the
+    /// pruned log recovers as closed with the same outcome.
+    pub fn checkpoint_frame(&self) -> Event {
+        Event {
+            seq: self.tip.seq,
+            cause: self.tip.cause,
+            body: EventBody::Checkpoint(self.build_checkpoint_descriptor()),
+        }
+    }
+
+    /// The seq range a [`checkpoint_frame`](Self::checkpoint_frame) at `checkpoint_seq` SUBSUMES — the original
+    /// frames the host truncates once the checkpoint is durable. Genesis (seq 0) is ALWAYS kept (it holds the
+    /// session identity / reducer / provenance, read from `events[0]` on recovery); the checkpoint frame
+    /// replaces the prefix at `checkpoint_seq`; so the subsumed originals are `1..=checkpoint_seq` and the tail
+    /// (`> checkpoint_seq`) is untouched. The single authoritative source of the prune rule (the host does not
+    /// reimplement it).
+    pub fn checkpoint_subsumed_prefix(checkpoint_seq: u64) -> std::ops::RangeInclusive<u64> {
+        1..=checkpoint_seq
+    }
+
     /// Fork this session into a fresh, EPHEMERAL query session over its CURRENT materialized state — the
     /// kernel half of the operator's fork-for-query session-debug mechanism (the semantic complement to the
     /// structural [`Session::status_snapshot`]). The fork is a brand-new session with its OWN genesis and
@@ -4417,6 +4447,105 @@ mod monotonic_now_tests {
                 "settled agreement at id {id}"
             );
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn kernel_built_checkpoint_frame_prunes_and_recovers_equivalently() {
+        // GAP-4 increment #4: the KERNEL-built checkpoint frame (Session::checkpoint_frame) + the
+        // subsumed-prefix rule. Prove the host's prune protocol using the kernel's own frame builder:
+        // [Genesis, checkpoint_frame@N, tail] recovers to the SAME state a full replay produces, and the
+        // subsumed prefix is 1..=N (genesis kept). (Complements the I6 test, which hand-built the frame.)
+        struct DispatchReducer;
+        #[async_trait::async_trait(?Send)]
+        impl Reducer for DispatchReducer {
+            async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
+                match &event.body {
+                    EventBody::Inbound { payload, .. } => {
+                        if let crate::effect::Payload::Inline(b) = payload {
+                            kv.put(b.to_vec(), b.to_vec());
+                        }
+                        FoldOutput::with_effects(vec![Effect {
+                            request: EffectRequest::new(
+                                EffectKind::Http,
+                                "https://ok.host/x",
+                                None,
+                                Timeliness::Interactive,
+                            ),
+                            token: Some(b"cont".to_vec()),
+                        }])
+                    }
+                    _ => FoldOutput::none(),
+                }
+            }
+        }
+        struct NeverExec;
+        #[async_trait::async_trait(?Send)]
+        impl Executor for NeverExec {
+            async fn perform(
+                &mut self,
+                _id: EffectId,
+                _req: &EffectRequest,
+                _key: Hash,
+            ) -> EffectOutcome {
+                EffectOutcome::Deferred
+            }
+        }
+        let authz = Authorizer::new(vec![Capability {
+            kind: EffectKind::Http,
+            predicate: crate::effect::ResourcePredicate::HostIn(vec!["ok.host".into()]),
+        }]);
+        fn msg(i: usize) -> EventBody {
+            EventBody::Inbound {
+                content_type: ContentType {
+                    family: "message".into(),
+                    version: 1,
+                },
+                payload: crate::effect::Payload::Inline(format!("m{i}").into_bytes().into()),
+            }
+        }
+
+        let mut s = Session::genesis(Hash::of(b"gap4-i4"), Hash::of(b"nonce"));
+        let captured = attach_recording_sink(&mut s);
+        for i in 0..2 {
+            s.deliver(msg(i), None, &mut DispatchReducer, &authz, &mut NeverExec)
+                .await
+                .unwrap();
+        }
+        // The kernel builds the checkpoint frame for the CURRENT tip.
+        let cp = s.checkpoint_frame();
+        let kv_at_n = s.kv.clone();
+        let n = s.tip.seq;
+        assert_eq!(cp.seq, n, "checkpoint frame sits at the current tip seq");
+        assert!(matches!(cp.body, EventBody::Checkpoint(_)));
+        assert_eq!(
+            Session::checkpoint_subsumed_prefix(n),
+            1..=n,
+            "the subsumed prefix is 1..=N (genesis at 0 kept)"
+        );
+        // Drive the tail.
+        for i in 2..4 {
+            s.deliver(msg(i), None, &mut DispatchReducer, &authz, &mut NeverExec)
+                .await
+                .unwrap();
+        }
+        let full_log = replay_input(&captured);
+        let reference = Session::replay(full_log.clone(), &mut DispatchReducer)
+            .await
+            .expect("full replay");
+
+        // Prune per the kernel's rule: keep genesis, drop the subsumed prefix, insert the kernel-built frame,
+        // keep the tail.
+        let mut pruned = vec![full_log[0].clone()];
+        pruned.push(cp);
+        pruned.extend(full_log[(n as usize + 1)..].iter().cloned());
+        let recovered = Session::recover_from_checkpoint(pruned, kv_at_n, &mut DispatchReducer)
+            .await
+            .expect("recover from the kernel-built checkpoint frame");
+
+        assert_eq!(recovered.snapshot().kv_root, reference.snapshot().kv_root);
+        assert_eq!(recovered.open_effect_ids(), reference.open_effect_ids());
+        assert_eq!(recovered.next_effect_id, reference.next_effect_id);
+        assert_eq!(recovered.tip.seq, reference.tip.seq);
     }
 
     // A reducer that, on an inbound message, emits a `control/summary` effect carrying summary bytes in
