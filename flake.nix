@@ -859,6 +859,23 @@
           witWorld = "pure";
           contentAddressed = true;
         };
+        # REIFY-PROBE (schema-hash phase-1a completion gate): the FIRST reducer that PERFORMS a world-effect
+        # rather than hand-building an EffectRequest record — reducer_reify.cdz does `host Probe in
+        # ([Probe.fire(p)])`, a target-free single-Bytes perform. Probe is NOT a world import (only kv is), so
+        # the sync/async fork (is_world_import_op, 0a6538c01) takes the ASYNC branch → rcdzc's reify_effect_to_tuple
+        # (eb34621ad) lowers it to the 3-field no-target reify record {correlation=None, kind="effect/Probe",
+        # payload=Some(p)}, which the kernel's target-free-tolerant parse_effect_request (14b7c9885) accepts.
+        # Targets the PURE-FOLD world (fold.apply only, NO kv import — Probe escapes via the returned reified
+        # list, needing no import), so `witWorld = "pure"` reuses the SAME pure-fold artifact as pure-genesis.
+        # Consumed by cdz-kernel's component_reducer_e2e reify_probe_reducer_reifies_a_target_free_perform_end_to_end
+        # via env REIFY_PROBE_REDUCER_COMPONENT (exported in cdzKernelNativeCheck below). CA like the siblings.
+        reducerCadenzaReify = mkCadenzaComponent {
+          name = "reducer-cadenza-reify";
+          cdzFile = "reducer_reify.cdz";
+          componentName = "cadenza:agent-kernel/fold";
+          witWorld = "pure";
+          contentAddressed = true;
+        };
         # KV-GENESIS (A1 bytes fold boundary): the sibling of pure-genesis that exercises the kv IMPORT end-to-end
         # — reducer_kv.cdz PUTs a value under a fixed key on a seed event then GETs it back on a trigger event and
         # echoes it, proving BOTH kv.put AND the kv.get option<list<u8>> host-result lift (rcdzc §3c GAP C,
@@ -1066,6 +1083,15 @@
             # step-1) instead of skipping. Same apply_handle_lowered path + CDZ_STORE transitive-nfc
             # resolution as b1/b2. Closes the tail: b1+b2+b3+genesis all live in CI.
             export REDUCER_CADENZA_B3_COMPONENT="${reducerCadenzaB3}"
+            # schema-hash phase-1a REIFY gate: feed the precompiled reify-probe reducer so
+            # component_reducer_e2e::reify_probe_reducer_reifies_a_target_free_perform_end_to_end RUNS instead of
+            # skipping — it drives a Some-payload event through the FIRST reducer that PERFORMS a world-effect
+            # (host Probe.fire, target-free single-Bytes) and asserts the reify chain folds to ONE effect
+            # (kind "effect/Probe", payload Inline(arg), token-free) across the A1 bytes boundary, proving rcdzc's
+            # reify_effect_to_tuple emit → wasm → kernel parse_effect_request end-to-end. Gates on this env +
+            # CDZ_STORE (the reducer imports cadenza:runtime/heap, resolved from the store, already exported
+            # below). Same pattern as REDUCER_CADENZA_B1/B2/B3_COMPONENT above.
+            export REIFY_PROBE_REDUCER_COMPONENT="${reducerCadenzaReify}"
             export CDZ_STORE="${componentStore}"
             cargo test --locked
             cargo clippy --all-targets --locked -- -D warnings
@@ -2215,6 +2241,7 @@
         packages.reducer-cadenza-b3 = reducerCadenzaB3;
         packages.reducer-cadenza-genesis = reducerCadenzaGenesis;
         packages.reducer-cadenza-pure-genesis = reducerCadenzaPureGenesis;
+        packages.reducer-cadenza-reify = reducerCadenzaReify;
         packages.reducer-cadenza-kv = reducerCadenzaKv;
         packages.reducer-cadenza-agent-loop = reducerCadenzaAgentLoop;
         packages.emit-wit-world = emitWitWorld;
@@ -2223,6 +2250,7 @@
         packages.reducer-cadenza-b3-hash = hashOf reducerCadenzaB3 "reducer-cadenza-b3-hash";
         packages.reducer-cadenza-genesis-hash = hashOf reducerCadenzaGenesis "reducer-cadenza-genesis-hash";
         packages.reducer-cadenza-pure-genesis-hash = hashOf reducerCadenzaPureGenesis "reducer-cadenza-pure-genesis-hash";
+        packages.reducer-cadenza-reify-hash = hashOf reducerCadenzaReify "reducer-cadenza-reify-hash";
         packages.reducer-cadenza-kv-hash = hashOf reducerCadenzaKv "reducer-cadenza-kv-hash";
         packages.reducer-cadenza-agent-loop-hash = hashOf reducerCadenzaAgentLoop "reducer-cadenza-agent-loop-hash";
 
@@ -2410,7 +2438,7 @@
                 inherit runtimeHashParity runtimeDebugHashParity nfcHashParity
                   reducerGuestValid cedarGuestValid
                   reducerCadenzaB1Valid reducerCadenzaB2Valid reducerCadenzaB3Valid reducerCadenzaGenesisValid
-                  reducerCadenzaPureGenesisValid reducerCadenzaKvValid reducerCadenzaAgentLoopValid
+                  reducerCadenzaPureGenesisValid reducerCadenzaReifyValid reducerCadenzaKvValid reducerCadenzaAgentLoopValid
                   exampleProjectTests reducerCadenzaTests crateClosureAssert;
               } ''
               echo "ok: flake reproducibility-backstop — hash-parity + component-validity + project-@tests + closure-assert" > $out
@@ -2429,6 +2457,7 @@
             reducerCadenzaB3Valid = validComponent { name = "reducer-cadenza-b3"; drv = reducerCadenzaB3; };
             reducerCadenzaGenesisValid = validComponent { name = "reducer-cadenza-genesis"; drv = reducerCadenzaGenesis; };
             reducerCadenzaPureGenesisValid = validComponent { name = "reducer-cadenza-pure-genesis"; drv = reducerCadenzaPureGenesis; };
+            reducerCadenzaReifyValid = validComponent { name = "reducer-cadenza-reify"; drv = reducerCadenzaReify; };
             reducerCadenzaKvValid = validComponent { name = "reducer-cadenza-kv"; drv = reducerCadenzaKv; };
             reducerCadenzaAgentLoopValid = validComponent { name = "reducer-cadenza-agent-loop"; drv = reducerCadenzaAgentLoop; };
 
@@ -2569,6 +2598,7 @@
             reducer-cadenza-b3-valid = reducerCadenzaB3Valid;
             reducer-cadenza-genesis-valid = reducerCadenzaGenesisValid;
             reducer-cadenza-pure-genesis-valid = reducerCadenzaPureGenesisValid;
+            reducer-cadenza-reify-valid = reducerCadenzaReifyValid;
             reducer-cadenza-kv-valid = reducerCadenzaKvValid;
             reducer-cadenza-agent-loop-valid = reducerCadenzaAgentLoopValid;
 
