@@ -162,6 +162,27 @@ export const EXAMPLES: Example[] = [
     expected: "(: (tuple 1 2 3) (Tuple Int64 Int64 Int64))",
   },
   {
+    // Shows off: `Tuple.split-at` and `Tuple.concat` — tuples have STRUCTURAL, compile-time-known arity,
+    // so these cut a tuple into a (head, tail) pair at a fixed index and weld two tuples back into one.
+    // Split (1 2 3 4 5) at 2 into (1 2) and (3 4 5), then Tuple.concat rebuilds the original — concat is
+    // split's inverse. The result shows the head, the tail, and the rebuilt tuple.
+    id: "tuple-split-concat",
+    name: "Splitting & joining tuples",
+    theme: "basics",
+    surface: "sexpr",
+    source: `(do
+  ; Tuples have STRUCTURAL, compile-time-known arity. Tuple.split-at cuts a tuple
+  ; into a (head, tail) pair of tuples at a fixed index; Tuple.concat is its inverse,
+  ; welding two tuples back into one. Split (1 2 3 4 5) at 2, then rebuild it.
+  (def (main)
+    (let ((parts (Tuple.split-at (tuple 1 2 3 4 5) 2)))
+      (match parts
+        ((tuple head tail)
+         (tuple head tail (Tuple.concat head tail))))))
+  (export main))`,
+    expected: "(: (tuple (tuple 1 2) (tuple 3 4 5) (tuple 1 2 3 4 5)) (Tuple (Tuple Int64 Int64) (Tuple Int64 Int64 Int64) (Tuple Int64 Int64 Int64 Int64 Int64)))",
+  },
+  {
     id: "lists",
     name: "Lists",
     theme: "basics",
