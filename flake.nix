@@ -1299,17 +1299,18 @@
             cargo clippy --all-targets --locked --features live-aws-storage -- -D warnings
             cargo test --locked --features live-aws-storage
             # FULL-FEATURE-UNION clippy leg (v-nix + v-agent-harness-host 2026-08-14): the no-dep executor
-            # features — live-exec (GAP-1 ShellExecutor), live-fs (GAP-3 FsExecutor), live-git (GAP-6
-            # GitExecutor), live-ws (websocket outpost) — each gate ONLY the per-session WIRING in
-            # factory.rs/LiveExecutorSet::build (#[cfg(feature="live-*")] with_effect blocks registering the
-            # always-compiled executor structs). NO other gate pass compiled them, so a peer edit to that
-            # feature-gated wiring or the effect_ct::GIT_*/etc constants compile-broke ONLY under the flag and
-            # slipped past localGate (pr-sync had to hand-validate live-git on the GAP-6 slice-2 land 77acbefba).
-            # ONE union leg suffices: the crate owner (v-ah-host) verified all features are mutually compatible
-            # (admin,live-net,live-aws-storage,live-ws,live-exec,live-fs,live-git clippy GREEN, ~54s warm), and it
-            # rides the live-net half so the heavy aws-sdk/aws-lc-sys chain is already built — the marginal cost is
-            # just the std-only feature modules. --all-targets covers the daemon-bin combo too.
-            cargo clippy --all-targets --locked --features admin,live-net,live-aws-storage,live-ws,live-exec,live-fs,live-git -- -D warnings
+            # features — live-exec (GAP-1 ShellExecutor), live-fs (GAP-3 FsExecutor), live-ws (websocket
+            # outpost) — each gate ONLY the per-session WIRING in factory.rs/LiveExecutorSet::build
+            # (#[cfg(feature="live-*")] with_effect blocks registering the always-compiled executor structs).
+            # NO other gate pass compiled them, so a peer edit to that feature-gated wiring compile-broke ONLY
+            # under the flag and slipped past localGate. ONE union leg suffices: the crate owner (v-ah-host)
+            # verified the features are mutually compatible, and it rides the live-net half so the heavy
+            # aws-sdk/aws-lc-sys chain is already built — the marginal cost is just the std-only feature
+            # modules. --all-targets covers the daemon-bin combo too.
+            # (live-git was dropped here 2026-08-14: operator reversed GAP-6 — git is a userspace shell-wrapper,
+            # not a host GitExecutor — so v-ah-host removed the GitExecutor + the live-git feature. Consumer-off
+            # -first: this leg dropped live-git BEFORE v-ah-host deletes the now-empty `live-git = []` line.)
+            cargo clippy --all-targets --locked --features admin,live-net,live-aws-storage,live-ws,live-exec,live-fs -- -D warnings
           '';
         };
         # ── N1: the value-heap runtime components AS input-addressed derivations (hash from output) ─
