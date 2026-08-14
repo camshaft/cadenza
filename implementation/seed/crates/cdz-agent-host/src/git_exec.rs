@@ -71,6 +71,24 @@ fn git_argv(req: &EffectRequest) -> Result<Vec<String>, String> {
             None => Err("git: this git verb requires a payload argument".to_string()),
         }
     };
+    // A ref/remote/refspec argument for a verb that places the reducer-controlled payload in a POSITIONAL
+    // slot (rev-parse/checkout/push) — where git reads a leading-dash token as a FLAG, not a ref. Unlike
+    // `add`'s pathspec (guarded by `--`) or `commit`'s message (the VALUE of `-m`, which git never treats as
+    // an option and which may legitimately begin with a dash), an untrusted payload beginning with `-` here
+    // would be git-FLAG injection: `push --force`/`--delete`/`--mirror` (destructive), `checkout -f`/`-b`/
+    // `--orphan` (behavior). Cedar authorizes the TARGET (repo/branch), NOT the payload, so it cannot catch
+    // this. A legitimate ref/remote/refspec never begins with a dash → reject it BEFORE argv is built (§17:
+    // an observable Err, never a spawn). (`--` is not a drop-in guard here: `git checkout -- X` treats X as a
+    // PATHSPEC, not a ref.)
+    let ref_arg = || -> Result<String, String> {
+        let a = payload_arg()?;
+        if a.starts_with('-') {
+            return Err(format!(
+                "git: refusing a ref/remote/refspec argument beginning with '-' (git would read it as a flag): {a:?}"
+            ));
+        }
+        Ok(a)
+    };
     let family = req.content_type.family.as_ref();
     let verb_args: Vec<String> = if family == effect_ct::GIT_STATUS {
         // Machine-readable status (deterministic output the reducer folds).
@@ -81,15 +99,16 @@ fn git_argv(req: &EffectRequest) -> Result<Vec<String>, String> {
         // `--` terminates options so the pathspec can never be read as a flag.
         vec!["add".into(), "--".into(), payload_arg()?]
     } else if family == effect_ct::GIT_COMMIT {
+        // The message is the VALUE of `-m` (git never reads it as an option), so a leading dash is fine.
         vec!["commit".into(), "-m".into(), payload_arg()?]
     } else if family == effect_ct::GIT_REV_PARSE {
-        vec!["rev-parse".into(), payload_arg()?]
+        vec!["rev-parse".into(), ref_arg()?]
     } else if family == effect_ct::GIT_CHECKOUT {
-        vec!["checkout".into(), payload_arg()?]
+        vec!["checkout".into(), ref_arg()?]
     } else if family == effect_ct::GIT_FETCH {
         vec!["fetch".into()]
     } else if family == effect_ct::GIT_PUSH {
-        vec!["push".into(), payload_arg()?]
+        vec!["push".into(), ref_arg()?]
     } else {
         return Err(format!(
             "GitExecutor only handles the {} family verbs, got {family}",
@@ -246,6 +265,45 @@ mod tests {
         );
         assert!(git_argv(&blob).is_err());
         assert!(git_argv(&req("git/rebase", "/repo", Some(b"x"))).is_err());
+    }
+
+    #[test]
+    fn git_argv_rejects_a_dash_leading_ref_argument_to_block_git_flag_injection() {
+        // SECURITY (reviewer catch, GitExecutor 3ff858c10): the reducer-controlled payload for rev-parse /
+        // checkout / push lands in POSITIONAL argument slot, where git reads a leading-dash token as a FLAG.
+        // An untrusted payload beginning with `-` would be flag injection — most severely `git push --force` /
+        // `--delete` / `--mirror` (a destructive op from a reducer authorized only to push a normal refspec),
+        // and `checkout -f`/`-b`/`--orphan`. Cedar gates the TARGET, not the payload, so the guard lives here.
+        for (verb, payload) in [
+            (effect_ct::GIT_PUSH, "--force"),
+            (effect_ct::GIT_PUSH, "--delete"),
+            (effect_ct::GIT_PUSH, "--mirror"),
+            (effect_ct::GIT_CHECKOUT, "-f"),
+            (effect_ct::GIT_CHECKOUT, "--orphan"),
+            (effect_ct::GIT_REV_PARSE, "--all"),
+        ] {
+            let got = git_argv(&req(verb, "/repo", Some(payload.as_bytes())));
+            assert!(
+                got.is_err(),
+                "a dash-leading payload {payload:?} for {verb} must be rejected before argv, got {got:?}"
+            );
+        }
+        // The guard is scoped to POSITIONAL ref-like args only: a `commit` message may legitimately begin
+        // with a dash (it is the VALUE of `-m`, never read as an option), and an `add` pathspec is guarded by
+        // `--` — both must still ACCEPT a dash-leading payload.
+        assert_eq!(
+            git_argv(&req(effect_ct::GIT_COMMIT, "/repo", Some(b"-fix the typo"))).unwrap(),
+            vec!["-C", "/repo", "commit", "-m", "-fix the typo"]
+        );
+        assert_eq!(
+            git_argv(&req(effect_ct::GIT_ADD, "/repo", Some(b"-weird-name.rs"))).unwrap(),
+            vec!["-C", "/repo", "add", "--", "-weird-name.rs"]
+        );
+        // A normal ref/remote/refspec (no leading dash) still maps through unchanged.
+        assert_eq!(
+            git_argv(&req(effect_ct::GIT_PUSH, "/repo", Some(b"origin"))).unwrap(),
+            vec!["-C", "/repo", "push", "origin"]
+        );
     }
 
     #[tokio::test]
