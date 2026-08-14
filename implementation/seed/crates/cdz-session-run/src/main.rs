@@ -138,6 +138,68 @@ impl HandlerResolver for MapResolver {
     }
 }
 
+/// A REIFIED effect observed on the drive's effect stream: `(owner, family, payload)` — the same shape as an
+/// `effect-request/<family>` forward, so the FIFO records it into `observed_effects` uniformly.
+type ReifyObservation = (SessionId, String, Option<Vec<u8>>);
+
+/// The fallback executor for a REDUCER-WORLD reified effect (schema-hash phase-1a): a reducer that PERFORMS a
+/// non-import world-effect (e.g. `(host (Beat) (list (Beat.beat p)))`) has that perform REIFIED by rcdzc into
+/// the returned effect-list as a 3-field request record whose `content_type.family` is `effect/<name>` (the
+/// `userspace_effect_family_kind` string). Such an effect has NO registered handler (it is not a served
+/// userspace family) and NO synchronous backing — it is the guest DELEGATING an async world-effect to the
+/// platform. The suite's job is to OBSERVE it (the reify boundary is what platform-conformance pins), so this
+/// executor: (a) for a reified `effect/<name>` family, records the observation + settles it fire-and-forget
+/// (`Ok(None)` — a conformance world-effect has no reply to thread); (b) for ANY OTHER family, delegates to
+/// the inner `UserspaceEffectExecutor` (the served-effect handler-forward path is untouched — a bare-family
+/// `ask`/`weather` with a registered handler still forwards + defers as before).
+///
+/// PHASE-2 NOTE (v-effects, flag-day): the `effect/<name>` STRING family is exactly what phase-2 re-keys to a
+/// schema-hash. The observation identity here is deliberately the family STRING today (phase-1a-era); at the
+/// flag-day it flips to the schema-hash — the same family-string→schema-hash re-key as v-cml's codec + the
+/// kernel router. `is_reified_family` is the single point that flip touches.
+struct ObserveReifyExecutor {
+    observe_tx: tokio::sync::mpsc::UnboundedSender<ReifyObservation>,
+    owner: SessionId,
+    inner: UserspaceEffectExecutor<MapResolver>,
+}
+
+/// Whether `family` is a reified world-effect family (`effect/<name>`) that the suite OBSERVES rather than
+/// forwards. Excludes `effect/reply` (a handler's routed reply — served by `ReplyExecutor`, never reified).
+/// PHASE-2: this predicate re-keys from the `effect/` string prefix to schema-hash-set membership.
+fn is_reified_family(family: &str) -> bool {
+    family.starts_with("effect/") && family != effect_ct::EFFECT_REPLY
+}
+
+#[async_trait::async_trait(?Send)]
+impl cdz_kernel::executor::Executor for ObserveReifyExecutor {
+    async fn perform(
+        &mut self,
+        id: cdz_kernel::effect::EffectId,
+        req: &cdz_kernel::effect::EffectRequest,
+        idempotency_key: Hash,
+    ) -> cdz_kernel::event::EffectOutcome {
+        let family = req.content_type.family.as_ref();
+        if is_reified_family(family) {
+            let payload = match &req.payload {
+                Some(Payload::Inline(bytes)) => (!bytes.is_empty()).then(|| bytes.to_vec()),
+                _ => None,
+            };
+            // Record the reified effect (owner resolves to the emitter's alias in the FIFO) + settle it
+            // fire-and-forget: a target-free conformance world-effect has no reply to thread back.
+            let _ = self
+                .observe_tx
+                .send((self.owner, family.to_string(), payload));
+            return cdz_kernel::event::EffectOutcome::Ok(None);
+        }
+        // Not a reified world-effect → the served-userspace-effect path (bare family + registered handler).
+        self.inner.perform(id, req, idempotency_key).await
+    }
+
+    fn handles_family(&self, family: &str) -> bool {
+        is_reified_family(family) || self.inner.handles_family(family)
+    }
+}
+
 /// The conformance-suite authorizer: PERMISSIVE by design (the suite tests platform SEMANTICS, not authz
 /// policy — a later increment can add a policy-testing genre). It admits:
 ///  - `effect/reply` UNCONDITIONALLY, regardless of target. A handler settles a caller by echoing the raw
@@ -295,6 +357,12 @@ async fn main() -> Result<()> {
     // (mirrors the daemon's defer-to-loop: the executor pre-computes the child id + returns it synchronously,
     // the loop — which owns `&mut host` — does the actual instantiate+register+edge).
     let (lifecycle_tx, mut lifecycle_rx) = tokio::sync::mpsc::unbounded_channel::<LifecycleOp>();
+    // REIFIED world-effects (schema-hash phase-1a): a reducer performing a non-import world-effect reifies it
+    // into an `effect/<name>` request the suite OBSERVES (no handler, no reply). The ObserveReifyExecutor
+    // records each onto this channel; the FIFO drains it into `observed_effects` (same stream as a forwarded
+    // effect-request). Distinct from the forwarded-request inbox so a reified observe never re-enters routing.
+    let (reify_observe_tx, mut reify_observe_rx) =
+        tokio::sync::mpsc::unbounded_channel::<ReifyObservation>();
 
     // Build the host + spawn every session with its own CompositeExecutor:
     //  - EVERY session gets a ReplyExecutor (family effect/reply) so it can REPLY when it serves an effect,
@@ -340,12 +408,19 @@ async fn main() -> Result<()> {
                     owner_genesis,
                 )),
             )
-            .with_fallback(Box::new(UserspaceEffectExecutor::new(
-                MapResolver(family_handler.clone()),
-                inbox_tx.clone(),
-                reply_tokens.clone(),
+            // The fallback OBSERVES a reified `effect/<name>` world-effect (records + settles fire-and-forget)
+            // and DELEGATES any served bare-family effect to the inner UserspaceEffectExecutor (handler
+            // forward + defer). One fallback slot serves both: reify-observe OR handler-forward by family.
+            .with_fallback(Box::new(ObserveReifyExecutor {
+                observe_tx: reify_observe_tx.clone(),
                 owner,
-            )));
+                inner: UserspaceEffectExecutor::new(
+                    MapResolver(family_handler.clone()),
+                    inbox_tx.clone(),
+                    reply_tokens.clone(),
+                    owner,
+                ),
+            }));
         let hosted = HostedSession::genesis_with_nonce(
             reducer_hash,
             nonce,
@@ -519,12 +594,16 @@ async fn main() -> Result<()> {
                             child_id.hash(),
                         )),
                     )
-                    .with_fallback(Box::new(UserspaceEffectExecutor::new(
-                        MapResolver(family_handler.clone()),
-                        inbox_tx.clone(),
-                        reply_tokens.clone(),
-                        child_id,
-                    )));
+                    .with_fallback(Box::new(ObserveReifyExecutor {
+                        observe_tx: reify_observe_tx.clone(),
+                        owner: child_id,
+                        inner: UserspaceEffectExecutor::new(
+                            MapResolver(family_handler.clone()),
+                            inbox_tx.clone(),
+                            reply_tokens.clone(),
+                            child_id,
+                        ),
+                    }));
                 let spawned = host
                     .spawn_child_with_nonce(
                         &parent,
@@ -548,6 +627,21 @@ async fn main() -> Result<()> {
             }
         }
         let _ = did_lifecycle;
+
+        // A REIFIED world-effect observation (schema-hash phase-1a): a reducer performed a non-import
+        // world-effect that rcdzc reified into an `effect/<name>` request; the ObserveReifyExecutor recorded
+        // it here (already settled fire-and-forget in `perform`, so nothing to route — just observe). Record
+        // it onto the SAME `observed_effects` stream as a forwarded effect-request so `(expect-effects …)`
+        // grades it uniformly. Drained before the inbox so a reified effect from the prior deliver is observed
+        // in fold order.
+        if let Ok((from_id, family, payload)) = reify_observe_rx.try_recv() {
+            let from = alias_of
+                .get(&from_id)
+                .cloned()
+                .unwrap_or_else(|| "?".to_string());
+            observed_effects.push((from, family, payload));
+            continue;
+        }
 
         // A forwarded effect-request: route it to its handler session (and record the observed effect).
         if let Ok(inbound) = inbox_rx.try_recv() {
