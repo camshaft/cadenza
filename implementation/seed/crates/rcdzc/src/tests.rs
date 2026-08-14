@@ -3643,6 +3643,61 @@ fn a_reified_async_world_effect_perform_types_as_the_request_record_in_effect_li
     );
 }
 
+/// RULING A (2026-08-14, resolving v-effects' freeze-blocking reify/2b crux): a TARGET-HAVING world-effect
+/// — one whose op carries an `@resource` marker (`Emit.send(@resource dest, payload)`) — reifies the dest to
+/// its OWN `target: Bytes` wire field (the dest is a runtime value SEC-F1 authorizes against a resource
+/// predicate, so it rides the wire, NOT dropped and NOT value-encoded with the payload). The perform must
+/// type as the 4-field record `{correlation, kind, payload, target}` (typing gains `target` iff the op has a
+/// resource marker) AND emit a valid component. Contrast the target-FREE sibling above (`Model.request`, no
+/// `@resource`) which stays 3-field. `Emit` is NOT a world import (world imports only `kv`), so it reifies;
+/// `(resource 0)` marks arg0 (dest) as the SEC-F1 resource → routed to `target`, payload = arg1.
+#[test]
+fn a_target_having_resource_effect_reifies_the_dest_to_a_target_field_and_emits() {
+    use crate::testkit::parse;
+    // Emit.send(@resource dest, payload): a 2-arg perform whose op declares `(resource 0)` (arg0=dest is the
+    // SEC-F1 resource). Both args Bytes. Reifies to {correlation, kind="effect/Emit", payload=Some(arg1),
+    // target=arg0}. The world imports ONLY kv, so Emit reifies (is_world_import_op=false).
+    let src = "(module m \
+                 (effect Emit (op send (-> Bytes Bytes Unit) (resource 0))) \
+                 (def (apply (: e (Record (dest Bytes) (pl Bytes)))) \
+                   (host (Emit) (list (Emit.send (. e dest) (. e pl))))) \
+                 (export apply))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:agent-kernel/fold"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                reducer_kv_get_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "a target-having @resource effect must reify (dest→target field) + emit (typing 4-field record \
+         agrees with reify): {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| (&d.code, &d.message))
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("the target-having reify reducer emits a component");
+    let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+    v.validate_all(bytes).expect(
+        "the target-having reify reducer's component validates (4-field record value-encodes)",
+    );
+    let _req = cdz_run::required_runtime(bytes)
+        .expect("the target-having reify reducer's component loads on the pinned wasmtime");
+}
+
 // NOTE: the SYNCHRONOUS-world-import sibling (a `kv.*` perform keeps its op-sig result, NOT the request
 // record) is pinned by the existing host-fused kv reducer tests (`a_host_fused_kv_get/put/delete_*`), which
 // use the real KIND_WIT_WORLD artifact importing `cadenza:agent-kernel/kv` and match on the op result — so

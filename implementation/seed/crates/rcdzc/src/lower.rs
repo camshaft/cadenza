@@ -1044,8 +1044,9 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         && !crate::wit_world::is_world_import_op(Some(world_bytes), &effect, &op)
                     {
                         // The op's `@resource`-marked param index (`OpDecl.resource`) — the SEC-F1
-                        // destination arg the reify SKIPS (the kernel extracts it via the marker). Resolved
-                        // from the perform's `(effect-op <decl> <idx>)` channel; `None` for a target-free op.
+                        // destination arg the reify routes to the `target` wire field (ruling A: the dest is a
+                        // runtime value, not dropped). Resolved from the perform's `(effect-op <decl> <idx>)`
+                        // channel; `None` for a target-free op (which reifies to a 3-field record).
                         let resource =
                             crate::eval::effect_op_of(db, head).and_then(|(decl, op_idx)| {
                                 db.effect_decl_by_occ(decl)
@@ -15385,17 +15386,38 @@ fn reify_effect_to_tuple(
     args: &[StructId],
     resource: Option<usize>,
 ) -> Core {
-    // Drop the `@resource`-marked arg (the kernel extracts it via the marker) — leaving the PAYLOAD args.
-    // A resource index out of range degrades to "no skip" (a malformed decl; the arity check below then
-    // declines rather than mis-dropping).
-    let payload_args: Vec<StructId> = match resource {
-        Some(idx) if idx < args.len() => args
-            .iter()
-            .enumerate()
-            .filter_map(|(i, &a)| (i != idx).then_some(a))
-            .collect(),
-        _ => args.to_vec(),
+    // Split the args into the `@resource`-designated TARGET (rides its own `target` wire field) and the
+    // PAYLOAD args (everything else). The reducer-chosen destination of a target-having effect
+    // (`Emit.send(@resource dest, payload)`) MUST reach the kernel as a RUNTIME VALUE — SEC-F1 authorizes
+    // the dest VALUE against a resource predicate (DescendantOf etc.), which needs the value — so it rides
+    // the wire in a dedicated `target` field (v-rb ruling A, 2026-08-14, resolving v-effects' freeze-blocking
+    // reify/2b-extraction crux). The `@resource` arg is skipped from the PAYLOAD-encode ONLY (payload stays
+    // single-Bytes → no R2), NOT dropped. Capability-blind: the kernel reads `target` as bare bytes via the
+    // existing optional `field("target")` read (zero kernel change) WITHOUT decoding the payload. A resource
+    // index out of range degrades to "no target" (a malformed decl; the arity check below then declines).
+    let (target_arg, payload_args): (Option<StructId>, Vec<StructId>) = match resource {
+        Some(idx) if idx < args.len() => {
+            let rest = args
+                .iter()
+                .enumerate()
+                .filter_map(|(i, &a)| (i != idx).then_some(a))
+                .collect();
+            (Some(args[idx]), rest)
+        }
+        _ => (None, args.to_vec()),
     };
+    // The `@resource` target rides the wire as a BARE Bytes field (the kernel reads `target` via `read_bytes`).
+    // A non-Bytes resource designation needs the deferred in-fold value-encode → decline (phase-1a: a Bytes
+    // dest — e.g. a peer/session id — is the only target shape that reifies today).
+    if let Some(t) = target_arg
+        && !matches!(crate::infer::type_of(db, t), crate::ty::Ty::Bytes)
+    {
+        return Core::Poison(Reject::decline(
+            "reifying a world-effect perform whose @resource target is not Bytes needs an in-fold \
+             value-encode primitive (schema-hash phase-1a: only a Bytes resource designation — a peer \
+             or session id — rides the target wire field; a structured resource rides Value.encode)",
+        ));
+    }
     // PAYLOAD (capability-blind, Bytes-only for now): one Bytes remaining arg → Some(arg); zero → None;
     // anything else (multi remaining arg, or a structured single arg) needs the in-fold value-encode → decline.
     let payload_field = match payload_args.as_slice() {
@@ -15423,17 +15445,21 @@ fn reify_effect_to_tuple(
         let none_h = db.push_name("None");
         db.push_list(vec![none_h])
     };
-    // NO target field (v-ah ruling S2, 2026-08-14): the reified record is 3-field {correlation, kind,
-    // payload} — NO target column. The resource (for a target-chosen effect) is an arg INSIDE the payload
-    // value-form; the kernel/executor extracts it via the effect DECL's `(resource N)` marker, NOT a wire
-    // field. A vestigial always-empty `target=b""` field is a half-collapse (no-adapter directive: drop it,
-    // don't keep it empty); target-free effects (model/now/timer) have no resource, so no target column is
-    // uniformly correct. The kernel's ingest drops the target-field read in the same flip window.
+    // target field (v-rb ruling A, 2026-08-14): PRESENT iff the effect designates an `@resource` target — a
+    // BARE Bytes wire field carrying the reducer-chosen destination VALUE (e.g. the peer/session id of an
+    // `Emit.send(@resource dest, …)`). A target-FREE effect (model/now/timer/tool — no `@resource`) emits NO
+    // target field, so its record stays 3-field {correlation, kind, payload}; the kernel reads `target` as
+    // OPTIONAL (absent → empty), so both shapes parse uniformly (no vestigial always-empty field — no-adapter
+    // directive). This resolves v-effects' freeze-blocking reify/2b crux: the dest is NOT lost (ruling B was
+    // wrong — SEC-F1 authorizes the dest value) and NOT value-encoded with the payload (ruling C = R2 +
+    // breaks capability-blindness); it rides its own field, so 2b @resource extraction is the existing
+    // `field("target")` read, and v-pc's `target_str()=="out"` stays green.
+    let target_field = target_arg;
 
-    // Synthesize the record AST `("record" (= correlation …) (= kind …) (= payload …))`. A record VALUE is
-    // a STR-head `("record" …)` form; each field the canonical `(= name value)` triple. `resolve_record`
-    // reads the fields into a name-SORTED BTreeMap, so the slot order is canonical (correlation < kind <
-    // payload) regardless of the order written here.
+    // Synthesize the record AST `("record" (= correlation …) (= kind …) (= payload …) [(= target …)])`. A
+    // record VALUE is a STR-head `("record" …)` form; each field the canonical `(= name value)` triple.
+    // `resolve_record` reads the fields into a name-SORTED BTreeMap, so the slot order is canonical
+    // (correlation < kind < payload < target) regardless of the order written here.
     let field = |db: &mut Db, name: &str, val: StructId| -> StructId {
         let eq = db.push_name("=");
         let n = db.push_name(name);
@@ -15443,7 +15469,12 @@ fn reify_effect_to_tuple(
     let corr = field(db, "correlation", correlation_field);
     let kind = field(db, "kind", kind_field);
     let payload = field(db, "payload", payload_field);
-    let record = db.push_list(vec![record_head, corr, kind, payload]);
+    let mut record_items = vec![record_head, corr, kind, payload];
+    if let Some(t) = target_field {
+        let target = field(db, "target", t);
+        record_items.push(target);
+    }
+    let record = db.push_list(record_items);
     // Re-resolve the synthesized subtree (binds `Some`/`None`/the field spellings) then lower it — reusing
     // the typed record/sum-value machinery so the `Core::Record` + its `Some`/`None` payloads are built +
     // typed exactly as a source-written record would be.
@@ -28167,11 +28198,12 @@ mod tests {
 
     #[test]
     fn reify_effect_to_tuple_skips_the_resource_arg_so_a_2_arg_emit_reifies() {
-        // The @resource-skip: Emit.send(@resource dest, payload) is a 2-arg perform, but with resource=Some(0)
-        // the reify DROPS arg0 (dest — the kernel extracts it via the marker) → the payload is the SINGLE
-        // remaining arg (arg1) → reifies with NO R2 (the resource-skip, not value-encode, unblocks 2-arg emits).
-        // Both args Bytes: dest (arg0, skipped) + payload (arg1, → Some(bytes)). This is v-ah's migrated
-        // reducer_kv Emit.send shape.
+        // The @resource-split (ruling A): Emit.send(@resource dest, payload) is a 2-arg perform; with
+        // resource=Some(0) the reify routes arg0 (dest) to its own `target` wire field (NOT dropped — the
+        // dest is a runtime value SEC-F1 authorizes) and the payload is the SINGLE remaining arg (arg1) →
+        // reifies with NO R2 (the resource-SPLIT, not value-encode, unblocks 2-arg emits). Both args Bytes:
+        // dest (arg0 → target field) + payload (arg1 → Some(bytes)). This is v-ah's migrated reducer_kv
+        // Emit.send shape. → 4-field record {correlation, kind, payload, target}.
         let mut db = Db::load(crate::testkit::parse(
             "(module m (def (f) b\"dest\") (def (g) b\"body\") (export f))",
         ));
@@ -28180,16 +28212,16 @@ mod tests {
         let core = reify_effect_to_tuple(&mut db, "emit", &[dest, body], Some(0));
         let Core::Record { fields } = core else {
             panic!(
-                "a 2-arg emit with @resource=arg0 reifies (resource skipped, payload=arg1), got {core:?}"
+                "a 2-arg emit with @resource=arg0 reifies (dest→target, payload=arg1), got {core:?}"
             );
         };
         let names: Vec<&str> = fields.keys().map(|s| s.name.as_ref()).collect();
         assert_eq!(
             names,
-            vec!["correlation", "kind", "payload"],
-            "3-field record"
+            vec!["correlation", "kind", "payload", "target"],
+            "4-field record: the @resource dest rides its own `target` field (name-sorted after payload)"
         );
-        // payload = Some(arg1=body) — the resource arg0 (dest) was skipped, not in the payload.
+        // payload = Some(arg1=body) — the resource arg0 (dest) went to `target`, not the payload.
         let payload_occ = *fields
             .iter()
             .find(|(s, _)| s.name.as_ref() == "payload")
@@ -28197,17 +28229,31 @@ mod tests {
             .1;
         assert!(
             matches!(core_of(&mut db, payload_occ), Core::SumNew { payloads, .. } if payloads.len() == 1),
-            "payload = Some(the non-resource arg): the @resource dest is skipped, payload is arg1"
+            "payload = Some(the non-resource arg): the @resource dest went to `target`, payload is arg1"
         );
-        // And a target-FREE effect (resource=None) with a single Bytes arg still reifies (payload=that arg) —
-        // the resource-skip only fires when a marker index is present.
-        let single = body_of(&mut db, "g");
+        // target = the bare dest value (arg0), NOT wrapped in Some — the kernel reads it via read_bytes.
+        let target_occ = *fields
+            .iter()
+            .find(|(s, _)| s.name.as_ref() == "target")
+            .unwrap()
+            .1;
         assert!(
-            matches!(
-                reify_effect_to_tuple(&mut db, "tool", &[single], None),
-                Core::Record { .. }
-            ),
-            "a target-free single-Bytes-arg effect (resource=None) still reifies"
+            !matches!(core_of(&mut db, target_occ), Core::SumNew { .. }),
+            "target = the bare @resource dest value (arg0), a raw Bytes field (not an Option)"
+        );
+        // And a target-FREE effect (resource=None) with a single Bytes arg reifies to a 3-field record (NO
+        // target field) — the target field only appears when a resource marker designates a dest.
+        let single = body_of(&mut db, "g");
+        let Core::Record { fields: tf_fields } =
+            reify_effect_to_tuple(&mut db, "tool", &[single], None)
+        else {
+            panic!("a target-free single-Bytes-arg effect (resource=None) reifies to a record");
+        };
+        let tf_names: Vec<&str> = tf_fields.keys().map(|s| s.name.as_ref()).collect();
+        assert_eq!(
+            tf_names,
+            vec!["correlation", "kind", "payload"],
+            "a target-free effect stays 3-field: no @resource → no target column"
         );
     }
 

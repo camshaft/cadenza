@@ -4963,20 +4963,25 @@ fn option_ty(db: &Db, elem: Ty) -> Option<Ty> {
 }
 
 /// The TYPE a REIFIED async world-effect perform carries in the reducer's returned effect-list — the
-/// effect-request record `{ correlation: Option Bytes, kind: String, payload: Option Bytes }` (schema-hash
-/// phase-1a, the shape v-rust-backend's `reify_effect_to_tuple` emits). Fields are name-sorted
-/// (`correlation < kind < payload`) so the `Ty::Record` `BTreeMap` order matches reify's value-encode
-/// sorted-slot column order; capability-BLIND (no `target` column — the resource arg, when declared, is
-/// extracted host-side off the decl marker, per the concierge resource-designation ruling). Phase-1a is
-/// the single-`Bytes`-arg (or zero-arg) case: `payload` is `Option Bytes`; a STRUCTURED/multi-arg payload
-/// rides R2 (the in-fold value-encode primitive). `None` when the prelude `Option` is absent.
-fn world_effect_request_ty(db: &Db) -> Option<Ty> {
+/// effect-request record `{ correlation: Option Bytes, kind: String, payload: Option Bytes [, target: Bytes] }`
+/// (schema-hash phase-1a, the shape v-rust-backend's `reify_effect_to_tuple` emits). Fields are name-sorted
+/// (`correlation < kind < payload < target`) so the `Ty::Record` `BTreeMap` order matches reify's
+/// value-encode sorted-slot column order. `has_target` (v-rb ruling A, 2026-08-14): a target-having effect
+/// (one whose op carries an `@resource` marker — e.g. `Emit.send(@resource dest, …)`) reifies the dest as a
+/// RUNTIME VALUE riding its own `target: Bytes` field (SEC-F1 authorizes the dest value), so the type gains
+/// that field; a target-FREE effect (model/now/timer/tool) stays 3-field. Phase-1a is the single-`Bytes`-arg
+/// (or zero-arg) payload case: `payload` is `Option Bytes`; a STRUCTURED/multi-arg payload rides R2 (the
+/// in-fold value-encode primitive). `None` when the prelude `Option` is absent.
+fn world_effect_request_ty(db: &Db, has_target: bool) -> Option<Ty> {
     let correlation = option_ty(db, Ty::Bytes)?;
     let payload = option_ty(db, Ty::Bytes)?;
     let mut fields = std::collections::BTreeMap::new();
     fields.insert(crate::resolved::Symbol::plain("correlation"), correlation);
     fields.insert(crate::resolved::Symbol::plain("kind"), Ty::String);
     fields.insert(crate::resolved::Symbol::plain("payload"), payload);
+    if has_target {
+        fields.insert(crate::resolved::Symbol::plain("target"), Ty::Bytes);
+    }
     Some(Ty::Record(std::rc::Rc::new(fields)))
 }
 
@@ -5658,9 +5663,19 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         if db.wit_world.is_some()
             && let Some((effect, op, _result)) = crate::effects::perform_host_target(db, head, head)
             && !crate::wit_world::is_world_import_op(db.wit_world.as_deref(), &effect, &op)
-            && let Some(record) = world_effect_request_ty(db)
         {
-            return record;
+            // has_target mirrors the reify fork in `lower`: a target-having effect (its op carries an
+            // `@resource` marker) reifies the dest to a `target` field, so the record type gains it (ruling A).
+            let has_target = crate::eval::effect_op_of(db, head)
+                .and_then(|(decl, op_idx)| {
+                    db.effect_decl_by_occ(decl)
+                        .and_then(|e| e.ops.get(op_idx as usize))
+                        .and_then(|o| o.resource)
+                })
+                .is_some();
+            if let Some(record) = world_effect_request_ty(db, has_target) {
+                return record;
+            }
         }
         let mut fresh = Fresh::new();
         if let Some(scheme) = crate::eval::scheme_of(db, head, &mut fresh) {

@@ -609,9 +609,12 @@ pub struct OpDecl {
     /// `@resource T` surface marker lifts (hash-clean, stripped from the op TYPE) to a `(resource <idx>)`
     /// decl-level sibling on the op node (v-syntax 2026-08-13); this reads that sibling. Load-bearing for
     /// the schema-hash reify: a reducer's world-effect perform reifies its args into the effect-request
-    /// payload BLIND except that the resource arg is SKIPPED here (the kernel extracts it via this index),
-    /// so a `(@resource dest, payload)` perform reifies with the resource-arg dropped → the payload is the
-    /// single remaining arg (no in-fold value-encode / R2 needed for the common one-resource-one-payload op).
+    /// record, routing the resource arg to its own `target` wire field (v-rb ruling A, 2026-08-14) — the
+    /// dest is a RUNTIME VALUE (SEC-F1 authorizes it against a resource predicate), so it rides the wire,
+    /// NOT dropped. The resource arg is skipped from the PAYLOAD-encode only, so a `(@resource dest, payload)`
+    /// perform reifies with the payload = the single remaining arg (no in-fold value-encode / R2 needed for
+    /// the common one-resource-one-payload op) and `target` = the bare dest bytes. `None` = a target-free op
+    /// (model/now/timer/tool) → no `target` field, a 3-field {correlation, kind, payload} record.
     pub resource: Option<usize>,
 }
 
