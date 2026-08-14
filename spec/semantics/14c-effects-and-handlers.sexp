@@ -10775,3 +10775,76 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 102020 Int64))
   (call   main (: 7 Int64)) (output (: 101030 Int64)))
+
+;; ── Josephus elimination, tortoise-and-hare cycle finder, day-clock rollover (breaker batch 271) ──
+(case "jos1 JOSEPHUS elimination — every dispatch advances the cursor k-1 around the SHRINKING ring by modulo, removes the survivor there by filtered rebuild, and answers the eliminated id"
+  (input  (do
+            (effect S (op elim (-> Int64)))
+            (def (drop-at (: xs (List Int64)) (: i Int64) (: k Int64) (: acc (List Int64)))
+              (match (List.at xs i)
+                ((Some v) (drop-at xs (+ i 1) k (if (= i k) acc (List.push acc v))))
+                ((None u) acc)))
+            (def (main (: n Int64))
+              (handle S (tuple (list 1 2 3 4 5) 0)
+                ((elim () st
+                  (match st
+                    ((tuple ring pos)
+                      (let ((p2 (% (+ pos (- n 1)) (List.len ring))))
+                        (let ((v (match (List.at ring p2) ((Some x) x) ((None u) -1))))
+                          (resume v (tuple (drop-at ring 0 p2 (: (list) (List Int64))) p2))))))))
+                (let ((a (S.elim)))
+                  (let ((b (S.elim)))
+                    (let ((c (S.elim)))
+                      (+ (* 100 (+ (* 100 a) b)) c))))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 20401 Int64))
+  (call   main (: 3 Int64)) (output (: 30105 Int64)))
+
+(case "tth1 TORTOISE-AND-HARE cycle detection — the handler owns the successor function and counts calls, the body's two-speed recursive driver meets inside the cycle and the call tally rides in the answer"
+  (input  (do
+            (effect S
+              (op succ (-> Int64 Int64))
+              (op calls (-> Int64)))
+            (def (chase (: slow Int64) (: fast Int64) (: k Int64) (: steps Int64))
+              (if (< k 1)
+                  (* steps 1000)
+                  (let ((s2 (S.succ slow)))
+                    (let ((f2 (S.succ (S.succ fast))))
+                      (if (= s2 f2)
+                          (+ (* (+ steps 1) 1000) (* s2 10))
+                          (chase s2 f2 (- k 1) (+ steps 1)))))))
+            (def (main (: n Int64))
+              (handle S 0
+                ((succ (i) c (resume (% (+ (* i 2) n) 6) (+ c 1)))
+                 (calls () c (resume (% c 10) c)))
+                (let ((r (chase 0 0 8 0)))
+                  (+ r (S.calls)))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 2036 Int64))
+  (call   main (: 2 Int64)) (output (: 2006 Int64)))
+
+(case "day1 a DAY-ROLLOVER ledger — transactions accumulate in the day buffer, endday posts the net to the balance answers day and net and clears, and the second day starts from a clean buffer"
+  (input  (do
+            (effect S
+              (op txn (-> Int64 Int64))
+              (op endday (-> Int64)))
+            (def (main (: n Int64))
+              (handle S (tuple 100 0 0)
+                ((txn (v) st
+                  (match st
+                    ((tuple bal buf day)
+                      (resume (+ (+ buf v) 50) (tuple bal (+ buf v) day)))))
+                 (endday () st
+                  (match st
+                    ((tuple bal buf day)
+                      (resume (+ (* (+ day 1) 1000) (+ buf 100))
+                              (tuple (+ bal buf) 0 (+ day 1)))))))
+                (let ((a (S.txn n)))
+                  (let ((b (S.txn -30)))
+                    (let ((c (S.endday)))
+                      (let ((d (S.txn 5)))
+                        (let ((e (S.endday)))
+                          (+ (* 10000 (+ (* 1000 (+ (* 10000 (+ (* 1000 a) b)) c)) d)) e))))))))
+            (export main)))
+  (call   main (: 20 Int64)) (output (: 7004010900552105 Int64))
+  (call   main (: 50 Int64)) (output (: 10007011200552105 Int64)))

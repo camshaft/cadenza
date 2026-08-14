@@ -4947,6 +4947,7 @@ pass	d2 three None-producing built-in reads in one expression — List.at in and
 pass	da1 THREE draws inside one list literal passed to a helper — left-to-right element order, the post-call draw sees all three
 pass	da2 draws as MAP-literal keys and values — two entries built from three sequential draws
 pass	da3 draws as SET-literal elements — n=7 collides the first draw with the fixed element, n=6 collides the second
+pass	day1 a DAY-ROLLOVER ledger — transactions accumulate in the day buffer, endday posts the net to the balance answers day and net and clears, and the second day starts from a clean buffer
 pass	dbn1 a DEBOUNCE gate — emits fire only when the gap since the last fire is met, suppressed emits stash their value in the pending slot, and flush releases whatever the last suppression left
 pass	dc1 a DEEP left-leaning concat chain — ten single-element concats build an 11-deep rope, random-access reads stay exact
 pass	dc1 a THREE-hop def relay under ONE handler — each def draws then calls the next, weights pin the depth order
@@ -5403,6 +5404,7 @@ pass	iwr1 a SIGNED Int8 handler state — wrapping-add crosses the sign boundary
 pass	ix1 the op argument INDEXES a list held in a two-slot state — in-range reads project, out-of-range yields the arm's fallback
 pass	jin1 a SEPARATOR-JOIN builder — the comma inserts only BETWEEN elements via the count field, and an EMPTY piece still consumes a separator slot
 pass	jointly-total guards over one variant are still non-exhaustive (guards are opaque to the checker)
+pass	jos1 JOSEPHUS elimination — every dispatch advances the cursor k-1 around the SHRINKING ring by modulo, removes the survivor there by filtered rebuild, and answers the eliminated id
 pass	keyed lookups at different keys are not shared
 pass	lam1 INLINE and LET-BOUND lambdas applied to one draw — both closure forms read the same drawn value
 pass	large-set algebra over a multi-level CHAMP trie computes correct union/intersection/difference
@@ -6583,6 +6585,7 @@ pass	tt2 NESTED-tuple resume values across two dispatches — outer destructured
 pass	tt3 a tuple ROTATED through two chained dispatches — each rotation folds the state into the moved slot
 pass	tt4 a MIXED String+Int tuple state — the arm grows the rope and folds the op arg into the counter per dispatch
 pass	tt5 an inner PAIR swapped on counter parity — a nested-tuple state machine, both slots and the counter observed
+pass	tth1 TORTOISE-AND-HARE cycle detection — the handler owns the successor function and counts calls, the body's two-speed recursive driver meets inside the cycle and the call tally rides in the answer
 pass	tug1 a TUPLE state pairing TWO collections — a List and a Map advance through different ops, and a cross op reads BOTH halves in one answer
 pass	tuple access on a non-tuple is a type error
 pass	tuple access on a record is a type error
