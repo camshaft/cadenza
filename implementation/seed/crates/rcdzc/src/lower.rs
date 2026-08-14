@@ -1047,14 +1047,23 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         // destination arg the reify routes to the `target` wire field (ruling A: the dest is a
                         // runtime value, not dropped). Resolved from the perform's `(effect-op <decl> <idx>)`
                         // channel; `None` for a target-free op (which reifies to a 3-field record).
-                        let resource =
-                            crate::eval::effect_op_of(db, head).and_then(|(decl, op_idx)| {
-                                db.effect_decl_by_occ(decl)
-                                    .and_then(|e| e.ops.get(op_idx as usize))
-                                    .and_then(|o| o.resource)
-                            });
+                        let effect_op = crate::eval::effect_op_of(db, head);
+                        let resource = effect_op.and_then(|(decl, op_idx)| {
+                            db.effect_decl_by_occ(decl)
+                                .and_then(|e| e.ops.get(op_idx as usize))
+                                .and_then(|o| o.resource)
+                        });
+                        // The effect DECLARATION occurrence — for the phase-3 schema_descriptor bake (the
+                        // descriptor is per-effect, so the op index is irrelevant here).
+                        let effect_decl = effect_op.map(|(decl, _)| decl);
                         trace!(target: "rcdzc::lower", node = id.0, %effect, %op, ?resource, "apply: reducer-world NON-import world-effect → reify to effect-request record (async)");
-                        return reify_effect_to_tuple(db, &effect, &args_vec, resource);
+                        return reify_effect_to_tuple(
+                            db,
+                            &effect,
+                            &args_vec,
+                            resource,
+                            effect_decl,
+                        );
                     }
                     trace!(target: "rcdzc::lower", node = id.0, %effect, %op, "apply: host-delegated perform → Core::HostCall (sync import / plain host-delegation)");
                     return Core::HostCall {
@@ -15125,7 +15134,6 @@ impl ShapeTableBuilder {
 // it, the only callers are the unit tests below, so the non-test lib build sees it as unused — the allow is
 // removed when the fork lands (it is genuinely live then). Not hiding dead code: this is a tested, complete
 // function staged one slice ahead of its production call site.
-#[cfg_attr(not(test), allow(dead_code))]
 fn ty_to_wit_desc(
     db: &mut Db,
     b: &mut crate::ast::Builder,
@@ -15251,7 +15259,6 @@ fn ty_to_wit_desc(
 /// `None` if the op has no declared type (a malformed `(op NAME)`) or the type does not reduce to an arrow
 /// (a nullary op with a bare result type — no params, but then there is no arrow to peel; handled by the
 /// caller as a 0-param op). Takes `&mut Db` because `typeval_of` reduces the type occurrence.
-#[cfg_attr(not(test), allow(dead_code))]
 fn op_arrow_param_result_tys(
     db: &mut Db,
     ty_occ: StructId,
@@ -15281,7 +15288,6 @@ fn op_arrow_param_result_tys(
 /// effect path uses this name-free form exclusively. `params` are the positional type descriptors in arrow
 /// order; `result` is the always-present result descriptor (a no-return op passes `unit`). Heads are NAME
 /// atoms (head-kind-fixed, matching `effect_schema_tree`), so identical op sigs encode byte-identically.
-#[cfg_attr(not(test), allow(dead_code))]
 fn effect_op_sig_name_free(
     b: &mut crate::ast::Builder,
     params: &[StructId],
@@ -15312,7 +15318,6 @@ fn effect_op_sig_name_free(
 /// param/result type has no WIT form (a still-generic op, an unsupported type) — never emits a partial
 /// descriptor that would bake a wrong identity. Every node is FRESH (no sharing) so the descriptor is a
 /// genuine tree the kernel `codec::decode`s without a `NotATree` rejection (ruling A).
-#[cfg_attr(not(test), allow(dead_code))]
 fn effect_schema_descriptor(
     db: &mut Db,
     b: &mut crate::ast::Builder,
@@ -15385,6 +15390,7 @@ fn reify_effect_to_tuple(
     effect: &str,
     args: &[StructId],
     resource: Option<usize>,
+    decl: Option<StructId>,
 ) -> Core {
     // Split the args into the `@resource`-designated TARGET (rides its own `target` wire field) and the
     // PAYLOAD args (everything else). The reducer-chosen destination of a target-having effect
@@ -15456,10 +15462,28 @@ fn reify_effect_to_tuple(
     // `field("target")` read, and v-pc's `target_str()=="out"` stays green.
     let target_field = target_arg;
 
-    // Synthesize the record AST `("record" (= correlation …) (= kind …) (= payload …) [(= target …)])`. A
-    // record VALUE is a STR-head `("record" …)` form; each field the canonical `(= name value)` triple.
-    // `resolve_record` reads the fields into a name-SORTED BTreeMap, so the slot order is canonical
-    // (correlation < kind < payload < target) regardless of the order written here.
+    // schema_descriptor field (phase-3 producer-bake, v-effects (B) 2026-08-14): the effect's RAW schema
+    // descriptor as encoded bytes, so the kernel `codec::decode`s it + hashes it via the one-hasher
+    // (`effect_schema_hash_from_nodes`) to obtain the authoritative schema-hash identity — RATHER than rcdzc
+    // baking the hash (which would MISMATCH: rcdzc emits raw bottom-up bytes, the kernel re-canonicalizes on
+    // ingest — ruling A, no `canon.rs` port; the bridge test pins the through-canon identity). BEST-EFFORT:
+    // `effect_schema_descriptor` DECLINES (None) for a still-generic op or an unsupported type — in that case
+    // OMIT the field, and the kernel falls back to the family-derived hash (byte-identical to pre-phase-3), so
+    // a reify whose descriptor doesn't build is UNCHANGED (no regression). The descriptor is built in its own
+    // `Builder` arena, so it can't splice into this db-arena record directly; encode it to a `Bytes` leaf (the
+    // kernel decodes the field bytes back into descriptor nodes). INERT until the kernel's schema_descriptor
+    // read lands (an unrecognized field is ignored by `parse_effect_request`) — co-gated with that read.
+    let schema_descriptor_field: Option<StructId> = decl.and_then(|d| {
+        let mut b = crate::ast::Builder::new();
+        let root = effect_schema_descriptor(db, &mut b, d)?;
+        let bytes = crate::codec::encode(&b.finish(root));
+        Some(db.push_atom(crate::ast::Leaf::Bytes(bytes)))
+    });
+
+    // Synthesize the record AST `("record" (= correlation …) (= kind …) (= payload …) [(= target …)]
+    // [(= schema_descriptor …)])`. A record VALUE is a STR-head `("record" …)` form; each field the canonical
+    // `(= name value)` triple. `resolve_record` reads the fields into a name-SORTED BTreeMap, so the slot order
+    // is canonical regardless of the order written here.
     let field = |db: &mut Db, name: &str, val: StructId| -> StructId {
         let eq = db.push_name("=");
         let n = db.push_name(name);
@@ -15473,6 +15497,10 @@ fn reify_effect_to_tuple(
     if let Some(t) = target_field {
         let target = field(db, "target", t);
         record_items.push(target);
+    }
+    if let Some(sd) = schema_descriptor_field {
+        let sd_field = field(db, "schema_descriptor", sd);
+        record_items.push(sd_field);
     }
     let record = db.push_list(record_items);
     // Re-resolve the synthesized subtree (binds `Some`/`None`/the field spellings) then lower it — reusing
@@ -28136,7 +28164,7 @@ mod tests {
             matches!(crate::infer::type_of(&mut db, arg), crate::ty::Ty::Bytes),
             "the test arg is Bytes-typed"
         );
-        let core = reify_effect_to_tuple(&mut db, "model", &[arg], None);
+        let core = reify_effect_to_tuple(&mut db, "model", &[arg], None, None);
         let Core::Record { fields } = core else {
             panic!("reify must build a Core::Record, got {core:?}");
         };
@@ -28181,6 +28209,40 @@ mod tests {
     }
 
     #[test]
+    fn reify_with_a_decl_emits_the_schema_descriptor_field_bytes() {
+        // PHASE-3 PRODUCER-BAKE (v-effects (B)): when reify is given the effect DECL, it emits a
+        // `schema_descriptor` field = the RAW `effect_schema_descriptor` tree encoded to Bytes (the kernel
+        // decodes + hashes it kernel-side, the one-hasher — NOT a rcdzc-baked hash, which would mismatch the
+        // kernel's re-canonicalized hash per ruling A). Assert: with a decl whose descriptor BUILDS, the
+        // record gains a 4th field `schema_descriptor` whose value is a Bytes leaf carrying
+        // codec::encode(descriptor). With decl=None, no such field (the base-case tests above pin that).
+        let src = "(module m (effect E (op send (-> Bytes Unit))) (def (f) b\"hi\") (export f))";
+        let mut db = Db::load(crate::testkit::parse(src));
+        let synth = db.effect_decl_by_name("E").expect("effect E declared");
+        let decl = db
+            .effect_decl_by_synth(synth)
+            .expect("effect decl present")
+            .occ;
+        let arg = body_of(&mut db, "f"); // a Bytes-typed node (b"hi")
+        let core = reify_effect_to_tuple(&mut db, "E", &[arg], None, Some(decl));
+        let Core::Record { fields } = core else {
+            panic!("reify must build a Core::Record, got {core:?}");
+        };
+        // 4 fields now, name-sorted: correlation < kind < payload < schema_descriptor — the decl-bearing
+        // reify adds the schema_descriptor field (the base-case tests above, decl=None, pin the 3-field
+        // shape, so this delta IS the phase-3 producer-bake firing). The field's value is the encoded
+        // descriptor Bytes (the kernel decodes + hashes it); the descriptor's OWN content is pinned by
+        // effect_schema_descriptor_builds_name_free_op_sigs_sorted_by_op_name, so here we assert only that the
+        // field is EMITTED (the wire carries it) — its lowered value is a constant bytes value like any other.
+        let names: Vec<&str> = fields.keys().map(|s| s.name.as_ref()).collect();
+        assert_eq!(
+            names,
+            vec!["correlation", "kind", "payload", "schema_descriptor"],
+            "the decl-bearing reify adds the schema_descriptor field (name-sorted last)"
+        );
+    }
+
+    #[test]
     fn reify_effect_to_tuple_declines_a_multi_arg_or_structured_payload() {
         // The Bytes-payload decomposition: a MULTI-arg perform (needs a value-form-of-args tuple = the
         // in-fold value-encode, R2, not built) declines cleanly. Two Bytes args → decline.
@@ -28189,7 +28251,7 @@ mod tests {
         ));
         let a = body_of(&mut db, "f");
         let b = body_of(&mut db, "g");
-        let core = reify_effect_to_tuple(&mut db, "emit", &[a, b], None);
+        let core = reify_effect_to_tuple(&mut db, "emit", &[a, b], None, None);
         assert!(
             matches!(core, Core::Poison(_)),
             "a multi-arg world-effect payload (no @resource skip) needs the R2 in-fold value-encode → declines cleanly, got {core:?}"
@@ -28209,7 +28271,7 @@ mod tests {
         ));
         let dest = body_of(&mut db, "f");
         let body = body_of(&mut db, "g");
-        let core = reify_effect_to_tuple(&mut db, "emit", &[dest, body], Some(0));
+        let core = reify_effect_to_tuple(&mut db, "emit", &[dest, body], Some(0), None);
         let Core::Record { fields } = core else {
             panic!(
                 "a 2-arg emit with @resource=arg0 reifies (dest→target, payload=arg1), got {core:?}"
@@ -28245,7 +28307,7 @@ mod tests {
         // target field) — the target field only appears when a resource marker designates a dest.
         let single = body_of(&mut db, "g");
         let Core::Record { fields: tf_fields } =
-            reify_effect_to_tuple(&mut db, "tool", &[single], None)
+            reify_effect_to_tuple(&mut db, "tool", &[single], None, None)
         else {
             panic!("a target-free single-Bytes-arg effect (resource=None) reifies to a record");
         };
@@ -28263,7 +28325,7 @@ mod tests {
         // payload = None — the 3-field record still builds, just with the None payload variant. Pins the
         // zero-arg arm ([] => (None)) alongside the single-Bytes-arg (Some) + multi-arg (decline) cases.
         let mut db = Db::load(crate::testkit::parse("(module m (def (f) 0) (export f))"));
-        let core = reify_effect_to_tuple(&mut db, "now", &[], None);
+        let core = reify_effect_to_tuple(&mut db, "now", &[], None, None);
         let Core::Record { fields } = core else {
             panic!("a zero-arg reify still builds a Core::Record, got {core:?}");
         };
