@@ -3643,6 +3643,57 @@ fn a_reified_async_world_effect_perform_types_as_the_request_record_in_effect_li
     );
 }
 
+/// SCHEMA_DESCRIPTOR field presence (v-inference typing half of the phase-3 producer-bake co-land, landed
+/// `30af6769b`): a reified world-effect whose op has a buildable schema descriptor (`(op beat (-> Bytes
+/// Unit))` — a typed op) reifies to a record that INCLUDES `schema_descriptor: Bytes` (name-sorted after
+/// `payload`). `world_effect_request_ty` gains that field iff `lower::effect_has_schema_descriptor` (the
+/// SAME predicate the reify emit gates on). This asserts the typed shape MATCHES the 4-field emitted shape
+/// via the type system: `apply`'s effect-list is annotated `List(Record{correlation,kind,payload,
+/// schema_descriptor})` and must type CLEAN — if the typing produced only the 3-field record, the
+/// annotation would mismatch (CDZ0203). Guards the bug case-32 hit (emit 4-field, type 3-field → field
+/// dropped → schema_hash None). Target-free single-Bytes-arg (Beat.beat, like the platform case-32 pin).
+#[test]
+fn a_reified_descriptor_bearing_effect_types_with_the_schema_descriptor_field() {
+    use crate::testkit::parse;
+    // Beat is NOT a world import (the artifact imports only kv) → Beat.beat reifies. Its op `(-> Bytes
+    // Unit)` builds a schema descriptor, so the reified record is 4-field incl. schema_descriptor. The
+    // apply effect-list is annotated with exactly that 4-field record — types clean iff the field is typed.
+    let src = "(module m \
+                 (effect Beat (op beat (-> Bytes Unit))) \
+                 (def (apply (: e Bytes)) \
+                   (: (host (Beat) (list (Beat.beat e))) \
+                      (List (Record (: correlation (Option Bytes)) (: kind String) \
+                                    (: payload (Option Bytes)) (: schema_descriptor Bytes))))) \
+                 (export apply))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:reducer/api"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                reducer_kv_put_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        out.diagnostics
+            .iter()
+            .all(|d| d.code.as_deref() != Some("CDZ0203")),
+        "a descriptor-bearing effect's reified record must TYPE with the schema_descriptor field (the \
+         4-field annotation must match the typed shape — no CDZ0203): {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| (&d.code, &d.message))
+            .collect::<Vec<_>>()
+    );
+}
+
 /// R2 (in-fold `Value.encode`/`decode` — operator-ruled binary-AST canonical encoder; the v-inference
 /// SURFACE + typing half, co-landed with v-rust-backend's `Core::ValueEncode`/`ValueDecode` prims + emit).
 /// `Value.encode : ∀a. a → Bytes` (TOTAL) and `Value.decode : ∀a. Bytes → Option a` (PARTIAL, `a` grounded
