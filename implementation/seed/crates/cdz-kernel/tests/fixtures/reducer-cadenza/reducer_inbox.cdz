@@ -1,0 +1,153 @@
+// reducer_inbox.cdz — ROLE LIBRARY increment #2: the INBOX-DRAIN role (pure fold).
+//
+// Step 2 of the fleet loop (tick -> INBOX-DRAIN -> work -> MR). A pure reducer that folds ONE inbound
+// inbox-message event into a routed action, mirroring the fleet resolver's classification: an
+// INFORMATIONAL message (note/merged/backlog/status/reply/answer) is ARCHIVED (drained to processed, no
+// work); anything else in the inbox is ACTIONABLE and surfaced for the work role (carrying the message
+// payload). A non-inbox event drives nothing. The resolver's rule is "actionable = anything NOT
+// informational", so a NEW/unknown inbox kind DEFAULTS to actionable (safe: never silently ignored).
+//
+// Inbox messages arrive with content-type.family = "inbox/<kind>" (the host tags each delivered inbox
+// message with its kind). Returns effects only (no host import) -> cdz-test-gated on the seed VM like
+// reducer_tick. The kv-backed processed/dedup STATE (mark a message processed so it is not re-acted) is a
+// LATER host-fused increment (needs a v-nix world-driven derivation + host e2e); this slice pins the pure
+// drain CLASSIFICATION logic.
+
+// The discriminated effect-result OUTCOME field (shared strict Event value-form; this reducer folds no
+// results but must declare it). Reply payload discriminated (no-capability-drop): Inline OR Blob hash.
+type ReplyPayload =
+  | Inline(Bytes)
+  | Blob(Bytes)
+
+type Outcome =
+  | Ok(ReplyPayload)
+  | Err(Record(message: Bytes, retryable: Bool))
+  | TimedOut
+
+// §6 V2 per-child supervision field (shared Event value-form).
+type ChildOutcome =
+  | Success(ReplyPayload)
+  | Failure(Bytes)
+
+// Is this family an inbox message (prefix "inbox/")? String.slice returns Option (None if too short).
+def is-inbox(fam: String) -> Bool =
+  match String.slice(fam, 0, 6) with
+    | Some(p) => p == "inbox/"
+    | None() => false
+
+// The INFORMATIONAL inbox kinds (drained to processed, no work) — the fleet resolver's "·" set. Every
+// other inbox kind is ACTIONABLE by default (the resolver's "anything not below" rule).
+def is-informational(fam: String) -> Bool =
+  fam == "inbox/note"
+  or fam == "inbox/merged"
+  or fam == "inbox/backlog"
+  or fam == "inbox/status"
+  or fam == "inbox/reply"
+  or fam == "inbox/answer"
+
+def apply(
+  event: Record(
+    content-type: Record(family: String, version: UInt(32)),
+    payload: Option(Bytes),
+    resumes: Option(Bytes),
+    outcome: Option(Outcome),
+    child-completed: Option(Record(child: Bytes, outcome: ChildOutcome)),
+  ),
+) -> List(Record(
+  kind: String,
+  target: Bytes,
+  payload: Option(Bytes),
+  correlation: Option(Bytes),
+)) =
+  let fam = event.content-type.family in
+  if is-inbox(fam) then
+    (if is-informational(fam) then
+       // Informational: archive to processed, no work.
+       [{
+         kind = "emit",
+         target = String.to-bytes("archive"),
+         payload = None(),
+         correlation = None(),
+       }]
+     else
+       // Actionable (default): surface the message for the work role, carrying its payload.
+       [{
+         kind = "emit",
+         target = String.to-bytes("act"),
+         payload = event.payload,
+         correlation = None(),
+       }])
+  else
+    // Not an inbox message — drive nothing.
+    []
+
+// Standalone behavioral coverage (`cdz test`, INDEPENDENT of any host).
+@test
+def inbox_prefix_classifies() =
+  if is-inbox("inbox/reply") and is-inbox("inbox/merge-request")
+     and (if is-inbox("message") then false else true)
+     and (if is-inbox("timer-fired") then false else true)
+  then unit
+  else trap("is-inbox must match the inbox/ prefix only")
+
+@test
+def informational_message_is_archived() =
+  let evt = {
+    content-type = { family = "inbox/reply", version = 1 },
+    payload = Some(String.to-bytes("a reply body")),
+    resumes = None(),
+    outcome = None(),
+    child-completed = None(),
+  } in
+  match List.at(apply(evt), 0) with
+    | Some(eff) =>
+      (if eff.kind == "emit" and eff.target == String.to-bytes("archive") then unit
+       else trap("an informational inbox message must be archived"))
+    | None() => trap("an informational inbox message must fold to one archive action")
+
+@test
+def actionable_message_is_surfaced_with_its_payload() =
+  let evt = {
+    content-type = { family = "inbox/merge-request", version = 1 },
+    payload = Some(String.to-bytes("ref abc123")),
+    resumes = None(),
+    outcome = None(),
+    child-completed = None(),
+  } in
+  match List.at(apply(evt), 0) with
+    | Some(eff) =>
+      (if eff.kind == "emit" and eff.target == String.to-bytes("act") then
+         (match eff.payload with
+            | Some(p) => (if p == String.to-bytes("ref abc123") then unit else trap("act must carry the message payload"))
+            | None() => trap("act must carry the message payload"))
+       else trap("an actionable inbox message must be surfaced to act"))
+    | None() => trap("an actionable inbox message must fold to one act action")
+
+@test
+def unknown_inbox_kind_defaults_to_actionable() =
+  // The resolver's rule: anything not informational is actionable — a new/unknown inbox kind must NOT be
+  // silently dropped.
+  let evt = {
+    content-type = { family = "inbox/ask", version = 1 },
+    payload = None(),
+    resumes = None(),
+    outcome = None(),
+    child-completed = None(),
+  } in
+  match List.at(apply(evt), 0) with
+    | Some(eff) => (if eff.target == String.to-bytes("act") then unit else trap("unknown inbox kind must default to act"))
+    | None() => trap("unknown inbox kind must still fold to an act action")
+
+@test
+def a_non_inbox_event_drives_nothing() =
+  let evt = {
+    content-type = { family = "message", version = 1 },
+    payload = Some(String.to-bytes("not an inbox message")),
+    resumes = None(),
+    outcome = None(),
+    child-completed = None(),
+  } in
+  if List.len(apply(evt)) == 0 then unit
+  else trap("a non-inbox event must drive nothing")
+
+export { apply }
