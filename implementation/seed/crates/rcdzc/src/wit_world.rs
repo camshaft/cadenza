@@ -332,15 +332,23 @@ pub fn is_world_import_op(world_bytes: Option<&[u8]>, iface: &str, op: &str) -> 
         return false;
     };
     // The world's import interface `name` is the FQ WIT name (`cadenza:agent-kernel/kv`); the perform's
-    // `iface` is the source effect short-name (`kv`). Match on the FQ name's last `/`-segment so the short
-    // effect name binds its FQ import interface (a bare short-name world also matches — no `/` = itself).
+    // `iface` is the SOURCE effect name (`Kv` — a Cadenza identifier, possibly capitalized). Match on the
+    // FQ name's last `/`-segment, KEBAB-NORMALIZED on BOTH sides — the effect `Kv` fuses to the import
+    // `cadenza:agent-kernel/kv` at the component boundary via `kebab_extern_name` (Kv → kv), so the
+    // membership test must apply the same normalization or a capitalized source effect name (the real
+    // `effect Kv`, host-fused to the lowercase WIT `kv` import) mis-misses and gets wrongly reified. Op
+    // names normalize too (a `prefix-scan` op ↔ `prefix-scan` member — already kebab, identity). A bare
+    // short-name world also matches (no `/` = itself, then kebab-normalized).
+    use crate::backend::common::export_name::kebab_extern_name;
     fn short(fq: &str) -> &str {
         fq.rsplit('/').next().unwrap_or(fq)
     }
-    world
-        .imports
-        .iter()
-        .any(|i| short(&i.name) == iface && i.members.iter().any(|m| m.name == op))
+    let iface_k = kebab_extern_name(iface);
+    let op_k = kebab_extern_name(op);
+    world.imports.iter().any(|i| {
+        kebab_extern_name(short(&i.name)) == iface_k
+            && i.members.iter().any(|m| kebab_extern_name(&m.name) == op_k)
+    })
 }
 
 fn parse_wit_interface(a: &Arenas, id: StructId) -> Option<WitInterface> {
@@ -769,6 +777,54 @@ mod tests {
         assert!(
             !is_world_import_op(None, "kv", "get"),
             "no target world → no sync imports"
+        );
+    }
+
+    #[test]
+    fn is_world_import_op_matches_a_fq_import_name_and_a_capitalized_effect_name() {
+        // REGRESSION (cdz-agent-host e2e reject 036966): the REAL reducer world declares its import at the
+        // FULLY-QUALIFIED WIT name `cadenza:agent-kernel/kv`, and the source effect is `effect Kv` (capital
+        // K — a Cadenza identifier), host-fused to the lowercase WIT `kv` import via `kebab_extern_name`.
+        // A case-sensitive last-`/`-segment match ("Kv" != "kv") wrongly missed → the perform fork
+        // mis-reified `Kv.put` instead of leaving it a sync Core::HostCall → the real kv reducers folded to
+        // 0 effects. The match must KEBAB-NORMALIZE both sides (Kv → kv), the same fusing the boundary does.
+        let mut b = Builder::new();
+        let ev = byte_list(&mut b);
+        let res = byte_list(&mut b);
+        let apply = member(&mut b, "apply", vec![("event", ev)], res);
+        let eh = b.name("export");
+        let en = b.name("fold");
+        let fold = b.list(vec![eh, en, apply]);
+        let pk = byte_list(&mut b);
+        let pv = byte_list(&mut b);
+        let pres = unit(&mut b);
+        let put = member(&mut b, "put", vec![("key", pk), ("value", pv)], pres);
+        let ih = b.name("import");
+        // The FQ WIT import name the real reducer world declares (v-ah's reducer_world_artifact).
+        let inm = b.name("cadenza:agent-kernel/kv");
+        let kv = b.list(vec![ih, inm, put]);
+        let wh = b.name("world");
+        let wn = b.name("reducer");
+        let world = b.list(vec![wh, wn, fold, kv]);
+        let a = b.finish(world);
+        let bytes = crate::codec::encode(&a);
+
+        // The CAPITALIZED source effect `Kv` (as `effect Kv` declares it) fuses to the FQ lowercase `kv`
+        // import → its ops are world-import members → SYNC HostCall (NOT reified). This is the exact case
+        // the e2e reject exercised.
+        assert!(
+            is_world_import_op(Some(&bytes), "Kv", "put"),
+            "capital `Kv` fuses to the FQ `cadenza:agent-kernel/kv` import (kebab Kv→kv) → sync import member"
+        );
+        // Lowercase `kv` also matches (kebab identity) — both source spellings fuse.
+        assert!(
+            is_world_import_op(Some(&bytes), "kv", "put"),
+            "lowercase `kv` matches the FQ import too"
+        );
+        // A NON-import world-effect (capitalized `Model`) still does not match → reify (async).
+        assert!(
+            !is_world_import_op(Some(&bytes), "Model", "request"),
+            "`Model` is not a world import → async reify (not mis-matched by the kebab normalization)"
         );
     }
 }
