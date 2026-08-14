@@ -53,12 +53,6 @@ live-exec = []
 # Cedar wasm authorizer on the effect's resolved target, NOT in the host — operator standing-order).
 live-fs = []
 
-# `live-git` — RETIRED no-op (GAP-6 REVERSED by operator 2026-08-14: git is a USERSPACE shell-wrapper, not a
-# host GitExecutor; the executor + its wiring were removed here, full-collapse). The feature is kept as an
-# empty no-op ONLY TRANSIENTLY because the flake's union clippy leg still passes `--features live-git`;
-# consumer-off-first, v-nix drops `live-git` from that leg, THEN a follow-on deletes this line. Gates nothing.
-live-git = []
-
 # `admin` gates the ADMIN CONTROL INTERFACE's transport — the Unix-domain-socket listener that carries
 # admin command/response frames to a running daemon (operator: "a way to communicate with the daemon + send
 # it commands as an admin"). OFF by default so the hermetic gate BINDS NO SOCKET + pulls no tokio `net`
