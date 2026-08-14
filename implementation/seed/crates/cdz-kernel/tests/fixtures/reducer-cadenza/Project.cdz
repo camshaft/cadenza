@@ -4,4 +4,4 @@
 // reducer fixtures (each carries @test defs guarding its fold behavior).
 def name = "reducer-cadenza"
 def entry = "reducer_b1.cdz"
-def tests = ["reducer_b1.cdz", "reducer_b2.cdz", "reducer_b3.cdz", "reducer_pure.cdz"]
+def tests = ["reducer_b1.cdz", "reducer_b2.cdz", "reducer_b3.cdz", "reducer_pure.cdz", "reducer_git.cdz"]
