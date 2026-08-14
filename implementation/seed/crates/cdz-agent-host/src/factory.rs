@@ -434,35 +434,11 @@ impl ExecutorSetBuilder for LiveExecutorSet {
             }
             c
         };
-        // GAP-6: wire the typed `git/*` executor UNCONDITIONALLY (behind `live-git`). Same posture as
-        // shell/fs: WHICH repo/worktree/ref/remote a session may touch is EVOLVABLE Cedar policy on the
-        // effect's resolved target (operator standing-order), so wiring the mechanism for all is safe — a
-        // session runs only the git ops its policy permitted, via CWE-78-safe direct exec. The
-        // `CompositeExecutor` routes by EXACT family, so register the (unit-struct) GitExecutor under each of
-        // the 8 v0 git verbs; a fresh one per verb is free. Metered like the others.
-        #[cfg(feature = "live-git")]
-        let composite = {
-            let mut c = composite;
-            for fam in [
-                effect_ct::GIT_STATUS,
-                effect_ct::GIT_DIFF,
-                effect_ct::GIT_ADD,
-                effect_ct::GIT_COMMIT,
-                effect_ct::GIT_REV_PARSE,
-                effect_ct::GIT_CHECKOUT,
-                effect_ct::GIT_FETCH,
-                effect_ct::GIT_PUSH,
-            ] {
-                c = c.with_effect(
-                    fam,
-                    Box::new(MeteredExecutor::new(
-                        Box::new(crate::GitExecutor::new()),
-                        m.clone(),
-                    )),
-                );
-            }
-            c
-        };
+        // NOTE (GAP-6 REVERSED by operator 2026-08-14): git is a USERSPACE shell-wrapper (reducer-side
+        // composition of the generic `shell` effect, evolvable without host redeploys), NOT a host git
+        // executor — so the former `live-git` GitExecutor wiring here was removed (full-collapse). No host-side
+        // git effect family / arg surface exists; a session runs git via the shell effect its Cedar policy
+        // permits, composed in the reducer (v-agent-harness role-library lane).
         // §lifecycle (tick-#784 gap): when the daemon wired the loop's lifecycle channel, register the four
         // `lifecycle/*` executors so an installed session can spawn/suspend/resume/terminate. Each is owned
         // by THIS session's id (the `by` stamped on its lifecycle ops); the LifecycleExecutor records a
