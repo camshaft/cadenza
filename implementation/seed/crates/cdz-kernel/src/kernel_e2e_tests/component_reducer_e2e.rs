@@ -423,3 +423,116 @@ async fn sync_reducer_declaring_a_dep_folds_loud_without_attach() {
         }
     }
 }
+
+/// The `reducer_reify.cdz` component bytes (v-nix `packages.reify-probe-reducer`, mirroring the pure/kv
+/// precompile drvs), read from `REIFY_PROBE_REDUCER_COMPONENT`; `None` (skip) when unset — same optional-skip
+/// contract as the guest, so a bare `cargo test -p cdz-kernel` stays green. A set-but-unreadable path panics.
+fn reify_probe_bytes() -> Option<Vec<u8>> {
+    let p = std::env::var("REIFY_PROBE_REDUCER_COMPONENT").ok()?;
+    Some(std::fs::read(&p).unwrap_or_else(|e| {
+        panic!("REIFY_PROBE_REDUCER_COMPONENT={p:?} is set but unreadable: {e}")
+    }))
+}
+
+/// Schema-hash phase-1a REIFY e2e (the phase-2-window gate): `reducer_reify.cdz` PERFORMS a target-free
+/// single-Bytes-arg world-effect (`host Probe in ([Probe.fire(p)])`), so rcdzc REIFIES it via
+/// `reify_effect_to_tuple` (NOT a sync HostCall — Probe is not a world import) to the 3-field no-target record
+/// `{ correlation=None, kind="effect/probe", payload=Some(p) }`, which the kernel `parse_effect_request`
+/// (target-free-tolerant, 14b7c9885) parses back. Proves the phase-1a triad end-to-end, non-vacuously:
+/// rcdzc reify emit → wasm component → kernel parse-tolerance. (SKIPs cleanly without the precompiled component.)
+#[tokio::test(flavor = "current_thread")]
+async fn reify_probe_reducer_reifies_a_target_free_perform_end_to_end() {
+    let Some(bytes) = reify_probe_bytes() else {
+        eprintln!(
+            "SKIP reify_probe_reducer_reifies_a_target_free_perform_end_to_end: REIFY_PROBE_REDUCER_COMPONENT unset"
+        );
+        return;
+    };
+    // reducer_reify TARGETS the pure-fold world, so it imports `cadenza:runtime/heap` (value-encode reifies
+    // the perform's args into the payload column) — its declared dep resolves from CDZ_STORE exactly as the
+    // pure/kv genesis reducers' do. A reducer set but no store = FAIL LOUD (a silent skip would hide broken
+    // wiring); an empty CDZ_STORE counts as unset.
+    let store_dir = std::env::var("CDZ_STORE")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            panic!(
+                "REIFY_PROBE_REDUCER_COMPONENT is set but CDZ_STORE is not — the world-driven reify reducer \
+                 imports cadenza:runtime/heap, which resolves from the store"
+            )
+        });
+    let reducer = ComponentReducer::from_component_bytes(&bytes)
+        .expect("reducer_reify must be a valid reducer component");
+    // Resolve the declared value-heap dep from CDZ_STORE (get_by_hash — the content-addressed reader the fold
+    // uses) + attach the store so the §23 compose resolves the runtime's OWN transitive bare import (nfc).
+    // Identical to the pure-genesis reducer's dep-resolve path.
+    let store = crate::component_store::ComponentStore::open(&store_dir);
+    let deps = reducer.deps().to_vec();
+    assert!(
+        !deps.is_empty(),
+        "reducer_reify imports cadenza:runtime/heap (value-encode) so it must declare a dep"
+    );
+    let mut resolved = Vec::with_capacity(deps.len());
+    for dep in &deps {
+        let dep_bytes = store.get_by_hash(&dep.hash).unwrap_or_else(|e| {
+            panic!(
+                "CDZ_STORE={store_dir:?} could not resolve reify reducer dep {:?} (hash {}): {e:?}",
+                dep.import_name,
+                dep.hash.to_hex()
+            )
+        });
+        resolved.push((dep.clone(), dep_bytes));
+    }
+    let reducer = reducer
+        .with_resolved_deps(resolved)
+        .with_component_store(store);
+
+    // A payloaded "message" event → the reducer performs Probe.fire(payload), reified to ONE effect.
+    let ct = ContentType {
+        family: "message".into(),
+        version: 1,
+    };
+    let (effects, _kv) = reducer
+        .apply(Kv::new(), ct, Some(b"hello".to_vec()), None)
+        .expect("apply drives the reify reducer without trapping");
+    assert_eq!(effects.len(), 1, "one reified Probe.fire perform");
+
+    // The reified 3-field record: kind = the userspace family string `effect/<declared-effect-name>` — the
+    // effect type name VERBATIM (`Probe`, capitalized per Cadenza's type/effect naming), NOT lowercased. (The
+    // kind is the transitional phase-1a human-facing family tag; phase-2 replaces it with the schema-hash, so
+    // its casing is cosmetic — but the reify derives it from the declared name as-written.) payload =
+    // Some(Inline(the single Bytes arg)); target-free (no target column, no @resource, no R2).
+    assert_eq!(
+        effects[0].request.content_type.family, "effect/Probe",
+        "reified kind = effect/<declared-name> (verbatim) for the performed Probe effect"
+    );
+    match &effects[0].request.payload {
+        Some(crate::effect::Payload::Inline(b)) => {
+            assert_eq!(
+                &b[..],
+                b"hello",
+                "reify's single-Bytes arg → the payload column"
+            )
+        }
+        other => {
+            panic!("reified perform must carry the arg as payload=Some(Inline), got {other:?}")
+        }
+    }
+    assert!(
+        effects[0].token.is_none(),
+        "a target-free perform carries no reducer correlation token"
+    );
+
+    // A payload-free event → the reducer performs nothing → no effects reified.
+    let ct2 = ContentType {
+        family: "message".into(),
+        version: 1,
+    };
+    let (none_effects, _) = reducer
+        .apply(Kv::new(), ct2, None, None)
+        .expect("apply on a payload-free event");
+    assert!(
+        none_effects.is_empty(),
+        "a payload-free event reifies no performs"
+    );
+}
