@@ -621,6 +621,22 @@ pub trait LogSinkBuilder {
     ) -> Result<Option<cdz_kernel::kv::Kv>, String> {
         Ok(None)
     }
+
+    /// GAP-4 D3-4 checkpoint WRITE — compact this session's durable log to `[Genesis, Checkpoint@N, tail]` +
+    /// persist the KV snapshot. The dyn-dispatchable seam the per-turn trigger
+    /// ([`HostedSession::maybe_checkpoint`](crate::host::HostedSession::maybe_checkpoint)) calls when the
+    /// [`CheckpointPolicy`](crate::checkpoint::CheckpointPolicy) fires — a session holds its builder as
+    /// `Box<dyn LogSinkBuilder>`, so checkpoint must be on the trait, not just an inherent method.
+    ///
+    /// DEFAULT: unsupported — a backend with no checkpoint store (the `memory` backend, or a file log with no
+    /// offload) never checkpoints. The durable [`FileLogSinkBuilder`] (with an offload store) overrides it.
+    async fn checkpoint(
+        &self,
+        _id: &crate::host::SessionId,
+        _session: &cdz_kernel::kernel::Session,
+    ) -> Result<(), String> {
+        Err("checkpoint: this log backend does not support checkpointing".to_string())
+    }
 }
 
 /// Where a GAP-4 D1 log-body OFFLOAD store is rooted — the content-addressed backing a `[log]` offload writes
@@ -903,6 +919,18 @@ impl LogSinkBuilder for FileLogSinkBuilder {
         };
         let blob = source.materialize()?;
         crate::checkpoint::load_kv_snapshot(blob.as_ref(), kv_root).await
+    }
+
+    /// GAP-4 D3-4: the trait-dispatchable checkpoint override — delegates to the inherent
+    /// [`FileLogSinkBuilder::checkpoint`] (the crash-safe compact-rewrite). UFCS names the inherent method
+    /// explicitly (no recursion) so a session holding this builder as `Box<dyn LogSinkBuilder>` can checkpoint
+    /// its own log via the trait.
+    async fn checkpoint(
+        &self,
+        id: &crate::host::SessionId,
+        session: &cdz_kernel::kernel::Session,
+    ) -> Result<(), String> {
+        FileLogSinkBuilder::checkpoint(self, id, session).await
     }
 }
 

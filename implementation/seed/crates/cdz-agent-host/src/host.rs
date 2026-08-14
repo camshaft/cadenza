@@ -134,6 +134,16 @@ pub struct HostedSession {
     /// recovery (a recovered session starts schedulable — a supervisor re-suspends if it wants). Distinct
     /// from TERMINATED ([`is_terminated`](Self::is_terminated)), which IS a durable kernel marker.
     suspended: bool,
+    /// GAP-4 D3-4: the per-session checkpoint capability — this session's OWN durable-log builder (as a
+    /// `dyn LogSinkBuilder`) so [`maybe_checkpoint`](Self::maybe_checkpoint) can compact-rewrite its log +
+    /// rebuild the live sink. `None` = no checkpointing (in-memory / no durable log / no offload store).
+    /// Attached via [`with_checkpoint`](Self::with_checkpoint) at build.
+    checkpoint_builder: Option<Box<dyn crate::factory::LogSinkBuilder>>,
+    /// The checkpoint TRIGGER policy consulted after each delivered turn (default DISABLED = never).
+    checkpoint_policy: crate::checkpoint::CheckpointPolicy,
+    /// The seq of the most recent checkpoint (`0` = genesis, none taken yet) — the growth baseline the policy
+    /// measures the current tip against.
+    last_checkpoint_seq: u64,
 }
 
 impl HostedSession {
@@ -180,6 +190,9 @@ impl HostedSession {
             authz,
             executor,
             suspended: false,
+            checkpoint_builder: None,
+            checkpoint_policy: crate::checkpoint::CheckpointPolicy::DISABLED,
+            last_checkpoint_seq: 0,
         }
     }
 
@@ -230,6 +243,9 @@ impl HostedSession {
             authz,
             executor,
             suspended: false,
+            checkpoint_builder: None,
+            checkpoint_policy: crate::checkpoint::CheckpointPolicy::DISABLED,
+            last_checkpoint_seq: 0,
         }
     }
 
@@ -264,6 +280,9 @@ impl HostedSession {
             authz,
             executor,
             suspended: false,
+            checkpoint_builder: None,
+            checkpoint_policy: crate::checkpoint::CheckpointPolicy::DISABLED,
+            last_checkpoint_seq: 0,
         }
     }
 
@@ -300,6 +319,53 @@ impl HostedSession {
     pub fn with_sink(mut self, sink: Box<dyn cdz_kernel::log_store::LogSink>) -> Self {
         self.session.attach_sink(sink);
         self
+    }
+
+    /// Attach the GAP-4 D3-4 checkpoint capability: this session's own durable-log `builder` (which knows how
+    /// to compact-rewrite its log + rebuild its sink) + the `policy` deciding WHEN. Builder-style, paired with
+    /// [`with_sink`](Self::with_sink) at build time (the factory attaches both when `[log]` is durable +
+    /// `checkpoint_threshold` is set). Absent = no checkpointing (the session's log grows unbounded). The
+    /// per-turn hook [`maybe_checkpoint`](Self::maybe_checkpoint) consults the policy after each delivered turn.
+    pub fn with_checkpoint(
+        mut self,
+        builder: Box<dyn crate::factory::LogSinkBuilder>,
+        policy: crate::checkpoint::CheckpointPolicy,
+    ) -> Self {
+        self.checkpoint_builder = Some(builder);
+        self.checkpoint_policy = policy;
+        self
+    }
+
+    /// GAP-4 D3-4 per-turn checkpoint TRIGGER — called after each delivered turn. If a checkpoint capability is
+    /// attached ([`with_checkpoint`](Self::with_checkpoint)) and its [`CheckpointPolicy`](crate::checkpoint::CheckpointPolicy)
+    /// fires (the log has grown past the threshold since the last checkpoint, at a quiescent boundary), compact
+    /// the durable log to `[Genesis, Checkpoint@N, tail]` + persist the KV snapshot, THEN rebuild the sink on
+    /// the compacted file and re-attach it — the compact-rewrite renames a fresh file over the log path, which
+    /// would orphan the LIVE sink's open handle (subsequent appends would go to the unlinked old inode = lost),
+    /// so the reattach is mandatory. Runs SYNCHRONOUSLY after the turn (same `&mut self`, no interleaved
+    /// append). A no-op when no capability is attached or the policy declines; a checkpoint/rebuild failure is a
+    /// clean `Err` the caller logs (the session keeps running on its current — possibly un-compacted — log).
+    pub async fn maybe_checkpoint(&mut self) -> Result<(), String> {
+        let Some(builder) = &self.checkpoint_builder else {
+            return Ok(());
+        };
+        let tip_seq = self.session.tip().seq;
+        let open_effects = self.session.open_effect_ids().len();
+        if !self.checkpoint_policy.should_checkpoint(
+            tip_seq,
+            self.last_checkpoint_seq,
+            open_effects,
+        ) {
+            return Ok(());
+        }
+        let id = SessionId::new(self.session.genesis_hash());
+        builder.checkpoint(&id, &self.session).await?;
+        // Reattach a fresh sink over the compacted log (the old handle points at the unlinked pre-rename inode).
+        if let Some(sink) = builder.build(&id).await? {
+            self.session.attach_sink(sink);
+        }
+        self.last_checkpoint_seq = tip_seq;
+        Ok(())
     }
 
     /// Register (or replace) a by-family effect executor on this LIVE session — the MECHANISM axis of a
@@ -1766,6 +1832,81 @@ mod tests {
             Box::new(authz),
             executor,
         )
+    }
+
+    #[tokio::test]
+    async fn maybe_checkpoint_fires_only_per_policy_and_advances_last_checkpoint_seq() {
+        // GAP-4 D3-4b (checkpoint TRIGGER wiring on HostedSession): a no-effect reducer advances the tip each
+        // turn (no open obligations -> quiescent, so the policy can fire); a stub LogSinkBuilder records each
+        // checkpoint call (build() -> None: no reattach needed to test the TRIGGER logic). Threshold 2 -> the
+        // trigger fires only when the log has grown >= 2 frames past the last checkpoint, at rest, and
+        // advances last_checkpoint_seq so it does not re-fire until it grows another 2.
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        struct NoopReducer;
+        #[async_trait::async_trait(?Send)]
+        impl Reducer for NoopReducer {
+            async fn fold(&mut self, _event: &Event, _kv: &mut Kv) -> FoldOutput {
+                FoldOutput::none()
+            }
+        }
+        struct StubCheckpointer(Rc<RefCell<Vec<u64>>>);
+        #[async_trait::async_trait(?Send)]
+        impl crate::factory::LogSinkBuilder for StubCheckpointer {
+            async fn build(
+                &self,
+                _id: &SessionId,
+            ) -> Result<Option<Box<dyn cdz_kernel::log_store::LogSink>>, String> {
+                Ok(None)
+            }
+            async fn checkpoint(
+                &self,
+                _id: &SessionId,
+                session: &cdz_kernel::kernel::Session,
+            ) -> Result<(), String> {
+                self.0.borrow_mut().push(session.tip().seq);
+                Ok(())
+            }
+        }
+
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let mut hosted = HostedSession::genesis(
+            Hash::of(b"cp-trigger-test"),
+            Box::new(NoopReducer),
+            Box::new(Authorizer::deny_all()),
+            CompositeExecutor::new(),
+        )
+        .with_checkpoint(
+            Box::new(StubCheckpointer(calls.clone())),
+            crate::checkpoint::CheckpointPolicy {
+                threshold_frames: 2,
+            },
+        );
+
+        // tip 1: growth 1 < 2 -> no checkpoint.
+        hosted.deliver(inbound_go(), None).await.unwrap();
+        hosted.maybe_checkpoint().await.unwrap();
+        assert!(
+            calls.borrow().is_empty(),
+            "growth 1 < threshold 2 -> no checkpoint"
+        );
+        // tip 2: growth 2 >= 2, quiescent -> fires once (records the tip seq it checkpointed at).
+        hosted.deliver(inbound_go(), None).await.unwrap();
+        hosted.maybe_checkpoint().await.unwrap();
+        assert_eq!(
+            calls.borrow().as_slice(),
+            &[2],
+            "checkpoint fires once at tip 2"
+        );
+        // tip 3: growth 3 - 2 = 1 < 2 -> no re-fire until 2 past the last checkpoint.
+        hosted.deliver(inbound_go(), None).await.unwrap();
+        hosted.maybe_checkpoint().await.unwrap();
+        assert_eq!(
+            calls.borrow().as_slice(),
+            &[2],
+            "no re-fire below threshold since the last checkpoint"
+        );
     }
 
     #[tokio::test]
