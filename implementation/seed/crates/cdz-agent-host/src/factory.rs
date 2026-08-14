@@ -841,6 +841,22 @@ impl FileLogSinkBuilder {
                 path.display()
             )
         })?;
+        // Flush the DIRECTORY entry the rename created (reviewer durability catch on D3-2a): `rename` durably
+        // swaps the file CONTENT, but the parent-directory metadata recording the new name is not guaranteed on
+        // disk until the directory itself is fsync'd — a crash between the rename and that metadata flush could
+        // revert to the pre-rename entry (a silently-lost checkpoint = log-growth regression once checkpointing
+        // is live). Open the parent dir and sync_all it. Surfaced as an Err on a real fsync failure (never a
+        // panic); a path with no parent component is a no-op.
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::File::open(parent)
+                .and_then(|d| d.sync_all())
+                .map_err(|e| {
+                    format!(
+                        "checkpoint: could not fsync log directory {} after rename: {e}",
+                        parent.display()
+                    )
+                })?;
+        }
         Ok(())
     }
 }

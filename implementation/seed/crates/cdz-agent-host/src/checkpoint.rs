@@ -49,6 +49,48 @@ pub async fn load_kv_snapshot(blob: &dyn BlobStore, kv_root: Hash) -> Result<Opt
     Ok(Some(kv))
 }
 
+/// GAP-4 D3-4 checkpoint TRIGGER policy — decides WHEN a session's durable log has grown enough settled
+/// history to be worth compacting to a checkpoint. A pure decision (no I/O) so the daemon's per-turn hook
+/// (D3-4b, `AgentHost::deliver`) can consult it cheaply after each delivered turn and, when it fires, call the
+/// backend's checkpoint-write ([`FileLogSinkBuilder::checkpoint`](crate::factory::FileLogSinkBuilder) / the
+/// D3-3 Dynamo path). Opt-in like the D1 body-offload threshold: a zero (or absent) threshold DISABLES
+/// checkpointing, so a session's log grows exactly as it does today until an operator configures a threshold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CheckpointPolicy {
+    /// Checkpoint once the log has grown at least this many frames beyond the last checkpoint (or genesis, if
+    /// none has been taken yet). `0` disables checkpointing.
+    pub threshold_frames: u64,
+}
+
+impl CheckpointPolicy {
+    /// A disabled policy — never checkpoints (the default; matches the pre-D3 unbounded-log behavior).
+    pub const DISABLED: CheckpointPolicy = CheckpointPolicy {
+        threshold_frames: 0,
+    };
+
+    /// Should the caller checkpoint now? `tip_seq` is the session's current tip sequence (the seq a checkpoint
+    /// frame would take); `last_checkpoint_seq` is the seq of the most recent checkpoint, or `0` (genesis) when
+    /// none has been taken. `open_effects` is the count of dispatched-but-unsettled obligations.
+    ///
+    /// Fires only when (a) the policy is ENABLED (`threshold_frames != 0`), (b) the session is QUIESCENT
+    /// (`open_effects == 0`), and (c) the log has grown `>= threshold_frames` since the last checkpoint.
+    /// Quiescence is a v0 simplification: a checkpoint descriptor CAN carry open obligations
+    /// ([`recover_from_checkpoint`](cdz_kernel::kernel::Session::recover_from_checkpoint) seeds them), but
+    /// triggering only at rest avoids racing an in-flight effect's result against the compact-rewrite and
+    /// keeps the compacted tail minimal. `saturating_sub` guards a `last_checkpoint_seq > tip_seq` inversion
+    /// (never expected — it would just not fire).
+    pub fn should_checkpoint(
+        &self,
+        tip_seq: u64,
+        last_checkpoint_seq: u64,
+        open_effects: usize,
+    ) -> bool {
+        self.threshold_frames != 0
+            && open_effects == 0
+            && tip_seq.saturating_sub(last_checkpoint_seq) >= self.threshold_frames
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,5 +162,44 @@ mod tests {
             .await
             .expect_err("a present-but-corrupt snapshot must be an Err, not a panic");
         assert!(err.contains("did not decode"), "{err}");
+    }
+
+    #[test]
+    fn a_disabled_policy_never_checkpoints() {
+        // threshold_frames == 0 (the default / DISABLED) never fires, no matter how far the log has grown or
+        // whether the session is quiescent — the pre-D3 unbounded-log behavior.
+        let p = CheckpointPolicy::DISABLED;
+        assert!(!p.should_checkpoint(1_000_000, 0, 0));
+        assert!(!p.should_checkpoint(1_000_000, 0, 3));
+        assert_eq!(p.threshold_frames, 0);
+    }
+
+    #[test]
+    fn an_enabled_policy_fires_only_when_quiescent_and_grown_past_the_threshold() {
+        let p = CheckpointPolicy {
+            threshold_frames: 100,
+        };
+        // Grown exactly the threshold beyond the last checkpoint, quiescent -> fire (boundary inclusive).
+        assert!(p.should_checkpoint(100, 0, 0), "growth == threshold fires");
+        assert!(
+            p.should_checkpoint(250, 100, 0),
+            "growth (150) past a prior checkpoint at 100 fires"
+        );
+        // Grown past threshold but NOT quiescent (an effect is still open) -> hold (v0 quiescence rule).
+        assert!(
+            !p.should_checkpoint(500, 0, 1),
+            "open effects hold the checkpoint until the session is at rest"
+        );
+        // Quiescent but not yet grown enough -> hold.
+        assert!(
+            !p.should_checkpoint(99, 0, 0),
+            "growth (99) below threshold (100) holds"
+        );
+        assert!(
+            !p.should_checkpoint(150, 100, 0),
+            "growth (50) since the last checkpoint at 100 holds"
+        );
+        // A last_checkpoint_seq ahead of tip (never expected) saturates to 0 growth -> hold, no underflow.
+        assert!(!p.should_checkpoint(50, 100, 0));
     }
 }
