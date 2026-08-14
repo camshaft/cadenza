@@ -37,7 +37,9 @@
 
 use crate::ast_marshal::val_to_ast;
 use crate::effect::{EffectId, Payload};
-use crate::event::{ContentType, EffectOutcome, Event, EventBody};
+use crate::event::{
+    CheckpointDescriptor, CheckpointObligation, ContentType, EffectOutcome, Event, EventBody,
+};
 use crate::hash::Hash;
 use cadenza_ast::ast::{Arenas, Builder, Leaf, Radix, Struct, StructId};
 use cadenza_ast::codec;
@@ -524,15 +526,8 @@ pub fn encode_child_exited(child: &Hash, outcome: &crate::event::CloseOutcome) -
         b.list(vec![h, hf])
     };
     // The close-outcome form — byte-identical to the `Closed` event's outcome encoding (bare payload for
-    // Success, `(failure <str>)` for Failure), so the ONE `read_close_outcome` decodes both.
-    let outcome_form = match outcome {
-        crate::event::CloseOutcome::Success(p) => payload_form(&mut b, p),
-        crate::event::CloseOutcome::Failure(reason) => {
-            let h = b.name("failure");
-            let r = str_leaf(&mut b, reason);
-            b.list(vec![h, r])
-        }
-    };
+    // Success, `(failure <str>)` for Failure), via the ONE authoritative `close_outcome_form`/`read_close_outcome` pair.
+    let outcome_form = close_outcome_form(&mut b, outcome);
     let root = b.list(vec![head, child_form, outcome_form]);
     codec::encode(&b.finish(root))
 }
@@ -1758,6 +1753,85 @@ fn opt_bytes_form(b: &mut Builder, token: Option<&[u8]>) -> StructId {
     }
 }
 
+/// A close-outcome as its canonical value-form — the ONE authoritative encoder (shared by the `Closed` arm,
+/// `encode_child_exited`, and the checkpoint descriptor's `close_outcome`): `Success` -> the BARE payload form
+/// (`(inline …)`/`(blob …)`), `Failure` -> `(failure <str>)`. Decoded by [`read_close_outcome`].
+fn close_outcome_form(b: &mut Builder, o: &crate::event::CloseOutcome) -> StructId {
+    match o {
+        crate::event::CloseOutcome::Success(p) => payload_form(b, p),
+        crate::event::CloseOutcome::Failure(reason) => {
+            let h = b.name("failure");
+            let r = str_leaf(b, reason);
+            b.list(vec![h, r])
+        }
+    }
+}
+
+/// Value-form of a `CheckpointObligation` (GAP-4 checkpoint frame, increment #1). Positional, in
+/// struct-declaration order mirroring the event.rs identity codec: `(obligation <id> <target> <schema_hash>
+/// <token> <deadline_ms> <dispatch_hash> <is_timer>)`. schema_hash/dispatch_hash ride as opt-hash (raw 32
+/// bytes when Some, like the Dispatched leaf); is_timer is a 0/1 leaf (decode rejects non-0/1, frozen-codec).
+fn obligation_form(b: &mut Builder, o: &CheckpointObligation) -> StructId {
+    let head = b.name("obligation");
+    let idv = u64_leaf(b, o.id);
+    let target = bytes_leaf(b, &o.target);
+    let sh = opt_bytes_form(b, o.schema_hash.as_ref().map(|h| h.as_bytes().as_slice()));
+    let tok = opt_bytes_form(b, o.token.as_deref());
+    let dl = opt_ms_form(b, o.deadline_ms);
+    let dh = opt_bytes_form(b, o.dispatch_hash.as_ref().map(|h| h.as_bytes().as_slice()));
+    let it = u64_leaf(b, o.is_timer as u64);
+    b.list(vec![head, idv, target, sh, tok, dl, dh, it])
+}
+
+/// Value-form of a `CheckpointDescriptor` (GAP-4 checkpoint frame, increment #1). Positional, in
+/// struct-declaration order mirroring the event.rs identity codec: `(descriptor <kv_root> <next_effect_id>
+/// <last_now> <settled_watermark> (exceptions <u64>…) (open <obligation>…) (spawned <hash>…)
+/// <seeded_capabilities> <close_outcome-opt>)`. Lists are headed forms (like `encode_members`);
+/// seeded_capabilities is a 0/1 leaf; close_outcome is `(some <close-outcome>)` | `(none)`.
+fn descriptor_form(b: &mut Builder, d: &CheckpointDescriptor) -> StructId {
+    let head = b.name("descriptor");
+    let kv_root = hash_form(b, &d.kv_root);
+    let next_id = u64_leaf(b, d.next_effect_id);
+    let last_now = u64_leaf(b, d.last_now);
+    let watermark = u64_leaf(b, d.settled_watermark);
+    let exceptions = {
+        let mut items = vec![b.name("exceptions")];
+        for e in &d.settled_exceptions {
+            items.push(u64_leaf(b, *e));
+        }
+        b.list(items)
+    };
+    let open = {
+        let mut items = vec![b.name("open")];
+        for o in &d.open {
+            items.push(obligation_form(b, o));
+        }
+        b.list(items)
+    };
+    let spawned = {
+        let mut items = vec![b.name("spawned")];
+        for hh in &d.spawned {
+            items.push(hash_form(b, hh));
+        }
+        b.list(items)
+    };
+    let seeded = u64_leaf(b, d.seeded_capabilities as u64);
+    let close = match &d.close_outcome {
+        Some(o) => {
+            let h = b.name("some");
+            let co = close_outcome_form(b, o);
+            b.list(vec![h, co])
+        }
+        None => {
+            let h = b.name("none");
+            b.list(vec![h])
+        }
+    };
+    b.list(vec![
+        head, kv_root, next_id, last_now, watermark, exceptions, open, spawned, seeded, close,
+    ])
+}
+
 fn body_form(b: &mut Builder, body: &EventBody) -> StructId {
     match body {
         EventBody::Genesis {
@@ -1801,7 +1875,8 @@ fn body_form(b: &mut Builder, body: &EventBody) -> StructId {
             schema_hash,
         } => {
             // Post-collapse (schema-hash-only effect identity): fixed 6-leaf. kind+family dropped from the
-            // wire (routing/authz now key on schema_hash); schema_hash MANDATORY, no back-compat arity
+            // wire (routing/authz now key on schema_hash); schema_hash is Option (None for a register-by-string
+            // extension with no wire hash yet — phase-3), encoded as opt-bytes below; no back-compat arity
             // (slice-D=A abandon-logs, no old-log migration). Target stays opaque `Bytes` (Target=Bytes
             // ruling; may not be UTF-8).
             let head = b.name("dispatched");
@@ -1857,14 +1932,7 @@ fn body_form(b: &mut Builder, body: &EventBody) -> StructId {
             // the BARE payload form (headed `inline`/`blob`) — byte-identical to a legacy Closed — while
             // Failure is `(failure <str>)`. Decode dispatches on the head, so an old `(closed (inline …))`
             // reads as Success unchanged, and a future arm (cancelled/escalated) just adds a new head.
-            let of = match outcome {
-                crate::event::CloseOutcome::Success(p) => payload_form(b, p),
-                crate::event::CloseOutcome::Failure(reason) => {
-                    let h = b.name("failure");
-                    let r = str_leaf(b, reason);
-                    b.list(vec![h, r])
-                }
-            };
+            let of = close_outcome_form(b, outcome);
             b.list(vec![head, of])
         }
         EventBody::FoldFailed {
@@ -1901,6 +1969,13 @@ fn body_form(b: &mut Builder, body: &EventBody) -> StructId {
                 }
             };
             b.list(vec![head, ch, of])
+        }
+        // GAP-4 checkpoint frame (increment #1): the descriptor rides as a nested `(descriptor …)` sub-form,
+        // mirroring the tuple `EventBody::Checkpoint(CheckpointDescriptor)` + the event.rs identity codec.
+        EventBody::Checkpoint(d) => {
+            let head = b.name("checkpoint");
+            let df = descriptor_form(b, d);
+            b.list(vec![head, df])
         }
     }
 }
@@ -2150,6 +2225,102 @@ fn read_opt_bytes(a: &Arenas, id: StructId) -> Result<Option<Vec<u8>>, EventAstE
     }
 }
 
+/// A frozen-codec bool leaf: strictly `0`/`1` (any other value is a `Shape` error — no `!= 0` coercion, so a
+/// corrupt/extended leaf fails closed rather than silently reading `true`).
+fn read_bool(a: &Arenas, id: StructId) -> Result<bool, EventAstError> {
+    match read_u64(a, id)? {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(shape("bool leaf not 0/1")),
+    }
+}
+
+/// An optional raw-32-byte hash carried as opt-bytes (the same wire the Dispatched `schema_hash` leaf uses):
+/// `(none)` -> `None`; `(token <raw32>)` -> `Some(Hash)`; a Some whose bytes are not exactly 32 is a `Shape` error.
+fn read_opt_hash(a: &Arenas, id: StructId) -> Result<Option<Hash>, EventAstError> {
+    read_opt_bytes(a, id)?
+        .map(|b| {
+            <[u8; 32]>::try_from(b.as_slice())
+                .map(Hash::from_bytes)
+                .map_err(|_| shape("hash bytes"))
+        })
+        .transpose()
+}
+
+/// Decode a `CheckpointObligation` value-form — the dual of [`obligation_form`], 7 fields in declaration order.
+fn read_obligation(a: &Arenas, id: StructId) -> Result<CheckpointObligation, EventAstError> {
+    let [idv, target, sh, tok, dl, dh, it] = form(a, id, "obligation")? else {
+        return Err(shape("obligation arity"));
+    };
+    Ok(CheckpointObligation {
+        id: read_u64(a, *idv)?,
+        target: std::sync::Arc::from(read_target_bytes(a, *target)?.as_slice()),
+        schema_hash: read_opt_hash(a, *sh)?,
+        token: read_opt_bytes(a, *tok)?,
+        deadline_ms: read_opt_ms(a, *dl)?,
+        dispatch_hash: read_opt_hash(a, *dh)?,
+        is_timer: read_bool(a, *it)?,
+    })
+}
+
+/// Decode a `CheckpointDescriptor` value-form — the dual of [`descriptor_form`], 9 fields in declaration order
+/// (lists are headed forms; close_outcome is `(some <close-outcome>)`|`(none)`).
+fn read_descriptor(a: &Arenas, id: StructId) -> Result<CheckpointDescriptor, EventAstError> {
+    let [kv, next_id, last_now, wm, exc, open, spawned, seeded, close] = form(a, id, "descriptor")?
+    else {
+        return Err(shape("descriptor arity"));
+    };
+    let settled_exceptions = {
+        let items = a
+            .as_form(*exc, "exceptions")
+            .ok_or(shape("exceptions head"))?;
+        let mut out = Vec::with_capacity(items.len());
+        for &e in items {
+            out.push(read_u64(a, e)?);
+        }
+        out
+    };
+    let open_obls = {
+        let items = a.as_form(*open, "open").ok_or(shape("open head"))?;
+        let mut out = Vec::with_capacity(items.len());
+        for &o in items {
+            out.push(read_obligation(a, o)?);
+        }
+        out
+    };
+    let spawned_hashes = {
+        let items = a
+            .as_form(*spawned, "spawned")
+            .ok_or(shape("spawned head"))?;
+        let mut out = Vec::with_capacity(items.len());
+        for &hh in items {
+            out.push(read_hash(a, hh)?);
+        }
+        out
+    };
+    let close_outcome = match head_of(a, *close)? {
+        "none" => None,
+        "some" => {
+            let [co] = form(a, *close, "some")? else {
+                return Err(shape("some arity"));
+            };
+            Some(read_close_outcome(a, *co)?)
+        }
+        _ => return Err(shape("unknown close-outcome-opt tag")),
+    };
+    Ok(CheckpointDescriptor {
+        kv_root: read_hash(a, *kv)?,
+        next_effect_id: read_u64(a, *next_id)?,
+        last_now: read_u64(a, *last_now)?,
+        settled_watermark: read_u64(a, *wm)?,
+        settled_exceptions,
+        open: open_obls,
+        spawned: spawned_hashes,
+        seeded_capabilities: read_bool(a, *seeded)?,
+        close_outcome,
+    })
+}
+
 fn read_body(a: &Arenas, id: StructId) -> Result<EventBody, EventAstError> {
     Ok(match head_of(a, id)? {
         "genesis" => {
@@ -2256,6 +2427,13 @@ fn read_body(a: &Arenas, id: StructId) -> Result<EventBody, EventAstError> {
             EventBody::Closed {
                 outcome: read_close_outcome(a, *of)?,
             }
+        }
+        "checkpoint" => {
+            // GAP-4 checkpoint frame: a nested `(descriptor …)` sub-form → CheckpointDescriptor.
+            let [d] = form(a, id, "checkpoint")? else {
+                return Err(shape("checkpoint arity"));
+            };
+            EventBody::Checkpoint(read_descriptor(a, *d)?)
         }
         "fold-failed" => {
             let [r, ce] = form(a, id, "fold-failed")? else {
@@ -2546,6 +2724,62 @@ mod tests {
                         "child goal unreachable".to_string(),
                     ),
                 },
+            },
+            // GAP-4 checkpoint frame (increment #1) — RICH: mixed Some/None obligations (one dispatched
+            // effect, one timer), non-empty exceptions/open/spawned lists, and a Some close_outcome. Exercises
+            // every descriptor/obligation codec path (opt-hash Some+None, is_timer 0+1, list iteration, close some).
+            Event {
+                seq: 19,
+                cause: Some(h),
+                body: EventBody::Checkpoint(CheckpointDescriptor {
+                    kv_root: Hash::of(b"kv-root"),
+                    next_effect_id: 42,
+                    last_now: 1000,
+                    settled_watermark: 10,
+                    settled_exceptions: vec![3, 7],
+                    open: vec![
+                        CheckpointObligation {
+                            id: 8,
+                            target: "eff-target".as_bytes().into(),
+                            schema_hash: Some(Hash::of(b"eff-schema")),
+                            token: Some(b"resume".to_vec()),
+                            deadline_ms: None,
+                            dispatch_hash: Some(Hash::of(b"disp")),
+                            is_timer: false,
+                        },
+                        CheckpointObligation {
+                            id: 9,
+                            target: "".as_bytes().into(),
+                            schema_hash: None,
+                            token: None,
+                            deadline_ms: Some(2500),
+                            dispatch_hash: None,
+                            is_timer: true,
+                        },
+                    ],
+                    spawned: vec![Hash::of(b"child-a"), Hash::of(b"child-b")],
+                    seeded_capabilities: true,
+                    close_outcome: Some(crate::event::CloseOutcome::Success(
+                        crate::effect::Payload::Inline(b"ck-result".to_vec().into()),
+                    )),
+                }),
+            },
+            // GAP-4 checkpoint frame — MINIMAL: empty lists, false seeded, None close_outcome (the empty-list +
+            // none-close + false-bool paths).
+            Event {
+                seq: 20,
+                cause: None,
+                body: EventBody::Checkpoint(CheckpointDescriptor {
+                    kv_root: Hash::of(b"kv-root-2"),
+                    next_effect_id: 0,
+                    last_now: 0,
+                    settled_watermark: 0,
+                    settled_exceptions: vec![],
+                    open: vec![],
+                    spawned: vec![],
+                    seeded_capabilities: false,
+                    close_outcome: None,
+                }),
             },
         ]
     }

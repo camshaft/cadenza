@@ -2232,6 +2232,9 @@ fn event_to_guest_inputs(body: &EventBody) -> GuestFoldInputs {
         EventBody::Dispatched { .. } => (synthetic("dispatched"), None, None, None),
         EventBody::TimerArmed { .. } => (synthetic("timer-armed"), None, None, None),
         EventBody::Closed { .. } => (synthetic("closed"), None, None, None),
+        // A Checkpoint is an internal durable-state frame (GAP-4), never delivered to a guest reducer
+        // (`observable()` excludes it, the loop never folds it) — map defensively rather than panic.
+        EventBody::Checkpoint(_) => (synthetic("checkpoint"), None, None, None),
         // FoldFailed is a kernel-recorded failure event, not a fold input (the loop never folds it —
         // `observable()` excludes it); map defensively rather than panic.
         EventBody::FoldFailed { .. } => (synthetic("fold-failed"), None, None, None),

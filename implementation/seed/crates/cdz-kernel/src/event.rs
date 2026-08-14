@@ -275,6 +275,15 @@ pub enum EventBody {
     /// read them directly, rather than value-decoding an opaque `encode_child_completed` payload (which a
     /// guest can't do). `child` is the completed child's genesis hash (= its SessionId).
     ChildCompleted { child: Hash, outcome: CloseOutcome },
+
+    /// A durable CHECKPOINT frame (GAP-4 log-prune-to-checkpoint): a first-class log event carrying the
+    /// complete log-derived resident state at its seq, so recovery can resume from `[Genesis, Checkpoint@N,
+    /// tail(> N)]` WITHOUT the pruned prefix (genesis stays at `events[0]`; this frame captures everything
+    /// `Session::replay` would otherwise re-fold from the dropped frames — see [`CheckpointDescriptor`]).
+    /// NOT produced in the normal apply loop; it is APPENDED by the checkpoint/prune path and CONSUMED by
+    /// recover-from-checkpoint (later increments). A tuple variant wrapping the descriptor keeps it a cohesive
+    /// unit (the same value `Session::build_checkpoint_descriptor` returns + recovery seeds from).
+    Checkpoint(CheckpointDescriptor),
 }
 
 /// How a session CLOSED — the structured terminal outcome a supervisor acts on (§6 supervision, operator
@@ -676,12 +685,107 @@ fn decode_body(c: &mut Cursor) -> Result<EventBody, DecodeError> {
             child: Hash::from_bytes(c.hash()?),
             outcome: decode_close_outcome(c)?,
         },
+        12 => EventBody::Checkpoint(decode_checkpoint_descriptor(c)?),
         t => {
             return Err(DecodeError::BadTag {
                 field: "body",
                 tag: t,
             })
         }
+    })
+}
+
+/// Decode a 32-byte hash written as opt-bytes (`None` presence → `None`; `Some` → exactly 32 bytes). The
+/// shared reader for the checkpoint frame's `schema_hash` / `dispatch_hash` fields (mirrors the Dispatched
+/// frame's `schema_hash` opt-bytes→Hash read). A non-32 length is corruption (`BadLength`).
+fn decode_opt_hash(c: &mut Cursor) -> Result<Option<Hash>, DecodeError> {
+    decode_opt_bytes(c)?
+        .map(|b| {
+            <[u8; 32]>::try_from(b.as_slice())
+                .map(Hash::from_bytes)
+                .map_err(|_| DecodeError::BadLength)
+        })
+        .transpose()
+}
+
+/// Decode a [`CheckpointDescriptor`] — the dual of [`encode_checkpoint_descriptor`], reading the 9 fields in
+/// struct-declaration order. Lists read their `u64` length (via `Cursor::len`, which fails `BadLength` on an
+/// oversized untrusted count) then that many elements. `is_timer` / `seeded_capabilities` / the close-outcome
+/// presence byte reject a non-0/1 tag as corruption (the frozen-codec contract).
+fn decode_checkpoint_descriptor(c: &mut Cursor) -> Result<CheckpointDescriptor, DecodeError> {
+    let kv_root = Hash::from_bytes(c.hash()?);
+    let next_effect_id = c.u64()?;
+    let last_now = c.u64()?;
+    let settled_watermark = c.u64()?;
+    let n_exc = c.len()?;
+    let mut settled_exceptions = Vec::with_capacity(n_exc);
+    for _ in 0..n_exc {
+        settled_exceptions.push(c.u64()?);
+    }
+    let n_open = c.len()?;
+    let mut open = Vec::with_capacity(n_open);
+    for _ in 0..n_open {
+        let id = c.u64()?;
+        let target: std::sync::Arc<[u8]> = c.bytes()?.into();
+        let schema_hash = decode_opt_hash(c)?;
+        let token = decode_opt_bytes(c)?;
+        let deadline_ms = decode_opt_u64(c)?;
+        let dispatch_hash = decode_opt_hash(c)?;
+        let is_timer = match c.u8()? {
+            0 => false,
+            1 => true,
+            t => {
+                return Err(DecodeError::BadTag {
+                    field: "checkpoint.obligation.is_timer",
+                    tag: t,
+                })
+            }
+        };
+        open.push(CheckpointObligation {
+            id,
+            target,
+            schema_hash,
+            token,
+            deadline_ms,
+            dispatch_hash,
+            is_timer,
+        });
+    }
+    let n_spawned = c.len()?;
+    let mut spawned = Vec::with_capacity(n_spawned);
+    for _ in 0..n_spawned {
+        spawned.push(Hash::from_bytes(c.hash()?));
+    }
+    let seeded_capabilities = match c.u8()? {
+        0 => false,
+        1 => true,
+        t => {
+            return Err(DecodeError::BadTag {
+                field: "checkpoint.seeded_capabilities",
+                tag: t,
+            })
+        }
+    };
+    let close_outcome = match c.u8()? {
+        0 => None,
+        1 => Some(decode_close_outcome(c)?),
+        t => {
+            return Err(DecodeError::BadTag {
+                field: "checkpoint.close_outcome",
+                tag: t,
+            })
+        }
+    };
+    Ok(CheckpointDescriptor {
+        kv_root,
+        next_effect_id,
+        last_now,
+        settled_watermark,
+        settled_exceptions,
+        open,
+        spawned,
+        seeded_capabilities,
+        close_outcome,
     })
 }
 
@@ -879,6 +983,57 @@ fn encode_body(body: &EventBody, out: &mut Vec<u8>) {
             out.extend_from_slice(child.as_bytes());
             encode_close_outcome(outcome, out);
         }
+        EventBody::Checkpoint(d) => {
+            out.push(12);
+            encode_checkpoint_descriptor(d, out);
+        }
+    }
+}
+
+/// Encode a [`CheckpointDescriptor`] (GAP-4 checkpoint frame) — the 9 log-derived fields in
+/// struct-declaration order; lists are a `u64` length prefix then their elements. Nested under the
+/// `Checkpoint` frame tag. (The value-form/event_ast codec mirrors this shape + field order; event_ast is
+/// v-cml's single-writer lane.)
+fn encode_checkpoint_descriptor(d: &CheckpointDescriptor, out: &mut Vec<u8>) {
+    out.extend_from_slice(d.kv_root.as_bytes());
+    out.extend_from_slice(&d.next_effect_id.to_le_bytes());
+    out.extend_from_slice(&d.last_now.to_le_bytes());
+    out.extend_from_slice(&d.settled_watermark.to_le_bytes());
+    // settled_exceptions: len prefix + each id (ascending, as produced by SettledSet::exceptions).
+    out.extend_from_slice(&(d.settled_exceptions.len() as u64).to_le_bytes());
+    for id in &d.settled_exceptions {
+        out.extend_from_slice(&id.to_le_bytes());
+    }
+    // open: len prefix + each obligation's 7 fields in declaration order.
+    out.extend_from_slice(&(d.open.len() as u64).to_le_bytes());
+    for ob in &d.open {
+        out.extend_from_slice(&ob.id.to_le_bytes());
+        encode_bytes(&ob.target, out);
+        encode_opt_bytes(
+            ob.schema_hash.as_ref().map(|h| h.as_bytes().as_slice()),
+            out,
+        );
+        encode_opt_bytes(ob.token.as_deref(), out);
+        encode_opt_u64(ob.deadline_ms, out);
+        encode_opt_bytes(
+            ob.dispatch_hash.as_ref().map(|h| h.as_bytes().as_slice()),
+            out,
+        );
+        out.push(ob.is_timer as u8);
+    }
+    // spawned: len prefix + each 32-byte genesis hash.
+    out.extend_from_slice(&(d.spawned.len() as u64).to_le_bytes());
+    for h in &d.spawned {
+        out.extend_from_slice(h.as_bytes());
+    }
+    out.push(d.seeded_capabilities as u8);
+    // close_outcome: presence byte + the CloseOutcome codec when Some.
+    match &d.close_outcome {
+        Some(o) => {
+            out.push(1);
+            encode_close_outcome(o, out);
+        }
+        None => out.push(0),
     }
 }
 
@@ -1389,6 +1544,48 @@ mod tests {
                     child: Hash::of(b"failed-child"),
                     outcome: CloseOutcome::Failure("child goal unreachable".to_string()),
                 },
+            },
+            // A GAP-4 Checkpoint frame — exercises every CheckpointDescriptor field and both Some/None per
+            // optional (across two obligations: a full effect obligation with all-Some + a timer obligation
+            // with deadline/is_timer and the rest None), non-empty settled_exceptions + spawned, and a
+            // Some(close_outcome), so the identity codec (and later event_ast) round-trip the new variant.
+            Event {
+                seq: 18,
+                cause: None,
+                body: EventBody::Checkpoint(CheckpointDescriptor {
+                    kv_root: Hash::of(b"kv@18"),
+                    next_effect_id: 42,
+                    last_now: 1_000_000,
+                    settled_watermark: 40,
+                    settled_exceptions: vec![41, 43],
+                    open: vec![
+                        CheckpointObligation {
+                            id: 42,
+                            target: "https://ok.host/p".as_bytes().into(),
+                            schema_hash: Some(crate::ast_marshal::builtin_effect_schema_hash(
+                                &crate::effect::EffectKind::Http,
+                            )),
+                            token: Some(b"resume-tok".to_vec()),
+                            deadline_ms: None,
+                            dispatch_hash: Some(Hash::of(b"dispatch@42")),
+                            is_timer: false,
+                        },
+                        CheckpointObligation {
+                            id: 44,
+                            target: b"".as_slice().into(),
+                            schema_hash: None,
+                            token: None,
+                            deadline_ms: Some(999),
+                            dispatch_hash: None,
+                            is_timer: true,
+                        },
+                    ],
+                    spawned: vec![Hash::of(b"child-a"), Hash::of(b"child-b")],
+                    seeded_capabilities: true,
+                    close_outcome: Some(CloseOutcome::Failure(
+                        "checkpointed after failure".to_string(),
+                    )),
+                }),
             },
         ]
     }

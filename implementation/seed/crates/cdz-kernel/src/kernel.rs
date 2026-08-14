@@ -2433,6 +2433,7 @@ fn event_body_name(body: &EventBody) -> &'static str {
         EventBody::Terminated { .. } => "Terminated",
         EventBody::Spawned { .. } => "Spawned",
         EventBody::ChildCompleted { .. } => "ChildCompleted",
+        EventBody::Checkpoint(_) => "Checkpoint",
     }
 }
 
@@ -2496,7 +2497,10 @@ fn observable(body: &EventBody) -> bool {
         | EventBody::TimerArmed { .. }
         | EventBody::FoldFailed { .. }
         | EventBody::Terminated { .. }
-        | EventBody::Spawned { .. } => false,
+        | EventBody::Spawned { .. }
+        // A Checkpoint is a durable RESIDENT-STATE frame (GAP-4), appended by the prune path and consumed by
+        // recover-from-checkpoint — never handed to the reducer's fold (like Genesis/Dispatched bookkeeping).
+        | EventBody::Checkpoint(_) => false,
     }
 }
 
