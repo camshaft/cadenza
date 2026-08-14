@@ -943,7 +943,14 @@ pub struct ComponentSessionFactory<B, E, A> {
     blob: B,
     executors: E,
     authz: A,
-    log_sink: Option<Box<dyn LogSinkBuilder>>,
+    /// The per-session durable-log builder, held as an `Rc` so it can be SHARED into each built session's
+    /// checkpoint capability (GAP-4 D3-4) via a cheap `Rc::clone` — the builder appends AND (per-session)
+    /// checkpoint-rewrites through the same handle. `Rc` (not `Arc`): the daemon loop is single-threaded.
+    log_sink: Option<std::rc::Rc<dyn LogSinkBuilder>>,
+    /// GAP-4 D3-4 checkpoint TRIGGER policy applied to every durably-logged session this factory builds
+    /// (from `[log].checkpoint_threshold`). Default DISABLED = no checkpointing (unbounded log). Set via
+    /// [`with_checkpoint_policy`](Self::with_checkpoint_policy).
+    checkpoint_policy: crate::checkpoint::CheckpointPolicy,
 }
 
 impl<B, E, A> ComponentSessionFactory<B, E, A>
@@ -961,13 +968,25 @@ where
             executors,
             authz,
             log_sink: None,
+            checkpoint_policy: crate::checkpoint::CheckpointPolicy::DISABLED,
         }
     }
 
     /// Attach a per-session durable-log [`LogSinkBuilder`] — the deployed daemon supplies one when
-    /// `[log].backend = file` so each installed session's event log persists to disk. Builder-style.
+    /// `[log].backend = file` so each installed session's event log persists to disk. Builder-style. Takes a
+    /// `Box` (the daemon's natural handle) and wraps it in an `Rc` so it can be shared into each session's
+    /// checkpoint capability.
     pub fn with_log_sink(mut self, log_sink: Box<dyn LogSinkBuilder>) -> Self {
-        self.log_sink = Some(log_sink);
+        self.log_sink = Some(std::rc::Rc::from(log_sink));
+        self
+    }
+
+    /// Set the GAP-4 D3-4 checkpoint TRIGGER policy applied to every durably-logged session this factory
+    /// builds (the daemon derives it from `[log].checkpoint_threshold`). Only takes effect for sessions that
+    /// also get a durable log sink ([`with_log_sink`](Self::with_log_sink)); a `memory`-backed session never
+    /// checkpoints regardless. Builder-style; default (unset) is [`CheckpointPolicy::DISABLED`](crate::checkpoint::CheckpointPolicy::DISABLED).
+    pub fn with_checkpoint_policy(mut self, policy: crate::checkpoint::CheckpointPolicy) -> Self {
+        self.checkpoint_policy = policy;
         self
     }
 
@@ -1122,6 +1141,11 @@ where
             if let Some(sink) = builder.build(&spec.id).await? {
                 hosted = hosted.with_sink(sink);
             }
+            // GAP-4 D3-4: attach the per-turn checkpoint capability — the SAME builder (a shared `Rc`) so the
+            // session can compact-rewrite its own durable log + rebuild the sink when the policy fires. A
+            // DISABLED policy (the default) makes this inert, so this is safe to attach unconditionally when a
+            // durable sink exists; only a configured `[log].checkpoint_threshold` actually triggers.
+            hosted = hosted.with_checkpoint(builder.clone(), self.checkpoint_policy);
         }
         Ok(hosted)
     }

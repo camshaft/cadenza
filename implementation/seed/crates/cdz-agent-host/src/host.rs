@@ -137,8 +137,10 @@ pub struct HostedSession {
     /// GAP-4 D3-4: the per-session checkpoint capability — this session's OWN durable-log builder (as a
     /// `dyn LogSinkBuilder`) so [`maybe_checkpoint`](Self::maybe_checkpoint) can compact-rewrite its log +
     /// rebuild the live sink. `None` = no checkpointing (in-memory / no durable log / no offload store).
-    /// Attached via [`with_checkpoint`](Self::with_checkpoint) at build.
-    checkpoint_builder: Option<Box<dyn crate::factory::LogSinkBuilder>>,
+    /// Attached via [`with_checkpoint`](Self::with_checkpoint) at build. An `Rc` (not `Box`): the factory
+    /// holds ONE builder shared across every session it builds, so each session's checkpoint capability is a
+    /// cheap `Rc::clone` of that shared builder (the loop is single-threaded — `Rc`, not `Arc`).
+    checkpoint_builder: Option<std::rc::Rc<dyn crate::factory::LogSinkBuilder>>,
     /// The checkpoint TRIGGER policy consulted after each delivered turn (default DISABLED = never).
     checkpoint_policy: crate::checkpoint::CheckpointPolicy,
     /// The seq of the most recent checkpoint (`0` = genesis, none taken yet) — the growth baseline the policy
@@ -328,7 +330,7 @@ impl HostedSession {
     /// per-turn hook [`maybe_checkpoint`](Self::maybe_checkpoint) consults the policy after each delivered turn.
     pub fn with_checkpoint(
         mut self,
-        builder: Box<dyn crate::factory::LogSinkBuilder>,
+        builder: std::rc::Rc<dyn crate::factory::LogSinkBuilder>,
         policy: crate::checkpoint::CheckpointPolicy,
     ) -> Self {
         self.checkpoint_builder = Some(builder);
@@ -1308,6 +1310,23 @@ impl AgentHost {
                 }
             }
         }
+        // GAP-4 D3-4: after a SUCCESSFUL turn, consult the session's checkpoint policy — if it fires, compact
+        // the session's durable log to [Genesis, Checkpoint@N, tail] + persist the KV snapshot + reattach the
+        // rebuilt sink ([`HostedSession::maybe_checkpoint`]). Best-effort: a checkpoint failure is logged, never
+        // fails the turn (the session keeps running on its current, possibly un-compacted, log). No-op unless a
+        // durable sink + an enabled `[log].checkpoint_threshold` policy were attached at build.
+        if outcome.is_ok() {
+            if let Some(s) = self.sessions.get_mut(id) {
+                if let Err(e) = s.maybe_checkpoint().await {
+                    tracing::warn!(
+                        target: "cdz_agent_host::checkpoint",
+                        session_id = id.to_base64url(),
+                        error = %e,
+                        "checkpoint failed (durability best-effort; the session keeps its current log)"
+                    );
+                }
+            }
+        }
     }
 
     /// Read-only access to a hosted session (for a status query / inspection). `None` = unknown id.
@@ -1878,7 +1897,7 @@ mod tests {
             CompositeExecutor::new(),
         )
         .with_checkpoint(
-            Box::new(StubCheckpointer(calls.clone())),
+            std::rc::Rc::new(StubCheckpointer(calls.clone())),
             crate::checkpoint::CheckpointPolicy {
                 threshold_frames: 2,
             },
@@ -1906,6 +1925,74 @@ mod tests {
             calls.borrow().as_slice(),
             &[2],
             "no re-fire below threshold since the last checkpoint"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_host_deliver_fires_the_session_checkpoint_when_the_policy_says_so() {
+        // GAP-4 D3-4b activation: AgentHost::deliver (via the shared record_turn_and_merge_back post-turn hook)
+        // fires the session's maybe_checkpoint after each SUCCESSFUL turn — so a durably-logged session with an
+        // enabled policy checkpoints itself IN THE LOOP, no external trigger. A stub checkpointer records the
+        // calls (the compact-rewrite itself is covered by the D3-2a + maybe_checkpoint tests); this proves the
+        // deliver-hook fires the trigger at the right turn.
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        struct NoopReducer;
+        #[async_trait::async_trait(?Send)]
+        impl Reducer for NoopReducer {
+            async fn fold(&mut self, _event: &Event, _kv: &mut Kv) -> FoldOutput {
+                FoldOutput::none()
+            }
+        }
+        struct StubCp(Rc<RefCell<u32>>);
+        #[async_trait::async_trait(?Send)]
+        impl crate::factory::LogSinkBuilder for StubCp {
+            async fn build(
+                &self,
+                _id: &SessionId,
+            ) -> Result<Option<Box<dyn cdz_kernel::log_store::LogSink>>, String> {
+                Ok(None)
+            }
+            async fn checkpoint(
+                &self,
+                _id: &SessionId,
+                _session: &cdz_kernel::kernel::Session,
+            ) -> Result<(), String> {
+                *self.0.borrow_mut() += 1;
+                Ok(())
+            }
+        }
+
+        let calls = Rc::new(RefCell::new(0u32));
+        let hosted = HostedSession::genesis(
+            Hash::of(b"cp-loop"),
+            Box::new(NoopReducer),
+            Box::new(Authorizer::deny_all()),
+            CompositeExecutor::new(),
+        )
+        .with_checkpoint(
+            Rc::new(StubCp(calls.clone())),
+            crate::checkpoint::CheckpointPolicy {
+                threshold_frames: 2,
+            },
+        );
+        let mut host = AgentHost::new();
+        let id = host.spawn(SessionId::new(hosted.genesis_hash()), hosted);
+
+        // Turn 1 -> tip 1, growth 1 < 2 -> the deliver-hook consults the policy but does NOT checkpoint.
+        host.deliver(&id, inbound_go(), None).await;
+        assert_eq!(
+            *calls.borrow(),
+            0,
+            "no checkpoint after turn 1 (growth 1 < 2)"
+        );
+        // Turn 2 -> tip 2, growth 2 >= 2, quiescent -> the deliver-hook fires the checkpoint.
+        host.deliver(&id, inbound_go(), None).await;
+        assert_eq!(
+            *calls.borrow(),
+            1,
+            "AgentHost::deliver fired the session checkpoint after turn 2 via the post-turn hook"
         );
     }
 
