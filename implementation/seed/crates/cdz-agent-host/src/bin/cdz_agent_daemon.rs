@@ -195,6 +195,10 @@ async fn main() -> std::process::ExitCode {
             LogConfig::File {
                 dir,
                 offload_threshold,
+                // checkpoint_threshold (GAP-4 D3-4) is config-surface only here — the per-turn checkpoint
+                // trigger that consumes it is a follow-on slice. `..` so a future [log] field can't re-break
+                // this live-net-gated destructure (E0027).
+                ..
             } => Some(Box::new(file_log_builder(dir, *offload_threshold))),
             // DynamoDB-backed durable session log (I2, behind `live-aws-storage`). Loads the ambient AWS
             // config ONCE here (boot path). A build WITHOUT the feature reports a clean "not compiled in"
@@ -208,6 +212,9 @@ async fn main() -> std::process::ExitCode {
                 table,
                 offload_threshold,
                 compress_threshold,
+                // checkpoint_threshold (GAP-4 D3-4): config surface only for now (consumer is a follow-on);
+                // `..` future-proofs this destructure against the next [log] field.
+                ..
             } => {
                 let builder = cdz_agent_host::DynamoLogSinkBuilder::new(table.clone()).await;
                 let builder = match (offload_threshold, blob_offload_source.clone()) {
@@ -241,6 +248,10 @@ async fn main() -> std::process::ExitCode {
             LogConfig::File {
                 dir,
                 offload_threshold,
+                // checkpoint_threshold (GAP-4 D3-4) is config-surface only here — the per-turn checkpoint
+                // trigger that consumes it is a follow-on slice. `..` so a future [log] field can't re-break
+                // this live-net-gated destructure (E0027).
+                ..
             } => Some(Box::new(file_log_builder(dir, *offload_threshold))),
             // GAP-4 D1: same offload wiring as the append-side builder above (a recovery reader must rehydrate
             // the bodies the append side offloaded — the same `[blob]` root, same threshold).
@@ -249,6 +260,9 @@ async fn main() -> std::process::ExitCode {
                 table,
                 offload_threshold,
                 compress_threshold,
+                // checkpoint_threshold (GAP-4 D3-4): config surface only for now (consumer is a follow-on);
+                // `..` future-proofs this destructure against the next [log] field.
+                ..
             } => {
                 let builder = cdz_agent_host::DynamoLogSinkBuilder::new(table.clone()).await;
                 let builder = match (offload_threshold, blob_offload_source.clone()) {

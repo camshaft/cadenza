@@ -96,6 +96,14 @@ pub enum LogConfig {
         dir: String,
         #[serde(default)]
         offload_threshold: Option<usize>,
+        /// `checkpoint_threshold` (GAP-4 D3-4, optional): checkpoint (compact the durable log to
+        /// `[Genesis, Checkpoint@N, tail]` + persist the KV snapshot) once the log has grown at least this many
+        /// FRAMES beyond the last checkpoint, when the session is quiescent — the [`CheckpointPolicy`](crate::checkpoint::CheckpointPolicy)
+        /// the per-turn trigger consults. Absent / `0` = no checkpointing (the log grows unbounded, pre-D3
+        /// behavior). Requires an offload store (the same `[blob]` CAS `offload_threshold` uses) to hold the KV
+        /// snapshot.
+        #[serde(default)]
+        checkpoint_threshold: Option<u64>,
     },
     /// DynamoDB-backed durable log in `table` (region from the ambient AWS env, like the Bedrock creds).
     /// The distributed prod target the operator flagged. `offload_threshold` (GAP-4 D1, optional) enables the
@@ -108,6 +116,12 @@ pub enum LogConfig {
         table: String,
         #[serde(default)]
         offload_threshold: Option<usize>,
+        /// `checkpoint_threshold` (GAP-4 D3-4, optional): the same frame-growth checkpoint trigger the `File`
+        /// backend carries (compact the log + persist the KV snapshot once it has grown this many frames past
+        /// the last checkpoint, quiescent). Absent / `0` = no checkpointing. The D3-3 Dynamo checkpoint-write is
+        /// a follow-on; the config surface is uniform across backends here.
+        #[serde(default)]
+        checkpoint_threshold: Option<u64>,
         /// `compress_threshold` (GAP-4 D2, optional): compress an event body larger than this many bytes with
         /// zstd before storing it in the Dynamo item (a small `z` marker attribute records that the body is
         /// compressed; a read decompresses transparently), shrinking Dynamo storage for cold logs. Composes
@@ -1228,6 +1242,7 @@ mod tests {
             LogConfig::Dynamo {
                 table: "cdz-agent-log".into(),
                 offload_threshold: None,
+                checkpoint_threshold: None,
                 compress_threshold: None,
             }
         );
@@ -1298,6 +1313,7 @@ mod tests {
             LogConfig::File {
                 dir: "/var/lib/cdz/log".into(),
                 offload_threshold: None,
+                checkpoint_threshold: None,
             }
         );
     }
@@ -1323,6 +1339,32 @@ mod tests {
             LogConfig::File {
                 dir: "/var/lib/cdz/log".into(),
                 offload_threshold: Some(4096),
+                checkpoint_threshold: None,
+            }
+        );
+    }
+
+    #[test]
+    fn a_file_log_backend_parses_its_checkpoint_threshold() {
+        // GAP-4 D3-4: the optional frame-growth checkpoint trigger parses from the snake_case
+        // `checkpoint_threshold` key (frames, u64), independently of offload_threshold. Absent = None (covered
+        // above); present = Some(N). The consumer (per-turn trigger via CheckpointPolicy) is a follow-on slice.
+        let cfg = DaemonConfig::from_toml_str(
+            r#"
+            [log]
+            backend = "file"
+            dir = "/var/lib/cdz/log"
+            offload_threshold = 4096
+            checkpoint_threshold = 512
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.log,
+            LogConfig::File {
+                dir: "/var/lib/cdz/log".into(),
+                offload_threshold: Some(4096),
+                checkpoint_threshold: Some(512),
             }
         );
     }
@@ -1346,6 +1388,7 @@ mod tests {
             LogConfig::Dynamo {
                 table: "cdz-agent-log".into(),
                 offload_threshold: Some(300_000),
+                checkpoint_threshold: None,
                 compress_threshold: Some(8192),
             }
         );
