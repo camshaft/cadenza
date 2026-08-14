@@ -1,11 +1,27 @@
-# GAP-6 — typed `git/*` effect family (v-agent-harness)
+# GAP-6 — typed `git/*` effect family (v-agent-harness) — ❌ SUPERSEDED / REVERSED
 
-> STATUS: DESIGN, boundary CONFIRMED by v-ah-host (concierge relay, 2026-08-13) — mirrors fs/* + the 14 host
+> ❌❌ **SUPERSEDED (operator ruling, 2026-08-14) — the entire typed-kernel-git-family design below is
+> REVERSED and was fully collapsed.** Operator directive, verbatim: "Why are we adding a kernel space git
+> executor? That should be a userspace wrapper around shell so it can easily evolve without redeployments."
+> The NEW direction: **git is USERSPACE** — a reducer-side wrapper that composes the ALREADY-EXISTING generic
+> `shell` effect (GAP-2), NOT a typed kernel `git/*` family and NOT a host `GitExecutor`. WHY: a userspace
+> shell-wrapper evolves by editing reducer code (no host/kernel redeploy) and bakes NO git vocabulary into the
+> kernel/host (generic-compiler-aligned). What was built under this doc + then FULLY COLLAPSED: the kernel
+> `git/*` family decl (`40ebf3e08`) + per-op Cedar authz (`e66ad882c`) + dispatch-wire (`f022038b2`) were
+> REMOVED (C1 kernel removal + C2 reducer removal, landed on origin); v-ah-host removed the host `GitExecutor`
+> + `live-git` feature. This mooted the GitExecutor flag-injection finding (`3ff858c10`), resolved-by-removal.
+> REPLACEMENT PATH (in flight): git ops = reducer functions emitting the `shell` effect, whose structured
+> `(shell-pipeline (stage (program …) (args …)))` payload a reducer builds via a prelude `Shell.pipeline`
+> builder (v-inference-owned; encoder-gated on exposing `ast-encode` OR R2 `Value.encode`). The role-library
+> git-publish step is DEFERRED until `Shell.pipeline` lands, then re-points. This doc is retained only as the
+> historical record of the reversed typed-family design — DO NOT build from it.
+>
+> ~~STATUS: DESIGN, boundary CONFIRMED by v-ah-host (concierge relay, 2026-08-13) — mirrors fs/* + the 14 host
 > executors + the schema-hash re-key. Phase-1a reify e2e LANDED on origin (d311398f8); the A/B framing is now
 > RESOLVED to (A) built-in well-known (see Schema-hash-model fit). Build still DESIGN-ONLY / HELD: git/* is a
 > host-executor family, so its BUILD touches the effect-family/schema surface + `cdz-kernel/src` near the
 > phase-2 dispatched-frame flip (2b/2c) — do NOT start it until the phase-2 squash lands, to avoid colliding
-> with v-effects' in-flight assembly. This doc is the design record (docs-only, no gated-crate impact).
+> with v-effects' in-flight assembly. This doc is the design record (docs-only, no gated-crate impact).~~
 
 ## The problem (GAP-6)
 A self-hosting agent replaces fleet-tooling, which drives git (`sync` = reset-onto-trunk + patch-id replay,
