@@ -1,0 +1,113 @@
+// reducer_inbox_kv.cdz — ROLE LIBRARY: the KV-BACKED INBOX-DRAIN role (host-fused, dedup state).
+//
+// The STATEFUL successor to reducer_inbox.cdz (which classifies but is stateless). A real fleet
+// inbox-drain must not RE-ACT on a re-delivered message, so this reducer tracks PROCESSED messages in KV:
+// on an inbox/<kind> message it checks a per-message seen-key; if already seen it drains to NOTHING
+// (dedup), otherwise it marks the key seen and emits the classified action (informational -> archive;
+// actionable -> act, carrying the message). This is the fleet resolver's "act once, then processed/"
+// semantics as a durable fold.
+//
+// HOST-FUSED (imports cadenza:agent-kernel/kv, like reducer_kv) — the seen-set lives in KV, so this is
+// NOT `cdz test`-gated (it cannot build a standalone test component on the seed VM); it targets the
+// REDUCER world (export fold.apply(list<u8>)->list<u8> + import kv) and is gated by a v-nix world-driven
+// precompile derivation + a host e2e (like reducer_kv). The pure reducer_inbox.cdz stays as the
+// classification reference; this adds the dedup STATE.
+//
+// BUILD (v-nix precompile, mirrors reducer_kv): emit-wit-world full -> reducer-world.bin; then
+//   cdz compile reducer_inbox_kv.cdz wit-world:reducer-world=reducer-world.bin
+//     --component-name cadenza:agent-kernel/fold -o reducer_inbox_kv.wasm
+//   -> exports fold.apply(list<u8>)->list<u8>, imports cadenza:agent-kernel/kv (+ runtime/heap); VALID.
+
+// The kv host import (get to check seen, put to mark seen). NO `bind` — the kv calls escape as host imports
+// fused against the world's cadenza:agent-kernel/kv import, exactly as reducer_kv does.
+effect Kv =
+  | get : `->`(Bytes, Option(Bytes))
+  | put : `->`(Bytes, Bytes, Unit)
+
+// The seen-set namespace: a processed message is marked at seen-prefix ++ <message bytes> (dedup by the
+// message the event carries; a real deployment keys on a message id, this reference keys on the payload).
+def seen-prefix() -> Bytes = String.to-bytes("inbox/seen/")
+def seen-key(msg: Bytes) -> Bytes = Bytes.concat(seen-prefix(), msg)
+
+// Shared strict Event value-form fields.
+type ReplyPayload =
+  | Inline(Bytes)
+  | Blob(Bytes)
+
+type Outcome =
+  | Ok(ReplyPayload)
+  | Err(Record(message: Bytes, retryable: Bool))
+  | TimedOut
+
+type ChildOutcome =
+  | Success(ReplyPayload)
+  | Failure(Bytes)
+
+// Is this an inbox message (family prefix "inbox/")? String.slice returns Option (None if too short).
+def is-inbox(fam: String) -> Bool =
+  match String.slice(fam, 0, 6) with
+    | Some(p) => p == "inbox/"
+    | None() => false
+
+// The INFORMATIONAL inbox kinds (drained, no work); every other inbox kind is ACTIONABLE by default.
+def is-informational(fam: String) -> Bool =
+  fam == "inbox/note"
+  or fam == "inbox/merged"
+  or fam == "inbox/backlog"
+  or fam == "inbox/status"
+  or fam == "inbox/reply"
+  or fam == "inbox/answer"
+
+def apply(
+  event: Record(
+    content-type: Record(family: String, version: UInt(32)),
+    payload: Option(Bytes),
+    resumes: Option(Bytes),
+    outcome: Option(Outcome),
+    child-completed: Option(Record(child: Bytes, outcome: ChildOutcome)),
+  ),
+) -> List(Record(
+  kind: String,
+  target: Bytes,
+  payload: Option(Bytes),
+  correlation: Option(Bytes),
+)) =
+  let fam = event.content-type.family in
+  if is-inbox(fam) then
+    (match event.payload with
+       // A message with content: dedup on its seen-key, act once, mark seen.
+       | Some(msg) =>
+         host Kv in (
+           let key = seen-key(msg) in
+           (match Kv.get(key) with
+              // Already processed -> drain to nothing (idempotent: no re-action on re-delivery).
+              | Some(_) => []
+              // First time -> mark seen, then emit the classified action.
+              | None() =>
+                Kv.put(key, String.to-bytes("1"));
+                (if is-informational(fam) then
+                   [{
+                     kind = "emit",
+                     target = String.to-bytes("archive"),
+                     payload = None(),
+                     correlation = None(),
+                   }]
+                 else
+                   [{
+                     kind = "emit",
+                     target = String.to-bytes("act"),
+                     payload = Some(msg),
+                     correlation = None(),
+                   }])))
+       // A payload-less inbox message has no dedup key -> drive nothing.
+       | None() => [])
+  else
+    // Not an inbox message -> drive nothing.
+    []
+
+// No `@test`: host-fused (kv escapes to host imports) → cannot build a standalone test component on the
+// seed VM (no kv host). Gated by the WORLD-DRIVEN compile (v-nix precompile derivation) + a
+// v-agent-harness-host inbox-dedup e2e. NOT in Project.cdz `tests` (that would break reducerCadenzaTests
+// trying to build a test component). The pure reducer_inbox.cdz carries the classification @tests.
+
+export { apply }
