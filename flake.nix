@@ -907,6 +907,20 @@
           witWorld = "full";
           contentAddressed = true;
         };
+        # INBOX-KV (role-library, the KV-backed inbox-drain role): the host-fused sibling of the pure
+        # reducer_inbox — folds an inbox/<kind> event but dedups on a KV seen-set (kv.get to check seen,
+        # kv.put to mark seen), so a re-delivered identical message drains to nothing. Host-fused (the kv
+        # calls escape as world imports, no bind), so it TARGETS the FULL reducer world — witWorld = "full"
+        # like reducerCadenzaKv (NOT pure like reducer-cadenza-vertical). Consumed by v-ah-host's inbox-dedup
+        # e2e (deliver an inbox event twice → exactly ONE act/archive then nothing) via env
+        # CDZ_REDUCER_INBOX_KV_COMPONENT (exported in agentHostEnvSetup below, + CDZ_STORE for the heap dep).
+        # CA like the other reducers.
+        reducerCadenzaInboxKv = mkCadenzaComponent {
+          name = "reducer-cadenza-inbox-kv";
+          cdzFile = "reducer_inbox_kv.cdz";
+          witWorld = "full";
+          contentAddressed = true;
+        };
         # AGENT-LOOP (GAP-1 keystone, design/agent-harness-kernel.md §3): the agentic loop expressed as a FOLD
         # over KV inbox state — message events append to the inbox under an "inbox/" prefix + enumerate the
         # pending inbox via kv.prefix-scan then emit a "model" effect; model-response events dispatch a "tool"
@@ -1239,6 +1253,12 @@
           # reducer for now). Returns effects only (no host import) so it needs only CDZ_STORE for its
           # cadenza:runtime/heap dep. Same pattern as CDZ_AGENT_LOOP_REDUCER_COMPONENT above.
           export CDZ_REDUCER_VERTICAL_COMPONENT="${reducerCadenzaVertical}"
+          # INBOX-DEDUP (KV-backed inbox-drain role): feed the precompiled host-fused inbox-kv reducer so
+          # v-ah-host's inbox-dedup e2e RUNS instead of skipping — it delivers an inbox/<kind> event TWICE and
+          # asserts exactly ONE act/archive then nothing, proving the KV seen-set dedup (kv.get check-seen +
+          # kv.put mark-seen) round-trips over the A1 bytes boundary. Host-fused (imports cadenza:agent-kernel/kv),
+          # gates on this env + CDZ_STORE (heap dep). Same pattern as CDZ_KV_GENESIS_REDUCER_COMPONENT.
+          export CDZ_REDUCER_INBOX_KV_COMPONENT="${reducerCadenzaInboxKv}"
           # (The A1 transition arming-switch CDZ_KERNEL_BYTES_ABI was dropped here once v-ah-host collapsed its
           # reader in 813570fa5 — the genesis e2e now gates purely on GENESIS_REDUCER_COMPONENT + CDZ_STORE like
           # pure/kv, so the export was a dead no-op. Dual-land: reader removed on origin FIRST, then this drop.)
@@ -2282,6 +2302,7 @@
         packages.reducer-cadenza-reify = reducerCadenzaReify;
         packages.reducer-cadenza-vertical = reducerCadenzaVertical;
         packages.reducer-cadenza-kv = reducerCadenzaKv;
+        packages.reducer-cadenza-inbox-kv = reducerCadenzaInboxKv;
         packages.reducer-cadenza-agent-loop = reducerCadenzaAgentLoop;
         packages.emit-wit-world = emitWitWorld;
         packages.reducer-cadenza-b1-hash = hashOf reducerCadenzaB1 "reducer-cadenza-b1-hash";
@@ -2292,6 +2313,7 @@
         packages.reducer-cadenza-reify-hash = hashOf reducerCadenzaReify "reducer-cadenza-reify-hash";
         packages.reducer-cadenza-vertical-hash = hashOf reducerCadenzaVertical "reducer-cadenza-vertical-hash";
         packages.reducer-cadenza-kv-hash = hashOf reducerCadenzaKv "reducer-cadenza-kv-hash";
+        packages.reducer-cadenza-inbox-kv-hash = hashOf reducerCadenzaInboxKv "reducer-cadenza-inbox-kv-hash";
         packages.reducer-cadenza-agent-loop-hash = hashOf reducerCadenzaAgentLoop "reducer-cadenza-agent-loop-hash";
 
         # PARITY CHECK (not a pin): assert the DERIVED hash of the nix-built runtime equals the hash
@@ -2478,7 +2500,7 @@
                 inherit runtimeHashParity runtimeDebugHashParity nfcHashParity
                   reducerGuestValid cedarGuestValid
                   reducerCadenzaB1Valid reducerCadenzaB2Valid reducerCadenzaB3Valid reducerCadenzaGenesisValid
-                  reducerCadenzaPureGenesisValid reducerCadenzaReifyValid reducerCadenzaVerticalValid reducerCadenzaKvValid reducerCadenzaAgentLoopValid
+                  reducerCadenzaPureGenesisValid reducerCadenzaReifyValid reducerCadenzaVerticalValid reducerCadenzaKvValid reducerCadenzaInboxKvValid reducerCadenzaAgentLoopValid
                   exampleProjectTests reducerCadenzaTests crateClosureAssert;
               } ''
               echo "ok: flake reproducibility-backstop — hash-parity + component-validity + project-@tests + closure-assert" > $out
@@ -2500,6 +2522,7 @@
             reducerCadenzaReifyValid = validComponent { name = "reducer-cadenza-reify"; drv = reducerCadenzaReify; };
             reducerCadenzaVerticalValid = validComponent { name = "reducer-cadenza-vertical"; drv = reducerCadenzaVertical; };
             reducerCadenzaKvValid = validComponent { name = "reducer-cadenza-kv"; drv = reducerCadenzaKv; };
+            reducerCadenzaInboxKvValid = validComponent { name = "reducer-cadenza-inbox-kv"; drv = reducerCadenzaInboxKv; };
             reducerCadenzaAgentLoopValid = validComponent { name = "reducer-cadenza-agent-loop"; drv = reducerCadenzaAgentLoop; };
 
             # LOCAL-GATE bindings (v-nix+v-fleet-tooling 2026-08-06, GHA-outage fallback). The 3 required
@@ -2642,6 +2665,7 @@
             reducer-cadenza-reify-valid = reducerCadenzaReifyValid;
             reducer-cadenza-vertical-valid = reducerCadenzaVerticalValid;
             reducer-cadenza-kv-valid = reducerCadenzaKvValid;
+            reducer-cadenza-inbox-kv-valid = reducerCadenzaInboxKvValid;
             reducer-cadenza-agent-loop-valid = reducerCadenzaAgentLoopValid;
 
             # Full-CI-in-nix increment 1: the LINT pair, mirroring checks.yml `fmt` + `clippy` exactly.
