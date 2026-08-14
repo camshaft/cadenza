@@ -1386,6 +1386,30 @@
   (call   main (: 1 Int64)) (output (: 6 Int64))
   (call   main (: 0 Int64)) (output (: 3 Int64)))
 
+(case "a non-recursive helper that performs the discharged op UNDER a conditional, in a recursive self-call arg, folds"
+  (doc    "The CONDITIONAL twin of the case above (v-effects self-select): `bump`'s perform of `S.tick` sits
+           UNDER an `if` (`(if (< k 3) (+ (S.tick) x) x)`) rather than on the helper's unconditional spine. This
+           was historically a clean DECLINE ('not yet reducible' — the branch-local threading of a perform under
+           an inlined `if` left a state ref unbound in the specialized def's sig); it now FOLDS correctly. The
+           helper is non-recursive so it inlines; the `if` lifts and each branch threads the incoming state, so
+           the perform-taking branch advances state while the pass-through branch carries it unchanged. `loop 4`
+           seed n: k=4,3 skip (k<3 false, no tick); k=2 ticks (reads n, s→n+1) +0 = n; k=1 ticks (reads n+1,
+           s→n+2) +n = 2n+1; k=0 returns acc = 2n+1. So main(1)=3, main(0)=1. Pins that a conditional perform in
+           a non-recursive helper on a recursive self-call arg no longer declines — the branch state-threading
+           binds correctly through the specialization.")
+  (input  (do
+            (effect S (op tick (-> Int64)))
+            (def (bump (: k Int64) (: x Int64)) (if (< k 3) (+ (S.tick) x) x))
+            (def (loop (: k Int64) (: acc Int64))
+              (if (< k 1) acc (loop (- k 1) (bump k acc))))
+            (def (main (: n Int64))
+              (handle S n
+                ((tick () s (resume s (+ s 1))))
+                (loop 4 0)))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 3 Int64))
+  (call   main (: 0 Int64)) (output (: 1 Int64)))
+
 (case "a NON-recursive helper calling a nested op whose resume performs the outer effect folds"
   (doc    "The non-recursive-helper twin of the resume-value-performs-outer case above (v-effects self-probe).
            A non-recursive `helper` calls the inner `B.step` (whose arm resumes with `(A.tick)`, performing the

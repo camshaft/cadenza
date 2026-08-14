@@ -2659,6 +2659,7 @@ pass	a non-linear tuple binding pattern is rejected
 pass	a non-matching literal inside a constructor pattern binds the runtime payload
 pass	a non-power-of-two float width is rejected
 pass	a non-recursive generic producer composes at two element types via inlining
+pass	a non-recursive helper that performs the discharged op UNDER a conditional, in a recursive self-call arg, folds
 pass	a non-tail accumulable recursion runs to a large runtime N in constant stack
 pass	a non-tail call passing a heap-match argument compiles to valid wasm
 pass	a non-tail mutual-recursive group observing a partner's out-state folds via the group multi-value fold

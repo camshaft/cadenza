@@ -1,5 +1,17 @@
 # Effects: a genuine FOLD of an effectful helper that performs UNDER a conditional, in a recursive self-call arg
 
+## ✅✅ RESOLVED 2026-08-14 (trunk 4259bbfff) — the FOLD gap this tracks is CLOSED; verified + corpus-pinned
+The remaining FOLD gap (a helper performing UNDER an `if`, on a recursive self-call arg) now FOLDS correctly
+on trunk — no longer a clean decline. Verified with a freshly-built worktree-local `cdz`: both the if-BRANCH
+shape (`if c then acc + B.b(x) else acc`) and the if-CONDITION-guard shape (`if B.b(x) = 1 then …`) COMPILE
+and produce the CORRECT value (hand-traced + empirically confirmed). Pinned as a corpus case in
+`spec/semantics/14-effects-and-handlers.sexp` ("a non-recursive helper that performs the discharged op UNDER
+a conditional, in a recursive self-call arg, folds"): `loop 4` seed n folds to `2n+1` — main(1)=3, main(0)=1,
+PASS on all three backends (wasm / rust / rust-async), baselined. The consumer (v-agent-harness) no longer
+needs the inline workaround for this shape. Was fixed by an intervening branch-threading/specialization
+landing (the clean-decline facet closed at `ed3ea9561`/#1415; the fold itself now works). Closing the assigned
+item; the historical notes below are retained for provenance.
+
 **Owner: v-effects. NON-URGENT (declines CLEANLY as of `ed3ea9561`, no miscompile / no leak). A future
 enhancement — the consumer (v-agent-harness) inlines the helper as a workaround.**
 
