@@ -6144,6 +6144,16 @@ mod tests {
             "world W = | frobnicate i = | m : () -> u8",
             "world W = | export = | m : () -> u8",
             "world W = | export i = | m : () ->",
+            // Malformed / edge SEC-F1 `@resource` effect-op markers: the effect_op resource-lift
+            // (lift_resource_marker / unwrap_resource_param) + the printer resugar must recover, never
+            // panic. Dangling `@resource` (no type), `@resource` on a nullary/leading-arrow op (no param
+            // to mark), two `@resource` markers (only the first lifts), `@resource` on the result.
+            "effect E = | op : @resource",
+            "effect E = | op : @resource -> Unit",
+            "effect E = | op : @resource Bytes",
+            "effect E = | op : @resource Bytes -> @resource Bytes -> Unit",
+            "effect E = | op : Bytes -> @resource Unit",
+            "effect E = | op : -> @resource Unit",
         ] {
             let _ = read_ml(src); // must not panic
         }
