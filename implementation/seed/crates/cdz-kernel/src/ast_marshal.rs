@@ -1632,6 +1632,19 @@ fn read_bytes(a: &Arenas, id: StructId) -> Result<Vec<u8>, MarshalError> {
     }
 }
 
+/// Read a 32-byte [`Hash`](crate::hash::Hash) carried as a RAW-BYTES leaf (the hash-encoding discipline: a
+/// hash-like value is raw bytes, never a hex string). A non-bytes leaf or a wrong length is a `TypeMismatch`.
+/// `Hash::from_bytes` is the raw-bytes constructor (not a forbidden `from_hex` decode) — same read the
+/// `child` hash uses in `decode_child_completed`. Used by the phase-3 input-wire `schema_hash` parse-read.
+fn read_hash(a: &Arenas, id: StructId) -> Result<crate::hash::Hash, MarshalError> {
+    let bytes = read_bytes(a, id)?;
+    let raw: [u8; 32] = bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| type_mismatch("hash", "not a 32-byte hash"))?;
+    Ok(crate::hash::Hash::from_bytes(raw))
+}
+
 /// Read an unsigned int leaf, range-checked into a u64 (the caller narrows to the WIT width). A negative
 /// or out-of-u64 value is IntOutOfRange; a non-int leaf is a TypeMismatch. The per-width narrowing (as u8
 /// etc.) at the call site is lossless because we FIRST check the value fits the width via the width name.
@@ -2183,7 +2196,24 @@ fn parse_effect_request(a: &Arenas, id: StructId) -> Result<Effect, MarshalError
         Some(n) => read_canonical_opt_bytes(a, n)?,
         None => None,
     };
-    let request = EffectRequest::new_with_family(family, target, payload, Timeliness::Interactive);
+    let mut request =
+        EffectRequest::new_with_family(family, target, payload, Timeliness::Interactive);
+    // PHASE-3 input-wire schema-hash (parse-read half — MY lane, the kernel-parse side of the co-dependent
+    // producer/parse pair). A reified effect record MAY carry a `schema_hash` field: the PRODUCER-BAKED
+    // identity `Hash::of(codec::encode(effect_schema_descriptor))` the reify computes rcdzc-side (v-rb's
+    // reify lane wires the emit; this reads it). When present, it is the AUTHORITATIVE wire identity — the
+    // effect's structural schema-hash — so it OVERRIDES the family-DERIVED hash `new_with_family` computed
+    // above (which is a fallback keyed only on the family string, `None` for an as-yet-undeclared/extension
+    // family). ADDITIVE + ORDER-SAFE: the field is OPTIONAL, so absent (every reify today, until the producer
+    // lands) → the family-derived hash stands, byte-identical to before; present → the precise producer hash
+    // wins. Landing this parse-read FIRST is the correct order — `parse_effect_request` ignores unrecognized
+    // fields (the `field()` lookup), so a producer that emitted `schema_hash` before this read existed would
+    // be SILENTLY DROPPED; reading it here makes the kernel honor the field the producer will emit. (The
+    // MANDATORY flip — every effect MUST carry Some — is a LATER phase-3 slice, co-dependent on the producer
+    // baking it universally; a premature `.expect()` red the platform target on register-by-string families.)
+    if let Some(n) = field("schema_hash") {
+        request.schema_hash = Some(read_hash(a, n)?);
+    }
     Ok(Effect { request, token })
 }
 
@@ -4378,6 +4408,69 @@ mod tests {
         assert_eq!(effects[1].request.content_type.family, "effect/beat");
         assert_eq!(effects[1].request.target_str().unwrap(), "");
         assert!(effects[1].request.payload.is_none());
+    }
+
+    #[test]
+    fn phase3_input_wire_schema_hash_field_overrides_the_family_derived_hash() {
+        // PHASE-3 parse-read: a reified effect record MAY carry a `schema_hash` field (the producer-baked
+        // identity `Hash::of(codec::encode(effect_schema_descriptor))` reify computes rcdzc-side). When
+        // present it is the AUTHORITATIVE wire identity and OVERRIDES the family-derived hash — even for a
+        // register-by-string EXTENSION family whose family-derived hash is `None`. This is the exact case the
+        // mandatory flip depends on: with the producer baking the hash, an extension family now carries `Some`.
+        let bytes = |b: &[u8]| Val::List(b.iter().copied().map(Val::U8).collect());
+        // A distinctive 32-byte hash the producer would bake (raw bytes — the hash-encoding discipline).
+        let baked = crate::hash::Hash::of(b"phase3-producer-baked-schema-descriptor");
+        let with_hash = Val::Record(vec![
+            ("kind".into(), Val::String("effect/weather".into())), // an extension family (no built-in kind)
+            (
+                "schema_hash".into(),
+                bytes(baked.as_bytes()), // raw 32 bytes, read by read_hash
+            ),
+            ("payload".into(), Val::Option(None)),
+            ("correlation".into(), Val::Option(None)),
+        ]);
+        // The SAME extension family with NO schema_hash field — the family-derived hash (None here) stands.
+        let without_hash = Val::Record(vec![
+            ("kind".into(), Val::String("effect/weather".into())),
+            ("payload".into(), Val::Option(None)),
+            ("correlation".into(), Val::Option(None)),
+        ]);
+        let parsed = parse_effect_list(&effect_list_bytes(vec![with_hash, without_hash]))
+            .expect("both records parse");
+        assert_eq!(parsed.len(), 2);
+        // Present → the producer hash wins (verbatim), even though the family alone derives None.
+        assert_eq!(
+            parsed[0].request.schema_hash,
+            Some(baked),
+            "a present schema_hash field is the authoritative wire identity"
+        );
+        // Absent → byte-identical to before: the family-derived hash (None for this extension family) stands.
+        assert_eq!(
+            parsed[1].request.schema_hash, None,
+            "no schema_hash field → the family-derived hash is unchanged (additive, order-safe)"
+        );
+        // The family string is preserved verbatim in both cases (identity axis unchanged).
+        assert_eq!(parsed[0].request.content_type.family, "effect/weather");
+        assert_eq!(parsed[1].request.content_type.family, "effect/weather");
+    }
+
+    #[test]
+    fn phase3_input_wire_schema_hash_wrong_length_is_a_type_mismatch() {
+        // A schema_hash field that is not 32 bytes is a TypeMismatch (fail-closed — never silently truncate
+        // or pad a wire identity). Total over a malformed producer emit.
+        let short = Val::List((0..8u8).map(Val::U8).collect()); // 8 bytes, not 32
+        let bad = Val::Record(vec![
+            ("kind".into(), Val::String("model".into())),
+            ("schema_hash".into(), short),
+            ("payload".into(), Val::Option(None)),
+            ("correlation".into(), Val::Option(None)),
+        ]);
+        let err = parse_effect_list(&effect_list_bytes(vec![bad]))
+            .expect_err("a non-32-byte schema_hash is rejected");
+        assert!(
+            matches!(err, MarshalError::TypeMismatch { .. }),
+            "wrong-length hash → TypeMismatch, got {err:?}"
+        );
     }
 
     #[test]
