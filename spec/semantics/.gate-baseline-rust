@@ -5337,6 +5337,7 @@ pass	hi1 an arm INSTALLS a fresh handle and resumes with its result — a whole 
 pass	hi2 the arm-installed handle's body draws from the arm's ENCLOSING frame — fresh inner frame and outer dispatch in one arm
 pass	hi3 the arm-installed handle's OWN arm resumes with an OUTER draw — the rv face nested inside another handler's dispatch
 pass	hi4 the arm-installed handle ABORTS with an outer draw — the av face nested inside another handler's dispatch
+pass	hld1 an INVENTORY hold/settle/release protocol — hold reserves against available (on-hand minus already-held) answering the running held total or the NEGATED available on reject, settle deducts held from on-hand, release just drops the holds, and the seeds reject DIFFERENT holds
 pass	ho2 a PURE factory returns a closure applied to a draw — the captured constant is pure, only the argument is drawn
 pass	hof1 a higher-order APPLY-TWICE over a draw — the fn value crosses the call while the thread advances underneath
 pass	host calls are observed in the order they were made
@@ -5754,6 +5755,7 @@ pass	permutation invariance of a commutative fold holds — the property oracle 
 pass	pf1 an AGGREGATOR arm — the op returns the running sum of every value fed to it, three feeds pin the accumulation
 pass	pfx1 a PREFIX-SUM table state — add appends the running total to the list, range answers pre[j]-pre[i] via two fallible reads with an out-of-bounds sentinel
 pass	pg1 a PUT/GET store — put returns the value it displaces, a counter tracks writes, get reads the survivor
+pass	pid1 an integer P+I CONTROLLER stepping a plant toward the setpoint 20 — each step folds the error into the integral, applies u = (2*err + integral) / 4 with a NEGATIVE dividend on the overshoot face, and the closing draw reads the wound-up integral
 pass	pk1 a BEGIN/END protocol arm — a Bool flag rejects double-begin and end-without-begin, the sequence encodes the violations
 pass	plt2 the LOOP-DRIVEN plateau tracker — the same three-let two-if arm that declines straight-line folds fine when one recursive driver walks the feed list
 pass	pm1 LITERAL match arms grade the state INSIDE the handler arm — a mod-4 walker crosses all four literal rows
@@ -6587,6 +6589,7 @@ pass	tp2 a SWAP op exchanges the tuple-state slots — interleaved readers obser
 pass	tp3 a NESTED tuple state ((a b) c) — the arm rebuilds the inner Fibonacci pair and bumps the outer counter per dispatch
 pass	tp4 readers and a SPIN writer share one tuple state — sum flows into slot a while old a shifts to b
 pass	tpc1 TWO-PHASE COMMIT across two handlers — the coordinator prepares both sides, commits both only when both prepared, otherwise aborts both restoring the balances; the pass and fail paths both verified
+pass	tpl1 a DELIMITER-JOIN rope builder — the first fragment lands bare, every later one is prefixed with the separator, the empty-vs-seeded start decides whether the FIRST dispatch takes the bare branch, and multibyte fragments keep the byte-length answers honest
 pass	tq1 a Q-shadow inside a TWO-effect region — P draws thread THROUGH the shadow while Q is locally rebound
 pass	tq2 the Q-shadow's SEED mixes P and Q draws — both outer threads advance before the shadow opens, and resume after
 pass	tq3 a Q-shadow wraps only the MIDDLE argument of a pure call — its neighbors dispatch to the outer P and Q frames

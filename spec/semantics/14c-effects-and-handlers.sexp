@@ -11140,3 +11140,84 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 3999998990700 Int64))
   (call   main (: 0 Int64)) (output (: -101000099 Int64)))
+
+;; ── Integer P+I controller, inventory hold/settle/release, delimiter-join rope (breaker batch 275) ──
+(case "pid1 an integer P+I CONTROLLER stepping a plant toward the setpoint 20 — each step folds the error into the integral, applies u = (2*err + integral) / 4 with a NEGATIVE dividend on the overshoot face, and the closing draw reads the wound-up integral"
+  (input  (do
+            (effect P
+              (op step (-> Int64))
+              (op integ (-> Int64)))
+            (def (main (: n Int64))
+              (handle P (tuple n (: 0 Int64))
+                ((step () st
+                  (match st
+                    ((tuple pv ig)
+                      (match (tuple (- 20 pv) ig)
+                        ((tuple err ig2)
+                          (match (+ ig2 err)
+                            (ig3
+                              (match (+ pv (/ (+ (* 2 err) ig3) 4))
+                                (pv2 (resume pv2 (tuple pv2 ig3)))))))))))
+                 (integ () st
+                  (match st ((tuple pv ig) (resume ig st)))))
+                (let ((a (P.step)))
+                  (let ((b (P.step)))
+                    (let ((c (P.step)))
+                      (let ((d (P.step)))
+                        (let ((e (P.step)))
+                          (let ((f (P.integ)))
+                            (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 172123232306 Int64))
+  (call   main (: 0 Int64)) (output (: 152327272608 Int64)))
+
+(case "hld1 an INVENTORY hold/settle/release protocol — hold reserves against available (on-hand minus already-held) answering the running held total or the NEGATED available on reject, settle deducts held from on-hand, release just drops the holds, and the seeds reject DIFFERENT holds"
+  (input  (do
+            (effect I
+              (op hold (-> Int64 Int64))
+              (op settle (-> Int64))
+              (op release (-> Int64)))
+            (def (main (: n Int64))
+              (handle I (tuple (+ n 8) (: 0 Int64))
+                ((hold (v) st
+                  (match st
+                    ((tuple oh hd)
+                      (if (< (- oh hd) v)
+                          (resume (- 0 (- oh hd)) st)
+                          (resume (+ hd v) (tuple oh (+ hd v)))))))
+                 (settle () st
+                  (match st
+                    ((tuple oh hd) (resume (- oh hd) (tuple (- oh hd) 0)))))
+                 (release () st
+                  (match st
+                    ((tuple oh hd) (resume oh (tuple oh 0))))))
+                (let ((a (I.hold 4)))
+                  (let ((b (I.hold 9)))
+                    (let ((c (I.settle)))
+                      (let ((d (I.hold 3)))
+                        (let ((e (I.release)))
+                          (let ((f (I.hold 6)))
+                            (let ((g (I.settle)))
+                              (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 4130503049505 Int64))
+  (call   main (: 0 Int64)) (output (: 3960403039604 Int64)))
+
+(case "tpl1 a DELIMITER-JOIN rope builder — the first fragment lands bare, every later one is prefixed with the separator, the empty-vs-seeded start decides whether the FIRST dispatch takes the bare branch, and multibyte fragments keep the byte-length answers honest"
+  (input  (do
+            (effect J (op sep (-> String Int64)))
+            (def (main (: n Int64))
+              (handle J (if (= n 0) "" "id")
+                ((sep (frag) s
+                  (if (= (String.byte-len s) 0)
+                      (resume (String.byte-len frag) frag)
+                      (let ((r (String.concat (String.concat s ";") frag)))
+                        (resume (String.byte-len r) r)))))
+                (let ((a (J.sep "ab")))
+                  (let ((b (J.sep "é")))
+                    (let ((c (J.sep "xyz")))
+                      (let ((d (J.sep "é")))
+                        (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 5081215 Int64))
+  (call   main (: 0 Int64)) (output (: 2050912 Int64)))
