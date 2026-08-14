@@ -81,6 +81,7 @@ pub mod export;
 pub mod factory;
 #[cfg(feature = "live-fs")]
 pub mod fs_exec;
+pub mod git_exec;
 pub mod host;
 pub mod http;
 pub mod lifecycle;
