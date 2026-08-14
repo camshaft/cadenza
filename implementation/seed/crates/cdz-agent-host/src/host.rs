@@ -2875,6 +2875,133 @@ mod tests {
         );
     }
 
+    /// END-TO-END: the ROLE LIBRARY KV-BACKED INBOX-DRAIN reducer (`reducer_inbox_kv.cdz`) folded through the
+    /// A1 bytes boundary — the STATEFUL dedup successor to the pure `reducer_inbox`. env-gated on
+    /// `CDZ_REDUCER_INBOX_KV_COMPONENT` (+ `CDZ_STORE` for the `cadenza:runtime/heap` dep; wired by v-nix's
+    /// `agentHostEnvSetup`, drv landed `b0eb73dfe`); skips when unwired. HOST-FUSED (imports
+    /// `cadenza:agent-kernel/kv`), so the dedup seen-set lives in the KV THREADED across `apply`s — the test
+    /// carries the returned kv forward to exercise re-delivery. Contract (reducer_inbox_kv.cdz): an
+    /// `inbox/<kind>` message with a payload dedups on its seen-key (`"inbox/seen/" ++ msg`): FIRST delivery
+    /// marks it seen + emits the classified action (informational[note/merged/backlog/status/reply/answer] →
+    /// `emit "archive"`; else actionable → `emit "act"`); a RE-delivery of the SAME message drains to NOTHING;
+    /// a DIFFERENT message is not deduped; a payload-less inbox message and a non-inbox family drive nothing.
+    #[tokio::test]
+    async fn real_inbox_kv_reducer_dedups_and_classifies_through_the_a1_bytes_boundary() {
+        use cdz_kernel::kv::Kv;
+        use cdz_kernel::wasm_host::AsyncComponentReducer;
+
+        let non_empty = |var: &str| std::env::var(var).ok().filter(|v| !v.is_empty());
+        let Some(reducer_path) = non_empty("CDZ_REDUCER_INBOX_KV_COMPONENT") else {
+            eprintln!(
+                "SKIP real_inbox_kv_reducer_dedups_and_classifies_through_the_a1_bytes_boundary: \
+                 CDZ_REDUCER_INBOX_KV_COMPONENT unset (or empty)"
+            );
+            return;
+        };
+        let store_dir = non_empty("CDZ_STORE").unwrap_or_else(|| {
+            panic!(
+                "real_inbox_kv_reducer_...: CDZ_REDUCER_INBOX_KV_COMPONENT is set but CDZ_STORE is not — the \
+                 inbox-kv reducer imports cadenza:runtime/heap, whose bytes resolve from the component store"
+            )
+        });
+        let bytes = std::fs::read(&reducer_path).unwrap_or_else(|e| {
+            panic!("CDZ_REDUCER_INBOX_KV_COMPONENT={reducer_path:?} set but unreadable: {e}")
+        });
+        let reducer = AsyncComponentReducer::from_component_bytes(&bytes)
+            .unwrap_or_else(|e| panic!("reducer_inbox_kv must be a valid component: {e:?}"));
+        let store = cdz_kernel::component_store::ComponentStore::open(&store_dir);
+        let deps = reducer.deps().to_vec();
+        let mut resolved = Vec::with_capacity(deps.len());
+        for dep in &deps {
+            let dep_bytes = store.get_by_hash(&dep.hash).unwrap_or_else(|e| {
+                panic!(
+                    "CDZ_STORE={store_dir:?} could not resolve inbox-kv reducer dep {:?} (hash {}): {e:?}",
+                    dep.import_name,
+                    dep.hash.to_hex()
+                )
+            });
+            resolved.push((dep.clone(), dep_bytes));
+        }
+        let reducer = reducer
+            .with_resolved_deps(resolved)
+            .with_component_store(store);
+
+        let ct = |fam: &'static str| cdz_kernel::event::ContentType {
+            family: fam.into(),
+            version: 1,
+        };
+        fn target_of(eff: &cdz_kernel::reducer::Effect) -> &str {
+            eff.request.target_str().expect("effect target is UTF-8")
+        }
+
+        // First delivery of an INFORMATIONAL inbox/note (payload "m1") → mark seen + emit "archive".
+        let (effs, kv) = reducer
+            .apply(Kv::new(), ct("inbox/note"), Some(b"m1".to_vec()), None)
+            .await
+            .expect("inbox/note folds through the bytes boundary");
+        assert_eq!(
+            effs.len(),
+            1,
+            "first informational delivery emits one action"
+        );
+        assert_eq!(effs[0].request.content_type.family, "emit");
+        assert_eq!(target_of(&effs[0]), "archive", "informational → archive");
+
+        // Re-delivery of the SAME message (the threaded kv holds the seen-key) → dedup to NOTHING.
+        let (effs, kv) = reducer
+            .apply(kv, ct("inbox/note"), Some(b"m1".to_vec()), None)
+            .await
+            .expect("re-delivery folds");
+        assert!(
+            effs.is_empty(),
+            "a re-delivered message is deduped (no re-action) — the whole point of the KV seen-set"
+        );
+
+        // A DIFFERENT informational message is NOT deduped (the seen-key is per-message).
+        let (effs, kv) = reducer
+            .apply(kv, ct("inbox/note"), Some(b"m2-different".to_vec()), None)
+            .await
+            .expect("a distinct message folds");
+        assert_eq!(effs.len(), 1, "a distinct message still acts");
+        assert_eq!(target_of(&effs[0]), "archive");
+
+        // An ACTIONABLE inbox/merge-request (payload "mr1") → mark seen + emit "act".
+        let (effs, kv) = reducer
+            .apply(kv, ct("inbox/merge-request"), Some(b"mr1".to_vec()), None)
+            .await
+            .expect("actionable folds");
+        assert_eq!(effs.len(), 1);
+        assert_eq!(effs[0].request.content_type.family, "emit");
+        assert_eq!(target_of(&effs[0]), "act", "actionable → act");
+
+        // Re-delivery of the actionable message → dedup.
+        let (effs, kv) = reducer
+            .apply(kv, ct("inbox/merge-request"), Some(b"mr1".to_vec()), None)
+            .await
+            .expect("re-delivery folds");
+        assert!(
+            effs.is_empty(),
+            "the actionable message is deduped on re-delivery"
+        );
+
+        // A payload-less inbox message has no dedup key → drives nothing.
+        let (effs, kv) = reducer
+            .apply(kv, ct("inbox/note"), None, None)
+            .await
+            .expect("payload-less inbox folds");
+        assert!(
+            effs.is_empty(),
+            "a payload-less inbox message has no seen-key → drives nothing"
+        );
+
+        // A NON-inbox family drives nothing (the reducer only acts on inbox/*).
+        let (effs, _kv) = reducer
+            .apply(kv, ct("tick-start"), Some(b"x".to_vec()), None)
+            .await
+            .expect("non-inbox folds");
+        assert!(effs.is_empty(), "a non-inbox family drives nothing");
+    }
+
     /// END-TO-END: drive the REAL rcdzc-compiled KV-GENESIS reducer (`reducer_kv.cdz`) through the A1 BYTES
     /// fold boundary on wasmtime, proving the kv HOST IMPORT round-trips the SAME bytes through the host — the
     /// sibling of the pure-genesis E2E, exercising BOTH `kv.put` AND the new `kv.get` option<list<u8>> lift
