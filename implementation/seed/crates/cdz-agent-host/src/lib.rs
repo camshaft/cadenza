@@ -146,6 +146,7 @@ pub use factory::{
 };
 #[cfg(feature = "live-fs")]
 pub use fs_exec::FsExecutor;
+pub use git_exec::GitExecutor;
 #[cfg(feature = "live-net")]
 pub use host::live_executor_set;
 pub use host::{genesis_ct, AgentHost, HostedSession, SessionId};

@@ -53,6 +53,14 @@ live-exec = []
 # Cedar wasm authorizer on the effect's resolved target, NOT in the host — operator standing-order).
 live-fs = []
 
+# `live-git` gates the GitExecutor — the typed `git/*` executor (GAP-6) so an agent can run the fleet-loop git
+# ops (status/diff/add/commit/rev-parse/checkout/fetch/push) on the source it builds. OFF by default so the
+# hermetic gate never spawns `git` (like `live-exec` gates the generic ShellExecutor). No extra deps — uses
+# `std::process`; this feature just WIRES the (always-compiled) GitExecutor per session. Thin MECHANISM
+# (deny-by-default repo/ref/remote policy lives in the Cedar wasm authorizer on the resolved target, NOT the
+# host — operator standing-order). CWE-78-safe direct exec (no `sh -c`), like ShellExecutor.
+live-git = []
+
 # `admin` gates the ADMIN CONTROL INTERFACE's transport — the Unix-domain-socket listener that carries
 # admin command/response frames to a running daemon (operator: "a way to communicate with the daemon + send
 # it commands as an admin"). OFF by default so the hermetic gate BINDS NO SOCKET + pulls no tokio `net`
