@@ -694,6 +694,106 @@ impl FileLogSinkBuilder {
     fn log_path(&self, id: &crate::host::SessionId) -> std::path::PathBuf {
         self.root.join(format!("{}.log", id.to_hex()))
     }
+
+    /// GAP-4 D3-2: crash-safely CHECKPOINT session `id`'s durable file log — the host half of
+    /// log-prune-to-checkpoint. Persists `session`'s KV snapshot to the configured offload store (content-
+    /// addressed by its root hash = the checkpoint descriptor's `kv_root`), then REWRITES the log to
+    /// `[Genesis, Checkpoint@N, tail(seq > N)]` — dropping the subsumed `1..=N` prefix
+    /// ([`Session::checkpoint_subsumed_prefix`](cdz_kernel::kernel::Session::checkpoint_subsumed_prefix)) — via
+    /// a temp file + atomic rename.
+    ///
+    /// **Crash-safe (safety condition 5)** by never appending the checkpoint frame to the LIVE full log: the
+    /// snapshot is persisted FIRST, the compacted log is built in a temp file, fsync'd, then atomically renamed
+    /// over the original. A crash BEFORE the rename recovers to the intact full log (a normal
+    /// [`Session::recover_from`](cdz_kernel::kernel::Session::recover_from) full replay — no checkpoint frame is
+    /// present); a crash AFTER recovers to the compacted log ([`Session::recover_from_checkpoint`](cdz_kernel::kernel::Session::recover_from_checkpoint));
+    /// never a torn mix. The `Checkpoint` frame therefore only ever exists in the post-rename compacted log.
+    ///
+    /// Requires an offload store configured ([`with_offload`](Self::with_offload)) — the snapshot goes to the
+    /// SAME content-addressed store D1 body-offload uses. `Err` if none is set, if the log has no genesis at
+    /// `events[0]`, or on any store/IO failure (never a panic). NOTE: nothing TRIGGERS this yet (the checkpoint
+    /// trigger policy is a later slice); a session's log is only ever rewritten by an explicit call.
+    pub async fn checkpoint(
+        &self,
+        id: &crate::host::SessionId,
+        session: &cdz_kernel::kernel::Session,
+    ) -> Result<(), String> {
+        use cdz_kernel::log_store::LogStore;
+        let (source, _threshold) = self.offload.as_ref().ok_or_else(|| {
+            "checkpoint requires an offload store (no [blob]/offload configured for this file log)".to_string()
+        })?;
+        // A fresh handle over the content-addressed store — `put` (persist snapshot) needs `&mut`, the
+        // subsequent rehydrating read needs `&`; one handle serves both.
+        let mut blob = source.materialize()?;
+
+        // The checkpoint frame sits at the session's CURRENT tip (seq N) and carries the full descriptor
+        // (incl. `kv_root` = session.kv().root_hash()). Snapshot FIRST (crash-safe order): persist the KV
+        // content the descriptor's `kv_root` names, so a post-rename recovery always finds its seed_kv.
+        let frame = session.checkpoint_frame();
+        let checkpoint_seq = frame.seq;
+        crate::checkpoint::persist_kv_snapshot(blob.as_mut(), session.kv()).await?;
+
+        // Read the current durable frames (rehydrating any D1-offloaded bodies so the rewrite carries full
+        // bodies). Genesis (events[0]) MUST be present — it holds the identity/reducer/provenance recovery
+        // reads, and is ALWAYS kept.
+        let path = self.log_path(id);
+        let recovered = LogStore::recover_rehydrated(&path, blob.as_ref())
+            .await
+            .map_err(|e| format!("checkpoint: could not read log {}: {e}", path.display()))?;
+        let genesis = recovered
+            .events
+            .first()
+            .filter(|e| matches!(e.body, cdz_kernel::event::EventBody::Genesis { .. }))
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "checkpoint: log {} has no genesis event at events[0]",
+                    path.display()
+                )
+            })?;
+
+        // Compacted log = [Genesis, Checkpoint@N, tail (seq > N)]. The subsumed prefix (1..=N) is dropped; the
+        // checkpoint frame subsumes it. (The tail is normally empty — the checkpoint is at the current tip —
+        // but the filter is general so a checkpoint of an older seq keeps any later frames.)
+        let mut compacted: Vec<cdz_kernel::event::Event> = Vec::with_capacity(2);
+        compacted.push(genesis);
+        compacted.push(frame);
+        compacted.extend(
+            recovered
+                .events
+                .into_iter()
+                .filter(|e| e.seq > checkpoint_seq),
+        );
+
+        // Write the compacted log to a TEMP file, fsync its bytes, then ATOMIC-rename over the original — so a
+        // crash leaves either the intact original or the complete compacted log, never a torn frame.
+        let tmp = path.with_extension("checkpointing");
+        {
+            let mut store = LogStore::open(&tmp).map_err(|e| {
+                format!("checkpoint: could not open temp log {}: {e}", tmp.display())
+            })?;
+            for e in &compacted {
+                store
+                    .append(e)
+                    .map_err(|e2| format!("checkpoint: temp log append failed: {e2}"))?;
+            }
+        } // drop closes the temp file's handle before we fsync + rename it
+        std::fs::File::open(&tmp)
+            .and_then(|f| f.sync_all())
+            .map_err(|e| {
+                format!(
+                    "checkpoint: could not fsync temp log {}: {e}",
+                    tmp.display()
+                )
+            })?;
+        std::fs::rename(&tmp, &path).map_err(|e| {
+            format!(
+                "checkpoint: atomic rename of {} failed: {e}",
+                path.display()
+            )
+        })?;
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait(?Send)]
@@ -1555,6 +1655,146 @@ mod tests {
             .await
             .expect("default recover is Ok");
         assert!(got.is_none(), "the trait default declines with None");
+    }
+
+    #[tokio::test]
+    async fn file_log_sink_checkpoint_rewrites_to_genesis_plus_checkpoint_and_persists_the_snapshot(
+    ) {
+        // GAP-4 D3-2a: FileLogSinkBuilder::checkpoint rewrites a session's durable file log to
+        // [Genesis, Checkpoint@N] (dropping the subsumed 1..=N prefix) and persists the KV snapshot to the
+        // offload store, content-addressed by the descriptor's kv_root. Crash-safe (temp + atomic rename).
+        use crate::host::HostedSession;
+        use cdz_kernel::event::{ContentType, Event, EventBody};
+        use cdz_kernel::executor::CompositeExecutor;
+        use cdz_kernel::kv::Kv;
+        use cdz_kernel::log_store::LogStore;
+        use cdz_kernel::reducer::{FoldOutput, Reducer};
+
+        // A no-effect reducer: records each message payload in KV, dispatches nothing — so the session
+        // advances + KV fills WITHOUT open obligations (a clean checkpoint).
+        struct KvPutReducer;
+        #[async_trait::async_trait(?Send)]
+        impl Reducer for KvPutReducer {
+            async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
+                if let EventBody::Inbound {
+                    payload: cdz_kernel::effect::Payload::Inline(b),
+                    ..
+                } = &event.body
+                {
+                    kv.put(b"last".to_vec(), b.to_vec());
+                }
+                FoldOutput::none()
+            }
+        }
+        fn message(v: &[u8]) -> EventBody {
+            EventBody::Inbound {
+                content_type: ContentType {
+                    family: "message".into(),
+                    version: 1,
+                },
+                payload: cdz_kernel::effect::Payload::Inline(v.to_vec().into()),
+            }
+        }
+
+        let root = crate::testutil::unique_temp_dir("d3-2a-cp");
+        let blob_dir = crate::testutil::unique_temp_dir("d3-2a-cas");
+        // High offload threshold: the log FRAMES stay inline; the offload store here backs the checkpoint
+        // SNAPSHOT (D3-1), which checkpoint requires.
+        let builder = FileLogSinkBuilder::new(&root)
+            .with_offload(OffloadSource::Dir(blob_dir.clone()), 1 << 20);
+
+        // Build a session, seed its genesis into a recording sink (with_sink attaches post-genesis, so the
+        // seeded buffer is the COMPLETE log), deliver two messages (tip -> seq 2, KV "last"=v2).
+        let base = HostedSession::genesis(
+            Hash::of(b"d3-2a-reducer"),
+            Box::new(KvPutReducer),
+            deny_all_authz(),
+            CompositeExecutor::new(),
+        );
+        let id = SessionId::new(base.genesis_hash());
+        let genesis = base.session().genesis_ref().clone();
+        let (sink, captured) = crate::testutil::log_capture::recording_sink_seeded(genesis);
+        let mut hosted = base.with_sink(sink);
+        hosted
+            .deliver(message(b"v1"), None)
+            .await
+            .expect("deliver v1");
+        hosted
+            .deliver(message(b"v2"), None)
+            .await
+            .expect("deliver v2");
+
+        // Materialize the genesis-seeded durable log into the real per-session file the builder checkpoints.
+        let path = builder.log_path(&id);
+        {
+            let mut store = LogStore::open(&path).expect("open durable log");
+            for e in captured.borrow().iter() {
+                store.append(e).expect("seed durable frame");
+            }
+        }
+        let before = LogStore::recover(&path).expect("recover pre-checkpoint");
+        assert!(
+            before.events.len() >= 3,
+            "pre-checkpoint log has genesis + a delivered prefix to subsume, got {}",
+            before.events.len()
+        );
+        let kv_root = hosted.session().kv().root_hash();
+
+        // CHECKPOINT.
+        builder
+            .checkpoint(&id, hosted.session())
+            .await
+            .expect("checkpoint succeeds");
+
+        // The log is now exactly [Genesis, Checkpoint@N] — the subsumed prefix is gone.
+        let after = LogStore::recover(&path).expect("recover post-checkpoint");
+        assert_eq!(
+            after.events.len(),
+            2,
+            "post-checkpoint log is [Genesis, Checkpoint], got {}",
+            after.events.len()
+        );
+        assert!(
+            matches!(after.events[0].body, EventBody::Genesis { .. }),
+            "events[0] stays the genesis"
+        );
+        let desc = match &after.events[1].body {
+            EventBody::Checkpoint(d) => d.clone(),
+            other => panic!("events[1] must be the Checkpoint frame, got {other:?}"),
+        };
+        assert_eq!(
+            desc.kv_root, kv_root,
+            "the checkpoint frame's kv_root is the session's current KV root"
+        );
+        assert!(
+            !after
+                .events
+                .iter()
+                .any(|e| matches!(e.body, EventBody::Inbound { .. })),
+            "the subsumed Inbound prefix was pruned"
+        );
+
+        // The KV snapshot was persisted to the offload store under kv_root and reloads to the live KV.
+        let blob = OffloadSource::Dir(blob_dir.clone())
+            .materialize()
+            .expect("materialize snapshot store");
+        let snap = crate::checkpoint::load_kv_snapshot(blob.as_ref(), kv_root)
+            .await
+            .expect("load snapshot ok")
+            .expect("the checkpoint persisted its KV snapshot");
+        assert_eq!(
+            snap.root_hash(),
+            kv_root,
+            "reloaded snapshot matches the descriptor kv_root"
+        );
+        assert_eq!(
+            snap.get(b"last").as_deref(),
+            Some(&b"v2"[..]),
+            "the snapshot carries the session's committed KV content"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&blob_dir);
     }
 
     /// A stub executor that returns a SCRIPTED sequence of outcomes (one per `perform`), for exercising the
