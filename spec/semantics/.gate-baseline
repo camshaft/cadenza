@@ -5282,6 +5282,7 @@ pass	greater-than of an integer and a float is rejected
 pass	greater-than on an unusual signed width orders a positive above the negative minimum
 pass	greater-than-or-equal
 pass	greater-than-or-equal of an integer and a float is rejected
+pass	gry1 a GRAY-CODE generator — each tick answers the threaded counter's Gray encoding (n XOR n>>1) then advances; the body XOR-popcounts consecutive answers proving the single-bit-change law
 pass	gs1 a user-declared GENERIC sum resolves by NAME in a param annotation — the applied (Container Int64) checks and the payload unwraps
 pass	gs2 a TWO-parameter generic sum by name — (Pair Int64 Int64) in the annotation, both payload slots extracted
 pass	gs3 the applied generic sum CROSSES a dispatch — (Container Int64) as an op result, unwrapped in the body after the arm wraps the state
@@ -5335,6 +5336,7 @@ pass	hygiene fix does not over-reach: a different-named template binder needs no
 pass	hygiene: a spliced unquote sits beside the template's own use of the renamed binder
 pass	hygiene: an unquote is uncaptured through two nested same-named template binders
 pass	hygiene: two distinct unquotes each colliding with a different template binder are both renamed
+pass	hys1 a HYSTERESIS gate — the output turns on at eight and off at three, HOLDING between the thresholds; the same mid-band feed answers differently depending on which side entered it
 pass	i64-EXTREME indices — MAX and MIN as List.at arguments both answer the None fallback; a truncating index marshal would wrap into range
 pass	i8s1 an Int8 handler state walked to the TOP of its range under a guard — the +40 stride stops exactly where one more step would overflow
 pass	ic2 an INLINE performing if-condition — the taken branch's draw reads the condition-advanced state
@@ -5778,6 +5780,7 @@ pass	print/read is IDEMPOTENT after one trip and read normalizes whitespace to o
 pass	print/read round-trips a 12-deep nest and a 25-wide list
 pass	print/read round-trips a tree carrying every leaf kind in one canonical form
 pass	print/read round-trips escape-laden, multibyte, and empty string leaves
+pass	prn1 a PAREN-DEPTH validator — open and close chars move the depth, an underflow flips the STICKY invalid flag whose every later answer is the sentinel, and the seed picks a balanced or underflowing stream
 pass	projecting a field is independent of the order fields are written
 pass	projecting a field of a non-compound argument is rejected at the call site
 pass	projecting a just-built tuple does not evaluate the unprojected sibling's trap

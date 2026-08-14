@@ -10560,3 +10560,66 @@
             (export main)))
   (call   main (: 4 Int64)) (output (: 1207214 Int64))
   (call   main (: 10 Int64)) (output (: 1213226 Int64)))
+
+;; ── Hysteresis gate, paren-depth validator, Gray-code walker (breaker batch 268) ────────────
+(case "hys1 a HYSTERESIS gate — the output turns on at eight and off at three, HOLDING between the thresholds; the same mid-band feed answers differently depending on which side entered it"
+  (input  (do
+            (effect S (op feed (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S 0
+                ((feed (v) out
+                  (let ((o2 (if (>= v 8) 1 (if (<= v 3) 0 out))))
+                    (resume (+ (* o2 10) (if (and (> v 3) (< v 8)) 1 0)) o2))))
+                (let ((a (S.feed n)))
+                  (let ((b (S.feed 5)))
+                    (let ((c (S.feed 2)))
+                      (let ((d (S.feed 6)))
+                        (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)))))))
+            (export main)))
+  (call   main (: 9 Int64)) (output (: 10110001 Int64))
+  (call   main (: 5 Int64)) (output (: 1010001 Int64)))
+
+(case "prn1 a PAREN-DEPTH validator — open and close chars move the depth, an underflow flips the STICKY invalid flag whose every later answer is the sentinel, and the seed picks a balanced or underflowing stream"
+  (input  (do
+            (effect S (op feed (-> String Int64)))
+            (def (main (: n Int64))
+              (handle S (tuple 0 0)
+                ((feed (c) st
+                  (match st
+                    ((tuple depth bad)
+                      (if (= bad 1)
+                          (resume -9 st)
+                          (let ((d2 (+ depth (if (= c "(") 1 (if (= c ")") -1 0)))))
+                            (if (< d2 0)
+                                (resume -9 (tuple d2 1))
+                                (resume d2 (tuple d2 0)))))))))
+                (let ((s1 (if (= n 0) "(" "(")))
+                  (let ((s2 (if (= n 0) "(" ")")))
+                    (let ((s3 (if (= n 0) ")" ")")))
+                      (let ((a (S.feed s1)))
+                        (let ((b (S.feed s2)))
+                          (let ((c (S.feed s3)))
+                            (let ((d (S.feed "(")))
+                              (+ (* 100 (+ (* 100 (+ (* 100 (+ a 10)) (+ b 10))) (+ c 10))) (+ d 10)))))))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 11121112 Int64))
+  (call   main (: 1 Int64)) (output (: 11100101 Int64)))
+
+(case "gry1 a GRAY-CODE generator — each tick answers the threaded counter's Gray encoding (n XOR n>>1) then advances; the body XOR-popcounts consecutive answers proving the single-bit-change law"
+  (input  (do
+            (effect S (op tick (-> Int64)))
+            (def (pc (: x Int64) (: acc Int64))
+              (if (= x 0) acc (pc (>> x 1) (+ acc (& x 1)))))
+            (def (main (: n Int64))
+              (handle S n
+                ((tick () c (resume (^ c (>> c 1)) (+ c 1))))
+                (let ((g1 (S.tick)))
+                  (let ((g2 (S.tick)))
+                    (let ((g3 (S.tick)))
+                      (+ (* 100000 g1)
+                         (+ (* 10000 g2)
+                            (+ (* 1000 g3)
+                               (+ (* 10 (pc (^ g1 g2) 0)) (pc (^ g2 g3) 0))))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 267011 Int64))
+  (call   main (: 6 Int64)) (output (: 552011 Int64)))
