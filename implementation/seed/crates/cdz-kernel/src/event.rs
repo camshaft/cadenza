@@ -7,7 +7,7 @@
 //! (§9b), and — later — a signature + producer identity (§10; carried as optional now, unverified in
 //! v0). The kernel treats the payload as opaque; only reducers/executors interpret it.
 
-use crate::effect::{EffectId, EffectKind, Payload};
+use crate::effect::{EffectId, Payload};
 use crate::hash::Hash;
 
 /// Position of an event within a session log: a dense 0-based index. Total order within a session
@@ -122,15 +122,6 @@ pub enum EventBody {
     /// fail — never silently double-fire or drop.
     Dispatched {
         id: EffectId,
-        kind: EffectKind,
-        /// The dispatched effect's content-type FAMILY (seq-39) — the authoritative identity of what was
-        /// dispatched. Recorded ALONGSIDE `kind` because a register-by-string / control family (e.g.
-        /// `control/capabilities`) has NO distinguishing `EffectKind` variant — its `kind` is a
-        /// placeholder (`Emit`), so `kind` alone can't tell such a dispatch apart from a real emit on the
-        /// recovery path. Persisting the family makes recovery classify an open dispatch deterministically
-        /// (re-answer `control/capabilities` inline vs. re-drive a real emit), and is the direction the
-        /// effect model is migrating onto (family is the source of truth, `kind` the legacy tag).
-        family: std::sync::Arc<str>,
         /// The resolved target argument (url / session-id / command / hash — opaque bytes). `Arc<[u8]>`
         /// (operator Target=Bytes ruling 2026-08-09): the source [`crate::effect::EffectRequest::target`] is
         /// `Arc<[u8]>`, so recording it here is an O(1) refcount bump (`req.target.clone()`), and the durable
@@ -154,15 +145,22 @@ pub enum EventBody {
         /// reducer that doesn't use a token (e.g. the in-process Rust `Reducer` trait), which is every
         /// dispatch until the wasm-reducer bridge (§19e slice 2) populates it.
         token: Option<Vec<u8>>,
-        /// The dispatched effect's SCHEMA-HASH identity (schema-hash-only effect model): the durable-frame
-        /// mirror of [`crate::effect::EffectRequest::schema_hash`], copied straight from the effect at
-        /// dispatch. `Some(hash)` for an effect whose family has a built-in schema (the [`EffectKind`]
-        /// verbs, slice-1); `None` for a control/store/register-by-string family with no schema (its
-        /// `EffectKind` is the `Emit` PLACEHOLDER, so `family` — not this — is its identity there). Recorded
-        /// alongside `kind`/`family` so recovery + a future schema-keyed router read the effect's schema
-        /// identity straight off the log rather than re-deriving it. ADDITIVE / backward-compatible: the
-        /// `event_ast` wire-codec for this field (raw 32-byte child when `Some`, omitted when `None`,
-        /// absence-tolerant decode) is v-compiler-ml's lane and lands ON TOP of this field.
+        /// The dispatched effect's SCHEMA-HASH identity (schema-hash-ONLY effect model, slice-2 wire flip):
+        /// the durable-frame mirror of [`crate::effect::EffectRequest::schema_hash`], copied straight from the
+        /// effect at dispatch. This is now the SOLE identity of a dispatched effect on the frame — the legacy
+        /// `kind: EffectKind` enum and `family: Arc<str>` string were DROPPED (schema-hash-only ruling: routing,
+        /// authz, and recovery classification all key on this hash, never on a name/enum). MANDATORY (not
+        /// `Option`): every dispatchable effect has a schema-hash — a built-in kind via
+        /// [`crate::ast_marshal::builtin_effect_schema_hash`], a well-known non-kind family via
+        /// `family_effect_schema_hash`. `None` for a register-by-string EXTENSION family (a userspace
+        /// `effect/<name>` a handler serves): its identity is the producer-baked reify hash, but phase-1a
+        /// reify emits the kind as a STRING on the INPUT wire (no hash yet), so `parse_effect_request` has no
+        /// hash to record — those route by `content_type.family` on the input wire (phase-3, unchanged), not
+        /// by this frame identity. MANDATORY schema_hash rides phase-3 (the input-wire kind→hash flip); until
+        /// then this stays `Option<Hash>` — the legacy `kind` enum + `family` string are DROPPED regardless
+        /// (schema-hash-only frame identity), so a well-known family carries `Some(hash)` and only an
+        /// as-yet-schemaless extension is `None`. The `event_ast` wire-codec (absence-tolerant) is
+        /// v-compiler-ml's 2c lane, folded into this same commit.
         schema_hash: Option<Hash>,
     },
 
@@ -555,27 +553,32 @@ fn decode_body(c: &mut Cursor) -> Result<EventBody, DecodeError> {
         }
         2 => {
             let id = EffectId(c.u64()?);
-            let kind = decode_kind(c.u8()?)?;
-            let family = c.string()?;
             // Target is opaque bytes (Target=Bytes ruling) — read raw, no UTF-8 validation. Wire-compatible
             // with the old `string()` encoding (a str was its UTF-8 bytes under the same len-prefix framing).
             let target = c.bytes()?;
             let idempotency_key = Hash::from_bytes(c.hash()?);
             let deadline_ms = decode_opt_u64(c)?;
             let token = decode_opt_bytes(c)?;
+            // Schema-hash-only (slice-2): the frame's identity is the schema_hash, read HERE (kind tag +
+            // family string dropped — see the encode counterpart). Option: None for a register-by-string
+            // extension with no wire hash yet (phase-3); read as opt-bytes → Hash.
+            let schema_hash = decode_opt_bytes(c)?
+                .map(|b| {
+                    <[u8; 32]>::try_from(b.as_slice())
+                        .map(Hash::from_bytes)
+                        .map_err(|_| DecodeError::BadTag {
+                            field: "schema_hash",
+                            tag: b.len() as u8,
+                        })
+                })
+                .transpose()?;
             EventBody::Dispatched {
                 id,
-                kind,
-                family: family.into(),
                 target: std::sync::Arc::from(target.as_slice()),
                 idempotency_key,
                 deadline_ms,
                 token,
-                // This event.rs binary codec (the identity codec behind `Event::hash`) does NOT yet carry
-                // `schema_hash` on the wire, so a decoded frame has none — `None`. Persisting it belongs to
-                // the `event_ast` durable-frame codec (v-compiler-ml's lane); keeping it OUT of the identity
-                // encoding leaves `Event::hash` byte-stable (schema_hash is redundant with kind/family here).
-                schema_hash: None,
+                schema_hash,
             }
         }
         3 => EventBody::EffectResult {
@@ -619,23 +622,6 @@ fn decode_body(c: &mut Cursor) -> Result<EventBody, DecodeError> {
         t => {
             return Err(DecodeError::BadTag {
                 field: "body",
-                tag: t,
-            })
-        }
-    })
-}
-
-fn decode_kind(tag: u8) -> Result<EffectKind, DecodeError> {
-    Ok(match tag {
-        0 => EffectKind::Shell,
-        1 => EffectKind::Http,
-        2 => EffectKind::Model,
-        3 => EffectKind::Now,
-        4 => EffectKind::Timer,
-        5 => EffectKind::Emit,
-        t => {
-            return Err(DecodeError::BadTag {
-                field: "kind",
                 tag: t,
             })
         }
@@ -759,24 +745,24 @@ fn encode_body(body: &EventBody, out: &mut Vec<u8>) {
         }
         EventBody::Dispatched {
             id,
-            kind,
-            family,
             target,
             idempotency_key,
             deadline_ms,
             token,
-            // NOT written by this identity codec (see the decode counterpart): schema_hash stays out of
-            // `Event::hash`'s bytes so the hash is byte-stable; the durable `event_ast` frame carries it.
-            schema_hash: _,
+            // Schema-hash-only (slice-2): the frame's identity is `schema_hash`, written HERE (the legacy
+            // `kind` tag + `family` string were dropped). slice-D=A (abandon old logs) so this codec change
+            // is not a back-compat break. `Event::hash` now covers the schema-hash instead of kind/family.
+            schema_hash,
         } => {
             out.push(2);
             out.extend_from_slice(&id.0.to_le_bytes());
-            out.push(kind_tag(kind));
-            encode_str(family, out);
             encode_bytes(target, out);
             out.extend_from_slice(idempotency_key.as_bytes());
             encode_opt_u64(*deadline_ms, out);
             encode_opt_bytes(token.as_deref(), out);
+            // schema_hash is Option (None for a register-by-string extension with no wire hash yet — phase-3);
+            // encode as opt-bytes (the raw 32 bytes when Some).
+            encode_opt_bytes(schema_hash.as_ref().map(|h| h.as_bytes().as_slice()), out);
         }
         EventBody::EffectResult { id, result, token } => {
             out.push(3);
@@ -836,17 +822,6 @@ fn encode_body(body: &EventBody, out: &mut Vec<u8>) {
             out.extend_from_slice(child.as_bytes());
             encode_close_outcome(outcome, out);
         }
-    }
-}
-
-fn kind_tag(kind: &EffectKind) -> u8 {
-    match kind {
-        EffectKind::Shell => 0,
-        EffectKind::Http => 1,
-        EffectKind::Model => 2,
-        EffectKind::Now => 3,
-        EffectKind::Timer => 4,
-        EffectKind::Emit => 5,
     }
 }
 
@@ -1052,13 +1027,13 @@ mod tests {
             cause: Some(Hash::from_bytes([0xABu8; 32])),
             body: EventBody::Dispatched {
                 id: EffectId(7),
-                kind: EffectKind::Http,
-                family: EffectKind::Http.family().into(),
                 target: "https://ok.host/p".as_bytes().into(),
                 idempotency_key: Hash::from_bytes([0xCDu8; 32]),
                 deadline_ms: Some(1000),
                 token: Some(b"step-1".to_vec()),
-                schema_hash: None,
+                schema_hash: Some(crate::ast_marshal::builtin_effect_schema_hash(
+                    &crate::effect::EffectKind::Http,
+                )),
             },
         }
     }
@@ -1078,26 +1053,19 @@ mod tests {
         //   cause=Some(0xAB..)    → 1, then 32×0xAB(171)    (tag + Hash)
         //   body tag=Dispatched   → 2
         //   id=7                  → 7,0,0,0,0,0,0,0         (u64 LE)
-        //   kind=Http             → 1                       (kind tag)
         //   target len=17         → 17,0,0,0,0,0,0,0        (u64 LE len)
         //   target="https://ok.host/p" → its 17 UTF-8 bytes
         //   idempotency_key=0xCD.. → 32×0xCD(205)           (Hash)
         //   deadline_ms=Some(1000) → 1, then 1000 as u64 LE (232,3,0,0,0,0,0,0)
-        //   token=Some("step-1")  → 1, then 6 as u64 LE, then "step-1" (§19e — CONSCIOUS format bump:
-        //                            the Dispatched frame now carries the reducer's continuation token
-        //                            so the EffectId↔token map rebuilds from the log on recover)
+        //   token=Some("step-1")  → 1, then 6 as u64 LE, then "step-1"
+        //   schema_hash=Some(Http builtin) → opt-bytes: 1, len 32, then its 32 bytes (…ends 26,15)
         //
-        // §19e continuation-token format bumps (ALL DELIBERATE — the §16c-S3 format is PRE-RELEASE, no
-        // durable log stream predates them, so extending body variants in place is an intentional call,
-        // not an accidental break; PR#1132 review): tag 2 (Dispatched, above) + tag 3 (EffectResult)
-        // gained a trailing opt-bytes `token` in slice 2b-i, and tags 4/5/6 (TimerArmed/TimerFired/
-        // AuthzDenied) gained the same in slice 2b-iii — each an appended trailing opt-bytes field. If
-        // durable-log persistence ships AND gains a real external consumer before the next such change, a
-        // further bump must instead use a new tag or a version/length framing layer (so old streams can't
-        // desync); until then, in-place extension with this golden pin as the byte-stability tripwire is
-        // the deliberate, documented policy. tag 2 (Dispatched) ALSO gained a `family` str after `kind`
-        // (host-capability-discovery follow-up): a register-by-string/control dispatch has no distinguishing
-        // kind, so recovery needs the family — same deliberate pre-release in-place extension.
+        // SCHEMA-HASH-ONLY (slice-2) CONSCIOUS format change: the Dispatched frame DROPPED the `kind` tag +
+        // the `family` str (they were the pre-slice-2 identity) and now carries the `schema_hash` (raw 32
+        // bytes) as the SOLE identity, written after `token`. slice-D=A (abandon old logs, no migration
+        // layer) makes this pre-release in-place format change deliberate, not an accidental break — this
+        // golden pin re-freezes the NEW byte-stable layout. (Prior deliberate bumps: §19e trailing opt-bytes
+        // `token` on tags 2/3/4/5/6; the now-removed host-capability-discovery `family` str after `kind`.)
         let expected: &[u8] = &[
             42, 0, 0, 0, 0, 0, 0, 0, // seq
             1, // cause: Some
@@ -1106,9 +1074,6 @@ mod tests {
             171, // cause hash
             2,   // body tag = Dispatched
             7, 0, 0, 0, 0, 0, 0, 0, // id
-            1, // kind = Http
-            4, 0, 0, 0, 0, 0, 0, 0, // family len
-            104, 116, 116, 112, // "http"
             17, 0, 0, 0, 0, 0, 0, 0, // target len
             104, 116, 116, 112, 115, 58, 47, 47, 111, 107, 46, 104, 111, 115, 116, 47,
             112, // "https://ok.host/p"
@@ -1118,6 +1083,10 @@ mod tests {
             1, 232, 3, 0, 0, 0, 0, 0, 0, // deadline_ms: Some(1000)
             1, 6, 0, 0, 0, 0, 0, 0, 0, // token: Some, len 6
             115, 116, 101, 112, 45, 49, // "step-1"
+            // schema_hash: Option → opt-bytes: Some tag(1) + len 32 + the Http built-in schema-hash 32 bytes
+            1, 32, 0, 0, 0, 0, 0, 0, 0, // schema_hash: Some, len 32
+            50, 211, 199, 222, 97, 236, 120, 70, 26, 123, 238, 204, 128, 12, 197, 71, 153, 253,
+            253, 37, 82, 45, 89, 30, 10, 191, 156, 49, 213, 191, 26, 15,
         ];
         assert_eq!(
             golden_event().encode(),
@@ -1128,8 +1097,9 @@ mod tests {
         // And the content-address hash the log/cause-edges depend on is pinned too.
         assert_eq!(
             golden_event().hash().to_hex(),
-            "9d12eae713d354981db668c8e4d32029754c9fdf1942b582f87404bc1f157a66",
-            "FROZEN event hash changed — persisted `cause` edges + content addresses would break."
+            "8b1bcc1f06d207b375b604c6a60129612097783ce39366c2af78c9580fd6e522",
+            "FROZEN event hash changed — persisted `cause` edges + content addresses would break. \
+             (Re-frozen for the schema-hash-only Dispatched format: kind/family dropped, schema_hash added.)"
         );
     }
 
@@ -1213,13 +1183,13 @@ mod tests {
                 cause: Some(h),
                 body: EventBody::Dispatched {
                     id: EffectId(7),
-                    kind: EffectKind::Http,
-                    family: EffectKind::Http.family().into(),
                     target: "https://ok.host/p".as_bytes().into(),
                     idempotency_key: h,
                     deadline_ms: Some(12345),
                     token: Some(b"resume-tok".to_vec()),
-                    schema_hash: None,
+                    schema_hash: Some(crate::ast_marshal::builtin_effect_schema_hash(
+                        &crate::effect::EffectKind::Http,
+                    )),
                 },
             },
             Event {
@@ -1227,13 +1197,13 @@ mod tests {
                 cause: None,
                 body: EventBody::Dispatched {
                     id: EffectId(8),
-                    kind: EffectKind::Shell,
-                    family: EffectKind::Shell.family().into(),
                     target: "cargo test".as_bytes().into(),
                     idempotency_key: h,
                     deadline_ms: None,
                     token: None,
-                    schema_hash: None,
+                    schema_hash: Some(crate::ast_marshal::builtin_effect_schema_hash(
+                        &crate::effect::EffectKind::Shell,
+                    )),
                 },
             },
             Event {

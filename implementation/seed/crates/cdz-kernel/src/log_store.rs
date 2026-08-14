@@ -450,13 +450,13 @@ mod tests {
             cause: None,
             body: EventBody::Dispatched {
                 id: EffectId(seq),
-                kind: crate::effect::EffectKind::Http,
-                family: crate::effect::EffectKind::Http.family().into(),
                 target: "https://ok.host/x".as_bytes().into(),
                 idempotency_key: Hash::of(b"k"),
                 deadline_ms: None,
                 token: None,
-                schema_hash: None,
+                schema_hash: Some(crate::ast_marshal::builtin_effect_schema_hash(
+                    &crate::effect::EffectKind::Http,
+                )),
             },
         }
     }

@@ -19,13 +19,14 @@
 //! - body is one of:
 //!   `(genesis <hash>)` ·
 //!   `(inbound <family:str> <version:int> <payload>)` ·
-//!   `(dispatched <id:int> <kind> <target:str> <idem:hash> <deadline> <token>)` ·
+//!   `(dispatched <id:int> <target:bytes> <idem:hash> <deadline> <token> <schema_hash:hash>)` ·
 //!   `(effect-result <id:int> <outcome> <token>)` ·
 //!   `(timer-armed <id:int> <deadline_ms:int>)` ·
 //!   `(timer-fired <id:int> <fired_ms:int>)` ·
 //!   `(authz-denied <id:int> <reason:str>)` ·
 //!   `(closed <payload>)`
-//! - `<kind>` a `Name` atom (shell/http/model/now/timer/emit); `<deadline>` = `(none)` | `(ms <int>)`;
+//! - `<schema_hash>` a `(hash <raw32>)` — the effect's schema-hash identity (kind/family no longer ride the
+//!   dispatched wire; routing/authz key on this hash); `<deadline>` = `(none)` | `(ms <int>)`;
 //!   `<payload>` = `(inline <bytes>)` | `(blob <hash>)`; `<outcome>` = `(ok <payload-opt>)` |
 //!   `(err <str>)` | `(timed-out)`; `<payload-opt>` = `(none)` | `(some <payload>)`; `<token>` =
 //!   `(none)` | `(token <bytes>)`.
@@ -35,7 +36,7 @@
 //! check so an out-of-u64 value is a clean `Corrupt`, never a panic).
 
 use crate::ast_marshal::val_to_ast;
-use crate::effect::{EffectId, EffectKind, Payload};
+use crate::effect::{EffectId, Payload};
 use crate::event::{ContentType, EffectOutcome, Event, EventBody};
 use crate::hash::Hash;
 use cadenza_ast::ast::{Arenas, Builder, Leaf, Radix, Struct, StructId};
@@ -1689,13 +1690,6 @@ fn opt_payload_form(b: &mut Builder, p: &Option<Payload>) -> StructId {
     }
 }
 
-fn kind_atom(b: &mut Builder, kind: &EffectKind) -> StructId {
-    // The canonical family string (crate::effect::effect_ct) — one source of truth shared with the
-    // executor router + Cedar action-map, so the wire name can't drift from them. Byte-identical to the
-    // previous hardcoded strings (the golden round-trip test pins the bytes).
-    b.name(kind.family())
-}
-
 fn outcome_form(b: &mut Builder, o: &EffectOutcome) -> StructId {
     match o {
         EffectOutcome::Ok(p) => {
@@ -1800,37 +1794,26 @@ fn body_form(b: &mut Builder, body: &EventBody) -> StructId {
         }
         EventBody::Dispatched {
             id,
-            kind,
-            family,
             target,
             idempotency_key,
             deadline_ms,
             token,
             schema_hash,
         } => {
+            // Post-collapse (schema-hash-only effect identity): fixed 6-leaf. kind+family dropped from the
+            // wire (routing/authz now key on schema_hash); schema_hash MANDATORY, no back-compat arity
+            // (slice-D=A abandon-logs, no old-log migration). Target stays opaque `Bytes` (Target=Bytes
+            // ruling; may not be UTF-8).
             let head = b.name("dispatched");
             let idv = u64_leaf(b, id.0);
-            let k = kind_atom(b, kind);
-            let fam = str_leaf(b, family);
-            // Target is opaque bytes (Target=Bytes ruling) → a `Bytes` leaf, not a `Str` leaf (it may not be
-            // UTF-8). This changes the Dispatched AST shape from the pre-ruling `Str` leaf.
             let t = bytes_leaf(b, target);
             let idem = hash_form(b, idempotency_key);
             let dl = opt_ms_form(b, *deadline_ms);
             let tok = opt_bytes_form(b, token.as_deref());
-            // family rides AFTER kind (seq-39 identity). A pre-family log has a 6-element `dispatched`
-            // form (no `fam`); the decoder tolerates both arities for backward compat.
-            // schema_hash (durable-frame effect identity): when Some, append a raw-32-byte `(hash …)` child
-            // → the 8-element form; when None (control/store/register-by-string effects), omit it → the
-            // 7-element form, byte-identical to a pre-schema_hash log. Decode is absence-tolerant, so old
-            // logs and None frames read back None (never a zero hash).
-            match schema_hash {
-                Some(sh) => {
-                    let shc = hash_form(b, sh);
-                    b.list(vec![head, idv, k, fam, t, idem, dl, tok, shc])
-                }
-                None => b.list(vec![head, idv, k, fam, t, idem, dl, tok]),
-            }
+            // schema_hash is Option (None for a register-by-string extension with no wire hash yet — phase-3);
+            // encode as opt-bytes (raw 32 bytes when Some), absence-tolerant on decode.
+            let shc = opt_bytes_form(b, schema_hash.as_ref().map(|h| h.as_bytes().as_slice()));
+            b.list(vec![head, idv, t, idem, dl, tok, shc])
         }
         EventBody::EffectResult { id, result, token } => {
             let head = b.name("effect-result");
@@ -2058,13 +2041,6 @@ fn read_opt_payload(a: &Arenas, id: StructId) -> Result<Option<Payload>, EventAs
     }
 }
 
-fn read_kind(a: &Arenas, id: StructId) -> Result<EffectKind, EventAstError> {
-    let family = a.as_name(id).ok_or(shape("expected kind name"))?;
-    // Route through the canonical family map (crate::effect::EffectKind::from_family) — one source of
-    // truth with the encoder + router + Cedar action-map. An unknown family is a decode shape error.
-    EffectKind::from_family(family).ok_or(shape("unknown effect kind"))
-}
-
 /// Decode a `(retryability <permanent|retryable>)` form → [`crate::event::Retryability`] (operator Q2).
 /// An unknown token is a `Shape` error (fail-closed — don't guess retryable). Total.
 fn read_retryability(
@@ -2211,48 +2187,26 @@ fn read_body(a: &Arenas, id: StructId) -> Result<EventBody, EventAstError> {
             }
         }
         "dispatched" => {
-            // Three arities: 8 = the schema_hash-carrying form `(dispatched id kind FAMILY target idem
-            // deadline token HASH)`, 7 = `(… token)` with no schema_hash, 6 = a pre-family log `(dispatched
-            // id kind target idem deadline token)` whose family is derived from the kind (a pre-family log
-            // only ever held built-in kinds — no register-by-string/control dispatch existed before the
-            // family field, so kind→family is exact). Absence-tolerant: 7/6 → schema_hash None (never a zero hash).
-            match form(a, id, "dispatched")? {
-                [idv, k, fam, t, idem, dl, tok, sh] => EventBody::Dispatched {
-                    id: EffectId(read_u64(a, *idv)?),
-                    kind: read_kind(a, *k)?,
-                    family: read_str(a, *fam)?.into(),
-                    target: std::sync::Arc::from(read_target_bytes(a, *t)?.as_slice()),
-                    idempotency_key: read_hash(a, *idem)?,
-                    deadline_ms: read_opt_ms(a, *dl)?,
-                    token: read_opt_bytes(a, *tok)?,
-                    // 8-arity carries the durable-frame effect identity — a raw-32-byte `(hash …)` child.
-                    // Only present for built-in-schema effects; control/store/register-by-string omit it.
-                    schema_hash: Some(read_hash(a, *sh)?),
-                },
-                [idv, k, fam, t, idem, dl, tok] => EventBody::Dispatched {
-                    id: EffectId(read_u64(a, *idv)?),
-                    kind: read_kind(a, *k)?,
-                    family: read_str(a, *fam)?.into(),
-                    target: std::sync::Arc::from(read_target_bytes(a, *t)?.as_slice()),
-                    idempotency_key: read_hash(a, *idem)?,
-                    deadline_ms: read_opt_ms(a, *dl)?,
-                    token: read_opt_bytes(a, *tok)?,
-                    // No schema_hash element in the 7-arity wire → None (a None-schema_hash frame or an old log).
-                    schema_hash: None,
-                },
-                [idv, k, t, idem, dl, tok] => EventBody::Dispatched {
-                    id: EffectId(read_u64(a, *idv)?),
-                    kind: read_kind(a, *k)?,
-                    family: read_kind(a, *k)?.family().into(),
-                    target: std::sync::Arc::from(read_target_bytes(a, *t)?.as_slice()),
-                    idempotency_key: read_hash(a, *idem)?,
-                    deadline_ms: read_opt_ms(a, *dl)?,
-                    token: read_opt_bytes(a, *tok)?,
-                    // No schema_hash element in the current 7/6-arity wire → None (the field-add is
-                    // additive; v-compiler-ml adds the schema_hash-carrying arity + its read on top).
-                    schema_hash: None,
-                },
-                _ => return Err(shape("dispatched arity")),
+            // Post-collapse (schema-hash-only effect identity): fixed 6-leaf. kind+family dropped from the
+            // wire (routing/authz key on schema_hash). schema_hash is Option (None for a register-by-string
+            // extension with no wire hash yet — phase-3; the mandatory flip rides the input-wire kind→hash
+            // flip), encoded as opt-bytes (raw 32 when Some), absence-tolerant here.
+            let [idv, t, idem, dl, tok, sh] = form(a, id, "dispatched")? else {
+                return Err(shape("dispatched arity"));
+            };
+            EventBody::Dispatched {
+                id: EffectId(read_u64(a, *idv)?),
+                target: std::sync::Arc::from(read_target_bytes(a, *t)?.as_slice()),
+                idempotency_key: read_hash(a, *idem)?,
+                deadline_ms: read_opt_ms(a, *dl)?,
+                token: read_opt_bytes(a, *tok)?,
+                schema_hash: read_opt_bytes(a, *sh)?
+                    .map(|b| {
+                        <[u8; 32]>::try_from(b.as_slice())
+                            .map(Hash::from_bytes)
+                            .map_err(|_| shape("schema_hash bytes"))
+                    })
+                    .transpose()?,
             }
         }
         "effect-result" => {
@@ -2443,13 +2397,11 @@ mod tests {
                 cause: Some(h),
                 body: EventBody::Dispatched {
                     id: EffectId(7),
-                    kind: EffectKind::Http,
-                    family: EffectKind::Http.family().into(),
                     target: "https://ok.host/p".as_bytes().into(),
                     idempotency_key: h,
                     deadline_ms: Some(12345),
                     token: Some(b"resume-tok".to_vec()),
-                    schema_hash: None,
+                    schema_hash: Some(Hash::of(b"http-schema")),
                 },
             },
             Event {
@@ -2457,30 +2409,25 @@ mod tests {
                 cause: None,
                 body: EventBody::Dispatched {
                     id: EffectId(8),
-                    kind: EffectKind::Shell,
-                    family: EffectKind::Shell.family().into(),
                     target: "cargo test".as_bytes().into(),
                     idempotency_key: h,
                     deadline_ms: None,
                     token: None,
-                    schema_hash: None,
+                    schema_hash: Some(Hash::of(b"shell-schema")),
                 },
             },
-            // A dispatch whose family DIVERGES from kind.family(): kind is the `Emit` placeholder, the
-            // family is `control/capabilities`. Pins that the codec preserves BOTH the kind AND the
-            // separately-recorded family across a round-trip (the family field is not collapsed onto kind).
+            // Post-collapse a Dispatched frame carries only its schema_hash identity (kind+family dropped
+            // from the wire); this frame pins that a distinct schema_hash round-trips intact.
             Event {
                 seq: 5,
                 cause: Some(h),
                 body: EventBody::Dispatched {
                     id: EffectId(9),
-                    kind: EffectKind::Emit,
-                    family: crate::effect::effect_ct::CAPABILITIES.into(),
                     target: "self".as_bytes().into(),
                     idempotency_key: h,
                     deadline_ms: None,
                     token: None,
-                    schema_hash: None,
+                    schema_hash: Some(Hash::of(b"emit-like-schema")),
                 },
             },
             Event {
@@ -2613,21 +2560,19 @@ mod tests {
     }
 
     #[test]
-    fn dispatched_schema_hash_round_trips_some_and_none() {
-        // The durable-frame effect identity: a Dispatched frame carries its effect's schema_hash when the
-        // effect had one (built-in-schema effects), and omits it otherwise (control/store/register-by-string).
-        // Some → the 8-arity `(dispatched … HASH)` form; None → the 7-arity form, byte-identical to a
-        // pre-schema_hash log so old frames stay decodable. Round-trip BOTH.
+    fn dispatched_schema_hash_round_trips() {
+        // The durable-frame effect identity: a Dispatched frame carries its effect's schema_hash as a
+        // MANDATORY raw-32-byte child (schema-hash-only identity; kind+family no longer ride the wire, and
+        // there is no None case — a None at Dispatch is a producer hard-error, not a wire arity). Round-trip
+        // a frame + confirm the hash reads back intact.
         let idem = Hash::of(b"idem");
         let sh = Hash::of(b"effect-schema-identity");
 
-        let some = Event {
+        let ev = Event {
             seq: 1,
             cause: None,
             body: EventBody::Dispatched {
                 id: EffectId(1),
-                kind: EffectKind::Http,
-                family: EffectKind::Http.family().into(),
                 target: "https://ok.host/p".as_bytes().into(),
                 idempotency_key: idem,
                 deadline_ms: Some(9),
@@ -2635,9 +2580,9 @@ mod tests {
                 schema_hash: Some(sh),
             },
         };
-        let back_some = decode(&encode(&some)).expect("Some schema_hash decodes");
-        assert_eq!(back_some, some, "schema_hash Some round-trips exactly");
-        match back_some.body {
+        let back = decode(&encode(&ev)).expect("schema_hash Dispatched decodes");
+        assert_eq!(back, ev, "Dispatched round-trips exactly");
+        match back.body {
             EventBody::Dispatched { schema_hash, .. } => {
                 assert_eq!(
                     schema_hash,
@@ -2647,34 +2592,6 @@ mod tests {
             }
             other => panic!("expected Dispatched, got {other:?}"),
         }
-
-        let none = Event {
-            seq: 2,
-            cause: None,
-            body: EventBody::Dispatched {
-                id: EffectId(2),
-                kind: EffectKind::Shell,
-                family: EffectKind::Shell.family().into(),
-                target: "cargo test".as_bytes().into(),
-                idempotency_key: idem,
-                deadline_ms: None,
-                token: None,
-                schema_hash: None,
-            },
-        };
-        // A None frame encodes to the 7-arity form and decodes back to None (never a zero hash) — the same
-        // absence-tolerant path an old pre-schema_hash log takes.
-        let none_bytes = encode(&none);
-        assert_eq!(
-            decode(&none_bytes).expect("None schema_hash decodes"),
-            none,
-            "schema_hash None round-trips (7-arity, absence-tolerant)"
-        );
-        // And the Some encoding is genuinely a distinct (longer) wire than None — the 8th child is emitted.
-        assert!(
-            encode(&some).len() > none_bytes.len(),
-            "the Some frame carries an extra hash child on the wire"
-        );
     }
 
     #[test]
@@ -2708,109 +2625,6 @@ mod tests {
         match decode(&non_event) {
             Err(EventAstError::Shape(_)) => {}
             other => panic!("a valid non-event AST should be Shape, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn an_unknown_effect_family_decodes_to_shape_never_panics() {
-        // The extensible-effects forward-compat seam (read_kind → EffectKind::from_family): a Dispatched
-        // frame whose effect family is one this kernel version has NO built-in `EffectKind` variant for
-        // (a future/extension effect type, or a corrupt family atom) must decode to a clean Shape error,
-        // NEVER a panic — a newer peer's log entry can't brick an older reader (§17 totality). We build a
-        // structurally-valid `dispatched` event AST by hand, identical to what `body_form` emits, but put
-        // an unknown family name where `kind_atom` would write a canonical `effect_ct` string.
-        let mut b = Builder::new();
-        let head = b.name("dispatched");
-        let idv = u64_leaf(&mut b, 7);
-        let unknown_kind = b.name("summary"); // NOT a known effect_ct family → from_family returns None
-        let target = str_leaf(&mut b, "s3://bucket/key");
-        let idem = hash_form(&mut b, &Hash::of(b"idem"));
-        let dl = opt_ms_form(&mut b, None);
-        let tok = opt_bytes_form(&mut b, None);
-        let body = b.list(vec![head, idv, unknown_kind, target, idem, dl, tok]);
-        // Wrap in the top-level `(event <seq> <cause> <body>)` shape so only the family is off.
-        let ev_head = b.name("event");
-        let seq = u64_leaf(&mut b, 0);
-        let no_cause = {
-            let h = b.name("none");
-            b.list(vec![h])
-        };
-        let root = b.list(vec![ev_head, seq, no_cause, body]);
-        let bytes = codec::encode(&b.finish(root));
-
-        // The unknown family is corruption to THIS reader (a shape error), surfaced as data — not a panic.
-        match decode(&bytes) {
-            Err(EventAstError::Shape(_)) => {}
-            other => panic!("an unknown effect family must be a Shape error, got {other:?}"),
-        }
-
-        // Control: the SAME structure with a KNOWN family (http) decodes cleanly to that kind — proving
-        // the test's frame is otherwise valid, so the failure above is the family alone, not the shape.
-        let mut b2 = Builder::new();
-        let head = b2.name("dispatched");
-        let idv = u64_leaf(&mut b2, 7);
-        let known_kind = b2.name(crate::effect::effect_ct::HTTP);
-        let target = str_leaf(&mut b2, "s3://bucket/key");
-        let idem = hash_form(&mut b2, &Hash::of(b"idem"));
-        let dl = opt_ms_form(&mut b2, None);
-        let tok = opt_bytes_form(&mut b2, None);
-        let body = b2.list(vec![head, idv, known_kind, target, idem, dl, tok]);
-        let ev_head = b2.name("event");
-        let seq = u64_leaf(&mut b2, 0);
-        let no_cause = {
-            let h = b2.name("none");
-            b2.list(vec![h])
-        };
-        let root = b2.list(vec![ev_head, seq, no_cause, body]);
-        let ok_bytes = codec::encode(&b2.finish(root));
-        match decode(&ok_bytes) {
-            Ok(Event {
-                body: EventBody::Dispatched { kind, .. },
-                ..
-            }) => assert_eq!(kind, EffectKind::Http),
-            other => {
-                panic!("the known-family control must decode to Dispatched(Http), got {other:?}")
-            }
-        }
-    }
-
-    #[test]
-    fn a_pre_family_six_element_dispatched_frame_decodes_deriving_family_from_kind() {
-        // Backward compat: a durable log written BEFORE the `family` field has a 6-element `dispatched`
-        // form `(dispatched id kind target idem deadline token)`. It must still decode — deriving `family`
-        // from `kind` (exact, because no register-by-string/control dispatch could exist before the field).
-        // Build the legacy 6-element frame by hand (what body_form emitted pre-change).
-        let mut b = Builder::new();
-        let head = b.name("dispatched");
-        let idv = u64_leaf(&mut b, 9);
-        let kind = b.name(crate::effect::effect_ct::MODEL);
-        let target = str_leaf(&mut b, "claude-x");
-        let idem = hash_form(&mut b, &Hash::of(b"idem"));
-        let dl = opt_ms_form(&mut b, None);
-        let tok = opt_bytes_form(&mut b, None);
-        let body = b.list(vec![head, idv, kind, target, idem, dl, tok]);
-        let ev_head = b.name("event");
-        let seq = u64_leaf(&mut b, 0);
-        let no_cause = {
-            let h = b.name("none");
-            b.list(vec![h])
-        };
-        let root = b.list(vec![ev_head, seq, no_cause, body]);
-        let bytes = codec::encode(&b.finish(root));
-
-        match decode(&bytes) {
-            Ok(Event {
-                body: EventBody::Dispatched { kind, family, .. },
-                ..
-            }) => {
-                assert_eq!(kind, EffectKind::Model);
-                assert_eq!(
-                    family.as_ref(),
-                    crate::effect::effect_ct::MODEL,
-                    "a pre-family frame derives family from its kind"
-                );
-            }
-            other => panic!("legacy 6-element dispatched must decode, got {other:?}"),
         }
     }
 

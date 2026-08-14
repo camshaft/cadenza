@@ -33,6 +33,29 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use tracing::{debug, instrument, warn};
 
+/// The reserved schema-hash of the well-known TIMER family — the identity a timer obligation carries
+/// (schema-hash-only). Never routed (a timer obligation's `is_timer` is the real discriminant); it exists so
+/// the obligation table is uniformly schema-hash-keyed. Well-known family, so the hash is always `Some`.
+fn timer_schema_hash() -> Hash {
+    crate::ast_marshal::effect_family_schema_hash(crate::effect::effect_ct::TIMER)
+        .expect("the well-known TIMER family always has a schema-hash")
+}
+
+/// The schema-hash of the well-known CAPABILITIES control family — the schema-hash-only replacement for the
+/// old `family == effect_ct::CAPABILITIES` seed-flag discriminant (I3 recovery). Well-known family → `Some`.
+fn capabilities_schema_hash() -> Hash {
+    crate::ast_marshal::effect_family_schema_hash(crate::effect::effect_ct::CAPABILITIES)
+        .expect("the well-known CAPABILITIES family always has a schema-hash")
+}
+
+/// The schema-hash of the well-known NOW built-in effect — the schema-hash-only replacement for the old
+/// `dispatch_family_of(id) == NOW` discriminant that tells a `now` result apart on replay (so `last_now`
+/// rebuilds only from `now` results). Built-in kind → always `Some`.
+fn now_schema_hash() -> Hash {
+    crate::ast_marshal::effect_family_schema_hash(crate::effect::effect_ct::NOW)
+        .expect("the well-known NOW family always has a schema-hash")
+}
+
 /// Errors the kernel surfaces to its driver. Kept small; grows with features.
 #[derive(Debug, PartialEq, Eq)]
 pub enum KernelError {
@@ -55,14 +78,15 @@ pub enum KernelError {
 /// `Arc<str>` family, `Arc<[u8]>` target, a `Hash`), so the table is cheap to snapshot for a checkpoint (I6).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct OpenObligation {
-    /// The effect kind (from the `Dispatched` frame). `Emit` for a `TimerArmed` obligation (timers carry
-    /// no world-effect kind — `is_timer` is the real discriminant).
-    pub kind: EffectKind,
     /// The resolved target the frame recorded (opaque bytes — Target=Bytes). Empty for a timer.
     pub target: std::sync::Arc<[u8]>,
-    /// The effect family the frame recorded (seq-39 authoritative identity) — what `dispatch_family_of`
-    /// returns. `timer` for a timer obligation.
-    pub family: std::sync::Arc<str>,
+    /// The dispatched effect's SCHEMA-HASH identity (schema-hash-only, slice-2) — what
+    /// `dispatch_schema_hash_of` returns, copied from the `Dispatched` frame. The frame identity (the legacy
+    /// `kind` enum + `family` string were dropped alongside the frame's). `None` for a register-by-string
+    /// EXTENSION family (no wire hash yet — phase-1a reify emits its kind as a string; those route by
+    /// `content_type.family` on the input wire, phase-3). For a TIMER obligation (opened by `TimerArmed`,
+    /// not `Dispatched`) this is the reserved TIMER schema-hash; `is_timer` stays the real discriminant.
+    pub schema_hash: Option<Hash>,
     /// The reducer continuation token the frame carried (§19e) — what `dispatch_token_of` returns.
     /// `None` = a token-free effect/timer.
     pub token: Option<Vec<u8>>,
@@ -582,7 +606,7 @@ impl Session {
         let mut oldest_dispatch_ms: Option<u64> = None;
         for ob in self.open.values().filter(|ob| !ob.is_timer) {
             in_flight.push(InFlight {
-                kind: effect_kind_name(&ob.kind),
+                schema_hash: ob.schema_hash,
                 // Observability only: a lossy UTF-8 view of the opaque byte target (non-UTF-8 bytes
                 // render as U+FFFD). This is a human-facing status snapshot, not an authz decision,
                 // so lossy is fine here (the SEC-F1 gates use the fail-closed strict view).
@@ -1032,8 +1056,7 @@ impl Session {
         match &event.body {
             EventBody::Dispatched {
                 id,
-                kind,
-                family,
+                schema_hash,
                 target,
                 token,
                 deadline_ms,
@@ -1042,9 +1065,8 @@ impl Session {
                 self.open.insert(
                     id.0,
                     OpenObligation {
-                        kind: kind.clone(),
                         target: target.clone(),
-                        family: family.clone(),
+                        schema_hash: *schema_hash,
                         token: token.clone(),
                         // Carry the frame's auto-timeout deadline anchor (log-decouple I5 step 2): the
                         // `status_snapshot` stall computation reads it, so it must be resident once the
@@ -1058,8 +1080,9 @@ impl Session {
                 // Resident seed flag (log-decouple I3): the capability SEED is a CAPABILITIES control
                 // effect cause-linked to GENESIS (a later reactive push is cause-linked to an Inbound, so
                 // the cause==genesis discriminant distinguishes them). Set the bit here so
-                // `already_seeded_capabilities` is a field read, not a log scan.
-                if family.as_ref() == crate::effect::effect_ct::CAPABILITIES
+                // `already_seeded_capabilities` is a field read, not a log scan. Keyed on the CAPABILITIES
+                // family's schema-hash (schema-hash-only — the frame no longer carries the family string).
+                if *schema_hash == Some(capabilities_schema_hash())
                     && event.cause == Some(self.genesis.hash())
                 {
                     self.seeded_capabilities = true;
@@ -1074,9 +1097,10 @@ impl Session {
                 self.open.insert(
                     id.0,
                     OpenObligation {
-                        kind: EffectKind::Emit, // a timer carries no world-effect kind; is_timer is the discriminant
                         target: std::sync::Arc::from(&b""[..]),
-                        family: std::sync::Arc::from(crate::effect::effect_ct::TIMER),
+                        // A timer carries no world-effect; its identity is the reserved TIMER family's
+                        // schema-hash. `is_timer` is the real discriminant (this hash is never routed).
+                        schema_hash: Some(timer_schema_hash()),
                         token: token.clone(),
                         deadline_ms: Some(*deadline_ms),
                         dispatch_hash: None, // opened by TimerArmed, not Dispatched
@@ -1166,8 +1190,6 @@ impl Session {
                         .append(
                             EventBody::Dispatched {
                                 id,
-                                kind: req.kind.clone(),
-                                family: req.content_type.family.as_ref().into(),
                                 target: req.target.clone(),
                                 idempotency_key,
                                 deadline_ms: None,
@@ -1226,8 +1248,6 @@ impl Session {
                     self.append(
                         EventBody::Dispatched {
                             id,
-                            kind: req.kind.clone(),
-                            family: req.content_type.family.as_ref().into(),
                             target: req.target.clone(),
                             idempotency_key,
                             deadline_ms: None,
@@ -1334,8 +1354,6 @@ impl Session {
                     .append(
                         EventBody::Dispatched {
                             id,
-                            kind: req.kind.clone(),
-                            family: req.content_type.family.as_ref().into(),
                             target: req.target.clone(),
                             idempotency_key,
                             deadline_ms: None,
@@ -1432,8 +1450,6 @@ impl Session {
                 .append(
                     EventBody::Dispatched {
                         id,
-                        kind: req.kind.clone(),
-                        family: req.content_type.family.as_ref().into(),
                         target: req.target.clone(),
                         idempotency_key,
                         deadline_ms: None,
@@ -1920,20 +1936,20 @@ impl Session {
             .map(|ob| ob.token.clone())
     }
 
-    /// The effect FAMILY that dispatch `id`'s `Dispatched` frame recorded, or `None` if `id` has no
+    /// The SCHEMA-HASH that dispatch `id`'s `Dispatched` frame recorded, or `None` if `id` has no
     /// `Dispatched` frame (e.g. a timer, opened by `TimerArmed`). Used on replay to tell a `now` result
-    /// apart (so `last_now` rebuilds only from `now` results). Keys on the durable `family` string (seq-39,
-    /// the authoritative identity) rather than the legacy `kind` enum, so it stays correct for a
-    /// register-by-string family with no `EffectKind` variant. Reads the durable frame → replay-deterministic.
-    fn dispatch_family_of(&self, id: EffectId) -> Option<std::sync::Arc<str>> {
+    /// apart (so `last_now` rebuilds only from `now` results). Keys on the durable schema-hash identity
+    /// (schema-hash-only — replaces the seq-39 family string + the legacy `kind` enum). Reads the durable
+    /// frame → replay-deterministic.
+    fn dispatch_schema_hash_of(&self, id: EffectId) -> Option<Hash> {
         // O(1) lookup in the resident open-obligation table (log-decouple I2), not a log scan. Called when
         // an `EffectResult` folds (live + on replay) — the matching `Dispatched` obligation is still OPEN
-        // at that point (the result REMOVES it), so the family is present. A timer obligation is excluded
+        // at that point (the result REMOVES it), so the schema-hash is present. A timer obligation is excluded
         // (it has no `Dispatched` frame — matches the old "None if opened by TimerArmed" behavior).
         self.open
             .get(&id.0)
             .filter(|ob| !ob.is_timer)
-            .map(|ob| ob.family.clone())
+            .and_then(|ob| ob.schema_hash)
     }
 
     /// The reducer continuation token that timer `id`'s `TimerArmed` frame carried (§19e slice 2b-iii),
@@ -2010,8 +2026,7 @@ impl Session {
             match &event.body {
                 EventBody::Dispatched {
                     id,
-                    kind,
-                    family,
+                    schema_hash,
                     target,
                     token,
                     deadline_ms,
@@ -2020,9 +2035,8 @@ impl Session {
                     s.open.insert(
                         id.0,
                         OpenObligation {
-                            kind: kind.clone(),
                             target: target.clone(),
-                            family: family.clone(),
+                            schema_hash: *schema_hash,
                             token: token.clone(),
                             // Same deadline-anchor carry as the append path (I5 step 2) — replay must
                             // rebuild the identical obligation, so the stall anchor survives recovery.
@@ -2031,8 +2045,10 @@ impl Session {
                             is_timer: false,
                         },
                     );
-                    // Rebuild the resident seed flag (I3): same cause==genesis CAPABILITIES discriminant.
-                    if family.as_ref() == crate::effect::effect_ct::CAPABILITIES
+                    // Rebuild the resident seed flag (I3): same cause==genesis CAPABILITIES discriminant,
+                    // now keyed on the CAPABILITIES family's schema-hash (schema-hash-only — the frame no
+                    // longer carries the family string).
+                    if *schema_hash == Some(capabilities_schema_hash())
                         && event.cause == Some(s.genesis.hash())
                     {
                         s.seeded_capabilities = true;
@@ -2048,9 +2064,9 @@ impl Session {
                     s.open.insert(
                         id.0,
                         OpenObligation {
-                            kind: EffectKind::Emit,
                             target: std::sync::Arc::from(&b""[..]),
-                            family: std::sync::Arc::from(crate::effect::effect_ct::TIMER),
+                            // Reserved TIMER schema-hash; never routed (is_timer is the discriminant).
+                            schema_hash: Some(timer_schema_hash()),
                             token: token.clone(),
                             deadline_ms: Some(*deadline_ms),
                             dispatch_hash: None,
@@ -2060,9 +2076,9 @@ impl Session {
                     s.next_effect_id = s.next_effect_id.max(id.0 + 1);
                 }
                 EventBody::EffectResult { id, result, .. } => {
-                    // Read the family BEFORE removing the obligation (dispatch_family_of reads the open table).
-                    let is_now =
-                        s.dispatch_family_of(*id).as_deref() == Some(crate::effect::effect_ct::NOW);
+                    // Read the schema-hash BEFORE removing the obligation (dispatch_schema_hash_of reads the
+                    // open table). Keyed on the NOW family's schema-hash (schema-hash-only).
+                    let is_now = s.dispatch_schema_hash_of(*id) == Some(now_schema_hash());
                     s.open.remove(&id.0);
                     s.settled.insert(id.0);
                     s.next_effect_id = s.next_effect_id.max(id.0 + 1);
@@ -2250,8 +2266,11 @@ pub enum SessionState {
 /// One dispatched-but-unsettled effect in a [`StatusSnapshot`] — what a session is blocked/waiting on.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct InFlight {
-    /// The effect kind (`"Http"`, `"Model"`, `"Shell"`, …).
-    pub kind: &'static str,
+    /// The in-flight effect's SCHEMA-HASH identity (schema-hash-only) — the durable-frame identity the open
+    /// obligation carries. Observability only; a display layer resolves it to a name ([`schema_resolver`],
+    /// display-only) or renders its base64url short form. Replaces the old `kind: &'static str` enum name.
+    /// `None` for a register-by-string extension family with no wire hash yet (phase-3).
+    pub schema_hash: Option<Hash>,
     /// The effect's resolved target (URL / model id / command) — what it's waiting on.
     pub target: String,
 }
@@ -2404,18 +2423,6 @@ fn clamp_now_outcome(outcome: EffectOutcome, last_now: &mut u64) -> EffectOutcom
         }
     }
     outcome
-}
-
-/// The variant name of an effect kind, for a [`StatusSnapshot`]'s in-flight report (a debug label).
-fn effect_kind_name(kind: &EffectKind) -> &'static str {
-    match kind {
-        EffectKind::Shell => "Shell",
-        EffectKind::Http => "Http",
-        EffectKind::Model => "Model",
-        EffectKind::Now => "Now",
-        EffectKind::Timer => "Timer",
-        EffectKind::Emit => "Emit",
-    }
 }
 
 fn observable(body: &EventBody) -> bool {
@@ -3069,18 +3076,26 @@ mod status_snapshot_tests {
             "the message payload rides the emit"
         );
 
-        // A durable Dispatched frame recorded kind=Emit + the peer target (the crash-recovery-safe record
-        // the host routes from — before the effect leaves the kernel).
-        let (kind, target) = replay_input(&captured)
+        // A durable Dispatched frame recorded the Emit schema-hash + the peer target (the crash-recovery-safe
+        // record the host routes from — before the effect leaves the kernel). Schema-hash-only: the frame's
+        // identity is the schema-hash (kind=Emit is gone), so match on the Emit built-in hash.
+        let (schema_hash, target) = replay_input(&captured)
             .iter()
             .find_map(|e| match &e.body {
-                EventBody::Dispatched { kind, target, .. } => Some((kind.clone(), target.clone())),
+                EventBody::Dispatched {
+                    schema_hash,
+                    target,
+                    ..
+                } => Some((*schema_hash, target.clone())),
                 _ => None,
             })
             .expect("a Dispatched frame was recorded for the emit");
-        assert!(
-            matches!(kind, EffectKind::Emit),
-            "Dispatched records kind=Emit"
+        assert_eq!(
+            schema_hash,
+            Some(crate::ast_marshal::builtin_effect_schema_hash(
+                &EffectKind::Emit
+            )),
+            "Dispatched records the Emit schema-hash"
         );
         assert_eq!(
             std::str::from_utf8(target.as_ref()).unwrap(),
@@ -3123,11 +3138,14 @@ mod status_snapshot_tests {
         let emit_schema = replay_input(&captured)
             .iter()
             .find_map(|e| match &e.body {
-                EventBody::Dispatched {
-                    kind: EffectKind::Emit,
-                    schema_hash,
-                    ..
-                } => Some(*schema_hash),
+                EventBody::Dispatched { schema_hash, .. }
+                    if *schema_hash
+                        == Some(crate::ast_marshal::builtin_effect_schema_hash(
+                            &EffectKind::Emit,
+                        )) =>
+                {
+                    Some(*schema_hash)
+                }
                 _ => None,
             })
             .expect("an Emit Dispatched frame was recorded");
@@ -3152,29 +3170,27 @@ mod status_snapshot_tests {
             &mut exec2,
         )
         .await;
+        // The CAPABILITIES seed frame's identity is the CAPABILITIES family schema-hash (schema-hash-only —
+        // the frame no longer carries the family string; identity IS the hash). Find the seed's Dispatched
+        // frame by that hash and confirm it was recorded.
+        let expected =
+            crate::ast_marshal::family_effect_schema_hash(crate::effect::effect_ct::CAPABILITIES)
+                .expect("the well-known CAPABILITIES family has a declared schema");
         let caps_schema = replay_input(&captured2)
             .iter()
             .find_map(|e| match &e.body {
-                EventBody::Dispatched {
-                    family,
-                    schema_hash,
-                    ..
-                } if family.as_ref() == crate::effect::effect_ct::CAPABILITIES => {
+                EventBody::Dispatched { schema_hash, .. } if *schema_hash == Some(expected) => {
                     Some(*schema_hash)
                 }
                 _ => None,
             })
-            .expect("a control/capabilities Dispatched frame was recorded by the seed");
-        // `caps_schema` is the frame's Option<Hash> (find_map + expect unwrapped the outer find). The family
-        // hash is itself Option<Hash>, so they compare directly; it must be Some (a declared schema).
+            .expect("a control/capabilities Dispatched frame (keyed by its schema-hash) was recorded by the seed");
+        // Identity check: the recorded frame's schema-hash IS the CAPABILITIES family hash (the seq-39
+        // family-string identity is gone — the durable frame carries only this hash).
         assert_eq!(
             caps_schema,
-            crate::ast_marshal::family_effect_schema_hash(crate::effect::effect_ct::CAPABILITIES),
-            "a declared control family mirrors its family schema_hash on the durable frame"
-        );
-        assert!(
-            caps_schema.is_some(),
-            "control/capabilities now has a declared schema"
+            Some(expected),
+            "the seed's control/capabilities frame carries the CAPABILITIES family schema-hash"
         );
     }
 
@@ -3852,8 +3868,10 @@ mod monotonic_now_tests {
         assert_eq!(ids, vec![EffectId(0)]);
         // The table serves all three accessors with no log scan.
         assert_eq!(
-            s.dispatch_family_of(EffectId(0)).as_deref(),
-            Some(EffectKind::Http.family())
+            s.dispatch_schema_hash_of(EffectId(0)),
+            Some(crate::ast_marshal::builtin_effect_schema_hash(
+                &EffectKind::Http
+            ))
         );
         assert_eq!(
             s.dispatch_token_of(EffectId(0)),
@@ -3862,15 +3880,15 @@ mod monotonic_now_tests {
         assert!(s.dispatch_hash_of(EffectId(0)).is_some());
 
         // Replay rebuilds the IDENTICAL open table (recovery-equivalence): same open ids + same
-        // per-obligation family/token/hash. Read the log from the durable source (sink), not the Vec.
+        // per-obligation schema-hash/token/hash. Read the log from the durable source (sink), not the Vec.
         let log = replay_input(&captured);
         let replayed = Session::replay(log, &mut EmitTokenedHttp)
             .await
             .expect("replay");
         assert_eq!(replayed.open_effect_ids(), s.open_effect_ids());
         assert_eq!(
-            replayed.dispatch_family_of(EffectId(0)).as_deref(),
-            s.dispatch_family_of(EffectId(0)).as_deref()
+            replayed.dispatch_schema_hash_of(EffectId(0)),
+            s.dispatch_schema_hash_of(EffectId(0))
         );
         assert_eq!(
             replayed.dispatch_token_of(EffectId(0)),
@@ -4073,13 +4091,15 @@ mod monotonic_now_tests {
         async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
-                    let mut request = EffectRequest::new(
-                        EffectKind::Emit, // kind irrelevant for a control family; the family drives routing
+                    // Build via new_with_family so the family AND its schema-hash are CONSISTENT (the
+                    // schema-hash-only identity): hand-patching content_type.family after new(Emit) would
+                    // leave schema_hash as Emit's, which the durable frame now records as the identity.
+                    let request = EffectRequest::new_with_family(
+                        crate::effect::effect_ct::SIGNATURE,
                         "component-hash-abc",
                         None,
                         Timeliness::Interactive,
                     );
-                    request.content_type.family = crate::effect::effect_ct::SIGNATURE.into();
                     FoldOutput::with_effects(vec![Effect {
                         request,
                         token: Some(b"sig-cont".to_vec()),
@@ -4152,17 +4172,20 @@ mod monotonic_now_tests {
             "a surfaced control/signature is an OPEN dispatched effect awaiting the host's answer"
         );
         let durable = replay_input(&captured);
-        let dispatched_family = durable
+        let dispatched_schema = durable
             .iter()
             .find_map(|e| match &e.body {
-                EventBody::Dispatched { family, .. } => Some(family.clone()),
+                EventBody::Dispatched { schema_hash, .. } => Some(*schema_hash),
                 _ => None,
             })
             .expect("a Dispatched frame was recorded for the fold-back control");
         assert_eq!(
-            dispatched_family.as_ref(),
-            crate::effect::effect_ct::SIGNATURE,
-            "the dispatch records control/signature (so recovery classifies it, not the emit placeholder)"
+            dispatched_schema,
+            Some(
+                crate::ast_marshal::family_effect_schema_hash(crate::effect::effect_ct::SIGNATURE)
+                    .expect("control/signature has a declared schema-hash")
+            ),
+            "the dispatch records the control/signature schema-hash (so recovery classifies it by identity)"
         );
         // No AuthzDenied — control is exempt even under deny_all (a routed effect would be denied).
         assert!(!durable
@@ -4404,9 +4427,14 @@ mod monotonic_now_tests {
         async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
-                    let mut request =
-                        EffectRequest::new(EffectKind::Emit, "self", None, Timeliness::Interactive);
-                    request.content_type.family = crate::effect::effect_ct::CAPABILITIES.into();
+                    // Build via new_with_family so family + schema-hash are CONSISTENT (schema-hash-only
+                    // identity — hand-patching family after new(Emit) leaves schema_hash as Emit's).
+                    let request = EffectRequest::new_with_family(
+                        crate::effect::effect_ct::CAPABILITIES,
+                        "self",
+                        None,
+                        Timeliness::Interactive,
+                    );
                     FoldOutput::with_effects(vec![Effect {
                         request,
                         token: Some(b"cap-tok".to_vec()),
@@ -4455,17 +4483,20 @@ mod monotonic_now_tests {
         // crash recovery can classify this open dispatch as control/capabilities and re-answer it inline,
         // rather than misreading it as a real emit (PR #1668 review, durability fix).
         let durable = replay_input(&captured);
-        let dispatched_family = durable
+        let dispatched_schema = durable
             .iter()
             .find_map(|e| match &e.body {
-                EventBody::Dispatched { family, .. } => Some(family.clone()),
+                EventBody::Dispatched { schema_hash, .. } => Some(*schema_hash),
                 _ => None,
             })
             .expect("a Dispatched frame was recorded");
         assert_eq!(
-            dispatched_family.as_ref(),
-            crate::effect::effect_ct::CAPABILITIES,
-            "the inline-capabilities dispatch records control/capabilities, not the emit placeholder"
+            dispatched_schema,
+            Some(
+                crate::ast_marshal::family_effect_schema_hash(crate::effect::effect_ct::CAPABILITIES)
+                    .unwrap()
+            ),
+            "the inline-capabilities dispatch records the control/capabilities schema-hash (its identity)"
         );
 
         // The kernel folded an EffectResult carrying the manifest bytes. Find it + decode.
@@ -4553,17 +4584,22 @@ mod monotonic_now_tests {
         // The seed's durable Dispatched records the control family (recovery-classifiable), cause-linked
         // to genesis.
         let durable = replay_input(&captured);
-        let dispatched_family = durable
+        let dispatched_schema = durable
             .iter()
             .find_map(|e| match &e.body {
-                EventBody::Dispatched { family, .. } => Some(family.clone()),
+                EventBody::Dispatched { schema_hash, .. } => Some(*schema_hash),
                 _ => None,
             })
             .expect("the seed recorded a Dispatched frame");
         assert_eq!(
-            dispatched_family.as_ref(),
-            crate::effect::effect_ct::CAPABILITIES,
-            "the seed dispatch is classifiable as control/capabilities on recovery"
+            dispatched_schema,
+            Some(
+                crate::ast_marshal::family_effect_schema_hash(
+                    crate::effect::effect_ct::CAPABILITIES
+                )
+                .unwrap()
+            ),
+            "the seed dispatch is classifiable by the control/capabilities schema-hash on recovery"
         );
 
         // Born knowing: a capabilities-manifest EffectResult is in the log after the seed, decodable, with
@@ -4728,8 +4764,8 @@ mod monotonic_now_tests {
             replay_input(&captured)
                 .iter()
                 .filter(|e| {
-                    matches!(&e.body, EventBody::Dispatched { family, .. }
-                        if family.as_ref() == crate::effect::effect_ct::CAPABILITIES)
+                    matches!(&e.body, EventBody::Dispatched { schema_hash, .. }
+                        if *schema_hash == Some(crate::ast_marshal::family_effect_schema_hash(crate::effect::effect_ct::CAPABILITIES).unwrap()))
                 })
                 .count()
         };
@@ -4789,8 +4825,8 @@ mod monotonic_now_tests {
             replay_input(&captured)
                 .iter()
                 .filter(|e| {
-                    matches!(&e.body, EventBody::Dispatched { family, .. }
-                        if family.as_ref() == crate::effect::effect_ct::CAPABILITIES)
+                    matches!(&e.body, EventBody::Dispatched { schema_hash, .. }
+                        if *schema_hash == Some(crate::ast_marshal::family_effect_schema_hash(crate::effect::effect_ct::CAPABILITIES).unwrap()))
                 })
                 .count()
         };
@@ -4814,8 +4850,8 @@ mod monotonic_now_tests {
         let seed_frames = replay_input(&captured)
             .iter()
             .filter(|e| {
-                matches!(&e.body, EventBody::Dispatched { family, .. }
-                    if family.as_ref() == crate::effect::effect_ct::CAPABILITIES)
+                matches!(&e.body, EventBody::Dispatched { schema_hash, .. }
+                    if *schema_hash == Some(crate::ast_marshal::family_effect_schema_hash(crate::effect::effect_ct::CAPABILITIES).unwrap()))
                     && e.cause == Some(genesis_hash)
             })
             .count();
@@ -5381,7 +5417,12 @@ mod monotonic_now_tests {
         let snap = s.status_snapshot(Some(500), 300_000);
         assert_eq!(snap.state, SessionState::Active);
         assert_eq!(snap.in_flight.len(), 1, "the open Http effect is in-flight");
-        assert_eq!(snap.in_flight[0].kind, effect_kind_name(&EffectKind::Http));
+        assert_eq!(
+            snap.in_flight[0].schema_hash,
+            Some(crate::ast_marshal::builtin_effect_schema_hash(
+                &EffectKind::Http
+            ))
+        );
         assert_eq!(snap.in_flight[0].target, "https://ok.host/x");
         assert_eq!(
             snap.armed_timers, 0,
@@ -5402,7 +5443,10 @@ mod monotonic_now_tests {
         assert_eq!(rsnap.last_event_kind, snap.last_event_kind);
         assert_eq!(rsnap.armed_timers, snap.armed_timers);
         assert_eq!(rsnap.in_flight.len(), snap.in_flight.len());
-        assert_eq!(rsnap.in_flight[0].kind, snap.in_flight[0].kind);
+        assert_eq!(
+            rsnap.in_flight[0].schema_hash,
+            snap.in_flight[0].schema_hash
+        );
         assert_eq!(
             rsnap.in_flight[0].target, snap.in_flight[0].target,
             "the in-flight target is rebuilt identically on replay"

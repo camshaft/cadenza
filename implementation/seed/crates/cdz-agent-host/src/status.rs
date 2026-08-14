@@ -34,7 +34,7 @@ pub const DEFAULT_STALL_AFTER_MS: u64 = 300_000;
 ///   "event_count": 5,
 ///   "last_event_kind": "Dispatched",
 ///   "armed_timers": 0,
-///   "in_flight": [{"kind": "Model", "target": "claude-test"}],
+///   "in_flight": [{"schema_hash": "Pb04ILGxMHRR…", "target": "claude-test"}],
 ///   "published": {"public/phase": "prompting"}   // the session's own published/ KV view
 /// }
 /// ```
@@ -114,9 +114,16 @@ fn render(id: &SessionId, snap: &StatusSnapshot, errored: Option<std::sync::Arc<
         if i > 0 {
             out.push(',');
         }
+        // The in-flight effect's identity is its schema-hash (schema-hash-only) — rendered as base64url
+        // (the no-hex-on-hashes display directive), not the legacy EffectKind name. `None` for a
+        // register-by-string extension family with no wire hash yet (phase-3) → rendered as JSON null.
+        let schema_hash_json = match &f.schema_hash {
+            Some(h) => escape(&h.to_base64url()),
+            None => "null".to_string(),
+        };
         out.push_str(&format!(
-            "{{\"kind\":{},\"target\":{}}}",
-            escape(f.kind),
+            "{{\"schema_hash\":{},\"target\":{}}}",
+            schema_hash_json,
             escape(&f.target)
         ));
     }
