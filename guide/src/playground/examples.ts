@@ -440,6 +440,25 @@ export const EXAMPLES: Example[] = [
     expected: "(: (list 1 2 5 6) (List Int64))",
   },
   {
+    // Shows off: `Set.intersection` — the members two sets share. Modeling each person's friends as a
+    // set, the mutual friends are exactly the intersection. `Set.of` dedups the input lists, and
+    // `Set.to-list` renders the shared members in sorted order. Complements set-algebra (union/difference).
+    id: "set-intersection-mutual",
+    name: "Mutual friends (set intersection)",
+    theme: "data-and-collections",
+    surface: "sexpr",
+    source: `(do
+  ; Model each person's friends as a set; the mutual friends are the members
+  ; BOTH sets share. Set.of dedups, Set.intersection keeps the shared members,
+  ; Set.to-list renders them in sorted order.
+  (def (mutual a b)
+    (Set.to-list (Set.intersection (Set.of a) (Set.of b))))
+  (def (main)
+    (mutual (list 1 2 3 4 5) (list 3 4 5 6 7)))
+  (export main))`,
+    expected: "(: (list 3 4 5) (List Int64))",
+  },
+  {
     // Shows off: a sum type as a functional STACK (cons list) with real push/pop via match, driving a
     // stack machine. Evaluates RPN (postfix): numbers push; an operator pops two and pushes the result.
     // "3 4 + 5 *" = (3+4)*5 = 35.
