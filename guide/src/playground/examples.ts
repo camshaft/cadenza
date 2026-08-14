@@ -957,6 +957,26 @@ export const EXAMPLES: Example[] = [
     expected: "(: (list 5 4 3 2 1) (List Int64))",
   },
   {
+    // Shows off: `List.prepend` — the O(1) front insert (receiver-first: `(List.prepend xs x)` puts x on
+    // the head). A stack keeps its TOP at the front, so a push IS a prepend — the natural counterpart to
+    // `reverse-a-list`'s `List.push`, which appends to the END. Here we push 10, 20, 30, so 30 lands on top.
+    id: "stack-via-prepend",
+    name: "Stack (push via prepend)",
+    theme: "basics",
+    surface: "sexpr",
+    source: `(do
+  ; A stack keeps its TOP at the FRONT. \`List.prepend\` puts an element on the
+  ; head in O(1) — \`(List.prepend stack x)\` — so a push is just a prepend.
+  ; (Contrast \`List.push\`, which appends to the END; see "Reverse a list".)
+  (def (push stack x)
+    (List.prepend stack x))
+  (def (main)
+    ; Push 10, then 20, then 30 — so 30 ends up on top of the stack.
+    (push (push (push (: (list) (List Int64)) 10) 20) 30))
+  (export main))`,
+    expected: "(: (list 30 20 10) (List Int64))",
+  },
+  {
     // Shows off: metaprogramming — code is DATA. `quasiquote` builds an AST value without running it,
     // `unquote` splices a computed value into that AST, and `eval` runs a constructed program. The
     // result SHOWS both halves: the generated syntax tree for (base*base + offset), and the value
