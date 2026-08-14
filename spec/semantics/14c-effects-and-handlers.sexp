@@ -11627,3 +11627,92 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 30606090312150603 Int64))
   (call   main (: 0 Int64)) (output (: 20404060208100402 Int64)))
+
+;; ── Luhn checksum, exponential backoff with cap, volume-weighted average price (breaker batch 280) ──
+(case "lhn1 a LUHN checksum accumulator — feed doubles every second digit by POSITION PARITY subtracting nine from two-digit doubles, chk answers 1 on a multiple of ten else the residue, and the seed-fed digit doubles on both runs but only one crosses the subtract-nine threshold"
+  (input  (do
+            (effect L
+              (op feed (-> Int64 Int64))
+              (op chk (-> Int64)))
+            (def (main (: n Int64))
+              (handle L (tuple (: 0 Int64) (: 0 Int64))
+                ((feed (d) st
+                  (match st
+                    ((tuple s pos)
+                      (if (= (% pos 2) 1)
+                          (if (< 9 (* d 2))
+                              (resume (+ s (- (* d 2) 9)) (tuple (+ s (- (* d 2) 9)) (+ pos 1)))
+                              (resume (+ s (* d 2)) (tuple (+ s (* d 2)) (+ pos 1))))
+                          (resume (+ s d) (tuple (+ s d) (+ pos 1)))))))
+                 (chk () st
+                  (match st
+                    ((tuple s pos)
+                      (if (= (% s 10) 0)
+                          (resume 1 st)
+                          (resume (% s 10) st))))))
+                (let ((a (L.feed 4)))
+                  (let ((b (L.feed (% n 7))))
+                    (let ((c (L.feed 9)))
+                      (let ((d (L.feed 7)))
+                        (let ((e (L.chk)))
+                          (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 410192404 Int64))
+  (call   main (: 0 Int64)) (output (: 404131808 Int64)))
+
+(case "bkf1 EXPONENTIAL BACKOFF with a seed-shaped cap — fail accrues the current delay into the total then doubles it clamped at the cap, ok resets the delay to one answering the accumulated wait, and the higher cap lets one seed keep doubling where the other saturates two steps earlier"
+  (input  (do
+            (effect B
+              (op fail (-> Int64))
+              (op ok (-> Int64)))
+            (def (main (: n Int64))
+              (handle B (tuple (: 1 Int64) (: 0 Int64))
+                ((fail () st
+                  (match st
+                    ((tuple delay total)
+                      (if (< (+ n 6) (* delay 2))
+                          (resume (+ n 6) (tuple (+ n 6) (+ total delay)))
+                          (resume (* delay 2) (tuple (* delay 2) (+ total delay)))))))
+                 (ok () st
+                  (match st
+                    ((tuple delay total) (resume total (tuple 1 total))))))
+                (let ((a (B.fail)))
+                  (let ((b (B.fail)))
+                    (let ((c (B.fail)))
+                      (let ((d (B.fail)))
+                        (let ((e (B.ok)))
+                          (let ((f (B.fail)))
+                            (let ((g (B.fail)))
+                              (let ((h (B.ok)))
+                                (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g)) h)))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 204081615020418 Int64))
+  (call   main (: 0 Int64)) (output (: 204060613020416 Int64)))
+
+(case "vwp1 a VOLUME-WEIGHTED average price tracker — trade accrues (price*qty, qty) answering the running notional, vwap answers the truncated notional-over-volume or -1 before any trade, and the LEADING -1 row drives the whole packed total negative while the seed shifts one trade's price through both later readouts"
+  (input  (do
+            (effect V
+              (op trade (-> Int64 Int64 Int64))
+              (op vwap (-> Int64)))
+            (def (main (: n Int64))
+              (handle V (tuple (: 0 Int64) (: 0 Int64))
+                ((trade (p qty) st
+                  (match st
+                    ((tuple pq q)
+                      (resume (+ pq (* p qty)) (tuple (+ pq (* p qty)) (+ q qty))))))
+                 (vwap () st
+                  (match st
+                    ((tuple pq q)
+                      (if (= q 0)
+                          (resume -1 st)
+                          (resume (/ pq q) st))))))
+                (let ((a (V.vwap)))
+                  (let ((b (V.trade (+ n 5) 2)))
+                    (let ((c (V.trade 8 3)))
+                      (let ((d (V.vwap)))
+                        (let ((e (V.trade 12 5)))
+                          (let ((f (V.vwap)))
+                            (+ (* 1000 (+ (* 1000 (+ (* 1000 (+ (* 1000 (+ (* 1000 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: -969945989885989 Int64))
+  (call   main (: 0 Int64)) (output (: -989965993905991 Int64)))

@@ -2378,6 +2378,7 @@ pass	a memoizing fold caches computed results in a Map and counts its hits
 pass	a mid-scalar byte window crosses to the arm and String.from-bytes declines it
 pass	a middle curry STAGE is reused — one s1 residual yields an s2 applied twice
 pass	a middle module re-exports a base function and also uses it in its own exported function
+pass	a min-heap in a list — push sifts UP, popmin sifts DOWN — the finding-24 match-scrutinee hoist at integration scale
 pass	a missed literal tag falls to a BINDER bin arm that decodes the scrutinee
 pass	a misspelled segment kind is rejected with a rename suggestion
 pass	a misspelled utf8 segment kind is rejected
@@ -3095,7 +3096,6 @@ pass	a rest-binder over a runtime-start slice measures the SLICE length, not the
 pass	a rest-pattern head binder read inside an inlined match-arg callee's scrutinee resolves
 pass	a resume outside any handler arm is rejected
 pass	a resume value that MATCHES a COMPOUND scrutinee over the growing state binds it once — finding-24 match-scrutinee face
-pass	a min-heap in a list — push sifts UP, popmin sifts DOWN — the finding-24 match-scrutinee hoist at integration scale
 pass	a resuming arm whose resume VALUE is a transform of state and next-state is a distinct advance, observed twice
 pass	a retired collection-op name is rejected with a rename fix-it (CDZ0603)
 pass	a returned capturing closure bound with let and applied folds like the inline form
@@ -4755,6 +4755,7 @@ pass	bitwise XOR of an integer and a float does not silently promote
 pass	bitwise XOR toggles bits
 pass	bitwise XOR with negative one is the bitwise complement
 pass	bitwise XOR with zero is the operand (identity)
+pass	bkf1 EXPONENTIAL BACKOFF with a seed-shaped cap — fail accrues the current delay into the total then doubles it clamped at the cap, ok resets the delay to one answering the accumulated wait, and the higher cap lets one seed keep doubling where the other saturates two steps earlier
 pass	bms1 a BITMASK SET in one Int64 — set ORs a shifted bit, clear ANDs with the XOR-complement answering whether the bit was live, popcount peels the mask; the clear of an absent high bit is a no-op zero
 pass	bmv1 BOYER-MOORE majority vote — the (leader,votes) state deposes on exhausted votes, the challenger seed flips the winner
 pass	bor1 a TWO-LIMB borrow decrement — subtracting from the low limb borrows from the high one when it underflows, and a borrow with no high limb left SATURATES both to zero
@@ -5449,6 +5450,7 @@ pass	lf2 a PERFORMING recursive walk — each element visit draws, pairing eleme
 pass	lf3 the arm pushes TWO elements per dispatch (both lengths read from the PRE-push list) — the third draw reads length 5
 pass	lf4 a per-element dispatch comparing each element against the RISING state — amplify-or-pass per visit
 pass	lf5 TWO lists walked in LOCKSTEP with a per-pair 2-arg dispatch — length-guarded via projection helpers
+pass	lhn1 a LUHN checksum accumulator — feed doubles every second digit by POSITION PARITY subtracting nine from two-digit doubles, chk answers 1 on a multiple of ten else the residue, and the seed-fed digit doubles on both runs but only one crosses the subtract-nine threshold
 pass	li1 draws choose BOTH the List.update target and the List.at read index — the collection edit follows the thread
 pass	li2 a list BUILT from pushed draws then read at a draw-picked index — construction and consumption share one thread
 pass	li3 draw PARITY picks prepend vs push while building — the final shape encodes the whole draw sequence
@@ -6811,6 +6813,7 @@ pass	vse10 two RESULT fields at different type args each encode their own Err pa
 pass	vse11 two LIST fields of different element types encode independently — the list control of the generic-instantiation family
 pass	vse7 TWO Option-sum sibling fields at DIFFERENT sum decls each keep their own value-form — the first instantiation's descriptor must not stamp the second
 pass	vse9 the Option-sum field sorting FIRST keeps both siblings intact — the sort-order control of the sibling-descriptor pair
+pass	vwp1 a VOLUME-WEIGHTED average price tracker — trade accrues (price*qty, qty) answering the running notional, vwap answers the truncated notional-over-volume or -1 before any trade, and the LEADING -1 row drives the whole packed total negative while the seed shifts one trade's price through both later readouts
 pass	wa1 wrapping-add as the next-state — a near-MAX seed wraps to a concrete near-MIN value on the second draw
 pass	wa2 wrapping-add of the op ARG and state in the resume value — wrap, exact-MAX, and identity rows
 pass	wa3 the wrap WALK — three draws from a MAX seed step MAX, MIN, MIN+1 through wrapping-add(+1), checked '+' beside
