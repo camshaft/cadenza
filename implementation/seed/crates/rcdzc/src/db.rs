@@ -604,6 +604,15 @@ pub struct OpDecl {
     /// application against that arrow (`capabilities-and-effects.md` §Performing An Operation Is Typed).
     /// `None` for a malformed `(op NAME)` with no type.
     pub ty: Option<StructId>,
+    /// The 0-based PARAMETER INDEX the `@resource` marker designated as this op's SEC-F1 resource (the
+    /// destination the kernel/executor routes on + Cedar authorizes), or `None` for a target-free op. The
+    /// `@resource T` surface marker lifts (hash-clean, stripped from the op TYPE) to a `(resource <idx>)`
+    /// decl-level sibling on the op node (v-syntax 2026-08-13); this reads that sibling. Load-bearing for
+    /// the schema-hash reify: a reducer's world-effect perform reifies its args into the effect-request
+    /// payload BLIND except that the resource arg is SKIPPED here (the kernel extracts it via this index),
+    /// so a `(@resource dest, payload)` perform reifies with the resource-arg dropped → the payload is the
+    /// single remaining arg (no in-fold value-encode / R2 needed for the common one-resource-one-payload op).
+    pub resource: Option<usize>,
 }
 
 /// An `(effect NAME (op f (-> A B)) …)` declaration scanned from the top level — a routing-agnostic
@@ -5474,10 +5483,23 @@ pub(crate) fn scan_effect_decl(ast: &Arenas, item: StructId) -> Option<EffectDec
             continue;
         };
         let op_name = ast.as_name(name_occ).unwrap_or("").to_string();
+        // The OPTIONAL 3rd op-child is the `@resource`-marker sibling `(resource <idx>)` (v-syntax
+        // 2026-08-13): the 0-based param position designated the SEC-F1 resource. Absent for a target-free
+        // op. Read the index off the `resource` form's Int atom (rcdzc's `as_int` → `usize`); a malformed
+        // sibling (no int) leaves `resource = None`, so a garbled marker degrades to target-free rather
+        // than mis-indexing.
+        let resource = op_tail
+            .get(2)
+            .and_then(|&s| ast.as_form(s, "resource"))
+            .and_then(|res_tail| res_tail.first().copied())
+            .and_then(|idx_occ| ast.as_int(idx_occ))
+            .and_then(|iv| iv.to_i64())
+            .and_then(|n| usize::try_from(n).ok());
         ops.push(OpDecl {
             name: op_name,
             name_occ,
             ty: op_tail.get(1).copied(),
+            resource,
         });
     }
     Some(EffectDecl {
@@ -6385,6 +6407,46 @@ mod tests {
         assert_eq!(db.exports.len(), 1);
         assert_eq!(db.exports[0].name, "main");
         assert_eq!(db.exports[0].def, Some(0));
+    }
+
+    #[test]
+    fn scan_effect_decl_reads_the_at_resource_marker_sibling() {
+        // The `@resource` marker lifts (hash-clean, stripped from the op TYPE) to a `(resource <idx>)`
+        // decl-level sibling as the op node's 3rd child (v-syntax 2026-08-13). scan_effect_decl reads it
+        // into OpDecl.resource. Here: op `send` marks param 0 as the resource → resource=Some(0); op `poll`
+        // has no marker → resource=None. (The sexpr form is what rcdzc scans — the ML `@resource` desugars
+        // to this `(op <name> <clean-type> (resource N))`.)
+        let ast = crate::testkit::parse(
+            "(module m \
+               (effect E (op send (-> Bytes Bytes Unit) (resource 0)) \
+                         (op poll (-> Unit Bytes))) \
+               (def (f) 0) (export f))",
+        );
+        // Find the (effect …) top-level item + scan it.
+        let items = ast.as_form(ast.root, "module").expect("module");
+        let eff_item = items
+            .iter()
+            .copied()
+            .find(|&it| ast.as_form(it, "effect").is_some())
+            .expect("effect item");
+        let decl = scan_effect_decl(&ast, eff_item).expect("scans");
+        assert_eq!(decl.ops.len(), 2);
+        assert_eq!(decl.ops[0].name, "send");
+        assert_eq!(
+            decl.ops[0].resource,
+            Some(0),
+            "the (resource 0) sibling → OpDecl.resource = Some(0)"
+        );
+        assert_eq!(decl.ops[1].name, "poll");
+        assert_eq!(
+            decl.ops[1].resource, None,
+            "an op with no marker → resource = None"
+        );
+        // The op TYPE is still read (the marker is a SIBLING, not part of the type).
+        assert!(
+            decl.ops[0].ty.is_some(),
+            "the op type occurrence is still captured alongside the resource sibling"
+        );
     }
 
     #[test]

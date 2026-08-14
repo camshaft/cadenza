@@ -1043,8 +1043,17 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     if let Some(world_bytes) = &world
                         && !crate::wit_world::is_world_import_op(Some(world_bytes), &effect, &op)
                     {
-                        trace!(target: "rcdzc::lower", node = id.0, %effect, %op, "apply: reducer-world NON-import world-effect → reify to effect-request record (async)");
-                        return reify_effect_to_tuple(db, &effect, &args_vec);
+                        // The op's `@resource`-marked param index (`OpDecl.resource`) — the SEC-F1
+                        // destination arg the reify SKIPS (the kernel extracts it via the marker). Resolved
+                        // from the perform's `(effect-op <decl> <idx>)` channel; `None` for a target-free op.
+                        let resource =
+                            crate::eval::effect_op_of(db, head).and_then(|(decl, op_idx)| {
+                                db.effect_decl_by_occ(decl)
+                                    .and_then(|e| e.ops.get(op_idx as usize))
+                                    .and_then(|o| o.resource)
+                            });
+                        trace!(target: "rcdzc::lower", node = id.0, %effect, %op, ?resource, "apply: reducer-world NON-import world-effect → reify to effect-request record (async)");
+                        return reify_effect_to_tuple(db, &effect, &args_vec, resource);
                     }
                     trace!(target: "rcdzc::lower", node = id.0, %effect, %op, "apply: host-delegated perform → Core::HostCall (sync import / plain host-delegation)");
                     return Core::HostCall {
@@ -15354,17 +15363,42 @@ fn effect_schema_descriptor(
 ///
 /// `kind` = `"effect/<effect-name>"` (the register-by-string family; String for phase-1a — v-effects flips
 /// it to the schema-hash at their phase-2 core-flip, a one-line change here). `correlation` = `None` (a
-/// concurrency token is a later slice). The PAYLOAD, for the Bytes-payload effects unblocked now (v-ah's
-/// decomposition — the arg is already `Bytes`, e.g. `Tool.run(call: Bytes)`): `Some(<the single Bytes
-/// arg>)` for one arg, `None` for zero args. A structured (non-Bytes) arg (`Model.request(mr: ModelRequest)`)
-/// needs an in-fold value-encode primitive that does not exist yet (R2, escalated to concierge) — DECLINE
-/// it cleanly here until that lands; a multi-arg perform likewise declines (the value-form-of-args tupling
-/// rides the same value-encode). Built by synthesizing the record AST + `resolve_subtree` + `core_of`, so
-/// all the typed `Some`/`None`/record-value machinery is reused (no hand-built typed `Core::SumNew`).
-fn reify_effect_to_tuple(db: &mut Db, effect: &str, args: &[StructId]) -> Core {
-    // PAYLOAD (capability-blind, Bytes-only for now): one Bytes arg → Some(arg); zero args → None; anything
-    // else (multi-arg, or a structured single arg) needs the not-yet-existing in-fold value-encode → decline.
-    let payload_field = match args {
+/// concurrency token is a later slice).
+///
+/// The RESOURCE ARG IS SKIPPED. `resource` is the op's `@resource`-marked param index (`OpDecl.resource`,
+/// from the decl's `(resource N)` sibling) — the SEC-F1 destination the kernel/executor extracts + Cedar
+/// authorizes. It is dropped from the args here (NOT put in the payload) — the reducer's `Emit.send(dest,
+/// payload)` carries `dest` as arg `N`, and the kernel derives the request's target from it via the marker;
+/// the wire record has no target column (ruling S2). This is capability-blind: it reads the DECL's marker
+/// index, not a hard-coded which-effects-are-target-chosen vocabulary. Crucially it also reduces arg count
+/// — a 2-arg `Emit.send(@resource dest, payload)` becomes a ONE-remaining-arg payload → reifies with NO
+/// in-fold value-encode (the resource-skip, not R2, is what unblocks the common one-resource-one-payload op).
+///
+/// The PAYLOAD is the args with the resource arg removed: `Some(<the single Bytes remaining arg>)`, or
+/// `None` for zero remaining args. A structured (non-Bytes) remaining arg (`Model.request(mr:
+/// ModelRequest)`) OR more than one remaining arg needs an in-fold value-encode primitive that does not
+/// exist yet (R2, escalated to the operator) — DECLINE cleanly until it lands. Built by synthesizing the
+/// record AST + `resolve_subtree` + `core_of`, so the typed `Some`/`None`/record machinery is reused.
+fn reify_effect_to_tuple(
+    db: &mut Db,
+    effect: &str,
+    args: &[StructId],
+    resource: Option<usize>,
+) -> Core {
+    // Drop the `@resource`-marked arg (the kernel extracts it via the marker) — leaving the PAYLOAD args.
+    // A resource index out of range degrades to "no skip" (a malformed decl; the arity check below then
+    // declines rather than mis-dropping).
+    let payload_args: Vec<StructId> = match resource {
+        Some(idx) if idx < args.len() => args
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &a)| (i != idx).then_some(a))
+            .collect(),
+        _ => args.to_vec(),
+    };
+    // PAYLOAD (capability-blind, Bytes-only for now): one Bytes remaining arg → Some(arg); zero → None;
+    // anything else (multi remaining arg, or a structured single arg) needs the in-fold value-encode → decline.
+    let payload_field = match payload_args.as_slice() {
         [] => {
             let none_h = db.push_name("None");
             db.push_list(vec![none_h]) // (None) — the payload-free effect
@@ -15375,9 +15409,10 @@ fn reify_effect_to_tuple(db: &mut Db, effect: &str, args: &[StructId]) -> Core {
         }
         _ => {
             return Core::Poison(Reject::decline(
-                "reifying a world-effect perform with a non-Bytes or multi-argument payload needs an \
-                 in-fold value-encode primitive (schema-hash phase-1a: only Bytes-payload effects reify \
-                 today; the structured/multi-arg payload rides the deferred Value.encode primitive)",
+                "reifying a world-effect perform with a non-Bytes or multi-argument payload (after the \
+                 @resource arg is skipped) needs an in-fold value-encode primitive (schema-hash phase-1a: \
+                 only a single-Bytes-payload effect reifies today; the structured/multi-arg payload rides \
+                 the deferred Value.encode primitive)",
             ));
         }
     };
@@ -28070,7 +28105,7 @@ mod tests {
             matches!(crate::infer::type_of(&mut db, arg), crate::ty::Ty::Bytes),
             "the test arg is Bytes-typed"
         );
-        let core = reify_effect_to_tuple(&mut db, "model", &[arg]);
+        let core = reify_effect_to_tuple(&mut db, "model", &[arg], None);
         let Core::Record { fields } = core else {
             panic!("reify must build a Core::Record, got {core:?}");
         };
@@ -28123,10 +28158,56 @@ mod tests {
         ));
         let a = body_of(&mut db, "f");
         let b = body_of(&mut db, "g");
-        let core = reify_effect_to_tuple(&mut db, "emit", &[a, b]);
+        let core = reify_effect_to_tuple(&mut db, "emit", &[a, b], None);
         assert!(
             matches!(core, Core::Poison(_)),
-            "a multi-arg world-effect payload needs the R2 in-fold value-encode → declines cleanly, got {core:?}"
+            "a multi-arg world-effect payload (no @resource skip) needs the R2 in-fold value-encode → declines cleanly, got {core:?}"
+        );
+    }
+
+    #[test]
+    fn reify_effect_to_tuple_skips_the_resource_arg_so_a_2_arg_emit_reifies() {
+        // The @resource-skip: Emit.send(@resource dest, payload) is a 2-arg perform, but with resource=Some(0)
+        // the reify DROPS arg0 (dest — the kernel extracts it via the marker) → the payload is the SINGLE
+        // remaining arg (arg1) → reifies with NO R2 (the resource-skip, not value-encode, unblocks 2-arg emits).
+        // Both args Bytes: dest (arg0, skipped) + payload (arg1, → Some(bytes)). This is v-ah's migrated
+        // reducer_kv Emit.send shape.
+        let mut db = Db::load(crate::testkit::parse(
+            "(module m (def (f) b\"dest\") (def (g) b\"body\") (export f))",
+        ));
+        let dest = body_of(&mut db, "f");
+        let body = body_of(&mut db, "g");
+        let core = reify_effect_to_tuple(&mut db, "emit", &[dest, body], Some(0));
+        let Core::Record { fields } = core else {
+            panic!(
+                "a 2-arg emit with @resource=arg0 reifies (resource skipped, payload=arg1), got {core:?}"
+            );
+        };
+        let names: Vec<&str> = fields.keys().map(|s| s.name.as_ref()).collect();
+        assert_eq!(
+            names,
+            vec!["correlation", "kind", "payload"],
+            "3-field record"
+        );
+        // payload = Some(arg1=body) — the resource arg0 (dest) was skipped, not in the payload.
+        let payload_occ = *fields
+            .iter()
+            .find(|(s, _)| s.name.as_ref() == "payload")
+            .unwrap()
+            .1;
+        assert!(
+            matches!(core_of(&mut db, payload_occ), Core::SumNew { payloads, .. } if payloads.len() == 1),
+            "payload = Some(the non-resource arg): the @resource dest is skipped, payload is arg1"
+        );
+        // And a target-FREE effect (resource=None) with a single Bytes arg still reifies (payload=that arg) —
+        // the resource-skip only fires when a marker index is present.
+        let single = body_of(&mut db, "g");
+        assert!(
+            matches!(
+                reify_effect_to_tuple(&mut db, "tool", &[single], None),
+                Core::Record { .. }
+            ),
+            "a target-free single-Bytes-arg effect (resource=None) still reifies"
         );
     }
 
@@ -28136,7 +28217,7 @@ mod tests {
         // payload = None — the 3-field record still builds, just with the None payload variant. Pins the
         // zero-arg arm ([] => (None)) alongside the single-Bytes-arg (Some) + multi-arg (decline) cases.
         let mut db = Db::load(crate::testkit::parse("(module m (def (f) 0) (export f))"));
-        let core = reify_effect_to_tuple(&mut db, "now", &[]);
+        let core = reify_effect_to_tuple(&mut db, "now", &[], None);
         let Core::Record { fields } = core else {
             panic!("a zero-arg reify still builds a Core::Record, got {core:?}");
         };
