@@ -175,22 +175,26 @@ impl Executor for LifecycleExecutor {
         req: &EffectRequest,
         _idempotency_key: Hash,
     ) -> EffectOutcome {
+        // PHASE-3 STEP B: dispatch on the SCHEMA-HASH identity (behavior-equivalent — req.schema_hash ==
+        // effect_family_schema_hash(family) for every in-host request). `family` is kept only for the
+        // mis-route diagnostics below; its content_type.family read is removed in STEP C.
         let family = req.content_type.family.as_ref();
         // SPAWN is structurally distinct from terminate/suspend/resume (no peer `target` — it CREATES a
         // child; the reducer identity rides the payload; it RETURNS the child's SessionId synchronously). So
         // dispatch it first, on its own path.
-        if req.content_type.matches_family(effect_ct::LIFECYCLE_SPAWN) {
+        if req.schema_hash
+            == cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::LIFECYCLE_SPAWN)
+        {
             return self.perform_spawn(req);
         }
-        // Dispatch by family: terminate / suspend / resume (register-by-string). A non-lifecycle family is
-        // structural → PERMANENT (§17). Suspend/resume take no payload; terminate carries an optional reason.
-        let is_terminate = req
-            .content_type
-            .matches_family(effect_ct::LIFECYCLE_TERMINATE);
-        let is_suspend = req
-            .content_type
-            .matches_family(effect_ct::LIFECYCLE_SUSPEND);
-        let is_resume = req.content_type.matches_family(effect_ct::LIFECYCLE_RESUME);
+        // Dispatch by schema-hash: terminate / suspend / resume. A non-lifecycle family is structural →
+        // PERMANENT (§17). Suspend/resume take no payload; terminate carries an optional reason.
+        let is_terminate = req.schema_hash
+            == cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::LIFECYCLE_TERMINATE);
+        let is_suspend = req.schema_hash
+            == cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::LIFECYCLE_SUSPEND);
+        let is_resume = req.schema_hash
+            == cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::LIFECYCLE_RESUME);
         if !(is_terminate || is_suspend || is_resume) {
             return EffectOutcome::err(format!(
                 "LifecycleExecutor handles only lifecycle/spawn|terminate|suspend|resume, got {family}"
@@ -267,14 +271,14 @@ impl Executor for LifecycleExecutor {
     }
 
     fn handles_family(&self, family: &str) -> bool {
-        // spawn + terminate + suspend + resume — the full lifecycle/* family this executor serves.
-        matches!(
-            family,
-            effect_ct::LIFECYCLE_SPAWN
-                | effect_ct::LIFECYCLE_TERMINATE
-                | effect_ct::LIFECYCLE_SUSPEND
-                | effect_ct::LIFECYCLE_RESUME
-        )
+        // Phase-3 (STEP B): answer by SCHEMA-HASH identity — the served verbs' hashes — not the strings.
+        // spawn + terminate + suspend + resume are the full lifecycle/* family this executor serves.
+        use cdz_kernel::ast_marshal::effect_family_schema_hash;
+        let h = effect_family_schema_hash(family);
+        h == effect_family_schema_hash(effect_ct::LIFECYCLE_SPAWN)
+            || h == effect_family_schema_hash(effect_ct::LIFECYCLE_TERMINATE)
+            || h == effect_family_schema_hash(effect_ct::LIFECYCLE_SUSPEND)
+            || h == effect_family_schema_hash(effect_ct::LIFECYCLE_RESUME)
     }
 }
 

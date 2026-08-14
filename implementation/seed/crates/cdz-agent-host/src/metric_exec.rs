@@ -257,7 +257,10 @@ impl Executor for MetricExecutor {
     ) -> EffectOutcome {
         // Family-keyed, matching the router + authz decision. A non-metric/publish family is structural →
         // PERMANENT (§17: observable Err, never a panic).
-        if !req.content_type.matches_family(effect_ct::METRIC_PUBLISH) {
+        // PHASE-3 STEP B: schema-hash self-guard (behavior-equivalent, moves off content_type.family for STEP C).
+        if req.schema_hash
+            != cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::METRIC_PUBLISH)
+        {
             return EffectOutcome::err(format!(
                 "MetricExecutor only handles the {} family, got {}",
                 effect_ct::METRIC_PUBLISH,
@@ -322,7 +325,8 @@ impl Executor for MetricExecutor {
 
     /// This single-family executor serves exactly the `metric/publish` family.
     fn handles_family(&self, family: &str) -> bool {
-        family == effect_ct::METRIC_PUBLISH
+        cdz_kernel::ast_marshal::effect_family_schema_hash(family)
+            == cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::METRIC_PUBLISH)
     }
 }
 

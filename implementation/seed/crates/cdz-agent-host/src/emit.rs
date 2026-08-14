@@ -78,7 +78,8 @@ impl Executor for EmitExecutor {
         // the routing target, not an oversight.
         // Family-keyed (seq-39), matching the router + authz decision. A non-Emit family is structural →
         // PERMANENT (§17: observable Err, never a panic).
-        if !req.content_type.matches_family(effect_ct::EMIT) {
+        // PHASE-3 STEP B: schema-hash self-guard (behavior-equivalent, moves off content_type.family for STEP C).
+        if req.schema_hash != cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::EMIT) {
             return EffectOutcome::err(format!(
                 "EmitExecutor only handles the {} family, got {}",
                 effect_ct::EMIT,
@@ -151,7 +152,8 @@ impl Executor for EmitExecutor {
     /// This single-family executor serves exactly the `Emit` family (the capability-manifest mechanism
     /// dimension when used bare; a `CompositeExecutor`'s own `by_family` answers when composed).
     fn handles_family(&self, family: &str) -> bool {
-        family == effect_ct::EMIT
+        cdz_kernel::ast_marshal::effect_family_schema_hash(family)
+            == cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::EMIT)
     }
 }
 

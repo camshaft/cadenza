@@ -81,7 +81,8 @@ impl<T: ModelTransport> Executor for ModelExecutor<T> {
         // Key the guard on the effect FAMILY STRING (seq-39 / effect-schema slice 2), not the EffectKind
         // enum — the same decision the router and authz make. Decouples this executor from the enum ahead
         // of its retirement; matches_family is the one-source-of-truth family compare.
-        if !req.content_type.matches_family(effect_ct::MODEL) {
+        // PHASE-3 STEP B: schema-hash self-guard (behavior-equivalent, moves off content_type.family for STEP C).
+        if req.schema_hash != cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::MODEL) {
             return EffectOutcome::err(format!(
                 "ModelExecutor only handles the {} family, got {}",
                 effect_ct::MODEL,
@@ -127,7 +128,8 @@ impl<T: ModelTransport> Executor for ModelExecutor<T> {
     /// dimension when it's used bare as a `dyn Executor` (in a `CompositeExecutor` the composite's own
     /// `by_family` override answers instead). Overrides the trait's fail-safe `false` default.
     fn handles_family(&self, family: &str) -> bool {
-        family == effect_ct::MODEL
+        cdz_kernel::ast_marshal::effect_family_schema_hash(family)
+            == cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::MODEL)
     }
 }
 

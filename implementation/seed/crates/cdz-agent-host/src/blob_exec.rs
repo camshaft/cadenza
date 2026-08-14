@@ -54,8 +54,13 @@ impl<B: BlobStore> Executor for BlobExecutor<B> {
         req: &EffectRequest,
         _idempotency_key: Hash,
     ) -> EffectOutcome {
+        // PHASE-3 STEP B: dispatch on the SCHEMA-HASH identity (behavior-equivalent — req.schema_hash ==
+        // effect_family_schema_hash(family) for every in-host request). `family` is kept only for the
+        // mis-route diagnostic below; its content_type.family read is removed in STEP C.
         let family = req.content_type.family.as_ref();
-        if family == effect_ct::BLOB_PUT {
+        if req.schema_hash
+            == cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::BLOB_PUT)
+        {
             // Store the payload bytes → return the content hash as its RAW bytes, the handle the reducer threads to get.
             let bytes = match &req.payload {
                 Some(Payload::Inline(b)) => b.clone(),
@@ -76,7 +81,9 @@ impl<B: BlobStore> Executor for BlobExecutor<B> {
                 Ok(()) => EffectOutcome::Ok(Some(Payload::Inline(hash.as_bytes().to_vec().into()))),
                 Err(e) => EffectOutcome::err(format!("blob/put failed: {e}")),
             }
-        } else if family == effect_ct::BLOB_GET {
+        } else if req.schema_hash
+            == cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::BLOB_GET)
+        {
             // Target = the RAW 32 hash bytes (opaque Arc<[u8]> the reducer echoed). Reconstruct the `Hash` via
             // from_bytes (NOT from_hex — no string parse); a wrong-length target is structural → PERMANENT.
             let Ok(hash) = <[u8; 32]>::try_from(req.target.as_ref()).map(Hash::from_bytes) else {
@@ -105,7 +112,9 @@ impl<B: BlobStore> Executor for BlobExecutor<B> {
 
     /// Serves the `blob/*` families (both put + get share this executor).
     fn handles_family(&self, family: &str) -> bool {
-        family == effect_ct::BLOB_PUT || family == effect_ct::BLOB_GET
+        let h = cdz_kernel::ast_marshal::effect_family_schema_hash(family);
+        h == cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::BLOB_PUT)
+            || h == cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::BLOB_GET)
     }
 }
 

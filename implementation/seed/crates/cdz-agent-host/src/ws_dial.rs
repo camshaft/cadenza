@@ -226,7 +226,11 @@ impl cdz_kernel::executor::Executor for WsDialExecutor {
         // Serves ONLY ws/dial (the outbound dial effect). ws/connect + ws/disconnect are INBOUND events the
         // transport emits, never effects dispatched here; ws/send is the peer-write effect. A mis-route is
         // structural → PERMANENT (§17: observable Err, never a panic).
-        if family != effect_ct::WS_DIAL {
+        // PHASE-3 STEP B: self-guard on the schema-hash identity (behavior-equivalent — req.schema_hash ==
+        // effect_family_schema_hash(family) for every in-host request). `family` kept only for the mis-route
+        // diagnostic; its content_type.family read is removed in STEP C.
+        if req.schema_hash != cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::WS_DIAL)
+        {
             return EffectOutcome::err(format!(
                 "WsDialExecutor only handles {}, got {family}",
                 effect_ct::WS_DIAL
@@ -275,7 +279,10 @@ impl cdz_kernel::executor::Executor for WsDialExecutor {
 
     /// Serves ONLY `ws/dial` — the outbound dial effect. Overrides the trait's fail-safe `false` default.
     fn handles_family(&self, family: &str) -> bool {
-        family == cdz_kernel::effect::effect_ct::WS_DIAL
+        cdz_kernel::ast_marshal::effect_family_schema_hash(family)
+            == cdz_kernel::ast_marshal::effect_family_schema_hash(
+                cdz_kernel::effect::effect_ct::WS_DIAL,
+            )
     }
 }
 

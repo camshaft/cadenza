@@ -58,7 +58,11 @@ impl Executor for ClockExecutor {
         // enum — the same decision the router and authz make, and the same shape the Model/Http executors
         // already use. Decouples this executor from the enum ahead of its retirement; matches_family is
         // the one-source-of-truth family compare.
-        if !req.content_type.matches_family(effect_ct::NOW) {
+        // PHASE-3 re-key (STEP B): self-guard on the SCHEMA-HASH identity, not the family string —
+        // req.schema_hash is the effect's baked identity and equals effect_family_schema_hash(family) for
+        // every in-host request (pinned precondition), so this is behavior-equivalent to the old
+        // matches_family compare while moving the leaf off content_type.family ahead of its removal (STEP C).
+        if req.schema_hash != cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::NOW) {
             // A wrong-family request is structural — PERMANENT, a supervisor must not retry it (§17: an
             // observable Err, never a panic).
             return EffectOutcome::err(format!(
@@ -88,7 +92,9 @@ impl Executor for ClockExecutor {
     /// dimension when it's used bare as a `dyn Executor` (in a `CompositeExecutor` the composite's own
     /// `by_family` override answers instead). Overrides the trait's fail-safe `false` default.
     fn handles_family(&self, family: &str) -> bool {
-        family == effect_ct::NOW
+        // Phase-3 (STEP B): answer by SCHEMA-HASH identity — the served family's hash — not the string.
+        cdz_kernel::ast_marshal::effect_family_schema_hash(family)
+            == cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::NOW)
     }
 }
 

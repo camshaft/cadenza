@@ -60,12 +60,19 @@ impl Executor for FsExecutor {
         };
         // Route on the fs/* family (seq-39 family-string source of truth). This executor does the raw syscall
         // for the one op Cedar permitted, nothing more.
-        if req.content_type.matches_family(effect_ct::FS_READ) {
+        // PHASE-3 STEP B: dispatch on the SCHEMA-HASH identity (behavior-equivalent — req.schema_hash ==
+        // effect_family_schema_hash(family) for every in-host request), moving off content_type.family
+        // ahead of STEP C. (handles_family keeps the param-based is_fs_family set helper — it reads the
+        // passed family arg, not the request field STEP C removes.)
+        if req.schema_hash == cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::FS_READ)
+        {
             match std::fs::read(path) {
                 Ok(bytes) => EffectOutcome::Ok(Some(Payload::Inline(bytes.into()))),
                 Err(e) => EffectOutcome::err(format!("fs/read {path}: {e}")),
             }
-        } else if req.content_type.matches_family(effect_ct::FS_WRITE) {
+        } else if req.schema_hash
+            == cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::FS_WRITE)
+        {
             // The payload IS the file content. A blob-ref payload can't be resolved here (no blob-store
             // handle) and a payload-less write has no content — both structural PERMANENT.
             let content: &[u8] = match &req.payload {
@@ -86,7 +93,9 @@ impl Executor for FsExecutor {
                 Ok(()) => EffectOutcome::Ok(Some(Payload::Inline(Vec::new().into()))),
                 Err(e) => EffectOutcome::err(format!("fs/write {path}: {e}")),
             }
-        } else if req.content_type.matches_family(effect_ct::FS_GLOB) {
+        } else if req.schema_hash
+            == cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::FS_GLOB)
+        {
             glob_paths(path)
         } else {
             // A non-fs family is structural (this executor serves only fs/*) → PERMANENT.

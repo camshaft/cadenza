@@ -147,7 +147,9 @@ impl<T: HttpTransport> Executor for HttpExecutor<T> {
         idempotency_key: Hash,
     ) -> EffectOutcome {
         // Family-keyed (seq-39), not the EffectKind enum — the same decision the router + authz make.
-        if !req.content_type.matches_family(effect_ct::HTTP) {
+        // PHASE-3 STEP B: self-guard on the schema-hash identity (== effect_family_schema_hash(family) for
+        // every in-host request), behavior-equivalent, moving off content_type.family ahead of STEP C.
+        if req.schema_hash != cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::HTTP) {
             // Structural — PERMANENT, a supervisor must not retry it (§17: observable Err, never a panic).
             return EffectOutcome::err(format!(
                 "HttpExecutor only handles the {} family, got {}",
@@ -213,7 +215,8 @@ impl<T: HttpTransport> Executor for HttpExecutor<T> {
     /// dimension when it's used bare as a `dyn Executor` (in a `CompositeExecutor` the composite's own
     /// `by_family` override answers instead). Overrides the trait's fail-safe `false` default.
     fn handles_family(&self, family: &str) -> bool {
-        family == effect_ct::HTTP
+        cdz_kernel::ast_marshal::effect_family_schema_hash(family)
+            == cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::HTTP)
     }
 }
 

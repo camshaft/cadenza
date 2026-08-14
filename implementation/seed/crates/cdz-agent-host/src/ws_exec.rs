@@ -104,7 +104,11 @@ impl<R: WsConnRegistry> Executor for WsSendExecutor<R> {
         // The kernel routes by family, but be explicit: this executor serves ONLY ws/send (the outbound
         // effect). ws/connect + ws/disconnect are INBOUND events the listener emits, never effects dispatched
         // here, so a non-ws/send ws family reaching this executor is a mis-route.
-        if family != effect_ct::WS_SEND {
+        // PHASE-3 STEP B: self-guard on the schema-hash identity (behavior-equivalent — req.schema_hash ==
+        // effect_family_schema_hash(family) for every in-host request). `family` is kept only for the
+        // mis-route diagnostic; its content_type.family read is removed in STEP C.
+        if req.schema_hash != cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::WS_SEND)
+        {
             return EffectOutcome::err(format!(
                 "WsSendExecutor only handles {}, got {family}",
                 effect_ct::WS_SEND
@@ -149,7 +153,8 @@ impl<R: WsConnRegistry> Executor for WsSendExecutor<R> {
     /// are INBOUND events the listener emits, not effects — so this executor claims just the outbound one, not
     /// the whole `ws/` prefix (a `ws/connect` reaching an executor would be a bug, caught by `perform`'s guard).
     fn handles_family(&self, family: &str) -> bool {
-        family == effect_ct::WS_SEND
+        cdz_kernel::ast_marshal::effect_family_schema_hash(family)
+            == cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::WS_SEND)
     }
 }
 

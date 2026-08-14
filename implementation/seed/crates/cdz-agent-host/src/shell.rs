@@ -61,7 +61,8 @@ impl Executor for ShellExecutor {
     ) -> EffectOutcome {
         // Family guard (seq-39 family-string source of truth, same as Clock/Http/Model). A wrong family is
         // structural → PERMANENT (§17: an observable Err, never a panic; a supervisor must not retry it).
-        if !req.content_type.matches_family(effect_ct::SHELL) {
+        // PHASE-3 STEP B: schema-hash self-guard (behavior-equivalent, moves off content_type.family for STEP C).
+        if req.schema_hash != cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::SHELL) {
             return EffectOutcome::err(format!(
                 "ShellExecutor only handles the {} family, got {}",
                 effect_ct::SHELL,
@@ -115,7 +116,8 @@ impl Executor for ShellExecutor {
     /// This single-kind executor serves exactly the `shell` family (the capability-manifest mechanism
     /// dimension when used bare as a `dyn Executor`; a `CompositeExecutor`'s own map answers otherwise).
     fn handles_family(&self, family: &str) -> bool {
-        family == effect_ct::SHELL
+        cdz_kernel::ast_marshal::effect_family_schema_hash(family)
+            == cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::SHELL)
     }
 }
 

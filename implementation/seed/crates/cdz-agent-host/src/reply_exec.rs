@@ -101,7 +101,10 @@ impl Executor for ReplyExecutor {
 
         // Structural: serve ONLY the effect/reply family. Anything else reaching here is a routing bug →
         // PERMANENT (§17: observable Err, never a panic).
-        if !req.content_type.matches_family(effect_ct::EFFECT_REPLY) {
+        // PHASE-3 STEP B: schema-hash self-guard (behavior-equivalent, moves off content_type.family for STEP C).
+        if req.schema_hash
+            != cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::EFFECT_REPLY)
+        {
             return EffectOutcome::err(format!(
                 "ReplyExecutor only handles the {} family, got {}",
                 effect_ct::EFFECT_REPLY,
@@ -182,7 +185,8 @@ impl Executor for ReplyExecutor {
 
     /// Serves exactly the `effect/reply` family (the handler's reply verb).
     fn handles_family(&self, family: &str) -> bool {
-        family == effect_ct::EFFECT_REPLY
+        cdz_kernel::ast_marshal::effect_family_schema_hash(family)
+            == cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::EFFECT_REPLY)
     }
 }
 
