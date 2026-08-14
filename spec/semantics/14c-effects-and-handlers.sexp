@@ -10848,3 +10848,92 @@
             (export main)))
   (call   main (: 20 Int64)) (output (: 7004010900552105 Int64))
   (call   main (: 50 Int64)) (output (: 10007011200552105 Int64)))
+
+;; ── Markov bigram counts, skyline demolish, typed bracket matcher (breaker batch 272) ────────
+(case "mkv1 a MARKOV bigram counter — each feed keys the map by the (previous, current) PAIR built from the state and the argument, so the same value arriving after different predecessors lands in different buckets"
+  (input  (do
+            (effect S (op feed (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle S (tuple 0 (: Map.empty (Map (Tuple Int64 Int64) Int64)))
+                ((feed (v) st
+                  (match st
+                    ((tuple prev m)
+                      (let ((k (tuple prev v)))
+                        (let ((c2 (+ (match (Map.lookup m k) ((Some c) c) ((None u) 0)) 1)))
+                          (resume c2 (tuple v (Map.insert m k c2)))))))))
+                (let ((a (S.feed n)))
+                  (let ((b (S.feed 2)))
+                    (let ((c (S.feed n)))
+                      (let ((d (S.feed 2)))
+                        (let ((e (S.feed n)))
+                          (+ (* 10 (+ (* 10 (+ (* 10 (+ (* 10 a) b)) c)) d)) e))))))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 11234 Int64))
+  (call   main (: 5 Int64)) (output (: 11122 Int64)))
+
+(case "sky1 SKYLINE visibility with demolition — feeds answer whether the building tops all before it, demolish removes EVERY copy of the max forcing the threshold to recompute from survivors"
+  (input  (do
+            (effect S
+              (op feed (-> Int64 Int64))
+              (op demolish (-> Int64)))
+            (def (maxl (: xs (List Int64)) (: i Int64) (: best Int64))
+              (match (List.at xs i)
+                ((Some v) (maxl xs (+ i 1) (if (> v best) v best)))
+                ((None u) best)))
+            (def (drop-eq (: xs (List Int64)) (: i Int64) (: m Int64) (: acc (List Int64)))
+              (match (List.at xs i)
+                ((Some v) (drop-eq xs (+ i 1) m (if (= v m) acc (List.push acc v))))
+                ((None u) acc)))
+            (def (main (: n Int64))
+              (handle S (: (list) (List Int64))
+                ((feed (h) hs
+                  (let ((vis (if (> h (maxl hs 0 -1)) 1 0)))
+                    (let ((h2 (List.push hs h)))
+                      (resume (+ (* vis 10) (List.len h2)) h2))))
+                 (demolish () hs
+                  (let ((m (maxl hs 0 -1)))
+                    (let ((h2 (drop-eq hs 0 m (: (list) (List Int64)))))
+                      (resume (maxl h2 0 0) h2)))))
+                (let ((a (S.feed 3)))
+                  (let ((b (S.feed n)))
+                    (let ((c (S.feed 4)))
+                      (let ((d (S.demolish)))
+                        (let ((e (S.feed 5)))
+                          (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e))))))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 1112030413 Int64))
+  (call   main (: 2 Int64)) (output (: 1102130313 Int64)))
+
+(case "brk1 TYPED-BRACKET matching — opens push their code, a close must match the TOP of the expected stack (LIFO discipline), a wrong-type close flips the sticky invalid; the seed orders the closes right or wrong"
+  (input  (do
+            (effect S (op feed (-> Int64 Int64)))
+            (def (topv (: xs (List Int64)))
+              (match (List.at xs (- (List.len xs) 1)) ((Some v) v) ((None u) -1)))
+            (def (dropl (: xs (List Int64)) (: i Int64) (: keep Int64) (: acc (List Int64)))
+              (if (< i keep)
+                  (dropl xs (+ i 1) keep (List.push acc (match (List.at xs i) ((Some v) v) ((None u) 0))))
+                  acc))
+            (def (main (: n Int64))
+              (handle S (tuple (: (list) (List Int64)) 0)
+                ((feed (c) st
+                  (match st
+                    ((tuple stack bad)
+                      (if (= bad 1)
+                          (resume -9 st)
+                          (if (< c 10)
+                              (let ((s2 (List.push stack c)))
+                                (resume (List.len s2) (tuple s2 0)))
+                              (if (= (topv stack) (- c 10))
+                                  (let ((s2 (dropl stack 0 (- (List.len stack) 1) (: (list) (List Int64)))))
+                                    (resume (List.len s2) (tuple s2 0)))
+                                  (resume -9 (tuple stack 1)))))))))
+                (let ((c3 (if (= n 0) 12 11)))
+                  (let ((c4 (if (= n 0) 11 12)))
+                    (let ((a (S.feed 1)))
+                      (let ((b (S.feed 2)))
+                        (let ((c (S.feed c3)))
+                          (let ((d (S.feed c4)))
+                            (+ (* 100 (+ (* 100 (+ (* 100 (+ a 10)) (+ b 10))) (+ c 10))) (+ d 10))))))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 11121110 Int64))
+  (call   main (: 1 Int64)) (output (: 11120101 Int64)))

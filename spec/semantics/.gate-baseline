@@ -4764,6 +4764,7 @@ pass	breaker holsubst: a free occurrence beside a shadow substitutes selectively
 pass	breaker holsubst: a shadowing binder blocks substitution
 pass	breaker holsubst: the naive subst's documented capture hazard
 pass	breaker specsubst: GEN of refl then SPEC substitutes the bound var throughout the body
+pass	brk1 TYPED-BRACKET matching — opens push their code, a close must match the TOP of the expected stack (LIFO discipline), a wrong-type close flips the sticky invalid; the seed orders the closes right or wrong
 pass	bs1 a BOOL toggle state — four draws alternate true/false from an input-dependent seed
 pass	bs2 a LATCH — once an op arg is false, the state stays false and every later check answers false
 pass	bt1 a BOOL handler state TOGGLES per dispatch — three draws read the alternating flag, seeded by input parity
@@ -5528,6 +5529,7 @@ pass	mk2 map keys DERIVED from prior draws — n=1 collides the derived key with
 pass	mk21 a scalar-map handler whose second put uses a COMPUTED key — the checked-add scratch and the Option-handle slot stay width-partitioned
 pass	mk3 the arm SHRINKS the map state via remove — re-removing the same key is idempotent, a missing key is a no-op
 pass	mki1 a MAP+KEYSET invariant pair — every put and remove maintains set = keys(map) across both structures in one transition, and paired membership checks verify both sides agree; the n=5 seed collapses the two puts into one key
+pass	mkv1 a MARKOV bigram counter — each feed keys the map by the (previous, current) PAIR built from the state and the argument, so the same value arriving after different predecessors lands in different buckets
 pass	ml1 a Map whose VALUES are tuples — a draw-keyed insert of a drawn pair, lookups destructure both hit and neighbor
 pass	mm1 a MIN/MAX tracking arm — three feeds tighten the (lo,hi) tuple state, readers project the final spread
 pass	mml1 a MULTIMAP handler state — (Map Int64 (List Int64)) buckets grow per-key across dispatches; put answers the new bucket length and total sums a bucket later
@@ -6105,6 +6107,7 @@ pass	size after a runtime-key insert reflects replace-vs-add
 pass	size after a runtime-key remove reflects whether the key was present
 pass	sk1 a FILTERED fold — only even draws accumulate but every draw advances the thread, kept-count and span both pinned
 pass	sk4 a Set of TUPLES as handler state with three arms — insert in one arm, contains in a sibling
+pass	sky1 SKYLINE visibility with demolition — feeds answer whether the building tops all before it, demolish removes EVERY copy of the max forcing the threshold to recompute from survivors
 pass	sl1 a STRING slot grows by a mod-picked suffix and its BYTE-LEN seeds a nested handle — the composed face of the slot-clobber fix
 pass	slicing a byte sequence built at run time yields Some of the sub-range
 pass	slicing a runtime byte sequence past the end yields None
