@@ -311,6 +311,32 @@ export const EXAMPLES: Example[] = [
     expected: "(: (list (tuple 1 2) (tuple 2 1) (tuple 3 3)) (List (Tuple Int64 Int64)))",
   },
   {
+    // Shows off: `Map.swap` and `Map.take` — both return a (value, new-map) PAIR, a functional update
+    // that hands you BOTH the old reading and the updated map with no separate lookup. swap sets k->v and
+    // returns the previous value; take removes k and returns its value. Stock {apple:5, pear:2}: restock
+    // apples to 9 (learning the old 5), then discontinue pears (taking out the 2). Result surfaces both.
+    id: "map-swap-take-inventory",
+    name: "Map swap & take (inventory)",
+    theme: "data-and-collections",
+    surface: "sexpr",
+    source: `(do
+  ; Both Map.swap and Map.take return a (value, new-map) PAIR — a functional update
+  ; that hands you BOTH the old value and the updated map, no separate lookup needed.
+  ;   Map.swap m k v : set k -> v, return (previous value, new map)
+  ;   Map.take m k   : remove k, return (its value, map without k)
+  ; Stock starts {apple: 5, pear: 2} (keys 1, 2). Restock apples to 9 (learn the old
+  ; 5), then discontinue pears (take out the 2), surfacing both old readings.
+  (def (main)
+    (let ((stock (Map.insert (Map.insert (Map.empty) 1 5) 2 2)))
+      (match (Map.swap stock 1 9)
+        ((tuple old-apples restocked)
+         (match (Map.take restocked 2)
+           ((tuple gone-pears final)
+            (tuple old-apples gone-pears (Map.to-list final))))))))
+  (export main))`,
+    expected: "(: (tuple (Some 5) (Some 2) (list (tuple 1 9))) (Tuple (Option Int64) (Option Int64) (List (Tuple Int64 Int64))))",
+  },
+  {
     // Shows off: Bytes as a Map KEY. Bytes carries a total order (lexicographic over unsigned bytes),
     // so a byte string can index a Map directly — no hashing it to an Int first. Here we tally how
     // often each word (as UTF-8 bytes) occurs: "red" 3x, "blue" 1x => ((Some 3), (Some 1)).
