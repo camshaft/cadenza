@@ -11045,3 +11045,98 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 4001008001002 Int64))
   (call   main (: 0 Int64)) (output (: 500031003 Int64)))
+
+;; ── Vickrey second-price auction, dedup key-collision stream, circuit breaker (breaker batch 274) ──
+(case "bid1 a SECOND-PRICE auction tracker — each bid answers the index of the CURRENT leader (a beaten high demotes to second, a middle bid bumps only second), and the closing draws read the winner index and the price he actually pays"
+  (input  (do
+            (effect A
+              (op bid (-> Int64 Int64))
+              (op winner (-> Int64))
+              (op price (-> Int64)))
+            (def (main (: n Int64))
+              (handle A (tuple (: 0 Int64) (: 0 Int64) (: 0 Int64) (: 0 Int64))
+                ((bid (v) st
+                  (match st
+                    ((tuple hi sec w cnt)
+                      (if (< hi v)
+                          (resume (+ cnt 1) (tuple v hi (+ cnt 1) (+ cnt 1)))
+                          (if (< sec v)
+                              (resume w (tuple hi v w (+ cnt 1)))
+                              (resume w (tuple hi sec w (+ cnt 1))))))))
+                 (winner () st
+                  (match st ((tuple hi sec w cnt) (resume w st))))
+                 (price () st
+                  (match st ((tuple hi sec w cnt) (resume sec st)))))
+                (let ((a (A.bid (+ n 5))))
+                  (let ((b (A.bid 8)))
+                    (let ((c (A.bid (+ n 12))))
+                      (let ((d (A.bid 17)))
+                        (let ((e (A.winner)))
+                          (let ((f (A.price)))
+                            (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 10103030317 Int64))
+  (call   main (: 0 Int64)) (output (: 10203040412 Int64)))
+
+(case "ddp1 a FIRST-TIME dedup stream over a Map of seen-counts — a first observation echoes the value, a repeat answers the negated repeat count, and the seed COLLIDES a computed key with a literal so the two runs disagree on which draws are repeats at all"
+  (input  (do
+            (effect D
+              (op obs (-> Int64 Int64))
+              (op kinds (-> Int64)))
+            (def (main (: n Int64))
+              (handle D (: (map) (Map Int64 Int64))
+                ((obs (v) m
+                  (match (Map.lookup m v)
+                    ((Some c)
+                      (resume (- 0 (+ c 1)) (Map.insert m v (+ c 1))))
+                    ((None)
+                      (resume v (Map.insert m v 1)))))
+                 (kinds () m (resume (Map.len m) m)))
+                (let ((a (D.obs (+ n 3))))
+                  (let ((b (D.obs 13)))
+                    (let ((c (D.obs 7)))
+                      (let ((d (D.obs (+ n 3))))
+                        (let ((e (D.obs 13)))
+                          (let ((f (D.obs 7)))
+                            (let ((g (D.kinds)))
+                              (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 12980696959802 Int64))
+  (call   main (: 0 Int64)) (output (: 3130697979803 Int64)))
+
+(case "cbk1 a CIRCUIT-BREAKER state machine — two failures trip it open, open requests answer the -1 sentinel while a cooldown counts down to half-open, the half-open probe either restores closed on success or re-trips on failure, and the final draw reads the mode"
+  (input  (do
+            (effect C
+              (op req (-> Int64 Int64))
+              (op mode (-> Int64)))
+            (def (main (: n Int64))
+              (handle C (tuple (: 0 Int64) (: 0 Int64) (: 0 Int64))
+                ((req (v) st
+                  (match st
+                    ((tuple m fails cd)
+                      (if (= m 1)
+                          (if (= cd 1)
+                              (resume -1 (tuple 2 fails 0))
+                              (resume -1 (tuple 1 fails (- cd 1))))
+                          (if (= m 2)
+                              (if (< v 0)
+                                  (resume 0 (tuple 1 fails 2))
+                                  (resume v (tuple 0 0 0)))
+                              (if (< v 0)
+                                  (if (< 0 fails)
+                                      (resume 0 (tuple 1 (+ fails 1) 2))
+                                      (resume 0 (tuple 0 (+ fails 1) 0)))
+                                  (resume v (tuple 0 fails 0))))))))
+                 (mode () st
+                  (match st ((tuple m fails cd) (resume m st)))))
+                (let ((a (C.req (- n 6))))
+                  (let ((b (C.req -3)))
+                    (let ((c (C.req -2)))
+                      (let ((d (C.req 5)))
+                        (let ((e (C.req (- n 1))))
+                          (let ((f (C.req 7)))
+                            (let ((g (C.mode)))
+                              (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 3999998990700 Int64))
+  (call   main (: 0 Int64)) (output (: -101000099 Int64)))

@@ -4719,6 +4719,7 @@ pass	bg2 the recursion guard is an AND of a bool draw and a pure bound check —
 pass	bg3 a BIGINT handler state — tripling per dispatch crosses the i64 boundary mid-thread, the exact multi-limb value survives
 pass	bg4 BIGINT comparison in the arm routes tri-band verdicts — doubling walks past both thresholds, one row compares a genuine multi-limb value
 pass	bhw1 a HIGH-WATER BYTES state — byte-lexicographic max through the thread; the multibyte lead 0xC3 must rank UNSIGNED above ASCII z, and the seeded third put only wins past 0xC3
+pass	bid1 a SECOND-PRICE auction tracker — each bid answers the index of the CURRENT leader (a beaten high demotes to second, a middle bid bumps only second), and the closing draws read the winner index and the price he actually pays
 pass	bin-encode segment ORDER holds for runtime-swapped operand values
 pass	binary operator operands are evaluated left to right
 pass	binding the same effect to a peer twice is rejected
@@ -4786,6 +4787,7 @@ pass	byte length is the UTF-8 byte count
 pass	byte sequences are equal by their bytes in order
 pass	capture-avoiding substitution renames a Forall binder to avoid capture (logical-form subst)
 pass	capture-avoiding substitution renames a binder so the substituted term's free variable is not captured
+pass	cbk1 a CIRCUIT-BREAKER state machine — two failures trip it open, open requests answer the -1 sentinel while a cooldown counts down to half-open, the half-open probe either restores closed on success or re-trips on failure, and the final draw reads the mode
 pass	cc1 a closure over the fn PARAM built before the handle, applied twice inside with draws — capture stable, draws advance
 pass	cc2 a closure escaping handle A is applied inside handle B — the A-capture is stable while B's draws feed the args
 pass	cc4 TWO closures over SEQUENTIAL draws inside one region — each captures its own read, applied after both bind
@@ -4960,6 +4962,7 @@ pass	dd1b consecutive do-DEF draws — both binders hold their reads, the tail d
 pass	dd1d a bare DISCARDED draw before a let-bound draw — the discard advances the state the binder reads
 pass	dd2 a do-DEF bound to a whole nested SHADOW handle — the def holds the inner region's value, the tail draw reads outer
 pass	dd5 a do-def BINDS a whole cross-effect handle region — the region's seed draws from the outer thread
+pass	ddp1 a FIRST-TIME dedup stream over a Map of seen-counts — a first observation echoes the value, a repeat answers the negated repeat count, and the seed COLLIDES a computed key with a literal so the two runs disagree on which draws are repeats at all
 pass	declaring a unit with a conversion conflicting with a built-in is an error
 pass	decode of a Float tag with a non-finite (NaN) bit pattern yields the error case
 pass	decode of a List tag whose element count exceeds the bytes present yields the error case
