@@ -659,6 +659,30 @@ pub fn family_effect_schema_hash(family: &str) -> Option<crate::hash::Hash> {
             UnitToBytes,
             true,
         ),
+        // git/* (GAP-6): all reducer-chosen-target (worktree/repo/remote is a leading `bytes` target op-arg,
+        // target-out of identity). status/diff read (UnitToBytes); add/checkout/push write args -> unit
+        // (BytesToUnit); commit/rev-parse take args -> a sha result (BytesToBytes); fetch is a no-arg sync
+        // (UnitToUnit). Distinct identities via the OP NAME under effect-name "git".
+        (effect_ct::GIT_STATUS, "git", "status", UnitToBytes, true),
+        (effect_ct::GIT_DIFF, "git", "diff", UnitToBytes, true),
+        (effect_ct::GIT_ADD, "git", "add", BytesToUnit, true),
+        (effect_ct::GIT_COMMIT, "git", "commit", BytesToBytes, true),
+        (
+            effect_ct::GIT_REV_PARSE,
+            "git",
+            "rev-parse",
+            BytesToBytes,
+            true,
+        ),
+        (
+            effect_ct::GIT_CHECKOUT,
+            "git",
+            "checkout",
+            BytesToUnit,
+            true,
+        ),
+        (effect_ct::GIT_FETCH, "git", "fetch", UnitToUnit, true),
+        (effect_ct::GIT_PUSH, "git", "push", BytesToUnit, true),
         (effect_ct::STORE_SET, "store", "set", BytesToUnit, true),
         (
             effect_ct::STORE_RESOLVE,
@@ -840,6 +864,14 @@ pub fn family_effect_schema_hash_memo(family: &str) -> Option<crate::hash::Hash>
                 effect_ct::STORE_RESOLVE_ALL,
                 effect_ct::EFFECT_REPLY,
                 effect_ct::CLOSE,
+                effect_ct::GIT_STATUS,
+                effect_ct::GIT_DIFF,
+                effect_ct::GIT_ADD,
+                effect_ct::GIT_COMMIT,
+                effect_ct::GIT_REV_PARSE,
+                effect_ct::GIT_CHECKOUT,
+                effect_ct::GIT_FETCH,
+                effect_ct::GIT_PUSH,
             ] {
                 if let Some(h) = family_effect_schema_hash(fam) {
                     m.insert(fam, h);
@@ -3758,8 +3790,8 @@ mod tests {
     fn family_effect_schema_hashes_are_stable_declared_set_pairwise_distinct_and_distinct_from_builtins(
     ) {
         use crate::effect::{effect_ct, EffectKind};
-        // The 22 well-known non-EffectKind families that have a DECLARED schema (target-OUT) — every
-        // well-known non-kind family now carries one (control/signature was the last to land).
+        // The 30 well-known non-EffectKind families that have a DECLARED schema (target-OUT) — every
+        // well-known non-kind family now carries one (the git/* family was the last to land).
         let families = [
             effect_ct::FS_READ,
             effect_ct::FS_WRITE,
@@ -3783,6 +3815,14 @@ mod tests {
             effect_ct::STORE_RESOLVE_ALL,
             effect_ct::EFFECT_REPLY,
             effect_ct::CLOSE,
+            effect_ct::GIT_STATUS,
+            effect_ct::GIT_DIFF,
+            effect_ct::GIT_ADD,
+            effect_ct::GIT_COMMIT,
+            effect_ct::GIT_REV_PARSE,
+            effect_ct::GIT_CHECKOUT,
+            effect_ct::GIT_FETCH,
+            effect_ct::GIT_PUSH,
         ];
         // (1) each is declared (Some), stable, and the memo agrees with the pure recompute.
         for f in &families {
@@ -3804,9 +3844,10 @@ mod tests {
         assert_eq!(family_effect_schema_hash("custom/metrics"), None);
         assert_eq!(family_effect_schema_hash("store/whatever"), None);
         assert_eq!(family_effect_schema_hash_memo("custom/metrics"), None);
-        // (3) THE IDENTITY GUARD: all 6 built-ins + 22 families = 28 PAIRWISE-DISTINCT hashes. This proves
-        // target-OUT is safe — the unit->unit families (ws/dial, lifecycle/suspend|resume|terminate) do NOT
-        // collide with each other despite identical signatures, because the effect NAME + OP NAME are hashed.
+        // (3) THE IDENTITY GUARD: all 6 built-ins + 30 families = 36 PAIRWISE-DISTINCT hashes. This proves
+        // target-OUT is safe — the unit->unit families (ws/dial, lifecycle/suspend|resume|terminate,
+        // git/fetch) do NOT collide with each other despite identical signatures, because the effect NAME +
+        // OP NAME are hashed (git/fetch stays distinct from ws/dial and the lifecycle unit->unit trio).
         let builtins = [
             EffectKind::Shell,
             EffectKind::Http,
@@ -3822,7 +3863,7 @@ mod tests {
                 .iter()
                 .map(|f| family_effect_schema_hash(f).unwrap()),
         );
-        assert_eq!(all.len(), 28);
+        assert_eq!(all.len(), 36);
         for i in 0..all.len() {
             for j in (i + 1)..all.len() {
                 assert_ne!(
@@ -3900,6 +3941,14 @@ mod tests {
             effect_ct::STORE_RESOLVE_ALL,
             effect_ct::EFFECT_REPLY,
             effect_ct::CLOSE,
+            effect_ct::GIT_STATUS,
+            effect_ct::GIT_DIFF,
+            effect_ct::GIT_ADD,
+            effect_ct::GIT_COMMIT,
+            effect_ct::GIT_REV_PARSE,
+            effect_ct::GIT_CHECKOUT,
+            effect_ct::GIT_FETCH,
+            effect_ct::GIT_PUSH,
         ] {
             assert!(
                 effect_family_schema_hash(fam).is_some(),
