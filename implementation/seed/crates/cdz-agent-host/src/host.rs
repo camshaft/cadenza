@@ -3002,6 +3002,137 @@ mod tests {
         assert!(effs.is_empty(), "a non-inbox family drives nothing");
     }
 
+    /// END-TO-END: the ROLE LIBRARY GENESIS-KV-SEEDED tick reducer (`reducer_tick_kv.cdz`) folded through the
+    /// A1 bytes boundary — the deployed-vertical successor to the pure `reducer_tick` (which hardcodes the
+    /// interval). Per the §6 child-hash-seed contract, a session's build-time config (the tick INTERVAL + the
+    /// FIRST deadline) is delivered as a genesis KV-SEED, so this reducer READS them from KV instead of
+    /// hardcoding. env-gated on `CDZ_REDUCER_TICK_KV_COMPONENT` (+ `CDZ_STORE` for the `cadenza:runtime/heap`
+    /// dep; wired by v-nix's `agentHostEnvSetup`, drv MR `5a19a78cc`); skips when unwired. HOST-FUSED (imports
+    /// `cadenza:agent-kernel/kv`, READ-only here). Contract (reducer_tick_kv.cdz): `tick-start` → arm one
+    /// `timer` at `decimal(KV["tick/first-deadline-ms"])`; `timer-fired`(payload = LE u64 fired_ms) → re-arm at
+    /// `decimal(fired_ms + KV["tick/interval-ms"])` + `emit "begin-tick"`; an UNSEEDED slot reads `0`; a
+    /// payload-less `timer-fired` drives nothing.
+    #[tokio::test]
+    async fn real_tick_kv_reducer_arms_from_the_genesis_kv_seed_through_the_a1_bytes_boundary() {
+        use cdz_kernel::kv::Kv;
+        use cdz_kernel::wasm_host::AsyncComponentReducer;
+
+        let non_empty = |var: &str| std::env::var(var).ok().filter(|v| !v.is_empty());
+        let Some(reducer_path) = non_empty("CDZ_REDUCER_TICK_KV_COMPONENT") else {
+            eprintln!(
+                "SKIP real_tick_kv_reducer_arms_from_the_genesis_kv_seed_through_the_a1_bytes_boundary: \
+                 CDZ_REDUCER_TICK_KV_COMPONENT unset (or empty)"
+            );
+            return;
+        };
+        let store_dir = non_empty("CDZ_STORE").unwrap_or_else(|| {
+            panic!(
+                "real_tick_kv_reducer_...: CDZ_REDUCER_TICK_KV_COMPONENT is set but CDZ_STORE is not — the \
+                 tick-kv reducer imports cadenza:runtime/heap, whose bytes resolve from the component store"
+            )
+        });
+        let bytes = std::fs::read(&reducer_path).unwrap_or_else(|e| {
+            panic!("CDZ_REDUCER_TICK_KV_COMPONENT={reducer_path:?} set but unreadable: {e}")
+        });
+        let reducer = AsyncComponentReducer::from_component_bytes(&bytes)
+            .unwrap_or_else(|e| panic!("reducer_tick_kv must be a valid component: {e:?}"));
+        let store = cdz_kernel::component_store::ComponentStore::open(&store_dir);
+        let deps = reducer.deps().to_vec();
+        let mut resolved = Vec::with_capacity(deps.len());
+        for dep in &deps {
+            let dep_bytes = store.get_by_hash(&dep.hash).unwrap_or_else(|e| {
+                panic!(
+                    "CDZ_STORE={store_dir:?} could not resolve tick-kv reducer dep {:?} (hash {}): {e:?}",
+                    dep.import_name,
+                    dep.hash.to_hex()
+                )
+            });
+            resolved.push((dep.clone(), dep_bytes));
+        }
+        let reducer = reducer
+            .with_resolved_deps(resolved)
+            .with_component_store(store);
+
+        let ct = |fam: &'static str| cdz_kernel::event::ContentType {
+            family: fam.into(),
+            version: 1,
+        };
+        fn target_of(eff: &cdz_kernel::reducer::Effect) -> &str {
+            eff.request.target_str().expect("effect target is UTF-8")
+        }
+        // The genesis KV-SEED: interval 900000ms + first-deadline 5000ms (LE u64), as a fresh Kv per apply
+        // (the reducer only Kv.gets — it never writes — so a fresh seed each call is faithful).
+        let seed = || {
+            let mut kv = Kv::new();
+            kv.put(
+                b"tick/interval-ms".to_vec(),
+                900_000u64.to_le_bytes().to_vec(),
+            );
+            kv.put(
+                b"tick/first-deadline-ms".to_vec(),
+                5_000u64.to_le_bytes().to_vec(),
+            );
+            kv
+        };
+
+        // tick-start → arm the first timer at the SEEDED first-deadline (decimal 5000), read from KV NOT the
+        // payload (the payload is ignored — that's the difference from the pure reducer_vertical/tick).
+        let (effs, _kv) = reducer
+            .apply(seed(), ct("tick-start"), None, None)
+            .await
+            .expect("tick-start folds through the bytes boundary");
+        assert_eq!(effs.len(), 1, "tick-start arms exactly one timer");
+        assert_eq!(effs[0].request.content_type.family, "timer");
+        assert_eq!(
+            target_of(&effs[0]),
+            "5000",
+            "first timer armed at the KV-SEEDED first-deadline"
+        );
+
+        // timer-fired(fired_ms = 1000) → re-arm at fired_ms + the SEEDED interval (901000) + emit begin-tick.
+        let (effs, _kv) = reducer
+            .apply(
+                seed(),
+                ct("timer-fired"),
+                Some(1000u64.to_le_bytes().to_vec()),
+                None,
+            )
+            .await
+            .expect("timer-fired folds");
+        assert_eq!(effs.len(), 2, "timer-fired re-arms + begins the tick");
+        assert_eq!(effs[0].request.content_type.family, "timer");
+        assert_eq!(
+            target_of(&effs[0]),
+            "901000",
+            "re-armed at fired_ms + the KV-SEEDED interval"
+        );
+        assert_eq!(effs[1].request.content_type.family, "emit");
+        assert_eq!(target_of(&effs[1]), "begin-tick");
+
+        // An UNSEEDED KV: an absent seed slot reads 0 → tick-start arms at "0" (proves the arm reads the SEED,
+        // not a hardcoded interval — the whole point of the kv-seeded form).
+        let (effs, _kv) = reducer
+            .apply(Kv::new(), ct("tick-start"), None, None)
+            .await
+            .expect("unseeded tick-start folds");
+        assert_eq!(effs.len(), 1);
+        assert_eq!(
+            target_of(&effs[0]),
+            "0",
+            "an unseeded first-deadline slot reads 0 (seed-driven, not hardcoded)"
+        );
+
+        // A payload-less timer-fired has no fired_ms → drives nothing.
+        let (effs, _kv) = reducer
+            .apply(seed(), ct("timer-fired"), None, None)
+            .await
+            .expect("payload-less timer-fired folds");
+        assert!(
+            effs.is_empty(),
+            "timer-fired with no fired_ms payload drives nothing"
+        );
+    }
+
     /// END-TO-END: drive the REAL rcdzc-compiled KV-GENESIS reducer (`reducer_kv.cdz`) through the A1 BYTES
     /// fold boundary on wasmtime, proving the kv HOST IMPORT round-trips the SAME bytes through the host — the
     /// sibling of the pure-genesis E2E, exercising BOTH `kv.put` AND the new `kv.get` option<list<u8>> lift
