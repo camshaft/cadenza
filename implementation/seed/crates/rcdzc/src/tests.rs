@@ -4014,6 +4014,63 @@ fn a_host_fused_kv_get_reducer_emits_and_loads() {
     );
 }
 
+/// SCHEMA-HASH PHASE-1a REIFY end-to-end (the 3-lane co-gate: v-inference typing + this reify emit +
+/// v-effects kernel-parse, all now on trunk): a reducer that PERFORMS a target-free single-Bytes-arg
+/// WORLD-effect must reify the perform into its returned effect-list + emit a VALID, LOADABLE component —
+/// proving the typing (the perform types as the 3-field record), `reify_effect_to_tuple` (emits it), and
+/// value-encode all agree end-to-end. `Ping` is NOT a member of the target world's imports (which is `kv`),
+/// so `Ping.ping` is a world-effect (is_world_import_op = false) → the fork REIFIES it (vs a synchronous
+/// kv `Core::HostCall`). The reified 3-field record `{correlation, kind, payload}` flows into the returned
+/// `list`, which value-encodes to the `list<u8>` fold-boundary result. Contrast the kv reducers above: kv
+/// IS an import → its ops stay synchronous, consumed inline. This is the emit-roundtrip half v-inference
+/// asked v-rust-backend to lead (they landed + typing-tested the typing half, `9b12c0684`).
+#[test]
+fn a_reducer_performing_a_world_effect_reifies_it_and_emits_a_valid_component() {
+    use crate::testkit::parse;
+    // `Ping` is a target-free single-Bytes-arg world-effect (ping: Bytes -> Unit) — NOT a world import, so
+    // `Ping.ping e` reifies. Delegated at the entrypoint via `(host (Ping) …)` (its CDZ0401 home). The body
+    // returns the perform in a `list` — the effect-list. (kv stays the sole import in the world artifact;
+    // Ping's non-membership is what routes it to reify.)
+    let src = "(module m \
+                 (effect Ping (op ping (-> Bytes Unit))) \
+                 (def (apply (: e (Record (ct String) (pl Bytes)))) \
+                   (host (Ping) (list (Ping.ping (. e pl))))) \
+                 (export apply))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:agent-kernel/fold"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                reducer_kv_get_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "a reducer performing a world-effect must reify it + emit (typing + reify + value-encode agree): {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("the reify reducer emits a component");
+    let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+    v.validate_all(bytes).expect(
+        "the reify reducer's component validates (the reified effect-list value-encodes cleanly)",
+    );
+    let _req = cdz_run::required_runtime(bytes)
+        .expect("the reify reducer's component loads on the pinned wasmtime");
+}
+
 /// §3c GAP C INVOKE (the deep runtime proof of the option-result LIFT): a kv.get reducer is INVOKED on the
 /// pinned wasmtime with its host `cadenza:agent-kernel/kv` `get` bound to a closure returning `Some(bytes)`,
 /// and the returned bytes must round-trip through the guest lift into the effect-list. The reducer matches
