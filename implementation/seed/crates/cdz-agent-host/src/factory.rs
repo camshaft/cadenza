@@ -596,6 +596,26 @@ pub trait LogSinkBuilder {
     ) -> Result<Option<cdz_kernel::log_store::Recovered>, String> {
         Ok(None)
     }
+
+    /// Load the KV SNAPSHOT a checkpoint descriptor's `kv_root` names (GAP-4 D3) — the recovery counterpart to
+    /// the checkpoint WRITE ([`FileLogSinkBuilder::checkpoint`]). A checkpoint-rooted durable log
+    /// (`[Genesis, Checkpoint@N, tail]`) recovers via
+    /// [`Session::recover_from_checkpoint`](cdz_kernel::kernel::Session::recover_from_checkpoint), which needs
+    /// the KV CONTENT the descriptor's `kv_root` addresses (the durable frame carries only the root hash). The
+    /// snapshot lives in this backend's checkpoint/offload store, so the recovery path resolves it through the
+    /// SAME builder that wrote it. `Ok(Some(kv))` present (its `root_hash()` == `kv_root`); `Ok(None)` absent
+    /// (no snapshot store configured, or the snapshot the checkpoint names isn't in the store — the caller
+    /// falls back to full-log replay); `Err` a store I/O error or a corrupt snapshot (never a panic).
+    ///
+    /// DEFAULT: `Ok(None)` — a backend with no checkpoint-snapshot store (the `memory` backend, or a file log
+    /// with no offload configured) never produces checkpoint-rooted logs, so it has nothing to load. The
+    /// durable [`FileLogSinkBuilder`] (with an offload store) overrides it.
+    async fn load_checkpoint_snapshot(
+        &self,
+        _kv_root: cdz_kernel::hash::Hash,
+    ) -> Result<Option<cdz_kernel::kv::Kv>, String> {
+        Ok(None)
+    }
 }
 
 /// Where a GAP-4 D1 log-body OFFLOAD store is rooted — the content-addressed backing a `[log]` offload writes
@@ -846,6 +866,22 @@ impl LogSinkBuilder for FileLogSinkBuilder {
                 .map(Some)
                 .map_err(|e| format!("could not recover durable log {}: {e}", path.display())),
         }
+    }
+
+    /// Load a checkpoint's KV snapshot from the offload store this builder writes checkpoints to (GAP-4 D3).
+    /// The snapshot was persisted by [`checkpoint`](Self::checkpoint) content-addressed by its `kv_root`, so a
+    /// fresh handle over the SAME [`OffloadSource`] resolves it by that key. No offload configured → this file
+    /// log never checkpoints → `Ok(None)` (nothing to load). Delegates the get+decode to
+    /// [`crate::checkpoint::load_kv_snapshot`] (absent → `None`; corrupt → `Err`).
+    async fn load_checkpoint_snapshot(
+        &self,
+        kv_root: cdz_kernel::hash::Hash,
+    ) -> Result<Option<cdz_kernel::kv::Kv>, String> {
+        let Some((source, _threshold)) = &self.offload else {
+            return Ok(None);
+        };
+        let blob = source.materialize()?;
+        crate::checkpoint::load_kv_snapshot(blob.as_ref(), kv_root).await
     }
 }
 
@@ -1791,6 +1827,73 @@ mod tests {
             snap.get(b"last").as_deref(),
             Some(&b"v2"[..]),
             "the snapshot carries the session's committed KV content"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&blob_dir);
+    }
+
+    #[tokio::test]
+    async fn load_checkpoint_snapshot_resolves_the_offload_store_and_declines_when_absent_or_unconfigured(
+    ) {
+        // GAP-4 D3-2b (recovery-loader): FileLogSinkBuilder::load_checkpoint_snapshot reads a checkpoint's KV
+        // snapshot back from the SAME offload store checkpoint writes it to, keyed by the descriptor's kv_root
+        // — the seed_kv recover_from_checkpoint needs. Absent snapshot -> None (fall back to replay); no
+        // offload store -> None (that log never checkpoints).
+        use cdz_kernel::kv::Kv;
+        let root = crate::testutil::unique_temp_dir("d3-2b-cp");
+        let blob_dir = crate::testutil::unique_temp_dir("d3-2b-cas");
+        let builder = FileLogSinkBuilder::new(&root)
+            .with_offload(OffloadSource::Dir(blob_dir.clone()), 1 << 20);
+
+        // Persist a snapshot to the builder's offload store (the SAME store checkpoint writes to), then load
+        // it back through the trait method by its kv_root.
+        let mut kv = Kv::new();
+        kv.put(b"k".to_vec(), b"v".to_vec());
+        let kv_root = {
+            let mut blob = OffloadSource::Dir(blob_dir.clone())
+                .materialize()
+                .expect("materialize");
+            crate::checkpoint::persist_kv_snapshot(blob.as_mut(), &kv)
+                .await
+                .expect("persist")
+        };
+        let loaded = builder
+            .load_checkpoint_snapshot(kv_root)
+            .await
+            .expect("load ok")
+            .expect("the persisted snapshot is present");
+        assert_eq!(
+            loaded.root_hash(),
+            kv_root,
+            "loaded snapshot matches the kv_root"
+        );
+        assert_eq!(loaded.get(b"k").as_deref(), Some(&b"v"[..]));
+
+        // A kv_root never persisted -> None (the caller falls back to a full-log replay).
+        let absent = {
+            let mut e = Kv::new();
+            e.put(b"other".to_vec(), b"x".to_vec());
+            e.root_hash()
+        };
+        assert!(
+            builder
+                .load_checkpoint_snapshot(absent)
+                .await
+                .expect("get ok")
+                .is_none(),
+            "an unpersisted kv_root loads as None"
+        );
+
+        // A builder with NO offload store configured -> None (that log never checkpoints, so no snapshot).
+        let no_offload = FileLogSinkBuilder::new(&root);
+        assert!(
+            no_offload
+                .load_checkpoint_snapshot(kv_root)
+                .await
+                .expect("no-offload load ok")
+                .is_none(),
+            "no offload store configured -> None"
         );
 
         let _ = std::fs::remove_dir_all(&root);
