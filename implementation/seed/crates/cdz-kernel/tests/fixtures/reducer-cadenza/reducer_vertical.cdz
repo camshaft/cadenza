@@ -6,7 +6,8 @@
 //   timer-fired   -> re-arm the next timer (fired_ms + interval) + emit "begin-tick"          (self-schedule)
 //   tick-start    -> arm the first timer at the seeded deadline                               (self-schedule)
 //   inbox/<kind>  -> classify: informational -> "archive"; else -> "act" (carry payload)      (inbox-drain)
-//   unit-complete -> the git publish sequence git/add -> git/commit -> git/push               (MR/publish)
+//   unit-complete -> DEFERRED (publish = git via the generic shell effect per the GAP-6 reversal; blocked
+//                    on a reducer-buildable shell-pipeline payload — folds to no effect for now)   (MR/publish)
 //   anything else -> nothing
 // This proves a self-hosting fleet agent runs as a single pure fold over the landed effects (timer / emit
 // / git). Returns effects only (no host import) -> cdz-test-gated. State (kv-backed inbox dedup, agent-loop
@@ -66,11 +67,6 @@ def is-informational(fam: String) -> Bool =
   or fam == "inbox/status"
   or fam == "inbox/reply"
   or fam == "inbox/answer"
-
-// --- MR/publish (from reducer_mr) ---
-def worktree() -> Bytes = String.to-bytes(".")
-def remote() -> Bytes = String.to-bytes("origin")
-def push-refspec() -> Bytes = String.to-bytes("HEAD:fleet/v-agent-harness")
 
 def apply(
   event: Record(
@@ -134,30 +130,14 @@ def apply(
          correlation = None(),
        }])
   else if fam == "unit-complete" then
-    // MR/publish: stage all -> commit with the carried message -> push HEAD to the fleet branch.
-    (match event.payload with
-       | Some(msg) =>
-         [
-           {
-             kind = "git/add",
-             target = worktree(),
-             payload = Some(String.to-bytes(".")),
-             correlation = None(),
-           },
-           {
-             kind = "git/commit",
-             target = worktree(),
-             payload = Some(msg),
-             correlation = None(),
-           },
-           {
-             kind = "git/push",
-             target = remote(),
-             payload = Some(push-refspec()),
-             correlation = None(),
-           },
-         ]
-       | None() => [])
+    // MR/publish: DEFERRED. Per the GAP-6 operator reversal (git = USERSPACE shell-wrapper, not a kernel
+    // git/* family), the publish step must emit the generic SHELL effect (git add/commit/push as shell
+    // invocations). That is BLOCKED for a pure reducer today: a shell effect's payload is the structured
+    // (shell-pipeline (stage (program ..) (args ..))) AST value-form (operator: no flat-string split), which
+    // a reducer cannot yet build (no prelude shell-pipeline builder; Value.encode / R2 is v-rust-backend,
+    // paused). So the publish folds to no effect until a reducer-buildable shell-effect path exists (tracked
+    // with the concierge). The tick + inbox-drain branches above are unaffected.
+    []
   else
     // Not a fleet-loop event -> nothing.
     []
@@ -223,7 +203,9 @@ def dispatches_actionable_inbox_to_act() =
     | None() => trap("inbox must fold")
 
 @test
-def dispatches_unit_complete_to_publish_sequence() =
+def unit_complete_publish_is_deferred_pending_shell_repoint() =
+  // GAP-6 reversal: the publish step (git via the generic shell effect) is deferred until a reducer can
+  // build the structured shell-pipeline payload; for now unit-complete folds to no effect.
   let evt = {
     content-type = { family = "unit-complete", version = 1 },
     payload = Some(String.to-bytes("land it")),
@@ -231,12 +213,8 @@ def dispatches_unit_complete_to_publish_sequence() =
     outcome = None(),
     child-completed = None(),
   } in
-  let effs = apply(evt) in
-  if List.len(effs) == 3 then
-    (match List.at(effs, 2) with
-       | Some(p) => (if p.kind == "git/push" then unit else trap("publish must end with git/push"))
-       | None() => trap("publish must have three effects"))
-  else trap("unit-complete must fold to the three-op publish sequence")
+  if List.len(apply(evt)) == 0 then unit
+  else trap("unit-complete publish is deferred — must fold to no effect for now")
 
 @test
 def a_non_loop_event_drives_nothing() =
