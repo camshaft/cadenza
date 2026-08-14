@@ -1,0 +1,131 @@
+// reducer_tick_kv.cdz — ROLE LIBRARY: the GENESIS-KV-SEEDED tick reducer (host-fused).
+//
+// The deployed-vertical successor to reducer_tick.cdz (which uses a FIXED interval def + takes the first
+// deadline off a tick-start event payload). Per v-agent-harness-host's §6 child-hash-seed contract, a
+// session's build-time config (here: the tick INTERVAL + the FIRST deadline) is delivered as a genesis
+// KV-SEED, so this reducer READS them from KV instead of hardcoding:
+//   KV["tick/interval-ms"]        -> the re-arm interval (u64 LE bytes)
+//   KV["tick/first-deadline-ms"]  -> the first timer deadline (u64 LE bytes)
+// On a `tick-start` event it arms the first timer at the seeded first-deadline; on `timer-fired` it
+// re-arms at fired_ms + the seeded interval + emits begin-tick. Config-driven, no source edit to retune.
+//
+// HOST-FUSED (imports cadenza:agent-kernel/kv, like reducer_kv) — reads the seed from KV, so NOT
+// cdz-test-gated / NOT in Project.cdz `tests`; targets the reducer world (fold.apply(list<u8>)->list<u8>
+// + import kv), gated by a v-nix world-driven derivation + a host e2e. reducer_tick.cdz stays as the
+// pure/@test-covered self-schedule reference; this is the kv-seeded deployed form.
+//
+// BUILD (v-nix precompile, mirrors reducer_kv): emit-wit-world full -> reducer-world.bin;
+//   cdz compile reducer_tick_kv.cdz wit-world:reducer-world=reducer-world.bin
+//     --component-name cadenza:agent-kernel/fold -o reducer_tick_kv.wasm  -> imports kv; VALID.
+
+// The kv host import (read the seeded interval + first-deadline). NO `bind` — escapes as a host import
+// fused against the world's cadenza:agent-kernel/kv import (as reducer_kv).
+effect Kv =
+  | get : `->`(Bytes, Option(Bytes))
+
+def interval-key() -> Bytes = String.to-bytes("tick/interval-ms")
+def first-deadline-key() -> Bytes = String.to-bytes("tick/first-deadline-ms")
+
+// Shared strict Event value-form fields.
+type ReplyPayload =
+  | Inline(Bytes)
+  | Blob(Bytes)
+
+type Outcome =
+  | Ok(ReplyPayload)
+  | Err(Record(message: Bytes, retryable: Bool))
+  | TimedOut
+
+type ChildOutcome =
+  | Success(ReplyPayload)
+  | Failure(Bytes)
+
+// --- numeric helpers (userspace; same as reducer_tick — no R2 needed) ---
+def byte-at(b: Bytes, i: Int64) -> Int64 =
+  match Bytes.at(b, i) with
+    | Some(v) => v
+    | None() => 0
+
+// Decode a little-endian u64 from the low 7 bytes (enough for any epoch-ms; byte 7 skipped to avoid an
+// Int64 overflow at 256^7). Used for both the fired_ms payload and the KV-seeded interval/deadline bytes.
+def le-u64(b: Bytes) -> Int64 =
+  byte-at(b, 0)
+  + byte-at(b, 1) * 256
+  + byte-at(b, 2) * 65536
+  + byte-at(b, 3) * 16777216
+  + byte-at(b, 4) * 4294967296
+  + byte-at(b, 5) * 1099511627776
+  + byte-at(b, 6) * 281474976710656
+
+def digit-char(d: Int64) -> String =
+  match String.from-bytes(Bytes.of([UInt8.wrap(d + 48)])) with
+    | Some(s) => s
+    | None() => trap("a decimal digit byte is always valid ascii")
+
+// Render an Int64 (>= 0) as decimal — the userspace itoa for the timer arm TARGET (which is decimal text).
+def u64-decimal(n: Int64) -> String =
+  if n < 10 then digit-char(n)
+  else String.concat(u64-decimal(n / 10), digit-char(n % 10))
+
+// Read a u64 (LE bytes) from a KV slot; 0 if unseeded (absent). The genesis seed populates these keys.
+def read-u64-slot(v: Option(Bytes)) -> Int64 =
+  match v with
+    | Some(b) => le-u64(b)
+    | None() => 0
+
+def apply(
+  event: Record(
+    content-type: Record(family: String, version: UInt(32)),
+    payload: Option(Bytes),
+    resumes: Option(Bytes),
+    outcome: Option(Outcome),
+    child-completed: Option(Record(child: Bytes, outcome: ChildOutcome)),
+  ),
+) -> List(Record(
+  kind: String,
+  target: Bytes,
+  payload: Option(Bytes),
+  correlation: Option(Bytes),
+)) =
+  let family = event.content-type.family in
+  if family == "timer-fired" then
+    // Re-arm at fired_ms + the KV-seeded interval + begin the tick.
+    (match event.payload with
+       | Some(p) =>
+         host Kv in (
+           let interval = read-u64-slot(Kv.get(interval-key())) in
+           [
+             {
+               kind = "timer",
+               target = String.to-bytes(u64-decimal(le-u64(p) + interval)),
+               payload = None(),
+               correlation = None(),
+             },
+             {
+               kind = "emit",
+               target = String.to-bytes("begin-tick"),
+               payload = None(),
+               correlation = None(),
+             },
+           ])
+       | None() => [])
+  else if family == "tick-start" then
+    // Arm the first timer at the KV-seeded first-deadline.
+    host Kv in (
+      let first = read-u64-slot(Kv.get(first-deadline-key())) in
+      [{
+        kind = "timer",
+        target = String.to-bytes(u64-decimal(first)),
+        payload = None(),
+        correlation = None(),
+      }])
+  else
+    // Not a tick event -> nothing.
+    []
+
+// No `@test`: host-fused (kv escapes to host imports) → cannot build a standalone test component on the
+// seed VM. Gated by the WORLD-DRIVEN compile (v-nix precompile derivation) + a v-agent-harness-host
+// kv-seeded-tick e2e (seed KV[tick/interval-ms] + KV[tick/first-deadline-ms], deliver tick-start then a
+// timer fire, assert the armed deadlines). reducer_tick.cdz carries the pure @tests. NOT in Project.cdz.
+
+export { apply }
