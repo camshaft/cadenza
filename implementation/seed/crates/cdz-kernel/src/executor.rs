@@ -61,21 +61,32 @@ pub trait Executor {
     }
 }
 
-/// The by-kind effect router (§2 "the kernel routes, doesn't distinguish"): holds `Box<dyn Executor>`
-/// per kind and routes `perform` to the registered executor, awaiting it. A session that emits more
-/// than one effect kind (an agent doing both `Http` and `Model`) wires one of these; a native-async
-/// executor (a real Bedrock/HTTP one that awaits its transport) registers directly.
+/// The effect router (§2 "the kernel routes, doesn't distinguish"): holds `Box<dyn Executor>` keyed by the
+/// effect's SCHEMA-HASH identity (phase-3 re-key) and routes `perform` to the registered executor, awaiting
+/// it. A session that emits more than one effect (an agent doing both `Http` and `Model`) wires one of these;
+/// a native-async executor (a real Bedrock/HTTP one that awaits its transport) registers directly.
 ///
-/// A request whose kind has no registered executor returns an OBSERVABLE [`EffectOutcome::Err`] (the
+/// A request whose identity has no registered executor returns an OBSERVABLE [`EffectOutcome::Err`] (the
 /// reducer folds it — §9d anti-stuck: an unroutable effect is a normal failure event, not a panic or a
 /// wedge), never a silent drop; `idempotency_key` passes through so a routed executor keeps its crash-dedup
 /// contract (§16c-S1).
 #[derive(Default)]
 pub struct CompositeExecutor {
-    /// Executors keyed by effect FAMILY STRING (seq-39), not the `EffectKind` enum — so a request routes
-    /// by `req.content_type.family`, the same string authz/codec use. Registered via
-    /// [`with_effect`](Self::with_effect) (register-by-string — a NEW family is served with no `EffectKind`
-    /// variant + no kernel edit).
+    /// Executors keyed by their effect's SCHEMA-HASH (phase-3 identity re-key): the router resolves a
+    /// request's schema-hash — its baked [`EffectRequest::schema_hash`] when present (the authoritative wire
+    /// identity), else the family-derived [`effect_family_schema_hash`](crate::ast_marshal::effect_family_schema_hash)
+    /// — and routes to the executor registered under that hash. [`with_effect`](Self::with_effect) computes
+    /// the family's schema-hash at registration, so a well-known/declared family (which has one) is served by
+    /// SCHEMA-HASH identity, not the family string. Behavior-equivalent to the old family-string routing
+    /// because `req.schema_hash == effect_family_schema_hash(family)` for every in-host request (the identity
+    /// `new_with_family` computes), so the same executor is selected.
+    by_schema_hash: HashMap<Hash, Box<dyn Executor>>,
+    /// Executors for schema-hash-LESS register-by-string families — a userspace extension family with no
+    /// declared schema, so [`effect_family_schema_hash`](crate::ast_marshal::effect_family_schema_hash) is
+    /// `None` and there is no hash to key on. These stay keyed by the family STRING. The well-known/declared
+    /// families all carry a schema-hash and live in [`by_schema_hash`](Self::by_schema_hash); this map holds
+    /// only the hashless remainder (register-by-string extension families) until phase-3's mandatory
+    /// schema-hash flip retires that path.
     by_family: HashMap<String, Box<dyn Executor>>,
     /// Optional DEFAULT-ROUTE executor, consulted ONLY when [`by_family`](Self::by_family) has no EXACT
     /// match for the request's family (userspace-effects I3). The `by_family` map serves a FIXED,
@@ -96,6 +107,7 @@ pub struct CompositeExecutor {
 impl CompositeExecutor {
     pub fn new() -> Self {
         CompositeExecutor {
+            by_schema_hash: HashMap::new(),
             by_family: HashMap::new(),
             fallback: None,
         }
@@ -108,7 +120,18 @@ impl CompositeExecutor {
     /// ([`crate::effect::effect_ct`]) or any family string. (control/* families register their in-kernel/
     /// host-surfaced dispositions in a later beat; this registers an executor-routed effect/* family.)
     pub fn with_effect(mut self, family: impl Into<String>, executor: Box<dyn Executor>) -> Self {
-        self.by_family.insert(family.into(), executor);
+        // Phase-3 re-key: key the executor by its effect's SCHEMA-HASH when the family has one (the
+        // well-known/declared families), else by the family STRING (a schema-hash-less register-by-string
+        // extension family). Route resolution in `perform`/`handles_family` mirrors this split.
+        let family = family.into();
+        match crate::ast_marshal::effect_family_schema_hash(&family) {
+            Some(h) => {
+                self.by_schema_hash.insert(h, executor);
+            }
+            None => {
+                self.by_family.insert(family, executor);
+            }
+        }
         self
     }
 
@@ -137,7 +160,13 @@ impl CompositeExecutor {
         // `handles_family` is its own honest answer (a `UserspaceEffectExecutor` reports true only for a
         // family that resolves to a registered handler), so the manifest projection stays accurate — it
         // does NOT blanket-claim every family just because a fallback exists.
-        self.by_family.contains_key(family)
+        let registered = match crate::ast_marshal::effect_family_schema_hash(family) {
+            // A family with a schema-hash is registered under that hash (phase-3 re-key)...
+            Some(h) => self.by_schema_hash.contains_key(&h),
+            // ...a schema-hash-less register-by-string extension family stays keyed by the family string.
+            None => self.by_family.contains_key(family),
+        };
+        registered
             || self
                 .fallback
                 .as_ref()
@@ -153,14 +182,24 @@ impl Executor for CompositeExecutor {
         req: &EffectRequest,
         idempotency_key: Hash,
     ) -> EffectOutcome {
-        // Route by the request's content-type FAMILY (seq-39): an EXACT-family executor wins. `id` threads
-        // through unchanged so a delegating leaf executor can bind its reply-token to (caller, id).
+        // Route by the effect's SCHEMA-HASH identity (phase-3 re-key): the request's baked `schema_hash` is
+        // authoritative, else the family-derived hash. `id` threads through unchanged so a delegating leaf
+        // executor can bind its reply-token to (caller, id).
+        let route_hash = req.schema_hash.or_else(|| {
+            crate::ast_marshal::effect_family_schema_hash(req.content_type.family.as_ref())
+        });
+        if let Some(h) = route_hash {
+            if let Some(inner) = self.by_schema_hash.get_mut(&h) {
+                return inner.perform(id, req, idempotency_key).await;
+            }
+        }
+        // No schema-hash executor: a schema-hash-less register-by-string extension family routes by string.
         match self.by_family.get_mut(req.content_type.family.as_ref()) {
             Some(inner) => inner.perform(id, req, idempotency_key).await,
             // No exact match: consult the DEFAULT-ROUTE fallback (userspace-effects I3) if registered — it
-            // serves DYNAMIC families (a userspace effect claimed at runtime, absent from the fixed
-            // `by_family` set) and self-guards (returns its own Err for a family it can't handle). With no
-            // fallback this is the original no-executor OBSERVABLE Err (§9d anti-stuck), never a drop/panic.
+            // serves DYNAMIC families (a userspace effect claimed at runtime, absent from the fixed set) and
+            // self-guards (returns its own Err for a family it can't handle). With no fallback this is the
+            // original no-executor OBSERVABLE Err (§9d anti-stuck), never a drop/panic.
             None => match self.fallback.as_mut() {
                 Some(fb) => fb.perform(id, req, idempotency_key).await,
                 None => EffectOutcome::err(format!(
@@ -422,9 +461,15 @@ mod tests {
             .with_effect("embedding", Box::new(TagExecutor(b"embed-e")));
         assert!(exec.handles_family(crate::effect::effect_ct::HTTP));
         assert!(exec.handles_family("embedding"));
-        // Route a request whose content_type.family is the extension family → its executor runs.
-        let mut ext = req(EffectKind::Http, "x");
-        ext.content_type.family = "embedding".into();
+        // Route a request for the extension family → its executor runs. Built via new_with_family so the
+        // request's schema_hash is CONSISTENT with the family (None for a schema-hash-less extension) — how a
+        // real request is constructed; a hashless extension routes by its family string.
+        let ext = crate::effect::EffectRequest::new_with_family(
+            "embedding",
+            "x",
+            None,
+            crate::effect::Timeliness::Interactive,
+        );
         assert_eq!(
             exec.perform(EffectId(1), &ext, Hash::of(b"k")).await,
             EffectOutcome::Ok(Some(Payload::Inline(b"embed-e".to_vec().into())))
@@ -530,12 +575,11 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn routing_keys_on_content_type_family_not_the_kind_enum() {
-        // The extensible-effects invariant (seq-39): the router keys on `content_type.family`, NOT the
-        // `EffectKind` enum. Prove it by DIVORCING the two — build a request whose `kind` is Http but whose
-        // `content_type.family` is "model", and show it routes to the MODEL-registered executor. (Via `new`
-        // the two agree by construction; the register-by-string slice will let a family exist with no
-        // matching `EffectKind` at all, and this is the seam that makes that work — so pin it now.)
+    async fn routing_keys_on_the_schema_hash_identity_not_the_kind_enum() {
+        // Phase-3 identity re-key: the router keys on the effect's SCHEMA-HASH (the request's `schema_hash`,
+        // else the family-derived one), NOT the `EffectKind` enum. A request built via new_with_family("model")
+        // carries the "model" schema-hash and routes to the MODEL-registered executor. (For a real request the
+        // family and schema-hash agree by construction; the router never consults the kind enum.)
         let mut exec = CompositeExecutor::new()
             .with_effect(
                 crate::effect::effect_ct::HTTP,
@@ -545,17 +589,25 @@ mod tests {
                 crate::effect::effect_ct::MODEL,
                 Box::new(TagExecutor(b"model-executor")),
             );
-        let mut r = req(EffectKind::Http, "x");
-        r.content_type.family = EffectKind::Model.family().into();
-        // Routed by family ("model") to the MODEL executor, despite kind == Http.
+        let r = crate::effect::EffectRequest::new_with_family(
+            crate::effect::effect_ct::MODEL,
+            "x",
+            None,
+            crate::effect::Timeliness::Interactive,
+        );
+        // Routed by the "model" schema-hash to the MODEL executor.
         assert_eq!(
             exec.perform(EffectId(1), &r, Hash::of(b"k")).await,
             EffectOutcome::Ok(Some(Payload::Inline(b"model-executor".to_vec().into())))
         );
-        // And a family with NO registered executor (and no EffectKind variant) is an observable Err naming
+        // And a family with NO registered executor (a schema-hash-less extension) is an observable Err naming
         // that family — the fail-closed seam the register-by-string slice hardens to retry::permanent.
-        let mut ext = req(EffectKind::Http, "x");
-        ext.content_type.family = "embedding".into();
+        let ext = crate::effect::EffectRequest::new_with_family(
+            "embedding",
+            "x",
+            None,
+            crate::effect::Timeliness::Interactive,
+        );
         match exec.perform(EffectId(1), &ext, Hash::of(b"k")).await {
             EffectOutcome::Err { message: msg, .. } => assert!(
                 msg.contains("embedding"),
@@ -563,6 +615,37 @@ mod tests {
             ),
             other => panic!("an unregistered family must be an observable Err, got {other:?}"),
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn routing_honors_a_baked_schema_hash_over_the_family() {
+        // Phase-3 input-wire (0dc861710): a request MAY carry a PRODUCER-BAKED schema_hash that is the
+        // AUTHORITATIVE wire identity. The re-keyed router keys on it — a request whose family string is
+        // "http" but whose baked schema_hash is model's routes to the MODEL executor (identity = the
+        // schema-hash, not the family string). This is the whole point of the schema-hash identity model.
+        let mut exec = CompositeExecutor::new()
+            .with_effect(
+                crate::effect::effect_ct::HTTP,
+                Box::new(TagExecutor(b"http")),
+            )
+            .with_effect(
+                crate::effect::effect_ct::MODEL,
+                Box::new(TagExecutor(b"model")),
+            );
+        let mut r = crate::effect::EffectRequest::new_with_family(
+            crate::effect::effect_ct::HTTP,
+            "x",
+            None,
+            crate::effect::Timeliness::Interactive,
+        );
+        // Override with the model schema-hash (as a phase-3 producer-baked identity would).
+        r.schema_hash =
+            crate::ast_marshal::effect_family_schema_hash(crate::effect::effect_ct::MODEL);
+        assert_eq!(
+            exec.perform(EffectId(1), &r, Hash::of(b"k")).await,
+            EffectOutcome::Ok(Some(Payload::Inline(b"model".to_vec().into()))),
+            "the baked schema_hash is the routing identity, overriding the family string"
+        );
     }
 
     // A stand-in for the host's `UserspaceEffectExecutor` (userspace-effects I3): serves ONLY families it
@@ -607,8 +690,12 @@ mod tests {
             .with_fallback(Box::new(FallbackExecutor {
                 handled: &["effect/weather"],
             }));
-        let mut ext = req(EffectKind::Http, "today");
-        ext.content_type.family = "effect/weather".into();
+        let ext = crate::effect::EffectRequest::new_with_family(
+            "effect/weather",
+            "today",
+            None,
+            crate::effect::Timeliness::Interactive,
+        );
         assert_eq!(
             exec.perform(EffectId(1), &ext, Hash::of(b"k")).await,
             EffectOutcome::Ok(Some(Payload::Inline(b"fallback-ran".to_vec().into()))),
@@ -646,8 +733,12 @@ mod tests {
         let mut exec = CompositeExecutor::new().with_fallback(Box::new(FallbackExecutor {
             handled: &["effect/weather"],
         }));
-        let mut ext = req(EffectKind::Http, "x");
-        ext.content_type.family = "effect/unregistered".into();
+        let ext = crate::effect::EffectRequest::new_with_family(
+            "effect/unregistered",
+            "x",
+            None,
+            crate::effect::Timeliness::Interactive,
+        );
         match exec.perform(EffectId(1), &ext, Hash::of(b"k")).await {
             EffectOutcome::Err { message: msg, .. } => assert!(
                 msg.contains("effect/unregistered"),
@@ -665,8 +756,12 @@ mod tests {
         // (the pre-I3 behavior) — the fallback is purely additive.
         let mut exec = CompositeExecutor::new()
             .with_effect(crate::effect::effect_ct::HTTP, Box::new(TagExecutor(b"h")));
-        let mut ext = req(EffectKind::Http, "x");
-        ext.content_type.family = "effect/weather".into();
+        let ext = crate::effect::EffectRequest::new_with_family(
+            "effect/weather",
+            "x",
+            None,
+            crate::effect::Timeliness::Interactive,
+        );
         match exec.perform(EffectId(1), &ext, Hash::of(b"k")).await {
             EffectOutcome::Err { message: msg, .. } => {
                 assert!(msg.contains("no executor registered"), "{msg}")
