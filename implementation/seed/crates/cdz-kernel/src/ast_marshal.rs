@@ -2214,7 +2214,42 @@ fn parse_effect_request(a: &Arenas, id: StructId) -> Result<Effect, MarshalError
     if let Some(n) = field("schema_hash") {
         request.schema_hash = Some(read_hash(a, n)?);
     }
+    // PHASE-3 (B) — the ONE-HASHER producer/parse path (design ruling A + v-rb's bridge-test, 2026-08-14): the
+    // reify emits a `schema_descriptor` field = a Bytes leaf holding `codec::encode` of the RAW effect
+    // schema-descriptor tree it builds rcdzc-side (`(effect Name (op OpName (func …))…)`, `effect_schema_descriptor`
+    // at lower.rs:15316). rcdzc does NOT hash (no `blake3`/`canon.rs` port — that would be a second hasher whose
+    // canonicalization must byte-match the kernel's forever). The KERNEL is the one hasher: decode the descriptor
+    // bytes and re-hash them here via the SAME canonicalizing path the family-derived hash uses
+    // (`schema_hash_of_descriptor_bytes` → `Hash::of(codec::encode(decoded))`, re-canonicalizing per ruling A), so
+    // the producer's RAW build order is ERASED and the result equals `family_effect_schema_hash` for a well-known
+    // family (and IS the true identity for an as-yet-family-`None` extension). AUTHORITATIVE over both the
+    // family-derived hash AND a raw pre-baked `schema_hash` (a producer that proved a canonical bake): the
+    // descriptor is the structural source of truth, hashed by the kernel. ADDITIVE + ORDER-SAFE like the
+    // `schema_hash` read — the field is optional, no reify emits it yet (byte-identical today), and reading it
+    // first makes the kernel honor the field v-rb's reify will emit (unrecognized fields are ignored, so a
+    // producer that emitted it before this read existed would be silently dropped). Best-effort on the producer
+    // side (emit only when the descriptor builds); an undecodable/malformed descriptor is a `TypeMismatch`
+    // (fail-closed — never silently fall back to a wrong identity).
+    if let Some(n) = field("schema_descriptor") {
+        let bytes = read_bytes(a, n)?;
+        request.schema_hash = Some(schema_hash_of_descriptor_bytes(&bytes)?);
+    }
     Ok(Effect { request, token })
+}
+
+/// Hash an effect SCHEMA-DESCRIPTOR carried on the input wire as `codec::encode`d bytes (phase-3 (B), the
+/// one-hasher path). The producer (rcdzc reify) emits the RAW descriptor tree `(effect Name (op OpName
+/// (func …))…)` encoded to bytes, WITHOUT hashing it. This DECODES those bytes then re-hashes via
+/// `Hash::of(codec::encode(decoded))` — RE-CANONICALIZING (ruling A: the kernel is the one hasher, so the
+/// producer's raw bottom-up build order is normalized away and the digest is over the canonical bytes).
+/// The result equals [`effect_schema_hash_from_nodes`]'s `Hash::of(codec::encode(b.finish(tree)))` for the
+/// same descriptor tree — so a producer-emitted descriptor hashes to the SAME schema-hash the kernel derives
+/// for a well-known family, and is the authoritative identity for an extension family. `Undecodable` bytes
+/// are a `TypeMismatch` (fail-closed — a malformed descriptor never yields a silent wrong-or-fallback hash).
+fn schema_hash_of_descriptor_bytes(bytes: &[u8]) -> Result<crate::hash::Hash, MarshalError> {
+    let decoded = codec::decode(bytes)
+        .ok_or_else(|| type_mismatch("schema_descriptor", "descriptor bytes do not decode"))?;
+    Ok(crate::hash::Hash::of(&codec::encode(&decoded)))
 }
 
 #[cfg(test)]
@@ -4470,6 +4505,82 @@ mod tests {
         assert!(
             matches!(err, MarshalError::TypeMismatch { .. }),
             "wrong-length hash → TypeMismatch, got {err:?}"
+        );
+    }
+
+    // Build an effect schema-descriptor tree + return BOTH its canonical bytes (what the reify producer
+    // would emit as the `schema_descriptor` field, phase-3 (B)) AND the schema-hash the kernel derives from
+    // it (`effect_schema_hash_from_nodes`, the family-derived path). A one-op effect `name.op(bytes)->unit`
+    // built with the SAME `Builder`/`wit_func_sig`/`effect_schema_tree` primitives the built-in schema
+    // declarations use — so this is the exact descriptor shape the producer emits + the exact hash the
+    // kernel's one-hasher yields.
+    fn descriptor_bytes_and_hash(name: &str, op: &str) -> (Vec<u8>, crate::hash::Hash) {
+        // The WIRE field bytes = codec::encode of the FULL `(effect Name (op OpName (func …)))` descriptor
+        // tree — exactly what the reify producer emits (phase-3 (B), best-effort, no rcdzc hashing).
+        let field_bytes = {
+            let mut b = Builder::new();
+            let arg = b.wit_type_prim("string");
+            let res = b.wit_type_unit();
+            let sig = b.wit_func_sig(&[("arg", arg)], res);
+            let tree = b.effect_schema_tree(name, &[(op, sig)]);
+            codec::encode(&b.finish(tree))
+        };
+        // The EXPECTED hash = the kernel's one-hasher over the same op-sig node (the family-derived path).
+        let expected = {
+            let mut b = Builder::new();
+            let arg = b.wit_type_prim("string");
+            let res = b.wit_type_unit();
+            let sig = b.wit_func_sig(&[("arg", arg)], res);
+            effect_schema_hash_from_nodes(b, name, &[(op, sig)])
+        };
+        (field_bytes, expected)
+    }
+
+    #[test]
+    fn phase3_schema_descriptor_field_hashes_kernel_side_to_the_family_derived_hash() {
+        // PHASE-3 (B): the reify emits a `schema_descriptor` field = codec::encode of the raw descriptor tree
+        // (NO rcdzc hashing). The kernel decodes + re-hashes (the one-hasher path). This pins that my
+        // `schema_hash_of_descriptor_bytes` read reproduces the SAME hash the kernel's `effect_schema_hash_from_nodes`
+        // derives — so a producer-emitted descriptor yields the canonical schema-hash, NON-VACUOUSLY (the field
+        // bytes + expected hash are both built from the kernel's own descriptor primitives, no producer needed).
+        let (field_bytes, expected) = descriptor_bytes_and_hash("weather", "fetch");
+        let bytes = |b: &[u8]| Val::List(b.iter().copied().map(Val::U8).collect());
+        let rec = Val::Record(vec![
+            ("kind".into(), Val::String("effect/weather".into())), // extension family: family-derived = None
+            ("schema_descriptor".into(), bytes(&field_bytes)),
+            ("payload".into(), Val::Option(None)),
+            ("correlation".into(), Val::Option(None)),
+        ]);
+        let parsed =
+            parse_effect_list(&effect_list_bytes(vec![rec])).expect("descriptor record parses");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(
+            parsed[0].request.schema_hash,
+            Some(expected),
+            "the kernel-hashed descriptor equals effect_schema_hash_from_nodes over the same tree \
+             (one-hasher, ruling A) — the authoritative identity even for a family-derived-None extension"
+        );
+    }
+
+    #[test]
+    fn phase3_schema_descriptor_undecodable_is_a_type_mismatch() {
+        // A malformed/undecodable schema_descriptor is fail-closed (TypeMismatch), never a silent fallback to
+        // the family-derived hash — a wrong identity must be rejected, not masked.
+        let bytes = |b: &[u8]| Val::List(b.iter().copied().map(Val::U8).collect());
+        let rec = Val::Record(vec![
+            ("kind".into(), Val::String("model".into())),
+            (
+                "schema_descriptor".into(),
+                bytes(b"\xff\xff not a valid ast encoding"),
+            ),
+            ("payload".into(), Val::Option(None)),
+            ("correlation".into(), Val::Option(None)),
+        ]);
+        let err = parse_effect_list(&effect_list_bytes(vec![rec]))
+            .expect_err("an undecodable schema_descriptor is rejected");
+        assert!(
+            matches!(err, MarshalError::TypeMismatch { .. }),
+            "undecodable descriptor → TypeMismatch, got {err:?}"
         );
     }
 
