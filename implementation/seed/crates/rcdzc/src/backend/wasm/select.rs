@@ -11184,6 +11184,22 @@ fn emit(
         // NOT copy the doc into the export retarea: the fresh owned doc handle IS the `Bytes` value, left on
         // the stack. `value-encode` BORROWS `v` (an inspector) so an owned-temporary `v` is dropped after.
         Core::ValueEncode { value, desc } => {
+            // The runtime `value-encode(v, desc)` op walks a HEAP HANDLE `v` (an i32 handle into the value
+            // store) guided by the descriptor. A value whose machine rep is a HANDLE (a record/tuple/sum/
+            // collection/bignum — `valtype_of == I32`) feeds it directly. But a value whose type is
+            // descriptor-eligible yet whose machine rep ERASES TO A BARE SCALAR — a single-field newtype
+            // over an int, `(type Pt (Mk Int64))`, is `valtype_of == I64` — is NOT a handle, so passing it
+            // to the handle-typed op is a stack type mismatch (i64 where i32 is wanted → an invalid module).
+            // Boxing such a scalar into a leaf handle first is a later increment; for R2 v1 (the carve-out
+            // payloads are multi-field declared records = genuine handles) DECLINE cleanly on a non-handle
+            // value rep, matching the reject-not-miscompile discipline.
+            if valtype_of(&type_of(db, value)) != Some(ValType::I32) {
+                return Err(Reject::decline(
+                    "Value.encode on a value whose machine rep is not a heap handle (a scalar-erased \
+                     newtype / bare scalar) — boxing it to a leaf handle is a later increment; the \
+                     runtime value-encode op walks an i32 handle",
+                ));
+            }
             let vo = heap_operand_ownership(db, value)?;
             let val_slot = *high;
             let desc_slot = *high + 1;
@@ -11224,6 +11240,23 @@ fn emit(
             disc_some,
             disc_none,
         } => {
+            // `value-decode` CONSTRUCTS a fresh heap-handle value; the `Some` payload carries it as an i32
+            // handle. A target type whose rep erases to a bare scalar (a single-field newtype over an int)
+            // is not a handle, so the Some-payload slot would mismatch — same non-handle-rep gap as
+            // `ValueEncode`. DECLINE for R2 v1 (the carve-out targets are declared records = handles);
+            // scalar-target decode + unbox is a later increment. The target type is the node's `(Option a)`
+            // element (`type_of(id)` peeled), which `lower_value_decode` already grounded to a concrete `a`.
+            let target_is_handle = matches!(
+                type_of(db, id),
+                Ty::Sum { ref args, .. } if args.first().and_then(valtype_of) == Some(ValType::I32)
+            );
+            if !target_is_handle {
+                return Err(Reject::decline(
+                    "Value.decode into a target whose machine rep is not a heap handle (a scalar-erased \
+                     newtype / bare scalar) — unboxing the decoded leaf is a later increment; the Some \
+                     payload carries an i32 handle",
+                ));
+            }
             let bo = heap_operand_ownership(db, bytes)?;
             let bytes_slot = *high;
             let desc_slot = *high + 1;
@@ -13172,6 +13205,16 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
         // Bytes analog of the `ListConcat`/`ListPush` producer gap fixed earlier.
         | Core::BinSizedRead { .. }
         | Core::BinRestRead { .. }
+        // `Value.encode` returns a FRESH owned `Bytes` document handle (the runtime `value-encode` op mints
+        // a new doc, borrowing its value operand), and `Value.decode` returns a FRESH owned value handle
+        // (`sum-new(Some, decoded)` over the fresh `value-decode` result, or the nullary `None`). So a
+        // `Value.encode`/`Value.decode` RESULT used as a borrowing-op operand — the round-trip `(let ((bs
+        // (Value.encode v))) (Value.decode bs) …)` where `bs` feeds `value-decode` (a borrow) — is an owned
+        // temporary the borrow must reclaim. WITHOUT this it fell to `_ => decline` ("ownership this backend
+        // cannot yet prove"), blocking the whole R2 round-trip at emit (v-inference's decode-grounding got it
+        // past typing, then this fired). The Bytes/value analog of the collection-producer arms below.
+        | Core::ValueEncode { .. }
+        | Core::ValueDecode { .. }
         // A set construction/update/algebra (`set-empty`+inserts, `set-insert`, `set-remove`, union/
         // intersection/difference) returns a fresh owned set handle — the `value-eq` emit drops it.
         | Core::SetOf { .. }
