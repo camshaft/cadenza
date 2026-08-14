@@ -588,6 +588,10 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
         | Core::Not { operand }
         | Core::ListLen { operand }
         | Core::BytesLen { operand }
+        // `Value.encode`/`decode` are `cadenza:runtime/heap` ops, not host imports; they contribute
+        // no HostImport but their single value/bytes operand must still be walked for nested performs.
+        | Core::ValueEncode { value: operand, .. }
+        | Core::ValueDecode { bytes: operand, .. }
         | Core::StrScalarLen { operand } => collect_host_imports(db, operand, out),
         Core::Match { scrutinee, arms } => {
             collect_host_imports(db, scrutinee, out);

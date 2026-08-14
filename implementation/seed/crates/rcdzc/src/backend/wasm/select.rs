@@ -329,6 +329,19 @@ const OP_VALUE_EQ_SHAPED: &str = "value-eq-shaped";
 /// `a` + `desc`, returns a FRESH owned handle the emit drops after a borrowing key op (like a compacted rope
 /// key). A malformed descriptor declines to an identity dup (total). See `value_canonicalize_shaped`.
 const OP_VALUE_CANONICALIZE: &str = "value-canonicalize";
+/// `value-encode(v, desc) -> handle` — render a runtime value `v` to its canonical binary-AST document,
+/// guided by the shape descriptor `desc` (baked as a Bytes constant, the SAME descriptor `value-cmp`/
+/// `value-encode` read). BORROWS `v` + `desc` (an inspector), returns a FRESH owned `Bytes` doc handle.
+/// Backs `Core::ValueEncode` (R2): the in-fold `Value.encode` — unlike the resource-escape path it does
+/// NOT copy the doc into the export retarea, it RETURNS the doc handle as the `Bytes` value. The owned-
+/// temporary `desc` (and an owned-temporary `v`) are `drop`ped after the borrowing call.
+const OP_VALUE_ENCODE: &str = "value-encode";
+/// `value-decode(bytes, desc) -> handle` — the inverse: parse the binary-AST document `bytes` back into a
+/// FRESH owned heap value of the type `desc` describes, or the NULL handle (`0`) on a shape/format mismatch
+/// (never traps — mirrors `value-encode`'s malformed-desc decline). BORROWS `bytes` + `desc`. Backs
+/// `Core::ValueDecode` (R2): the emit wraps the success handle into `Some` / the NULL signal into `None`
+/// via `disc_some`/`disc_none` (the `∀a. Bytes → Option a` partial). See `op_value_decode`.
+const OP_VALUE_DECODE: &str = "value-decode";
 /// Persistent CHAMP map ops. `map-empty() -> handle` — the canonical empty map; `map-insert(m, key, val)
 /// -> handle` — add-or-replace (CONSUMES m, key, val; returns the new map); `map-lookup(m, key) -> handle`
 /// — the value for `key` or NULL when absent (BORROWS m + key); `map-remove(m, key) -> handle` — m without
@@ -557,6 +570,13 @@ fn binding_escapes_dup_aware(
             binding_escapes_dup_aware(db, value, binder, false, dup_sites)
         }
         Core::BigIntToI64 { operand } => {
+            binding_escapes_dup_aware(db, operand, binder, true, dup_sites)
+        }
+        // `Value.encode`/`decode` BORROW their operand: `value-encode` is an inspector (walks `v` to a fresh
+        // owned doc); `value-decode` reads `bytes` to CONSTRUCT a fresh owned value. Neither retains a
+        // reference to the operand in the result, so a binding used directly as the operand does NOT escape
+        // through it (recurse `tail_borrowed: true`, like `BigIntToI64`/`ListLen`).
+        Core::ValueEncode { value: operand, .. } | Core::ValueDecode { bytes: operand, .. } => {
             binding_escapes_dup_aware(db, operand, binder, true, dup_sites)
         }
         // The runtime Rational arithmetic/comparison ops BORROW their operand handles (`rational-add`/…/
@@ -1323,6 +1343,10 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
         | Core::StrFromBytes { bytes: operand, .. }
         | Core::StrToBytes { string: operand }
         | Core::NfcNormalize { string: operand }
+        // `Value.encode`/`decode` each have one child NODE: the value / bytes operand. The `desc` bytes
+        // and the `disc_some`/`disc_none` are scalars baked into the op, not sub-expression occurrences.
+        | Core::ValueEncode { value: operand, .. }
+        | Core::ValueDecode { bytes: operand, .. }
         | Core::Convert { operand, .. }
         | Core::Not { operand } => cs.push(operand),
         // A `BinIntRead`/`BinRestRead` reads `bytes`, plus a `off_plus` size-sum child (§4a dynamic offset).
@@ -1960,6 +1984,11 @@ fn mark_binder_dups_inner(
             consume(db, value, live_after, sites)
         }
         Core::BigIntToI64 { operand } => borrow(db, operand, live_after, sites),
+        // `Value.encode`/`decode` BORROW their value/bytes operand (inspector / fresh-construct — the result
+        // retains no reference to it; the emit drops an owned-temporary operand + the baked desc after the op).
+        Core::ValueEncode { value: operand, .. } | Core::ValueDecode { bytes: operand, .. } => {
+            borrow(db, operand, live_after, sites)
+        }
         // `rational-num`/`rational-den` BORROW the Rational operand (return a fresh BigInt handle).
         Core::RationalNum { operand } | Core::RationalDen { operand } => {
             borrow(db, operand, live_after, sites)
@@ -3599,6 +3628,28 @@ fn collect_used_ops_into(
             out.insert(OP_BYTES_SET);
             collect_used_ops_into(db, lhs, out);
             collect_used_ops_into(db, rhs, out);
+        }
+        // `Value.encode` (R2) imports `value-encode` (the render) + `bytes-alloc`/`bytes-set` (the emit BAKES
+        // the shape descriptor inline as a Bytes constant, exactly like `ValueCmp`) + `drop` (reclaim the
+        // borrowed-only descriptor Bytes — and an owned-temporary value operand — after the borrowing call).
+        Core::ValueEncode { value, .. } => {
+            out.insert(OP_VALUE_ENCODE);
+            out.insert(OP_BYTES_ALLOC);
+            out.insert(OP_BYTES_SET);
+            out.insert(OP_DROP);
+            collect_used_ops_into(db, value, out);
+        }
+        // `Value.decode` (R2) imports `value-decode` (the parse) + the descriptor-baking op set + `drop`
+        // (reclaim the borrowed descriptor + owned-temporary bytes operand) + `sum-new` (wrap the success
+        // handle into `Some` / the NULL signal into `None` — the `Option a` result). Mirrors `MapLookup`'s
+        // present/absent → Some/None op set plus the descriptor bake.
+        Core::ValueDecode { bytes, .. } => {
+            out.insert(OP_VALUE_DECODE);
+            out.insert(OP_BYTES_ALLOC);
+            out.insert(OP_BYTES_SET);
+            out.insert(OP_DROP);
+            out.insert(OP_SUM_NEW);
+            collect_used_ops_into(db, bytes, out);
         }
         Core::Convert { operand, .. } | Core::Not { operand } => {
             collect_used_ops_into(db, operand, out)
@@ -11090,6 +11141,96 @@ fn emit(
             lo.drop_slot_if_owned(slot_l, out);
             ro.drop_slot_if_owned(slot_r, out);
             // The bool result is already on top — no mapping needed.
+            Ok(())
+        }
+        // `Value.encode v` (R2) — render the runtime value `v` to its canonical binary-AST document via
+        // `value-encode(v, desc)`, guided by the compiler-baked shape `desc`. Same emit SHAPE as `ValueCmp`
+        // (bake the descriptor Bytes into a slot on a clean stack, emit the borrowed operand, drop the
+        // descriptor + any owned temporary after the borrowing call). UNLIKE the resource-escape path it does
+        // NOT copy the doc into the export retarea: the fresh owned doc handle IS the `Bytes` value, left on
+        // the stack. `value-encode` BORROWS `v` (an inspector) so an owned-temporary `v` is dropped after.
+        Core::ValueEncode { value, desc } => {
+            let vo = heap_operand_ownership(db, value)?;
+            let val_slot = *high;
+            let desc_slot = *high + 1;
+            *high = desc_slot + 1;
+            for s in [val_slot, desc_slot] {
+                scratch_ty.insert(s, ValType::I32);
+            }
+            let op_base = *high;
+            // Bake the descriptor into desc_slot FIRST (clean stack for the operand emit), exactly as ValueCmp.
+            out.push(Lir::ConstI32(desc.len() as i32));
+            out.push(Lir::CallImport(OP_BYTES_ALLOC)); // [desc-buf]
+            for (j, &byte) in desc.iter().enumerate() {
+                out.push(Lir::ConstI32(j as i32));
+                out.push(Lir::ConstI32(byte as i32));
+                out.push(Lir::CallImport(OP_BYTES_SET)); // [desc-buf]
+            }
+            out.push(Lir::LocalSet(desc_slot)); // [] — descriptor stored, stack clear
+            emit(db, value, slots, op_base, high, scratch_ty, layout, out)?; // [v]
+            out.push(Lir::LocalTee(val_slot)); // [v]
+            out.push(Lir::LocalGet(desc_slot)); // [v, desc]
+            out.push(Lir::CallImport(OP_VALUE_ENCODE)); // [v, desc] → [doc] (borrows both)
+            // Drop the borrowed-only descriptor Bytes, then any owned-temporary value operand — the fresh
+            // doc retains no reference to either.
+            out.push(Lir::LocalGet(desc_slot));
+            out.push(Lir::CallImport(OP_DROP));
+            vo.drop_slot_if_owned(val_slot, out);
+            Ok(()) // leaves [doc]
+        }
+        // `Value.decode b` (R2, the inverse) — parse the binary-AST document `b` into a fresh owned value of
+        // the call-site expected type via `value-decode(b, desc)` (returns the value handle or the NULL
+        // signal on a shape/format mismatch), then wrap into `(Option a)`: `Some(handle)` when non-NULL, else
+        // `None`. Descriptor bake + borrow/drop discipline as `ValueEncode`; the Some/None wrap mirrors
+        // `MapLookup`, EXCEPT the decoded handle is FRESH OWNED (value-decode constructs it) so the `Some`
+        // payload uses it directly with NO `dup` (MapLookup dup'd because the map still owned its value).
+        Core::ValueDecode {
+            bytes,
+            desc,
+            disc_some,
+            disc_none,
+        } => {
+            let bo = heap_operand_ownership(db, bytes)?;
+            let bytes_slot = *high;
+            let desc_slot = *high + 1;
+            let res_slot = *high + 2;
+            *high = res_slot + 1;
+            for s in [bytes_slot, desc_slot, res_slot] {
+                scratch_ty.insert(s, ValType::I32);
+            }
+            let op_base = *high;
+            // Bake the descriptor into desc_slot FIRST (clean stack for the operand emit).
+            out.push(Lir::ConstI32(desc.len() as i32));
+            out.push(Lir::CallImport(OP_BYTES_ALLOC)); // [desc-buf]
+            for (j, &byte) in desc.iter().enumerate() {
+                out.push(Lir::ConstI32(j as i32));
+                out.push(Lir::ConstI32(byte as i32));
+                out.push(Lir::CallImport(OP_BYTES_SET)); // [desc-buf]
+            }
+            out.push(Lir::LocalSet(desc_slot)); // [] — descriptor stored, stack clear
+            emit(db, bytes, slots, op_base, high, scratch_ty, layout, out)?; // [bytes]
+            out.push(Lir::LocalTee(bytes_slot)); // [bytes]
+            out.push(Lir::LocalGet(desc_slot)); // [bytes, desc]
+            out.push(Lir::CallImport(OP_VALUE_DECODE)); // [bytes, desc] → [handle-or-null] (borrows both)
+            out.push(Lir::LocalSet(res_slot)); // [] — result stashed
+            // Drop the borrowed-only descriptor Bytes + any owned-temporary bytes operand. The decoded value
+            // (or NULL) in res_slot is independent of both, so this is safe before the wrap.
+            out.push(Lir::LocalGet(desc_slot));
+            out.push(Lir::CallImport(OP_DROP));
+            bo.drop_slot_if_owned(bytes_slot, out);
+            // present = (handle != NULL).
+            out.push(Lir::LocalGet(res_slot));
+            out.push(Lir::ConstI32(NULL_HANDLE));
+            out.push(Lir::I32Ne); // [present]
+            out.push(Lir::If(BlockType::Val(ValType::I32)));
+            // THEN — Some(handle): the decoded value is FRESH OWNED, used directly as the payload (no dup).
+            out.push(Lir::ConstI32(disc_some as i32)); // [disc_some]
+            out.push(Lir::LocalGet(res_slot)); // [disc_some, handle]
+            out.push(Lir::CallImport(OP_SUM_NEW)); // [Some-handle]
+            out.push(Lir::Else);
+            // ELSE — None: value-decode allocated nothing on a NULL return, so there is nothing to reclaim.
+            emit_none_option(disc_none, out); // [None-handle]
+            out.push(Lir::End);
             Ok(())
         }
         // A runtime arithmetic op. The numeric model fixes each operation's DEFINED outcome, which the

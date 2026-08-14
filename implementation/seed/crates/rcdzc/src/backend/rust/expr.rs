@@ -2511,6 +2511,19 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             let b = emit(db, bytes, env, ctx)?;
             Ok(format!("String::from_utf8({b}).ok()"))
         }
+        // `Value.encode`/`decode` (R2) render/parse a runtime value to/from its canonical binary-AST document
+        // guided by the compiler-baked shape descriptor. The wasm backend calls the `value-encode`/`value-
+        // decode` runtime-heap ops (which walk a tagged heap handle). The NATIVE rust rep is a static Rust
+        // type, not a tagged heap value, so there is no `desc`-driven walker to call — a native encoder that
+        // reflects the shape descriptor over the concrete Rust type is a separate rust-lane build (like the
+        // NfcNormalize rust-NFC split above). Until it lands, DECLINE on rust: this surfaces as `todo` on the
+        // rust faces (never a fail, never a silent miscompile), while the wasm backend has the real op.
+        Core::ValueEncode { .. } => Err(Reject::decline(
+            "Value.encode has no native rust rep yet (the descriptor-guided value-form walker is a wasm runtime op; the native rust encoder is a separate rust-lane build)",
+        )),
+        Core::ValueDecode { .. } => Err(Reject::decline(
+            "Value.decode has no native rust rep yet (the descriptor-guided value-form parser is a wasm runtime op; the native rust decoder is a separate rust-lane build)",
+        )),
         // `Core::StrToBytes` is the "canonicalize a runtime text leaf" op. On the wasm side it backs THREE
         // surface ops (all a `bytes-compact` byte-rope flatten): `String.to-bytes` (String → Bytes),
         // `Symbol.of` (String → Symbol, intern), and `Symbol.to-string` (Symbol → String). On the RUST

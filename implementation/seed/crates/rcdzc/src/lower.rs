@@ -2028,6 +2028,35 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // out-of-range integer (`collections-and-text.md` §A Char Converts To And From An Integer
                 // Totally). Never traps.
                 Some(Prim::CharFromInt) if args.len() == 1 => lower_char_from_int(db, id, args[0]),
+                // `Value.encode v` (R2) — the in-fold binary-AST value-form encode `∀a. a → Bytes`, TOTAL.
+                // Emits `Core::ValueEncode { value, desc }` — the runtime `value-encode(v, desc)` op — with
+                // `desc` the framed `(: value Type)` shape descriptor built from `v`'s type
+                // (`sum_shape_descriptor`, the same self-describing descriptor the escape path uses, so
+                // `Value.decode` round-trips it). The op walks the value handle (constant OR runtime — a
+                // constant value still sits boxed on the heap) to its document, so no separate const-fold is
+                // needed for correctness (a const-fold to baked bytes is a later optimization). Declines if
+                // the value's type has no value-form descriptor (a function / type-value — no encodable
+                // value-form; matches the boundary's decline domain).
+                Some(Prim::ValueEncode) if args.len() == 1 => {
+                    let vty = crate::infer::type_of(db, args[0]);
+                    match sum_shape_descriptor(db, &vty) {
+                        Some(desc) => Core::ValueEncode {
+                            value: args[0],
+                            desc: std::rc::Rc::from(desc.as_slice()),
+                        },
+                        None => Core::Poison(Reject::decline(
+                            "Value.encode on a value whose type has no binary-AST value-form descriptor \
+                             (a function / type-value has no encodable value-form)",
+                        )),
+                    }
+                }
+                // `Value.decode b` (R2) — the inverse `∀a. Bytes → (Option a)`, PARTIAL. The target type `a`
+                // is the node's solved type peeled from `(Option a)`. Emits `Core::ValueDecode { bytes, desc,
+                // disc_some, disc_none }` — the runtime `value-decode(b, desc)` op — with `desc` the same
+                // framed descriptor for `a`. (A constant-bytes fold is a later refinement; the runtime path
+                // is the common case.) Declines if the target type is unresolved (typing already declines an
+                // unsolved `a` at the decode node, so this is defensive) or has no value-form descriptor.
+                Some(Prim::ValueDecode) if args.len() == 1 => lower_value_decode(db, id, args[0]),
                 // `Symbol.of` — intern a String into a Symbol (`String → Symbol`). A CONSTANT string folds
                 // to a constant symbol, which shares the underlying `Core::ConstStr` REP (identity is
                 // content-derived); only the static TYPE differs (`Ty::Symbol`, off this node's solved
@@ -20531,6 +20560,10 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::CharTy
         | Prim::CharToInt
         | Prim::CharFromInt
+        // Value.encode/decode are unary value↔Bytes conversions (they lower in their own apply-dispatch
+        // arm, like Char.to-int), NOT integer binary ops — unreachable in the arith fold, decline.
+        | Prim::ValueEncode
+        | Prim::ValueDecode
         | Prim::SymbolTy
         | Prim::SymbolOf
         | Prim::SymbolToString
@@ -24092,6 +24125,47 @@ fn lower_char_from_int(db: &mut Db, id: StructId, n: StructId) -> Core {
     }
 }
 
+/// Lower `Value.decode b` (R2) — the in-fold binary-AST value-form DECODE `∀a. Bytes → (Option a)`. The
+/// target type `a` is the node's solved type peeled from `(Option a)` (typing declines an unsolved `a` at
+/// the decode node, so a decode node reaching lowering has a concrete `a`). Emits `Core::ValueDecode {
+/// bytes, desc, disc_some, disc_none }` — the runtime `value-decode(b, desc)` op — with `desc` the framed
+/// `(: value Type)` descriptor for `a` (the SAME descriptor `Value.encode` writes, so a round-trip agrees).
+/// The backend wraps the op's success handle (or its failure signal) into the `(Option a)` sum. Declines if
+/// the node's type is not the built-in `(Option a)`, or `a` has no value-form descriptor.
+fn lower_value_decode(db: &mut Db, id: StructId, b: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, b) {
+        return Core::Poison(r);
+    }
+    let Some((disc_some, disc_none)) = option_discs(db, id) else {
+        return Core::Poison(Reject::decline(
+            "Value.decode result is not the built-in Option sum",
+        ));
+    };
+    // Peel `a` from the node's solved `(Option a)` type — the target type the bytes decode into.
+    let node_ty = crate::infer::type_of(db, id);
+    let crate::ty::Ty::Sum { args, .. } = &node_ty else {
+        return Core::Poison(Reject::decline(
+            "Value.decode result type is not a resolved (Option a) — the target type is unsolved",
+        ));
+    };
+    let Some(target_ty) = args.first().cloned() else {
+        return Core::Poison(Reject::decline(
+            "Value.decode target type (Option's element) is unresolved",
+        ));
+    };
+    match sum_shape_descriptor(db, &target_ty) {
+        Some(desc) => Core::ValueDecode {
+            bytes: b,
+            desc: std::rc::Rc::from(desc.as_slice()),
+            disc_some,
+            disc_none,
+        },
+        None => Core::Poison(Reject::decline(
+            "Value.decode into a type with no binary-AST value-form descriptor",
+        )),
+    }
+}
+
 fn lower_str_at(db: &mut Db, id: StructId, string: StructId, index: StructId) -> Core {
     if let Core::Poison(r) = core_of(db, string) {
         return Core::Poison(r);
@@ -27253,6 +27327,8 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::CharTy => "Char",
         Prim::CharToInt => "char-to-int",
         Prim::CharFromInt => "char-from-int",
+        Prim::ValueEncode => "value-encode",
+        Prim::ValueDecode => "value-decode",
         Prim::SymbolTy => "Symbol",
         Prim::SymbolOf => "symbol-of",
         Prim::SymbolToString => "symbol-to-string",

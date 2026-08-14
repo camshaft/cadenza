@@ -240,6 +240,14 @@ pub enum Prim {
     /// for a value that is a Unicode scalar, `None` for a surrogate / out-of-range integer. Folds a
     /// constant integer to `Some`/`None`.
     CharFromInt,
+    /// `Value.encode` — the in-fold binary-AST value-form encode (R2): `∀a. a → Bytes`, TOTAL. Walks any
+    /// value to its canonical binary-AST document bytes (the same value-form the export boundary emits),
+    /// callable mid-fold. Lowers to `Core::ValueEncode` (runtime `value-encode` op) or a constant fold.
+    ValueEncode,
+    /// `Value.decode` — the inverse (R2): `∀a. Bytes → (Option a)`, PARTIAL. Parses a binary-AST document
+    /// back into a value of the call-site expected type (`None` on shape/type mismatch). Lowers to
+    /// `Core::ValueDecode`. The target type is grounded by typing (an unsolved `a` declines at the decode node).
+    ValueDecode,
     /// The ground `Symbol` type-value — held in the `Symbol` module record's `(meta t)`, so bare `Symbol`
     /// in type position reduces to `Ty::Symbol` (a NULLARY type, like `String`/`Char`; the `Symbol` module
     /// also carries `of`/`to-string` operation fields, but its type role is this).
@@ -893,6 +901,8 @@ impl Prim {
             "Char" => Some(Prim::CharTy),
             "char-to-int" => Some(Prim::CharToInt),
             "char-from-int" => Some(Prim::CharFromInt),
+            "value-encode" => Some(Prim::ValueEncode),
+            "value-decode" => Some(Prim::ValueDecode),
             "Symbol" => Some(Prim::SymbolTy),
             "bigint-of" => Some(Prim::BigIntOf),
             "symbol-of" => Some(Prim::SymbolOf),

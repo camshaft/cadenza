@@ -522,6 +522,33 @@ pub enum Core {
     StrToBytes {
         string: StructId,
     },
+    /// `Value.encode v` on a RUNTIME value (R2, the in-fold binary-AST value-form encode) — walk `v` to its
+    /// canonical binary-AST document `Bytes`, guided by the compile-time shape DESCRIPTOR built from `v`'s
+    /// type. TOTAL (every value has a value-form; `∀a. a → Bytes`). Emits the runtime `value-encode(v, desc)`
+    /// op — the SAME walker the export boundary uses (`runtime_value_form_template`/the resource escape), now
+    /// callable in-fold, so a reified world-effect's structured payload can encode to a single `Bytes` (the
+    /// schema-hash R2 carve-out) and `Shell.pipeline` can produce its shell-payload bytes. A CONSTANT value is
+    /// NOT const-folded (there is no `Core::ConstBytes`; the runtime `value-encode` op walks a boxed constant
+    /// fine), so it takes this same runtime path. `desc` is the descriptor byte string (compile-time constant,
+    /// built from the value's type exactly as the boundary escape builds it). BORROWS `v`; returns a fresh
+    /// owned `Bytes` document handle.
+    ValueEncode {
+        value: StructId,
+        desc: std::rc::Rc<[u8]>,
+    },
+    /// `Value.decode b` on a RUNTIME `Bytes` (R2, the inverse) — parse the binary-AST document `b` back into a
+    /// value of the call-site EXPECTED type via the runtime `value-decode(b, desc)` op, guided by the same
+    /// shape `desc`. PARTIAL (`∀a. Bytes → (Option a)`) — `None` when the bytes do not decode to the expected
+    /// shape/type. The target type is grounded by typing (v-inference declines an unsolved `a` at the decode
+    /// node, so `desc` here is always for a concrete type). The backend wraps the runtime op's success handle
+    /// (or its failure signal) into the `(Option a)` sum via `disc_some`/`disc_none`. `desc` is the same
+    /// compile-time-constant descriptor bytes as the encode direction.
+    ValueDecode {
+        bytes: StructId,
+        desc: std::rc::Rc<[u8]>,
+        disc_some: u32,
+        disc_none: u32,
+    },
     /// `BigInt.of x` on a RUNTIME fixed-width integer — widen `x` (an i64-slot value) into a `BigInt`
     /// heap leaf via the runtime `bigint-of-i64` op. A CONSTANT source folds to `Core::ConstInt` retyped
     /// `BigInt` in `lower` (B1) and never reaches here; this is the runtime path (B3b).

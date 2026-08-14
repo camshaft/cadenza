@@ -1291,6 +1291,10 @@ fn collect_host_arg_strings_at(db: &mut Db, id: crate::ast::StructId, out: &mut 
         | Core::Not { operand }
         | Core::ListLen { operand }
         | Core::BytesLen { operand }
+        // `Value.encode`/`decode` marshal no constant host-arg string (the descriptor is baked as
+        // per-byte `bytes-set`, not a data-segment `(ptr,len)`); walk the single operand for nested ones.
+        | Core::ValueEncode { value: operand, .. }
+        | Core::ValueDecode { bytes: operand, .. }
         | Core::StrScalarLen { operand } => collect_host_arg_strings(db, operand, out),
         Core::Match { scrutinee, arms } => {
             collect_host_arg_strings(db, scrutinee, out);
