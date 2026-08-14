@@ -11407,3 +11407,122 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 29187903130101 Int64))
   (call   main (: 0 Int64)) (output (: 31097903030101 Int64)))
+
+;; ── Weighted quorum w/ punitive veto, capacity-2 LRU cache, Pascal row builder (breaker batch 278) ──
+(case "qrm1 WEIGHTED QUORUM voting with a punitive veto — votes accumulate weight answering whether the threshold is met, veto ZEROES the tally and RAISES the threshold by two, tally packs weight and quorum-bit, and the seed sets the initial threshold so the same votes pass on one seed and never on the other"
+  (input  (do
+            (effect Q
+              (op vote (-> Int64 Int64))
+              (op veto (-> Int64))
+              (op tally (-> Int64)))
+            (def (main (: n Int64))
+              (handle Q (tuple (: 0 Int64) (+ n 6))
+                ((vote (v) st
+                  (match st
+                    ((tuple w thr)
+                      (if (< (+ w v) thr)
+                          (resume 0 (tuple (+ w v) thr))
+                          (resume 1 (tuple (+ w v) thr))))))
+                 (veto () st
+                  (match st
+                    ((tuple w thr) (resume (+ thr 2) (tuple 0 (+ thr 2))))))
+                 (tally () st
+                  (match st
+                    ((tuple w thr)
+                      (if (< w thr)
+                          (resume (* w 10) st)
+                          (resume (+ (* w 10) 1) st))))))
+                (let ((a (Q.vote 5)))
+                  (let ((b (Q.vote 4)))
+                    (let ((c (Q.tally)))
+                      (let ((d (Q.veto)))
+                        (let ((e (Q.vote 9)))
+                          (let ((f (Q.vote 8)))
+                            (let ((g (Q.tally)))
+                              (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 9018000170 Int64))
+  (call   main (: 0 Int64)) (output (: 19108010271 Int64)))
+
+(case "lru1 a CAPACITY-2 LRU cache — put inserts as most-recent and answers the evicted key or 0, get answers the value refreshing recency or -1 on miss, and the SEED collides the computed key with a literal so one run UPDATES where the other EVICTS"
+  (input  (do
+            (effect C
+              (op put (-> Int64 Int64 Int64))
+              (op get (-> Int64 Int64)))
+            (def (without (: xs (List Int64)) (: k Int64) (: i Int64) (: acc (List Int64)))
+              (if (< i (List.len xs))
+                  (without xs k (+ i 1)
+                    (match (List.at xs i)
+                      ((Some v) (if (= v k) acc (List.push acc v)))
+                      ((None u) acc)))
+                  acc))
+            (def (headof (: xs (List Int64)))
+              (match (List.at xs 0) ((Some v) v) ((None u) 0)))
+            (def (tailof (: xs (List Int64)) (: i Int64) (: acc (List Int64)))
+              (if (< i (List.len xs))
+                  (tailof xs (+ i 1) (List.push acc (match (List.at xs i) ((Some v) v) ((None u) 0))))
+                  acc))
+            (def (main (: n Int64))
+              (handle C (tuple (: (list) (List Int64)) (: (map) (Map Int64 Int64)))
+                ((put (k v) st
+                  (match st
+                    ((tuple rec m)
+                      (match (List.push (without rec k 0 (: (list) (List Int64))) k)
+                        (rec2
+                          (if (< 2 (List.len rec2))
+                              (resume (headof rec2)
+                                      (tuple (tailof rec2 1 (: (list) (List Int64)))
+                                             (Map.remove (Map.insert m k v) (headof rec2))))
+                              (resume 0 (tuple rec2 (Map.insert m k v)))))))))
+                 (get (k) st
+                  (match st
+                    ((tuple rec m)
+                      (match (Map.lookup m k)
+                        ((Some v) (resume v (tuple (List.push (without rec k 0 (: (list) (List Int64))) k) m)))
+                        ((None) (resume -1 st)))))))
+                (let ((a (C.put (+ n 1) 5)))
+                  (let ((b (C.put 1 6)))
+                    (let ((c (C.get (+ n 1))))
+                      (let ((d (C.put 3 7)))
+                        (let ((e (C.get 1)))
+                          (let ((f (C.get (+ n 1))))
+                            (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 5009905 Int64))
+  (call   main (: 0 Int64)) (output (: 6000606 Int64)))
+
+(case "pas1 PASCAL'S TRIANGLE row advanced through effect state — next rebuilds the row by a recursive pairwise-sum answering the row total (a power of two), coef reads the SEED-KEYED binomial coefficient mid-descent and after, and the out-of-range read answers -1"
+  (input  (do
+            (effect P
+              (op next (-> Int64))
+              (op coef (-> Int64 Int64)))
+            (def (getat (: xs (List Int64)) (: i Int64))
+              (match (List.at xs i) ((Some v) v) ((None u) 0)))
+            (def (pairs (: xs (List Int64)) (: i Int64) (: acc (List Int64)))
+              (if (< i (- (List.len xs) 1))
+                  (pairs xs (+ i 1) (List.push acc (+ (getat xs i) (getat xs (+ i 1)))))
+                  (List.push acc 1)))
+            (def (sums (: xs (List Int64)) (: i Int64) (: acc Int64))
+              (if (< i (List.len xs))
+                  (sums xs (+ i 1) (+ acc (getat xs i)))
+                  acc))
+            (def (main (: n Int64))
+              (handle P (: (list 1) (List Int64))
+                ((next () st
+                  (match (pairs st 0 (: (list 1) (List Int64)))
+                    (r2 (resume (sums r2 0 0) r2))))
+                 (coef (k) st
+                  (if (< k (List.len st))
+                      (resume (getat st k) st)
+                      (resume -1 st))))
+                (let ((a (P.next)))
+                  (let ((b (P.next)))
+                    (let ((c (P.coef (+ (% n 3) 1))))
+                      (let ((d (P.next)))
+                        (let ((e (P.next)))
+                          (let ((f (P.coef (+ (% n 3) 1))))
+                            (let ((g (P.coef 7)))
+                              (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 2040108160599 Int64))
+  (call   main (: 0 Int64)) (output (: 2040208160399 Int64)))

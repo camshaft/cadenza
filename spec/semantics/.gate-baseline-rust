@@ -5468,6 +5468,7 @@ pass	loc1 a LIST-OF-CLOSURES pipeline state — each add pushes a stage function
 pass	looking up an absent key yields None
 pass	lp1 a LIST handler state — each feed pushes and returns the pre-push length, a summing walk reads the final list
 pass	lpc1 a LAMPORT CLOCK — local events tick the counter, receives jump it to max(local,remote)+1; the stale remote (already-past timestamp) still ticks by one through the max
+pass	lru1 a CAPACITY-2 LRU cache — put inserts as most-recent and answers the evicted key or 0, get answers the value refreshing recency or -1 on miss, and the SEED collides the computed key with a literal so one run UPDATES where the other EVICTS
 pass	ls1 a LIST-state snapshot crosses mid-growth — the held list is immutable while the state keeps growing, sum and final length both pinned
 pass	lt1 the arm SWAPS its list state's ends per dispatch — the head alternates between the original ends
 pass	lt2 the arm DOUBLES every list element per dispatch (via a projection helper) — the sum geometrically grows
@@ -5733,6 +5734,7 @@ pass	pal1 PARITY-ALTERNATING two-effect draws — one recursive driver picks whi
 pass	parsing a length-framed message and rebuilding it yields the original bytes
 pass	partial application captures a let-bound value in the residual lambda
 pass	partial application captures a runtime parameter in the residual lambda
+pass	pas1 PASCAL'S TRIANGLE row advanced through effect state — next rebuilds the row by a recursive pairwise-sum answering the row total (a power of two), coef reads the SEED-KEYED binomial coefficient mid-descent and after, and the out-of-range read answers -1
 pass	passing one newtype where a different newtype is expected names both nominal types
 pass	pattern matching over AST distinguishes forms
 pass	pbr1 PER-BRANCH resume with different value AND stride — the else branch jumps the state 50, flipping the next dispatch's route
@@ -5837,6 +5839,7 @@ pass	pw1 a TRIPLING state crosses fixed thresholds — three compares catch the 
 pass	px1 observed tail performer at depth 100 — values must agree while the stack face is under repair
 pass	q5 a FIVE-argument op — the arm folds all five positions with distinct weights, two calls permute the arguments
 pass	q6 all FIVE arguments are draws — left-to-right evaluation order pinned at width five by distinct weights
+pass	qrm1 WEIGHTED QUORUM voting with a punitive veto — votes accumulate weight answering whether the threshold is met, veto ZEROES the tally and RAISES the threshold by two, tally packs weight and quorum-bit, and the seed sets the initial threshold so the same votes pass on one seed and never on the other
 pass	qs1 two perform-drawn quantities of one dimension ADD — same-unit combine over two crossings
 pass	quasiquote constructs AST with selective evaluation
 pass	quasiquote makes AST construction readable
