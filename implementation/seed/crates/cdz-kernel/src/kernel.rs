@@ -68,6 +68,14 @@ pub enum KernelError {
     /// session refuses every further delivery — a first-class kernel guard so a terminated session can't
     /// be re-driven even by a buggy host. Terminal: there is no recovery (a fresh spawn replaces it, §7).
     FoldRefused,
+    /// Recover-from-checkpoint (GAP-4) was handed a pruned log whose SECOND event is not a `Checkpoint`
+    /// frame (a checkpoint-rooted log is `[Genesis, Checkpoint@N, tail]`). A non-checkpoint log must go
+    /// through the full [`Session::replay`] path instead.
+    MissingCheckpoint,
+    /// The seed-KV handed to recover-from-checkpoint has a Merkle root that doesn't match the checkpoint
+    /// descriptor's `kv_root` — the WRONG KV snapshot for this checkpoint (GAP-4; a corruption alarm the
+    /// caller must not proceed past, mirroring the `Corrupt` recovery kind).
+    CheckpointKvRootMismatch,
 }
 
 /// One entry of the resident open-obligation table (log/state-decouple I2, design D2): everything an OPEN
@@ -105,11 +113,9 @@ pub struct OpenObligation {
 /// [`crate::event::CheckpointObligation`] — the recover-from-checkpoint DUAL of the build-direction mapping in
 /// [`Session::build_checkpoint_descriptor`] (GAP-4 increment #3). Together they satisfy the recovery-
 /// equivalence invariant: rebuilding the open table from a checkpoint yields the SAME `BTreeMap<u64,
-/// OpenObligation>` a full replay produces (I6's gate for the open set). The invertibility is pinned by
+/// OpenObligation>` a full replay produces (I6's gate for the open set). Consumed by
+/// [`Session::recover_from_checkpoint`]; the invertibility is pinned by
 /// `checkpoint_open_table_roundtrips_the_resident_open_table`.
-// #[allow(dead_code)]: the non-test consumer is `recover_from`-from-checkpoint (increment #3's next slice);
-// for now it is exercised by the invertibility test that pins the build<->recover equivalence.
-#[allow(dead_code)]
 fn open_obligation_from_checkpoint(
     co: &crate::event::CheckpointObligation,
 ) -> (u64, OpenObligation) {
@@ -2085,7 +2091,7 @@ impl Session {
             ) => e.clone(),
             _ => return Err(KernelError::MissingGenesis),
         };
-        let mut s = Session {
+        let s = Session {
             // Seed the resident genesis/tip (log/state-decouple I1) from the validated first event; `tip`
             // advances to the last event as the replay loop folds each (I5: no resident Vec to push into —
             // the input `log` IS the durable source being replayed, not a resident copy).
@@ -2104,10 +2110,27 @@ impl Session {
             name_store: None,
             last_manifest: None,
         };
-        for (i, event) in log.into_iter().enumerate() {
-            if event.seq != i as u64 {
+        Self::replay_events(s, log, 0, reducer).await
+    }
+
+    /// Fold a contiguous run of log events into resident state, checking sequence contiguity from `start_seq`
+    /// onward. This is the ONE shared replay/recovery loop. Full [`Session::replay`] calls it with the whole
+    /// log at `start_seq` zero; recover-from-checkpoint (GAP-4) calls it with the post-checkpoint tail at
+    /// `start_seq` of `checkpoint.seq + 1` over a session already seeded from the descriptor, so both paths
+    /// reconstruct identical resident state (recovery-equivalence by construction, since the sole per-event
+    /// reconstruction lives here). It rebuilds the open-obligation table, the settled set, the id counter, and
+    /// the lifecycle flags (§16c-S1/S5, log-decouple I2/I3), folds observable events into KV, and advances the tip.
+    async fn replay_events(
+        mut s: Session,
+        events: Vec<Event>,
+        start_seq: u64,
+        reducer: &mut dyn Reducer,
+    ) -> Result<Session, KernelError> {
+        for (i, event) in events.into_iter().enumerate() {
+            let expected = start_seq + i as u64;
+            if event.seq != expected {
                 return Err(KernelError::NonContiguousSeq {
-                    expected: i as u64,
+                    expected,
                     got: event.seq,
                 });
             }
@@ -2209,6 +2232,75 @@ impl Session {
             s.tip = event;
         }
         Ok(s)
+    }
+
+    /// Boot a session from a PRUNED, checkpoint-rooted log `[Genesis, Checkpoint@N, tail(> N)]` — the GAP-4
+    /// recover-from-checkpoint path (increment #3). Genesis stays at `events[0]` (session identity / reducer /
+    /// provenance read from it, the Genesis-at-`[0]` invariant preserved); the `Checkpoint` frame at
+    /// `events[1]` carries the log-derived resident state at seq N, so recovery SEEDS from it + `seed_kv` (the
+    /// KV CONTENT at N — `kv_root` in the descriptor is only a Merkle root, so the CALLER loads the snapshot
+    /// bytes, e.g. from the host's D3 offload store, and hands the reconstructed KV here) INSTEAD of re-folding
+    /// the pruned prefix, then folds ONLY the tail. Recovery-equivalent to a full replay by construction: the
+    /// tail runs through the SAME [`Session::replay_events`] loop over state seeded to exactly what folding
+    /// `0..=N` produced (pinned by the I6 equivalence test `recover_from_checkpoint_equals_full_replay`).
+    /// Errors: [`KernelError::MissingGenesis`] / [`KernelError::MissingCheckpoint`] if the log isn't
+    /// `[Genesis, Checkpoint, …]`; [`KernelError::CheckpointKvRootMismatch`] if `seed_kv`'s root != the
+    /// descriptor's `kv_root` (the wrong snapshot — a corruption alarm).
+    pub async fn recover_from_checkpoint(
+        log: Vec<Event>,
+        seed_kv: Kv,
+        reducer: &mut dyn Reducer,
+    ) -> Result<Session, KernelError> {
+        let mut events = log.into_iter();
+        let genesis_event = match events.next() {
+            Some(
+                e @ Event {
+                    body: EventBody::Genesis { .. },
+                    ..
+                },
+            ) => e,
+            _ => return Err(KernelError::MissingGenesis),
+        };
+        let checkpoint_event = match events.next() {
+            Some(e) if matches!(e.body, EventBody::Checkpoint(_)) => e,
+            _ => return Err(KernelError::MissingCheckpoint),
+        };
+        let checkpoint_seq = checkpoint_event.seq;
+        let d = match &checkpoint_event.body {
+            EventBody::Checkpoint(d) => d.clone(),
+            _ => unreachable!("guarded by the matches! above"),
+        };
+        // The seed-KV MUST be the snapshot the descriptor names — else it is the wrong content for this
+        // checkpoint (never fold a tail onto a mismatched base; a corruption alarm).
+        if seed_kv.root_hash() != d.kv_root {
+            return Err(KernelError::CheckpointKvRootMismatch);
+        }
+        // Seed the resident state at N from the descriptor (recover-direction duals of
+        // build_checkpoint_descriptor): KV content + id counter + clock + settled(watermark+exceptions) +
+        // open table (with ids) + spawned edges + capability-seed bit + close outcome. Genesis identity comes
+        // from events[0]; tip is the checkpoint frame (seq N) until the tail advances it.
+        let s = Session {
+            genesis: genesis_event,
+            tip: checkpoint_event,
+            spawned: d.spawned.clone(),
+            seeded_capabilities: d.seeded_capabilities,
+            close_outcome: d.close_outcome.clone(),
+            kv: seed_kv,
+            next_effect_id: d.next_effect_id,
+            settled: SettledSet::from_parts(
+                d.settled_watermark,
+                d.settled_exceptions.iter().copied(),
+            ),
+            open: d.open.iter().map(open_obligation_from_checkpoint).collect(),
+            last_now: d.last_now,
+            store: None,
+            persist_error: None,
+            name_store: None,
+            last_manifest: None,
+        };
+        // Fold the tail (seq N+1 onward) through the SHARED replay loop — recovery-equivalence by construction.
+        let tail: Vec<Event> = events.collect();
+        Self::replay_events(s, tail, checkpoint_seq + 1, reducer).await
     }
 
     /// The set of open (dispatched-but-unsettled) effect ids after recovery — what a driver must
@@ -4175,6 +4267,156 @@ mod monotonic_now_tests {
             defensive.is_settled(1),
             "below-watermark id is implied-settled"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn recover_from_checkpoint_equals_full_replay() {
+        // GAP-4 increment #3 — the I6 EQUIVALENCE: recovering from a PRUNED checkpoint-rooted log
+        // [Genesis, Checkpoint@N, tail] (seed resident state from the descriptor + the KV snapshot@N, then
+        // fold ONLY the tail) reconstructs the IDENTICAL resident state a FULL replay of the whole log
+        // produces. This is the property that makes log-prune-to-checkpoint safe (nothing lost by dropping
+        // the pre-checkpoint prefix).
+        struct KvHttpReducer;
+        #[async_trait::async_trait(?Send)]
+        impl Reducer for KvHttpReducer {
+            async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
+                match &event.body {
+                    EventBody::Inbound { payload, .. } => {
+                        // Write a KV entry keyed by the (distinct) message so the KV GROWS across events, and
+                        // dispatch a tokened Http effect (an open obligation until settled).
+                        let p = match payload {
+                            crate::effect::Payload::Inline(b) => b.to_vec(),
+                            crate::effect::Payload::Blob(_) => Vec::new(),
+                        };
+                        kv.put(p.clone(), p);
+                        FoldOutput::with_effects(vec![Effect {
+                            request: EffectRequest::new(
+                                EffectKind::Http,
+                                "https://ok.host/x",
+                                None,
+                                Timeliness::Interactive,
+                            ),
+                            token: Some(b"cont".to_vec()),
+                        }])
+                    }
+                    _ => FoldOutput::none(),
+                }
+            }
+        }
+        // Never-answering executor: the Http effects stay OPEN, so state@N carries real open obligations.
+        struct NeverExec;
+        #[async_trait::async_trait(?Send)]
+        impl Executor for NeverExec {
+            async fn perform(
+                &mut self,
+                _id: EffectId,
+                _req: &EffectRequest,
+                _key: Hash,
+            ) -> EffectOutcome {
+                EffectOutcome::Deferred
+            }
+        }
+        let authz = Authorizer::new(vec![Capability {
+            kind: EffectKind::Http,
+            predicate: crate::effect::ResourcePredicate::HostIn(vec!["ok.host".into()]),
+        }]);
+        fn msg(i: usize) -> EventBody {
+            EventBody::Inbound {
+                content_type: ContentType {
+                    family: "message".into(),
+                    version: 1,
+                },
+                payload: crate::effect::Payload::Inline(format!("msg-{i}").into_bytes().into()),
+            }
+        }
+
+        // Drive to the checkpoint point N: 3 inbounds (each appends an Inbound + a Dispatched frame).
+        let mut s = Session::genesis(Hash::of(b"gap4-i6"), Hash::of(b"nonce"));
+        let captured = attach_recording_sink(&mut s);
+        for i in 0..3 {
+            s.deliver(msg(i), None, &mut KvHttpReducer, &authz, &mut NeverExec)
+                .await
+                .unwrap();
+        }
+        // Snapshot @N: the descriptor + the KV content (whose root == descriptor.kv_root).
+        let descriptor = s.build_checkpoint_descriptor();
+        let kv_at_n = s.kv.clone();
+        let n = s.tip.seq;
+        // Drive the TAIL: 2 more inbounds (seq N+1 onward).
+        for i in 3..5 {
+            s.deliver(msg(i), None, &mut KvHttpReducer, &authz, &mut NeverExec)
+                .await
+                .unwrap();
+        }
+
+        // The full log and the full-replay REFERENCE session.
+        let full_log = replay_input(&captured);
+        assert!(
+            full_log.len() as u64 > n + 1,
+            "the checkpoint must have a non-empty tail after it"
+        );
+        let reference = Session::replay(full_log.clone(), &mut KvHttpReducer)
+            .await
+            .expect("full replay");
+
+        // Build the PRUNED log: [Genesis(0), Checkpoint(seq N, descriptor), tail(N+1..)].
+        let mut pruned = vec![full_log[0].clone()];
+        pruned.push(Event {
+            seq: n,
+            cause: full_log[n as usize].cause,
+            body: EventBody::Checkpoint(descriptor.clone()),
+        });
+        pruned.extend(full_log[(n as usize + 1)..].iter().cloned());
+
+        // Recover from the pruned log + the KV snapshot@N, then fold the tail.
+        let recovered = Session::recover_from_checkpoint(pruned, kv_at_n, &mut KvHttpReducer)
+            .await
+            .expect("recover from checkpoint");
+
+        // I6: the recovered resident state is IDENTICAL to the full-replay state.
+        assert_eq!(
+            recovered.snapshot().kv_root,
+            reference.snapshot().kv_root,
+            "KV root"
+        );
+        assert_eq!(
+            recovered.open_effect_ids(),
+            reference.open_effect_ids(),
+            "open obligation ids"
+        );
+        assert_eq!(
+            recovered.next_effect_id, reference.next_effect_id,
+            "id counter"
+        );
+        assert_eq!(recovered.last_now, reference.last_now, "clock high-water");
+        assert_eq!(recovered.spawned, reference.spawned, "spawned edges");
+        assert_eq!(
+            recovered.close_outcome, reference.close_outcome,
+            "close outcome"
+        );
+        assert_eq!(
+            recovered.tip.seq, reference.tip.seq,
+            "tip advances to the last tail event"
+        );
+        // Per-obligation: the reconstructed open table matches (schema-hash + token per id).
+        for id in recovered.open_effect_ids() {
+            assert_eq!(
+                recovered.dispatch_schema_hash_of(id),
+                reference.dispatch_schema_hash_of(id)
+            );
+            assert_eq!(
+                recovered.dispatch_token_of(id),
+                reference.dispatch_token_of(id)
+            );
+        }
+        // Settled set agrees across the whole id range.
+        for id in 0..reference.next_effect_id + 2 {
+            assert_eq!(
+                recovered.settled.is_settled(id),
+                reference.settled.is_settled(id),
+                "settled agreement at id {id}"
+            );
+        }
     }
 
     // A reducer that, on an inbound message, emits a `control/summary` effect carrying summary bytes in
