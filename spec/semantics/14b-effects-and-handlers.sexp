@@ -8534,3 +8534,33 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 10017 Int64))
   (call   main (: 9 Int64)) (output (: 10025 Int64)))
+
+(case "a resume value that MATCHES a COMPOUND scrutinee over the growing state binds it once — finding-24 match-scrutinee face"
+  (doc    "Breaker sft1 (min-heap-sift) SHRUNK to its mechanism: a tail-resumptive arm whose resume value is a
+           `(match <compound> (h2 <body>))` — a SINGLE bare-name binder over a COMPOUND scrutinee that references
+           the growing List state. The resumptive fold threads a match by copying its SCRUTINEE into every
+           continuation copy (one per dispatch), so a compound scrutinee over handler state duplicated per
+           dispatch makes emit grow SUPER-LINEARLY — the finding-24 continuation-duplication class, exposed
+           through a match-scrutinee instead of a `let`-init (sft1: exponential, 47015 locals in one function ->
+           INVALID wasm too-many-locals). The fix canonicalizes the irrefutable single-binder match to a `let`
+           (`(match k (h2 b))` = `(let ((h2 k)) b)`), routing the scrutinee through the per-dispatch `#st`
+           state-bind so it binds ONCE (sft1: 1.47MB -> 38820 bytes valid). This case pins the shape at 3
+           dispatches: `push v` appends `v+n` to the state and resumes the LAST element read back through the
+           match binder. `main(1)`: pushes 4,5,6; resumes 4,5,6; `(+ (* 100 4) (+ (* 10 5) 6))` = 456.
+           `main(2)`: pushes 5,6,7 -> 567. Uniform on all 3 backends. v-effects finding-24 match-scrutinee
+           coverage-gap fix (2026-08-14).")
+  (input  (do
+            (effect H (op push (-> Int64 Int64)))
+            (def (getat (: xs (List Int64)) (: i Int64)) (match (List.at xs i) ((Some v) v) ((None u) 0)))
+            (def (main (: n Int64))
+              (handle H (: (list) (List Int64))
+                ((push (v) st
+                  (match (List.push st (+ v n))
+                    (h2 (resume (getat h2 (- (List.len h2) 1)) h2)))))
+                (let ((a (H.push 3)))
+                  (let ((b (H.push 4)))
+                    (let ((c (H.push 5)))
+                      (+ (* 100 a) (+ (* 10 b) c)))))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 456 Int64))
+  (call   main (: 2 Int64)) (output (: 567 Int64)))

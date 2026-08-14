@@ -1952,6 +1952,21 @@ pub fn reduce_handle(
         } else {
             arm.clone()
         };
+        // FINDING-24 COVERAGE-GAP (sft1): canonicalize a single-bare-name-binder match over a COMPOUND
+        // scrutinee in the arm body — `(match <compound> (h2 <body>))` → `(let ((h2 <compound>)) <body>)` —
+        // so the resumptive fold binds the scrutinee ONCE per dispatch (the existing `#st` state-bind path)
+        // instead of copying the compound scrutinee into every continuation copy (super-linear emit → invalid
+        // wasm). A pure syntactic identity; see `hoist_single_binder_match_scrutinee`.
+        let arm = match hoist_single_binder_match_scrutinee(db, arm.body) {
+            Some(hoisted) => HandleArm {
+                op: arm.op,
+                params: arm.params.clone(),
+                state: arm.state,
+                cont: arm.cont,
+                body: hoisted,
+            },
+            None => arm,
+        };
         map.insert((decl.0, idx), arm);
     }
     // This handle discharges ONE effect (all its arms share a decl — a handle's arms are for one effect),
@@ -2896,6 +2911,69 @@ fn is_irrefutable_pattern(db: &mut Db, pat: StructId) -> bool {
         Some("_") => true,
         Some(_) => true, // a bare name binds the whole scrutinee — irrefutable
         None => false,   // a literal / compound / annotated pattern refutes
+    }
+}
+
+/// FINDING-24 COVERAGE-GAP (breaker sft1, the min-heap-sift face). Canonicalize a SINGLE-ARM match whose
+/// only arm is a bare-NAME binder over a COMPOUND scrutinee — `(match <compound> (h2 <body>))` — into the
+/// equivalent `let`: `(let ((h2 <compound>)) <body>)`. A single bare-name arm is UNCONDITIONALLY irrefutable
+/// (a nullary/payload constructor pattern is a 2-element LIST `(Ctor sub)`, an atom name never is — see
+/// `eval::fold_ctor_match` slice 0/1), so the match always succeeds and binds `h2` to the whole scrutinee;
+/// the `let` is a pure syntactic identity. WHY it matters: the resumptive fold threads a `match` by copying
+/// the SCRUTINEE into every continuation copy (one per dispatch), so a compound scrutinee referencing handler
+/// state duplicated per dispatch makes emit grow SUPER-LINEARLY — the same continuation-duplication class as
+/// finding-24, exposed through a match-scrutinee instead of a `let`-init (sft1: exponential, 47015 locals in
+/// one function → invalid wasm "too many locals"). Routing the scrutinee through a `let` binds it ONCE via
+/// the existing per-dispatch `#st` state-bind machinery `drain_and_wrap` already covers, collapsing the
+/// growth back to LINEAR (sft1: 1.47MB→38820 bytes, valid, byte-for-byte correct outputs). Gated to a
+/// COMPOUND scrutinee (an atom scrutinee is already a single slot — case E in the diagnosis is LINEAR — so
+/// leave it untouched to minimize churn) and to a SINGLE arm (a multi-arm match is a real runtime dispatch,
+/// not an irrefutable bind). Walks structurally (the match may be nested under `if`/`let`/`do` in an arm
+/// body); copy-on-change so an unaffected subtree keeps its node identity (the scrutinee-identity-keyed
+/// `fold_ctor_match`/`SumPayload` passes must not see a needlessly-rebuilt spine).
+fn hoist_single_binder_match_scrutinee(db: &mut Db, node: StructId) -> Option<StructId> {
+    if let Resolved::Match { scrutinee, arms } = resolved_of(db, node)
+        && arms.len() == 1
+    {
+        let (pat, body) = arms[0];
+        // The arm pattern must be a bare NAME binder (not `_`, not a `(Ctor …)`/tuple/literal list pattern),
+        // and the scrutinee must be COMPOUND (a list — an application/op/ctor expr), not an atom already in
+        // one slot. A `_` wildcard is left alone: it binds nothing, so there is no continuation-copied use to
+        // collapse, and the scrutinee (if pure) folds away regardless.
+        if let Some(name) = db.ast.as_name(pat).map(|s| s.to_string())
+            && name != "_"
+            && matches!(db.ast.get(scrutinee), Struct::List(_))
+        {
+            // First hoist any single-binder match NESTED in the body, then rebuild this one as a `let`.
+            let body = hoist_single_binder_match_scrutinee(db, body).unwrap_or(body);
+            let name_atom = db.push_name(&name);
+            let let_head = db.push_name("let");
+            let binding = db.push_list(vec![name_atom, scrutinee]);
+            let bindings = db.push_list(vec![binding]);
+            return Some(db.push_list(vec![let_head, bindings, body]));
+        }
+    }
+    // Recurse structurally: the match may be nested inside an `if`/`let`/`do` arm body.
+    match db.ast.get(node).clone() {
+        Struct::List(children) => {
+            let mut changed = false;
+            let mut rebuilt = Vec::with_capacity(children.len());
+            for c in children {
+                match hoist_single_binder_match_scrutinee(db, c) {
+                    Some(r) => {
+                        rebuilt.push(r);
+                        changed = true;
+                    }
+                    None => rebuilt.push(c),
+                }
+            }
+            if changed {
+                Some(db.push_list(rebuilt))
+            } else {
+                None
+            }
+        }
+        Struct::Atom(_) => None,
     }
 }
 
