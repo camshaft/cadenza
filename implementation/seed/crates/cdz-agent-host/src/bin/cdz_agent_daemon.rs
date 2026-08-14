@@ -412,6 +412,22 @@ async fn main() -> std::process::ExitCode {
         ) -> CachingBlobStore<DiskCacheTier<B>> {
             CachingBlobStore::new(DiskCacheTier::new(store, disk_dir, disk_bytes), mem_bytes)
         }
+        // GAP-4 D3-4: derive the checkpoint TRIGGER policy from [log].checkpoint_threshold (frames past the
+        // last checkpoint; 0 / absent = DISABLED = unbounded log). Applied via with_checkpoint_policy to every
+        // durably-logged session the factory builds (a memory-backed session never checkpoints regardless).
+        let checkpoint_policy = cdz_agent_host::checkpoint::CheckpointPolicy {
+            threshold_frames: match &config.log {
+                LogConfig::File {
+                    checkpoint_threshold,
+                    ..
+                }
+                | LogConfig::Dynamo {
+                    checkpoint_threshold,
+                    ..
+                } => checkpoint_threshold.unwrap_or(0),
+                LogConfig::Memory => 0,
+            },
+        };
         // Attach the optional log-sink builder to whichever blob-backed factory we build, then box it. (The
         // two arms are distinct concrete factory types, so the with_log_sink + Box happens per-arm; the
         // executor set is moved into the one arm that runs.)
@@ -426,7 +442,7 @@ async fn main() -> std::process::ExitCode {
                 );
                 let mut f = ComponentSessionFactory::new(store, executors, session_authz);
                 if let Some(b) = log_sink {
-                    f = f.with_log_sink(b);
+                    f = f.with_log_sink(b).with_checkpoint_policy(checkpoint_policy);
                 }
                 Box::new(f)
             }
@@ -435,7 +451,7 @@ async fn main() -> std::process::ExitCode {
                     let store = wrap_cache(store, disk_dir.clone(), disk_bytes, cache_mem_bytes);
                     let mut f = ComponentSessionFactory::new(store, executors, session_authz);
                     if let Some(b) = log_sink {
-                        f = f.with_log_sink(b);
+                        f = f.with_log_sink(b).with_checkpoint_policy(checkpoint_policy);
                     }
                     Box::new(f)
                 }
@@ -454,7 +470,7 @@ async fn main() -> std::process::ExitCode {
                 let store = wrap_cache(store, disk_dir.clone(), disk_bytes, cache_mem_bytes);
                 let mut f = ComponentSessionFactory::new(store, executors, session_authz);
                 if let Some(b) = log_sink {
-                    f = f.with_log_sink(b);
+                    f = f.with_log_sink(b).with_checkpoint_policy(checkpoint_policy);
                 }
                 Box::new(f)
             }
