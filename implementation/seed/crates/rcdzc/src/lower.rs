@@ -15383,6 +15383,20 @@ fn effect_schema_descriptor(
     Some(b.effect_schema_tree(&effect_name, &op_refs))
 }
 
+/// Whether the reify EMITS a `schema_descriptor` field for the effect `decl` — i.e. whether
+/// [`effect_schema_descriptor`] BUILDS (it declines for a still-generic op / a type with no WIT
+/// descriptor). The SINGLE SOURCE OF TRUTH for the reify's schema_descriptor condition: the reify emit
+/// (`reify_effect_to_tuple`) gates the field on this, AND the reify TYPING (`infer::world_effect_request_ty`
+/// via its callsite) gates the `schema_descriptor: Bytes` record field on this — so the emitted record shape
+/// and its typed shape CANNOT DRIFT (the phase-3 producer-bake bug: the emit added the field but the typing
+/// didn't, so the typed 3-field record DROPPED the emit's 4th field → schema_hash None at the kernel). Both
+/// sides call THIS, so a change to when the descriptor builds moves both in lockstep. `pub(crate)` so `infer`
+/// can call it.
+pub(crate) fn effect_has_schema_descriptor(db: &mut Db, decl: StructId) -> bool {
+    let mut b = crate::ast::Builder::new();
+    effect_schema_descriptor(db, &mut b, decl).is_some()
+}
+
 /// Lower a NON-import (world-effect) perform `(E.op args…)` to its reified EFFECT-REQUEST record — the
 /// entry a reducer's `apply` returns in its effect-list (schema-hash phase-1a; v-ah ruling: apply returns
 /// the effect-list, a world-effect perform reifies into it, NO result-threading — the result arrives as a

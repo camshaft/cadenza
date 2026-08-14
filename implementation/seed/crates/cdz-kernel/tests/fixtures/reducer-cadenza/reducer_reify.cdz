@@ -9,8 +9,10 @@
 //   (the CDZ0401 home); Probe's op is not an import member (only kv is a world import), so the sync/async fork
 //   (is_world_import_op, 0a6538c01) takes the ASYNC branch → reify_effect_to_tuple, NOT a sync HostCall.
 //
-// REIFY OUTPUT (3-field, S2 — v-inference types the perform as this record, 9b12c0684):
-//   Record { correlation: Option(Bytes)=None, kind: String="effect/Probe", payload: Option(Bytes)=Some(p) }
+// REIFY OUTPUT (4-field, phase-3 producer-bake — v-inference types the perform as this record):
+//   Record { correlation: Option(Bytes)=None, kind: String="effect/Probe", payload: Option(Bytes)=Some(p),
+//            schema_descriptor: Bytes=codec(op-sig descriptor) } — the 4th field present because Probe.fire
+//   has a concrete WIT signature (effect_has_schema_descriptor); the kernel decodes+hashes it (one-hasher)
 //   — capability-blind, target-free (no target column); the single Bytes arg → payload=Some(p). The kind is
 //   "effect/<declared-effect-name>" VERBATIM (Probe, capitalized) — NOT lowercased/kebab-normalized (unlike
 //   is_world_import_op's world-import match, 44a295288); phase-2 replaces the kind with the schema-hash, so
@@ -51,10 +53,14 @@ def apply(
     outcome: Option(Outcome),
     child-completed: Option(Record(child: Bytes, outcome: ChildOutcome)),
   ),
-  // OUTPUT = the reified 3-field record (S2): correlation<kind<payload, NO target column. A world-effect
-  // perform `Probe.fire(p)` in return position TYPES as this record (v-inference reify-typing rule); rcdzc's
-  // reify lowers it to (None, "effect/probe", Some(p)).
-) -> List(Record(correlation: Option(Bytes), kind: String, payload: Option(Bytes))) =
+  // OUTPUT = the reified 4-field record (phase-3 producer-bake): correlation<kind<payload<schema_descriptor,
+  // NO target column (Probe.fire is target-free). A world-effect perform `Probe.fire(p)` in return position
+  // TYPES as this record (v-inference reify-typing rule); rcdzc's reify lowers it to (None, "effect/Probe",
+  // Some(p), Bytes(descriptor)). The `schema_descriptor` field carries the codec-encoded op-signature
+  // descriptor tree — the kernel decodes+hashes it (one-hasher). Present because `Probe.fire : Bytes -> Unit`
+  // has a concrete WIT signature, so `effect_has_schema_descriptor` succeeds → the reify emits + types the 4th
+  // field (emit+typing lockstep; the SAME 4-field annotation-flip class as spec/platform case-32).
+) -> List(Record(correlation: Option(Bytes), kind: String, payload: Option(Bytes), schema_descriptor: Bytes)) =
   // `host Probe in` = the entrypoint delegation giving Probe a home (no CDZ0401); Probe not being an import
   // makes the fork reify the perform.
   host Probe in (

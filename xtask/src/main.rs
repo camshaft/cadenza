@@ -4402,6 +4402,13 @@ struct PlatformCaseRecord {
     /// `--child-reducer <alias>=<path>`; the runner content-hashes it + seeds KV["child"] so a supervisor
     /// reads the hash and emits `lifecycle/spawn`. Distinct from a `session` (a live, kickable session).
     children: Vec<(String, String)>,
+    /// `(effect … (schema-hash present))` → `(from, family)` pairs whose reified effect MUST carry a
+    /// `schema_hash` (phase-3 producer-bake: reify emits the schema_descriptor, the kernel decodes+hashes it).
+    /// The corpus reader renders these as `expect-effect-schema-hash\t<from>\t<family>\tpresent` lines (keyed
+    /// by from+family); the grader asserts the runner observed a matching `effect-schema-hash` line — pinning
+    /// the reify descriptor→hash round-trip non-vacuously (a status-only reify assertion would miss a silent
+    /// drop). Present-vs-absent (not a literal hash: the descriptor-encoding is v-rb's to own, a literal brittle).
+    expect_effect_schema_hashes: Vec<(String, String)>,
 }
 
 /// One expected dispatched effect (I2): session `from` performed effect `family`, optionally carrying a
@@ -4439,6 +4446,7 @@ fn parse_platform_records(text: &str) -> Vec<PlatformCaseRecord> {
     let mut events_processed: Vec<(String, String)> = Vec::new();
     let mut expect_fault: Option<String> = None;
     let mut children: Vec<(String, String)> = Vec::new();
+    let mut expect_effect_schema_hashes: Vec<(String, String)> = Vec::new();
     for line in text.lines() {
         if line == "---" {
             records.push(PlatformCaseRecord {
@@ -4454,6 +4462,7 @@ fn parse_platform_records(text: &str) -> Vec<PlatformCaseRecord> {
                 events_processed: std::mem::take(&mut events_processed),
                 expect_fault: expect_fault.take(),
                 children: std::mem::take(&mut children),
+                expect_effect_schema_hashes: std::mem::take(&mut expect_effect_schema_hashes),
             });
             continue;
         }
@@ -4537,6 +4546,16 @@ fn parse_platform_records(text: &str) -> Vec<PlatformCaseRecord> {
                     _ => {}
                 }
             }
+            // `expect-effect-schema-hash\t<from>\t<family>\t<tok>` (tok=present) — the reified effect (from,
+            // family) MUST carry a schema_hash (phase-3 reify descriptor→hash). Rendered AFTER the effect lines
+            // by the corpus reader; a distinct line-type (NOT a 5th inline field) so the exhaustive expect-effect
+            // slice parse above stays untouched. tok is `present` today (present-vs-absent, not a literal hash).
+            "expect-effect-schema-hash" => {
+                let cols: Vec<&str> = val.splitn(3, '\t').collect();
+                if let [from, family, _tok] = cols.as_slice() {
+                    expect_effect_schema_hashes.push(((*from).to_string(), (*family).to_string()));
+                }
+            }
             // `expect-message\t<from>\t<to>\t<family>\t<value-form>` (I3) — one routed inter-session message,
             // in order. The `family` column is always `message` (the routed cross-session family); the grader
             // keys on from/to + the decoded value payload.
@@ -4592,6 +4611,10 @@ struct ObservedRun {
     /// The bounced delivery-failures in whole-run order (I3 slice-2): `(from-alias, to-alias)` from each
     /// `delivery-failure\t<from>\t<to>` line — a message to an absent peer that bounced back to the sender.
     delivery_failures: Vec<(String, String)>,
+    /// Reified effects observed carrying a `schema_hash` (phase-3): `(from-alias, family)` from each
+    /// `effect-schema-hash\t<from>\t<family>\tpresent` line — matched against an `(effect .. (schema-hash
+    /// present))` expectation to pin the reify descriptor→hash round-trip.
+    effect_schema_hashes: Vec<(String, String)>,
 }
 
 /// Parse a `cdz-session-run` invocation's stdout (per-alias `end-*` lines + whole-run `effect` lines) into
@@ -4604,6 +4627,10 @@ fn parse_observed_run(stdout: &str) -> ObservedRun {
             ["effect", from, family] => {
                 run.effects
                     .push(((*from).to_string(), (*family).to_string(), None));
+            }
+            ["effect-schema-hash", from, family, _tok] => {
+                run.effect_schema_hashes
+                    .push(((*from).to_string(), (*family).to_string()));
             }
             ["effect", from, family, value] => {
                 run.effects.push((
@@ -4994,6 +5021,23 @@ fn grade_platform_case(
                     }
                 }
             }
+        }
+    }
+    // Reified-effect schema-hash presence (phase-3): each `(effect .. (schema-hash present))` pins that the
+    // reified effect (from, family) carried a producer-baked schema_hash (reify emitted the schema_descriptor,
+    // the kernel decoded+hashed it). The runner emits an `effect-schema-hash` line per such observed effect;
+    // assert every expectation has a matching observed line (keyed by from+family). Non-vacuous: a status-only
+    // reify assertion would pass even if the descriptor→hash round-trip silently dropped.
+    for (from, family) in &rec.expect_effect_schema_hashes {
+        if !obs
+            .effect_schema_hashes
+            .iter()
+            .any(|(f, fam)| f == from && fam == family)
+        {
+            return Grade::Fail(format!(
+                "expect-effect-schema-hash: expected reified ({from} {family}) to carry a schema_hash (present), \
+                 but no matching effect-schema-hash was observed"
+            ));
         }
     }
     // Whole-run ordered inter-session message sequence (I3): each expected message must appear, in order, in

@@ -138,9 +138,12 @@ impl HandlerResolver for MapResolver {
     }
 }
 
-/// A REIFIED effect observed on the drive's effect stream: `(owner, family, payload)` — the same shape as an
-/// `effect-request/<family>` forward, so the FIFO records it into `observed_effects` uniformly.
-type ReifyObservation = (SessionId, String, Option<Vec<u8>>);
+/// A REIFIED effect observed on the drive's effect stream: `(owner, family, payload, has_schema_hash)` — the
+/// same shape as an `effect-request/<family>` forward (recorded into `observed_effects`), plus whether the
+/// reified request carried a `schema_hash` (the phase-3 producer-baked structural identity the kernel
+/// decodes from the emitted schema_descriptor). `has_schema_hash` drives the `effect-schema-hash` observed
+/// line the grader matches against an `(effect .. (schema-hash present))` expectation.
+type ReifyObservation = (SessionId, String, Option<Vec<u8>>, bool);
 
 /// The fallback executor for a REDUCER-WORLD reified effect (schema-hash phase-1a): a reducer that PERFORMS a
 /// non-import world-effect (e.g. `(host (Beat) (list (Beat.beat p)))`) has that perform REIFIED by rcdzc into
@@ -185,10 +188,15 @@ impl cdz_kernel::executor::Executor for ObserveReifyExecutor {
                 _ => None,
             };
             // Record the reified effect (owner resolves to the emitter's alias in the FIFO) + settle it
-            // fire-and-forget: a target-free conformance world-effect has no reply to thread back.
-            let _ = self
-                .observe_tx
-                .send((self.owner, family.to_string(), payload));
+            // fire-and-forget: a target-free conformance world-effect has no reply to thread back. Also carry
+            // whether the request bore a schema_hash (phase-3 producer-bake): the kernel populates it from the
+            // reified schema_descriptor, so `Some` pins the descriptor->hash round-trip fired.
+            let _ = self.observe_tx.send((
+                self.owner,
+                family.to_string(),
+                payload,
+                req.schema_hash.is_some(),
+            ));
             return cdz_kernel::event::EffectOutcome::Ok(None);
         }
         // Not a reified world-effect → the served-userspace-effect path (bare family + registered handler).
@@ -433,6 +441,10 @@ async fn main() -> Result<()> {
 
     // Observed effects, in whole-run dispatch order (each forwarded effect-request the drive routes).
     let mut observed_effects: Vec<(String, String, Option<Vec<u8>>)> = Vec::new();
+    // Reified effects that carried a `schema_hash` (phase-3 producer-bake), by (from-alias, family). Emitted
+    // as `effect-schema-hash\t<from>\t<family>\tpresent` lines the grader matches against an
+    // `(effect .. (schema-hash present))` expectation — pins the reify schema_descriptor->hash round-trip.
+    let mut observed_effect_schema_hashes: Vec<(String, String)> = Vec::new();
     // Observed inter-session messages (I3), in whole-run routing order: (from-alias, to-alias, payload).
     // A `message`-family Inbound on the shared inbox is a cross-session Emit routed by an EmitExecutor
     // (distinct from an `effect-request/*` forward, which is a deferred userspace effect).
@@ -634,11 +646,14 @@ async fn main() -> Result<()> {
         // it onto the SAME `observed_effects` stream as a forwarded effect-request so `(expect-effects …)`
         // grades it uniformly. Drained before the inbox so a reified effect from the prior deliver is observed
         // in fold order.
-        if let Ok((from_id, family, payload)) = reify_observe_rx.try_recv() {
+        if let Ok((from_id, family, payload, has_schema_hash)) = reify_observe_rx.try_recv() {
             let from = alias_of
                 .get(&from_id)
                 .cloned()
                 .unwrap_or_else(|| "?".to_string());
+            if has_schema_hash {
+                observed_effect_schema_hashes.push((from.clone(), family.clone()));
+            }
             observed_effects.push((from, family, payload));
             continue;
         }
@@ -763,6 +778,13 @@ async fn main() -> Result<()> {
             }
             _ => out.push_str(&format!("effect\t{from}\t{family}\n")),
         }
+    }
+    // Observed reified-effect schema-hash presence (phase-3), AFTER the effect lines:
+    // `effect-schema-hash\t<from>\t<family>\tpresent`. Mirrors the corpus reader's expect-effect-schema-hash
+    // render line the grader matches on (keyed by from+family). Absent for a reified effect that carried no
+    // schema_hash (a non-WIT-representable op the producer couldn't descriptor-bake).
+    for (from, family) in &observed_effect_schema_hashes {
+        out.push_str(&format!("effect-schema-hash\t{from}\t{family}\tpresent\n"));
     }
     // Observed inter-session messages (I3), in whole-run routing order: `message\t<from>\t<to>[\thex:..]`.
     for (from, to, payload) in &observed_messages {

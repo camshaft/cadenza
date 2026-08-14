@@ -4972,7 +4972,7 @@ fn option_ty(db: &Db, elem: Ty) -> Option<Ty> {
 /// that field; a target-FREE effect (model/now/timer/tool) stays 3-field. Phase-1a is the single-`Bytes`-arg
 /// (or zero-arg) payload case: `payload` is `Option Bytes`; a STRUCTURED/multi-arg payload rides R2 (the
 /// in-fold value-encode primitive). `None` when the prelude `Option` is absent.
-fn world_effect_request_ty(db: &Db, has_target: bool) -> Option<Ty> {
+fn world_effect_request_ty(db: &Db, has_target: bool, has_descriptor: bool) -> Option<Ty> {
     let correlation = option_ty(db, Ty::Bytes)?;
     let payload = option_ty(db, Ty::Bytes)?;
     let mut fields = std::collections::BTreeMap::new();
@@ -4981,6 +4981,18 @@ fn world_effect_request_ty(db: &Db, has_target: bool) -> Option<Ty> {
     fields.insert(crate::resolved::Symbol::plain("payload"), payload);
     if has_target {
         fields.insert(crate::resolved::Symbol::plain("target"), Ty::Bytes);
+    }
+    // `schema_descriptor: Bytes` (phase-3 producer-bake, v-rb): present iff the reify EMITS the field — i.e.
+    // iff `effect_has_schema_descriptor` (the reify's descriptor builds). The typed shape MUST match the emit
+    // or the emitted `schema_descriptor` field is DROPPED when the record types against this shape (the bug
+    // v-pc case-32 hit: emit 4-field, type 3-field → field lost → schema_hash None). `has_descriptor` is
+    // computed at the callsite via the SAME `lower::effect_has_schema_descriptor` the emit gates on, so they
+    // cannot drift. Name-sorted, so it slots after correlation/kind/payload/target.
+    if has_descriptor {
+        fields.insert(
+            crate::resolved::Symbol::plain("schema_descriptor"),
+            Ty::Bytes,
+        );
     }
     Some(Ty::Record(std::rc::Rc::new(fields)))
 }
@@ -5666,14 +5678,22 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         {
             // has_target mirrors the reify fork in `lower`: a target-having effect (its op carries an
             // `@resource` marker) reifies the dest to a `target` field, so the record type gains it (ruling A).
-            let has_target = crate::eval::effect_op_of(db, head)
-                .and_then(|(decl, op_idx)| {
+            let effect_decl = crate::eval::effect_op_of(db, head).map(|(decl, _)| decl);
+            let has_target = effect_decl
+                .and_then(|decl| {
+                    let op_idx = crate::eval::effect_op_of(db, head).map(|(_, i)| i)?;
                     db.effect_decl_by_occ(decl)
                         .and_then(|e| e.ops.get(op_idx as usize))
                         .and_then(|o| o.resource)
                 })
                 .is_some();
-            if let Some(record) = world_effect_request_ty(db, has_target) {
+            // has_descriptor mirrors the reify EMIT: the record type gains `schema_descriptor: Bytes` iff the
+            // reify emits it — i.e. iff the effect's descriptor builds. Computed via the SAME
+            // `lower::effect_has_schema_descriptor` the emit gates on, so the typed shape can't drift from the
+            // emitted shape (the phase-3 bug: emit 4-field, type 3-field → dropped field → schema_hash None).
+            let has_descriptor = effect_decl
+                .is_some_and(|decl| crate::lower::effect_has_schema_descriptor(db, decl));
+            if let Some(record) = world_effect_request_ty(db, has_target, has_descriptor) {
                 return record;
             }
         }
