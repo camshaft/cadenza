@@ -298,6 +298,63 @@ pub enum CloseOutcome {
     Failure(String),
 }
 
+/// A durable-frame SNAPSHOT of one open (dispatched-but-unsettled) obligation, carried in a checkpoint
+/// (GAP-4 log-prune-to-checkpoint, [`CheckpointDescriptor`]). This is the event.rs-native mirror of the
+/// kernel's resident `OpenObligation` (kernel.rs): `event.rs` is BELOW `kernel.rs` in the module layering
+/// (kernel.rs imports `EventBody`; event.rs must not name kernel types), so the durable frame carries THIS
+/// type and the kernel converts `OpenObligation` <-> `CheckpointObligation` at checkpoint-build / recover.
+/// Carries the open-table MAP KEY (`id`, the effect id) alongside the frame fields, so recovery rebuilds the
+/// resident `BTreeMap<u64, OpenObligation>` exactly. Fields mirror `OpenObligation` (§16c-S1 dispatch record).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CheckpointObligation {
+    /// The open-obligation table key: the effect id this obligation is keyed under.
+    pub id: u64,
+    /// The resolved target the dispatch recorded (opaque bytes; empty for a timer).
+    pub target: std::sync::Arc<[u8]>,
+    /// The dispatched effect's schema-hash identity; `None` for a register-by-string extension family.
+    pub schema_hash: Option<Hash>,
+    /// The reducer continuation token the frame carried; `None` for a token-free effect/timer.
+    pub token: Option<Vec<u8>>,
+    /// A timer obligation's absolute deadline (wall-clock ms); `None` for a non-timer effect.
+    pub deadline_ms: Option<u64>,
+    /// The hash of the `Dispatched` frame that opened this obligation; `None` for a timer.
+    pub dispatch_hash: Option<Hash>,
+    /// Is this a TIMER obligation (armed via `TimerArmed`) rather than a dispatched effect?
+    pub is_timer: bool,
+}
+
+/// The complete DERIVED resident state a checkpoint@N must carry so recovery can resume from
+/// `[Genesis, Checkpoint@N, tail(> N)]` WITHOUT the pruned prefix (GAP-4 increment #2 — "what a checkpoint
+/// must carry"). Genesis stays UNPRUNED at `events[0]`, so session identity / reducer / provenance are read
+/// from `log[0]` and the Genesis-at-`[0]` invariant holds; this descriptor therefore carries ONLY the
+/// log-DERIVED state (everything [`crate::kernel::Session::replay`] reconstructs by folding the prefix): the
+/// KV root, the id counter, the clock high-water, the settled watermark + sparse exceptions, the
+/// open-obligation table (with ids), the spawned-children edges, the capability-seed bit, and the close
+/// outcome. Assembled by [`crate::kernel::Session::build_checkpoint_descriptor`]; the durable checkpoint frame
+/// wraps it (that frame + its value-form codec is the co-landed increment #1).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CheckpointDescriptor {
+    /// The KV Merkle root at the checkpoint seq (seeds the recovered session's KV).
+    pub kv_root: Hash,
+    /// The next-effect-id counter at the checkpoint (monotonic; recovery resumes id assignment here).
+    pub next_effect_id: u64,
+    /// The `Now`-clock monotonicity high-water at the checkpoint.
+    pub last_now: u64,
+    /// The settled-set watermark: every effect id STRICTLY BELOW this is settled.
+    pub settled_watermark: u64,
+    /// The out-of-order settled ids at/above the watermark (canonically ordered).
+    pub settled_exceptions: Vec<u64>,
+    /// The resident open-obligation table (dispatched-but-unsettled effects + armed timers), each carrying
+    /// its map-key id, so recovery rebuilds the table without the pruned `Dispatched`/`TimerArmed` frames.
+    pub open: Vec<CheckpointObligation>,
+    /// The spawned-children genesis-hash edges (§6/lifecycle I2/I3) at the checkpoint.
+    pub spawned: Vec<Hash>,
+    /// Whether the session has already been seeded its capability manifest (host-capability-discovery I3).
+    pub seeded_capabilities: bool,
+    /// The self-close outcome if the session has closed (terminal), else `None`.
+    pub close_outcome: Option<CloseOutcome>,
+}
+
 /// Whether a failed effect is worth RETRYING — a FIRST-CLASS typed field on [`EffectOutcome::Err`] (operator
 /// Q2), so a reducer's fold matches STRUCTURALLY on the retryability rather than parsing a `RETRYABLE:`/
 /// `PERMANENT:` prefix out of the message string (the old host convention this replaces). RETRY POLICY lives

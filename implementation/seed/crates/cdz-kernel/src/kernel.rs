@@ -138,6 +138,18 @@ impl SettledSet {
             self.watermark += 1;
         }
     }
+
+    /// The contiguous-settled-prefix watermark (every id `< watermark` is settled). For the GAP-4 checkpoint
+    /// frame's durable encode + recovery reconstruction (paired with [`SettledSet::exceptions`]).
+    pub fn watermark(&self) -> u64 {
+        self.watermark
+    }
+
+    /// The out-of-order settled ids at/above the watermark, in canonical (ascending) order — the sparse
+    /// exceptions a checkpoint frame carries alongside the watermark. Bounded by the concurrent open frontier.
+    pub fn exceptions(&self) -> impl Iterator<Item = u64> + '_ {
+        self.exceptions.iter().copied()
+    }
 }
 
 /// A single-session kernel instance: bounded resident STATE (derived KV + head/tip + open-obligation
@@ -403,6 +415,43 @@ impl Session {
             seq: self.tip.seq,
             kv_root: self.kv.root_hash(),
             reducer: self.reducer_hash(),
+        }
+    }
+
+    /// Assemble the [`CheckpointDescriptor`](crate::event::CheckpointDescriptor) capturing THIS session's
+    /// log-derived resident state at its current tip — GAP-4 log-prune-to-checkpoint, increment #2 ("what a
+    /// checkpoint must carry"). The durable checkpoint frame wraps this so recovery can resume from
+    /// `[Genesis, Checkpoint, tail]` WITHOUT the pruned prefix. Genesis stays unpruned at `events[0]` (identity
+    /// / reducer / provenance read from `log[0]`), so this carries ONLY what [`Session::replay`] rebuilds by
+    /// folding the prefix: the KV root, the id counter + clock high-water, the settled watermark + sparse
+    /// exceptions, the open-obligation table (each entry carrying its map-key id), the spawned-children edges,
+    /// the capability-seed bit, and the close outcome. A PURE read of resident state — no log access, so it is
+    /// as cheap as [`Session::snapshot`] and safe on the hot path. (The prune/rewrite that USES this + the
+    /// recover-from-checkpoint that consumes it are later increments; the descriptor is proven-round-trippable
+    /// on its own here.)
+    pub fn build_checkpoint_descriptor(&self) -> crate::event::CheckpointDescriptor {
+        crate::event::CheckpointDescriptor {
+            kv_root: self.kv.root_hash(),
+            next_effect_id: self.next_effect_id,
+            last_now: self.last_now,
+            settled_watermark: self.settled.watermark(),
+            settled_exceptions: self.settled.exceptions().collect(),
+            open: self
+                .open
+                .iter()
+                .map(|(&id, ob)| crate::event::CheckpointObligation {
+                    id,
+                    target: ob.target.clone(),
+                    schema_hash: ob.schema_hash,
+                    token: ob.token.clone(),
+                    deadline_ms: ob.deadline_ms,
+                    dispatch_hash: ob.dispatch_hash,
+                    is_timer: ob.is_timer,
+                })
+                .collect(),
+            spawned: self.spawned.clone(),
+            seeded_capabilities: self.seeded_capabilities,
+            close_outcome: self.close_outcome.clone(),
         }
     }
 
@@ -3897,6 +3946,106 @@ mod monotonic_now_tests {
         assert_eq!(
             replayed.dispatch_hash_of(EffectId(0)),
             s.dispatch_hash_of(EffectId(0))
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn build_checkpoint_descriptor_captures_live_derived_state() {
+        // GAP-4 increment #2: `build_checkpoint_descriptor` captures ALL log-derived resident state so a
+        // checkpoint@N lets recovery resume from `[Genesis, Checkpoint, tail]` WITHOUT the pruned prefix.
+        // Drive ONE tokened, deferred (still-open) Http effect, then assert the descriptor mirrors the live
+        // session's derived state: kv_root, the id counter, the clock, the settled watermark/exceptions, the
+        // open obligation (WITH its map-key id + schema-hash/token/is_timer/dispatch_hash), spawned, close.
+        struct EmitTokenedHttp;
+        #[async_trait::async_trait(?Send)]
+        impl Reducer for EmitTokenedHttp {
+            async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+                match &event.body {
+                    EventBody::Inbound { .. } => FoldOutput::with_effects(vec![Effect {
+                        request: EffectRequest::new(
+                            EffectKind::Http,
+                            "https://ok.host/x",
+                            None,
+                            Timeliness::Interactive,
+                        ),
+                        token: Some(b"cont-1".to_vec()),
+                    }]),
+                    _ => FoldOutput::none(),
+                }
+            }
+        }
+        // A never-answering executor so the Http effect stays OPEN (its obligation is retained for the descriptor).
+        struct NeverExec;
+        #[async_trait::async_trait(?Send)]
+        impl Executor for NeverExec {
+            async fn perform(
+                &mut self,
+                _id: EffectId,
+                _req: &EffectRequest,
+                _key: Hash,
+            ) -> EffectOutcome {
+                EffectOutcome::Deferred
+            }
+        }
+        let authz = Authorizer::new(vec![Capability {
+            kind: EffectKind::Http,
+            predicate: crate::effect::ResourcePredicate::HostIn(vec!["ok.host".into()]),
+        }]);
+        let mut s = Session::genesis(Hash::of(b"gap4-ckpt"), Hash::of(b"test-spawn-nonce"));
+        s.deliver(
+            inbound(),
+            None,
+            &mut EmitTokenedHttp,
+            &authz,
+            &mut NeverExec,
+        )
+        .await
+        .unwrap();
+
+        let d = s.build_checkpoint_descriptor();
+
+        // Derived scalar state mirrors the live session.
+        assert_eq!(
+            d.kv_root,
+            s.snapshot().kv_root,
+            "kv_root == live snapshot root"
+        );
+        assert_eq!(d.next_effect_id, 1, "one effect dispatched → next id is 1");
+        assert_eq!(d.last_now, s.last_now);
+        // Nothing settled yet (the Http is deferred/open): watermark 0, no exceptions.
+        assert_eq!(d.settled_watermark, 0);
+        assert!(d.settled_exceptions.is_empty());
+
+        // The one open obligation, captured WITH its map-key id and frame fields.
+        assert_eq!(d.open.len(), 1, "one open (deferred Http) obligation");
+        let ob = &d.open[0];
+        assert_eq!(ob.id, 0);
+        assert_eq!(ob.token.as_deref(), Some(&b"cont-1"[..]));
+        assert!(!ob.is_timer, "an Http effect obligation is not a timer");
+        assert!(
+            ob.dispatch_hash.is_some(),
+            "a dispatched effect carries its Dispatched-frame hash"
+        );
+        assert_eq!(
+            ob.schema_hash,
+            Some(crate::ast_marshal::builtin_effect_schema_hash(
+                &EffectKind::Http
+            )),
+            "the obligation's schema-hash identity survives into the descriptor"
+        );
+
+        // No lifecycle state yet.
+        assert!(d.spawned.is_empty());
+        assert!(d.close_outcome.is_none());
+
+        // The descriptor's open set mirrors the resident open table 1:1 (same ids) — the recovery-equivalence
+        // property the later log-prune / recover-from-checkpoint increments rely on.
+        assert_eq!(
+            d.open.iter().map(|o| o.id).collect::<Vec<_>>(),
+            s.open_effect_ids()
+                .into_iter()
+                .map(|EffectId(i)| i)
+                .collect::<Vec<_>>(),
         );
     }
 
