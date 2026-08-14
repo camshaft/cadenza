@@ -5338,6 +5338,7 @@ pass	hr1 a HANDLE expression as a record-literal FIELD value — the region's re
 pass	hr2 a HANDLE expression as a middle LIST element — the region's result sits between pure elements
 pass	hr3 a HANDLE expression as a map-literal VALUE — the region's result is stored under a key and looked up after
 pass	hr4 a whole HANDLE region as another effect's op ARGUMENT — B's region computes the value A's dispatch consumes
+pass	hrn1 a HORNER polynomial evaluator with a MID-STREAM base swap — feed folds acc*x+c answering the running value, swapx replaces the base answering the old one, and the seed shapes the INITIAL base so the pre-swap accumulations diverge while the post-swap coefficients ride on top
 pass	hs1 an inner SAME-effect handle's result is the match SCRUTINEE — the selected arm and the trailing draw hit the OUTER state
 pass	hs2 an OUTER-seeded inner handle builds a tuple scrutinee — the destructured arm re-performs against the outer
 pass	hs3 an inner SAME-effect handle's result is the IF condition — the taken branch re-performs against the outer
@@ -5415,6 +5416,7 @@ pass	jointly-total guards over one variant are still non-exhaustive (guards are 
 pass	jos1 JOSEPHUS elimination — every dispatch advances the cursor k-1 around the SHRINKING ring by modulo, removes the survivor there by filtered rebuild, and answers the eliminated id
 pass	keyed lookups at different keys are not shared
 pass	lam1 INLINE and LET-BOUND lambdas applied to one draw — both closure forms read the same drawn value
+pass	lap1 a STOPWATCH with lap splits — tick advances the clock by a seed stride, lap answers the split since the last mark and remembers it, best tracks the MINIMUM split (seeded -1 sentinel replaced on first lap), and the middle lap of three is the unique best on both seeds
 pass	large-set algebra over a multi-level CHAMP trie computes correct union/intersection/difference
 pass	lba1 an op taking a LIST argument — the arm folds the batch into the scalar state by recursion; the second batch is BUILT FROM the first's answer and the empty batch is a no-op
 pass	lc1 SELF-CONCAT sharing — the same list appears twice in one concat, then the original grows and is re-read unchanged
@@ -5977,6 +5979,7 @@ pass	rq3 a FRACTIONAL drain with a sign guard — subtracting 1/3 per tick until
 pass	rr1 RECORD handler state updated by one arm, field-read by a SIBLING arm plus a third counter arm — the record twin of the collection cross-arm shape
 pass	rr1 one draw consumed THREE times (squared, scaled, summed) — a single dispatch, the binder multiply-read
 pass	rr2 the SQUARE of a difference of two draws — composite arithmetic over one advancing thread, zero row included
+pass	rrb1 a ROUND-ROBIN scheduler with a skip mask — turn advances cyclically to the next unskipped worker answering its id (or -1 when all four are out), skip marks a worker answering the popcount, and the SEED sets the starting position so the same skip sequence yields different service orders
 pass	rs1 a RECORD state where each op owns a FIELD — bump advances a, scale multiplies b, interleaved
 pass	rs1 a RESULT built from draw parity crosses dispatch as an op ARGUMENT — Ok scales with state, Err folds in negated
 pass	rs2 the arm updates the record state via Record.with — field b is held by the functional update across dispatches

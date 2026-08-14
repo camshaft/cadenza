@@ -25,3 +25,10 @@ double-List.update-in-recursive-def (siftdn) at TWO call sites.
 
 Rust/rust-async verdicts pending (host rebuilding pipeline deps); wasm-only
 invalidity is already a hard compiler bug.
+
+## RECLASSIFIED (tick 1492): F24, not width-alias
+v-effects re-diagnosed: wasm-tools reports 'too many locals: exceed maximum'
+(COUNT limit) — NOT the i64/i32 TYPE mismatch of 21/23. sft1 is the first
+REALISTIC-demand F24 witness (per-dispatch locals explosion); rides the F24
+fold-lowering fix. Triage rule: error KIND distinguishes the classes —
+count-limit => F24, type-mismatch => 21/23; rust-passes alone does not.

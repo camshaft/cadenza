@@ -11526,3 +11526,104 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 2040108160599 Int64))
   (call   main (: 0 Int64)) (output (: 2040208160399 Int64)))
+
+;; ── Horner base-swap evaluator, round-robin skip mask, stopwatch lap splits (breaker batch 279) ──
+(case "hrn1 a HORNER polynomial evaluator with a MID-STREAM base swap — feed folds acc*x+c answering the running value, swapx replaces the base answering the old one, and the seed shapes the INITIAL base so the pre-swap accumulations diverge while the post-swap coefficients ride on top"
+  (input  (do
+            (effect H
+              (op feed (-> Int64 Int64))
+              (op swapx (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle H (tuple (: 0 Int64) (+ (% n 4) 2))
+                ((feed (c) st
+                  (match st
+                    ((tuple acc x)
+                      (resume (+ (* acc x) c) (tuple (+ (* acc x) c) x)))))
+                 (swapx (v) st
+                  (match st
+                    ((tuple acc x) (resume x (tuple acc v))))))
+                (let ((a (H.feed 3)))
+                  (let ((b (H.feed 1)))
+                    (let ((c (H.swapx 10)))
+                      (let ((d (H.feed 4)))
+                        (let ((e (H.feed 2)))
+                          (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 313054742 Int64))
+  (call   main (: 0 Int64)) (output (: 307028142 Int64)))
+
+(case "rrb1 a ROUND-ROBIN scheduler with a skip mask — turn advances cyclically to the next unskipped worker answering its id (or -1 when all four are out), skip marks a worker answering the popcount, and the SEED sets the starting position so the same skip sequence yields different service orders"
+  (input  (do
+            (effect R
+              (op turn (-> Int64))
+              (op skip (-> Int64 Int64)))
+            (def (bits (: m Int64) (: acc Int64))
+              (if (= m 0) acc (bits (>> m 1) (+ acc (& m 1)))))
+            (def (scan (: cur Int64) (: mask Int64) (: step Int64))
+              (if (< 4 step)
+                  -1
+                  (if (= (& (>> mask (% (+ cur step) 4)) 1) 0)
+                      (% (+ cur step) 4)
+                      (scan cur mask (+ step 1)))))
+            (def (main (: n Int64))
+              (handle R (tuple (% n 4) (: 0 Int64))
+                ((turn () st
+                  (match st
+                    ((tuple cur mask)
+                      (if (= (bits mask 0) 4)
+                          (resume -1 st)
+                          (match (scan cur mask 1)
+                            (nxt (resume nxt (tuple nxt mask))))))))
+                 (skip (i) st
+                  (match st
+                    ((tuple cur mask)
+                      (resume (bits (| mask (<< 1 i)) 0) (tuple cur (| mask (<< 1 i))))))))
+                (let ((a (R.turn)))
+                  (let ((b (R.skip 2)))
+                    (let ((c (R.turn)))
+                      (let ((d (R.turn)))
+                        (let ((e (R.skip 0)))
+                          (let ((f (R.skip 1)))
+                            (let ((g (R.turn)))
+                              (let ((h (R.skip 3)))
+                                (let ((i (R.turn)))
+                                  (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g)) h)) i))))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 30100010203030399 Int64))
+  (call   main (: 0 Int64)) (output (: 10103000203030399 Int64)))
+
+(case "lap1 a STOPWATCH with lap splits — tick advances the clock by a seed stride, lap answers the split since the last mark and remembers it, best tracks the MINIMUM split (seeded -1 sentinel replaced on first lap), and the middle lap of three is the unique best on both seeds"
+  (input  (do
+            (effect W
+              (op tick (-> Int64))
+              (op lap (-> Int64))
+              (op bst (-> Int64)))
+            (def (main (: n Int64))
+              (handle W (tuple (: 0 Int64) (: 0 Int64) (: -1 Int64))
+                ((tick () st
+                  (match st
+                    ((tuple t last best)
+                      (resume (+ t (+ (% n 3) 2)) (tuple (+ t (+ (% n 3) 2)) last best)))))
+                 (lap () st
+                  (match st
+                    ((tuple t last best)
+                      (if (< best 0)
+                          (resume (- t last) (tuple t t (- t last)))
+                          (if (< (- t last) best)
+                              (resume (- t last) (tuple t t (- t last)))
+                              (resume (- t last) (tuple t t best)))))))
+                 (bst () st
+                  (match st ((tuple t last best) (resume best st)))))
+                (let ((a (W.tick)))
+                  (let ((b (W.tick)))
+                    (let ((c (W.lap)))
+                      (let ((d (W.tick)))
+                        (let ((e (W.lap)))
+                          (let ((f (W.tick)))
+                            (let ((g (W.tick)))
+                              (let ((h (W.lap)))
+                                (let ((i (W.bst)))
+                                  (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g)) h)) i))))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 30606090312150603 Int64))
+  (call   main (: 0 Int64)) (output (: 20404060208100402 Int64)))
