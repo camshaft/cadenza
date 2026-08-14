@@ -3,6 +3,20 @@
 Routed by corpus-bugfix (issue 2026-08-14). Tested on my sft1-fix-carrying cdz
 (HEAD 17e3ed857, the scrutinee-hoist fix built in).
 
+> **⚠️ CORRECTION (2026-08-15, after v-rb co-gate of the emit-budget fix).** "EXPONENTIAL"
+> below describes the emit-SIZE GROWTH RATE (~6^N), which is real. It does NOT mean every
+> K>=3 case is INVALID wasm. VALID-LARGE ≠ INVALID:
+> - **VALID-but-large (load + RUN fine):** isolate-K3 (593 KB, runs → 201202203204205301),
+>   isolate-K4 (215 KB, runs → 200400300301302), and the corpus high-water cbk1 (~416K Lir)
+>   / sw4 / sw5. Large emitted bodies, but the engine loads + runs them.
+> - **GENUINELY INVALID (engine rejects the module):** dst1 (2.88 MB → cranelift "Code for
+>   function is too large"), dstC (166 MB → "function body size count exceeds 7654321"),
+>   scn1 (too-many-locals). These are the soundness bug.
+> The `isolate-K3/K4-...-EXPONENTIAL.sexp` filenames name the GROWTH, not invalidity — K3/K4
+> are the valid-large tail that must KEEP compiling; dst1/dstC/scn1 are the invalid tail the
+> emit-budget decline (`EMIT_INSTRUCTION_BUDGET=1_000_000` Lir, v-rb `9c55a11ab`) rejects
+> cleanly. The 1M-Lir bound sits >2x over the ~416K valid high-water and under dst1's ~1.48M.
+
 ## Both faces are F24-class code-SIZE explosion (super-linear emit per dispatch)
 FACE-1 (dst1/dstB): 3-tuple state, `(% n 4)` pivot recomputed in the arm.
   dstA(5 disp): 321354 B, RUNS (=101201102301211).
