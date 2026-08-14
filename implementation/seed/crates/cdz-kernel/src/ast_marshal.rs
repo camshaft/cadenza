@@ -4502,4 +4502,50 @@ mod tests {
         );
         assert_eq!(effects[0].token.as_deref(), Some(&b"tok-9"[..]));
     }
+
+    #[test]
+    fn effect_list_carries_the_intrinsic_git_schema_hash_through_the_reducer_dispatch_wire() {
+        // GAP-6 dispatch-wire proof: a reducer performs a built-in git/* op by RETURNING an effect record
+        // whose `kind` is the git family string (exactly like emit/tool — the returned-effect-list path, not
+        // a host import). parse_effect_list must yield an EffectRequest whose family is preserved verbatim
+        // AND whose schema_hash is the INTRINSIC git/* identity (new_with_family derives it from the family
+        // via family_effect_schema_hash), so the kernel dispatches it to the registered GitExecutor by
+        // schema-hash — NOT reified as a userspace effect/<name>. This ties the git family decl (#1) to the
+        // actual reducer->kernel dispatch path; the host GitExecutor keys on this very hash.
+        use crate::effect::effect_ct;
+        // Two shapes: git/status (target-out worktree, no payload) + git/push (target repo/branch + refspec).
+        for (family, target, payload) in [
+            (effect_ct::GIT_STATUS, &b"worktree/x"[..], None),
+            (
+                effect_ct::GIT_PUSH,
+                &b"fleet/v-agent-harness"[..],
+                Some(&b"HEAD:fleet/v-agent-harness"[..]),
+            ),
+        ] {
+            let bytes = effect_list_bytes(vec![effect_req_val(family, target, payload, None)]);
+            let effects = parse_effect_list(&bytes).expect("git effect parses");
+            assert_eq!(effects.len(), 1);
+            let req = &effects[0].request;
+            // Family preserved verbatim (register-by-string wire, never coerced to a closed enum).
+            assert_eq!(req.content_type.family, family);
+            // The INTRINSIC git schema-hash flows through the wire → the effect routes to the GitExecutor by
+            // schema-hash (the built-in identity), NOT a reify.
+            assert_eq!(
+                req.schema_hash,
+                family_effect_schema_hash(family),
+                "parsed git effect must carry the intrinsic git/* schema-hash"
+            );
+            assert!(req.schema_hash.is_some());
+            assert_eq!(req.target_str().unwrap().as_bytes(), target);
+            match payload {
+                Some(p) => {
+                    assert!(matches!(&req.payload, Some(Payload::Inline(b)) if b.as_ref() == p))
+                }
+                None => assert!(req.payload.is_none()),
+            }
+        }
+        // The decisive built-in-vs-reify distinction: git IS a built-in family (executor-backed), so it is
+        // NOT a register-by-string userspace effect that would resolve to an effect/<name> handler.
+        assert!(!effect_ct::is_registered_effect_family(effect_ct::GIT_PUSH));
+    }
 }
