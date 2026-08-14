@@ -921,6 +921,20 @@
           witWorld = "full";
           contentAddressed = true;
         };
+        # TICK-KV (role-library, the GENESIS-KV-SEEDED tick reducer): the host-fused tick role that reads its
+        # schedule from the KV genesis seed — KV[tick/interval-ms] + KV[tick/first-deadline-ms] — instead of a
+        # fixed def, then arms/re-arms the timer + emits begin-tick. Host-fused (kv.get escapes as a world
+        # import, no bind), so it TARGETS the FULL reducer world — witWorld = "full" like reducerCadenzaKv /
+        # reducerCadenzaInboxKv (NOT pure). Consumed by v-ah-host's kv-seeded-tick e2e (seed the two KV keys,
+        # deliver tick-start → assert timer armed at target=decimal(first-deadline); fire it → assert re-arm at
+        # decimal(fired+interval) + begin-tick) via env CDZ_REDUCER_TICK_KV_COMPONENT (exported in
+        # agentHostEnvSetup below, + CDZ_STORE for the heap dep). CA like the other reducers.
+        reducerCadenzaTickKv = mkCadenzaComponent {
+          name = "reducer-cadenza-tick-kv";
+          cdzFile = "reducer_tick_kv.cdz";
+          witWorld = "full";
+          contentAddressed = true;
+        };
         # AGENT-LOOP (GAP-1 keystone, design/agent-harness-kernel.md §3): the agentic loop expressed as a FOLD
         # over KV inbox state — message events append to the inbox under an "inbox/" prefix + enumerate the
         # pending inbox via kv.prefix-scan then emit a "model" effect; model-response events dispatch a "tool"
@@ -1259,6 +1273,13 @@
           # kv.put mark-seen) round-trips over the A1 bytes boundary. Host-fused (imports cadenza:agent-kernel/kv),
           # gates on this env + CDZ_STORE (heap dep). Same pattern as CDZ_KV_GENESIS_REDUCER_COMPONENT.
           export CDZ_REDUCER_INBOX_KV_COMPONENT="${reducerCadenzaInboxKv}"
+          # KV-SEEDED TICK: feed the precompiled host-fused tick-kv reducer so v-ah-host's kv-seeded-tick e2e
+          # RUNS instead of skipping — it seeds KV[tick/interval-ms] + KV[tick/first-deadline-ms], delivers a
+          # tick-start (asserts the timer arms at the seeded first-deadline) then fires it (asserts re-arm at
+          # fired+interval + begin-tick), proving the reducer reads its schedule from the KV genesis seed over
+          # the A1 bytes boundary. Host-fused (imports cadenza:agent-kernel/kv), gates on this env + CDZ_STORE
+          # (heap dep). Same pattern as CDZ_REDUCER_INBOX_KV_COMPONENT.
+          export CDZ_REDUCER_TICK_KV_COMPONENT="${reducerCadenzaTickKv}"
           # (The A1 transition arming-switch CDZ_KERNEL_BYTES_ABI was dropped here once v-ah-host collapsed its
           # reader in 813570fa5 — the genesis e2e now gates purely on GENESIS_REDUCER_COMPONENT + CDZ_STORE like
           # pure/kv, so the export was a dead no-op. Dual-land: reader removed on origin FIRST, then this drop.)
@@ -2303,6 +2324,7 @@
         packages.reducer-cadenza-vertical = reducerCadenzaVertical;
         packages.reducer-cadenza-kv = reducerCadenzaKv;
         packages.reducer-cadenza-inbox-kv = reducerCadenzaInboxKv;
+        packages.reducer-cadenza-tick-kv = reducerCadenzaTickKv;
         packages.reducer-cadenza-agent-loop = reducerCadenzaAgentLoop;
         packages.emit-wit-world = emitWitWorld;
         packages.reducer-cadenza-b1-hash = hashOf reducerCadenzaB1 "reducer-cadenza-b1-hash";
@@ -2314,6 +2336,7 @@
         packages.reducer-cadenza-vertical-hash = hashOf reducerCadenzaVertical "reducer-cadenza-vertical-hash";
         packages.reducer-cadenza-kv-hash = hashOf reducerCadenzaKv "reducer-cadenza-kv-hash";
         packages.reducer-cadenza-inbox-kv-hash = hashOf reducerCadenzaInboxKv "reducer-cadenza-inbox-kv-hash";
+        packages.reducer-cadenza-tick-kv-hash = hashOf reducerCadenzaTickKv "reducer-cadenza-tick-kv-hash";
         packages.reducer-cadenza-agent-loop-hash = hashOf reducerCadenzaAgentLoop "reducer-cadenza-agent-loop-hash";
 
         # PARITY CHECK (not a pin): assert the DERIVED hash of the nix-built runtime equals the hash
@@ -2500,7 +2523,7 @@
                 inherit runtimeHashParity runtimeDebugHashParity nfcHashParity
                   reducerGuestValid cedarGuestValid
                   reducerCadenzaB1Valid reducerCadenzaB2Valid reducerCadenzaB3Valid reducerCadenzaGenesisValid
-                  reducerCadenzaPureGenesisValid reducerCadenzaReifyValid reducerCadenzaVerticalValid reducerCadenzaKvValid reducerCadenzaInboxKvValid reducerCadenzaAgentLoopValid
+                  reducerCadenzaPureGenesisValid reducerCadenzaReifyValid reducerCadenzaVerticalValid reducerCadenzaKvValid reducerCadenzaInboxKvValid reducerCadenzaTickKvValid reducerCadenzaAgentLoopValid
                   exampleProjectTests reducerCadenzaTests crateClosureAssert;
               } ''
               echo "ok: flake reproducibility-backstop — hash-parity + component-validity + project-@tests + closure-assert" > $out
@@ -2523,6 +2546,7 @@
             reducerCadenzaVerticalValid = validComponent { name = "reducer-cadenza-vertical"; drv = reducerCadenzaVertical; };
             reducerCadenzaKvValid = validComponent { name = "reducer-cadenza-kv"; drv = reducerCadenzaKv; };
             reducerCadenzaInboxKvValid = validComponent { name = "reducer-cadenza-inbox-kv"; drv = reducerCadenzaInboxKv; };
+            reducerCadenzaTickKvValid = validComponent { name = "reducer-cadenza-tick-kv"; drv = reducerCadenzaTickKv; };
             reducerCadenzaAgentLoopValid = validComponent { name = "reducer-cadenza-agent-loop"; drv = reducerCadenzaAgentLoop; };
 
             # LOCAL-GATE bindings (v-nix+v-fleet-tooling 2026-08-06, GHA-outage fallback). The 3 required
@@ -2666,6 +2690,7 @@
             reducer-cadenza-vertical-valid = reducerCadenzaVerticalValid;
             reducer-cadenza-kv-valid = reducerCadenzaKvValid;
             reducer-cadenza-inbox-kv-valid = reducerCadenzaInboxKvValid;
+            reducer-cadenza-tick-kv-valid = reducerCadenzaTickKvValid;
             reducer-cadenza-agent-loop-valid = reducerCadenzaAgentLoopValid;
 
             # Full-CI-in-nix increment 1: the LINT pair, mirroring checks.yml `fmt` + `clippy` exactly.
