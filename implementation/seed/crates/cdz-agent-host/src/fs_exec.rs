@@ -269,4 +269,52 @@ mod tests {
         );
         assert!(exec.handles_family(effect_ct::FS_READ) && !exec.handles_family(effect_ct::SHELL));
     }
+
+    #[tokio::test]
+    async fn a_blob_ref_write_payload_is_a_permanent_error() {
+        // fs/write's content IS the payload; a BLOB-REF payload can't be resolved here (this executor has no
+        // blob-store handle) → structural PERMANENT fail-closed (inline the bytes instead). Mirrors the
+        // analogous blob/put guard (a_blob_ref_put_payload_is_a_permanent_error) — pins that fs/write REJECTS
+        // a payload it structurally cannot handle rather than silently writing nothing / mishandling it. Was
+        // untested (only the payload-less and inline-payload write paths were).
+        let mut exec = FsExecutor::new();
+        let req = EffectRequest::new_with_family(
+            effect_ct::FS_WRITE,
+            "/tmp/cdz-fsexec-blobref-should-not-be-written",
+            Some(Payload::Blob(Hash::of(b"big"))),
+            Timeliness::Interactive,
+        );
+        let out = exec.perform(EffectId(0), &req, Hash::of(b"k")).await;
+        assert!(
+            matches!(&out, EffectOutcome::Err { message, retryability }
+                if *retryability == Retryability::Permanent && message.contains("blob-ref payload")),
+            "a blob-ref fs/write payload fails closed PERMANENT, got {out:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_glob_of_a_missing_directory_is_a_permanent_error() {
+        // fs/glob's `dir/*` branch surfaces a read_dir error as PERMANENT (a missing dir won't appear on a
+        // blind retry). A LITERAL missing path is Ok(empty) (tested implicitly by glob semantics), but the
+        // read_dir error arm (glob_paths L132) was untested. Use a `/*` pattern on a definitely-absent dir.
+        let missing = std::env::temp_dir()
+            .join(format!("cdz-fsexec-absent-{}", std::process::id()))
+            .join("nope");
+        // Ensure it truly does not exist.
+        let _ = std::fs::remove_dir_all(&missing);
+        let pat = format!("{}/*", missing.to_string_lossy());
+        let mut exec = FsExecutor::new();
+        let out = exec
+            .perform(
+                EffectId(0),
+                &fs_req(effect_ct::FS_GLOB, &pat, None),
+                Hash::of(b"k"),
+            )
+            .await;
+        assert!(
+            matches!(&out, EffectOutcome::Err { message, retryability }
+                if *retryability == Retryability::Permanent && message.contains("fs/glob")),
+            "a glob of a missing directory is PERMANENT, got {out:?}"
+        );
+    }
 }
