@@ -170,16 +170,24 @@ impl LoopGroup {
 /// sharing-aware emit (bind a 2+-reached node once into a `Core::Let` slot), a separate increment blocked
 /// on the Perceus dup/drop seam.
 ///
-/// CALIBRATION (measured, corpus-wide rust-emit sweep 2026-08-15, 6912 cases): the largest single function
-/// body that `rustc` actually BUILDS is `spec/semantics/14c-effects-and-handlers` case 360 at ~2.16MB
-/// (parse+typecheck in ~8s). The next-larger normal case (case 564, ~5.49MB single fn) already TIMES OUT
-/// in `rustc` (>149s) — i.e. it is ALREADY an "artifact did not build", so declining it is an improvement,
-/// not a regression. The smallest INVALID handler-fold probe is `rps1`/`nsq1` at ~6.9-7.07MB. 4_000_000
-/// sits ~1.85x above the largest BUILDABLE body (2.16MB) and below every unbuildable one — no currently-
-/// passing rust case is false-declined (verified: no buildable single fn exceeds ~2.16MB), while `nsq1`,
-/// `rps1`, `case564`, and the dst*/pwm/trn explosions all decline. A legitimately large LINEAR body stays
-/// far under it (real code does not emit a single >4MB function).
-pub(super) const RUST_FN_EMIT_BUDGET: usize = 4_000_000;
+/// CALIBRATION (corpus-wide rust-emit sweep 2026-08-15, 6912 cases, RE-TUNED after a false-decline
+/// regression). The largest single function body that `rustc` actually BUILDS + PASSES is the `cbk1`
+/// circuit-breaker case in `spec/semantics/14c-effects-and-handlers` (= the sweep's "case 564") at
+/// **~5.49MB** — it compiles + runs green on the corpus rust/rust-async gate. (An earlier 4_000_000 cut
+/// was mis-calibrated: a local `rustc` probe with a 149s cap looked like a timeout on cbk1 and I wrongly
+/// judged 5.49MB "unbuildable", so the 4MB cut FALSE-DECLINED cbk1 — a real pass→todo regression on
+/// rust+rust-async, caught by corpus-bugfix's clean rust `--check`. The gate's `rustc` DOES build cbk1;
+/// it just takes longer than my impatient local cap.) The smallest genuinely-UNBUILDABLE handler-fold
+/// PROBE (not a corpus case) is `rps1` ~6.89MB / `nsq1` ~7.07MB (these exceed the gate's `rustc` build
+/// timeout → the opaque "artifact did not build"). So the buildable-vs-unbuildable boundary is the narrow
+/// band (5.49MB, 6.89MB]. 6_000_000 sits above the largest BUILDABLE corpus body (cbk1 5.49MB, ~9%
+/// headroom) and below every unbuildable probe (rps1 6.89MB, ~13% margin) — no currently-passing corpus
+/// case is false-declined (cbk1 is the corpus emit-size MAX; every other case is ≤ ~2.16MB), while `nsq1`,
+/// `rps1`, and the dst*/pwm/trn explosions still decline cleanly. NOTE: buildable/unbuildable overlap by
+/// SIZE is inherently narrow here (rustc build time ≈ size but not exactly); the durable robust fix is
+/// sharing-aware emit (collapses these to linear), a separate increment blocked on the Perceus seam — this
+/// SIZE budget is the interim soundness backstop.
+pub(super) const RUST_FN_EMIT_BUDGET: usize = 6_000_000;
 
 /// Decline a function whose emitted body exceeds [`RUST_FN_EMIT_BUDGET`] — the per-function backstop that
 /// turns a super-linear emit into a clean `todo` decline instead of an unbuildable multi-MB artifact.
