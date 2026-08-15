@@ -33,6 +33,12 @@ Cargo.lock
 # The nix seed-compiler build (buildRustPackage) + `--locked` CI both need this tracked to vendor/pin.
 !/Cargo.lock
 
+# The tracked `fleet/` source dir (role bodies, window.sh, contract) also gets used as an agent scratch
+# area — `fleet/scratch/` holds work-in-progress .patch/handoff files that are NOT source and must never
+# be committed. They leaked onto origin once (two record-eq migration .patch files swept into an unrelated
+# commit via `git add`, PR-review 2026-08-15); ignore the whole dir so scratch artifacts can't be tracked.
+fleet/scratch/
+
 # `cdz run-ml` / `cdz run-emitted` write a pid-stamped driver into the compiler-ml src dir (imports
 # resolve entry-dir-relative, so it MUST live beside the sources — not a temp dir). They clean up on a
 # normal exit, but a SIGKILL'd run (gate-batch contention, or a killed test) can leave one behind; ignore
