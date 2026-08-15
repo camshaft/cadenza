@@ -141,6 +141,22 @@ enum Cmd {
     /// non-zero, names the titles) — never silently deduped. Writes only files that were non-canonical
     /// (an already-clean file is left byte-identical, so it never dirties the worktree).
     CanonicalizeBaselines,
+    /// Git MERGE DRIVER for the `.gate-baseline*` files — the durable fix for the recurring `merge=union`
+    /// duplicate-append toil (corpus-bugfix hand-cleaned it twice in a few ticks). `merge=union` (the old
+    /// built-in) resolves a concurrent-append conflict by CONCATENATING both sides, so the same
+    /// verdict\tdescription line lands twice at EOF and re-warns every `gate --check` until hand-cleaned.
+    /// This driver unions the two sides then VERDICT-AWARE DEDUPS (same [`canonicalize_baseline_text`] the
+    /// canonicalizer uses): it reads `ours` + `theirs`, concatenates, and rewrites `ours` sorted + deduped
+    /// — collapsing a benign same-verdict dup, and FAILING (exit 1, leave the conflict for a human) on a
+    /// same-description/DIFFERENT-verdict conflict (never silently pick a verdict). Wired via
+    /// `.gitattributes` `merge=fleet-baseline` + registered by `fleet up`'s `register_merge_drivers`;
+    /// mirrors the `fleet-maxfloor` coverage-floor driver. Args are git's `%A` (ours/dest) and `%B` (theirs).
+    MergeBaseline {
+        /// Git `%A`: our version (also the destination the merged result is written to).
+        ours: PathBuf,
+        /// Git `%B`: their version.
+        theirs: PathBuf,
+    },
     /// Emoji-ban lint, standalone (operator directive): fail if any emoji/pictographic/dingbat char
     /// appears in an `implementation/**/*.rs` source COMMENT. This is the same `emoji_free_lint` the
     /// omnibus `check` runs, exposed as its own fast subcommand so CI can gate it as an isolated
@@ -297,6 +313,7 @@ fn main() {
         Cmd::Check => check(&paths, profile),
         Cmd::DevGate { crates } => dev_gate(&paths, &crates),
         Cmd::CanonicalizeBaselines => canonicalize_baselines(&paths),
+        Cmd::MergeBaseline { ours, theirs } => merge_baseline(&ours, &theirs),
         Cmd::LintEmoji => match emoji_free_lint(&paths) {
             Ok(()) => println!("lint-emoji: ok — no emoji in source comments"),
             Err(msg) => {
@@ -5271,6 +5288,52 @@ fn serialize_baseline(by_desc: &std::collections::BTreeMap<String, Verdict>) -> 
     )
 }
 
+/// Why a baseline union can't be auto-resolved — distinguishes the two `canonicalize_baseline_text`
+/// `Ok(None)`/`Err` cases the merge driver must treat DIFFERENTLY (a conflict → leave for a human; an
+/// unparseable line → also leave for a human, but a distinct reason). Kept separate so the driver never
+/// writes data it can't model. Pure + unit-testable.
+#[derive(Debug, PartialEq, Eq)]
+enum BaselineMergeErr {
+    /// Same description, different verdicts on the two sides — a real integrity conflict.
+    Conflict(Vec<String>),
+    /// A non-comment, non-blank line that isn't `verdict\tdescription` — we don't understand it, so we
+    /// won't rewrite (a rewrite would silently drop it).
+    Unparseable,
+}
+
+/// Union two gate-baseline texts into the canonical sorted + verdict-aware-deduped form, or say why not.
+/// The pure core of the `merge-baseline` git driver: unlike [`canonicalize_baseline_text`] (whose
+/// `Ok(None)` conflates "already canonical" with "leave alone"), this ALWAYS returns the canonical union
+/// string on success, so the driver can write it unconditionally. Errors distinguish a real
+/// different-verdict [`BaselineMergeErr::Conflict`] from an [`BaselineMergeErr::Unparseable`] line.
+fn merge_baseline_union(ours: &str, theirs: &str) -> Result<String, BaselineMergeErr> {
+    let mut by_desc: std::collections::BTreeMap<String, Verdict> =
+        std::collections::BTreeMap::new();
+    let mut conflicting: Vec<String> = Vec::new();
+    for line in ours.lines().chain(theirs.lines()) {
+        if line.starts_with('#') || line.is_empty() {
+            continue;
+        }
+        let Some((v, d)) = line.split_once('\t') else {
+            return Err(BaselineMergeErr::Unparseable);
+        };
+        let Some(verdict) = Verdict::parse(v) else {
+            return Err(BaselineMergeErr::Unparseable);
+        };
+        match by_desc.insert(d.to_string(), verdict) {
+            None => {}
+            Some(prev) if prev == verdict => {} // benign same-verdict dup — collapsed
+            Some(_) => conflicting.push(d.to_string()),
+        }
+    }
+    if !conflicting.is_empty() {
+        conflicting.sort();
+        conflicting.dedup();
+        return Err(BaselineMergeErr::Conflict(conflicting));
+    }
+    Ok(serialize_baseline(&by_desc))
+}
+
 /// Canonicalize a gate-baseline FILE from its text alone — sort + de-dup verdict-aware — WITHOUT a gate
 /// run. This is the root-fix for the `merge=union` re-accumulation (concierge assign 2026-08-10, option
 /// (a)): the `.gate-baseline*` files carry `merge=union` so every concurrent baseline append merges BOTH
@@ -5395,6 +5458,59 @@ fn canonicalize_baselines(paths: &Paths) {
             rewrote.len(),
             rewrote.join("\n  ")
         );
+    }
+}
+
+/// Git merge driver for `.gate-baseline*` (see the `MergeBaseline` doc): union the two sides then
+/// verdict-aware DEDUP, replacing the built-in `merge=union` that concatenated (re-injecting the benign
+/// duplicate lines corpus-bugfix kept hand-cleaning). Concatenate `ours` + `theirs`, run the same pure
+/// [`canonicalize_baseline_text`] the canonicalizer uses, and OVERWRITE `ours` (git's `%A`, the merge
+/// destination) with the sorted+deduped union. FAILS (exit 1, leaving the conflict for a human) on a
+/// same-description/DIFFERENT-verdict conflict — never silently picks a verdict. Fail-safe: an unreadable
+/// side, or a line neither side parses (`Ok(None)` = "don't understand, hands off"), exits 1 so git falls
+/// back to a normal conflict rather than this driver eating data it can't model.
+fn merge_baseline(ours: &Path, theirs: &Path) {
+    let read = |p: &Path| -> Option<String> { std::fs::read_to_string(p).ok() };
+    let (Some(o), Some(t)) = (read(ours), read(theirs)) else {
+        eprintln!(
+            "merge-baseline: could not read both baseline sides ({} / {}) — leaving the conflict for a human",
+            ours.display(),
+            theirs.display()
+        );
+        std::process::exit(1);
+    };
+    match merge_baseline_union(&o, &t) {
+        Ok(merged) => {
+            if std::fs::write(ours, &merged).is_err() {
+                eprintln!(
+                    "merge-baseline: could not write merged baseline to {}",
+                    ours.display()
+                );
+                std::process::exit(1);
+            }
+            eprintln!(
+                "merge-baseline: resolved {} baseline merge (union + verdict-aware dedup)",
+                ours.display()
+            );
+        }
+        Err(BaselineMergeErr::Conflict(titles)) => {
+            eprintln!(
+                "merge-baseline: REFUSING {} — {} same-title/DIFFERENT-verdict conflict(s) can't be \
+                 auto-merged (would mask one via last-wins); leaving the conflict for a human:\n    {}",
+                ours.display(),
+                titles.len(),
+                titles.join("\n    ")
+            );
+            std::process::exit(1);
+        }
+        Err(BaselineMergeErr::Unparseable) => {
+            eprintln!(
+                "merge-baseline: REFUSING {} — a baseline line isn't `verdict<TAB>description`; won't \
+                 rewrite data I can't model. Leaving the conflict for a human.",
+                ours.display()
+            );
+            std::process::exit(1);
+        }
     }
 }
 
@@ -8890,6 +9006,42 @@ mod trap_grading_tests {
             canonicalize_baseline_text("mystery\tsome case\n").expect("no conflict"),
             None,
             "an unknown verdict tag → hands off"
+        );
+    }
+
+    #[test]
+    fn merge_baseline_union_dedups_benign_conflicts_on_verdict_and_declines_unparseable() {
+        // The recurring toil: two sides each appended the SAME verdict\tdesc line. Union + dedup → ONE
+        // line (the merge=union bug was keeping BOTH). Result is canonical (sorted, header, deduped).
+        let ours = "# hdr\npass\tcase a\npass\tshared\n";
+        let theirs = "# hdr\npass\tshared\ntodo\tcase b\n";
+        let merged = merge_baseline_union(ours, theirs).expect("clean union");
+        // `shared` appears exactly once; both distinct cases present; sorted.
+        assert_eq!(
+            merged.matches("\tshared").count(),
+            1,
+            "benign dup collapsed to one line"
+        );
+        assert!(merged.contains("pass\tcase a") && merged.contains("todo\tcase b"));
+        // Idempotent: unioning the merged result with itself is a fixpoint (no re-accumulation).
+        assert_eq!(
+            merge_baseline_union(&merged, &merged).expect("idempotent"),
+            merged,
+            "re-merging the canonical union must be a fixpoint"
+        );
+        // Same description, DIFFERENT verdict on the two sides → Conflict (never silently pick one).
+        match merge_baseline_union("pass\tx\n", "todo\tx\n") {
+            Err(BaselineMergeErr::Conflict(t)) => assert_eq!(t, vec!["x".to_string()]),
+            other => panic!("expected Conflict, got {other:?}"),
+        }
+        // An unparseable line (no tab / unknown tag) → Unparseable, never rewritten.
+        assert_eq!(
+            merge_baseline_union("pass\tok\nno-tab-line\n", ""),
+            Err(BaselineMergeErr::Unparseable)
+        );
+        assert_eq!(
+            merge_baseline_union("mystery\tcase\n", ""),
+            Err(BaselineMergeErr::Unparseable)
         );
     }
 

@@ -7,16 +7,20 @@
 # constantly on this one file — it was the #1 source of merge-request bounces (a fix agent could be
 # rejected 4× purely on baseline contention, never touching the same case).
 #
-# `merge=union` (a BUILT-IN git driver — no registration needed) resolves such a conflict by keeping
-# BOTH sides' lines instead of flagging it. That is exactly right here: the file is line-oriented and
-# order-independent — `gate --check` parses it into a description-keyed map (see `check_baseline` in
-# xtask), and `gate --save` re-sorts + de-dupes on the next write. So concurrent appends of DIFFERENT
-# cases union cleanly; the only residue is a possible duplicate line when two agents touch the SAME
-# case, which the map-load tolerates and the next `--save` collapses. Net: baseline appends stop
-# blocking integration.
-spec/semantics/.gate-baseline           merge=union
-spec/semantics/.gate-baseline-rust      merge=union
-spec/semantics/.gate-baseline-rust-async merge=union
+# The custom `fleet-baseline` driver (registered by `fleet up` in the hub's .git/config; see
+# `register_merge_drivers`) resolves such a conflict by UNIONING both sides then VERDICT-AWARE DEDUPING
+# (`xtask merge-baseline`): the file is line-oriented + order-independent (`gate --check` parses it into a
+# description-keyed map — see `check_baseline`), so a union is correct, and the dedup collapses the
+# duplicate line two agents produce when they touch the SAME case. This REPLACES the old built-in
+# `merge=union` (which kept BOTH duplicate lines → a benign dup that re-warned every `gate --check` until
+# hand-cleaned; corpus-bugfix hand-cleaned it repeatedly). A same-description/DIFFERENT-verdict conflict
+# is left for a human (never silently resolved). If the driver isn't registered (config missing), git
+# falls back to a normal conflict — safe, just the old behavior. Net: baseline appends stop blocking
+# integration AND stop leaving duplicate residue.
+spec/semantics/.gate-baseline            merge=fleet-baseline
+spec/semantics/.gate-baseline-rust       merge=fleet-baseline
+spec/semantics/.gate-baseline-rust-async merge=fleet-baseline
+spec/semantics/.gate-baseline-platform   merge=fleet-baseline
 #
 # NOTE: the executable-semantics corpus files (`spec/semantics/NN-*.sexp`) are deliberately NOT
 # union-merged. Each `(case …)` is a multi-line s-expression BLOCK; unioning interleaved lines from two

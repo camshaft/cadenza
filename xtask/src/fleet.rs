@@ -1466,6 +1466,29 @@ fn register_merge_drivers(fleet: &Fleet) {
             fleet.repo.display()
         );
     }
+    // The gate-baseline union+dedup driver (replaces the built-in `merge=union`, which concatenated
+    // both sides' appends → duplicate lines corpus-bugfix kept hand-cleaning). `.gitattributes` points
+    // the three `.gate-baseline*` files at `merge=fleet-baseline`; without this registration that line
+    // silently does nothing and git falls back to a plain conflict on a concurrent baseline append.
+    let ok_bl_name = set(
+        "merge.fleet-baseline.name",
+        "gate-baseline union + verdict-aware dedup",
+    );
+    let ok_bl_driver = set("merge.fleet-baseline.driver", baseline_driver_command());
+    if !ok_bl_name || !ok_bl_driver {
+        eprintln!(
+            "fleet: WARNING — failed to register the fleet-baseline merge driver in {}/.git/config; \
+             concurrent .gate-baseline* appends will fall back to a normal git conflict.",
+            fleet.repo.display()
+        );
+    }
+}
+
+/// The git merge-driver command for `.gate-baseline*` (registered as `merge.fleet-baseline.driver`).
+/// `%A` = ours/dest, `%B` = theirs; `merge-baseline` unions + verdict-aware-dedups them into `%A`.
+/// Mirrors `maxfloor_driver_command`.
+fn baseline_driver_command() -> &'static str {
+    "cargo xtask merge-baseline %A %B"
 }
 
 /// Does a HUMAN sit directly at this role's terminal window, typing into an interactive Claude prompt?
