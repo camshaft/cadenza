@@ -3768,6 +3768,53 @@ fn value_decode_grounds_its_target_from_the_enclosing_annotation() {
     }
 }
 
+/// R2 DECODE GROUNDING — the NEGATIVE half of the contract (the `annotation_context_ty` fix's comment states
+/// it, but nothing pinned it): an UNANNOTATED `Value.decode` has NO enclosing annotation to ground its target
+/// `a`, so the decode node's `type_of` stays `(Option ?a)` with `?a` free. Typing does NOT hang or fault — a
+/// `Bytes -> (Option ?a)` is well-formed, so `check` passes. The honesty is enforced at LOWER:
+/// `lower_value_decode` peels `a`, finds no value-form descriptor for a free var, and DECLINES cleanly ("no
+/// binary-AST value-form descriptor") — NOT a panic, NOT invalid wasm, NOT a silently-wrong descriptor. This
+/// pins that a decode you can't ground is a clean compile-time decline, so the grounding path can never be
+/// "relaxed" into emitting a bogus descriptor for an unsolved target. Complements
+/// `value_decode_grounds_its_target_from_the_enclosing_annotation` (the positive half).
+#[test]
+fn an_unannotated_value_decode_declines_at_lower_not_a_panic_or_invalid_wasm() {
+    use crate::testkit::parse;
+    // No `(: ... (Option T))` around the decode — nothing grounds `a`, so it stays a free Var.
+    let src = "(module m (def (dec (: bs Bytes)) (Value.decode bs)) (export dec))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:reducer/api"),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        out.has_error(),
+        "an unannotated Value.decode (ungrounded target) must DECLINE at lower, not compile a bogus \
+         descriptor for a free var: {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| (&d.code, &d.message))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        out.diagnostics
+            .iter()
+            .any(|d| d.message.contains("no binary-AST value-form descriptor")),
+        "the decline must be the value-form-descriptor decline (the free-var target has no descriptor), \
+         not some unrelated error: {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| (&d.code, &d.message))
+            .collect::<Vec<_>>()
+    );
+}
+
 /// R2 ROUND-TRIP, NON-VACUOUS (reviewer-requested: the `Value.decode` lower + `Core::ValueDecode` wasm emit
 /// were dead-on-trunk until the grounding fix that lands with this test, so the emit must be proven under a
 /// RUN, not just type-checked). `main` encodes `(Pt.Mk (record x=7 y=107))` to its binary-AST value-form
