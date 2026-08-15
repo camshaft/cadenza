@@ -1165,6 +1165,9 @@ pass	a VARIABLE catch-all arm binds the whole runtime scrutinee as a Bytes value
 pass	a VIOLATED @ensures on a performing def traps at body-exit
 pass	a VIOLATED @ensures traps when the def arrives through a runtime branch
 pass	a VIOLATED @requires traps at body-entry BEFORE the body's perform fires
+pass	a Value.decode round-trip grounds its target from a LET-BINDER annotation, not only an inline ascription
+pass	a Value.encode then Value.decode round-trips a compound value back to Some of the SAME structure
+pass	a Value.encode/Value.decode round-trip preserves a STRING element of a compound
 pass	a WIDE integer literal pattern (beyond ±2^31) matches a runtime scrutinee by equality
 pass	a WORD COUNT threads an in-word flag through a scalar scan, counting entries not characters
 pass	a WRAP-composing closure state (the replacement captures the PREVIOUS closure) folds at two dispatches
@@ -6895,8 +6898,6 @@ todo	a DEPTH-3 nested-op chain whose deepest resume performs the outer effect de
 todo	a DIRECT branch perform in a NESTED handler-arm resume-value declines cleanly (adv-69 a3-direct sub-face)
 todo	a HEAP-accumulator block-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor)
 todo	a MODULE-exported closure that performs a delegated effect cannot cross the host boundary
-todo	a Value.decode round-trip grounds its target from a LET-BINDER annotation, not only an inline ascription
-todo	a Value.encode then Value.decode round-trips a compound value back to Some of the SAME structure
 todo	a block-wrapped OUTER-effect perform in a do-statement TWO nested handlers deep declines cleanly (adv-69 nh7 depth-3)
 todo	a block-wrapped OUTER-effect perform in a nested handle's INIT declines cleanly (adv-69 a4-init sub-face)
 todo	a block-wrapped OUTER-effect perform in a non-tail do-statement INSIDE a nested handler body declines cleanly (adv-69 c3-nested sub-face)

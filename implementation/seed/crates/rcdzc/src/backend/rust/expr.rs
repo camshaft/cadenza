@@ -417,6 +417,112 @@ pub(super) fn closure_struct_ident(k: usize) -> String {
 /// needless and trips `unused_braces` under the gate's `-D warnings` (the value appears in arbitrary
 /// positions — a `.call(..)` argument, a function/return value — each of which the lint flags). Shared by
 /// the sync (`Rc<dyn Fn>`) and async (`Rc<dyn EnvClosure>`) `Core::Closure` emits so both stay warning-clean.
+/// Emit a rust expression that builds the R2 VALUE-FORM node (a `cadenza_ast::ast::StructId`) for the value
+/// `val_expr` of type `ty`, into a `cadenza_ast::ast::Builder` in scope as `__b` — the native-rust twin of
+/// `cdz-runtime`'s `encode_value_recursive`. Mirrors the runtime's post-order build: a SCALAR is one
+/// `atom_leaf`; a TUPLE is `(tuple …)` — a `list` headed by the `tuple` name-atom with each element built
+/// recursively. Each `__b.<method>(…)` borrows `__b` mutably, so a compound sequences its children into
+/// block-local `let`s (block scoping means the fixed temp names never collide across nesting) before the
+/// final `list`. INCREMENTAL: fixed-width Int (as `i64` → a `BigInt` leaf), Bool, and Tuple-of-those are
+/// wired (the round-trip corpus shape); any other shape DECLINES (the encode stays a `todo` on rust, never a
+/// miscompile). The result BYTES match the runtime's `value-encode` by construction (v-runtime: all three
+/// codecs share `ast-encoding.md`, and `codec::encode` canonicalizes) — though the round-trip cases only need
+/// rust-internal `decode∘encode = id`, which reusing `cadenza_ast::codec` for both directions guarantees.
+fn emit_value_form(ty: &Ty, val_expr: &str) -> Result<String, Reject> {
+    match ty.strip_nominal() {
+        Ty::Bool => Ok(format!(
+            "__b.atom_leaf(cadenza_ast::ast::Leaf::Bool({val_expr}))"
+        )),
+        Ty::Int(_) => Ok(format!(
+            "__b.atom_leaf(cadenza_ast::ast::Leaf::Int {{ value: num_bigint::BigInt::from(({val_expr}) as i64), radix: cadenza_ast::ast::Radix::Dec }})"
+        )),
+        // A CHAR is a native `char`; String/Symbol are `String`; Bytes is `Vec<u8>` — each a single leaf
+        // (std-only, no external type beyond `Arc`). `Arc::from(&str)`/`Arc::from(&[u8])` build the leaf's
+        // `Arc<str>`/`Arc<[u8]>` from a borrow of the owned value.
+        Ty::Char => Ok(format!(
+            "__b.atom_leaf(cadenza_ast::ast::Leaf::Char({val_expr}))"
+        )),
+        Ty::String | Ty::Symbol => Ok(format!(
+            "__b.atom_leaf(cadenza_ast::ast::Leaf::Str(std::sync::Arc::from(({val_expr}).as_str())))"
+        )),
+        Ty::Bytes => Ok(format!(
+            "__b.atom_leaf(cadenza_ast::ast::Leaf::Bytes(std::sync::Arc::from(({val_expr}).as_slice())))"
+        )),
+        Ty::Tuple(elems) => {
+            let mut body = String::from("{ let __h = __b.name(\"tuple\");");
+            let mut vars = vec!["__h".to_string()];
+            for (i, et) in elems.iter().enumerate() {
+                let child = emit_value_form(et, &format!("({val_expr}).{i}"))?;
+                body.push_str(&format!(" let __e{i} = {child};"));
+                vars.push(format!("__e{i}"));
+            }
+            body.push_str(&format!(" __b.list(vec![{}]) }}", vars.join(", ")));
+            Ok(body)
+        }
+        other => Err(Reject::decline(format!(
+            "Value.encode native rust: value shape {other:?} not yet wired (Int/Bool/Tuple only — incremental slices)"
+        ))),
+    }
+}
+
+/// Emit a rust expression of type `Option<T>` that RECONSTRUCTS a native value of type `ty` from the
+/// value-form node `node` (a `cadenza_ast::ast::StructId`) in the decoded `Arenas` `arenas` — the inverse of
+/// [`emit_value_form`], the native-rust twin of `cdz-runtime`'s value-decode walk. A SCALAR reads its leaf
+/// (`None` on shape/leaf mismatch → the decode is TOTAL); a TUPLE checks the `(tuple …)` list shape then
+/// reconstructs each element, threaded through an IIFE closure with `?` so any element mismatch yields
+/// `None`. INCREMENTAL: Int/Bool/Tuple wired (the round-trip corpus shape); other shapes decline.
+fn emit_value_reconstruct(ty: &Ty, arenas: &str, node: &str) -> Result<String, Reject> {
+    match ty.strip_nominal() {
+        Ty::Bool => Ok(format!(
+            "(match {arenas}.get({node}) {{ cadenza_ast::ast::Struct::Atom(__l) => \
+             match {arenas}.leaf(*__l) {{ cadenza_ast::ast::Leaf::Bool(__v) => Some(*__v), _ => None }}, \
+             _ => None }})"
+        )),
+        Ty::Int(_) => Ok(format!(
+            "(match {arenas}.get({node}) {{ cadenza_ast::ast::Struct::Atom(__l) => \
+             match {arenas}.leaf(*__l) {{ cadenza_ast::ast::Leaf::Int {{ value, .. }} => i64::try_from(value).ok(), _ => None }}, \
+             _ => None }})"
+        )),
+        // The leaf-scalar inverses of the `emit_value_form` Char/String/Bytes arms.
+        Ty::Char => Ok(format!(
+            "(match {arenas}.get({node}) {{ cadenza_ast::ast::Struct::Atom(__l) => \
+             match {arenas}.leaf(*__l) {{ cadenza_ast::ast::Leaf::Char(__v) => Some(*__v), _ => None }}, \
+             _ => None }})"
+        )),
+        Ty::String | Ty::Symbol => Ok(format!(
+            "(match {arenas}.get({node}) {{ cadenza_ast::ast::Struct::Atom(__l) => \
+             match {arenas}.leaf(*__l) {{ cadenza_ast::ast::Leaf::Str(__s) => Some(__s.to_string()), _ => None }}, \
+             _ => None }})"
+        )),
+        Ty::Bytes => Ok(format!(
+            "(match {arenas}.get({node}) {{ cadenza_ast::ast::Struct::Atom(__l) => \
+             match {arenas}.leaf(*__l) {{ cadenza_ast::ast::Leaf::Bytes(__b) => Some(__b.to_vec()), _ => None }}, \
+             _ => None }})"
+        )),
+        Ty::Tuple(elems) => {
+            let n = elems.len();
+            let mut body = format!(
+                "(|| {{ let __items = if let cadenza_ast::ast::Struct::List(__i) = {arenas}.get({node}) {{ __i }} else {{ return None }}; \
+                 if __items.len() != {} || {arenas}.head_name({node}) != Some(\"tuple\") {{ return None }}; ",
+                n + 1
+            );
+            let mut results = Vec::with_capacity(n);
+            for (i, et) in elems.iter().enumerate() {
+                let child = emit_value_reconstruct(et, arenas, &format!("__items[{}]", i + 1))?;
+                body.push_str(&format!("let __e{i} = {child}?; "));
+                results.push(format!("__e{i}"));
+            }
+            // A 1-tuple needs the trailing comma; join covers the rest.
+            let tail = if n == 1 { "," } else { "" };
+            body.push_str(&format!("Some(({}{tail})) }})()", results.join(", ")));
+            Ok(body)
+        }
+        other => Err(Reject::decline(format!(
+            "Value.decode native rust: value shape {other:?} not yet wired (Int/Bool/Tuple only — incremental slices)"
+        ))),
+    }
+}
+
 fn wrap_closure_value(cap_lets: &str, closure_expr: &str) -> String {
     if cap_lets.is_empty() {
         closure_expr.to_string()
@@ -2563,19 +2669,46 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             let b = emit(db, bytes, env, ctx)?;
             Ok(format!("String::from_utf8({b}).ok()"))
         }
-        // `Value.encode`/`decode` (R2) render/parse a runtime value to/from its canonical binary-AST document
-        // guided by the compiler-baked shape descriptor. The wasm backend calls the `value-encode`/`value-
-        // decode` runtime-heap ops (which walk a tagged heap handle). The NATIVE rust rep is a static Rust
-        // type, not a tagged heap value, so there is no `desc`-driven walker to call — a native encoder that
-        // reflects the shape descriptor over the concrete Rust type is a separate rust-lane build (like the
-        // NfcNormalize rust-NFC split above). Until it lands, DECLINE on rust: this surfaces as `todo` on the
-        // rust faces (never a fail, never a silent miscompile), while the wasm backend has the real op.
-        Core::ValueEncode { .. } => Err(Reject::decline(
-            "Value.encode has no native rust rep yet (the descriptor-guided value-form walker is a wasm runtime op; the native rust encoder is a separate rust-lane build)",
-        )),
-        Core::ValueDecode { .. } => Err(Reject::decline(
-            "Value.decode has no native rust rep yet (the descriptor-guided value-form parser is a wasm runtime op; the native rust decoder is a separate rust-lane build)",
-        )),
+        // `Value.encode` (R2) renders a runtime value to its canonical binary-AST document. The wasm backend
+        // calls the `value-encode` runtime op (walks a tagged heap handle); the NATIVE rust encoder is
+        // TYPE-DIRECTED — build the SAME value-form (`cadenza_ast::ast::Arenas`) the runtime builds, then
+        // `cadenza_ast::codec::encode` (the linked `cadenza-ast` rlib). `emit_value_form` recurses over the
+        // type, mirroring `cdz-runtime`'s `encode_value_recursive` post-order build (scalar → `atom_leaf`,
+        // Tuple → `(tuple …)`, etc.). INCREMENTAL: Int/Bool/Tuple wired (the round-trip case shape); other
+        // shapes DECLINE (todo, never a fail). NOTE: `Value.decode` (the inverse) is the follow-up slice; the
+        // round-trip corpus cases need BOTH, so they stay todo until decode lands. See `native-rust-r2-value-codec`.
+        Core::ValueEncode { value, .. } => {
+            let vty = type_of(db, value);
+            let val = emit(db, value, env, ctx)?;
+            let form = emit_value_form(&vty, "__vv")?;
+            Ok(format!(
+                "{{ let __vv = {val}; let mut __b = cadenza_ast::ast::Builder::new(); \
+                 let __root = {form}; cadenza_ast::codec::encode(&__b.finish(__root)) }}"
+            ))
+        }
+        // `Value.decode b` (R2) — the inverse `∀a. Bytes → (Option a)`, TOTAL. `cadenza_ast::codec::decode`
+        // parses the bytes to an `Arenas` (`None` on a malformed document); `emit_value_reconstruct` then
+        // walks it to the native value of the CALL-SITE target type `a` (peeled from the node's `(Option a)`
+        // type — grounded by typing), yielding `Option<a>` = the built-in `(Option a)` (Rust's own `Option`,
+        // so `disc_some`/`disc_none` are unused on this path). `None` on any shape mismatch — never a trap.
+        // Reusing `cadenza_ast::codec` for BOTH directions makes `decode ∘ encode = id` on rust by
+        // construction (the round-trip corpus property). INCREMENTAL: Int/Bool/Tuple wired; other shapes decline.
+        Core::ValueDecode { bytes, .. } => {
+            let node_ty = type_of(db, id);
+            let target = match node_ty.strip_nominal() {
+                Ty::Sum { args, .. } if args.len() == 1 => args[0].clone(),
+                _ => {
+                    return Err(Reject::decline(
+                        "Value.decode result type is not a resolved (Option a) — the target type is unsolved",
+                    ));
+                }
+            };
+            let b = emit(db, bytes, env, ctx)?;
+            let recon = emit_value_reconstruct(&target, "__a", "__a.root")?;
+            Ok(format!(
+                "(match cadenza_ast::codec::decode(&({b})) {{ Some(__a) => {recon}, None => None }})"
+            ))
+        }
         // `Core::StrToBytes` is the "canonicalize a runtime text leaf" op. On the wasm side it backs THREE
         // surface ops (all a `bytes-compact` byte-rope flatten): `String.to-bytes` (String → Bytes),
         // `Symbol.of` (String → Symbol, intern), and `Symbol.to-string` (Symbol → String). On the RUST

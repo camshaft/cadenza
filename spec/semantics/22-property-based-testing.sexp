@@ -1142,6 +1142,23 @@
   (call   main (: 7 Int64)) (output (: 7107 Int64))
   (call   main (: 3 Int64)) (output (: 3103 Int64)))
 
+(case "a Value.encode/Value.decode round-trip preserves a STRING element of a compound"
+  (doc    "Extends the Int/Int round-trip to a `(Tuple String Int64)` — exercising the R2 value-form STRING leaf
+           (a variable-length heap element, so the compound escapes via the descriptor-guided value-encode, not
+           the fixed static template). `Value.decode (Value.encode (tuple \"hi\" n)) == Some (tuple \"hi\" n)`; the
+           match asserts the string SURVIVED (equals `\"hi\"`) and returns `n`, else -1. `main 5` -> 5, `main 9` ->
+           9 (two distinct outputs); a lost/garbled string element would give -1. Pins that the String leaf of the
+           canonical value form round-trips faithfully — the rust encoder builds a `Leaf::Str`, the wasm
+           `value-encode` op the same, and `codec::decode` recovers it. Runs on wasm + rust + rust-async.")
+  (input  (do
+            (def (main (: n Int64))
+              (match (: (Value.decode (Value.encode (tuple "hi" n))) (Option (Tuple String Int64)))
+                ((Some m) (match m ((tuple s k) (if (= s "hi") k (- 0 1)))))
+                ((None u) (- 0 1))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 5 Int64))
+  (call   main (: 9 Int64)) (output (: 9 Int64)))
+
 ; --- The round-trip under LET-BINDER grounding: decode's target fixed by the binder annotation, not inline. ---
 
 (case "a Value.decode round-trip grounds its target from a LET-BINDER annotation, not only an inline ascription"

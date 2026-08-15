@@ -1087,6 +1087,11 @@ struct Tools {
     /// dependency=<dir> --extern cdz_num=…` when an emitted (sync or async) program uses `cdz_num::Big`.
     /// `None` if the rlib wasn't built.
     cdz_num_dir: Option<PathBuf>,
+    /// The directory holding the built `cadenza-ast` rlib (`libcadenza_ast.rlib`) + its deps — passed to
+    /// `rustc` as `-L dependency=<dir> --extern cadenza_ast=…` when an emitted program uses the native R2
+    /// value codec (`Core::ValueEncode`/`ValueDecode` emit `cadenza_ast::codec::encode`/`decode`). `None`
+    /// if the rlib wasn't built.
+    cadenza_ast_dir: Option<PathBuf>,
 }
 
 /// Build the three pipeline tools once (under `profile`) and return their binary paths — shared by
@@ -1107,7 +1112,7 @@ fn build_tools(paths: &Paths, profile: &str) -> Tools {
     // an emitted program uses BigInt. Built here once alongside `cdz-rt`.
     if let Err(e) = cmd!(
         sh,
-        "cargo build --quiet --profile {profile} -p cdz -p cdz-corpus -p cdz-run -p cdz-rt -p cdz-num"
+        "cargo build --quiet --profile {profile} -p cdz -p cdz-corpus -p cdz-run -p cdz-rt -p cdz-num -p cadenza-ast"
     )
     .quiet()
     .run()
@@ -1128,6 +1133,13 @@ fn build_tools(paths: &Paths, profile: &str) -> Tools {
     // The `cdz-num` rlib (`libcdz_num.rlib`) — the SYNC rust gate links it via `--extern` for a
     // BigInt-using program. Same directory as `cdz-rt`; recorded only when the rlib actually built.
     let cdz_num_dir = bin.join("libcdz_num.rlib").exists().then(|| bin.clone());
+    // The `cadenza-ast` rlib (`libcadenza_ast.rlib`) — the rust gate links it via `--extern` when an
+    // emitted program uses the native R2 value codec (`cadenza_ast::codec::encode`/`decode`). Same dir as
+    // the others; recorded only when the rlib actually built.
+    let cadenza_ast_dir = bin
+        .join("libcadenza_ast.rlib")
+        .exists()
+        .then(|| bin.clone());
     Tools {
         syntax: cdz.clone(),
         corpus: bin.join("cdz-corpus"),
@@ -1135,6 +1147,7 @@ fn build_tools(paths: &Paths, profile: &str) -> Tools {
         run: bin.join("cdz-run"),
         cdz_rt_dir,
         cdz_num_dir,
+        cadenza_ast_dir,
     }
 }
 
@@ -2466,6 +2479,35 @@ fn run_program_rust(
             .arg(format!("dependency={}", dir.display()))
             .arg("--extern")
             .arg(format!("cdz_num={}", dir.join("libcdz_num.rlib").display()));
+    }
+    // A program that uses the native R2 value codec emits `cadenza_ast::codec::encode`/`decode`, so link the
+    // `cadenza-ast` rlib. Provided for BOTH sync and async; harmless when unreferenced (`--extern` only makes
+    // it available). Its transitive deps (`num_bigint`, `unicode_normalization`) land in `<dir>/deps`, so add
+    // that search path too (the top-level rlib is in `<dir>` itself).
+    if let Some(dir) = tools.cadenza_ast_dir.as_deref() {
+        cmd.arg("-L")
+            .arg(format!("dependency={}", dir.display()))
+            .arg("-L")
+            .arg(format!("dependency={}", dir.join("deps").display()))
+            .arg("--extern")
+            .arg(format!(
+                "cadenza_ast={}",
+                dir.join("libcadenza_ast.rlib").display()
+            ));
+        // The native value-encode emit constructs `num_bigint::BigInt` for Int leaves, so `num_bigint` must
+        // be a NAMABLE extern (not just findable for cadenza_ast's transitive link). Its rlib is hash-named
+        // in `<dir>/deps` (`libnum_bigint-<hash>.rlib`); glob for it and `--extern num_bigint=` it. Harmless
+        // when unreferenced. (num_bigint is a shared dep — cdz-num uses it too — so it is always built.)
+        if let Ok(entries) = std::fs::read_dir(dir.join("deps"))
+            && let Some(rlib) = entries.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("libnum_bigint-") && n.ends_with(".rlib"))
+            })
+        {
+            cmd.arg("--extern")
+                .arg(format!("num_bigint={}", rlib.display()));
+        }
     }
     let compiled = cmd.output();
     let compiled = match compiled {
