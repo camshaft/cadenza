@@ -11883,3 +11883,89 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 399190203 Int64))
   (call   main (: 0 Int64)) (output (: -100819898 Int64)))
+
+;; ── Turnstile FSM (passing 6-dispatch face), ripple-carry flip counts, Kadane tracker (breaker batch 283) ──
+(case "trn6 six dispatches — coin unlocks or wastes (wasted coins answer a deepening negative count), push passes and relocks or bounces (bounces answer their own negative count), the seed decides whether the gate STARTS unlocked, and the first push diverges the runs from the very first row"
+  (input  (do
+            (effect T
+              (op coin (-> Int64))
+              (op push (-> Int64)))
+            (def (main (: n Int64))
+              (handle T (tuple (if (< 5 n) 1 0) (: 0 Int64) (: 0 Int64) (: 0 Int64))
+                ((coin () st
+                  (match st
+                    ((tuple u waste bounce passed)
+                      (if (= u 1)
+                          (resume (- 0 (+ waste 1)) (tuple 1 (+ waste 1) bounce passed))
+                          (resume 1 (tuple 1 waste bounce passed))))))
+                 (push () st
+                  (match st
+                    ((tuple u waste bounce passed)
+                      (if (= u 1)
+                          (resume (+ passed 1) (tuple 0 waste bounce (+ passed 1)))
+                          (resume (- 0 (+ bounce 1)) (tuple 0 waste (+ bounce 1) passed)))))))
+                (let ((a (T.push)))
+                  (let ((b (T.coin)))
+                    (let ((c (T.coin)))
+                      (let ((d (T.push)))
+                        (let ((e (T.push)))
+                          (let ((f (T.coin)))
+                            (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 10099019901 Int64))
+  (call   main (: 0 Int64)) (output (: -9900990199 Int64)))
+
+(case "rpc1 a RIPPLE-CARRY counter — inc answers the number of bits FLIPPED by that increment (the XOR of old and new popcounted, the amortized-analysis witness), pop reads the live bit count, and the seeds start at 10 and 0 so the carry chains fire at different steps"
+  (input  (do
+            (effect C
+              (op inc (-> Int64))
+              (op pop (-> Int64)))
+            (def (bits (: b Int64) (: acc Int64))
+              (if (= b 0) acc (bits (>> b 1) (+ acc (& b 1)))))
+            (def (main (: n Int64))
+              (handle C (: n Int64)
+                ((inc () v
+                  (resume (bits (^ v (+ v 1)) 0) (+ v 1)))
+                 (pop () v (resume (bits v 0) v)))
+                (let ((a (C.inc)))
+                  (let ((b (C.inc)))
+                    (let ((c (C.pop)))
+                      (let ((d (C.inc)))
+                        (let ((e (C.inc)))
+                          (let ((f (C.pop)))
+                            (let ((g (C.inc)))
+                              (let ((h (C.pop)))
+                                (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g)) h)))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 103020102030104 Int64))
+  (call   main (: 0 Int64)) (output (: 102010103010102 Int64)))
+
+(case "kgt1 a KADANE max-subarray tracker — feed extends or RESTARTS the running sum via a four-way comparison lattice answering the live sum, best remembers the peak from a -99 sentinel, and the seed flips the middle feed's sign so one run restarts there while the other extends through it"
+  (input  (do
+            (effect K
+              (op feed (-> Int64 Int64))
+              (op bst (-> Int64)))
+            (def (main (: n Int64))
+              (handle K (tuple (: 0 Int64) (: -99 Int64))
+                ((feed (v) st
+                  (match st
+                    ((tuple cur best)
+                      (if (< (+ cur v) v)
+                          (if (< best v)
+                              (resume v (tuple v v))
+                              (resume v (tuple v best)))
+                          (if (< best (+ cur v))
+                              (resume (+ cur v) (tuple (+ cur v) (+ cur v)))
+                              (resume (+ cur v) (tuple (+ cur v) best)))))))
+                 (bst () st
+                  (match st ((tuple cur best) (resume best st)))))
+                (let ((a (K.feed 4)))
+                  (let ((b (K.feed -6)))
+                    (let ((c (K.feed (- n 5))))
+                      (let ((d (K.feed 7)))
+                        (let ((e (K.feed -2)))
+                          (let ((f (K.bst)))
+                            (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 39805121012 Int64))
+  (call   main (: 0 Int64)) (output (: 39795070507 Int64)))

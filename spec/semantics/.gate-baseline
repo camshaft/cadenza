@@ -5419,6 +5419,7 @@ pass	jin1 a SEPARATOR-JOIN builder — the comma inserts only BETWEEN elements v
 pass	jointly-total guards over one variant are still non-exhaustive (guards are opaque to the checker)
 pass	jos1 JOSEPHUS elimination — every dispatch advances the cursor k-1 around the SHRINKING ring by modulo, removes the survivor there by filtered rebuild, and answers the eliminated id
 pass	keyed lookups at different keys are not shared
+pass	kgt1 a KADANE max-subarray tracker — feed extends or RESTARTS the running sum via a four-way comparison lattice answering the live sum, best remembers the peak from a -99 sentinel, and the seed flips the middle feed's sign so one run restarts there while the other extends through it
 pass	knt1 a KNIGHT walker on an eight-by-eight board — hop attempts the L-move answering the landing square's index or -1 REFUSED off-board with the position held, cnt reads the completed-hop count, and the seed's starting rank makes the SAME move list bounce twice on one run and once on the other
 pass	lam1 INLINE and LET-BOUND lambdas applied to one draw — both closure forms read the same drawn value
 pass	lap1 a STOPWATCH with lap splits — tick advances the clock by a seed stride, lap answers the split since the last mark and remembers it, best tracks the MINIMUM split (seeded -1 sentinel replaced on first lap), and the middle lap of three is the unique best on both seeds
@@ -5978,6 +5979,7 @@ pass	rowacc5 the walk carries an ACCUMULATOR — the post-recursion read still s
 pass	rp1 two-site arm + a state-REPLACING second op over a SCALAR state
 pass	rp2 a RECORD op argument read by field beside an inner sum-state match — the record-payload face of the per-dispatch arm
 pass	rp3 the record payload carries a NESTED record — two-level field projection inside the arm beside the state match
+pass	rpc1 a RIPPLE-CARRY counter — inc answers the number of bits FLIPPED by that increment (the XOR of old and new popcounted, the amortized-analysis witness), pop reads the live bit count, and the seeds start at 10 and 0 so the carry chains fire at different steps
 pass	rpl1 an OP-LOG REPLAY state — apply advances the value and logs its delta, replay re-applies the WHOLE log to the current value keeping the log intact, so a second replay after more logging compounds
 pass	rpn1 an RPN EVALUATOR — pushes stack operands, the operator ops pop two and push the result; the (n+3)*2 program evaluates through five dispatches with stack depths and intermediates exposed
 pass	rps2 the RPS judge with the opponent move HOISTED through match binders — the LCG advance and the mod-3 move bind once per dispatch instead of recomputing per branch, same protocol and answers
@@ -6607,6 +6609,7 @@ pass	tree HEIGHT and BALANCE derive from insertion order over the same BST shape
 pass	tri1 sign TRICHOTOMY of a draw — negative, zero-literal, and positive rows each route distinctly
 pass	triple negation of a runtime boolean is a single negation
 pass	triple-nested same-op performs — each argument is the inner perform's result
+pass	trn6 six dispatches — coin unlocks or wastes (wasted coins answer a deepening negative count), push passes and relocks or bounces (bounces answer their own negative count), the seed decides whether the gate STARTS unlocked, and the first push diverges the runs from the very first row
 pass	true is greater than false
 pass	true is not less than false
 pass	truncating a rational whose integer part exceeds Int64 traps rather than wrapping
