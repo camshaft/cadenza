@@ -8576,6 +8576,29 @@
   (call   main (: 65 Int64)) (output (: -1 Int64))
   (call   main (: 200 Int64)) (output (: 201 Int64)))
 
+(case "adv-20 RESIDUAL — a NESTED let inside the let-init still declines (recursive-flatten follow-up; TODO witness)"
+  (doc    "adv-20 residual gap (v-effects, edge-probed after the one-hole flatten fix f9c3980ad landed): the
+           flatten handles a let-wrapped resume whose let-init reads the arm state, but only at the OUTER level
+           — a NESTED `let` INSIDE the let-init is not recursively flattened, so the inner let-init's arm-state
+           `s` survives the subst and reaches emit as a slotless `Core::Param{arm.state}` → 'parameter reference
+           has no local slot' decline. Here `o`'s init is itself `(let ((c (+ s 1))) ((. Option Some) c))` — a
+           nested let reading `s` — consumed by the resume-value match. This is the SAME class as finding #20,
+           one `let` level deeper (a reject-don't-miscompile clean-decline, NOT an ICE, NOT a wrong answer).
+           `main(65)`: inner `c` = 66, `o` = Some 66, match → 66. `main(200)`: `c` = 201 → 201. Standing
+           non-vacuous WITNESS: declines TODAY (TODO), flips to the 66 / 201 PASS when the flatten RECURSES
+           into nested pure lets in the init (or iterates to a fixpoint). adv-20 nested-let residual (2026-08-15).")
+  (input  (do
+            (effect S (op dec (-> Int64)))
+            (def (main (: n Int64))
+              (handle S n
+                ((dec () s
+                  (let ((o (let ((c (+ s 1))) ((. Option Some) c))))
+                    (resume (match o ((Some x) x) ((None _u) -1)) s))))
+                (S.dec)))
+            (export main)))
+  (call   main (: 65 Int64)) (output (: 66 Int64))
+  (call   main (: 200 Int64)) (output (: 201 Int64)))
+
 (case "PREFIX-order edges — the state string compares against crossed op-arg strings: equal, longer-prefix, and shorter-prefix faces"
   (doc    "3-way LEXICOGRAPHIC String ordering (< / = / >) against a threaded String handler state — distinct
            from the string-EQUALITY pins (sg3, one-shot lock): the `vs` arm answers `(if (< s probe) -1 (if
