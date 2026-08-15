@@ -9814,7 +9814,13 @@ fn flatten_pure_let_wrapped_resume(
                 if reaches_any_perform(db, kv[1]) {
                     return None;
                 }
-                subst.insert(kv[1], kv[1]);
+                // adv-20 residual: if the init is ITSELF a nested pure `let` reading the arm state (`(let ((c
+                // (+ s 1))) …)`), recursively flatten it FIRST so its inner let-init `s` does not survive the
+                // splice unsubstituted (the flatten handles only one `let` level per pass, so a nested one
+                // would otherwise reach emit slotless). A non-`let` init is returned unchanged, so the common
+                // single-level case is byte-identical to before.
+                let flat_init = flatten_nested_pure_let(db, kv[1], arm_binders);
+                subst.insert(kv[1], flat_init);
             }
         }
     }
@@ -9822,6 +9828,39 @@ fn flatten_pure_let_wrapped_resume(
     // shares them rather than orphaning a bare sibling `s`.
     pin_refs_to_binders(db, lbody, arm_binders);
     Some(crate::eval::beta_reduce(db, lbody, &subst))
+}
+
+/// Recursively flatten a NESTED pure `let` used as an initializer — `(let ((c e)…) body)` → `body` with each
+/// pure init `e` spliced for its binder refs, at every depth — returning the let-free node, or `node`
+/// unchanged if it is not a `let` (the common case) or any init reaches a perform (leave it intact —
+/// duplicating an effectful init would re-perform). Pins the arm-state/param uses in the whole `let` FIRST so
+/// the flatten copy SHARES them (keeps `Ref{arm.state}`) rather than orphaning them, exactly as the top-level
+/// flatten does for `lbody`; the caller's `{arm.state → init}` subst then substitutes the shared occurrences.
+/// (adv-20 nested-let residual.)
+fn flatten_nested_pure_let(db: &mut Db, node: StructId, arm_binders: &[StructId]) -> StructId {
+    let Some(tail) = db.ast.as_form(node, "let").map(<[_]>::to_vec) else {
+        return node;
+    };
+    if tail.len() != 2 {
+        return node;
+    }
+    let (bindings, body) = (tail[0], tail[1]);
+    let mut subst: HashMap<StructId, StructId> = HashMap::default();
+    if let Struct::List(pairs) = db.ast.get(bindings).clone() {
+        for pair in pairs {
+            if let Struct::List(kv) = db.ast.get(pair).clone()
+                && kv.len() == 2
+            {
+                if reaches_any_perform(db, kv[1]) {
+                    return node;
+                }
+                let flat = flatten_nested_pure_let(db, kv[1], arm_binders);
+                subst.insert(kv[1], flat);
+            }
+        }
+    }
+    pin_refs_to_binders(db, node, arm_binders);
+    crate::eval::beta_reduce(db, body, &subst)
 }
 
 fn rewrite_resume_to_context(
