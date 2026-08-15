@@ -8236,3 +8236,67 @@ fn adv68_inrange_sibling_typed_set_element_and_map_value_render_at_the_collectio
         assert_eq!(out, "2", "the two distinct keys {{1, 2}} count as 2");
     }
 }
+
+#[test]
+fn a_partial_eval_explosion_declines_on_rust_instead_of_an_unbuildable_artifact() {
+    // REGRESSION (breaker nsq1 `83e6f35b9`, 2026-08-15, bank `.breaker-probes/2026-08-15-newton-sqrt`).
+    // The effect handler is fully partial-evaluated into ONE arithmetic expression; the `improve` arm's
+    // compound `(/ (+ x (/ t x)) 2)` references `x` twice and CHAINS into the next `improve` as its `x`,
+    // so a 5-`improve` chain expands ~2^5 x the nested division structure. The Rust emit re-descends the
+    // shared Core DAG per reference → ONE ~7MB function body that `rustc` cannot compile (parse/typecheck
+    // times out) — the corpus gate reported the opaque "artifact did not build" FAIL (a `BadArtifact`,
+    // NOT a miscompile: wasm passes at 738KB, under `EMIT_INSTRUCTION_BUDGET`). The per-function emit-size
+    // backstop (`expr::RUST_FN_EMIT_BUDGET`) now DECLINES it cleanly (a `todo`), so the gate never hands
+    // rustc an unbuildable multi-MB artifact. Durable linear fix = sharing-aware emit (separate increment,
+    // blocked on the Perceus dup/drop seam) — this pins the SOUNDNESS backstop, the Rust twin of the wasm
+    // `EMIT_INSTRUCTION_BUDGET` decline.
+    let nsq1 = "(module m \
+        (effect N (op improve (-> Int64)) (op done (-> Int64))) \
+        (def (main (: n Int64)) \
+          (handle N (tuple (+ 60 (* n 7)) (+ 60 (* n 7))) \
+            ((improve () st (match st \
+                              ((tuple x t) \
+                               (resume (/ (+ x (/ t x)) 2) (tuple (/ (+ x (/ t x)) 2) t))))) \
+             (done () st (match st \
+                           ((tuple x t) \
+                            (if (< t (* (+ x 1) (+ x 1))) \
+                                (if (< t (* x x)) (resume 0 st) (resume 1 st)) \
+                                (resume 0 st)))))) \
+            (let ((a (N.improve))) \
+              (let ((b (N.improve))) \
+                (let ((c (N.done))) \
+                  (let ((d (N.improve))) \
+                    (let ((e (N.improve))) \
+                      (let ((f (N.done))) \
+                        (let ((g (N.improve))) \
+                          (let ((h (N.done))) \
+                            (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g)) h))))))))))) \
+          (export main))";
+    let res = compile_rust_result(nsq1);
+    assert!(
+        res.is_err(),
+        "an emit that would blow past the per-function size budget must DECLINE (a todo), not emit an \
+         unbuildable multi-MB artifact"
+    );
+    let msg = res.err().unwrap().join(" ");
+    assert!(
+        msg.contains("function-size budget"),
+        "the decline cites the per-function emit-size backstop: {msg}"
+    );
+}
+
+#[test]
+fn the_rust_fn_emit_budget_enforcer_declines_over_budget_bodies() {
+    // Unit-pins the backstop threshold + decline (fast; no compile). A body AT the budget is fine; one
+    // byte OVER declines cleanly. Guards the constant + logic even if a future refactor moves the call
+    // sites (the e2e test above pins the WIRING).
+    use super::expr::{RUST_FN_EMIT_BUDGET, enforce_fn_emit_budget};
+    assert!(
+        enforce_fn_emit_budget(&"x".repeat(RUST_FN_EMIT_BUDGET)).is_ok(),
+        "a body exactly at the budget is allowed"
+    );
+    assert!(
+        enforce_fn_emit_budget(&"x".repeat(RUST_FN_EMIT_BUDGET + 1)).is_err(),
+        "a body one byte over the budget declines"
+    );
+}

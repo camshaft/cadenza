@@ -657,6 +657,8 @@ pub fn emit(db: &mut Db, layout: &Layout, mode: Mode) -> Result<Vec<u8>, Reject>
         }
         if layout.lifted_reached.get(k).copied().unwrap_or(false) {
             let f = expr::emit_lifted_lambda(db, k, layout, mode)?;
+            // Same per-function emit-size backstop as an ordinary body (a lifted lambda can explode too).
+            expr::enforce_fn_emit_budget(&f)?;
             out.push('\n');
             out.push_str(&f);
             // ASYNC (Option A uniform ABI): the lifted fn is an `async fn`, and its closure VALUE is
@@ -1190,6 +1192,10 @@ fn emit_signature(
     // become `Box::pin(callee(env, …)).await`; a self-tail-recursive body becomes a `loop` (so `def` is
     // passed to detect a self-call).
     let body_src = expr::emit_body(db, body, params, def, layout, mode)?;
+    // Per-function emit-size backstop: a handler-derived Core DAG re-descended per reference can serialize
+    // into ONE multi-MB function body rustc cannot build ("artifact did not build"); decline it cleanly
+    // instead. See `expr::RUST_FN_EMIT_BUDGET`. Durable linear fix = sharing-aware emit (separate increment).
+    expr::enforce_fn_emit_budget(&body_src)?;
     let vis = if public { "pub " } else { "" };
     // The function NAME via `fn_ident` — sanitized (`sum-to` → `sum_to`) and UNIQUED per definition when a
     // β-copied do-local worker would otherwise emit two `fn`s of the same name (E0428). The SAME mapping a

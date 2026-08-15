@@ -153,6 +153,50 @@ impl LoopGroup {
     }
 }
 
+/// Per-FUNCTION emitted-source-size backstop (bytes of ONE function body's Rust text). The Rust emit
+/// walk RE-DESCENDS each shared `Core` `StructId` and re-emits its subtree, so a handler that partial-
+/// evaluates into a threaded state referenced 2+ times per step — either fanned out over K>=3 resume/
+/// next-state branches, OR a BRANCH-FREE chain where each step's compound feeds the next as a value
+/// used 2x (the `nsq1` Newton-sqrt witness: `(x + t/x)/2` chained over 5 `improve`s → ~2^5 × the nested
+/// structure) — serializes as a TREE whose ONE function body blows up super-linearly. Unlike the wasm
+/// backend (whose invalid module trips the engine function-size limit and whose emit already declines via
+/// `EMIT_INSTRUCTION_BUDGET`), the Rust backend has no such bound today, so it hands `rustc` a multi-MB
+/// single expression that never finishes parse/typecheck — the corpus gate reports the opaque "artifact
+/// did not build" (a `Ran::BadArtifact` FAIL) instead of a clean decline.
+///
+/// This bound DECLINES cleanly (reject-not-BadArtifact) once ONE function body's emitted text crosses it,
+/// so a run-away body grades `todo` (the compiler can't-yet-handle it) rather than emitting an unbuildable
+/// artifact. It is the Rust twin of the wasm `EMIT_INSTRUCTION_BUDGET`; the durable LINEAR fix is the same
+/// sharing-aware emit (bind a 2+-reached node once into a `Core::Let` slot), a separate increment blocked
+/// on the Perceus dup/drop seam.
+///
+/// CALIBRATION (measured, corpus-wide rust-emit sweep 2026-08-15, 6912 cases): the largest single function
+/// body that `rustc` actually BUILDS is `spec/semantics/14c-effects-and-handlers` case 360 at ~2.16MB
+/// (parse+typecheck in ~8s). The next-larger normal case (case 564, ~5.49MB single fn) already TIMES OUT
+/// in `rustc` (>149s) — i.e. it is ALREADY an "artifact did not build", so declining it is an improvement,
+/// not a regression. The smallest INVALID handler-fold probe is `rps1`/`nsq1` at ~6.9-7.07MB. 4_000_000
+/// sits ~1.85x above the largest BUILDABLE body (2.16MB) and below every unbuildable one — no currently-
+/// passing rust case is false-declined (verified: no buildable single fn exceeds ~2.16MB), while `nsq1`,
+/// `rps1`, `case564`, and the dst*/pwm/trn explosions all decline. A legitimately large LINEAR body stays
+/// far under it (real code does not emit a single >4MB function).
+pub(super) const RUST_FN_EMIT_BUDGET: usize = 4_000_000;
+
+/// Decline a function whose emitted body exceeds [`RUST_FN_EMIT_BUDGET`] — the per-function backstop that
+/// turns a super-linear emit into a clean `todo` decline instead of an unbuildable multi-MB artifact.
+/// Called on each emitted function body (ordinary + lifted). See [`RUST_FN_EMIT_BUDGET`] for the mechanism
+/// and calibration.
+pub(super) fn enforce_fn_emit_budget(body: &str) -> Result<(), Reject> {
+    if body.len() > RUST_FN_EMIT_BUDGET {
+        return Err(Reject::decline(
+            "emit-walk function-size budget exceeded: a handler-derived Core DAG serializes as a tree \
+             whose one function body exceeds what rustc can compile (a resume/next-state fan-out or a \
+             chained compound threaded state re-descended per reference); pending sharing-aware emit that \
+             binds a shared subtree once",
+        ));
+    }
+    Ok(())
+}
+
 /// Render a function body as the Rust expression that is its return value. Builds the initial
 /// environment from the function's parameters (each binder → its emitted name), then renders the body
 /// core. `self_def` is the function's own `db.defs` index — used to detect a SELF-tail-call and, when
