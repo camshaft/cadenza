@@ -12323,3 +12323,96 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 121212120712121200 Int64))
   (call   main (: 0 Int64)) (output (: 21212120699020201 Int64)))
+
+;; ── Phase-change heater (constant-guard face), rule-90 automaton, water jugs (breaker batch 288) ──
+(case "phs5 inner guard made CONSTANT (latent never checked) — each tick delivers one quantum which either RAISES the temperature by a degree or, exactly at the melting point with latent heat unpaid, pays two units of latent answering a tagged fifty-plus row, and the warm seed climbs straight through while the cold seed hits the plateau and stalls there"
+  (input  (do
+            (effect P
+              (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle P (tuple (+ (% n 6) 1) (: 0 Int64))
+                ((tick () st
+                  (match st
+                    ((tuple temp latent)
+                      (if (= temp 3)
+                          (if (< 0 6)
+                              (resume (+ 50 (+ latent 2)) (tuple temp (+ latent 2)))
+                              (resume (+ temp 1) (tuple (+ temp 1) latent)))
+                          (resume (+ temp 1) (tuple (+ temp 1) latent))))))
+)
+                (let ((a (P.tick)))
+                  (let ((b (P.tick)))
+                    (let ((c (P.tick)))
+                      (let ((d (P.tick)))
+                        (let ((e (P.tick)))
+                          (let ((f (P.tick)))
+                            (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 60708091011 Int64))
+  (call   main (: 0 Int64)) (output (: 20352545658 Int64)))
+
+(case "cel1 a RULE-NINETY cellular automaton in one Int64 byte — step XORs the left-shifted and right-shifted worlds masked to eight bits answering the new generation, density popcounts between steps, and the seeds' initial worlds diverge into different orbits with different densities"
+  (input  (do
+            (effect C
+              (op step (-> Int64))
+              (op density (-> Int64)))
+            (def (bits (: b Int64) (: acc Int64))
+              (if (= b 0) acc (bits (>> b 1) (+ acc (& b 1)))))
+            (def (main (: n Int64))
+              (handle C (+ (% n 16) 4)
+                ((step () w
+                  (resume (^ (& (>> w 1) 255) (& (<< w 1) 255))
+                          (^ (& (>> w 1) 255) (& (<< w 1) 255))))
+                 (density () w (resume (bits w 0) w)))
+                (let ((a (C.step)))
+                  (let ((b (C.density)))
+                    (let ((c (C.step)))
+                      (let ((d (C.step)))
+                        (let ((e (C.density)))
+                          (let ((f (C.step)))
+                            (+ (* 1000 (+ (* 1000 (+ (* 1000 (+ (* 1000 (+ (* 1000 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 27004059107005227 Int64))
+  (call   main (: 0 Int64)) (output (: 10002017042003065 Int64)))
+
+(case "wtr1 the WATER-JUG puzzle over a five-cap and a three-cap jug — fill tops a jug, pour transfers the minimum of the source's content and the destination's headroom, empty drains, every answer packs both jugs as a*10+b, and the seed picks WHICH jug the routine works from so one run reaches the classic four-measure states while the other cycles"
+  (input  (do
+            (effect J
+              (op fill (-> Int64 Int64))
+              (op pour (-> Int64 Int64 Int64))
+              (op emptyj (-> Int64 Int64)))
+            (def (capof (: i Int64)) (if (= i 0) 5 3))
+            (def (main (: n Int64))
+              (handle J (tuple (: 0 Int64) (: 0 Int64))
+                ((fill (i) st
+                  (match st
+                    ((tuple a b)
+                      (if (= i 0)
+                          (resume (+ 50 b) (tuple 5 b))
+                          (resume (+ (* a 10) 3) (tuple a 3))))))
+                 (pour (src dst) st
+                  (match st
+                    ((tuple a b)
+                      (if (= src 0)
+                          (if (< (- 3 b) a)
+                              (resume (+ (* (- a (- 3 b)) 10) 3) (tuple (- a (- 3 b)) 3))
+                              (resume (+ (* 0 10) (+ b a)) (tuple 0 (+ b a))))
+                          (if (< (- 5 a) b)
+                              (resume (+ 50 (- b (- 5 a))) (tuple 5 (- b (- 5 a))))
+                              (resume (+ (* (+ a b) 10) 0) (tuple (+ a b) 0)))))))
+                 (emptyj (i) st
+                  (match st
+                    ((tuple a b)
+                      (if (= i 0)
+                          (resume b (tuple 0 b))
+                          (resume (* a 10) (tuple a 0)))))))
+                (let ((p (J.fill (if (= (% n 3) 1) 1 0))))
+                  (let ((q (J.pour (if (= (% n 3) 1) 1 0) (if (= (% n 3) 1) 0 1))))
+                    (let ((r (J.fill (if (= (% n 3) 1) 1 0))))
+                      (let ((s (J.pour (if (= (% n 3) 1) 1 0) (if (= (% n 3) 1) 0 1))))
+                        (let ((t (J.emptyj (if (= (% n 3) 1) 0 1))))
+                          (let ((u (J.pour (if (= (% n 3) 1) 1 0) (if (= (% n 3) 1) 0 1))))
+                            (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 p) q)) r)) s)) t)) u)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 33033510110 Int64))
+  (call   main (: 0 Int64)) (output (: 502353535023 Int64)))
