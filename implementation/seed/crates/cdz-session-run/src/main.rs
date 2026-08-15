@@ -41,10 +41,12 @@ use clap::Parser;
 use cdz_agent_host::async_host::Inbound;
 use cdz_agent_host::effect_reply::ReplyTokenRegistry;
 use cdz_agent_host::emit::EmitExecutor;
+use cdz_agent_host::factory::{ComponentSessionFactory, FileLogSinkBuilder, LogSinkBuilder};
 use cdz_agent_host::host::{AgentHost, HostedSession, SessionId};
 use cdz_agent_host::lifecycle::{LifecycleExecutor, LifecycleOp};
 use cdz_agent_host::reply_exec::{reply_settle_channel, ReplyExecutor};
 use cdz_agent_host::userspace_effect_exec::{HandlerResolver, UserspaceEffectExecutor};
+use cdz_kernel::blob::BlobStore;
 use cdz_kernel::component_store::ComponentStore;
 use cdz_kernel::effect::{effect_ct, Payload};
 use cdz_kernel::event::{ContentType, EventBody};
@@ -127,6 +129,18 @@ struct Args {
     /// Stall threshold (ms) for the terminal status snapshot. `0` = no clock (Active/Quiescent/Closed).
     #[arg(long, default_value_t = 0)]
     stall_after_ms: u64,
+    /// A session alias to REPLAY-EQUALS-RECOVER check (I4). When given, that session's whole event log is
+    /// persisted through a durable file sink as it drives (genesis persisted first, then every fold's
+    /// events); after the fixpoint the runner reads its LIVE end-state, removes it from the host (the crash
+    /// boundary), then RECOVERS it from the persisted log into a FRESH host via
+    /// `AgentHost::recover_hosted_session` (reloading the reducer + resolving its heap dep from a populated
+    /// `MemBlobStore` + the same `--store` `ComponentStore`), and asserts the RECOVERED end-state
+    /// (kv + status + open-effect count) EQUALS the captured live one. Emits `recover-equal\t<alias>\tok` on
+    /// a match or `recover-mismatch\t<alias>\t<detail>` on a divergence — the grader pins the `ok`. Repeatable
+    /// (check several sessions). A checked session drives IDENTICALLY to an unchecked one; only its log is
+    /// additionally persisted.
+    #[arg(long = "recover-check", value_name = "ALIAS")]
+    recover_checks: Vec<String>,
 }
 
 /// A family→handler-SessionId resolver built from the case's `serves` map — the `HandlerResolver` the
@@ -269,6 +283,39 @@ fn load_reducer(
     Ok((reducer, Hash::of(&bytes)))
 }
 
+/// The reducer + direct-dep bytes a `--recover-check` session stashes so its log can be RECOVERED after the
+/// drive: `recover_and_build` reloads the reducer from a blob store by the genesis reducer-hash and resolves
+/// its direct deps (the `cadenza:runtime/heap` component) from the SAME blob store by their content hash, so
+/// the recovery `MemBlobStore` must carry both. (The heap dep's own transitive `cadenza:nfc/normalize`
+/// by-NAME import is resolved separately by the `--store` `ComponentStore` handed to the recovery factory.)
+struct RecoverBytes {
+    reducer_hash: Hash,
+    reducer_bytes: Vec<u8>,
+    dep_bytes: Vec<(Hash, Vec<u8>)>,
+}
+
+/// Read a reducer's raw component bytes + its direct-dep bytes from the store (both content-addressed) — the
+/// blob material a recovery `MemBlobStore` needs to reload + resolve the reducer, mirroring `load_reducer`'s
+/// live resolution. Only called for `--recover-check` sessions.
+fn load_recover_bytes(path: &std::path::Path, store: &ComponentStore) -> Result<RecoverBytes> {
+    let reducer_bytes =
+        std::fs::read(path).with_context(|| format!("reading reducer {}", path.display()))?;
+    let reducer = AsyncComponentReducer::from_component_bytes(&reducer_bytes)
+        .map_err(|e| anyhow::anyhow!("{} is not a valid component: {e:?}", path.display()))?;
+    let mut dep_bytes = Vec::new();
+    for dep in reducer.deps() {
+        let b = store.get_by_hash(&dep.hash).map_err(|e| {
+            anyhow::anyhow!("store has no blob for dep {:?}: {e:?}", dep.import_name)
+        })?;
+        dep_bytes.push((dep.hash, b));
+    }
+    Ok(RecoverBytes {
+        reducer_hash: Hash::of(&reducer_bytes),
+        reducer_bytes,
+        dep_bytes,
+    })
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -374,6 +421,25 @@ async fn main() -> Result<()> {
     let (reify_observe_tx, mut reify_observe_rx) =
         tokio::sync::mpsc::unbounded_channel::<ReifyObservation>();
 
+    // §I4 replay-equals-recover: for each `--recover-check <alias>` session the runner persists its whole log
+    // through a durable FILE sink as it drives, then after the fixpoint recovers it from disk and asserts the
+    // recovered end-state equals the live one. Prepare the per-invocation temp log root + the blob material
+    // (reducer + heap-dep bytes) each checked session will need to reload+resolve its reducer at recover time.
+    // A hermetic temp dir under the system TMPDIR (same std::fs viability the live-fs FsExecutor tests use);
+    // keyed by process id so concurrent gate cases don't collide, cleaned up at the end of the run.
+    let recover_check: std::collections::HashSet<String> =
+        args.recover_checks.iter().cloned().collect();
+    let recover_log_root = if recover_check.is_empty() {
+        None
+    } else {
+        let mut root = std::env::temp_dir();
+        root.push(format!("cdz-recover-check-{}", std::process::id()));
+        std::fs::create_dir_all(&root)
+            .with_context(|| format!("creating recover-check log root {}", root.display()))?;
+        Some(root)
+    };
+    let mut recover_bytes_of: HashMap<String, RecoverBytes> = HashMap::new();
+
     // Build the host + spawn every session with its own CompositeExecutor:
     //  - EVERY session gets a ReplyExecutor (family effect/reply) so it can REPLY when it serves an effect,
     //    and a UserspaceEffectExecutor fallback so it can PERFORM an effect served by a peer. A session that
@@ -438,6 +504,29 @@ async fn main() -> Result<()> {
             Box::new(authz),
             executor,
         );
+        // §I4: a `--recover-check` session persists its log through a durable file sink so it can be recovered
+        // after the drive. `with_persisted_sink` appends genesis FIRST (else recover_and_build finds no
+        // genesis at events[0]) then attaches the sink write-through, so every subsequent fold's events land
+        // on disk. Also stash the reducer + heap-dep bytes the post-drive recovery blob needs. An unchecked
+        // session spawns exactly as before (in-memory log).
+        let hosted = if recover_check.contains(alias) {
+            let root = recover_log_root
+                .as_ref()
+                .expect("root set when checks nonempty");
+            let sink = FileLogSinkBuilder::new(root)
+                .build(&owner)
+                .await
+                .map_err(|e| anyhow::anyhow!("recover-check: build file sink for {alias}: {e}"))?
+                .ok_or_else(|| anyhow::anyhow!("recover-check: file backend yielded no sink"))?;
+            let hosted = hosted
+                .with_persisted_sink(sink)
+                .await
+                .map_err(|e| anyhow::anyhow!("recover-check: persist genesis for {alias}: {e}"))?;
+            recover_bytes_of.insert(alias.clone(), load_recover_bytes(path, &store)?);
+            hosted
+        } else {
+            hosted
+        };
         host.spawn(owner, hosted);
     }
 
@@ -841,6 +930,57 @@ async fn main() -> Result<()> {
             ));
         }
     }
+
+    // §I4 replay-equals-recover: for each checked session, capture its LIVE end-state, remove it from the host
+    // (the crash boundary — dropping the live session releases the file sink so the persisted log is flushed +
+    // closed before we read it back), then RECOVER it from disk into a fresh host and assert the recovered
+    // end-state EQUALS the live one. This is the platform analog of the kernel's `loop_and_recovery.rs`
+    // reference (KV reconstructed + open-effect obligations preserved across a crash+recover). Emits
+    // `recover-equal\t<alias>\tok` on a match (the grader pins it) or `recover-mismatch\t<alias>\t<detail>`.
+    for alias in &session_specs
+        .iter()
+        .filter(|(a, _)| recover_check.contains(a))
+        .map(|(a, _)| a.clone())
+        .collect::<Vec<_>>()
+    {
+        let id = id_of[alias];
+        // Capture the live end-state (kv sorted, status, open-effect count) BEFORE removing the session.
+        let Some(hosted) = host.get(&id) else {
+            out.push_str(&format!(
+                "recover-mismatch\t{alias}\tlive session absent at recover-check time\n"
+            ));
+            continue;
+        };
+        let live = capture_end_state(hosted.session(), args.stall_after_ms);
+        // Crash boundary: remove the live session so its file sink drops (flush+close) before recover reads.
+        drop(host.remove(&id));
+
+        let recovered_state = recover_and_capture(
+            alias,
+            id,
+            &recover_bytes_of[alias],
+            &store,
+            &recover_log_root,
+        )
+        .await;
+        match recovered_state {
+            Ok(rec) if rec == live => out.push_str(&format!("recover-equal\t{alias}\tok\n")),
+            Ok(rec) => out.push_str(&format!(
+                "recover-mismatch\t{alias}\tlive={} recovered={}\n",
+                live.render_inline(),
+                rec.render_inline()
+            )),
+            Err(e) => out.push_str(&format!(
+                "recover-mismatch\t{alias}\t{}\n",
+                e.replace(['\t', '\n'], " ")
+            )),
+        }
+    }
+    // Clean up the per-invocation recover-check log root (best-effort; a leftover temp dir is harmless).
+    if let Some(root) = &recover_log_root {
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     print!("{out}");
     if budget_exceeded {
         anyhow::bail!(
@@ -850,6 +990,107 @@ async fn main() -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// The comparable end-state of a session for the §I4 replay-equals-recover check: the sorted KV pairs, the
+/// terminal status, and the count of open (dispatched-but-unsettled) effect obligations. `PartialEq` is the
+/// equivalence the check asserts — a recovered session must reconstruct the SAME observable state a crash
+/// interrupted (KV folded from the log + the open obligations the driver must re-drive), matching the
+/// kernel's `loop_and_recovery.rs` "KV reconstructed + open_effects preserved" contract at the platform tier.
+#[derive(PartialEq, Eq)]
+struct EndState {
+    kv: Vec<(Vec<u8>, Vec<u8>)>,
+    status: &'static str,
+    open_effects: usize,
+}
+
+impl EndState {
+    /// A one-line render for a `recover-mismatch` detail (only emitted on divergence — the pass path is the
+    /// bare `ok` token, so this never appears in a green baseline).
+    fn render_inline(&self) -> String {
+        let kv: Vec<String> = self
+            .kv
+            .iter()
+            .map(|(k, v)| format!("{}={}", render_key(k), to_hex(v)))
+            .collect();
+        format!(
+            "status={} open_effects={} kv=[{}]",
+            self.status,
+            self.open_effects,
+            kv.join(",")
+        )
+    }
+}
+
+/// Snapshot a session's comparable end-state (sorted KV + status + open-effect count) for the I4 check.
+fn capture_end_state(session: &cdz_kernel::kernel::Session, stall_after_ms: u64) -> EndState {
+    let mut kv: Vec<(Vec<u8>, Vec<u8>)> = session
+        .kv()
+        .prefix_scan(b"")
+        .into_iter()
+        .map(|(k, v)| (k.as_ref().to_vec(), v.as_ref().to_vec()))
+        .collect();
+    kv.sort();
+    EndState {
+        kv,
+        status: state_str(session.status_snapshot(None, stall_after_ms).state),
+        open_effects: session.open_effects(),
+    }
+}
+
+/// Recover a `--recover-check` session from its persisted file log into a FRESH host and snapshot the
+/// recovered end-state. Builds a recovery `ComponentSessionFactory` whose `MemBlobStore` carries the reducer
+/// bytes plus its direct heap-dep bytes (both content-addressed, so `recover_and_build` reloads and resolves
+/// them) while its `--store` `ComponentStore` resolves the heap dep's transitive `cadenza:nfc/normalize`
+/// by-name import. The recovered session re-registers under the SAME `id` (the runner-supplied one), read
+/// back through the identical `host.get(id).session()` surface the live path uses.
+async fn recover_and_capture(
+    alias: &str,
+    id: SessionId,
+    rb: &RecoverBytes,
+    store: &ComponentStore,
+    log_root: &Option<std::path::PathBuf>,
+) -> Result<EndState, String> {
+    let root = log_root
+        .as_ref()
+        .ok_or_else(|| "recover-check: no log root".to_string())?;
+    // Read the persisted log back from disk (genesis + every folded turn).
+    let recovered = FileLogSinkBuilder::new(root)
+        .recover(&id)
+        .await
+        .map_err(|e| format!("recover {alias}: {e}"))?
+        .ok_or_else(|| format!("recover {alias}: no persisted log at the sink path"))?;
+    // The recovery blob: reducer + its direct heap-dep bytes, keyed by content hash (recover_and_build reads
+    // the reducer-hash off the recovered genesis + resolves the reducer's declared deps from this store).
+    let mut blob = cdz_kernel::blob::MemBlobStore::new();
+    blob.put(
+        rb.reducer_hash,
+        bytes::Bytes::from(rb.reducer_bytes.clone()),
+    )
+    .await
+    .map_err(|e| format!("recover {alias}: blob put reducer: {e}"))?;
+    for (hash, dep) in &rb.dep_bytes {
+        blob.put(*hash, bytes::Bytes::from(dep.clone()))
+            .await
+            .map_err(|e| format!("recover {alias}: blob put dep: {e}"))?;
+    }
+    // A minimal executor set for the recovered session: the replay RE-FOLDS the log through the reducer to
+    // rebuild KV, but does NOT re-drive live effects (a deferred effect simply lands back as an open
+    // obligation) — so a bare CompositeExecutor suffices (we only READ the recovered end-state, never drive
+    // it further). Dep-free reducers need no store; a heap-dep reducer needs the ComponentStore for nfc.
+    let executors = cdz_kernel::executor::CompositeExecutor::new;
+    let authz = || Box::new(SuiteAuthorizer) as Box<dyn cdz_kernel::authz::Authorize>;
+    let mut factory =
+        ComponentSessionFactory::new(blob, executors, authz).with_component_store(store.clone());
+    let mut fresh = AgentHost::new();
+    fresh
+        .recover_hosted_session(id, recovered, &mut factory)
+        .await
+        .map_err(|e| format!("recover_hosted_session {alias}: {e}"))?;
+    let hosted = fresh
+        .get(&id)
+        .ok_or_else(|| format!("recover {alias}: recovered session not registered under id"))?;
+    Ok(capture_end_state(hosted.session(), 0))
 }
 
 /// Recover the opaque request payload from a forwarded effect-request's framed bytes:

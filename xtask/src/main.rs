@@ -4468,6 +4468,12 @@ struct PlatformCaseRecord {
     /// the reify descriptor→hash round-trip non-vacuously (a status-only reify assertion would miss a silent
     /// drop). Present-vs-absent (not a literal hash: the descriptor-encoding is v-rb's to own, a literal brittle).
     expect_effect_schema_hashes: Vec<(String, String)>,
+    /// `(recover-check <alias>)` (0-or-more) → session aliases to REPLAY-EQUALS-RECOVER check (§I4). The
+    /// corpus reader renders each as a `recover-check\t<alias>` line; the grade path passes
+    /// `--recover-check <alias>` to the runner (persist the log + recover after the drive) and asserts the
+    /// runner emitted `recover-equal\t<alias>\tok` — the recovered session's kv+status+open-effects EQUALLED
+    /// the live one. A `recover-mismatch` line (or a missing `recover-equal`) fails the case.
+    recover_checks: Vec<String>,
 }
 
 /// One expected dispatched effect (I2): session `from` performed effect `family`, optionally carrying a
@@ -4506,6 +4512,7 @@ fn parse_platform_records(text: &str) -> Vec<PlatformCaseRecord> {
     let mut expect_fault: Option<String> = None;
     let mut children: Vec<(String, String)> = Vec::new();
     let mut expect_effect_schema_hashes: Vec<(String, String)> = Vec::new();
+    let mut recover_checks: Vec<String> = Vec::new();
     for line in text.lines() {
         if line == "---" {
             records.push(PlatformCaseRecord {
@@ -4522,6 +4529,7 @@ fn parse_platform_records(text: &str) -> Vec<PlatformCaseRecord> {
                 expect_fault: expect_fault.take(),
                 children: std::mem::take(&mut children),
                 expect_effect_schema_hashes: std::mem::take(&mut expect_effect_schema_hashes),
+                recover_checks: std::mem::take(&mut recover_checks),
             });
             continue;
         }
@@ -4637,6 +4645,9 @@ fn parse_platform_records(text: &str) -> Vec<PlatformCaseRecord> {
             // `expect-fault\t<kind>` (0-or-1) — the whole run must fault with a stderr marker containing
             // `<kind>` (e.g. `SettleUnbounded`). A later line overrides an earlier one (matches the reader).
             "expect-fault" => expect_fault = Some(val.to_string()),
+            // `recover-check\t<alias>` (0-or-more, §I4) — the runner persists this session's log + recovers it
+            // after the drive; the grader passes `--recover-check <alias>` and asserts a `recover-equal` line.
+            "recover-check" => recover_checks.push(val.to_string()),
             _ => {}
         }
     }
@@ -4674,6 +4685,11 @@ struct ObservedRun {
     /// `effect-schema-hash\t<from>\t<family>\tpresent` line — matched against an `(effect .. (schema-hash
     /// present))` expectation to pin the reify descriptor→hash round-trip.
     effect_schema_hashes: Vec<(String, String)>,
+    /// Aliases the runner recover-checked and found EQUAL (§I4): from each `recover-equal\t<alias>\tok` line.
+    recover_ok: Vec<String>,
+    /// Recover-check DIVERGENCES: `(alias, detail)` from each `recover-mismatch\t<alias>\t<detail>` line — a
+    /// recovered end-state that did NOT equal the live one (fails the case with the detail in the message).
+    recover_mismatches: Vec<(String, String)>,
 }
 
 /// Parse a `cdz-session-run` invocation's stdout (per-alias `end-*` lines + whole-run `effect` lines) into
@@ -4740,6 +4756,12 @@ fn parse_observed_run(stdout: &str) -> ObservedRun {
                     .kv
                     .insert((*key).to_string(), (*value).to_string());
             }
+            // `recover-equal\t<alias>\tok` — the recovered session's end-state equalled the live one (§I4).
+            ["recover-equal", alias, "ok"] => run.recover_ok.push((*alias).to_string()),
+            // `recover-mismatch\t<alias>\t<detail>` — recovered ≠ live (fails the case with `detail`).
+            ["recover-mismatch", alias, detail] => run
+                .recover_mismatches
+                .push(((*alias).to_string(), (*detail).to_string())),
             _ => {}
         }
     }
@@ -4928,6 +4950,12 @@ fn grade_platform_case(
     for (alias, family, _value) in &rec.kickoffs {
         cmd.args(["--kickoff", &format!("{alias}={family}=")]);
     }
+    // §I4 replay-equals-recover: pass one `--recover-check <alias>` per `(recover-check <alias>)` clause so
+    // the runner persists that session's log + recovers it after the drive, emitting `recover-equal` / a
+    // `recover-mismatch` line the grader asserts below.
+    for alias in &rec.recover_checks {
+        cmd.args(["--recover-check", alias]);
+    }
     // A fault-expecting case (an unbounded effect/reply ping-pong) would otherwise run to the runner's default
     // 1000-delivery budget — 1000 wasm instantiations, far too slow for the gate. Cap it low: a genuine
     // divergence trips the SettleUnbounded fault within a handful of deliveries (each fold re-performs), so a
@@ -5096,6 +5124,25 @@ fn grade_platform_case(
             return Grade::Fail(format!(
                 "expect-effect-schema-hash: expected reified ({from} {family}) to carry a schema_hash (present), \
                  but no matching effect-schema-hash was observed"
+            ));
+        }
+    }
+    // §I4 replay-equals-recover: each `(recover-check <alias>)` must yield a `recover-equal <alias> ok` — the
+    // recovered session's end-state (kv + status + open-effects) EQUALLED the live one after a persist +
+    // crash + recover round-trip. A `recover-mismatch` (recovered ≠ live) fails with the runner's detail; a
+    // missing `recover-equal` (the recover path errored before emitting either — e.g. a reducer that couldn't
+    // reload) also fails. Non-vacuous: the checked reducer writes a known kv AND leaves an open effect, so a
+    // recover that dropped state or lost the obligation diverges.
+    for alias in &rec.recover_checks {
+        if let Some((_, detail)) = obs.recover_mismatches.iter().find(|(a, _)| a == alias) {
+            return Grade::Fail(format!(
+                "recover-check {alias}: recovered end-state did NOT equal live: {detail}"
+            ));
+        }
+        if !obs.recover_ok.iter().any(|a| a == alias) {
+            return Grade::Fail(format!(
+                "recover-check {alias}: no recover-equal observed (the recover path errored before comparing \
+                 — see the runner stderr)"
             ));
         }
     }
