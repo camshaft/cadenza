@@ -3239,6 +3239,24 @@
             ((None _) false)))
   (output (: true Bool)))
 
+(case "Char.from-int on a genuinely-runtime integer computes Some/None at run time (Char-rep 4/N follow-on)"
+  (doc    "`(Char.from-int n)` with a RUNTIME `n` (a def PARAMETER supplied by `(call …)`, not a constant
+           fold) runs the exact scalar-validity check (`0..=0x10FFFF`, excluding surrogates `0xD800..=0xDFFF`)
+           and Option-wrap AT RUN TIME — the runtime companion of the constant from-int cases above, unblocked
+           once a runtime `Char` became a representable value (Char-rep 4/N: a boxable `Some` payload). Each
+           `(call main v)` binds `c` = `#\\<v>` and returns its code point on a valid scalar, else -1: 97 → a
+           valid `#\\a` → 97; 0 → U+0000 valid → 0; 55296 → U+D800 surrogate → None → -1; 1114112 → U+110000
+           out-of-range → None → -1; -1 → negative → None → -1. This is the SAME domain the fold + the rust
+           `char::from_u32` path enforce, now at run time.")
+  (input  (do
+            (def (main (: n Int64)) (match (Char.from-int n) ((Some c) (Char.to-int c)) ((None u) -1)))
+            (export main)))
+  (call   main (: 97 Int64)) (output (: 97 Int64))
+  (call   main (: 0 Int64)) (output (: 0 Int64))
+  (call   main (: 55296 Int64)) (output (: -1 Int64))
+  (call   main (: 1114112 Int64)) (output (: -1 Int64))
+  (call   main (: -1 Int64)) (output (: -1 Int64)))
+
 (case "a char literal naming a surrogate is a reader error"
   (doc    "`#\\u+D800` names U+D800, a high surrogate — NOT a Unicode scalar value — so the char literal
            denotes no valid scalar and the reader rejects it (CDZ0002, collections-and-text.md #A Char Is
@@ -3497,24 +3515,26 @@
 ; because its `(Char.from-int 98)` argument is a compile-time constant that reduces to `#\b` before the
 ; match. A GENUINELY runtime char — `(Char.from-int n)` where `n` is a def PARAMETER supplied by `(call …)`
 ; — has no runtime Char representation in the seed yet (a Char is not `ty_heap_walkable`: the scalar runtime
-; char rep is a later increment, select.rs ~5413), so a match (or `=`) on it DECLINES. This grades that
-; boundary: a runtime char scrutinee is a sound reject-don't-miscompile decline, NOT a bug — the constant
-; path dispatches correctly (cases above) and the runtime path refuses rather than emitting a wrong compare.
-; A future change that made a runtime char match/`=` silently MISCOMPILE (a truncated-code-unit compare, a
-; wrong scalar box) instead of declining would flip this `(declines)`. Upgrades to an executing witness when
-; the runtime Char rep lands.
-(case "a match on a genuinely-runtime char (from a runtime Char.from-int) declines pending the runtime Char rep"
+; char rep has since LANDED (Char-rep 1-4/N: a Char is an i32 code-point slot, dispatched by scalar value,
+; boxable as a compound element / sum payload; runtime `Char.from-int` computes the Option at run time). So a
+; runtime char match now EXECUTES by scalar value — the executing witness the old decline-pin promised (case
+; below). A future change that made it silently MISCOMPILE (a truncated-code-unit compare, a wrong scalar
+; box) instead of dispatching correctly would flip this case's outputs.
+(case "a match on a genuinely-runtime char (from a runtime Char.from-int) dispatches by scalar value"
   (doc    "`classify` matches a Char against char-literal arms; called with `(Char.from-int n)` where `n` is
-           a runtime Int64 PARAMETER (so the char is not constant-folded to a literal like the cases above),
-           the seed has no runtime scalar-char representation to dispatch on, so it soundly DECLINES rather
-           than emitting a possibly-truncated compare. Contrast the constant `(Char.from-int 98)` case above
-           (which folds to `#\\b` and matches → 2). Grades the genuinely-runtime char match decline as an
-           intentional, tracked boundary pending the runtime Char rep (a Char is not ty_heap_walkable yet).")
+           a runtime Int64 PARAMETER (so the char is NOT constant-folded to a literal like the cases above).
+           This EXECUTES now that the runtime Char rep landed (Char-rep 1-4/N + runtime `Char.from-int`): the
+           runtime char is an i32 code-point slot dispatched by scalar value (3/N), and `Char.from-int` on a
+           runtime int computes the Option at run time. `(call main 97)` → `#\\a` → arm 1; `98` → `#\\b` → arm
+           2; `99` → `#\\c` → wildcard 0. (Was a decline-pin pending the rep; now the executing witness the
+           old pin promised.)")
   (input  (do
             (def (classify (: c Char)) (match c (#\a 1) (#\b 2) (_ 0)))
             (def (main (: n Int64)) (classify (Option.expect (Char.from-int n) "in range")))
             (export main)))
-  (declines))
+  (call   main (: 97 Int64)) (output (: 1 Int64))
+  (call   main (: 98 Int64)) (output (: 2 Int64))
+  (call   main (: 99 Int64)) (output (: 0 Int64)))
 
 ; --- String operations at RUN TIME: a string not fixed at compile time ---------------------------------
 ; The string cases above operate on CONSTANT string literals, so their lengths / slices / concatenations

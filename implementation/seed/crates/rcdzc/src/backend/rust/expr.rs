@@ -3035,6 +3035,16 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             let c = emit(db, operand, env, ctx)?;
             Ok(format!("(({c}) as u32 as i64)"))
         }
+        // `Char.from-int n` on a runtime Int64 (Char-rep 4/N follow-on) — the FALLIBLE, TOTAL conversion
+        // `Int64 -> (Option Char)`. The native rust rep of a `Char` is `char` and the built-in `Option` maps
+        // to Rust's own `Option`, so `u32::try_from(n).ok().and_then(char::from_u32)` IS the value: `try_from`
+        // rejects a negative / `> u32` value (→ None) and `char::from_u32` performs the EXACT scalar-validity
+        // test (excludes surrogates + `> U+10FFFF`) — the same test `lower`'s constant fold applies. Never
+        // panics/traps. `disc_some`/`disc_none` are the wasm sum tags, irrelevant on the native-`Option` path.
+        Core::IntToCharChecked { operand, .. } => {
+            let n = emit(db, operand, env, ctx)?;
+            Ok(format!("u32::try_from({n}).ok().and_then(char::from_u32)"))
+        }
         // A runtime BigInt binary op — `+`/`-`/`*`/`/`/`%`. `add`/`sub`/`mul` are total; `div`/`rem` go
         // through `divmod` (returns `None` on a zero divisor → TRAP, matching the wasm `bigint-div`).
         Core::BigIntBinOp { op, lhs, rhs } => {

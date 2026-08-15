@@ -24062,9 +24062,15 @@ fn lower_char_from_int(db: &mut Db, id: StructId, n: StructId) -> Core {
                 }
             }
         }
-        _ => Core::Poison(Reject::decline(
-            "Char.from-int on a runtime integer is not yet computed (constant integers only)",
-        )),
+        // A RUNTIME integer (a param/local/`if`-join): emit the checked conversion node. The backend
+        // range-checks n against the Unicode-scalar domain and wraps the i32 code point into `Some`/`None`
+        // (the runtime companion of the constant fold above; Char-rep 4/N made a runtime `Char` a boxable
+        // `Some` payload, which is what this yields on success).
+        _ => Core::IntToCharChecked {
+            operand: n,
+            disc_some,
+            disc_none,
+        },
     }
 }
 

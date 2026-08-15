@@ -573,6 +573,20 @@ pub enum Core {
     CharToInt {
         operand: StructId,
     },
+    /// `Char.from-int n` on a RUNTIME integer (Char-rep 4/N follow-on) — the FALLIBLE, TOTAL conversion
+    /// `Int64 → (Option Char)`. A CONSTANT operand folds to `Some #\c` / `None` in `lower` and never reaches
+    /// here; this is the genuinely-runtime int (a param/local/`if`-join). `n` is a Unicode SCALAR iff it fits
+    /// `u32` AND `char::from_u32` accepts it (in `0..=0x10FFFF`, excluding the surrogates `0xD800..=0xDFFF`) —
+    /// the SAME test `lower`'s fold applies. On success the backend wraps the i32 code point (n narrowed to
+    /// the `Char` i32 slot, boxed like a narrow int per Char-rep 4/N) into the `disc_some` variant; otherwise
+    /// the `disc_none` variant. Never traps (`collections-and-text.md` §A Char Converts To And From An Integer
+    /// Totally). `disc_some`/`disc_none` are the built-in `Option`'s discriminants (the wasm sum tags; the
+    /// native-`Option` rust path ignores them and emits `u32::try_from(n).ok().and_then(char::from_u32)`).
+    IntToCharChecked {
+        operand: StructId,
+        disc_some: u32,
+        disc_none: u32,
+    },
     /// A runtime BigInt BINARY op — `+`/`-`/`*`/`/` (the runtime `bigint-add`/`-sub`/`-mul`/`-div`) or a
     /// comparison lowered through `bigint-cmp`. Present when at least one operand is a runtime `BigInt`
     /// (a constant pair folds via `num-bigint` in `lower`). Produces a `BigInt` handle for arithmetic;

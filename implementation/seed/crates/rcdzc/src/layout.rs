@@ -1278,7 +1278,9 @@ fn collect_closure_codes_at(db: &mut Db, id: StructId, out: &mut std::collection
         }
         Core::BigIntOfI64 { value } => collect_closure_codes(db, value, out),
         Core::BigIntToI64 { operand } => collect_closure_codes(db, operand, out),
-        Core::CharToInt { operand } => collect_closure_codes(db, operand, out),
+        Core::CharToInt { operand } | Core::IntToCharChecked { operand, .. } => {
+            collect_closure_codes(db, operand, out)
+        }
         Core::RationalOfIntWiden { value } => collect_closure_codes(db, value, out),
         Core::RationalNum { operand } | Core::RationalDen { operand } => {
             collect_closure_codes(db, operand, out)
@@ -1642,7 +1644,10 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
         }
         crate::core::Core::BigIntOfI64 { value } => collect_call_callees(db, value, out),
         crate::core::Core::BigIntToI64 { operand } => collect_call_callees(db, operand, out),
-        crate::core::Core::CharToInt { operand } => collect_call_callees(db, operand, out),
+        crate::core::Core::CharToInt { operand }
+        | crate::core::Core::IntToCharChecked { operand, .. } => {
+            collect_call_callees(db, operand, out)
+        }
         crate::core::Core::RationalOfIntWiden { value } => collect_call_callees(db, value, out),
         crate::core::Core::RationalNum { operand } | crate::core::Core::RationalDen { operand } => {
             collect_call_callees(db, operand, out)

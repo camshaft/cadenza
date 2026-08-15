@@ -88,6 +88,7 @@ pass	CROSS-TYPE @invariant: a value deconstructed from one @invariant newtype an
 pass	Char.from-int at U+E000 (first scalar after the surrogate block) is Some
 pass	Char.from-int at the last surrogate U+DFFF is None
 pass	Char.from-int at the maximum valid scalar U+10FFFF is Some
+pass	Char.from-int on a genuinely-runtime integer computes Some/None at run time (Char-rep 4/N follow-on)
 pass	Char.to-int reads a genuinely-runtime char (if-selected) by scalar value
 pass	DIAMOND effect: two middles each perform base's ONE effect; the entry's single handler serves both
 pass	DIAMOND: two middles import one base; the entry composes both and base's abstract type unifies
@@ -2344,7 +2345,7 @@ pass	a match init binds a per-arm HEAP list and the sibling init consumes it
 pass	a match not covering the scrutinee is a compile-time rejection
 pass	a match on a BigInt with a single catch-all binder binds and uses it
 pass	a match on a computed runtime value dispatches on the result
-pass	a match on a genuinely-runtime char (from a runtime Char.from-int) declines pending the runtime Char rep
+pass	a match on a genuinely-runtime char (from a runtime Char.from-int) dispatches by scalar value
 pass	a match on a record field selects a later literal arm
 pass	a match on a record-field-access scrutinee dispatches on the field value
 pass	a match on a runtime integer scrutinee producing a boolean

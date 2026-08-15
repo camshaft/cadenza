@@ -620,7 +620,9 @@ fn binding_escapes_dup_aware(
         // `Char.to-int`'s operand is a `Char` (an i32 SCALAR code point, never a heap handle), so it cannot
         // retain a heap reference — a binding used as the operand does NOT escape (recurse `tail_borrowed:
         // true`, like the scalar-yielding `BigIntToI64`).
-        Core::CharToInt { operand } => {
+        Core::CharToInt { operand } | Core::IntToCharChecked { operand, .. } => {
+            // The operand is a scalar (Char's i32 code point / Int64), never a heap handle, so it retains no
+            // reference — recurse `tail_borrowed: true` (like the scalar-yielding `BigIntToI64`).
             binding_escapes_dup_aware(db, operand, binder, true, dup_sites)
         }
         // The runtime Rational arithmetic/comparison ops BORROW their operand handles (`rational-add`/…/
@@ -1383,6 +1385,7 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
         | Core::RationalOfIntWiden { value: operand }
         | Core::BigIntToI64 { operand }
         | Core::CharToInt { operand }
+        | Core::IntToCharChecked { operand, .. }
         | Core::RationalNum { operand }
         | Core::RationalDen { operand }
         | Core::StrFromBytes { bytes: operand, .. }
@@ -2036,7 +2039,9 @@ fn mark_binder_dups_inner(
         }
         // `Char.to-int` reads its i32-scalar Char operand and yields an i64 — a scalar read, no handle
         // retained, so it BORROWS (like `BigIntToI64`).
-        Core::CharToInt { operand } => borrow(db, operand, live_after, sites),
+        Core::CharToInt { operand } | Core::IntToCharChecked { operand, .. } => {
+            borrow(db, operand, live_after, sites)
+        }
         // `rational-num`/`rational-den` BORROW the Rational operand (return a fresh BigInt handle).
         Core::RationalNum { operand } | Core::RationalDen { operand } => {
             borrow(db, operand, live_after, sites)
@@ -3496,6 +3501,14 @@ fn collect_used_ops_into(
         // `Char.to-int` uses NO runtime op — it is a pure wasm `i64.extend_i32_u` of the i32 code-point
         // slot. Just descend into the operand.
         Core::CharToInt { operand } => collect_used_ops_into(db, operand, out),
+        // `Char.from-int n` (runtime): the emit boxes the code point (box-int) into a `Some` and builds
+        // `Some`/`None` via sum-new (None's unit payload is the inline-unit constant, no arr-alloc). Collect
+        // those ops + recurse the operand.
+        Core::IntToCharChecked { operand, .. } => {
+            collect_used_ops_into(db, operand, out);
+            out.insert(OP_BOX_INT);
+            out.insert(OP_SUM_NEW);
+        }
         Core::BigIntBinOp { op, lhs, rhs } => {
             out.insert(match op {
                 crate::core::BigIntOp::Add => OP_BIGINT_ADD,
@@ -5008,6 +5021,7 @@ fn param_only_borrowed_or_backedge_rec(
         | Core::StrScalarLen { operand }
         | Core::BigIntToI64 { operand }
         | Core::CharToInt { operand }
+        | Core::IntToCharChecked { operand, .. }
         | Core::RationalNum { operand }
         | Core::RationalDen { operand } => recur(db, operand, true),
         Core::SumPayload { scrutinee, .. } | Core::SumExpect { scrutinee, .. } => {
@@ -9507,6 +9521,48 @@ fn emit(
         Core::CharToInt { operand } => {
             emit(db, operand, slots, base, high, scratch_ty, layout, out)?; // [code:i32]
             out.push(Lir::I64ExtendI32U); // → [code:i64]
+            Ok(())
+        }
+        // `Char.from-int n` on a runtime Int64 (Char-rep 4/N follow-on) — the FALLIBLE, TOTAL conversion
+        // `Int64 -> (Option Char)`. Evaluate `n` once into a scratch (read up to 3× for the range test), test
+        // the Unicode-scalar domain — `n u<= 0x10FFFF` (unsigned, so a NEGATIVE n wraps huge → false) AND NOT
+        // a surrogate (`n u< 0xD800 || n u> 0xDFFF`) — then `if valid (Some #\<n>) else None`. The `Some`
+        // payload is the code point BOXED as a char leaf: `n` is already the validated i64 code point, so
+        // `box-int` stores it in the i64 heap cell exactly as a Char payload does (Char boxes like a narrow
+        // int, Char-rep 4/N; read back with get-int + the i64→i32 narrow). Mirrors the `List.at` fallible-
+        // Option shape; the exact scalar test the `lower` fold + the rust `char::from_u32` path use.
+        Core::IntToCharChecked {
+            operand,
+            disc_some,
+            disc_none,
+        } => {
+            let n_slot = base.max(*high);
+            *high = (*high).max(n_slot + 1);
+            scratch_ty.insert(n_slot, ValType::I64);
+            let op_floor = n_slot + 1;
+            emit(db, operand, slots, op_floor, high, scratch_ty, layout, out)?; // [n:i64]
+            out.push(Lir::LocalSet(n_slot));
+            // valid = (n u<= 0x10FFFF) & (n u< 0xD800 | n u> 0xDFFF)
+            out.push(Lir::LocalGet(n_slot));
+            out.push(Lir::ConstI64(0x10_FFFF));
+            out.push(Lir::I64LeU); // [n<=maxcp]
+            out.push(Lir::LocalGet(n_slot));
+            out.push(Lir::ConstI64(0xD800));
+            out.push(Lir::I64LtU); // [.., n<0xD800]
+            out.push(Lir::LocalGet(n_slot));
+            out.push(Lir::ConstI64(0xDFFF));
+            out.push(Lir::I64GtU); // [.., n<0xD800, n>0xDFFF]
+            out.push(Lir::I32Or); // [n<=maxcp, not-surrogate]
+            out.push(Lir::I32And); // [valid]
+            out.push(Lir::If(BlockType::Val(ValType::I32)));
+            // Some(char): [disc_some] ; box the validated code point as a char leaf (box-int on the i64) ; sum-new
+            out.push(Lir::ConstI32(disc_some as i32));
+            out.push(Lir::LocalGet(n_slot)); // [disc_some, n:i64]
+            out.push(Lir::CallImport(OP_BOX_INT)); // [disc_some, char-leaf]
+            out.push(Lir::CallImport(OP_SUM_NEW)); // [Some-handle]
+            out.push(Lir::Else);
+            emit_none_option(disc_none, out); // [None-handle]
+            out.push(Lir::End);
             Ok(())
         }
         // `Rational.numerator`/`denominator` on a runtime Rational — `rational-num`/`rational-den` BORROW
