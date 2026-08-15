@@ -6919,4 +6919,3 @@ todo	round-trip: a higher-order closure whose inner closure CAPTURES and is appl
 todo	round-trip: a higher-order closure whose inner closure takes an UNANNOTATED compound param
 todo	round-trip: an UNANNOTATED inner closure with a List param via the context arrow
 todo	two adapter records with different state types drive a take-while fold in one program
-pass	Ast.encode emits the canonical cdzast container header (byte 0 is 'c')

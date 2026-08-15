@@ -6919,4 +6919,3 @@ todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	read of malformed text is a coded reject, not a wrong value
 todo	two adapter records with different state types drive a take-while fold in one program
-pass	Ast.encode emits the canonical cdzast container header (byte 0 is 'c')
