@@ -493,6 +493,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_non_pipeline_inline_payload_falls_through_to_the_authorized_target_command() {
+        // perform() routing: an inline payload is only run as a pipeline if it DECODES as a `(shell-pipeline
+        // ..)` (line 79-83). A payload that does NOT decode must FALL THROUGH to the single-command path and
+        // run `req.target` — the Cedar-authorized command (SEC-F1) — NOT error out and NOT try to exec the
+        // opaque payload bytes. Pins that a non-pipeline payload can't bypass or break the authorized-target
+        // path: garbage payload + `echo` target runs echo, folding echo's stdout (the payload is ignored).
+        let req = EffectRequest::new(
+            EffectKind::Shell,
+            "echo fell-through",
+            Some(Payload::Inline(
+                b"this is not a shell-pipeline document".to_vec().into(),
+            )),
+            Timeliness::Interactive,
+        );
+        let out = ShellExecutor::new()
+            .perform(EffectId(0), &req, Hash::of(b"k"))
+            .await;
+        match out {
+            EffectOutcome::Ok(Some(Payload::Inline(bytes))) => assert_eq!(
+                String::from_utf8_lossy(&bytes).trim(),
+                "fell-through",
+                "a non-pipeline payload falls through to run the authorized target, folding its stdout"
+            ),
+            other => panic!("expected the target command to run (Ok stdout), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_pipeline_whose_non_last_stage_fails_reports_that_stage_deny_all() {
+        // Companion to the last-stage-fails test: when a NON-final stage exits nonzero, `first_failure` records
+        // THAT (earlier) index, the pipeline is Failed deny-all (no stdout), and we STILL wait the later stages
+        // (no zombie). `false | cat` — stage 0 (`false`) fails; stage 1 (`cat`) still runs (reads the closed
+        // empty stdin, exits 0). The reported failure is stage 0, not the last stage — the branch the existing
+        // `stage_index:1` (last) test does not cover.
+        use cdz_kernel::event_ast::{
+            decode_shell_pipeline_outcome, encode_shell_pipeline, ShellPipeline,
+            ShellPipelineOutcome, ShellStage,
+        };
+        let pipeline = ShellPipeline {
+            stages: vec![
+                ShellStage {
+                    program: "false".into(),
+                    args: vec![],
+                },
+                ShellStage {
+                    program: "cat".into(),
+                    args: vec![],
+                },
+            ],
+        };
+        let req = EffectRequest::new(
+            EffectKind::Shell,
+            String::new(),
+            Some(Payload::Inline(encode_shell_pipeline(&pipeline).into())),
+            Timeliness::Interactive,
+        );
+        let out = ShellExecutor::new()
+            .perform(EffectId(0), &req, Hash::of(b"k"))
+            .await;
+        match out {
+            EffectOutcome::Ok(Some(Payload::Inline(bytes))) => {
+                match decode_shell_pipeline_outcome(&bytes).expect("decodes") {
+                    ShellPipelineOutcome::Failed {
+                        stage_index,
+                        program,
+                        exit_code,
+                        ..
+                    } => {
+                        assert_eq!(stage_index, 0, "the FIRST (non-last) stage failed");
+                        assert_eq!(program, "false");
+                        assert_ne!(exit_code, 0, "a nonzero exit");
+                    }
+                    other => panic!("expected a Failed pipeline outcome, got {other:?}"),
+                }
+            }
+            other => panic!("expected an Ok(Failed-frame), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn a_command_runs_and_returns_its_stdout() {
         let mut exec = ShellExecutor::new();
         let out = exec
