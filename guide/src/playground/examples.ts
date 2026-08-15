@@ -470,6 +470,27 @@ export const EXAMPLES: Example[] = [
     expected: "(: (tuple 103 61 71) (Tuple Int64 Int64 Int64))",
   },
   {
+    // Shows off: `Value.encode` is DETERMINISTIC and STRUCTURAL — two structurally-equal values encode to
+    // byte-identical output, so the encoding is a content address. Bytes has a total order, so we compare
+    // the encodings with `=`. Two equal records -> identical bytes (true); one differing field -> different
+    // bytes (false). This is what makes Value.encode usable as a canonical key/digest.
+    id: "value-encode-determinism",
+    name: "Structural encoding is deterministic (Value.encode)",
+    theme: "data-and-collections",
+    surface: "sexpr",
+    source: `(do
+  ; Value.encode is deterministic + structural: two structurally-equal values encode to
+  ; byte-identical output (a content address). Bytes has a total order, so we compare the
+  ; encodings directly with =. Equal records -> identical bytes; a differing field -> not.
+  (def (main)
+    (let ((ba (Value.encode (record (x 3) (y 4))))
+          (bb (Value.encode (record (x 3) (y 4))))
+          (bc (Value.encode (record (x 3) (y 5)))))
+      (tuple (Bytes.len ba) (= ba bb) (= ba bc))))
+  (export main))`,
+    expected: "(: (tuple 103 true false) (Tuple Int64 Bool Bool))",
+  },
+  {
     // Shows off: EXACT rational arithmetic — 1/2 + 1/3 + 1/6 is EXACTLY 1, with no floating-point
     // drift. The `(pragma default-fraction Rational)` directive makes every bare literal in scope an
     // exact fraction; compare with Float64, where 0.1 + 0.2 famously isn't 0.3.
