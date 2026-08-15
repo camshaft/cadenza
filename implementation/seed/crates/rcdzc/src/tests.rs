@@ -3840,11 +3840,62 @@ fn an_unannotated_value_decode_declines_at_lower_not_a_panic_or_invalid_wasm() {
             .collect::<Vec<_>>()
     );
     assert!(
+        out.diagnostics.iter().any(
+            |d| d.message.contains("target type is unsolved") && d.message.contains("annotate")
+        ),
+        "the decline must be the ACTIONABLE unsolved-target message (a free-var target is undetermined, so \
+         the fix is to annotate — NOT the generic 'no value-form descriptor' which misreads it as an \
+         unsupported concrete type): {:?}",
         out.diagnostics
             .iter()
-            .any(|d| d.message.contains("no binary-AST value-form descriptor")),
-        "the decline must be the value-form-descriptor decline (the free-var target has no descriptor), \
-         not some unrelated error: {:?}",
+            .map(|d| (&d.code, &d.message))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// R2 DECODE DIAGNOSTIC — a bare `Value.decode` as a MATCH SCRUTINEE whose target is only implied by the arm
+/// patterns (`(match (Value.decode bs) ((Some (Pt.Mk r)) …))`) is STILL an ungrounded free-var target: the
+/// arm patterns do not thread their type back into the decode node's `type_of` (same root as the unannotated
+/// case). It must decline with the ACTIONABLE unsolved-target message (fix: annotate the scrutinee), NOT the
+/// generic "no value-form descriptor" that would misread the undetermined target as an unsupported concrete
+/// type. Pins the diagnostic split (`has_free_var` in `lower_value_decode`) for the match-scrutinee shape a
+/// user is most likely to hit.
+#[test]
+fn a_bare_value_decode_match_scrutinee_declines_with_the_actionable_unsolved_target_message() {
+    use crate::testkit::parse;
+    // Scrutinee is a BARE decode; the target Pt is only implied by the `(Some (Pt.Mk r))` arm pattern, which
+    // does not ground the decode node — so its target stays a free Var.
+    let src = "(module m (type Pt (Mk (Record (: x Int64) (: y Int64)))) \
+                 (def (dec (: bs Bytes)) \
+                   (match (Value.decode bs) \
+                     ((Some p) (match p ((Pt.Mk r) (+ (. r x) (. r y))))) ((None) -1))) \
+                 (export dec))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:reducer/api"),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        out.has_error(),
+        "a bare Value.decode match scrutinee (target only implied by arm patterns) must DECLINE — the arms \
+         do not ground the decode node: {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| (&d.code, &d.message))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        out.diagnostics.iter().any(
+            |d| d.message.contains("target type is unsolved") && d.message.contains("annotate")
+        ),
+        "the decline must be the ACTIONABLE unsolved-target message directing the user to annotate the \
+         scrutinee, not the generic no-descriptor message: {:?}",
         out.diagnostics
             .iter()
             .map(|d| (&d.code, &d.message))

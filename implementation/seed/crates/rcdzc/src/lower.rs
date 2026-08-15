@@ -24180,6 +24180,18 @@ fn lower_value_decode(db: &mut Db, id: StructId, b: StructId) -> Core {
             disc_some,
             disc_none,
         },
+        // No descriptor. TWO distinct causes, distinguished for an ACTIONABLE diagnostic: an UNDETERMINED
+        // target (`a` is still a free `Ty::Var` — an unannotated decode, or one whose target is only
+        // implied by downstream match-arm patterns that don't thread their type back to the decode node)
+        // has no descriptor because there is no type YET, and the fix is to ANNOTATE (`(: (Value.decode
+        // bs) (Option T))` or a typed let-binder). A CONCRETE target with no value-form descriptor (e.g. a
+        // function type) is genuinely unsupported. The old message ("no binary-AST value-form descriptor")
+        // fired for BOTH and misled the free-var case into looking like an unsupported type. `has_free_var`
+        // splits them so the common "you forgot the annotation" case gets the honest fix.
+        None if target_ty.has_free_var() => Core::Poison(Reject::decline(
+            "Value.decode target type is unsolved — annotate the decode with its expected type, e.g. \
+             (: (Value.decode bs) (Option T)) or a typed let-binder (let (((: p (Option T)) …)) …)",
+        )),
         None => Core::Poison(Reject::decline(
             "Value.decode into a type with no binary-AST value-form descriptor",
         )),
