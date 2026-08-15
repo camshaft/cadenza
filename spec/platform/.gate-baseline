@@ -6,6 +6,7 @@ pass	a handler's effect/reply Ok(Inline) payload round-trips to the caller, obse
 pass	a message carrying a multi-byte String payload round-trips to the receiver intact
 pass	a message chains across three sessions a -> b -> c, each hop emitting to the next
 pass	a message to an absent peer bounces a delivery-failure back to the sender, which folds it
+pass	a reducer Value.encodes a structured record then Value.decodes it back in-fold, recovering the field (R2 round-trip)
 pass	a reducer deletes KV slots and branches on the delete bool: true for a present key, false for an absent one
 pass	a reducer in-fold Value.encodes a structured value and reifies an effect carrying the encoded payload (R2 composes with reify)
 pass	a reducer performs a target-free async world-effect; rcdzc REIFIES the perform into the observed effect-list
