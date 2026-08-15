@@ -373,11 +373,23 @@ const OP_MAP_TO_LIST: &str = "map-to-list";
 /// VALID emitted body is the `cbk1` circuit-breaker corpus case at ~416K `Lir` (the `sw4`/`sw5` window
 /// cases ~364K, the `isolate-K3` probe ~301K = 593KB wasm, LARGE but loads + runs); the INVALID cases are
 /// `dst1` at ~1.48M `Lir` (2.88MB wasm -> "Code for function is too large") and `dstC` at ~74M.
-/// 1_000_000 clears every valid body with >2x headroom over the ~416K high-water and catches `dst1`/`dstC`
-/// (and any steeper N). A legitimately large LINEAR function is never false-declined; the super-linear one
-/// is. The durable LINEAR fix is sharing-aware emit (emit a 2+-reached node once into a `Core::Let` slot),
-/// a separate increment; this budget is the soundness backstop that stops the invalid wasm now.
-const EMIT_INSTRUCTION_BUDGET: usize = 1_000_000;
+///
+/// RE-CALIBRATED to the CRANELIFT ceiling (breaker dbc1, 2026-08-15). The two engine ceilings DIFFER: the
+/// `wasm-tools` VALIDATOR accepts a much larger body than CRANELIFT (wasmtime's compiler, which `cdz run`
+/// uses) will compile — cranelift's per-function limit is LOWER. `dbc1` (a hold-debouncer, 7 dispatches
+/// through a 3-branch arm recomputing the hold compound) emits ~852K `Lir` = 1.67MB wasm: the validator
+/// PASSES it (well under its cap) but cranelift REJECTS it "Code for function is too large" — a run-time
+/// `invalid component` trap, NOT the clean decline this backstop must give. The old 1M was tuned to the
+/// VALIDATOR ceiling, so it under-fenced cranelift (the mirror of the `cbk1` rust-budget regression, where a
+/// budget tuned to the wrong ceiling was too LOW; here it was too HIGH). 600_000 sits in the wide EMPIRICAL
+/// GAP between the largest VALID body (`cbk1` at ~416K `Lir` / ~815KB wasm, which cranelift COMPILES + runs)
+/// and the smallest cranelift-REJECTED body (`dbc1` at ~852K): ~1.44x headroom over the valid high-water,
+/// and it catches `dbc1`/`dst1`/`dstC`. CAVEAT: cranelift's true ceiling is on MACHINE code, not wasm bytes,
+/// so no static wasm/`Lir` budget predicts it EXACTLY (a denser-branching shape could reject at fewer `Lir`);
+/// this is the calibrated INTERIM backstop that turns the known escapes into clean declines. The durable
+/// LINEAR fix — sharing-aware emit (emit a 2+-reached node once into a `Core::Let` slot) — collapses the
+/// super-linear body so it never approaches either ceiling; routed to v-core-opt.
+const EMIT_INSTRUCTION_BUDGET: usize = 600_000;
 /// The emit-walk SCRATCH-LOCALS BUDGET — the SECOND axis of the finding-24-sibling explosion. The K^N
 /// DAG-as-tree serialization blows up in TWO independent ways (the "two kinds" split from the original
 /// finding-24 arc): (1) BODY SIZE — the emitted `Lir` count, bounded by `EMIT_INSTRUCTION_BUDGET`; and (2)
