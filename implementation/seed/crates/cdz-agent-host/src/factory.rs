@@ -952,6 +952,14 @@ pub struct ComponentSessionFactory<B, E, A> {
     /// (from `[log].checkpoint_threshold`). Default DISABLED = no checkpointing (unbounded log). Set via
     /// [`with_checkpoint_policy`](Self::with_checkpoint_policy).
     checkpoint_policy: crate::checkpoint::CheckpointPolicy,
+    /// An optional [`ComponentStore`](cdz_kernel::component_store::ComponentStore) for resolving a RECOVERED
+    /// reducer's TRANSITIVE by-name imports during boot-recovery's replay fold. A reducer's DIRECT deps
+    /// resolve from `blob` by hash ([`resolve_deps`](cdz_kernel::wasm_host::AsyncComponentReducer::resolve_deps)),
+    /// but a real runtime dep whose OWN world imports the bare `cadenza:nfc/normalize` needs a store to resolve
+    /// it by name (`runtime.toml`) — see [`with_component_store`](cdz_kernel::wasm_host::AsyncComponentReducer::with_component_store),
+    /// which is REQUIRED for such a dep. Without one, [`recover_and_build`](Self::recover_and_build) can only
+    /// recover a dependency-free / purely direct-dep reducer; the daemon/runner supplies its `CDZ_STORE` here.
+    component_store: Option<cdz_kernel::component_store::ComponentStore>,
 }
 
 impl<B, E, A> ComponentSessionFactory<B, E, A>
@@ -970,7 +978,22 @@ where
             authz,
             log_sink: None,
             checkpoint_policy: crate::checkpoint::CheckpointPolicy::DISABLED,
+            component_store: None,
         }
+    }
+
+    /// Attach a [`ComponentStore`](cdz_kernel::component_store::ComponentStore) so
+    /// [`recover_and_build`](Self::recover_and_build) can resolve a recovered reducer's TRANSITIVE by-name
+    /// imports (the value-heap runtime's `cadenza:nfc/normalize`) during the replay fold. REQUIRED to recover a
+    /// real runtime-dep reducer: the reducer's own direct deps resolve from the blob store by hash, but a dep
+    /// whose world imports nfc by NAME needs this store to compose (a plain blob store can't resolve a by-name
+    /// import). Builder-style; the daemon/runner passes the same store its live loader uses.
+    pub fn with_component_store(
+        mut self,
+        store: cdz_kernel::component_store::ComponentStore,
+    ) -> Self {
+        self.component_store = Some(store);
+        self
     }
 
     /// Attach a per-session durable-log [`LogSinkBuilder`] — the deployed daemon supplies one when
@@ -1278,9 +1301,26 @@ where
             .ok_or_else(|| {
                 format!("no reducer component in the blob store for recovered hash {reducer_hash}")
             })?;
-        let mut reducer = AsyncComponentReducer::from_component_bytes(&bytes).map_err(|e| {
+        let reducer = AsyncComponentReducer::from_component_bytes(&bytes).map_err(|e| {
             format!("recovered reducer component for {reducer_hash} did not lift: {e:?}")
         })?;
+        // Resolve the recovered reducer's deps so it can INSTANTIATE at the replay fold. recover_from re-folds
+        // the log through the reducer to rebuild KV (Session::replay -> reducer.fold per event), so a reducer
+        // whose deps aren't resolved fails to compose — and EVERY real platform/agent reducer declares a
+        // cadenza:runtime/heap dep. Mirror the live loader: resolve the reducer's DIRECT deps from this
+        // factory's own blob store (the same store the reducer bytes came from — the caller populates it with
+        // the reducer + its direct dep blobs, content-addressed), then, if a ComponentStore is attached, hand
+        // it over for a runtime dep's OWN transitive by-name imports (the value-heap runtime imports the bare
+        // cadenza:nfc/normalize — with_component_store is REQUIRED for that; a blob store resolves only by hash,
+        // not by name). A dependency-free reducer resolves to an empty set + needs no store (the pre-recovery
+        // behavior, unchanged). An absent dep blob / store-miss is a clean Err here, never a fold-time panic.
+        let resolved = reducer.resolve_deps(&self.blob).await.map_err(|e| {
+            format!("recover_and_build: resolving recovered reducer {reducer_hash} deps: {e:?}")
+        })?;
+        let mut reducer = reducer.with_resolved_deps(resolved);
+        if let Some(store) = &self.component_store {
+            reducer = reducer.with_component_store(store.clone());
+        }
         // Fold the recovered log with the reloaded reducer: a checkpoint-rooted log seeds the resident state
         // from the snapshot at seq N and folds only the tail (recovery-EQUIVALENT to full replay by
         // construction — kernel-proven in `recover_from_checkpoint_equals_full_replay`); a full log replays
