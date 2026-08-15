@@ -4783,6 +4783,7 @@ pass	bw2 an XOR accumulator folds four draws through a recursion — bit-mixing 
 pass	bw3 shift-up then shift-back round trip over MASKED draws — both the value and the shift count come from the thread
 pass	bw4 the ARM bit-mixes its argument with the live state — low nibble from the arg, bits 4-5 stamped from the state
 pass	bwa1 THREE parallel bit-accumulators in one state — running AND, OR, and XOR folds over the drawn payloads, read as a sum
+pass	bwl1 a SPARE-CHAIN scorer — each roll adds its pins plus a DOUBLE when the previous two rolls summed to ten, threading a two-roll history through the state, and only the seed whose opening pair hits ten fires the bonus so the scores drift apart from the third row
 pass	by1 a BYTES handler state grows two bytes per dispatch — each arm returns the pre-growth length
 pass	by1 bytes built from THREE draws then read at a draw-picked index — Bytes.at follows the thread into the buffer
 pass	by2 a SLICE view (start,LEN) of the Bytes state read per dispatch — in-range bytes returned, out-of-range answers -1
@@ -5431,6 +5432,7 @@ pass	lap1 a STOPWATCH with lap splits — tick advances the clock by a seed stri
 pass	large-set algebra over a multi-level CHAMP trie computes correct union/intersection/difference
 pass	lba1 an op taking a LIST argument — the arm folds the batch into the scalar state by recursion; the second batch is BUILT FROM the first's answer and the empty batch is a no-op
 pass	lc1 SELF-CONCAT sharing — the same list appears twice in one concat, then the original grows and is re-read unchanged
+pass	lck1 a COMBINATION-LOCK matcher — press advances the cursor against the three-digit secret whose MIDDLE digit is seed-shaped, a wrong press falls back to one if it re-matches the first digit else to zero (answering the negated or zero fallback), and open pays a hundred-plus-count on a full match; the SAME eight presses open the lock in the FIRST half on one seed and the SECOND half on the other
 pass	lcs1 an LCS DP-ROW state — each fed character rebuilds the whole dynamic-programming row against the fixed pattern via a recursive fold reading the OLD row while writing the NEW
 pass	ldd1 an EVENT-LEDGER state — a List of (tag,value) tuples appends per log dispatch, and replay folds only the MATCHING tag's values (absent tag folds to zero)
 pass	ldg1 a LEADING-DIGIT counter — feed strips each value to its leading digit through a recursive divide-down callee, a hit on the seed-wanted digit answers digit*10 plus the running hit count while a miss answers the bare digit, and the two seeds hunt DIFFERENT digits through one shared stream
@@ -5937,6 +5939,7 @@ pass	rhe1 a ROUND-HALF-TO-EVEN halving accumulator — each dispatch adds v/2 ro
 pass	rle1 RUN-LENGTH tracking — the 3-tuple state carries (last,run,best); the n=5 seed extends one run to five, n=7 breaks it at two
 pass	rle2 a RUN-LENGTH ENCODER state — equal-to-last feeds bump the tail pair's count via List.update at len-1, fresh values push a new pair; the n=5 seed merges the middle literal into one long run
 pass	rlm1 a SLIDING-WINDOW rate limiter — allow prunes expired timestamps then admits only under the cap of two per ten ticks; the seeded third request either bounces inside the window or lands beyond it and steals a later slot
+pass	rmn1 a ROMAN-NUMERAL accumulator with subtractive correction — feeding a numeral LARGER than its predecessor retro-subtracts the predecessor twice (the IX rule), the seed picks the second numeral as five or one, and the correction fires at DIFFERENT positions so the totals cross (nineteen versus twenty-three)
 pass	rmp1 a RECORD state wrapping a Map plus a counter — computed perform keys; the arm answers 10*lookup + the ADVANCED counter so both fields are observed
 pass	rn1 a RUNNING-AVERAGE state (sum,count) — three feeds then a truncating divide read, negative total exercises toward-zero
 pass	rot1 a ROTATION-CIPHER state — enc shifts a letter index with the double-mod negative-normalization idiom in the arm, tune drives the shift NEGATIVE and the normalization recovers the canonical class
@@ -6029,6 +6032,7 @@ pass	runtime Rational arithmetic that cancels to zero normalizes to canonical ze
 pass	runtime Rational arithmetic that reduces to a whole normalizes to denominator one
 pass	runtime String.concat is associative — (a·b)·c equals a·(b·c), both equal the flat concatenation
 pass	runtime UInt64 division and remainder above the Int64 boundary compute unsigned
+pass	runtime char-literal match dispatches by Unicode code point
 pass	runtime division and remainder agree across ALL FOUR sign quadrants
 pass	runtime float equality compares by canonical byte form
 pass	runtime float inequality compares by canonical byte form

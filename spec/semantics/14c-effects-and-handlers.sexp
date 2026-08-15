@@ -12140,3 +12140,96 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 2001001128064000 Int64))
   (call   main (: 0 Int64)) (output (: 129192000096048000 Int64)))
+
+;; ── Combination-lock matcher, spare-chain scorer, Roman subtractive accumulator (breaker batch 286) ──
+(case "lck1 a COMBINATION-LOCK matcher — press advances the cursor against the three-digit secret whose MIDDLE digit is seed-shaped, a wrong press falls back to one if it re-matches the first digit else to zero (answering the negated or zero fallback), and open pays a hundred-plus-count on a full match; the SAME eight presses open the lock in the FIRST half on one seed and the SECOND half on the other"
+  (input  (do
+            (effect L
+              (op press (-> Int64 Int64))
+              (op opn (-> Int64)))
+            (def (digit-at (: n Int64) (: i Int64))
+              (if (= i 0) 3 (if (= i 1) (+ (% n 4) 1) 7)))
+            (def (main (: n Int64))
+              (handle L (tuple (: 0 Int64) (: 0 Int64))
+                ((press (d) st
+                  (match st
+                    ((tuple cur opens)
+                      (if (= d (digit-at n cur))
+                          (resume (+ cur 1) (tuple (+ cur 1) opens))
+                          (if (= d 3)
+                              (resume -1 (tuple 1 opens))
+                              (resume 0 (tuple 0 opens)))))))
+                 (opn () st
+                  (match st
+                    ((tuple cur opens)
+                      (if (= cur 3)
+                          (resume (+ 101 opens) (tuple 0 (+ opens 1)))
+                          (resume (- 0 cur) st))))))
+                (let ((a (L.press 3)))
+                  (let ((b (L.press 3)))
+                    (let ((c (L.press 7)))
+                      (let ((d (L.opn)))
+                        (let ((e (L.press 3)))
+                          (let ((f (L.press 1)))
+                            (let ((g (L.press 7)))
+                              (let ((h (L.opn)))
+                                (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g)) h)))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 102040101000000 Int64))
+  (call   main (: 0 Int64)) (output (: 99000001020401 Int64)))
+
+(case "bwl1 a SPARE-CHAIN scorer — each roll adds its pins plus a DOUBLE when the previous two rolls summed to ten, threading a two-roll history through the state, and only the seed whose opening pair hits ten fires the bonus so the scores drift apart from the third row"
+  (input  (do
+            (effect B
+              (op roll (-> Int64 Int64))
+              (op total (-> Int64)))
+            (def (main (: n Int64))
+              (handle B (tuple (: -1 Int64) (: -1 Int64) (: 0 Int64))
+                ((roll (p) st
+                  (match st
+                    ((tuple p2 p1 score)
+                      (if (< p2 0)
+                          (resume (+ score p) (tuple p1 p (+ score p)))
+                          (if (= (+ p2 p1) 10)
+                              (resume (+ score (* p 2)) (tuple p1 p (+ score (* p 2))))
+                              (resume (+ score p) (tuple p1 p (+ score p))))))))
+                 (total () st
+                  (match st ((tuple p2 p1 score) (resume score st)))))
+                (let ((a (B.roll (+ (% n 6) 3))))
+                  (let ((b (B.roll 3)))
+                    (let ((c (B.roll 5)))
+                      (let ((d (B.roll 6)))
+                        (let ((e (B.roll 4)))
+                          (let ((f (B.total)))
+                            (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 71020263030 Int64))
+  (call   main (: 0 Int64)) (output (: 30611172121 Int64)))
+
+(case "rmn1 a ROMAN-NUMERAL accumulator with subtractive correction — feeding a numeral LARGER than its predecessor retro-subtracts the predecessor twice (the IX rule), the seed picks the second numeral as five or one, and the correction fires at DIFFERENT positions so the totals cross (nineteen versus twenty-three)"
+  (input  (do
+            (effect R
+              (op feed (-> Int64 Int64))
+              (op tot (-> Int64)))
+            (def (main (: n Int64))
+              (handle R (tuple (: 0 Int64) (: 0 Int64))
+                ((feed (v) st
+                  (match st
+                    ((tuple total prev)
+                      (if (< 0 prev)
+                          (if (< prev v)
+                              (resume (+ total (- v (* 2 prev))) (tuple (+ total (- v (* 2 prev))) v))
+                              (resume (+ total v) (tuple (+ total v) v)))
+                          (resume (+ total v) (tuple (+ total v) v))))))
+                 (tot () st
+                  (match st ((tuple total prev) (resume total st)))))
+                (let ((a (R.feed 10)))
+                  (let ((b (R.feed (if (= (% n 3) 1) 5 1))))
+                    (let ((c (R.feed 10)))
+                      (let ((d (R.feed 1)))
+                        (let ((e (R.feed 5)))
+                          (let ((f (R.tot)))
+                            (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 101515161919 Int64))
+  (call   main (: 0 Int64)) (output (: 101119202323 Int64)))
