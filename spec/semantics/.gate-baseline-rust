@@ -4991,7 +4991,6 @@ pass	decode of a Float tag with a non-finite (NaN) bit pattern yields the error 
 pass	decode of a List tag whose element count exceeds the bytes present yields the error case
 pass	decode of a List tag with an enormous element count does not attempt a giant build — yields the error case
 pass	decode of a Str tag with an oversized length yields the error case
-pass	decode of a canonical length-prefixed Int magnitude round-trips to its value
 pass	decode of a truncated Float tag yields the error case, not a trap
 pass	decode of an Int tag marked negative with a zero-length magnitude is non-canonical (no negative zero)
 pass	decode of an Int tag whose magnitude is shorter than its declared length yields the error case
@@ -6374,12 +6373,6 @@ pass	the empty string is a matchable literal
 pass	the empty symbol converts to the empty string
 pass	the empty symbol equals itself
 pass	the en1 helper called ONCE folds (the single-site control)
-pass	the encoded tag byte of an Ast.Bool is 0x03
-pass	the encoded tag byte of an Ast.Float is 0x05
-pass	the encoded tag byte of an Ast.Int is 0x00
-pass	the encoded tag byte of an Ast.List is 0x02
-pass	the encoded tag byte of an Ast.Name is 0x01
-pass	the encoded tag byte of an Ast.Str is 0x04
 pass	the entrypoint adds one to its runtime argument
 pass	the entrypoint branches on its runtime argument
 pass	the entrypoint compares its runtime argument to a bound
@@ -6917,3 +6910,4 @@ todo	expect traps on the absent case of a runtime optional
 todo	read of malformed text is a coded reject, not a wrong value
 todo	two adapter records with different state types drive a take-while fold in one program
 pass	runtime char-literal match dispatches by Unicode code point
+pass	Ast.encode emits the canonical cdzast container header (byte 0 is 'c')

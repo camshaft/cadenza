@@ -2863,33 +2863,11 @@ fn lower_ast_lift(db: &mut Db, operand: StructId) -> Core {
     }
 }
 
-// ── AST binary encoding — the canonical byte form (`ast-encoding.md`) ────────────────────────────
-//
-// A DECLARED-DEFAULT byte format (the contract pins the bijection, not the concrete bytes). Each node
-// is a TAG byte then its payload, so the container form is independent of the node kinds:
-//   Int  n   →  0x00, then `n` as 8 bytes little-endian (two's-complement i64)
-//   Name s   →  0x01, then `len(s)` as 4 bytes LE, then the `len` UTF-8 bytes
-//   List es  →  0x02, then `count` as 4 bytes LE, then each element encoded in order
-//   Bool b   →  0x03, then one byte (0 = false, 1 = true)
-//   Str  s   →  0x04, then `len(s)` as 4 bytes LE, then the `len` UTF-8 bytes (same shape as Name — a
-//              string LITERAL, distinguished from a Name by its tag, not its payload layout)
-//   Float f  →  0x05, then the f64 BIT PATTERN as 8 bytes LE (`Decimal::to_f64_bits`) — a stable
-//              canonical form (equal doubles → equal bits; -0.0 ≠ 0.0), decoded via `Decimal::from_f64`
-// The encoding is a pure function of the tree (equal trees → identical bytes) and is self-delimiting
-// (every node carries its own length), so `decode` consumes the WHOLE input or reports an error. Each
-// tag byte is a stable constant (adding a variant appends a NEW tag; existing tags never shift), so a
-// byte stream encoded by one build decodes identically under a later one.
-const AST_TAG_INT: u8 = 0x00;
-const AST_TAG_NAME: u8 = 0x01;
-const AST_TAG_LIST: u8 = 0x02;
-const AST_TAG_BOOL: u8 = 0x03;
-const AST_TAG_STR: u8 = 0x04;
-const AST_TAG_FLOAT: u8 = 0x05;
-// A raw byte-sequence node (`Ast.Bytes`) — a length-prefixed raw-bytes payload, so a blob rides this
-// value codec as ONE node, not a node-per-byte list (operator seq 113). ADDITIVE: a fresh tag past the
-// existing 0x00–0x05, so legacy bytes decode exactly as before. Same length-prefix framing as Str/Name
-// (4-byte LE length + that many bytes), but the bytes are RAW (not UTF-8) and decode to `Ast.Bytes`.
-const AST_TAG_BYTES: u8 = 0x06;
+// `Ast.encode`/`Ast.decode` serialize through the SINGLE canonical `cdzast` codec (`crate::codec` —
+// header + LEB128 leaf/structure arena), the SAME form the kernel `decode_shell_pipeline`/`codec::decode`
+// read (operator ruling 2026-08-15, OPTION A: no bespoke formats — one source of truth). `encode_ast_value`
+// builds a cadenza-ast `Arenas` for the `Ast` value + `codec::encode`s it; `arenas_to_ast_value` rebuilds
+// the `Ast` value from a `codec::decode`d arena. The `Ast` variants map 1:1 to cadenza-ast leaves/structs.
 
 /// Lower `(Ast.encode t)` — FOLD a compile-time-visible `Ast` value to a `Core::BytesOf` of its
 /// canonical bytes; a runtime `Ast` (no visible `Core::SumNew`) declines. A poison operand propagates.
@@ -2902,13 +2880,18 @@ fn lower_ast_encode(db: &mut Db, id: StructId, ast_val: StructId) -> Core {
             "Ast.encode: the built-in Ast sum is unavailable",
         ));
     };
-    let mut bytes = Vec::new();
-    if encode_ast_value(db, ast_val, &disc, &mut bytes).is_none() {
+    // Build the Ast value into a cadenza-ast `Arenas` and delegate to `codec::encode` — the SINGLE
+    // canonical `cdzast` serializer the kernel `decode_shell_pipeline`/`codec::decode` read (operator
+    // ruling 2026-08-15, OPTION A: no bespoke formats — one source of truth). So guest `Ast.encode` emits
+    // exactly the bytes the kernel decodes, unblocking reducer_publish/git-publish end-to-end.
+    let mut b = crate::ast::Builder::new();
+    let Some(root) = encode_ast_value(db, ast_val, &disc, &mut b) else {
         return Core::Poison(Reject::decline(
             "Ast.encode of a runtime AST value is not yet computed (constant AST values only)",
         ));
-    }
-    trace!(target: "rcdzc::fold", node = id.0, len = bytes.len(), "Ast.encode folds a constant AST to its canonical bytes");
+    };
+    let bytes = crate::codec::encode(&b.finish(root));
+    trace!(target: "rcdzc::fold", node = id.0, len = bytes.len(), "Ast.encode folds a constant AST to its canonical cdzast bytes");
     Core::BytesOf {
         elems: bytes_to_elems(db, &bytes).into(),
     }
@@ -3558,83 +3541,67 @@ fn ast_variant_discs(db: &mut Db) -> Option<AstDiscs> {
     })
 }
 
-/// Serialize a compile-time-visible `Ast` value (a `Core::SumNew` at an Int/Name/List disc) into `out`.
-/// Returns `None` if the value is not a fully-constant AST (a runtime node, or a payload that is not the
-/// expected constant shape) — the caller then declines.
-fn encode_ast_value(db: &mut Db, node: StructId, disc: &AstDiscs, out: &mut Vec<u8>) -> Option<()> {
+/// Build a compile-time-visible `Ast` value (a `Core::SumNew` at an Int/Float/Bool/Str/Name/List/Bytes
+/// disc) into the cadenza-ast `Arenas` builder `b`, returning the `StructId` of the built node. The caller
+/// (`lower_ast_encode`) `codec::encode`s the finished arena — the SINGLE canonical `cdzast` form the kernel
+/// `decode_shell_pipeline`/`codec::decode` read (operator ruling 2026-08-15, OPTION A: no bespoke formats).
+/// The `Ast` variants map 1:1 to cadenza-ast leaves/structs. `None` if the value is not a fully-constant
+/// AST (a runtime node, or a payload not the expected constant shape) — the caller then declines.
+fn encode_ast_value(
+    db: &mut Db,
+    node: StructId,
+    disc: &AstDiscs,
+    b: &mut crate::ast::Builder,
+) -> Option<StructId> {
     let Core::SumNew { disc: d, payloads } = core_of(db, node) else {
         return None;
     };
     if d == disc.int && payloads.len() == 1 {
+        // `IntValue` is natively (sign, big-endian minimal magnitude) — exactly what `Leaf::Int` carries;
+        // an `Ast` value has no radix, so it is decimal. NON-LOSSY (arbitrary precision, no i64 round-trip).
         let Core::ConstInt(v) = core_of(db, payloads[0]) else {
             return None;
         };
-        // The Int payload is NON-LOSSY (operator directive: parametric integers must never silently
-        // truncate). `IntValue` is natively a sign + big-endian minimal magnitude, so it serializes
-        // DIRECTLY as: tag 0x00, 1 sign byte (0 = non-negative, 1 = negative), a 4-byte LE u32 magnitude
-        // length, then that many big-endian magnitude bytes. Same length-prefix framing the Str/List
-        // arms use (one framing style across the codec). Canonical: zero is `negative=false` + a length-0
-        // magnitude (no negative-zero, no leading-zero bytes — the `IntValue` invariant guarantees the
-        // magnitude is already minimal). This replaces the old fixed 8-byte i64 form (which bailed via
-        // `to_i64()` on a beyond-i64 value); an arbitrary-precision magnitude now round-trips.
-        let mag = &v.magnitude;
-        out.push(AST_TAG_INT);
-        out.push(u8::from(v.negative));
-        out.extend_from_slice(&(u32::try_from(mag.len()).ok()?).to_le_bytes());
-        out.extend_from_slice(mag);
-        Some(())
+        Some(b.atom_leaf(crate::ast::Leaf::Int {
+            value: v,
+            radix: crate::ast::Radix::Dec,
+        }))
     } else if d == disc.float && payloads.len() == 1 {
-        // A float: the 8-byte f64 BIT PATTERN (`to_f64_bits`), LE — a stable canonical form (equal
-        // doubles → equal bits, -0.0 ≠ 0.0). Decoded via `Decimal::from_f64`.
+        // `Leaf::Float` carries the full `Decimal` (negative/exponent/significand) — NOT a lossy f64 bit
+        // pattern (the bespoke form's bug); the codec round-trips the Decimal exactly.
         let Core::ConstFloat(dec) = core_of(db, payloads[0]) else {
             return None;
         };
-        out.push(AST_TAG_FLOAT);
-        out.extend_from_slice(&dec.to_f64_bits().to_le_bytes());
-        Some(())
+        Some(b.atom_leaf(crate::ast::Leaf::Float(dec)))
     } else if d == disc.bool && payloads.len() == 1 {
-        let Core::ConstBool(b) = core_of(db, payloads[0]) else {
+        let Core::ConstBool(x) = core_of(db, payloads[0]) else {
             return None;
         };
-        out.push(AST_TAG_BOOL);
-        out.push(u8::from(b));
-        Some(())
+        Some(b.atom_leaf(crate::ast::Leaf::Bool(x)))
     } else if d == disc.str && payloads.len() == 1 {
-        // A string literal: same length-prefixed UTF-8 layout as Name, under its own tag (so decode
-        // rebuilds an `Ast.Str`, not an `Ast.Name`).
         let Core::ConstStr(s) = core_of(db, payloads[0]) else {
             return None;
         };
-        let sb = s.as_bytes();
-        out.push(AST_TAG_STR);
-        out.extend_from_slice(&(u32::try_from(sb.len()).ok()?).to_le_bytes());
-        out.extend_from_slice(sb);
-        Some(())
+        Some(b.atom_leaf(crate::ast::Leaf::Str(s)))
     } else if d == disc.name && payloads.len() == 1 {
         let Core::ConstStr(s) = core_of(db, payloads[0]) else {
             return None;
         };
-        let sb = s.as_bytes();
-        out.push(AST_TAG_NAME);
-        out.extend_from_slice(&(u32::try_from(sb.len()).ok()?).to_le_bytes());
-        out.extend_from_slice(sb);
-        Some(())
+        Some(b.atom_leaf(crate::ast::Leaf::Name(s)))
     } else if d == disc.list && payloads.len() == 1 {
+        // A list node is a `Struct::List` of the encoded children (each recursively built into `b`).
         let Core::ListNew { elems } = core_of(db, payloads[0]) else {
             return None;
         };
-        out.push(AST_TAG_LIST);
-        out.extend_from_slice(&(u32::try_from(elems.len()).ok()?).to_le_bytes());
+        let mut children = Vec::with_capacity(elems.len());
         for e in elems.iter().copied() {
-            encode_ast_value(db, e, disc, out)?;
+            children.push(encode_ast_value(db, e, disc, b)?);
         }
-        Some(())
+        Some(b.list(children))
     } else if d == disc.bytes && payloads.len() == 1 {
-        // A byte-sequence node: tag then the length-prefixed RAW bytes (4-byte LE length + bytes verbatim,
-        // the Str/Name framing but not UTF-8). The payload is a `Core::BytesOf` of `ConstInt` elements each
-        // range-checked to `0..=255` at `lower_bytes_of` (a non-constant element declines there, so no
-        // `BytesOf` reaches here). This is the whole point of the variant: one length-prefixed node, not a
-        // node-per-byte list.
+        // A byte-sequence node → `Leaf::Bytes` of the raw bytes. The payload is a `Core::BytesOf` of
+        // `ConstInt` elements each range-checked to `0..=255` at `lower_bytes_of` (a non-constant element
+        // declines there, so no `BytesOf` reaches here).
         let Core::BytesOf { elems } = core_of(db, payloads[0]) else {
             return None;
         };
@@ -3645,10 +3612,7 @@ fn encode_ast_value(db: &mut Db, node: StructId, disc: &AstDiscs, out: &mut Vec<
             };
             raw.push(u8::try_from(v.to_i64().filter(|n| (0..=255).contains(n))?).ok()?);
         }
-        out.push(AST_TAG_BYTES);
-        out.extend_from_slice(&(u32::try_from(raw.len()).ok()?).to_le_bytes());
-        out.extend_from_slice(&raw);
-        Some(())
+        Some(b.atom_leaf(crate::ast::Leaf::Bytes(raw)))
     } else {
         None
     }
@@ -3712,12 +3676,14 @@ fn lower_ast_decode(db: &mut Db, id: StructId, bytes: StructId) -> Core {
             }
         }
     }
-    // Parse ONE node from the front; the decode succeeds only if it consumes the ENTIRE input (a valid
-    // prefix followed by trailing bytes is an error — the encoding is a bijection over the WHOLE tree).
-    let ok = match decode_ast_value(db, &raw, &disc) {
-        Some((node, consumed)) if consumed == raw.len() => Some(node),
-        _ => None,
-    };
+    // `codec::decode` parses the WHOLE byte sequence into a cadenza-ast `Arenas` — the canonical `cdzast`
+    // decoder (None on a bad header / malformed structure / out-of-range id / TRAILING bytes; it consumes
+    // the whole input or refuses, so no separate length check). Then rebuild the `Ast` sum VALUE from the
+    // arena's root. Bytes that decode to a cadenza-ast which is NOT an `Ast` value shape (e.g. a Char/Sym
+    // leaf) yield `None` → the `Err` arm. Inverse of `encode_ast_value` (operator ruling OPTION A: one
+    // canonical codec, no bespoke format). Total: never a trap on untrusted bytes.
+    let ok = crate::codec::decode(&raw)
+        .and_then(|arenas| arenas_to_ast_value(db, &arenas, arenas.root, &disc));
     match ok {
         Some(node) => {
             trace!(target: "rcdzc::fold", node = id.0, "Ast.decode folds canonical bytes to (Ok ast)");
@@ -3873,174 +3839,24 @@ fn decode_error_ty(db: &mut Db) -> crate::ty::Ty {
     crate::ty::Ty::Any
 }
 
-/// Parse ONE canonical AST node from the FRONT of `raw`, returning the synthesized `Ast` value
-/// (`Core::SumNew` node) and the number of bytes consumed, or `None` if the front is not a well-formed
-/// node (bad tag, truncated, or a nested element fails). The recursive inverse of `encode_ast_value`.
-fn decode_ast_value(db: &mut Db, raw: &[u8], disc: &AstDiscs) -> Option<(StructId, usize)> {
-    let (&tag, rest) = raw.split_first()?;
-    match tag {
-        AST_TAG_INT => {
-            // Inverse of the non-lossy Int encoding: 1 sign byte (0 = non-negative, 1 = negative), a
-            // 4-byte LE u32 magnitude length, then that many big-endian magnitude bytes. TOTAL over any
-            // input — a truncated sign/length/magnitude yields `None` (the error case), never a panic.
-            let (&sign_byte, after_sign) = rest.split_first()?;
-            let negative = match sign_byte {
-                0 => false,
-                1 => true,
-                _ => return None, // not a canonical sign byte
-            };
-            let len_field = after_sign.get(..4)?;
-            let mag_len = u32::from_le_bytes(len_field.try_into().ok()?) as usize;
-            // `4 + mag_len` can overflow `usize` on a 32-bit target (wasm32 — rcdzc self-hosts to wasm)
-            // when `mag_len` is a large untrusted u32, which would panic under overflow-checks and break
-            // the never-panic-on-untrusted-input contract. `checked_add` → `None` (the error case) instead.
-            let end = 4usize.checked_add(mag_len)?;
-            let magnitude = after_sign.get(4..end)?.to_vec();
-            // Canonical form: the magnitude carries no leading zero bytes and is empty iff the value is
-            // zero (the `IntValue` invariant). A non-canonical wire form (a leading zero byte, or a
-            // length-0 magnitude marked negative — there is no negative zero) is rejected so decode is a
-            // bijection with one canonical encoding.
-            if magnitude.first() == Some(&0) {
-                return None; // leading zero byte — non-minimal magnitude
-            }
-            if magnitude.is_empty() && negative {
-                return None; // negative zero is not canonical
-            }
-            let value = IntValue {
-                negative,
-                magnitude,
-            };
-            let payload = db.push_atom(crate::ast::Leaf::Int {
-                value: value.clone(),
-                radix: crate::ast::Radix::Dec,
-            });
-            db.core.fill(payload, Core::ConstInt(value));
-            // `Ast.Int`'s payload is `BigInt` (a quoted AST stores integers non-lossily), so a decoded
-            // integer node is typed `BigInt` — not `Int64` — to match the sum's declared payload and the
-            // sign-magnitude wire form this reads (an `IntValue` can exceed i64).
-            db.types.fill(payload, crate::ty::Ty::BigInt);
-            let node = synth_core(
-                db,
-                Core::SumNew {
-                    disc: disc.int,
-                    payloads: vec![payload],
-                },
-                disc.ty.clone(),
-            );
-            Some((node, 1 + 1 + 4 + mag_len))
-        }
-        AST_TAG_FLOAT => {
-            // 8-byte f64 bit pattern (LE) → a `Decimal` via `from_f64`. A non-finite pattern (inf/NaN) has
-            // no `Decimal` value form → `None` (the decode reports the error case, never a wrong value).
-            let field = rest.get(..8)?;
-            let bits = u64::from_le_bytes(field.try_into().ok()?);
-            let dec = crate::ast::Decimal::from_f64(f64::from_bits(bits))?;
-            let payload = synth_core(db, Core::ConstFloat(dec), crate::ty::Ty::float64());
-            let node = synth_core(
-                db,
-                Core::SumNew {
-                    disc: disc.float,
-                    payloads: vec![payload],
-                },
-                disc.ty.clone(),
-            );
-            Some((node, 1 + 8))
-        }
-        AST_TAG_BOOL => {
-            // Exactly one byte, canonical: 0 = false, 1 = true. Any other byte is NOT a canonical Bool
-            // encoding → `None` (the decode reports the error case, never a wrong value).
-            let b = match rest.first()? {
-                0 => false,
-                1 => true,
-                _ => return None,
-            };
-            let payload = synth_core(db, Core::ConstBool(b), crate::ty::Ty::Bool);
-            let node = synth_core(
-                db,
-                Core::SumNew {
-                    disc: disc.bool,
-                    payloads: vec![payload],
-                },
-                disc.ty.clone(),
-            );
-            Some((node, 1 + 1))
-        }
-        AST_TAG_STR => {
-            // Same length-prefixed UTF-8 layout as Name, rebuilding an `Ast.Str` (a string literal, not
-            // an identifier). Non-UTF-8 payload bytes are not a canonical encoding → `None`.
-            let len_field = rest.get(..4)?;
-            let len = u32::from_le_bytes(len_field.try_into().ok()?) as usize;
-            // `4 + len` can overflow `usize` on a 32-bit target (wasm32) for a large untrusted length →
-            // `checked_add` to `None` (error case), keeping decode never-panic on untrusted input.
-            let end = 4usize.checked_add(len)?;
-            let sbytes = rest.get(4..end)?;
-            let s = std::str::from_utf8(sbytes).ok()?.to_string();
-            let payload = synth_core(db, Core::ConstStr(s.into()), crate::ty::Ty::String);
-            let node = synth_core(
-                db,
-                Core::SumNew {
-                    disc: disc.str,
-                    payloads: vec![payload],
-                },
-                disc.ty.clone(),
-            );
-            Some((node, 1 + 4 + len))
-        }
-        AST_TAG_NAME => {
-            let len_field = rest.get(..4)?;
-            let len = u32::from_le_bytes(len_field.try_into().ok()?) as usize;
-            // `4 + len` can overflow `usize` on a 32-bit target (wasm32) for a large untrusted length →
-            // `checked_add` to `None` (error case), keeping decode never-panic on untrusted input.
-            let end = 4usize.checked_add(len)?;
-            let sbytes = rest.get(4..end)?;
-            let s = std::str::from_utf8(sbytes).ok()?.to_string();
-            let payload = synth_core(db, Core::ConstStr(s.into()), crate::ty::Ty::String);
-            let node = synth_core(
-                db,
-                Core::SumNew {
-                    disc: disc.name,
-                    payloads: vec![payload],
-                },
-                disc.ty.clone(),
-            );
-            Some((node, 1 + 4 + len))
-        }
-        AST_TAG_BYTES => {
-            // Length-prefixed RAW bytes (not UTF-8, unlike Str/Name) → an `Ast.Bytes` whose payload is a
-            // `Core::BytesOf` of the decoded bytes (each a `UInt8` `Leaf::Int`, the `b"…"`/`Bytes.of` shape).
-            // `4 + len` can overflow `usize` on wasm32 for a large untrusted length → `checked_add` → `None`
-            // (never-panic on untrusted input, matching the Str/Name arms).
-            let len_field = rest.get(..4)?;
-            let len = u32::from_le_bytes(len_field.try_into().ok()?) as usize;
-            let end = 4usize.checked_add(len)?;
-            let raw_bytes = rest.get(4..end)?.to_vec();
-            let elems = bytes_to_elems(db, &raw_bytes);
-            let payload = synth_core(
-                db,
-                Core::BytesOf {
-                    elems: elems.into(),
-                },
-                crate::ty::Ty::Bytes,
-            );
-            let node = synth_core(
-                db,
-                Core::SumNew {
-                    disc: disc.bytes,
-                    payloads: vec![payload],
-                },
-                disc.ty.clone(),
-            );
-            Some((node, 1 + 4 + len))
-        }
-        AST_TAG_LIST => {
-            let count_field = rest.get(..4)?;
-            let count = u32::from_le_bytes(count_field.try_into().ok()?) as usize;
-            let mut consumed = 1 + 4;
-            let mut elems = Vec::with_capacity(count);
-            for _ in 0..count {
-                let (elem, used) = decode_ast_value(db, raw.get(consumed..)?, disc)?;
-                elems.push(elem);
-                consumed += used;
+/// Rebuild an `Ast` sum VALUE (`Core::SumNew`) from a node of a `codec::decode`d cadenza-ast `Arenas` — the
+/// inverse of `encode_ast_value`. Walks the `Struct`/`Leaf` at `sid` (an arena-local id) and maps each
+/// cadenza-ast kind to the matching `Ast` variant, synthesizing the payload + `SumNew` in `db`'s arena.
+/// `None` if a node is NOT a shape an `Ast` value covers (a Char/Sym/… leaf) — so `Ast.decode` yields the
+/// `Err` arm (TOTAL, never a trap). Operator ruling OPTION A: one canonical codec, no bespoke format.
+fn arenas_to_ast_value(
+    db: &mut Db,
+    arenas: &crate::ast::Arenas,
+    sid: StructId,
+    disc: &AstDiscs,
+) -> Option<StructId> {
+    match arenas.get(sid) {
+        // A `Struct::List` → `Ast.List` of the rebuilt children (each an arena-local child id).
+        crate::ast::Struct::List(children) => {
+            let children = children.clone();
+            let mut elems = Vec::with_capacity(children.len());
+            for c in children {
+                elems.push(arenas_to_ast_value(db, arenas, c, disc)?);
             }
             let payload = synth_core(
                 db,
@@ -4049,17 +3865,104 @@ fn decode_ast_value(db: &mut Db, raw: &[u8], disc: &AstDiscs) -> Option<(StructI
                 },
                 crate::ty::Ty::List(Box::new(disc.ty.clone())),
             );
-            let node = synth_core(
+            Some(synth_core(
                 db,
                 Core::SumNew {
                     disc: disc.list,
                     payloads: vec![payload],
                 },
                 disc.ty.clone(),
-            );
-            Some((node, consumed))
+            ))
         }
-        _ => None,
+        crate::ast::Struct::Atom(leaf_id) => {
+            // Clone the leaf out so no borrow of `arenas` is held across the `&mut db` synth calls below.
+            let leaf = arenas.leaves.get(leaf_id.0 as usize)?.clone();
+            match leaf {
+                crate::ast::Leaf::Int { value, .. } => {
+                    // `Ast.Int`'s payload is `BigInt` (a quoted AST stores integers non-lossily), so the
+                    // decoded integer node is typed `BigInt` — matching the sum's declared payload and the
+                    // arbitrary-precision `IntValue` (which can exceed i64). Mirrors the encode `Leaf::Int`.
+                    let payload = db.push_atom(crate::ast::Leaf::Int {
+                        value: value.clone(),
+                        radix: crate::ast::Radix::Dec,
+                    });
+                    db.core.fill(payload, Core::ConstInt(value));
+                    db.types.fill(payload, crate::ty::Ty::BigInt);
+                    Some(synth_core(
+                        db,
+                        Core::SumNew {
+                            disc: disc.int,
+                            payloads: vec![payload],
+                        },
+                        disc.ty.clone(),
+                    ))
+                }
+                crate::ast::Leaf::Float(dec) => {
+                    let payload = synth_core(db, Core::ConstFloat(dec), crate::ty::Ty::float64());
+                    Some(synth_core(
+                        db,
+                        Core::SumNew {
+                            disc: disc.float,
+                            payloads: vec![payload],
+                        },
+                        disc.ty.clone(),
+                    ))
+                }
+                crate::ast::Leaf::Bool(x) => {
+                    let payload = synth_core(db, Core::ConstBool(x), crate::ty::Ty::Bool);
+                    Some(synth_core(
+                        db,
+                        Core::SumNew {
+                            disc: disc.bool,
+                            payloads: vec![payload],
+                        },
+                        disc.ty.clone(),
+                    ))
+                }
+                crate::ast::Leaf::Str(s) => {
+                    let payload = synth_core(db, Core::ConstStr(s), crate::ty::Ty::String);
+                    Some(synth_core(
+                        db,
+                        Core::SumNew {
+                            disc: disc.str,
+                            payloads: vec![payload],
+                        },
+                        disc.ty.clone(),
+                    ))
+                }
+                crate::ast::Leaf::Name(n) => {
+                    let payload = synth_core(db, Core::ConstStr(n), crate::ty::Ty::String);
+                    Some(synth_core(
+                        db,
+                        Core::SumNew {
+                            disc: disc.name,
+                            payloads: vec![payload],
+                        },
+                        disc.ty.clone(),
+                    ))
+                }
+                crate::ast::Leaf::Bytes(bytes) => {
+                    let elems = bytes_to_elems(db, &bytes);
+                    let payload = synth_core(
+                        db,
+                        Core::BytesOf {
+                            elems: elems.into(),
+                        },
+                        crate::ty::Ty::Bytes,
+                    );
+                    Some(synth_core(
+                        db,
+                        Core::SumNew {
+                            disc: disc.bytes,
+                            payloads: vec![payload],
+                        },
+                        disc.ty.clone(),
+                    ))
+                }
+                // Char / Sym / BadChar / BadEscape / suffixed — NOT `Ast` value variants → `Err`.
+                _ => None,
+            }
+        }
     }
 }
 

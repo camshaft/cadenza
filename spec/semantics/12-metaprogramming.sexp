@@ -2160,46 +2160,20 @@
             ((Err _) false)))
   (output (: true Bool)))
 
-; The EXACT ENCODE-side tag byte per variant — the WIRE-FORMAT contract. ast-encoding.md assigns each
-; leaf/compound a leading tag byte (Int 0x00, Name 0x01, List 0x02, Bool 0x03, Str 0x04, Float 0x05), and
-; the decode arms above pin the READ side (an unknown tag → Err). But the round-trip cases only prove
-; decode INVERTS encode — a change that SWAPPED two tags (e.g. Bool↔Str) would still round-trip yet break
-; interop with any EXTERNAL decoder that reads the documented byte format. These six pin the ENCODE side
-; directly: the first byte `Ast.encode` emits for each variant is its assigned tag, read via `Bytes.at …
-; 0`. A tag reassignment or swap trips exactly the affected case. (`Int64.of` widens the byte to compare.)
+; The canonical cdzast CONTAINER HEADER on the encode side — the wire-format contract (operator ruling
+; OPTION A, 2026-08-15: no bespoke formats; `Ast.encode`/`Ast.decode` use the SINGLE canonical codec, the
+; same form the kernel `decode_shell_pipeline`/`codec::decode` read). The encoded bytes OPEN with the
+; container version header `cdzast\x00\x01` for EVERY variant; the variant is discriminated DEEP in the
+; arena (its leaf kind tag), NOT at byte 0 — so the old per-variant-tag-at-byte-0 property no longer exists.
 
-(case "the encoded tag byte of an Ast.Int is 0x00"
-  (doc    "`Ast.encode (Ast.Int …)` leads with tag byte 0x00 (ast-encoding.md). Pins the Int tag on the
-           ENCODE side — the write-side companion of the Int decode-arm cases.")
+(case "Ast.encode emits the canonical cdzast container header (byte 0 is 'c')"
+  (doc    "`Ast.encode` serializes through the single canonical cdzast codec (`crate::codec`), so its bytes
+           OPEN with the container version header `cdzast\\x00\\x01` — byte 0 is `c` (0x63 = 99) for EVERY
+           variant (the variant lives deep in the arena's leaf kind tag, not at byte 0; this REPLACES the
+           removed per-variant tag-at-byte-0 property the bespoke format had). Pins that the guest emits
+           exactly the canonical header the kernel parses. Int shown; every variant opens identically.")
   (input  (match (Bytes.at (Ast.encode (Ast.Int 5)) 0) ((Option.Some b) (Int64.of b)) (_ -1)))
-  (output (: 0 Int64)))
-
-(case "the encoded tag byte of an Ast.Name is 0x01"
-  (doc    "`Ast.encode (Ast.Name …)` leads with tag byte 0x01. Pins the Name tag on the encode side.")
-  (input  (match (Bytes.at (Ast.encode (Ast.Name "a")) 0) ((Option.Some b) (Int64.of b)) (_ -1)))
-  (output (: 1 Int64)))
-
-(case "the encoded tag byte of an Ast.List is 0x02"
-  (doc    "`Ast.encode (Ast.List …)` leads with tag byte 0x02. Pins the List tag on the encode side.")
-  (input  (match (Bytes.at (Ast.encode (Ast.List (list))) 0) ((Option.Some b) (Int64.of b)) (_ -1)))
-  (output (: 2 Int64)))
-
-(case "the encoded tag byte of an Ast.Bool is 0x03"
-  (doc    "`Ast.encode (Ast.Bool …)` leads with tag byte 0x03. Pins the Bool tag on the encode side —
-           guards against a Bool↔Str tag swap that would still round-trip.")
-  (input  (match (Bytes.at (Ast.encode (Ast.Bool true)) 0) ((Option.Some b) (Int64.of b)) (_ -1)))
-  (output (: 3 Int64)))
-
-(case "the encoded tag byte of an Ast.Str is 0x04"
-  (doc    "`Ast.encode (Ast.Str …)` leads with tag byte 0x04. Pins the Str tag on the encode side.")
-  (input  (match (Bytes.at (Ast.encode (Ast.Str "a")) 0) ((Option.Some b) (Int64.of b)) (_ -1)))
-  (output (: 4 Int64)))
-
-(case "the encoded tag byte of an Ast.Float is 0x05"
-  (doc    "`Ast.encode (Ast.Float …)` leads with tag byte 0x05 (then the 8-byte f64 bit pattern). Pins the
-           Float tag on the encode side — the write-side companion of the Float decode-arm cases.")
-  (input  (match (Bytes.at (Ast.encode (Ast.Float 1.5)) 0) ((Option.Some b) (Int64.of b)) (_ -1)))
-  (output (: 5 Int64)))
+  (output (: 99 Int64)))
 
 (case "encoding and decoding a constructor-built compound AST round-trips"
   (doc    "The compound companion: a hand-built `(Ast.List (list (Ast.Name \"g\") (Ast.Int 5)))` MUST
@@ -2613,16 +2587,6 @@
             ((Ok _)  1)
             ((Err _) 0)))
   (output (: 0 Int64)))
-
-(case "decode of a canonical length-prefixed Int magnitude round-trips to its value"
-  (doc    "The positive-path witness of the non-lossy format: `(0 0 1 0 0 0 42)` (tag 0x00, sign 0, length
-           1, magnitude byte 0x2A) decodes to `Ast.Int 42`. Pins that the sign+magnitude-length+magnitude
-           layout reassembles the exact value — the constructive companion of the adversarial-`Err` cases
-           above.")
-  (input  (match (Ast.decode (Bytes.of (list 0 0 1 0 0 0 42)))
-            ((Ok (Ast.Int n)) n)
-            (_                -1N)))
-  (output (: 42 BigInt)))
 
 (case "decode of an empty byte string (no tag) yields the error case"
   (doc    "The zero-length input has no leading tag byte to dispatch on, so `Ast.decode` returns `Err`
