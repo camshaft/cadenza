@@ -8483,7 +8483,7 @@
   (call   main (: 65 Int64)) (output (: 1 Int64))
   (call   main (: 200 Int64)) (output (: -1 Int64)))
 
-(case "the LET-BOUND twin of finding #20 — a state byte LET-bound as a Bytes then decoded by a from-bytes match in a tail-resumptive arm (declines cleanly TODO, flips to pass when the let-init resolve pin lands)"
+(case "the LET-BOUND twin of finding #20 — a state byte LET-bound as a Bytes then decoded by a from-bytes match in a tail-resumptive arm folds (flatten+pin fix landed; regression-guard)"
   (doc    "adv-20 (breaker via corpus-bugfix, v-effects lane): the LET-BOUND face of the inline sentinel directly
            above. The handler state byte is FIRST let-bound into a one-element `Bytes` — `(let ((b (Bytes.of
            (list (UInt8.wrap s))))) …)` — then that binder `b` is consumed by a `String.from-bytes` decode-MATCH
@@ -8502,9 +8502,9 @@
            pin-predicate in eval.rs that pins the arm's own op-param uses sitting inside a let-INIT so the
            Ref-subst branch fires on the shared occurrence (v-inference's resolve machinery; miscompile risk if
            it over-pins the capture/mv classes). It is a REJECT-DON'T-MISCOMPILE decline (safe, not an ICE, not a
-           wrong answer). This case is the standing non-vacuous WITNESS: it DECLINES (TODO) today and flips to
-           the 1 / -1 PASS the moment the let-init resolve pin lands — pinning the invariant so the fix is gated.
-           adv-20 let-bound twin (2026-08-15).")
+           wrong answer). This case now FOLDS to the 1 / -1 PASS — the flatten+pin fix (2687ed3ae, one-hole
+           path flattens the let-wrapped resume + pins arm-state uses so they survive the copy) landed; it
+           stands as a regression-guard for the invariant. adv-20 let-bound twin (2026-08-15).")
   (input  (do
             (effect S (op dec (-> Int64)))
             (def (main (: n Int64))
@@ -8546,7 +8546,7 @@
   (call   main (: 65 Int64)) (output (: 66 Int64))
   (call   main (: 200 Int64)) (output (: 201 Int64)))
 
-(case "adv-20's decline class is BROADER than the Bytes decode — a state-derived OPTION LET-bound then consumed by a plain Some/None match also declines (same 'no local slot', TODO witness)"
+(case "adv-20 class is BROADER than the Bytes decode — a state-derived OPTION LET-bound then consumed by a plain Some/None match also folds (flatten+pin fix landed; regression-guard)"
   (doc    "adv-20 class-boundary witness (v-effects lane): proves finding-#20's decline is NOT specific to the
            `String.from-bytes` Bytes decode-match — the trigger is the GENERAL shape `let`-bound state-derived
            value CONSUMED BY A MATCH in a tail-resumptive resume. Here the let-bound value is an OPTION built
@@ -8576,17 +8576,15 @@
   (call   main (: 65 Int64)) (output (: -1 Int64))
   (call   main (: 200 Int64)) (output (: 201 Int64)))
 
-(case "adv-20 RESIDUAL — a NESTED let inside the let-init still declines (recursive-flatten follow-up; TODO witness)"
-  (doc    "adv-20 residual gap (v-effects, edge-probed after the one-hole flatten fix f9c3980ad landed): the
-           flatten handles a let-wrapped resume whose let-init reads the arm state, but only at the OUTER level
-           — a NESTED `let` INSIDE the let-init is not recursively flattened, so the inner let-init's arm-state
-           `s` survives the subst and reaches emit as a slotless `Core::Param{arm.state}` → 'parameter reference
-           has no local slot' decline. Here `o`'s init is itself `(let ((c (+ s 1))) ((. Option Some) c))` — a
-           nested let reading `s` — consumed by the resume-value match. This is the SAME class as finding #20,
-           one `let` level deeper (a reject-don't-miscompile clean-decline, NOT an ICE, NOT a wrong answer).
-           `main(65)`: inner `c` = 66, `o` = Some 66, match → 66. `main(200)`: `c` = 201 → 201. Standing
-           non-vacuous WITNESS: declines TODAY (TODO), flips to the 66 / 201 PASS when the flatten RECURSES
-           into nested pure lets in the init (or iterates to a fixpoint). adv-20 nested-let residual (2026-08-15).")
+(case "adv-20 nested-let — a NESTED let inside the let-init folds (recursive flatten; regression-guard)"
+  (doc    "adv-20 nested-let regression-guard (v-effects; was a TODO witness, now PASSES — the recursive flatten
+           landed). The one-hole flatten handles a let-wrapped resume whose let-init reads the arm state; the
+           recursive `flatten_nested_pure_let` (be0f729b3) extends it to a NESTED `let` INSIDE the let-init.
+           Here `o`'s init is itself `(let ((c (+ s 1))) ((. Option Some) c))` — a nested let reading `s` —
+           consumed by the resume-value match; without the recursion the inner let-init's `s` would survive to
+           emit as a slotless `Core::Param{arm.state}` (the original finding-#20 class, one `let` deeper).
+           `main(65)`: inner `c` = 66, `o` = Some 66, match → 66. `main(200)`: `c` = 201 → 201. Guards the
+           recursive-flatten fix against a regression to one-level-only. adv-20 nested-let (2026-08-15).")
   (input  (do
             (effect S (op dec (-> Int64)))
             (def (main (: n Int64))
@@ -8598,6 +8596,26 @@
             (export main)))
   (call   main (: 65 Int64)) (output (: 66 Int64))
   (call   main (: 200 Int64)) (output (: 201 Int64)))
+
+(case "adv-20 DEEP nest — a THREE-level nested let in the let-init folds, guarding arbitrary recursion depth"
+  (doc    "adv-20 depth regression-guard (v-effects): the deeper twin of the nested-let case above — `o`'s init
+           is a THREE-level `(let ((a (+ s 1))) (let ((b (+ a 1))) ((. Option Some) b)))`, each level reading a
+           binder that ultimately traces to the arm state `s`. The recursive `flatten_nested_pure_let`
+           (be0f729b3) must flatten to arbitrary depth (not just one nested level), so every level's `s`-derived
+           init is substituted and none reaches emit as a slotless `Core::Param`. Guards against a regression
+           that handles only a single nested level. `main(65)`: `a` = 66, `b` = 67, `o` = Some 67 → 67.
+           `main(200)`: `a` = 201, `b` = 202 → 202. Uniform on all backends. adv-20 deep-nest (2026-08-15).")
+  (input  (do
+            (effect S (op dec (-> Int64)))
+            (def (main (: n Int64))
+              (handle S n
+                ((dec () s
+                  (let ((o (let ((a (+ s 1))) (let ((b (+ a 1))) ((. Option Some) b)))))
+                    (resume (match o ((Some x) x) ((None _u) -1)) s))))
+                (S.dec)))
+            (export main)))
+  (call   main (: 65 Int64)) (output (: 67 Int64))
+  (call   main (: 200 Int64)) (output (: 202 Int64)))
 
 (case "PREFIX-order edges — the state string compares against crossed op-arg strings: equal, longer-prefix, and shorter-prefix faces"
   (doc    "3-way LEXICOGRAPHIC String ordering (< / = / >) against a threaded String handler state — distinct
