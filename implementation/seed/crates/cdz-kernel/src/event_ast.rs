@@ -3456,6 +3456,107 @@ mod tests {
     }
 
     #[test]
+    fn shell_pipeline_reducer_publish_ast_encode_documents_decode_via_the_kernel() {
+        // BYTE CO-GATE (v-effects, for v-agent-harness's reducer_publish.cdz, landed ca9ca593f): the
+        // git-publish role emits its shell payload as `Ast.encode` of a CONSTANT Ast literal —
+        // `(shell-pipeline (stage (program git) (args (arg <a>) …)))` — NOT `Value.encode` (which wraps
+        // the Ast in a runtime value-form the kernel rejects). The reducer's @tests pin only the emitted
+        // effect SHAPE; the END-TO-END round-trip (the emitted bytes actually decode via the kernel) is
+        // v-effects' co-gate. This proves the exact three git commands the reducer builds decode into the
+        // ShellPipeline the host would run — and that the reducer's document byte-shape is BYTE-IDENTICAL
+        // to the kernel's own `encode_shell_pipeline` (both are `codec::encode` over the same canonical AST
+        // tree), so `Ast.encode` on the guest side and `encode_shell_pipeline` on the kernel side agree.
+
+        // Build a `(shell-pipeline (stage (program git) (args (arg …) …)))` document EXACTLY as
+        // reducer_publish.cdz constructs it via Ast.List/Ast.Name/Ast.Str — the raw canonical tree, NOT via
+        // the kernel's `encode_shell_pipeline` helper (so the test doesn't beg the question). One stage, git.
+        fn reducer_git_document(args: &[&str]) -> Vec<u8> {
+            let mut b = Builder::new();
+            let arg_forms: Vec<StructId> = args
+                .iter()
+                .map(|a| {
+                    let ah = b.name("arg");
+                    let av = str_leaf(&mut b, a);
+                    b.list(vec![ah, av])
+                })
+                .collect();
+            let args_form = {
+                let mut items = vec![b.name("args")];
+                items.extend(arg_forms);
+                b.list(items)
+            };
+            let program_form = {
+                let h = b.name("program");
+                let v = str_leaf(&mut b, "git");
+                b.list(vec![h, v])
+            };
+            let stage_form = {
+                let head = b.name("stage");
+                b.list(vec![head, program_form, args_form])
+            };
+            let root = {
+                let head = b.name("shell-pipeline");
+                b.list(vec![head, stage_form])
+            };
+            codec::encode(&b.finish(root))
+        }
+
+        // The three fixed git commands reducer_publish emits: `git add .`, `git commit -m "fleet unit"`,
+        // `git push`. Each as (reducer-built document bytes, the ShellPipeline the host must decode to).
+        let cases: &[(&[&str], ShellPipeline)] = &[
+            (
+                &["add", "."],
+                ShellPipeline {
+                    stages: vec![ShellStage {
+                        program: "git".to_string(),
+                        args: vec!["add".to_string(), ".".to_string()],
+                    }],
+                },
+            ),
+            (
+                &["commit", "-m", "fleet unit"],
+                ShellPipeline {
+                    stages: vec![ShellStage {
+                        program: "git".to_string(),
+                        // The fixed commit message rides as ONE arg with a space — never re-split.
+                        args: vec![
+                            "commit".to_string(),
+                            "-m".to_string(),
+                            "fleet unit".to_string(),
+                        ],
+                    }],
+                },
+            ),
+            (
+                &["push"],
+                ShellPipeline {
+                    stages: vec![ShellStage {
+                        program: "git".to_string(),
+                        args: vec!["push".to_string()],
+                    }],
+                },
+            ),
+        ];
+
+        for (args, want) in cases {
+            let reducer_bytes = reducer_git_document(args);
+            // (1) The reducer's Ast.encode document DECODES via the kernel into exactly the intended pipeline.
+            assert_eq!(
+                decode_shell_pipeline(&reducer_bytes).expect("reducer document decodes"),
+                *want,
+                "git {args:?} document decodes to the expected ShellPipeline"
+            );
+            // (2) …and is BYTE-IDENTICAL to the kernel's own encode_shell_pipeline of that pipeline — so the
+            // guest-side Ast.encode and the kernel-side encoder produce the same canonical bytes (no drift).
+            assert_eq!(
+                reducer_bytes,
+                encode_shell_pipeline(want),
+                "git {args:?} reducer-built document is byte-identical to encode_shell_pipeline"
+            );
+        }
+    }
+
+    #[test]
     fn shell_pipeline_decode_is_total_codec_vs_shape() {
         // Two EventAstError classes, never panics (the payload rides the durable effect log / a guest reducer):
         // non-decodable bytes → Codec; a well-formed frame with the WRONG head → Shape.
