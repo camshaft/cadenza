@@ -2896,6 +2896,127 @@ mod tests {
         );
     }
 
+    /// END-TO-END: the ROLE LIBRARY MR/PUBLISH reducer (`reducer_publish.cdz` — v-agent-harness role #4)
+    /// folded through the A1 bytes boundary — proves the git-publish EMIT sequence + the shell-pipeline BYTE
+    /// round-trip. On a `unit-complete` event it emits 3 `shell` effects (`git add .` → `git commit -m "fleet
+    /// unit"` → `git push`), each `kind=shell` with `target=b"git"` (the SEC-F1 program unit) and
+    /// `payload=Ast.encode` of the BARE `(shell-pipeline (stage (program git) (args (arg ..) ..)))` document.
+    /// This e2e asserts the emitted SHAPE + ORDER and that each payload DECODES via the kernel's
+    /// [`decode_shell_pipeline`](cdz_kernel::event_ast::decode_shell_pipeline) to the expected stage — the
+    /// end-to-end byte round-trip (Ast.encode bytes → decode_shell_pipeline), COMPLEMENTING v-effects'
+    /// unit-level Ast.encode↔encode_shell_pipeline byte-identity check (MR ad8b70177) at the host-boundary
+    /// level (confirmed non-redundant with v-agent-harness). It deliberately does NOT EXECUTE the shell: a
+    /// real `git push` in a test is unacceptable, and the ShellExecutor RUNS a decoded pipeline directly
+    /// (`Command::new`), so driving these effects through `perform` would push for real — emit+decode is the
+    /// host-boundary value; real exec is the manual/integration path. env-gated on
+    /// `CDZ_REDUCER_PUBLISH_COMPONENT` (+ `CDZ_STORE` for the `cadenza:runtime/heap` dep, wired by v-nix's
+    /// `agentHostEnvSetup`); skips when unwired, exactly like the pure/kv/vertical role E2Es.
+    #[tokio::test]
+    async fn real_publish_reducer_emits_the_git_add_commit_push_sequence_through_the_a1_bytes_boundary(
+    ) {
+        use cdz_kernel::effect::Payload;
+        use cdz_kernel::wasm_host::AsyncComponentReducer;
+
+        let non_empty = |var: &str| std::env::var(var).ok().filter(|v| !v.is_empty());
+        let Some(reducer_path) = non_empty("CDZ_REDUCER_PUBLISH_COMPONENT") else {
+            eprintln!(
+                "SKIP real_publish_reducer_emits_the_git_add_commit_push_sequence...: \
+                 CDZ_REDUCER_PUBLISH_COMPONENT unset (or empty)"
+            );
+            return;
+        };
+        // BOTH-OR-SKIP (not fail-loud): the publish reducer imports cadenza:runtime/heap, so it needs BOTH
+        // the component AND CDZ_STORE. A PARTIALLY-wired env (component set, store absent) SKIPS rather than
+        // panics — so this e2e is green under a hermetic gate that hasn't wired the reducer_publish component
+        // the way the local non-vacuous rig does (pr-sync reject 2026-08-15), while still running
+        // non-vacuously wherever BOTH are set (locally + once v-nix wires reducerCadenzaPublish into the
+        // cdz-agent-host gate derivation).
+        let Some(store_dir) = non_empty("CDZ_STORE") else {
+            eprintln!(
+                "SKIP real_publish_reducer_...: CDZ_REDUCER_PUBLISH_COMPONENT is set but CDZ_STORE is not — \
+                 both are required (heap dep resolves from the store); partially-wired env skips"
+            );
+            return;
+        };
+        let bytes = std::fs::read(&reducer_path).unwrap_or_else(|e| {
+            panic!("CDZ_REDUCER_PUBLISH_COMPONENT={reducer_path:?} set but unreadable: {e}")
+        });
+        let reducer = AsyncComponentReducer::from_component_bytes(&bytes)
+            .unwrap_or_else(|e| panic!("reducer_publish must be a valid component: {e:?}"));
+        let store = cdz_kernel::component_store::ComponentStore::open(&store_dir);
+        let deps = reducer.deps().to_vec();
+        let mut resolved = Vec::with_capacity(deps.len());
+        for dep in &deps {
+            let dep_bytes = store.get_by_hash(&dep.hash).unwrap_or_else(|e| {
+                panic!(
+                    "CDZ_STORE={store_dir:?} could not resolve publish reducer dep {:?} (hash {}): {e:?}",
+                    dep.import_name,
+                    dep.hash.to_hex()
+                )
+            });
+            resolved.push((dep.clone(), dep_bytes));
+        }
+        let reducer = reducer
+            .with_resolved_deps(resolved)
+            .with_component_store(store);
+
+        let ct = |fam: &'static str| cdz_kernel::event::ContentType {
+            family: fam.into(),
+            version: 1,
+        };
+
+        // unit-complete → publish the completed unit: git add . → git commit → git push (IN ORDER).
+        let (effs, _kv) = reducer
+            .apply(cdz_kernel::kv::Kv::new(), ct("unit-complete"), None, None)
+            .await
+            .expect("unit-complete folds through the bytes boundary");
+        assert_eq!(
+            effs.len(),
+            3,
+            "unit-complete publishes exactly 3 git shell effects (add, commit, push)"
+        );
+
+        // Each effect is a `shell` effect (schema-hash identity) targeting the `git` program (SEC-F1 unit),
+        // and its Ast.encode'd payload decodes via the kernel decode_shell_pipeline to the expected 1-stage
+        // `git <args>` pipeline — the byte round-trip.
+        let shell_hash = cdz_kernel::ast_marshal::effect_family_schema_hash("shell");
+        let expected_args: [&[&str]; 3] =
+            [&["add", "."], &["commit", "-m", "fleet unit"], &["push"]];
+        for (i, eff) in effs.iter().enumerate() {
+            assert_eq!(
+                eff.request.schema_hash, shell_hash,
+                "effect {i} is a shell effect (schema-hash identity)"
+            );
+            assert_eq!(
+                eff.request.target_str().expect("the git target is UTF-8"),
+                "git",
+                "effect {i} targets the git program (the SEC-F1 unit)"
+            );
+            let Some(Payload::Inline(payload)) = &eff.request.payload else {
+                panic!("effect {i} must carry the inline shell-pipeline payload");
+            };
+            let pipeline =
+                cdz_kernel::event_ast::decode_shell_pipeline(payload).unwrap_or_else(|e| {
+                    panic!("effect {i} payload must decode as a shell-pipeline: {e:?}")
+                });
+            assert_eq!(
+                pipeline.stages.len(),
+                1,
+                "each git command is a single-stage pipeline"
+            );
+            assert_eq!(
+                pipeline.stages[0].program, "git",
+                "stage {i} program is git"
+            );
+            let args: Vec<&str> = pipeline.stages[0].args.iter().map(String::as_str).collect();
+            assert_eq!(
+                args.as_slice(),
+                expected_args[i],
+                "stage {i} args are the expected git command"
+            );
+        }
+    }
+
     /// END-TO-END: the ROLE LIBRARY KV-BACKED INBOX-DRAIN reducer (`reducer_inbox_kv.cdz`) folded through the
     /// A1 bytes boundary — the STATEFUL dedup successor to the pure `reducer_inbox`. env-gated on
     /// `CDZ_REDUCER_INBOX_KV_COMPONENT` (+ `CDZ_STORE` for the `cadenza:runtime/heap` dep; wired by v-nix's
