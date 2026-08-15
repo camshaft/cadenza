@@ -452,6 +452,18 @@ pub enum FleetCmd {
         #[arg(long)]
         close: bool,
     },
+    /// Reactivate a `stopped` agent (the inverse of `remove`): flip its registry status back to
+    /// `active`, clear its stop-file, then ensure its worktree + inbox + a live tmux window (re-arming
+    /// the loop). This is the sanctioned way to bring back an agent a `remove` (or `down`) paused —
+    /// `fleet up` alone SKIPS non-active agents, and `fleet add` REFUSES an existing name, so before
+    /// this there was no clean resume path (a paused agent whose window was also reaped could only be
+    /// revived by hand-editing registry.json, which risks corrupting the durable manifest). Idempotent:
+    /// resuming an already-active agent just re-ensures its window. The agent must already exist in the
+    /// registry (use `add` for a brand-new one).
+    Resume {
+        /// The stopped agent to reactivate.
+        name: String,
+    },
     /// Deliver a message into another agent's inbox as one atomic JSON file. The whole fleet
     /// coordinates through this — see the message-kind table in AGENTS-fleet.md.
     ///
@@ -1041,6 +1053,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
             &fleet, name, role, vertical, area, interval, model, effort, seed,
         ),
         FleetCmd::Remove { name, close } => remove(&fleet, &name, close),
+        FleetCmd::Resume { name } => resume(&fleet, &name),
         FleetCmd::Send {
             to,
             kind,
@@ -1864,6 +1877,56 @@ fn remove(fleet: &Fleet, name: &str, close: bool) {
              Its tmux window is left OPEN for scrollback."
         );
     }
+}
+
+/// Reactivate a `stopped` agent — the inverse of `remove`. Flips its registry status to `active`,
+/// clears its stop-file, then re-ensures its worktree + inbox + a live tmux window (re-arming the loop
+/// via the same `ensure_window` path `up` uses). This is the sanctioned resume: `up` skips non-active
+/// agents and `add` refuses an existing name, so a paused-and-window-reaped agent had no clean revival
+/// short of hand-editing the manifest. Idempotent — resuming an already-active agent just re-ensures
+/// its window. Requires the agent to exist in the registry (a brand-new one uses `add`).
+fn resume(fleet: &Fleet, name: &str) {
+    let mut reg = fleet.load();
+    let Some(a) = reg.agents.iter_mut().find(|a| a.name == name) else {
+        eprintln!(
+            "fleet resume: no agent named '{name}' in the registry — use `fleet add` for a new agent."
+        );
+        std::process::exit(1);
+    };
+    let was_stopped = a.status != "active";
+    a.status = "active".to_string();
+    fleet.save(&reg);
+    // Clear the stop-file so the re-armed loop doesn't immediately exit on its heartbeat check.
+    let _ = std::fs::remove_file(fleet.stopfile(name));
+    // Re-ensure the runtime pieces (same as `up` does for an active agent). Needs a tmux session for the
+    // window; without one, the status flip + stop-file clear still stand and a later `up`/`resume` from
+    // inside tmux completes the revival.
+    let a = reg
+        .agents
+        .iter()
+        .find(|a| a.name == name)
+        .expect("agent present (just found it)");
+    if !in_tmux() {
+        println!(
+            "fleet resume: '{name}' marked active + stop-file cleared, but not inside a tmux session \
+             (no $TMUX) — re-run `fleet resume {name}` (or `fleet up`) from the fleet's tmux session to \
+             (re)create its window."
+        );
+        return;
+    }
+    let session = tmux_current_session();
+    ensure_worktree(fleet, a);
+    ensure_inbox(fleet, name);
+    ensure_window(fleet, &session, a);
+    let verb = if was_stopped {
+        "reactivated (status stopped → active, stop-file cleared)"
+    } else {
+        "was already active; re-ensured"
+    };
+    println!(
+        "fleet resume: '{name}' {verb}; worktree + inbox + tmux window ensured in session '{session}' \
+         (loop re-armed on its next window launch)."
+    );
 }
 
 // ── send / heartbeat / describe ─────────────────────────────────────────────────────────────────
