@@ -4827,6 +4827,7 @@ pass	checked multiplication reports the Int64.min * -1 overflow as None (the che
 pass	checked multiplication yields Some when it fits
 pass	checked subtraction yields None on underflow instead of trapping
 pass	checked subtraction yields Some of the difference when it fits
+pass	chg1 a BATTERY controller with a protected reserve — charge clamps at one hundred, draw refuses any request that would dip below the seed-shaped reserve answering the negated shortfall with the level UNTOUCHED, and the same draw sequence trips the refusal at DIFFERENT points per seed with the refused row's level surviving to the next draw
 pass	ckp1 a CHECKPOINT/RESTORE protocol — save copies the live slot into the shadow slot, work mutates only the live one, restore copies the shadow back and later work resumes from the checkpoint
 pass	cl1 a NARROWING clamp arm — the [lo,hi] window shrinks by one each side per dispatch, three args meet three windows
 pass	cla1 the arm runs a PURE data-dependent-depth recursion on the crossed ARGUMENT — collatz length computed wholly inside one dispatch frame, the state accumulates the lengths and a final read exposes the total
@@ -5449,6 +5450,7 @@ pass	lf2 a PERFORMING recursive walk — each element visit draws, pairing eleme
 pass	lf3 the arm pushes TWO elements per dispatch (both lengths read from the PRE-push list) — the third draw reads length 5
 pass	lf4 a per-element dispatch comparing each element against the RISING state — amplify-or-pass per visit
 pass	lf5 TWO lists walked in LOCKSTEP with a per-pair 2-arg dispatch — length-guarded via projection helpers
+pass	lfs1 an EIGHT-BIT Fibonacci LFSR — step shifts right injecting the XOR of taps zero and two as the new high bit answering the register, peek masks the low nibble, and the two seeds fall into DIFFERENT orbits (one decays toward the injected-bit ladder, the other rings the high bits immediately)
 pass	lhn1 a LUHN checksum accumulator — feed doubles every second digit by POSITION PARITY subtracting nine from two-digit doubles, chk answers 1 on a multiple of ten else the residue, and the seed-fed digit doubles on both runs but only one crosses the subtract-nine threshold
 pass	li1 draws choose BOTH the List.update target and the List.at read index — the collection edit follows the thread
 pass	li2 a list BUILT from pushed draws then read at a draw-picked index — construction and consumption share one thread
@@ -6596,6 +6598,7 @@ pass	tl2 a THREE-frame value pipeline — innermost pick feeds middle dbl feeds 
 pass	tl3 the MIDDLE frame's arm resumes with an OUTERMOST draw — rv-face at depth, dispatched from under a third live frame
 pass	tl4 SAME effect handled at two depths — the inner handle shadows for its extent, the outer thread resumes after it closes
 pass	tm2 a THREE-function mutual SCC — two tail legs route by value, the third combines the cycle result with a post-put draw
+pass	tmp1 a SIMULATED-ANNEALING acceptance schedule — cool decays the temperature by nine-tenths truncating, accept takes any improvement and any worsening still under the heat counting the accepts, and the hot seed accepts EVERYTHING the cold seed rejects while both take the improving move
 pass	to-bytes of a sliced multibyte string is read twice and both reads see the right bytes
 pass	tok1 a TOKENIZER protocol — next-tok skips leading spaces, answers the token's byte-len, and threads the REST of the string; the drained stream answers zero forever
 pass	tp1 TWO ops each own a tuple-state SLOT — lo advances field 0, hi doubles field 1, interleaved

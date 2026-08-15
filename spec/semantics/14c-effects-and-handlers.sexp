@@ -12054,3 +12054,89 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 203010300 Int64))
   (call   main (: 0 Int64)) (output (: 204000300 Int64)))
+
+;; ── Annealing acceptance schedule, battery reserve, eight-bit LFSR (breaker batch 285) ────────
+(case "tmp1 a SIMULATED-ANNEALING acceptance schedule — cool decays the temperature by nine-tenths truncating, accept takes any improvement and any worsening still under the heat counting the accepts, and the hot seed accepts EVERYTHING the cold seed rejects while both take the improving move"
+  (input  (do
+            (effect A
+              (op cool (-> Int64))
+              (op accept (-> Int64 Int64))
+              (op tally (-> Int64)))
+            (def (main (: n Int64))
+              (handle A (tuple (+ 40 (* n 4)) (: 0 Int64))
+                ((cool () st
+                  (match st
+                    ((tuple temp k)
+                      (resume (/ (* temp 9) 10) (tuple (/ (* temp 9) 10) k)))))
+                 (accept (d) st
+                  (match st
+                    ((tuple temp k)
+                      (if (< d 1)
+                          (resume 1 (tuple temp (+ k 1)))
+                          (if (< d temp)
+                              (resume 1 (tuple temp (+ k 1)))
+                              (resume 0 st))))))
+                 (tally () st
+                  (match st ((tuple temp k) (resume k st)))))
+                (let ((a (A.accept 50)))
+                  (let ((b (A.cool)))
+                    (let ((c (A.accept 50)))
+                      (let ((d (A.cool)))
+                        (let ((e (A.accept -3)))
+                          (let ((f (A.cool)))
+                            (let ((g (A.accept 50)))
+                              (let ((h (A.accept 30)))
+                                (let ((i (A.tally)))
+                                  (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g)) h)) i))))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 17201640157010105 Int64))
+  (call   main (: 0 Int64)) (output (: 3600320128000001 Int64)))
+
+(case "chg1 a BATTERY controller with a protected reserve — charge clamps at one hundred, draw refuses any request that would dip below the seed-shaped reserve answering the negated shortfall with the level UNTOUCHED, and the same draw sequence trips the refusal at DIFFERENT points per seed with the refused row's level surviving to the next draw"
+  (input  (do
+            (effect C
+              (op charge (-> Int64 Int64))
+              (op draw (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle C (: 50 Int64)
+                ((charge (v) level
+                  (if (< 100 (+ level v))
+                      (resume 100 100)
+                      (resume (+ level v) (+ level v))))
+                 (draw (v) level
+                  (if (< (- level v) (+ n 10))
+                      (resume (- 0 (- (+ n 10) (- level v))) level)
+                      (resume (- level v) (- level v)))))
+                (let ((a (C.draw 25)))
+                  (let ((b (C.charge 40)))
+                    (let ((c (C.draw 52)))
+                      (let ((d (C.draw 30)))
+                        (let ((e (C.charge 80)))
+                          (let ((f (C.draw 52)))
+                            (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 256493360048 Int64))
+  (call   main (: 0 Int64)) (output (: 256512739341 Int64)))
+
+(case "lfs1 an EIGHT-BIT Fibonacci LFSR — step shifts right injecting the XOR of taps zero and two as the new high bit answering the register, peek masks the low nibble, and the two seeds fall into DIFFERENT orbits (one decays toward the injected-bit ladder, the other rings the high bits immediately)"
+  (input  (do
+            (effect L
+              (op step (-> Int64))
+              (op peek (-> Int64)))
+            (def (main (: n Int64))
+              (handle L (+ (% n 8) 3)
+                ((step (
+                  ) reg
+                  (resume (| (>> reg 1) (<< (^ (& reg 1) (& (>> reg 2) 1)) 7))
+                          (| (>> reg 1) (<< (^ (& reg 1) (& (>> reg 2) 1)) 7))))
+                 (peek () reg (resume (& reg 15) reg)))
+                (let ((a (L.step)))
+                  (let ((b (L.step)))
+                    (let ((c (L.peek)))
+                      (let ((d (L.step)))
+                        (let ((e (L.step)))
+                          (let ((f (L.peek)))
+                            (+ (* 1000 (+ (* 1000 (+ (* 1000 (+ (* 1000 (+ (* 1000 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 2001001128064000 Int64))
+  (call   main (: 0 Int64)) (output (: 129192000096048000 Int64)))
