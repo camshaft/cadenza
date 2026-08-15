@@ -4956,6 +4956,7 @@ pass	da2 draws as MAP-literal keys and values — two entries built from three s
 pass	da3 draws as SET-literal elements — n=7 collides the first draw with the fixed element, n=6 collides the second
 pass	day1 a DAY-ROLLOVER ledger — transactions accumulate in the day buffer, endday posts the net to the balance answers day and net and clears, and the second day starts from a clean buffer
 pass	dbn1 a DEBOUNCE gate — emits fire only when the gap since the last fire is met, suppressed emits stash their value in the pending slot, and flush releases whatever the last suppression left
+pass	dbt1 a DEBT AMORTIZATION schedule — pay accrues truncating interest at the seed-shaped rate first and the remainder reduces principal, answering the interest slice; left reads the balance; the higher rate leaks interest on every payment so the principals drift apart payment by payment
 pass	dc1 a DEEP left-leaning concat chain — ten single-element concats build an 11-deep rope, random-access reads stay exact
 pass	dc1 a THREE-hop def relay under ONE handler — each def draws then calls the next, weights pin the depth order
 pass	dc2 the relay call's ARGUMENT is a draw — the callee draws again and combines, argument-before-body order pinned
@@ -6091,6 +6092,7 @@ pass	set union is idempotent on generated inputs (re-delivering a set changes no
 pass	sets reached via DIFFERENCE and INTERSECTION equal the directly-built set
 pass	sf1 an inner SAME-effect handler's arm re-performs the effect it discharges — the re-perform routes to the OUTER handler, both states advance independently
 pass	sf2 the inner arm's NEXT-STATE re-performs to the outer — the forward sits in the state-thread position, not the resume value
+pass	sfu1 TWO-SENSOR weighted fusion — each read folds the sample into a running weighted mean by est*wsum plus v*w over the grown weight (truncating), the trusted sensor carries weight three while the seed shapes the second sensor's trust, and the final draw reads the accumulated weight
 pass	sg1 a string BUILT by a recursive walk of draws — one H/L character per dispatch, exact content compared
 pass	sg2 a stable PREFIX slice of a growing rope — String.slice (start,END) of the state per dispatch, prefix identical across growth
 pass	sg3 a ONE-SHOT string lock — the arm string-compares op arg vs state, consuming the key on the first match
@@ -6596,6 +6598,7 @@ pass	tq4 BOTH effects shadowed in one inner region — two fresh threads run the
 pass	tq5 a DEF installs the Q-shadow and draws P from inside it — the P dispatch crosses the def AND the shadow to the caller's frame
 pass	tr1 a TUPLE snapshot resume value — each dispatch returns (state, state*10), two snapshots differ by the stride
 pass	tr2 TWO string fields in the tuple with only one phi-grown — the sibling rope field is undisturbed (slot-clobber extended witness)
+pass	trb1 the TRIBONACCI recurrence with a window readout — step rolls (a,b,c) to (b,c,a+b+c) answering the new term, peek answers the live window sum without advancing, and the seed shapes the leading term so the whole orbit shifts while fib1's two-term twin stays covered separately
 pass	tree HEIGHT and BALANCE derive from insertion order over the same BST shape
 pass	tri1 sign TRICHOTOMY of a draw — negative, zero-literal, and positive rows each route distinctly
 pass	triple negation of a runtime boolean is a single negation
