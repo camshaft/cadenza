@@ -464,6 +464,20 @@ pub enum FleetCmd {
         /// The stopped agent to reactivate.
         name: String,
     },
+    /// Run a gate-heavy command under a fleet check-lease so it YIELDS to pr-sync's priority merge gate
+    /// and counts against the fleet-wide concurrency cap (`CDZ_CHECK_LEASE_MAX`). The lease is acquired
+    /// (a VERTICAL, non-priority slot — waits while pr-sync holds a priority lease + for a free slot),
+    /// the command runs, and the lease is released when it exits (RAII). This closes the check-lease's
+    /// coverage HOLE: the cap only governed `cargo xtask check`, so a churner's heavy build/fuzz cycle
+    /// (the fuzzer's `fuzz-cycle.sh`, a full rebuild) escaped it and could oversubscribe the box + starve
+    /// the merge gate (the 2026-08-15 load deadlock). Wrap such a cycle in `fleet with-lease -- <cmd…>`
+    /// so it participates in the same operator-mandated cap as vertical checks. Exit code is the wrapped
+    /// command's. Fail-open: a lease-dir hiccup never blocks the command (the lease is best-effort).
+    WithLease {
+        /// The command + args to run under the lease (everything after `--`).
+        #[arg(trailing_var_arg = true, required = true)]
+        command: Vec<String>,
+    },
     /// Deliver a message into another agent's inbox as one atomic JSON file. The whole fleet
     /// coordinates through this — see the message-kind table in AGENTS-fleet.md.
     ///
@@ -1054,6 +1068,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         ),
         FleetCmd::Remove { name, close } => remove(&fleet, &name, close),
         FleetCmd::Resume { name } => resume(&fleet, &name),
+        FleetCmd::WithLease { command } => with_lease(&fleet, &command),
         FleetCmd::Send {
             to,
             kind,
@@ -1927,6 +1942,34 @@ fn resume(fleet: &Fleet, name: &str) {
         "fleet resume: '{name}' {verb}; worktree + inbox + tmux window ensured in session '{session}' \
          (loop re-armed on its next window launch)."
     );
+}
+
+/// Run a gate-heavy command under a VERTICAL check-lease, so it yields to pr-sync's priority merge gate
+/// and counts against the fleet concurrency cap (`CDZ_CHECK_LEASE_MAX`) — extending the operator-mandated
+/// cap (previously only on `cargo xtask check`) to cover a churner's heavy build/fuzz cycle. The lease is
+/// held for the whole command and released on exit (RAII drop of `_lease`). Fail-open: the lease is
+/// best-effort (a lease-dir hiccup yields an inert guard), so it NEVER blocks the command from running.
+/// Exits with the wrapped command's own status code so callers/CI see the real result.
+fn with_lease(fleet: &Fleet, command: &[String]) {
+    let Some((program, args)) = command.split_first() else {
+        eprintln!("fleet with-lease: no command given (usage: fleet with-lease -- <cmd> [args…]).");
+        std::process::exit(2);
+    };
+    // Acquire a VERTICAL (non-priority) slot: it waits while pr-sync holds a priority lease and for a
+    // free slot under the cap, so a heavy churner cycle pauses while the merge gate runs. `_lease` must
+    // outlive the command — held until this fn returns (RAII), never dropped early.
+    let _lease = acquire_check_lease(&fleet.repo, false);
+    let status = Command::new(program).args(args).status();
+    match status {
+        Ok(s) => {
+            // Propagate the wrapped command's exit code (default 1 if it was killed by a signal → no code).
+            std::process::exit(s.code().unwrap_or(1));
+        }
+        Err(e) => {
+            eprintln!("fleet with-lease: failed to spawn '{program}': {e}");
+            std::process::exit(127);
+        }
+    }
 }
 
 // ── send / heartbeat / describe ─────────────────────────────────────────────────────────────────

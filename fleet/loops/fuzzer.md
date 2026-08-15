@@ -11,10 +11,14 @@ cdz-smith is its OWN cargo workspace, so you run it from its crate dir, not `-p`
    bare `git reset --hard trunk` does; refuses on a dirty tree). Bare-hub: `trunk` is a LOCAL branch,
    there is NO `origin/trunk`; reset not rebase, since pr-sync squash-integrates. Then rebuild
    `cdz`/`cdz-run` + store so you fuzz current `trunk`.
-3. The cron entry point is the committed cycle script — run it as the repo does:
-   `bash <(git show trunk:implementation/seed/crates/cdz-smith/fuzz-cycle.sh)` (it knows the
-   engine + corpus paths). If that script has moved, read `cdz-smith`'s README for the current
-   invocation.
+3. The cron entry point is the committed cycle script — run it UNDER A CHECK-LEASE so your heavy fuzz
+   cycle yields to pr-sync's priority merge gate and counts against the fleet concurrency cap (you are a
+   gate-heavy churner; an unleased cycle oversubscribes the shared box + starves the merge queue — the
+   2026-08-15 load deadlock):
+   `cargo xtask fleet with-lease -- bash <(git show trunk:implementation/seed/crates/cdz-smith/fuzz-cycle.sh)`
+   (`with-lease` acquires a vertical lease, runs the cycle, releases on exit — same operator-mandated cap
+   as `cargo xtask check`). The script knows the engine + corpus paths. If it has moved, read `cdz-smith`'s
+   README for the current invocation (still wrap it in `fleet with-lease --`).
 
 ## Each tick
 1. `cargo xtask fleet heartbeat fuzzer`.
