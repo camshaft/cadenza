@@ -6913,5 +6913,4 @@ todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	read of malformed text is a coded reject, not a wrong value
 todo	two runtime String entry args compare by content including multibyte
-pass	runtime char-literal match dispatches by Unicode code point
 pass	Ast.encode emits the canonical cdzast container header (byte 0 is 'c')
