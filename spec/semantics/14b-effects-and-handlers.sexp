@@ -8483,6 +8483,43 @@
   (call   main (: 65 Int64)) (output (: 1 Int64))
   (call   main (: 200 Int64)) (output (: -1 Int64)))
 
+(case "the LET-BOUND twin of finding #20 — a state byte LET-bound as a Bytes then decoded by a from-bytes match in a tail-resumptive arm (declines cleanly TODO, flips to pass when the let-init resolve pin lands)"
+  (doc    "adv-20 (breaker via corpus-bugfix, v-effects lane): the LET-BOUND face of the inline sentinel directly
+           above. The handler state byte is FIRST let-bound into a one-element `Bytes` — `(let ((b (Bytes.of
+           (list (UInt8.wrap s))))) …)` — then that binder `b` is consumed by a `String.from-bytes` decode-MATCH
+           in the resume value. Same two arms (valid Some / invalid None), same expected results as the inline
+           twin: `main(65)` → 'A' valid 1-byte → byte-len 1; `main(200)` → 0xC8 lone continuation → invalid UTF-8
+           → None → -1.
+           WHY IT'S A TODO (not the inline pass): the CONJUNCTION `let`-binder (state-derived init) CONSUMED BY a
+           decode-match is a clean-decline on current trunk — `parameter reference has no local slot`
+           (select.rs). Bisection pins the trigger to the conjunction: let+`Bytes.len` alone COMPILES, inline+
+           decode-match alone COMPILES (the sentinel above), only let+decode-match declines. Root (v-inference
+           diagnosed): in `reduce_handle`'s tail-resumptive `beta_reduce`, `copy_structural` copies the let-init
+           `s` FRESH while still an unresolved name; by the time it re-resolves, `freshen_local_binders` + the
+           resume-rewrite have DETACHED the arm from its handle form, so `handle_arm_binds` fails on the copy and
+           it falls back to the ORIGINAL slot-less op-param binder — while the trailing resume-arg `s` (no
+           intervening let scope) resolves straight to the arm state and substitutes fine. The correct fix is a
+           pin-predicate in eval.rs that pins the arm's own op-param uses sitting inside a let-INIT so the
+           Ref-subst branch fires on the shared occurrence (v-inference's resolve machinery; miscompile risk if
+           it over-pins the capture/mv classes). It is a REJECT-DON'T-MISCOMPILE decline (safe, not an ICE, not a
+           wrong answer). This case is the standing non-vacuous WITNESS: it DECLINES (TODO) today and flips to
+           the 1 / -1 PASS the moment the let-init resolve pin lands — pinning the invariant so the fix is gated.
+           adv-20 let-bound twin (2026-08-15).")
+  (input  (do
+            (effect S (op dec (-> Int64)))
+            (def (main (: n Int64))
+              (handle S n
+                ((dec () s
+                  (let ((b (Bytes.of (list (UInt8.wrap s)))))
+                    (resume (match (String.from-bytes b)
+                              ((Some t) (String.byte-len t))
+                              ((None _u) -1))
+                            s))))
+                (S.dec)))
+            (export main)))
+  (call   main (: 65 Int64)) (output (: 1 Int64))
+  (call   main (: 200 Int64)) (output (: -1 Int64)))
+
 (case "PREFIX-order edges — the state string compares against crossed op-arg strings: equal, longer-prefix, and shorter-prefix faces"
   (doc    "3-way LEXICOGRAPHIC String ordering (< / = / >) against a threaded String handler state — distinct
            from the string-EQUALITY pins (sg3, one-shot lock): the `vs` arm answers `(if (< s probe) -1 (if
