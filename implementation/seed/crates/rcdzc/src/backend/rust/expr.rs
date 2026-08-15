@@ -459,8 +459,18 @@ fn emit_value_form(ty: &Ty, val_expr: &str) -> Result<String, Reject> {
             body.push_str(&format!(" __b.list(vec![{}]) }}", vars.join(", ")));
             Ok(body)
         }
+        // A LIST is a `Vec<T>` — a RUNTIME-length `(list e0 e1 …)`: loop the vec building each element node
+        // (cloning the element so a non-Copy element is not moved out of the borrow), push onto the children.
+        Ty::List(elem) => {
+            let child = emit_value_form(elem, "__ev")?;
+            Ok(format!(
+                "{{ let __lv = {val_expr}; let __lh = __b.name(\"list\"); let mut __lc = vec![__lh]; \
+                 for __el in __lv.iter() {{ let __ev = __el.clone(); let __c = {child}; __lc.push(__c); }} \
+                 __b.list(__lc) }}"
+            ))
+        }
         other => Err(Reject::decline(format!(
-            "Value.encode native rust: value shape {other:?} not yet wired (Int/Bool/Tuple only — incremental slices)"
+            "Value.encode native rust: value shape {other:?} not yet wired (Int/Bool/Char/String/Bytes/Tuple/List — incremental slices)"
         ))),
     }
 }
@@ -517,8 +527,20 @@ fn emit_value_reconstruct(ty: &Ty, arenas: &str, node: &str) -> Result<String, R
             body.push_str(&format!("Some(({}{tail})) }})()", results.join(", ")));
             Ok(body)
         }
+        // A LIST: check the `(list …)` shape, reconstruct each element into a `Vec` (`?` on any element
+        // mismatch → the whole decode is None). The inverse of the List encode loop.
+        Ty::List(elem) => {
+            let child = emit_value_reconstruct(elem, arenas, "__items[__ix]")?;
+            Ok(format!(
+                "(|| {{ let __items = if let cadenza_ast::ast::Struct::List(__i) = {arenas}.get({node}) {{ __i }} else {{ return None }}; \
+                 if __items.is_empty() || {arenas}.head_name({node}) != Some(\"list\") {{ return None }}; \
+                 let mut __out = Vec::new(); \
+                 for __ix in 1..__items.len() {{ __out.push({child}?); }} \
+                 Some(__out) }})()"
+            ))
+        }
         other => Err(Reject::decline(format!(
-            "Value.decode native rust: value shape {other:?} not yet wired (Int/Bool/Tuple only — incremental slices)"
+            "Value.decode native rust: value shape {other:?} not yet wired (Int/Bool/Char/String/Bytes/Tuple/List — incremental slices)"
         ))),
     }
 }

@@ -1159,6 +1159,22 @@
   (call   main (: 5 Int64)) (output (: 5 Int64))
   (call   main (: 9 Int64)) (output (: 9 Int64)))
 
+(case "a Value.encode/Value.decode round-trip preserves a runtime-length LIST"
+  (doc    "Extends the round-trips to a `(List Int64)` — the R2 value-form `(list ..)` shape, a RUNTIME-length
+           heap element. `Value.decode (Value.encode (list n (+ n 5) (+ n 10))) == Some [n, n+5, n+10]`; the
+           match returns `len*1000 + first` to prove the LENGTH and element POSITIONS survive. `main 7` ->
+           3*1000+7 = 3007, `main 2` -> 3002 (distinct); a truncated/garbled list would differ. Pins the List
+           leaf of the native codec (the rust encoder loops the `Vec` into a `(list ..)`, decode rebuilds the
+           `Vec`). Runs on wasm + rust + rust-async.")
+  (input  (do
+            (def (main (: n Int64))
+              (match (: (Value.decode (Value.encode (list n (+ n 5) (+ n 10)))) (Option (List Int64)))
+                ((Some l) (+ (* (List.len l) 1000) (Option.expect (List.at l 0) "first")))
+                ((None u) (- 0 1))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 3007 Int64))
+  (call   main (: 2 Int64)) (output (: 3002 Int64)))
+
 ; --- The round-trip under LET-BINDER grounding: decode's target fixed by the binder annotation, not inline. ---
 
 (case "a Value.decode round-trip grounds its target from a LET-BINDER annotation, not only an inline ascription"
