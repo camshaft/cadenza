@@ -12754,12 +12754,16 @@ fn emit_probe_condition(probe: &crate::core::Probe, src: OperandSrc, it: IntTy, 
                 "a string-literal probe folds; it is never emitted as a runtime scalar probe"
             )
         }
-        // A char-literal probe only ever FOLDS (a constant scrutinee) — a runtime char is not a scalar
-        // (`is_scalar`) and has no machine rep, so a `Probe::Char` never reaches the runtime scalar emit.
-        crate::core::Probe::Char(_) => {
-            unreachable!(
-                "a char-literal probe folds; it is never emitted as a runtime scalar probe"
-            )
+        // A runtime char-literal probe (Char-rep 3/N): the scrutinee is the char's i32 code-point slot, so
+        // test it against THIS literal's code point with `i32.eq` — the same `const ; eq` the nonzero-Int
+        // path uses. `it` is `int_ty_of(Char)` = signed-32, so `m.slot32` is true → `i32.eq`. (A constant
+        // char scrutinee still folds in `lower`; this is the runtime path a `Char` scrutinee reaches now
+        // that `is_scalar` includes `Ty::Char` — 2/N.) `#\u+0000` (code point 0) compares by `const 0 ; eq`
+        // like any other value; no `eqz` special-case needed.
+        crate::core::Probe::Char(c) => {
+            let m = Machine::of(it);
+            out.push(m.konst(*c as u32 as i64));
+            out.push(if m.slot32 { Lir::I32Eq } else { Lir::I64Eq });
         }
         // A `ListLen` probe folds against a constant list; a runtime list payload declines earlier, so it
         // never reaches a runtime scalar probe.
@@ -12781,6 +12785,11 @@ fn block_scalar_slot(db: &mut Db, scrutinee: StructId) -> Option<ValType> {
     match type_of(db, scrutinee) {
         Ty::Int(it) => Some(m_slot(it)),
         Ty::Bool => Some(ValType::I32),
+        // A CHAR scrutinee is an i32 code-point slot (`valtype_of(Ty::Char) = I32`, Char-rep 1/N), so a
+        // runtime char-literal `match` dispatches on it as an i32 scalar (Char-rep 3/N). `is_scalar` (2/N)
+        // routes the char scrutinee here; the per-probe test (`emit_probe_condition`) compares it to each
+        // char literal's code point with `i32.eq`.
+        Ty::Char => Some(ValType::I32),
         _ => None,
     }
 }
@@ -13770,10 +13779,15 @@ fn emit_probe_chain(
                     "a string-literal probe folds; a runtime string match declines at is_scalar"
                 )
             }
-            crate::core::Probe::Char(_) => {
-                unreachable!(
-                    "a char-literal probe folds; a runtime char match declines at is_scalar"
-                )
+            crate::core::Probe::Char(c) => {
+                // A runtime char-literal probe (Char-rep 3/N): compare the i32 code-point scrutinee to THIS
+                // literal's code point with `const ; i32.eq` (the nonzero-Int shape; `it` = int_ty_of(Char)
+                // = signed-32, so `m.slot32` → i32.eq). `is_scalar` (2/N) now routes a runtime char
+                // scrutinee to this probe chain — this is the multi-arm dispatch (distinct from the 2-arm
+                // `select` in `emit_probe_condition`, patched too).
+                let m = Machine::of(it);
+                out.push(m.konst(*c as u32 as i64));
+                out.push(if m.slot32 { Lir::I32Eq } else { Lir::I64Eq });
             }
             crate::core::Probe::ListLen { .. } => {
                 unreachable!(
@@ -17515,6 +17529,12 @@ fn int_ty_of(db: &mut Db, id: StructId) -> IntTy {
     };
     match inner {
         Ty::Int(it) => *it,
+        // A CHAR value occupies an i32 code-point slot (Char-rep 1/N); a runtime char-literal `match`
+        // grounds its scrutinee + probe constants to a signed ≤32-bit width so the per-probe compare is
+        // `i32.eq` (code points are 0..=0x10FFFF, always non-negative). Without this the `_ => i64` default
+        // emitted i64 ops on the i32 char slot → an invalid module (the same class as `operand_int_ty`'s
+        // Char fix). Char-rep 3/N.
+        Ty::Char => IntTy::fixed(true, 32),
         _ => IntTy::i64(),
     }
 }

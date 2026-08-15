@@ -3137,6 +3137,18 @@
   (call   main (: true Bool)) (output (: 11 Int64))
   (call   main (: false Bool)) (output (: 0 Int64)))
 
+(case "runtime char-literal match dispatches by Unicode code point"
+  (doc    "Char-rep 3/N: a runtime char scrutinee — the `(if b …)`-join is not constant-folded — drives a
+           char-literal `match`. Each arm tests the i32 code-point scrutinee against its char literal
+           (`const code-point ; i32.eq` on wasm; a native `char` literal pattern on rust). `b`=true selects
+           #\\a → the #\\a arm → 1; `b`=false selects #\\z → the #\\z arm → 2; the `_` wildcard covers the
+           rest. Pins runtime char-literal MATCH — reachable now that is_scalar routes a Char scrutinee to
+           the scalar-match path (2/N) and the scrutinee slot / probe constants ground to i32 (3/N). A
+           CONSTANT char match folds at compile time; this is the runtime dispatch.")
+  (input  (do (def (main (: b Bool)) (match (if b #\a #\z) (#\a 1) (#\z 2) (_ 0))) (export main)))
+  (call   main (: true Bool)) (output (: 1 Int64))
+  (call   main (: false Bool)) (output (: 2 Int64)))
+
 (case "converting a scalar-valued integer to a char yields Some"
   (doc    "`(Char.from-int 97)` is `(Some #\\a)` — 97 is the scalar value of `a`, a valid Unicode scalar,
            so the conversion succeeds (collections-and-text.md #A Char Converts To And From An Integer
