@@ -1950,7 +1950,7 @@ mod tests {
     /// transport body. Structure entries are `(tag, [ids])` where an Atom is `(TAG_ATOM,[leaf_id])`, a
     /// List `(TAG_LIST, child_ids)`, a DictRef `(TAG_DICT_REF,[dict_idx,node_id])`.
     fn build_transport(
-        imports: &[[u8; 32]],
+        imports: &[[u8; HASH_LEN]],
         leaves: &[Leaf],
         structure: &[(u8, Vec<u64>)],
         root: u64,
