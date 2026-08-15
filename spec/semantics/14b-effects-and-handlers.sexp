@@ -8520,6 +8520,32 @@
   (call   main (: 65 Int64)) (output (: 1 Int64))
   (call   main (: 200 Int64)) (output (: -1 Int64)))
 
+(case "the PASSING FLOOR of adv-20's bisection — a state byte LET-bound as a Bytes and consumed by Bytes.len (NO decode-match) in a tail-resumptive arm folds correctly"
+  (doc    "adv-20 bisection floor (v-effects lane): the PASSING control that isolates the finding-#20 decline
+           above to the `let`+decode-match CONJUNCTION. SAME let-bound state-derived `Bytes` — `(let ((b (Bytes.of
+           (list (UInt8.wrap s))))) …)` — but the binder `b` is consumed by `Bytes.len` (a plain byte-count), NOT
+           a `String.from-bytes` decode-MATCH. The resume value `(+ (Bytes.len b) s)` reads both the let-bound
+           `b`'s length AND the arm state `s` directly, so the output varies with state and the let-bound
+           state-Bytes coexisting with state-arithmetic in the resume is exercised end to end. `main(65)`: the
+           one-element Bytes has length 1, state 65 → resume `1 + 65` = 66. `main(200)`: length 1, state 200 →
+           `1 + 200` = 201. This COMPILES + folds correct on all backends (the LET-BOUND twin directly above
+           DECLINES only because its consumer is a decode-match, whose specialization copies the let-init `s`
+           fresh and detaches it from the arm form; a plain `Bytes.len` consumer never triggers that copy). Pins
+           the passing side of the bisection so a future change can't quietly break let-binding a state-derived
+           Bytes even in the non-decode shape. Uniform on all 3 backends, opt-sweep 0-divergence. adv-20 passing
+           floor (2026-08-15).")
+  (input  (do
+            (effect S (op dec (-> Int64)))
+            (def (main (: n Int64))
+              (handle S n
+                ((dec () s
+                  (let ((b (Bytes.of (list (UInt8.wrap s)))))
+                    (resume (+ (Bytes.len b) s) s))))
+                (S.dec)))
+            (export main)))
+  (call   main (: 65 Int64)) (output (: 66 Int64))
+  (call   main (: 200 Int64)) (output (: 201 Int64)))
+
 (case "PREFIX-order edges — the state string compares against crossed op-arg strings: equal, longer-prefix, and shorter-prefix faces"
   (doc    "3-way LEXICOGRAPHIC String ordering (< / = / >) against a threaded String handler state — distinct
            from the string-EQUALITY pins (sg3, one-shot lock): the `vs` arm answers `(if (< s probe) -1 (if
