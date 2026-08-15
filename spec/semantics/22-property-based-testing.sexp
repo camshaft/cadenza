@@ -1111,3 +1111,33 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 40 Int64))
   (call   main (: 1 Int64)) (output (: 10 Int64)))
+
+; --- The serialization ROUND-TRIP property: decode . encode = Some (Value.encode/decode, R2 binary-AST). ---
+
+(case "a Value.encode then Value.decode round-trips a compound value back to Some of the SAME structure"
+  (doc    "The canonical serialization property `Value.decode (Value.encode v) == Some v` — the R2 binary-AST
+           encoder/decoder (`Value.encode : forall a. a -> Bytes` TOTAL, `Value.decode : forall a. Bytes ->
+           Option a` PARTIAL, `a` grounded by the call-site expected type). This is the property-testing angle
+           on the newly-runnable encoder: a value is generated from the seed `n`, encoded to its binary-AST
+           bytes, and decoded back at the SAME type via the enclosing `(: (Value.decode ..) (Option T))`
+           annotation (which threads `a := T` into the decode node so its descriptor is concrete — an
+           unsolved `a` would decline). The round-tripped value must be `Some` of a STRUCTURALLY-EQUAL value.
+           The generated value is a `(Tuple Int64 Int64)` (a heap-handle compound — the R2 v1 carve-out domain
+           is handle-typed values; a scalar-erased newtype still declines the emit, a later increment). To
+           prove BOTH elements survive the round-trip in the right POSITIONS (not dropped, swapped, or
+           zeroed), the match folds them positionally as `(+ (* a 1000) c)` over `(tuple n (+ n 100))`, and
+           two calls discriminate: n=7 -> `(tuple 7 107)` -> 7*1000+107 = 7107; n=3 -> `(tuple 3 103)` ->
+           3103. A decode that lost the second element would give 7000/3000; one that swapped them 107007/…;
+           an all-`None` decode would give -1 twice (indistinguishable calls) — so the two distinct outputs
+           pin a faithful structural round-trip. Runs at the boundary so the decoded heap value is realized.
+           NOTE (target coverage): the `Value` emit is wasm-only at this landing, so this case PASSES on the
+           default/wasm target and is TODO on rust / rust-async (the rust backend's Value emit is a later
+           increment) — an additive per-target baseline, no regression.")
+  (input  (do
+            (def (main (: n Int64))
+              (match (: (Value.decode (Value.encode (tuple n (+ n 100)))) (Option (Tuple Int64 Int64)))
+                ((Some m) (match m ((tuple a c) (+ (* a 1000) c))))
+                ((None u) (- 0 1))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 7107 Int64))
+  (call   main (: 3 Int64)) (output (: 3103 Int64)))
