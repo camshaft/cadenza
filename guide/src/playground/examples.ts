@@ -449,6 +449,27 @@ export const EXAMPLES: Example[] = [
     expected: "(: (tuple 6 71) (Tuple Int64 Int64))",
   },
   {
+    // Shows off: `Value.encode` — the single canonical binary form of ANY value. Its type is
+    // `forall a. a -> Bytes` (TOTAL: every value has a value-form), so one generic `size` helper works
+    // across a record, an Option, and a list. Here we report the byte length of each canonical encoding.
+    id: "value-encode-canonical-bytes",
+    name: "Canonical binary encoding (Value.encode)",
+    theme: "data-and-collections",
+    surface: "sexpr",
+    source: `(do
+  ; Value.encode : forall a. a -> Bytes — the single canonical binary form of ANY
+  ; value (total: every value has one). One generic helper encodes different shapes;
+  ; we report the byte length of each value's canonical encoding.
+  (def (size v) (Bytes.len (Value.encode v)))
+  (def (main)
+    (tuple
+      (size (record (x 3) (y 4)))
+      (size (Some 7))
+      (size (list 1 2 3))))
+  (export main))`,
+    expected: "(: (tuple 103 61 71) (Tuple Int64 Int64 Int64))",
+  },
+  {
     // Shows off: EXACT rational arithmetic — 1/2 + 1/3 + 1/6 is EXACTLY 1, with no floating-point
     // drift. The `(pragma default-fraction Rational)` directive makes every bare literal in scope an
     // exact fraction; compare with Float64, where 0.1 + 0.2 famously isn't 0.3.
