@@ -315,7 +315,7 @@ impl Gen<'_> {
         }
         // Weighted toward leaves + operators + control flow (the shapes most likely to type and
         // reach codegen); the tail arms exercise ctors, access, ascription, and match.
-        match self.cur.choice(16) {
+        match self.cur.choice(17) {
             0..=2 => self.leaf(want),
             3 => self.if_expr(depth, want),
             4 => self.let_expr(depth, want),
@@ -329,6 +329,7 @@ impl Gen<'_> {
             12 => self.ascribe_expr(depth, want),
             13 => self.list_builtin_expr(depth),
             14 => self.string_builtin_expr(depth),
+            15 => self.rec_def_expr(depth),
             _ => self.match_expr(depth, want),
         }
     }
@@ -603,6 +604,34 @@ impl Gen<'_> {
                 self.out.push(')');
             }
         }
+    }
+
+    /// A GUARANTEED-TERMINATING recursive top-level def, exercising the self-call / recursion
+    /// lowering (the F24 tail-resumptive-continuation + sft1 recursive-fold crash-cluster territory)
+    /// that the generator otherwise never reaches. Shape:
+    /// `(do (def (f n) (if (<= n 0) BASE (<arith> (f (- n 1)) OPERAND))) (f K))`.
+    /// Termination is structural: base case `(<= n 0)`, the SOLE recursive call passes the strictly-
+    /// decreasing `(- n 1)`, and the initial argument K is a small non-negative literal — so the
+    /// differential run always halts (no false hang). CRITICAL SAFETY INVARIANT: `f` is NEVER pushed
+    /// into scope, so the generated BASE/OPERAND sub-exprs cannot introduce a SECOND, non-decreasing
+    /// call to `f` (which would be unbounded recursion); only the parameter `n` is in scope for them.
+    fn rec_def_expr(&mut self, depth: u32) {
+        let f = self.env.fresh(); // deliberately NOT pushed into scope
+        let n = self.env.fresh();
+        let _ = write!(self.out, "(do (def ({f} {n}) (if (<= {n} 0) ");
+        let mark = self.env.push(n.clone(), Kind::Num); // only `n` visible to sub-exprs, never `f`
+        self.expr(depth.saturating_sub(1), Kind::Num); // BASE (numeric)
+        let op = match self.cur.choice(3) {
+            0 => "+",
+            1 => "-",
+            _ => "*",
+        };
+        let _ = write!(self.out, " ({op} ({f} (- {n} 1)) ");
+        self.expr(depth.saturating_sub(1), Kind::Num); // OPERAND (numeric; `f` not in scope → safe)
+        self.out.push_str(")))");
+        self.env.truncate(mark);
+        // initial call with a small non-negative literal bounds the recursion depth for the diff run
+        let _ = write!(self.out, " ({f} {}))", self.cur.range(0, 6));
     }
 
     fn access_expr(&mut self, depth: u32) {
@@ -946,6 +975,35 @@ mod tests {
             }
         }
         assert!(hit, "no seed in the sweep emitted a String builtin");
+    }
+
+    /// The recursive-def arm is reachable — some seed emits a NESTED `(def (...` helper (main is the
+    /// only other def) — and every program that path can emit still parses. Also asserts the
+    /// TERMINATION STRUCTURE holds on every such program: the helper carries a `(if (<= ` base-case
+    /// guard and its SOLE self-application decrements via `(- `, so the differential run can't hang.
+    #[test]
+    fn some_seed_emits_a_terminating_recursive_def() {
+        let mut hit = false;
+        for n in 0..8000u32 {
+            let seed = varied_seed(n);
+            let src = generate(&seed).source;
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "generated program did not parse:\n{src}"
+            );
+            // `main` is the only top-level def; a SECOND `(def (` is a recursive helper.
+            if src.matches("(def (").count() >= 2 {
+                hit = true;
+                assert!(
+                    src.contains("(if (<= "),
+                    "recursive helper is missing its base-case guard `(if (<= `:\n{src}"
+                );
+            }
+        }
+        assert!(
+            hit,
+            "no seed in the sweep emitted a recursive def (nested `(def (`)"
+        );
     }
 
     /// Generation is deterministic in the seed (required for reproducing + shrinking a finding).
