@@ -178,6 +178,12 @@ pub struct PlatformRecord {
     /// clean run graded normally, any nonzero exit a plain Fail). The grade-side arm lives in xtask
     /// (v-platform-conformance's domain); the reader only carries the token.
     pub expect_fault: Option<String>,
+    /// Top-level `(recover-check <alias>)` clauses (0-or-more) — each names a session to
+    /// replay-equals-recover check (I4: a recovered session must reach the same state as a
+    /// full replay). Absent = no line rendered = byte-identical. The grade-side arm (assert
+    /// recover-equal) lives in xtask (v-platform-conformance's domain); the reader only carries
+    /// the aliases.
+    pub recover_checks: Vec<String>,
 }
 
 /// One `(session <alias> (reducer <prog>) (serves <family>…))` block of a platform case.
@@ -393,7 +399,8 @@ pub fn to_records(text: &str) -> Result<String, String> {
 ///   `expect-delivery-failure\t<from>\t<to>` (0+) · `end-kv\t<alias>\t<key>\t<value>` (0+) ·
 ///   `end-status\t<alias>\t<status>` (0+) · `end-close-outcome\t<alias>\t<kind>` (0+) ·
 ///   `events-processed\t<alias>\t<n>` (0+) ·
-///   `expect-fault\t<kind>` (0-or-1) · `---` terminator.
+///   `expect-fault\t<kind>` (0-or-1) · `recover-check\t<alias>` (0+, declaration order) ·
+///   `---` terminator.
 pub fn render_platform(records: &[PlatformRecord]) -> String {
     let mut out = String::new();
     for r in records {
@@ -509,6 +516,11 @@ pub fn render_platform(records: &[PlatformRecord]) -> String {
         if let Some(kind) = &r.expect_fault {
             out.push_str("expect-fault\t");
             out.push_str(kind);
+            out.push('\n');
+        }
+        for alias in &r.recover_checks {
+            out.push_str("recover-check\t");
+            out.push_str(alias);
             out.push('\n');
         }
         out.push_str("---\n");
@@ -762,7 +774,8 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
 ///   `(expect-delivery-failure (from <a>) (to <b>))` (0+) ·
 ///   `(end-state <alias> (kv <key> <value>)… (status <state>)? (close-outcome <kind>)?)` ·
 ///   `(events-processed <alias> <n>)` ·
-///   `(expect-fault <kind>)` (0-or-1 — the run must fault with a stderr marker containing `<kind>`).
+///   `(expect-fault <kind>)` (0-or-1 — the run must fault with a stderr marker containing `<kind>`) ·
+///   `(recover-check <alias>)` (0+ — names a session to replay-equals-recover check, I4).
 fn parse_platform_case(a: &Arenas, case_id: StructId) -> Result<PlatformRecord, String> {
     let items = match a.get(case_id) {
         cadenza_syntax::ast::Struct::List(items) => items,
@@ -785,6 +798,7 @@ fn parse_platform_case(a: &Arenas, case_id: StructId) -> Result<PlatformRecord, 
     let mut close_outcome: Vec<(String, String)> = Vec::new();
     let mut events_processed: Vec<(String, String)> = Vec::new();
     let mut expect_fault: Option<String> = None;
+    let mut recover_checks: Vec<String> = Vec::new();
 
     for &clause in &items[2..] {
         match a.head_name(clause) {
@@ -1008,6 +1022,17 @@ fn parse_platform_case(a: &Arenas, case_id: StructId) -> Result<PlatformRecord, 
                     expect_fault = Some(kind);
                 }
             }
+            // `(recover-check <alias>)` — a single bare alias token naming a session to
+            // replay-equals-recover check (I4). 0-or-more; declaration order preserved. The reader
+            // only carries the alias — the assert (recover-equal) is xtask's (v-platform-conformance).
+            Some("recover-check") => {
+                if let Some(tail) = a.as_form(clause, "recover-check")
+                    && let Some(&alias_id) = tail.first()
+                    && let Some(alias) = atom_text(a, alias_id)
+                {
+                    recover_checks.push(alias);
+                }
+            }
             _ => {}
         }
     }
@@ -1033,6 +1058,7 @@ fn parse_platform_case(a: &Arenas, case_id: StructId) -> Result<PlatformRecord, 
         close_outcome,
         events_processed,
         expect_fault,
+        recover_checks,
     })
 }
 
@@ -1335,6 +1361,50 @@ mod tests {
         // here we assert the rendered stream is fixed-point under a re-read of the ORIGINAL sexp.
         let recs2 = read_platform(src).unwrap();
         assert_eq!(render_platform(&recs2), out);
+    }
+
+    /// `(recover-check <alias>)` clauses (0+, I4 replay-equals-recover) collect into `recover_checks` in
+    /// DECLARATION ORDER and render one `recover-check\t<alias>` line each; a case with no such clause
+    /// renders byte-identically to before (no line). The reader only carries the aliases — the recover-equal
+    /// assert is xtask's (v-platform-conformance's domain).
+    #[test]
+    fn platform_case_carries_recover_check_aliases_through_read_and_render() {
+        let src = r#"(platform-case "a recovered session replays equal to a full replay"
+                 (session "a" (reducer (do (def (main) 0) (export main))) (serves "tick"))
+                 (session "b" (reducer (do (def (main) 0) (export main))) (serves "tock"))
+                 (kickoff "a" (inbound "start" (: unit Unit)))
+                 (recover-check a)
+                 (recover-check b))"#;
+        let recs = read_platform(src).unwrap();
+        assert_eq!(recs.len(), 1);
+        // Two aliases, in declaration order.
+        assert_eq!(
+            recs[0].recover_checks,
+            vec!["a".to_string(), "b".to_string()]
+        );
+
+        // Renders one fixed-arity line per alias, after expect-fault and before the terminator.
+        let out = render_platform(&recs);
+        assert!(out.contains("recover-check\ta\n"));
+        assert!(out.contains("recover-check\tb\n"));
+        assert_eq!(out.matches("recover-check").count(), 2);
+        // Stable under a re-read of the original sexp.
+        let recs2 = read_platform(src).unwrap();
+        assert_eq!(render_platform(&recs2), out);
+    }
+
+    /// A platform-case with NO `(recover-check …)` clause carries an empty `recover_checks` and renders
+    /// no `recover-check` line — byte-identical to before the clause existed (existing cases unchanged).
+    #[test]
+    fn platform_case_without_recover_check_renders_no_line() {
+        let src = r#"(platform-case "an ordinary case with no such clause"
+                 (session "a" (reducer (do (def (main) 0) (export main))) (serves "tick"))
+                 (kickoff "a" (inbound "start" (: unit Unit))))"#;
+        let recs = read_platform(src).unwrap();
+        assert!(recs[0].recover_checks.is_empty());
+        // Assert on the rendered LINE (not a bare substring — a title could legitimately contain the word).
+        let out = render_platform(&recs);
+        assert!(!out.contains("recover-check\t"));
     }
 
     /// Multiple `(kickoff …)` clauses (the operator-approved fan-in shape) collect into `kickoffs` in
