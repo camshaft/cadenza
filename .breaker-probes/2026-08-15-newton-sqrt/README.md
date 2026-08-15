@@ -11,3 +11,8 @@ F24-safe: the branching arm (done) receives only 3 of 8 dispatches (≤4 rule);
 improve is branch-free.
 
 PASS ×3 wasm. **Pool (next trio seed after dbt1/sfu1/trb1 ships).**
+
+## Rust backstop VERIFIED (tick 1533)
+884d37ba3 (rust per-function size backstop): nsq1 flips artifact-did-not-build
+→ clean decline on BOTH rust targets; wasm still passes. Chain-multiply
+witness now decline-today, rides (b) for the compute pass-pin.

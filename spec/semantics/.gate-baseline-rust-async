@@ -4773,6 +4773,7 @@ pass	bp4 two one-byte op results CONCATENATED in the body — the joined frame's
 pass	br1 a BYTES handler state grows one byte per recursive dispatch — the final frame's length and bytes pin the accumulation
 pass	br2 the arm returns a SLICE of the growing Bytes state — a window over rope-accumulated bytes crosses dispatch
 pass	branches performing DIFFERENT counts each thread their own post-state to the continuation
+pass	brd1 a BORDA count over three candidates — each ballot awards two points to its first choice and one to its second answering the first choice's new total, lead answers the current leader with ties to the lowest id, and the seed steers ONE ballot's first choice producing a three-way tie on one run and a runaway winner on the other
 pass	breaker capsubst: a non-capturing substitution takes the plain path
 pass	breaker capsubst: the fresh binder clears the body's ids, not only s's
 pass	breaker exists: DISJ2 preserves the premise's hypothesis
@@ -4816,6 +4817,7 @@ pass	cc7 a draw-capturing closure threaded through a RECURSIVE helper — applie
 pass	cc8 a closure carried in a TUPLE beside a scalar — destructured in one match and applied around advancing draws
 pass	cd1 a closure CAPTURES a draw then is called after LATER draws — the captured value must not re-read state
 pass	cd4 a captured draw crosses a HIGHER-ORDER def boundary — helper applies the closure twice with different args
+pass	cfr1 a CONTINUED-FRACTION expander — each step peels the integer part of p/q answering it then inverts the remainder to (q, p-a*q), a drained fraction answers -1 forever, and the seeds share a denominator but one terminates two steps early so its tail is sentinels while the other is still peeling
 pass	ch1 a FOUR-op result chain in one nested expression — each op transforms the last result while bumping the shared state differently
 pass	ch2 the same FOUR-op chain flattened through LETs — one binding per hop must equal the nested form exactly
 pass	ch21 CHAINED computed keys — the second perform's key is computed FROM the first's answer, both dispatches walk the two-lookup-match arm
@@ -5441,6 +5443,7 @@ pass	lba1 an op taking a LIST argument — the arm folds the batch into the scal
 pass	lc1 SELF-CONCAT sharing — the same list appears twice in one concat, then the original grows and is re-read unchanged
 pass	lcs1 an LCS DP-ROW state — each fed character rebuilds the whole dynamic-programming row against the fixed pattern via a recursive fold reading the OLD row while writing the NEW
 pass	ldd1 an EVENT-LEDGER state — a List of (tag,value) tuples appends per log dispatch, and replay folds only the MATCHING tag's values (absent tag folds to zero)
+pass	ldg1 a LEADING-DIGIT counter — feed strips each value to its leading digit through a recursive divide-down callee, a hit on the seed-wanted digit answers digit*10 plus the running hit count while a miss answers the bare digit, and the two seeds hunt DIFFERENT digits through one shared stream
 pass	le multi-byte fields read little-endian at runtime offsets, unsigned and signed
 pass	le-ax of a ground add that OVERFLOWS Int64 traps during evaluation — it cannot wrap to forge a false bound
 pass	led1 BULLY leader election — registrations grow the candidate set, elect scans for the highest id, and deregistering the ELECTED leader (its id threaded through the body) forces re-election from the survivors
@@ -6882,6 +6885,7 @@ todo	a DEPTH-3 nested-op chain whose deepest resume performs the outer effect de
 todo	a DIRECT branch perform in a NESTED handler-arm resume-value declines cleanly (adv-69 a3-direct sub-face)
 todo	a HEAP-accumulator block-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor)
 todo	a MODULE-exported closure that performs a delegated effect cannot cross the host boundary
+todo	a Value.encode then Value.decode round-trips a compound value back to Some of the SAME structure
 todo	a block-wrapped OUTER-effect perform in a do-statement TWO nested handlers deep declines cleanly (adv-69 nh7 depth-3)
 todo	a block-wrapped OUTER-effect perform in a nested handle's INIT declines cleanly (adv-69 a4-init sub-face)
 todo	a block-wrapped OUTER-effect perform in a non-tail do-statement INSIDE a nested handler body declines cleanly (adv-69 c3-nested sub-face)
