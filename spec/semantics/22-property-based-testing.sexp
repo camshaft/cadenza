@@ -1167,3 +1167,27 @@
             (export main)))
   (call   main (: 7 Int64)) (output (: 7107 Int64))
   (call   main (: 4 Int64)) (output (: 4104 Int64)))
+
+; --- The NEGATIVE face: an UNGROUNDED decode has no determined target, so it declines (actionably). ---
+
+(case "a bare Value.decode with no grounding annotation declines with an actionable unsolved-target message"
+  (doc    "The negative face of the two Value.decode round-trip cases above: where those ground the partial
+           `Value.decode : forall a. Bytes -> Option a` from an inline ascription or a let-binder, an
+           UNGROUNDED decode leaves `a` a free type variable. The compiler cannot pick a concrete value-form
+           descriptor for an undetermined target, so it DECLINES rather than emit a bogus descriptor — and
+           the decline carries an ACTIONABLE message telling the user to annotate the decode with its
+           expected type. Here the target `Pt` is only IMPLIED by the `(Some (Pt.Mk r))` arm pattern, which
+           does not thread a type into the decode node, so `a` stays unsolved. Pins decline-rather-than-
+           miscompile for the ungrounded partial (reference-compiler.md #A Type Without A Boundary
+           Representation Declines At The Boundary), and that the diagnostic is actionable (directs the fix:
+           annotate the scrutinee / use a typed let-binder). Backend-uniform: the unsolved-target guard fires
+           at shared lowering before any backend-specific representation choice, so it declines identically on
+           wasm / rust / rust-async (the `(message ...)` pin holds on all three baselines).")
+  (input  (do
+            (type Pt (Mk (Record (: x Int64) (: y Int64))))
+            (def (dec (: bs Bytes))
+              (match (Value.decode bs)
+                ((Some p) (match p ((Pt.Mk r) (+ (. r x) (. r y)))))
+                ((None u) (- 0 1))))
+            (export dec)))
+  (declines (message "target type is unsolved")))
