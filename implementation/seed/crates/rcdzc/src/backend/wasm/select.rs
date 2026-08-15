@@ -356,11 +356,15 @@ const OP_MAP_TO_LIST: &str = "map-to-list";
 
 /// The emit-walk INSTRUCTION BUDGET (finding-24 sibling, the K^N DAG-serialized-as-tree explosion). The
 /// Core IR is a compact DAG (a shared threaded-state subtree reached by many branch successors), but the
-/// emit walk re-descends each shared `StructId` reference and re-emits its subtree, so a node reached K^N
-/// times on the walk emits K^N instruction (`Lir`) copies. A handler that both resumes AND advances a
-/// COMPOUND threaded state across K>=3 branches, repeated over N dispatches, grows ~6^N — and past a point
-/// the emitted wasm function body exceeds the engine's function-size limit ("Code for function is too
-/// large" — an INVALID module the guest cannot load, though not a miscompile).
+/// emit walk re-descends each shared `StructId` reference and re-emits its subtree, so a node reached many
+/// times on the walk emits that many instruction (`Lir`) copies. The explosion driver is NOT the branch
+/// count: it is the number of DISPATCHES ROUTING THROUGH the branching arm (each such dispatch re-expands
+/// the arm body), multiplied by the per-branch state-rebuild width and any compound recomputed per branch.
+/// A handler that both resumes AND advances a compound threaded state, re-expanded per dispatch, grows
+/// super-linearly — and past a point the emitted wasm function body exceeds the engine's function-size
+/// limit ("Code for function is too large" — an INVALID module the guest cannot load, though not a
+/// miscompile). (Witness: the two-branch `pwm1` with 7-of-9 dispatches through its arm explodes, while the
+/// three-branch `lap1` with only 3-of-9 through the arm stays valid — so branch count K is not the driver.)
 ///
 /// This bound DECLINES cleanly (reject-not-miscompile) once the emitted-`Lir` count crosses it: the guard
 /// at the top of `emit` trips mid-walk, so a run-away body declines rather than serializing the
@@ -7324,16 +7328,18 @@ fn emit(
         return Ok(());
     }
     // EMIT-WALK INSTRUCTION BUDGET (finding-24 sibling): the Core IR is a DAG the emit walk serializes as a
-    // TREE (re-descending each shared `StructId`), so a K>=3-branch handler over a compound threaded state
-    // explodes ~6^N. Check the emitted-instruction count on EVERY node entry, so a super-linear body trips
+    // TREE (re-descending each shared `StructId`), so a handler whose compound threaded state is re-expanded
+    // by each dispatch routing through the branching arm explodes super-linearly (driver = dispatches-
+    // through-arm, not branch count K). Check the emitted-instruction count on EVERY node entry, so a super-linear body trips
     // this MID-walk and declines cleanly — before the ~593KB that breaks the engine's function-size/locals
     // limit ever serializes (reject-not-miscompile). A legitimately large LINEAR function stays well under
     // the bound; see `EMIT_INSTRUCTION_BUDGET`. The durable linear fix is sharing-aware emit (a follow-up).
     if out.code.len() > EMIT_INSTRUCTION_BUDGET {
         return Err(Reject::decline(
             "emit-walk instruction budget exceeded: a handler-derived Core DAG serializes as a tree \
-             whose expansion exceeds the wasm function-size limit (a K>=3-branch resume/next-state fan-out \
-             over a compound threaded state); pending sharing-aware emit that binds a shared subtree once",
+             whose expansion exceeds the wasm function-size limit (a resume/next-state fan-out re-expanded \
+             by each dispatch routing through the branching arm over a compound threaded state); pending \
+             sharing-aware emit that binds a shared subtree once",
         ));
     }
     // EMIT-WALK SCRATCH-LOCALS BUDGET (the SECOND axis): a per-branch-compound-recompute body (rps1) can
