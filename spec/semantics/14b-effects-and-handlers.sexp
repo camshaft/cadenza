@@ -8552,18 +8552,18 @@
            value CONSUMED BY A MATCH in a tail-resumptive resume. Here the let-bound value is an OPTION built
            from the handler state — `(let ((o (if (> s 100) ((. Option Some) (+ s 1)) ((. Option None) unit))))
            …)` — consumed by a plain `(match o ((Some x) x) ((None _u) -1))`. NO Bytes, NO decode; just a
-           state-derived Option matched. This DECLINES with the IDENTICAL root as the let-bound Bytes twin
-           above: `cdz compile` → `parameter reference has no local slot` (exit 0, a clean Reject::decline, NOT
-           an ICE). Confirmed by direct standalone compile (2026-08-15). CONTRAST the PASSING FLOOR two cases up
+           state-derived Option matched. PRE-FIX this DECLINED with the IDENTICAL root as the let-bound Bytes
+           twin above (`cdz compile` → `parameter reference has no local slot`, a clean Reject::decline, NOT an
+           ICE — confirmed by direct standalone compile 2026-08-15). CONTRAST the PASSING FLOOR two cases up
            (`Bytes.len b`, no match) which COMPILES — so the discriminant is the MATCH consumer, not the value
            type: any match on a let-bound state-derived value re-materializes the let-init's state occurrence
            under the arm-body specialization (`copy_structural` copies the init `s` fresh, `freshen_local_binders`
            + the resume-rewrite detach it from the handle form, `handle_arm_binds` fails on the copy → slot-less
            original op-param binder). This BROADENS the fix surface: v-inference's eval.rs let-init resolve
-           pin-predicate must cover ANY match-consumed let-bound state value, not just the Bytes decode. Standing
-           non-vacuous WITNESS: declines TODAY (TODO), flips to the -1 / 201 PASS when that pin lands. `main(65)`:
-           s=65 not >100 → None → -1. `main(200)`: s=200 >100 → Some 201 → 201. adv-20 broadened-class witness
-           (2026-08-15).")
+           pin-predicate must cover ANY match-consumed let-bound state value, not just the Bytes decode. This
+           now FOLDS to the -1 / 201 PASS (the flatten+pin fix 2687ed3ae landed); it stands as a regression-guard
+           for the broadened class. `main(65)`: s=65 not >100 → None → -1. `main(200)`: s=200 >100 → Some 201 →
+           201. adv-20 broadened-class regression-guard (2026-08-15).")
   (input  (do
             (effect S (op dec (-> Int64)))
             (def (main (: n Int64))
