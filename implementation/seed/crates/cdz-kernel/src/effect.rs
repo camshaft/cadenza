@@ -661,6 +661,17 @@ pub struct EffectRequest {
     /// slice consumes next. Computed from the effect's REAL kind (via [`EffectKind::from_family`] in
     /// `new_with_family`), never the collapsed placeholder.
     pub schema_hash: Option<Hash>,
+    /// The register-by-string family STRING, retained for effects ROUTED/AUTHZ'd BY FAMILY STRING rather than
+    /// by [`schema_hash`] identity — `Some(family)` iff [`effect_ct::is_store_family`] OR
+    /// [`effect_ct::is_registered_effect_family`], `None` for every hash-identified / built-in effect. This is
+    /// the carrier that survives the S3 `content_type` delete (v-effects flag-day): once effect identity
+    /// collapses to `schema_hash`, the string-routed families — the `store/*` prefix namespace + the
+    /// register-by-string `effect/<name>` extensions — still need their family STRING as the routing/authz KEY
+    /// (a runtime registration key, NOT derivable; note `store/*` even carries a `schema_hash` yet STILL routes
+    /// by string, which is why the rule is "string-routed", not "unhashed"). Read by `FamilyGrant` /
+    /// `is_store_family` authz + the userspace-effect handler resolver instead of the deleted
+    /// `content_type.family`. `None` (the common case) is a cheap non-alloc. (DESIGN-userspace-effects I1/I3.)
+    pub string_routed_family: Option<std::sync::Arc<str>>,
 }
 
 impl EffectRequest {
@@ -696,6 +707,9 @@ impl EffectRequest {
             target: std::sync::Arc::from(target.as_ref()),
             payload,
             timeliness,
+            // A well-known [`EffectKind`] is HASH-identified (schema_hash is always `Some` above), never
+            // string-routed — so it carries no register-by-string family.
+            string_routed_family: None,
         }
     }
 
@@ -749,6 +763,18 @@ impl EffectRequest {
                 }
             }
         };
+        // The register-by-string CARRIER (S3 content_type-delete survivor): retain the family STRING iff this
+        // family is ROUTED/AUTHZ'd BY STRING — the `store/*` prefix namespace OR a register-by-string
+        // `effect/<name>` extension. Computed BEFORE `family` moves into `content_type`. A built-in kind or a
+        // hash-identified control family is NOT string-routed → `None`. reify + `parse_effect_request` both
+        // construct through this fn, so they inherit the carrier with no separate populate site.
+        let string_routed_family = if effect_ct::is_store_family(family.as_ref())
+            || effect_ct::is_registered_effect_family(family.as_ref())
+        {
+            Some(std::sync::Arc::from(family.as_ref()))
+        } else {
+            None
+        };
         EffectRequest {
             content_type: ContentType { family, version: 1 },
             kind,
@@ -756,6 +782,7 @@ impl EffectRequest {
             target: std::sync::Arc::from(target.as_ref()),
             payload,
             timeliness,
+            string_routed_family,
         }
     }
 
@@ -1418,6 +1445,8 @@ mod tests {
             schema_hash: Some(crate::ast_marshal::builtin_effect_schema_hash_memo(
                 &EffectKind::Http,
             )),
+            // Http is a built-in HASH-identified kind → not string-routed (matches `new`'s `None`).
+            string_routed_family: None,
         };
         assert_eq!(via_new, via_literal);
         // The `impl Into<Arc<str>>` target arg accepts both &str and String uniformly.
@@ -1429,6 +1458,35 @@ mod tests {
                 Timeliness::Interactive
             ),
             EffectRequest::new(EffectKind::Now, "", None, Timeliness::Interactive),
+        );
+    }
+
+    #[test]
+    fn string_routed_family_carries_the_family_for_string_routed_effects_only() {
+        // The S3 `content_type`-delete CARRIER: `string_routed_family` = `Some(family)` IFF the family is
+        // routed/authz'd BY STRING — a `store/*` prefix OR a register-by-string `effect/<name>` extension —
+        // and `None` for every hash-identified / built-in effect. This is exactly what `FamilyGrant` /
+        // `is_store_family` authz + the userspace-effect handler resolver read once `content_type.family` is
+        // gone. reify + `parse_effect_request` inherit it (both construct via `new_with_family`).
+        let carrier = |family: &'static str| {
+            EffectRequest::new_with_family(family, "t", None, Timeliness::Interactive)
+                .string_routed_family
+        };
+        // A register-by-string EXTENSION (is_registered_effect_family) → carried.
+        assert_eq!(carrier("weather").as_deref(), Some("weather"));
+        // `store/*` verbs — carried EVEN THOUGH hash-bearing (they route by the `store/` prefix STRING, not by
+        // schema_hash — the precise reason the rule is "string-routed", not "unhashed").
+        assert_eq!(carrier("store/set").as_deref(), Some("store/set"));
+        assert_eq!(
+            carrier("store/resolve-all").as_deref(),
+            Some("store/resolve-all")
+        );
+        // A built-in HASH-identified family → None, whether built via `new_with_family` or `new`.
+        assert_eq!(carrier(effect_ct::HTTP), None);
+        assert_eq!(
+            EffectRequest::new(EffectKind::Http, "u", None, Timeliness::Interactive)
+                .string_routed_family,
+            None
         );
     }
 
