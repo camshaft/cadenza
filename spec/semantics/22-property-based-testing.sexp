@@ -1141,3 +1141,29 @@
             (export main)))
   (call   main (: 7 Int64)) (output (: 7107 Int64))
   (call   main (: 3 Int64)) (output (: 3103 Int64)))
+
+; --- The round-trip under LET-BINDER grounding: decode's target fixed by the binder annotation, not inline. ---
+
+(case "a Value.decode round-trip grounds its target from a LET-BINDER annotation, not only an inline ascription"
+  (doc    "The round-trip's SIBLING grounding path. Case 'a Value.encode then Value.decode round-trips ...'
+           grounds the partial `Value.decode : forall a. Bytes -> Option a` from an INLINE ascription
+           `(: (Value.decode ..) (Option T))`. But the property-testing idiom is usually to BIND the decoded
+           value and then assert over it — `(let (((: r (Option T)) (Value.decode bs))) (match r ..))` — where
+           `a` is fixed by the LET-BINDER's annotation on the binding pair, a DISTINCT typing path
+           (`let_binder_annotation_ty` climbing the binder, vs the inline `annotation_context_ty`). This pins
+           that the round-trip `Value.decode (Value.encode v) == Some v` holds identically under let-binder
+           grounding: an ungrounded `a` at the decode node would DECLINE (no concrete descriptor to emit), so
+           a passing run proves the binder annotation threaded `a := (Tuple Int64 Int64)` into the decode node.
+           Same discriminating structure as the inline case — `(tuple n (+ n 100))` folded `(+ (* a 1000) c)`,
+           n=7 -> 7107, n=4 -> 4104 — so both tuple elements are proven to survive in position through the
+           bound-then-matched decode. wasm PASS; rust / rust-async TODO (Value emit is wasm-only), additive.")
+  (input  (do
+            (def (main (: n Int64))
+              (let (((: r (Option (Tuple Int64 Int64)))
+                     (Value.decode (Value.encode (tuple n (+ n 100))))))
+                (match r
+                  ((Some m) (match m ((tuple a c) (+ (* a 1000) c))))
+                  ((None u) (- 0 1)))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 7107 Int64))
+  (call   main (: 4 Int64)) (output (: 4104 Int64)))

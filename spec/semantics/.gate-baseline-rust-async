@@ -1163,6 +1163,7 @@ pass	a VARIABLE catch-all arm binds the whole runtime scrutinee as a Bytes value
 pass	a VIOLATED @ensures on a performing def traps at body-exit
 pass	a VIOLATED @ensures traps when the def arrives through a runtime branch
 pass	a VIOLATED @requires traps at body-entry BEFORE the body's perform fires
+todo	a Value.decode round-trip grounds its target from a LET-BINDER annotation, not only an inline ascription
 todo	a Value.encode then Value.decode round-trips a compound value back to Some of the SAME structure
 pass	a WIDE integer literal pattern (beyond ±2^31) matches a runtime scrutinee by equality
 pass	a WORD COUNT threads an in-word flag through a scalar scan, counting entries not characters
