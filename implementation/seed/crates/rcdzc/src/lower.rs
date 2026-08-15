@@ -15519,8 +15519,9 @@ fn reify_effect_to_tuple(
              or session id — rides the target wire field; a structured resource rides Value.encode)",
         ));
     }
-    // PAYLOAD (capability-blind, Bytes-only for now): one Bytes remaining arg → Some(arg); zero → None;
-    // anything else (multi remaining arg, or a structured single arg) needs the in-fold value-encode → decline.
+    // PAYLOAD (capability-blind): one Bytes remaining arg → Some(bytes verbatim); zero → None; a SINGLE
+    // STRUCTURED (non-Bytes) arg → Some(Value.encode arg) (R2 in-fold value-form); MULTI remaining arg still
+    // declines (phase-1b: tuple-then-encode).
     let payload_field = match payload_args.as_slice() {
         [] => {
             let none_h = db.push_name("None");
@@ -15530,12 +15531,31 @@ fn reify_effect_to_tuple(
             let some_h = db.push_name("Some");
             db.push_list(vec![some_h, *only]) // (Some <bytes-arg>) — the arg IS the payload, no encode
         }
+        [only] => {
+            // A SINGLE STRUCTURED (non-Bytes) payload (R2 carve-out, v-effects-unblocked 2026-08-15: S3
+            // schema-hash identity flip + the R2 Value.encode prim both landed). Value-encode the arg IN-FOLD
+            // by synthesizing `(Some ((. Value encode) <arg>))`: the member-access application lowers to
+            // `Core::ValueEncode { value, desc: sum_shape_descriptor(arg-ty) }` (the existing `Value.encode`
+            // lowering computes the descriptor), producing the canonical binary-AST value-form bytes the
+            // DOWNSTREAM CONSUMER's `Value.decode` reads (the Model handler decoding `ModelRequest`; the
+            // reply consumer). A RUNTIME `Core::ValueEncode` is valid here because reify runs IN-FOLD (unlike
+            // `Ast.encode`'s constant-only limit). The payload is OPAQUE to the kernel `parse_effect_request`
+            // (it reads it as `Payload::Inline` bytes, never decoding/re-hashing it — the effect-IDENTITY
+            // descriptor is the SEPARATE `schema_descriptor` field above), so no framing beyond the value form
+            // is needed. Unblocks `Model.request(ModelRequest)` + `close`/`reply(structured)`.
+            let dot = db.push_name(".");
+            let value_mod = db.push_name("Value");
+            let encode = db.push_name("encode");
+            let member = db.push_list(vec![dot, value_mod, encode]); // (. Value encode)
+            let app = db.push_list(vec![member, *only]); // ((. Value encode) <arg>)
+            let some_h = db.push_name("Some");
+            db.push_list(vec![some_h, app]) // (Some ((. Value encode) <arg>))
+        }
         _ => {
             return Core::Poison(Reject::decline(
-                "reifying a world-effect perform with a non-Bytes or multi-argument payload (after the \
-                 @resource arg is skipped) needs an in-fold value-encode primitive (schema-hash phase-1a: \
-                 only a single-Bytes-payload effect reifies today; the structured/multi-arg payload rides \
-                 the deferred Value.encode primitive)",
+                "reifying a world-effect perform with a MULTI-argument payload (after the @resource arg is \
+                 skipped) needs bundling the args into a tuple before the in-fold value-encode (phase-1b): \
+                 a single Bytes or single structured payload reifies today; multi-arg rides a later slice",
             ));
         }
     };
@@ -28516,6 +28536,45 @@ mod tests {
         assert!(
             matches!(core, Core::Poison(_)),
             "a multi-arg world-effect payload (no @resource skip) needs the R2 in-fold value-encode → declines cleanly, got {core:?}"
+        );
+    }
+
+    #[test]
+    fn reify_effect_to_tuple_value_encodes_a_single_structured_payload() {
+        // R2 CARVE-OUT (v-effects-unblocked 2026-08-15: S3 identity flip + the Value.encode prim landed). A
+        // SINGLE STRUCTURED (non-Bytes) payload arg no longer declines — it reifies by VALUE-ENCODING the arg
+        // in-fold: payload = Some((. Value encode) arg), which lowers to Core::ValueEncode. This unblocks
+        // Model.request(ModelRequest)/close-reply(structured). (A Bytes arg still rides verbatim — see
+        // reify_effect_to_tuple_builds_the_3_field_record_for_a_single_bytes_arg; MULTI-arg still declines —
+        // see reify_effect_to_tuple_declines_a_multi_arg_or_structured_payload. The payload is opaque to the
+        // kernel parse; the value-form desc is for the downstream consumer's Value.decode.)
+        let mut db = Db::load(crate::testkit::parse(
+            "(module m (def (f) (tuple 1 2)) (export f))", // a (Tuple Int64 Int64) — structured, non-Bytes
+        ));
+        let arg = body_of(&mut db, "f");
+        assert!(
+            matches!(crate::infer::type_of(&mut db, arg), crate::ty::Ty::Tuple(_)),
+            "the test arg is a structured (Tuple) value, not Bytes"
+        );
+        let core = reify_effect_to_tuple(&mut db, "model", &[arg], None, None);
+        let fields = match core {
+            Core::Record { fields } => fields,
+            other => panic!("a single structured payload must REIFY (not decline), got {other:?}"),
+        };
+        // payload = Some(<Value.encode arg>): a Some SumNew whose single payload lowers to Core::ValueEncode.
+        let payload_occ = *fields
+            .iter()
+            .find(|(s, _)| s.name.as_ref() == "payload")
+            .unwrap()
+            .1;
+        let inner = match core_of(&mut db, payload_occ) {
+            Core::SumNew { payloads, .. } if payloads.len() == 1 => payloads[0],
+            other => panic!("payload must be Some(<one>): a single-payload SumNew, got {other:?}"),
+        };
+        assert!(
+            matches!(core_of(&mut db, inner), Core::ValueEncode { .. }),
+            "the structured payload is value-encoded in-fold (Core::ValueEncode), got {:?}",
+            core_of(&mut db, inner)
         );
     }
 
