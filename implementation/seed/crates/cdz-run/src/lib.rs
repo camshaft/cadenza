@@ -67,6 +67,55 @@ fn run_timeout_secs() -> u64 {
 /// deadline resolves to a wall-clock bound with this granularity.
 const EPOCH_TICK: std::time::Duration = std::time::Duration::from_millis(100);
 
+/// The ceiling on the load-scale factor (see [`scale_from_load`]). A genuine runaway loop is CPU-bound and
+/// always runnable, so it burns its epoch deadline in ~real time and still TRAPS within `MAX_LOAD_SCALE ×`
+/// the base timeout — bounding the worst-case trap latency (e.g. the default 30s → at most 480s under a
+/// pathological load spike) so the safety net can never be defeated, only stretched.
+const MAX_LOAD_SCALE: u64 = 16;
+
+/// The pure oversubscription-factor computation for the epoch deadline, split out for a load-independent
+/// unit test. `load1` is the 1-minute run-queue length, `ncpu` the core count; their ratio is roughly how
+/// many runnable threads share each core, i.e. how much longer than its CPU time a correct run takes in
+/// WALL clock. Returns that ratio (rounded UP, so a hair over full utilization already grants headroom),
+/// clamped to `[1, MAX_LOAD_SCALE]`: at or below full utilization → 1 (no stretch, identical prior
+/// behavior), and any degenerate input (non-finite, `ncpu < 1`) → 1 (fail safe to the unscaled deadline).
+fn scale_from_load(load1: f64, ncpu: f64) -> u64 {
+    if !load1.is_finite() || !ncpu.is_finite() || ncpu < 1.0 {
+        return 1;
+    }
+    let factor = (load1 / ncpu).ceil();
+    if !factor.is_finite() || factor < 1.0 {
+        1
+    } else {
+        (factor as u64).min(MAX_LOAD_SCALE)
+    }
+}
+
+/// The live epoch-deadline stretch for THIS host's current load. The deadline is WALL-CLOCK (the ticker
+/// bumps the epoch every `EPOCH_TICK` regardless of whether the guest is scheduled on a core), so under CPU
+/// oversubscription — a herd of `cdz-run` processes on one box, `loadavg` well above `ncpu` — a CORRECT
+/// trivial run is descheduled off-core and can trip a deadline it would never reach on an idle box. That is
+/// a load-induced FALSE `interrupt` trap, and it corrupted pr-sync's merge-gate verdicts on trivial cases
+/// every herd (routed by v-fleet-tooling). Scaling the budget by `loadavg/ncpu` restores a starved run's
+/// true CPU budget. Linux-only signal (`/proc/loadavg`); anywhere it can't be read/parsed → factor 1
+/// (unchanged behavior, so non-Linux and a missing procfs both fall back to the plain wall-clock deadline).
+fn load_scale_factor() -> u64 {
+    let ncpu = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1) as f64;
+    match std::fs::read_to_string("/proc/loadavg") {
+        Ok(s) => match s
+            .split_whitespace()
+            .next()
+            .and_then(|f| f.parse::<f64>().ok())
+        {
+            Some(load1) => scale_from_load(load1, ncpu),
+            None => 1,
+        },
+        Err(_) => 1,
+    }
+}
+
 /// Create a `Store` with the run's epoch deadline armed (trap on deadline), and ensure the background
 /// epoch-ticker for `engine` is running. Every in-process run goes through here so a runaway loop can't
 /// escape the wall-clock cap. A `run_timeout_secs()` of 0 disables the deadline (unbounded — for a
@@ -87,8 +136,12 @@ fn new_store(engine: &Engine) -> Store<()> {
         // a PANIC in a debug build, and in release it WRAPS to a tiny value, so a huge timeout inverts into
         // a near-instant trap (the same class of inversion as the `secs == 0` bug). Saturating means a
         // giant timeout clamps to a giant tick count (≈ never reached), which is the intended "unbounded".
+        // The `load_scale_factor()` (≥1) STRETCHES the wall-clock budget under CPU oversubscription so a
+        // correct-but-off-core run isn't false-trapped as a runaway (see `load_scale_factor`); it composes
+        // as another `saturating_mul` so the overflow-safety above is preserved.
         let ticks = secs
             .saturating_mul(1000)
+            .saturating_mul(load_scale_factor())
             .div_ceil(EPOCH_TICK.as_millis() as u64)
             .max(1);
         store.set_epoch_deadline(ticks);
@@ -3236,6 +3289,50 @@ mod tests {
     #[test]
     fn empty_bytes_is_invalid() {
         assert!(validate(&[]).is_err());
+    }
+
+    #[test]
+    fn scale_from_load_is_one_at_or_below_full_utilization() {
+        // The whole point of the clamp-to-1 floor: an idle or normally-loaded box gets the EXACT prior
+        // wall-clock deadline (no stretch), so this change is a no-op except under real oversubscription.
+        assert_eq!(scale_from_load(0.0, 8.0), 1, "idle box → no stretch");
+        assert_eq!(scale_from_load(4.0, 8.0), 1, "half-loaded → no stretch");
+        assert_eq!(scale_from_load(8.0, 8.0), 1, "exactly full → no stretch");
+        // A hair over full utilization already grants one step of headroom (ceil), since even mild
+        // oversubscription deschedules a correct run off-core long enough to risk a wall-clock false-trap.
+        assert_eq!(scale_from_load(8.1, 8.0), 2, "just over full → ceil to 2");
+    }
+
+    #[test]
+    fn scale_from_load_tracks_oversubscription_and_clamps() {
+        // The oversubscription factor is loadavg/ncpu rounded up: ~how many runnable threads share a core,
+        // i.e. how much longer than its CPU time a correct run takes in wall clock. This is the exact
+        // stretch that keeps a load-starved trivial case (the pr-sync false-RED) from tripping the deadline.
+        assert_eq!(scale_from_load(16.0, 8.0), 2, "2x oversubscribed");
+        assert_eq!(scale_from_load(40.0, 8.0), 5, "5x oversubscribed");
+        assert_eq!(
+            scale_from_load(532.0, 64.0),
+            9,
+            "the reported peak (~532 on 64 cores)"
+        );
+        // Clamp: a pathological spike can't grant an unbounded budget — a genuine CPU-bound runaway loop
+        // still traps within MAX_LOAD_SCALE× the base timeout (the safety net is stretched, never defeated).
+        assert_eq!(
+            scale_from_load(100_000.0, 1.0),
+            MAX_LOAD_SCALE,
+            "clamped at the ceiling"
+        );
+    }
+
+    #[test]
+    fn scale_from_load_fails_safe_on_degenerate_input() {
+        // Any unreadable/garbage signal falls back to the unscaled deadline (factor 1) rather than a wild
+        // stretch that would blunt the runaway-loop trap — fail SAFE toward the stricter prior behavior.
+        assert_eq!(scale_from_load(f64::NAN, 8.0), 1, "NaN load → 1");
+        assert_eq!(scale_from_load(f64::INFINITY, 8.0), 1, "inf load → 1");
+        assert_eq!(scale_from_load(8.0, 0.0), 1, "zero cpus → 1");
+        assert_eq!(scale_from_load(8.0, f64::NAN), 1, "NaN cpus → 1");
+        assert_eq!(scale_from_load(-5.0, 8.0), 1, "negative load → 1");
     }
 
     #[test]
