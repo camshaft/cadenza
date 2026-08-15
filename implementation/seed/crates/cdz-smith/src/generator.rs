@@ -556,6 +556,35 @@ impl Gen<'_> {
     }
 
     fn match_expr(&mut self, depth: u32, want: Kind) {
+        // About a third of the time (with depth to spare), emit a STRUCTURED tuple match: a tuple
+        // scrutinee of known arity paired with a binding tuple PATTERN that destructures it. Unlike
+        // the literal-pattern arms below, this reaches product-destructuring lowering AND binds fresh
+        // names into the arm body (deepening data flow) — a match shape the generator otherwise never
+        // produces. Arity-matched scrutinee+pattern guarantee it types and reaches codegen; a trailing
+        // wildcard keeps it exhaustive.
+        if depth > 1 && self.cur.choice(3) == 0 {
+            let arity = 2 + self.cur.choice(2); // 2 or 3 elements
+            self.out.push_str("(match (tuple");
+            for _ in 0..arity {
+                self.out.push(' ');
+                self.expr(depth.saturating_sub(1), Kind::Any);
+            }
+            self.out.push_str(") ((tuple");
+            let mark = self.env.scope.len();
+            for _ in 0..arity {
+                let name = self.env.fresh();
+                self.out.push(' ');
+                self.out.push_str(&name);
+                self.env.push(name, Kind::Any);
+            }
+            self.out.push_str(") ");
+            self.expr(depth.saturating_sub(1), want);
+            self.env.truncate(mark);
+            self.out.push_str(") (_ ");
+            self.expr(depth.saturating_sub(1), want);
+            self.out.push_str("))");
+            return;
+        }
         self.out.push_str("(match ");
         self.expr(depth.saturating_sub(1), Kind::Any);
         // 1..=2 arms; a wildcard arm guarantees exhaustiveness so more match nodes reach codegen.
@@ -743,6 +772,30 @@ mod tests {
                 "operator application did not parse: ({head} 1 2)"
             );
         }
+    }
+
+    /// The structured tuple-destructuring match arm is reachable — some seed emits a binding tuple
+    /// pattern (`(match (tuple ...) ((tuple ...) ...) (_ ...))`) — and every program that path can
+    /// emit still parses. Guards the product-destructuring reach against a refactor that drops it or
+    /// emits an unparseable pattern.
+    #[test]
+    fn some_seed_emits_a_tuple_destructuring_match() {
+        let mut hit = false;
+        for b0 in 0u16..=255 {
+            let seed = [b0 as u8, 13, b0 as u8, 7, 2, b0 as u8, 9, 4, 1, 6];
+            let src = generate(&seed).source;
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "generated program did not parse:\n{src}"
+            );
+            if src.contains("(match (tuple") && src.contains("((tuple") {
+                hit = true;
+            }
+        }
+        assert!(
+            hit,
+            "no seed in the sweep emitted a tuple-destructuring match"
+        );
     }
 
     /// Generation is deterministic in the seed (required for reproducing + shrinking a finding).
