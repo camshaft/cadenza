@@ -28208,6 +28208,99 @@ mod tests {
         }
     }
 
+    #[test]
+    fn ty_to_wit_desc_declines_the_reify_path_declining_domain_bigint_rational_symbol_qty() {
+        // REVIEWER PRECISION (S3 hard gate, b2843b647): the `_ => None` decline domain is NOT just
+        // Fn/Cont/Var. `Ty::BigInt`, `Ty::Rational`, `Ty::Symbol`, and `Ty::Qty` ALSO have no WIT
+        // descriptor form and fall to the same decline arm — and they ARE reachable as effect-op
+        // param/result types (14b `Acc.grow -> BigInt`, `Avg.sample -> Rational`, `Reg.intern -> Symbol`,
+        // 14 `Env.width -> Qty`). They do not regress the S3 mandatory-schema_hash flip TODAY only because
+        // every such occurrence is a HANDLED effect (discharged in-language, never reaching the reify /
+        // schema-hash path). This pins the decline DOMAIN explicitly so the S3 flip's invariant — "no
+        // REIFYING world-effect op is typed with a declining type" — verifies the right thing: a future
+        // host op returning e.g. a Qty must be COVERED here or caught by the flip's decline check, never
+        // silently declining (which would regress under mandatory schema_hash).
+        use crate::ty::{Ty, Unit};
+        let mut db = Db::load(crate::testkit::parse("(module m (def (f) 0) (export f))"));
+        let mut decline = |ty: &Ty| {
+            let mut b = crate::ast::Builder::new();
+            ty_to_wit_desc(&mut db, &mut b, ty)
+        };
+        assert!(
+            decline(&Ty::BigInt).is_none(),
+            "BigInt has no WIT descriptor form → declines"
+        );
+        assert!(
+            decline(&Ty::Rational).is_none(),
+            "Rational has no WIT descriptor form → declines"
+        );
+        assert!(
+            decline(&Ty::Symbol).is_none(),
+            "Symbol has no WIT descriptor form → declines"
+        );
+        assert!(
+            decline(&Ty::Qty {
+                inner: Box::new(Ty::int64()),
+                unit: Unit::one()
+            })
+            .is_none(),
+            "Qty has no WIT descriptor form → declines (it erases to its inner before emit, but ty_to_wit_desc sees the Qty)"
+        );
+        // A COMPOUND carrying a declining leaf declines transitively (the `?` short-circuit) — so a
+        // `list<BigInt>` or `tuple<Bytes, Symbol>` op type is caught too, not just the bare scalar.
+        assert!(
+            decline(&Ty::List(Box::new(Ty::BigInt))).is_none(),
+            "list<BigInt> declines transitively (declining leaf short-circuits the compound)"
+        );
+        assert!(
+            decline(&Ty::Tuple(vec![Ty::Bytes, Ty::Symbol].into())).is_none(),
+            "tuple<Bytes, Symbol> declines transitively"
+        );
+        // CONTROL: the covered domain still builds (guards against an over-broad decline regressing coverage).
+        assert!(decline(&Ty::Bytes).is_some(), "Bytes is covered (list<u8>)");
+        assert!(
+            decline(&Ty::Map(Box::new(Ty::int64()), Box::new(Ty::int64()))).is_some(),
+            "Map is covered (the b2843b647 arm) — the fix under review"
+        );
+    }
+
+    #[test]
+    fn effect_schema_descriptor_declines_a_whole_effect_with_a_declining_op_type() {
+        // The effect-level face of the S3 invariant: `effect_schema_descriptor` (hence
+        // `effect_has_schema_descriptor`, the SINGLE-SOURCE gate the reify emit + typing both call)
+        // DECLINES the WHOLE effect if ANY op param/result type declines — it never bakes a partial
+        // descriptor (a wrong identity). So a REIFYING world-effect typed with a declining type flips
+        // `effect_has_schema_descriptor` to false, which is exactly the condition the S3 mandatory flip
+        // must gate-verify (rather than silently regressing to schema_hash None under mandatory).
+        // `Reg.intern -> Symbol` is the shape (14b:5720); Symbol declines → the effect declines.
+        let src = "(module m (effect Reg (op intern (-> String Symbol))) (def (f) 0) (export f))";
+        let mut db = Db::load(crate::testkit::parse(src));
+        let synth = db.effect_decl_by_name("Reg").expect("effect Reg declared");
+        let decl = db
+            .effect_decl_by_synth(synth)
+            .expect("effect decl present")
+            .occ;
+        assert!(
+            !effect_has_schema_descriptor(&mut db, decl),
+            "an effect with a Symbol-typed op has no schema descriptor (declines, never a partial identity)"
+        );
+        // CONTROL: a same-shaped effect over COVERED types builds — proving it's the declining type that
+        // declines the effect, not the effect machinery.
+        let src_ok = "(module m (effect Reg (op intern (-> String Bytes))) (def (f) 0) (export f))";
+        let mut db_ok = Db::load(crate::testkit::parse(src_ok));
+        let synth_ok = db_ok
+            .effect_decl_by_name("Reg")
+            .expect("effect Reg declared");
+        let decl_ok = db_ok
+            .effect_decl_by_synth(synth_ok)
+            .expect("effect decl present")
+            .occ;
+        assert!(
+            effect_has_schema_descriptor(&mut db_ok, decl_ok),
+            "the same effect over covered types (String→Bytes) builds a descriptor"
+        );
+    }
+
     /// The (params, result) an effect op's declared arrow reduces to — used to build its schema `wit_func_sig`.
     fn op_arrow_tys(src_effect_decl: &str, op_idx: usize) -> (Vec<crate::ty::Ty>, crate::ty::Ty) {
         let src = format!("(module m {src_effect_decl} (def (f) 0) (export f))");
