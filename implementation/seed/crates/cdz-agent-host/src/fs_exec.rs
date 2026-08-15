@@ -98,11 +98,9 @@ impl Executor for FsExecutor {
         {
             glob_paths(path)
         } else {
-            // A non-fs family is structural (this executor serves only fs/*) → PERMANENT.
-            EffectOutcome::err(format!(
-                "FsExecutor only handles the fs/* families, got {}",
-                req.content_type.family
-            ))
+            // A non-fs family is structural (this executor serves only fs/*) → PERMANENT. Identity is the
+            // schema_hash (content_type.family is deleted from EffectRequest in the S3 flip).
+            EffectOutcome::err("FsExecutor only handles the fs/* families (schema_hash mismatch)")
         }
     }
 

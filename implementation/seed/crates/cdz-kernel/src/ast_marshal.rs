@@ -4327,14 +4327,18 @@ mod tests {
         let effects = parse_effect_list(&bytes).expect("parses");
         assert_eq!(effects.len(), 2);
         // Effect 0: http with a body payload + a continuation token.
-        assert_eq!(effects[0].request.content_type.family, "http");
+        assert!(effects[0]
+            .request
+            .is_builtin_kind(crate::effect::EffectKind::Http));
         assert_eq!(effects[0].request.target_str().unwrap(), "https://ok/x");
         assert!(
             matches!(&effects[0].request.payload, Some(Payload::Inline(p)) if p.as_ref() == b"body")
         );
         assert_eq!(effects[0].token.as_deref(), Some(&b"cont-1"[..]));
         // Effect 1: bare now — no payload, no token (fire-and-forget).
-        assert_eq!(effects[1].request.content_type.family, "now");
+        assert!(effects[1]
+            .request
+            .is_builtin_kind(crate::effect::EffectKind::Now));
         assert!(effects[1].request.payload.is_none());
         assert!(effects[1].token.is_none());
 
@@ -4382,7 +4386,7 @@ mod tests {
         let effects = parse_effect_list(&bytes).expect("a 3-field no-target reify record parses");
         assert_eq!(effects.len(), 2);
         // Both parse target-FREE: target is empty (not an error), payload as given.
-        assert_eq!(effects[0].request.content_type.family, "effect/ping");
+        assert_eq!(effects[0].request.string_family(), "effect/ping");
         assert_eq!(
             effects[0].request.target_str().unwrap(),
             "",
@@ -4391,7 +4395,7 @@ mod tests {
         assert!(
             matches!(&effects[0].request.payload, Some(Payload::Inline(p)) if p.as_ref() == b"pong")
         );
-        assert_eq!(effects[1].request.content_type.family, "effect/beat");
+        assert_eq!(effects[1].request.string_family(), "effect/beat");
         assert_eq!(effects[1].request.target_str().unwrap(), "");
         assert!(effects[1].request.payload.is_none());
     }
@@ -4436,8 +4440,8 @@ mod tests {
             "no schema_hash field → the family-derived hash is unchanged (additive, order-safe)"
         );
         // The family string is preserved verbatim in both cases (identity axis unchanged).
-        assert_eq!(parsed[0].request.content_type.family, "effect/weather");
-        assert_eq!(parsed[1].request.content_type.family, "effect/weather");
+        assert_eq!(parsed[0].request.string_family(), "effect/weather");
+        assert_eq!(parsed[1].request.string_family(), "effect/weather");
     }
 
     #[test]
@@ -4586,7 +4590,9 @@ mod tests {
         let bytes = effect_list_bytes(vec![structured_effect]);
         let effects = parse_effect_list(&bytes).expect("structured payload parses");
         assert_eq!(effects.len(), 1);
-        assert_eq!(effects[0].request.content_type.family, "model");
+        assert!(effects[0]
+            .request
+            .is_builtin_kind(crate::effect::EffectKind::Model));
         match &effects[0].request.payload {
             Some(Payload::Inline(p)) => assert_eq!(
                 p.as_ref(),
@@ -4623,7 +4629,7 @@ mod tests {
         ]);
         let effects = parse_effect_list(&effect_list_bytes(vec![raw_effect])).expect("Raw parses");
         assert_eq!(effects.len(), 1);
-        assert_eq!(effects[0].request.content_type.family, "tool");
+        assert_eq!(effects[0].request.string_family(), "tool");
         assert!(
             matches!(&effects[0].request.payload, Some(Payload::Inline(p)) if p.as_ref() == b"cargo test"),
             "the Raw arm unwraps to the opaque bytes verbatim"
@@ -4648,7 +4654,7 @@ mod tests {
         let effects = parse_effect_list(&bytes).expect("register-by-string family parses");
         assert_eq!(effects.len(), 1);
         // The family is preserved VERBATIM as the string — not coerced to a built-in kind, not dropped.
-        assert_eq!(effects[0].request.content_type.family, novel);
+        assert_eq!(effects[0].request.string_family(), novel);
         // Sanity: it is genuinely NOT one of the well-known families (this is the register-by-string path).
         assert!(!["shell", "http", "model", "now", "timer", "emit"].contains(&novel));
         assert_eq!(effects[0].request.target_str().unwrap(), "sess-42");

@@ -105,13 +105,14 @@ impl Executor for MeteredExecutor {
         let outcome = self.inner.perform(id, req, idempotency_key).await;
         self.metrics
             .record_latency_us(crate::metrics::micros_u64(started.elapsed()));
-        // Tally the metric + trace at the SAME tap. The family names which effect; a failure logs its
-        // classified reason (retryable/permanent) at warn (a supervisor signal), ok at debug (routine).
-        let family = req.content_type.family.as_ref();
+        // Tally the metric + trace at the SAME tap. The schema_hash is the effect identity (STEP C:
+        // content_type.family is deleted from EffectRequest in the S3 flip); a failure logs its classified
+        // reason (retryable/permanent) at warn (a supervisor signal), ok at debug (routine).
+        let schema_hash = req.schema_hash;
         match &outcome {
             EffectOutcome::Ok(_) => {
                 self.metrics.record_ok();
-                tracing::debug!(target: "cdz_agent_host::effect", family, "effect ok");
+                tracing::debug!(target: "cdz_agent_host::effect", ?schema_hash, "effect ok");
             }
             EffectOutcome::Err {
                 message,
@@ -122,7 +123,7 @@ impl Executor for MeteredExecutor {
                 self.metrics.record_err(*retryability);
                 tracing::warn!(
                     target: "cdz_agent_host::effect",
-                    family,
+                    ?schema_hash,
                     retryability = ?retryability,
                     reason = message,
                     "effect errored"
@@ -130,7 +131,7 @@ impl Executor for MeteredExecutor {
             }
             EffectOutcome::TimedOut => {
                 self.metrics.record_timed_out();
-                tracing::warn!(target: "cdz_agent_host::effect", family, "effect timed out");
+                tracing::warn!(target: "cdz_agent_host::effect", ?schema_hash, "effect timed out");
             }
             EffectOutcome::Deferred => {
                 // The inner executor DEFERRED (a delegating/userspace-effect executor forwarded the request
@@ -138,7 +139,7 @@ impl Executor for MeteredExecutor {
                 // terminal outcome, so tally NOTHING here — the real Ok/Err is recorded when the deferred
                 // effect settles + folds back (that settle is a separate path, not this per-perform tap).
                 // Trace at debug so the deferral is observable without inflating the ok/err/timed-out counts.
-                tracing::debug!(target: "cdz_agent_host::effect", family, "effect deferred (awaiting settle)");
+                tracing::debug!(target: "cdz_agent_host::effect", ?schema_hash, "effect deferred (awaiting settle)");
             }
         }
         outcome
@@ -2336,7 +2337,7 @@ mod tests {
         // the SAME registry-backed set. Two families here — one Ok + one TimedOut — both recorded through the
         // shared Arc without panic (registry Counters are drain-on-report, no value getter, so we assert the
         // record path is total + the registry reports over it, not per-counter values).
-        use cdz_kernel::effect::{EffectKind, Payload, Timeliness};
+        use cdz_kernel::effect::{Payload, Timeliness};
         use cdz_kernel::executor::Executor as _;
 
         let registry = crate::metrics::Registry::new();
@@ -2362,11 +2363,11 @@ mod tests {
                 Box::new(MeteredExecutor::new(Box::new(timedout_b), metrics.clone())),
             );
 
-        // Route one effect to each family (CompositeExecutor dispatches by req.content_type.family).
-        let mut req_a = EffectRequest::new(EffectKind::Emit, "t", None, Timeliness::Interactive);
-        req_a.content_type.family = "fam-a".into();
-        let mut req_b = req_a.clone();
-        req_b.content_type.family = "fam-b".into();
+        // Route one effect to each family (CompositeExecutor dispatches a register-by-string family by its
+        // `string_routed_family` carrier). `new_with_family` populates the carrier for a register-by-string
+        // extension family (is_registered_effect_family), so these route without a hand-patched field.
+        let req_a = EffectRequest::new_with_family("fam-a", "t", None, Timeliness::Interactive);
+        let req_b = EffectRequest::new_with_family("fam-b", "t", None, Timeliness::Interactive);
         composite.perform(EffectId(0), &req_a, Hash::of(b"a")).await;
         composite.perform(EffectId(0), &req_b, Hash::of(b"b")).await;
 

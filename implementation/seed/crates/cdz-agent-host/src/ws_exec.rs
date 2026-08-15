@@ -100,17 +100,15 @@ impl<R: WsConnRegistry> Executor for WsSendExecutor<R> {
         req: &EffectRequest,
         _idempotency_key: Hash,
     ) -> EffectOutcome {
-        let family = req.content_type.family.as_ref();
         // The kernel routes by family, but be explicit: this executor serves ONLY ws/send (the outbound
         // effect). ws/connect + ws/disconnect are INBOUND events the listener emits, never effects dispatched
         // here, so a non-ws/send ws family reaching this executor is a mis-route.
-        // PHASE-3 STEP B: self-guard on the schema-hash identity (behavior-equivalent — req.schema_hash ==
-        // effect_family_schema_hash(family) for every in-host request). `family` is kept only for the
-        // mis-route diagnostic; its content_type.family read is removed in STEP C.
+        // PHASE-3 STEP C: self-guard on the schema-hash identity (content_type.family is deleted from
+        // EffectRequest in the S3 flip; the mis-route diagnostic reports a schema_hash mismatch).
         if req.schema_hash != cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::WS_SEND)
         {
             return EffectOutcome::err(format!(
-                "WsSendExecutor only handles {}, got {family}",
+                "WsSendExecutor only handles {} (schema_hash mismatch)",
                 effect_ct::WS_SEND
             ));
         }

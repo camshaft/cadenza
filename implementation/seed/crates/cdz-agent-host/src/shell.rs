@@ -64,9 +64,8 @@ impl Executor for ShellExecutor {
         // PHASE-3 STEP B: schema-hash self-guard (behavior-equivalent, moves off content_type.family for STEP C).
         if req.schema_hash != cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::SHELL) {
             return EffectOutcome::err(format!(
-                "ShellExecutor only handles the {} family, got {}",
-                effect_ct::SHELL,
-                req.content_type.family
+                "ShellExecutor only handles the {} family (schema_hash mismatch)",
+                effect_ct::SHELL
             ));
         }
         // PIPELINE PATH (shell-pipeline fan-out): if the payload decodes as a `(shell-pipeline …)`, run the

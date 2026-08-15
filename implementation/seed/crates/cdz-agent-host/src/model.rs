@@ -81,12 +81,12 @@ impl<T: ModelTransport> Executor for ModelExecutor<T> {
         // Key the guard on the effect FAMILY STRING (seq-39 / effect-schema slice 2), not the EffectKind
         // enum — the same decision the router and authz make. Decouples this executor from the enum ahead
         // of its retirement; matches_family is the one-source-of-truth family compare.
-        // PHASE-3 STEP B: schema-hash self-guard (behavior-equivalent, moves off content_type.family for STEP C).
+        // PHASE-3 STEP C: schema-hash self-guard; diagnostic reports the mismatched request schema_hash
+        // (content_type.family is deleted from EffectRequest in the S3 flip — identity is the schema_hash).
         if req.schema_hash != cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::MODEL) {
             return EffectOutcome::err(format!(
-                "ModelExecutor only handles the {} family, got {}",
-                effect_ct::MODEL,
-                req.content_type.family
+                "ModelExecutor only handles the {} family (schema_hash mismatch)",
+                effect_ct::MODEL
             ));
         }
         // A model call needs a request body. An inline payload IS the request; a blob-ref payload is
@@ -595,8 +595,9 @@ mod tests {
                 retryability,
             } => {
                 assert!(
-                    message.contains(effect_ct::MODEL) && message.contains(effect_ct::HTTP),
-                    "err names the handled family (model) + the rejected one (http): {message}"
+                    message.contains(effect_ct::MODEL),
+                    "err names the handled (model) family + flags a schema_hash mismatch (STEP C: the \
+                     rejected family is no longer read from content_type.family): {message}"
                 );
                 assert_eq!(retryability, Retryability::Permanent, "{message}");
             }

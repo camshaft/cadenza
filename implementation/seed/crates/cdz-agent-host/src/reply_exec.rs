@@ -101,14 +101,14 @@ impl Executor for ReplyExecutor {
 
         // Structural: serve ONLY the effect/reply family. Anything else reaching here is a routing bug →
         // PERMANENT (§17: observable Err, never a panic).
-        // PHASE-3 STEP B: schema-hash self-guard (behavior-equivalent, moves off content_type.family for STEP C).
+        // PHASE-3 STEP C: schema-hash self-guard; diagnostic reports the mismatched request schema_hash
+        // (content_type.family is deleted from EffectRequest in the S3 flip — identity is the schema_hash).
         if req.schema_hash
             != cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::EFFECT_REPLY)
         {
             return EffectOutcome::err(format!(
-                "ReplyExecutor only handles the {} family, got {}",
-                effect_ct::EFFECT_REPLY,
-                req.content_type.family
+                "ReplyExecutor only handles the {} family (schema_hash mismatch)",
+                effect_ct::EFFECT_REPLY
             ));
         }
 

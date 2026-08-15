@@ -78,12 +78,12 @@ impl Executor for EmitExecutor {
         // the routing target, not an oversight.
         // Family-keyed (seq-39), matching the router + authz decision. A non-Emit family is structural →
         // PERMANENT (§17: observable Err, never a panic).
-        // PHASE-3 STEP B: schema-hash self-guard (behavior-equivalent, moves off content_type.family for STEP C).
+        // PHASE-3 STEP C: schema-hash self-guard; the diagnostic reports the mismatched request schema_hash
+        // (content_type.family is deleted from EffectRequest in the S3 flip — identity is the schema_hash).
         if req.schema_hash != cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::EMIT) {
             return EffectOutcome::err(format!(
-                "EmitExecutor only handles the {} family, got {}",
-                effect_ct::EMIT,
-                req.content_type.family
+                "EmitExecutor only handles the {} family (schema_hash mismatch)",
+                effect_ct::EMIT
             ));
         }
 

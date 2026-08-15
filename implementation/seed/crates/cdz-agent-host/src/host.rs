@@ -811,7 +811,10 @@ impl HostedSession {
             .into_iter()
             .find_map(|ce| match ce.request.payload {
                 Some(cdz_kernel::effect::Payload::Inline(bytes))
-                    if ce.request.content_type.matches_family(effect_ct::SUMMARY) =>
+                    if ce.request.schema_hash
+                        == cdz_kernel::ast_marshal::effect_family_schema_hash(
+                            effect_ct::SUMMARY,
+                        ) =>
                 {
                     Some(bytes.to_vec())
                 }
@@ -1266,7 +1269,9 @@ impl AgentHost {
         // &mut) — the session is still registered (a signature query doesn't terminate it).
         let mut factory = factory;
         for ce in &controls {
-            if !ce.request.content_type.matches_family(effect_ct::SIGNATURE) {
+            if ce.request.schema_hash
+                != cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::SIGNATURE)
+            {
                 continue;
             }
             // The target rides the effect as the raw content-hash bytes; resolve it to bytes through the
@@ -2699,7 +2704,8 @@ mod tests {
         // proving the round-trip: family "emit" + target bytes "out" + payload = the echoed input.
         assert_eq!(effects.len(), 1, "a payloaded event folds to one effect");
         assert_eq!(
-            effects[0].request.content_type.family, "emit",
+            effects[0].request.schema_hash,
+            cdz_kernel::ast_marshal::effect_family_schema_hash("emit"),
             "the folded effect's kind crosses the bytes boundary as the family string"
         );
         assert_eq!(
@@ -2801,7 +2807,10 @@ mod tests {
             .await
             .expect("tick-start folds through the bytes boundary");
         assert_eq!(effs.len(), 1, "tick-start arms exactly one timer");
-        assert_eq!(effs[0].request.content_type.family, "timer");
+        assert_eq!(
+            effs[0].request.schema_hash,
+            cdz_kernel::ast_marshal::effect_family_schema_hash("timer")
+        );
         assert_eq!(
             target_of(&effs[0]),
             "5000",
@@ -2819,13 +2828,19 @@ mod tests {
             .await
             .expect("timer-fired folds");
         assert_eq!(effs.len(), 2, "timer-fired re-arms + begins the tick");
-        assert_eq!(effs[0].request.content_type.family, "timer");
+        assert_eq!(
+            effs[0].request.schema_hash,
+            cdz_kernel::ast_marshal::effect_family_schema_hash("timer")
+        );
         assert_eq!(
             target_of(&effs[0]),
             "901000",
             "re-armed at fired_ms + 900000ms interval"
         );
-        assert_eq!(effs[1].request.content_type.family, "emit");
+        assert_eq!(
+            effs[1].request.schema_hash,
+            cdz_kernel::ast_marshal::effect_family_schema_hash("emit")
+        );
         assert_eq!(target_of(&effs[1]), "begin-tick");
 
         // inbox/reply (informational) → emit "archive".
@@ -2834,7 +2849,10 @@ mod tests {
             .await
             .expect("inbox/reply folds");
         assert_eq!(effs.len(), 1);
-        assert_eq!(effs[0].request.content_type.family, "emit");
+        assert_eq!(
+            effs[0].request.schema_hash,
+            cdz_kernel::ast_marshal::effect_family_schema_hash("emit")
+        );
         assert_eq!(
             target_of(&effs[0]),
             "archive",
@@ -2852,7 +2870,10 @@ mod tests {
             .await
             .expect("inbox/merge-request folds");
         assert_eq!(effs.len(), 1);
-        assert_eq!(effs[0].request.content_type.family, "emit");
+        assert_eq!(
+            effs[0].request.schema_hash,
+            cdz_kernel::ast_marshal::effect_family_schema_hash("emit")
+        );
         assert_eq!(
             target_of(&effs[0]),
             "act",
@@ -2944,7 +2965,10 @@ mod tests {
             1,
             "first informational delivery emits one action"
         );
-        assert_eq!(effs[0].request.content_type.family, "emit");
+        assert_eq!(
+            effs[0].request.schema_hash,
+            cdz_kernel::ast_marshal::effect_family_schema_hash("emit")
+        );
         assert_eq!(target_of(&effs[0]), "archive", "informational → archive");
 
         // Re-delivery of the SAME message (the threaded kv holds the seen-key) → dedup to NOTHING.
@@ -2971,7 +2995,10 @@ mod tests {
             .await
             .expect("actionable folds");
         assert_eq!(effs.len(), 1);
-        assert_eq!(effs[0].request.content_type.family, "emit");
+        assert_eq!(
+            effs[0].request.schema_hash,
+            cdz_kernel::ast_marshal::effect_family_schema_hash("emit")
+        );
         assert_eq!(target_of(&effs[0]), "act", "actionable → act");
 
         // Re-delivery of the actionable message → dedup.
@@ -3082,7 +3109,10 @@ mod tests {
             .await
             .expect("tick-start folds through the bytes boundary");
         assert_eq!(effs.len(), 1, "tick-start arms exactly one timer");
-        assert_eq!(effs[0].request.content_type.family, "timer");
+        assert_eq!(
+            effs[0].request.schema_hash,
+            cdz_kernel::ast_marshal::effect_family_schema_hash("timer")
+        );
         assert_eq!(
             target_of(&effs[0]),
             "5000",
@@ -3100,13 +3130,19 @@ mod tests {
             .await
             .expect("timer-fired folds");
         assert_eq!(effs.len(), 2, "timer-fired re-arms + begins the tick");
-        assert_eq!(effs[0].request.content_type.family, "timer");
+        assert_eq!(
+            effs[0].request.schema_hash,
+            cdz_kernel::ast_marshal::effect_family_schema_hash("timer")
+        );
         assert_eq!(
             target_of(&effs[0]),
             "901000",
             "re-armed at fired_ms + the KV-SEEDED interval"
         );
-        assert_eq!(effs[1].request.content_type.family, "emit");
+        assert_eq!(
+            effs[1].request.schema_hash,
+            cdz_kernel::ast_marshal::effect_family_schema_hash("emit")
+        );
         assert_eq!(target_of(&effs[1]), "begin-tick");
 
         // An UNSEEDED KV: an absent seed slot reads 0 → tick-start arms at "0" (proves the arm reads the SEED,
@@ -3245,7 +3281,8 @@ mod tests {
             "a kv-read event with the slot populated folds to one emit effect"
         );
         assert_eq!(
-            read_effects[0].request.content_type.family, "emit",
+            read_effects[0].request.schema_hash,
+            cdz_kernel::ast_marshal::effect_family_schema_hash("emit"),
             "the folded effect's kind crosses the bytes boundary as the family string"
         );
         assert_eq!(
@@ -3353,7 +3390,8 @@ mod tests {
             "deleting an EXISTING key folds to one emit (kv.delete returned true)"
         );
         assert_eq!(
-            del_effects[0].request.content_type.family, "emit",
+            del_effects[0].request.schema_hash,
+            cdz_kernel::ast_marshal::effect_family_schema_hash("emit"),
             "the folded effect's kind crosses the bytes boundary as the family string"
         );
         assert_eq!(
@@ -3466,7 +3504,8 @@ mod tests {
             "scanning a NON-EMPTY prefix folds to one emit (prefix-scan returned a non-empty list of pairs)"
         );
         assert_eq!(
-            scan_effects[0].request.content_type.family, "emit",
+            scan_effects[0].request.schema_hash,
+            cdz_kernel::ast_marshal::effect_family_schema_hash("emit"),
             "the folded effect's kind crosses the bytes boundary as the family string"
         );
         assert_eq!(
@@ -3579,7 +3618,8 @@ mod tests {
             "a message event with a non-empty inbox folds to one model effect (read-inbox → call-model)"
         );
         assert_eq!(
-            msg_effects[0].request.content_type.family, "model",
+            msg_effects[0].request.schema_hash,
+            cdz_kernel::ast_marshal::effect_family_schema_hash("model"),
             "the message step emits a `model` effect (invoke the LLM)"
         );
         assert_eq!(
@@ -3637,7 +3677,8 @@ mod tests {
             "a model-response event folds to one tool effect (the loop's action step)"
         );
         assert_eq!(
-            resp_effects[0].request.content_type.family, "tool",
+            resp_effects[0].request.string_routed_family.as_deref(),
+            Some("tool"),
             "the model-response step emits a `tool` effect (dispatch the requested tool call)"
         );
         assert_eq!(
@@ -3675,7 +3716,7 @@ mod tests {
             "a tool-result event RE-INVOKES the model (loop closure): one more model effect"
         );
         assert_eq!(
-            result_effects[0].request.content_type.family, "model",
+            result_effects[0].request.schema_hash, cdz_kernel::ast_marshal::effect_family_schema_hash("model"),
             "the tool-result step emits another `model` effect (re-invoke the LLM with the grown context)"
         );
         assert_eq!(
@@ -3802,7 +3843,10 @@ mod tests {
             1,
             "the first message (inbox now non-empty) folds to one model effect"
         );
-        assert_eq!(effects_a[0].request.content_type.family, "model");
+        assert_eq!(
+            effects_a[0].request.schema_hash,
+            cdz_kernel::ast_marshal::effect_family_schema_hash("model")
+        );
 
         let (effects_b, kv_after_b) = reducer
             .apply(kv_after_a, msg_ct(), Some(msg_b.clone()), None)
@@ -3815,7 +3859,10 @@ mod tests {
             1,
             "the second message also folds to one model effect (inbox still non-empty)"
         );
-        assert_eq!(effects_b[0].request.content_type.family, "model");
+        assert_eq!(
+            effects_b[0].request.schema_hash,
+            cdz_kernel::ast_marshal::effect_family_schema_hash("model")
+        );
 
         // THE ACCUMULATION PROOF: after both folds, the reducer's own `inbox/` prefix holds BOTH messages'
         // pairs — the inbox is durable, stateful KV the reducer grows and re-enumerates, not per-turn scratch.
@@ -5961,7 +6008,13 @@ mod tests {
     #[async_trait::async_trait(?Send)]
     impl Authorize for AllowStore {
         async fn authorize(&self, req: &cdz_kernel::effect::EffectRequest) -> Result<(), String> {
-            if effect_ct::is_store_family(&req.content_type.family) {
+            // PHASE-3 STEP C: authorize on the STRING-ROUTED carrier (req.content_type.family is deleted;
+            // store/* families are string-routed, so string_routed_family carries them per the union rule).
+            if req
+                .string_routed_family
+                .as_deref()
+                .is_some_and(effect_ct::is_store_family)
+            {
                 Ok(())
             } else {
                 Err("only store/* permitted".into())
@@ -6205,7 +6258,10 @@ mod tests {
             .expect("deliver ok");
         let sig: Vec<_> = controls
             .iter()
-            .filter(|ce| ce.request.content_type.matches_family(effect_ct::SIGNATURE))
+            .filter(|ce| {
+                ce.request.schema_hash
+                    == cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::SIGNATURE)
+            })
             .collect();
         assert_eq!(sig.len(), 1, "the control/signature effect was surfaced");
         assert_eq!(
@@ -6228,7 +6284,10 @@ mod tests {
             .expect("deliver ok");
         let ce = controls
             .into_iter()
-            .find(|ce| ce.request.content_type.matches_family(effect_ct::SIGNATURE))
+            .find(|ce| {
+                ce.request.schema_hash
+                    == cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::SIGNATURE)
+            })
             .expect("the signature effect surfaced");
         let settled = host.settle_signature_query(&ce, None).await;
         assert!(settled, "an open control/signature id settles");
@@ -6251,7 +6310,10 @@ mod tests {
             .expect("deliver ok");
         let ce = controls
             .into_iter()
-            .find(|ce| ce.request.content_type.matches_family(effect_ct::SIGNATURE))
+            .find(|ce| {
+                ce.request.schema_hash
+                    == cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::SIGNATURE)
+            })
             .expect("the signature effect surfaced");
         let settled = host
             .settle_signature_query(&ce, Some(b"not a wasm component"))

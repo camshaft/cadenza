@@ -181,7 +181,9 @@ impl cdz_kernel::executor::Executor for ObserveReifyExecutor {
         req: &cdz_kernel::effect::EffectRequest,
         idempotency_key: Hash,
     ) -> cdz_kernel::event::EffectOutcome {
-        let family = req.content_type.family.as_ref();
+        // A reified world-effect is register-by-string (`effect/<name>`) → its family rides the
+        // string-routed carrier (schema-hash-only S3; content_type is gone).
+        let family = req.string_family();
         if is_reified_family(family) {
             let payload = match &req.payload {
                 Some(Payload::Inline(bytes)) => (!bytes.is_empty()).then(|| bytes.to_vec()),

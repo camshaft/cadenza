@@ -51,7 +51,9 @@ async fn real_guest_folds_through_async_apply_end_to_end() {
     // correlation token, round-tripped across the component boundary.
     assert_eq!(effects.len(), 1);
     // Bytes boundary: kind crosses as the family STRING, kernel `Effect` is `{request, token}`.
-    assert_eq!(effects[0].request.content_type.family, "http");
+    assert!(effects[0]
+        .request
+        .is_builtin_kind(crate::effect::EffectKind::Http));
     assert_eq!(
         effects[0].request.target_str().unwrap(),
         "https://ok.host/x"
@@ -99,7 +101,9 @@ async fn async_reducer_drives_via_the_async_reducer_trait() {
         out.failure
     );
     assert_eq!(out.effects.len(), 1);
-    assert_eq!(out.effects[0].request.kind, crate::effect::EffectKind::Http);
+    assert!(out.effects[0]
+        .request
+        .is_builtin_kind(crate::effect::EffectKind::Http));
     assert_eq!(kv.get(b"count").as_deref(), Some(&[1u8][..]));
 }
 

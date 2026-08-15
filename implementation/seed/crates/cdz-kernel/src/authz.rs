@@ -117,10 +117,18 @@ impl Authorize for Authorizer {
         {
             Ok(())
         } else {
-            Err(format!(
-                "no capability permits {:?} to target {:?}",
-                req.kind, req.target
-            ))
+            // Identify the effect by its schema-hash-only identity: the string-routed family when present
+            // (store/*, register-by-string extension), else the schema-hash (the built-in identity).
+            Err(match req.string_routed_family.as_deref() {
+                Some(fam) => format!(
+                    "no capability permits family {fam:?} to target {:?}",
+                    req.target
+                ),
+                None => format!(
+                    "no capability permits schema-hash {:?} to target {:?}",
+                    req.schema_hash, req.target
+                ),
+            })
         }
     }
 }
@@ -195,12 +203,11 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn authz_gates_on_content_type_family_not_the_kind_enum() {
-        // The seq-39 seam's authz half: a grant permits by the effect FAMILY string
-        // (Capability.kind.family() vs req.content_type.family), NOT EffectKind enum equality. Prove it by
-        // divorcing kind from family — an Http-kind request whose content_type.family is "model" is NOT
-        // permitted by an Http grant (family mismatch), and IS permitted by a Model grant, regardless of
-        // the enum. (Via `new` they agree; register-by-string will let a family stand alone — pin it now.)
+    async fn authz_gates_on_schema_hash_identity_not_the_target() {
+        // Schema-hash-only (S3, operator D15): a `Capability` grant permits iff the request's `schema_hash`
+        // equals the grant kind's built-in schema-hash — authz binds to the collision-proof IDENTITY, not a
+        // family string. Prove it: a Model request (schema_hash = Model's hash) is NOT permitted by an Http
+        // grant (identity mismatch) and IS permitted by a Model grant, regardless of the (identical) target.
         let http_grant = Authorizer::new(vec![Capability {
             kind: EffectKind::Http,
             predicate: ResourcePredicate::Any,
@@ -209,11 +216,10 @@ mod tests {
             kind: EffectKind::Model,
             predicate: ResourcePredicate::Any,
         }]);
-        let mut r = req(EffectKind::Http, "x");
-        r.content_type.family = EffectKind::Model.family().into();
-        // The Http grant's family ("http") no longer matches the request's family ("model") → denied...
+        let r = req(EffectKind::Model, "x");
+        // The Http grant's schema-hash ≠ the Model request's schema-hash → denied...
         assert!(http_grant.authorize(&r).await.is_err());
-        // ...and the Model grant's family ("model") matches → permitted, despite kind == Http.
+        // ...and the Model grant's schema-hash matches → permitted.
         assert!(model_grant.authorize(&r).await.is_ok());
     }
 
@@ -327,7 +333,7 @@ mod tests {
         #[async_trait::async_trait(?Send)]
         impl Authorize for OnlyNow {
             async fn authorize(&self, req: &EffectRequest) -> Result<(), String> {
-                if req.kind == EffectKind::Now {
+                if req.is_builtin_kind(EffectKind::Now) {
                     Ok(())
                 } else {
                     Err("only Now permitted".into())

@@ -182,19 +182,20 @@ impl Executor for CompositeExecutor {
         req: &EffectRequest,
         idempotency_key: Hash,
     ) -> EffectOutcome {
-        // Route by the effect's SCHEMA-HASH identity (phase-3 re-key): the request's baked `schema_hash` is
-        // authoritative, else the family-derived hash. `id` threads through unchanged so a delegating leaf
-        // executor can bind its reply-token to (caller, id).
-        let route_hash = req.schema_hash.or_else(|| {
-            crate::ast_marshal::effect_family_schema_hash(req.content_type.family.as_ref())
-        });
-        if let Some(h) = route_hash {
+        // Route by the effect's SCHEMA-HASH identity (schema-hash-only, S3): the request's baked `schema_hash`
+        // IS the identity — every built-in + well-known family carries it (via `new_with_family`), no
+        // family-string fallback derivation. `id` threads through unchanged so a delegating leaf executor can
+        // bind its reply-token to (caller, id).
+        if let Some(h) = req.schema_hash {
             if let Some(inner) = self.by_schema_hash.get_mut(&h) {
                 return inner.perform(id, req, idempotency_key).await;
             }
         }
-        // No schema-hash executor: a schema-hash-less register-by-string extension family routes by string.
-        match self.by_family.get_mut(req.content_type.family.as_ref()) {
+        // No schema-hash executor: a schema-hash-less register-by-string extension family routes by its
+        // STRING-ROUTED family (the S3 content_type-delete survivor carrier), `None` for a hash-identified
+        // effect (which would have matched above).
+        let string_family = req.string_routed_family.as_deref();
+        match string_family.and_then(|f| self.by_family.get_mut(f)) {
             Some(inner) => inner.perform(id, req, idempotency_key).await,
             // No exact match: consult the DEFAULT-ROUTE fallback (userspace-effects I3) if registered — it
             // serves DYNAMIC families (a userspace effect claimed at runtime, absent from the fixed set) and
@@ -203,8 +204,9 @@ impl Executor for CompositeExecutor {
             None => match self.fallback.as_mut() {
                 Some(fb) => fb.perform(id, req, idempotency_key).await,
                 None => EffectOutcome::err(format!(
-                    "no executor registered for effect family {:?} (target {:?})",
-                    req.content_type.family, req.target
+                    "no executor registered for effect {:?} (target {:?})",
+                    string_family.or(Some("<schema-hash>")),
+                    req.target
                 )),
             },
         }
@@ -297,10 +299,12 @@ impl Executor for ShellExecutor {
         _idempotency_key: Hash,
     ) -> EffectOutcome {
         use crate::effect::EffectKind;
-        if req.kind != EffectKind::Shell {
+        // Shell is a built-in HASH-identified kind (schema-hash-only, S3) → gate on its schema-hash identity,
+        // not the deleted `kind` field. A non-Shell request is a routing bug (§17: observable Err, no panic).
+        if !req.is_builtin_kind(EffectKind::Shell) {
             return EffectOutcome::err(format!(
-                "ShellExecutor only handles Shell effects, got {:?}",
-                req.kind
+                "ShellExecutor only handles Shell effects, got schema_hash {:?}",
+                req.schema_hash
             ));
         }
         // The shell command is a STRUCTURED {program, args} payload (operator directive: NO flat-string
@@ -437,10 +441,12 @@ mod tests {
             .await
         {
             EffectOutcome::Err { message: msg, .. } => {
-                // The message names the unroutable FAMILY (seq-39: routing keys on the family string).
+                // Schema-hash-only (S3): routing keys on the schema-hash identity, so an unroutable
+                // hash-identified effect's err names the schema-hash (not a family string). The contract this
+                // pins is the OBSERVABLE Err itself (§9d anti-stuck) — never a silent drop/panic.
                 assert!(
-                    msg.contains(EffectKind::Model.family()),
-                    "err names the unroutable family: {msg}"
+                    msg.contains("no executor registered"),
+                    "err is the observable unroutable-effect message: {msg}"
                 );
             }
             other => panic!("expected Err for an unroutable kind, got {other:?}"),
@@ -662,14 +668,14 @@ mod tests {
             req: &EffectRequest,
             _key: Hash,
         ) -> EffectOutcome {
-            if self.handled.contains(&req.content_type.family.as_ref()) {
+            let family = req.string_routed_family.as_deref().unwrap_or("");
+            if self.handled.contains(&family) {
                 EffectOutcome::Ok(Some(Payload::Inline(b"fallback-ran".to_vec().into())))
             } else {
                 // SELF-GUARD: a family this delegating executor does not actually handle still gets an
                 // observable Err (§9d) — the fallback never blanket-accepts.
                 EffectOutcome::err(format!(
-                    "no handler registered for userspace effect family {:?}",
-                    req.content_type.family
+                    "no handler registered for userspace effect family {family:?}"
                 ))
             }
         }

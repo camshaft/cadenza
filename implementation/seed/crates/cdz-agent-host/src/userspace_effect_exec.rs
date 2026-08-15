@@ -148,7 +148,16 @@ impl<R: HandlerResolver> Executor for UserspaceEffectExecutor<R> {
         // belongs at a durable peer-inbox, which in-memory `Inbox` routing has none of — the key has nothing
         // to consult here (a redelivered forward mints a fresh token + re-forwards; the kernel's at-most-once
         // settle on an already-settled id is the real guard).
-        let family = req.content_type.family.as_ref();
+        // PHASE-3 STEP C: the handler-resolution family key is the STRING-ROUTED carrier
+        // (`req.content_type.family` is deleted in the flag-day; `string_routed_family` carries the
+        // register-by-string userspace family per the union populate rule is_store_family ||
+        // is_registered_effect_family). A request with NO carrier (`None`) is a built-in kind that
+        // mis-routed here — reject PERMANENT (§17). A Some(store/*) is caught by the is_registered guard below.
+        let Some(family) = req.string_routed_family.as_deref() else {
+            return EffectOutcome::err(
+                "UserspaceEffectExecutor serves only registered userspace-effect families, not a built-in family (the request carries no string_routed_family carrier)",
+            );
+        };
 
         // Structural: this executor serves ONLY registered userspace families (the syntactic partition —
         // never a kernel built-in like http/shell/ws, which have their own executors). A built-in reaching

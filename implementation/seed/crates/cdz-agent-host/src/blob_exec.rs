@@ -54,10 +54,8 @@ impl<B: BlobStore> Executor for BlobExecutor<B> {
         req: &EffectRequest,
         _idempotency_key: Hash,
     ) -> EffectOutcome {
-        // PHASE-3 STEP B: dispatch on the SCHEMA-HASH identity (behavior-equivalent — req.schema_hash ==
-        // effect_family_schema_hash(family) for every in-host request). `family` is kept only for the
-        // mis-route diagnostic below; its content_type.family read is removed in STEP C.
-        let family = req.content_type.family.as_ref();
+        // PHASE-3 STEP C: dispatch on the SCHEMA-HASH identity (content_type.family is deleted from
+        // EffectRequest in the S3 flip; the mis-route diagnostic below reports a schema_hash mismatch).
         if req.schema_hash
             == cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::BLOB_PUT)
         {
@@ -104,7 +102,7 @@ impl<B: BlobStore> Executor for BlobExecutor<B> {
         } else {
             // Not a blob family — structural (a CompositeExecutor routes by family, so this is a mis-route).
             EffectOutcome::err(format!(
-                "BlobExecutor only handles the {} family, got {family}",
+                "BlobExecutor only handles the {} family (schema_hash mismatch)",
                 effect_ct::BLOB_PREFIX
             ))
         }

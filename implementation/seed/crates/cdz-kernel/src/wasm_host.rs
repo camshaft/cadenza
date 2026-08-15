@@ -1520,7 +1520,7 @@ impl ComponentReducer {
 fn guest_self_close(effects: &[crate::reducer::Effect]) -> Option<crate::reducer::FoldOutput> {
     let close = effects
         .iter()
-        .find(|e| e.request.content_type.family == crate::effect::effect_ct::CLOSE)?;
+        .find(|e| e.request.string_family() == crate::effect::effect_ct::CLOSE)?;
     let out = match &close.request.payload {
         Some(crate::effect::Payload::Inline(bytes)) => {
             match crate::ast_marshal::decode_close_outcome(bytes) {
@@ -2012,7 +2012,7 @@ impl crate::reducer::Reducer for AsyncComponentReducer {
 /// `None` (the policy then decides on principal×action×target alone) — never a panic, and never opaque body
 /// bytes (only the typed member identity is surfaced, preserving the SEC-F1 "no body in authz" posture).
 fn subject_of(req: &crate::effect::EffectRequest) -> Option<String> {
-    if !crate::effect::effect_ct::is_group_store_family(&req.content_type.family) {
+    if !crate::effect::effect_ct::is_group_store_family(req.string_family()) {
         return None;
     }
     match &req.payload {
@@ -2110,7 +2110,7 @@ impl crate::authz::Authorize for ComponentAuthorizer {
             // family (a `store/*` set/resolve, or any extension family) carries the `Emit` PLACEHOLDER kind —
             // keying `action` on the enum would present "emit" to the policy for a `store/set`, so a Cedar
             // policy could never gate store writes (or any register-by-string family) correctly.
-            action: req.content_type.family.to_string(),
+            action: req.string_family().to_string(),
             target,
             // SUBJECT (§directory-D5): a group membership op (`store/add`/`store/remove`) carries the member
             // value in its `member-op` payload — the STRUCTURED SUBJECT the self-vs-other rule keys on
@@ -2643,7 +2643,7 @@ mod tests {
         assert!(
             effects
                 .iter()
-                .any(|e| e.request.content_type.family == effect_ct::CLOSE),
+                .any(|e| e.request.string_family() == effect_ct::CLOSE),
             "parse_effect_list must preserve the control/close family byte-for-byte"
         );
         // End-to-end: the interception fires and yields the guest's exact CloseOutcome; the emit is ignored.

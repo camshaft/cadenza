@@ -66,9 +66,8 @@ impl Executor for ClockExecutor {
             // A wrong-family request is structural — PERMANENT, a supervisor must not retry it (§17: an
             // observable Err, never a panic).
             return EffectOutcome::err(format!(
-                "ClockExecutor only handles the {} family, got {}",
-                effect_ct::NOW,
-                req.content_type.family
+                "ClockExecutor only handles the {} family (schema_hash mismatch)",
+                effect_ct::NOW
             ));
         }
         // Nanoseconds since the Unix epoch as a u64 LITTLE-ENDIAN 8-byte integer (operator binary-ns

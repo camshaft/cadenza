@@ -12,7 +12,6 @@
 //!   the reducer resumes when the *result event* carrying that id arrives. Correlation is by id, so
 //!   concurrent / out-of-order results are unambiguous.
 
-use crate::event::ContentType;
 use crate::hash::Hash;
 
 /// A kernel-assigned identifier for a single dispatched effect, unique within a session. The reducer
@@ -612,8 +611,7 @@ impl EffectKind {
 /// blob [`struct@Hash`]; small ones inline — §4 blob boundary), interpreted by the executor, not the kernel.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct EffectRequest {
-    pub kind: EffectKind,
-    /// The resolved target the capability predicate gates (SEC-F1). Never trust the kind alone.
+    /// The resolved target the capability predicate gates (SEC-F1). Never trust the identity alone.
     ///
     /// `Arc<[u8]>` (operator ruling 2026-08-09): the target is UNIFORM OPAQUE BYTES, not a string — the
     /// operator's point is that the resolved targets are not all genuinely UTF-8 (a shell command, an http
@@ -636,14 +634,6 @@ pub struct EffectRequest {
     /// wiring it through the durable frame + executor routing is a follow-up. Meaningful for `Model`; a
     /// first-class field so future batchable kinds (embeddings, bulk fetches) reuse it. Default `Interactive`.
     pub timeliness: Timeliness,
-    /// The extensible content-type of this effect (seq-39): a `{family, version}` tag that routing and
-    /// authz key on, so a NEW effect type is served by registering a handler for its family STRING rather
-    /// than growing the [`EffectKind`] enum + recompiling the kernel. For the well-known kinds this is
-    /// derived from `kind` ([`EffectKind::family`] + version 1) by [`EffectRequest::new`], so the two agree
-    /// by construction; a future register-by-string slice lets an effect carry a family with no matching
-    /// `EffectKind` variant at all. The `family` is the seam [`crate::authz::Authorizer`] and the executor
-    /// router match on (via [`ContentType::matches_family`]).
-    pub content_type: ContentType,
     /// The effect's SCHEMA-HASH identity (schema-hash-only effect model, D14=A) — the raw 32-byte
     /// content-hash of the effect's AST-typed schema, the identity a router/authz grant will key on once the
     /// wire flips off `kind`/`content_type`. This is the PRODUCER half: the request carries the hash the
@@ -691,24 +681,17 @@ impl EffectRequest {
         payload: Option<Payload>,
         timeliness: Timeliness,
     ) -> Self {
-        // `kind` is always a well-known built-in here, so its schema-hash exists (slice-1) — memoized O(1).
+        // A well-known built-in's schema-hash always exists (slice-1) — memoized O(1). This IS the effect's
+        // identity (schema-hash-only, S3): routing/authz key on it, never on a family string or `EffectKind`.
         let schema_hash = Some(crate::ast_marshal::builtin_effect_schema_hash_memo(&kind));
         EffectRequest {
-            content_type: ContentType {
-                // `family()` is a `&'static str` → `Cow::Borrowed`, ZERO alloc (the per-effect String this
-                // used to build is exactly what the operator's Bytes/cheap-clone directive flagged).
-                family: std::borrow::Cow::Borrowed(kind.family()),
-                version: 1,
-            },
-            kind,
             schema_hash,
             // `impl AsRef<[u8]>` so `&str`/`String`/`&[u8]`/`Vec<u8>` all pass unchanged (the operator
             // Target=Bytes ruling); `Arc::from(&[u8])` is the one heap copy at construction, then O(1) clones.
             target: std::sync::Arc::from(target.as_ref()),
             payload,
             timeliness,
-            // A well-known [`EffectKind`] is HASH-identified (schema_hash is always `Some` above), never
-            // string-routed — so it carries no register-by-string family.
+            // A well-known effect is HASH-identified, never string-routed — no register-by-string family.
             string_routed_family: None,
         }
     }
@@ -768,16 +751,27 @@ impl EffectRequest {
         // `effect/<name>` extension. Computed BEFORE `family` moves into `content_type`. A built-in kind or a
         // hash-identified control family is NOT string-routed → `None`. reify + `parse_effect_request` both
         // construct through this fn, so they inherit the carrier with no separate populate site.
-        let string_routed_family = if effect_ct::is_store_family(family.as_ref())
-            || effect_ct::is_registered_effect_family(family.as_ref())
-        {
+        // Retain the family STRING iff this family is STRING-DISPATCHED — i.e. its routing/authz reads the
+        // family string / a family PREFIX, NOT the schema_hash. The carrier's TRUE contract (v-effects +
+        // v-agent-harness): EVERY family that is NOT one of the six built-in [`EffectKind`]s. Those built-ins
+        // (shell/http/model/now/timer/emit) are HASH-identified — a `Capability` grants them by their single
+        // schema-hash. EVERYONE ELSE is string/prefix-dispatched and needs the family string as the key:
+        //   - `store/*` prefix (kernel-applied) + `control/*` OPEN-PREFIX (host-answered, authz-exempt for
+        //     ANY control/x) + `blob/*`/`fs/*`/`ws/*`/`lifecycle/*`/`metric/*` well-known PREFIX partitions
+        //     (executor-routed; authz grants them as a prefix, not per-verb hashes),
+        //   - register-by-string `effect/<name>` extensions (handler-resolved, schema_hash may be `None`),
+        //   - the `effect/reply` routed verb.
+        // Dropping any of these would NARROW routing/authz (e.g. a control/x losing authz-exemption, or a
+        // `blob/*` prefix grant no longer matching) — so "not a built-in kind" is the exact string-dispatched set.
+        let string_routed_family = if EffectKind::from_family(family.as_ref()).is_none() {
             Some(std::sync::Arc::from(family.as_ref()))
         } else {
             None
         };
+        // `kind`/`family` are consumed above (schema_hash derivation + the string-routed carrier); the
+        // schema-hash-only frame keeps neither — identity is `schema_hash`, string routing is the carrier.
+        let _ = (kind, family);
         EffectRequest {
-            content_type: ContentType { family, version: 1 },
-            kind,
             schema_hash,
             target: std::sync::Arc::from(target.as_ref()),
             payload,
@@ -796,6 +790,24 @@ impl EffectRequest {
     /// `str::from_utf8(&req.target)`.
     pub fn target_str(&self) -> Result<&str, std::str::Utf8Error> {
         std::str::from_utf8(&self.target)
+    }
+
+    /// Is this request one of a specific well-known built-in [`EffectKind`], by its SCHEMA-HASH identity?
+    /// The schema-hash-only (S3) successor to the old `content_type.matches_family(kind.family())` family
+    /// check — the kernel keys a built-in-specific decision (timer-arm, now-clamp, shell-pipeline) on the
+    /// baked `schema_hash`, never a family string. A built-in always carries `Some(hash)` (via
+    /// [`EffectRequest::new`]/`new_with_family`), so this is an exact identity match, not a prefix.
+    pub fn is_builtin_kind(&self, kind: EffectKind) -> bool {
+        self.schema_hash == Some(crate::ast_marshal::builtin_effect_schema_hash_memo(&kind))
+    }
+
+    /// The STRING-ROUTED family view (`""` when absent) — the schema-hash-only (S3) successor to
+    /// `content_type.family.as_ref()` for the readers that key on the family STRING: the `store/*` prefix
+    /// partition (kernel-applied) + register-by-string extensions (handler-resolved). A hash-identified
+    /// built-in carries no string-routed family, so this yields `""`, which no prefix/family test matches —
+    /// fail-closed by construction. Reads [`string_routed_family`](Self::string_routed_family) (the carrier).
+    pub fn string_family(&self) -> &str {
+        self.string_routed_family.as_deref().unwrap_or("")
     }
 
     /// Build a STRUCTURED shell effect request (operator directive: shell invocation is a `program` + a
@@ -950,21 +962,24 @@ pub struct Capability {
 }
 
 impl Capability {
-    /// Does this grant permit the given request? The effect FAMILY must match AND the predicate must admit
-    /// the resolved target. Both conditions — the review's whole point (SEC-F1): family alone is not enough.
+    /// Does this grant permit the given request? The effect IDENTITY must match AND the predicate must admit
+    /// the resolved target. Both conditions — the review's whole point (SEC-F1): identity alone is not enough.
     ///
-    /// Family-keyed (seq-39): the match is `req.content_type.family == self.kind.family()`, via
-    /// [`ContentType::matches_family`], NOT an `EffectKind` enum equality. So authz keys on the same family
-    /// STRING the codec/router use — the seam that lets a future effect type (a family with no built-in
-    /// `EffectKind`) be granted by family without a kernel enum edit. For the well-known kinds this is
-    /// identical to the old `kind ==` check (a request built via [`EffectRequest::new`] has
-    /// `content_type.family == kind.family()` by construction).
+    /// SCHEMA-HASH-keyed (schema-hash-only, D15): the grant's [`kind`](Self::kind) has a declared built-in
+    /// schema-hash ([`crate::ast_marshal::builtin_effect_schema_hash_memo`]); the request matches iff its
+    /// `schema_hash` equals that. Authz binds to the schema-hash DIRECTLY (operator directive: HASHES
+    /// EVERYWHERE, no family strings) — a collision-proof identity, NOT the old `content_type.family` string.
+    /// A register-by-string family (no built-in kind, `schema_hash` may be `None`) is UNGRANTABLE by a
+    /// `Capability` — it needs a [`FamilyGrant`] keyed on its string-routed family instead.
     pub fn permits(&self, req: &EffectRequest) -> bool {
         // Match the predicate against the RAW opaque byte target (operator ruling 2026-08-13: authz matches
         // raw bytes, no UTF-8 requirement — a hash-shaped target stays 32 raw bytes through the gate). The
         // value predicates compare bytes; `HostIn` fail-closes internally on non-UTF-8. SEC-F1 stays
         // fail-closed — an unmatched/malformed target is never granted.
-        req.content_type.matches_family(self.kind.family())
+        req.schema_hash
+            == Some(crate::ast_marshal::builtin_effect_schema_hash_memo(
+                &self.kind,
+            ))
             && self.predicate.admits_bytes(&req.target)
     }
 
@@ -1003,12 +1018,24 @@ pub struct FamilyGrant {
 }
 
 impl FamilyGrant {
-    /// Does this family-grant permit `req`? Family STRING match AND predicate admits the resolved target —
-    /// the same SEC-F1 two-condition rule [`Capability::permits`] applies, keyed on the family string.
+    /// Does this family-grant permit `req`? The grant NAMES a family string; it matches `req` iff that family
+    /// is the request's identity AND the predicate admits the resolved target (SEC-F1, same two-condition
+    /// rule as [`Capability::permits`]). Under schema-hash-only (S3), a family string maps to an identity two
+    /// ways, so BOTH are checked (a `FamilyGrant` is used for both register-by-string grants AND deny rules,
+    /// and a deny rule legitimately names a BUILT-IN family like `http` for an SSRF carve-out):
+    /// - STRING-ROUTED match: the request's [`string_routed_family`](EffectRequest::string_routed_family)
+    ///   carrier equals `self.family` — a `store/*`, `control/*`, or register-by-string `effect/<name>` effect.
+    /// - SCHEMA-HASH match: `self.family` derives a schema-hash ([`crate::ast_marshal::effect_family_schema_hash`])
+    ///   equal to `req.schema_hash` — a hash-identified BUILT-IN (`http`/`model`/…), whose carrier is `None`.
+    ///
+    /// Fail-closed: a family with neither a carrier match nor a derivable hash matches nothing.
     pub fn permits(&self, req: &EffectRequest) -> bool {
         // Match the predicate against the RAW opaque byte target (operator ruling 2026-08-13: authz matches
         // raw bytes — a hash-shaped target stays raw bytes through the gate). SEC-F1 stays fail-closed.
-        req.content_type.matches_family(&self.family) && self.predicate.admits_bytes(&req.target)
+        let identity_matches = req.string_routed_family.as_deref() == Some(&self.family)
+            || (req.schema_hash.is_some()
+                && req.schema_hash == crate::ast_marshal::effect_family_schema_hash(&self.family));
+        identity_matches && self.predicate.admits_bytes(&req.target)
     }
 }
 
@@ -1160,13 +1187,17 @@ pub async fn project_manifest(
         let grant = if !handles(family) {
             GrantState::Absent
         } else {
-            // Mechanism present → the policy probe decides. Build the probe request via the family's
-            // well-known kind when there is one (so kind + content_type.family agree); an extension family
-            // with no `EffectKind` still probes by family once register-by-string lands.
-            let kind = EffectKind::from_family(family).unwrap_or(EffectKind::Emit);
-            let mut probe =
-                EffectRequest::new(kind, probe_target(family), None, Timeliness::Interactive);
-            probe.content_type.family = family.to_string().into();
+            // Mechanism present → the policy probe decides. Build the probe request BY FAMILY so it carries
+            // the identity the authorizer keys on: `new_with_family` sets `schema_hash` (from the family —
+            // a well-known family resolves its built-in hash, matched by a `Capability` grant) AND
+            // `string_routed_family` (the carrier — a `store/*`/extension family, matched by a `FamilyGrant`).
+            // Both authz grant kinds see the probe under the right key with no hand-patched field.
+            let probe = EffectRequest::new_with_family(
+                family.to_string(),
+                probe_target(family),
+                None,
+                Timeliness::Interactive,
+            );
             match authorizer.authorize(&probe).await {
                 Ok(()) => GrantState::Granted,
                 Err(_) => GrantState::Denied,
@@ -1304,72 +1335,58 @@ mod tests {
     }
 
     #[test]
-    fn new_with_family_derives_kind_for_wellknown_and_placeholders_extensions() {
-        // effect-schema slice 2: the register-by-string constructor. A WELL-KNOWN family derives its kind
-        // (and equals the enum constructor's shape); an EXTENSION family (no built-in kind) gets the Emit
-        // placeholder while preserving the real family — the durable identity dispatch/idempotency key on.
+    fn new_with_family_sets_schema_hash_for_wellknown_and_carrier_for_string_routed() {
+        // Schema-hash-only (S3): the register-by-string constructor. A WELL-KNOWN family gets its
+        // schema_hash (the identity) + NO string-routed carrier (hash-identified); a store/control/extension
+        // family is STRING-DISPATCHED → carries its family in `string_routed_family` (the carrier that
+        // survives the `content_type` delete). `new_with_family` equals `new`'s shape for a well-known kind.
         let http = EffectRequest::new_with_family(
             effect_ct::HTTP,
             "https://ok/x",
             None,
             Timeliness::Interactive,
         );
-        assert_eq!(http.content_type.family, effect_ct::HTTP);
         assert_eq!(
-            http.kind,
-            EffectKind::Http,
-            "well-known family derives its kind"
+            http.schema_hash,
+            Some(crate::ast_marshal::builtin_effect_schema_hash_memo(
+                &EffectKind::Http
+            )),
+            "a well-known family gets its built-in schema-hash identity"
         );
-        // Same shape as the enum constructor for a well-known family.
+        assert_eq!(
+            http.string_routed_family, None,
+            "a hash-identified built-in is NOT string-routed → no carrier"
+        );
+        // Same identity as the enum constructor for a well-known family.
         let via_enum = EffectRequest::new(
             EffectKind::Http,
             "https://ok/x",
             None,
             Timeliness::Interactive,
         );
-        assert_eq!(http.content_type, via_enum.content_type);
-        assert_eq!(http.kind, via_enum.kind);
+        assert_eq!(http.schema_hash, via_enum.schema_hash);
+        assert_eq!(http.string_routed_family, via_enum.string_routed_family);
 
-        // A well-known family is a zero-alloc Cow::Borrowed (the #1563/#1722 invariant).
-        assert!(
-            matches!(http.content_type.family, std::borrow::Cow::Borrowed(_)),
-            "a well-known family is Cow::Borrowed (zero-alloc)"
-        );
-
-        // A well-known CONTROL family (no EffectKind) is ALSO zero-alloc Borrowed, via wellknown_control —
-        // the #1727 residual: it used to fall to None→Owned. Emit placeholder, family preserved.
+        // A well-known CONTROL family (no EffectKind) is STRING-DISPATCHED (open-prefix, host-answered) →
+        // carries its family; it also has a family-derived schema_hash.
         let caps = EffectRequest::new_with_family(
             effect_ct::CAPABILITIES,
             "self",
             None,
             Timeliness::Interactive,
         );
-        assert_eq!(caps.content_type.family, effect_ct::CAPABILITIES);
-        assert_eq!(caps.kind, EffectKind::Emit);
-        assert!(
-            matches!(caps.content_type.family, std::borrow::Cow::Borrowed(_)),
-            "a well-known control family is Cow::Borrowed (zero-alloc), not owned"
-        );
+        assert_eq!(caps.string_family(), effect_ct::CAPABILITIES);
 
-        // An extension family with no EffectKind variant → Emit placeholder, family preserved. Passed as a
-        // `&'static str`, it stays Cow::Borrowed — ZERO alloc even for an unknown family (the #1722 fix: the
-        // constructor takes `Into<Cow<'static, str>>` and preserves the caller's Cow instead of round-tripping
-        // through an Arc<str>, so a static extension family no longer allocates either).
+        // An extension family with no EffectKind variant → schema_hash None, carrier holds the real family.
         let ext =
             EffectRequest::new_with_family("custom/metrics", "m", None, Timeliness::Interactive);
-        assert_eq!(ext.content_type.family, "custom/metrics");
+        assert_eq!(ext.string_family(), "custom/metrics");
         assert_eq!(
-            ext.kind,
-            EffectKind::Emit,
-            "an extension family with no built-in kind gets the Emit placeholder"
-        );
-        assert!(
-            matches!(ext.content_type.family, std::borrow::Cow::Borrowed(_)),
-            "a static extension family stays Borrowed (zero-alloc — the #1722 fix)"
+            ext.schema_hash, None,
+            "a register-by-string extension has no declared schema → None; its carrier is its identity"
         );
 
-        // A genuinely OWNED extension family (a runtime String, not a static const) is preserved as
-        // Cow::Owned WITHOUT re-allocation — the constructor reuses the caller's Cow, it doesn't clone it.
+        // A genuinely OWNED extension family (a runtime String) is carried too (the carrier owns an Arc<str>).
         let dynamic: String = format!("custom/{}", "runtime");
         let owned_ext = EffectRequest::new_with_family(
             std::borrow::Cow::Owned(dynamic),
@@ -1377,22 +1394,17 @@ mod tests {
             None,
             Timeliness::Interactive,
         );
-        assert_eq!(owned_ext.content_type.family, "custom/runtime");
-        assert!(
-            matches!(owned_ext.content_type.family, std::borrow::Cow::Owned(_)),
-            "a runtime-owned extension family is preserved as Owned (reused, not re-cloned)"
-        );
+        assert_eq!(owned_ext.string_family(), "custom/runtime");
     }
 
     #[test]
-    fn a_store_set_request_carries_the_family_not_the_placeholder_kind_for_authz() {
-        // The request-layer BACKSTOP for #1916 (ComponentAuthorizer authorizes on content_type.family, NOT
-        // the EffectKind enum): a register-by-string store/* request carries the REAL family string while its
-        // `kind` is the inert `Emit` PLACEHOLDER. This pins the PRECONDITION that fix relies on — if this
-        // invariant ever broke (e.g. store/set started carrying kind=Shell, or the family got lost), the
-        // policy would gate the wrong string. The end-to-end decision test lives in the host's Cedar e2e
-        // (a forbid on action=="store/set" denies a store/set); this is the cheap kernel-side 2nd layer
-        // catching a regression at the request-construction boundary, no policy fixture needed.
+    fn a_store_set_request_carries_the_family_string_for_authz() {
+        // The request-layer BACKSTOP for #1916 (ComponentAuthorizer authorizes on the family STRING, NOT a
+        // schema_hash): a store/* request is STRING-DISPATCHED — it carries its family in
+        // `string_routed_family` (the S3 carrier), which `FamilyGrant`/`is_store_family` authz + a Cedar
+        // policy read. This pins the precondition — if the carrier were ever lost, the policy would gate the
+        // wrong string. store/set ALSO has a family-derived schema_hash, but it routes/authz's by STRING
+        // (the precise "string-routed, not unhashed" distinction), so the carrier is load-bearing.
         let set = EffectRequest::new_with_family(
             effect_ct::STORE_SET,
             "system/compiler/latest",
@@ -1400,48 +1412,35 @@ mod tests {
             Timeliness::Interactive,
         );
         assert_eq!(
-            set.content_type.family, effect_ct::STORE_SET,
-            "a store/set request carries family 'store/set' — the string authz (and a Cedar policy) sees"
-        );
-        assert_eq!(
-            set.kind,
-            EffectKind::Emit,
-            "store/* has no EffectKind variant → the inert Emit placeholder; authz MUST key on family, not \
-             this kind (else store/set authorizes as 'emit' — the #1916 bug)"
-        );
-        // The family and the placeholder kind's family DIFFER — the exact gap that makes keying-on-kind wrong.
-        assert_ne!(
-            set.content_type.family.as_ref(),
-            EffectKind::Emit.family(),
-            "the store/set family must NOT equal the placeholder kind's family, or the bug would be invisible"
+            set.string_family(),
+            effect_ct::STORE_SET,
+            "a store/set request carries family 'store/set' in the carrier — the string authz + Cedar sees"
         );
     }
 
     #[test]
-    fn new_derives_content_type_from_kind_and_matches_a_full_literal() {
-        // EffectRequest::new DERIVES content_type from kind (family = kind.family(), version 1) — this is
-        // the field-add benefit realized: callers pass the same 4 args and get the extra field filled
-        // consistently, so kind and content_type.family can't drift. Equivalent to a full literal that
-        // spells out the derived content_type.
+    fn new_sets_schema_hash_identity_and_matches_a_full_literal() {
+        // Schema-hash-only (S3): EffectRequest::new sets `schema_hash` = the kind's built-in schema-hash
+        // (the identity) + no string-routed carrier (a built-in is hash-identified). Equivalent to a full
+        // literal spelling out the schema-hash-only shape.
         let via_new = EffectRequest::new(
             EffectKind::Http,
             "https://ok.host/x",
             Some(Payload::Inline(b"body".to_vec().into())),
             Timeliness::Interactive,
         );
-        // new() set content_type.family to the kind's canonical family string.
-        assert_eq!(via_new.content_type.family, EffectKind::Http.family());
-        assert_eq!(via_new.content_type.version, 1);
+        assert_eq!(
+            via_new.schema_hash,
+            Some(crate::ast_marshal::builtin_effect_schema_hash_memo(
+                &EffectKind::Http
+            )),
+            "new() sets the kind's built-in schema-hash as the identity"
+        );
         let via_literal = EffectRequest {
-            kind: EffectKind::Http,
             target: "https://ok.host/x".as_bytes().into(),
             payload: Some(Payload::Inline(b"body".to_vec().into())),
             timeliness: Timeliness::Interactive,
-            content_type: ContentType {
-                family: EffectKind::Http.family().into(),
-                version: 1,
-            },
-            // `new` fills schema_hash from the kind's built-in schema (slice-1); the literal spells it out.
+            // `new` fills schema_hash from the kind's built-in schema; the literal spells it out.
             schema_hash: Some(crate::ast_marshal::builtin_effect_schema_hash_memo(
                 &EffectKind::Http,
             )),
@@ -1464,10 +1463,11 @@ mod tests {
     #[test]
     fn string_routed_family_carries_the_family_for_string_routed_effects_only() {
         // The S3 `content_type`-delete CARRIER: `string_routed_family` = `Some(family)` IFF the family is
-        // routed/authz'd BY STRING — a `store/*` prefix OR a register-by-string `effect/<name>` extension —
-        // and `None` for every hash-identified / built-in effect. This is exactly what `FamilyGrant` /
-        // `is_store_family` authz + the userspace-effect handler resolver read once `content_type.family` is
-        // gone. reify + `parse_effect_request` inherit it (both construct via `new_with_family`).
+        // STRING-DISPATCHED — its routing/authz reads the family STRING, not the schema_hash. That set:
+        // `store/*` prefix, register-by-string `effect/<name>` extensions, the `control/*` OPEN-PREFIX
+        // partition, and the `effect/reply` routed verb — `None` for every hash-identified built-in. This is
+        // exactly what `FamilyGrant`/`is_store_family`/`is_control_family` authz + the userspace-effect
+        // handler resolver read once `content_type.family` is gone. reify + `parse_effect_request` inherit it.
         let carrier = |family: &'static str| {
             EffectRequest::new_with_family(family, "t", None, Timeliness::Interactive)
                 .string_routed_family
@@ -1480,6 +1480,22 @@ mod tests {
         assert_eq!(
             carrier("store/resolve-all").as_deref(),
             Some("store/resolve-all")
+        );
+        // `control/*` is an OPEN-PREFIX authz-exempt partition — a KNOWN control family AND an arbitrary
+        // `control/x` both carry (is_control_family/is_authz_exempt read the string for ANY control/x, so the
+        // carrier must hold it or the S3 delete would narrow that gate).
+        assert_eq!(
+            carrier(effect_ct::CAPABILITIES).as_deref(),
+            Some("control/capabilities")
+        );
+        assert_eq!(
+            carrier("control/anything").as_deref(),
+            Some("control/anything")
+        );
+        // The `effect/reply` routed verb → carried (a string-dispatched built-in, not hash-identified here).
+        assert_eq!(
+            carrier(effect_ct::EFFECT_REPLY).as_deref(),
+            Some("effect/reply")
         );
         // A built-in HASH-identified family → None, whether built via `new_with_family` or `new`.
         assert_eq!(carrier(effect_ct::HTTP), None);
@@ -1533,8 +1549,8 @@ mod tests {
             "a declared control family carries its family schema-hash",
         );
         assert!(control.schema_hash.is_some());
-        // placeholder kind — but the hash came from the FAMILY, never the (wrong) Emit identity.
-        assert_eq!(control.kind, EffectKind::Emit);
+        // control/* is string-dispatched → it also carries its family in the carrier (open-prefix authz).
+        assert_eq!(control.string_family(), effect_ct::CAPABILITIES);
         // store/* gained declared schemas → store/set now carries its family schema-hash.
         let store = EffectRequest::new_with_family(
             effect_ct::STORE_SET,
@@ -1581,7 +1597,7 @@ mod tests {
             ["hello world", ";", "not-a-separator"],
             Timeliness::Interactive,
         );
-        assert_eq!(req.kind, EffectKind::Shell);
+        assert!(req.is_builtin_kind(EffectKind::Shell));
         // Target = the program (what authz gates), NOT the whole command line.
         assert_eq!(req.target_str().unwrap(), "echo");
         // Args ride the structured payload; decode it back and confirm they are LITERAL + un-split.

@@ -222,17 +222,15 @@ impl cdz_kernel::executor::Executor for WsDialExecutor {
     ) -> cdz_kernel::event::EffectOutcome {
         use cdz_kernel::effect::effect_ct;
         use cdz_kernel::event::EffectOutcome;
-        let family = req.content_type.family.as_ref();
         // Serves ONLY ws/dial (the outbound dial effect). ws/connect + ws/disconnect are INBOUND events the
         // transport emits, never effects dispatched here; ws/send is the peer-write effect. A mis-route is
         // structural → PERMANENT (§17: observable Err, never a panic).
-        // PHASE-3 STEP B: self-guard on the schema-hash identity (behavior-equivalent — req.schema_hash ==
-        // effect_family_schema_hash(family) for every in-host request). `family` kept only for the mis-route
-        // diagnostic; its content_type.family read is removed in STEP C.
+        // PHASE-3 STEP C: self-guard on the schema-hash identity; the diagnostic reports the mismatched
+        // request schema_hash (content_type.family is deleted from EffectRequest in the S3 flip).
         if req.schema_hash != cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::WS_DIAL)
         {
             return EffectOutcome::err(format!(
-                "WsDialExecutor only handles {}, got {family}",
+                "WsDialExecutor only handles {} (schema_hash mismatch)",
                 effect_ct::WS_DIAL
             ));
         }

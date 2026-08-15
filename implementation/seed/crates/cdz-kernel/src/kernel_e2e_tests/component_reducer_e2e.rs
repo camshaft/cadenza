@@ -64,7 +64,9 @@ async fn real_guest_component_folds_through_apply_end_to_end() {
     // Under the bytes boundary the guest's `kind` crosses as the family STRING (parse_effect_list →
     // new_with_family), and the kernel `Effect` is `{request, token}` — so assert the family/target/token
     // rather than a WIT `EffectKind` enum + bare fields.
-    assert_eq!(effects[0].request.content_type.family, "http");
+    assert!(effects[0]
+        .request
+        .is_builtin_kind(crate::effect::EffectKind::Http));
     assert_eq!(
         effects[0].request.target_str().unwrap(),
         "https://ok.host/x"
@@ -503,7 +505,8 @@ async fn reify_probe_reducer_reifies_a_target_free_perform_end_to_end() {
     // its casing is cosmetic — but the reify derives it from the declared name as-written.) payload =
     // Some(Inline(the single Bytes arg)); target-free (no target column, no @resource, no R2).
     assert_eq!(
-        effects[0].request.content_type.family, "effect/Probe",
+        effects[0].request.string_family(),
+        "effect/Probe",
         "reified kind = effect/<declared-name> (verbatim) for the performed Probe effect"
     );
     match &effects[0].request.payload {

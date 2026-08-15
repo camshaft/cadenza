@@ -262,9 +262,8 @@ impl Executor for MetricExecutor {
             != cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::METRIC_PUBLISH)
         {
             return EffectOutcome::err(format!(
-                "MetricExecutor only handles the {} family, got {}",
-                effect_ct::METRIC_PUBLISH,
-                req.content_type.family
+                "MetricExecutor only handles the {} family (schema_hash mismatch)",
+                effect_ct::METRIC_PUBLISH
             ));
         }
         // The payload IS the encoded MetricSample. A blob-ref / missing payload can't be a metric sample →

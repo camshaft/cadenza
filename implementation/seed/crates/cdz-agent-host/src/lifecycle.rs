@@ -175,10 +175,10 @@ impl Executor for LifecycleExecutor {
         req: &EffectRequest,
         _idempotency_key: Hash,
     ) -> EffectOutcome {
-        // PHASE-3 STEP B: dispatch on the SCHEMA-HASH identity (behavior-equivalent — req.schema_hash ==
-        // effect_family_schema_hash(family) for every in-host request). `family` is kept only for the
-        // mis-route diagnostics below; its content_type.family read is removed in STEP C.
-        let family = req.content_type.family.as_ref();
+        // PHASE-3 STEP C: dispatch on the SCHEMA-HASH identity — req.content_type.family is DELETED from
+        // EffectRequest in the S3 flip. The mis-route diagnostic reports a schema_hash mismatch; the per-verb
+        // diagnostics below derive their verb label from the matched schema_hash (the `is_*` booleans), not
+        // from a family string.
         // SPAWN is structurally distinct from terminate/suspend/resume (no peer `target` — it CREATES a
         // child; the reducer identity rides the payload; it RETURNS the child's SessionId synchronously). So
         // dispatch it first, on its own path.
@@ -196,15 +196,25 @@ impl Executor for LifecycleExecutor {
         let is_resume = req.schema_hash
             == cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::LIFECYCLE_RESUME);
         if !(is_terminate || is_suspend || is_resume) {
-            return EffectOutcome::err(format!(
-                "LifecycleExecutor handles only lifecycle/spawn|terminate|suspend|resume, got {family}"
-            ));
+            return EffectOutcome::err(
+                "LifecycleExecutor handles only lifecycle/spawn|terminate|suspend|resume (schema_hash mismatch)",
+            );
         }
+        // The canonical verb label for the per-verb diagnostics below — derived from the MATCHED schema-hash
+        // (the `is_*` booleans), not from a family string (content_type.family is deleted in STEP C). Equals
+        // the family string the old `req.content_type.family` carried (e.g. "lifecycle/suspend").
+        let verb = if is_terminate {
+            effect_ct::LIFECYCLE_TERMINATE
+        } else if is_suspend {
+            effect_ct::LIFECYCLE_SUSPEND
+        } else {
+            effect_ct::LIFECYCLE_RESUME
+        };
         // `target` is the peer session id = its RAW 32 genesis-hash bytes (opaque Arc<[u8]>). Empty = no peer
         // → structural PERMANENT (fail-closed).
         if req.target.is_empty() {
             return EffectOutcome::err(format!(
-                "LifecycleExecutor: {family} requires a non-empty target (the peer session id)"
+                "LifecycleExecutor: {verb} requires a non-empty target (the peer session id)"
             ));
         }
         // Reconstruct the peer SessionId from the raw bytes via from_bytes (NOT from_hex — no string parse; the
@@ -214,7 +224,7 @@ impl Executor for LifecycleExecutor {
             .map(SessionId::new)
         else {
             return EffectOutcome::err(format!(
-                "LifecycleExecutor: {family} target must be the peer's raw 32-byte genesis-hash session id"
+                "LifecycleExecutor: {verb} target must be the peer's raw 32-byte genesis-hash session id"
             ));
         };
         // A session controlling ITSELF via lifecycle/* is rejected — self-lifecycle is the `close`/own-loop
@@ -222,7 +232,7 @@ impl Executor for LifecycleExecutor {
         // the very session it's mid-deliver on).
         if target == self.owner {
             return EffectOutcome::err(format!(
-                "LifecycleExecutor: a session cannot {family} itself; target == controller"
+                "LifecycleExecutor: a session cannot {verb} itself; target == controller"
             ));
         }
         let by = self.owner;
@@ -253,7 +263,7 @@ impl Executor for LifecycleExecutor {
             // — the exact inconsistency terminate's exhaustive match guards against).
             if req.payload.is_some() {
                 return EffectOutcome::err(format!(
-                    "LifecycleExecutor: {family} takes no payload (it flips a scheduler bit); drop the payload"
+                    "LifecycleExecutor: {verb} takes no payload (it flips a scheduler bit); drop the payload"
                 ));
             }
             if is_suspend {

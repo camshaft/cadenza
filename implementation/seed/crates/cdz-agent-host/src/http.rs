@@ -152,9 +152,8 @@ impl<T: HttpTransport> Executor for HttpExecutor<T> {
         if req.schema_hash != cdz_kernel::ast_marshal::effect_family_schema_hash(effect_ct::HTTP) {
             // Structural — PERMANENT, a supervisor must not retry it (§17: observable Err, never a panic).
             return EffectOutcome::err(format!(
-                "HttpExecutor only handles the {} family, got {}",
-                effect_ct::HTTP,
-                req.content_type.family
+                "HttpExecutor only handles the {} family (schema_hash mismatch)",
+                effect_ct::HTTP
             ));
         }
         // The payload is a `(http-request (method <name>) (headers ((k v)…)) (body <opt>))` binary-sexpr —
@@ -687,8 +686,9 @@ mod tests {
                 retryability,
             } => {
                 assert!(
-                    message.contains(effect_ct::HTTP) && message.contains(effect_ct::MODEL),
-                    "err names the handled (http) + rejected (model) families: {message}"
+                    message.contains(effect_ct::HTTP),
+                    "err names the handled (http) family + flags a schema_hash mismatch (STEP C: the \
+                     rejected family is no longer read from content_type.family): {message}"
                 );
                 assert_eq!(retryability, Retryability::Permanent, "{message}");
             }

@@ -829,7 +829,7 @@ impl Session {
         // effect gets) — better than a perpetual open. `control/summary` (fire-and-forget, no Dispatched
         // frame, not open) is unaffected: it's simply dropped, nothing to settle.
         for ce in &control {
-            if crate::effect::effect_ct::is_fold_back_control(&ce.request.content_type.family) {
+            if crate::effect::effect_ct::is_fold_back_control(ce.request.string_family()) {
                 self.settle_effect_result(
                     ce.id,
                     EffectOutcome::err(
@@ -1307,8 +1307,8 @@ impl Session {
             // (host-capability-discovery I4): the kernel projects the capability manifest and folds it back
             // as an EffectResult, so the guest gets its answer without a host round-trip. Every OTHER
             // control/* family surfaces to the driver (via the returned Vec) — host-answered.
-            if crate::effect::effect_ct::is_control_family(&req.content_type.family) {
-                if req.content_type.family.as_ref() == crate::effect::effect_ct::CAPABILITIES {
+            if crate::effect::effect_ct::is_control_family(req.string_family()) {
+                if req.string_family() == crate::effect::effect_ct::CAPABILITIES {
                     // Durable Dispatched record BEFORE the answer (S1) — also what gives
                     // record_result the continuation token to resume the guest. authz-exempt: no
                     // authorize() call; the projection PROBES authz per family but the query itself is free.
@@ -1370,7 +1370,7 @@ impl Session {
                 // and NOT answered inline — the host produces the answer (e.g. wasmtime reflection). A
                 // fire-and-forget control family (summary) skips this and surfaces with NO frame (below), so
                 // it never enters `open` (it would otherwise hang as a never-settled effect).
-                if crate::effect::effect_ct::is_fold_back_control(&req.content_type.family) {
+                if crate::effect::effect_ct::is_fold_back_control(req.string_family()) {
                     let idempotency_key = idempotency_key_for(id, &req);
                     self.append(
                         EventBody::Dispatched {
@@ -1415,35 +1415,34 @@ impl Session {
             // a strictly stronger gate than capability-matching. See `effect_ct::is_authz_exempt`. Routing is
             // unchanged: an exempt effect is still dispatched to its executor (no executor → unhandled, never
             // an unchecked action), so this only drops the redundant+impossible capability check.
-            let authz_result =
-                if crate::effect::effect_ct::is_authz_exempt(&req.content_type.family) {
-                    Ok(())
-                } else {
-                    match authorize_shell_pipeline(&req, authz).await {
-                        // The payload decoded as a `(shell-pipeline …)` → the per-stage fan-out verdict IS the gate:
-                        // each stage's PROGRAM was authorized (the SEC-F1 unit), deny-all-if-any-denied. `req.target`
-                        // is NOT gated for a pipeline — it is vestigial on the pipeline path.
-                        //
-                        // TARGET-GATE RELAX (co-landed with the host pipeline executor). Earlier (reviewer HIGH on
-                        // #2596) the kernel ALSO gated `req.target` here — a belt-and-suspenders check — because no
-                        // pipeline-executing host consumer had landed and the host `ShellExecutor` still direct-exec'd
-                        // `req.target`; without the extra gate a reducer could pair a DENIED `target` with an ALLOWED
-                        // one-stage pipeline payload, the stages would authorize, and the host would run the ungated
-                        // denied `target`. The host pipeline executor has now landed (`cdz-agent-host` shell.rs): it
-                        // keys on the SAME "payload decodes as (shell-pipeline …)" discriminant and runs the decoded
-                        // STAGES, never `req.target`, on the pipeline path. So the belt-and-suspenders `target` gate is
-                        // no longer load-bearing — `req.target` is unreachable by the host for a pipeline — and gating
-                        // it would only reject pipelines whose (unused) `target` a policy happens to deny, a spurious
-                        // denial. The per-stage fan-out remains the sole, complete SEC-F1 gate for the pipeline path.
-                        Some(stage_verdict) => stage_verdict,
-                        // NOT a pipeline (a bare-target shell, an opaque non-pipeline payload like an M3 tool-call's
-                        // raw input, a blob-ref, or any non-shell effect) → the ordinary single-target SEC-F1 gate on
-                        // `req.target`. Backward-compatible: today's single-command shell + every other effect are
-                        // unchanged. The host MUST use the SAME "decodes as (shell-pipeline …)" discriminant so a guest
-                        // can't get multi-stage execution without a decodable pipeline (which is what triggers fan-out).
-                        None => authz.authorize(&req).await,
-                    }
-                };
+            let authz_result = if crate::effect::effect_ct::is_authz_exempt(req.string_family()) {
+                Ok(())
+            } else {
+                match authorize_shell_pipeline(&req, authz).await {
+                    // The payload decoded as a `(shell-pipeline …)` → the per-stage fan-out verdict IS the gate:
+                    // each stage's PROGRAM was authorized (the SEC-F1 unit), deny-all-if-any-denied. `req.target`
+                    // is NOT gated for a pipeline — it is vestigial on the pipeline path.
+                    //
+                    // TARGET-GATE RELAX (co-landed with the host pipeline executor). Earlier (reviewer HIGH on
+                    // #2596) the kernel ALSO gated `req.target` here — a belt-and-suspenders check — because no
+                    // pipeline-executing host consumer had landed and the host `ShellExecutor` still direct-exec'd
+                    // `req.target`; without the extra gate a reducer could pair a DENIED `target` with an ALLOWED
+                    // one-stage pipeline payload, the stages would authorize, and the host would run the ungated
+                    // denied `target`. The host pipeline executor has now landed (`cdz-agent-host` shell.rs): it
+                    // keys on the SAME "payload decodes as (shell-pipeline …)" discriminant and runs the decoded
+                    // STAGES, never `req.target`, on the pipeline path. So the belt-and-suspenders `target` gate is
+                    // no longer load-bearing — `req.target` is unreachable by the host for a pipeline — and gating
+                    // it would only reject pipelines whose (unused) `target` a policy happens to deny, a spurious
+                    // denial. The per-stage fan-out remains the sole, complete SEC-F1 gate for the pipeline path.
+                    Some(stage_verdict) => stage_verdict,
+                    // NOT a pipeline (a bare-target shell, an opaque non-pipeline payload like an M3 tool-call's
+                    // raw input, a blob-ref, or any non-shell effect) → the ordinary single-target SEC-F1 gate on
+                    // `req.target`. Backward-compatible: today's single-command shell + every other effect are
+                    // unchanged. The host MUST use the SAME "decodes as (shell-pipeline …)" discriminant so a guest
+                    // can't get multi-stage execution without a decodable pipeline (which is what triggers fan-out).
+                    None => authz.authorize(&req).await,
+                }
+            };
             if let Err(reason) = authz_result {
                 // SEC-F1 denial — WARN (an authorization boundary was hit). Log only NON-SENSITIVE
                 // metadata: `target` is GUEST-controlled (a URL with a token/query, a PII path) and
@@ -1456,8 +1455,8 @@ impl Session {
                 // the DURABLE `EventBody::AuthzDenied` below (on-box audit), which never leaves the box.
                 warn!(
                     effect_id = id.0,
-                    family = loggable_family(&req.content_type.family),
-                    family_len = req.content_type.family.len(),
+                    family = loggable_family(req.string_family()),
+                    family_len = req.string_family().len(),
                     target_len = req.target.len(),
                     "effect authorization denied"
                 );
@@ -1475,7 +1474,7 @@ impl Session {
             // store IS authz-gated, so it lands AFTER the authorize() above). Durable Dispatched BEFORE the
             // mutation (S1), then apply_effect, then fold the outcome. No store attached, or a malformed
             // effect, is an observable Err (§9d anti-stuck), never a panic.
-            if crate::effect::effect_ct::is_store_family(&req.content_type.family) {
+            if crate::effect::effect_ct::is_store_family(req.string_family()) {
                 let idempotency_key = idempotency_key_for(id, &req);
                 let dispatch_hash = self
                     .append(
@@ -1497,8 +1496,7 @@ impl Session {
                         "dispatch not durably logged (persist failure) — store effect NOT applied (S1)"
                             .to_string(),
                     )
-                } else if crate::effect::effect_ct::is_group_store_family(&req.content_type.family)
-                {
+                } else if crate::effect::effect_ct::is_group_store_family(req.string_family()) {
                     // §4c I3b GROUP sub-partition: store/add|remove|resolve-all act on OR-set groups (member-op
                     // payload) — routed to the group handler, distinct from the single-value pointer path.
                     self.apply_group_store_effect(&req, idempotency_key)
@@ -1527,12 +1525,9 @@ impl Session {
                 continue;
             }
 
-            // Timers arm a kernel-fired deadline (§9c), not an executor call. Keyed on the content-type
-            // FAMILY (seq-39), not the legacy kind enum: the kernel routes by family.
-            if req
-                .content_type
-                .matches_family(crate::effect::effect_ct::TIMER)
-            {
+            // Timers arm a kernel-fired deadline (§9c), not an executor call. Keyed on the SCHEMA-HASH
+            // identity (schema-hash-only, S3), not the legacy family string / kind enum.
+            if req.is_builtin_kind(crate::effect::EffectKind::Timer) {
                 // The timer deadline is a u64 ms encoded as text in the opaque byte target; read the
                 // fail-closed UTF-8 view then parse. A non-UTF-8 / non-u64 target is a malformed timer
                 // (observable AuthzDenied, resumes the continuation — §9d), never a panic.
@@ -1611,8 +1606,8 @@ impl Session {
             // durable Dispatched event above, which stays on-box.
             debug!(
                 effect_id = id.0,
-                family = loggable_family(&req.content_type.family),
-                family_len = req.content_type.family.len(),
+                family = loggable_family(req.string_family()),
+                family_len = req.string_family().len(),
                 target_len = req.target.len(),
                 "dispatching effect to executor"
             );
@@ -1630,11 +1625,8 @@ impl Session {
             }
 
             // MONOTONIC `now` clamp (operator ruling): only `now` results are clamped. Keyed on the
-            // content-type FAMILY (seq-39), not the legacy kind enum.
-            let outcome = if req
-                .content_type
-                .matches_family(crate::effect::effect_ct::NOW)
-            {
+            // SCHEMA-HASH identity (schema-hash-only, S3), not the legacy family string / kind enum.
+            let outcome = if req.is_builtin_kind(crate::effect::EffectKind::Now) {
                 clamp_now_outcome(outcome, &mut self.last_now)
             } else {
                 outcome
@@ -1879,7 +1871,7 @@ impl Session {
     /// `name-set`-shaped payload (name + resolved hash), so the reducer reads it back through the SAME §9b
     /// codec it would use for a set.
     fn apply_store_effect(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
-        let family = req.content_type.family.as_ref();
+        let family = req.string_family();
         // A store NAME is text (a `system/…`/`effect/…`/group name); the opaque byte target is read as its
         // fail-closed UTF-8 view (operator Target=Bytes ruling). A non-UTF-8 target for a store effect is a
         // malformed request → observable Err, never a panic.
@@ -1974,7 +1966,7 @@ impl Session {
         req: &EffectRequest,
         idempotency_key: Hash,
     ) -> EffectOutcome {
-        let family = req.content_type.family.as_ref();
+        let family = req.string_family();
         // A group NAME is text; read the opaque byte target as its fail-closed UTF-8 view (Target=Bytes
         // ruling). Non-UTF-8 → malformed group effect, observable Err.
         let name =
@@ -2539,10 +2531,8 @@ async fn authorize_shell_pipeline(
     authz: &(impl Authorize + ?Sized),
 ) -> Option<Result<(), String>> {
     // Only a `shell` effect with an INLINE payload can be a pipeline. Everything else → None (single-target).
-    if !req
-        .content_type
-        .matches_family(crate::effect::effect_ct::SHELL)
-    {
+    // Keyed on the SCHEMA-HASH identity (schema-hash-only, S3), not the legacy family string.
+    if !req.is_builtin_kind(crate::effect::EffectKind::Shell) {
         return None;
     }
     let bytes = match &req.payload {
@@ -2682,7 +2672,20 @@ fn observable(body: &EventBody) -> bool {
 fn idempotency_key_for(id: EffectId, req: &EffectRequest) -> Hash {
     let mut buf = Vec::new();
     buf.extend_from_slice(&id.0.to_le_bytes());
-    let family = req.content_type.family.as_bytes();
+    // Discriminate by the effect's SCHEMA-HASH identity (schema-hash-only, S3) — the successor to the old
+    // `content_type.family` discriminant. A hash-identified effect contributes its 32-byte hash (fixed
+    // width); a register-by-string / string-routed effect (schema_hash may be `None`) contributes its
+    // `string_routed_family` string, length-prefixed so it can't alias the target. Both are length/width-
+    // framed, so distinct effects can't collide. The key stays an OPAQUE dedup handle (executors never pin a
+    // value); same request → same identity → same key, so re-drive consistency holds.
+    match req.schema_hash {
+        Some(h) => {
+            buf.push(1);
+            buf.extend_from_slice(h.as_bytes());
+        }
+        None => buf.push(0),
+    }
+    let family = req.string_family().as_bytes();
     buf.extend_from_slice(&(family.len() as u64).to_le_bytes());
     buf.extend_from_slice(family);
     buf.extend_from_slice(&req.target);
@@ -3279,7 +3282,10 @@ mod status_snapshot_tests {
             "the authorized emit reached the executor"
         );
         let (req, _key) = &exec.seen[0];
-        assert!(matches!(req.kind, EffectKind::Emit), "kind is Emit");
+        assert!(
+            req.is_builtin_kind(EffectKind::Emit),
+            "identity is Emit's schema-hash"
+        );
         assert_eq!(
             req.target_str().unwrap(),
             peer,
@@ -3927,7 +3933,7 @@ mod monotonic_now_tests {
             req: &EffectRequest,
             _key: Hash,
         ) -> EffectOutcome {
-            assert_eq!(req.kind, EffectKind::Now);
+            assert!(req.is_builtin_kind(EffectKind::Now));
             EffectOutcome::Ok(Some(Payload::Inline(self.0.to_le_bytes().to_vec().into())))
         }
     }
@@ -4557,17 +4563,16 @@ mod monotonic_now_tests {
         async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
-                    let mut request = EffectRequest::new(
-                        EffectKind::Emit, // kind is irrelevant for a control family; the family drives it
+                    // A control family is built BY FAMILY (schema-hash-only): `new_with_family` sets both its
+                    // family-derived schema_hash and its string-routed carrier (control/* is string-dispatched).
+                    let request = EffectRequest::new_with_family(
+                        crate::effect::effect_ct::SUMMARY,
                         "self",
                         Some(crate::effect::Payload::Inline(
                             b"i am investigating".to_vec().into(),
                         )),
                         Timeliness::Interactive,
                     );
-                    // Control families carry the "control/" prefix; set it directly (a register-by-string
-                    // caller would emit this family without any EffectKind at all).
-                    request.content_type.family = crate::effect::effect_ct::SUMMARY.into();
                     FoldOutput::with_effects(vec![Effect {
                         request,
                         token: Some(b"cont-9".to_vec()),
@@ -4601,7 +4606,7 @@ mod monotonic_now_tests {
         // Surfaced to the driver: exactly the control/summary effect, payload + token intact.
         assert_eq!(control.len(), 1);
         assert_eq!(
-            control[0].request.content_type.family.as_ref(),
+            control[0].request.string_family(),
             crate::effect::effect_ct::SUMMARY
         );
         assert_eq!(control[0].token.as_deref(), Some(&b"cont-9"[..]));
@@ -4642,14 +4647,14 @@ mod monotonic_now_tests {
         async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
-                    // (1) a control/summary effect — must surface, authz-exempt, unrouted.
-                    let mut control = EffectRequest::new(
-                        EffectKind::Emit,
+                    // (1) a control/summary effect — must surface, authz-exempt, unrouted. Built BY FAMILY
+                    // (schema-hash-only): new_with_family sets its family-derived schema_hash + carrier.
+                    let control = EffectRequest::new_with_family(
+                        crate::effect::effect_ct::SUMMARY,
                         "self",
                         Some(crate::effect::Payload::Inline(b"summary".to_vec().into())),
                         Timeliness::Interactive,
                     );
-                    control.content_type.family = crate::effect::effect_ct::SUMMARY.into();
                     // (2) a regular effect/emit effect — must authorize + route to the executor.
                     let regular = EffectRequest::new(
                         EffectKind::Emit,
@@ -4695,7 +4700,7 @@ mod monotonic_now_tests {
         // Control half: exactly the summary effect surfaced, with its token + payload intact.
         assert_eq!(control.len(), 1, "only the control/* effect surfaces");
         assert_eq!(
-            control[0].request.content_type.family.as_ref(),
+            control[0].request.string_family(),
             crate::effect::effect_ct::SUMMARY
         );
         assert_eq!(control[0].token.as_deref(), Some(&b"ctl"[..]));
@@ -4712,10 +4717,9 @@ mod monotonic_now_tests {
         // Routed half: exactly the regular effect reached the executor (control never did).
         assert_eq!(exec.seen.len(), 1, "only the effect/* effect routes");
         assert_eq!(exec.seen[0].0.target_str().unwrap(), "world");
-        assert_eq!(
-            exec.seen[0].0.content_type.family.as_ref(),
-            crate::effect::effect_ct::EMIT
-        );
+        assert!(exec.seen[0]
+            .0
+            .is_builtin_kind(crate::effect::EffectKind::Emit));
 
         // The regular effect was authorized (granted) → no AuthzDenied event for it, and it produced a
         // dispatch. (Control being exempt also produces no AuthzDenied — so zero denials total here.)
@@ -4802,7 +4806,7 @@ mod monotonic_now_tests {
             "the signature query surfaces to the driver"
         );
         assert_eq!(
-            control[0].request.content_type.family.as_ref(),
+            control[0].request.string_family(),
             crate::effect::effect_ct::SIGNATURE
         );
         assert_eq!(control[0].token.as_deref(), Some(&b"sig-cont"[..]));
@@ -5039,7 +5043,7 @@ mod monotonic_now_tests {
             .expect("deliver");
         assert_eq!(control.len(), 1);
         assert_eq!(
-            control[0].request.content_type.family.as_ref(),
+            control[0].request.string_family(),
             crate::effect::effect_ct::SUMMARY
         );
         assert_eq!(
@@ -5571,9 +5575,14 @@ mod monotonic_now_tests {
         async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
-                    let mut request =
-                        EffectRequest::new(EffectKind::Emit, "1000", None, Timeliness::Interactive);
-                    request.content_type.family = crate::effect::effect_ct::TIMER.into();
+                    // Timer IS a built-in kind → build it directly so it carries Timer's schema_hash (the
+                    // identity the drive loop's `is_builtin_kind(Timer)` arm now keys on, schema-hash-only).
+                    let request = EffectRequest::new(
+                        EffectKind::Timer,
+                        "1000",
+                        None,
+                        Timeliness::Interactive,
+                    );
                     FoldOutput::with_effects(vec![Effect {
                         request,
                         token: None,
@@ -5750,30 +5759,25 @@ mod monotonic_now_tests {
 
     #[test]
     fn idempotency_key_distinguishes_families_sharing_a_placeholder_kind() {
-        // seq-39: the idempotency key keys on the content-type FAMILY, not the EffectKind enum tag. Two
-        // effects with the SAME id + target + placeholder kind (Emit) but DIFFERENT families must get
-        // DISTINCT keys — else a register-by-string family would collide its dedup handle with a real emit
-        // (both carry kind=Emit), and a crash-re-drive could dedup two genuinely-different effects together.
+        // Schema-hash-only (S3): the idempotency key discriminates by the effect's IDENTITY — the built-in's
+        // schema_hash for a hash-identified effect, the string-routed carrier for a register-by-string one.
+        // A built-in emit (schema_hash = Emit's hash) and a `custom/metrics` extension (schema_hash None,
+        // carrier "custom/metrics") with the SAME id + target must get DISTINCT keys — else a crash-re-drive
+        // could dedup two genuinely-different effects together.
         let id = EffectId(1);
-        let mut emit = EffectRequest::new(EffectKind::Emit, "t", None, Timeliness::Interactive);
-        emit.content_type.family = crate::effect::effect_ct::EMIT.into();
-        // A genuine NON-control register-by-string extension family (no EffectKind variant, so it carries
-        // the Emit placeholder kind) — NOT a control/* family (which the drive loop routes out before the
-        // emit path, per the control-plane partition). This is the real extension-vs-emit collision case.
-        let mut ext = EffectRequest::new(EffectKind::Emit, "t", None, Timeliness::Interactive);
-        ext.content_type.family = "custom/metrics".into();
+        let emit = EffectRequest::new(EffectKind::Emit, "t", None, Timeliness::Interactive);
+        // A genuine NON-control register-by-string extension family (no EffectKind variant, schema_hash None,
+        // its identity is the string-routed carrier) — the real extension-vs-emit collision case.
+        let ext =
+            EffectRequest::new_with_family("custom/metrics", "t", None, Timeliness::Interactive);
 
         assert_ne!(
             idempotency_key_for(id, &emit),
             idempotency_key_for(id, &ext),
-            "same id/target/placeholder-kind but different family → distinct keys"
+            "same id/target but different identity (built-in hash vs carrier) → distinct keys"
         );
-        // Same family + id + target → SAME key (re-drive stability preserved).
-        let emit2 = {
-            let mut r = EffectRequest::new(EffectKind::Emit, "t", None, Timeliness::Interactive);
-            r.content_type.family = crate::effect::effect_ct::EMIT.into();
-            r
-        };
+        // Same identity + id + target → SAME key (re-drive stability preserved).
+        let emit2 = EffectRequest::new(EffectKind::Emit, "t", None, Timeliness::Interactive);
         assert_eq!(
             idempotency_key_for(id, &emit),
             idempotency_key_for(id, &emit2),
@@ -5793,7 +5797,7 @@ mod monotonic_now_tests {
             req: &EffectRequest,
             _key: Hash,
         ) -> EffectOutcome {
-            assert_eq!(req.kind, EffectKind::Http);
+            assert!(req.is_builtin_kind(EffectKind::Http));
             EffectOutcome::err("PERMANENT: 400 bad request".to_string())
         }
     }
@@ -6554,9 +6558,14 @@ mod lifecycle_tests {
         async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
-                    let mut request =
-                        EffectRequest::new(EffectKind::Emit, "1000", None, Timeliness::Interactive);
-                    request.content_type.family = crate::effect::effect_ct::TIMER.into();
+                    // Timer IS a built-in kind → build it directly so it carries Timer's schema_hash (the
+                    // identity the drive loop's `is_builtin_kind(Timer)` arm now keys on, schema-hash-only).
+                    let request = EffectRequest::new(
+                        EffectKind::Timer,
+                        "1000",
+                        None,
+                        Timeliness::Interactive,
+                    );
                     FoldOutput::with_effects(vec![Effect {
                         request,
                         token: None,
@@ -6950,7 +6959,7 @@ mod store_effect_tests {
     #[async_trait::async_trait(?Send)]
     impl Authorize for AllowStore {
         async fn authorize(&self, req: &EffectRequest) -> Result<(), String> {
-            if effect_ct::is_store_family(&req.content_type.family) {
+            if effect_ct::is_store_family(req.string_family()) {
                 Ok(())
             } else {
                 Err("only store/* permitted".into())
@@ -7163,8 +7172,9 @@ mod store_effect_tests {
             req: &EffectRequest,
             _key: Hash,
         ) -> EffectOutcome {
-            let family = req.content_type.family.as_ref();
-            if family == effect_ct::MODEL {
+            // model + shell are built-in HASH-identified kinds → dispatch by their schema-hash identity
+            // (schema-hash-only, S3), not a family string (their string-routed carrier is None).
+            if req.is_builtin_kind(EffectKind::Model) {
                 self.model_calls += 1;
                 let resp = if self.model_calls == 1 {
                     // First model turn → ask to run a tool.
@@ -7188,13 +7198,17 @@ mod store_effect_tests {
                 EffectOutcome::Ok(Some(Payload::Inline(
                     crate::event_ast::encode_model_response(&resp).into(),
                 )))
-            } else if family == effect_ct::SHELL {
+            } else if req.is_builtin_kind(EffectKind::Shell) {
                 // The dispatched tool → a canned result the reducer folds back into the conversation.
                 EffectOutcome::Ok(Some(Payload::Inline(
                     b"test result: 277 passed".to_vec().into(),
                 )))
             } else {
-                EffectOutcome::err(format!("unexpected effect family {family:?}"))
+                EffectOutcome::err(format!(
+                    "unexpected effect (schema_hash={:?}, family={:?})",
+                    req.schema_hash,
+                    req.string_family()
+                ))
             }
         }
     }
@@ -8110,7 +8124,7 @@ mod store_effect_tests {
             req: &EffectRequest,
             _key: Hash,
         ) -> EffectOutcome {
-            let family = req.content_type.family.as_ref();
+            let family = req.string_family();
             match family {
                 effect_ct::BLOB_PUT => {
                     let bytes = match &req.payload {
@@ -8149,7 +8163,7 @@ mod store_effect_tests {
     #[async_trait::async_trait(?Send)]
     impl Authorize for AllowStoreAndBlob {
         async fn authorize(&self, req: &EffectRequest) -> Result<(), String> {
-            let fam = &req.content_type.family;
+            let fam = req.string_family();
             if effect_ct::is_store_family(fam) || effect_ct::is_blob_family(fam) {
                 Ok(())
             } else {
