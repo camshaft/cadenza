@@ -103,6 +103,16 @@ const OPS: &[Op] = &[
     Op::Arith("*"),
     Op::Arith("/"),
     Op::Arith("%"),
+    // Bitwise + shift: integer-only, total, and width-sensitive (shift-count masking, sign
+    // extension, wrapping) — the lowering where a Wasm-vs-Rust const-fold-vs-runtime disagreement
+    // is most plausible, and where a large/negative shift operand drawn from INT_BOUNDARIES lands
+    // straight on the count-out-of-range edge. Classed Arith (numeric x numeric -> numeric); a
+    // float operand is a clean decline, same as `%`.
+    Op::Arith("&"),
+    Op::Arith("|"),
+    Op::Arith("^"),
+    Op::Arith("<<"),
+    Op::Arith(">>"),
     Op::Rel("<"),
     Op::Rel(">"),
     Op::Rel("<="),
@@ -714,6 +724,23 @@ mod tests {
             assert!(
                 kind_of_type(ty) != Kind::Num,
                 "numeric type {ty} outside the numeric prefix"
+            );
+        }
+    }
+
+    /// Every operator head (incl. the bitwise/shift additions `&`/`|`/`^`/`<<`/`>>`) forms a
+    /// parseable binary application `(<head> 1 2)` — a malformed head string would silently reject
+    /// upstream and never reach the arithmetic/bitwise lowering the differential oracle targets.
+    #[test]
+    fn every_op_head_forms_a_parseable_application() {
+        for op in OPS {
+            let head = match op {
+                Op::Arith(h) | Op::Rel(h) | Op::Logic(h) => *h,
+            };
+            let src = format!("(do (def (main) ({head} 1 2)) (export main))");
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "operator application did not parse: ({head} 1 2)"
             );
         }
     }
