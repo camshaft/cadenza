@@ -1299,6 +1299,25 @@ pub struct Db {
     /// so a clipped reachable set changes no accepted program. Bumped/restored around each walk recursion.
     pub(crate) walk_depth: u32,
 
+    /// VISITED-SETS for the three SET-producing LAYOUT walks (`collect_call_callees`,
+    /// `collect_closure_codes`, `collect_closure_call_sigs`). Each walk follows [`crate::lower::core_of`],
+    /// which resolves a `Ref` to its target's body, so a compound value used at several sub-positions is a
+    /// SHARED core DAG the naive recursion re-walks as a TREE — `O(K^depth)` on a wide fan-out (the CMB1
+    /// binomial-walker compile-hang). Each walk's OUTPUT is a SET whose membership is a pure function of the
+    /// node (a callee reached via two DAG edges is the same callee; a closure code / call-sig likewise —
+    /// multiplicity is irrelevant, and every downstream consumer dedups), so skipping an already-walked node
+    /// changes no result. This is the same soundness argument [`reached_visited`] relies on for the
+    /// reached-poison walk. Unlike that walk these need NO clip-flag: the layout walks' `WALK_DEPTH_LIMIT`
+    /// clip is already documented accepted-program-neutral (a clipped program is rejected by `collect_faults`
+    /// anyway), so recording a depth-clipped node cannot suppress a fault in an ACCEPTED program. Each set is
+    /// CLEARED at its walk's top-level entry (`walk_depth == 0`): the walks never cross-nest and `core_of`
+    /// never re-enters them, so `walk_depth == 0` is exactly "no walk of this kind is active" — a fresh
+    /// per-entry set, which is required because `collect_call_callees` runs PER-DEF (a persistent set would
+    /// give a later def an incomplete callee set → a dropped emit / miscompile).
+    pub(crate) callee_visited: crate::fxhash::FxHashSet<StructId>,
+    pub(crate) closure_code_visited: crate::fxhash::FxHashSet<StructId>,
+    pub(crate) closure_sig_visited: crate::fxhash::FxHashSet<StructId>,
+
     /// Set true when a `collect` subtree hit a depth/reduction LIMIT (the descent-depth backstop, or a
     /// reduction that could not proceed because `enter_reduction` was exhausted). A limit-clipped walk is
     /// PARTIAL — it declined early rather than seeing the node's true faults — so its result must NOT be
@@ -2725,6 +2744,9 @@ impl Db {
             reduce_nodes: 0,
             descent_depth: 0,
             walk_depth: 0,
+            callee_visited: crate::fxhash::FxHashSet::default(),
+            closure_code_visited: crate::fxhash::FxHashSet::default(),
+            closure_sig_visited: crate::fxhash::FxHashSet::default(),
             collect_limited: false,
             reached_visited: crate::fxhash::FxHashSet::default(),
             reached_clipped: false,

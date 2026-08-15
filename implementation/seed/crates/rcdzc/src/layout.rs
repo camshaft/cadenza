@@ -1126,6 +1126,16 @@ fn collect_closure_call_sigs(
     if db.walk_depth >= crate::db::WALK_DEPTH_LIMIT {
         return;
     }
+    // VISITED-SET (see [`Db::closure_sig_visited`] and the twin in `collect_call_callees`): the collected
+    // call-sig shapes are dedup'd by the consumer (`closure_shape_key` + `seen_sig`), so a node visited once
+    // vs. many yields identical `sigs` — skipping a re-visited shared-DAG node changes no output while
+    // avoiding the `O(K^depth)` re-descent. Cleared at the top-level entry (`walk_depth == 0`).
+    if db.walk_depth == 0 {
+        db.closure_sig_visited.clear();
+    }
+    if !db.closure_sig_visited.insert(id) {
+        return;
+    }
     db.walk_depth += 1;
     if let Core::CallClosure { closure, args } = crate::lower::core_of(db, id) {
         // The application's env-prefixed param valtypes + result type — the shape the `call_indirect` needs.
@@ -1225,6 +1235,15 @@ fn collect_closure_codes(db: &mut Db, id: StructId, out: &mut std::collections::
     // spuriously decline a valid moderately-deep program). Past the limit stop descending; the program is
     // rejected by `collect_faults` anyway, so a clipped closure set changes no accepted program.
     if db.walk_depth >= crate::db::WALK_DEPTH_LIMIT {
+        return;
+    }
+    // VISITED-SET (see [`Db::closure_code_visited`] and the twin in `collect_call_callees`): the closure-code
+    // set is multiplicity-independent, so skipping an already-walked shared-DAG node changes no output while
+    // avoiding the `O(K^depth)` re-descent. Cleared at the top-level entry (`walk_depth == 0`).
+    if db.walk_depth == 0 {
+        db.closure_code_visited.clear();
+    }
+    if !db.closure_code_visited.insert(id) {
         return;
     }
     db.walk_depth += 1;
@@ -1527,6 +1546,19 @@ pub(crate) fn body_has_call(db: &mut Db, id: StructId) -> bool {
 /// program. A compiler must never crash on well-formed input, only decline or complete.
 fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
     if db.walk_depth >= crate::db::WALK_DEPTH_LIMIT {
+        return;
+    }
+    // VISITED-SET (see [`Db::callee_visited`]): a shared core DAG (a compound reached via several
+    // sub-positions, since `core_of` resolves a `Ref` to its target) would otherwise be re-walked as a tree
+    // — `O(K^depth)` on a wide fan-out (the CMB1 hang). The callee set is multiplicity-independent, so
+    // skipping an already-walked node changes no output. Cleared at the top-level entry (`walk_depth == 0`),
+    // which is a fresh per-entry set — required because this walk runs PER-DEF and a stale set would drop a
+    // later def's callees. Placed after the depth guard: a depth-clipped node is still recorded, which is
+    // sound here because the clip is accepted-program-neutral (the program is rejected by `collect_faults`).
+    if db.walk_depth == 0 {
+        db.callee_visited.clear();
+    }
+    if !db.callee_visited.insert(id) {
         return;
     }
     db.walk_depth += 1;
