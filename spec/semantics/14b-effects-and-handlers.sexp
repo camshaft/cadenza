@@ -8546,6 +8546,36 @@
   (call   main (: 65 Int64)) (output (: 66 Int64))
   (call   main (: 200 Int64)) (output (: 201 Int64)))
 
+(case "adv-20's decline class is BROADER than the Bytes decode — a state-derived OPTION LET-bound then consumed by a plain Some/None match also declines (same 'no local slot', TODO witness)"
+  (doc    "adv-20 class-boundary witness (v-effects lane): proves finding-#20's decline is NOT specific to the
+           `String.from-bytes` Bytes decode-match — the trigger is the GENERAL shape `let`-bound state-derived
+           value CONSUMED BY A MATCH in a tail-resumptive resume. Here the let-bound value is an OPTION built
+           from the handler state — `(let ((o (if (> s 100) ((. Option Some) (+ s 1)) ((. Option None) unit))))
+           …)` — consumed by a plain `(match o ((Some x) x) ((None _u) -1))`. NO Bytes, NO decode; just a
+           state-derived Option matched. This DECLINES with the IDENTICAL root as the let-bound Bytes twin
+           above: `cdz compile` → `parameter reference has no local slot` (exit 0, a clean Reject::decline, NOT
+           an ICE). Confirmed by direct standalone compile (2026-08-15). CONTRAST the PASSING FLOOR two cases up
+           (`Bytes.len b`, no match) which COMPILES — so the discriminant is the MATCH consumer, not the value
+           type: any match on a let-bound state-derived value re-materializes the let-init's state occurrence
+           under the arm-body specialization (`copy_structural` copies the init `s` fresh, `freshen_local_binders`
+           + the resume-rewrite detach it from the handle form, `handle_arm_binds` fails on the copy → slot-less
+           original op-param binder). This BROADENS the fix surface: v-inference's eval.rs let-init resolve
+           pin-predicate must cover ANY match-consumed let-bound state value, not just the Bytes decode. Standing
+           non-vacuous WITNESS: declines TODAY (TODO), flips to the -1 / 201 PASS when that pin lands. `main(65)`:
+           s=65 not >100 → None → -1. `main(200)`: s=200 >100 → Some 201 → 201. adv-20 broadened-class witness
+           (2026-08-15).")
+  (input  (do
+            (effect S (op dec (-> Int64)))
+            (def (main (: n Int64))
+              (handle S n
+                ((dec () s
+                  (let ((o (if (> s 100) ((. Option Some) (+ s 1)) ((. Option None) unit))))
+                    (resume (match o ((Some x) x) ((None _u) -1)) s))))
+                (S.dec)))
+            (export main)))
+  (call   main (: 65 Int64)) (output (: -1 Int64))
+  (call   main (: 200 Int64)) (output (: 201 Int64)))
+
 (case "PREFIX-order edges — the state string compares against crossed op-arg strings: equal, longer-prefix, and shorter-prefix faces"
   (doc    "3-way LEXICOGRAPHIC String ordering (< / = / >) against a threaded String handler state — distinct
            from the string-EQUALITY pins (sg3, one-shot lock): the `vs` arm answers `(if (< s probe) -1 (if
