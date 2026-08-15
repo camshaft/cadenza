@@ -2288,16 +2288,21 @@ fn enrich_nested_lowercase_type_vars(
     }
 }
 
-/// An ARITY-specific message when the annotation type is a prelude type CONSTRUCTOR applied to the WRONG
-/// number of arguments — `(List Int64 Int64)` (List takes 1), `(Map Int64)` (Map takes 2), `(Set Int64
-/// Bool)` (Set takes 1). Such a form reduces to NO type-value (`reduce_ctor` rejects the arity), so the
-/// generic `non_type_annotation_message` calls it "a non-type" — misleading, since `List`/`Map`/`Set` ARE
-/// type constructors, just misapplied. This names the constructor + its expected vs supplied arity
-/// (rustc's "this type takes N generic arguments but M were supplied"). `None` unless `ty_expr` is a
-/// `(Head arg…)` application whose head is a known type constructor (`List`/`Set` = 1, `Map` = 2) AND the
-/// argument count differs — every other non-type keeps the generic message. Reads the head's ctor
-/// identity via `meta_apply_of` (GENERIC — the prim carries the arity, no hard-coded name match on the
-/// source spelling).
+/// An ARITY-specific message when a type CONSTRUCTOR is applied to the WRONG number of arguments —
+/// `(List Int64 Int64)` (List takes 1), `(Map Int64)` (Map takes 2), `(Set Int64 Bool)` (Set takes 1).
+/// Such a form reduces to NO type-value (`reduce_ctor` rejects the arity), so the generic
+/// `non_type_annotation_message` calls it "a non-type" — misleading, since `List`/`Map`/`Set` ARE type
+/// constructors, just misapplied. This names the constructor + its expected vs supplied arity (rustc's
+/// "this type takes N generic arguments but M were supplied"). `None` unless `ty_expr` is a `(Head arg…)`
+/// application whose head is a known type constructor (`List`/`Set` = 1, `Map` = 2) AND the argument count
+/// differs — every other non-type keeps the generic message. Reads the head's ctor identity via
+/// `meta_apply_of` (GENERIC — the prim carries the arity, no hard-coded name match on the source spelling).
+///
+/// Used at BOTH annotation/prelude positions AND variant-payload / effect-op-type DECLARATION positions:
+/// `compile::validate_type_position` calls this (alongside `bare_type_ctor_needs_argument` for the bare
+/// no-argument case) so a mis-arity ctor in `(type W (Wrap (Box Int64 Bool)))` / `(op emit (-> (Option Int64
+/// Bool) Unit))` is rejected at the declaration with the same message an annotation gives, not waved through
+/// to a confusing later construction-site CDZ0201.
 pub(crate) fn type_ctor_arity_message(db: &mut Db, ty_expr: StructId) -> Option<String> {
     // Check THIS node's head first; if it is well-formed, RECURSE into its argument positions so a NESTED
     // wrong-arity ctor is caught too — `(List (Box Int64 Bool))`, `(Tuple Int64 (Map Int64))`, a record
