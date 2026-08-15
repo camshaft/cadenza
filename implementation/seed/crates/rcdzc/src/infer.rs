@@ -5857,8 +5857,38 @@ fn annotation_context_ty(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
             }
             return None;
         }
+        // An annotated let-binder `((: <pat> T) <this>)` grounds its initializer exactly as a direct
+        // `(: <this> T)` annotation does — the author named the type either way, so the idiomatic
+        // `(let (((: p (Option T)) (Value.decode bs))) …)` must ground the decode identically to
+        // `(: (Value.decode bs) (Option T))`. When `parent` is the binding PAIR whose SECOND element is
+        // this node, the declared type on its `(: <pat> T)` LHS is the grounding type.
+        if let Some(ty) = let_binder_annotation_ty(db, parent, child) {
+            return Some(ty);
+        }
         child = parent;
     }
+}
+
+/// The declared type of an annotated let-binder whose INITIALIZER is `init` — i.e. `pair` is the binding
+/// pair `((: <pat> T) init)` (a two-element list whose second element is `init`) sitting in a `let`'s
+/// bindings-list, with an `(: <pat> T)` LHS that reduces to a type value `T`. `None` for a bare-name
+/// binding, a non-annotated LHS, or a `pair` that isn't a let binding at all. Shares the shape guard with
+/// `annotated_let_binder_ty` (pair-in-bindings-list, `:`-form LHS), but grounds UNCONDITIONALLY — there is
+/// no "initializer inferred type" to contradict here (the initializer is a `Value.decode` whose target is
+/// still a free var, which is exactly what needs grounding), so the disagreement check that helper makes
+/// (to suppress a contradictory body-use cascade) does not apply.
+fn let_binder_annotation_ty(db: &mut Db, pair: StructId, init: StructId) -> Option<crate::ty::Ty> {
+    let kv = match db.ast.get(pair) {
+        crate::ast::Struct::List(kv) if kv.len() == 2 && kv[1] == init => kv.clone(),
+        _ => return None,
+    };
+    let bindings_occ = db.parent_of(pair)?;
+    crate::resolve::let_of_bindings_list(db, bindings_occ)?;
+    let ann = db.ast.as_form(kv[0], ":").map(<[_]>::to_vec)?;
+    if ann.len() != 2 {
+        return None;
+    }
+    crate::eval::typeval_of(db, ann[1])
 }
 
 /// Apply a def SCHEME to `args`, returning the result type — instantiate it with fresh variables, then

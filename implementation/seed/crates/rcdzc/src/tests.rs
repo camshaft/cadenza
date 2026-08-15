@@ -3768,6 +3768,43 @@ fn value_decode_grounds_its_target_from_the_enclosing_annotation() {
     }
 }
 
+/// R2 DECODE GROUNDING through a TYPED LET-BINDER (`annotation_context_ty`'s `let_binder_annotation_ty`
+/// extension): the idiomatic `(let (((: p (Option Pt)) (Value.decode bs))) …)` names the target type on the
+/// BINDER, not by wrapping the decode in a direct `(: … (Option Pt))`. The author annotated `p` either way,
+/// so the binder form must ground the decode node's target `Pt` IDENTICALLY to the direct-annotation form —
+/// otherwise the exact same annotated decode declines at lower ("no value-form descriptor") purely because
+/// the annotation sits on the binder rather than around the application. Asserts the decode application node's
+/// `type_of` is the GROUND `(Option Pt)`, not `(Option ?)`. Twin of
+/// `value_decode_grounds_its_target_from_the_enclosing_annotation` (the direct-annotation form).
+#[test]
+fn value_decode_grounds_its_target_from_a_typed_let_binder() {
+    use crate::db::Db;
+    use crate::testkit::parse;
+    let src = "(module m (type Pt (Mk Int64)) \
+                 (def (dec (: bs Bytes)) (let (((: p (Option Pt)) (Value.decode bs))) p)) (export dec))";
+    let mut db = Db::load(parse(src));
+    let decode_ty = (0..db.ast.structure.len() as u32)
+        .map(crate::ast::StructId)
+        .find_map(|id| {
+            matches!(crate::resolve::resolved_of(&mut db, id), crate::resolved::Resolved::Apply { head, .. }
+                if crate::eval::meta_apply_of(&mut db, head) == Some(crate::resolved::Prim::ValueDecode))
+                .then(|| crate::infer::type_of(&mut db, id))
+        })
+        .expect("a Value.decode application node");
+    match &decode_ty {
+        crate::ty::Ty::Sum { args, .. } => {
+            let target = args.first().expect("Option carries its element arg");
+            assert!(
+                !matches!(target, crate::ty::Ty::Var(_)),
+                "Value.decode's target must be grounded from the typed let-binder `(: p (Option Pt))`, not \
+                 left a free Var — a binder annotation grounds identically to a direct one: got {}",
+                decode_ty.render_name(&db.name_ctx())
+            );
+        }
+        other => panic!("Value.decode node must type as (Option _), got {other:?}"),
+    }
+}
+
 /// R2 DECODE GROUNDING — the NEGATIVE half of the contract (the `annotation_context_ty` fix's comment states
 /// it, but nothing pinned it): an UNANNOTATED `Value.decode` has NO enclosing annotation to ground its target
 /// `a`, so the decode node's `type_of` stays `(Option ?a)` with `?a` free. Typing does NOT hang or fault — a
@@ -3842,6 +3879,38 @@ fn value_encode_then_decode_round_trips_a_record_nominal_when_run() {
             v, "114",
             "Value.decode of Value.encode must reconstruct the record (Some arm, x+y=7+107): a `None` or \
              wrong value means the decode emit round-trip is broken"
+        );
+    }
+}
+
+/// R2 ROUND-TRIP through a TYPED LET-BINDER, NON-VACUOUS — the run-proof twin of
+/// `value_decode_grounds_its_target_from_a_typed_let_binder`. Same round-trip as
+/// `value_encode_then_decode_round_trips_a_record_nominal_when_run` (encode a record, decode it back, read
+/// `x+y=114`), but the decode is grounded by a `(let (((: p (Option Pt)) (Value.decode bs))) …)` BINDER
+/// annotation, not a direct `(: … (Option Pt))`. Proves the binder-grounded decode doesn't just type-check —
+/// its emit fires for real and reconstructs the record, so the binder-grounding path yields the SAME correct
+/// descriptor the direct-annotation path does. Skips if the value-heap runtime wasm is absent (the heap-test
+/// pattern).
+#[test]
+fn value_decode_grounded_by_a_let_binder_round_trips_a_record_when_run() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (type Pt (Mk (Record (: x Int64) (: y Int64)))) \
+                 (def (main) \
+                   (let ((bs (Value.encode (Pt.Mk (record (= x 7) (= y 107)))))) \
+                     (let (((: p (Option Pt)) (Value.decode bs))) \
+                       (match p \
+                         ((Some q) (match q ((Pt.Mk r) (+ (. r x) (. r y))))) \
+                         ((None) -1))))) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("the let-binder-grounded Value.decode round-trip reducer compiles");
+    if let Some(v) = run_linked(&bytes, "main") {
+        assert_eq!(
+            v, "114",
+            "a let-binder-grounded Value.decode of Value.encode must reconstruct the record (Some arm, \
+             x+y=7+107) exactly as the direct-annotation form does: a `None`/wrong value means binder \
+             grounding built the wrong descriptor"
         );
     }
 }
