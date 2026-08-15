@@ -436,6 +436,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_single_stage_pipeline_the_git_publish_emit_shape_runs_and_returns_its_stdout() {
+        // The git-publish reducer (reducer_publish.cdz, role #4) emits SINGLE-stage pipelines — each git
+        // command (`git add .`, `git commit -m …`, `git push`) is ONE `(shell-pipeline (stage (program git)
+        // (args …)))`. The publish e2e (host.rs) proves those payloads DECODE; this pins that run_pipeline
+        // EXECUTES the len==1 shape correctly (the `last_index == 0` branch: the sole stage is BOTH first and
+        // final — its stdin is null, and its stdout is the concurrently-drained pipeline output, not fed into
+        // a next stage). `echo` stands in for `git` so the test spawns no VCS command.
+        use cdz_kernel::event_ast::{
+            decode_shell_pipeline_outcome, encode_shell_pipeline, ShellPipeline,
+            ShellPipelineOutcome, ShellStage,
+        };
+        let pipeline = ShellPipeline {
+            stages: vec![ShellStage {
+                program: "echo".into(),
+                args: vec!["published".into()],
+            }],
+        };
+        let req = EffectRequest::new(
+            EffectKind::Shell,
+            String::new(),
+            Some(Payload::Inline(encode_shell_pipeline(&pipeline).into())),
+            Timeliness::Interactive,
+        );
+        let out = ShellExecutor::new()
+            .perform(EffectId(0), &req, Hash::of(b"k"))
+            .await;
+        match out {
+            EffectOutcome::Ok(Some(Payload::Inline(bytes))) => {
+                match decode_shell_pipeline_outcome(&bytes).expect("decodes as a pipeline outcome")
+                {
+                    ShellPipelineOutcome::Ok { stdout } => assert_eq!(
+                        String::from_utf8_lossy(&stdout).trim(),
+                        "published",
+                        "the sole stage's stdout is the whole pipeline output"
+                    ),
+                    other => panic!("expected Ok pipeline outcome, got {other:?}"),
+                }
+            }
+            other => panic!("expected an Ok pipeline-outcome frame, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_empty_shell_pipeline_is_a_permanent_host_error_not_an_index_panic() {
+        // The `run_pipeline` stage-less guard: a real emit never produces this (the kernel rejects an empty
+        // `(shell-pipeline)` at authz/dispatch), but the guard must be a CLEAN Err, never an index panic on
+        // `stages[0]` / `last_index = len - 1` underflow. Pins the guard so a future refactor can't drop it.
+        use cdz_kernel::event_ast::ShellPipeline;
+        let out = run_pipeline(&ShellPipeline { stages: vec![] });
+        assert!(
+            matches!(&out, EffectOutcome::Err { message, retryability }
+                if *retryability == Retryability::Permanent && message.contains("no stages")),
+            "an empty pipeline is a PERMANENT host error, got {out:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_command_runs_and_returns_its_stdout() {
         let mut exec = ShellExecutor::new();
         let out = exec
