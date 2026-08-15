@@ -374,6 +374,19 @@ const OP_MAP_TO_LIST: &str = "map-to-list";
 /// is. The durable LINEAR fix is sharing-aware emit (emit a 2+-reached node once into a `Core::Let` slot),
 /// a separate increment; this budget is the soundness backstop that stops the invalid wasm now.
 const EMIT_INSTRUCTION_BUDGET: usize = 1_000_000;
+/// The emit-walk SCRATCH-LOCALS BUDGET — the SECOND axis of the finding-24-sibling explosion. The K^N
+/// DAG-as-tree serialization blows up in TWO independent ways (the "two kinds" split from the original
+/// finding-24 arc): (1) BODY SIZE — the emitted `Lir` count, bounded by `EMIT_INSTRUCTION_BUDGET`; and (2)
+/// SCRATCH LOCALS — the running high-water `*high` of scratch slots a guarded op claims. A body can blow the
+/// LOCALS cap while staying UNDER the instruction bound: `rps1` (the in-branch-compound-recompute face)
+/// emits ~2.5MB but wasmparser rejects it "too many locals exceeds maximum" (wasm's ~50000 per-function
+/// locals cap) — its per-branch recompute mints fresh scratch slots faster than instructions, so it slips
+/// the instruction budget yet overruns the locals cap → an INVALID module. So the emit-walk needs a locals
+/// budget too: decline when `*high` crosses this (well below the ~50000 engine cap, with headroom over any
+/// valid function — scratch slots are REUSED across siblings so a legitimate body's high-water stays low).
+/// Same reject-not-miscompile decline; the durable fix is (b) sharing-aware emit (a shared subtree binds
+/// ONCE, so it claims its slots once instead of per-reference).
+const EMIT_LOCALS_BUDGET: u32 = 40_000;
 /// Persistent CHAMP set ops (CHAMP-minus-value-column). `set-empty() -> handle`; `set-insert(s, elem) ->
 /// handle` (consumes s, elem); `set-contains(s, elem) -> bool` (BORROWS both); `set-remove(s, elem) ->
 /// handle` (consumes s; borrows elem); `set-size(s) -> u32` (borrows, O(1)); `set-union`/`set-intersection`/
@@ -7307,6 +7320,17 @@ fn emit(
             "emit-walk instruction budget exceeded: a handler-derived Core DAG serializes as a tree \
              whose expansion exceeds the wasm function-size limit (a K>=3-branch resume/next-state fan-out \
              over a compound threaded state); pending sharing-aware emit that binds a shared subtree once",
+        ));
+    }
+    // EMIT-WALK SCRATCH-LOCALS BUDGET (the SECOND axis): a per-branch-compound-recompute body (rps1) can
+    // slip UNDER the instruction budget yet mint scratch slots past the wasm ~50000 per-function locals cap
+    // ("too many locals" — an INVALID module). Bound the running high-water `*high` too, so such a body
+    // declines cleanly rather than overrunning the cap. See `EMIT_LOCALS_BUDGET`.
+    if *high > EMIT_LOCALS_BUDGET {
+        return Err(Reject::decline(
+            "emit-walk scratch-locals budget exceeded: a handler-derived Core DAG serializes as a tree \
+             whose per-branch recompute mints scratch slots past the wasm per-function locals limit; \
+             pending sharing-aware emit that binds a shared subtree once",
         ));
     }
     // DEBUG (per-construct line rows): mark this node's first instruction with its source occurrence,
