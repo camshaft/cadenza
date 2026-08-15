@@ -323,6 +323,28 @@ impl HostedSession {
         self
     }
 
+    /// Attach a durable sink AND persist the genesis event through it — the footgun-proof variant of
+    /// [`with_sink`](Self::with_sink) for a session that must be RECOVERABLE. [`attach_sink`] does NOT replay
+    /// the pre-attach log, and the genesis event is built at construction (before any sink), so a plain
+    /// `with_sink` yields a durable log whose first persisted frame is the first POST-attach event — GENESIS
+    /// IS MISSING. [`recover_and_build`](crate::admin::SessionFactory::recover_and_build) /
+    /// [`Session::recover_from`](cdz_kernel::kernel::Session::recover_from) require genesis at `events[0]`, so
+    /// such a log can't be recovered (a silent "forgot to persist genesis" footgun the daemon factory avoids by
+    /// doing the explicit `sink.append(genesis)` per the kernel.rs §recover contract). This helper folds that
+    /// append INTO the attach so a caller can't forget it: it persists [`genesis_ref`](cdz_kernel::kernel::Session::genesis_ref)
+    /// through the sink FIRST, then attaches it, so every subsequent appended event lands after a genesis-rooted
+    /// head. Fallible + async (the durable append can fail); returns the builder on success.
+    pub async fn with_persisted_sink(
+        mut self,
+        mut sink: Box<dyn cdz_kernel::log_store::LogSink>,
+    ) -> Result<Self, String> {
+        sink.append(self.session.genesis_ref()).await.map_err(|e| {
+            format!("with_persisted_sink: failed to persist the genesis event: {e}")
+        })?;
+        self.session.attach_sink(sink);
+        Ok(self)
+    }
+
     /// Attach the GAP-4 D3-4 checkpoint capability: this session's own durable-log `builder` (which knows how
     /// to compact-rewrite its log + rebuild its sink) + the `policy` deciding WHEN. Builder-style, paired with
     /// [`with_sink`](Self::with_sink) at build time (the factory attaches both when `[log]` is durable +
@@ -7204,7 +7226,60 @@ mod tests {
         );
     }
 
-    // ---- §lifecycle I4 boot-recovery: AgentHost::recover_hosted_session ----
+    // ---- §lifecycle I4 boot-recovery: AgentHost::recover_hosted_session + the genesis-persist footgun-guard ----
+
+    #[tokio::test]
+    async fn with_persisted_sink_makes_the_durable_log_genesis_rooted_so_it_recovers() {
+        // FOOTGUN-GUARD pin (v-pc I4): with_persisted_sink appends the genesis event to the sink BEFORE
+        // attaching, so the durable log is GENESIS-ROOTED — the events[0]-is-Genesis precondition
+        // recover_and_build / Session::recover_from require. (A plain with_sink omits genesis — the silent
+        // "forgot to persist genesis" footgun both v-agent-harness-host + v-platform-conformance hit.) Drives a
+        // turn, drops the session (the crash boundary that releases + flushes the file), and recovers via the
+        // same public LogSinkBuilder::recover path: events[0] is Genesis + the driven turn persisted. Hermetic
+        // (std::fs temp dir + a Rust reducer, no wasm component) — runs under the default `cargo test`.
+        use crate::factory::{FileLogSinkBuilder, LogSinkBuilder};
+        let dir = std::env::temp_dir().join(format!("cdz-i4-persistgen-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let builder = FileLogSinkBuilder::new(&dir);
+
+        let hosted = now_host();
+        let id = SessionId::new(hosted.genesis_hash());
+        let sink = builder
+            .build(&id)
+            .await
+            .expect("file backend build ok")
+            .expect("the file backend yields a sink");
+        let mut hosted = hosted
+            .with_persisted_sink(sink)
+            .await
+            .expect("with_persisted_sink persists genesis + attaches the sink");
+        hosted
+            .deliver(inbound_go(), None)
+            .await
+            .expect("deliver go");
+        drop(hosted); // crash boundary: release + flush the file before the recovery read
+
+        let recovered = builder
+            .recover(&id)
+            .await
+            .expect("recover read ok")
+            .expect("a genesis-rooted durable log exists for this id");
+        assert!(
+            matches!(
+                recovered.events.first().map(|e| &e.body),
+                Some(EventBody::Genesis { .. })
+            ),
+            "with_persisted_sink made events[0] the genesis (recover_from's precondition) — a plain with_sink \
+             would omit it"
+        );
+        assert!(
+            recovered.events.len() >= 2,
+            "genesis + the driven turn persisted, got {} events",
+            recovered.events.len()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[tokio::test]
     async fn recover_hosted_session_reregisters_the_rebuilt_session_under_the_caller_id_and_returns_the_report(
