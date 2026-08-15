@@ -491,6 +491,29 @@ export const EXAMPLES: Example[] = [
     expected: "(: (tuple 103 true false) (Tuple Int64 Bool Bool))",
   },
   {
+    // Shows off: a full `Value.encode` -> `Value.decode` ROUND-TRIP. encode : forall a. a -> Bytes (total);
+    // decode : forall a. Bytes -> Option a, where the result annotation grounds `a` (here `Option Point`).
+    // We encode a Point, decode it back, and read the restored fields (x+y). decode is partial (Option), so
+    // we match — None would mean the bytes didn't fit the type. The target is a named type (Point).
+    id: "value-encode-roundtrip",
+    name: "Encode / decode round-trip (Value)",
+    theme: "data-and-collections",
+    surface: "sexpr",
+    source: `(do
+  ; A value survives a trip through its canonical bytes. Value.encode : a -> Bytes
+  ; (total); Value.decode : Bytes -> Option a, with the result annotation grounding a.
+  ; Decode is partial (None if the bytes don't fit the type), so we match on the Option.
+  (type Point (Mk (Record (: x Int64) (: y Int64))))
+  (def (main)
+    (let ((p (Point.Mk (record (x 3) (y 4)))))
+      (let ((bytes (Value.encode p)))
+        (match (: (Value.decode bytes) (Option Point))
+          ((Some (Point.Mk r)) (tuple (Bytes.len bytes) (+ (. r x) (. r y))))
+          ((None) (tuple (Bytes.len bytes) 0))))))
+  (export main))`,
+    expected: "(: (tuple 82 7) (Tuple Int64 Int64))",
+  },
+  {
     // Shows off: EXACT rational arithmetic — 1/2 + 1/3 + 1/6 is EXACTLY 1, with no floating-point
     // drift. The `(pragma default-fraction Rational)` directive makes every bare literal in scope an
     // exact fraction; compare with Float64, where 0.1 + 0.2 famously isn't 0.3.
