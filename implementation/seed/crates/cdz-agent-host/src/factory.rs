@@ -1476,6 +1476,53 @@ mod tests {
         }
     }
 
+    #[test]
+    fn non_executor_families_the_phase3_re_key_depends_on_also_resolve_and_bake_consistently() {
+        // PHASE-3 RE-KEY COVERAGE-GAP GUARD (companion to the two executor-suite pins above). The re-key does
+        // NOT only touch leaf-executor self-guards — it also re-keys two host surfaces that dispatch on
+        // schema-hash for families NO cdz-agent-host leaf executor serves:
+        //   - the host loop's CONTROL-effect match — it keys control/summary (== effect_family_schema_hash(
+        //     SUMMARY)) and control/signature (!= effect_family_schema_hash(SIGNATURE)) independently;
+        //   - the genesis/kv reducer E2E schema_hash asserts (host.rs real_pure/kv_reducer_*), which pin an
+        //     emitted `timer` effect's baked schema_hash against effect_family_schema_hash(TIMER).
+        // TIMER (kernel-INJECTED — timer.arm has no leaf executor) and SUMMARY/SIGNATURE (host-loop-handled
+        // control families) are therefore ABSENT from `every_family_the_host_executor_suite_serves_resolves`
+        // + `an_in_host_requests_schema_hash_equals_...`, which enumerate only the executor-suite families.
+        // Yet the re-key compares a baked schema_hash against `effect_family_schema_hash(fam)` for exactly
+        // these. A kernel reflection-table change that dropped one to None — or desynced its baked hash —
+        // would break the control match / E2E asserts. And the E2E asserts are ENV-GATED (they SKIP on a
+        // bare `cargo test` when the reducer components + CDZ_STORE are unset), so the `timer` break would
+        // slip PAST the local hermetic gate and red only in a non-vacuous CI run. Pin resolve + bake-
+        // consistency HERE so the whole re-key-depended-upon family set reds hermetically in my own gate.
+        use cdz_kernel::ast_marshal::effect_family_schema_hash;
+        use cdz_kernel::effect::{effect_ct, EffectRequest, Timeliness};
+        for fam in [effect_ct::TIMER, effect_ct::SUMMARY, effect_ct::SIGNATURE] {
+            assert!(
+                effect_family_schema_hash(fam).is_some(),
+                "family {fam:?} — depended on by the phase-3 re-key (host control match / env-gated E2E \
+                 schema_hash assert) but served by NO leaf executor — must resolve to a schema-hash; None \
+                 would break the re-key and (for timer) slip past the hermetic gate since its E2E is env-gated"
+            );
+            let req = EffectRequest::new_with_family(fam, "t", None, Timeliness::Interactive);
+            assert_eq!(
+                req.schema_hash,
+                effect_family_schema_hash(fam),
+                "family {fam:?}: the in-host-baked schema_hash (new_with_family) must equal \
+                 effect_family_schema_hash(family) — the re-keyed control match + E2E asserts compare the \
+                 former against the latter, so a desync would misfire them"
+            );
+        }
+        // The control match distinguishes control/summary (matched with ==) from control/signature (matched
+        // with !=): they MUST hash DISTINCTLY, else the two control paths would cross-fire on each other. The
+        // executor-suite pins never needed a distinctness check; the control match does.
+        assert_ne!(
+            effect_family_schema_hash(effect_ct::SUMMARY),
+            effect_family_schema_hash(effect_ct::SIGNATURE),
+            "control/summary and control/signature must hash distinctly — the host loop's control match keys \
+             on each independently (== SUMMARY, != SIGNATURE); a collision would cross-fire the control paths"
+        );
+    }
+
     #[tokio::test]
     async fn install_of_an_absent_reducer_hash_is_a_clean_error() {
         // The blob store is empty → get returns None → build errors cleanly (no panic), and apply_admin
