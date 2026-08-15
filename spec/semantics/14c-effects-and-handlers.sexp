@@ -11793,3 +11793,93 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 30509091731 Int64))
   (call   main (: 0 Int64)) (output (: 20407071324 Int64)))
+
+;; ── RPS judge (hoisted twin of the F24 rps1 face), leaky bucket, knight walker (breaker batch 282) ──
+(case "rps2 the RPS judge with the opponent move HOISTED through match binders — the LCG advance and the mod-3 move bind once per dispatch instead of recomputing per branch, same protocol and answers"
+  (input  (do
+            (effect R
+              (op play (-> Int64 Int64))
+              (op score (-> Int64)))
+            (def (main (: n Int64))
+              (handle R (tuple (+ n 3) (: 0 Int64) (: 0 Int64))
+                ((play (mine) st
+                  (match st
+                    ((tuple seed wins losses)
+                      (match (% (+ (* seed 5) 3) 16)
+                        (s2
+                          (match (% s2 3)
+                            (o
+                              (if (= mine o)
+                                  (resume 0 (tuple s2 wins losses))
+                                  (if (= (% (+ (- mine o) 3) 3) 1)
+                                      (resume 1 (tuple s2 (+ wins 1) losses))
+                                      (resume -1 (tuple s2 wins (+ losses 1))))))))))))
+                 (score () st
+                  (match st
+                    ((tuple seed wins losses) (resume (+ (* wins 10) losses) st)))))
+                (let ((a (R.play 0)))
+                  (let ((b (R.play 1)))
+                    (let ((c (R.play 2)))
+                      (let ((d (R.play 0)))
+                        (let ((e (R.score)))
+                          (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: -100010097 Int64))
+  (call   main (: 0 Int64)) (output (: 100009921 Int64)))
+
+(case "lky1 a LEAKY-BUCKET meter — arrive fills toward the seed-shaped capacity answering only the OVERFLOW spill (level clamps at the brim), drain leaks five clamped at empty answering the new level, and the small bucket spills twice where the large one never does"
+  (input  (do
+            (effect K
+              (op arrive (-> Int64 Int64))
+              (op drain (-> Int64)))
+            (def (main (: n Int64))
+              (handle K (: 0 Int64)
+                ((arrive (v) level
+                  (if (< (+ n 8) (+ level v))
+                      (resume (- (+ level v) (+ n 8)) (+ n 8))
+                      (resume 0 (+ level v))))
+                 (drain () level
+                  (if (< level 5)
+                      (resume 0 0)
+                      (resume (- level 5) (- level 5)))))
+                (let ((a (K.arrive 6)))
+                  (let ((b (K.arrive 7)))
+                    (let ((c (K.drain)))
+                      (let ((d (K.arrive 9)))
+                        (let ((e (K.drain)))
+                          (let ((f (K.drain)))
+                            (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 8001207 Int64))
+  (call   main (: 0 Int64)) (output (: 503040300 Int64)))
+(case "knt1 a KNIGHT walker on an eight-by-eight board — hop attempts the L-move answering the landing square's index or -1 REFUSED off-board with the position held, cnt reads the completed-hop count, and the seed's starting rank makes the SAME move list bounce twice on one run and once on the other"
+  (input  (do
+            (effect W
+              (op hop (-> Int64 Int64 Int64))
+              (op cnt (-> Int64)))
+            (def (main (: n Int64))
+              (handle W (tuple (% n 8) (: 3 Int64) (: 0 Int64))
+                ((hop (dr dc) st
+                  (match st
+                    ((tuple r c hops)
+                      (if (< (+ r dr) 0)
+                          (resume -1 st)
+                          (if (< 7 (+ r dr))
+                              (resume -1 st)
+                              (if (< (+ c dc) 0)
+                                  (resume -1 st)
+                                  (if (< 7 (+ c dc))
+                                      (resume -1 st)
+                                      (resume (+ (* (+ r dr) 8) (+ c dc))
+                                              (tuple (+ r dr) (+ c dc) (+ hops 1))))))))))
+                 (cnt () st
+                  (match st ((tuple r c hops) (resume hops st)))))
+                (let ((a (W.hop -2 1)))
+                  (let ((b (W.hop -1 -2)))
+                    (let ((c (W.hop 2 -1)))
+                      (let ((d (W.hop -2 -1)))
+                        (let ((e (W.cnt)))
+                          (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 399190203 Int64))
+  (call   main (: 0 Int64)) (output (: -100819898 Int64)))
