@@ -3120,6 +3120,23 @@
   (call   main (: true Bool)) (output (: 97 Int64))
   (call   main (: false Bool)) (output (: 122 Int64)))
 
+(case "runtime Char equality and ordering compare by Unicode code point (scalar i32)"
+  (doc    "Char-rep 2/N: a runtime char — the `(if b …)`-join is not constant-folded — occupies a scalar i32
+           code-point slot, so `=` compares by `i32.eq` and `<`/`>`/`<=`/`>=` by the signed-i32 order, which
+           matches Unicode-scalar (code-point) order since code points are 0..=0x10FFFF (never negative).
+           `b`=true selects #\\a (97): `#\\a = #\\a` is true (1) and `#\\a < #\\m` (97<109) is true (1) ->
+           10*1+1 = 11. `b`=false selects #\\z (122): `#\\z = #\\a` is false (0) and `#\\z < #\\m` (122>109)
+           is false (0) -> 0. Two distinct outputs pin BOTH equality and ordering on a RUNTIME char, upgrading
+           the compound-path decline (`comparison of a compound value needs a heap walk`); routes through the
+           same scalar path an Int/Bool/enum-disc takes (is_scalar now includes Ty::Char). Distinct from a
+           constant char-literal compare, which folds at compile time.")
+  (input  (do (def (main (: b Bool))
+                (+ (* 10 (if (= (if b #\a #\z) #\a) 1 0))
+                   (if (< (if b #\a #\z) #\m) 1 0)))
+              (export main)))
+  (call   main (: true Bool)) (output (: 11 Int64))
+  (call   main (: false Bool)) (output (: 0 Int64)))
+
 (case "converting a scalar-valued integer to a char yields Some"
   (doc    "`(Char.from-int 97)` is `(Some #\\a)` — 97 is the scalar value of `a`, a valid Unicode scalar,
            so the conversion succeeds (collections-and-text.md #A Char Converts To And From An Integer

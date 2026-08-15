@@ -27280,7 +27280,14 @@ fn eq_shaped_walkable(
 fn is_scalar(db: &mut Db, id: StructId) -> bool {
     matches!(
         crate::infer::type_of(db, id),
-        crate::ty::Ty::Int(_) | crate::ty::Ty::Bool
+        // `Ty::Char` is a scalar too (Char-rep 2/N): a char occupies an i32 code-point slot
+        // (`valtype_of(Ty::Char) = I32`, Char-rep 1/N), so runtime Char equality/ordering/match route to
+        // the SAME scalar i32 path an Int/Bool/enum-disc takes — `i32.eq` for `=`, `Core::Compare` (i32) for
+        // `<`/`>`/`<=`/`>=`, a scalar-value `match`. Code points are 0..=0x10FFFF (always non-negative), so
+        // the signed-i32 compare matches Unicode-scalar (code-point) order. Without this a runtime char fell
+        // to the compound path and declined ("comparison of a compound value needs a heap walk" / "matching a
+        // compound value needs a heap walk").
+        crate::ty::Ty::Int(_) | crate::ty::Ty::Bool | crate::ty::Ty::Char
     )
 }
 

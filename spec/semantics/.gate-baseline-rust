@@ -6032,6 +6032,7 @@ pass	runtime BigInt remainder runs on the arbitrary-precision runtime
 pass	runtime Bools order false below true with compare and equality agreeing
 pass	runtime Bytes ordering is content-lexicographic over unsigned bytes — the blessed total order
 pass	runtime Bytes value-equality distinguishes different content
+pass	runtime Char equality and ordering compare by Unicode code point (scalar i32)
 pass	runtime Float32 arithmetic computes at f32 precision — 0.1 + 0.2 equals 0.3 exactly at binary32
 pass	runtime Float32 ordering compares at f32 precision — same-bits literals are not ordered
 pass	runtime Rational DIVISION inverts the divisor and reduces to lowest terms

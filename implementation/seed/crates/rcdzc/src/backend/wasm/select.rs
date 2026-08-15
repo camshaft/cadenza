@@ -17455,6 +17455,13 @@ fn operand_int_ty(db: &mut Db, lhs: StructId, rhs: StructId) -> IntTy {
         (Ty::Int(it), _) => *it,
         (_, Ty::Int(it)) => *it,
         (Ty::Bool, _) | (_, Ty::Bool) => bool_as_i32,
+        // A CHAR operand is an i32 code-point slot (`valtype_of(Ty::Char) = I32`, Char-rep 1/N), holding a
+        // Unicode scalar 0..=0x10FFFF — ALWAYS non-negative, so a Char comparison is a signed-≤32 i32 op
+        // (the same width bool/enum-disc use) and the signed compare matches Unicode-scalar (code-point)
+        // order. Lets a runtime `= < <= > >=` on a char emit `i32.eq`/`i32.lt_s`/… rather than falling to
+        // the i64 default below (which pushed i64 ops beside the i32 char operands → an INVALID module).
+        // `is_scalar` now routes a runtime Char here (Char-rep 2/N).
+        (Ty::Char, _) | (_, Ty::Char) => bool_as_i32,
         // An ENUM-DISCRIMINANT operand is a bare discriminant i32 (like a bool), so its comparison is an
         // i32 op — the same signed-≤32 width bool uses. Lets `(= c C.Red)` emit `i32.eq` on the raw
         // discriminants rather than a `value-eq` heap walk (which would misread a discriminant as a
