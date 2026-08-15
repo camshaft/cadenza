@@ -2389,7 +2389,22 @@ pub fn reduce_handle(
             // preserves it. `lam_body = arm.body`, so the arm's own op-params/state binder (bound within) stay
             // unpinned + substitute normally. (breaker mv-class, arm-side/resume-value locus.)
             crate::eval::pin_free_vars(db, arm.body, arm.body, &[]);
-            let substituted = crate::eval::beta_reduce(db, arm.body, &subst);
+            // adv-20: if the arm body is a pure LET-WRAPPED resume — `(let ((o (if (> s 100) … s))) (resume
+            // (match o …) s))` — FLATTEN it (splice each pure let-init for its binder refs) so a let-init that
+            // reads the arm state does not survive the `{arm.state → init}` subst below UNSUBSTITUTED (→
+            // slotless `Core::Param{arm.state}` decline). The flatten PINS the arm's state/op-param uses first
+            // so the flatten copy SHARES them (keeps `Ref{arm.state}`) rather than orphaning a bare sibling `s`
+            // in the resume value; the subst below then substitutes the shared occurrences. Non-let arms fall
+            // through unchanged. (v-inference-pinned locus; Option A.)
+            let arm_binders: Vec<StructId> = arm
+                .params
+                .iter()
+                .copied()
+                .chain(std::iter::once(arm.state))
+                .collect();
+            let arm_body =
+                flatten_pure_let_wrapped_resume(db, arm.body, &arm_binders).unwrap_or(arm.body);
+            let substituted = crate::eval::beta_reduce(db, arm_body, &subst);
             // Also pin the SEED-derived captures now in `substituted`: when `n` is the handle SEED
             // (`(handle Amb n …)`), it enters the arm via the state-binder subst, so it appears in
             // `substituted` (not `arm.body`); pin it here so the per-resume splice shares it too.
@@ -9770,6 +9785,45 @@ fn strongly_pure(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
 /// contexts), so a MULTI-shot arm may splice a fresh copy of it per resume with no effect duplication.
 /// Non-resume nodes are copied structurally so the result is self-contained. Each spliced copy detaches
 /// from the dead `resume` node's scope (fresh parentage), and `C`'s free names re-parent under the splice.
+/// FLATTEN a pure LET-WRAPPED resume body `(let ((x e)…) body)` (body bears a `resume`) into `body` with
+/// each pure init `e` spliced in place of its binder refs — returning the let-free body, or `None` if `node`
+/// is not such a let / any init reaches a perform (leave an effectful init a let). `arm_binders` are the
+/// arm's state + op-params: their uses in `body` are RESOLVE-PINNED (`pin_refs_to_binders`) BEFORE the
+/// flatten `beta_reduce`, so beta_reduce SHARES those occurrences (capture-share path) instead of copying
+/// them fresh. Without the pin, a bare arm-state sibling `s` in the resume value (`(+ (Bytes.len b) s)`) is
+/// copied fresh by copy_structural, then re-resolves against the now-let-less tree where the arm form is no
+/// longer its ancestor → dangling `unbound s` (adv-20). The pin keeps its `Ref{arm.state}` so the caller's
+/// subsequent `{arm.state → init}` subst substitutes it. The pin runs FIRST, while `body` is still parented
+/// under the arm (so `resolved_of` reaches arm.state), before any `push_list` copy. (v-inference Option A.)
+fn flatten_pure_let_wrapped_resume(
+    db: &mut Db,
+    node: StructId,
+    arm_binders: &[StructId],
+) -> Option<StructId> {
+    let tail = db.ast.as_form(node, "let").map(<[_]>::to_vec)?;
+    if tail.len() != 2 || count_resumes(db, tail[1]) < 1 {
+        return None;
+    }
+    let (bindings, lbody) = (tail[0], tail[1]);
+    let mut subst: HashMap<StructId, StructId> = HashMap::default();
+    if let Struct::List(pairs) = db.ast.get(bindings).clone() {
+        for pair in pairs {
+            if let Struct::List(kv) = db.ast.get(pair).clone()
+                && kv.len() == 2
+            {
+                if reaches_any_perform(db, kv[1]) {
+                    return None;
+                }
+                subst.insert(kv[1], kv[1]);
+            }
+        }
+    }
+    // Pin arm-state/param uses FIRST (while `lbody` is still parented under the arm) so the flatten copy
+    // shares them rather than orphaning a bare sibling `s`.
+    pin_refs_to_binders(db, lbody, arm_binders);
+    Some(crate::eval::beta_reduce(db, lbody, &subst))
+}
+
 fn rewrite_resume_to_context(
     db: &mut Db,
     node: StructId,
