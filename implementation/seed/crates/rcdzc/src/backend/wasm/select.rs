@@ -2420,6 +2420,11 @@ fn box_op_ty(db: &Db, ty: &Ty) -> Result<Option<&'static str>, Reject> {
     }
     match ty {
         Ty::Int(_) => Ok(Some(OP_BOX_INT)),
+        // A CHAR is an i32 code-point scalar (Char-rep 1/N); it boxes into the i64 heap cell exactly like a
+        // narrow int (`box-int`, with the i32→i64 extend `is_narrow_int` now applies for `Ty::Char`), so a
+        // Char can be a tuple/record element, sum payload, or map/set member (Char-rep 4/N). Read back with
+        // `get-int` + the i64→i32 narrow (`get_op_ty`/`needs_get_int_narrow`).
+        Ty::Char => Ok(Some(OP_BOX_INT)),
         Ty::Bool => Ok(Some(OP_BOX_BOOL)),
         // A FLOAT boxes into its width's dedicated leaf: Float64 → `box-float` (an `f64` slot, `valtype_of`
         // → F64, IS `box-float`'s arg), Float32 → `box-float32` (an `f32` slot IS `box-float32`'s arg). So
@@ -2505,6 +2510,9 @@ fn get_op_ty(db: &Db, ty: &Ty) -> Result<Option<&'static str>, Reject> {
     }
     match ty {
         Ty::Int(_) => Ok(Some(OP_GET_INT)),
+        // A CHAR reads back from its i64 heap cell with `get-int`; `needs_get_int_narrow` (which now covers
+        // `Ty::Char`) narrows the i64 to the i32 code-point slot. The dual of `box_op_ty(Char)` (Char-rep 4/N).
+        Ty::Char => Ok(Some(OP_GET_INT)),
         Ty::Bool => Ok(Some(OP_GET_BOOL)),
         // A FLOAT reads back with its width's op: Float64 → `get-float` (an `f64`), Float32 → `get-float32`
         // (an `f32`, the value's machine slot) — the duals of `box_op_ty`'s Float arms, both coercion-free.
@@ -2665,6 +2673,16 @@ fn is_narrow_int(db: &mut Db, id: StructId) -> Option<Machine> {
     match inner {
         Ty::Int(it) => {
             let m = Machine::of(*it);
+            m.slot32.then_some(m)
+        }
+        // A CHAR is a Unicode code point in an i32 machine slot (`valtype_of(Ty::Char) = I32`, Char-rep
+        // 1/N; `int_ty_of(Char) = fixed(signed, 32)`). Boxed into an i64 heap cell as a compound element /
+        // sum payload (`box_op_ty(Char) = box-int`, `get_op_ty(Char) = get-int`, Char-rep 4/N), it needs the
+        // SAME i32→i64 extend before `box-int` and i64→i32 narrow after `get-int` a narrow int does — so it
+        // rides this predicate exactly like `Int32`. Code points are 0..=0x10FFFF (bit 31 clear), so
+        // sign-vs-zero extend is immaterial; `signed` matches `int_ty_of(Char)` for consistency.
+        Ty::Char => {
+            let m = Machine::of(IntTy::fixed(true, 32));
             m.slot32.then_some(m)
         }
         _ => None,
@@ -14920,14 +14938,22 @@ fn emit_littest_probe(
             out.push(Lir::ConstI32(*len as i32));
             out.push(if *at_least { Lir::I32GeU } else { Lir::I32Eq }); // [bool]
         }
-        crate::core::Probe::Char(_) => {
-            // A char-literal payload over a RUNTIME value: a `Char` has NO runtime machine rep yet
-            // (its `=` folds only at compile time), so there is no leaf handle to compare — a
-            // CONSTANT char payload folds the `Char` test instead (`build_tree`), never reaching
-            // here. Decline (like the runtime map-payload probe), never a miscompile.
-            return Err(Reject::decline(
-                "a char-literal payload over a runtime char is not yet matched at run time (no runtime char rep)",
-            ));
+        crate::core::Probe::Char(c) => {
+            // A char-literal payload over a RUNTIME char (Char-rep 4/N): a `Char` is an i32 code-point slot
+            // (Char-rep 1/N), boxed into the i64 heap cell like a narrow int (`box_op_ty(Char) = box-int`).
+            // The path walk left either the BOXED leaf handle (`holds_handle`) or a RAW i32 char (an erased
+            // char newtype). Read the code point out of the box with `get-int` (→ i64) when boxed, else the
+            // raw value is already the i32 slot; compare to THIS literal's code point (`i32.eq`/`i64.eq` to
+            // match the read width) — the payload twin of the scalar char-scrutinee match (Char-rep 3/N).
+            let cp = *c as u32 as i64; // Unicode scalar, always non-negative
+            if holds_handle {
+                out.push(Lir::CallImport(OP_GET_INT)); // [i64]
+                out.push(Lir::ConstI64(cp));
+                out.push(Lir::I64Eq); // [bool]
+            } else {
+                out.push(Lir::ConstI32(cp as i32));
+                out.push(Lir::I32Eq); // [bool]
+            }
         }
         crate::core::Probe::MapHasKeys { .. } => {
             // A map-pattern payload over a RUNTIME map: the key-presence gate would need a runtime

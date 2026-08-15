@@ -3429,6 +3429,34 @@
   (call   main)
   (output (: 1 Int64)))
 
+(case "a char-literal payload matches over a RUNTIME sum scrutinee (boxed char payload, Char-rep 4/N)"
+  (doc    "A `Tok` built at RUN TIME from a Bool param — `(if b (Tok.Ch #\\a) (Tok.End))` — is a heap sum
+           whose `Char` payload is BOXED into the i64 heap cell (box-int + i32->i64 extend), NOT a constant
+           fold. Matching it with the char-literal arm `(Tok.Ch #\\a)` reads the payload back (get-int +
+           i64->i32 narrow) and compares the i32 code point at run time (Char-rep 4/N — a Char is now a
+           boxable compound element / sum payload). `(call main true)` builds `(Tok.Ch #\\a)` → the `#\\a`
+           arm → 97; `(call main false)` builds `(Tok.End)` → the End arm → 0. Distinct from the nested
+           CONSTANT-payload cases above (those fold the `Char` test); this exercises the runtime box/get path.")
+  (input  (do (type Tok (Ch Char) (End))
+              (def (main (: b Bool))
+                (match (if b (Tok.Ch #\a) (Tok.End)) ((Tok.Ch #\a) 97) ((Tok.Ch _) 1) ((Tok.End) 0)))
+              (export main)))
+  (call   main (: true Bool)) (output (: 97 Int64))
+  (call   main (: false Bool)) (output (: 0 Int64)))
+
+(case "a runtime char payload binds and reads back its code point (Char-rep 4/N)"
+  (doc    "Binding the `Char` payload of a RUNTIME `Tok.Ch` — the arm `((Tok.Ch c) (Char.to-int c))` — reads
+           the boxed char out of the heap cell (get-int + i64->i32 narrow to the i32 code-point slot) and
+           `Char.to-int` yields its Int64 code point. `(call main true)` builds `(Tok.Ch #\\a)` → binds `c` =
+           `#\\a` → 97; `(call main false)` builds `(Tok.End)` → -1. The binding-read twin of the literal-test
+           case above; pins that a char extracted from a runtime sum payload is a sound runtime Char value.")
+  (input  (do (type Tok (Ch Char) (End))
+              (def (main (: b Bool))
+                (match (if b (Tok.Ch #\a) (Tok.End)) ((Tok.Ch c) (Char.to-int c)) ((Tok.End) -1)))
+              (export main)))
+  (call   main (: true Bool)) (output (: 97 Int64))
+  (call   main (: false Bool)) (output (: -1 Int64)))
+
 ; The landed char-pattern cases use CONSTANT char scrutinees. These pin the neighbors: a RUNTIME char (from
 ; Char.from-int, not a const fold) reaching a later arm; a char pattern over a NON-char scrutinee is a type
 ; error (the char pattern enforces its type from the PATTERN — unlike the String/Symbol pattern leak, the

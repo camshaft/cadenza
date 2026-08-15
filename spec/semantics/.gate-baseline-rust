@@ -47,6 +47,7 @@ pass	Ast values key a map across quote and Ast.* construction routes
 pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
 pass	Ast.encode and Ast.decode round-trip
+pass	Ast.encode emits the canonical cdzast container header (byte 0 is 'c')
 pass	BETA over the capture-avoiding substitution still proves the identity theorem (no regression)
 pass	BIJECTIVE base-26 column codec biases each step by one and round-trips at the boundaries
 pass	BINARY SEARCH against a hidden state target — the body bisects on the arm's ordering verdicts, eight probes find any target in 0..100
@@ -1367,6 +1368,7 @@ pass	a char order agrees with its scalar value
 pass	a char-literal pattern nested in a variant payload matches by scalar value
 pass	a char-literal pattern over a non-char scrutinee is a type error
 pass	a char-literal pattern selects the arm whose char matches
+pass	a char-literal payload matches over a RUNTIME sum scrutinee (boxed char payload, Char-rep 4/N)
 pass	a checked addition of two runtime-wrapped bytes still guards at the narrow width
 pass	a checked conversion of a negative CONSTANT into an unsigned type is rejected
 pass	a checked integer conversion of an out-of-range CONSTANT is rejected at compile time
@@ -3245,6 +3247,7 @@ pass	a runtime branch selects WHICH host op consumes the first response row
 pass	a runtime branch selects between two ANONYMOUS closures fed to the iterate combinator
 pass	a runtime byte truncation of the sign extremes keeps exactly the low byte
 pass	a runtime bytes value is spliced into a length-prefixed frame
+pass	a runtime char payload binds and reads back its code point (Char-rep 4/N)
 pass	a runtime char reaches a later char-literal arm by scalar value
 pass	a runtime closure compares its argument to a captured value in a branch
 pass	a runtime closure whose body calls a recursive top-level function
