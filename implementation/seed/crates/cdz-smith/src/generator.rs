@@ -71,9 +71,19 @@ impl<'a> Cursor<'a> {
 
 /// A small closed set of type expressions, for `main` parameters and `:` ascriptions. Kept to
 /// types the front end fully models so an ascription constrains rather than declines.
+/// Numeric types come FIRST (indices `0..NUM_TYPES`) so the numeric-ish ascription subset is a clean
+/// prefix slice — `Bool`/`String` trail. All fixed-width int widths (8/16/32/64, signed + unsigned)
+/// plus both float widths are here so an ascription can constrain a boundary literal to its MATCHING
+/// narrow type (the 16- and 32-bit widths were previously absent, leaving those width-fit seams
+/// unreachable).
 const TYPES: &[&str] = &[
-    "Int64", "Int32", "Int8", "UInt64", "UInt8", "Bool", "String", "Float64",
+    "Int64", "Int32", "Int16", "Int8", "UInt64", "UInt32", "UInt16", "UInt8", "Float64", "Float32",
+    "Bool", "String",
 ];
+
+/// Count of leading numeric entries in [`TYPES`] (the `Int*`/`UInt*`/`Float*` prefix). Used to slice
+/// the numeric-ish subset for a `want == Num` ascription without accidentally reaching `Bool`.
+const NUM_TYPES: usize = 10;
 
 /// Infix operator heads, paired with a coarse arity/kind so the generator can pick operands that
 /// have a chance of typing. `Bool` in/out vs numeric in/out is the only distinction tracked.
@@ -143,7 +153,9 @@ const INT_BOUNDARIES: &[&str] = &[
 /// `INT_BOUNDARIES` magnitude with a possibly-narrower declared width drives the width-fit (CDZ0301) /
 /// const-fold-overflow (CDZ0304) decision at a KNOWN operand — and where the value DOES fit, both
 /// backends must agree, so it also feeds the differential oracle.
-const INT_FIXED_TYPES: &[&str] = &["Int8", "Int32", "Int64", "UInt8", "UInt64"];
+const INT_FIXED_TYPES: &[&str] = &[
+    "Int8", "Int16", "Int32", "Int64", "UInt8", "UInt16", "UInt32", "UInt64",
+];
 
 /// Exact float boundaries, each a well-formed float token (starts with a digit, has a `.`/`e`, valid
 /// chars) so `cadenza-syntax::parse_float` accepts it. Covers signed zero, the f32/f64 magnitude
@@ -522,7 +534,7 @@ impl Gen<'_> {
             return;
         }
         let ty = if want == Kind::Num {
-            TYPES[self.cur.choice(6)] // the numeric-ish subset (Int*/UInt*)
+            TYPES[self.cur.choice(NUM_TYPES)] // the numeric-ish subset (Int*/UInt*/Float*)
         } else {
             TYPES[self.cur.choice(TYPES.len())]
         };
@@ -558,7 +570,7 @@ fn kind_of_type(ty: &str) -> Kind {
     match ty {
         "Bool" => Kind::Bool,
         "String" => Kind::Str,
-        "Float64" => Kind::Num,
+        "Float64" | "Float32" => Kind::Num,
         _ => Kind::Num, // Int*/UInt*
     }
 }
@@ -667,6 +679,43 @@ mod tests {
             }
         }
         assert!(hit, "no seed in the sweep emitted a boundary ascription");
+    }
+
+    /// Every fixed-width int type we ascribe boundaries to pairs with every boundary literal into a
+    /// program that PARSES — so the 16- and 32-bit width-fit/overflow seams (`Int16`/`UInt16`/`UInt32`)
+    /// are actually reachable via ascription, not just the 8/64-bit ones. A parse failure here would
+    /// mean a boundary/type token the reader chokes on before the width checker ever sees it.
+    #[test]
+    fn every_fixed_type_boundary_ascription_parses() {
+        for t in INT_FIXED_TYPES {
+            for lit in INT_BOUNDARIES {
+                let src = format!("(do (def (main) (: {lit} {t})) (export main))");
+                assert!(
+                    cadenza_syntax::sexpr::read(&src).is_ok(),
+                    "boundary ascription did not parse: (: {lit} {t})"
+                );
+            }
+        }
+    }
+
+    /// The numeric-ish ascription prefix ([`NUM_TYPES`] leading entries of [`TYPES`]) is exactly the
+    /// `Int*`/`UInt*`/`Float*` types — no `Bool`/`String` leaks into the slice a `want == Num`
+    /// ascription draws from. Guards the prefix invariant against a future `TYPES` reordering.
+    #[test]
+    fn numeric_type_prefix_is_well_formed() {
+        assert!(NUM_TYPES <= TYPES.len());
+        for ty in &TYPES[..NUM_TYPES] {
+            assert!(
+                kind_of_type(ty) == Kind::Num,
+                "non-numeric type {ty} inside the numeric prefix"
+            );
+        }
+        for ty in &TYPES[NUM_TYPES..] {
+            assert!(
+                kind_of_type(ty) != Kind::Num,
+                "numeric type {ty} outside the numeric prefix"
+            );
+        }
     }
 
     /// Generation is deterministic in the seed (required for reproducing + shrinking a finding).
