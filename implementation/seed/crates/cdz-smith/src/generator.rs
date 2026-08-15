@@ -315,7 +315,7 @@ impl Gen<'_> {
         }
         // Weighted toward leaves + operators + control flow (the shapes most likely to type and
         // reach codegen); the tail arms exercise ctors, access, ascription, and match.
-        match self.cur.choice(15) {
+        match self.cur.choice(16) {
             0..=2 => self.leaf(want),
             3 => self.if_expr(depth, want),
             4 => self.let_expr(depth, want),
@@ -328,6 +328,7 @@ impl Gen<'_> {
             11 => self.access_expr(depth),
             12 => self.ascribe_expr(depth, want),
             13 => self.list_builtin_expr(depth),
+            14 => self.string_builtin_expr(depth),
             _ => self.match_expr(depth, want),
         }
     }
@@ -554,6 +555,51 @@ impl Gen<'_> {
                 self.expr(depth.saturating_sub(1), Kind::Num);
                 self.out.push(' ');
                 self.expr(depth.saturating_sub(1), Kind::Num);
+                self.out.push(')');
+            }
+        }
+    }
+
+    /// A `String`-module builtin over string literals — `at`/`slice`/`concat`/`byte-len`/`to-bytes`.
+    /// These reach the string runtime indexing/slice/length lowering (the StrAt/BytesAt width-alias
+    /// class the breaker mined) where a value executes, feeding the differential oracle. A
+    /// boundary/negative index drawn from `num_lit` lands on the out-of-bounds edge (a clean
+    /// `None`, never a hang). Result type (Option String / String / Int / Bytes) governs the node,
+    /// so a mismatch with the outer `want` is a clean decline. String operands are literals so the
+    /// call always types and reaches codegen.
+    fn string_builtin_expr(&mut self, depth: u32) {
+        match self.cur.choice(5) {
+            0 => {
+                self.out.push_str("(String.at ");
+                self.string_lit();
+                self.out.push(' ');
+                self.expr(depth.saturating_sub(1), Kind::Num);
+                self.out.push(')');
+            }
+            1 => {
+                self.out.push_str("(String.slice ");
+                self.string_lit();
+                self.out.push(' ');
+                self.expr(depth.saturating_sub(1), Kind::Num);
+                self.out.push(' ');
+                self.expr(depth.saturating_sub(1), Kind::Num);
+                self.out.push(')');
+            }
+            2 => {
+                self.out.push_str("(String.concat ");
+                self.string_lit();
+                self.out.push(' ');
+                self.string_lit();
+                self.out.push(')');
+            }
+            3 => {
+                self.out.push_str("(String.byte-len ");
+                self.string_lit();
+                self.out.push(')');
+            }
+            _ => {
+                self.out.push_str("(String.to-bytes ");
+                self.string_lit();
                 self.out.push(')');
             }
         }
@@ -880,6 +926,26 @@ mod tests {
             }
         }
         assert!(hit, "no seed in the sweep emitted a List builtin");
+    }
+
+    /// The String-builtin arm is reachable — some seed emits a `(String.at|slice|concat|byte-len|
+    /// to-bytes ...)` call — and every program that path can emit still parses. Guards the string
+    /// runtime reach (StrAt/BytesAt width-alias territory) against a refactor that drops it.
+    #[test]
+    fn some_seed_emits_a_string_builtin() {
+        let mut hit = false;
+        for n in 0..8000u32 {
+            let seed = varied_seed(n);
+            let src = generate(&seed).source;
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "generated program did not parse:\n{src}"
+            );
+            if src.contains("(String.") {
+                hit = true;
+            }
+        }
+        assert!(hit, "no seed in the sweep emitted a String builtin");
     }
 
     /// Generation is deterministic in the seed (required for reproducing + shrinking a finding).
