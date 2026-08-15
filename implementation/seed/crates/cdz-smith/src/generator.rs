@@ -315,7 +315,7 @@ impl Gen<'_> {
         }
         // Weighted toward leaves + operators + control flow (the shapes most likely to type and
         // reach codegen); the tail arms exercise ctors, access, ascription, and match.
-        match self.cur.choice(14) {
+        match self.cur.choice(15) {
             0..=2 => self.leaf(want),
             3 => self.if_expr(depth, want),
             4 => self.let_expr(depth, want),
@@ -327,6 +327,7 @@ impl Gen<'_> {
             10 => self.ctor("tuple", depth),
             11 => self.access_expr(depth),
             12 => self.ascribe_expr(depth, want),
+            13 => self.list_builtin_expr(depth),
             _ => self.match_expr(depth, want),
         }
     }
@@ -513,6 +514,51 @@ impl Gen<'_> {
         self.out.push(')');
     }
 
+    /// A homogeneous, non-empty numeric list `(list <num> <num> ...)` — the operand a `List.*`
+    /// builtin needs to actually TYPE (a heterogeneous list declines) and reach the list runtime
+    /// lowering. Non-empty so an index op has something to hit.
+    fn num_list(&mut self, depth: u32) {
+        let n = 1 + self.cur.choice(3); // 1..=3 elements
+        self.out.push_str("(list");
+        for _ in 0..n {
+            self.out.push(' ');
+            self.expr(depth.saturating_sub(1), Kind::Num);
+        }
+        self.out.push(')');
+    }
+
+    /// A `List`-module builtin over a freshly-built numeric list — `len`/`at`/`update`. These reach
+    /// the list runtime indexing/update lowering (the width-partition-index-scratch class the breaker
+    /// mined: ListAt/ListUpdate) where a value actually executes, feeding the differential oracle. A
+    /// boundary/negative index drawn from `num_lit` lands on the out-of-bounds edge (a clean
+    /// `None`/no-op, not a hang). The result type (Int / Option / List) governs the node, so a
+    /// mismatch with the outer `want` is a clean decline.
+    fn list_builtin_expr(&mut self, depth: u32) {
+        match self.cur.choice(3) {
+            0 => {
+                self.out.push_str("(List.len ");
+                self.num_list(depth);
+                self.out.push(')');
+            }
+            1 => {
+                self.out.push_str("(List.at ");
+                self.num_list(depth);
+                self.out.push(' ');
+                self.expr(depth.saturating_sub(1), Kind::Num);
+                self.out.push(')');
+            }
+            _ => {
+                self.out.push_str("(List.update ");
+                self.num_list(depth);
+                self.out.push(' ');
+                self.expr(depth.saturating_sub(1), Kind::Num);
+                self.out.push(' ');
+                self.expr(depth.saturating_sub(1), Kind::Num);
+                self.out.push(')');
+            }
+        }
+    }
+
     fn access_expr(&mut self, depth: u32) {
         // (. <expr> <name-or-index>)
         self.out.push_str("(. ");
@@ -617,6 +663,21 @@ fn kind_of_type(ty: &str) -> Kind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A varied (non-uniform) byte seed derived from `n`, for reachability sweeps. Uniform `[b; N]`
+    /// seeds drive every choice site with the SAME byte, which can make an arm gated behind two
+    /// successive `choice`s structurally unreachable; a varied seed exercises every arm combination
+    /// over a large-enough sweep, so these tests stay robust to grammar-distribution changes (adding
+    /// an `expr` arm shifts the modulus and would break hand-tuned fixed seeds).
+    fn varied_seed(n: u32) -> Vec<u8> {
+        (0..24u32)
+            .map(|i| {
+                (n.wrapping_mul(2_654_435_761)
+                    .wrapping_add(i.wrapping_mul(40_503))
+                    >> 11) as u8
+            })
+            .collect()
+    }
 
     /// Any seed — including empty, all-zero, and adversarial — produces parseable s-expr.
     #[test]
@@ -781,8 +842,8 @@ mod tests {
     #[test]
     fn some_seed_emits_a_tuple_destructuring_match() {
         let mut hit = false;
-        for b0 in 0u16..=255 {
-            let seed = [b0 as u8, 13, b0 as u8, 7, 2, b0 as u8, 9, 4, 1, 6];
+        for n in 0..8000u32 {
+            let seed = varied_seed(n);
             let src = generate(&seed).source;
             assert!(
                 cadenza_syntax::sexpr::read(&src).is_ok(),
@@ -796,6 +857,29 @@ mod tests {
             hit,
             "no seed in the sweep emitted a tuple-destructuring match"
         );
+    }
+
+    /// The List-builtin arm is reachable — some seed emits a `(List.len|at|update ...)` call over a
+    /// list — and every program that path can emit still parses. Guards the list-runtime reach
+    /// (ListAt/ListUpdate width-alias territory) against a refactor that drops it.
+    #[test]
+    fn some_seed_emits_a_list_builtin() {
+        let mut hit = false;
+        for n in 0..8000u32 {
+            let seed = varied_seed(n);
+            let src = generate(&seed).source;
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "generated program did not parse:\n{src}"
+            );
+            if src.contains("(List.len ")
+                || src.contains("(List.at ")
+                || src.contains("(List.update ")
+            {
+                hit = true;
+            }
+        }
+        assert!(hit, "no seed in the sweep emitted a List builtin");
     }
 
     /// Generation is deterministic in the seed (required for reproducing + shrinking a finding).
