@@ -5095,6 +5095,7 @@ pass	division by zero traps
 pass	division of an integer and a float does not silently promote
 pass	division of the minimum integer by -1 overflows and traps
 pass	dl1 TEN chained lets each drawing once — position weights 1..10 pin every binder to its draw
+pass	dlt1 a DELTA encoder and decoder sharing ONE previous-value slot — enc answers the difference storing the raw value, dec answers the reconstruction storing it, interleaving them CROSS-TALKS through the shared slot by design, and after the seed washes out of the second row the tails converge exactly
 pass	dn1 a FIVE-deep same-effect shadow tower — one draw per level plus a doubled draw at the innermost
 pass	dn2b an abort under FOUR resumptive frames — the unwind abandons all four pending sums (extends the three-frame pin)
 pass	dn3 an ALTERNATING A/B/A/B tower where both effects share the op NAME next — each perform homes to its effect's innermost handler
@@ -5131,6 +5132,7 @@ pass	ed2 a handled def CALLED from inside another def's handle — the callee's 
 pass	ed3 a RECURSIVE def that handles per frame, called from a handled main — the base case draws from the deepest frame's handler
 pass	ed4 one shared performing helper called under TWO different live handlers — each call homes to its caller's region
 pass	effect state threads across a successful `?`
+pass	egy1 EGYPTIAN multiplication — each step tests the multiplier's low bit (accumulating the doubled multiplicand when odd) answering odd*100 plus the running product's low digits, acc reads the exact product, and the seeds' bit patterns (all-ones versus alternating) fire the accumulation on different steps
 pass	ema1 an INTEGER EMA state — each dispatch blends (3*ema + 100*v)/4 at 100x scale, convergence toward the fed value from both sides
 pass	encoding a decoded string round-trips to the same bytes
 pass	encoding and decoding a constructor-built AST round-trips to an equal value
@@ -6602,6 +6604,7 @@ pass	tl3 the MIDDLE frame's arm resumes with an OUTERMOST draw — rv-face at de
 pass	tl4 SAME effect handled at two depths — the inner handle shadows for its extent, the outer thread resumes after it closes
 pass	tm2 a THREE-function mutual SCC — two tail legs route by value, the third combines the cycle result with a post-put draw
 pass	tmp1 a SIMULATED-ANNEALING acceptance schedule — cool decays the temperature by nine-tenths truncating, accept takes any improvement and any worsening still under the heat counting the accepts, and the hot seed accepts EVERYTHING the cold seed rejects while both take the improving move
+pass	tmr1 a TRIPLE-MODULAR-REDUNDANCY voter — set writes one of three channel slots, vote answers the majority value or -1 counting the all-differ disagreements, and the seed corrupts channel zero so one run stays unanimous while the other walks through a majority flip, a full disagreement, and a healed two-vote majority
 pass	to-bytes of a sliced multibyte string is read twice and both reads see the right bytes
 pass	tok1 a TOKENIZER protocol — next-tok skips leading spaces, answers the token's byte-len, and threads the REST of the string; the drained stream answers zero forever
 pass	tp1 TWO ops each own a tuple-state SLOT — lo advances field 0, hi doubles field 1, interleaved

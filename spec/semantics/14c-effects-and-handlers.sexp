@@ -12233,3 +12233,93 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 101515161919 Int64))
   (call   main (: 0 Int64)) (output (: 101119202323 Int64)))
+
+;; ── Delta codec cross-talk, Egyptian multiplication, TMR voter (breaker batch 287) ───────────
+(case "dlt1 a DELTA encoder and decoder sharing ONE previous-value slot — enc answers the difference storing the raw value, dec answers the reconstruction storing it, interleaving them CROSS-TALKS through the shared slot by design, and after the seed washes out of the second row the tails converge exactly"
+  (input  (do
+            (effect D
+              (op enc (-> Int64 Int64))
+              (op dec (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle D (: 0 Int64)
+                ((enc (v) prev (resume (- v prev) v))
+                 (dec (d) prev (resume (+ prev d) (+ prev d))))
+                (let ((a (D.enc (+ n 4))))
+                  (let ((b (D.enc 9)))
+                    (let ((c (D.dec 3)))
+                      (let ((d (D.enc 20)))
+                        (let ((e (D.dec -5)))
+                          (let ((f (D.dec 2)))
+                            (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 139512081517 Int64))
+  (call   main (: 0 Int64)) (output (: 40512081517 Int64)))
+
+(case "egy1 EGYPTIAN multiplication — each step tests the multiplier's low bit (accumulating the doubled multiplicand when odd) answering odd*100 plus the running product's low digits, acc reads the exact product, and the seeds' bit patterns (all-ones versus alternating) fire the accumulation on different steps"
+  (input  (do
+            (effect E
+              (op step (-> Int64))
+              (op acc (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple (+ n 5) (: 7 Int64) (: 0 Int64))
+                ((step () st
+                  (match st
+                    ((tuple mult mcand accv)
+                      (if (= (% mult 2) 1)
+                          (resume (+ 100 (% (+ accv mcand) 100))
+                                  (tuple (/ mult 2) (* mcand 2) (+ accv mcand)))
+                          (resume (% accv 100)
+                                  (tuple (/ mult 2) (* mcand 2) accv))))))
+                 (acc () st
+                  (match st ((tuple mult mcand accv) (resume accv st)))))
+                (let ((a (E.step)))
+                  (let ((b (E.step)))
+                    (let ((c (E.step)))
+                      (let ((d (E.step)))
+                        (let ((e (E.acc)))
+                          (+ (* 1000 (+ (* 1000 (+ (* 1000 (+ (* 1000 a) b)) c)) d)) e))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 107121149105105 Int64))
+  (call   main (: 0 Int64)) (output (: 107007135035035 Int64)))
+
+(case "tmr1 a TRIPLE-MODULAR-REDUNDANCY voter — set writes one of three channel slots, vote answers the majority value or -1 counting the all-differ disagreements, and the seed corrupts channel zero so one run stays unanimous while the other walks through a majority flip, a full disagreement, and a healed two-vote majority"
+  (input  (do
+            (effect T
+              (op set (-> Int64 Int64 Int64))
+              (op vote (-> Int64))
+              (op bad (-> Int64)))
+            (def (main (: n Int64))
+              (handle T (tuple (: 0 Int64) (: 0 Int64) (: 0 Int64) (: 0 Int64))
+                ((set (i v) st
+                  (match st
+                    ((tuple a b c k)
+                      (if (= i 0)
+                          (resume v (tuple v b c k))
+                          (if (= i 1)
+                              (resume v (tuple a v c k))
+                              (resume v (tuple a b v k)))))))
+                 (vote () st
+                  (match st
+                    ((tuple a b c k)
+                      (if (= a b)
+                          (resume a st)
+                          (if (= a c)
+                              (resume a st)
+                              (if (= b c)
+                                  (resume b st)
+                                  (resume -1 (tuple a b c (+ k 1)))))))))
+                 (bad () st
+                  (match st ((tuple a b c k) (resume k st)))))
+                (let ((p (T.set 0 (+ n 2))))
+                  (let ((q (T.set 1 12)))
+                    (let ((r (T.set 2 12)))
+                      (let ((s (T.vote)))
+                        (let ((t (T.set 1 7)))
+                          (let ((u (T.vote)))
+                            (let ((v (T.set 2 (+ n 2))))
+                              (let ((w (T.vote)))
+                                (let ((x (T.bad)))
+                                  (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 p) q)) r)) s)) t)) u)) v)) w)) x))))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 121212120712121200 Int64))
+  (call   main (: 0 Int64)) (output (: 21212120699020201 Int64)))
