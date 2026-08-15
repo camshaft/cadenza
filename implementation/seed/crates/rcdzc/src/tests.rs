@@ -3731,6 +3731,108 @@ fn value_encode_decode_type_a_structured_record_round_trip_surface() {
     );
 }
 
+/// R2 DECODE GROUNDING (the v-inference typing fix v-rust-backend's backend surfaced): `Value.decode`'s
+/// result `a` is unconstrained by its `Bytes` argument, so the decode APPLICATION node types `(Option ?a)`
+/// bottom-up. An enclosing `(: (Value.decode bs) (Option Pt))` annotation must ground `?a := Pt` AT the
+/// decode node's own `type_of` — because `lower_value_decode` reads `type_of(decode-node)` to build the
+/// shape descriptor, and a free `?a` there declines "target unsolved". The fix climbs from the decode node
+/// to the enclosing annotation (mirroring `literal_binop_context_ty`'s deferred-width climb). This asserts
+/// the DECODE application node's `type_of` is the GROUND `(Option Pt)`, not `(Option ?)` — the precise thing
+/// the lower reads.
+#[test]
+fn value_decode_grounds_its_target_from_the_enclosing_annotation() {
+    use crate::db::Db;
+    use crate::testkit::parse;
+    let src = "(module m (type Pt (Mk Int64)) \
+                 (def (dec (: bs Bytes)) (: (Value.decode bs) (Option Pt))) (export dec))";
+    let mut db = Db::load(parse(src));
+    let decode_ty = (0..db.ast.structure.len() as u32)
+        .map(crate::ast::StructId)
+        .find_map(|id| {
+            matches!(crate::resolve::resolved_of(&mut db, id), crate::resolved::Resolved::Apply { head, .. }
+                if crate::eval::meta_apply_of(&mut db, head) == Some(crate::resolved::Prim::ValueDecode))
+                .then(|| crate::infer::type_of(&mut db, id))
+        })
+        .expect("a Value.decode application node");
+    match &decode_ty {
+        crate::ty::Ty::Sum { args, .. } => {
+            let target = args.first().expect("Option carries its element arg");
+            assert!(
+                !matches!(target, crate::ty::Ty::Var(_)),
+                "Value.decode's target must be grounded from the (Option Pt) annotation, not left a free \
+                 Var (lower reads this node's type to build the descriptor): got {}",
+                decode_ty.render_name(&db.name_ctx())
+            );
+        }
+        other => panic!("Value.decode node must type as (Option _), got {other:?}"),
+    }
+}
+
+/// R2 ROUND-TRIP, NON-VACUOUS (reviewer-requested: the `Value.decode` lower + `Core::ValueDecode` wasm emit
+/// were dead-on-trunk until the grounding fix that lands with this test, so the emit must be proven under a
+/// RUN, not just type-checked). `main` encodes `(Pt.Mk (record x=7 y=107))` to its binary-AST value-form
+/// Bytes, then `Value.decode`s into `(Option Pt)` (the annotation grounds the target), takes the `Some`
+/// arm, and reads back `x + y == 114`. Runs the compiled component with the value-heap runtime LINKED via
+/// `run_linked` (decode mints a heap value), so a good document decodes to `Some` and reconstructs the
+/// record — the decode emit fires for real. Skips if the runtime wasm is absent (the established heap-test
+/// pattern). This is the gate-visible non-vacuous proof the corpus runner can't give (it doesn't stage the
+/// value-heap runtime for a Bytes round-trip → records `todo`).
+#[test]
+fn value_encode_then_decode_round_trips_a_record_nominal_when_run() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (type Pt (Mk (Record (: x Int64) (: y Int64)))) \
+                 (def (main) \
+                   (let ((bs (Value.encode (Pt.Mk (record (= x 7) (= y 107)))))) \
+                     (match (: (Value.decode bs) (Option Pt)) \
+                       ((Some p) (match p ((Pt.Mk r) (+ (. r x) (. r y))))) \
+                       ((None) -1)))) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("the Value.encode/decode round-trip reducer compiles");
+    if let Some(v) = run_linked(&bytes, "main") {
+        assert_eq!(
+            v, "114",
+            "Value.decode of Value.encode must reconstruct the record (Some arm, x+y=7+107): a `None` or \
+             wrong value means the decode emit round-trip is broken"
+        );
+    }
+}
+
+/// R2 ENCODE GUARD — the scalar-erased-newtype DECLINE (reviewer-requested regression pin, R2 last-mile).
+/// `Value.encode` walks an i32 HEAP HANDLE; a scalar-erased newtype over a WIDER-than-i32 scalar (`type W (Mk
+/// Int64)` — the box is erased, so `W`'s runtime rep IS the bare `i64`, NOT a handle) has no handle slot. The
+/// emit's `valtype_of != I32` guard DECLINES cleanly rather than `LocalTee`ing the `i64` into an `i32` handle
+/// slot — which emitted INVALID wasm ("expected i32, found i64") LIVE ON ORIGIN before this guard (the encode
+/// arm shipped in 057e19950 with no valtype check). Pins the guard so the encode hole can't regress. (An
+/// i32-erased newtype `(Mk Int32)` encodes FINE — value-encode reads the i32 slot as the integer; only
+/// wider-than-i32 scalars mismatch, so the guard is calibrated to the rep width, verified by reviewer.)
+#[test]
+fn value_encode_on_a_wide_scalar_erased_newtype_declines_not_invalid_wasm() {
+    use crate::testkit::parse;
+    let src = "(module m (type W (Mk Int64)) (def (main) (Value.encode (W.Mk 7))) (export main))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:reducer/api"),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        out.has_error(),
+        "Value.encode of a scalar-erased newtype over Int64 (no heap handle) must DECLINE, not emit invalid \
+         wasm (the live-origin i64-into-i32-handle-slot hole this guard closes): {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| (&d.code, &d.message))
+            .collect::<Vec<_>>()
+    );
+}
+
 /// RULING A (2026-08-14, resolving v-effects' freeze-blocking reify/2b crux): a TARGET-HAVING world-effect
 /// — one whose op carries an `@resource` marker (`Emit.send(@resource dest, payload)`) — reifies the dest to
 /// its OWN `target: Bytes` wire field (the dest is a runtime value SEC-F1 authorizes against a resource

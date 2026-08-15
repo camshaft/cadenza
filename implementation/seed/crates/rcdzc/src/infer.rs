@@ -5798,7 +5798,67 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     {
         return subst.apply(result);
     }
+    // `Value.decode : ∀a. Bytes → (Option a)` — its result `a` is UNCONSTRAINED by the argument (a
+    // `Bytes`), so per-node bottom-up `type_of` leaves the application `(Option ?a)` with `?a` free. The
+    // target `a` is fixed by the CALL-SITE EXPECTED TYPE — an enclosing `(: (Value.decode …) (Option T))`
+    // annotation. But an annotation is the node's PARENT: its `type_of` arm unifies `annot_ty` with this
+    // node's type in a LOCAL subst and returns the grounded type for the ANNOTATION node — it does NOT
+    // thread the `a := T` binding back into THIS node's memoized `type_of`. `lower_value_decode` reads
+    // `type_of(decode-node)` to build the shape descriptor, so an ungrounded `?a` there DECLINES
+    // ("target type is unsolved") even though the annotation names it. So when this application is
+    // `Value.decode` and its result is still `(Option <free>)`, CLIMB to the enclosing annotation (the same
+    // parent-context grounding `literal_binop_context_ty` does for a deferred integer width) and unify the
+    // annotation's type into the result. Keyed on the PRIM, not a name — generic-compiler-clean; no other
+    // op needs this (an arg-grounded result is already concrete). An UNANNOTATED decode stays `(Option ?a)`
+    // and declines at lower (the honest needs-annotation contract).
+    if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::ValueDecode)
+        && matches!(&applied, Ty::Sum { args, .. } if args.first().is_some_and(has_free_var))
+        && let Some(expected) = annotation_context_ty(db, head)
+    {
+        let mut gsubst = Subst::new();
+        if crate::unify::unify(&mut gsubst, &applied, &expected, &db.name_ctx()).is_ok() {
+            return gsubst.apply(&applied);
+        }
+    }
     applied
+}
+
+/// Whether `ty` contains an unsolved type VARIABLE anywhere (a free `Ty::Var`). Used to detect a
+/// `Value.decode` result `(Option ?a)` whose target is not yet grounded, so `type_of` climbs to the
+/// annotation to fix it before `lower_value_decode` reads the node's type for its descriptor.
+fn has_free_var(ty: &Ty) -> bool {
+    match ty {
+        Ty::Var(_) => true,
+        Ty::Sum { args, .. } | Ty::Nominal { args, .. } => args.iter().any(has_free_var),
+        Ty::List(e) => has_free_var(e),
+        Ty::Tuple(es) => es.iter().any(has_free_var),
+        Ty::Map(k, v) => has_free_var(k) || has_free_var(v),
+        Ty::Record(fs) => fs.values().any(has_free_var),
+        _ => false,
+    }
+}
+
+/// The type an enclosing `(: <this> <Type>)` annotation grounds `id` to — climb PARENTS to the nearest
+/// `Resolved::Annot` whose annotated `expr` is on the path from `id`, and reduce its `ty_expr` to a type
+/// value. `None` if no annotation encloses `id` (then a `Value.decode` there stays ungrounded and declines
+/// at lower — the honest needs-annotation contract). Mirrors `literal_binop_context_ty`'s parent-climb for
+/// a deferred integer width — the shared "consult the context because per-node `type_of` can't thread it
+/// back" path. Starts at `head` (the decode op node), whose first parent is the application node, whose
+/// parent is the annotation; a non-annotation parent chain simply finds no annotation and returns `None`.
+fn annotation_context_ty(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
+    let mut child = id;
+    loop {
+        let parent = db.parent_of(child)?;
+        if let Resolved::Annot { expr, ty_expr } = resolved_of(db, parent) {
+            // Only the annotation whose annotated expression is (an ancestor-or-self on the path from) THIS
+            // node grounds it — `(: (Value.decode bs) (Option T))` has `expr` == the decode application node.
+            if expr == child {
+                return crate::eval::typeval_of(db, ty_expr);
+            }
+            return None;
+        }
+        child = parent;
+    }
 }
 
 /// Apply a def SCHEME to `args`, returning the result type — instantiate it with fresh variables, then
