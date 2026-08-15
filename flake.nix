@@ -893,6 +893,20 @@
           witWorld = "pure";
           contentAddressed = true;
         };
+        # PUBLISH (role-library, the MR/PUBLISH role): folds a unit-complete event into the git publish
+        # sequence (git add -> commit -> push) as returned effect records (kind = "shell", const-literal
+        # Ast.encode interim). PURE — returns effects only, NO host import — so it targets the pure-fold world
+        # like reducer_vertical/reify, `witWorld = "pure"`. Consumed by v-agent-harness-host's publish-sequence
+        # host e2e (real_publish_reducer_emits_the_git_add_commit_push_sequence...) via env
+        # CDZ_REDUCER_PUBLISH_COMPONENT (exported in agentHostEnvSetup below, + the shared CDZ_STORE for the
+        # cadenza:runtime/heap dep). CA like the siblings.
+        reducerCadenzaPublish = mkCadenzaComponent {
+          name = "reducer-cadenza-publish";
+          cdzFile = "reducer_publish.cdz";
+          componentName = "cadenza:agent-kernel/fold";
+          witWorld = "pure";
+          contentAddressed = true;
+        };
         # KV-GENESIS (A1 bytes fold boundary): the sibling of pure-genesis that exercises the kv IMPORT end-to-end
         # — reducer_kv.cdz PUTs a value under a fixed key on a seed event then GETs it back on a trigger event and
         # echoes it, proving BOTH kv.put AND the kv.get option<list<u8>> host-result lift (rcdzc §3c GAP C,
@@ -1267,6 +1281,12 @@
           # reducer for now). Returns effects only (no host import) so it needs only CDZ_STORE for its
           # cadenza:runtime/heap dep. Same pattern as CDZ_AGENT_LOOP_REDUCER_COMPONENT above.
           export CDZ_REDUCER_VERTICAL_COMPONENT="${reducerCadenzaVertical}"
+          # PUBLISH (MR/publish role): feed the precompiled publish reducer so v-ah-host's publish-sequence
+          # host e2e RUNS instead of skipping — it drives a unit-complete event and asserts the git
+          # add->commit->push shell-effect sequence fires (real_publish_reducer_emits_the_git_add_commit_push_sequence).
+          # Pure (effects-only, no host import) so it needs only CDZ_STORE for its cadenza:runtime/heap dep.
+          # Same pattern as CDZ_REDUCER_VERTICAL_COMPONENT.
+          export CDZ_REDUCER_PUBLISH_COMPONENT="${reducerCadenzaPublish}"
           # INBOX-DEDUP (KV-backed inbox-drain role): feed the precompiled host-fused inbox-kv reducer so
           # v-ah-host's inbox-dedup e2e RUNS instead of skipping — it delivers an inbox/<kind> event TWICE and
           # asserts exactly ONE act/archive then nothing, proving the KV seen-set dedup (kv.get check-seen +
@@ -2322,6 +2342,7 @@
         packages.reducer-cadenza-pure-genesis = reducerCadenzaPureGenesis;
         packages.reducer-cadenza-reify = reducerCadenzaReify;
         packages.reducer-cadenza-vertical = reducerCadenzaVertical;
+        packages.reducer-cadenza-publish = reducerCadenzaPublish;
         packages.reducer-cadenza-kv = reducerCadenzaKv;
         packages.reducer-cadenza-inbox-kv = reducerCadenzaInboxKv;
         packages.reducer-cadenza-tick-kv = reducerCadenzaTickKv;
@@ -2334,6 +2355,7 @@
         packages.reducer-cadenza-pure-genesis-hash = hashOf reducerCadenzaPureGenesis "reducer-cadenza-pure-genesis-hash";
         packages.reducer-cadenza-reify-hash = hashOf reducerCadenzaReify "reducer-cadenza-reify-hash";
         packages.reducer-cadenza-vertical-hash = hashOf reducerCadenzaVertical "reducer-cadenza-vertical-hash";
+        packages.reducer-cadenza-publish-hash = hashOf reducerCadenzaPublish "reducer-cadenza-publish-hash";
         packages.reducer-cadenza-kv-hash = hashOf reducerCadenzaKv "reducer-cadenza-kv-hash";
         packages.reducer-cadenza-inbox-kv-hash = hashOf reducerCadenzaInboxKv "reducer-cadenza-inbox-kv-hash";
         packages.reducer-cadenza-tick-kv-hash = hashOf reducerCadenzaTickKv "reducer-cadenza-tick-kv-hash";
@@ -2523,7 +2545,7 @@
                 inherit runtimeHashParity runtimeDebugHashParity nfcHashParity
                   reducerGuestValid cedarGuestValid
                   reducerCadenzaB1Valid reducerCadenzaB2Valid reducerCadenzaB3Valid reducerCadenzaGenesisValid
-                  reducerCadenzaPureGenesisValid reducerCadenzaReifyValid reducerCadenzaVerticalValid reducerCadenzaKvValid reducerCadenzaInboxKvValid reducerCadenzaTickKvValid reducerCadenzaAgentLoopValid
+                  reducerCadenzaPureGenesisValid reducerCadenzaReifyValid reducerCadenzaVerticalValid reducerCadenzaPublishValid reducerCadenzaKvValid reducerCadenzaInboxKvValid reducerCadenzaTickKvValid reducerCadenzaAgentLoopValid
                   exampleProjectTests reducerCadenzaTests crateClosureAssert;
               } ''
               echo "ok: flake reproducibility-backstop — hash-parity + component-validity + project-@tests + closure-assert" > $out
@@ -2544,6 +2566,7 @@
             reducerCadenzaPureGenesisValid = validComponent { name = "reducer-cadenza-pure-genesis"; drv = reducerCadenzaPureGenesis; };
             reducerCadenzaReifyValid = validComponent { name = "reducer-cadenza-reify"; drv = reducerCadenzaReify; };
             reducerCadenzaVerticalValid = validComponent { name = "reducer-cadenza-vertical"; drv = reducerCadenzaVertical; };
+            reducerCadenzaPublishValid = validComponent { name = "reducer-cadenza-publish"; drv = reducerCadenzaPublish; };
             reducerCadenzaKvValid = validComponent { name = "reducer-cadenza-kv"; drv = reducerCadenzaKv; };
             reducerCadenzaInboxKvValid = validComponent { name = "reducer-cadenza-inbox-kv"; drv = reducerCadenzaInboxKv; };
             reducerCadenzaTickKvValid = validComponent { name = "reducer-cadenza-tick-kv"; drv = reducerCadenzaTickKv; };
@@ -2688,6 +2711,7 @@
             reducer-cadenza-pure-genesis-valid = reducerCadenzaPureGenesisValid;
             reducer-cadenza-reify-valid = reducerCadenzaReifyValid;
             reducer-cadenza-vertical-valid = reducerCadenzaVerticalValid;
+            reducer-cadenza-publish-valid = reducerCadenzaPublishValid;
             reducer-cadenza-kv-valid = reducerCadenzaKvValid;
             reducer-cadenza-inbox-kv-valid = reducerCadenzaInboxKvValid;
             reducer-cadenza-tick-kv-valid = reducerCadenzaTickKvValid;
