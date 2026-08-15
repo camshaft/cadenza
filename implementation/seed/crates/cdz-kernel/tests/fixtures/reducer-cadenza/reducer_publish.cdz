@@ -1,0 +1,183 @@
+// reducer_publish.cdz -- ROLE LIBRARY: the MR/PUBLISH role (increment #4) -- git-publish via shell effects.
+//
+// The publish step of the fleet loop: on a completed unit, drive `git add . -> git commit -> git push` as
+// `shell` effects. A `shell` effect is STRUCTURED (operator: no flat-string whitespace split). The kernel's
+// shell EffectRequest (cdz-kernel effect.rs EffectRequest::shell) is: kind = "shell", TARGET = the program
+// bytes (the SEC-F1-gated unit), PAYLOAD = the (shell-pipeline (stage (program <p>) (args (arg <a>) ..)))
+// canonical AST document that cdz-kernel decode_shell_pipeline reads (event_ast encode_shell_pipeline).
+//
+// ENCODER: `Ast.encode` (Prim::AstEncode, Ast -> Bytes) produces the BARE canonical document the kernel
+// reads -- NOT `Value.encode`, which wraps the Ast as a runtime value-form decode_shell_pipeline rejects
+// (v-inference + v-effects finding). `Ast`, `Ast.Name`, `Ast.List`, `Ast.Str`, `Ast.encode` are PRELUDE.
+//
+// INTERIM (concierge + v-inference GO, 2026-08-15): `Ast.encode` is CONSTANT-only today -- it declines a
+// RUNTIME-built Ast ("Ast.encode of a runtime AST value is not yet computed"). So this reference reducer
+// builds each git command's pipeline as a FULLY-CONSTANT Ast literal (fixed program + fixed args), which
+// Ast.encode accepts NOW. The general parameterized `Shell.pipeline(program, args)` builder (recursive
+// arg-forms over runtime args) is v-inference-owned and swaps in once v-rust-backend lands the RUNTIME
+// Ast.encode lowering (ratified Option B). Fixed add / commit-with-fixed-msg / push cover the publish flow;
+// any RUNTIME arg (dynamic commit message / branch / path) waits for the runtime lowering.
+//
+// PURE: returns effect records (kind = "shell"), no host import -> `cdz test`-gated on the seed VM like
+// reducer_tick/inbox/vertical/supervisor. The END-TO-END shell round-trip (bytes actually decode + run) is
+// v-effects' byte co-gate (Ast.encode bytes decode via decode_shell_pipeline) + a v-agent-harness-host
+// publish-sequence e2e; the @tests here pin the reducer's OWN contract (the emitted effect SHAPE).
+
+// Shared strict Event value-form fields (same across the reducer-cadenza fixtures).
+type ReplyPayload =
+  | Inline(Bytes)
+  | Blob(Bytes)
+
+type Outcome =
+  | Ok(ReplyPayload)
+  | Err(Record(message: Bytes, retryable: Bool))
+  | TimedOut
+
+type ChildOutcome =
+  | Success(ReplyPayload)
+  | Failure(Bytes)
+
+// --- Constant-literal shell-pipeline payloads (one nullary def per fixed git command; Ast.encode accepts
+//     a fully-constant Ast today). Each is the (shell-pipeline (stage (program git) (args (arg ..) ..)))
+//     canonical document, Ast.encode'd to the bytes cdz-kernel decode_shell_pipeline reads. ---
+
+// git add .
+def git-add-payload() =
+  Ast.encode(
+    Ast.List([
+      Ast.Name("shell-pipeline"),
+      Ast.List([
+        Ast.Name("stage"),
+        Ast.List([Ast.Name("program"), Ast.Str("git")]),
+        Ast.List([
+          Ast.Name("args"),
+          Ast.List([Ast.Name("arg"), Ast.Str("add")]),
+          Ast.List([Ast.Name("arg"), Ast.Str(".")]),
+        ]),
+      ]),
+    ]))
+
+// git commit -m "fleet unit"  (fixed message -- a RUNTIME message waits for v-rb's runtime Ast.encode)
+def git-commit-payload() =
+  Ast.encode(
+    Ast.List([
+      Ast.Name("shell-pipeline"),
+      Ast.List([
+        Ast.Name("stage"),
+        Ast.List([Ast.Name("program"), Ast.Str("git")]),
+        Ast.List([
+          Ast.Name("args"),
+          Ast.List([Ast.Name("arg"), Ast.Str("commit")]),
+          Ast.List([Ast.Name("arg"), Ast.Str("-m")]),
+          Ast.List([Ast.Name("arg"), Ast.Str("fleet unit")]),
+        ]),
+      ]),
+    ]))
+
+// git push
+def git-push-payload() =
+  Ast.encode(
+    Ast.List([
+      Ast.Name("shell-pipeline"),
+      Ast.List([
+        Ast.Name("stage"),
+        Ast.List([Ast.Name("program"), Ast.Str("git")]),
+        Ast.List([
+          Ast.Name("args"),
+          Ast.List([Ast.Name("arg"), Ast.Str("push")]),
+        ]),
+      ]),
+    ]))
+
+// Wrap an already-encoded shell-pipeline payload in a `git` shell effect record: kind = "shell",
+// target = program bytes (the SEC-F1-gated unit), payload = the structured value-form, correlation = none.
+def git-effect(pipeline: Bytes) =
+  {
+    kind = "shell",
+    target = String.to-bytes("git"),
+    payload = Some(pipeline),
+    correlation = None(),
+  }
+
+def apply(
+  event: Record(
+    content-type: Record(family: String, version: UInt(32)),
+    payload: Option(Bytes),
+    resumes: Option(Bytes),
+    outcome: Option(Outcome),
+    child-completed: Option(Record(child: Bytes, outcome: ChildOutcome)),
+  ),
+) -> List(Record(
+  kind: String,
+  target: Bytes,
+  payload: Option(Bytes),
+  correlation: Option(Bytes),
+)) =
+  let family = event.content-type.family in
+  if family == "unit-complete" then
+    // Publish the completed unit: git add . -> git commit -> git push (in order).
+    [
+      git-effect(git-add-payload()),
+      git-effect(git-commit-payload()),
+      git-effect(git-push-payload()),
+    ]
+  else
+    // Not a completed unit -> nothing to publish.
+    []
+
+// --- @tests (`cdz test`, host-independent): the reducer's OWN contract (the emitted effect SHAPE) ---
+
+@test
+def unit_complete_publishes_the_git_sequence() =
+  let evt = {
+    content-type = { family = "unit-complete", version = 1 },
+    payload = None(),
+    resumes = None(),
+    outcome = None(),
+    child-completed = None(),
+  } in
+  let effs = apply(evt) in
+  if List.len(effs) == 3 then
+    (match List.at(effs, 0) with
+       | Some(eff) =>
+         (if eff.kind == "shell" and eff.target == String.to-bytes("git") then
+            (match eff.payload with
+               | Some(_) => unit
+               | None() => trap("a git shell effect must carry the structured pipeline payload"))
+          else trap("publish must emit kind=shell targeting git"))
+       | None() => trap("unit-complete must publish git shell effects"))
+  else trap("unit-complete must publish exactly 3 effects: add, commit, push")
+
+@test
+def every_published_effect_is_a_git_shell_effect() =
+  let evt = {
+    content-type = { family = "unit-complete", version = 1 },
+    payload = None(),
+    resumes = None(),
+    outcome = None(),
+    child-completed = None(),
+  } in
+  let effs = apply(evt) in
+  // The push effect (index 2) must also be a git shell effect carrying a payload.
+  match List.at(effs, 2) with
+    | Some(eff) =>
+      (if eff.kind == "shell" and eff.target == String.to-bytes("git") then
+         (match eff.payload with
+            | Some(_) => unit
+            | None() => trap("the push effect must carry its pipeline payload"))
+       else trap("every published effect must be a git shell effect"))
+    | None() => trap("the publish sequence must include the push effect")
+
+@test
+def a_non_unit_event_publishes_nothing() =
+  let evt = {
+    content-type = { family = "message", version = 1 },
+    payload = Some(String.to-bytes("hello")),
+    resumes = None(),
+    outcome = None(),
+    child-completed = None(),
+  } in
+  if List.len(apply(evt)) == 0 then unit
+  else trap("only unit-complete publishes")
+
+export { apply }
