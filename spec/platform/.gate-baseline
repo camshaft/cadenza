@@ -36,3 +36,4 @@ pass	the same counter IGNORES a non-message kick-off (else-branch writes no stat
 pass	two independent senders converge on one receiver which accumulates both messages (fan-in)
 pass	two sessions ping-pong: a emits to b, b replies to a, a folds the reply and stops
 pass	two sessions self-close with distinct outcomes — one Success, one Failure — each observable
+todo	reify auto-value-encodes a structured op-arg passed directly to a world-effect perform (reify structured-payload carve-out)
