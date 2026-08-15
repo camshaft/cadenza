@@ -4075,14 +4075,21 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
             }
         }
 
-        // ── NOTE-BACKLOG signal (report-only) — the selective-drain blind spot the actionable
-        // drain-stall misses. An agent draining MRs but NOT notes (found live: pr-sync, 9 notes / 3+hrs)
-        // looks healthy to the actionable stall check (informational mail isn't counted). Flag when the
-        // informational inbox is BOTH deep AND stale → the agent has stopped note-draining, which can
-        // silently drop coordination (an `ask` relayed as a note). Runs for EVERY active agent regardless
-        // of heartbeat freshness (a fast-ticking agent can still ignore notes). Report-only + rate-limited
-        // like the saturation escalation — notes may be intentionally deprioritized, so we INFORM, never
-        // nudge/restart.
+        // ── NOTE-BACKLOG signal — the selective-drain blind spot the actionable drain-stall misses. An
+        // agent draining MRs but NOT notes (found live: pr-sync, 9 notes / 3+hrs) looks healthy to the
+        // actionable stall check (informational mail isn't counted). Flag when the informational inbox is
+        // BOTH deep AND stale → the agent has stopped note-draining, which silently drops coordination
+        // (an `ask`/scheduling request relayed as a note). Runs for EVERY active agent regardless of
+        // heartbeat freshness (a fast-ticking agent can still ignore notes).
+        //
+        // ESCALATED from report-only to ALSO NUDGE the agent (concierge 2026-08-15): a dropped note is no
+        // longer merely cosmetic — a pr-sync-bound flag-day SCHEDULING request sent as a note went unread
+        // ~2.5hr, starving v-effects' S3 flag-day, because pr-sync drains MRs but not notes and only a
+        // concierge hand-relay via tmux got through. So besides informing the concierge (the durable
+        // record), send the backlogged agent a note-drain nudge — but ONLY if it is NOT mid-tick
+        // (`window_is_working` guard, so we never interrupt real work; a busy agent drains on its own next
+        // tick). The nudge is a safe `continue`-class poke: it wakes an idle agent to run a tick, where its
+        // role contract has it drain the inbox (notes included). Rate-limited with the concierge escalation.
         let note_depth = informational_inbox_depth(&fleet.inbox(&a.name));
         if let Some(oldest_age) = oldest_informational_age_secs(fleet, &a.name, now)
             && informational_backlog_is_stale(
@@ -4105,6 +4112,24 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
             let key = format!("{}.note-backlog", a.name);
             let notified_recently =
                 sat_notify_age_secs(fleet, &key, now).is_some_and(|s| s < SAT_NOTIFY_GRACE);
+            // Nudge the backlogged agent to take a note-drain pass — but not while it's mid-tick (that
+            // would inject a keystroke into real work; a busy agent will drain on its own next tick). Same
+            // rate-limit gate as the concierge escalation. Skipped in dry-run + for interactive roles a
+            // human reads at their own cadence (concierge/design sit idle with mail by design).
+            if !dry_run
+                && !notified_recently
+                && !role_is_terminal_interactive(&a.role)
+                && !window_is_working(&session, &a.name)
+            {
+                if nudge_drain_stall(&session, &a.name) {
+                    println!(
+                        "  ✉→ nudged '{}' to take a note-drain pass ({note_depth} undrained notes, oldest {mins}min)",
+                        a.name
+                    );
+                } else {
+                    eprintln!("  ! note-drain nudge send-keys failed for '{}'", a.name);
+                }
+            }
             if !dry_run && !notified_recently {
                 deliver(
                     fleet,
@@ -4120,9 +4145,11 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                             "'{}' is processing actionable mail but its INFORMATIONAL inbox (note/merged/\
                              backlog/status/reply) has {note_depth} messages, oldest {mins}min old — it has \
                              stopped note-draining. The actionable drain-stall watchdog can't see this (it \
-                             ignores informational mail by design), so coordination notes can silently pile \
-                             up + get dropped. Consider nudging '{}' to take a note-drain pass. Report-only + \
-                             rate-limited (one per ~30min); notes may be intentionally deprioritized.",
+                             ignores informational mail by design), so coordination notes (incl pr-sync-bound \
+                             scheduling/freeze requests) can silently pile up + get dropped. The watchdog has \
+                             ALSO nudged '{}' to take a note-drain pass this sweep (unless it was mid-tick); \
+                             this note is the durable record + a prompt to hand-relay via tmux if the nudge \
+                             doesn't clear it. Rate-limited (one per ~30min).",
                             a.name, a.name
                         ),
                         seq: next_seq(),
