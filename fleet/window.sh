@@ -29,6 +29,23 @@ HUB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # recurring `cargo xtask …` calls the loop makes, not just the one below.
 export CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never
 
+# Cap each agent's build fan-out. The whole fleet (~30+ agents) shares ONE box; by default `cargo build`
+# and `rustc`'s codegen threads fan out to ALL cores, so a SINGLE agent's release build can spawn ~ncpu
+# rustc/codegen jobs and, multiplied across agents building concurrently, oversubscribe the box into a
+# load spike that starves pr-sync's merge gate — the wasmtime epoch deadline then interrupt-traps trivial
+# gate cases (false REDs) and integration deadlocks (observed 2026-08-15: one agent ran 53 rustc procs,
+# loadavg hit 585, pr-sync froze ~5.5h). Bounding CARGO_BUILD_JOBS per agent caps that fan-out at the
+# SOURCE, so no single agent can monopolize the cores. `~ncpu/8` (min 2) keeps a single agent's build
+# reasonably fast while leaving headroom for peers + the priority merge gate; the check-lease cap
+# (CDZ_CHECK_LEASE_MAX) limits how many gate-heavy runs happen at once, and this limits how wide EACH
+# one goes — the two compose. Respect an explicit operator override if already set in the environment.
+if [ -z "${CARGO_BUILD_JOBS:-}" ]; then
+  _ncpu="$(nproc 2>/dev/null || echo 8)"
+  _jobs=$(( _ncpu / 8 ))
+  [ "$_jobs" -lt 2 ] && _jobs=2
+  export CARGO_BUILD_JOBS="$_jobs"
+fi
+
 # Resolve the agent's config from the registry. The hub is BARE (no Cargo workspace), so run the
 # xtask from any worktree that has one — the pr-sync worktree always exists and holds trunk.
 XTASK_WT="$HUB/.claude/worktrees/pr-sync"
