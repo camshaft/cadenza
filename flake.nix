@@ -1380,6 +1380,16 @@
             # not a host GitExecutor — so v-ah-host removed the GitExecutor + the live-git feature. Consumer-off
             # -first: this leg dropped live-git BEFORE v-ah-host deletes the now-empty `live-git = []` line.)
             cargo clippy --all-targets --locked --features admin,live-net,live-aws-storage,live-ws,live-exec,live-fs -- -D warnings
+            # live-fs BEHAVIORAL coverage (v-nix + v-agent-harness-host 2026-08-15): the union clippy leg above
+            # only COMPILES the live-fs FsExecutor tests (--all-targets lints them), it never RUNS them — so a
+            # behavioral regression (a cdz-kernel Payload/EffectRequest refactor, an fs-path change) would keep CI
+            # green while breaking FsExecutor. This test pass EXECUTES them. HERMETIC: FsExecutor is pure std::fs
+            # (temp_dir read/write/glob) — NO subprocess, NO network — so it runs in the nix sandbox (writable
+            # TMPDIR). (live-exec is DELIBERATELY still clippy-only: ShellExecutor SPAWNS external programs the
+            # hermetic sandbox lacks by design, so it stays compile-gated + run locally pre-MR.) Rides this half
+            # so the aws chain is already built; marginal cost = the std-only fs test module. Same clippy->test
+            # behavioral upgrade as live-aws-storage above.
+            cargo test --locked --features live-fs
           '';
         };
         # ── N1: the value-heap runtime components AS input-addressed derivations (hash from output) ─
