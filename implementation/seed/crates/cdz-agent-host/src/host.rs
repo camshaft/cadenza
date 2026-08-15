@@ -1049,6 +1049,39 @@ impl AgentHost {
         id
     }
 
+    /// §lifecycle I4 boot-recovery, HOST-level: re-register a session rebuilt from its durably-read log into
+    /// this host under the caller-supplied `id`, returning the
+    /// [`RecoveryReport`](cdz_kernel::kernel::RecoveryReport) so the caller can re-drive `report.open_effects`
+    /// and react to `report.is_corrupt()`. This is thin glue: it calls the factory's
+    /// [`recover_and_build`](crate::admin::SessionFactory::recover_and_build) (which reloads the reducer from
+    /// its blob store by the recovered genesis hash, then folds the log via
+    /// [`Session::recover_from`](cdz_kernel::kernel::Session::recover_from)), then [`spawn`](Self::spawn)s the
+    /// rebuilt session into this host.
+    ///
+    /// The caller reads the [`Recovered`](cdz_kernel::log_store::Recovered) first via
+    /// [`LogSinkBuilder::recover`](crate::factory::LogSinkBuilder::recover) (the daemon's boot-recovery-loop
+    /// pattern) and passes it here with the [`SessionId`] it maps to. The id is CALLER-SUPPLIED, not derived
+    /// from the genesis hash: a spawned child's id happens to be `hex(genesis)`, but a root/named session
+    /// carries an opaque vanity id (see [`spawn_child`](Self::spawn_child)), so only the caller (who owns the
+    /// registry's id↔log mapping) knows it. Recovery NEVER re-mints — the rebuilt session keeps its original
+    /// genesis / KV / open-obligations — so `self.get(&id).session()` addresses the recovered session
+    /// IDENTICALLY to the live one: the replay-equals-recover equivalence (kv + status + open_effects equal).
+    /// Like the daemon boot loop, this re-registers under `id` (a [`spawn`](Self::spawn) that replaces).
+    ///
+    /// Errors (never a panic) surface whatever `recover_and_build` reports — an empty / genesis-less recovered
+    /// log, the reducer bytes absent from the factory's blob store, a component that doesn't lift, or a replay
+    /// failure. On error NOTHING is registered (the `spawn` is reached only after a successful rebuild).
+    pub async fn recover_hosted_session(
+        &mut self,
+        id: SessionId,
+        recovered: cdz_kernel::log_store::Recovered,
+        factory: &mut dyn crate::admin::SessionFactory,
+    ) -> Result<cdz_kernel::kernel::RecoveryReport, String> {
+        let (hosted, report) = factory.recover_and_build(recovered).await?;
+        self.spawn(id, hosted);
+        Ok(report)
+    }
+
     /// SPAWN A CHILD session under `parent` (§lifecycle I3): the `lifecycle/spawn` effect's registry side.
     /// Builds a child [`HostedSession`] from `reducer_hash` + its executor/authz with parent-provenance
     /// ([`HostedSession::genesis_spawned`]), derives the child's `SessionId` from its genesis hash
@@ -7168,6 +7201,118 @@ mod tests {
             running.open_effects(),
             0,
             "the resolved artifact's turn settled — publisher published, a separate consumer resolved + RAN it"
+        );
+    }
+
+    // ---- §lifecycle I4 boot-recovery: AgentHost::recover_hosted_session ----
+
+    #[tokio::test]
+    async fn recover_hosted_session_reregisters_the_rebuilt_session_under_the_caller_id_and_returns_the_report(
+    ) {
+        use cdz_kernel::kernel::RecoveryReport;
+        use cdz_kernel::log_store::{Recovered, RecoveryKind};
+
+        // A stub SessionFactory whose recover_and_build IGNORES the Recovered and hands back a hermetically
+        // genesis-built HostedSession + a Clean report. This isolates recover_hosted_session's GLUE
+        // (recover_and_build -> spawn under the CALLER-supplied id -> return report) from recover_and_build's
+        // internal reducer-reload (its own tests + v-pc's env-gated platform fixture cover the real path).
+        struct RebuildStub;
+        #[async_trait::async_trait(?Send)]
+        impl crate::admin::SessionFactory for RebuildStub {
+            async fn build(
+                &mut self,
+                _spec: &crate::admin::InstallSpec,
+            ) -> Result<HostedSession, String> {
+                Err("stub: build is unused by this test".into())
+            }
+            async fn recover_and_build(
+                &mut self,
+                _recovered: Recovered,
+            ) -> Result<(HostedSession, RecoveryReport), String> {
+                Ok((
+                    now_host(),
+                    RecoveryReport {
+                        kind: RecoveryKind::Clean,
+                        open_effects: vec![],
+                    },
+                ))
+            }
+        }
+
+        let mut host = AgentHost::new();
+        // A VANITY id distinct from SessionId::new(genesis) — proves the id is caller-supplied, not derived
+        // from the rebuilt session's genesis (a root/named session's id is opaque per spawn_child's docs).
+        let vanity = SessionId::new(Hash::of(b"vanity-recover-id"));
+        let recovered = Recovered {
+            events: vec![],
+            kind: RecoveryKind::Clean,
+            good_prefix_len: 0,
+        };
+        let report = host
+            .recover_hosted_session(vanity, recovered, &mut RebuildStub)
+            .await
+            .expect("recover_hosted_session succeeds when recover_and_build does");
+        assert!(
+            matches!(report.kind, RecoveryKind::Clean),
+            "the RecoveryReport is threaded back to the caller"
+        );
+        // The rebuilt session is registered under the CALLER id and readable via the identical
+        // host.get(id).session() surface a live session uses (the replay-equals-recover read path).
+        let got = host
+            .get(&vanity)
+            .expect("recovered session is registered under the caller-supplied id");
+        // Readable via the identical host.get(id).session() surface v-pc's fixture asserts over: a clean
+        // rebuild has no open obligations. (genesis_hash isn't compared — the root `genesis` mints a fresh
+        // nonce per call, so it's not reproducible from a second now_host(); the id contract is asserted below.)
+        assert_eq!(
+            got.session().open_effect_ids().len(),
+            0,
+            "the recovered session is readable via host.get(id).session() (a clean rebuild — no open effects)"
+        );
+        // The id is CALLER-supplied, NOT derived from the rebuilt genesis: the session lives under `vanity`,
+        // which is distinct from SessionId::new(its genesis) — the point of the caller-supplied-id contract.
+        assert_ne!(
+            SessionId::new(got.genesis_hash()),
+            vanity,
+            "registered under the caller's vanity id, not the genesis-derived one"
+        );
+    }
+
+    #[tokio::test]
+    async fn recover_hosted_session_propagates_a_factory_recovery_error_and_registers_nothing() {
+        use cdz_kernel::log_store::{Recovered, RecoveryKind};
+        // The default SessionFactory::recover_and_build returns Err ("does not support boot-recovery"); a stub
+        // that only impls the required `build` inherits it. recover_hosted_session must propagate that Err (never
+        // panic) and register NOTHING — spawn is reached only after a successful rebuild.
+        struct NoRecoverStub;
+        #[async_trait::async_trait(?Send)]
+        impl crate::admin::SessionFactory for NoRecoverStub {
+            async fn build(
+                &mut self,
+                _spec: &crate::admin::InstallSpec,
+            ) -> Result<HostedSession, String> {
+                Err("stub".into())
+            }
+            // recover_and_build inherits the trait default (Err "does not support boot-recovery").
+        }
+        let mut host = AgentHost::new();
+        let id = SessionId::new(Hash::of(b"never-registered"));
+        let recovered = Recovered {
+            events: vec![],
+            kind: RecoveryKind::Clean,
+            good_prefix_len: 0,
+        };
+        let err = host
+            .recover_hosted_session(id, recovered, &mut NoRecoverStub)
+            .await
+            .expect_err("a factory that can't recover surfaces an Err, never a panic");
+        assert!(
+            err.contains("boot-recovery"),
+            "propagates recover_and_build's Err verbatim: {err}"
+        );
+        assert!(
+            host.get(&id).is_none(),
+            "nothing is registered under the id when the rebuild fails"
         );
     }
 }
