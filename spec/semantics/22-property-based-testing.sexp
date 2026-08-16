@@ -1279,6 +1279,23 @@
   (call   main (: 7 Int64)) (output (: 3007 Int64))
   (call   main (: 2 Int64)) (output (: 3002 Int64)))
 
+(case "a Value.encode/Value.decode round-trip preserves a FLOAT element of a compound"
+  (doc    "Extends the round-trips to a `(Tuple Int64 Float64)` — exercising the R2 value-form FLOAT leaf, an
+           EXACT shortest-decimal `Leaf::Float(Decimal)` (NOT lossy bits). `Value.decode (Value.encode (tuple n
+           2.5)) == Some (tuple n 2.5)`; the match asserts the FLOAT survived (`= b 2.5`, exact) and returns `n`,
+           else -1. `main 7` -> 7, `main 3` -> 3 (distinct outputs prove the Int slot too); a lost/garbled float
+           gives -1. Pins the Float leaf: rust builds `Leaf::Float(Decimal::from_f64 2.5)`, decode reconstructs
+           the f64 by re-parsing the decimal — byte-identical to the wasm float_leaf. Runs on wasm + rust + rust-async.")
+  (input  (do
+            (def (main (: n Int64))
+              (match (: (Value.decode (Value.encode (: (tuple n 2.5) (Tuple Int64 Float64))))
+                        (Option (Tuple Int64 Float64)))
+                ((Some m) (match m ((tuple a b) (if (= b 2.5) a (- 0 1)))))
+                ((None u) (- 0 2))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 7 Int64))
+  (call   main (: 3 Int64)) (output (: 3 Int64)))
+
 ; --- The round-trip under LET-BINDER grounding: decode's target fixed by the binder annotation, not inline. ---
 
 (case "a Value.decode round-trip grounds its target from a LET-BINDER annotation, not only an inline ascription"

@@ -460,6 +460,22 @@ fn emit_value_form(db: &mut Db, ty: &Ty, val_expr: &str) -> Result<String, Rejec
         Ty::Bytes => Ok(format!(
             "__b.atom_leaf(cadenza_ast::ast::Leaf::Bytes(std::sync::Arc::from(({val_expr}).as_slice())))"
         )),
+        // A FLOAT is an `f64`/`f32` → a `Leaf::Float(Decimal)` built by the EXACT-shortest-decimal
+        // `Decimal::from_f64`/`from_f32` (cadenza-ast, mirroring the runtime `float_leaf`) — NOT lossy bits.
+        // Float32 uses `from_f32` (a promoted f32's shortest decimal differs from the f64's). A non-finite
+        // value (NaN/inf) has no canonical form → `from_*` returns None → PANIC, matching the runtime
+        // value-encode trap (and the `Ast.Float` NaN guard). A bare float declines at lower; this arm is the
+        // recursion base for a float NESTED in a compound (`(tuple 1.5 2.5)`).
+        Ty::Float(ft) => {
+            let ctor = if ft.ground_width() == 32 {
+                format!("cadenza_ast::ast::Decimal::from_f32({val_expr})")
+            } else {
+                format!("cadenza_ast::ast::Decimal::from_f64({val_expr})")
+            };
+            Ok(format!(
+                "__b.atom_leaf(cadenza_ast::ast::Leaf::Float(match {ctor} {{ Some(__d) => __d, None => panic!(\"a non-canonical float (NaN/inf) has no canonical value form\") }}))"
+            ))
+        }
         Ty::Tuple(elems) => {
             let mut body = String::from("{ let __h = __b.name(\"tuple\");");
             let mut vars = vec!["__h".to_string()];
@@ -655,6 +671,23 @@ fn emit_value_reconstruct(
              match {arenas}.leaf(*__l) {{ cadenza_ast::ast::Leaf::Bytes(__b) => Some(__b.to_vec()), _ => None }}, \
              _ => None }})"
         )),
+        // A FLOAT leaf inverse: reconstruct the f64/f32 EXACTLY from the `Decimal` by rebuilding its
+        // `<sig>e<exp>` scientific text (sign + BigInt significand + base-10 exponent) and re-parsing —
+        // `parse(from_f64(f)) == f` bit-exact (the shortest decimal round-trips). `.ok()` → None on the
+        // (unreachable-for-a-valid-leaf) parse failure. Float32 parses as `f32` (its own shortest form).
+        Ty::Float(ft) => {
+            let parse_ty = if ft.ground_width() == 32 {
+                "f32"
+            } else {
+                "f64"
+            };
+            Ok(format!(
+                "(match {arenas}.get({node}) {{ cadenza_ast::ast::Struct::Atom(__l) => \
+                 match {arenas}.leaf(*__l) {{ cadenza_ast::ast::Leaf::Float(__d) => \
+                 format!(\"{{}}{{}}e{{}}\", if __d.negative {{ \"-\" }} else {{ \"\" }}, __d.significand, __d.exponent).parse::<{parse_ty}>().ok(), \
+                 _ => None }}, _ => None }})"
+            ))
+        }
         Ty::Tuple(elems) => {
             let n = elems.len();
             let mut body = format!(
