@@ -889,4 +889,64 @@ mod tests {
             "a shared heap node reading an inner Let binder is excluded (slice-1: param-closed only)"
         );
     }
+
+    // GATE-4 (bind-safe): a TRAPPING shared heap node is EXCLUDED — binding a trapping value at a dominator
+    // that doesn't unconditionally reach a use would MOVE the trap (opt-sweep divergence). Slice-1 gates on
+    // is_trap_free alone. A heap ListNew whose element is a runtime `p / q` (checked div, runtime divisor →
+    // NOT trap-free) is excluded even though it's param-closed + shared.
+    #[test]
+    fn bind_plan_excludes_a_trapping_shared_heap_node() {
+        let mut db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (main) 0) (export main))",
+        ));
+        let list_int = Ty::List(Box::new(Ty::int64()));
+        // Two params p, q; a checked divide `p / q` (runtime divisor → trapping); a ListNew carrying it
+        // (heap, but NOT trap-free because its element traps), shared from both concat operands.
+        let pb = synth_id_marker(&mut db);
+        let qb = synth_id_marker(&mut db);
+        let p = synth_core(&mut db, Core::Param { binder: pb }, Ty::int64());
+        let q = synth_core(&mut db, Core::Param { binder: qb }, Ty::int64());
+        let div = synth_core(
+            &mut db,
+            Core::Arith {
+                op: crate::resolved::Prim::Div,
+                lhs: p,
+                rhs: q,
+            },
+            Ty::int64(),
+        );
+        let trapping_list = synth_core(
+            &mut db,
+            Core::ListNew {
+                elems: [div].into(),
+            },
+            list_int.clone(),
+        );
+        let shared = synth_core(
+            &mut db,
+            Core::ListConcat {
+                lhs: trapping_list,
+                rhs: trapping_list,
+            },
+            list_int,
+        );
+        assert!(
+            !crate::lower::is_trap_free(&mut db, trapping_list),
+            "a ListNew carrying a runtime divide is not trap-free (test premise)"
+        );
+        let plan = b2_bind_plan(&mut db, shared);
+        assert!(
+            !plan.iter().any(|e| e.shared_id == trapping_list),
+            "a trapping shared heap node is excluded (slice-1: is_trap_free gate)"
+        );
+    }
+
+    // A distinct StructId to serve as a Param's binder key in a test.
+    fn synth_id_marker(db: &mut Db) -> StructId {
+        synth_core(
+            db,
+            Core::ConstInt(crate::ast::IntValue::from_i64(0)),
+            Ty::int64(),
+        )
+    }
 }
