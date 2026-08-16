@@ -301,19 +301,35 @@ pub(crate) struct B2BindPlanEntry {
 /// 1. DETECTION via the COMPLETE `core_child_ids` traversal (descends `MatchSum` arms — the arm-internal
 ///    shares that CAUSE the hang are invisible to `licm_children`, proven: cmb1 31 vs 127).
 /// 2. HEAP-SHARE: parent-edge count ≥ 2, `is_heap_type`, not `LocalRef`/`Unit`.
-/// 3. NOT-A-TEMPLATE-SHARE: the share's free binders (`free_binders_of`) must all be `Core::Param`s (or
-///    outer refs) — a share reading a re-threaded inner `Core::Let` binder is a STATE-THREADED template
-///    (cbk1/trn6: same node, different value per resume-state) and binding it once is a MISCOMPILE.
-/// 4. BIND-SAFE (byte-neutral): trap-free (a trapping share bound at an LCA that doesn't unconditionally
-///    reach a member = a MOVED trap = opt-sweep divergence). This first slice gates on `is_trap_free`
-///    ALONE — a trap-free share binds safely at any dominating node; the unconditional-reach arm
-///    (`|| frontier.contains(member)`) for the general trapping case is a follow-on (mirrors the LICM gate
-///    at select.rs:5251). Covers cmb1 (its divide compound is trap-free, divisor ≥ 1).
+/// 3. NOT-A-TEMPLATE-SHARE / VALUE-STABILITY = LOOP-INVARIANCE: (3a) the share's free binders
+///    (`free_binders_of`) must all be `Core::Param`s — a share reading a re-threaded inner `Core::Let`
+///    binder is a STATE-THREADED template (cbk1/trn6: same node, different value per resume-state) and
+///    binding it once is a MISCOMPILE. (3b) even a Param is stable-to-hoist ONLY when the body is NOT
+///    recursive: in a recursive body a Param threaded through the self-call / loop back-edge is re-bound
+///    per iteration, so the K uses of the shared StructId span DIFFERENT iterations and binding once
+///    captures ONE iteration's value (rq3 99≠199 stale value, plt2 freed-alias trap). A CLOSED share (no
+///    free binders) is loop-invariant regardless. This is the value-stability = loop-invariance test both
+///    v-rb and v-agent-harness converged on — a Param is loop-invariant only if not reached through a
+///    recursion back-edge; cmb1 (the fixable witness) is non-recursive, rq3/plt2 are recursive-driver.
+/// 4. BIND-SAFE (byte-neutral): `is_trap_free(shared) OR collect_dominating_frontier(scope_node)` contains
+///    the shared node. A trapping rep_init bound at an LCA that only CONDITIONALLY reaches a use is a MOVED
+///    trap (opt-sweep divergence); but when scope_node's dominating frontier already contains the shared
+///    node it binds on exactly the paths that already evaluated it (byte-neutral). Mirrors the LICM gate at
+///    select.rs:5251. Admits cmb1: its recomputed divide (divisor k+1, NOT trap-free) sits in the inner-if
+///    GUARD its arm-body LCA unconditionally evaluates → in the frontier.
 pub(crate) fn b2_bind_plan(db: &mut Db, body: StructId) -> Vec<B2BindPlanEntry> {
     // (1) DETECTION: core_child_ids parent-edge counts (descends MatchSum), first-seen order.
     let mut counts: HashMap<StructId, u32> = HashMap::new();
     let mut order: Vec<StructId> = Vec::new();
     b2_node_refs(db, body, &mut counts, &mut order);
+
+    // VALUE-STABILITY = LOOP-INVARIANCE (gate-3b): computed ONCE per body. A shared node's free binders are
+    // loop-invariant (safe to bind once) only when the body is NOT recursive — in a recursive body a binder
+    // threaded through the self-call / loop back-edge is re-bound to a DIFFERENT value per iteration, so the
+    // K uses of the shared StructId span DIFFERENT iterations and binding once captures ONE iteration's value
+    // (rq3 99!=199 stale, plt2 freed-alias trap). See the memory note: cmb1 (the fixable witness) is
+    // non-recursive; rq3/plt2 (the miscompiles) are recursive-driver bodies.
+    let body_is_recursive = crate::eval::is_recursive(db, body);
 
     let mut plan: Vec<B2BindPlanEntry> = Vec::new();
     for id in order {
@@ -328,16 +344,22 @@ pub(crate) fn b2_bind_plan(db: &mut Db, body: StructId) -> Vec<B2BindPlanEntry> 
         if !is_heap_type(&ty) || matches!(ty.strip_nominal(), Ty::Unit) {
             continue;
         }
-        // (3) NOT-A-TEMPLATE-SHARE: every free binder must be a Core::Param (a share reading a re-threaded
-        // inner Let binder denotes different values per dispatch — unsound to bind once).
-        if free_binders_of(db, id)
+        // (3) NOT-A-TEMPLATE-SHARE / VALUE-STABILITY = LOOP-INVARIANCE.
+        let free = free_binders_of(db, id);
+        // (3a) every free binder must be a Core::Param — a share reading a re-threaded inner Let binder
+        // denotes different values per dispatch (the cbk1/trn6 template class), unsound to bind once.
+        if free
             .iter()
             .any(|&b| !matches!(core_of(db, b), Core::Param { .. }))
         {
             continue;
         }
-        // (4) BIND-SAFE (first slice): trap-free only.
-        if !crate::lower::is_trap_free(db, id) {
+        // (3b) even a Param is stable-to-hoist only when it is NOT reached through a recursion/loop
+        // back-edge: in a recursive body a Param threaded to the self-call is re-bound per iteration, so a
+        // share reading ANY free binder there is per-iteration-distinct (rq3/plt2). A CLOSED share (no free
+        // binders) is loop-invariant regardless. Conservative: over-excluding a genuinely-invariant share in
+        // a recursive body only forfeits the opt (leaves it re-descended) — never a miscompile.
+        if body_is_recursive && !free.is_empty() {
             continue;
         }
         // The shared node is ONE StructId (the compact DAG shares it); its K PARENTS all read it, so the
@@ -350,6 +372,21 @@ pub(crate) fn b2_bind_plan(db: &mut Db, body: StructId) -> Vec<B2BindPlanEntry> 
         let Some(scope_node) = b2_members_lca(db, body, &members) else {
             continue;
         };
+        // (4) BIND-SAFE: trap-free OR the scope_node UNCONDITIONALLY REACHES the shared node. A trapping
+        // rep_init (divide/index/overflow) bound at a dominator that only CONDITIONALLY reaches a use would
+        // MOVE the trap onto a path that skipped it (opt-sweep divergence). But when scope_node's dominating
+        // frontier already contains the shared id, binding there evaluates it on exactly the paths that
+        // already did — byte-neutral. Mirrors the LICM hoist-safety gate (select.rs:5251
+        // `is_trap_free || frontier.contains`). This admits cmb1: its recomputed divide sits in the inner-if
+        // GUARD its LCA unconditionally evaluates, so the frontier contains it though the compound is a
+        // (k+1)-divisor divide (is_trap_free false).
+        if !crate::lower::is_trap_free(db, id) {
+            let mut frontier = std::collections::HashSet::new();
+            collect_dominating_frontier(db, scope_node, &mut frontier);
+            if !frontier.contains(&id) {
+                continue;
+            }
+        }
         plan.push(B2BindPlanEntry {
             scope_node,
             shared_id: id,
@@ -890,22 +927,31 @@ mod tests {
         );
     }
 
-    // GATE-4 (bind-safe): a TRAPPING shared heap node is EXCLUDED — binding a trapping value at a dominator
-    // that doesn't unconditionally reach a use would MOVE the trap (opt-sweep divergence). Slice-1 gates on
-    // is_trap_free alone. A heap ListNew whose element is a runtime `p / q` (checked div, runtime divisor →
-    // NOT trap-free) is excluded even though it's param-closed + shared.
+    // GATE-4 (bind-safe): a TRAPPING shared heap node that is only CONDITIONALLY reached from its scope_node
+    // is EXCLUDED — binding a trapping value at a dominator that does NOT unconditionally reach a use would
+    // MOVE the trap onto a path that skipped it (opt-sweep divergence). Here the trapping share sits in BOTH
+    // branches of an `if` (so it is shared, count 2) but NOT in the cond, so the LCA is the `if` node whose
+    // dominating frontier is just the cond → the share is not unconditionally reached → excluded. (Contrast
+    // the admit test above, where a concat reaches the same shape unconditionally.)
     #[test]
-    fn bind_plan_excludes_a_trapping_shared_heap_node() {
+    fn bind_plan_excludes_a_trapping_share_reached_only_conditionally() {
         let mut db = crate::db::Db::load(crate::testkit::parse(
             "(module m (def (main) 0) (export main))",
         ));
         let list_int = Ty::List(Box::new(Ty::int64()));
-        // Two params p, q; a checked divide `p / q` (runtime divisor → trapping); a ListNew carrying it
-        // (heap, but NOT trap-free because its element traps), shared from both concat operands.
-        let pb = synth_id_marker(&mut db);
-        let qb = synth_id_marker(&mut db);
-        let p = synth_core(&mut db, Core::Param { binder: pb }, Ty::int64());
-        let q = synth_core(&mut db, Core::Param { binder: qb }, Ty::int64());
+        // Real params p, q; a checked divide `p / q` (runtime divisor → trapping); a ListNew carrying it
+        // (heap, NOT trap-free). Placed in BOTH branches of an `if` over a param cond → shared, but reached
+        // only under the branch, never by the cond the `if` evaluates unconditionally.
+        let p = synth_param(&mut db);
+        let q = synth_param(&mut db);
+        let cond_binder = synth_id_marker(&mut db);
+        let cond = synth_core(
+            &mut db,
+            Core::Param {
+                binder: cond_binder,
+            },
+            Ty::Bool,
+        );
         let div = synth_core(
             &mut db,
             Core::Arith {
@@ -922,7 +968,79 @@ mod tests {
             },
             list_int.clone(),
         );
-        let shared = synth_core(
+        let body = synth_core(
+            &mut db,
+            Core::If {
+                cond,
+                then_: trapping_list,
+                else_: trapping_list,
+            },
+            list_int,
+        );
+        assert!(
+            !crate::lower::is_trap_free(&mut db, trapping_list),
+            "a ListNew carrying a runtime divide is not trap-free (test premise)"
+        );
+        let plan = b2_bind_plan(&mut db, body);
+        assert!(
+            !plan.iter().any(|e| e.shared_id == trapping_list),
+            "a trapping share reached only under a branch is excluded (gate-4: not unconditionally reached)"
+        );
+    }
+
+    // A distinct StructId to serve as a Param's binder key in a test.
+    fn synth_id_marker(db: &mut Db) -> StructId {
+        synth_core(
+            db,
+            Core::ConstInt(crate::ast::IntValue::from_i64(0)),
+            Ty::int64(),
+        )
+    }
+
+    // A `Core::Param` OCCURRENCE whose `binder` field resolves (via `core_of`) to a `Core::Param` too — the
+    // real lowered shape (a param reference points at the parameter's binding occurrence, itself a Param).
+    // So `free_binders_of` of a node reading this occurrence yields a binder that passes gate-3a's
+    // "all free binders are Core::Param" check (unlike `synth_id_marker`, a ConstInt, which fails gate-3a).
+    fn synth_param(db: &mut Db) -> StructId {
+        let marker = synth_id_marker(db);
+        let binder = synth_core(db, Core::Param { binder: marker }, Ty::int64());
+        synth_core(db, Core::Param { binder }, Ty::int64())
+    }
+
+    // GATE-4 (bind-safe, UNCONDITIONAL-REACH arm): a TRAPPING but PARAM-CLOSED shared heap node whose
+    // scope_node (LCA) UNCONDITIONALLY REACHES it (the scope_node's dominating frontier contains the shared
+    // id) IS planned — binding there evaluates the trap on exactly the paths that already did (byte-neutral).
+    // This is the cmb1-unblocking arm: cmb1's recomputed divide is NOT trap-free (divisor k+1) yet its
+    // arm-body LCA unconditionally reaches it, so it must be admitted. (The trap-free-only first slice would
+    // have wrongly excluded it → empty plan → cmb1 stays hung, as v-rb's install opt-sweep showed.)
+    #[test]
+    fn bind_plan_admits_a_trapping_param_closed_share_reached_unconditionally() {
+        let mut db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (main) 0) (export main))",
+        ));
+        let list_int = Ty::List(Box::new(Ty::int64()));
+        // Two real params p, q; a checked divide `p / q` (runtime divisor → trapping); a ListNew carrying it
+        // (heap, NOT trap-free), shared from both operands of a concat. The concat evaluates both operands
+        // unconditionally, so its dominating frontier contains the shared list → gate-4's reach arm admits.
+        let p = synth_param(&mut db);
+        let q = synth_param(&mut db);
+        let div = synth_core(
+            &mut db,
+            Core::Arith {
+                op: crate::resolved::Prim::Div,
+                lhs: p,
+                rhs: q,
+            },
+            Ty::int64(),
+        );
+        let trapping_list = synth_core(
+            &mut db,
+            Core::ListNew {
+                elems: [div].into(),
+            },
+            list_int.clone(),
+        );
+        let body = synth_core(
             &mut db,
             Core::ListConcat {
                 lhs: trapping_list,
@@ -934,19 +1052,10 @@ mod tests {
             !crate::lower::is_trap_free(&mut db, trapping_list),
             "a ListNew carrying a runtime divide is not trap-free (test premise)"
         );
-        let plan = b2_bind_plan(&mut db, shared);
+        let plan = b2_bind_plan(&mut db, body);
         assert!(
-            !plan.iter().any(|e| e.shared_id == trapping_list),
-            "a trapping shared heap node is excluded (slice-1: is_trap_free gate)"
+            plan.iter().any(|e| e.shared_id == trapping_list),
+            "a trapping param-closed share unconditionally reached by its scope_node IS planned (gate-4 reach arm)"
         );
-    }
-
-    // A distinct StructId to serve as a Param's binder key in a test.
-    fn synth_id_marker(db: &mut Db) -> StructId {
-        synth_core(
-            db,
-            Core::ConstInt(crate::ast::IntValue::from_i64(0)),
-            Ty::int64(),
-        )
     }
 }
