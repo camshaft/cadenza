@@ -6039,6 +6039,19 @@ fn thread_bounded(
                     ctx.pending.borrow_mut().truncate(freeze_mark);
                 }
             }
+            // SAFE-FLOOR (xhsGrow): a GROWING-STATE arm with a mid-arm foreign-perform-with-args let-init has
+            // the collapse EXCLUDED by `arm_state_grows`, so it would fall to the distribute peel — which wraps
+            // the foreign-perform let-init around BOTH resume slots and mis-threads the shared binder (the xhs1
+            // divergence), a SILENT x3 miscompile (43078123 vs the correct 44071111). Decline until the collapse
+            // extends to growing-state (the F24 surface). breaker-confirmed no over-fire: keyed on a
+            // foreign-perform-with-args let-init + `arm_state_grows`, which no landed corpus case combines (gws1
+            // grows but has NO foreign perform; xhs1-D perform but NON-growing → stay collapse-correct).
+            if collapsed.is_none()
+                && arm_state_grows
+                && arm_has_let_init_reaching_arg_perform(db, arm_body)
+            {
+                return None;
+            }
             let (value, next_state) = if let Some(combined) = collapsed {
                 let name = format!("#st{}_vs", node.0);
                 ctx.pending.borrow_mut().push((name.clone(), combined));
