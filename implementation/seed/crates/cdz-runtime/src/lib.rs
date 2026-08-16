@@ -9363,6 +9363,113 @@ mod tests {
         op_drop(list);
     }
 
+    /// The root-`Framed` plain-Tuple descriptor `(: <value> (Tuple Int64 Int64))` — a tag-15 `Framed`
+    /// whose TypeNode is `Tuple` with two `Int64` children, inner → a `Tuple[→Int, →Int]` table entry.
+    /// This is the descriptor `sum_shape_descriptor` bakes for a `Value.encode` of a two-int tuple (the
+    /// PUBLIC value-encode path frames the compound; the fold/reducer boundary's `bare_shape_descriptor`
+    /// does NOT — see rcdzc `sum_shape_descriptor` vs `bare_shape_descriptor`). Kept as a test constant.
+    fn framed_int_pair_descriptor() -> Vec<u8> {
+        fn leb(out: &mut Vec<u8>, mut v: u64) {
+            loop {
+                let mut b = (v & 0x7f) as u8;
+                v >>= 7;
+                if v != 0 {
+                    b |= 0x80;
+                }
+                out.push(b);
+                if v == 0 {
+                    break;
+                }
+            }
+        }
+        fn name(out: &mut Vec<u8>, s: &str) {
+            leb(out, s.len() as u64);
+            out.extend_from_slice(s.as_bytes());
+        }
+        let mut d = Vec::new();
+        leb(&mut d, 3); // table_len = 3
+        // [0] Int
+        d.push(0);
+        // [1] Tuple [→0, →0]
+        d.push(6);
+        leb(&mut d, 2);
+        leb(&mut d, 0);
+        leb(&mut d, 0);
+        // [2] Framed( TypeNode Tuple[Int64, Int64], inner → 1 )
+        d.push(15);
+        // TypeNode: head "Tuple", 2 children each head "Int64" with 0 children
+        name(&mut d, "Tuple");
+        leb(&mut d, 2);
+        name(&mut d, "Int64");
+        leb(&mut d, 0);
+        name(&mut d, "Int64");
+        leb(&mut d, 0);
+        leb(&mut d, 1); // inner → 1 (the Tuple shape)
+        leb(&mut d, 2); // root = 2 (the Framed)
+        d
+    }
+
+    /// GOLDEN + cross-backend divergence pin: `Value.encode` of a two-int tuple must render the
+    /// `(: (tuple 5 105) (Tuple Int64 Int64))` COLON-FRAMED typed document — NOT the bare `(tuple 5 105)`.
+    /// This is the exact shape a native-backend divergence surfaced on (v-rust-backend, 2026-08-16: the
+    /// native codec emitted the bare 35-byte form vs this framed form; reviewer flagged that no standing
+    /// pin caught a cross-backend `Value.encode` byte divergence, an invariant v-runtime owns). Guards the
+    /// framed-root walk three ways: iterative == recursive oracle, decode ∘ encode == id, and the exact
+    /// golden bytes. A native backend (rcdzc rust / cadenza-ast) mirrors this same golden constant so the
+    /// two codecs are pinned to one byte string. `#[cfg(test)]` → does not touch the runtime hash.
+    #[test]
+    fn value_encode_of_a_framed_int_tuple_is_the_colon_framed_golden() {
+        reset();
+        let desc = framed_int_pair_descriptor();
+        let pair = op_arr_alloc(2);
+        op_arr_set(pair, 0, op_box_int(5));
+        op_arr_set(pair, 1, op_box_int(105));
+        let got = op_value_encode_form(pair, &desc).expect("encode framed int pair");
+
+        // (1) iterative production walk == recursive oracle (the byte-equality guard the sibling
+        // differential relies on, here on a root-Framed Tuple rather than a Named sum).
+        let descriptor = decode_descriptor(&desc).expect("descriptor");
+        let mut b = DocBuilder::default();
+        let root = encode_value_recursive(&descriptor, &mut b, pair, descriptor.root, 0)
+            .expect("recursive encode");
+        let rec_doc = b.finish(root);
+        assert_eq!(got, rec_doc, "iterative and recursive framed-tuple encode disagree");
+
+        // (2) decode ∘ encode == id (the doc round-trips back to the same value form).
+        let back = op_value_decode(&got, &desc);
+        assert_ne!(back, Handle::NULL, "framed-tuple doc must decode (round-trip)");
+        let reencoded = op_value_encode_form(back, &desc).expect("re-encode decoded framed tuple");
+        assert_eq!(got, reencoded, "decode∘encode is not the identity on the framed tuple");
+        op_drop(back);
+
+        // (3) exact golden bytes — the colon-framed typed document. Leaves in canon pre-order
+        // first-encounter: ':' , 'tuple', 5, 105, 'Tuple', 'Int64'. The '(: value type)' frame is the
+        // outer form (head ':'), value = (tuple 5 105), type = (Tuple Int64 Int64).
+        let expect: &[u8] = &[
+            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, // cdzast\x00\x01
+            0x06, // 6 leaves
+            0x0a, 0x01, 0x3a, // NAME ':'
+            0x0a, 0x05, 0x74, 0x75, 0x70, 0x6c, 0x65, // NAME 'tuple'
+            0x00, 0x01, 0x05, // INT 5 (pos-dec, siglen 1, magnitude [5])
+            0x00, 0x01, 0x69, // INT 105 (pos-dec, siglen 1, magnitude [105])
+            0x0a, 0x05, 0x54, 0x75, 0x70, 0x6c, 0x65, // NAME 'Tuple'
+            0x0a, 0x05, 0x49, 0x6e, 0x74, 0x36, 0x34, // NAME 'Int64'
+        ];
+        // Prefix through the leaf pool is the load-bearing cross-backend contract (the struct spine
+        // follows deterministically from canon). Assert the full document.
+        assert_eq!(
+            &got[..expect.len()],
+            expect,
+            "framed int-tuple leaf pool must be the colon-framed byte string"
+        );
+        // And the document is strictly longer than the bare form would be (the frame is present): a bare
+        // (tuple 5 105) has NO ':' / 'Tuple' / 'Int64' leaves, so its leaf count byte would be 3 not 6.
+        assert_eq!(got[8], 0x06, "leaf count must be 6 (framed), not 3 (bare) — the divergence guard");
+
+        op_drop(pair);
+        assert_eq!(live_nodes(), 0, "no leak");
+    }
+
     #[test]
     fn value_encode_form_matches_the_codec_for_a_recursive_sum() {
         reset();
