@@ -6950,3 +6950,4 @@ todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	read of malformed text is a coded reject, not a wrong value
 todo	two adapter records with different state types drive a take-while fold in one program
+pass	tpwJ a cross-scope shared-let in a resumptive arm — a let-bound NESTED-IF (outer cond reads a state field, inner reads the param) feeding 3+ consumers across 3+ dispatches with a state-reading second op, the thread-path no-local-slot face closed by 8276ad1a6
