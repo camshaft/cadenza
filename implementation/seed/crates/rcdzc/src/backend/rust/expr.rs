@@ -545,6 +545,69 @@ fn emit_value_reconstruct(ty: &Ty, arenas: &str, node: &str) -> Result<String, R
     }
 }
 
+/// Emit a rust expression building the TYPE-NODE `cadenza_ast::ast::StructId` in `__b` for `ty`, mirroring
+/// the compiler's `type_ast`/`Ty::render_name`. This is the `<type-node>` half of the `(: <value>
+/// <type-node>)` value-form FRAME that the runtime `value-encode` op wraps EVERY escaping compound in
+/// (`sum_shape_descriptor` → `Framed(type_node, inner)` for Tuple/Record/List/Set/Map/generic-sum, or
+/// `Named(name, inner)` for a monomorphic sum — both render `(: value X)`, differing only in whether `X`
+/// is a structured node or a bare name). Without this frame the native rust `Value.encode` produced a
+/// BARE `(tuple …)` document that DIVERGED from the wasm face (measured: 35 vs 70 bytes for a
+/// `(tuple 5 105)`), so `Value.encode` was not a stable cross-backend content-address — a real bug the
+/// self-consistent round-trip corpus masked. A SCALAR's node is its bare render-name atom
+/// (`Int64`/`String`/`Bool`/`Char`/`Bytes`/…); a `Tuple`/`List`/`Record` is the structured
+/// `(Tuple …)`/`(List …)`/`(Record (: k T) …)` application (the RECORD field is a `(: name T)` colon
+/// ascription — the TYPE head is capitalized, matching `type_ast`). Covers exactly the shapes
+/// [`emit_value_form`] wires; others decline in lockstep.
+fn emit_type_node(ty: &Ty, ncx: &crate::ty::NameCtx) -> Result<String, Reject> {
+    match ty.strip_nominal() {
+        Ty::Int(_)
+        | Ty::Bool
+        | Ty::Unit
+        | Ty::String
+        | Ty::Char
+        | Ty::Symbol
+        | Ty::BigInt
+        | Ty::Rational
+        | Ty::Bytes
+        | Ty::Float(_) => {
+            let name = ty.render_name(ncx);
+            Ok(format!("__b.name(\"{name}\")"))
+        }
+        Ty::Tuple(elems) => {
+            let mut s =
+                String::from("{ let __th = __b.name(\"Tuple\"); let mut __tc = vec![__th];");
+            for (i, et) in elems.iter().enumerate() {
+                let child = emit_type_node(et, ncx)?;
+                s.push_str(&format!(" let __tt{i} = {child}; __tc.push(__tt{i});"));
+            }
+            s.push_str(" __b.list(__tc) }");
+            Ok(s)
+        }
+        Ty::List(elem) => {
+            let child = emit_type_node(elem, ncx)?;
+            Ok(format!(
+                "{{ let __th = __b.name(\"List\"); let __te = {child}; __b.list(vec![__th, __te]) }}"
+            ))
+        }
+        Ty::Record(fields) => {
+            let mut s =
+                String::from("{ let __th = __b.name(\"Record\"); let mut __tc = vec![__th];");
+            for (i, (sym, fty)) in fields.iter().enumerate() {
+                let fname = &*sym.name;
+                let child = emit_type_node(fty, ncx)?;
+                s.push_str(&format!(
+                    " let __tf{i} = {{ let __tcol = __b.name(\":\"); let __tk = __b.name(\"{fname}\"); let __tv = {child}; __b.list(vec![__tcol, __tk, __tv]) }}; __tc.push(__tf{i});"
+                ));
+            }
+            s.push_str(" __b.list(__tc) }");
+            Ok(s)
+        }
+        other => Err(Reject::decline(format!(
+            "Value.encode native rust: type-node for value shape {other:?} not yet wired (Int/Bool/Char/String/Bytes/Tuple/List/Record — incremental slices)"
+        ))),
+    }
+}
+
 fn wrap_closure_value(cap_lets: &str, closure_expr: &str) -> String {
     if cap_lets.is_empty() {
         closure_expr.to_string()
@@ -2701,11 +2764,24 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // round-trip corpus cases need BOTH, so they stay todo until decode lands. See `native-rust-r2-value-codec`.
         Core::ValueEncode { value, .. } => {
             let vty = type_of(db, value);
+            // The `<type-node>` half of the `(: <value> <type-node>)` frame — computed under a scoped
+            // `name_ctx` borrow (released before the `&mut db` `emit` call below).
+            let tnode = {
+                let ncx = db.name_ctx();
+                emit_type_node(&vty, &ncx)?
+            };
             let val = emit(db, value, env, ctx)?;
             let form = emit_value_form(&vty, "__vv")?;
+            // Wrap the bare value form in the `(: <value> <type-node>)` frame the runtime `value-encode`
+            // op applies ONCE at the root (nested compounds stay bare) — `sum_shape_descriptor`'s
+            // `Framed`/`Named` wrapper. This makes the native rust document byte-identical to the wasm face
+            // (both `(: (tuple …) (Tuple Int64 Int64))`), so `Value.encode` is a stable cross-backend
+            // content-address; `Value.decode` peels the same frame.
             Ok(format!(
                 "{{ let __vv = {val}; let mut __b = cadenza_ast::ast::Builder::new(); \
-                 let __root = {form}; cadenza_ast::codec::encode(&__b.finish(__root)) }}"
+                 let __inner = {form}; let __tn = {tnode}; let __colon = __b.name(\":\"); \
+                 let __root = __b.list(vec![__colon, __inner, __tn]); \
+                 cadenza_ast::codec::encode(&__b.finish(__root)) }}"
             ))
         }
         // `Value.decode b` (R2) — the inverse `∀a. Bytes → (Option a)`, TOTAL. `cadenza_ast::codec::decode`
@@ -2726,9 +2802,15 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 }
             };
             let b = emit(db, bytes, env, ctx)?;
-            let recon = emit_value_reconstruct(&target, "__a", "__a.root")?;
+            // PEEL the `(: <value> <type-node>)` frame the encoder wraps the document in: the decoded root
+            // is the 3-element `(: value type)` list, so extract child[1] (the bare value node) and
+            // reconstruct the target type from THAT. A malformed/unframed root (wrong head or arity) → None.
+            let recon = emit_value_reconstruct(&target, "__a", "__valnode")?;
             Ok(format!(
-                "(match cadenza_ast::codec::decode(&({b})) {{ Some(__a) => {recon}, None => None }})"
+                "(match cadenza_ast::codec::decode(&({b})) {{ Some(__a) => (|| {{ \
+                 let __items = if let cadenza_ast::ast::Struct::List(__i) = __a.get(__a.root) {{ __i }} else {{ return None }}; \
+                 if __items.len() != 3 || __a.head_name(__a.root) != Some(\":\") {{ return None }}; \
+                 let __valnode = __items[1]; {recon} }})(), None => None }})"
             ))
         }
         // `Core::StrToBytes` is the "canonicalize a runtime text leaf" op. On the wasm side it backs THREE
