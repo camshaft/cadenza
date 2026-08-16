@@ -451,6 +451,24 @@ struct HandlerCtx {
     /// suppressing the bind there loses no size win — it is pure harm to fire. Interior-mutable so the
     /// specialize path can flip it around its own thread without rebuilding the ctx.
     bind_growing_state: std::cell::Cell<bool>,
+    /// [tpwJ Option A-tight] TRUE while `specialize_recursive` is threading a RECURSIVE-DRIVER body. The
+    /// cross-scope tuple COLLAPSE (a straight-line per-dispatch `#st`-bind + tuple-projection transform) is
+    /// NOT sound under recursive specialization: `thread_returning_tuple` infers the recursive result type
+    /// from the threaded shape, and a tuple-projected next-state leaves that result type undetermined (rq3).
+    /// Excluding recursive drivers from the collapse is principled (a separate larger unit would teach
+    /// `thread_returning_tuple` about the tuple-projected state); such an arm stays on the distribute path.
+    in_recursive_specialize: std::cell::Cell<bool>,
+    /// [tpwJ Option A-tight, per-handler ALL-OR-NOTHING] TRUE only when EVERY arm of this handler MESHES with
+    /// the cross-scope tuple COLLAPSE: each arm either (a) HAS the shared-let-across-resume-slots shape (a
+    /// collapse candidate), (b) is ABORTIVE (no resume — threads no state), or (c) threads the state UNCHANGED
+    /// (its tail resume's next-state IS the arm's state binder — a trivial reader). A per-dispatch collapse
+    /// threads state as `(. #st_vs 1)`; a DISTRIBUTE arm of the SAME handler that MODIFIES the state cannot
+    /// read that projected state without orphaning (rrb1 binder 10055: a distribute arm reads a
+    /// collapse-threaded projected state → cross-path mismatch). Deciding ONCE over `ctx.arms` and enabling the
+    /// collapse only when all arms mesh keeps tpwJ (K.type shared-let + K.fin trivial reader) on the collapse
+    /// path while rrb1/lru1/xh1 stay ALL on distribute → zero regression. The per-dispatch gate (hoistable /
+    /// drain-safe / non-growing / single-slot / non-recursive) still applies on top for each firing dispatch.
+    collapse_enabled: std::cell::Cell<bool>,
 }
 
 /// One handler's state in a (possibly merged) [`HandlerCtx`]: the effect declaration whose operations
@@ -488,6 +506,31 @@ impl HandlerCtx {
             .filter(|(_, arm)| arm.cont.is_none() && !arm_has_resume(db, arm.body))
             .map(|(&k, _)| k)
             .collect();
+        // [tpwJ A-tight per-handler ALL-OR-NOTHING] Enable the cross-scope tuple COLLAPSE for THIS handler
+        // only when >=1 arm is a collapse candidate (shared-let-across-resume-slots) AND EVERY arm MESHES with
+        // it: each arm either has that shared-let shape, is abortive (no resume — no state thread), or threads
+        // the state UNCHANGED (its tail resume's next-state IS the arm's state binder — a trivial reader like
+        // tpwJ's `fin`). A distribute arm that MODIFIES the state cannot safely read a collapse-threaded
+        // `(. #st_vs 1)` projection (rrb1 cross-path orphan), so if any arm fails to mesh, disable the collapse
+        // and keep the whole handler on the distribute path. Decided ONCE here over all arms.
+        let arm_list: Vec<HandleArm> = arms.values().cloned().collect();
+        let any_candidate = arm_list
+            .iter()
+            .any(|a| arm_has_let_shared_across_resume_slots(db, a.body));
+        let all_mesh = arm_list.iter().all(|a| {
+            if arm_has_let_shared_across_resume_slots(db, a.body) || !arm_has_resume(db, a.body) {
+                return true;
+            }
+            // Threads the state UNCHANGED: EVERY resume next-state (peeled through match/if branches) is the
+            // arm's state binder. Such a distribute arm reads a collapse-threaded `(. #st_vs 1)` projection and
+            // passes it straight through — safe (tpwJ's `fin`). A next-state that MODIFIES the state does not
+            // mesh (rrb1).
+            let mut nexts: Vec<StructId> = Vec::new();
+            let got = arm_resume_next_states(db, a.body, &mut nexts).is_some();
+            let state = a.state;
+            got && !nexts.is_empty() && nexts.iter().all(|&next| node_refs_binder(db, next, state))
+        });
+        let collapse_enabled = any_candidate && all_mesh;
         HandlerCtx {
             arms,
             key,
@@ -497,6 +540,8 @@ impl HandlerCtx {
             pending: std::cell::RefCell::new(Vec::new()),
             temp_ctr: std::cell::Cell::new(0),
             bind_growing_state: std::cell::Cell::new(true),
+            in_recursive_specialize: std::cell::Cell::new(false),
+            collapse_enabled: std::cell::Cell::new(collapse_enabled),
         }
     }
 
@@ -5920,7 +5965,70 @@ fn thread_bounded(
             //     `(do stmt… v)`: the statements sequenced (folded later under their own enclosing
             //     handler / emitted as host calls), then the resume value. This is what lets an inner
             //     handler INTERPOSE on a delegated effect — count it via an outer effect, then forward.
-            let (value, next_state) = peel_resume_from_arm_body(db, arm_body)?;
+            // [tpwJ, breaker 2026-08-16] CROSS-SCOPE shared-`let` arm: when a `let` binder is referenced in
+            // BOTH a resume value AND its next-state, the DISTRIBUTE peel below splits it into two separate
+            // matches/ifs whose two copies land in different emit scopes — a multi-use binding kept in one,
+            // copy-propagated away in the other → cross-scope "no local slot". Serve it via the COLLAPSED path
+            // instead: rewrite the arm's tail resumes to `(tuple v s)` IN PLACE (structure intact, the binder
+            // stays bound once in its own arm with its match-pattern binders live), bind that single
+            // `(value, state)` tuple ONCE to a fresh `#st`-prefixed name (materialized by `drain_and_wrap`
+            // OUTSIDE both, force-kept via the `should_keep_binding` `#st` carve-out), and PROJECT
+            // value = `(. t 0)`, next_state = `(. t 1)`. Both projections read the ONE shared slot → no
+            // cross-scope orphan. Falls back to the distribute peel if the collapse does not model the shape.
+            // OPTION A (v-inference-confirmed): fire the COLLAPSE only when the combined is CLOSED at the
+            // DRAIN level — i.e. every op-arg substituted into it is drain-safe (a literal / an outer param /
+            // an already-`#st`-bound state ref), NOT a HANDLE-BODY or ARM-LOCAL `let` binding. The collapsed
+            // tuple is materialized by `drain_and_wrap` OUTSIDE the arm, so a substituted op-arg that is a
+            // body-bound name (which the fold LIFTS to a `#`-name bound near the perform site) would resolve
+            // out of scope there → CDZ0101 (neu1's `#big70`). A body-bound-op-arg arm STAYS on the distribute
+            // path (where it already folds correctly), so this narrowing closes the literal-op-arg family
+            // (tpwJ + the tpw ladder) with ZERO regression and defers the body-bound-op-arg cross-scope class
+            // as an honest follow-up. `Resolved::Ref` is exactly a `let`-binding reference; a `Param`/literal/
+            // member/prim is not, so it is the precise drain-safe discriminator.
+            // OPTION A (drain-closed): fire the COLLAPSE only when the built `combined` is HOISTABLE to the
+            // drain level — it must reference no LIFTED `#`-name that is bound NEAR the perform site (a `#cv`
+            // op-arg/condition lift, a `#big…`/freshen-walk body-let lift), since `drain_and_wrap` materializes
+            // the combined OUTSIDE the arm and such a name would resolve out of scope there → CDZ0101 (neu1's
+            // `#big70`). `#st`/`#seed` names ARE bound at the drain level (the per-dispatch state bind and the
+            // handle-seed lift), so a threaded `(. #st… 1)` incoming state is fine — that is what keeps a
+            // uniformly-literal-arg handler (tpwJ) ALL on the collapse path across dispatches. A mixed handler
+            // whose combined reaches a body-lifted name (neu1) stays ALL on the distribute path (where it
+            // already folds), so this narrowing closes the literal-op-arg family with ZERO regression and
+            // defers the body-lifted class as a follow-up. Structural (not resolution-based): a lifted name's
+            // resolution is unreliable pre-materialization, but its `#`-prefix is an exact, stable witness.
+            // A-TIGHT GUARDS (v-inference-confirmed): the collapse's per-dispatch `#st`-bind + tuple-projection
+            // is a STRAIGHT-LINE-thread transform, sound ONLY for a single-slot, non-recursive-driver handler
+            // whose threaded state is not a growing collection. Fire it only there; the diverse remainder stays
+            // on the proven distribute path (named follow-up classes: recursive-driver / growing-state /
+            // cross-handler shared-let). (1) SINGLE-SLOT — a merged multi-slot ctx (a cross-handler shape,
+            // xh1) threads several states; the single-name projection does not model that. (2) NOT a recursive
+            // driver — `thread_returning_tuple` infers the recursive result type from the threaded shape, and a
+            // tuple-projected next-state leaves it undetermined (rq3). (3) NOT a growing-collection next-state —
+            // a `(. t 1)` projecting a `Map.insert`/`List.push` state would need the base's see-through arm
+            // AND re-introduces the F24 surface here (lru1/rrb1); defer it.
+            let mut arm_next_states: Vec<StructId> = Vec::new();
+            let arm_state_grows = arm_resume_next_states(db, arm_body, &mut arm_next_states)
+                .is_some()
+                && arm_next_states
+                    .iter()
+                    .any(|&s| next_state_is_growing_compound(db, s));
+            let collapse_ok = ctx.collapse_enabled.get()
+                && ctx.slots.len() == 1
+                && !ctx.in_recursive_specialize.get()
+                && !arm_state_grows;
+            let (value, next_state) = if collapse_ok
+                && arm_has_let_shared_across_resume_slots(db, arm_body)
+                && let Some(combined) = peel_tuple_value_state(db, arm_body)
+                && combined_hoistable_to_drain(db, combined)
+            {
+                let name = format!("#st{}_vs", node.0);
+                ctx.pending.borrow_mut().push((name.clone(), combined));
+                let value = tuple_proj(db, &name, 0);
+                let next_state = tuple_proj(db, &name, 1);
+                (value, next_state)
+            } else {
+                peel_resume_from_arm_body(db, arm_body)?
+            };
             // SAFE-DECLINE: a FOREIGN perform DIRECTLY in the threaded NEXT-STATE (as2/as1, breaker
             // 2026-08-05; both-perform gap closed per github-liaison/Copilot #2289). An arm `(resume t (+ t
             // (A.get)))` performing an OUTER effect `A.get` in its next-state expr is unsound as a fold: the
@@ -8923,6 +9031,10 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     } else {
         orig_body
     };
+    // [tpwJ A-tight] Mark that we are threading a RECURSIVE-DRIVER body, so the perform arm's cross-scope
+    // tuple COLLAPSE stays OFF here (it is unsound under recursive specialization — rq3). Restored after.
+    let saved_recur = ctx.in_recursive_specialize.get();
+    ctx.in_recursive_specialize.set(true);
     // MULTI-VALUE mode: the body's every tail leaf yields `("tuple" value out-states…)`, and each self-call
     // is let-bound (out-state projected + threaded). SINGLE-return mode: the ordinary `thread` (unchanged).
     let spec_body = if multivalue {
@@ -8954,6 +9066,7 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
         let (b, _out) = threaded?;
         b
     };
+    ctx.in_recursive_specialize.set(saved_recur);
 
     // DEEP-FRESH-COPY the threaded body so NO original-body node is shared into the spec. Threading /
     // `beta_reduce` return an unchanged subtree AS-IS (a node with no substituted param is not rebuilt), so
@@ -9300,6 +9413,163 @@ fn lift_inner_op_arm_outer_perform(
             }
         }
         Struct::Atom(_) => node,
+    }
+}
+
+/// [tpwJ, breaker 2026-08-16] Rewrite every TAIL `(resume v s)` in an arm body to a `(tuple v s)`, leaving
+/// the surrounding `do`/`let`/`match`/`if` structure INTACT — the COLLAPSED alternative to
+/// [`peel_resume_from_arm_body`], which DISTRIBUTES the resume into two separate value/next-state expressions.
+/// The distribute path reuses the original branch nodes across two separate matches/ifs; when a `let` binder
+/// is referenced in BOTH the resume value AND its next-state, the two copies land in different emit scopes and
+/// a multi-use binding is kept in one but copy-propagated away in the other → cross-scope "no local slot".
+/// Collapsing keeps the binder bound ONCE in its own arm (its match-pattern binders `col`/`k` stay in scope)
+/// and yields a single `(value, state)` tuple; the caller binds it once and PROJECTS `(. t 0)`/`(. t 1)`, so
+/// the single kept slot is shared. Returns `None` on any shape the resume-peel does not model (same coverage
+/// as `peel_resume_from_arm_body`), so the caller falls back to the distribute path.
+fn peel_tuple_value_state(db: &mut Db, arm_body: StructId) -> Option<StructId> {
+    // Bare `(resume v s)` → `(tuple v s)`.
+    if let Some((v, s)) = tail_resume(db, arm_body) {
+        let tup_head = db.push_name("tuple");
+        return Some(db.push_list(vec![tup_head, v, s]));
+    }
+    // `(do stmt… last)` — keep the leading statements, collapse the tail.
+    if let Some(items) = db.ast.as_form(arm_body, "do").map(|t| t.to_vec()) {
+        let (&last, stmts) = items.split_last()?;
+        let collapsed = peel_tuple_value_state(db, last)?;
+        let do_head = db.push_name("do");
+        let mut children = vec![do_head];
+        children.extend_from_slice(stmts);
+        children.push(collapsed);
+        return Some(db.push_list(children));
+    }
+    // `(let binds body)` — keep the binding, collapse the body (the binder stays in scope for both tuple slots).
+    if let Some(tail) = db.ast.as_form(arm_body, "let").map(<[_]>::to_vec)
+        && tail.len() == 2
+    {
+        let (bindings, body) = (tail[0], tail[1]);
+        let collapsed = peel_tuple_value_state(db, body)?;
+        let let_head = db.push_name("let");
+        return Some(db.push_list(vec![let_head, bindings, collapsed]));
+    }
+    // A VISIBLE-ctor op-arg match — fold it (consume this dispatch's op arg), then collapse the arm body.
+    if matches!(resolved_of(db, arm_body), Resolved::Match { .. })
+        && let Some(folded) = crate::eval::fold_ctor_match(db, arm_body)
+    {
+        return peel_tuple_value_state(db, folded);
+    }
+    // `(match scrut (pat body)…)` — collapse each arm body, keep the ONE match (pattern binders stay in scope).
+    if let Resolved::Match { scrutinee, arms } = resolved_of(db, arm_body) {
+        if arms.is_empty() {
+            return None;
+        }
+        let mhead = db.push_name("match");
+        let mut children = vec![mhead, scrutinee];
+        for (pat, body) in arms {
+            let collapsed = peel_tuple_value_state(db, body)?;
+            children.push(db.push_list(vec![pat, collapsed]));
+        }
+        return Some(db.push_list(children));
+    }
+    // `(if cond then else)` — collapse each branch, keep the ONE if.
+    if let Resolved::If { cond, then_, else_ } = resolved_of(db, arm_body) {
+        let ct = peel_tuple_value_state(db, then_)?;
+        let ce = peel_tuple_value_state(db, else_)?;
+        let if_head = db.push_name("if");
+        return Some(db.push_list(vec![if_head, cond, ct, ce]));
+    }
+    None
+}
+
+/// [tpwJ] Whether the arm body binds a `let` whose binder is referenced in BOTH a resume VALUE and a resume
+/// NEXT-STATE — the shape that makes the distribute-peel produce a cross-scope "no local slot" orphan (the
+/// binding is kept in one of the two split scopes and copy-propagated away in the other). Such an arm is
+/// served by the COLLAPSED `peel_tuple_value_state` path instead. Detected structurally by binder NAME (the
+/// reused branch refs are memoized to a stale init, so a resolution-keyed test misses them).
+fn arm_has_let_shared_across_resume_slots(db: &mut Db, arm_body: StructId) -> bool {
+    // Collect let-binder names bound anywhere on the tail spine, then check each is referenced in BOTH the
+    // resume value-slots and the resume next-state-slots — AND KEPT (referenced >=2x) in at least one slot.
+    // The cross-scope orphan only arises when the DISTRIBUTE peel produces a MULTI-USE binding that
+    // `should_keep_binding` KEEPS as a `Core::Let` in one of the two split scopes (a single-use-per-slot
+    // binding is copy-propagated in both → no slot, no orphan — e.g. the closure-state `(let ((r (f v)))
+    // (resume r (fn (x) (+ x r))))` arm, which the distribute path handles fine and must stay on it). Gating
+    // the COLLAPSE on the kept (>=2) case keeps every single-use-per-slot arm on the proven distribute path.
+    let mut binder_names: Vec<String> = Vec::new();
+    collect_tail_let_binder_names(db, arm_body, &mut binder_names);
+    binder_names.iter().any(|nm| {
+        let mut value_occ = 0u32;
+        let mut state_occ = 0u32;
+        check_name_in_resume_slots(db, arm_body, nm, &mut value_occ, &mut state_occ);
+        value_occ > 0 && state_occ > 0 && (value_occ >= 2 || state_occ >= 2)
+    })
+}
+
+fn collect_tail_let_binder_names(db: &Db, node: StructId, out: &mut Vec<String>) {
+    if let Some(tail) = db.ast.as_form(node, "let")
+        && tail.len() == 2
+        && let Struct::List(pairs) = db.ast.get(tail[0]).clone()
+    {
+        for p in pairs {
+            if let Struct::List(kv) = db.ast.get(p).clone()
+                && kv.len() == 2
+                && let Some(nm) = db.ast.as_name(kv[0])
+            {
+                out.push(nm.to_string());
+            }
+        }
+    }
+    if let Struct::List(children) = db.ast.get(node).clone() {
+        for c in children {
+            collect_tail_let_binder_names(db, c, out);
+        }
+    }
+}
+
+fn check_name_in_resume_slots(
+    db: &mut Db,
+    node: StructId,
+    name: &str,
+    value_occ: &mut u32,
+    state_occ: &mut u32,
+) {
+    if let Resolved::Resume { value, next_state } = resolved_of(db, node) {
+        *value_occ += count_name_occ(db, value, name);
+        *state_occ += count_name_occ(db, next_state, name);
+    }
+    if let Struct::List(children) = db.ast.get(node).clone() {
+        for c in children {
+            check_name_in_resume_slots(db, c, name, value_occ, state_occ);
+        }
+    }
+}
+
+/// [tpwJ Option A] Whether the collapsed `combined` tuple is HOISTABLE to the drain level — it references no
+/// LIFTED `#`-name bound NEAR the perform site. `drain_and_wrap` materializes the combined OUTSIDE the arm, so
+/// a `#cv` (op-arg / performing-condition lift) or a `#big…`/freshen-walk (body-`let` lift) reference would
+/// resolve out of scope there → CDZ0101. `#st` (per-dispatch state bind) and `#seed` (handle-seed lift) ARE
+/// bound at the drain level, so a threaded `(. #st… 1)` incoming state stays hoistable. Structural: a lifted
+/// name's resolution is unreliable pre-materialization, but its prefix is an exact, stable witness.
+fn combined_hoistable_to_drain(db: &Db, node: StructId) -> bool {
+    match db.ast.get(node) {
+        Struct::Atom(_) => match db.ast.as_name(node) {
+            Some(n) if n.starts_with('#') => n.starts_with("#st") || n.starts_with("#seed"),
+            _ => true,
+        },
+        Struct::List(children) => children
+            .clone()
+            .iter()
+            .all(|&c| combined_hoistable_to_drain(db, c)),
+    }
+}
+
+/// Count occurrences of a bare NAME atom `name` in `node`'s subtree (structural — ignores resolution).
+fn count_name_occ(db: &Db, node: StructId, name: &str) -> u32 {
+    match db.ast.get(node) {
+        Struct::Atom(_) => u32::from(db.ast.as_name(node) == Some(name)),
+        Struct::List(children) => children
+            .clone()
+            .iter()
+            .map(|&c| count_name_occ(db, c, name))
+            .sum(),
     }
 }
 
