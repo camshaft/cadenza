@@ -483,6 +483,11 @@ fn emit_value_form(db: &mut Db, ty: &Ty, val_expr: &str) -> Result<String, Rejec
         Ty::BigInt => Ok(format!(
             "__b.atom_leaf(cadenza_ast::ast::Leaf::Int {{ value: num_bigint::BigInt::parse_bytes(({val_expr}).to_decimal_string().as_bytes(), 10).unwrap(), radix: cadenza_ast::ast::Radix::Dec }})"
         )),
+        // A RATIONAL is a `cdz_num::Rational` → a single NAME leaf whose text is `num/den` (normalized:
+        // lowest terms, sign on num, den>0), framed `(: <num>/<den> Rational)` — NOT a record and NOT the
+        // 2-handle heap node (v-runtime's runtime value-encode renders the folded `num/den` text directly).
+        // `Rational::to_display_string` produces exactly that `num/den` string.
+        Ty::Rational => Ok(format!("__b.name(&({val_expr}).to_display_string())")),
         Ty::Tuple(elems) => {
             let mut body = String::from("{ let __h = __b.name(\"tuple\");");
             let mut vars = vec!["__h".to_string()];
@@ -703,6 +708,19 @@ fn emit_value_reconstruct(
              match {arenas}.leaf(*__l) {{ cadenza_ast::ast::Leaf::Int {{ value, .. }} => \
              {{ let (__sg, __mag) = value.to_u32_digits(); Some(cdz_num::Big {{ neg: __sg == num_bigint::Sign::Minus, mag: __mag }}) }}, \
              _ => None }}, _ => None }})"
+        )),
+        // A RATIONAL leaf inverse: read the `num/den` NAME text, split on `/`, parse each half into a
+        // `cdz_num::Big` (num_bigint parse → LE u32 limbs, exact) and rebuild via `Rational::new` (which
+        // re-normalizes — idempotent, the encoded text is already normalized). None on a bad shape/parse.
+        Ty::Rational => Ok(format!(
+            "(match {arenas}.get({node}) {{ cadenza_ast::ast::Struct::Atom(__l) => \
+             match {arenas}.leaf(*__l) {{ cadenza_ast::ast::Leaf::Name(__s) => {{ \
+             let __parts: std::vec::Vec<&str> = __s.splitn(2, '/').collect(); \
+             if __parts.len() != 2 {{ None }} else {{ \
+             match (num_bigint::BigInt::parse_bytes(__parts[0].as_bytes(), 10), num_bigint::BigInt::parse_bytes(__parts[1].as_bytes(), 10)) {{ \
+             (Some(__nn), Some(__dd)) => {{ let (__ns, __nm) = __nn.to_u32_digits(); let (__ds, __dm) = __dd.to_u32_digits(); \
+             Some(cdz_num::Rational::new(cdz_num::Big {{ neg: __ns == num_bigint::Sign::Minus, mag: __nm }}, cdz_num::Big {{ neg: __ds == num_bigint::Sign::Minus, mag: __dm }})) }}, \
+             _ => None }} }} }}, _ => None }}, _ => None }})"
         )),
         Ty::Tuple(elems) => {
             let n = elems.len();

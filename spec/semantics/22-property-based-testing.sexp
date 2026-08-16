@@ -1314,6 +1314,24 @@
   (call   main (: 9999999999 Int64)) (output (: 9999999999 Int64))
   (call   main (: 7 Int64)) (output (: 7 Int64)))
 
+(case "a Value.encode/Value.decode round-trip preserves a Rational (normalized num/den name leaf)"
+  (doc    "Extends the round-trips to a `Rational` — the R2 value-form is a SINGLE NAME leaf whose text is
+           `num/den` NORMALIZED (lowest terms, sign on num, den>0), framed `(: <num>/<den> Rational)` — NOT a
+           record, NOT the 2-handle heap node. `Rational.of n 8` NORMALIZES on construct, so `main 6` builds
+           6/8 = 3/4 (a REDUCED form — catches a normalize mismatch), `main 5` = 5/8 (already reduced).
+           `Value.decode (Value.encode r) == Some r`; the match confirms `= r (Rational.of n 8)` (Rational
+           equality) and returns `n`. `main 6` -> 6, `main 5` -> 5 (distinct). rust encodes via
+           Rational::to_display_string (num/den) into a Name leaf, decode splits on `/` and rebuilds via
+           Rational::new (re-normalizes). Byte-identical to the wasm value-encode. wasm + rust + rust-async.")
+  (input  (do
+            (def (main (: n Int64))
+              (match (: (Value.decode (Value.encode (: (Rational.of n 8) Rational))) (Option Rational))
+                ((Some r) (if (= r (Rational.of n 8)) n (- 0 1)))
+                ((None u) (- 0 2))))
+            (export main)))
+  (call   main (: 6 Int64)) (output (: 6 Int64))
+  (call   main (: 5 Int64)) (output (: 5 Int64)))
+
 ; --- The round-trip under LET-BINDER grounding: decode's target fixed by the binder annotation, not inline. ---
 
 (case "a Value.decode round-trip grounds its target from a LET-BINDER annotation, not only an inline ascription"

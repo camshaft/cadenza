@@ -1173,6 +1173,7 @@ pass	a Value.encode/Value.decode round-trip preserves a FLOAT element of a compo
 pass	a Value.encode/Value.decode round-trip preserves a MAP's entries
 pass	a Value.encode/Value.decode round-trip preserves a MULTI-PAYLOAD sum variant (spread)
 pass	a Value.encode/Value.decode round-trip preserves a RECORD's fields
+pass	a Value.encode/Value.decode round-trip preserves a Rational (normalized num/den name leaf)
 pass	a Value.encode/Value.decode round-trip preserves a SET's elements
 pass	a Value.encode/Value.decode round-trip preserves a STRING element of a compound
 pass	a Value.encode/Value.decode round-trip preserves a SUM's NULLARY variant (Option None)
