@@ -9784,6 +9784,86 @@ mod tests {
         assert_eq!(live_nodes(), 0, "no leak");
     }
 
+    /// The framed Int×Float tuple descriptor `(: <value> (Tuple Int64 Float64))` — tag-15 `Framed` whose
+    /// TypeNode is `Tuple[Int64, Float64]`, inner → a `Tuple[→Int, →Float]`. Exercises the FLOAT leaf
+    /// (KIND_FLOAT exact-decimal) inside the framed cross-backend golden.
+    fn framed_int_float_pair_descriptor() -> Vec<u8> {
+        let mut d = Vec::new();
+        desc_leb(&mut d, 4); // table_len = 4 (Int, Float, Tuple, Framed)
+        d.push(0); // [0] Int
+        d.push(2); // [1] Float
+        // [2] Tuple [→0, →1]
+        d.push(6);
+        desc_leb(&mut d, 2);
+        desc_leb(&mut d, 0);
+        desc_leb(&mut d, 1);
+        // [3] Framed( TypeNode Tuple[ Int64, Float64 ], inner → 2 )
+        d.push(15);
+        desc_name(&mut d, "Tuple");
+        desc_leb(&mut d, 2);
+        desc_name(&mut d, "Int64");
+        desc_leb(&mut d, 0);
+        desc_name(&mut d, "Float64");
+        desc_leb(&mut d, 0);
+        desc_leb(&mut d, 2); // inner → 2
+        desc_leb(&mut d, 3); // root = 3
+        d
+    }
+
+    /// GOLDEN pin, FLOAT shape (v-rust-backend fixture, 2026-08-16): `Value.encode` of `(tuple 5 2.5)` at
+    /// `(Tuple Int64 Float64)` must render `(: (tuple 5 2.5) (Tuple Int64 Float64))` — the 2.5 is a
+    /// KIND_FLOAT exact-decimal leaf (Decimal false/25/-1, i.e. 25×10⁻¹), NOT a lossy f64 bit pattern. This
+    /// pins the exact-decimal Float leaf identity that the 3 codecs (runtime/rcdzc/cadenza-ast) share; the
+    /// cadenza-ast mirror (`1712ab8d7`) asserts the same bytes. Guarded three ways. `#[cfg(test)]`.
+    #[test]
+    fn value_encode_of_a_framed_int_float_tuple_is_the_colon_framed_golden() {
+        reset();
+        let desc = framed_int_float_pair_descriptor();
+        let pair = op_arr_alloc(2);
+        op_arr_set(pair, 0, op_box_int(5));
+        op_arr_set(pair, 1, op_box_float(2.5));
+        let got = op_value_encode_form(pair, &desc).expect("encode framed int/float pair");
+
+        let descriptor = decode_descriptor(&desc).expect("descriptor");
+        let mut b = DocBuilder::default();
+        let root = encode_value_recursive(&descriptor, &mut b, pair, descriptor.root, 0)
+            .expect("recursive encode");
+        assert_eq!(got, b.finish(root), "iterative/recursive disagree on int/float tuple");
+
+        let back = op_value_decode(&got, &desc);
+        assert_ne!(back, Handle::NULL, "int/float tuple doc must decode");
+        assert_eq!(
+            got,
+            op_value_encode_form(back, &desc).expect("re-encode"),
+            "decode∘encode ≠ id on int/float tuple"
+        );
+        op_drop(back);
+
+        // FULL document: ':' , 'tuple', 5, 2.5 (KIND_FLOAT), 'Tuple', 'Int64', 'Float64' (7 leaves) + spine.
+        // The FLOAT leaf is KIND_FLOAT(6) + neg(0) + exponent as a FIXED 8-byte BIG-ENDIAN i64 (-1 =
+        // 0xFF×8) + siglen(1) + significand([25]) — i.e. 25×10⁻¹ = 2.5 (exact decimal, not lossy bits).
+        let expect: &[u8] = &[
+            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, // cdzast\x00\x01
+            0x07, // 7 leaves
+            0x0a, 0x01, 0x3a, // ':'
+            0x0a, 0x05, 0x74, 0x75, 0x70, 0x6c, 0x65, // 'tuple'
+            0x00, 0x01, 0x05, // INT 5
+            0x06, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01, 0x19, // FLOAT 2.5 (exp -1, sig 25)
+            0x0a, 0x05, 0x54, 0x75, 0x70, 0x6c, 0x65, // 'Tuple'
+            0x0a, 0x05, 0x49, 0x6e, 0x74, 0x36, 0x34, // 'Int64'
+            0x0a, 0x07, 0x46, 0x6c, 0x6f, 0x61, 0x74, 0x36, 0x34, // 'Float64'
+            // struct spine:
+            0x0a, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x01, 0x03, 0x01, 0x02, 0x03, 0x00,
+            0x04, 0x00, 0x05, 0x00, 0x06, 0x01, 0x03, 0x05, 0x06, 0x07, 0x01, 0x03, 0x00, 0x04, 0x08,
+            0x09,
+        ];
+        assert_eq!(got, expect, "framed int/float tuple must be the full colon-framed golden document");
+        assert_eq!(got[8], 0x07, "leaf count = 7 (framed int/float tuple)");
+
+        op_drop(pair);
+        assert_eq!(live_nodes(), 0, "no leak");
+    }
+
     #[test]
     fn value_encode_form_matches_the_codec_for_a_recursive_sum() {
         reset();
