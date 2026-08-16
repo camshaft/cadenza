@@ -843,4 +843,50 @@ mod tests {
         b2_reachable(&mut db, e.scope_node, x, &mut seen, &mut found);
         assert!(found, "scope_node dominates the shared node");
     }
+
+    // GATE-3 (not-a-template): a shared heap node that reads a NON-Param binder (an inner Core::Let binder,
+    // i.e. state that a resume could re-thread) is EXCLUDED — binding a state-threaded template once
+    // collapses distinct per-dispatch values (the cbk1/trn6 miscompile class). Slice-1 admits only
+    // param-closed value-shares. (Slice-2 will refine this to admit a bound-once inner-Let binder.)
+    #[test]
+    fn bind_plan_excludes_a_share_reading_an_inner_let_binder() {
+        let mut db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (main) 0) (export main))",
+        ));
+        let list_int = Ty::List(Box::new(Ty::int64()));
+        // A binder id `k` + a heap node that READS it via LocalRef, shared twice, then wrapped in a Let
+        // that binds `k` — so the share's free binder `k` is an inner Let binder (non-Param).
+        let k = synth_core(
+            &mut db,
+            Core::ConstInt(crate::ast::IntValue::from_i64(0)),
+            Ty::int64(),
+        );
+        let reads_k = synth_core(&mut db, Core::LocalRef { binder: k }, list_int.clone());
+        let shared = synth_core(
+            &mut db,
+            Core::ListConcat {
+                lhs: reads_k,
+                rhs: reads_k,
+            },
+            list_int.clone(),
+        );
+        let k_init = synth_core(
+            &mut db,
+            Core::ListNew { elems: [].into() },
+            list_int.clone(),
+        );
+        let body = synth_core(
+            &mut db,
+            Core::Let {
+                bindings: [(k, k_init)].into(),
+                body: shared,
+            },
+            list_int,
+        );
+        let plan = b2_bind_plan(&mut db, body);
+        assert!(
+            !plan.iter().any(|e| e.shared_id == reads_k),
+            "a shared heap node reading an inner Let binder is excluded (slice-1: param-closed only)"
+        );
+    }
 }
