@@ -5633,8 +5633,42 @@ fn next_state_produces_accumulating_op(db: &mut Db, node: StructId, depth: u32) 
             next_state_produces_accumulating_op(db, then_, depth + 1)
                 || next_state_produces_accumulating_op(db, else_, depth + 1)
         }
+        // SEE-THROUGH a TUPLE PROJECTION `(. t idx)` into the tuple's element `idx`. The multi-resume peel
+        // may thread the next-state as a projection of a let-bound `(tuple <value> <state>)` — bound once
+        // in scope so a value AND a threaded next-state share one slot (the tpwJ cross-scope collapse). A
+        // GROWING state (`(Map.insert m k v)` / `(List.push s v)`) wrapped as that tuple's `idx` element
+        // would otherwise be HIDDEN from this detection (a `Proj` matches none of the arms above → `false`),
+        // so the `#st` per-dispatch bind would NOT fire and the FINDING-24 exponential blowup would RETURN
+        // for a growing-state handler. Resolve the projected operand to its `(tuple …)` construction (a
+        // direct tuple form, or a `Ref`/`Let` chain ending at one) and recurse into element `idx`, so a
+        // growing element inside a threaded tuple is still detected and `#st` still fires. `None` if the
+        // operand does not reach a tuple with that element (a non-tuple projection is not an accumulator).
+        Resolved::Proj { operand, index } => tuple_elem_of(db, operand, index)
+            .is_some_and(|elem| next_state_produces_accumulating_op(db, elem, depth + 1)),
         _ => false,
     }
+}
+
+/// The `index`-th element expression of the tuple `(tuple e0 e1 …)` the node at `operand` reaches — a DIRECT
+/// tuple construction, or one reached through a `Ref` (a `let`-binder to a tuple init) or a `Let` body.
+/// `None` if `operand` does not reach a tuple, or the tuple has no such element. Used by the tuple-projection
+/// see-through arm of the growing-state detection so a `(. t idx)` next-state is inspected at its real
+/// element rather than treated as opaque (which would hide a growing state from the `#st` bind — F24).
+fn tuple_elem_of(db: &mut Db, operand: StructId, index: usize) -> Option<StructId> {
+    // Follow a `Ref` (let-binder → its init) / `Let` (→ body) chain to the tuple construction, bounded.
+    let mut cur = operand;
+    for _ in 0..=F24_REACH_LIMIT {
+        // A direct `(tuple e0 e1 …)` form — the head is `tuple`, the elements are the tail.
+        if let Some(elems) = db.ast.as_form(cur, "tuple") {
+            return elems.get(index).copied();
+        }
+        match resolved_of(db, cur) {
+            Resolved::Ref { value } => cur = value,
+            Resolved::Let { body, .. } => cur = body,
+            _ => return None,
+        }
+    }
+    None
 }
 
 /// Thread a conditional BRANCH / match ARM body, returning its rewrite AND its OUT-STATE (per slot) — the threaded

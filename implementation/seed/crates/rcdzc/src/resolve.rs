@@ -248,6 +248,40 @@ pub fn forget_subtree(db: &mut Db, id: StructId) {
     }
 }
 
+/// RE-ANCHOR every `let`-body reference in the subtree at `id` that resolves to the binding initializer
+/// `old_init` so it instead resolves to `new_init` — an alpha-consistency repair for a COPIED `let`.
+///
+/// A `let` reference `x` resolves (via `last_binder_named`) to `Resolved::Ref { value: <init-occ> }` — the
+/// INITIALIZER occurrence of its binding, keyed by node identity. When a caller COPIES a `let` (the effect
+/// multi-resume peel building a fresh header, or a `deep_fresh_copy` of a `let`-bearing arm body) it mints a
+/// FRESH init occurrence `new_init` for the header, but body references it did not itself rebuild — reused
+/// branch nodes, or refs whose resolution was memoized against the pre-copy scope — still resolve to the
+/// ORIGINAL `old_init`. The kept multi-use `Core::Let` slot is then keyed by `new_init` (the header) while the
+/// `Core::LocalRef`s carry `old_init` — which has no slot in the copied scope: "let-binding reference has no
+/// local slot" at emit (breaker tpwJ). `copy_structural` avoids this for the `let`s IT builds (its copied refs
+/// re-resolve against the copied scope), but a reused foreign ref, or a copy whose refs were resolved before
+/// re-parenting, does not — so the caller repairs it here.
+///
+/// TIMING: call this AFTER the copied tree is re-parented into its lexical site, and SCOPED to the copied
+/// `let` body (not a whole wrapped tree), so `resolved_of` on any unrelated node — an enclosing param `n`, a
+/// match-pattern binder — resolves against a valid parent chain rather than memoizing a spurious `Unbound`
+/// (a pre-reparent or too-wide call poisons those memos — the wiring lesson from the tpwJ prototype).
+/// Overwrites the `db.resolved` memo of every node whose resolved form is `Ref { value: old_init }` to
+/// `Ref { value: new_init }`. Bounded by the subtree size; a node resolving to any OTHER init (a sibling
+/// binding, an outer capture) is untouched, so a well-formed nested/sibling `let` is unaffected.
+pub fn reanchor_let_refs(db: &mut Db, id: StructId, old_init: StructId, new_init: StructId) {
+    if let Resolved::Ref { value } = resolved_of(db, id)
+        && value == old_init
+    {
+        db.resolved.fill(id, Resolved::Ref { value: new_init });
+    }
+    if let Struct::List(children) = db.ast.get(id) {
+        for c in children.clone() {
+            reanchor_let_refs(db, c, old_init, new_init);
+        }
+    }
+}
+
 /// Classify one AST occurrence into its resolved form. Reads the AST + the parent index (for scope);
 /// does not recurse into children (they resolve on their own demand). A "no" is a `Poison` value.
 fn compute(db: &Db, id: StructId) -> Resolved {
