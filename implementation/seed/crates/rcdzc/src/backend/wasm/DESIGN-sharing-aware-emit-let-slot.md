@@ -172,3 +172,25 @@ both plan fixes (gate-3 tighten + gate-4 arm); v-rb's install is unchanged (it f
 whatever the plan admits) and is HELD until the tightened plan lands, then re-verified against the full
 opt-sweep + cmb1 co-verify. TRUNK IS SAFE throughout — the pass is a no-op on trunk (the plan installs
 nothing there).
+
+### LANDED OUTCOME (correction of record — the findings above are the FIRST-install history, superseded)
+
+What actually landed on trunk (verified `72eb14812`, drift-guard-green at `d38a2a9a1`):
+- **v-core-opt's bind-safety whitelist** — gate-3b (value-stability = loop-invariance: exclude a free-binder
+  share in an `is_recursive` body) + P1 (fully-solved-type) + P3 (not-a-match-scrutinee) `bc7437703`, plus
+  the gate-4 unconditional-reach arm (`is_trap_free || collect_dominating_frontier(scope_node).contains(id)`)
+  `85bb67940`; and **v-rb's emit-side install** `72eb14812` (unchanged mechanism: Core::Let slot + distinct
+  fresh binder + LocalRef repoint).
+- **DELIVERED (sound):** the rq3/plt2 O2/O3 MISCOMPILES are FIXED (gate-3b); the FIFO-OOB / Record.with /
+  rust-Sum-scrutinee install-hazards are all excluded by P1/P3; the effect-state read-once-per-path hang
+  class is bound soundly. Full-corpus BOTH backends 0-div O0..O3 — wasm 6179/0 + rust 6082/0.
+- **⚠ NOT delivered — cmb1/pom5/ksc1 themselves are NOT un-hung.** cmb1 STILL HANGS at O2 on trunk
+  (reproduced EXIT=124 at `d38a2a9a1`, 2026-08-16). The "durable cmb1/pom5 fix" framing OVERCLAIMED: the
+  SOUNDNESS + mechanism + gate landed, but cmb1's own trapping-divide shares are still excluded. Note P1
+  (fully-solved-type) excludes MORE of cmb1's divide-compound shares than the gate-4 arm alone did, so the
+  admitted set is now BELOW the re-descent-taming threshold → cmb1 HANGS (not the intermediate 28/127
+  "clean decline" that existed only on the pre-P1 `de0f8638f` overlay). NOT a regression (cmb1 hung before).
+- **TRACKED FOLLOW-ONS (low-pri pure-opt, joint w/ v-core-opt):** cmb1-FULL = admit cmb1's guard-position
+  divides by binding at the DEEPEST-unconditional-reach node (the 2nd-`if` whose cond evaluates the divide),
+  not the members' LCA — likely a pure `b2_bind_plan` scope_node refinement, diagnostic open with v-core-opt;
+  and slice-2 = pom5/ksc1 inner-Let bound-once shares (relax gate-3a) + the re-threading-detection design Q.
