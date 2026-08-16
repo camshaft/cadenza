@@ -428,7 +428,7 @@ pub(super) fn closure_struct_ident(k: usize) -> String {
 /// miscompile). The result BYTES match the runtime's `value-encode` by construction (v-runtime: all three
 /// codecs share `ast-encoding.md`, and `codec::encode` canonicalizes) — though the round-trip cases only need
 /// rust-internal `decode∘encode = id`, which reusing `cadenza_ast::codec` for both directions guarantees.
-fn emit_value_form(ty: &Ty, val_expr: &str) -> Result<String, Reject> {
+fn emit_value_form(db: &mut Db, ty: &Ty, val_expr: &str) -> Result<String, Reject> {
     match ty.strip_nominal() {
         Ty::Bool => Ok(format!(
             "__b.atom_leaf(cadenza_ast::ast::Leaf::Bool({val_expr}))"
@@ -452,7 +452,7 @@ fn emit_value_form(ty: &Ty, val_expr: &str) -> Result<String, Reject> {
             let mut body = String::from("{ let __h = __b.name(\"tuple\");");
             let mut vars = vec!["__h".to_string()];
             for (i, et) in elems.iter().enumerate() {
-                let child = emit_value_form(et, &format!("({val_expr}).{i}"))?;
+                let child = emit_value_form(db, et, &format!("({val_expr}).{i}"))?;
                 body.push_str(&format!(" let __e{i} = {child};"));
                 vars.push(format!("__e{i}"));
             }
@@ -462,7 +462,7 @@ fn emit_value_form(ty: &Ty, val_expr: &str) -> Result<String, Reject> {
         // A LIST is a `Vec<T>` — a RUNTIME-length `(list e0 e1 …)`: loop the vec building each element node
         // (cloning the element so a non-Copy element is not moved out of the borrow), push onto the children.
         Ty::List(elem) => {
-            let child = emit_value_form(elem, "__ev")?;
+            let child = emit_value_form(db, elem, "__ev")?;
             Ok(format!(
                 "{{ let __lv = {val_expr}; let __lh = __b.name(\"list\"); let mut __lc = vec![__lh]; \
                  for __el in __lv.iter() {{ let __ev = __el.clone(); let __c = {child}; __lc.push(__c); }} \
@@ -479,7 +479,7 @@ fn emit_value_form(ty: &Ty, val_expr: &str) -> Result<String, Reject> {
             let mut vars = vec!["__rh".to_string()];
             for (i, (sym, fty)) in fields.iter().enumerate() {
                 let fname = &*sym.name;
-                let fval = emit_value_form(fty, &format!("(__rv).{i}"))?;
+                let fval = emit_value_form(db, fty, &format!("(__rv).{i}"))?;
                 s.push_str(&format!(
                     " let __f{i} = {{ let __eq = __b.name(\"=\"); let __k = __b.name(\"{fname}\"); let __fv = {fval}; __b.list(vec![__eq, __k, __fv]) }};"
                 ));
@@ -488,8 +488,81 @@ fn emit_value_form(ty: &Ty, val_expr: &str) -> Result<String, Reject> {
             s.push_str(&format!(" __b.list(vec![{}]) }}", vars.join(", ")));
             Ok(s)
         }
+        // A SUM value renders `(Head payload…)` per variant (the runtime `variant_form_template` /
+        // `Shape::Sum`): nullary → `(Head unit)`, single-payload → `(Head <payload-form>)`. `match` the
+        // native enum on each variant (path from `sum_variant_path_of_ty`), building the head + payload node.
+        // INCREMENTAL: arity 0/1 non-recursive with a BARE head (Option/Sign-shape). DECLINE the not-yet-wired
+        // arms — multi-payload (a `Spread`, flattened not tuple-wrapped), a recursive/boxed variant, and a
+        // prelude-shadowed variant whose head is qualified `(. Type Variant)` — so the frame stays exact.
+        sum_ty @ Ty::Sum { decl, .. } => {
+            let sum_ty = sum_ty.clone();
+            let decl_occ = *decl;
+            let variants: Vec<(u32, String, usize)> = {
+                let td = db.type_decl_by_occ(decl_occ).ok_or_else(|| {
+                    Reject::decline("Value.encode native rust: sum decl not found")
+                })?;
+                td.variants
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| (i as u32, v.name.clone(), v.payloads.len()))
+                    .collect()
+            };
+            // A qualified head (a `.` member) means a prelude-shadowed variant — the runtime writes
+            // `(. Type Variant)`, which this slice does not yet build. Decline rather than emit a wrong head.
+            if variants.iter().any(|(_, h, _)| h.contains('.')) {
+                return Err(Reject::decline(
+                    "Value.encode native rust: prelude-shadowed sum variant (qualified head) not yet wired",
+                ));
+            }
+            let mut arms = String::new();
+            for (disc, head, arity) in variants {
+                if super::enums::variant_is_recursive(db, &sum_ty, disc) {
+                    return Err(Reject::decline(
+                        "Value.encode native rust: recursive (boxed) sum variant not yet wired",
+                    ));
+                }
+                let path = sum_variant_path_of_ty(db, &sum_ty, disc)?;
+                match arity {
+                    0 => arms.push_str(&format!(
+                        "{path} => {{ let __sh = __b.name(\"{head}\"); let __su = __b.name(\"unit\"); __b.list(vec![__sh, __su]) }}, "
+                    )),
+                    1 => {
+                        let pty = variant_payload_ty(db, &sum_ty, disc).ok_or_else(|| {
+                            Reject::decline("Value.encode native rust: sum variant payload type unresolved")
+                        })?;
+                        let pform = emit_value_form(db, &pty, "__sp")?;
+                        arms.push_str(&format!(
+                            "{path}(__sp) => {{ let __sh = __b.name(\"{head}\"); let __spv = {pform}; __b.list(vec![__sh, __spv]) }}, "
+                        ));
+                    }
+                    // MULTI-payload: the core models the payload as ONE `Ty::Tuple`, boxed as a single field
+                    // `Enum::V((T0, T1, …))`, but the canonical value form is FLAT — `(Head p0 p1 …)`, the
+                    // elements SPLICED directly under the head (a `Shape::Spread`, NOT a `(tuple …)` wrapper).
+                    // Bind the tuple `__sp` and push each `__sp.i` element node as a child of the head.
+                    _ => {
+                        let pty = variant_payload_ty(db, &sum_ty, disc).ok_or_else(|| {
+                            Reject::decline("Value.encode native rust: sum variant payload type unresolved")
+                        })?;
+                        let Ty::Tuple(elems) = pty.strip_nominal() else {
+                            return Err(Reject::decline(
+                                "Value.encode native rust: multi-payload sum variant payload is not a tuple",
+                            ));
+                        };
+                        let mut arm =
+                            format!("{path}(__sp) => {{ let __sh = __b.name(\"{head}\"); let mut __sc = vec![__sh];");
+                        for (i, et) in elems.iter().enumerate() {
+                            let eform = emit_value_form(db, et, &format!("(__sp).{i}"))?;
+                            arm.push_str(&format!(" let __se{i} = {eform}; __sc.push(__se{i});"));
+                        }
+                        arm.push_str(" __b.list(__sc) }, ");
+                        arms.push_str(&arm);
+                    }
+                }
+            }
+            Ok(format!("(match {val_expr} {{ {arms} }})"))
+        }
         other => Err(Reject::decline(format!(
-            "Value.encode native rust: value shape {other:?} not yet wired (Int/Bool/Char/String/Bytes/Tuple/List — incremental slices)"
+            "Value.encode native rust: value shape {other:?} not yet wired (Int/Bool/Char/String/Bytes/Tuple/List/Record/Sum — incremental slices)"
         ))),
     }
 }
@@ -500,7 +573,12 @@ fn emit_value_form(ty: &Ty, val_expr: &str) -> Result<String, Reject> {
 /// (`None` on shape/leaf mismatch → the decode is TOTAL); a TUPLE checks the `(tuple …)` list shape then
 /// reconstructs each element, threaded through an IIFE closure with `?` so any element mismatch yields
 /// `None`. INCREMENTAL: Int/Bool/Tuple wired (the round-trip corpus shape); other shapes decline.
-fn emit_value_reconstruct(ty: &Ty, arenas: &str, node: &str) -> Result<String, Reject> {
+fn emit_value_reconstruct(
+    db: &mut Db,
+    ty: &Ty,
+    arenas: &str,
+    node: &str,
+) -> Result<String, Reject> {
     match ty.strip_nominal() {
         Ty::Bool => Ok(format!(
             "(match {arenas}.get({node}) {{ cadenza_ast::ast::Struct::Atom(__l) => \
@@ -537,7 +615,7 @@ fn emit_value_reconstruct(ty: &Ty, arenas: &str, node: &str) -> Result<String, R
             );
             let mut results = Vec::with_capacity(n);
             for (i, et) in elems.iter().enumerate() {
-                let child = emit_value_reconstruct(et, arenas, &format!("__items[{}]", i + 1))?;
+                let child = emit_value_reconstruct(db, et, arenas, &format!("__items[{}]", i + 1))?;
                 body.push_str(&format!("let __e{i} = {child}?; "));
                 results.push(format!("__e{i}"));
             }
@@ -549,7 +627,7 @@ fn emit_value_reconstruct(ty: &Ty, arenas: &str, node: &str) -> Result<String, R
         // A LIST: check the `(list …)` shape, reconstruct each element into a `Vec` (`?` on any element
         // mismatch → the whole decode is None). The inverse of the List encode loop.
         Ty::List(elem) => {
-            let child = emit_value_reconstruct(elem, arenas, "__items[__ix]")?;
+            let child = emit_value_reconstruct(db, elem, arenas, "__items[__ix]")?;
             Ok(format!(
                 "(|| {{ let __items = if let cadenza_ast::ast::Struct::List(__i) = {arenas}.get({node}) {{ __i }} else {{ return None }}; \
                  if __items.is_empty() || {arenas}.head_name({node}) != Some(\"list\") {{ return None }}; \
@@ -571,7 +649,7 @@ fn emit_value_reconstruct(ty: &Ty, arenas: &str, node: &str) -> Result<String, R
             );
             let mut results = Vec::with_capacity(n);
             for (i, (_sym, fty)) in fields.iter().enumerate() {
-                let fval = emit_value_reconstruct(fty, arenas, &format!("__g{i}[2]"))?;
+                let fval = emit_value_reconstruct(db, fty, arenas, &format!("__g{i}[2]"))?;
                 body.push_str(&format!(
                     "let __g{i} = if let cadenza_ast::ast::Struct::List(__gg) = {arenas}.get(__items[{}]) {{ __gg }} else {{ return None }}; \
                      if __g{i}.len() != 3 {{ return None }}; let __r{i} = {fval}?; ",
@@ -583,8 +661,100 @@ fn emit_value_reconstruct(ty: &Ty, arenas: &str, node: &str) -> Result<String, R
             body.push_str(&format!("Some(({}{tail})) }})()", results.join(", ")));
             Ok(body)
         }
+        // A SUM: the node is `(Head payload…)`. Dispatch on `head_name`: a matching nullary variant checks
+        // the `(Head unit)` 2-child shape and constructs the bare/turbofish variant path; a single-payload
+        // variant reconstructs `__sitems[1]` and constructs `Enum::V(payload)`. Unknown head / wrong arity →
+        // None. The inverse of the encode Sum arm; same INCREMENTAL scope (arity 0/1, non-recursive, bare head).
+        sum_ty @ Ty::Sum { decl, .. } => {
+            let sum_ty = sum_ty.clone();
+            let decl_occ = *decl;
+            let variants: Vec<(u32, String, usize)> = {
+                let td = db.type_decl_by_occ(decl_occ).ok_or_else(|| {
+                    Reject::decline("Value.decode native rust: sum decl not found")
+                })?;
+                td.variants
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| (i as u32, v.name.clone(), v.payloads.len()))
+                    .collect()
+            };
+            if variants.iter().any(|(_, h, _)| h.contains('.')) {
+                return Err(Reject::decline(
+                    "Value.decode native rust: prelude-shadowed sum variant (qualified head) not yet wired",
+                ));
+            }
+            let mut body = format!(
+                "(|| {{ let __sitems = if let cadenza_ast::ast::Struct::List(__i) = {arenas}.get({node}) {{ __i }} else {{ return None }}; \
+                 if __sitems.is_empty() {{ return None }}; let __shn = {arenas}.head_name({node}); "
+            );
+            for (disc, head, arity) in variants {
+                if super::enums::variant_is_recursive(db, &sum_ty, disc) {
+                    return Err(Reject::decline(
+                        "Value.decode native rust: recursive (boxed) sum variant not yet wired",
+                    ));
+                }
+                let path = sum_variant_path_of_ty(db, &sum_ty, disc)?;
+                match arity {
+                    0 => {
+                        let ctor = nullary_variant_path(&db.name_ctx(), &sum_ty, disc, &path);
+                        body.push_str(&format!(
+                            "if __shn == Some(\"{head}\") {{ if __sitems.len() != 2 {{ return None }} return Some({ctor}); }} "
+                        ));
+                    }
+                    1 => {
+                        let pty = variant_payload_ty(db, &sum_ty, disc).ok_or_else(|| {
+                            Reject::decline(
+                                "Value.decode native rust: sum variant payload type unresolved",
+                            )
+                        })?;
+                        let precon = emit_value_reconstruct(db, &pty, arenas, "__sitems[1]")?;
+                        body.push_str(&format!(
+                            "if __shn == Some(\"{head}\") {{ if __sitems.len() != 2 {{ return None }} let __sp = ({precon})?; return Some({path}(__sp)); }} "
+                        ));
+                    }
+                    // MULTI-payload: `(Head p0 p1 …)` — arity+1 children (head + one per element).
+                    // Reconstruct each `__sitems[1+i]` into the tuple, then construct `Enum::V((p0, p1, …))`
+                    // (the core's single-tuple-payload model). The inverse of the encode Spread arm.
+                    _ => {
+                        let pty = variant_payload_ty(db, &sum_ty, disc).ok_or_else(|| {
+                            Reject::decline(
+                                "Value.decode native rust: sum variant payload type unresolved",
+                            )
+                        })?;
+                        let Ty::Tuple(elems) = pty.strip_nominal() else {
+                            return Err(Reject::decline(
+                                "Value.decode native rust: multi-payload sum variant payload is not a tuple",
+                            ));
+                        };
+                        let n = elems.len();
+                        let mut arm = format!(
+                            "if __shn == Some(\"{head}\") {{ if __sitems.len() != {} {{ return None }} ",
+                            n + 1
+                        );
+                        let mut results = Vec::with_capacity(n);
+                        for (i, et) in elems.iter().enumerate() {
+                            let precon = emit_value_reconstruct(
+                                db,
+                                et,
+                                arenas,
+                                &format!("__sitems[{}]", i + 1),
+                            )?;
+                            arm.push_str(&format!("let __se{i} = ({precon})?; "));
+                            results.push(format!("__se{i}"));
+                        }
+                        arm.push_str(&format!(
+                            "return Some({path}(({}))); }} ",
+                            results.join(", ")
+                        ));
+                        body.push_str(&arm);
+                    }
+                }
+            }
+            body.push_str("None })()");
+            Ok(body)
+        }
         other => Err(Reject::decline(format!(
-            "Value.decode native rust: value shape {other:?} not yet wired (Int/Bool/Char/String/Bytes/Tuple/List — incremental slices)"
+            "Value.decode native rust: value shape {other:?} not yet wired (Int/Bool/Char/String/Bytes/Tuple/List/Record/Sum — incremental slices)"
         ))),
     }
 }
@@ -646,8 +816,31 @@ fn emit_type_node(ty: &Ty, ncx: &crate::ty::NameCtx) -> Result<String, Reject> {
             s.push_str(" __b.list(__tc) }");
             Ok(s)
         }
+        // A SUM's type node: the bare NAME for a monomorphic sum (`Sign`), or the parametric `(Name arg…)`
+        // for a generic instantiation (`(Option Int64)`) — matches `type_ast`/`Ty::render_name`. `name_of`
+        // resolves the declared name from the render-context.
+        Ty::Sum { decl, args, .. } => {
+            let name = ncx
+                .name_of(*decl)
+                .ok_or_else(|| {
+                    Reject::decline("Value.encode native rust: sum type name unresolved")
+                })?
+                .to_string();
+            if args.is_empty() {
+                Ok(format!("__b.name(\"{name}\")"))
+            } else {
+                let mut s =
+                    format!("{{ let __th = __b.name(\"{name}\"); let mut __tc = vec![__th];");
+                for (i, a) in args.iter().enumerate() {
+                    let child = emit_type_node(a, ncx)?;
+                    s.push_str(&format!(" let __ta{i} = {child}; __tc.push(__ta{i});"));
+                }
+                s.push_str(" __b.list(__tc) }");
+                Ok(s)
+            }
+        }
         other => Err(Reject::decline(format!(
-            "Value.encode native rust: type-node for value shape {other:?} not yet wired (Int/Bool/Char/String/Bytes/Tuple/List/Record — incremental slices)"
+            "Value.encode native rust: type-node for value shape {other:?} not yet wired (Int/Bool/Char/String/Bytes/Tuple/List/Record/Sum — incremental slices)"
         ))),
     }
 }
@@ -2815,7 +3008,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 emit_type_node(&vty, &ncx)?
             };
             let val = emit(db, value, env, ctx)?;
-            let form = emit_value_form(&vty, "__vv")?;
+            let form = emit_value_form(db, &vty, "__vv")?;
             // Wrap the bare value form in the `(: <value> <type-node>)` frame the runtime `value-encode`
             // op applies ONCE at the root (nested compounds stay bare) — `sum_shape_descriptor`'s
             // `Framed`/`Named` wrapper. This makes the native rust document byte-identical to the wasm face
@@ -2849,7 +3042,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // PEEL the `(: <value> <type-node>)` frame the encoder wraps the document in: the decoded root
             // is the 3-element `(: value type)` list, so extract child[1] (the bare value node) and
             // reconstruct the target type from THAT. A malformed/unframed root (wrong head or arity) → None.
-            let recon = emit_value_reconstruct(&target, "__a", "__valnode")?;
+            let recon = emit_value_reconstruct(db, &target, "__a", "__valnode")?;
             Ok(format!(
                 "(match cadenza_ast::codec::decode(&({b})) {{ Some(__a) => (|| {{ \
                  let __items = if let cadenza_ast::ast::Struct::List(__i) = __a.get(__a.root) {{ __i }} else {{ return None }}; \

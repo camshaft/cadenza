@@ -1193,6 +1193,57 @@
   (call   main (: 7 Int64)) (output (: 7107 Int64))
   (call   main (: 3 Int64)) (output (: 3103 Int64)))
 
+(case "a Value.encode/Value.decode round-trip preserves a SUM's payload variant (Option Some)"
+  (doc    "Extends the round-trips to a `(Option Int64)` SUM — the R2 value-form `(Head payload)` shape, framed
+           `(: (Some n) (Option Int64))`. `Value.decode (Value.encode (Some n)) == Some (Some n)`; the outer
+           match unwraps the decode's `Option`, the inner match reads the round-tripped `Some k` and returns `k`.
+           `main 5` -> 5, `main 9` -> 9 (distinct); a lost payload or wrong variant would give a negative. Pins
+           the SINGLE-PAYLOAD sum arm of the native codec (rust `match`es the enum building `(Some <int>)`, decode
+           dispatches on the head and reconstructs `Option::Some`). Runs on wasm + rust + rust-async.")
+  (input  (do
+            (def (main (: n Int64))
+              (match (: (Value.decode (Value.encode (: (Some n) (Option Int64))))
+                        (Option (Option Int64)))
+                ((Some m) (match m ((Some k) k) ((None u) (- 0 1))))
+                ((None u) (- 0 2))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 5 Int64))
+  (call   main (: 9 Int64)) (output (: 9 Int64)))
+
+(case "a Value.encode/Value.decode round-trip preserves a SUM's NULLARY variant (Option None)"
+  (doc    "The nullary-variant face of the sum round-trip: `(: None (Option Int64))` renders `(: (None unit)
+           (Option Int64))`. `Value.decode (Value.encode None) == Some None`; the outer match unwraps the decode,
+           the inner match confirms the `None` head survived and returns `n` (else a negative). `main 4` -> 4,
+           `main 8` -> 8 (distinct). Pins the NULLARY sum arm (rust builds `(None unit)`, decode dispatches the
+           head to the bare/turbofish variant path). Runs on wasm + rust + rust-async.")
+  (input  (do
+            (def (main (: n Int64))
+              (match (: (Value.decode (Value.encode (: None (Option Int64))))
+                        (Option (Option Int64)))
+                ((Some m) (match m ((Some k) (- 0 1)) ((None u) n)))
+                ((None u) (- 0 2))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 4 Int64))
+  (call   main (: 8 Int64)) (output (: 8 Int64)))
+
+(case "a Value.encode/Value.decode round-trip preserves a MULTI-PAYLOAD sum variant (spread)"
+  (doc    "Extends the sum round-trip to a MULTI-payload variant of a user sum `(type Shape (Circle Int64)
+           (Rect Int64 Int64))`. `Rect`'s two payloads render FLAT under the head — `(Rect a b)`, a `Spread`,
+           NOT `(Rect (tuple a b))` — framed `(: (Rect a b) Shape)`. `Value.decode (Value.encode (Rect n (+ n
+           1))) == Some (Rect n (n+1))`; the inner match reads both payloads and folds `a*1000 + b` to prove
+           each survives its own slot. `main 5` -> Rect(5,6) -> 5006, `main 3` -> 3004 (distinct); a lost/
+           swapped payload would differ. Pins the multi-payload Spread arm (rust `match`es `Shape::Rect((a,b))`
+           splicing a,b under the head; decode rebuilds the tuple + constructs the variant). wasm + rust + rust-async.")
+  (input  (do
+            (type Shape (Circle Int64) (Rect Int64 Int64))
+            (def (main (: n Int64))
+              (match (: (Value.decode (Value.encode (: (Rect n (+ n 1)) Shape))) (Option Shape))
+                ((Some s) (match s ((Rect a b) (+ (* a 1000) b)) ((Circle r) (- 0 1))))
+                ((None u) (- 0 2))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 5006 Int64))
+  (call   main (: 3 Int64)) (output (: 3004 Int64)))
+
 ; --- The round-trip under LET-BINDER grounding: decode's target fixed by the binder annotation, not inline. ---
 
 (case "a Value.decode round-trip grounds its target from a LET-BINDER annotation, not only an inline ascription"
