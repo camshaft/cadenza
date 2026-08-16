@@ -9580,6 +9580,201 @@ mod tests {
         assert_eq!(live_nodes(), 0, "no leak");
     }
 
+    /// A small LEB + length-prefixed-name descriptor builder, shared by the framed-Sum goldens below.
+    fn desc_leb(out: &mut Vec<u8>, mut v: u64) {
+        loop {
+            let mut b = (v & 0x7f) as u8;
+            v >>= 7;
+            if v != 0 {
+                b |= 0x80;
+            }
+            out.push(b);
+            if v == 0 {
+                break;
+            }
+        }
+    }
+    fn desc_name(out: &mut Vec<u8>, s: &str) {
+        desc_leb(out, s.len() as u64);
+        out.extend_from_slice(s.as_bytes());
+    }
+
+    /// The generic-Sum descriptor `(: <value> (Option Int64))` — a boxed GENERIC sum (`args` non-empty)
+    /// roots at a PARAMETRIC `Framed(TypeNode Option[Int64], inner)`. Table: [0] Int, [1] Unit (the None
+    /// payload), [2] Sum[(Some→0),(None→1)], [3] Framed(Option[Int64] → 2); root = 3.
+    fn framed_option_int_descriptor() -> Vec<u8> {
+        let mut d = Vec::new();
+        desc_leb(&mut d, 4); // table_len = 4
+        d.push(0); // [0] Int
+        d.push(5); // [1] Unit
+        // [2] Sum [ (Some → 0), (None → 1) ]
+        d.push(9);
+        desc_leb(&mut d, 2);
+        desc_name(&mut d, "Some");
+        desc_leb(&mut d, 0);
+        desc_name(&mut d, "None");
+        desc_leb(&mut d, 1);
+        // [3] Framed( TypeNode Option[ Int64 ], inner → 2 )
+        d.push(15);
+        desc_name(&mut d, "Option");
+        desc_leb(&mut d, 1);
+        desc_name(&mut d, "Int64");
+        desc_leb(&mut d, 0);
+        desc_leb(&mut d, 2); // inner → 2 (the Sum)
+        desc_leb(&mut d, 3); // root = 3 (the Framed)
+        d
+    }
+
+    /// GOLDEN pin, GENERIC-SUM shape (v-rust-backend fixtures 2+3, 2026-08-16): `Value.encode` of
+    /// `(Some 5)` / `None` at `(Option Int64)` must render the colon-framed doc with a PARAMETRIC `Option`
+    /// type node — `(: (Some 5) (Option Int64))` and `(: (None unit) (Option Int64))`. Guarded three ways
+    /// each (iterative == recursive oracle, decode∘encode == id, exact leaf pool). The cadenza-ast mirror
+    /// asserts the same byte strings. `#[cfg(test)]` → no runtime-hash change.
+    #[test]
+    fn value_encode_of_a_framed_generic_sum_is_the_colon_framed_golden() {
+        reset();
+        let desc = framed_option_int_descriptor();
+
+        // (Some 5): disc 0, single Int payload.
+        let some = op_sum_new(0, op_box_int(5));
+        let got_some = op_value_encode_form(some, &desc).expect("encode Some 5");
+        let descriptor = decode_descriptor(&desc).expect("descriptor");
+        let mut b = DocBuilder::default();
+        let root = encode_value_recursive(&descriptor, &mut b, some, descriptor.root, 0)
+            .expect("recursive encode Some");
+        assert_eq!(got_some, b.finish(root), "iterative/recursive disagree on Some");
+        let back = op_value_decode(&got_some, &desc);
+        assert_ne!(back, Handle::NULL, "Some doc must decode");
+        assert_eq!(
+            got_some,
+            op_value_encode_form(back, &desc).expect("re-encode Some"),
+            "decode∘encode ≠ id on Some"
+        );
+        op_drop(back);
+        // Leaf pool: ':' , 'Some', 5, 'Option', 'Int64' (5 leaves) — the parametric Option type node.
+        let expect_some: &[u8] = &[
+            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, // cdzast\x00\x01
+            0x05, // 5 leaves
+            0x0a, 0x01, 0x3a, // ':'
+            0x0a, 0x04, 0x53, 0x6f, 0x6d, 0x65, // 'Some'
+            0x00, 0x01, 0x05, // INT 5
+            0x0a, 0x06, 0x4f, 0x70, 0x74, 0x69, 0x6f, 0x6e, // 'Option'
+            0x0a, 0x05, 0x49, 0x6e, 0x74, 0x36, 0x34, // 'Int64'
+        ];
+        assert_eq!(&got_some[..expect_some.len()], expect_some, "Some leaf pool");
+        assert_eq!(got_some[8], 0x05, "Some leaf count = 5 (framed generic sum)");
+        op_drop(some);
+
+        // None: disc 1, nullary (unit) payload → renders (None unit).
+        let none = op_sum_new(1, op_arr_alloc(0));
+        let got_none = op_value_encode_form(none, &desc).expect("encode None");
+        let mut b2 = DocBuilder::default();
+        let root2 = encode_value_recursive(&descriptor, &mut b2, none, descriptor.root, 0)
+            .expect("recursive encode None");
+        assert_eq!(got_none, b2.finish(root2), "iterative/recursive disagree on None");
+        let back2 = op_value_decode(&got_none, &desc);
+        assert_ne!(back2, Handle::NULL, "None doc must decode");
+        assert_eq!(
+            got_none,
+            op_value_encode_form(back2, &desc).expect("re-encode None"),
+            "decode∘encode ≠ id on None"
+        );
+        op_drop(back2);
+        // Leaf pool: ':' , 'None', 'unit', 'Option', 'Int64' (5 leaves).
+        let expect_none: &[u8] = &[
+            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, // cdzast\x00\x01
+            0x05, // 5 leaves
+            0x0a, 0x01, 0x3a, // ':'
+            0x0a, 0x04, 0x4e, 0x6f, 0x6e, 0x65, // 'None'
+            0x0a, 0x04, 0x75, 0x6e, 0x69, 0x74, // 'unit'
+            0x0a, 0x06, 0x4f, 0x70, 0x74, 0x69, 0x6f, 0x6e, // 'Option'
+            0x0a, 0x05, 0x49, 0x6e, 0x74, 0x36, 0x34, // 'Int64'
+        ];
+        assert_eq!(&got_none[..expect_none.len()], expect_none, "None leaf pool");
+        assert_eq!(got_none[8], 0x05, "None leaf count = 5 (framed generic sum)");
+        op_drop(none);
+
+        assert_eq!(live_nodes(), 0, "no leak");
+    }
+
+    /// The monomorphic-Sum descriptor `(: <value> Shape)` where `Shape = (Circle Int64) | (Rect Int64
+    /// Int64)` — a MONOMORPHIC sum (`args: []`) roots at a bare-name `Named("Shape", inner)`, NOT a
+    /// parametric `Framed`. A multi-payload variant's payload is a `Spread` (its elements splice flat).
+    /// Table: [0] Int, [1] Spread[→0,→0] (Rect's two Int64s), [2] Sum[(Circle→0),(Rect→1)],
+    /// [3] Named("Shape" → 2); root = 3.
+    fn named_shape_descriptor() -> Vec<u8> {
+        let mut d = Vec::new();
+        desc_leb(&mut d, 4); // table_len = 4
+        d.push(0); // [0] Int
+        // [1] Spread [→0, →0]
+        d.push(16);
+        desc_leb(&mut d, 2);
+        desc_leb(&mut d, 0);
+        desc_leb(&mut d, 0);
+        // [2] Sum [ (Circle → 0), (Rect → 1) ]
+        d.push(9);
+        desc_leb(&mut d, 2);
+        desc_name(&mut d, "Circle");
+        desc_leb(&mut d, 0);
+        desc_name(&mut d, "Rect");
+        desc_leb(&mut d, 1);
+        // [3] Named( "Shape", inner → 2 )
+        d.push(10);
+        desc_name(&mut d, "Shape");
+        desc_leb(&mut d, 2);
+        desc_leb(&mut d, 3); // root = 3 (the Named)
+        d
+    }
+
+    /// GOLDEN pin, MONOMORPHIC-multi-payload-SUM shape (v-rust-backend fixture 4, 2026-08-16):
+    /// `Value.encode` of `(Rect 5 6)` at `Shape` must render `(: (Rect 5 6) Shape)` — the frame is a
+    /// bare-name `Named` (NOT a parametric type node, because `Shape` is monomorphic), and `Rect`'s two
+    /// payloads splice FLAT (a `Spread`). This exercises the Named-vs-Framed root distinction the earlier
+    /// goldens don't. Guarded three ways; the cadenza-ast mirror asserts the same bytes. `#[cfg(test)]`.
+    #[test]
+    fn value_encode_of_a_named_monomorphic_sum_is_the_colon_framed_golden() {
+        reset();
+        let desc = named_shape_descriptor();
+        // (Rect 5 6): disc 1, payload a 2-element arr (the Spread splices its two Int64s flat).
+        let pair = op_arr_alloc(2);
+        op_arr_set(pair, 0, op_box_int(5));
+        op_arr_set(pair, 1, op_box_int(6));
+        let rect = op_sum_new(1, pair);
+        let got = op_value_encode_form(rect, &desc).expect("encode Rect 5 6");
+
+        let descriptor = decode_descriptor(&desc).expect("descriptor");
+        let mut b = DocBuilder::default();
+        let root = encode_value_recursive(&descriptor, &mut b, rect, descriptor.root, 0)
+            .expect("recursive encode Rect");
+        assert_eq!(got, b.finish(root), "iterative/recursive disagree on Rect");
+
+        let back = op_value_decode(&got, &desc);
+        assert_ne!(back, Handle::NULL, "Rect doc must decode");
+        assert_eq!(
+            got,
+            op_value_encode_form(back, &desc).expect("re-encode Rect"),
+            "decode∘encode ≠ id on Rect"
+        );
+        op_drop(back);
+
+        // Leaf pool: ':' , 'Rect', 5, 6, 'Shape' (5 leaves) — a bare-name 'Shape' frame (Named), the two
+        // payloads flat. NO parametric type node (contrast the generic Option's (Option Int64)).
+        let expect: &[u8] = &[
+            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, // cdzast\x00\x01
+            0x05, // 5 leaves
+            0x0a, 0x01, 0x3a, // ':'
+            0x0a, 0x04, 0x52, 0x65, 0x63, 0x74, // 'Rect'
+            0x00, 0x01, 0x05, // INT 5
+            0x00, 0x01, 0x06, // INT 6
+            0x0a, 0x05, 0x53, 0x68, 0x61, 0x70, 0x65, // 'Shape'
+        ];
+        assert_eq!(&got[..expect.len()], expect, "Rect (Named) leaf pool");
+        assert_eq!(got[8], 0x05, "Rect leaf count = 5 (Named mono sum, flat payloads)");
+
+        op_drop(rect);
+        assert_eq!(live_nodes(), 0, "no leak");
+    }
+
     #[test]
     fn value_encode_form_matches_the_codec_for_a_recursive_sum() {
         reset();
