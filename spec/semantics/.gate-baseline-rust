@@ -5843,6 +5843,7 @@ pass	print/read is IDEMPOTENT after one trip and read normalizes whitespace to o
 pass	print/read round-trips a 12-deep nest and a 25-wide list
 pass	print/read round-trips a tree carrying every leaf kind in one canonical form
 pass	print/read round-trips escape-laden, multibyte, and empty string leaves
+pass	prk1 a PARKING-LOT fee meter — enter stamps the time, exit charges the seed-shaped first-hour rate plus two per further hour CAPPED at fifteen (a zero-duration stay is free), rev totals the day, and the cap row is identical across seeds while the uncapped rows and the total differ
 pass	prn1 a PAREN-DEPTH validator — open and close chars move the depth, an underflow flips the STICKY invalid flag whose every later answer is the sentinel, and the seed picks a balanced or underflowing stream
 pass	projecting a field is independent of the order fields are written
 pass	projecting a field of a non-compound argument is rejected at the call site
@@ -6214,6 +6215,7 @@ pass	st2 TWO sibling handle expressions as operands of one sum — independent r
 pass	st2 draws BETWEEN the installs of a three-deep tower — each thread advances only while it is the innermost, sum pins the interleave
 pass	st3 the SHADOWING frame's arm draws the SAME effect — its dispatch escapes its own extent and lands on the frame it shadows
 pass	stacked line comments on a top-level form are all seen through
+pass	stg1 a STONE-TAKING game — take removes up to k stones clamped at the pile answering pile-times-ten plus whose turn it was, the player landing the pile at zero answers a hundred-plus-their-id, and the smaller pile ends three moves early so its tail is drained-pile wins for alternating players
 pass	stk2 a STICKY-ERR Result state — pushes accumulate while Ok, the over-20 sum flips the state to an absorbing Err whose pushes answer the negated code, reset reports-and-restores
 pass	straight-line add-then-subtract keeps the value but is not cancelled to the operand
 pass	string REVERSE walks scalars back-to-front and anti-commutes with concatenation
@@ -6612,6 +6614,7 @@ pass	ti2b the inner arm's resume-VALUE performs the outer effect on EVERY dispat
 pass	ti3 cross-effect resume-value feed PLUS direct body interleave — B's arm and the body both advance A
 pass	ti4 THREE-effect chained cross-feed — C's arm performs B, B's arm performs A, two C dispatches walk the whole chain twice
 pass	ti5 a FOREIGN outer perform inside the inner region — A advances inside B's body, the post-region draw sees it
+pass	tie1 a TWO-POINTER merge of IMPLICIT arithmetic streams — the heads bind once through match binders, take answers the smaller advancing that stream's index, a TIE answers fifty-plus-the-value advancing the a-side, and the seed offsets stream a so one run opens with a tie and the other buries its tie mid-stream
 pass	tk-ann1 an ASCRIBED empty-Map seed (: Map.empty (Map (Tuple Int64 Int64) Int64)) used across three arms — the annotation grounds the element type every arm sees
 pass	tk1 a Map state with TUPLE keys built from consecutive draws — record twice, query a hit and a miss
 pass	tk3 an UNASCRIBED empty-Map seed with tuple keys solved in one arm, read in siblings — cross-arm element propagation (3 arms)

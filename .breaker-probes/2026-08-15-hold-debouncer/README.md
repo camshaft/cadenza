@@ -11,3 +11,8 @@ wasm-tools limits, but cranelift's per-function code-size ceiling is LOWER
 for this shape, so budget-passing emits still fail at wasmtime compile.
 Filed: budget threshold must target cranelift's limit (or catch its error
 and decline). Deterministic ×3. Held from corpus pending the threshold fix.
+
+## Recalibrated budget VERIFIED (tick 1573)
+4bd3f3670 (EMIT_INSTRUCTION_BUDGET → cranelift ceiling): dbc1 flips
+cranelift-reject → clean decline ×3. F24 witnesses (dst1/rps1/trn1/elv1)
+spot-swept: still clean-decline. Escape closed; dbc1 rides (b) for pass-pin.

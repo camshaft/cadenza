@@ -12416,3 +12416,88 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 33033510110 Int64))
   (call   main (: 0 Int64)) (output (: 502353535023 Int64)))
+
+;; ── Implicit-stream merge, parking-fee meter, stone-taking game (breaker batch 289) ──────────
+(case "tie1 a TWO-POINTER merge of IMPLICIT arithmetic streams — the heads bind once through match binders, take answers the smaller advancing that stream's index, a TIE answers fifty-plus-the-value advancing the a-side, and the seed offsets stream a so one run opens with a tie and the other buries its tie mid-stream"
+  (input  (do
+            (effect M (op take (-> Int64)))
+            (def (main (: n Int64))
+              (handle M (tuple (: 0 Int64) (: 0 Int64))
+                ((take () st
+                  (match st
+                    ((tuple ai bi)
+                      (match (+ (* 3 ai) (+ (% n 4) 1))
+                        (ah
+                          (match (+ (* 4 bi) 1)
+                            (bh
+                              (if (= ah bh)
+                                  (resume (+ 50 ah) (tuple (+ ai 1) bi))
+                                  (if (< ah bh)
+                                      (resume ah (tuple (+ ai 1) bi))
+                                      (resume bh (tuple ai (+ bi 1)))))))))))))
+                (let ((a (M.take)))
+                  (let ((b (M.take)))
+                    (let ((c (M.take)))
+                      (let ((d (M.take)))
+                        (let ((e (M.take)))
+                          (let ((f (M.take)))
+                            (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 10305065909 Int64))
+  (call   main (: 0 Int64)) (output (: 510104050709 Int64)))
+
+(case "prk1 a PARKING-LOT fee meter — enter stamps the time, exit charges the seed-shaped first-hour rate plus two per further hour CAPPED at fifteen (a zero-duration stay is free), rev totals the day, and the cap row is identical across seeds while the uncapped rows and the total differ"
+  (input  (do
+            (effect P
+              (op enter (-> Int64 Int64))
+              (op exit (-> Int64 Int64))
+              (op rev (-> Int64)))
+            (def (main (: n Int64))
+              (handle P (tuple (: -1 Int64) (: 0 Int64))
+                ((enter (t) st
+                  (match st
+                    ((tuple entry total) (resume t (tuple t total)))))
+                 (exit (t) st
+                  (match st
+                    ((tuple entry total)
+                      (if (< (- t entry) 1)
+                          (resume 0 (tuple -1 total))
+                          (if (< 15 (+ (+ (% n 4) 2) (* 2 (- (- t entry) 1))))
+                              (resume 15 (tuple -1 (+ total 15)))
+                              (resume (+ (+ (% n 4) 2) (* 2 (- (- t entry) 1)))
+                                      (tuple -1 (+ total (+ (+ (% n 4) 2) (* 2 (- (- t entry) 1)))))))))))
+                 (rev () st
+                  (match st ((tuple entry total) (resume total st)))))
+                (let ((a (P.enter 2)))
+                  (let ((b (P.exit 5)))
+                    (let ((c (P.enter 6)))
+                      (let ((d (P.exit 6)))
+                        (let ((e (P.enter 7)))
+                          (let ((f (P.exit 20)))
+                            (let ((g (P.rev)))
+                              (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 2080600071523 Int64))
+  (call   main (: 0 Int64)) (output (: 2060600071521 Int64)))
+
+(case "stg1 a STONE-TAKING game — take removes up to k stones clamped at the pile answering pile-times-ten plus whose turn it was, the player landing the pile at zero answers a hundred-plus-their-id, and the smaller pile ends three moves early so its tail is drained-pile wins for alternating players"
+  (input  (do
+            (effect G (op take (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle G (tuple (+ n 11) (: 0 Int64))
+                ((take (k) st
+                  (match st
+                    ((tuple pile turn)
+                      (if (< pile (+ k 1))
+                          (resume (+ 100 turn) (tuple 0 (- 1 turn)))
+                          (resume (+ (* (- pile k) 10) turn) (tuple (- pile k) (- 1 turn))))))))
+                (let ((a (G.take 3)))
+                  (let ((b (G.take 4)))
+                    (let ((c (G.take 2)))
+                      (let ((d (G.take 3)))
+                        (let ((e (G.take 4)))
+                          (let ((f (G.take 5)))
+                            (+ (* 1000 (+ (* 1000 (+ (* 1000 (+ (* 1000 (+ (* 1000 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 180141120091050101 Int64))
+  (call   main (: 0 Int64)) (output (: 80041020101100101 Int64)))
