@@ -9864,6 +9864,165 @@ mod tests {
         assert_eq!(live_nodes(), 0, "no leak");
     }
 
+    /// The framed Map descriptor `(: <value> (Map Int64 Int64))` — tag-15 `Framed` whose TypeNode is
+    /// `Map[Int64, Int64]`, inner → a `Map(key→0, val→0)` (tag 13).
+    fn framed_int_map_descriptor() -> Vec<u8> {
+        let mut d = Vec::new();
+        desc_leb(&mut d, 3); // table_len = 3
+        d.push(0); // [0] Int
+        // [1] Map [ key→0, val→0 ]
+        d.push(13);
+        desc_leb(&mut d, 0);
+        desc_leb(&mut d, 0);
+        // [2] Framed( TypeNode Map[ Int64, Int64 ], inner → 1 )
+        d.push(15);
+        desc_name(&mut d, "Map");
+        desc_leb(&mut d, 2);
+        desc_name(&mut d, "Int64");
+        desc_leb(&mut d, 0);
+        desc_name(&mut d, "Int64");
+        desc_leb(&mut d, 0);
+        desc_leb(&mut d, 1); // inner → 1
+        desc_leb(&mut d, 2); // root = 2
+        d
+    }
+
+    /// The framed Set descriptor `(: <value> (Set Int64))` — tag-15 `Framed` whose TypeNode is
+    /// `Set[Int64]`, inner → a `Set(elem→0)` (tag 12).
+    fn framed_int_set_descriptor() -> Vec<u8> {
+        let mut d = Vec::new();
+        desc_leb(&mut d, 3); // table_len = 3
+        d.push(0); // [0] Int
+        // [1] Set [ elem→0 ]
+        d.push(12);
+        desc_leb(&mut d, 0);
+        // [2] Framed( TypeNode Set[ Int64 ], inner → 1 )
+        d.push(15);
+        desc_name(&mut d, "Set");
+        desc_leb(&mut d, 1);
+        desc_name(&mut d, "Int64");
+        desc_leb(&mut d, 0);
+        desc_leb(&mut d, 1); // inner → 1
+        desc_leb(&mut d, 2); // root = 2
+        d
+    }
+
+    /// GOLDEN pin, MAP shape (v-rust-backend fixture, 2026-08-16): `Value.encode` of
+    /// `(Map.insert (Map.insert Map.empty 7 70) 8 99)` at `(Map Int64 Int64)` must render
+    /// `(: (map (7 70) (8 99)) (Map Int64 Int64))` — the entries in CANONICAL KEY ORDER (7 before 8,
+    /// regardless of insert order), the value head `map` distinct from the type node's `Map`. Pins the
+    /// member-order-at-build contract (the runtime's canonical map iteration). Guarded three ways; the
+    /// cadenza-ast mirror asserts the same bytes. `#[cfg(test)]`.
+    #[test]
+    fn value_encode_of_a_framed_int_map_is_the_colon_framed_golden() {
+        reset();
+        let desc = framed_int_map_descriptor();
+        // Insert 8 THEN observe canonical order puts 7 first — build 7 then 8 (canonical is key-sorted
+        // regardless, but this documents the value the fixture names).
+        let m = op_map_insert(
+            op_map_insert(op_map_empty(), op_box_int(7), op_box_int(70)),
+            op_box_int(8),
+            op_box_int(99),
+        );
+        let got = op_value_encode_form(m, &desc).expect("encode framed int map");
+
+        let descriptor = decode_descriptor(&desc).expect("descriptor");
+        let mut b = DocBuilder::default();
+        let root = encode_value_recursive(&descriptor, &mut b, m, descriptor.root, 0)
+            .expect("recursive encode");
+        assert_eq!(got, b.finish(root), "iterative/recursive disagree on map");
+
+        let back = op_value_decode(&got, &desc);
+        assert_ne!(back, Handle::NULL, "map doc must decode");
+        assert_eq!(
+            got,
+            op_value_encode_form(back, &desc).expect("re-encode map"),
+            "decode∘encode ≠ id on map"
+        );
+        op_drop(back);
+
+        // FULL document: ':' , 'map', 7, 70, 8, 99, 'Map', 'Int64' (8 leaves) + spine. Entries in
+        // canonical key order (7 before 8).
+        let expect: &[u8] = &[
+            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, // cdzast\x00\x01
+            0x08, // 8 leaves
+            0x0a, 0x01, 0x3a, // ':'
+            0x0a, 0x03, 0x6d, 0x61, 0x70, // 'map'
+            0x00, 0x01, 0x07, // INT 7 (key)
+            0x00, 0x01, 0x46, // INT 70 (val)
+            0x00, 0x01, 0x08, // INT 8 (key)
+            0x00, 0x01, 0x63, // INT 99 (val)
+            0x0a, 0x03, 0x4d, 0x61, 0x70, // 'Map'
+            0x0a, 0x05, 0x49, 0x6e, 0x74, 0x36, 0x34, // 'Int64'
+            // struct spine:
+            0x0e, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x01, 0x02, 0x02, 0x03, 0x00, 0x04,
+            0x00, 0x05, 0x01, 0x02, 0x05, 0x06, 0x01, 0x03, 0x01, 0x04, 0x07, 0x00, 0x06, 0x00, 0x07,
+            0x00, 0x07, 0x01, 0x03, 0x09, 0x0a, 0x0b, 0x01, 0x03, 0x00, 0x08, 0x0c, 0x0d,
+        ];
+        assert_eq!(got, expect, "framed int map must be the full colon-framed golden document");
+        assert_eq!(got[8], 0x08, "map leaf count = 8");
+
+        op_drop(m);
+        assert_eq!(live_nodes(), 0, "no leak");
+    }
+
+    /// GOLDEN pin, SET shape (v-rust-backend fixture, 2026-08-16): `Value.encode` of
+    /// `(Set.of (list 7 12 17))` at `(Set Int64)` must render `(: ((. Set of) (list 7 12 17)) (Set
+    /// Int64))` — the `((. Set of) (list …))` member-access form, elements in CANONICAL order. Pins the
+    /// Set member-order-at-build contract. Guarded three ways; the cadenza-ast mirror asserts the same
+    /// bytes. `#[cfg(test)]`.
+    #[test]
+    fn value_encode_of_a_framed_int_set_is_the_colon_framed_golden() {
+        reset();
+        let desc = framed_int_set_descriptor();
+        let mut s = op_set_empty();
+        for e in [7i64, 12, 17] {
+            s = op_set_insert(s, op_box_int(e));
+        }
+        let got = op_value_encode_form(s, &desc).expect("encode framed int set");
+
+        let descriptor = decode_descriptor(&desc).expect("descriptor");
+        let mut b = DocBuilder::default();
+        let root = encode_value_recursive(&descriptor, &mut b, s, descriptor.root, 0)
+            .expect("recursive encode");
+        assert_eq!(got, b.finish(root), "iterative/recursive disagree on set");
+
+        let back = op_value_decode(&got, &desc);
+        assert_ne!(back, Handle::NULL, "set doc must decode");
+        assert_eq!(
+            got,
+            op_value_encode_form(back, &desc).expect("re-encode set"),
+            "decode∘encode ≠ id on set"
+        );
+        op_drop(back);
+
+        // FULL document: ':' , '.', 'Set', 'of', 'list', 7, 12, 17, 'Int64' (9 leaves) + spine. The
+        // ((. Set of) (list …)) member-access form, elements in canonical order 7 < 12 < 17.
+        let expect: &[u8] = &[
+            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, // cdzast\x00\x01
+            0x09, // 9 leaves
+            0x0a, 0x01, 0x3a, // ':'
+            0x0a, 0x01, 0x2e, // '.'
+            0x0a, 0x03, 0x53, 0x65, 0x74, // 'Set'
+            0x0a, 0x02, 0x6f, 0x66, // 'of'
+            0x0a, 0x04, 0x6c, 0x69, 0x73, 0x74, // 'list'
+            0x00, 0x01, 0x07, // INT 7
+            0x00, 0x01, 0x0c, // INT 12
+            0x00, 0x01, 0x11, // INT 17
+            0x0a, 0x05, 0x49, 0x6e, 0x74, 0x36, 0x34, // 'Int64'
+            // struct spine:
+            0x0f, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x01, 0x03, 0x01, 0x02, 0x03, 0x00,
+            0x04, 0x00, 0x05, 0x00, 0x06, 0x00, 0x07, 0x01, 0x04, 0x05, 0x06, 0x07, 0x08, 0x01, 0x02,
+            0x04, 0x09, 0x00, 0x02, 0x00, 0x08, 0x01, 0x02, 0x0b, 0x0c, 0x01, 0x03, 0x00, 0x0a, 0x0d,
+            0x0e,
+        ];
+        assert_eq!(got, expect, "framed int set must be the full colon-framed golden document");
+        assert_eq!(got[8], 0x09, "set leaf count = 9");
+
+        op_drop(s);
+        assert_eq!(live_nodes(), 0, "no leak");
+    }
+
     #[test]
     fn value_encode_form_matches_the_codec_for_a_recursive_sum() {
         reset();
