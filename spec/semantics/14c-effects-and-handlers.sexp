@@ -12952,3 +12952,130 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 80808060412 Int64))
   (call   main (: 0 Int64)) (output (: 80803990312 Int64)))
+
+;; ── xhs cross-handler shared-let mid-arm foreign-perform family — miscompile class closed by eead20a60; xhsE = freeze completeness boundary, flips on the list-branch-init follow-up (breaker batch 295) ──
+(case "xhs1 CROSS-HANDLER shared-let — the inner step arm let-binds the advanced column, PERFORMS the outer note with it mid-arm (accumulating), then resumes packing the binder with the note's answer while threading the binder as next-state; the seed bias shifts every column so both the inner rows and the outer accumulator diverge"
+  (input  (do
+            (effect O (op note (-> Int64 Int64)))
+            (effect I (op step (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle O (: 0 Int64)
+                ((note (v) acc
+                  (resume (+ acc v) (+ acc v))))
+                (handle I (: 0 Int64)
+                  ((step (x) col
+                    (let ((c2 (+ col (+ x (% n 3)))))
+                      (let ((nv (O.note c2)))
+                        (resume (+ (* c2 10) (% nv 10)) c2)))))
+                  (let ((a (I.step (: 3 Int64))))
+                    (let ((b (I.step (: 5 Int64))))
+                      (let ((c (O.note (: 100 Int64))))
+                        (+ (* 1000 (+ (* 1000 a) b)) c)))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 44104114 Int64))
+  (call   main (: 0 Int64)) (output (: 33081111 Int64)))
+
+(case "xhsA the binder feeds the outer perform and the answer but the state threads the OLD column — boundary variant"
+  (input  (do
+            (effect O (op note (-> Int64 Int64)))
+            (effect I (op step (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle O (: 0 Int64)
+                ((note (v) acc
+                  (resume (+ acc v) (+ acc v))))
+                (handle I (: 0 Int64)
+                  ((step (x) col
+                    (let ((c2 (+ col (+ x (% n 3)))))
+                      (let ((nv (O.note c2)))
+                        (resume (+ (* c2 10) (% nv 10)) col)))))
+                  (let ((a (I.step (: 3 Int64))))
+                    (let ((b (I.step (: 5 Int64))))
+                      (let ((c (O.note (: 100 Int64))))
+                        (+ (* 1000 (+ (* 1000 a) b)) c)))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 44060110 Int64))
+  (call   main (: 0 Int64)) (output (: 33058108 Int64)))
+
+(case "xhsB the binder feeds the outer perform and the threaded state but the answer is only the note result — boundary variant"
+  (input  (do
+            (effect O (op note (-> Int64 Int64)))
+            (effect I (op step (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle O (: 0 Int64)
+                ((note (v) acc
+                  (resume (+ acc v) (+ acc v))))
+                (handle I (: 0 Int64)
+                  ((step (x) col
+                    (let ((c2 (+ col (+ x (% n 3)))))
+                      (let ((nv (O.note c2)))
+                        (resume nv c2)))))
+                  (let ((a (I.step (: 3 Int64))))
+                    (let ((b (I.step (: 5 Int64))))
+                      (let ((c (O.note (: 100 Int64))))
+                        (+ (* 1000 (+ (* 1000 a) b)) c)))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 4014114 Int64))
+  (call   main (: 0 Int64)) (output (: 3011111 Int64)))
+
+(case "xhsC the outer perform takes a CONSTANT while the binder feeds answer and state — boundary variant"
+  (input  (do
+            (effect O (op note (-> Int64 Int64)))
+            (effect I (op step (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle O (: 0 Int64)
+                ((note (v) acc
+                  (resume (+ acc v) (+ acc v))))
+                (handle I (: 0 Int64)
+                  ((step (x) col
+                    (let ((c2 (+ col (+ x (% n 3)))))
+                      (let ((nv (O.note (: 5 Int64))))
+                        (resume (+ (* c2 10) (% nv 10)) c2)))))
+                  (let ((a (I.step (: 3 Int64))))
+                    (let ((b (I.step (: 5 Int64))))
+                      (let ((c (O.note (: 100 Int64))))
+                        (+ (* 1000 (+ (* 1000 a) b)) c)))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 45100110 Int64))
+  (call   main (: 0 Int64)) (output (: 35080110 Int64)))
+
+(case "xhsD the DROPPED-frozen-arg complement — the outer note arm IGNORES its op param (answers the count, threads count plus one) while the inner step arm still let-binds the advanced column performs the outer note with it and resumes packing both; the frozen argument is dropped not escaped, and the fold is CORRECT"
+  (input  (do
+            (effect O (op note (-> Int64 Int64)))
+            (effect I (op step (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle O (: 0 Int64)
+                ((note (v) acc
+                  (resume acc (+ acc 1))))
+                (handle I (: 0 Int64)
+                  ((step (x) col
+                    (let ((c2 (+ col (+ x (% n 3)))))
+                      (let ((nv (O.note c2)))
+                        (resume (+ (* c2 10) (% nv 10)) c2)))))
+                  (let ((a (I.step (: 3 Int64))))
+                    (let ((b (I.step (: 5 Int64))))
+                      (let ((c (O.note (: 100 Int64))))
+                        (+ (* 1000 (+ (* 1000 a) b)) c)))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 40101002 Int64))
+  (call   main (: 0 Int64)) (output (: 30081002 Int64)))
+
+(case "xhsE the COMPUTED perform-arg variant — the inner arm let-binds the advanced column but performs the outer note with the binder PLUS ONE (a compound of the binder, not the binder itself), resuming and threading as before; the freeze's completeness boundary declines this today and the post-merge follow-up folds it"
+  (input  (do
+            (effect O (op note (-> Int64 Int64)))
+            (effect I (op step (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle O (: 0 Int64)
+                ((note (v) acc
+                  (resume (+ acc v) (+ acc v))))
+                (handle I (: 0 Int64)
+                  ((step (x) col
+                    (let ((c2 (+ col (+ x (% n 3)))))
+                      (let ((nv (O.note (+ c2 1))))
+                        (resume (+ (* c2 10) (% nv 10)) c2)))))
+                  (let ((a (I.step (: 3 Int64))))
+                    (let ((b (I.step (: 5 Int64))))
+                      (let ((c (O.note (: 100 Int64))))
+                        (+ (* 1000 (+ (* 1000 a) b)) c)))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 45106116 Int64))
+  (call   main (: 0 Int64)) (output (: 34083113 Int64)))

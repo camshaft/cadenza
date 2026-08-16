@@ -39,3 +39,41 @@ RE-EXECUTES. Common ingredient across all four: an arm with a binder chain
 whose inner let binds a cross-handler perform result. Contrast rlyC (same-
 handler binder-over-perform DECLINES) — cross-handler slips the guard and
 miscompiles instead.
+
+## xhsD dropped-arg complement (tick 1625)
+v-effects reported the dropped-frozen-arg case (outer arm IGNORES its op param)
+folds CORRECTLY — measured on their safe-floor build 07e85af7c. VERIFIED
+CONTRAST on pre-floor trunk e261604c6: xhsD miscompiles with the SAME
+duplication signature (ran 40102003/30082003 vs expected 40101002/30081002 —
+final acc 3 = three note executions across two steps, uniform wasm+rust).
+So the floor's arm-local freeze doesn't just gate the escape case — it also
+FIXES the dropped case outright. xhsD banked with hand-modeled (correct)
+outputs: it is a STAGED PASS-WITNESS that flips green when 07e85af7c lands,
+guarding the already-correct drop case against a future correct-fold regression
+(exactly what v-effects requested).
+
+## PLAN CHANGE (tick 1626): floor DEAD, correct-fold 8f32b07a0 queued
+- Safe-floor 07e85af7c was REJECTED at pr-sync (over-declined the as7
+  fold-strict unit) and is DEAD. v-effects replaced it with ONE squashed
+  CORRECT-FOLD commit 8f32b07a0 (drain-level freeze + narrowed collapse
+  trigger; v-inference sign-off, rcdzc 2660/0, 14c 620/2/0), queued now.
+- Witness re-keying (all to 8f32b07a0, NOT the dead floor):
+  xhs1 44104114/33081111 · xhsA 44060110/33058108 · xhsB 4014114/3011111 ·
+  xhsC 45100110/35080110 · xhsD 40101002/30081002 — ALL become PASS-witnesses
+  (the case files already carry these correct oracles; no edits needed).
+- NEW xhsE (computed perform-arg `(O.note (+ c2 1))`): on CURRENT trunk it
+  MISCOMPILES 45103133/expected 45106116 (same duplication family); on the
+  correct-fold build it SAFELY DECLINES (freeze completeness boundary,
+  list-branch init not drain-safe yet). DECLINE-witness at 8f32b07a0,
+  flipping to PASS (45106116/34083113, hand-verified) on the post-merge
+  follow-up. n=0 oracle 34083113 computed here — v-effects' note only gave
+  n=10.
+
+## tick 1628: land claim REFUTED by fresh-binary verify
+v-effects reported 8f32b07a0 "integrated by content" — but at origin/main
+6106503ee (fresh fetch + rebuild): xhs1 still miscompiles 44100130 (the
+ORIGINAL duplication answer), all 6 witnesses fail, and the freeze markers
+(reaches_perform_with_args / #fa) are absent from rcdzc source. No integration
+commit in origin's last three. Their diff likely ran against a local ref.
+Promotion HELD; re-verifying on flip-sweep each tick. This is exactly why
+verify-on-origin-by-content with a FRESH BINARY is the standing rule.
