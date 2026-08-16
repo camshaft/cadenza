@@ -18340,6 +18340,154 @@ mod tests {
         (params, body)
     }
 
+    // ---- B2 co-verify harness (sharing-aware emit-into-Let-slot) ----------------------------------
+    // The durable B2 fix (v-core-opt owns the Core-IR: lift cse_body Guard A for heap handles + place a
+    // shared heap node in a Core::Let slot; I own the emit-side dup/drop) rests on one refcount invariant:
+    // when a shared heap node becomes a Let slot whose reads are `Core::LocalRef` occurrences, each read
+    // must be marked by EXACTLY ONE of {B1 `collect_shell_reclaim_child_dups`/`collect_row_op_field_dups`,
+    // `mark_binder_dups` (dup_sites)} — never BOTH (double-dup = leak) and never neither (missed retain =
+    // UAF). This harness pins that the three collectors are PAIRWISE DISJOINT on the B2 target shapes, built
+    // here from real source over RUNTIME HEAP PARAMS (a constructed literal constant-folds away; a param
+    // can't) — the same shapes the B2 pass will produce implicitly. Covered: `mark_binder_dups` fires (a
+    // real retain) at body root, WITHIN a match arm, and on a SHARED match scrutinee (the last confirms the
+    // Q2 ownership caveat: a shared scrutinee is BORROWED so shell_reclaim stays empty and dup covers it —
+    // exactly-one, never both). NOT yet exercised here: shell_reclaim firing SIMULTANEOUSLY with dup on
+    // distinct nodes — its narrow owned-compound-boxed-sum-with-consuming-scrutinee-child-projection pattern
+    // is not reachable from these source shapes (match arms bind payloads as fresh binders, not the direct
+    // scrutinee-child projections the collector keys on). v-core-opt hands the exact synth_core for that
+    // (+ the enclosing-scope binding) when their design MR frees the branch; it slots into `b2_dup_site_sets`
+    // unchanged. Agreed co-verify before either side lands B2 code.
+
+    /// Run the three dup-site collectors over `body`: (shell_reclaim, row_op, dup_sites).
+    fn b2_dup_site_sets(
+        db: &mut Db,
+        body: StructId,
+    ) -> (HashSet<StructId>, HashSet<StructId>, HashSet<StructId>) {
+        let mut shell = HashSet::new();
+        collect_shell_reclaim_child_dups(db, body, &mut shell);
+        let mut row = HashSet::new();
+        collect_row_op_field_dups(db, body, &mut row);
+        let mut binders = Vec::new();
+        collect_retain_candidate_binders(db, body, &mut binders);
+        let mut dup = HashSet::new();
+        collect_dup_sites(db, body, &binders, &mut dup);
+        (shell, row, dup)
+    }
+
+    /// The B2 invariant: no node id is marked by more than one collector (exactly-one-of per shared read).
+    fn assert_dup_sites_pairwise_disjoint(
+        shell: &HashSet<StructId>,
+        row: &HashSet<StructId>,
+        dup: &HashSet<StructId>,
+    ) {
+        assert!(
+            shell.is_disjoint(row),
+            "B2: shell_reclaim and row_op must be disjoint ({shell:?} vs {row:?})"
+        );
+        assert!(
+            shell.is_disjoint(dup),
+            "B2: shell_reclaim and dup_sites must be disjoint ({shell:?} vs {dup:?})"
+        );
+        assert!(
+            row.is_disjoint(dup),
+            "B2: row_op and dup_sites must be disjoint ({row:?} vs {dup:?})"
+        );
+    }
+
+    #[test]
+    fn b2_disjoint_body_root_heap_let_shared_k_reads() {
+        // B2 shape (i): a RUNTIME heap PARAM `e` (a List — a param can't constant-fold) consumed by
+        // `List.push` AND read again by a later `List.len`. `mark_binder_dups` marks the consume-with-later-
+        // use occurrence a dup site; B1 marks nothing (no MatchSum scrutinee, no self-keyed materialize-
+        // record). Sets pairwise disjoint.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: e (List Int64))) \
+               (+ (List.len (List.push e 9)) (List.len e))) \
+             (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let _ = select_function(&mut db, body, &params, &layout).expect("select f");
+        let (shell, row, dup) = b2_dup_site_sets(&mut db, body);
+        assert!(
+            !dup.is_empty(),
+            "the consume-then-later-use e must be a dup site"
+        );
+        assert!(
+            shell.is_empty(),
+            "no MatchSum scrutinee -> shell_reclaim empty"
+        );
+        assert!(
+            row.is_empty(),
+            "no self-keyed materialize-record -> row_op empty"
+        );
+        assert_dup_sites_pairwise_disjoint(&shell, &row, &dup);
+    }
+
+    #[test]
+    fn b2_disjoint_within_arm_heap_let() {
+        // B2 shape (ii): a runtime heap PARAM `e` used consume-then-later INSIDE a match arm (the cmb1
+        // within-arm placement). The outer match is over an enum-disc `Col` (scalar disc, NOT owned-compound-
+        // boxed) so shell_reclaim stays empty; `mark_binder_dups` marks the arm-local occurrence. Disjoint.
+        let ast = crate::testkit::parse(
+            "(module m (type Col (Red) (Green) (Blue)) \
+               (def (f (: c Col) (: e (List Int64))) \
+                 (match c \
+                   ((Red) (+ (List.len (List.push e 9)) (List.len e))) \
+                   ((Green) 0) \
+                   ((Blue) 0))) \
+             (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let _ = select_function(&mut db, body, &params, &layout).expect("select f");
+        let (shell, row, dup) = b2_dup_site_sets(&mut db, body);
+        assert!(
+            !dup.is_empty(),
+            "the arm-local consume-then-later-use e must be a dup site"
+        );
+        assert!(
+            shell.is_empty(),
+            "enum-disc scrutinee is not owned-compound-boxed -> shell_reclaim empty"
+        );
+        assert_dup_sites_pairwise_disjoint(&shell, &row, &dup);
+    }
+
+    #[test]
+    fn b2_disjoint_shared_owned_boxed_sum_scrutinee() {
+        // B2 shape (iii), the Q2 ownership caveat + the MEANINGFUL case where B1 shell_reclaim and dup_sites
+        // are BOTH non-empty: a boxed sum `Box` (a compound `(List Int64)` payload) bound to `w`, matched
+        // TWICE. The FIRST arm CONSUMES the extracted payload (`List.push xs 9`) -> shell_reclaim marks that
+        // consuming payload site (a SumPayload/Proj node); `w` is matched a second time so it is SHARED, and
+        // its first (consuming) scrutinee occurrence gets a dup site (a `LocalRef` off `w`). shell marks the
+        // payload node, dup marks the scrutinee LocalRef -> DIFFERENT node ids -> disjoint. This is exactly
+        // the double-dup=leak guard: the scrutinee read is covered by mark_binder_dups, the payload by B1,
+        // never both.
+        let ast = crate::testkit::parse(
+            "(module m (type Box (Wrap (List Int64)) (Empty)) \
+               (def (f (: w Box)) \
+                 (+ (match w ((Wrap xs) (List.len (List.push xs 9))) ((Empty) 0)) \
+                    (match w ((Wrap ys) (List.len ys)) ((Empty) 0)))) \
+             (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let _ = select_function(&mut db, body, &params, &layout).expect("select f");
+        let (shell, row, dup) = b2_dup_site_sets(&mut db, body);
+        // A SHARED scrutinee is BORROWED (not the last use), so shell_reclaim (which reclaims an OWNED
+        // scrutinee's shell) does NOT fire — mark_binder_dups covers the shared scrutinee read instead. The
+        // Q2 ownership caveat thus resolves to exactly-one (dup), never both.
+        assert!(!dup.is_empty(), "the shared scrutinee w must be a dup site");
+        assert!(
+            shell.is_empty(),
+            "a shared (borrowed) scrutinee is not owned -> shell_reclaim empty"
+        );
+        assert_dup_sites_pairwise_disjoint(&shell, &row, &dup);
+    }
+
     #[test]
     fn a_parameterized_addition_selects_to_a_checked_sequence() {
         // (def (add (: a Int64) (: b Int64)) (+ a b)) — the body is a RUNTIME add over two params, and
