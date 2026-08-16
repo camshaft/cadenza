@@ -6012,10 +6012,19 @@ fn thread_bounded(
                 && arm_next_states
                     .iter()
                     .any(|&s| next_state_is_growing_compound(db, s));
+            // GROWING-STATE was originally excluded from the collapse (F24 caution: a `(. #st_vs 1)` projecting
+            // a `List.push`/`Map.insert` next-state re-introduces the F24 exponential + a see-through arm). But
+            // for the mid-arm-FOREIGN-PERFORM shared-let shape (xhsGrow) the DISTRIBUTE fallback MISCOMPILES (the
+            // shared-binder divergence), and the collapse's per-dispatch `#st_vs` bind IS the F24 fix — so
+            // collapsing it is LINEAR (verified: a 6-dispatch xhsGrow compiles in ~0.4s, no blowup) AND correct
+            // (differential-confirmed variant==inline-control at 2 and 6 dispatches). So ALLOW the collapse for a
+            // growing-state arm that has a foreign-perform-with-args let-init — the correct fold, superseding the
+            // safe-floor decline below (which still fires when the frozen combined is non-hoistable). A
+            // growing-state arm WITHOUT such a perform (gws1, lru1/rrb1) stays excluded (distribute-correct).
             let collapse_ok = ctx.collapse_enabled.get()
                 && ctx.slots.len() == 1
                 && !ctx.in_recursive_specialize.get()
-                && !arm_state_grows;
+                && (!arm_state_grows || arm_has_let_init_reaching_arg_perform(db, arm_body));
             let mut collapsed: Option<StructId> = None;
             if collapse_ok
                 && arm_is_collapse_candidate(db, arm_body)
