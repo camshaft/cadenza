@@ -499,6 +499,25 @@ fn emit_value_form(db: &mut Db, ty: &Ty, val_expr: &str) -> Result<String, Rejec
                  __b.list(__mc) }}"
             ))
         }
+        // A SET is a `BTreeSet<T>` rendered `((. Set of) (list e1 … en))` — a 2-child list: the member-access
+        // head `(. Set of)` then a `(list …)` of the elements, in canonical order (the `BTreeSet` iterates
+        // sorted = canonical, no explicit sort). Only a SCALAR element is orderable/encodable (the runtime
+        // declines a non-scalar element), so decline it too.
+        Ty::Set(elem) => {
+            if !is_orderable_scalar_key(elem) {
+                return Err(Reject::decline(
+                    "Value.encode native rust: Set element is not an orderable scalar (Int/Bool/Char/String/Symbol)",
+                ));
+            }
+            let child = emit_value_form(db, elem, "__ev")?;
+            Ok(format!(
+                "{{ let __sv = {val_expr}; \
+                 let __sof = {{ let __d = __b.name(\".\"); let __sm = __b.name(\"Set\"); let __of = __b.name(\"of\"); __b.list(vec![__d, __sm, __of]) }}; \
+                 let __lh = __b.name(\"list\"); let mut __lc = vec![__lh]; \
+                 for __el in __sv.iter() {{ let __ev = __el.clone(); let __c = {child}; __lc.push(__c); }} \
+                 let __lst = __b.list(__lc); __b.list(vec![__sof, __lst]) }}"
+            ))
+        }
         // A RECORD is a Rust TUPLE (`tuple_type(fields.values())`, so tuple position i == the i-th field in
         // the `BTreeMap<Symbol,_>`'s sorted-key order) rendered as `(record (= k0 v0) (= k1 v1) …)`. Each
         // field is a nested `(= <name> <value>)` list; the field NAME is the Symbol's `name` (db-free). Bind
@@ -687,6 +706,26 @@ fn emit_value_reconstruct(
                  Some(__out) }})()"
             ))
         }
+        // A SET: check the `((. Set of) (list …))` 2-child shape, reconstruct each element of the inner
+        // `(list …)` and insert into a `BTreeSet` (`?` on any mismatch → None). Inverse of the Set encode.
+        Ty::Set(elem) => {
+            if !is_orderable_scalar_key(elem) {
+                return Err(Reject::decline(
+                    "Value.decode native rust: Set element is not an orderable scalar (Int/Bool/Char/String/Symbol)",
+                ));
+            }
+            let child = emit_value_reconstruct(db, elem, arenas, "__litems[__ix]")?;
+            Ok(format!(
+                "(|| {{ let __souter = if let cadenza_ast::ast::Struct::List(__i) = {arenas}.get({node}) {{ __i }} else {{ return None }}; \
+                 if __souter.len() != 2 {{ return None }} \
+                 let __listnode = __souter[1]; \
+                 let __litems = if let cadenza_ast::ast::Struct::List(__i) = {arenas}.get(__listnode) {{ __i }} else {{ return None }}; \
+                 if {arenas}.head_name(__listnode) != Some(\"list\") {{ return None }} \
+                 let mut __out = std::collections::BTreeSet::new(); \
+                 for __ix in 1..__litems.len() {{ __out.insert({child}?); }} \
+                 Some(__out) }})()"
+            ))
+        }
         // A RECORD: check the `(record (= k v) …)` shape, then for each field read the `(= k v)` triple's
         // VALUE (its 3rd child) and reconstruct positionally into the tuple (matching the encode's sorted-key
         // field order). Positional (not by-key) is sound because encode + decode iterate the SAME sorted-key
@@ -854,9 +893,13 @@ fn emit_type_node(ty: &Ty, ncx: &crate::ty::NameCtx) -> Result<String, Reject> {
                 "{{ let __th = __b.name(\"List\"); let __te = {child}; __b.list(vec![__th, __te]) }}"
             ))
         }
-        // Map type node: `(Map k v)` — mirror `type_node_of` (matches `render_name`). (Set's type node
-        // `(Set e)` is not wired here: Set `Value.encode` currently declines upstream at typing (CDZ0203),
-        // so the Set codec arm is unreachable — added when v-inference grounds it.)
+        // Set/Map type nodes: `(Set e)` / `(Map k v)` — mirror `type_node_of` (matches `render_name`).
+        Ty::Set(elem) => {
+            let child = emit_type_node(elem, ncx)?;
+            Ok(format!(
+                "{{ let __th = __b.name(\"Set\"); let __te = {child}; __b.list(vec![__th, __te]) }}"
+            ))
+        }
         Ty::Map(k, v) => {
             let kc = emit_type_node(k, ncx)?;
             let vc = emit_type_node(v, ncx)?;

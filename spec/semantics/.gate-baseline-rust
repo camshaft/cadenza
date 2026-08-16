@@ -1171,6 +1171,7 @@ pass	a Value.encode then Value.decode round-trips a compound value back to Some 
 pass	a Value.encode/Value.decode round-trip preserves a MAP's entries
 pass	a Value.encode/Value.decode round-trip preserves a MULTI-PAYLOAD sum variant (spread)
 pass	a Value.encode/Value.decode round-trip preserves a RECORD's fields
+pass	a Value.encode/Value.decode round-trip preserves a SET's elements
 pass	a Value.encode/Value.decode round-trip preserves a STRING element of a compound
 pass	a Value.encode/Value.decode round-trip preserves a SUM's NULLARY variant (Option None)
 pass	a Value.encode/Value.decode round-trip preserves a SUM's payload variant (Option Some)

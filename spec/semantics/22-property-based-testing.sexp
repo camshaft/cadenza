@@ -1262,6 +1262,23 @@
   (call   main (: 7 Int64)) (output (: 70099 Int64))
   (call   main (: 3 Int64)) (output (: 30099 Int64)))
 
+(case "a Value.encode/Value.decode round-trip preserves a SET's elements"
+  (doc    "Extends the round-trips to a `(Set Int64)` — the R2 value-form `((. Set of) (list e …))` shape,
+           elements in CANONICAL order. `Set.of` takes a SINGLE `(List _)` arg (not variadic), so the set is
+           `(Set.of (list n (n+5) (n+10)))`. `Value.decode (Value.encode set) == Some` of the same set; the
+           match confirms a member survived (`Set.contains s (n+5)`) and folds `len*1000 + n`. `main 7` ->
+           {7,12,17} -> 3007, `main 2` -> 3002 (distinct); a lost element would drop the len or fail contains.
+           Pins the Set arm of the native codec: rust iterates the `BTreeSet` (already canonical order, no sort)
+           building `((. Set of) (list …))`, decode rebuilds the `BTreeSet`. Runs on wasm + rust + rust-async.")
+  (input  (do
+            (def (main (: n Int64))
+              (match (: (Value.decode (Value.encode (Set.of (list n (+ n 5) (+ n 10))))) (Option (Set Int64)))
+                ((Some s) (if (Set.contains s (+ n 5)) (+ (* (Set.len s) 1000) n) (- 0 1)))
+                ((None u) (- 0 2))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 3007 Int64))
+  (call   main (: 2 Int64)) (output (: 3002 Int64)))
+
 ; --- The round-trip under LET-BINDER grounding: decode's target fixed by the binder annotation, not inline. ---
 
 (case "a Value.decode round-trip grounds its target from a LET-BINDER annotation, not only an inline ascription"
