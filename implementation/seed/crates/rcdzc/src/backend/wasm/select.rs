@@ -2977,11 +2977,34 @@ fn looped_owned_param_drops(
 /// The recursive worker of [`collect_used_ops`] — descends every sub-position (both `if` branches, every
 /// arm body — an op used only under a branch is still imported, since the branch may run). A box/get op
 /// that would decline (a non-scalar element) is simply not added here; the decline surfaces at `emit`.
+///
+/// SHARING-AWARE (2026-08-16, v-core-opt-signed-off CLASS-A slice): a per-body `visited` set skips a
+/// shared `StructId` already walked. The op accumulator is a `BTreeSet` — PRESENCE-only, idempotent under
+/// revisits — so skipping a re-descent changes NO output while collapsing the exponential DAG re-walk (a
+/// VALID self-host emit body reached 291M core-visits from re-walking shared nodes; cmb1 is unbounded).
+/// This thin wrapper creates the `visited` set FRESH per top-level call so it never leaks across defs
+/// (the reset discipline of `count_localref_reads` / the layout visited-sets). NOT applied to the class-B
+/// dup/retain/consuming-payload walks: those feed per-occurrence dup/drop placement (multiplicity), where a
+/// visited-set UNDER-counts → use-after-free (the reverted memo-sweep) — they stay Perceus-blocked.
 fn collect_used_ops_into(
     db: &mut Db,
     id: StructId,
     out: &mut std::collections::BTreeSet<&'static str>,
 ) {
+    let mut visited: HashSet<StructId> = HashSet::new();
+    collect_used_ops_into_seen(db, id, out, &mut visited);
+}
+
+fn collect_used_ops_into_seen(
+    db: &mut Db,
+    id: StructId,
+    out: &mut std::collections::BTreeSet<&'static str>,
+    visited: &mut HashSet<StructId>,
+) {
+    // Already walked this shared node → its ops are already in `out` (a set); skip the re-descent.
+    if !visited.insert(id) {
+        return;
+    }
     match core_of(db, id) {
         Core::Tuple { elems } => {
             out.insert(OP_ARR_ALLOC);
@@ -2998,7 +3021,7 @@ fn collect_used_ops_into(
                 if elem_needs_rope_compaction(db, *elem) {
                     out.insert(OP_BYTES_COMPACT);
                 }
-                collect_used_ops_into(db, *elem, out);
+                collect_used_ops_into_seen(db, *elem, out, visited);
             }
         }
         Core::Proj { operand, .. } => {
@@ -3019,7 +3042,7 @@ fn collect_used_ops_into(
                     out.insert(OP_DUP);
                 }
             }
-            collect_used_ops_into(db, operand, out);
+            collect_used_ops_into_seen(db, operand, out, visited);
         }
         // A list construction is a BULK build: a flat `arr` (`arr-alloc` + a boxed `arr-set` per element,
         // like a tuple) then one `vec-of-arr`. So it imports the arr ops + `vec-of-arr`, not the old
@@ -3035,7 +3058,7 @@ fn collect_used_ops_into(
                 if elem_needs_rope_compaction(db, *elem) {
                     out.insert(OP_BYTES_COMPACT);
                 }
-                collect_used_ops_into(db, *elem, out);
+                collect_used_ops_into_seen(db, *elem, out, visited);
             }
         }
         // `List.len` uses `vec-len` and evaluates its operand.
@@ -3050,7 +3073,7 @@ fn collect_used_ops_into(
             ) {
                 out.insert(OP_DROP);
             }
-            collect_used_ops_into(db, operand, out);
+            collect_used_ops_into_seen(db, operand, out, visited);
         }
         // `Bytes.of` uses `bytes-alloc` + a `bytes-set` per element (each element is a raw byte — an
         // i32 in `0..=255`, NOT boxed to a handle, unlike a list element). Evaluate each element.
@@ -3058,7 +3081,7 @@ fn collect_used_ops_into(
             out.insert(OP_BYTES_ALLOC);
             out.insert(OP_BYTES_SET);
             for elem in elems.iter() {
-                collect_used_ops_into(db, *elem, out);
+                collect_used_ops_into_seen(db, *elem, out, visited);
             }
         }
         // A runtime `(bin …)` build allocs the byte buffer + writes each segment byte with `bytes-set`.
@@ -3066,7 +3089,7 @@ fn collect_used_ops_into(
             out.insert(OP_BYTES_ALLOC);
             out.insert(OP_BYTES_SET);
             for s in &segs {
-                collect_used_ops_into(db, s.value, out);
+                collect_used_ops_into_seen(db, s.value, out, visited);
             }
         }
         // A runtime bit-field run allocs the buffer + writes each packed byte with `bytes-set`.
@@ -3074,7 +3097,7 @@ fn collect_used_ops_into(
             out.insert(OP_BYTES_ALLOC);
             out.insert(OP_BYTES_SET);
             for f in &fields {
-                collect_used_ops_into(db, f.value, out);
+                collect_used_ops_into_seen(db, f.value, out, visited);
             }
         }
         // A `BinIntRead` reads its segment bytes with `bytes-get`. A §4a `off_plus` (a scalar `BinIntRead`)
@@ -3083,9 +3106,9 @@ fn collect_used_ops_into(
             bytes, off_plus, ..
         } => {
             out.insert(OP_BYTES_GET);
-            collect_used_ops_into(db, bytes, out);
+            collect_used_ops_into_seen(db, bytes, out, visited);
             if let Some(op) = off_plus {
-                collect_used_ops_into(db, op, out);
+                collect_used_ops_into_seen(db, op, out, visited);
             }
         }
         // A `BinRestRead` slices the tail: `dup` the shared scrutinee, then `bytes-slice(bytes, off,
@@ -3096,9 +3119,9 @@ fn collect_used_ops_into(
             out.insert(OP_DUP);
             out.insert(OP_BYTES_LEN);
             out.insert(OP_BYTES_SLICE);
-            collect_used_ops_into(db, bytes, out);
+            collect_used_ops_into_seen(db, bytes, out, visited);
             if let Some(op) = off_plus {
-                collect_used_ops_into(db, op, out);
+                collect_used_ops_into_seen(db, op, out, visited);
             }
         }
         // A `BinSizedRead` slices exactly `len` bytes at a static offset: `dup` the shared scrutinee, then
@@ -3113,10 +3136,10 @@ fn collect_used_ops_into(
         } => {
             out.insert(OP_DUP);
             out.insert(OP_BYTES_SLICE);
-            collect_used_ops_into(db, bytes, out);
-            collect_used_ops_into(db, len, out);
+            collect_used_ops_into_seen(db, bytes, out, visited);
+            collect_used_ops_into_seen(db, len, out, visited);
             if let Some(op) = off_plus {
-                collect_used_ops_into(db, op, out);
+                collect_used_ops_into_seen(db, op, out, visited);
             }
         }
         // `Bytes.len` uses `bytes-len` and evaluates its operand.
@@ -3130,7 +3153,7 @@ fn collect_used_ops_into(
             ) {
                 out.insert(OP_DROP);
             }
-            collect_used_ops_into(db, operand, out);
+            collect_used_ops_into_seen(db, operand, out, visited);
         }
         // `String.scalar-len` walks the UTF-8 byte leaf counting lead bytes — `bytes-len` (the loop bound)
         // + `bytes-get` (the per-byte read), the same borrowing reads `Core::StrAt`'s scalar-scan uses. Same
@@ -3144,7 +3167,7 @@ fn collect_used_ops_into(
             ) {
                 out.insert(OP_DROP);
             }
-            collect_used_ops_into(db, operand, out);
+            collect_used_ops_into_seen(db, operand, out, visited);
         }
         // `List.push` uses `vec-push` (the pushed element boxed by its type); `List.concat` uses `vec-concat`.
         Core::ListPush { list, elem } => {
@@ -3152,13 +3175,13 @@ fn collect_used_ops_into(
             if let Ok(Some(op)) = box_op(db, elem) {
                 out.insert(op);
             }
-            collect_used_ops_into(db, list, out);
-            collect_used_ops_into(db, elem, out);
+            collect_used_ops_into_seen(db, list, out, visited);
+            collect_used_ops_into_seen(db, elem, out, visited);
         }
         Core::ListConcat { lhs, rhs } => {
             out.insert(OP_VEC_CONCAT);
-            collect_used_ops_into(db, lhs, out);
-            collect_used_ops_into(db, rhs, out);
+            collect_used_ops_into_seen(db, lhs, out, visited);
+            collect_used_ops_into_seen(db, rhs, out, visited);
         }
         // `List.update` uses `vec-update` (the replacement element boxed by its type, like a push).
         Core::ListUpdate { list, index, elem } => {
@@ -3166,9 +3189,9 @@ fn collect_used_ops_into(
             if let Ok(Some(op)) = box_op(db, elem) {
                 out.insert(op);
             }
-            collect_used_ops_into(db, list, out);
-            collect_used_ops_into(db, index, out);
-            collect_used_ops_into(db, elem, out);
+            collect_used_ops_into_seen(db, list, out, visited);
+            collect_used_ops_into_seen(db, index, out, visited);
+            collect_used_ops_into_seen(db, elem, out, visited);
         }
         // A RUNTIME `List.at` reads the length (`vec-len`) for the bounds test and, in bounds, the
         // element (`vec-get`, which BORROWS → `dup` before the `Some` consumes it), then builds
@@ -3189,8 +3212,8 @@ fn collect_used_ops_into(
             if matches!(heap_operand_ownership(db, list), Ok(HandleOwnership::Owned)) {
                 out.insert(OP_DROP);
             }
-            collect_used_ops_into(db, list, out);
-            collect_used_ops_into(db, index, out);
+            collect_used_ops_into_seen(db, list, out, visited);
+            collect_used_ops_into_seen(db, index, out, visited);
         }
         // A map construction is `map-empty` then a `map-insert` per entry (each key/value boxed by its
         // type). Mirrors the emit arm's op choices.
@@ -3221,8 +3244,8 @@ fn collect_used_ops_into(
                     out.insert(OP_BYTES_ALLOC); // descriptor bake
                     out.insert(OP_BYTES_SET);
                 }
-                collect_used_ops_into(db, *k, out);
-                collect_used_ops_into(db, *v, out);
+                collect_used_ops_into_seen(db, *k, out, visited);
+                collect_used_ops_into_seen(db, *v, out, visited);
             }
         }
         // `Map.insert` = `map-insert`, boxing the key and value by their types (NODE-AWARE `box_op_for` so a
@@ -3249,9 +3272,9 @@ fn collect_used_ops_into(
                 out.insert(OP_BYTES_ALLOC); // descriptor bake
                 out.insert(OP_BYTES_SET);
             }
-            collect_used_ops_into(db, map, out);
-            collect_used_ops_into(db, key, out);
-            collect_used_ops_into(db, val, out);
+            collect_used_ops_into_seen(db, map, out, visited);
+            collect_used_ops_into_seen(db, key, out, visited);
+            collect_used_ops_into_seen(db, val, out, visited);
         }
         // A RUNTIME `Map.lookup`: box the key, `map-lookup` (→ the stored value handle, or NULL when
         // absent), then build `Some(value)` / `None` (`sum-new`, `arr-alloc(0)` for None's unit). The
@@ -3280,8 +3303,8 @@ fn collect_used_ops_into(
                 out.insert(OP_BYTES_ALLOC); // descriptor bake
                 out.insert(OP_BYTES_SET);
             }
-            collect_used_ops_into(db, map, out);
-            collect_used_ops_into(db, key, out);
+            collect_used_ops_into_seen(db, map, out, visited);
+            collect_used_ops_into_seen(db, key, out, visited);
         }
         // `Map.remove` = `map-remove`, boxing the key by its type (NODE-AWARE `box_op_for` — see `MapInsert`).
         Core::MapRemove { map, key, key_ty } => {
@@ -3298,8 +3321,8 @@ fn collect_used_ops_into(
                 out.insert(OP_BYTES_ALLOC); // descriptor bake
                 out.insert(OP_BYTES_SET);
             }
-            collect_used_ops_into(db, map, out);
-            collect_used_ops_into(db, key, out);
+            collect_used_ops_into_seen(db, map, out, visited);
+            collect_used_ops_into_seen(db, key, out, visited);
         }
         // `Map.size` = `map-size` (→ u32, extended to i64) — reads the map operand.
         Core::MapSize { map } => {
@@ -3308,7 +3331,7 @@ fn collect_used_ops_into(
             if matches!(heap_operand_ownership(db, map), Ok(HandleOwnership::Owned)) {
                 out.insert(OP_DROP);
             }
-            collect_used_ops_into(db, map, out);
+            collect_used_ops_into_seen(db, map, out, visited);
         }
         // A set construction is `set-empty` then a `set-insert` per element (each boxed by its type).
         Core::SetOf { elems, elem_ty } => {
@@ -3334,7 +3357,7 @@ fn collect_used_ops_into(
                     out.insert(OP_BYTES_ALLOC); // descriptor bake
                     out.insert(OP_BYTES_SET);
                 }
-                collect_used_ops_into(db, e, out);
+                collect_used_ops_into_seen(db, e, out, visited);
             }
         }
         // `Set.contains` = `set-contains` (→ bool), boxing the element (an owned temporary the emit drops).
@@ -3352,8 +3375,8 @@ fn collect_used_ops_into(
                 out.insert(OP_BYTES_ALLOC); // descriptor bake
                 out.insert(OP_BYTES_SET);
             }
-            collect_used_ops_into(db, set, out);
-            collect_used_ops_into(db, elem, out);
+            collect_used_ops_into_seen(db, set, out, visited);
+            collect_used_ops_into_seen(db, elem, out, visited);
         }
         // `Set.insert`/`Set.remove` = `set-insert`/`set-remove`, boxing the element by its type. NODE-AWARE
         // `box_op_for` (not `box_op_ty`) so a Float element into an empty (`Var`-typed) set imports the
@@ -3371,8 +3394,8 @@ fn collect_used_ops_into(
                 out.insert(OP_BYTES_ALLOC); // descriptor bake
                 out.insert(OP_BYTES_SET);
             }
-            collect_used_ops_into(db, set, out);
-            collect_used_ops_into(db, elem, out);
+            collect_used_ops_into_seen(db, set, out, visited);
+            collect_used_ops_into_seen(db, elem, out, visited);
         }
         // `set-remove` BORROWS the element, so the emit drops an OWNED-TEMPORARY element after the borrow
         // (the ownership gate) — hence `drop`.
@@ -3390,8 +3413,8 @@ fn collect_used_ops_into(
                 out.insert(OP_BYTES_ALLOC); // descriptor bake
                 out.insert(OP_BYTES_SET);
             }
-            collect_used_ops_into(db, set, out);
-            collect_used_ops_into(db, elem, out);
+            collect_used_ops_into_seen(db, set, out, visited);
+            collect_used_ops_into_seen(db, elem, out, visited);
         }
         // `Set.to-list` = `set-to-list` + the inline descriptor `Bytes` build (`bytes-alloc`/`bytes-set`).
         Core::SetToList { set, .. } => {
@@ -3399,7 +3422,7 @@ fn collect_used_ops_into(
             out.insert(OP_BYTES_ALLOC);
             out.insert(OP_BYTES_SET);
             out.insert(OP_DROP); // the borrowed-only descriptor Bytes is dropped after the op
-            collect_used_ops_into(db, set, out);
+            collect_used_ops_into_seen(db, set, out, visited);
         }
         // `Map.to-list` = `map-to-list` + the inline descriptor `Bytes` build (`bytes-alloc`/`bytes-set`).
         Core::MapToList { map, .. } => {
@@ -3407,7 +3430,7 @@ fn collect_used_ops_into(
             out.insert(OP_BYTES_ALLOC);
             out.insert(OP_BYTES_SET);
             out.insert(OP_DROP); // the borrowed-only descriptor Bytes is dropped after the op
-            collect_used_ops_into(db, map, out);
+            collect_used_ops_into_seen(db, map, out, visited);
         }
         // `Set.len` = `set-size` (→ u32, extended to i64) — reads the set operand.
         Core::SetLen { set } => {
@@ -3416,7 +3439,7 @@ fn collect_used_ops_into(
             if matches!(heap_operand_ownership(db, set), Ok(HandleOwnership::Owned)) {
                 out.insert(OP_DROP);
             }
-            collect_used_ops_into(db, set, out);
+            collect_used_ops_into_seen(db, set, out, visited);
         }
         // A set-algebra op = the matching runtime op (consumes both operand sets).
         Core::SetAlgebra { op, lhs, rhs } => {
@@ -3425,8 +3448,8 @@ fn collect_used_ops_into(
                 crate::core::SetAlgebraOp::Intersection => OP_SET_INTERSECTION,
                 crate::core::SetAlgebraOp::Difference => OP_SET_DIFFERENCE,
             });
-            collect_used_ops_into(db, lhs, out);
-            collect_used_ops_into(db, rhs, out);
+            collect_used_ops_into_seen(db, lhs, out, visited);
+            collect_used_ops_into_seen(db, rhs, out, visited);
         }
         // A RUNTIME `Bytes.at`: `bytes-len` (bounds test) + `bytes-get` (the raw byte VALUE, in bounds),
         // then `box-int` the byte into the `Some` payload (`sum-new`), or `arr-alloc(0)` for `None`'s
@@ -3447,8 +3470,8 @@ fn collect_used_ops_into(
             ) {
                 out.insert(OP_DROP);
             }
-            collect_used_ops_into(db, bytes, out);
-            collect_used_ops_into(db, index, out);
+            collect_used_ops_into_seen(db, bytes, out, visited);
+            collect_used_ops_into_seen(db, index, out, visited);
         }
         // `String.at` on a runtime string walks the UTF-8 buffer (`bytes-len`/`bytes-get`), slices the
         // scalar span (`bytes-slice`, which CONSUMES the string handle → the borrowed scan `dup`s first,
@@ -3468,8 +3491,8 @@ fn collect_used_ops_into(
             out.insert(OP_BYTES_COMPACT);
             out.insert(OP_DUP);
             out.insert(OP_SUM_NEW);
-            collect_used_ops_into(db, string, out);
-            collect_used_ops_into(db, index, out);
+            collect_used_ops_into_seen(db, string, out, visited);
+            collect_used_ops_into_seen(db, index, out, visited);
         }
         // `String.slice` walks the UTF-8 buffer to the start/end scalar byte positions (`bytes-len`/`bytes-
         // get`), slices that span (`bytes-slice`, which CONSUMES the string handle → the Some branch `dup`s
@@ -3485,16 +3508,16 @@ fn collect_used_ops_into(
             out.insert(OP_BYTES_COMPACT);
             out.insert(OP_DUP);
             out.insert(OP_SUM_NEW);
-            collect_used_ops_into(db, string, out);
-            collect_used_ops_into(db, start, out);
-            collect_used_ops_into(db, end, out);
+            collect_used_ops_into_seen(db, string, out, visited);
+            collect_used_ops_into_seen(db, start, out, visited);
+            collect_used_ops_into_seen(db, end, out, visited);
         }
         // `Bytes.concat` = `bytes-concat`; `Bytes.compact` = `bytes-compact`; `Bytes.slice` bounds-checks
         // via `bytes-len` then builds `Some(bytes-slice)` (a Bytes HANDLE, no box) / `None` (`arr-alloc(0)`).
         Core::BytesConcat { lhs, rhs } => {
             out.insert(OP_BYTES_CONCAT);
-            collect_used_ops_into(db, lhs, out);
-            collect_used_ops_into(db, rhs, out);
+            collect_used_ops_into_seen(db, lhs, out, visited);
+            collect_used_ops_into_seen(db, rhs, out, visited);
         }
         // `bigint-of-i64` mints a leaf from an i64 scalar — no handle operand, no drop. An UNSIGNED source
         // instead materializes a sign-magnitude byte leaf (`bytes-alloc`/`bytes-set` → `bigint-of-bytes`),
@@ -3507,7 +3530,7 @@ fn collect_used_ops_into(
                 out.insert(OP_BYTES_SET);
                 out.insert(OP_BIGINT_OF_BYTES);
             }
-            collect_used_ops_into(db, value, out);
+            collect_used_ops_into_seen(db, value, out, visited);
         }
         // The borrowing BigInt ops also import `drop` (to reclaim an OWNED-temporary handle operand after
         // the borrowing call — see the `emit_bigint_borrow_*` helpers), plus `bigint-of-i64` when an
@@ -3516,16 +3539,16 @@ fn collect_used_ops_into(
             out.insert(OP_BIGINT_TO_I64_CHECKED);
             out.insert(OP_DROP);
             insert_const_bigint_materialize_ops(db, operand, out);
-            collect_used_ops_into(db, operand, out);
+            collect_used_ops_into_seen(db, operand, out, visited);
         }
         // `Char.to-int` uses NO runtime op — it is a pure wasm `i64.extend_i32_u` of the i32 code-point
         // slot. Just descend into the operand.
-        Core::CharToInt { operand } => collect_used_ops_into(db, operand, out),
+        Core::CharToInt { operand } => collect_used_ops_into_seen(db, operand, out, visited),
         // `Char.from-int n` (runtime): the emit boxes the code point (box-int) into a `Some` and builds
         // `Some`/`None` via sum-new (None's unit payload is the inline-unit constant, no arr-alloc). Collect
         // those ops + recurse the operand.
         Core::IntToCharChecked { operand, .. } => {
-            collect_used_ops_into(db, operand, out);
+            collect_used_ops_into_seen(db, operand, out, visited);
             out.insert(OP_BOX_INT);
             out.insert(OP_SUM_NEW);
         }
@@ -3540,8 +3563,8 @@ fn collect_used_ops_into(
             out.insert(OP_DROP);
             insert_const_bigint_materialize_ops(db, lhs, out);
             insert_const_bigint_materialize_ops(db, rhs, out);
-            collect_used_ops_into(db, lhs, out);
-            collect_used_ops_into(db, rhs, out);
+            collect_used_ops_into_seen(db, lhs, out, visited);
+            collect_used_ops_into_seen(db, rhs, out, visited);
         }
         // A BigInt comparison imports `bigint-cmp` (the three-way primitive) AND `drop` (to reclaim an
         // owned-temporary operand after the borrowing compare — the `emit_bigint_borrow_binary` helper),
@@ -3551,21 +3574,21 @@ fn collect_used_ops_into(
             out.insert(OP_DROP);
             insert_const_bigint_materialize_ops(db, lhs, out);
             insert_const_bigint_materialize_ops(db, rhs, out);
-            collect_used_ops_into(db, lhs, out);
-            collect_used_ops_into(db, rhs, out);
+            collect_used_ops_into_seen(db, lhs, out, visited);
+            collect_used_ops_into_seen(db, rhs, out, visited);
         }
         // `Rational.of n d` on runtime ints — widen each to a BigInt (`bigint-of-i64`) then `rational-of`.
         Core::RationalOfInts { num, den } => {
             out.insert(OP_BIGINT_OF_I64);
             out.insert(OP_RATIONAL_OF);
-            collect_used_ops_into(db, num, out);
-            collect_used_ops_into(db, den, out);
+            collect_used_ops_into_seen(db, num, out, visited);
+            collect_used_ops_into_seen(db, den, out, visited);
         }
         // `Rational.of-int n` — widen `n` + the constant `1` to BigInt, then `rational-of`.
         Core::RationalOfIntWiden { value } => {
             out.insert(OP_BIGINT_OF_I64);
             out.insert(OP_RATIONAL_OF);
-            collect_used_ops_into(db, value, out);
+            collect_used_ops_into_seen(db, value, out, visited);
         }
         // `Rational.numerator`/`denominator` — `rational-num`/`rational-den` BORROW the operand (import
         // `drop` to reclaim an owned-temporary Rational after the borrowing read), returning a BigInt.
@@ -3573,12 +3596,12 @@ fn collect_used_ops_into(
         Core::RationalNum { operand } => {
             out.insert(OP_RATIONAL_NUM);
             out.insert(OP_DROP);
-            collect_used_ops_into(db, operand, out);
+            collect_used_ops_into_seen(db, operand, out, visited);
         }
         Core::RationalDen { operand } => {
             out.insert(OP_RATIONAL_DEN);
             out.insert(OP_DROP);
-            collect_used_ops_into(db, operand, out);
+            collect_used_ops_into_seen(db, operand, out, visited);
         }
         // The borrowing Rational arithmetic ops import their op + `drop` (reclaim an owned-temporary
         // operand after the borrowing call — the `emit_rational_borrow_binary` helper).
@@ -3590,14 +3613,14 @@ fn collect_used_ops_into(
                 crate::core::RationalOp::Div => OP_RATIONAL_DIV,
             });
             out.insert(OP_DROP);
-            collect_used_ops_into(db, lhs, out);
-            collect_used_ops_into(db, rhs, out);
+            collect_used_ops_into_seen(db, lhs, out, visited);
+            collect_used_ops_into_seen(db, rhs, out, visited);
         }
         Core::RationalCmp { lhs, rhs, .. } => {
             out.insert(OP_RATIONAL_CMP);
             out.insert(OP_DROP);
-            collect_used_ops_into(db, lhs, out);
-            collect_used_ops_into(db, rhs, out);
+            collect_used_ops_into_seen(db, lhs, out, visited);
+            collect_used_ops_into_seen(db, rhs, out, visited);
         }
         Core::BytesSlice {
             bytes, start, len, ..
@@ -3608,13 +3631,13 @@ fn collect_used_ops_into(
             out.insert(OP_SUM_NEW);
             // None is the inline-unit constant (`IMM_UNIT`), NOT an allocation — no `arr-alloc` (see the
             // emit arm; PR #404 class).
-            collect_used_ops_into(db, bytes, out);
-            collect_used_ops_into(db, start, out);
-            collect_used_ops_into(db, len, out);
+            collect_used_ops_into_seen(db, bytes, out, visited);
+            collect_used_ops_into_seen(db, start, out, visited);
+            collect_used_ops_into_seen(db, len, out, visited);
         }
         Core::BytesCompact { operand } => {
             out.insert(OP_BYTES_COMPACT);
-            collect_used_ops_into(db, operand, out);
+            collect_used_ops_into_seen(db, operand, out, visited);
         }
         // `String.from-bytes` on a runtime Bytes: `str-from-bytes` (→ the String handle, or NULL when the
         // buffer is invalid UTF-8), then build `Some(handle)` / `None` via `sum-new`. The returned handle is
@@ -3632,34 +3655,34 @@ fn collect_used_ops_into(
             // importing it forced an unnecessary runtime import — PR #404 Copilot review.)
             out.insert(OP_STR_FROM_BYTES);
             out.insert(OP_SUM_NEW);
-            collect_used_ops_into(db, bytes, out);
+            collect_used_ops_into_seen(db, bytes, out, visited);
         }
         // `String.to-bytes` on a runtime String: `bytes-compact` flattens the string's byte-rope to a
         // canonical flat leaf (a String IS a UTF-8 Bytes leaf, so no conversion) and transfers it out as the
         // Bytes result — the total encoding needs no `sum-new`/validation, just the one flatten op.
         Core::StrToBytes { string } => {
             out.insert(OP_BYTES_COMPACT);
-            collect_used_ops_into(db, string, out);
+            collect_used_ops_into_seen(db, string, out, visited);
         }
         // `str-nfc-normalize` on a runtime String: one runtime op that canonicalizes to NFC. The collect
         // MUST mirror the emit arm's single `CallImport(OP_STR_NFC_NORMALIZE)` exactly (an import-set that
         // omits it, or adds an extra, shifts every import index → invalid module), then recurse into `string`.
         Core::NfcNormalize { string } => {
             out.insert(OP_STR_NFC_NORMALIZE);
-            collect_used_ops_into(db, string, out);
+            collect_used_ops_into_seen(db, string, out, visited);
         }
         Core::If { cond, then_, else_ } => {
-            collect_used_ops_into(db, cond, out);
-            collect_used_ops_into(db, then_, out);
-            collect_used_ops_into(db, else_, out);
+            collect_used_ops_into_seen(db, cond, out, visited);
+            collect_used_ops_into_seen(db, then_, out, visited);
+            collect_used_ops_into_seen(db, else_, out, visited);
         }
         Core::Match { scrutinee, arms } => {
-            collect_used_ops_into(db, scrutinee, out);
+            collect_used_ops_into_seen(db, scrutinee, out, visited);
             for arm in arms {
                 if let Some(g) = arm.guard {
-                    collect_used_ops_into(db, g, out);
+                    collect_used_ops_into_seen(db, g, out, visited);
                 }
-                collect_used_ops_into(db, arm.body, out);
+                collect_used_ops_into_seen(db, arm.body, out, visited);
             }
         }
         Core::Let { bindings, body } => {
@@ -3674,16 +3697,16 @@ fn collect_used_ops_into(
                 if is_heap_type_for_retain(&type_of(db, *binder)) {
                     out.insert(OP_DROP);
                 }
-                collect_used_ops_into(db, *value, out);
+                collect_used_ops_into_seen(db, *value, out, visited);
             }
-            collect_used_ops_into(db, body, out);
+            collect_used_ops_into_seen(db, body, out, visited);
         }
         Core::Arith { lhs, rhs, .. }
         | Core::Compare { lhs, rhs, .. }
         | Core::FloatCompare { lhs, rhs, .. }
         | Core::And { lhs, rhs, .. } => {
-            collect_used_ops_into(db, lhs, out);
-            collect_used_ops_into(db, rhs, out);
+            collect_used_ops_into_seen(db, lhs, out, visited);
+            collect_used_ops_into_seen(db, rhs, out, visited);
         }
         // Runtime String/Symbol ordering walks both leaves with `bytes-len`/`bytes-get` and drops an owned-
         // temporary operand after the borrowing walk (see the `Core::StrCmp` emit). No `bytes-compact` — the
@@ -3692,8 +3715,8 @@ fn collect_used_ops_into(
             out.insert(OP_BYTES_LEN);
             out.insert(OP_BYTES_GET);
             out.insert(OP_DROP);
-            collect_used_ops_into(db, lhs, out);
-            collect_used_ops_into(db, rhs, out);
+            collect_used_ops_into_seen(db, lhs, out, visited);
+            collect_used_ops_into_seen(db, rhs, out, visited);
         }
         // Runtime structural equality imports `value-eq` (the compare) AND `drop` (to reclaim an owned
         // temporary operand after the borrowing compare — see the `Core::ValueEq` emit). A STRING/BYTES
@@ -3705,8 +3728,8 @@ fn collect_used_ops_into(
             if operand_is_string_or_bytes(db, lhs) || operand_is_string_or_bytes(db, rhs) {
                 out.insert(OP_BYTES_COMPACT);
             }
-            collect_used_ops_into(db, lhs, out);
-            collect_used_ops_into(db, rhs, out);
+            collect_used_ops_into_seen(db, lhs, out, visited);
+            collect_used_ops_into_seen(db, rhs, out, visited);
         }
         // Runtime compound ORDERING imports `value-cmp` (the compare) + `drop` (reclaim the descriptor Bytes
         // AND an owned-temporary operand after the borrowing compare) + `bytes-alloc`/`bytes-set` (the emit
@@ -3717,8 +3740,8 @@ fn collect_used_ops_into(
             out.insert(OP_DROP);
             out.insert(OP_BYTES_ALLOC);
             out.insert(OP_BYTES_SET);
-            collect_used_ops_into(db, lhs, out);
-            collect_used_ops_into(db, rhs, out);
+            collect_used_ops_into_seen(db, lhs, out, visited);
+            collect_used_ops_into_seen(db, rhs, out, visited);
         }
         // Runtime descriptor-guided structural EQUALITY imports `value-eq-shaped` + `drop` (reclaim the
         // descriptor Bytes AND an owned-temporary operand after the borrowing compare) + `bytes-alloc`/
@@ -3728,8 +3751,8 @@ fn collect_used_ops_into(
             out.insert(OP_DROP);
             out.insert(OP_BYTES_ALLOC);
             out.insert(OP_BYTES_SET);
-            collect_used_ops_into(db, lhs, out);
-            collect_used_ops_into(db, rhs, out);
+            collect_used_ops_into_seen(db, lhs, out, visited);
+            collect_used_ops_into_seen(db, rhs, out, visited);
         }
         // `Value.encode` (R2) imports `value-encode` (the render) + `bytes-alloc`/`bytes-set` (the emit BAKES
         // the shape descriptor inline as a Bytes constant, exactly like `ValueCmp`) + `drop` (reclaim the
@@ -3739,7 +3762,7 @@ fn collect_used_ops_into(
             out.insert(OP_BYTES_ALLOC);
             out.insert(OP_BYTES_SET);
             out.insert(OP_DROP);
-            collect_used_ops_into(db, value, out);
+            collect_used_ops_into_seen(db, value, out, visited);
         }
         // `Value.decode` (R2) imports `value-decode` (the parse) + the descriptor-baking op set + `drop`
         // (reclaim the borrowed descriptor + owned-temporary bytes operand) + `sum-new` (wrap the success
@@ -3751,16 +3774,16 @@ fn collect_used_ops_into(
             out.insert(OP_BYTES_SET);
             out.insert(OP_DROP);
             out.insert(OP_SUM_NEW);
-            collect_used_ops_into(db, bytes, out);
+            collect_used_ops_into_seen(db, bytes, out, visited);
         }
         Core::Convert { operand, .. } | Core::Not { operand } => {
-            collect_used_ops_into(db, operand, out)
+            collect_used_ops_into_seen(db, operand, out, visited)
         }
         Core::Call { args, .. } => {
             // A CONSTANT-BigInt argument to a BigInt param materializes via `bigint-of-i64` in the
             // `Core::ConstInt` collect arm (matching its emit) — no per-call special-case needed here.
             for arg in args {
-                collect_used_ops_into(db, arg, out);
+                collect_used_ops_into_seen(db, arg, out, visited);
             }
         }
         // A HOST CALL vs a PEER CALL — mirror the `emit` arm's arg handling EXACTLY, and the two boundaries
@@ -3790,22 +3813,22 @@ fn collect_used_ops_into(
                         if !matches!(core_of(db, arg), Core::ConstStr(_)) {
                             out.insert(OP_BYTES_LEN);
                             out.insert(OP_BYTES_GET);
-                            collect_used_ops_into(db, arg, out);
+                            collect_used_ops_into_seen(db, arg, out, visited);
                         }
                     }
-                    _ => collect_used_ops_into(db, arg, out),
+                    _ => collect_used_ops_into_seen(db, arg, out, visited),
                 }
             }
         }
         Core::Seq { stmts, tail } => {
             for s in stmts {
-                collect_used_ops_into(db, s, out);
+                collect_used_ops_into_seen(db, s, out, visited);
             }
-            collect_used_ops_into(db, tail, out);
+            collect_used_ops_into_seen(db, tail, out, visited);
         }
         // A boundary block / break — descend into the body / break value to reach any op inside.
-        Core::Block { body, .. } => collect_used_ops_into(db, body, out),
-        Core::Break { value } => collect_used_ops_into(db, value, out),
+        Core::Block { body, .. } => collect_used_ops_into_seen(db, body, out, visited),
+        Core::Break { value } => collect_used_ops_into_seen(db, value, out, visited),
         Core::Record { fields } => {
             // A runtime record builds on the heap exactly as a tuple — `arr-alloc` + per-field
             // `box-*`/`arr-set` (the same ops `emit`'s `Core::Record` arm lays down), so the used-set
@@ -3833,7 +3856,7 @@ fn collect_used_ops_into(
                 if elem_needs_rope_compaction(db, *value) {
                     out.insert(OP_BYTES_COMPACT);
                 }
-                collect_used_ops_into(db, *value, out);
+                collect_used_ops_into_seen(db, *value, out, visited);
             }
         }
         // A sum construction always calls `sum-new`; the payload build mirrors `emit`'s `Core::SumNew`:
@@ -3859,7 +3882,7 @@ fn collect_used_ops_into(
                     if elem_needs_rope_compaction(db, payloads[0]) {
                         out.insert(OP_BYTES_COMPACT);
                     }
-                    collect_used_ops_into(db, payloads[0], out);
+                    collect_used_ops_into_seen(db, payloads[0], out, visited);
                 }
                 _ => {
                     out.insert(OP_ARR_ALLOC);
@@ -3871,7 +3894,7 @@ fn collect_used_ops_into(
                         if elem_needs_rope_compaction(db, *p) {
                             out.insert(OP_BYTES_COMPACT);
                         }
-                        collect_used_ops_into(db, *p, out);
+                        collect_used_ops_into_seen(db, *p, out, visited);
                     }
                 }
             }
@@ -3899,7 +3922,7 @@ fn collect_used_ops_into(
             {
                 out.insert(OP_DROP);
             }
-            collect_used_ops_into(db, scrutinee, out);
+            collect_used_ops_into_seen(db, scrutinee, out, visited);
             collect_cont_ops(db, scrutinee, &root, out);
         }
         // A list match reads `vec-len` to dispatch by length; arm bodies' element/rest binders bring in
@@ -3907,12 +3930,12 @@ fn collect_used_ops_into(
         // emitted (its ops must be collected too).
         Core::MatchList { scrutinee, arms } => {
             out.insert(OP_VEC_LEN);
-            collect_used_ops_into(db, scrutinee, out);
+            collect_used_ops_into_seen(db, scrutinee, out, visited);
             for arm in &arms {
                 if let Some(g) = arm.guard {
-                    collect_used_ops_into(db, g, out);
+                    collect_used_ops_into_seen(db, g, out, visited);
                 }
-                collect_used_ops_into(db, arm.body, out);
+                collect_used_ops_into_seen(db, arm.body, out, visited);
             }
         }
         // A sum-payload read walks its `path` (`sum-payload`/`arr-get` per step) then unboxes the leaf
@@ -3940,7 +3963,7 @@ fn collect_used_ops_into(
             if let Ok(Some(op)) = get_op(db, id) {
                 out.insert(op);
             }
-            collect_used_ops_into(db, scrutinee, out);
+            collect_used_ops_into_seen(db, scrutinee, out, visited);
         }
         // `expect` probes the discriminant (`sum-disc`) and, on the present arm, reads the payload
         // (`sum-payload`) then unboxes by the result type (`get-*`); the absent arm traps (no op). It also
@@ -3962,7 +3985,7 @@ fn collect_used_ops_into(
             ) {
                 out.insert(OP_DROP);
             }
-            collect_used_ops_into(db, scrutinee, out);
+            collect_used_ops_into_seen(db, scrutinee, out, visited);
         }
         // A closure VALUE is a heap CELL — `arr-alloc(1 + captures)` then `arr-set` of `box-int(code)`
         // (slot 0) and each boxed capture. So it uses `arr-alloc`/`arr-set`/`box-int` always, plus the
@@ -3976,7 +3999,7 @@ fn collect_used_ops_into(
                 if let Ok(Some(op)) = box_op(db, c) {
                     out.insert(op);
                 }
-                collect_used_ops_into(db, c, out);
+                collect_used_ops_into_seen(db, c, out, visited);
             }
         }
         Core::CallClosure { closure, args } => {
@@ -3993,9 +4016,9 @@ fn collect_used_ops_into(
             {
                 out.insert(OP_DROP);
             }
-            collect_used_ops_into(db, closure, out);
+            collect_used_ops_into_seen(db, closure, out, visited);
             for arg in args {
-                collect_used_ops_into(db, arg, out);
+                collect_used_ops_into_seen(db, arg, out, visited);
             }
         }
         // A CAPTURED-variable read: `arr-get(env, 1+index)` then unbox by the captured value's type.
