@@ -238,6 +238,213 @@ pub(crate) fn collect_shared_heap_binding_candidates(db: &mut Db, body: StructId
     out
 }
 
+/// [B2] the FREE binders of `id`'s subtree — LocalRef/Param binders read within it that are NOT bound by a
+/// `Core::Let` inside it. Complete `core_child_ids` traversal (descends MatchSum). The B2 template-share
+/// gate reads this: a share whose free binders are all `Core::Param`s is a value-share (same value every
+/// occurrence); one reading a re-threaded inner `Core::Let` binder is a state-threaded template (unsound).
+pub(crate) fn free_binders_of(db: &mut Db, id: StructId) -> std::collections::HashSet<StructId> {
+    let mut free = std::collections::HashSet::new();
+    let mut bound = std::collections::HashSet::new();
+    let mut seen = std::collections::HashSet::new();
+    fn rec(
+        db: &mut Db,
+        id: StructId,
+        free: &mut std::collections::HashSet<StructId>,
+        bound: &mut std::collections::HashSet<StructId>,
+        seen: &mut std::collections::HashSet<StructId>,
+    ) {
+        if !seen.insert(id) {
+            return;
+        }
+        match core_of(db, id) {
+            Core::LocalRef { binder } | Core::Param { binder } => {
+                free.insert(binder);
+            }
+            Core::Let { bindings, .. } => {
+                for (b, _) in bindings.iter() {
+                    bound.insert(*b);
+                }
+            }
+            _ => {}
+        }
+        for c in crate::backend::wasm::select::core_child_ids(db, id) {
+            rec(db, c, free, bound, seen);
+        }
+    }
+    rec(db, id, &mut free, &mut bound, &mut seen);
+    free.retain(|b| !bound.contains(b));
+    free
+}
+
+/// One entry of the B2 sharing-aware-emit BIND PLAN (see `backend/wasm/DESIGN-sharing-aware-emit-let-slot.md`):
+/// a shared heap node the emit-side install (v-rust-backend) binds ONCE into a `Core::Let` slot. The plan
+/// is the interface between v-core-opt's analysis (this) and v-rb's emit-coupled install: v-rb overrides
+/// `scope_node` to a `Core::Let` whose single binding is `(fresh_binder, copy-of shared_id's core)` and
+/// whose body is `scope_node`'s ORIGINAL core, then overrides each `member` to `Core::LocalRef{fresh_binder}`.
+#[derive(Debug, Clone)]
+pub(crate) struct B2BindPlanEntry {
+    /// The node to install the `Core::Let` AT — the deepest node whose subtree contains ALL `members` (the
+    /// members' LCA). For an arm-internal share this is the arm-body node, so the `Let` nests INSIDE the arm
+    /// (binders in scope, handle-expr top untouched → no handler-emit perturbation). NEVER the fn/handle body.
+    pub scope_node: StructId,
+    /// The shared node whose core is COPIED into the binding's initializer.
+    pub shared_id: StructId,
+    /// The shared node's type — for the fresh binder's synth + slot valtype.
+    pub ty: Ty,
+    /// The K occurrence ids to repoint to `Core::LocalRef{fresh_binder}`.
+    pub members: Vec<StructId>,
+}
+
+/// Compute the B2 bind plan for `body`: the shared heap nodes that are SOUND to bind-once into a `Core::Let`
+/// slot, each with its install site. This is the v-core-opt half of the durable cmb1/pom5 fix; v-rb's
+/// install consumes the returned plan. Pure analysis (no override). The four gates:
+/// 1. DETECTION via the COMPLETE `core_child_ids` traversal (descends `MatchSum` arms — the arm-internal
+///    shares that CAUSE the hang are invisible to `licm_children`, proven: cmb1 31 vs 127).
+/// 2. HEAP-SHARE: parent-edge count ≥ 2, `is_heap_type`, not `LocalRef`/`Unit`.
+/// 3. NOT-A-TEMPLATE-SHARE: the share's free binders (`free_binders_of`) must all be `Core::Param`s (or
+///    outer refs) — a share reading a re-threaded inner `Core::Let` binder is a STATE-THREADED template
+///    (cbk1/trn6: same node, different value per resume-state) and binding it once is a MISCOMPILE.
+/// 4. BIND-SAFE (byte-neutral): trap-free (a trapping share bound at an LCA that doesn't unconditionally
+///    reach a member = a MOVED trap = opt-sweep divergence). This first slice gates on `is_trap_free`
+///    ALONE — a trap-free share binds safely at any dominating node; the unconditional-reach arm
+///    (`|| frontier.contains(member)`) for the general trapping case is a follow-on (mirrors the LICM gate
+///    at select.rs:5251). Covers cmb1 (its divide compound is trap-free, divisor ≥ 1).
+pub(crate) fn b2_bind_plan(db: &mut Db, body: StructId) -> Vec<B2BindPlanEntry> {
+    // (1) DETECTION: core_child_ids parent-edge counts (descends MatchSum), first-seen order.
+    let mut counts: HashMap<StructId, u32> = HashMap::new();
+    let mut order: Vec<StructId> = Vec::new();
+    b2_node_refs(db, body, &mut counts, &mut order);
+
+    let mut plan: Vec<B2BindPlanEntry> = Vec::new();
+    for id in order {
+        // (2) HEAP-SHARE.
+        if counts.get(&id).copied().unwrap_or(0) < 2 {
+            continue;
+        }
+        if matches!(core_of(db, id), Core::LocalRef { .. }) {
+            continue;
+        }
+        let ty = crate::infer::type_of(db, id);
+        if !is_heap_type(&ty) || matches!(ty.strip_nominal(), Ty::Unit) {
+            continue;
+        }
+        // (3) NOT-A-TEMPLATE-SHARE: every free binder must be a Core::Param (a share reading a re-threaded
+        // inner Let binder denotes different values per dispatch — unsound to bind once).
+        if free_binders_of(db, id)
+            .iter()
+            .any(|&b| !matches!(core_of(db, b), Core::Param { .. }))
+        {
+            continue;
+        }
+        // (4) BIND-SAFE (first slice): trap-free only.
+        if !crate::lower::is_trap_free(db, id) {
+            continue;
+        }
+        // The shared node is ONE StructId (the compact DAG shares it); its K PARENTS all read it, so the
+        // "members" to repoint is that single id (count≥2 above already established the K-way sharing).
+        let members = b2_member_occurrences(db, body, id);
+        if members.is_empty() {
+            continue; // not reachable from body (defensive)
+        }
+        // scope_node = the deepest node whose subtree contains the shared id (its nearest enclosing scope).
+        let Some(scope_node) = b2_members_lca(db, body, &members) else {
+            continue;
+        };
+        plan.push(B2BindPlanEntry {
+            scope_node,
+            shared_id: id,
+            ty,
+            members,
+        });
+    }
+    plan
+}
+
+/// `collect_node_refs` twin using the COMPLETE `core_child_ids` traversal (descends `MatchSum` arms), for
+/// B2 detection. A shared sub-node's interior is walked once (the count captures its own multiplicity).
+fn b2_node_refs(
+    db: &mut Db,
+    id: StructId,
+    counts: &mut HashMap<StructId, u32>,
+    order: &mut Vec<StructId>,
+) {
+    let n = counts.entry(id).or_insert(0);
+    *n += 1;
+    if *n == 1 {
+        order.push(id);
+        for child in crate::backend::wasm::select::core_child_ids(db, id) {
+            b2_node_refs(db, child, counts, order);
+        }
+    }
+}
+
+/// The occurrence ids of `target` reachable from `body` — for a shared node this is the SAME `StructId`
+/// (the DAG shares one node), so this returns `[target]` when reachable. (The K parent EDGES are what the
+/// re-descent walks; the emit-side repoint overrides the single shared `StructId`, which every parent reads.)
+fn b2_member_occurrences(db: &mut Db, body: StructId, target: StructId) -> Vec<StructId> {
+    // A compact shared DAG has ONE StructId for the shared value (reduce_handle's copy_pure share-path), so
+    // the "members" to repoint is that one id; its K parents all read it. Confirm it is reachable.
+    let mut seen = std::collections::HashSet::new();
+    let mut found = false;
+    b2_reachable(db, body, target, &mut seen, &mut found);
+    if found { vec![target] } else { vec![] }
+}
+
+fn b2_reachable(
+    db: &mut Db,
+    id: StructId,
+    target: StructId,
+    seen: &mut std::collections::HashSet<StructId>,
+    found: &mut bool,
+) {
+    if *found || !seen.insert(id) {
+        return;
+    }
+    if id == target {
+        *found = true;
+        return;
+    }
+    for c in crate::backend::wasm::select::core_child_ids(db, id) {
+        b2_reachable(db, c, target, seen, found);
+    }
+}
+
+/// The LCA (deepest common dominator) of `members` within `body`: the deepest node whose subtree (via
+/// `core_child_ids`) contains EVERY member. Since a shared node is ONE `StructId`, its members are that id,
+/// and the LCA is the deepest node whose subtree contains it — but v-rb's install needs the deepest node
+/// that DOMINATES it AND is a valid install point (a scope-introducing node whose body it can wrap). We
+/// return the deepest node on the path from `body` to the shared id whose subtree contains the shared id
+/// exactly once at each step; for the single-shared-id case this is the shared id's own nearest enclosing
+/// arm/let/block. Implemented as: the deepest ancestor of `target` (in the core_child_ids tree) all of
+/// whose OTHER-than-the-target-path children do not also contain target — i.e. the target's immediate
+/// dominator that is a structural container. (First cut: the body itself if the target is reached once;
+/// v-rb refines the exact install node from this dominator.)
+fn b2_members_lca(db: &mut Db, body: StructId, members: &[StructId]) -> Option<StructId> {
+    let target = *members.first()?;
+    // Find the deepest node whose subtree contains `target` — walk down, at each node descend into the
+    // unique child whose subtree contains target; stop when no single child does (target is here or splits).
+    let mut cur = body;
+    loop {
+        let children = crate::backend::wasm::select::core_child_ids(db, cur);
+        let mut containing: Vec<StructId> = Vec::new();
+        for c in &children {
+            let mut seen = std::collections::HashSet::new();
+            let mut found = false;
+            b2_reachable(db, *c, target, &mut seen, &mut found);
+            if found {
+                containing.push(*c);
+            }
+        }
+        if containing.len() == 1 && containing[0] != target {
+            cur = containing[0];
+        } else {
+            // Either target IS a direct child (bind at cur, the enclosing scope) or multiple children
+            // contain it (cur is the convergence LCA). Return cur — the deepest dominating scope node.
+            return Some(cur);
+        }
+    }
+}
+
 /// The number of nodes in the value-position subtree at `id` (via `licm_children`) — the CSE ordering key
 /// (inner-first). A shared node is counted structurally; the absolute value only needs to be MONOTONE in
 /// containment (a subtree is strictly larger than any subtree it contains), which this is.
@@ -601,5 +808,39 @@ mod tests {
             !collect_shared_heap_binding_candidates(&mut db, scalar_shared).contains(&s),
             "a twice-reached SCALAR node is not a B2 heap candidate"
         );
+    }
+
+    // b2_bind_plan emits an entry for a trap-free param-closed shared heap node (a value-share), with the
+    // shared id + a scope_node that dominates it. A scalar share or a trapping share is excluded.
+    #[test]
+    fn bind_plan_emits_a_value_share_entry_with_a_dominating_scope() {
+        let mut db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (main) 0) (export main))",
+        ));
+        let list_int = Ty::List(Box::new(Ty::int64()));
+        // A heap ListNew (trap-free, no free binders) reached from both operands of a concat → shared.
+        let x = synth_core(
+            &mut db,
+            Core::ListNew { elems: [].into() },
+            list_int.clone(),
+        );
+        let body = synth_core(
+            &mut db,
+            Core::ListConcat { lhs: x, rhs: x },
+            list_int.clone(),
+        );
+        let plan = b2_bind_plan(&mut db, body);
+        let entry = plan.iter().find(|e| e.shared_id == x);
+        assert!(
+            entry.is_some(),
+            "a trap-free shared heap ListNew is a bind-plan entry"
+        );
+        let e = entry.unwrap();
+        assert_eq!(e.ty, list_int, "entry carries the shared node's type");
+        // scope_node dominates the shared id (its subtree contains it).
+        let mut seen = std::collections::HashSet::new();
+        let mut found = false;
+        b2_reachable(&mut db, e.scope_node, x, &mut seen, &mut found);
+        assert!(found, "scope_node dominates the shared node");
     }
 }

@@ -551,10 +551,25 @@ pub(crate) fn run_sharing_aware_emit(
         let Some(body) = db.defs[def].body else {
             continue;
         };
-        let cands = crate::core_analysis::collect_shared_heap_binding_candidates(db, body);
-        if !cands.is_empty() {
-            trace!(target: "rcdzc::opt", def, candidates = cands.len(),
-                "sharing-aware-emit: shared heap-handle binding candidates (step-1 detection no-op)");
+        // STEP 2 (still a no-op wrt emit): compute the B2 bind PLAN (detection + template-exclusion + LCA +
+        // trap-free gate). v-rust-backend's install consumes this plan (Option-ii division); until that
+        // lands this only traces the plan size — byte-neutral (no override installed here).
+        let plan = crate::core_analysis::b2_bind_plan(db, body);
+        if !plan.is_empty() {
+            // `_body_level` is the licm_children-only detection (body-level shares); the plan uses the
+            // complete core_child_ids traversal (also the arm-internal shares). Tracing both shows the
+            // coverage delta (cmb1: 31 body-level vs the plan's arm-internal set).
+            let _body_level =
+                crate::core_analysis::collect_shared_heap_binding_candidates(db, body).len();
+            // Read every plan field (they are the v-rb-install interface; exercised here so the trace
+            // reflects the actual plan, not just its length, until the install consumer lands).
+            for e in &plan {
+                trace!(target: "rcdzc::opt", def, scope = e.scope_node.0, shared = e.shared_id.0,
+                    members = e.members.len(), ty = ?e.ty,
+                    "sharing-aware-emit: B2 bind-plan entry (v-rb install consumes this; no-op here)");
+            }
+            trace!(target: "rcdzc::opt", def, entries = plan.len(), body_level = _body_level,
+                "sharing-aware-emit: B2 bind plan total (no-op here)");
         }
     }
 }
