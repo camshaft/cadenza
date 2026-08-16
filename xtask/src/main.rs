@@ -5751,6 +5751,19 @@ fn check_baseline(paths: &Paths, verdicts: &[(String, Verdict)], target: GateTar
 /// Passes `crates` through as explicit args; empty lets the app auto-detect touched crates. Inherits
 /// stdio so the agent sees the verdict live. Exits with the app's status. If the app isn't present yet
 /// (its MR not landed), nix errors cleanly and we surface a hint rather than a cryptic failure.
+/// A nix REMOTE-BUILDER transient in the fast-gate output — NOT a real test/clippy/fmt failure of the
+/// touched crate. The remote builder (or its daemon) can hiccup mid-build and report a build-result the
+/// caller can't interpret; verifying directly (`cargo clippy/test -p <crate>`) is then clean and the
+/// change lands fine (v-core-opt saw this 3 ticks running on cadenza-ast's clippy check). Detecting it
+/// lets dev-gate AUTO-RETRY once (a transient clears; a real failure re-fails) + label it so an agent
+/// isn't misled into thinking its code is broken. Pure so the match rule is unit-testable.
+fn fast_gate_output_is_remote_transient(output: &str) -> bool {
+    // The observed signature; keep the match narrow so a real error mentioning "remote" doesn't trip it.
+    output.contains("Invalid BuildResult status from remote")
+        || output.contains("error: build failure on remote")
+        || output.contains("cannot build on remote")
+}
+
 fn dev_gate(paths: &Paths, crates: &[String]) {
     let nix_bin = fleet::nix_binary();
     // `nix run .#fast-gate [-- crate1 crate2]` — the `--` separates flake-app args from nix's own.
@@ -5764,42 +5777,88 @@ fn dev_gate(paths: &Paths, crates: &[String]) {
          the full gate + pr-sync stay authoritative)…",
         args.join(" ")
     );
-    let status = std::process::Command::new(&nix_bin)
-        .args(&args)
-        // The scripted-shell gotcha: a non-login shell needs NIX_REMOTE=daemon to reach the multi-user
-        // daemon (else a local build that needs the caller in `nixbld` fails). Set it if unset.
-        .env(
-            "NIX_REMOTE",
-            std::env::var("NIX_REMOTE").unwrap_or_else(|_| "daemon".into()),
-        )
-        .current_dir(&paths.repo)
-        .status();
-    match status {
-        Ok(s) if s.success() => {} // app printed its own green + not-merge-safe caveat.
-        Ok(s) => {
-            // A non-zero exit is one of THREE things (the app streamed which above): (a) real
-            // test/clippy/fmt failures → fix them; (b) `.#fast-gate` unrecognized → the app MR isn't on
-            // trunk yet; (c) your touched crate is NOT a gated-root crate (a workspace-EXCLUDED crate
-            // like `cdz-kernel`/`cdz-wasm` — its own workspace + a separate nix native check, so fast-gate
-            // skips it). Case (c) is NOT a failure of your code — dev-gate just can't cover that crate; run
-            // its tests directly from the crate dir (`cargo test` in the crate) for your inner loop.
-            eprintln!(
-                "dev-gate: fast-gate exit {} — see its output above. If it's TEST/clippy/fmt failures, fix \
-                 them. If it says a crate is 'not a gated root crate' (a workspace-excluded crate like \
-                 cdz-kernel), dev-gate can't cover it — iterate with `cargo test`/`cargo clippy` from that \
-                 crate's own dir instead. If `.#fast-gate` is unrecognized, its app MR isn't on trunk yet — \
-                 fall back to `cargo xtask gate --files <yours> --target wasm`.",
-                s.code().unwrap_or(-1)
-            );
-            std::process::exit(s.code().unwrap_or(1));
+    // Up to 2 attempts: a nix remote-builder transient (see `fast_gate_output_is_remote_transient`) is a
+    // false-RED, not a code failure, so retry it ONCE (a transient clears; a real failure re-fails and is
+    // surfaced). To detect the signature we CAPTURE combined output — then echo it verbatim so the agent
+    // still sees the full streamed gate result (just after each attempt completes rather than live).
+    const MAX_ATTEMPTS: u32 = 2;
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+        let out = std::process::Command::new(&nix_bin)
+            .args(&args)
+            // The scripted-shell gotcha: a non-login shell needs NIX_REMOTE=daemon to reach the multi-user
+            // daemon (else a local build that needs the caller in `nixbld` fails). Set it if unset.
+            .env(
+                "NIX_REMOTE",
+                std::env::var("NIX_REMOTE").unwrap_or_else(|_| "daemon".into()),
+            )
+            .current_dir(&paths.repo)
+            .output();
+        let out = match out {
+            Ok(o) => o,
+            Err(e) => {
+                eprintln!(
+                    "dev-gate: could not invoke `{nix_bin} run .#fast-gate` ({e}). Ensure nix is installed; \
+                     until v-nix's fast-gate app lands, use `cargo xtask gate --files <yours> --target wasm`."
+                );
+                std::process::exit(1);
+            }
+        };
+        // Echo the captured output verbatim (the app's own green/red + caveats), so the agent sees it.
+        use std::io::Write;
+        let _ = std::io::stdout().write_all(&out.stdout);
+        let _ = std::io::stderr().write_all(&out.stderr);
+        if out.status.success() {
+            return; // app printed its own green + not-merge-safe caveat.
         }
-        Err(e) => {
+        // Non-zero. If it's the nix remote-builder transient AND we have a retry left, retry — it's a
+        // false-RED, not the touched crate's code failing.
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        if fast_gate_output_is_remote_transient(&combined) && attempt < MAX_ATTEMPTS {
             eprintln!(
-                "dev-gate: could not invoke `{nix_bin} run .#fast-gate` ({e}). Ensure nix is installed; \
-                 until v-nix's fast-gate app lands, use `cargo xtask gate --files <yours> --target wasm`."
+                "dev-gate: fast-gate hit a nix REMOTE-BUILDER transient ('Invalid BuildResult status from \
+                 remote' / remote build failure) — this is NOT your code failing. Retrying once (attempt \
+                 {}/{})…",
+                attempt + 1,
+                MAX_ATTEMPTS
             );
-            std::process::exit(1);
+            continue;
         }
+        if fast_gate_output_is_remote_transient(&combined) {
+            // Retries exhausted and it's STILL the transient — don't mislabel it as a code failure. Exit
+            // non-zero (the gate did NOT verify), but tell the agent it's a remote hiccup, not their bug.
+            eprintln!(
+                "dev-gate: fast-gate STILL hit the nix remote-builder transient after {MAX_ATTEMPTS} \
+                 attempts — this is a nix REMOTE-BUILD hiccup, NOT your code. Verify directly with `cargo \
+                 clippy/test -p <your-crate>` (that bypasses the remote builder) and re-run dev-gate later; \
+                 the remote transient usually clears. (Flagged to v-nix as a recurring remote-builder issue.)"
+            );
+            std::process::exit(s_code(&out.status));
+        }
+        // A genuine non-zero: real failure / unrecognized app / excluded crate (the app streamed which).
+        eprintln!(
+            "dev-gate: fast-gate exit {} — see its output above. If it's TEST/clippy/fmt failures, fix \
+             them. If it says a crate is 'not a gated root crate' (a workspace-excluded crate like \
+             cdz-kernel), dev-gate can't cover it — iterate with `cargo test`/`cargo clippy` from that \
+             crate's own dir instead. If `.#fast-gate` is unrecognized, its app MR isn't on trunk yet — \
+             fall back to `cargo xtask gate --files <yours> --target wasm`.",
+            s_code(&out.status)
+        );
+        std::process::exit(s_code(&out.status));
+    }
+}
+
+/// A child's exit code to propagate on a FAILURE path — guaranteed non-zero (a signal-killed child with
+/// no code, or a spurious 0, maps to 1) so dev-gate never exits 0 after surfacing a failure.
+fn s_code(status: &std::process::ExitStatus) -> i32 {
+    match status.code() {
+        Some(c) if c != 0 => c,
+        _ => 1,
     }
 }
 
@@ -9096,6 +9155,29 @@ mod trap_grading_tests {
             None,
             "an unknown verdict tag → hands off"
         );
+    }
+
+    #[test]
+    fn fast_gate_remote_transient_matches_the_nix_signature_not_ordinary_clippy_output() {
+        // The v-core-opt signature → transient (retry-worthy), not a code failure.
+        assert!(fast_gate_output_is_remote_transient(
+            "cargo-clippy-rcdzc-clippy> Checking cadenza-ast v0.0.0\nerror: Invalid BuildResult status from remote"
+        ));
+        assert!(fast_gate_output_is_remote_transient(
+            "error: build failure on remote 'ssh://builder'"
+        ));
+        // A REAL clippy/test failure must NOT be misread as a transient (else we'd retry a genuine bug).
+        assert!(!fast_gate_output_is_remote_transient(
+            "error[E0308]: mismatched types\n  --> src/lib.rs:10:5"
+        ));
+        assert!(!fast_gate_output_is_remote_transient(
+            "error: this lint expectation is unfulfilled"
+        ));
+        // The word "remote" alone (e.g. in a doc comment / a git-remote mention) must not trip it.
+        assert!(!fast_gate_output_is_remote_transient(
+            "note: the remote branch is ahead; a clippy warning about remote_data follows"
+        ));
+        assert!(!fast_gate_output_is_remote_transient(""));
     }
 
     #[test]
