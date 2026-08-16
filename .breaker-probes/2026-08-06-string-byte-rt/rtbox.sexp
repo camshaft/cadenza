@@ -1,0 +1,1 @@
+(do (type (Box a) (Full a) (Nil Unit)) (def (main (: k Int64)) (Set.len (Set.of (list (Full 1) (Full k) (Nil unit))))) (export main))

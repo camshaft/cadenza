@@ -13280,3 +13280,44 @@
       (export main)))
   (call main (: 10 Int64)) (output (: 445044228 Int64))
   (call main (: 0 Int64)) (output (: 333811222 Int64)))
+
+;; ── xhsGrow growing-state foreign-perform pass-pin (correct-folded by 95f5ab8d2) + xhsRec recursive-driver decline-witness (safe exclusion, rq3 boundary) (breaker batch 298) ──
+(case "xhsGrow GROWING-STATE shared-let with a mid-arm foreign perform — the step arm derives its binder from the list LENGTH, performs the outer note with it, answers the binder packed with the note's low digit, and threads the list GROWN by the binder; the growing next-state excludes the collapse so the distribute path must keep the two binder copies coherent"
+  (input  (do
+            (effect O (op note (-> Int64 Int64)))
+            (effect I (op step (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle O (: 0 Int64)
+                ((note (v) acc
+                  (resume (+ acc v) (+ acc v))))
+                (handle I (list)
+                  ((step (x) col
+                    (let ((c2 (+ (List.len col) (+ x (% n 3)))))
+                      (let ((nv (O.note c2)))
+                        (resume (+ (* c2 10) (% nv 10)) (List.push col c2))))))
+                  (let ((a (I.step (: 3 Int64))))
+                    (let ((b (I.step (: 5 Int64))))
+                      (let ((r (O.note (: 100 Int64))))
+                        (+ (* 1000 (+ (* 1000 a) b)) r)))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 44071111 Int64))
+  (call   main (: 0 Int64)) (output (: 33069109 Int64)))
+
+(case "xhsRec recursive-DRIVER + shared-let + mid-arm foreign perform — drive recursively performs I.tick each iter; the tick arm let-binds c2, performs O.note(c2) mid-arm, resumes packing nv, threads c2. Collapse excluded by in_recursive_specialize -> distribute; does the shared binder diverge like xhsGrow?"
+  (input
+    (do
+      (effect O (op note (-> Int64 Int64)))
+      (effect I (op tick (-> Int64 Int64)))
+      (def (drive (: k Int64))
+        (if (<= k 0) 0 (+ (I.tick k) (drive (- k 1)))))
+      (def (main (: n Int64))
+        (handle O (: 0 Int64)
+          ((note (v) acc (resume (+ acc v) (+ acc v))))
+          (handle I (: 0 Int64)
+            ((tick (x) col
+              (let ((c2 (+ col (+ x (% n 3)))))
+                (let ((nv (O.note c2)))
+                  (resume (+ (* c2 10) (% nv 10)) c2)))))
+            (drive n))))
+      (export main)))
+  (call main (: 3 Int64)) (output (: 0 Int64)))

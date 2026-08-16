@@ -23,3 +23,13 @@ cross-handler). No wrong answers possible; safe floor intact.
 Both banked as todo-witnesses for the "later increment" cross-function fold.
 Deferred-class audit COMPLETE: 1 miscompile (xhs1, filed + being fixed),
 1 correct (gws1, staged pass-pin), 1 clean decline (rds1, todo-witness).
+
+## xhsRec (tick 1652) — v-effects' collapse-exclusion audit closes
+Their probe of the last exclusion axis (in_recursive_specialize): xhsRec
+(recursive drive performs I.tick per iter; tick arm = shared-let c2 +
+mid-arm O.note(c2)). BOTH variant and inline-control DECLINE cleanly (rq3:
+thread_returning_tuple can't infer the recursive result type) — a SAFE
+exclusion, unlike growing-state which hid the xhsGrow miscompile. Verified
+todo x1 here. Banked as decline-witness for the recursive-driver boundary
+(no baseline row); joins rds1 in this dir. Audit verdict: of the 3 collapse
+exclusions, only growing-state hid a wrong answer — now correct-folded.
