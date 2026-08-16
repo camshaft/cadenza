@@ -521,6 +521,44 @@ pub(crate) mod cse {
     }
 }
 
+/// The B2 SHARING-AWARE-EMIT pass — the POST-LAYOUT Core-IR seam (greenlit by v-rust-backend as the
+/// layout-owner: every `Layout` field is keyed by def-index/module-level with ZERO per-Core-node state, so
+/// an intra-body `Core::Let`-bind + `LocalRef`-repoint — no new defs, no signature change — is provably
+/// layout-stable; emit computes per-body slots itself so the new node ids need no layout entry). Runs AFTER
+/// `layout::compute` (so the Core column is lowered WITH its lift/handler context — the timing the pre-layout
+/// `GlobalCsePass` hook cannot give a heap/compound body) and BEFORE `backend::emit`. Binds a shared
+/// heap-handle node (produced by `reduce_handle`'s resume-value substitution — the emit-phase re-descent
+/// source, cmb1/pom5) ONCE into a `Core::Let` slot with a DISTINCT fresh binder + repoints its K parent
+/// edges to `Core::LocalRef`, so the emit-analysis walks see it once (the durable fix for the
+/// `mark_binder_dups` O(K^depth) re-descent). See `backend/wasm/DESIGN-sharing-aware-emit-let-slot.md`.
+///
+/// STEP 1 (this slice): DETECTION-ONLY, a verified BYTE-NEUTRAL no-op — it enumerates the O2 emit bodies and
+/// counts shared heap-handle candidates (`core_analysis::collect_shared_heap_binding_candidates`) but
+/// installs NO binding, exactly as the empty `PassManager` seam landed as a no-op. The distinct-fresh-binder
+/// Let-install + dominating-frontier/enclosing-scope placement + unconditional-reach byte-neutrality gate
+/// are the following slices (each opt-sweep 0-divergence gated); v-rust-backend's landed disjointness
+/// harness co-verifies the emit dup/drop when the binding slice lands.
+pub(crate) fn run_sharing_aware_emit(
+    db: &mut crate::db::Db,
+    layout: &crate::layout::Layout,
+    opt_level: OptLevel,
+) {
+    // Gated to O2+ (a whole-body sharing analysis), tier-consistent with `GlobalCsePass`.
+    if opt_level < OptLevel::O2 {
+        return;
+    }
+    for &def in &layout.order {
+        let Some(body) = db.defs[def].body else {
+            continue;
+        };
+        let cands = crate::core_analysis::collect_shared_heap_binding_candidates(db, body);
+        if !cands.is_empty() {
+            trace!(target: "rcdzc::opt", def, candidates = cands.len(),
+                "sharing-aware-emit: shared heap-handle binding candidates (step-1 detection no-op)");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

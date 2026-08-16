@@ -199,6 +199,45 @@ pub(crate) fn collect_node_refs(
     }
 }
 
+/// The B2 sharing-aware-emit DETECTION primitive (see `backend/wasm/DESIGN-sharing-aware-emit-let-slot.md`):
+/// the distinct shared HEAP-HANDLE nodes in the value-position DAG rooted at `body` — a `StructId` reached
+/// by ≥2 parent edges (`collect_node_refs` count ≥ 2) whose lowered type is a heap handle (`is_heap_type`).
+/// These are the nodes a shared-DAG-walk re-descends exponentially and that a `Core::Let` slot binding
+/// would compute ONCE (the durable fix for the cmb1/pom5 emit-phase re-descent). The shared `StructId` is
+/// produced by `reduce_handle`'s resume-value substitution (the `copy_pure`/`resolved_subtrees` share-path,
+/// effects.rs), NOT by a source `let` (which already names its value — one parent edge). Returned in
+/// first-seen (`collect_node_refs` `order`) order for determinism.
+///
+/// SEAM-AGNOSTIC + PURE: only READS the (already-lowered) Core column via `core_of`/`type_of`; installs no
+/// override and rewrites nothing, so it is safe to call from the post-layout B2 seam (it runs over a column
+/// the layout phase has lowered, so no first-demand poison). Excludes `Core::LocalRef` (already a slot
+/// read) and non-heap / `Unit` nodes (a scalar needs no dup/drop; a `Unit` handle owns no reference). The
+/// distinct-fresh-binder slot construction + placement (dominating-frontier + unconditional-reach) are the
+/// CALLER's job — this is detection only.
+pub(crate) fn collect_shared_heap_binding_candidates(db: &mut Db, body: StructId) -> Vec<StructId> {
+    let mut counts: HashMap<StructId, u32> = HashMap::new();
+    let mut order: Vec<StructId> = Vec::new();
+    collect_node_refs(db, body, &mut counts, &mut order);
+    let mut out: Vec<StructId> = Vec::new();
+    for id in order {
+        // Shared: reached by ≥2 parent edges (the re-descent source).
+        if counts.get(&id).copied().unwrap_or(0) < 2 {
+            continue;
+        }
+        // A LocalRef is already a slot read — binding it would be redundant / cyclic.
+        if matches!(core_of(db, id), Core::LocalRef { .. }) {
+            continue;
+        }
+        // Heap handle only: a scalar share is the scalar CSE's job (no dup/drop); a Unit owns no reference.
+        let ty = crate::infer::type_of(db, id);
+        if !is_heap_type(&ty) || matches!(ty.strip_nominal(), Ty::Unit) {
+            continue;
+        }
+        out.push(id);
+    }
+    out
+}
+
 /// The number of nodes in the value-position subtree at `id` (via `licm_children`) — the CSE ordering key
 /// (inner-first). A shared node is counted structurally; the absolute value only needs to be MONOTONE in
 /// containment (a subtree is strictly larger than any subtree it contains), which this is.
@@ -507,5 +546,60 @@ pub(crate) fn core_eq(db: &mut Db, a: StructId, b: StructId) -> bool {
             },
         ) => core_eq(db, cx, cy) && core_eq(db, tx, ty) && core_eq(db, ex, ey),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lower::synth_core;
+
+    // The B2 detection primitive reports a HEAP node reached by ≥2 parent edges — the multi-parent shared
+    // `StructId` `reduce_handle`'s resume-value substitution produces (the emit-phase re-descent source),
+    // which a `Core::Let` slot would compute once. Built directly with `synth_core` so the DAG shape is
+    // deterministic and independent of `reduce_handle`'s folding: `ListConcat{lhs: x, rhs: x}` over ONE
+    // heap `x` gives `x` two parent edges (`licm_children(ListConcat) = [lhs, rhs]`).
+    #[test]
+    fn detection_reports_a_two_parent_heap_node_not_a_scalar_or_unshared_one() {
+        let mut db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (main) 0) (export main))",
+        ));
+        let list_int = Ty::List(Box::new(Ty::int64()));
+        // ONE heap child node, reached from BOTH operands of a concat → 2 parent edges.
+        let x = synth_core(
+            &mut db,
+            Core::ListNew { elems: [].into() },
+            list_int.clone(),
+        );
+        let shared = synth_core(&mut db, Core::ListConcat { lhs: x, rhs: x }, list_int);
+        let cands = collect_shared_heap_binding_candidates(&mut db, shared);
+        assert!(
+            cands.contains(&x),
+            "the twice-reached heap ListNew node is a shared-heap binding candidate"
+        );
+        for &c in &cands {
+            assert!(is_heap_type(&crate::infer::type_of(&mut db, c)));
+            assert!(!matches!(core_of(&mut db, c), Core::LocalRef { .. }));
+        }
+
+        // A SCALAR twice-reached node is NOT a candidate (scalar CSE's job, not B2's — no dup/drop).
+        let s = synth_core(
+            &mut db,
+            Core::ConstInt(crate::ast::IntValue::from_i64(7)),
+            Ty::int64(),
+        );
+        let scalar_shared = synth_core(
+            &mut db,
+            Core::Arith {
+                op: crate::resolved::Prim::Add,
+                lhs: s,
+                rhs: s,
+            },
+            Ty::int64(),
+        );
+        assert!(
+            !collect_shared_heap_binding_candidates(&mut db, scalar_shared).contains(&s),
+            "a twice-reached SCALAR node is not a B2 heap candidate"
+        );
     }
 }

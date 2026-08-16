@@ -408,6 +408,13 @@ fn compile_with_opt_inner(
         }
     };
 
+    // B2 SHARING-AWARE-EMIT (post-layout Core-IR seam) — runs AFTER layout (so the Core column is lowered
+    // WITH its lift/handler context) and BEFORE emit, binding a shared heap-handle node once into a
+    // `Core::Let` slot so the emit-analysis walks stop re-descending it (the durable cmb1/pom5 fix).
+    // Layout is provably stable across this intra-body rewrite (v-rb, layout owner: zero per-node state).
+    // STEP 1: detection-only, a verified byte-neutral no-op (opt-sweep 0-divergence).
+    crate::opt::run_sharing_aware_emit(&mut db, &layout, opt_level);
+
     // Collect every reached fault across the reachable definitions, module-wide (report ALL, not just
     // the first — `compiler-pipeline.md` §Phases Recover From Errors). The check does not stop at the
     // first fault; it recovers and gathers the whole independent set in one pass:
