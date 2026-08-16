@@ -4772,6 +4772,7 @@ pass	bitwise XOR with zero is the operand (identity)
 pass	bkf1 EXPONENTIAL BACKOFF with a seed-shaped cap — fail accrues the current delay into the total then doubles it clamped at the cap, ok resets the delay to one answering the accumulated wait, and the higher cap lets one seed keep doubling where the other saturates two steps earlier
 pass	bms1 a BITMASK SET in one Int64 — set ORs a shifted bit, clear ANDs with the XOR-complement answering whether the bit was live, popcount peels the mask; the clear of an absent high bit is a no-op zero
 pass	bmv1 BOYER-MOORE majority vote — the (leader,votes) state deposes on exhausted votes, the challenger seed flips the winner
+pass	bnfE 2-tuple FIFO control — (front, back) only, no counter
 pass	bor1 a TWO-LIMB borrow decrement — subtracting from the low limb borrows from the high one when it underflows, and a borrow with no high limb left SATURATES both to zero
 pass	both elements of a runtime-content fn-return tuple are projected directly and combined
 pass	both same-effect handlers STATEFUL — the outer's advance survives the inner's forwards
@@ -5292,6 +5293,7 @@ pass	fx4 float sign TRICHOTOMY of a draw — positive scales, negative negates, 
 pass	fx5 the float state SATURATES to infinity mid-thread — a squaring ladder crosses Float64.max, the arm's finite/inf verdict flips per dispatch
 pass	fx6 NaN born in the ARM — s2−s2 is 0.0 while finite and NaN once the thread saturates; canonical equality distinguishes them per dispatch
 pass	fx7 NEGATIVE ZERO through the state thread — canonical equality separates -0.0 from +0.0, and IEEE addition washes the sign out mid-thread
+pass	gbx1 a THREE-SPEED gearbox odometer — shift moves the gear clamped to the one-to-three range answering the landed gear, drive accrues time-times-the-gear's-speed into the odometer answering the total, and the seed's starting gear compounds through every drive so the odometers pull apart while the shift answers converge
 pass	gc1 a EUCLID-step arm — each dispatch advances (a,b) one gcd step, low digits of the descent spell the trace
 pass	gcd1 EUCLID with a logged trace — each remainder step performs, the accumulator sums the divisor chain, data-dependent step counts
 pass	gd1 PURE guards over a draw-bound scrutinee — three guard tiers select on the drawn value, the trailing probe pins one advance
@@ -6857,6 +6859,7 @@ pass	when two abortive performs sit on one spine the FIRST (leftmost) abort wins
 pass	widening a runtime narrow-width unsigned integer to Int64 zero-extends (total, emits)
 pass	widening a runtime signed narrow integer to Int64 sign-extends (total, emits)
 pass	without- and with-REACHED records with runtime leaves equal the directly-built record
+pass	wlkC single-wall control — reflect only at the floor, ceiling unguarded
 pass	wp2 a CHECKED-SHIFT computed perform arg feeding the two-lookup-match arm — shl scratch width does not alias the Option handle
 pass	wp3 a THREE-param op with two computed args through the two-lookup-match arm — every arg slot and the handle slot stay disjoint
 pass	wrap-narrowed values fill BOTH segments of a dispatching frame — the wrapped tag selects the arm

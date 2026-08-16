@@ -12501,3 +12501,98 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 180141120091050101 Int64))
   (call   main (: 0 Int64)) (output (: 80041020101100101 Int64)))
+
+;; ── FIFO id-range queue, gearbox odometer, single-wall reflecting walk (breaker batch 290) ───
+(case "bnfE 2-tuple FIFO control — (front, back) only, no counter"
+  (input  (do
+            (effect Q
+              (op join (-> Int64))
+              (op serve (-> Int64)))
+            (def (main (: n Int64))
+              (handle Q (tuple (: 1 Int64) (+ (% n 4) 3))
+                ((join () st
+                  (match st
+                    ((tuple front back)
+                      (resume (- (+ back 1) front) (tuple front (+ back 1))))))
+                 (serve () st
+                  (match st
+                    ((tuple front back)
+                      (if (< front back)
+                          (resume front (tuple (+ front 1) back))
+                          (resume -1 st))))))
+                (let ((a (Q.serve)))
+                  (let ((b (Q.join)))
+                    (let ((c (Q.serve)))
+                      (let ((d (Q.serve)))
+                        (let ((e (Q.join)))
+                          (let ((f (Q.serve)))
+                            (let ((g (Q.serve)))
+                              (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 1040203030405 Int64))
+  (call   main (: 0 Int64)) (output (: 1020203010399 Int64)))
+
+(case "gbx1 a THREE-SPEED gearbox odometer — shift moves the gear clamped to the one-to-three range answering the landed gear, drive accrues time-times-the-gear's-speed into the odometer answering the total, and the seed's starting gear compounds through every drive so the odometers pull apart while the shift answers converge"
+  (input  (do
+            (effect G
+              (op shift (-> Int64 Int64))
+              (op drive (-> Int64 Int64)))
+            (def (speed (: g Int64))
+              (if (= g 1) 2 (if (= g 2) 5 9)))
+            (def (main (: n Int64))
+              (handle G (tuple (+ (% n 3) 1) (: 0 Int64))
+                ((shift (d) st
+                  (match st
+                    ((tuple gear odo)
+                      (if (< (+ gear d) 1)
+                          (resume 1 (tuple 1 odo))
+                          (if (< 3 (+ gear d))
+                              (resume 3 (tuple 3 odo))
+                              (resume (+ gear d) (tuple (+ gear d) odo)))))))
+                 (drive (t) st
+                  (match st
+                    ((tuple gear odo)
+                      (resume (+ odo (* t (speed gear))) (tuple gear (+ odo (* t (speed gear)))))))))
+                (let ((a (G.drive 2)))
+                  (let ((b (G.shift 1)))
+                    (let ((c (G.drive 3)))
+                      (let ((d (G.shift 1)))
+                        (let ((e (G.drive 1)))
+                          (let ((f (G.shift -2)))
+                            (let ((g (G.drive 4)))
+                              (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 10033703460154 Int64))
+  (call   main (: 0 Int64)) (output (: 4021903280136 Int64)))
+
+(case "wlkC single-wall control — reflect only at the floor, ceiling unguarded"
+  (input  (do
+            (effect W
+              (op step (-> Int64))
+              (op whr (-> Int64)))
+            (def (main (: n Int64))
+              (handle W (tuple (+ (% n 4) 1) (: 7 Int64))
+                ((step () st
+                  (match st
+                    ((tuple pos seed)
+                      (match (% (+ (* seed 5) 3) 32)
+                        (s2
+                          (if (= (% (>> s2 1) 2) 1)
+                              (resume (+ pos 1) (tuple (+ pos 1) s2))
+                              (if (< (- pos 1) 0)
+                                  (resume (+ pos 1) (tuple (+ pos 1) s2))
+                                  (resume (- pos 1) (tuple (- pos 1) s2)))))))))
+                 (whr () st
+                  (match st
+                    ((tuple pos seed) (resume (+ (* pos 10) (% seed 10)) st)))))
+                (let ((a (W.step)))
+                  (let ((b (W.step)))
+                    (let ((c (W.step)))
+                      (let ((d (W.whr)))
+                        (let ((e (W.step)))
+                          (let ((f (W.step)))
+                            (let ((g (W.whr)))
+                              (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 4030228030446 Int64))
+  (call   main (: 0 Int64)) (output (: 2010008010226 Int64)))
