@@ -3490,6 +3490,23 @@
             (export main)))
   (call   main) (output (: 508 UInt32)))
 
+(case "a recursive-call result ascribed to a wider int width is coerced when used as an arithmetic operand"
+  (doc    "The OPERAND-position sibling of the tail-call narrow-int case (fuzzer 38592 / note 38738). `v3`
+           returns Int64 (= rust i64); its result is ascribed to `UInt64` (= u64) and then used as the LEFT
+           operand of `+`. The ascription `(: (v3 2) UInt64)` is absorbed as type-only (no cast node), so the
+           rust backend emitted the callee's i64 value directly into the u64 `+` — `(v3(..)).checked_add(3u64)`
+           = `i64 .checked_add u64` → rustc E0308 mismatched types (the wasm backend, with a uniform i64
+           machine width, ran it fine = a backend DIVERGENCE below the shared front-end). The fix coerces an
+           arithmetic operand whose ACTUAL emitted int type (a `Core::Call`'s callee-result type) differs from
+           the op's int type with an `as` cast — `((v3(..)) as u64).checked_add(3u64)`. `v3 2` recurses
+           2->1->0 returning 5 at the base; `5 + 3 = 8`, ascribed UInt64 -> 8. Pins the
+           ascription-over-a-recursive-call-as-a-binary-op-operand class emits well-typed rust (+ valid wasm).")
+  (input  (do
+            (def (v3 (: v4 Int64)) (if (<= v4 0) 5 (v3 (- v4 1))))
+            (def (main) (+ (: (v3 2) UInt64) 3))
+            (export main)))
+  (call   main) (output (: 8 UInt64)))
+
 (case "a mutually tail-recursive even/odd over a large runtime count iterates in constant stack"
   (doc    "The cross-function shape: `even` and `odd` each end in a tail call to the OTHER. At a runtime
            depth of 100000 the alternating tail calls run in constant stack and yield 1 (100000 is

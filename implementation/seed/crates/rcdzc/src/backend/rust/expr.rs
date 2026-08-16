@@ -1737,7 +1737,21 @@ fn emit_grounded(
     // (if … 100 0) 100) Int8)` n=3 → 100+100=200 overflows Int8 → panics, matching wasm's trap). Only cast
     // when the operand's OWN solved integer type DIFFERS from `it` (same width → emit unchanged, no
     // redundant `as`); a non-integer operand emits unchanged.
-    if let Ty::Int(op_it) = type_of(db, id)
+    // The operand's ACTUAL EMITTED integer type. For a `Core::Call` it is the CALLEE's own result type,
+    // NOT `type_of(id)`: the call-site narrowing/widening ascription `(: (f x) T)` is absorbed as type-only
+    // (no Core cast node), so `type_of(id)` reports the ascribed op width and MASKS a real mismatch — the
+    // OPERAND-position twin of the `emit_body` E0308 fix (fz-38551 tail-call class / fz-38592: `(+ (: (rec)
+    // UInt64) 3)` emitted `(rec()).checked_add(3u64)` = i64 `.checked_add` u64 → E0308). A non-Call node
+    // emits at its own solved `type_of` (the `if`/`match` branch-width case this guard already handled).
+    let emitted_ty = if let Core::Call { callee, .. } = core_of(db, id) {
+        match db.defs[callee].body {
+            Some(cb) => type_of(db, cb),
+            None => type_of(db, id),
+        }
+    } else {
+        type_of(db, id)
+    };
+    if let Ty::Int(op_it) = emitted_ty
         && (op_it.ground_signed(), op_it.ground_width()) != (it.ground_signed(), it.ground_width())
         && let Some(target) = types::rust_type(&db.name_ctx(), &Ty::Int(it))
     {

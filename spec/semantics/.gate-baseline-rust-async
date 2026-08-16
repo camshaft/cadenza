@@ -3071,6 +3071,7 @@ pass	a recursive walk over the built-in Ast recurses into its List payload via a
 pass	a recursive walk threads THREE nested handlers' states at once
 pass	a recursive walk threads TWO effects at once — a fresh-index counter and a running total
 pass	a recursive walker applies two different capture closures per element
+pass	a recursive-call result ascribed to a wider int width is coerced when used as an arithmetic operand
 pass	a recursive-generic filter threading a predicate closure composes at two element types
 pass	a recursive-generic flatten over a nested generic iterator composes at two element types
 pass	a recursive-generic flatten over a nested generic iterator monomorphizes and runs at one element type
@@ -6643,6 +6644,7 @@ pass	tp3 a NESTED tuple state ((a b) c) — the arm rebuilds the inner Fibonacci
 pass	tp4 readers and a SPIN writer share one tuple state — sum flows into slot a while old a shifts to b
 pass	tpc1 TWO-PHASE COMMIT across two handlers — the coordinator prepares both sides, commits both only when both prepared, otherwise aborts both restoring the balances; the pass and fail paths both verified
 pass	tpl1 a DELIMITER-JOIN rope builder — the first fragment lands bare, every later one is prefixed with the separator, the empty-vs-seeded start decides whether the FIRST dispatch takes the bare branch, and multibyte fragments keep the byte-length answers honest
+pass	tpwJ a cross-scope shared-let in a resumptive arm — a let-bound NESTED-IF (outer cond reads a state field, inner reads the param) feeding 3+ consumers across 3+ dispatches with a state-reading second op, the thread-path no-local-slot face closed by 8276ad1a6
 pass	tq1 a Q-shadow inside a TWO-effect region — P draws thread THROUGH the shadow while Q is locally rebound
 pass	tq2 the Q-shadow's SEED mixes P and Q draws — both outer threads advance before the shadow opens, and resume after
 pass	tq3 a Q-shadow wraps only the MIDDLE argument of a pure call — its neighbors dispatch to the outer P and Q frames
@@ -6950,4 +6952,3 @@ todo	round-trip: a higher-order closure whose inner closure CAPTURES and is appl
 todo	round-trip: a higher-order closure whose inner closure takes an UNANNOTATED compound param
 todo	round-trip: an UNANNOTATED inner closure with a List param via the context arrow
 todo	two adapter records with different state types drive a take-while fold in one program
-pass	tpwJ a cross-scope shared-let in a resumptive arm — a let-bound NESTED-IF (outer cond reads a state field, inner reads the param) feeding 3+ consumers across 3+ dispatches with a state-reading second op, the thread-path no-local-slot face closed by 8276ad1a6
