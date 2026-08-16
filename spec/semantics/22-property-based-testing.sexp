@@ -1296,6 +1296,24 @@
   (call   main (: 7 Int64)) (output (: 7 Int64))
   (call   main (: 3 Int64)) (output (: 3 Int64)))
 
+(case "a Value.encode/Value.decode round-trip preserves a BigInt (arbitrary precision, multi-limb)"
+  (doc    "Extends the round-trips to a `BigInt` — the R2 value-form KIND_INT leaf, framed `(: <int> BigInt)`.
+           `big = 9999999999 * n` EXCEEDS i64 for the first call (≈1e20 > 9.2e18), so it is a MULTI-LIMB
+           bignum — exercising the arbitrary-precision path (rust encodes cdz_num::Big via its decimal string
+           into a num_bigint Leaf::Int; decode rebuilds Big from the leaf's LE u32 limbs, NOT an i64 clamp).
+           `Value.decode (Value.encode big) == Some big`; the match confirms `= b big` (BigInt equality) and
+           returns `n`. `main 9999999999` -> 9999999999 (big ≈1e20), `main 7` -> 7 (distinct); an i64-truncated
+           or garbled bignum would fail the equality. Byte-identical to the wasm value-encode. wasm+rust+rust-async.")
+  (input  (do
+            (def (main (: n Int64))
+              (let (((: big BigInt) (* (BigInt.of 9999999999) (BigInt.of n))))
+                (match (: (Value.decode (Value.encode big)) (Option BigInt))
+                  ((Some b) (if (= b big) n (- 0 1)))
+                  ((None u) (- 0 2)))))
+            (export main)))
+  (call   main (: 9999999999 Int64)) (output (: 9999999999 Int64))
+  (call   main (: 7 Int64)) (output (: 7 Int64)))
+
 ; --- The round-trip under LET-BINDER grounding: decode's target fixed by the binder annotation, not inline. ---
 
 (case "a Value.decode round-trip grounds its target from a LET-BINDER annotation, not only an inline ascription"

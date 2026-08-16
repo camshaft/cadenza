@@ -476,6 +476,13 @@ fn emit_value_form(db: &mut Db, ty: &Ty, val_expr: &str) -> Result<String, Rejec
                 "__b.atom_leaf(cadenza_ast::ast::Leaf::Float(match {ctor} {{ Some(__d) => __d, None => panic!(\"a non-canonical float (NaN/inf) has no canonical value form\") }}))"
             ))
         }
+        // A BIGINT is a `cdz_num::Big` → a KIND_INT `Leaf::Int` (byte-identical to a fixed Int's int-body:
+        // the runtime BigInt leaf IS a KIND_INT leaf), framed `(: <int> BigInt)`. Convert the runtime bignum
+        // to `num_bigint::BigInt` (what `cadenza_ast::Leaf::Int` holds) via its exact decimal string —
+        // `parse_bytes(.., 10)` never fails on `to_decimal_string`'s output.
+        Ty::BigInt => Ok(format!(
+            "__b.atom_leaf(cadenza_ast::ast::Leaf::Int {{ value: num_bigint::BigInt::parse_bytes(({val_expr}).to_decimal_string().as_bytes(), 10).unwrap(), radix: cadenza_ast::ast::Radix::Dec }})"
+        )),
         Ty::Tuple(elems) => {
             let mut body = String::from("{ let __h = __b.name(\"tuple\");");
             let mut vars = vec!["__h".to_string()];
@@ -688,6 +695,15 @@ fn emit_value_reconstruct(
                  _ => None }}, _ => None }})"
             ))
         }
+        // A BIGINT leaf inverse: read the `Leaf::Int` num_bigint value and rebuild `cdz_num::Big` from its
+        // little-endian base-2^32 limbs (`to_u32_digits` → the exact `mag` layout, trailing-zero-stripped;
+        // sign maps to `Big.neg`). Exact, no i64 clamp.
+        Ty::BigInt => Ok(format!(
+            "(match {arenas}.get({node}) {{ cadenza_ast::ast::Struct::Atom(__l) => \
+             match {arenas}.leaf(*__l) {{ cadenza_ast::ast::Leaf::Int {{ value, .. }} => \
+             {{ let (__sg, __mag) = value.to_u32_digits(); Some(cdz_num::Big {{ neg: __sg == num_bigint::Sign::Minus, mag: __mag }}) }}, \
+             _ => None }}, _ => None }})"
+        )),
         Ty::Tuple(elems) => {
             let n = elems.len();
             let mut body = format!(
