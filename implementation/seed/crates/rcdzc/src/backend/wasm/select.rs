@@ -1160,6 +1160,26 @@ fn collect_consuming_payload_sites_expr(
 /// with no dup, or leaves a borrowed scrutinee to its owner). This is what makes the deep shell drop in
 /// BOTH the tail and non-tail `MatchSum` emits safe for a consumed-child arm.
 fn collect_shell_reclaim_child_dups(db: &mut Db, id: StructId, dup_sites: &mut HashSet<StructId>) {
+    // SHARING-AWARE: a shared Core `StructId` reached under N parents would otherwise be re-descended N
+    // times (the exponential DAG re-walk — v-core-opt profile: this walk was ~55% of one self-host body's
+    // 291M node-visits). Each `MatchSum`'s contribution here is a function of the NODE ALONE (its own
+    // scrutinee + root) and lands in a SET of site node-ids, so visiting a node once vs. N times yields the
+    // IDENTICAL `dup_sites` set — a node-id visited-set is idempotent and BYTE-NEUTRAL. (Contrast the
+    // multiplicity-sensitive `mark_binder_dups`, whose per-occurrence retain placement a naive visited-set
+    // WOULD corrupt into a dropped dup → UAF; that one stays Perceus-blocked.)
+    let mut seen = HashSet::new();
+    collect_shell_reclaim_child_dups_seen(db, id, dup_sites, &mut seen);
+}
+
+fn collect_shell_reclaim_child_dups_seen(
+    db: &mut Db,
+    id: StructId,
+    dup_sites: &mut HashSet<StructId>,
+    seen: &mut HashSet<StructId>,
+) {
+    if !seen.insert(id) {
+        return;
+    }
     if let Core::MatchSum { scrutinee, root } = core_of(db, id) {
         let scrut_ty = type_of(db, scrutinee);
         let owned_compound_boxed = is_heap_type(&scrut_ty)
@@ -1174,7 +1194,7 @@ fn collect_shell_reclaim_child_dups(db: &mut Db, id: StructId, dup_sites: &mut H
         }
     }
     for child in core_child_ids(db, id) {
-        collect_shell_reclaim_child_dups(db, child, dup_sites);
+        collect_shell_reclaim_child_dups_seen(db, child, dup_sites, seen);
     }
 }
 
@@ -1202,6 +1222,22 @@ fn collect_shell_reclaim_child_dups(db: &mut Db, id: StructId, dup_sites: &mut H
 /// `collect_shell_reclaim_child_dups`'s structure; run alongside it so the emit's child-`dup` + the `dup`
 /// IMPORT decision (`collect_used_ops`) read the SAME set.
 fn collect_row_op_field_dups(db: &mut Db, id: StructId, dup_sites: &mut HashSet<StructId>) {
+    // SHARING-AWARE, same rationale as `collect_shell_reclaim_child_dups`: a self-keyed materialize `Let`'s
+    // contribution is node-intrinsic (its own bindings/body/fields) and lands in a SET of field node-ids, so
+    // a node-id visited-set collapses the shared-DAG re-descent while keeping `dup_sites` byte-identical.
+    let mut seen = HashSet::new();
+    collect_row_op_field_dups_seen(db, id, dup_sites, &mut seen);
+}
+
+fn collect_row_op_field_dups_seen(
+    db: &mut Db,
+    id: StructId,
+    dup_sites: &mut HashSet<StructId>,
+    seen: &mut HashSet<StructId>,
+) {
+    if !seen.insert(id) {
+        return;
+    }
     if let Core::Let { bindings, body } = core_of(db, id)
         // A self-keyed single binding `(k, k)` — the materialize-once row-op operand signature.
         && let [(bk, bv)] = &bindings[..]
@@ -1235,7 +1271,7 @@ fn collect_row_op_field_dups(db: &mut Db, id: StructId, dup_sites: &mut HashSet<
         }
     }
     for child in core_child_ids(db, id) {
-        collect_row_op_field_dups(db, child, dup_sites);
+        collect_row_op_field_dups_seen(db, child, dup_sites, seen);
     }
 }
 
