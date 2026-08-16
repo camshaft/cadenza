@@ -5524,6 +5524,7 @@ pass	matching on string literals
 pass	md1 a MODULAR ring state — the thread walks a size-7 ring with stride 3, entry point reduced mod 7 at the seed
 pass	md2 the arm DRAINS a Map entry per dispatch — Map.remove keyed by the op arg, a re-take of the same key routes to the miss path
 pass	md3 the drained value RE-FILES under a shifted key — the third take HITS the re-filed entry, the final take finds it moved on
+pass	mdi1 a PITCH-CLASS walker over MIDI notes — transpose shifts the held note answering its class mod twelve, octave answers the note divided by twelve, two fifths then a double-octave drop then a fourth and a tone walk the circle, and the seeds' classes rotate through DIFFERENT residues while the octave rows differ by the same offset
 pass	me1 a MIXED-endian frame crosses the dispatch boundary as an op ARGUMENT — the arm decodes big and little fields independently
 pass	me2 the arm RE-ENCODES its two decoded fields with SWAPPED endianness and the body decodes the swap
 pass	mec1 sorted enumeration AFTER remove-churn — five keyed inserts (one seed-colliding overwrite), two removes, the surviving key walk pins order and count
@@ -5585,6 +5586,7 @@ pass	ml1 a Map whose VALUES are tuples — a draw-keyed insert of a drawn pair, 
 pass	mm1 a MIN/MAX tracking arm — three feeds tighten the (lo,hi) tuple state, readers project the final spread
 pass	mml1 a MULTIMAP handler state — (Map Int64 (List Int64)) buckets grow per-key across dispatches; put answers the new bucket length and total sums a bucket later
 pass	mmx1 a LAZY-INIT extrema tracker — Option (Tuple min max) state starts None, the first feed initializes both bounds to the value, later feeds widen, range reads answer max-min with the uninitialized read answering zero
+pass	mnc1 a GREEDY change-making counter — pay walks the denomination ladder accumulating quotients by repeated divide-and-remainder answering the coin count, the seed decides whether a SEVEN-coin exists in the ladder, and amounts touching the seven diverge (two versus eight coins for eight cents) while seven-free amounts agree
 pass	mns1 a MIN-TRACKING stack state — (stack, min) pushes thread the heap and the scalar together, mid-run and final min reads
 pass	mo1 a TWO-op effect fully shadowed — the inner handler re-interprets BOTH ops with different arms
 pass	mo2 THREE-deep same-effect shadowing — each depth's draws thread its own state, interleaved before/inside/after
@@ -6298,6 +6300,7 @@ pass	take-while composed after a map threads both transformers' closures
 pass	take-while excludes the failing element and everything after it (content, not just count)
 pass	take-while where every element satisfies the predicate keeps the whole run
 pass	take-while where the first element fails the predicate returns the empty run
+pass	tax1 PROGRESSIVE tax brackets with a seed-shaped edge — assess splits the income into three bands via chained match binders over clamped compounds (ten twenty and thirty percent truncating), accumulating into the audit total, and the WIDER bracket taxes every income LESS while the sub-bracket income taxes to zero on both
 pass	tb1 a def RETURNS a tuple of two draws — the caller destructures the multi-value result of a performing helper
 pass	textually-identical performs are DISTINCT state-advancing reads, not a common subexpression
 pass	the ARM ENCODES its scalar op argument into framed Bytes and resumes them — body decodes

@@ -12751,3 +12751,89 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 403050403020089 Int64))
   (call   main (: 0 Int64)) (output (: 201030200890201 Int64)))
+
+;; ── Greedy change-making, progressive tax brackets, pitch-class walker (breaker batch 293) ──
+(case "mnc1 a GREEDY change-making counter — pay walks the denomination ladder accumulating quotients by repeated divide-and-remainder answering the coin count, the seed decides whether a SEVEN-coin exists in the ladder, and amounts touching the seven diverge (two versus eight coins for eight cents) while seven-free amounts agree"
+  (input  (do
+            (effect C
+              (op pay (-> Int64 Int64))
+              (op drawer (-> Int64)))
+            (def (coins-for (: n Int64) (: a Int64))
+              (match (/ a 25)
+                (q25
+                  (match (- a (* q25 25))
+                    (r25
+                      (match (/ r25 10)
+                        (q10
+                          (match (- r25 (* q10 10))
+                            (r10
+                              (if (= n 10)
+                                  (+ (+ q25 q10) (+ (/ r10 7) (- r10 (* (/ r10 7) 7))))
+                                  (+ (+ q25 q10) r10)))))))))))
+            (def (main (: n Int64))
+              (handle C (: 0 Int64)
+                ((pay (a) total
+                  (match (coins-for n a)
+                    (c (resume c (+ total c)))))
+                 (drawer () total (resume total total)))
+                (let ((a (C.pay 14)))
+                  (let ((b (C.pay 8)))
+                    (let ((c (C.pay 21)))
+                      (let ((d (C.pay 9)))
+                        (let ((e (C.pay 14)))
+                          (let ((f (C.drawer)))
+                            (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 50203030518 Int64))
+  (call   main (: 0 Int64)) (output (: 50803090530 Int64)))
+
+(case "tax1 PROGRESSIVE tax brackets with a seed-shaped edge — assess splits the income into three bands via chained match binders over clamped compounds (ten twenty and thirty percent truncating), accumulating into the audit total, and the WIDER bracket taxes every income LESS while the sub-bracket income taxes to zero on both"
+  (input  (do
+            (effect T
+              (op assess (-> Int64 Int64))
+              (op audit (-> Int64)))
+            (def (bandtax (: b Int64) (: inc Int64))
+              (match (if (< inc b) inc b)
+                (lo
+                  (match (if (< b inc) (if (< (* 2 b) (- inc b)) (* 2 b) (- inc b)) 0)
+                    (mid
+                      (match (if (< (* 3 b) inc) (- inc (* 3 b)) 0)
+                        (hi
+                          (+ (/ lo 10) (+ (/ (* mid 2) 10) (/ (* hi 3) 10))))))))))
+            (def (main (: n Int64))
+              (handle T (: 0 Int64)
+                ((assess (inc) total
+                  (match (bandtax (* (+ (% n 4) 2) 10) inc)
+                    (tax (resume tax (+ total tax)))))
+                 (audit () total (resume total total)))
+                (let ((a (T.assess 30)))
+                  (let ((b (T.assess 75)))
+                    (let ((c (T.assess 150)))
+                      (let ((d (T.assess 9)))
+                        (let ((e (T.audit)))
+                          (+ (* 1000 (+ (* 1000 (+ (* 1000 (+ (* 1000 a) b)) c)) d)) e))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 3011029000043 Int64))
+  (call   main (: 0 Int64)) (output (: 4014037000055 Int64)))
+
+(case "mdi1 a PITCH-CLASS walker over MIDI notes — transpose shifts the held note answering its class mod twelve, octave answers the note divided by twelve, two fifths then a double-octave drop then a fourth and a tone walk the circle, and the seeds' classes rotate through DIFFERENT residues while the octave rows differ by the same offset"
+  (input  (do
+            (effect M
+              (op transpose (-> Int64 Int64))
+              (op octave (-> Int64)))
+            (def (main (: n Int64))
+              (handle M (+ 60 n)
+                ((transpose (k) note
+                  (resume (% (+ note k) 12) (+ note k)))
+                 (octave () note (resume (/ note 12) note)))
+                (let ((a (M.transpose 7)))
+                  (let ((b (M.transpose 7)))
+                    (let ((c (M.octave)))
+                      (let ((d (M.transpose -24)))
+                        (let ((e (M.octave)))
+                          (let ((f (M.transpose 5)))
+                            (let ((g (M.transpose 2)))
+                              (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 5000700050507 Int64))
+  (call   main (: 0 Int64)) (output (: 7020602040709 Int64)))
