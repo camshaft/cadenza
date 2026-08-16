@@ -9442,29 +9442,27 @@ mod tests {
         assert_eq!(got, reencoded, "decode∘encode is not the identity on the framed tuple");
         op_drop(back);
 
-        // (3) exact golden bytes — the colon-framed typed document. Leaves in canon pre-order
-        // first-encounter: ':' , 'tuple', 5, 105, 'Tuple', 'Int64'. The '(: value type)' frame is the
-        // outer form (head ':'), value = (tuple 5 105), type = (Tuple Int64 Int64).
+        // (3) exact golden bytes — the FULL colon-framed typed document (leaf pool + struct spine).
+        // Leaves in canon pre-order first-encounter: ':' , 'tuple', 5, 105, 'Tuple', 'Int64'; the
+        // '(: value type)' frame is the outer form (head ':'), value = (tuple 5 105), type = (Tuple Int64
+        // Int64). Asserting the WHOLE document (not just a prefix) makes this a symmetric full-byte
+        // wasm==rust guard against the same golden the cadenza-ast mirror asserts (reviewer refinement).
         let expect: &[u8] = &[
             0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, // cdzast\x00\x01
             0x06, // 6 leaves
             0x0a, 0x01, 0x3a, // NAME ':'
             0x0a, 0x05, 0x74, 0x75, 0x70, 0x6c, 0x65, // NAME 'tuple'
-            0x00, 0x01, 0x05, // INT 5 (pos-dec, siglen 1, magnitude [5])
-            0x00, 0x01, 0x69, // INT 105 (pos-dec, siglen 1, magnitude [105])
+            0x00, 0x01, 0x05, // INT 5
+            0x00, 0x01, 0x69, // INT 105
             0x0a, 0x05, 0x54, 0x75, 0x70, 0x6c, 0x65, // NAME 'Tuple'
             0x0a, 0x05, 0x49, 0x6e, 0x74, 0x36, 0x34, // NAME 'Int64'
+            // struct spine (post-order structs; TAG_ATOM=0/TAG_LIST=1 + child refs):
+            0x0a, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x01, 0x03, 0x01, 0x02, 0x03, 0x00,
+            0x04, 0x00, 0x05, 0x00, 0x05, 0x01, 0x03, 0x05, 0x06, 0x07, 0x01, 0x03, 0x00, 0x04, 0x08,
+            0x09,
         ];
-        // Prefix through the leaf pool is the load-bearing cross-backend contract (the struct spine
-        // follows deterministically from canon). Assert the full document.
-        assert_eq!(
-            &got[..expect.len()],
-            expect,
-            "framed int-tuple leaf pool must be the colon-framed byte string"
-        );
-        // And the document is strictly longer than the bare form would be (the frame is present): a bare
-        // (tuple 5 105) has NO ':' / 'Tuple' / 'Int64' leaves, so its leaf count byte would be 3 not 6.
-        assert_eq!(got[8], 0x06, "leaf count must be 6 (framed), not 3 (bare) — the divergence guard");
+        assert_eq!(got, expect, "framed int-tuple must be the full colon-framed golden document");
+        assert_eq!(got[8], 0x06, "leaf count 6 (framed) not 3 (bare) — the divergence guard");
 
         op_drop(pair);
         assert_eq!(live_nodes(), 0, "no leak");
@@ -9568,13 +9566,15 @@ mod tests {
             0x0a, 0x01, 0x62, // NAME 'b'
             0x00, 0x01, 0x69, // INT 105
             0x0a, 0x05, 0x49, 0x6e, 0x74, 0x36, 0x34, // NAME 'Int64' (shared across both fields)
+            // struct spine (full document — reviewer full-byte refinement):
+            0x14, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04, 0x01, 0x03, 0x02, 0x03,
+            0x04, 0x00, 0x02, 0x00, 0x05, 0x00, 0x06, 0x01, 0x03, 0x06, 0x07, 0x08, 0x01, 0x03, 0x01,
+            0x05, 0x09, 0x00, 0x01, 0x00, 0x03, 0x00, 0x07, 0x01, 0x02, 0x0c, 0x0d, 0x00, 0x05, 0x00,
+            0x07, 0x01, 0x02, 0x0f, 0x10, 0x01, 0x03, 0x0b, 0x0e, 0x11, 0x01, 0x03, 0x00, 0x0a, 0x12,
+            0x13,
         ];
-        assert_eq!(
-            &got[..expect.len()],
-            expect,
-            "framed int-record leaf pool must be the colon-framed byte string"
-        );
-        assert_eq!(got[8], 0x08, "leaf count must be 8 (framed record), not the bare count");
+        assert_eq!(got, expect, "framed int-record must be the full colon-framed golden document");
+        assert_eq!(got[8], 0x08, "leaf count 8 (framed record), not the bare count");
 
         op_drop(rec);
         assert_eq!(live_nodes(), 0, "no leak");
@@ -9651,7 +9651,7 @@ mod tests {
             "decode∘encode ≠ id on Some"
         );
         op_drop(back);
-        // Leaf pool: ':' , 'Some', 5, 'Option', 'Int64' (5 leaves) — the parametric Option type node.
+        // FULL document: ':' , 'Some', 5, 'Option', 'Int64' (5 leaves) + spine — the parametric Option node.
         let expect_some: &[u8] = &[
             0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, // cdzast\x00\x01
             0x05, // 5 leaves
@@ -9660,8 +9660,11 @@ mod tests {
             0x00, 0x01, 0x05, // INT 5
             0x0a, 0x06, 0x4f, 0x70, 0x74, 0x69, 0x6f, 0x6e, // 'Option'
             0x0a, 0x05, 0x49, 0x6e, 0x74, 0x36, 0x34, // 'Int64'
+            // struct spine:
+            0x08, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x01, 0x02, 0x01, 0x02, 0x00, 0x03, 0x00, 0x04,
+            0x01, 0x02, 0x04, 0x05, 0x01, 0x03, 0x00, 0x03, 0x06, 0x07,
         ];
-        assert_eq!(&got_some[..expect_some.len()], expect_some, "Some leaf pool");
+        assert_eq!(got_some, expect_some, "Some must be the full colon-framed golden document");
         assert_eq!(got_some[8], 0x05, "Some leaf count = 5 (framed generic sum)");
         op_drop(some);
 
@@ -9680,7 +9683,7 @@ mod tests {
             "decode∘encode ≠ id on None"
         );
         op_drop(back2);
-        // Leaf pool: ':' , 'None', 'unit', 'Option', 'Int64' (5 leaves).
+        // FULL document: ':' , 'None', 'unit', 'Option', 'Int64' (5 leaves) + spine.
         let expect_none: &[u8] = &[
             0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, // cdzast\x00\x01
             0x05, // 5 leaves
@@ -9689,8 +9692,11 @@ mod tests {
             0x0a, 0x04, 0x75, 0x6e, 0x69, 0x74, // 'unit'
             0x0a, 0x06, 0x4f, 0x70, 0x74, 0x69, 0x6f, 0x6e, // 'Option'
             0x0a, 0x05, 0x49, 0x6e, 0x74, 0x36, 0x34, // 'Int64'
+            // struct spine:
+            0x08, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x01, 0x02, 0x01, 0x02, 0x00, 0x03, 0x00, 0x04,
+            0x01, 0x02, 0x04, 0x05, 0x01, 0x03, 0x00, 0x03, 0x06, 0x07,
         ];
-        assert_eq!(&got_none[..expect_none.len()], expect_none, "None leaf pool");
+        assert_eq!(got_none, expect_none, "None must be the full colon-framed golden document");
         assert_eq!(got_none[8], 0x05, "None leaf count = 5 (framed generic sum)");
         op_drop(none);
 
@@ -9757,8 +9763,8 @@ mod tests {
         );
         op_drop(back);
 
-        // Leaf pool: ':' , 'Rect', 5, 6, 'Shape' (5 leaves) — a bare-name 'Shape' frame (Named), the two
-        // payloads flat. NO parametric type node (contrast the generic Option's (Option Int64)).
+        // FULL document: ':' , 'Rect', 5, 6, 'Shape' (5 leaves) + spine — a bare-name 'Shape' frame
+        // (Named), the two payloads flat. NO parametric type node (contrast the generic Option's node).
         let expect: &[u8] = &[
             0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, // cdzast\x00\x01
             0x05, // 5 leaves
@@ -9767,8 +9773,11 @@ mod tests {
             0x00, 0x01, 0x05, // INT 5
             0x00, 0x01, 0x06, // INT 6
             0x0a, 0x05, 0x53, 0x68, 0x61, 0x70, 0x65, // 'Shape'
+            // struct spine:
+            0x07, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x01, 0x03, 0x01, 0x02, 0x03, 0x00,
+            0x04, 0x01, 0x03, 0x00, 0x04, 0x05, 0x06,
         ];
-        assert_eq!(&got[..expect.len()], expect, "Rect (Named) leaf pool");
+        assert_eq!(got, expect, "Rect must be the full colon-framed golden document (Named root)");
         assert_eq!(got[8], 0x05, "Rect leaf count = 5 (Named mono sum, flat payloads)");
 
         op_drop(rect);
