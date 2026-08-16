@@ -10023,6 +10023,64 @@ mod tests {
         assert_eq!(live_nodes(), 0, "no leak");
     }
 
+    /// The framed BigInt descriptor `(: <value> BigInt)` — tag-15 `Framed` whose TypeNode is a bare-leaf
+    /// `BigInt`, inner → a `BigInt` (tag 17). A BigInt renders as a plain KIND_INT leaf.
+    fn framed_bigint_descriptor() -> Vec<u8> {
+        let mut d = Vec::new();
+        desc_leb(&mut d, 2); // table_len = 2
+        d.push(17); // [0] BigInt
+        // [1] Framed( TypeNode 'BigInt' (0 children), inner → 0 )
+        d.push(15);
+        desc_name(&mut d, "BigInt");
+        desc_leb(&mut d, 0);
+        desc_leb(&mut d, 0); // inner → 0
+        desc_leb(&mut d, 1); // root → 1
+        d
+    }
+
+    /// GOLDEN pin, BIGINT shape (v-rust-backend fixture, 2026-08-16; the last leaf gap, native codec
+    /// `df50352da`): `Value.encode` of `(BigInt.of 5)` at `BigInt` must render `(: 5 BigInt)` — the BigInt
+    /// is a plain KIND_INT leaf (byte-identical to a boxed int 5). Guarded three ways; the cadenza-ast
+    /// mirror asserts the same bytes. `#[cfg(test)]`.
+    #[test]
+    fn value_encode_of_a_framed_bigint_is_the_colon_framed_golden() {
+        reset();
+        let desc = framed_bigint_descriptor();
+        let n = op_bigint_of_i64(5);
+        let got = op_value_encode_form(n, &desc).expect("encode framed bigint");
+
+        let descriptor = decode_descriptor(&desc).expect("descriptor");
+        let mut b = DocBuilder::default();
+        let root = encode_value_recursive(&descriptor, &mut b, n, descriptor.root, 0)
+            .expect("recursive encode");
+        assert_eq!(got, b.finish(root), "iterative/recursive disagree on bigint");
+
+        let back = op_value_decode(&got, &desc);
+        assert_ne!(back, Handle::NULL, "bigint doc must decode");
+        assert_eq!(
+            got,
+            op_value_encode_form(back, &desc).expect("re-encode bigint"),
+            "decode∘encode ≠ id on bigint"
+        );
+        op_drop(back);
+
+        // FULL document: ':' , 5 (KIND_INT), 'BigInt' (3 leaves) + spine.
+        let expect: &[u8] = &[
+            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, // cdzast\x00\x01
+            0x03, // 3 leaves
+            0x0a, 0x01, 0x3a, // ':'
+            0x00, 0x01, 0x05, // INT 5 (a BigInt renders as a plain KIND_INT leaf)
+            0x0a, 0x06, 0x42, 0x69, 0x67, 0x49, 0x6e, 0x74, // 'BigInt'
+            // struct spine:
+            0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x01, 0x03, 0x00, 0x01, 0x02, 0x03,
+        ];
+        assert_eq!(got, expect, "framed bigint must be the full colon-framed golden document");
+        assert_eq!(got[8], 0x03, "bigint leaf count = 3");
+
+        op_drop(n);
+        assert_eq!(live_nodes(), 0, "no leak");
+    }
+
     #[test]
     fn value_encode_form_matches_the_codec_for_a_recursive_sum() {
         reset();
