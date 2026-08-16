@@ -4125,9 +4125,17 @@ fn lower_let(
         .iter()
         .filter(|(binder, _)| {
             let mut n = 0usize;
-            count_localref_reads(db, body, *binder, &mut n);
+            // A lowered core can SHARE sub-nodes (a kept binding referenced twice, or a node reachable via
+            // both the body and a later kept init), so a plain recursion re-descends the shared DAG as a
+            // tree — exponential on a wide share (pom5: a same-field cascade sharing a state-field subtree).
+            // The consumer is `n > 0` (presence, not multiplicity), so a visited set is SOUND: visiting a
+            // shared node once still finds any reachable `LocalRef` for the binder, giving the identical
+            // liveness verdict while making the walk linear and cycle-safe. Shared across the body and every
+            // kept init for THIS binder — a node already visited via one has the same fixed verdict.
+            let mut seen = std::collections::HashSet::new();
+            count_localref_reads(db, body, *binder, &mut n, &mut seen);
             for &(other, _) in kept.iter() {
-                count_localref_reads(db, other, *binder, &mut n);
+                count_localref_reads(db, other, *binder, &mut n, &mut seen);
             }
             n > 0 || subtree_reaches_host_call(db, *binder)
         })
@@ -4164,14 +4172,26 @@ fn lower_let(
 /// (an undercount would wrongly reclaim a LIVE binding = miscompile). Reads memoized `core_of` results, so
 /// it neither re-lowers nor perturbs `db.kept_bindings`/`captured_ref`. Used by `lower_let`'s post-fold
 /// dead-binding reclaim to detect a kept binding whose every use folded away.
-fn count_localref_reads(db: &mut Db, id: StructId, binder: StructId, n: &mut usize) {
+fn count_localref_reads(
+    db: &mut Db,
+    id: StructId,
+    binder: StructId,
+    n: &mut usize,
+    seen: &mut std::collections::HashSet<StructId>,
+) {
+    // A shared sub-node is walked once — its `LocalRef` contribution is fixed, and the consumer only tests
+    // `n > 0` (presence), so dedup preserves the liveness verdict while keeping the walk linear on a wide
+    // shared DAG (a naive re-descent is exponential — the pom5 lowering-phase hang).
+    if !seen.insert(id) {
+        return;
+    }
     if let Core::LocalRef { binder: b } = core_of(db, id)
         && b == binder
     {
         *n += 1;
     }
     for child in crate::backend::wasm::select::core_child_ids(db, id) {
-        count_localref_reads(db, child, binder, n);
+        count_localref_reads(db, child, binder, n, seen);
     }
 }
 
