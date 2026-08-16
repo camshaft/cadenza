@@ -2602,6 +2602,122 @@ fn reap_stranded_dead_letters(fleet: &Fleet, name: &str, now: u64) -> usize {
     reaped
 }
 
+/// Is a stale INFORMATIONAL message PROVABLY SPENT — safe for the watchdog to archive without dropping
+/// live coordination (concierge-confirmed design, 2026-08-16)? Pure so the safety rule is unit-testable.
+///
+/// `kind` + `subject` + `msg_ref` describe one informational message; `queued_refs` is the set of MR refs
+/// CURRENTLY in pr-sync's queue. Two spent classes:
+///   * INERT ACK (`merged`/`status`/`backlog`/`reply`) — carries no live directive, always safe.
+///   * a SPENT DROP-DIRECTIVE `note` — a `DROP-REF`/withdraw note whose `--ref` is NO LONGER queued. WHILE
+///     the ref is queued the note is LOAD-BEARING (`refs_to_drop` reads it to filter the queue = the
+///     double-land guard), so it must stay; ONCE the ref has left the queue the drop already took effect
+///     and the ref can't re-land, so the note is spent. This ref-left-queue gate is what makes the reap
+///     lossless rather than a double-land regression.
+///
+/// Everything else (a real coordination `note` that isn't a drop-directive) is NOT spent → left to keep
+/// escalating to the concierge, unchanged.
+fn informational_msg_is_spent(
+    kind: &str,
+    subject: &str,
+    msg_ref: &str,
+    queued_refs: &[String],
+) -> bool {
+    match kind {
+        // Inert acks never carry a directive pr-sync must act on.
+        "merged" | "status" | "backlog" | "reply" => true,
+        // A drop-directive note is spent ONLY once its ref has left the queue (drop took effect).
+        "note" if subject_is_drop_directive(subject) && !msg_ref.is_empty() => {
+            !queued_refs.iter().any(|q| refs_match_for_drop(msg_ref, q))
+        }
+        // Any other note (real coordination) is NOT spent — leave it for the escalation path.
+        _ => false,
+    }
+}
+
+/// The UNFILTERED set of MR refs currently in pr-sync's queue — every queued `-merge-request.json`'s
+/// `ref`, WITHOUT the `refs_to_drop` filtering `queued_merge_requests` applies. The reaper needs the raw
+/// queue to answer "is this drop-note's ref still queued?" (a drop note's own ref appears here until the
+/// drop actually removes the MR / it lands). Empty on an unreadable dir (→ reaper treats drop-notes as
+/// spent only when truly absent; a read hiccup errs toward KEEP since an empty set makes nothing match).
+fn queued_mr_refs_unfiltered(fleet: &Fleet) -> Vec<String> {
+    let dir = fleet.inbox("pr-sync");
+    let mut refs = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for p in rd.filter_map(|e| e.ok().map(|e| e.path())) {
+            let is_mr = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with("-merge-request.json"));
+            if !is_mr {
+                continue;
+            }
+            if let Some(r) = std::fs::read_to_string(&p)
+                .ok()
+                .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+                .and_then(|v| v.get("ref").and_then(|x| x.as_str()).map(str::to_string))
+                && !r.is_empty()
+            {
+                refs.push(r);
+            }
+        }
+    }
+    refs
+}
+
+/// LOSSLESS reap of an agent's PROVABLY-SPENT informational mail (concierge-confirmed 2026-08-16). The
+/// note-backlog signal's remediation for a never-idle agent (pr-sync is ~always mid-gate, so the
+/// idle-only `continue`-nudge never lands): the watchdog itself archives the spent informational
+/// messages — inert acks + drop-directive notes whose ref has left the queue (see
+/// `informational_msg_is_spent`) — logging each to `dead-letters.log` FIRST (recoverable), THEN moving it
+/// to `processed/`. A real coordination note is LEFT (keeps escalating). Independent of the agent's
+/// mid-tick state (no keystroke injection). Returns the count archived.
+fn reap_spent_informational(fleet: &Fleet, name: &str, now: u64) -> usize {
+    let dir = fleet.inbox(name);
+    let processed = dir.join("processed");
+    let queued_refs = queued_mr_refs_unfiltered(fleet);
+    let mut reaped = 0usize;
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return 0;
+    };
+    let mut names: Vec<String> = rd
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|f| message_kind_from_filename(f).is_some())
+        .collect();
+    sort_inbox_filenames(&mut names); // oldest-first, so the log records arrival order.
+    for fname in names {
+        let src = dir.join(&fname);
+        // Parse the message to classify it; an unparseable file is left alone (never reap what we can't
+        // read — it could be a live directive we failed to interpret).
+        let Some(m) = std::fs::read_to_string(&src)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Message>(&t).ok())
+        else {
+            continue;
+        };
+        if !informational_msg_is_spent(&m.kind, &m.subject, &m.r#ref, &queued_refs) {
+            continue;
+        }
+        // Durable record FIRST — if we can't log it, don't archive it (never lose an unrecorded item).
+        if !append_dead_letter_log(fleet, name, &src, &fname, now) {
+            eprintln!(
+                "  ! could not log spent informational '{fname}' for '{name}' — LEFT in inbox"
+            );
+            continue;
+        }
+        std::fs::create_dir_all(&processed).ok();
+        if std::fs::rename(&src, processed.join(&fname)).is_ok() {
+            reaped += 1;
+        } else {
+            eprintln!(
+                "  ! logged spent informational '{fname}' for '{name}' but failed to archive it"
+            );
+        }
+    }
+    reaped
+}
+
 /// Append one dead-letter to the append-only `.claude/fleet/dead-letters.log` before it is archived,
 /// so a reaped work item is recoverable for re-routing. One tab-separated line per message: reap-time,
 /// recipient (the stopped agent), filename, sender, kind, subject. Returns whether the append
@@ -3505,6 +3621,7 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
     let mut wedge_restarts = 0usize;
     let mut compact_nudges = 0usize;
     let mut note_backlogs = 0usize;
+    let mut spent_informational_reaped = 0usize;
     for a in &reg.agents {
         // Only ACTIVE agents with no stop-file are candidates — a stopped/removed agent SHOULD be idle.
         if a.status != "active" || fleet.stopfile(&a.name).exists() {
@@ -4129,6 +4246,33 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                  draining actionable mail but not notes (coordination may be silently dropped).",
                 a.name
             );
+            // REAP the PROVABLY-SPENT informational mail FIRST (concierge-confirmed 2026-08-16): inert acks
+            // + drop-directive notes whose ref has left pr-sync's queue (see `informational_msg_is_spent`).
+            // This is the remediation the idle-only nudge can't deliver to a never-idle agent (pr-sync is
+            // ~always mid-gate). Lossless (logged to dead-letters.log before archive), independent of the
+            // agent's mid-tick state. If it clears the whole backlog, the nudge + escalation below are
+            // skipped (nothing left). Skipped under --dry-run (a preview must not mutate the inbox).
+            let reaped_spent = if dry_run {
+                0
+            } else {
+                reap_spent_informational(fleet, &a.name, now)
+            };
+            if reaped_spent > 0 {
+                spent_informational_reaped += reaped_spent;
+                println!(
+                    "  ♻ reaped {reaped_spent} spent informational msg(s) from '{}' (inert acks + drop-notes whose ref left the queue) → processed/ (logged to dead-letters.log)",
+                    a.name
+                );
+            }
+            // Recompute the remaining informational depth after the reap — if it's now below the stale
+            // threshold, the reap DID the job and we don't nudge/escalate this sweep.
+            let remaining_depth = informational_inbox_depth(&fleet.inbox(&a.name));
+            let still_backlogged = informational_backlog_is_stale(
+                remaining_depth,
+                oldest_age,
+                INFORMATIONAL_BACKLOG_COUNT,
+                INFORMATIONAL_BACKLOG_AGE,
+            );
             // Rate-limit the concierge note like the saturation escalation (reuse the sat-notify marker
             // family via a distinct key), so a persistently note-ignoring agent generates one note per
             // grace window, not one every ~4-min sweep.
@@ -4139,21 +4283,22 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
             // would inject a keystroke into real work; a busy agent will drain on its own next tick). Same
             // rate-limit gate as the concierge escalation. Skipped in dry-run + for interactive roles a
             // human reads at their own cadence (concierge/design sit idle with mail by design).
-            if !dry_run
+            if still_backlogged
+                && !dry_run
                 && !notified_recently
                 && !role_is_terminal_interactive(&a.role)
                 && !window_is_working(&session, &a.name)
             {
                 if nudge_drain_stall(&session, &a.name) {
                     println!(
-                        "  ✉→ nudged '{}' to take a note-drain pass ({note_depth} undrained notes, oldest {mins}min)",
+                        "  ✉→ nudged '{}' to take a note-drain pass ({remaining_depth} undrained notes remain after reap, oldest {mins}min)",
                         a.name
                     );
                 } else {
                     eprintln!("  ! note-drain nudge send-keys failed for '{}'", a.name);
                 }
             }
-            if !dry_run && !notified_recently {
+            if still_backlogged && !dry_run && !notified_recently {
                 deliver(
                     fleet,
                     &Message {
@@ -4161,18 +4306,19 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                         to: "concierge".to_string(),
                         kind: "note".to_string(),
                         subject: format!(
-                            "note-backlog: '{}' has {note_depth} undrained notes (oldest {mins}min) — draining MRs but not notes",
+                            "note-backlog: '{}' has {remaining_depth} undrained coordination notes (oldest {mins}min) after auto-reap — draining MRs but not notes",
                             a.name
                         ),
                         body: format!(
-                            "'{}' is processing actionable mail but its INFORMATIONAL inbox (note/merged/\
-                             backlog/status/reply) has {note_depth} messages, oldest {mins}min old — it has \
-                             stopped note-draining. The actionable drain-stall watchdog can't see this (it \
-                             ignores informational mail by design), so coordination notes (incl pr-sync-bound \
-                             scheduling/freeze requests) can silently pile up + get dropped. The watchdog has \
-                             ALSO nudged '{}' to take a note-drain pass this sweep (unless it was mid-tick); \
-                             this note is the durable record + a prompt to hand-relay via tmux if the nudge \
-                             doesn't clear it. Rate-limited (one per ~30min).",
+                            "'{}' is processing actionable mail but its INFORMATIONAL inbox still has \
+                             {remaining_depth} message(s) AFTER the watchdog auto-reaped the provably-spent \
+                             ones (inert acks + drop-directive notes whose ref already left the queue). The \
+                             {remaining_depth} that remain are REAL coordination the reaper won't touch — a \
+                             note that is neither an inert ack nor a spent drop-directive (e.g. a genuine \
+                             heads-off/hand-off, or — the recurring root — an actionable request mis-sent as \
+                             a `note` instead of an `ask`/`assign`). The watchdog also nudged '{}' this sweep \
+                             (unless mid-tick); this note is the durable record + a prompt to hand-relay via \
+                             tmux if the nudge doesn't clear it. Rate-limited (one per ~30min).",
                             a.name, a.name
                         ),
                         seq: next_seq(),
@@ -4555,6 +4701,7 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                 wedge_restarts,
                 compact_nudges,
                 note_backlogs,
+                spent_informational_reaped,
                 leases_reaped,
                 stranded_agents,
                 dead_letters_reaped,
@@ -4628,6 +4775,12 @@ struct WatchdogCounts {
     /// selective-drain signal the actionable drain-stall misses by design; persistently >0 for the same
     /// agent means notes are being dropped, worth a nudge. Report-only.
     note_backlogs: usize,
+    /// PROVABLY-SPENT informational messages ARCHIVED this sweep by the note-backlog reaper (inert acks +
+    /// drop-directive notes whose ref left the queue — logged to dead-letters.log, then moved to the
+    /// agent's `processed/`). An action count like `reaped`; the remediation for a never-idle agent whose
+    /// idle-only note-drain nudge can't land. Persistently >0 means an agent keeps accumulating spent mail
+    /// (its own note-draining is chronically deferred), the reaper keeping it bounded.
+    spent_informational_reaped: usize,
     leases_reaped: usize,
     /// STOPPED agents holding stranded (permanently-undrained) actionable dead-letters this sweep. A
     /// standing anomaly (unlike the transient re-arm/reap counts) — persistently >0 across sweeps is the
@@ -4675,6 +4828,7 @@ fn watchdog_log_line(now: u64, checked: usize, c: &WatchdogCounts) -> Option<Str
         && c.wedge_restarts == 0
         && c.compact_nudges == 0
         && c.note_backlogs == 0
+        && c.spent_informational_reaped == 0
         && c.leases_reaped == 0
         && c.stranded_agents == 0
         && c.dead_letters_reaped == 0
@@ -4698,8 +4852,18 @@ fn watchdog_log_line(now: u64, checked: usize, c: &WatchdogCounts) -> Option<Str
     } else {
         format!("\tself_stale_behind={}", c.self_stale_behind)
     };
+    // Trailing additive field, emitted only when >0 (same discipline as reissued_agents/self_stale) so
+    // every pre-existing log-line shape is byte-for-byte unchanged and existing greps/parsers don't break.
+    let spent_reaped = if c.spent_informational_reaped == 0 {
+        String::new()
+    } else {
+        format!(
+            "\tspent_informational_reaped={}",
+            c.spent_informational_reaped
+        )
+    };
     Some(format!(
-        "{now}\tchecked={checked}\trearmed={}\treissued={}\treaped={}\tdrain_stalls={}\tdrain_stall_escalations={}\tsaturated={}\tqueued_but_landed={}\twedge_escalations={}\twedge_restarts={}\tcompact_nudges={}\tnote_backlogs={}\tleases_reaped={}\tstranded_agents={}\tdead_letters_reaped={}{reissued_agents}{self_stale}",
+        "{now}\tchecked={checked}\trearmed={}\treissued={}\treaped={}\tdrain_stalls={}\tdrain_stall_escalations={}\tsaturated={}\tqueued_but_landed={}\twedge_escalations={}\twedge_restarts={}\tcompact_nudges={}\tnote_backlogs={}\tleases_reaped={}\tstranded_agents={}\tdead_letters_reaped={}{reissued_agents}{self_stale}{spent_reaped}",
         c.rearmed,
         c.reissued,
         c.reaped,
@@ -14513,6 +14677,67 @@ mod tests {
     }
 
     #[test]
+    fn informational_msg_is_spent_reaps_only_provably_spent_mail() {
+        let queued = vec!["abc123def".to_string(), "999ffff".to_string()];
+        // INERT ACKS → always spent (safe to reap), regardless of ref/subject.
+        for kind in ["merged", "status", "backlog", "reply"] {
+            assert!(
+                informational_msg_is_spent(kind, "anything", "", &queued),
+                "{kind} ack is always spent"
+            );
+        }
+        // A DROP-directive note whose ref has LEFT the queue → SPENT (drop took effect, can't re-land).
+        assert!(informational_msg_is_spent(
+            "note",
+            "DROP-REF deadbeef: superseded",
+            "deadbeef",
+            &queued
+        ));
+        // A DROP-directive note whose ref is STILL queued → NOT spent (load-bearing: refs_to_drop reads it
+        // to filter the queue; reaping now would let the withdrawn MR re-land = double-land regression).
+        assert!(!informational_msg_is_spent(
+            "note",
+            "DROP-REF abc123def: superseded",
+            "abc123def",
+            &queued
+        ));
+        // ref-match is prefix-symmetric (short vs full sha) — a short drop-ref still matches a queued full sha.
+        assert!(!informational_msg_is_spent(
+            "note",
+            "DROP-REF abc123",
+            "abc123",
+            &queued
+        ));
+        // A REAL coordination note (not a drop-directive) → NOT spent — left to keep escalating.
+        assert!(!informational_msg_is_spent(
+            "note",
+            "heads-up: cutover plan for the S3 flag-day",
+            "",
+            &queued
+        ));
+        // A drop-directive note with an EMPTY ref can't be proven spent (no ref to check) → NOT reaped.
+        assert!(!informational_msg_is_spent(
+            "note",
+            "DROP-REF (no ref field)",
+            "",
+            &queued
+        ));
+        // An actionable kind is never in this informational path, but defensively → NOT spent.
+        assert!(!informational_msg_is_spent(
+            "assign",
+            "do the thing",
+            "",
+            &queued
+        ));
+        assert!(!informational_msg_is_spent(
+            "merge-request",
+            "land me",
+            "abc",
+            &queued
+        ));
+    }
+
+    #[test]
     fn parse_left_right_count_maps_to_ahead_behind() {
         // git `rev-list --left-right --count origin/main...trunk` prints LEFT<tab>RIGHT where LEFT =
         // origin/main-only (trunk BEHIND) and RIGHT = trunk-only (trunk AHEAD). The board relies on
@@ -15478,6 +15703,9 @@ mod tests {
                     wedge_restarts: 2,
                     compact_nudges: 9,
                     note_backlogs: 8,
+                    // 0 here → the trailing `spent_informational_reaped=` field is OMITTED, keeping this
+                    // exact-byte assertion unchanged; the >0 case is pinned by the reaper's own test.
+                    spent_informational_reaped: 0,
                     leases_reaped: 4,
                     stranded_agents: 6,
                     dead_letters_reaped: 7,

@@ -162,7 +162,17 @@ Kinds and who sends them:
 | `answer`        | `concierge` → asker  | the human's decision, routed back to the agent that asked      |
 | `backlog`       | any → `concierge`    | "please add this to the operator's backlog" (a lead, an idea, a follow-up) |
 | `status`        | `concierge` → any    | "the operator wants your current state" — reply with a `note`  |
-| `note`          | any → any            | free-form coordination (territory hand-off, "I'm taking X", a status reply) |
+| `note`          | any → any            | free-form coordination (territory hand-off, "I'm taking X", a status reply) — INFORMATIONAL, not a work request |
+
+**A `note` is INFORMATIONAL — do NOT use it for an ACTIONABLE request the recipient must act on.** A
+recipient drains its ACTIONABLE mail (merge-request/assign/issue/ask) reliably, but `note`s are lower
+priority and may sit undrained under load (a busy pr-sync mid-gate is the classic case); the watchdog
+auto-reaps provably-spent notes and only escalates the rest. So if you need someone to DO something —
+schedule a freeze, pause work, prioritize a ref, make a call — send an `ask` (to the concierge, for a
+decision) or an `assign`/`merge-request`/`issue` (the actionable kinds), NOT a `note`. (A pr-sync-bound
+`DROP-REF` withdraw is the one exception: it's a `note` by protocol and is honored passively by
+`schedule-pass`'s queue filter — see the DROP-REF section — so it doesn't depend on pr-sync draining it.)
+A scheduling/priority request mis-sent as a `note` once starved a flag-day ~2.5h because it sat unread.
 
 Include enough in `--body` that the recipient needs no other context. A `merge-request` body should
 carry the gate summary (fail-set diff, test count) so pr-sync can trust it fast. An `ask` body MUST
