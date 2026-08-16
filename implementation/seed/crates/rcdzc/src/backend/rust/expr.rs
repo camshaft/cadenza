@@ -474,6 +474,19 @@ fn is_orderable_scalar_key(ty: &Ty) -> bool {
     )
 }
 
+/// The shared `(list …)`-CHILDREN loop of the encode List + Set arms of [`emit_value_form`]: bind the `list`
+/// head name-atom, then push each element's value-form node, cloning the element so a non-Copy element is not
+/// moved out of the `.iter()` borrow. Returns the statements that populate `__lc` (headed by `list`) over
+/// `src_var`; the caller finishes with `__b.list(__lc)` — the List arm as its result, the Set arm bound to
+/// `__lst` inside the 2-child `((. Set of) (list …))`. `child` is the per-element node expr emitted with the
+/// element bound to `__ev`. BYTE-IDENTICAL to the previous two inline copies (same string assembly).
+fn emit_list_children(child: &str, src_var: &str) -> String {
+    format!(
+        "let __lh = __b.name(\"list\"); let mut __lc = vec![__lh]; \
+         for __el in {src_var}.iter() {{ let __ev = __el.clone(); let __c = {child}; __lc.push(__c); }}"
+    )
+}
+
 fn emit_value_form(db: &mut Db, ty: &Ty, val_expr: &str) -> Result<String, Reject> {
     match ty.strip_nominal() {
         Ty::Bool => Ok(format!(
@@ -538,9 +551,8 @@ fn emit_value_form(db: &mut Db, ty: &Ty, val_expr: &str) -> Result<String, Rejec
         Ty::List(elem) => {
             let child = emit_value_form(db, elem, "__ev")?;
             Ok(format!(
-                "{{ let __lv = {val_expr}; let __lh = __b.name(\"list\"); let mut __lc = vec![__lh]; \
-                 for __el in __lv.iter() {{ let __ev = __el.clone(); let __c = {child}; __lc.push(__c); }} \
-                 __b.list(__lc) }}"
+                "{{ let __lv = {val_expr}; {} __b.list(__lc) }}",
+                emit_list_children(&child, "__lv")
             ))
         }
         // A MAP is a `BTreeMap<K, V>` rendered `(map (k1 v1) … (kn vn))` — head `map`, each entry a `(key
@@ -575,9 +587,9 @@ fn emit_value_form(db: &mut Db, ty: &Ty, val_expr: &str) -> Result<String, Rejec
             Ok(format!(
                 "{{ let __sv = {val_expr}; \
                  let __sof = {{ let __d = __b.name(\".\"); let __sm = __b.name(\"Set\"); let __of = __b.name(\"of\"); __b.list(vec![__d, __sm, __of]) }}; \
-                 let __lh = __b.name(\"list\"); let mut __lc = vec![__lh]; \
-                 for __el in __sv.iter() {{ let __ev = __el.clone(); let __c = {child}; __lc.push(__c); }} \
-                 let __lst = __b.list(__lc); __b.list(vec![__sof, __lst]) }}"
+                 {} \
+                 let __lst = __b.list(__lc); __b.list(vec![__sof, __lst]) }}",
+                emit_list_children(&child, "__sv")
             ))
         }
         // A RECORD is a Rust TUPLE (`tuple_type(fields.values())`, so tuple position i == the i-th field in
@@ -678,6 +690,20 @@ fn emit_value_form(db: &mut Db, ty: &Ty, val_expr: &str) -> Result<String, Rejec
     }
 }
 
+/// The shared outer frame of every LEAF-SCALAR decode arm in [`emit_value_reconstruct`]: match `node` as an
+/// `Atom` leaf, apply `leaf_arm` (a `Leaf::X(..) => Some(..)` mapping), and fall through to `None` on any
+/// shape/leaf mismatch (a TOTAL decode). Each scalar inverse (Bool/Int/Char/String/Bytes/Float/BigInt/
+/// Rational) passes ONLY its differing leaf pattern + success map, so the eight arms no longer repeat this
+/// frame verbatim. BYTE-IDENTICAL to the previous inline copies (same string assembly) — the round-trip
+/// corpus + golden pins hold.
+fn decode_leaf(arenas: &str, node: &str, leaf_arm: &str) -> String {
+    format!(
+        "(match {arenas}.get({node}) {{ cadenza_ast::ast::Struct::Atom(__l) => \
+         match {arenas}.leaf(*__l) {{ {leaf_arm}, _ => None }}, \
+         _ => None }})"
+    )
+}
+
 /// Emit a rust expression of type `Option<T>` that RECONSTRUCTS a native value of type `ty` from the
 /// value-form node `node` (a `cadenza_ast::ast::StructId`) in the decoded `Arenas` `arenas` — the inverse of
 /// [`emit_value_form`], the native-rust twin of `cdz-runtime`'s value-decode walk. A SCALAR reads its leaf
@@ -691,31 +717,31 @@ fn emit_value_reconstruct(
     node: &str,
 ) -> Result<String, Reject> {
     match ty.strip_nominal() {
-        Ty::Bool => Ok(format!(
-            "(match {arenas}.get({node}) {{ cadenza_ast::ast::Struct::Atom(__l) => \
-             match {arenas}.leaf(*__l) {{ cadenza_ast::ast::Leaf::Bool(__v) => Some(*__v), _ => None }}, \
-             _ => None }})"
+        Ty::Bool => Ok(decode_leaf(
+            arenas,
+            node,
+            "cadenza_ast::ast::Leaf::Bool(__v) => Some(*__v)",
         )),
-        Ty::Int(_) => Ok(format!(
-            "(match {arenas}.get({node}) {{ cadenza_ast::ast::Struct::Atom(__l) => \
-             match {arenas}.leaf(*__l) {{ cadenza_ast::ast::Leaf::Int {{ value, .. }} => i64::try_from(value).ok(), _ => None }}, \
-             _ => None }})"
+        Ty::Int(_) => Ok(decode_leaf(
+            arenas,
+            node,
+            "cadenza_ast::ast::Leaf::Int { value, .. } => i64::try_from(value).ok()",
         )),
         // The leaf-scalar inverses of the `emit_value_form` Char/String/Bytes arms.
-        Ty::Char => Ok(format!(
-            "(match {arenas}.get({node}) {{ cadenza_ast::ast::Struct::Atom(__l) => \
-             match {arenas}.leaf(*__l) {{ cadenza_ast::ast::Leaf::Char(__v) => Some(*__v), _ => None }}, \
-             _ => None }})"
+        Ty::Char => Ok(decode_leaf(
+            arenas,
+            node,
+            "cadenza_ast::ast::Leaf::Char(__v) => Some(*__v)",
         )),
-        Ty::String | Ty::Symbol => Ok(format!(
-            "(match {arenas}.get({node}) {{ cadenza_ast::ast::Struct::Atom(__l) => \
-             match {arenas}.leaf(*__l) {{ cadenza_ast::ast::Leaf::Str(__s) => Some(__s.to_string()), _ => None }}, \
-             _ => None }})"
+        Ty::String | Ty::Symbol => Ok(decode_leaf(
+            arenas,
+            node,
+            "cadenza_ast::ast::Leaf::Str(__s) => Some(__s.to_string())",
         )),
-        Ty::Bytes => Ok(format!(
-            "(match {arenas}.get({node}) {{ cadenza_ast::ast::Struct::Atom(__l) => \
-             match {arenas}.leaf(*__l) {{ cadenza_ast::ast::Leaf::Bytes(__b) => Some(__b.to_vec()), _ => None }}, \
-             _ => None }})"
+        Ty::Bytes => Ok(decode_leaf(
+            arenas,
+            node,
+            "cadenza_ast::ast::Leaf::Bytes(__b) => Some(__b.to_vec())",
         )),
         // A FLOAT leaf inverse: reconstruct the f64/f32 EXACTLY from the `Decimal` by rebuilding its
         // `<sig>e<exp>` scientific text (sign + BigInt significand + base-10 exponent) and re-parsing —
@@ -727,34 +753,29 @@ fn emit_value_reconstruct(
             } else {
                 "f64"
             };
-            Ok(format!(
-                "(match {arenas}.get({node}) {{ cadenza_ast::ast::Struct::Atom(__l) => \
-                 match {arenas}.leaf(*__l) {{ cadenza_ast::ast::Leaf::Float(__d) => \
-                 format!(\"{{}}{{}}e{{}}\", if __d.negative {{ \"-\" }} else {{ \"\" }}, __d.significand, __d.exponent).parse::<{parse_ty}>().ok(), \
-                 _ => None }}, _ => None }})"
+            Ok(decode_leaf(
+                arenas,
+                node,
+                &format!(
+                    "cadenza_ast::ast::Leaf::Float(__d) => format!(\"{{}}{{}}e{{}}\", if __d.negative {{ \"-\" }} else {{ \"\" }}, __d.significand, __d.exponent).parse::<{parse_ty}>().ok()"
+                ),
             ))
         }
         // A BIGINT leaf inverse: read the `Leaf::Int` num_bigint value and rebuild `cdz_num::Big` from its
         // little-endian base-2^32 limbs (`to_u32_digits` → the exact `mag` layout, trailing-zero-stripped;
         // sign maps to `Big.neg`). Exact, no i64 clamp.
-        Ty::BigInt => Ok(format!(
-            "(match {arenas}.get({node}) {{ cadenza_ast::ast::Struct::Atom(__l) => \
-             match {arenas}.leaf(*__l) {{ cadenza_ast::ast::Leaf::Int {{ value, .. }} => \
-             {{ let (__sg, __mag) = value.to_u32_digits(); Some(cdz_num::Big {{ neg: __sg == num_bigint::Sign::Minus, mag: __mag }}) }}, \
-             _ => None }}, _ => None }})"
+        Ty::BigInt => Ok(decode_leaf(
+            arenas,
+            node,
+            "cadenza_ast::ast::Leaf::Int { value, .. } => { let (__sg, __mag) = value.to_u32_digits(); Some(cdz_num::Big { neg: __sg == num_bigint::Sign::Minus, mag: __mag }) }",
         )),
         // A RATIONAL leaf inverse: read the `num/den` NAME text, split on `/`, parse each half into a
         // `cdz_num::Big` (num_bigint parse → LE u32 limbs, exact) and rebuild via `Rational::new` (which
         // re-normalizes — idempotent, the encoded text is already normalized). None on a bad shape/parse.
-        Ty::Rational => Ok(format!(
-            "(match {arenas}.get({node}) {{ cadenza_ast::ast::Struct::Atom(__l) => \
-             match {arenas}.leaf(*__l) {{ cadenza_ast::ast::Leaf::Name(__s) => {{ \
-             let __parts: std::vec::Vec<&str> = __s.splitn(2, '/').collect(); \
-             if __parts.len() != 2 {{ None }} else {{ \
-             match (num_bigint::BigInt::parse_bytes(__parts[0].as_bytes(), 10), num_bigint::BigInt::parse_bytes(__parts[1].as_bytes(), 10)) {{ \
-             (Some(__nn), Some(__dd)) => {{ let (__ns, __nm) = __nn.to_u32_digits(); let (__ds, __dm) = __dd.to_u32_digits(); \
-             Some(cdz_num::Rational::new(cdz_num::Big {{ neg: __ns == num_bigint::Sign::Minus, mag: __nm }}, cdz_num::Big {{ neg: __ds == num_bigint::Sign::Minus, mag: __dm }})) }}, \
-             _ => None }} }} }}, _ => None }}, _ => None }})"
+        Ty::Rational => Ok(decode_leaf(
+            arenas,
+            node,
+            "cadenza_ast::ast::Leaf::Name(__s) => { let __parts: std::vec::Vec<&str> = __s.splitn(2, '/').collect(); if __parts.len() != 2 { None } else { match (num_bigint::BigInt::parse_bytes(__parts[0].as_bytes(), 10), num_bigint::BigInt::parse_bytes(__parts[1].as_bytes(), 10)) { (Some(__nn), Some(__dd)) => { let (__ns, __nm) = __nn.to_u32_digits(); let (__ds, __dm) = __dd.to_u32_digits(); Some(cdz_num::Rational::new(cdz_num::Big { neg: __ns == num_bigint::Sign::Minus, mag: __nm }, cdz_num::Big { neg: __ds == num_bigint::Sign::Minus, mag: __dm })) }, _ => None } } }",
         )),
         Ty::Tuple(elems) => {
             let n = elems.len();
