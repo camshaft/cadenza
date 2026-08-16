@@ -13079,3 +13079,82 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 45106116 Int64))
   (call   main (: 0 Int64)) (output (: 34083113 Int64)))
+
+;; ── tpwJ-collapse chained-binder stress, growing-state shared-let, xhsF multi-perform (breaker batch 296) ──
+(case "tpx1 CHAINED shared-lets through a three-way arm — the step arm binds the advanced column THEN a second binder derived from the first, routes on the second binder's residue mod three, and every branch resumes a different mix of the two binders as answer and next-state; the closing peek reads the threaded column, exercising the collapse gate on a multi-binder arm"
+  (input  (do
+            (effect X
+              (op step (-> Int64 Int64))
+              (op peek (-> Int64)))
+            (def (main (: n Int64))
+              (handle X (: 1 Int64)
+                ((step (x) col
+                  (let ((c2 (+ col (+ x (% n 3)))))
+                    (let ((d2 (- (* c2 2) col)))
+                      (if (= (% d2 3) 0)
+                          (resume (* d2 10) c2)
+                          (if (= (% d2 3) 1)
+                              (resume (+ (* c2 10) 1) d2)
+                              (resume (+ c2 d2) (+ c2 1)))))))
+                 (peek () col (resume col col)))
+                (let ((a (X.step (: 3 Int64))))
+                  (let ((b (X.step (: 5 Int64))))
+                    (let ((c (X.step (: 2 Int64))))
+                      (let ((d (X.step (: 4 Int64))))
+                        (let ((f (X.peek)))
+                          (+ (* 1000 (+ (* 1000 (+ (* 1000 (+ (* 1000 a) b)) c)) d)) f))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 90028180201025 Int64))
+  (call   main (: 0 Int64)) (output (: 41029032240020 Int64)))
+
+(case "gws1 GROWING-STATE shared-let — the push arm let-binds a value derived from the argument the CURRENT length and the seed bias, answers the binder packed with the length, and threads the LIST GROWN by the binder; the total draws all three stored values back out, so a binder aliased against the post-push list would corrupt both the rows and the total"
+  (input  (do
+            (effect G
+              (op push (-> Int64 Int64))
+              (op total (-> Int64)))
+            (def (main (: n Int64))
+              (handle G (list)
+                ((push (x) st
+                  (let ((v2 (+ x (+ (* (List.len st) 10) (% n 3)))))
+                    (resume (+ (* v2 10) (% (List.len st) 10))
+                            (List.push st v2))))
+                 (total () st
+                  (match (List.at st 0)
+                    ((Some p)
+                      (match (List.at st 1)
+                        ((Some q)
+                          (match (List.at st 2)
+                            ((Some r) (resume (+ p (+ q r)) st))
+                            ((None) (resume (: -1 Int64) st))))
+                        ((None) (resume (: -1 Int64) st))))
+                    ((None) (resume (: -1 Int64) st)))))
+                (let ((a (G.push (: 3 Int64))))
+                  (let ((b (G.push (: 5 Int64))))
+                    (let ((c (G.push (: 2 Int64))))
+                      (let ((f (G.total)))
+                        (+ (* 1000 (+ (* 1000 (+ (* 1000 a) b)) c)) f)))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 40161232043 Int64))
+  (call   main (: 0 Int64)) (output (: 30151222040 Int64)))
+
+(case "xhsF the MULTI-PERFORM variant — the inner step arm performs the outer note TWICE with the same shared binder before resuming with both answers' low digits and threading the binder; two frozen arguments must drain-bind independently in one arm"
+  (input  (do
+            (effect O (op note (-> Int64 Int64)))
+            (effect I (op step (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle O (: 0 Int64)
+                ((note (v) acc
+                  (resume (+ acc v) (+ acc v))))
+                (handle I (: 0 Int64)
+                  ((step (x) col
+                    (let ((c2 (+ col (+ x (% n 3)))))
+                      (let ((a (O.note c2)))
+                        (let ((b (O.note c2)))
+                          (resume (+ (* c2 10) (+ (% a 10) (% b 10))) c2))))))
+                  (let ((p (I.step (: 3 Int64))))
+                    (let ((q (I.step (: 5 Int64))))
+                      (let ((r (O.note (: 100 Int64))))
+                        (+ (* 1000 (+ (* 1000 p) q)) r)))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 52116128 Int64))
+  (call   main (: 0 Int64)) (output (: 39086122 Int64)))

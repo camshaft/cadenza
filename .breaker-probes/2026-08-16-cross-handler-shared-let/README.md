@@ -77,3 +77,13 @@ ORIGINAL duplication answer), all 6 witnesses fail, and the freeze markers
 commit in origin's last three. Their diff likely ran against a local ref.
 Promotion HELD; re-verifying on flip-sweep each tick. This is exactly why
 verify-on-origin-by-content with a FRESH BINARY is the standing rule.
+
+## xhsF multi-perform (tick 1631)
+v-effects' hardening-sweep candidate: the inner arm performs the outer note
+TWICE with the same shared binder (two frozen args drain-bind in one arm).
+Their n=10 verify: 52116128 (wasm+rust, variant==control). My independent
+hand-model MATCHES (52116128) + derived the n=0 oracle they lacked: 39086122.
+Banked + gated PASS ×3 wasm, ×1 rust, ×1 rust-async at 931c11dd3. Joins the
+family as pass-witness #6 (batch-296 candidate; 295 carries the first 6).
+Their hardening backlog (next shapes): two-distinct-outer-ops 3-handler nest,
+conditional mid-arm perform.

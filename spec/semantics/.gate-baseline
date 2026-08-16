@@ -5335,6 +5335,7 @@ pass	gs7 the applied generic in the op ARGUMENT position — the arm unwraps (Co
 pass	gs8 the applied generic AS the handler state — (Container Int64) seeds the handle, the arm unwraps and re-wraps per dispatch
 pass	gsc1 a GOLF scorecard with a birdie-streak multiplier — each hole answers its par delta where consecutive under-par holes MULTIPLY the negative contribution by the deepening streak, an over-par hole resets the streak, card totals, and the seed shifts one hole's strokes so the streak bonus doubles differently
 pass	gsx1 ONE arm instantiates the same generic sum at TWO types — a Container Int64 and a Container String built, unwrapped, and combined per dispatch
+pass	gws1 GROWING-STATE shared-let — the push arm let-binds a value derived from the argument the CURRENT length and the seed bias, answers the binder packed with the length, and threads the LIST GROWN by the binder; the total draws all three stored values back out, so a binder aliased against the post-push list would corrupt both the rows and the total
 pass	ha1 an INNER op's arguments draw from the OUTER handler — two outer draws cross the inner dispatch boundary in order
 pass	ha2 outer-draw feeds the INNER op, whose result feeds an OUTER op again — a three-hop cross-handler value chain
 pass	ha3 INTERLEAVED outer-inner-outer draws in ONE argument list — each draw dispatches to its own handler in sequence
@@ -6642,6 +6643,7 @@ pass	tp4 readers and a SPIN writer share one tuple state — sum flows into slot
 pass	tpc1 TWO-PHASE COMMIT across two handlers — the coordinator prepares both sides, commits both only when both prepared, otherwise aborts both restoring the balances; the pass and fail paths both verified
 pass	tpl1 a DELIMITER-JOIN rope builder — the first fragment lands bare, every later one is prefixed with the separator, the empty-vs-seeded start decides whether the FIRST dispatch takes the bare branch, and multibyte fragments keep the byte-length answers honest
 pass	tpwJ a cross-scope shared-let in a resumptive arm — a let-bound NESTED-IF (outer cond reads a state field, inner reads the param) feeding 3+ consumers across 3+ dispatches with a state-reading second op, the thread-path no-local-slot face closed by 8276ad1a6
+pass	tpx1 CHAINED shared-lets through a three-way arm — the step arm binds the advanced column THEN a second binder derived from the first, routes on the second binder's residue mod three, and every branch resumes a different mix of the two binders as answer and next-state; the closing peek reads the threaded column, exercising the collapse gate on a multi-binder arm
 pass	tq1 a Q-shadow inside a TWO-effect region — P draws thread THROUGH the shadow while Q is locally rebound
 pass	tq2 the Q-shadow's SEED mixes P and Q draws — both outer threads advance before the shadow opens, and resume after
 pass	tq3 a Q-shadow wraps only the MIDDLE argument of a pure call — its neighbors dispatch to the outer P and Q frames
@@ -6912,6 +6914,7 @@ pass	xhsA the binder feeds the outer perform and the answer but the state thread
 pass	xhsB the binder feeds the outer perform and the threaded state but the answer is only the note result — boundary variant
 pass	xhsC the outer perform takes a CONSTANT while the binder feeds answer and state — boundary variant
 pass	xhsD the DROPPED-frozen-arg complement — the outer note arm IGNORES its op param (answers the count, threads count plus one) while the inner step arm still let-binds the advanced column performs the outer note with it and resumes packing both; the frozen argument is dropped not escaped, and the fold is CORRECT
+pass	xhsF the MULTI-PERFORM variant — the inner step arm performs the outer note TWICE with the same shared binder before resuming with both answers' low digits and threading the binder; two frozen arguments must drain-bind independently in one arm
 pass	xsw1 a CROSS-SWAPPING scalar pair — each dispatch computes both successors then installs them SWAPPED (a gets the b-derived value, b the a-derived), lineage crosses sides every step
 pass	za1 literal-arm dispatch on a draw — the MATCHED arm performs again, both calls exercised
 pass	za2 a COMPUTED scrutinee (difference of two draws) selects the performing arm at one input only
