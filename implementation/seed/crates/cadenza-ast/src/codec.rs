@@ -1472,6 +1472,90 @@ mod tests {
     }
 
     #[test]
+    fn value_encode_of_a_framed_map_is_the_colon_framed_golden() {
+        // (: (map (7 70) (8 99)) (Map Int64 Int64)) — the `(map (k v) …)` shape, entries in canonical KEY
+        // order; each entry a `(key value)` 2-list. 8 leaves.
+        let mut b = Builder::new();
+        let map_head = b.name("map");
+        let e0 = {
+            let k = int(&mut b, 7);
+            let v = int(&mut b, 70);
+            b.list(vec![k, v])
+        };
+        let e1 = {
+            let k = int(&mut b, 8);
+            let v = int(&mut b, 99);
+            b.list(vec![k, v])
+        };
+        let value = b.list(vec![map_head, e0, e1]);
+        let tmap = b.name("Map");
+        let tk = b.name("Int64");
+        let tv = b.name("Int64");
+        let type_node = b.list(vec![tmap, tk, tv]);
+        let colon = b.name(":");
+        let root = b.list(vec![colon, value, type_node]);
+        let a = b.finish(root);
+        let golden: &[u8] = b"cdzast\x00\x01\x08\n\x01:\n\x03map\x00\x01\x07\x00\x01F\x00\x01\x08\x00\x01c\n\x03Map\n\x05Int64\x0e\x00\x00\x00\x01\x00\x02\x00\x03\x01\x02\x02\x03\x00\x04\x00\x05\x01\x02\x05\x06\x01\x03\x01\x04\x07\x00\x06\x00\x07\x00\x07\x01\x03\t\n\x0b\x01\x03\x00\x08\x0c\r";
+        assert_encodes_to(
+            &a,
+            golden,
+            "the framed (map (7 70) (8 99)) : (Map Int64 Int64)",
+        );
+    }
+
+    #[test]
+    fn value_encode_of_a_framed_set_is_the_colon_framed_golden() {
+        // (: ((. Set of) (list 7 12 17)) (Set Int64)) — the Set shape: a 2-child value list of the
+        // member-access head `(. Set of)` and a `(list …)` of elements in canonical order. 9 leaves.
+        let mut b = Builder::new();
+        let set_of = {
+            let dot = b.name(".");
+            let set = b.name("Set");
+            let of = b.name("of");
+            b.list(vec![dot, set, of])
+        };
+        let list_v = {
+            let lh = b.name("list");
+            let e0 = int(&mut b, 7);
+            let e1 = int(&mut b, 12);
+            let e2 = int(&mut b, 17);
+            b.list(vec![lh, e0, e1, e2])
+        };
+        let value = b.list(vec![set_of, list_v]);
+        let tset = b.name("Set");
+        let te = b.name("Int64");
+        let type_node = b.list(vec![tset, te]);
+        let colon = b.name(":");
+        let root = b.list(vec![colon, value, type_node]);
+        let a = b.finish(root);
+        let golden: &[u8] = b"cdzast\x00\x01\t\n\x01:\n\x01.\n\x03Set\n\x02of\n\x04list\x00\x01\x07\x00\x01\x0c\x00\x01\x11\n\x05Int64\x0f\x00\x00\x00\x01\x00\x02\x00\x03\x01\x03\x01\x02\x03\x00\x04\x00\x05\x00\x06\x00\x07\x01\x04\x05\x06\x07\x08\x01\x02\x04\t\x00\x02\x00\x08\x01\x02\x0b\x0c\x01\x03\x00\n\r\x0e";
+        assert_encodes_to(
+            &a,
+            golden,
+            "the framed ((. Set of) (list 7 12 17)) : (Set Int64)",
+        );
+    }
+
+    #[test]
+    fn value_encode_of_a_framed_list_is_the_colon_framed_golden() {
+        // (: (list 7 12 17) (List Int64)) — the `(list e …)` runtime-length shape. 7 leaves.
+        let mut b = Builder::new();
+        let lh = b.name("list");
+        let e0 = int(&mut b, 7);
+        let e1 = int(&mut b, 12);
+        let e2 = int(&mut b, 17);
+        let value = b.list(vec![lh, e0, e1, e2]);
+        let tlist = b.name("List");
+        let te = b.name("Int64");
+        let type_node = b.list(vec![tlist, te]);
+        let colon = b.name(":");
+        let root = b.list(vec![colon, value, type_node]);
+        let a = b.finish(root);
+        let golden: &[u8] = b"cdzast\x00\x01\x07\n\x01:\n\x04list\x00\x01\x07\x00\x01\x0c\x00\x01\x11\n\x04List\n\x05Int64\n\x00\x00\x00\x01\x00\x02\x00\x03\x00\x04\x01\x04\x01\x02\x03\x04\x00\x05\x00\x06\x01\x02\x06\x07\x01\x03\x00\x05\x08\t";
+        assert_encodes_to(&a, golden, "the framed (list 7 12 17) : (List Int64)");
+    }
+
+    #[test]
     fn every_payload_leaf_kind_including_markers_round_trips_equal_through_the_codec() {
         // `round_trips()` above uses `sample()`, which only carries Int/Float/Str/Bool/Name — it does NOT
         // exercise Sym, Char, Bytes, or the two MARKER leaves (BadChar/BadEscape). `radix_sample()` carries
