@@ -1446,6 +1446,32 @@ mod tests {
     }
 
     #[test]
+    fn value_encode_of_a_framed_float_tuple_is_the_colon_framed_golden() {
+        // (: (tuple 5 2.5) (Tuple Int64 Float64)) — pins the exact-shortest-decimal FLOAT leaf
+        // (`Leaf::Float(Decimal::from_f64(2.5))` = {false, 25, -1}, KIND_FLOAT), the newest + trickiest
+        // codec shape. A lossy-bits encoding would diverge from the wasm `float_leaf` here. Guards the
+        // Decimal round-trip encoding cross-backend, mirroring the runtime float pin.
+        let mut b = Builder::new();
+        let th = b.name("tuple");
+        let i5 = int(&mut b, 5);
+        let f25 = b.atom_leaf(Leaf::Float(Decimal::from_f64(2.5).unwrap()));
+        let value = b.list(vec![th, i5, f25]);
+        let tn_head = b.name("Tuple");
+        let tn_int = b.name("Int64");
+        let tn_float = b.name("Float64");
+        let type_node = b.list(vec![tn_head, tn_int, tn_float]);
+        let colon = b.name(":");
+        let root = b.list(vec![colon, value, type_node]);
+        let a = b.finish(root);
+        let golden: &[u8] = b"cdzast\x00\x01\x07\n\x01:\n\x05tuple\x00\x01\x05\x06\x00\xff\xff\xff\xff\xff\xff\xff\xff\x01\x19\n\x05Tuple\n\x05Int64\n\x07Float64\n\x00\x00\x00\x01\x00\x02\x00\x03\x01\x03\x01\x02\x03\x00\x04\x00\x05\x00\x06\x01\x03\x05\x06\x07\x01\x03\x00\x04\x08\t";
+        assert_encodes_to(
+            &a,
+            golden,
+            "the framed (tuple 5 2.5) : (Tuple Int64 Float64)",
+        );
+    }
+
+    #[test]
     fn every_payload_leaf_kind_including_markers_round_trips_equal_through_the_codec() {
         // `round_trips()` above uses `sample()`, which only carries Int/Float/Str/Bool/Name — it does NOT
         // exercise Sym, Char, Bytes, or the two MARKER leaves (BadChar/BadEscape). `radix_sample()` carries
