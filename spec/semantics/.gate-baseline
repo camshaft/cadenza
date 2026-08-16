@@ -2976,6 +2976,7 @@ pass	a recursive builder PERFORMS per step and a recursive pure fold consumes th
 pass	a recursive byte fold calling two helpers emits valid wasm (disjoint scratch slots)
 pass	a recursive byte walk sums a runtime sequence via Bytes.at and match
 pass	a recursive byte walk threading a Bytes parameter through a helper infers without annotation
+pass	a recursive call in TAIL position ascribed to a NARROWER int width wraps its result (valid wasm)
 pass	a recursive callee drawing the SAME op twice per round threads the out-state to a trailing observer
 pass	a recursive callee performing TWO effects per round threads both slots' out-state to a trailing observer
 pass	a recursive combinator applies a captured closure a RUNTIME number of times

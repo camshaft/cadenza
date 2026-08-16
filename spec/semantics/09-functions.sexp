@@ -3475,6 +3475,21 @@
   (call   go (: 10 UInt8))
   (output (: 0 UInt8)))
 
+(case "a recursive call in TAIL position ascribed to a NARROWER int width wraps its result (valid wasm)"
+  (doc    "`main` TAIL-CALLS the recursive `v1` (result Int64 = i64) but ASCRIBES the result to `UInt32`
+           (= i32), so `main`'s wasm result type is i32 while the callee returns i64. A `return_call` would
+           return the callee's i64 DIRECTLY as main's i32 result — eliding the `i32.wrap_i64` the narrowing
+           requires — producing INVALID wasm (`current function requires result type i32 but callee returns
+           i64`; fuzzer 38551). The fix: a tail call whose callee result valtype differs from the enclosing
+           function's result falls back to a non-tail `call` + the width conversion. `v1 3` recurses
+           3->2->1->0 adding 127 per level = 508; ascribed UInt32 -> 508. Pins the
+           narrow-int-ascription-over-a-recursive-tail-call class emits valid wasm and computes.")
+  (input  (do
+            (def (v1 (: v2 Int64)) (if (<= v2 0) 127 (+ (v1 (- v2 1)) 127)))
+            (def (main) (: (v1 3) UInt32))
+            (export main)))
+  (call   main) (output (: 508 UInt32)))
+
 (case "a mutually tail-recursive even/odd over a large runtime count iterates in constant stack"
   (doc    "The cross-function shape: `even` and `odd` each end in a tail call to the OTHER. At a runtime
            depth of 100000 the alternating tail calls run in constant stack and yield 1 (100000 is

@@ -116,6 +116,14 @@ pub struct Emit {
     /// `Core`-result match). Scoping by the scrutinee id fences each match's records to its own scrutinee,
     /// exactly as the sibling `payload_prefix_slots` map is keyed `(scrutinee, path)`.
     sum_path_types: HashMap<(StructId, Vec<crate::core::PathStep>), Ty>,
+    /// The ENCLOSING function's result valtype (`valtype_of(&ret)`), set ONCE at the function-body emit
+    /// entry. Read in `emit_tail`'s `Core::Call` arm: a `return_call` returns the callee's result valtype
+    /// DIRECTLY as this function's result, which is only valid when they MATCH. A recursive callee's
+    /// full-width `i64` result tail-called from a function whose result is a NARROWER ascribed int (`UInt32`
+    /// → `i32`) would emit `return_call` and ELIDE the `i32.wrap_i64` the ascription requires — invalid
+    /// wasm (fuzzer 38551). When the callee's valtype differs from this, the tail call falls back to a
+    /// non-tail `Call` + the width conversion + `Return`. `None` for a Unit/diverging (0-result) function.
+    fn_ret_vt: Option<ValType>,
 }
 
 /// A scalar match's binder scope: the `[start, end)` Lir range spanning its arm bodies, and the binder
@@ -4275,6 +4283,9 @@ pub fn select_function_of(
         ret = Ty::Unit;
     }
     let mut code = Emit::new();
+    // The function's result valtype — read in `emit_tail`'s tail-`Call` arm to detect a `return_call`
+    // whose callee result valtype differs (a narrowing/widening ascription the tail call cannot carry).
+    code.fn_ret_vt = valtype_of(&ret);
     // Perceus RETAIN placement (soundness): find every occurrence that CONSUMES a heap binding (a param or
     // a nested `let`) while that binding has a LATER live use, and record it so the emit `dup`s it. Without
     // this a value consumed by `List.push`/`Map.insert`/… in one operand and read again in a later operand
@@ -6037,8 +6048,60 @@ fn emit_tail(
             }
             match layout.abs(callee) {
                 Some(idx) => {
-                    trace!(target: "rcdzc::select", callee, idx, args = args.len(), "emit TAIL call (return_call)");
-                    out.push(Lir::ReturnCall(idx));
+                    // A `return_call` returns the CALLEE's result valtype DIRECTLY as this function's
+                    // result — valid ONLY when they match. If this function's result valtype differs (a
+                    // narrowing/widening ascription over the tail-called result — e.g. `(: (rec …) UInt32)`
+                    // gives this fn an i32 result while the recursive callee returns i64), a `return_call`
+                    // ELIDES the width conversion the ascription requires → invalid wasm (fuzzer 38551).
+                    // Fall back to a non-tail `Call` + the stack width conversion; the converted value is
+                    // left on the stack and falls through to the function's IMPLICIT return (wasm returns
+                    // the stack top — no explicit Return op, same as the `return_call`/extern-tail paths).
+                    //
+                    // The mismatch is the CALLEE's ACTUAL emitted result valtype vs THIS function's result
+                    // valtype — NOT `type_of(id)`, which the call-site ascription already narrowed to the
+                    // fn's result (so it would falsely == `fn_ret_vt` and miss the bug). The callee is a def
+                    // index; its emitted result type is its body's solved type (all params are bound, so the
+                    // body type IS the result). A callee with no body (import) can't be inspected — keep the
+                    // tail call unchanged.
+                    let callee_body = db.defs.get(callee).and_then(|d| d.body);
+                    let callee_result_ty = match callee_body {
+                        Some(b) => type_of(db, b),
+                        None => {
+                            out.push(Lir::ReturnCall(idx));
+                            return Ok(());
+                        }
+                    };
+                    let callee_vt = valtype_of(&callee_result_ty);
+                    if callee_vt == out.fn_ret_vt {
+                        trace!(target: "rcdzc::select", callee, idx, args = args.len(), "emit TAIL call (return_call)");
+                        out.push(Lir::ReturnCall(idx));
+                        return Ok(());
+                    }
+                    trace!(target: "rcdzc::select", callee, idx, "tail call callee result valtype differs from fn result — non-tail Call + convert");
+                    out.push(Lir::Call(idx));
+                    match (callee_vt, out.fn_ret_vt) {
+                        (Some(ValType::I64), Some(ValType::I32)) => out.push(Lir::I32WrapI64),
+                        (Some(ValType::I32), Some(ValType::I64)) => {
+                            // Widen using the callee int's signedness (the value on the stack is the
+                            // callee's narrow-int result).
+                            let signed = matches!(
+                                callee_result_ty.strip_nominal(),
+                                Ty::Int(it) if it.ground_signed()
+                            );
+                            out.push(if signed {
+                                Lir::I64ExtendI32S
+                            } else {
+                                Lir::I64ExtendI32U
+                            });
+                        }
+                        (Some(ValType::F64), Some(ValType::F32)) => out.push(Lir::F32DemoteF64),
+                        (Some(ValType::F32), Some(ValType::F64)) => out.push(Lir::F64PromoteF32),
+                        _ => {
+                            return Err(Reject::decline(
+                                "tail call callee result valtype differs from the enclosing function's result in an unhandled way",
+                            ));
+                        }
+                    }
                     Ok(())
                 }
                 None => Err(Reject::decline(
