@@ -12596,3 +12596,73 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 4030228030446 Int64))
   (call   main (: 0 Int64)) (output (: 2010008010226 Int64)))
+
+;; ── Twin-effect identity pin, cross-effect arm-perform relay, hourglass flips (breaker batch 291) ──
+(case "twn1 TWO structurally IDENTICAL effect declarations (same op name, same signature, different effect names) nested as a tower — interleaved draws must dispatch to the CORRECT handler by effect identity alone, the sharpest post-schema-hash identity probe: same-shape effects with different seeds thread independently"
+  (input  (do
+            (effect A (op bump (-> Int64 Int64)))
+            (effect B (op bump (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle A (: n Int64)
+                ((bump (v) s (resume (+ s v) (+ s v))))
+                (handle B (: 100 Int64)
+                  ((bump (v) s (resume (+ s v) (+ s v))))
+                  (let ((a (A.bump 3)))
+                    (let ((b (B.bump 3)))
+                      (let ((c (A.bump 5)))
+                        (let ((d (B.bump 5)))
+                          (let ((e (A.bump 1)))
+                            (+ (* 1000 (+ (* 1000 (+ (* 1000 (+ (* 1000 a) b)) c)) d)) e)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 13103018108019 Int64))
+  (call   main (: 0 Int64)) (output (: 3103008108009 Int64)))
+
+(case "rlyB single-use arm-perform control (answer only, state untouched) — B's handler arm PERFORMS the outer A (same op name, same signature) doubling the argument and folding A's answer into B's state, so every relay draw advances BOTH threads and the identity question routes THROUGH an arm-perform under schema-hash-only dispatch"
+  (input  (do
+            (effect A (op bump (-> Int64 Int64)))
+            (effect B (op bump (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle A (: n Int64)
+                ((bump (v) s (resume (+ s v) (+ s v))))
+                (handle B (: 0 Int64)
+                  ((bump (v) s
+                    (resume (A.bump (* v 2)) s)))
+                  (let ((a (A.bump 1)))
+                    (let ((b (B.bump 2)))
+                      (let ((c (A.bump 1)))
+                        (let ((d (B.bump 3)))
+                          (let ((e (A.bump 1)))
+                            (+ (* 1000 (+ (* 1000 (+ (* 1000 (+ (* 1000 a) b)) c)) d)) e)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 11015016022023 Int64))
+  (call   main (: 0 Int64)) (output (: 1005006012013 Int64)))
+
+(case "hgl1 an HOURGLASS with flips — tick drains three grains from the top clamped at empty, flip swaps the bulbs answering the new top (total minus old top), and the two totals CONVERGE mid-stream (both read 6,3,0 after the first flip drains) then DIVERGE again at the second flip which restores each glass's own total"
+  (input  (do
+            (effect H
+              (op tick (-> Int64))
+              (op flip (-> Int64)))
+            (def (main (: n Int64))
+              (handle H (tuple (+ 8 n) (+ 8 n))
+                ((tick (
+                  ) st
+                  (match st
+                    ((tuple top total)
+                      (if (< top 3)
+                          (resume 0 (tuple 0 total))
+                          (resume (- top 3) (tuple (- top 3) total))))))
+                 (flip () st
+                  (match st
+                    ((tuple top total)
+                      (resume (- total top) (tuple (- total top) total))))))
+                (let ((a (H.tick)))
+                  (let ((b (H.tick)))
+                    (let ((c (H.flip)))
+                      (let ((d (H.tick)))
+                        (let ((e (H.tick)))
+                          (let ((f (H.flip)))
+                            (let ((g (H.tick)))
+                              (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 15120603001815 Int64))
+  (call   main (: 0 Int64)) (output (: 5020603000805 Int64)))

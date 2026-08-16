@@ -5361,6 +5361,7 @@ pass	het1 ONE effect with THREE result types — Int64, Bool, and String ops sha
 pass	heterogeneous constructions take ONE malformed-collection code across list, map, and set
 pass	hex and binary literals drive a runtime mask-extract across radix notations
 pass	hexadecimal, binary, and decimal spellings of one value are equal
+pass	hgl1 an HOURGLASS with flips — tick drains three grains from the top clamped at empty, flip swaps the bulbs answering the new top (total minus old top), and the two totals CONVERGE mid-stream (both read 6,3,0 after the first flip drains) then DIVERGE again at the second flip which restores each glass's own total
 pass	hi1 an arm INSTALLS a fresh handle and resumes with its result — a whole handler lifecycle inside one dispatch
 pass	hi2 the arm-installed handle's body draws from the arm's ENCLOSING frame — fresh inner frame and outer dispatch in one arm
 pass	hi3 the arm-installed handle's OWN arm resumes with an OUTER draw — the rv face nested inside another handler's dispatch
@@ -5971,6 +5972,7 @@ pass	rhe1 a ROUND-HALF-TO-EVEN halving accumulator — each dispatch adds v/2 ro
 pass	rle1 RUN-LENGTH tracking — the 3-tuple state carries (last,run,best); the n=5 seed extends one run to five, n=7 breaks it at two
 pass	rle2 a RUN-LENGTH ENCODER state — equal-to-last feeds bump the tail pair's count via List.update at len-1, fresh values push a new pair; the n=5 seed merges the middle literal into one long run
 pass	rlm1 a SLIDING-WINDOW rate limiter — allow prunes expired timestamps then admits only under the cap of two per ten ticks; the seeded third request either bounces inside the window or lands beyond it and steals a later slot
+pass	rlyB single-use arm-perform control (answer only, state untouched) — B's handler arm PERFORMS the outer A (same op name, same signature) doubling the argument and folding A's answer into B's state, so every relay draw advances BOTH threads and the identity question routes THROUGH an arm-perform under schema-hash-only dispatch
 pass	rmn1 a ROMAN-NUMERAL accumulator with subtractive correction — feeding a numeral LARGER than its predecessor retro-subtracts the predecessor twice (the IX rule), the seed picks the second numeral as five or one, and the correction fires at DIFFERENT positions so the totals cross (nineteen versus twenty-three)
 pass	rmp1 a RECORD state wrapping a Map plus a counter — computed perform keys; the arm answers 10*lookup + the ADVANCED counter so both fields are observed
 pass	rn1 a RUNNING-AVERAGE state (sum,count) — three feeds then a truncating divide read, negative total exercises toward-zero
@@ -6678,6 +6680,7 @@ pass	tv1 tuple VALUES with scalar keys across three arms — element propagation
 pass	tw1 arms of TWO different effects call one shared PURE helper — square-plus-one applied to each live state
 pass	tw2 an explicit FEEDBACK loop — each call feeds the previous result back as the op's first argument beside a fresh draw
 pass	twl1 a TAKE-WHILE pull stream — the body's recursive driver keeps drawing until the arm hands back a divisible-by-four value, accumulating the survivors and counting all pulls including the terminator
+pass	twn1 TWO structurally IDENTICAL effect declarations (same op name, same signature, different effect names) nested as a tower — interleaved draws must dispatch to the CORRECT handler by effect identity alone, the sharpest post-schema-hash identity probe: same-shape effects with different seeds thread independently
 pass	two @param accessors INTERLEAVED (a b a) consume per-op response queues in perform order
 pass	two @param sites generate two accessors under one Param effect
 pass	two @param sites with the same name are rejected as a duplicate effect operation
