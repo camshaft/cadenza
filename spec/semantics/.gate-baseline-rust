@@ -2990,6 +2990,7 @@ pass	a recursive builder PERFORMS per step and a recursive pure fold consumes th
 pass	a recursive byte fold calling two helpers emits valid wasm (disjoint scratch slots)
 pass	a recursive byte walk sums a runtime sequence via Bytes.at and match
 pass	a recursive byte walk threading a Bytes parameter through a helper infers without annotation
+pass	a recursive call in TAIL position ascribed to a NARROWER int width wraps its result (valid wasm)
 pass	a recursive callee drawing the SAME op twice per round threads the out-state to a trailing observer
 pass	a recursive callee performing TWO effects per round threads both slots' out-state to a trailing observer
 pass	a recursive combinator applies a captured closure a RUNTIME number of times
@@ -6940,7 +6941,6 @@ todo	a mutually-recursive group with a BRANCH-PERFORM sharing a strict expr with
 todo	a mutually-recursive performer pair whose out-state a trailing caller draw observes declines cleanly (completeness gap)
 todo	a recursive NEWTYPE traversal recurses on its projected recursive field
 todo	a recursive NEWTYPE-wrapped linked list folds to a scalar
-todo	a recursive call in TAIL position ascribed to a NARROWER int width wraps its result (valid wasm)
 todo	a recursive nested-op performer whose resume-VALUE reads the inner state around the outer perform declines cleanly
 todo	a runtime bin match decodes a FINAL constant-size utf8 segment
 todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands

@@ -248,6 +248,40 @@ pub fn emit_body(
         expected_ty: None,
     };
     let expr = emit(db, body, &env, &ctx)?;
+    // E0308 FIX — the rust twin of the wasm tail-call wrap (fz 38551 / `7529f6901`). A body that is a
+    // direct `Core::Call` emits the CALLEE's natural result rust type; the call-site narrowing ascription
+    // `(: (f x) T)` is absorbed as type-only (there is NO Core cast/narrow node — see
+    // [[fz-tailcall-narrowint-ascription-return-call-elides-i64-to-i32-wrap]]), so rustc sees the callee's
+    // (wider/narrower) int where this fn's signature declares `T` -> `error[E0308] mismatched types`.
+    // When the body is such a Call whose callee-result rust INT type differs from this fn's declared result
+    // INT type, coerce with an `as <prim>` cast — truncate/extend, matching the wasm `i32.wrap_i64` the tail
+    // fix emits. Scoped to INT<->INT scalars: `type_of(body)` is the ASCRIBED (fn-result) type, the callee
+    // body's `type_of` is the un-narrowed natural type; any non-Int shape or matching prim is left verbatim
+    // (no spurious cast, which would be a silent wrong value rather than a caught build error).
+    let expr = if let Core::Call { callee, .. } = core_of(db, body) {
+        match db.defs[callee].body {
+            Some(callee_body) => {
+                let result_ty = type_of(db, body);
+                let callee_ty = type_of(db, callee_body);
+                let coerce = match (result_ty.strip_nominal(), callee_ty.strip_nominal()) {
+                    (Ty::Int(_), Ty::Int(_)) => {
+                        let ncx = db.name_ctx();
+                        let rt = types::rust_type(&ncx, &result_ty);
+                        let ct = types::rust_type(&ncx, &callee_ty);
+                        if rt != ct { rt } else { None }
+                    }
+                    _ => None,
+                };
+                match coerce {
+                    Some(prim) => format!("({expr}) as {prim}"),
+                    None => expr,
+                }
+            }
+            None => expr,
+        }
+    } else {
+        expr
+    };
     Ok(format!("    {expr}"))
 }
 
