@@ -336,6 +336,19 @@ pub fn collect_host_imports(db: &mut Db, id: StructId, out: &mut Vec<HostImport>
     if db.walk_depth >= crate::db::WALK_DEPTH_LIMIT {
         return;
     }
+    // SHARING-AWARE VISITED-SET (see [`Db::host_import_visited`], same class + soundness as
+    // `collect_call_callees`'s `callee_visited`): a shared core DAG reached via several sub-positions would
+    // otherwise be re-walked as a tree (O(K^depth) on a wide fan-out — the emit-walk re-descent). The
+    // host-import SET is presence-only (the walk self-dedups by (effect,op)), so skipping an already-walked
+    // node changes no output. Cleared at the top-level entry (`walk_depth == 0`) — a fresh per-entry set,
+    // required because this walk runs PER-EXPORT and a stale set would drop a later root's imports. After
+    // the depth guard: a depth-clipped node is still recorded, sound because the clip is accepted-neutral.
+    if db.walk_depth == 0 {
+        db.host_import_visited.clear();
+    }
+    if !db.host_import_visited.insert(id) {
+        return;
+    }
     db.walk_depth += 1;
     collect_host_imports_at(db, id, out);
     db.walk_depth -= 1;

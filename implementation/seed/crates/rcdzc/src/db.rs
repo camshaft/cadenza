@@ -1317,6 +1317,15 @@ pub struct Db {
     pub(crate) callee_visited: crate::fxhash::FxHashSet<StructId>,
     pub(crate) closure_code_visited: crate::fxhash::FxHashSet<StructId>,
     pub(crate) closure_sig_visited: crate::fxhash::FxHashSet<StructId>,
+    /// Sharing-aware visited-set for the host-import walk ([`crate::backend::wasm::host::collect_host_imports`]),
+    /// same class + soundness as [`Self::callee_visited`]: the host-import SET is presence-only (the walk
+    /// self-dedups by (effect,op)), so skipping an already-walked shared node changes no output while
+    /// collapsing the DAG re-descent. Cleared at the walk's top-level entry (`walk_depth == 0`).
+    pub(crate) host_import_visited: crate::fxhash::FxHashSet<StructId>,
+    /// Sharing-aware visited-set for the host-arg-string walk
+    /// ([`crate::backend::wasm::collect_host_arg_strings`]) — same class: the consumer lays each DISTINCT
+    /// string once (presence), so skipping an already-walked shared node changes no laid-string set.
+    pub(crate) host_arg_string_visited: crate::fxhash::FxHashSet<StructId>,
 
     /// Set true when a `collect` subtree hit a depth/reduction LIMIT (the descent-depth backstop, or a
     /// reduction that could not proceed because `enter_reduction` was exhausted). A limit-clipped walk is
@@ -2747,6 +2756,8 @@ impl Db {
             callee_visited: crate::fxhash::FxHashSet::default(),
             closure_code_visited: crate::fxhash::FxHashSet::default(),
             closure_sig_visited: crate::fxhash::FxHashSet::default(),
+            host_import_visited: crate::fxhash::FxHashSet::default(),
+            host_arg_string_visited: crate::fxhash::FxHashSet::default(),
             collect_limited: false,
             reached_visited: crate::fxhash::FxHashSet::default(),
             reached_clipped: false,

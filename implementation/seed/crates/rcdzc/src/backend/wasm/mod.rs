@@ -1119,6 +1119,16 @@ fn collect_host_arg_strings(db: &mut Db, id: crate::ast::StructId, out: &mut Vec
     if db.walk_depth >= crate::db::WALK_DEPTH_LIMIT {
         return;
     }
+    // SHARING-AWARE VISITED-SET (see [`Db::host_arg_string_visited`], same class as `collect_host_imports`
+    // / `callee_visited`): skip an already-walked shared node — the laid-string set is presence-only (the
+    // consumer dedups distinct strings), so this changes no output while collapsing the DAG re-descent.
+    // Cleared at the top-level entry (`walk_depth == 0`); after the depth guard (clip is accepted-neutral).
+    if db.walk_depth == 0 {
+        db.host_arg_string_visited.clear();
+    }
+    if !db.host_arg_string_visited.insert(id) {
+        return;
+    }
     db.walk_depth += 1;
     collect_host_arg_strings_at(db, id, out);
     db.walk_depth -= 1;
