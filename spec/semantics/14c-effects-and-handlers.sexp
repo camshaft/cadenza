@@ -13158,3 +13158,125 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 52116128 Int64))
   (call   main (: 0 Int64)) (output (: 39086122 Int64)))
+
+;; ── conditional-selector re-capture family closed by 7106ad497 (xhsG if / xhsGmatch match / xhsGdeep depth-2) + xhsH perform-as-selector no-touch + xhsTwo two-distinct-handlers (breaker batch 297) ──
+(case "xhsG CONDITIONAL mid-arm foreign perform — the note rides only the THEN branch"
+  (input  (do
+            (effect O (op note (-> Int64 Int64)))
+            (effect I (op step (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle O (: 0 Int64)
+                ((note (v) acc
+                  (resume (+ acc v) (+ acc v))))
+                (handle I (: 0 Int64)
+                  ((step (x) col
+                    (let ((c2 (+ col (+ x (% n 3)))))
+                      (if (> c2 5)
+                          (let ((nv (O.note c2)))
+                            (resume (+ (* c2 10) (% nv 10)) c2))
+                          (resume (* c2 10) c2)))))
+                  (let ((p (I.step (: 3 Int64))))
+                    (let ((q (I.step (: 5 Int64))))
+                      (let ((r (O.note (: 100 Int64))))
+                        (+ (* 1000 (+ (* 1000 p) q)) r)))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 40100110 Int64))
+  (call   main (: 0 Int64)) (output (: 30088108 Int64)))
+
+(case "xhsGmatch the MATCH twin of the conditional mid-arm foreign perform — the same then-else split expressed as a boolean match scrutinee, exercising the match-arm out-state merge path of the selector freeze"
+  (input  (do
+            (effect O (op note (-> Int64 Int64)))
+            (effect I (op step (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle O (: 0 Int64)
+                ((note (v) acc
+                  (resume (+ acc v) (+ acc v))))
+                (handle I (: 0 Int64)
+                  ((step (x) col
+                    (let ((c2 (+ col (+ x (% n 3)))))
+                      (match (> c2 5)
+                        (true
+                          (let ((nv (O.note c2)))
+                            (resume (+ (* c2 10) (% nv 10)) c2)))
+                        (false (resume (* c2 10) c2))))))
+                  (let ((p (I.step (: 3 Int64))))
+                    (let ((q (I.step (: 5 Int64))))
+                      (let ((r (O.note (: 100 Int64))))
+                        (+ (* 1000 (+ (* 1000 p) q)) r)))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 40100110 Int64))
+  (call   main (: 0 Int64)) (output (: 30088108 Int64)))
+
+(case "xhsGdeep the perform buried TWO selector levels deep — an if-in-if routes on parity then magnitude and only the even-and-large leaf performs the outer note, the other three leaves answer distinct tags without performing; the seeds route their FIRST step through different silent leaves before both reach the performing leaf on the second"
+  (input  (do
+            (effect O (op note (-> Int64 Int64)))
+            (effect I (op step (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle O (: 0 Int64)
+                ((note (v) acc
+                  (resume (+ acc v) (+ acc v))))
+                (handle I (: 0 Int64)
+                  ((step (x) col
+                    (let ((c2 (+ col (+ x (% n 3)))))
+                      (if (= (% c2 2) 0)
+                          (if (> c2 5)
+                              (let ((nv (O.note c2)))
+                                (resume (+ (* c2 10) (% nv 10)) c2))
+                              (resume (+ (* c2 10) 1) c2))
+                          (if (> c2 5)
+                              (resume (+ (* c2 10) 2) c2)
+                              (resume (+ (* c2 10) 3) c2))))))
+                  (let ((p (I.step (: 3 Int64))))
+                    (let ((q (I.step (: 5 Int64))))
+                      (let ((r (O.note (: 100 Int64))))
+                        (+ (* 1000 (+ (* 1000 p) q)) r)))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 41100110 Int64))
+  (call   main (: 0 Int64)) (output (: 33088108 Int64)))
+
+(case "xhsH the foreign perform AS the selector — the note's answer is let-bound then ROUTES the branch (over nine takes a 7 tag, under packs the answer's low digit), both branches silent, the perform running exactly once as condition input; the inverse of the G family where the perform hides inside a branch"
+  (input  (do
+            (effect O (op note (-> Int64 Int64)))
+            (effect I (op step (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle O (: 0 Int64)
+                ((note (v) acc
+                  (resume (+ acc v) (+ acc v))))
+                (handle I (: 0 Int64)
+                  ((step (x) col
+                    (let ((c2 (+ col (+ x (% n 3)))))
+                      (let ((nv (O.note c2)))
+                        (if (> nv 9)
+                            (resume (+ (* c2 10) 7) c2)
+                            (resume (+ (* c2 10) (% nv 10)) c2))))))
+                  (let ((p (I.step (: 3 Int64))))
+                    (let ((q (I.step (: 5 Int64))))
+                      (let ((r (O.note (: 100 Int64))))
+                        (+ (* 1000 (+ (* 1000 p) q)) r)))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 44107114 Int64))
+  (call   main (: 0 Int64)) (output (: 33087111 Int64)))
+
+(case "xhsTwo two DISTINCT outer handlers — inner step performs O.note(c2) then P.tick(c2), both foreign, both with the shared binder; tests #fa freeze for two handlers at different drain levels"
+  (input
+    (do
+      (effect P (op tick (-> Int64 Int64)))
+      (effect O (op note (-> Int64 Int64)))
+      (effect I (op step (-> Int64 Int64)))
+      (def (main (: n Int64))
+        (handle P (: 0 Int64)
+          ((tick (w) pa (resume (+ pa w) (+ pa w))))
+          (handle O (: 0 Int64)
+            ((note (v) oa (resume (+ oa v) (+ oa v))))
+            (handle I (: 0 Int64)
+              ((step (x) col
+                (let ((c2 (+ col (+ x (% n 3)))))
+                  (let ((nv (O.note c2)))
+                    (let ((tw (P.tick c2)))
+                      (resume (+ (* c2 100) (+ (* (% nv 10) 10) (% tw 10))) c2))))))
+              (let ((a (I.step (: 3 Int64))))
+                (let ((b (I.step (: 5 Int64))))
+                  (+ (* 1000 (+ (* 1000 a) b)) (+ (O.note (: 100 Int64)) (P.tick (: 100 Int64))))))))))
+      (export main)))
+  (call main (: 10 Int64)) (output (: 445044228 Int64))
+  (call main (: 0 Int64)) (output (: 333811222 Int64)))

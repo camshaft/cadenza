@@ -87,3 +87,12 @@ Banked + gated PASS ×3 wasm, ×1 rust, ×1 rust-async at 931c11dd3. Joins the
 family as pass-witness #6 (batch-296 candidate; 295 carries the first 6).
 Their hardening backlog (next shapes): two-distinct-outer-ops 3-handler nest,
 conditional mid-arm perform.
+
+## xhsTwo two-distinct-outer-handlers (tick 1642)
+v-effects' probe #2 (last hardening axis): inner performs O.note(c2) then
+P.tick(c2) — two DIFFERENT foreign handlers, shared binder, freezes at
+different drain levels. Their n=10 verify 445044228; my independent model
+MATCHES + fills n=0 = 333811222 (their template had a placeholder 0 output —
+banked with real oracles). PASS ×3 wasm + ×1 rust + ×1 rust-async on origin
+3c06de590. The family hardening matrix is now complete: single/multi/
+conditional(4 shapes)/two-handlers performs + 2 no-touch controls.

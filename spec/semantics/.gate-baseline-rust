@@ -6929,6 +6929,11 @@ pass	xhsB the binder feeds the outer perform and the threaded state but the answ
 pass	xhsC the outer perform takes a CONSTANT while the binder feeds answer and state — boundary variant
 pass	xhsD the DROPPED-frozen-arg complement — the outer note arm IGNORES its op param (answers the count, threads count plus one) while the inner step arm still let-binds the advanced column performs the outer note with it and resumes packing both; the frozen argument is dropped not escaped, and the fold is CORRECT
 pass	xhsF the MULTI-PERFORM variant — the inner step arm performs the outer note TWICE with the same shared binder before resuming with both answers' low digits and threading the binder; two frozen arguments must drain-bind independently in one arm
+pass	xhsG CONDITIONAL mid-arm foreign perform — the note rides only the THEN branch
+pass	xhsGdeep the perform buried TWO selector levels deep — an if-in-if routes on parity then magnitude and only the even-and-large leaf performs the outer note, the other three leaves answer distinct tags without performing; the seeds route their FIRST step through different silent leaves before both reach the performing leaf on the second
+pass	xhsGmatch the MATCH twin of the conditional mid-arm foreign perform — the same then-else split expressed as a boolean match scrutinee, exercising the match-arm out-state merge path of the selector freeze
+pass	xhsH the foreign perform AS the selector — the note's answer is let-bound then ROUTES the branch (over nine takes a 7 tag, under packs the answer's low digit), both branches silent, the perform running exactly once as condition input; the inverse of the G family where the perform hides inside a branch
+pass	xhsTwo two DISTINCT outer handlers — inner step performs O.note(c2) then P.tick(c2), both foreign, both with the shared binder; tests #fa freeze for two handlers at different drain levels
 pass	xsw1 a CROSS-SWAPPING scalar pair — each dispatch computes both successors then installs them SWAPPED (a gets the b-derived value, b the a-derived), lineage crosses sides every step
 pass	za1 literal-arm dispatch on a draw — the MATCHED arm performs again, both calls exercised
 pass	za2 a COMPUTED scrutinee (difference of two draws) selects the performing arm at one input only
