@@ -9510,7 +9510,75 @@ fn freeze_foreign_perform_args(db: &mut Db, node: StructId, ctx: &HandlerCtx) ->
         }
         return db.push_list(new_call);
     }
+    // FREEZE an if-CONDITION / match-SCRUTINEE's state-dependent refs (xhsG / xhsGmatch). thread_bounded's
+    // If-arm AND Match-arm merge the per-branch out-states into a `(if cond then_out else_out)` / `(match
+    // scrut (pat arm-out)…)`-valued OUT-state that RE-USES the selector, threaded FORWARD as the next
+    // dispatch's incoming state. A bare arm-local binder ref in the selector (`(> c2 5)`) then RE-CAPTURES the
+    // next dispatch's binder there, selecting the wrong branch and mis-applying the performing branch's
+    // advance. The perform ARG is frozen to `#fa`; the SELECTOR was not, so freeze its refs too.
+    // ⚠ GATED on a BRANCH/ARM that reaches an EFFECT-OP-WITH-ARGS perform (`reaches_perform_with_args`, the
+    // same ctx-independent predicate the collapse candidate uses) — the xhsG/xhsGmatch shape (a mid-arm foreign
+    // perform inside a branch/arm) which is what makes the merge forward a state-advancing selector. When NO
+    // branch performs such an op, the merge collapses to the incoming state (no forwarded selector, no
+    // re-capture) so the freeze is unnecessary — AND freezing then OVER-declines (pr-sync reject: quo1, a
+    // shared-let collapse whose nested match/if selectors reference PATTERN-bound state names with no branch
+    // perform, went pass→todo when its selectors were frozen to out-of-scope `#fac`). (NOT `subtree_performs`:
+    // that is ctx-sensitive — at THIS inner fold the outer op is FOREIGN and it under-counted, missing xhsG.)
+    if let Some(tail) = db.ast.as_form(node, "if").map(<[_]>::to_vec)
+        && tail.len() == 3
+        && (reaches_perform_with_args(db, tail[1]) || reaches_perform_with_args(db, tail[2]))
+    {
+        let frozen_cond = freeze_selector_refs(db, tail[0], ctx);
+        if frozen_cond != tail[0] {
+            let if_head = db.push_name("if");
+            return db.push_list(vec![if_head, frozen_cond, tail[1], tail[2]]);
+        }
+    }
+    if let Some(tail) = db.ast.as_form(node, "match").map(<[_]>::to_vec)
+        && tail.len() >= 2
+        && tail[1..]
+            .iter()
+            .any(|&arm| reaches_perform_with_args(db, arm))
+    {
+        let frozen_scrut = freeze_selector_refs(db, tail[0], ctx);
+        if frozen_scrut != tail[0] {
+            let match_head = db.push_name("match");
+            let mut children = vec![match_head, frozen_scrut];
+            children.extend_from_slice(&tail[1..]);
+            return db.push_list(children);
+        }
+    }
     node
+}
+
+/// Freeze each arm-local `let`-ref in an if-CONDITION or match-SCRUTINEE to a drain-bound `#fac` name (xhsG /
+/// xhsGmatch): a bare binder ref re-captures the next dispatch's binding when the merged out-state selector
+/// threads forward. Binds the ref's drain-safe INIT (`Ref { value }`) — pure refs only (a perform-reaching
+/// ref is left as-is). `#fac` is `#fa`-prefixed so it inherits `combined_hoistable_to_drain`'s whitelist and
+/// the `#st`/`#fa` forget filter. Non-ref nodes recurse structurally. Callers gate on a performing branch, so
+/// this fires only where the out-state merge forwards the selector (avoids over-declining pure-branch matches).
+fn freeze_selector_refs(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> StructId {
+    if let Resolved::Ref { value } = resolved_of(db, node)
+        && !reaches_any_perform(db, value)
+    {
+        let nm = format!("#fac{}", node.0);
+        ctx.pending.borrow_mut().push((nm.clone(), value));
+        return db.push_name(&nm);
+    }
+    match db.ast.get(node).clone() {
+        Struct::Atom(_) => node,
+        Struct::List(children) => {
+            let rebuilt: Vec<StructId> = children
+                .iter()
+                .map(|&c| freeze_selector_refs(db, c, ctx))
+                .collect();
+            if rebuilt == children {
+                node
+            } else {
+                db.push_list(rebuilt)
+            }
+        }
+    }
 }
 
 fn peel_tuple_value_state(db: &mut Db, arm_body: StructId) -> Option<StructId> {
