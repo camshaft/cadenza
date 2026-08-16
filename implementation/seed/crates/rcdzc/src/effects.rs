@@ -516,9 +516,9 @@ impl HandlerCtx {
         let arm_list: Vec<HandleArm> = arms.values().cloned().collect();
         let any_candidate = arm_list
             .iter()
-            .any(|a| arm_has_let_shared_across_resume_slots(db, a.body));
+            .any(|a| arm_is_collapse_candidate(db, a.body));
         let all_mesh = arm_list.iter().all(|a| {
-            if arm_has_let_shared_across_resume_slots(db, a.body) || !arm_has_resume(db, a.body) {
+            if arm_is_collapse_candidate(db, a.body) || !arm_has_resume(db, a.body) {
                 return true;
             }
             // Threads the state UNCHANGED: EVERY resume next-state (peeled through match/if branches) is the
@@ -2795,7 +2795,7 @@ pub fn reduce_handle(
                 .pending
                 .borrow()
                 .iter()
-                .filter(|(name, _)| name.starts_with("#st"))
+                .filter(|(name, _)| name.starts_with("#st") || name.starts_with("#fa"))
                 .map(|(_, init)| *init)
                 .collect();
             let drained = drain_and_wrap(db, &ctx, 0, rewritten);
@@ -6016,11 +6016,30 @@ fn thread_bounded(
                 && ctx.slots.len() == 1
                 && !ctx.in_recursive_specialize.get()
                 && !arm_state_grows;
-            let (value, next_state) = if collapse_ok
-                && arm_has_let_shared_across_resume_slots(db, arm_body)
-                && let Some(combined) = peel_tuple_value_state(db, arm_body)
-                && combined_hoistable_to_drain(db, combined)
+            let mut collapsed: Option<StructId> = None;
+            if collapse_ok
+                && arm_is_collapse_candidate(db, arm_body)
+                && let Some(combined0) = peel_tuple_value_state(db, arm_body)
             {
+                // FREEZE any mid-arm FOREIGN-perform argument into a kept `#st`-name computed against the
+                // INCOMING state (xhs1). Bind-once of the shared binder is necessary but NOT sufficient: when
+                // the OUTER handler later folds the embedded foreign perform, it RE-THREADS the perform's arg
+                // against its own pass, so a state-dependent arg expression is re-derived (wrong incoming
+                // state) — the resume copy stays I-frozen (right) while the arg copy diverges (wrong). Freezing
+                // the arg to a force-kept `#st` slot at THIS (inner) fold gives the outer handler an opaque
+                // frozen name, not a re-derivable expression. (v-inference's foreign-perform-arg analogue of
+                // the `#st` state-bind.)
+                let freeze_mark = ctx.pending.borrow().len();
+                let combined = freeze_foreign_perform_args(db, combined0, ctx);
+                if combined_hoistable_to_drain(db, combined) {
+                    collapsed = Some(combined);
+                } else {
+                    // The freeze speculatively pushed drain-level `#fa` binds; the distribute fallback does not
+                    // use the frozen combined, so roll them back (else an unreferenced `#fa` bind materializes).
+                    ctx.pending.borrow_mut().truncate(freeze_mark);
+                }
+            }
+            let (value, next_state) = if let Some(combined) = collapsed {
                 let name = format!("#st{}_vs", node.0);
                 ctx.pending.borrow_mut().push((name.clone(), combined));
                 let value = tuple_proj(db, &name, 0);
@@ -9426,6 +9445,74 @@ fn lift_inner_op_arm_outer_perform(
 /// and yields a single `(value, state)` tuple; the caller binds it once and PROJECTS `(. t 0)`/`(. t 1)`, so
 /// the single kept slot is shared. Returns `None` on any shape the resume-peel does not model (same coverage
 /// as `peel_resume_from_arm_body`), so the caller falls back to the distribute path.
+/// [xhs1] Rewrite each FOREIGN-perform application in `node` — `(E.op arg…)` where `E.op` is an effect op
+/// NOT discharged by `ctx` — so every argument is a FROZEN `#st`-prefixed name (force-kept, materialized at
+/// THIS inner fold against the incoming state) rather than a live state-dependent subexpression: `(E.op arg)`
+/// → `(let ((#stfa{id} arg)) (E.op #stfa{id}))`. The OUTER handler that later folds the embedded perform then
+/// reads the frozen slot instead of RE-THREADING the arg against its own pass (which re-derives the incoming
+/// state wrongly — the xhs1 residual). A trivial arg (a bare name / literal) is left as-is (nothing to freeze,
+/// byte-identical). Recurses bottom-up.
+fn freeze_foreign_perform_args(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> StructId {
+    // Recurse bottom-up, rebuilding ONLY if a child changed (preserve node sharing/resolution otherwise).
+    let node = match db.ast.get(node).clone() {
+        Struct::Atom(_) => return node,
+        Struct::List(children) => {
+            let rebuilt: Vec<StructId> = children
+                .iter()
+                .map(|&c| freeze_foreign_perform_args(db, c, ctx))
+                .collect();
+            if rebuilt == children {
+                node
+            } else {
+                db.push_list(rebuilt)
+            }
+        }
+    };
+    if let Resolved::Apply { head, args } = resolved_of(db, node)
+        && crate::eval::effect_op_of(db, head).is_some()
+        && is_perform(db, head, ctx).is_none()
+        && !args.is_empty()
+        && let Struct::List(orig) = db.ast.get(node).clone()
+    {
+        // orig = [head-expr, arg0, …]. Freeze each STATE-DEPENDENT arg — a computed list OR a bare name that
+        // resolves to a `let`-binding (`Ref`, e.g. the shared `c2`) — to a fresh `#fa`-name.
+        // DRAIN-LEVEL FREEZE (correct-fold, co-designed with v-inference — supersedes the arm-local let). An
+        // arm-local `(let ((#stfa arg)) (E.op #stfa))` buries the freeze binder INSIDE the combined; when the
+        // OUTER handler folds the embedded foreign perform and threads `(+ acc #stfa)` FORWARD, it splices that
+        // ref OUT of the arm-local binder scope → CDZ0101 unbound (xhs1 note, decline-by-accident). Instead push
+        // each frozen arg to `ctx.pending` as a REAL drain-level bind — materialized by `drain_and_wrap` OUTSIDE
+        // the arm, where the outer handler reads it in scope. Bind the drain-SAFE INIT, not the arm-local ref:
+        // for a `let`-ref arg (the shared `c2`) that is its resolved `Ref { value }` (the binding's init, already
+        // `col`→`#st`/`#seed`-substituted in the combined); for a computed-list arg the expr itself. The `#fa`
+        // prefix is DISTINCT and NOT `#st`-matchable (so an arm-local binder can never again accidentally pass
+        // `combined_hoistable_to_drain`); `#fa` is whitelisted there and re-resolved by the `#st`/`#fa` forget
+        // filter (its init carries `#seed`/`#st` refs). Speculative: the caller rolls back these pending pushes
+        // if the combined turns out non-hoistable (the distribute fallback does not use the frozen combined).
+        let mut new_call: Vec<StructId> = vec![orig[0]];
+        let mut any_frozen = false;
+        for (i, &a) in orig.iter().enumerate().skip(1) {
+            let init = match resolved_of(db, a) {
+                Resolved::Ref { value } => Some(value),
+                _ if matches!(db.ast.get(a), Struct::List(_)) => Some(a),
+                _ => None,
+            };
+            if let Some(init) = init {
+                let nm = format!("#fa{}_{i}", node.0);
+                ctx.pending.borrow_mut().push((nm.clone(), init));
+                new_call.push(db.push_name(&nm));
+                any_frozen = true;
+            } else {
+                new_call.push(a);
+            }
+        }
+        if !any_frozen {
+            return node;
+        }
+        return db.push_list(new_call);
+    }
+    node
+}
+
 fn peel_tuple_value_state(db: &mut Db, arm_body: StructId) -> Option<StructId> {
     // Bare `(resume v s)` → `(tuple v s)`.
     if let Some((v, s)) = tail_resume(db, arm_body) {
@@ -9485,6 +9572,67 @@ fn peel_tuple_value_state(db: &mut Db, arm_body: StructId) -> Option<StructId> {
 /// binding is kept in one of the two split scopes and copy-propagated away in the other). Such an arm is
 /// served by the COLLAPSED `peel_tuple_value_state` path instead. Detected structurally by binder NAME (the
 /// reused branch refs are memoized to a stale init, so a resolution-keyed test misses them).
+/// [xhs1] Whether the arm has a `let`-binding whose INIT reaches a foreign perform WITH A NON-EMPTY ARGUMENT
+/// LIST — a mid-arm arg-bearing perform bound to a name on the resume spine (`(let ((nv (O.note c2))) (resume
+/// …))`, `(O.note 5)`). The DISTRIBUTE peel WRAPS such a let-init around BOTH the value and the next-state,
+/// DUPLICATING the foreign perform (breaker xhsC: a constant-arg outer note RE-EXECUTES 3x across 2 dispatches)
+/// and — when a binder feeds the perform arg — threading its two copies against different incoming state
+/// (xhs1). The COLLAPSE binds the whole arm once (perform runs once, binder computed once) → correct.
+/// ⚠ ARG-BEARING ONLY (pr-sync reject of 07e85af7c): a NULLARY foreign perform let-init — `(let ((x (A.get)))
+/// (resume t (+ t x)))`, the as7 fold-strict shape — is EXCLUDED. `thread_bounded`'s let-arm threads a nullary
+/// perform's init exactly ONCE (no arg to re-derive), so DISTRIBUTE already folds as7 correctly (strict → 6);
+/// widening the collapse to it wrongly heap-collapsed that fold-strict case. The xhs miscompile class is
+/// precisely the ARG-bearing perform (an arg the peel re-threads / the perform the peel duplicates), so gate
+/// on `reaches_perform_with_args`. Fires even at 1-use-per-slot (which the shared-let detector below excludes).
+fn arm_has_let_init_reaching_arg_perform(db: &mut Db, node: StructId) -> bool {
+    if let Some(tail) = db.ast.as_form(node, "let").map(<[_]>::to_vec)
+        && tail.len() == 2
+        && let Struct::List(pairs) = db.ast.get(tail[0]).clone()
+        && pairs.iter().any(|&p| {
+            matches!(db.ast.get(p).clone(), Struct::List(kv) if kv.len() == 2 && reaches_perform_with_args(db, kv[1]))
+        })
+    {
+        return true;
+    }
+    if let Struct::List(children) = db.ast.get(node).clone() {
+        return children
+            .iter()
+            .any(|&c| arm_has_let_init_reaching_arg_perform(db, c));
+    }
+    false
+}
+
+/// Whether `node`'s subtree contains an effect-operation APPLICATION WITH A NON-EMPTY argument list — the
+/// arg-bearing foreign perform the drain-level freeze targets (`(O.note c2)`, `(O.note 5)`). A NULLARY perform
+/// (`(A.get)`) is EXCLUDED: it has no arg to freeze/re-thread and DISTRIBUTE folds it strict (as3/as7). This is
+/// the precise xhs collapse trigger — narrower than `reaches_any_perform` (which also reports nullary performs
+/// and `resume`), so it does not sweep the fold-strict let-lifted-nullary-perform shape into the collapse.
+fn reaches_perform_with_args(db: &mut Db, node: StructId) -> bool {
+    fn walk(db: &mut Db, node: StructId, depth: u32) -> bool {
+        if depth > 32 {
+            return false; // too deep — do not over-widen the collapse (distribute is the safe default)
+        }
+        if let Resolved::Apply { head, args } = resolved_of(db, node)
+            && !args.is_empty()
+            && crate::eval::effect_op_of(db, head).is_some()
+        {
+            return true;
+        }
+        match db.ast.get(node).clone() {
+            Struct::List(children) => children.iter().any(|&c| walk(db, c, depth + 1)),
+            Struct::Atom(_) => false,
+        }
+    }
+    walk(db, node, 0)
+}
+
+/// A collapse CANDIDATE: either the cross-scope multi-use shared-let (tpwJ) or a mid-arm-foreign-perform
+/// let-init (xhs1) — both are corrupted by the distribute peel and correctly served by the tuple collapse.
+fn arm_is_collapse_candidate(db: &mut Db, body: StructId) -> bool {
+    arm_has_let_shared_across_resume_slots(db, body)
+        || arm_has_let_init_reaching_arg_perform(db, body)
+}
+
 fn arm_has_let_shared_across_resume_slots(db: &mut Db, arm_body: StructId) -> bool {
     // Collect let-binder names bound anywhere on the tail spine, then check each is referenced in BOTH the
     // resume value-slots and the resume next-state-slots — AND KEPT (referenced >=2x) in at least one slot.
@@ -9551,7 +9699,9 @@ fn check_name_in_resume_slots(
 fn combined_hoistable_to_drain(db: &Db, node: StructId) -> bool {
     match db.ast.get(node) {
         Struct::Atom(_) => match db.ast.as_name(node) {
-            Some(n) if n.starts_with('#') => n.starts_with("#st") || n.starts_with("#seed"),
+            Some(n) if n.starts_with('#') => {
+                n.starts_with("#st") || n.starts_with("#seed") || n.starts_with("#fa")
+            }
             _ => true,
         },
         Struct::List(children) => children
