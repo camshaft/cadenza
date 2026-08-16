@@ -2602,34 +2602,55 @@ fn reap_stranded_dead_letters(fleet: &Fleet, name: &str, now: u64) -> usize {
     reaped
 }
 
+/// A note older than this is treated as AUDIT-LOG (age-archivable) — 24h, an order of magnitude past the
+/// 1h `INFORMATIONAL_BACKLOG_AGE` staleness trigger and far beyond any live-coordination window (a
+/// directive that mattered is acted on within a gate cycle or two; a diagnostic is FYI). The residual
+/// class the ref-gate structurally can't reap (concierge audit 2026-08-16): DROP directives that name
+/// their ref only in PROSE (empty structured `ref`, so `refs_to_drop` never filtered on them = never
+/// live) + free-form diagnostic/status notes. At 24h all are provably audit-log; the age-archive clears
+/// them (losslessly, via dead-letters.log) so the residual stops re-triggering the note-backlog escalation
+/// every ~30min forever. The ref-still-queued guard below still protects the ONE live case.
+const NOTE_AUDIT_LOG_AGE: u64 = 24 * 3600;
+
 /// Is a stale INFORMATIONAL message PROVABLY SPENT — safe for the watchdog to archive without dropping
 /// live coordination (concierge-confirmed design, 2026-08-16)? Pure so the safety rule is unit-testable.
 ///
 /// `kind` + `subject` + `msg_ref` describe one informational message; `queued_refs` is the set of MR refs
-/// CURRENTLY in pr-sync's queue. Two spent classes:
+/// CURRENTLY in pr-sync's queue; `msg_age_secs` is how old the message is. Spent classes:
 ///   * INERT ACK (`merged`/`status`/`backlog`/`reply`) — carries no live directive, always safe.
 ///   * a SPENT DROP-DIRECTIVE `note` — a `DROP-REF`/withdraw note whose `--ref` is NO LONGER queued. WHILE
 ///     the ref is queued the note is LOAD-BEARING (`refs_to_drop` reads it to filter the queue = the
 ///     double-land guard), so it must stay; ONCE the ref has left the queue the drop already took effect
 ///     and the ref can't re-land, so the note is spent. This ref-left-queue gate is what makes the reap
 ///     lossless rather than a double-land regression.
+///   * an AUDIT-LOG note — ANY note older than `NOTE_AUDIT_LOG_AGE` (24h), which is far past any live
+///     window. This clears the residual the ref-gate can't (concierge audit): prose-only DROP directives
+///     (empty structured ref → never filtered the queue → never live) + diagnostic/status notes. GUARDED:
+///     a note whose structured `ref` is STILL QUEUED is NEVER age-reaped (the one still-live case), so age
+///     can't override the double-land guard.
 ///
-/// Everything else (a real coordination `note` that isn't a drop-directive) is NOT spent → left to keep
-/// escalating to the concierge, unchanged.
+/// Everything else (a recent real coordination `note`) is NOT spent → left to keep escalating, unchanged.
 fn informational_msg_is_spent(
     kind: &str,
     subject: &str,
     msg_ref: &str,
     queued_refs: &[String],
+    msg_age_secs: u64,
 ) -> bool {
+    // A note whose STRUCTURED ref is still queued is live (the double-land guard reads it) — never reap it,
+    // regardless of age. This is the single hard exception that age must not override.
+    let ref_still_queued =
+        !msg_ref.is_empty() && queued_refs.iter().any(|q| refs_match_for_drop(msg_ref, q));
     match kind {
         // Inert acks never carry a directive pr-sync must act on.
         "merged" | "status" | "backlog" | "reply" => true,
-        // A drop-directive note is spent ONLY once its ref has left the queue (drop took effect).
-        "note" if subject_is_drop_directive(subject) && !msg_ref.is_empty() => {
-            !queued_refs.iter().any(|q| refs_match_for_drop(msg_ref, q))
-        }
-        // Any other note (real coordination) is NOT spent — leave it for the escalation path.
+        _ if ref_still_queued => false, // live drop-directive — keep until its ref leaves the queue.
+        // A drop-directive note is spent once its ref has left the queue (drop took effect).
+        "note" if subject_is_drop_directive(subject) && !msg_ref.is_empty() => true,
+        // Any note aged past the audit-log threshold is spent (prose-only drops + diagnostics). The
+        // ref_still_queued guard above already excluded the one live case, so this is safe.
+        "note" if msg_age_secs >= NOTE_AUDIT_LOG_AGE => true,
+        // A recent note that's neither an inert ack nor a spent/aged drop → NOT spent (keeps escalating).
         _ => false,
     }
 }
@@ -2696,7 +2717,12 @@ fn reap_spent_informational(fleet: &Fleet, name: &str, now: u64) -> usize {
         else {
             continue;
         };
-        if !informational_msg_is_spent(&m.kind, &m.subject, &m.r#ref, &queued_refs) {
+        // Message age from its file mtime (delivery time); 0 if unreadable (→ never age-reaps, only the
+        // ref-gate/inert-ack rules apply — a message we can't age-check is treated as fresh).
+        let age = file_mtime_unix(&src)
+            .map(|m| now.saturating_sub(m))
+            .unwrap_or(0);
+        if !informational_msg_is_spent(&m.kind, &m.subject, &m.r#ref, &queued_refs, age) {
             continue;
         }
         // Durable record FIRST — if we can't log it, don't archive it (never lose an unrecorded item).
@@ -14679,10 +14705,12 @@ mod tests {
     #[test]
     fn informational_msg_is_spent_reaps_only_provably_spent_mail() {
         let queued = vec!["abc123def".to_string(), "999ffff".to_string()];
-        // INERT ACKS → always spent (safe to reap), regardless of ref/subject.
+        let fresh = 60u64; // 1 min old — well under the 24h audit-log threshold.
+        let old = NOTE_AUDIT_LOG_AGE + 1; // past the audit-log threshold.
+        // INERT ACKS → always spent (safe to reap), regardless of ref/subject/age.
         for kind in ["merged", "status", "backlog", "reply"] {
             assert!(
-                informational_msg_is_spent(kind, "anything", "", &queued),
+                informational_msg_is_spent(kind, "anything", "", &queued, fresh),
                 "{kind} ack is always spent"
             );
         }
@@ -14691,7 +14719,8 @@ mod tests {
             "note",
             "DROP-REF deadbeef: superseded",
             "deadbeef",
-            &queued
+            &queued,
+            fresh
         ));
         // A DROP-directive note whose ref is STILL queued → NOT spent (load-bearing: refs_to_drop reads it
         // to filter the queue; reaping now would let the withdrawn MR re-land = double-land regression).
@@ -14699,41 +14728,72 @@ mod tests {
             "note",
             "DROP-REF abc123def: superseded",
             "abc123def",
-            &queued
+            &queued,
+            fresh
         ));
         // ref-match is prefix-symmetric (short vs full sha) — a short drop-ref still matches a queued full sha.
         assert!(!informational_msg_is_spent(
             "note",
             "DROP-REF abc123",
             "abc123",
-            &queued
+            &queued,
+            fresh
         ));
-        // A REAL coordination note (not a drop-directive) → NOT spent — left to keep escalating.
+        // CRUCIAL: even AGED past the audit-log threshold, a note whose structured ref is STILL QUEUED is
+        // NEVER age-reaped — age must not override the double-land guard.
+        assert!(!informational_msg_is_spent(
+            "note",
+            "DROP-REF abc123def: superseded",
+            "abc123def",
+            &queued,
+            old
+        ));
+        // A FRESH real coordination note (not a drop-directive) → NOT spent — left to keep escalating.
         assert!(!informational_msg_is_spent(
             "note",
             "heads-up: cutover plan for the S3 flag-day",
             "",
-            &queued
+            &queued,
+            fresh
         ));
-        // A drop-directive note with an EMPTY ref can't be proven spent (no ref to check) → NOT reaped.
+        // The RESIDUAL class the ref-gate can't reap (concierge audit): an OLD note that's a prose-only
+        // drop (empty structured ref) OR a diagnostic → AGE-ARCHIVABLE past the 24h threshold.
+        assert!(informational_msg_is_spent(
+            "note",
+            "DROP 3 superseded v-inference MRs",
+            "",
+            &queued,
+            old
+        ));
+        assert!(informational_msg_is_spent(
+            "note",
+            "Isolation aid: wasm 6868/44/0 diagnostic",
+            "",
+            &queued,
+            old
+        ));
+        // A drop-directive note with an EMPTY ref, still FRESH → NOT reaped yet (waits out the age gate).
         assert!(!informational_msg_is_spent(
             "note",
             "DROP-REF (no ref field)",
             "",
-            &queued
+            &queued,
+            fresh
         ));
-        // An actionable kind is never in this informational path, but defensively → NOT spent.
+        // An actionable kind is never in this informational path, but defensively → NOT spent (even old).
         assert!(!informational_msg_is_spent(
             "assign",
             "do the thing",
             "",
-            &queued
+            &queued,
+            old
         ));
         assert!(!informational_msg_is_spent(
             "merge-request",
             "land me",
             "abc",
-            &queued
+            &queued,
+            old
         ));
     }
 
