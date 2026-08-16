@@ -532,12 +532,16 @@ pub(crate) mod cse {
 /// edges to `Core::LocalRef`, so the emit-analysis walks see it once (the durable fix for the
 /// `mark_binder_dups` O(K^depth) re-descent). See `backend/wasm/DESIGN-sharing-aware-emit-let-slot.md`.
 ///
-/// STEP 1 (this slice): DETECTION-ONLY, a verified BYTE-NEUTRAL no-op — it enumerates the O2 emit bodies and
-/// counts shared heap-handle candidates (`core_analysis::collect_shared_heap_binding_candidates`) but
-/// installs NO binding, exactly as the empty `PassManager` seam landed as a no-op. The distinct-fresh-binder
-/// Let-install + dominating-frontier/enclosing-scope placement + unconditional-reach byte-neutrality gate
-/// are the following slices (each opt-sweep 0-divergence gated); v-rust-backend's landed disjointness
-/// harness co-verifies the emit dup/drop when the binding slice lands.
+/// INSTALL (this slice — v-rb's emit-coupled half of the Option-ii division): consume `b2_bind_plan`
+/// (v-core-opt's analysis: detection + heap-share + template-exclusion + bind-safety gates) and, per planned
+/// entry, install a `Core::Let` slot at its `scope_node` binding a COPY of the shared node's core to a
+/// DISTINCT fresh binder, then repoint the shared id to a `LocalRef` of that binder (the loop below). This is
+/// byte-neutral WHERE THE PLAN IS EMPTY and refcount-correct where it fires (the distinct fresh binder makes
+/// `collect_row_op_field_dups`'s `bk == bv` guard false → no double-dup). Proven end-to-end on cmb1
+/// (828567056280870 / 615201506009920, no hang) once the plan admits its shares; the plan currently gates on
+/// `is_trap_free` ALONE (b2_bind_plan gate 4), so a TRAPPING share (cmb1's `(/ … (+ k 1))` divide compound)
+/// is not yet planned — v-core-opt's unconditional-reach arm is the follow-on that lights cmb1/pom5/ksc1 up
+/// against this install with no further emit change.
 pub(crate) fn run_sharing_aware_emit(
     db: &mut crate::db::Db,
     layout: &crate::layout::Layout,
@@ -551,25 +555,57 @@ pub(crate) fn run_sharing_aware_emit(
         let Some(body) = db.defs[def].body else {
             continue;
         };
-        // STEP 2 (still a no-op wrt emit): compute the B2 bind PLAN (detection + template-exclusion + LCA +
-        // trap-free gate). v-rust-backend's install consumes this plan (Option-ii division); until that
-        // lands this only traces the plan size — byte-neutral (no override installed here).
+        // STEP 3: INSTALL the B2 bind plan (v-rb's emit-coupled half of the Option-ii division). Each entry
+        // is a shared heap node the plan ALREADY gated as sound to bind (trap-free + PARAM-closed value-share;
+        // template-shares + trapping shares excluded — see b2_bind_plan). For each, install a `Core::Let` slot
+        // at its `scope_node` (the members' LCA = the nearest enclosing scope, e.g. the arm-body — NOT the
+        // fn/handle body, so no handler-emit perturbation) binding a COPY of the shared node's core to a
+        // DISTINCT fresh binder, then repoint the shared id to a `LocalRef` of that binder. This collapses the
+        // emit-analysis re-descent (`mark_binder_dups` O(K^depth)) — the durable cmb1 fix. Mirrors `cse_body`'s
+        // Let-install; sequential per-entry install NESTS correctly when two entries share a `scope_node`
+        // (each captures `scope_node`'s CURRENT core as the new Let body → the second wraps the first, let*).
+        // See backend/wasm/DESIGN-sharing-aware-emit-let-slot.md.
         let plan = crate::core_analysis::b2_bind_plan(db, body);
-        if !plan.is_empty() {
-            // `_body_level` is the licm_children-only detection (body-level shares); the plan uses the
-            // complete core_child_ids traversal (also the arm-internal shares). Tracing both shows the
-            // coverage delta (cmb1: 31 body-level vs the plan's arm-internal set).
-            let _body_level =
-                crate::core_analysis::collect_shared_heap_binding_candidates(db, body).len();
-            // Read every plan field (they are the v-rb-install interface; exercised here so the trace
-            // reflects the actual plan, not just its length, until the install consumer lands).
-            for e in &plan {
-                trace!(target: "rcdzc::opt", def, scope = e.scope_node.0, shared = e.shared_id.0,
-                    members = e.members.len(), ty = ?e.ty,
-                    "sharing-aware-emit: B2 bind-plan entry (v-rb install consumes this; no-op here)");
+        for e in &plan {
+            // rep_init: a fresh node holding the shared node's ORIGINAL core (the binding VALUE), captured
+            // BEFORE the member repoint below — it references the shared node's CHILDREN, not the shared id
+            // itself, so the id-repoint leaves the original computation intact.
+            let shared_core = crate::lower::core_of(db, e.shared_id);
+            let rep_init = crate::lower::synth_core(db, shared_core, e.ty.clone());
+            // A DISTINCT fresh binder id (the slot key) typed as the shared value: `is_heap_type_for_retain`
+            // sees the heap type so `mark_binder_dups` gives the slot the correct dup/drop; distinct from the
+            // value so `collect_row_op_field_dups`'s `bk == bv` guard is false (no double-count). Its core is
+            // only a key (never dereferenced for a Let binder).
+            let fresh_binder = crate::lower::synth_core(
+                db,
+                crate::core::Core::LocalRef { binder: rep_init },
+                e.ty.clone(),
+            );
+            // The Let BODY: a fresh node holding `scope_node`'s CURRENT core (so a prior same-scope Let is
+            // captured as this Let's body → nested let* bindings, never a clobber).
+            let scope_ty = crate::infer::type_of(db, e.scope_node);
+            let scope_core = crate::lower::core_of(db, e.scope_node);
+            let inner = crate::lower::synth_core(db, scope_core, scope_ty);
+            db.install_core_override(
+                e.scope_node,
+                crate::core::Core::Let {
+                    bindings: vec![(fresh_binder, rep_init)].into(),
+                    body: inner,
+                },
+            );
+            // Repoint the shared id (its K parents all read this one id) to read the slot.
+            for &m in &e.members {
+                db.install_core_override(
+                    m,
+                    crate::core::Core::LocalRef {
+                        binder: fresh_binder,
+                    },
+                );
             }
-            trace!(target: "rcdzc::opt", def, entries = plan.len(), body_level = _body_level,
-                "sharing-aware-emit: B2 bind plan total (no-op here)");
+        }
+        if !plan.is_empty() {
+            trace!(target: "rcdzc::opt", def, entries = plan.len(),
+                "sharing-aware-emit: B2 bind plan INSTALLED (shared heap nodes bound into Let slots)");
         }
     }
 }

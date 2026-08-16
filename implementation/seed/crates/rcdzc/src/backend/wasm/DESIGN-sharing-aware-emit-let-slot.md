@@ -131,3 +131,44 @@ RESOLVED (v-rb + v-agent-harness co-review, 2026-08-16):
   battery is staged).
 - Self-host: `cdz test implementation/compiler-ml` must stay green (the 291M bodies must still
   emit identically, just faster).
+
+## Empirical findings on the FIRST install (v-rust-backend, 2026-08-16)
+
+The emit-side install (opt.rs `run_sharing_aware_emit`, gated O2+) was built and exercised against
+the FIRST `b2_bind_plan` (gate-3 = free-binders-all-Param, gate-4 = trap-free-only). Three verified
+results, from running the real install (not a simulation):
+
+1. **MECHANISM PROVEN.** With gate-4's `is_trap_free` bypassed locally so cmb1's shares are admitted,
+   cmb1.main binds 127 slots, compiles WITHOUT HANGING, and runs to the exact expected values
+   (`--arg 10` → 828567056280870, `--arg 0` → 615201506009920). So the Let-slot + distinct-fresh-binder
+   + repoint construction is correct and does kill the `mark_binder_dups` O(K^depth) re-descent.
+
+2. **gate-4 (trap-free-only) leaves cmb1 EMPTY.** `b2_bind_plan(cmb1.main)`: shared≥2 = 130, rejected
+   [localref 0, notheap 3, template 0, **trap 127**], planned 0. cmb1's shared node is the
+   `(/ (* c (- (+ 6 (% n 4)) k)) (+ k 1))` DIVIDE compound → `is_trap_free` = false. So the deferred
+   **unconditional-reach arm** (`|| frontier.contains(member)`) is REQUIRED for cmb1 — its divides sit
+   in the guarded false-branch, so binding at their members' LCA is non-speculative (does not move the
+   trap past the k-guard).
+
+3. **gate-3 (free-binders-all-Param) is UNSOUND — the first install MISCOMPILED at O2/O3.**
+   `gate --opt-sweep --target wasm spec/semantics/14c-effects-and-handlers.sexp` with the install ON:
+   6 divergences — **rq3** (rational STATE, O2/O3 → value 99 vs O1 → value 199, WRONG) and **plt2**
+   (list STATE, O2/O3 → trap vs O1 → value, a CRASH). Install OFF (env-gate): 0 divergences / 627
+   checked. Attribution is definitive: MINE. Root cause: rq3/plt2's shared heap node reads the
+   handler-arm STATE PARAM, which is re-bound to a DIFFERENT value on each recursive-driver /
+   resume-next-state iteration, so the same `StructId` reached ≥2× is NOT the same runtime value
+   across iterations. Binding once collapses distinct per-iteration values (rq3) or aliases a handle
+   freed on a prior iteration (plt2 trap). **A Param free-binder is NOT proof of value-stability.**
+   This is the same state-threaded-template hazard gate-3 targets (cbk1/trn6), reached via a Param
+   instead of an inner-Let binder (and the same class as xhs1's Resume-next-state binder).
+
+### CORRECTED admit rule (both arms — the real test is VALUE-STABILITY-across-iterations)
+
+Admit a share iff EVERY free binder is `(Core::Param OR inner-Let bound-once)` **AND** that binder is
+NEVER used as a `Core::Resume` next_state and is NEVER re-bound on a self/recursive-call or resume path
+between its binding and the share. The `free-binder-is-a-Param` check alone is insufficient. gate-4
+additionally needs the unconditional-reach arm for the trapping case (cmb1). Ownership: v-core-opt owns
+both plan fixes (gate-3 tighten + gate-4 arm); v-rb's install is unchanged (it faithfully installs
+whatever the plan admits) and is HELD until the tightened plan lands, then re-verified against the full
+opt-sweep + cmb1 co-verify. TRUNK IS SAFE throughout — the pass is a no-op on trunk (the plan installs
+nothing there).

@@ -214,6 +214,12 @@ pub(crate) fn collect_node_refs(
 /// read) and non-heap / `Unit` nodes (a scalar needs no dup/drop; a `Unit` handle owns no reference). The
 /// distinct-fresh-binder slot construction + placement (dominating-frontier + unconditional-reach) are the
 /// CALLER's job — this is detection only.
+///
+/// NOTE: `b2_bind_plan` (below) supersedes this for the live pass — it uses the COMPLETE `core_child_ids`
+/// traversal (descends `MatchSum` arms), where this body-level detector sees only `licm_children`. This
+/// remains as the body-level detector its own unit tests pin (the coverage-delta reference for the plan),
+/// so it is `#[cfg(test)]` — retained + tested, but not on the production path.
+#[cfg(test)]
 pub(crate) fn collect_shared_heap_binding_candidates(db: &mut Db, body: StructId) -> Vec<StructId> {
     let mut counts: HashMap<StructId, u32> = HashMap::new();
     let mut order: Vec<StructId> = Vec::new();
