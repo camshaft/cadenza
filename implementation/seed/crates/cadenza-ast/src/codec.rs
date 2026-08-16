@@ -1331,6 +1331,120 @@ mod tests {
         );
     }
 
+    // Shared assertion for the cross-backend byte-identity golden pins below: encode the framed value-form
+    // arena and require the EXACT bytes. `encode` canonicalizes (interns identical leaves + DFS re-index),
+    // which is why e.g. the Record golden carries only 8 leaves though the value + type mention
+    // `record`/`=`/`a`/`b`/`Int64` more than once. Each golden was recorded from the native-rust
+    // `Value.encode` face and
+    // byte-verified equal to the wasm `value-encode` op; v-runtime pins the runtime side to the same bytes.
+    fn assert_encodes_to(a: &Arenas, golden: &[u8], what: &str) {
+        let got = encode(a);
+        assert_eq!(
+            got, golden,
+            "cadenza_ast::codec::encode of {what} diverged from the cross-backend golden"
+        );
+    }
+
+    fn int(b: &mut Builder, n: i64) -> crate::ast::StructId {
+        b.atom_leaf(Leaf::Int {
+            value: BigInt::from(n),
+            radix: Radix::Dec,
+        })
+    }
+
+    #[test]
+    fn value_encode_of_a_framed_record_is_the_colon_framed_golden() {
+        // (: (record (= a 5) (= b 105)) (record (a Int64) (b Int64))) — the structural Record frame. BOTH
+        // the value head AND the type-node head are LOWERCASE `record` (the descriptor `type_node_of`, NOT
+        // `type_ast`'s capital `Record`/`(: k T)`), so they intern to ONE atom and each type field is a bare
+        // `(name Type)` node — 8 deduped leaves (: record = a INT5 b INT105 Int64). Matches the wasm face;
+        // an earlier draft used capital `Record` + colon fields (9 leaves) which DIVERGED — v-runtime's
+        // per-side pin caught it, fixed alongside the rcdzc emit_type_node Record arm.
+        let mut b = Builder::new();
+        let a5 = {
+            let eq = b.name("=");
+            let ka = b.name("a");
+            let v = int(&mut b, 5);
+            b.list(vec![eq, ka, v])
+        };
+        let b105 = {
+            let eq = b.name("=");
+            let kb = b.name("b");
+            let v = int(&mut b, 105);
+            b.list(vec![eq, kb, v])
+        };
+        let rec_head = b.name("record");
+        let value = b.list(vec![rec_head, a5, b105]);
+        let ta = {
+            let ka = b.name("a");
+            let ty = b.name("Int64");
+            b.list(vec![ka, ty])
+        };
+        let tb = {
+            let kb = b.name("b");
+            let ty = b.name("Int64");
+            b.list(vec![kb, ty])
+        };
+        let trec_head = b.name("record");
+        let type_node = b.list(vec![trec_head, ta, tb]);
+        let colon = b.name(":");
+        let root = b.list(vec![colon, value, type_node]);
+        let a = b.finish(root);
+        let golden: &[u8] = b"cdzast\x00\x01\x08\n\x01:\n\x06record\n\x01=\n\x01a\x00\x01\x05\n\x01b\x00\x01i\n\x05Int64\x14\x00\x00\x00\x01\x00\x02\x00\x03\x00\x04\x01\x03\x02\x03\x04\x00\x02\x00\x05\x00\x06\x01\x03\x06\x07\x08\x01\x03\x01\x05\t\x00\x01\x00\x03\x00\x07\x01\x02\x0c\r\x00\x05\x00\x07\x01\x02\x0f\x10\x01\x03\x0b\x0e\x11\x01\x03\x00\n\x12\x13";
+        assert_encodes_to(&a, golden, "the framed (record (= a 5) (= b 105))");
+    }
+
+    #[test]
+    fn value_encode_of_a_framed_generic_sum_some_is_the_colon_framed_golden() {
+        // (: (Some 5) (Option Int64)) — a GENERIC sum, root Framed with the parametric (Option Int64) type node.
+        let mut b = Builder::new();
+        let some_head = b.name("Some");
+        let five = int(&mut b, 5);
+        let value = b.list(vec![some_head, five]);
+        let opt = b.name("Option");
+        let i64n = b.name("Int64");
+        let type_node = b.list(vec![opt, i64n]);
+        let colon = b.name(":");
+        let root = b.list(vec![colon, value, type_node]);
+        let a = b.finish(root);
+        let golden: &[u8] = b"cdzast\x00\x01\x05\n\x01:\n\x04Some\x00\x01\x05\n\x06Option\n\x05Int64\x08\x00\x00\x00\x01\x00\x02\x01\x02\x01\x02\x00\x03\x00\x04\x01\x02\x04\x05\x01\x03\x00\x03\x06\x07";
+        assert_encodes_to(&a, golden, "the framed (Some 5) : (Option Int64)");
+    }
+
+    #[test]
+    fn value_encode_of_a_framed_generic_sum_none_is_the_colon_framed_golden() {
+        // (: (None unit) (Option Int64)) — the nullary variant renders (None unit).
+        let mut b = Builder::new();
+        let none_head = b.name("None");
+        let unit = b.name("unit");
+        let value = b.list(vec![none_head, unit]);
+        let opt = b.name("Option");
+        let i64n = b.name("Int64");
+        let type_node = b.list(vec![opt, i64n]);
+        let colon = b.name(":");
+        let root = b.list(vec![colon, value, type_node]);
+        let a = b.finish(root);
+        let golden: &[u8] = b"cdzast\x00\x01\x05\n\x01:\n\x04None\n\x04unit\n\x06Option\n\x05Int64\x08\x00\x00\x00\x01\x00\x02\x01\x02\x01\x02\x00\x03\x00\x04\x01\x02\x04\x05\x01\x03\x00\x03\x06\x07";
+        assert_encodes_to(&a, golden, "the framed None : (Option Int64)");
+    }
+
+    #[test]
+    fn value_encode_of_a_framed_monomorphic_sum_multi_payload_is_the_named_framed_golden() {
+        // (: (Rect 5 6) Shape) — a MONOMORPHIC sum roots at Named (BARE-name type node `Shape`, not a
+        // parametric list), and Rect is a MULTI-payload variant so its two ints spread FLAT: (Rect 5 6).
+        let mut b = Builder::new();
+        let rect = b.name("Rect");
+        let p0 = int(&mut b, 5);
+        let p1 = int(&mut b, 6);
+        let value = b.list(vec![rect, p0, p1]);
+        let type_node = b.name("Shape");
+        let colon = b.name(":");
+        let root = b.list(vec![colon, value, type_node]);
+        let a = b.finish(root);
+        let golden: &[u8] = b"cdzast\x00\x01\x05\n\x01:\n\x04Rect\x00\x01\x05\x00\x01\x06\n\x05Shape\x07\x00\x00\x00\x01\x00\x02\x00\x03\x01\x03\x01\x02\x03\x00\x04\x01\x03\x00\x04\x05\x06";
+        assert_encodes_to(&a, golden, "the framed (Rect 5 6) : Shape");
+    }
+
     #[test]
     fn every_payload_leaf_kind_including_markers_round_trips_equal_through_the_codec() {
         // `round_trips()` above uses `sample()`, which only carries Int/Float/Str/Bool/Name — it does NOT
