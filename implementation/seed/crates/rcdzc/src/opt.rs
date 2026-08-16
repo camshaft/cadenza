@@ -537,11 +537,17 @@ pub(crate) mod cse {
 /// entry, install a `Core::Let` slot at its `scope_node` binding a COPY of the shared node's core to a
 /// DISTINCT fresh binder, then repoint the shared id to a `LocalRef` of that binder (the loop below). This is
 /// byte-neutral WHERE THE PLAN IS EMPTY and refcount-correct where it fires (the distinct fresh binder makes
-/// `collect_row_op_field_dups`'s `bk == bv` guard false → no double-dup). Proven end-to-end on cmb1
-/// (828567056280870 / 615201506009920, no hang) once the plan admits its shares; the plan currently gates on
-/// `is_trap_free` ALONE (b2_bind_plan gate 4), so a TRAPPING share (cmb1's `(/ … (+ k 1))` divide compound)
-/// is not yet planned — v-core-opt's unconditional-reach arm is the follow-on that lights cmb1/pom5/ksc1 up
-/// against this install with no further emit change.
+/// `collect_row_op_field_dups`'s `bk == bv` guard false → no double-dup). Both-backend full-corpus opt-sweep
+/// 0-div O0..O3 (wasm 6179 / rust 6082) — the bind-safety gates (`b2_bind_plan`: fully-solved-type,
+/// not-match-scrutinee, value-stability, trap-free OR unconditionally-reached) keep every admitted bind sound.
+/// GATE 4 admits a trapping share when its `scope_node`'s dominating frontier CONTAINS it (the
+/// unconditional-reach arm, not `is_trap_free` alone), so cmb1's guard-position divide reads ARE planned;
+/// but cmb1 has ~99 further divide shares that are BOTH trapping AND only conditionally reached (nested
+/// if-branches → frontier excludes them), so it is only PARTIALLY bound → its emit-re-descent shrinks enough
+/// to hit a clean instruction-budget DECLINE rather than hang, but not enough to COMPILE. Full cmb1 compile
+/// (828567056280870 / 615201506009920) needs the cmb1-FULL follow-on: PER-BRANCH binding (one plan entry per
+/// guarded-branch occurrence, `scope_node` = the guarded branch) — `value_range` cannot prove `k+1` nonzero
+/// (cross-iteration-inductive), so the trap-free arm cannot admit those 99; a non-blocking joint pure-opt.
 pub(crate) fn run_sharing_aware_emit(
     db: &mut crate::db::Db,
     layout: &crate::layout::Layout,
@@ -556,8 +562,9 @@ pub(crate) fn run_sharing_aware_emit(
             continue;
         };
         // STEP 3: INSTALL the B2 bind plan (v-rb's emit-coupled half of the Option-ii division). Each entry
-        // is a shared heap node the plan ALREADY gated as sound to bind (trap-free + PARAM-closed value-share;
-        // template-shares + trapping shares excluded — see b2_bind_plan). For each, install a `Core::Let` slot
+        // is a shared heap node the plan ALREADY gated as sound to bind (fully-solved-type + not-a-scrutinee +
+        // value-stable PARAM-closed + [trap-free OR its scope_node unconditionally reaches it]; template-shares
+        // and conditionally-reached trapping shares excluded — see b2_bind_plan). For each, install a `Core::Let` slot
         // at its `scope_node` (the members' LCA = the nearest enclosing scope, e.g. the arm-body — NOT the
         // fn/handle body, so no handler-emit perturbation) binding a COPY of the shared node's core to a
         // DISTINCT fresh binder, then repoint the shared id to a `LocalRef` of that binder. This collapses the
