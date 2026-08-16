@@ -4821,6 +4821,7 @@ pass	cc7 a draw-capturing closure threaded through a RECURSIVE helper — applie
 pass	cc8 a closure carried in a TUPLE beside a scalar — destructured in one match and applied around advancing draws
 pass	cd1 a closure CAPTURES a draw then is called after LATER draws — the captured value must not re-read state
 pass	cd4 a captured draw crosses a HIGHER-ORDER def boundary — helper applies the closure twice with different args
+pass	cds1 a COUNTDOWN alarm with snooze — tick decrements answering the remaining time until it FIRES at zero (answering a negated ten-plus-fire-count and auto-reloading the seed interval), snooze adds slack, and the shorter interval fires MID-STREAM where the longer one fires on the very last tick
 pass	cel1 a RULE-NINETY cellular automaton in one Int64 byte — step XORs the left-shifted and right-shifted worlds masked to eight bits answering the new generation, density popcounts between steps, and the seeds' initial worlds diverge into different orbits with different densities
 pass	cfr1 a CONTINUED-FRACTION expander — each step peels the integer part of p/q answering it then inverts the remainder to (q, p-a*q), a drained fraction answers -1 forever, and the seeds share a denominator but one terminates two steps early so its tail is sentinels while the other is still peeling
 pass	ch1 a FOUR-op result chain in one nested expression — each op transforms the last result while bumping the shared state differently
@@ -5356,6 +5357,7 @@ pass	hi2 the arm-installed handle's body draws from the arm's ENCLOSING frame �
 pass	hi3 the arm-installed handle's OWN arm resumes with an OUTER draw — the rv face nested inside another handler's dispatch
 pass	hi4 the arm-installed handle ABORTS with an outer draw — the av face nested inside another handler's dispatch
 pass	hld1 an INVENTORY hold/settle/release protocol — hold reserves against available (on-hand minus already-held) answering the running held total or the NEGATED available on reject, settle deducts held from on-hand, release just drops the holds, and the seeds reject DIFFERENT holds
+pass	hmg1 a HAMMING-distance tracker with an XOR-folding reference — cmp answers the popcount of the value against the reference remembering the value, lock folds the last value INTO the reference by XOR answering the old one, and the seed reference propagates through both locks so the distance rows diverge after the first fold
 pass	ho2 a PURE factory returns a closure applied to a draw — the captured constant is pure, only the argument is drawn
 pass	hof1 a higher-order APPLY-TWICE over a draw — the fn value crosses the call while the thread advances underneath
 pass	host calls are observed in the order they were made
@@ -5787,6 +5789,7 @@ pass	pg1 a PUT/GET store — put returns the value it displaces, a counter track
 pass	phs5 inner guard made CONSTANT (latent never checked) — each tick delivers one quantum which either RAISES the temperature by a degree or, exactly at the melting point with latent heat unpaid, pays two units of latent answering a tagged fifty-plus row, and the warm seed climbs straight through while the cold seed hits the plateau and stalls there
 pass	pid1 an integer P+I CONTROLLER stepping a plant toward the setpoint 20 — each step folds the error into the integral, applies u = (2*err + integral) / 4 with a NEGATIVE dividend on the overshoot face, and the closing draw reads the wound-up integral
 pass	pk1 a BEGIN/END protocol arm — a Bool flag rejects double-begin and end-without-begin, the sequence encodes the violations
+pass	pkg1 FIRST-FIT bin packing over two capacity-ten bins — place walks the bins in order answering bin-index-times-a-hundred plus the remaining room (or -1 when nothing fits), loads packs both levels, and the seed's first item cascades every later placement
 pass	plt2 the LOOP-DRIVEN plateau tracker — the same three-let two-if arm that declines straight-line folds fine when one recursive driver walks the feed list
 pass	pm1 LITERAL match arms grade the state INSIDE the handler arm — a mod-4 walker crosses all four literal rows
 pass	popping a field yields its value and the remaining record

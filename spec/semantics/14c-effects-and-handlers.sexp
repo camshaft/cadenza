@@ -12666,3 +12666,88 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 15120603001815 Int64))
   (call   main (: 0 Int64)) (output (: 5020603000805 Int64)))
+
+;; ── Hamming XOR-fold tracker, first-fit packing, snooze alarm (breaker batch 292) ────────────
+(case "hmg1 a HAMMING-distance tracker with an XOR-folding reference — cmp answers the popcount of the value against the reference remembering the value, lock folds the last value INTO the reference by XOR answering the old one, and the seed reference propagates through both locks so the distance rows diverge after the first fold"
+  (input  (do
+            (effect H
+              (op cmp (-> Int64 Int64))
+              (op lock (-> Int64)))
+            (def (bits (: b Int64) (: acc Int64))
+              (if (= b 0) acc (bits (>> b 1) (+ acc (& b 1)))))
+            (def (main (: n Int64))
+              (handle H (tuple (+ n 5) (: 0 Int64))
+                ((cmp (v) st
+                  (match st
+                    ((tuple ref last) (resume (bits (^ v ref) 0) (tuple ref v)))))
+                 (lock () st
+                  (match st
+                    ((tuple ref last) (resume ref (tuple (^ last ref) last))))))
+                (let ((a (H.cmp 7)))
+                  (let ((b (H.cmp 12)))
+                    (let ((c (H.lock)))
+                      (let ((d (H.cmp 7)))
+                        (let ((e (H.cmp 15)))
+                          (let ((f (H.lock)))
+                            (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 10215010203 Int64))
+  (call   main (: 0 Int64)) (output (: 10205030209 Int64)))
+
+(case "pkg1 FIRST-FIT bin packing over two capacity-ten bins — place walks the bins in order answering bin-index-times-a-hundred plus the remaining room (or -1 when nothing fits), loads packs both levels, and the seed's first item cascades every later placement"
+  (input  (do
+            (effect P
+              (op place (-> Int64 Int64))
+              (op loads (-> Int64)))
+            (def (main (: n Int64))
+              (handle P (tuple (: 0 Int64) (: 0 Int64))
+                ((place (w) st
+                  (match st
+                    ((tuple b0 b1)
+                      (if (< (+ b0 w) 11)
+                          (resume (- 10 (+ b0 w)) (tuple (+ b0 w) b1))
+                          (if (< (+ b1 w) 11)
+                              (resume (+ 100 (- 10 (+ b1 w))) (tuple b0 (+ b1 w)))
+                              (resume -1 st))))))
+                 (loads () st
+                  (match st
+                    ((tuple b0 b1) (resume (+ (* b0 10) b1) st)))))
+                (let ((a (P.place (+ (% n 4) 3))))
+                  (let ((b (P.place 6)))
+                    (let ((c (P.place 5)))
+                      (let ((d (P.place 8)))
+                        (let ((e (P.place 4)))
+                          (let ((f (P.loads)))
+                            (+ (* 1000 (+ (* 1000 (+ (* 1000 (+ (* 1000 (+ (* 1000 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 5103999999100110 Int64))
+  (call   main (: 0 Int64)) (output (: 7001104999101099 Int64)))
+
+(case "cds1 a COUNTDOWN alarm with snooze — tick decrements answering the remaining time until it FIRES at zero (answering a negated ten-plus-fire-count and auto-reloading the seed interval), snooze adds slack, and the shorter interval fires MID-STREAM where the longer one fires on the very last tick"
+  (input  (do
+            (effect A
+              (op tick (-> Int64))
+              (op snooze (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle A (tuple (+ (% n 4) 3) (: 0 Int64))
+                ((tick () st
+                  (match st
+                    ((tuple rem fires)
+                      (if (= (- rem 1) 0)
+                          (resume (- 0 (+ 11 fires)) (tuple (+ (% n 4) 3) (+ fires 1)))
+                          (resume (- rem 1) (tuple (- rem 1) fires))))))
+                 (snooze (k) st
+                  (match st
+                    ((tuple rem fires) (resume (+ rem k) (tuple (+ rem k) fires))))))
+                (let ((a (A.tick)))
+                  (let ((b (A.tick)))
+                    (let ((c (A.snooze 2)))
+                      (let ((d (A.tick)))
+                        (let ((e (A.tick)))
+                          (let ((f (A.tick)))
+                            (let ((g (A.tick)))
+                              (let ((h (A.tick)))
+                                (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g)) h)))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 403050403020089 Int64))
+  (call   main (: 0 Int64)) (output (: 201030200890201 Int64)))
