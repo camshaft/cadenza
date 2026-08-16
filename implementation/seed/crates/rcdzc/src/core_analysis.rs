@@ -300,7 +300,14 @@ pub(crate) struct B2BindPlanEntry {
 /// install consumes the returned plan. Pure analysis (no override). The four gates:
 /// 1. DETECTION via the COMPLETE `core_child_ids` traversal (descends `MatchSum` arms — the arm-internal
 ///    shares that CAUSE the hang are invisible to `licm_children`, proven: cmb1 31 vs 127).
-/// 2. HEAP-SHARE: parent-edge count ≥ 2, `is_heap_type`, not `LocalRef`/`Unit`.
+/// 2. HEAP-SHARE: parent-edge count ≥ 2, `is_heap_type`, not `LocalRef`/`Unit`. PLUS two bind-safety
+///    whitelist predicates (v-rb, from the full-corpus drift-guard's pure-value miscompiles): (P1)
+///    FULLY-SOLVED TYPE — the share's type must be `is_fully_solved` (no `Deferred`/`Var` int axis, no
+///    `Any`/`Var`); an unsolved type gives the slot an indeterminate valtype → 'no local slot' emit failure
+///    (2 of the 3 Record.with drift-guard shares had a Deferred-int type). (P3) NOT A MATCH SCRUTINEE — the
+///    share must not be dispatched on (a `Match`/`MatchSum`/`MatchList` scrutinee, or a
+///    `SumExpect`/`SumPayload` read); binding it behind a slot breaks the rust backend's nested-variant
+///    subject resolution → a rust-only decline the wasm sweep can't see.
 /// 3. NOT-A-TEMPLATE-SHARE / VALUE-STABILITY = LOOP-INVARIANCE: (3a) the share's free binders
 ///    (`free_binders_of`) must all be `Core::Param`s — a share reading a re-threaded inner `Core::Let`
 ///    binder is a STATE-THREADED template (cbk1/trn6: same node, different value per resume-state) and
@@ -342,6 +349,22 @@ pub(crate) fn b2_bind_plan(db: &mut Db, body: StructId) -> Vec<B2BindPlanEntry> 
         }
         let ty = crate::infer::type_of(db, id);
         if !is_heap_type(&ty) || matches!(ty.strip_nominal(), Ty::Unit) {
+            continue;
+        }
+        // (2b) FULLY-SOLVED TYPE (v-rb bind-safety whitelist P1): a slot binding fixes the slot's valtype
+        // to the shared node's type up front; an unsolved type (a Deferred int sign/width — the shape v-rb's
+        // install dump showed on 2 Record.with shares) yields an indeterminate slot valtype → emit fails
+        // 'let-binding reference has no local slot'. Require a determinate machine representation.
+        if !ty.is_fully_solved() {
+            continue;
+        }
+        // (2c) NOT A MATCH SCRUTINEE (v-rb bind-safety whitelist P3): a shared node that is ALSO dispatched
+        // on (a Match/MatchSum/MatchList scrutinee, or read by SumExpect/SumPayload) must stay a DIRECT
+        // construction — the rust backend's nested-variant lowering resolves the inner switch subject type
+        // from the entered-variant payload of the direct node; repointing it to a slot LocalRef loses that
+        // and DECLINES ('sum payload has no bound match arm'). A wasm-only sweep can't see this (wasm reads
+        // the payload directly) — so exclude any share dispatched on, on ALL backends.
+        if b2_is_dispatched_on(db, body, id) {
             continue;
         }
         // (3) NOT-A-TEMPLATE-SHARE / VALUE-STABILITY = LOOP-INVARIANCE.
@@ -395,6 +418,44 @@ pub(crate) fn b2_bind_plan(db: &mut Db, body: StructId) -> Vec<B2BindPlanEntry> 
         });
     }
     plan
+}
+
+/// Whether `target` is DISPATCHED ON anywhere reachable from `body` — it appears as the `scrutinee` of a
+/// `Match`/`MatchSum`/`MatchList`, or as the `scrutinee` of a `SumExpect`/`SumPayload` (a variant
+/// discriminant/payload read). Such a node must stay a DIRECT construction for the rust backend's
+/// nested-variant lowering (it resolves the inner switch subject type from the entered-variant payload of
+/// the direct node); repointing it to a slot `LocalRef` loses that → a rust-backend decline the wasm sweep
+/// can't see. The B2 bind PLAN (P3) excludes a dispatched-on share. Walks via `core_child_ids` (the
+/// complete traversal), a visited-set bounding it; checks the scrutinee field of each dispatch node.
+fn b2_is_dispatched_on(db: &mut Db, body: StructId, target: StructId) -> bool {
+    let mut seen = std::collections::HashSet::new();
+    fn rec(
+        db: &mut Db,
+        id: StructId,
+        target: StructId,
+        seen: &mut std::collections::HashSet<StructId>,
+    ) -> bool {
+        if !seen.insert(id) {
+            return false;
+        }
+        let hit = matches!(core_of(db, id),
+            Core::Match { scrutinee, .. }
+            | Core::MatchSum { scrutinee, .. }
+            | Core::MatchList { scrutinee, .. }
+            | Core::SumExpect { scrutinee, .. }
+            | Core::SumPayload { scrutinee, .. }
+            if scrutinee == target);
+        if hit {
+            return true;
+        }
+        for c in crate::backend::wasm::select::core_child_ids(db, id) {
+            if rec(db, c, target, seen) {
+                return true;
+            }
+        }
+        false
+    }
+    rec(db, body, target, &mut seen)
 }
 
 /// `collect_node_refs` twin using the COMPLETE `core_child_ids` traversal (descends `MatchSum` arms), for
@@ -1056,6 +1117,97 @@ mod tests {
         assert!(
             plan.iter().any(|e| e.shared_id == trapping_list),
             "a trapping param-closed share unconditionally reached by its scope_node IS planned (gate-4 reach arm)"
+        );
+    }
+
+    // GATE P1 (fully-solved type, v-rb bind-safety whitelist): a shared heap node whose type is NOT fully
+    // solved (a Deferred int axis — the shape the Record.with drift-guard shares had) is EXCLUDED, because
+    // the slot binding would fix an indeterminate valtype → 'no local slot' emit failure. The SAME node
+    // shape with a Fixed-width type IS planned (control), isolating the type-solvedness as the delta.
+    #[test]
+    fn bind_plan_excludes_a_share_with_an_unsolved_type() {
+        // Deferred-int element list = an unsolved type (the drift-guard Record.with shape).
+        let deferred = Ty::Int(crate::ty::IntTy::deferred());
+        assert!(
+            !deferred.is_fully_solved(),
+            "test premise: deferred int is unsolved"
+        );
+        assert!(Ty::int64().is_fully_solved(), "test premise: i64 is solved");
+        let build = |solved: bool| -> bool {
+            let mut db = crate::db::Db::load(crate::testkit::parse(
+                "(module m (def (main) 0) (export main))",
+            ));
+            let elem = if solved {
+                Ty::int64()
+            } else {
+                Ty::Int(crate::ty::IntTy::deferred())
+            };
+            let list_ty = Ty::List(Box::new(elem));
+            let x = synth_core(&mut db, Core::ListNew { elems: [].into() }, list_ty.clone());
+            let body = synth_core(&mut db, Core::ListConcat { lhs: x, rhs: x }, list_ty);
+            let plan = b2_bind_plan(&mut db, body);
+            plan.iter().any(|e| e.shared_id == x)
+        };
+        assert!(
+            build(true),
+            "control: a solved-type shared heap ListNew IS planned"
+        );
+        assert!(
+            !build(false),
+            "a shared heap node with an unsolved (Deferred-int) type is excluded (P1)"
+        );
+    }
+
+    // GATE P3 (not a match scrutinee, v-rb bind-safety whitelist): a shared heap node that is ALSO a
+    // Match scrutinee is EXCLUDED — binding it behind a slot breaks the rust backend's nested-variant
+    // subject resolution (a rust-only decline the wasm sweep can't catch). Here a shared list is both a
+    // MatchList scrutinee AND a concat operand (count≥2); it must NOT be planned.
+    #[test]
+    fn bind_plan_excludes_a_share_that_is_a_match_scrutinee() {
+        let mut db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (main) 0) (export main))",
+        ));
+        let list_int = Ty::List(Box::new(Ty::int64()));
+        let xs = synth_core(
+            &mut db,
+            Core::ListNew { elems: [].into() },
+            list_int.clone(),
+        );
+        // xs is dispatched on (a MatchList scrutinee) with an empty-arm body, AND fed to a concat — count≥2.
+        let empty_arm = synth_core(
+            &mut db,
+            Core::ListNew { elems: [].into() },
+            list_int.clone(),
+        );
+        let matched = synth_core(
+            &mut db,
+            Core::MatchList {
+                scrutinee: xs,
+                arms: [crate::core::ListArm {
+                    cond: crate::core::ListArmCond::Any,
+                    guard: None,
+                    body: empty_arm,
+                }]
+                .into(),
+            },
+            list_int.clone(),
+        );
+        let body = synth_core(
+            &mut db,
+            Core::ListConcat {
+                lhs: matched,
+                rhs: xs,
+            },
+            list_int,
+        );
+        assert!(
+            b2_is_dispatched_on(&mut db, body, xs),
+            "test premise: xs is a MatchList scrutinee reachable from body"
+        );
+        let plan = b2_bind_plan(&mut db, body);
+        assert!(
+            !plan.iter().any(|e| e.shared_id == xs),
+            "a shared heap node that is a match scrutinee is excluded (P3)"
         );
     }
 }

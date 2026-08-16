@@ -1128,6 +1128,46 @@ impl Ty {
         }
     }
 
+    /// Whether this type is FULLY SOLVED — no `Ty::Any`, no free `Ty::Var`, and no integer/float axis left
+    /// `Deferred`/`Var` (i.e. every `IntTy`/`FloatTy` sign+width is `Fixed`). A fully-solved type has a
+    /// determinate machine representation (a concrete valtype + box/unbox op set) at every position.
+    ///
+    /// The B2 sharing-aware-emit bind PLAN requires this: binding a shared heap node into a `Core::Let`
+    /// slot gives the slot the node's type as its valtype; an UNSOLVED type (`Int` with `Deferred` sign or
+    /// width — the shape v-rb's install dump showed on two Record.with shares) yields an indeterminate slot
+    /// valtype and the emit fails with `let-binding reference has no local slot`. So a share whose type is
+    /// not fully solved is NOT bind-safe. (Deferred int axes GROUND to a default at emit for a normal
+    /// value, but a slot binding must fix the valtype up front — the grounding is not visible to the slot
+    /// synth — so the plan must require a solved type rather than rely on the default.)
+    pub fn is_fully_solved(&self) -> bool {
+        let int_solved =
+            |it: &IntTy| matches!(it.sign, Sign::Fixed(_)) && matches!(it.width, Width::Fixed(_));
+        match self {
+            Ty::Any | Ty::Var(_) => false,
+            Ty::Int(it) => int_solved(it),
+            Ty::Float(ft) => matches!(ft.width, Width::Fixed(_)),
+            Ty::Fn(p, r) => p.is_fully_solved() && r.is_fully_solved(),
+            Ty::Tuple(elems) => elems.iter().all(|t| t.is_fully_solved()),
+            Ty::List(elem) => elem.is_fully_solved(),
+            Ty::Map(k, v) => k.is_fully_solved() && v.is_fully_solved(),
+            Ty::Set(elem) => elem.is_fully_solved(),
+            Ty::Record(fields) => fields.values().all(|t| t.is_fully_solved()),
+            Ty::Sum { args, .. } => args.iter().all(|t| t.is_fully_solved()),
+            Ty::Qty { inner, .. } => inner.is_fully_solved(),
+            Ty::Nominal { args, .. } => args.iter().all(|t| t.is_fully_solved()),
+            Ty::Cont { resume, answer } => resume.is_fully_solved() && answer.is_fully_solved(),
+            Ty::Bool
+            | Ty::Unit
+            | Ty::Type
+            | Ty::Bytes
+            | Ty::String
+            | Ty::Char
+            | Ty::Symbol
+            | Ty::BigInt
+            | Ty::Rational => true,
+        }
+    }
+
     /// Whether this type contains an `Any` in a DATA-CONTAINER ELEMENT position — nested in a
     /// List/Tuple/Map/Set/Record/Sum/Nominal/Qty — but NOT reached through a function arrow (`Ty::Fn`).
     /// `(List Any)` and `(Tuple Int64 Any)` are true; `(-> Int64 (-> Any Any))` and a bare `Any` are
