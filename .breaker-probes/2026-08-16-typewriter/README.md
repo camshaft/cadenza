@@ -29,3 +29,13 @@ VALUE whose outer condition is state-keyed. New axis.
 
 tpw1 (the original 5-dispatch typewriter probe, banked here) hits the same
 error. Held from corpus until triaged.
+
+## 2026-08-16 CLOSED (tick 1613, fix 8276ad1a6)
+v-effects closed the face: thread-path analogue of adv-20 — a shared-let arm
+(binder feeding BOTH resume value and threaded next-state, per-branch resumes)
+orphaned across split emit scopes. Fix collapses the arm to a single projected
+(value,state) tuple, all-or-nothing per handler. Verified on-land with a fresh
+8276ad1a6 binary: tpwJ-case + tpw1 PASS x3 all backends; held-witness sweep
+shows no unexpected flips (budget faces unaffected). Deferred clean-decline
+classes noted: recursive-driver / growing-state / cross-handler shared-let.
+PROMOTION: tpwJ-case + tpw1 staged as batch-295.

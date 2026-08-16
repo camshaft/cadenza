@@ -5347,6 +5347,7 @@ pass	gs5 the generic applied to ITSELF — (Container (Container Int64)) double-
 pass	gs6 a TWO-VARIANT generic (Either a b) by name — parity routes construction between Left and Right, the annotated consumer matches both
 pass	gs7 the applied generic in the op ARGUMENT position — the arm unwraps (Container Int64) payloads into the accumulating state
 pass	gs8 the applied generic AS the handler state — (Container Int64) seeds the handle, the arm unwraps and re-wraps per dispatch
+pass	gsc1 a GOLF scorecard with a birdie-streak multiplier — each hole answers its par delta where consecutive under-par holes MULTIPLY the negative contribution by the deepening streak, an over-par hole resets the streak, card totals, and the seed shifts one hole's strokes so the streak bonus doubles differently
 pass	gsx1 ONE arm instantiates the same generic sum at TWO types — a Container Int64 and a Container String built, unwrapped, and combined per dispatch
 pass	ha1 an INNER op's arguments draw from the OUTER handler — two outer draws cross the inner dispatch boundary in order
 pass	ha2 outer-draw feeds the INNER op, whose result feeds an OUTER op again — a three-hop cross-handler value chain
@@ -5805,6 +5806,7 @@ pass	permutation invariance of a commutative fold holds — the property oracle 
 pass	pf1 an AGGREGATOR arm — the op returns the running sum of every value fed to it, three feeds pin the accumulation
 pass	pfx1 a PREFIX-SUM table state — add appends the running total to the list, range answers pre[j]-pre[i] via two fallible reads with an out-of-bounds sentinel
 pass	pg1 a PUT/GET store — put returns the value it displaces, a counter tracks writes, get reads the survivor
+pass	pgn1 a PAGINATION cursor over a seed-sized collection — next serves up to the page size answering the count actually served (the LAST page runs short), a drained cursor answers -1, rewind resets answering the pages served, and the smaller collection drains one page EARLIER so its short page and its -1 land at different rows
 pass	phs5 inner guard made CONSTANT (latent never checked) — each tick delivers one quantum which either RAISES the temperature by a degree or, exactly at the melting point with latent heat unpaid, pays two units of latent answering a tagged fifty-plus row, and the warm seed climbs straight through while the cold seed hits the plateau and stalls there
 pass	pid1 an integer P+I CONTROLLER stepping a plant toward the setpoint 20 — each step folds the error into the integral, applies u = (2*err + integral) / 4 with a NEGATIVE dividend on the overshoot face, and the closing draw reads the wound-up integral
 pass	pk1 a BEGIN/END protocol arm — a Bool flag rejects double-begin and end-without-begin, the sequence encodes the violations
@@ -6871,6 +6873,7 @@ pass	uv4 a RELATIONAL @ensures (ret > x) over a TWO-draw body — the postcondit
 pass	uwr1 a NARROW UInt8 handler state — wrapping-add accumulates modulo 256 through the thread, each dispatch answers the widened running value
 pass	value-eq CONTROL: a runtime slice compares equal to a flat Bytes of the same content
 pass	vig1 a VIGENERE-style rolling-key cipher — enc adds and dec subtracts the key byte selected by the ADVANCING key index mod 3, both mod 26, so interleaved enc/dec draws consume ONE shared key stream and the seed shapes the middle key byte
+pass	vnd1 a VENDING machine with a change float — insert accumulates credit, buy vends only when the credit covers the seven-cent price AND the float covers the change (answering the change, growing the float by price minus change, zeroing credit), refusing otherwise with distinct negated codes, and the seed's starting float decides whether ANY sale completes
 pass	vse1 a record with SIBLING Option-sum and Option-Bytes fields value-encodes the sum payload intact — the Option-Bytes sibling must not alias its bytes descriptor onto the Option-sum field
 pass	vse10 two RESULT fields at different type args each encode their own Err payload — the same generic decl at two instantiations shares no descriptor
 pass	vse11 two LIST fields of different element types encode independently — the list control of the generic-instantiation family

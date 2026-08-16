@@ -22,3 +22,10 @@ call.
 
 Also: the binder form DECLINING (not hanging) while the direct call HANGS
 inverts the usual severity — the workaround shape is WORSE-behaved here.
+
+## 2026-08-16 flip-sweep update (tick 1607, trunk 42b0fc9e0)
+ksc1 FLIPPED: indefinite compile-hang → TERMINATES at ~89.5s with the
+emit-walk instruction-budget clean decline. v-core-opt's sharing-aware
+visited-set collectors (d4d4e340b, 42b0fc9e0) cut the re-descent enough to
+terminate. Still 89s to decline — the emit walk itself is still exponential;
+full fix rides the Let-slot sharing-aware emit. cmb1/pom5 still hang >120s.

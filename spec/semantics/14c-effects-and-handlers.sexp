@@ -12863,3 +12863,92 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 3006063 Int64))
   (call   main (: 0 Int64)) (output (: 3002023 Int64)))
+;; ── Golf scorecard, vending machine, pagination cursor (breaker batch 294) ──
+(case "gsc1 a GOLF scorecard with a birdie-streak multiplier — each hole answers its par delta where consecutive under-par holes MULTIPLY the negative contribution by the deepening streak, an over-par hole resets the streak, card totals, and the seed shifts one hole's strokes so the streak bonus doubles differently"
+  (input  (do
+            (effect G
+              (op hole (-> Int64 Int64 Int64))
+              (op card (-> Int64)))
+            (def (main (: n Int64))
+              (handle G (tuple (: 0 Int64) (: 0 Int64))
+                ((hole (strokes par) st
+                  (match st
+                    ((tuple total streak)
+                      (if (< strokes par)
+                          (resume (* (- strokes par) (+ streak 1))
+                                  (tuple (+ total (* (- strokes par) (+ streak 1))) (+ streak 1)))
+                          (resume (- strokes par)
+                                  (tuple (+ total (- strokes par)) 0))))))
+                 (card () st
+                  (match st ((tuple total streak) (resume total st)))))
+                (let ((a (G.hole 4 4)))
+                  (let ((b (G.hole 3 4)))
+                    (let ((c (G.hole (+ (% n 3) 2) 4)))
+                      (let ((d (G.hole 5 4)))
+                        (let ((e (G.hole 3 4)))
+                          (let ((f (G.card)))
+                            (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: -101990103 Int64))
+  (call   main (: 0 Int64)) (output (: -103990105 Int64)))
+
+(case "vnd1 a VENDING machine with a change float — insert accumulates credit, buy vends only when the credit covers the seven-cent price AND the float covers the change (answering the change, growing the float by price minus change, zeroing credit), refusing otherwise with distinct negated codes, and the seed's starting float decides whether ANY sale completes"
+  (input  (do
+            (effect V
+              (op insert (-> Int64 Int64))
+              (op buy (-> Int64)))
+            (def (main (: n Int64))
+              (handle V (tuple (: 0 Int64) (% n 4))
+                ((insert (c) st
+                  (match st
+                    ((tuple credit fl) (resume (+ credit c) (tuple (+ credit c) fl)))))
+                 (buy () st
+                  (match st
+                    ((tuple credit fl)
+                      (if (< credit 7)
+                          (resume (- credit 7) st)
+                          (if (< fl (- credit 7))
+                              (resume (- (- fl (- credit 7)) 50) st)
+                              (resume (- credit 7)
+                                      (tuple 0 (+ fl (- 7 (- credit 7)))))))))))
+                (let ((a (V.insert 5)))
+                  (let ((b (V.buy)))
+                    (let ((c (V.insert 4)))
+                      (let ((d (V.buy)))
+                        (let ((e (V.insert 10)))
+                          (let ((f (V.buy)))
+                            (let ((g (V.buy)))
+                              (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 4980902100293 Int64))
+  (call   main (: 0 Int64)) (output (: 4980848183738 Int64)))
+
+(case "pgn1 a PAGINATION cursor over a seed-sized collection — next serves up to the page size answering the count actually served (the LAST page runs short), a drained cursor answers -1, rewind resets answering the pages served, and the smaller collection drains one page EARLIER so its short page and its -1 land at different rows"
+  (input  (do
+            (effect P
+              (op next (-> Int64 Int64))
+              (op rewind (-> Int64)))
+            (def (main (: n Int64))
+              (handle P (tuple (: 0 Int64) (: 0 Int64))
+                ((next (size) st
+                  (match st
+                    ((tuple cursor pages)
+                      (if (< cursor (+ 20 n))
+                          (if (< (- (+ 20 n) cursor) size)
+                              (resume (- (+ 20 n) cursor)
+                                      (tuple (+ 20 n) (+ pages 1)))
+                              (resume size (tuple (+ cursor size) (+ pages 1))))
+                          (resume -1 st)))))
+                 (rewind () st
+                  (match st
+                    ((tuple cursor pages) (resume pages (tuple 0 pages))))))
+                (let ((a (P.next 8)))
+                  (let ((b (P.next 8)))
+                    (let ((c (P.next 8)))
+                      (let ((d (P.next 8)))
+                        (let ((e (P.rewind)))
+                          (let ((f (P.next 12)))
+                            (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 80808060412 Int64))
+  (call   main (: 0 Int64)) (output (: 80803990312 Int64)))
