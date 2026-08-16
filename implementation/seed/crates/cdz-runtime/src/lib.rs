@@ -9470,6 +9470,116 @@ mod tests {
         assert_eq!(live_nodes(), 0, "no leak");
     }
 
+    /// The root-`Framed` two-field-record descriptor `(: <value> (Record (a Int64) (b Int64)))` —
+    /// tag-15 `Framed` whose TypeNode is `record` with two field children (`a`→`Int64`, `b`→`Int64`,
+    /// each a `(name <type>)` node), inner → a `Record[a→0, b→0]` table entry. This is what
+    /// `sum_shape_descriptor` bakes for a `Value.encode` of a two-`Int64`-field record.
+    fn framed_int_record_descriptor() -> Vec<u8> {
+        fn leb(out: &mut Vec<u8>, mut v: u64) {
+            loop {
+                let mut b = (v & 0x7f) as u8;
+                v >>= 7;
+                if v != 0 {
+                    b |= 0x80;
+                }
+                out.push(b);
+                if v == 0 {
+                    break;
+                }
+            }
+        }
+        fn name(out: &mut Vec<u8>, s: &str) {
+            leb(out, s.len() as u64);
+            out.extend_from_slice(s.as_bytes());
+        }
+        let mut d = Vec::new();
+        leb(&mut d, 3); // table_len = 3
+        // [0] Int
+        d.push(0);
+        // [1] Record [ a→0, b→0 ]
+        d.push(8);
+        leb(&mut d, 2);
+        name(&mut d, "a");
+        leb(&mut d, 0);
+        name(&mut d, "b");
+        leb(&mut d, 0);
+        // [2] Framed( TypeNode record[ a[Int64], b[Int64] ], inner → 1 )
+        d.push(15);
+        // TypeNode: head "record", 2 children, each a field node (head = field name, 1 child = "Int64").
+        name(&mut d, "record");
+        leb(&mut d, 2);
+        name(&mut d, "a");
+        leb(&mut d, 1);
+        name(&mut d, "Int64");
+        leb(&mut d, 0);
+        name(&mut d, "b");
+        leb(&mut d, 1);
+        name(&mut d, "Int64");
+        leb(&mut d, 0);
+        leb(&mut d, 1); // inner → 1 (the Record shape)
+        leb(&mut d, 2); // root = 2 (the Framed)
+        d
+    }
+
+    /// GOLDEN + cross-backend divergence pin, RECORD shape (v-rust-backend fixture 1, 2026-08-16): a
+    /// `Value.encode` of `(record (= a 5) (= b 105))` at `(Record (a Int64) (b Int64))` must render the
+    /// colon-framed `(: (record (= a 5) (= b 105)) (Record (a Int64) (b Int64)))` doc. The cadenza-ast
+    /// mirror (`codec::tests`) asserts the SAME byte string, so the two codecs are pinned together. Guarded
+    /// three ways (iterative == recursive oracle, decode∘encode == id, exact leaf pool). `#[cfg(test)]`.
+    #[test]
+    fn value_encode_of_a_framed_int_record_is_the_colon_framed_golden() {
+        reset();
+        let desc = framed_int_record_descriptor();
+        // A record VALUE is a heap array of its field values in declared order (the descriptor names them).
+        let rec = op_arr_alloc(2);
+        op_arr_set(rec, 0, op_box_int(5));
+        op_arr_set(rec, 1, op_box_int(105));
+        let got = op_value_encode_form(rec, &desc).expect("encode framed int record");
+
+        // (1) iterative production walk == recursive oracle.
+        let descriptor = decode_descriptor(&desc).expect("descriptor");
+        let mut b = DocBuilder::default();
+        let root = encode_value_recursive(&descriptor, &mut b, rec, descriptor.root, 0)
+            .expect("recursive encode");
+        assert_eq!(got, b.finish(root), "iterative and recursive framed-record encode disagree");
+
+        // (2) decode ∘ encode == id.
+        let back = op_value_decode(&got, &desc);
+        assert_ne!(back, Handle::NULL, "framed-record doc must decode (round-trip)");
+        let reencoded = op_value_encode_form(back, &desc).expect("re-encode decoded framed record");
+        assert_eq!(got, reencoded, "decode∘encode is not the identity on the framed record");
+        op_drop(back);
+
+        // (3) exact leaf pool — the deduped leaves in canon pre-order first-encounter: ':' , 'record',
+        // '=' , 'a', 5, 'b', 105, 'Int64'. 8 deduped leaves. KEY DETAIL: the frame's type node is
+        // `(record (a Int64) (b Int64))` — its head atom is the LOWERCASE `record`, the SAME atom as the
+        // value form's `(record …)` head, so it INTERNS ONCE (no distinct `Record` type leaf); likewise the
+        // field-name atoms `a`/`b` are shared between the value's `(= a …)` and the type's `(a Int64)`, and
+        // `Int64` interns once across both fields. So the pool is 8, not 9 (a bare record would omit ':' and
+        // 'Int64' entirely — this leaf-count is the framed-vs-bare divergence guard).
+        let expect: &[u8] = &[
+            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, // cdzast\x00\x01
+            0x08, // 8 deduped leaves
+            0x0a, 0x01, 0x3a, // NAME ':'
+            0x0a, 0x06, 0x72, 0x65, 0x63, 0x6f, 0x72, 0x64, // NAME 'record' (shared value+type head)
+            0x0a, 0x01, 0x3d, // NAME '='
+            0x0a, 0x01, 0x61, // NAME 'a'
+            0x00, 0x01, 0x05, // INT 5
+            0x0a, 0x01, 0x62, // NAME 'b'
+            0x00, 0x01, 0x69, // INT 105
+            0x0a, 0x05, 0x49, 0x6e, 0x74, 0x36, 0x34, // NAME 'Int64' (shared across both fields)
+        ];
+        assert_eq!(
+            &got[..expect.len()],
+            expect,
+            "framed int-record leaf pool must be the colon-framed byte string"
+        );
+        assert_eq!(got[8], 0x08, "leaf count must be 8 (framed record), not the bare count");
+
+        op_drop(rec);
+        assert_eq!(live_nodes(), 0, "no leak");
+    }
+
     #[test]
     fn value_encode_form_matches_the_codec_for_a_recursive_sum() {
         reset();
