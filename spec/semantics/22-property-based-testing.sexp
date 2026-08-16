@@ -1175,6 +1175,24 @@
   (call   main (: 7 Int64)) (output (: 3007 Int64))
   (call   main (: 2 Int64)) (output (: 3002 Int64)))
 
+(case "a Value.encode/Value.decode round-trip preserves a RECORD's fields"
+  (doc    "Extends the round-trips to a `(Record (a Int64) (b Int64))` — the R2 value-form `(record (= k v) ..)`
+           shape. `Value.decode (Value.encode (record (= a n) (= b (+ n 100)))) == Some` of the same record;
+           the match projects both fields and folds `a*1000 + b` to prove each field survives in its own slot
+           (a rust Record is a tuple in sorted-key order, so `a` before `b`). `main 7` -> record(a=7,b=107) ->
+           7107, `main 3` -> 3103 (distinct); a dropped/swapped field would differ. Pins the Record leaf of the
+           native codec (rust builds `(record (= a ..) (= b ..))`, decode rebuilds the tuple positionally).
+           Runs on wasm + rust + rust-async.")
+  (input  (do
+            (def (main (: n Int64))
+              (match (: (Value.decode (Value.encode (record (= a n) (= b (+ n 100)))))
+                        (Option (Record (a Int64) (b Int64))))
+                ((Some m) (+ (* (. m a) 1000) (. m b)))
+                ((None u) (- 0 1))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 7107 Int64))
+  (call   main (: 3 Int64)) (output (: 3103 Int64)))
+
 ; --- The round-trip under LET-BINDER grounding: decode's target fixed by the binder annotation, not inline. ---
 
 (case "a Value.decode round-trip grounds its target from a LET-BINDER annotation, not only an inline ascription"

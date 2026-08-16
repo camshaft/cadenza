@@ -1156,6 +1156,7 @@ pass	a VIOLATED @ensures traps when the def arrives through a runtime branch
 pass	a VIOLATED @requires traps at body-entry BEFORE the body's perform fires
 pass	a Value.decode round-trip grounds its target from a LET-BINDER annotation, not only an inline ascription
 pass	a Value.encode then Value.decode round-trips a compound value back to Some of the SAME structure
+pass	a Value.encode/Value.decode round-trip preserves a RECORD's fields
 pass	a Value.encode/Value.decode round-trip preserves a STRING element of a compound
 pass	a Value.encode/Value.decode round-trip preserves a runtime-length LIST
 pass	a WIDE integer literal pattern (beyond ±2^31) matches a runtime scrutinee by equality

@@ -469,6 +469,25 @@ fn emit_value_form(ty: &Ty, val_expr: &str) -> Result<String, Reject> {
                  __b.list(__lc) }}"
             ))
         }
+        // A RECORD is a Rust TUPLE (`tuple_type(fields.values())`, so tuple position i == the i-th field in
+        // the `BTreeMap<Symbol,_>`'s sorted-key order) rendered as `(record (= k0 v0) (= k1 v1) …)`. Each
+        // field is a nested `(= <name> <value>)` list; the field NAME is the Symbol's `name` (db-free). Bind
+        // the record once, build each field node in a block (so `=`/key/value temps don't collide), positional
+        // `.i` reads the field value. Field order matches the runtime (both iterate the sorted-key type map).
+        Ty::Record(fields) => {
+            let mut s = format!("{{ let __rv = {val_expr}; let __rh = __b.name(\"record\");");
+            let mut vars = vec!["__rh".to_string()];
+            for (i, (sym, fty)) in fields.iter().enumerate() {
+                let fname = &*sym.name;
+                let fval = emit_value_form(fty, &format!("(__rv).{i}"))?;
+                s.push_str(&format!(
+                    " let __f{i} = {{ let __eq = __b.name(\"=\"); let __k = __b.name(\"{fname}\"); let __fv = {fval}; __b.list(vec![__eq, __k, __fv]) }};"
+                ));
+                vars.push(format!("__f{i}"));
+            }
+            s.push_str(&format!(" __b.list(vec![{}]) }}", vars.join(", ")));
+            Ok(s)
+        }
         other => Err(Reject::decline(format!(
             "Value.encode native rust: value shape {other:?} not yet wired (Int/Bool/Char/String/Bytes/Tuple/List — incremental slices)"
         ))),
@@ -538,6 +557,31 @@ fn emit_value_reconstruct(ty: &Ty, arenas: &str, node: &str) -> Result<String, R
                  for __ix in 1..__items.len() {{ __out.push({child}?); }} \
                  Some(__out) }})()"
             ))
+        }
+        // A RECORD: check the `(record (= k v) …)` shape, then for each field read the `(= k v)` triple's
+        // VALUE (its 3rd child) and reconstruct positionally into the tuple (matching the encode's sorted-key
+        // field order). Positional (not by-key) is sound because encode + decode iterate the SAME sorted-key
+        // type map. `?` on any field mismatch → None.
+        Ty::Record(fields) => {
+            let n = fields.len();
+            let mut body = format!(
+                "(|| {{ let __items = if let cadenza_ast::ast::Struct::List(__i) = {arenas}.get({node}) {{ __i }} else {{ return None }}; \
+                 if __items.len() != {} || {arenas}.head_name({node}) != Some(\"record\") {{ return None }}; ",
+                n + 1
+            );
+            let mut results = Vec::with_capacity(n);
+            for (i, (_sym, fty)) in fields.iter().enumerate() {
+                let fval = emit_value_reconstruct(fty, arenas, &format!("__g{i}[2]"))?;
+                body.push_str(&format!(
+                    "let __g{i} = if let cadenza_ast::ast::Struct::List(__gg) = {arenas}.get(__items[{}]) {{ __gg }} else {{ return None }}; \
+                     if __g{i}.len() != 3 {{ return None }}; let __r{i} = {fval}?; ",
+                    i + 1
+                ));
+                results.push(format!("__r{i}"));
+            }
+            let tail = if n == 1 { "," } else { "" };
+            body.push_str(&format!("Some(({}{tail})) }})()", results.join(", ")));
+            Ok(body)
         }
         other => Err(Reject::decline(format!(
             "Value.decode native rust: value shape {other:?} not yet wired (Int/Bool/Char/String/Bytes/Tuple/List — incremental slices)"
