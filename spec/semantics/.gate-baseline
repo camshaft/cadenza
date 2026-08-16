@@ -4792,6 +4792,7 @@ pass	breaker holsubst: a shadowing binder blocks substitution
 pass	breaker holsubst: the naive subst's documented capture hazard
 pass	breaker specsubst: GEN of refl then SPEC substitutes the bound var throughout the body
 pass	brk1 TYPED-BRACKET matching — opens push their code, a close must match the TOP of the expected stack (LIFO discipline), a wrong-type close flips the sticky invalid; the seed orders the closes right or wrong
+pass	brw1 a BREW fermenter with a stuck-fermentation rescue — each day the gravity drops by the yeast health floored at ten (an inline min), a drop under three counts as STUCK earning a four-point yeast boost and a seven-hundred alarm with the standing gravity, a healthy day answers gravity and the yeast's low digit, pitching adds yeast, the read packs all three, and the weak seed sticks on DAY ONE (rescuing early) while the strong one ferments clean until the floor
 pass	bs1 a BOOL toggle state — four draws alternate true/false from an input-dependent seed
 pass	bs2 a LATCH — once an op arg is false, the state stays false and every later check answers false
 pass	bt1 a BOOL handler state TOGGLES per dispatch — three draws read the alternating flag, seeded by input parity
@@ -5324,6 +5325,7 @@ pass	greater-than of an integer and a float is rejected
 pass	greater-than on an unusual signed width orders a positive above the negative minimum
 pass	greater-than-or-equal
 pass	greater-than-or-equal of an integer and a float is rejected
+pass	grh1 a GREENHOUSE auto-vent — sunshine heats the house and crossing thirty with the vents SHUT trips them open (an eight-hundred alarm row with the temperature's low digits), misting adds three humidity but an open vent bleeds one back (a nine-tagged row), the read packs temperature humidity and vents, and the seed's starting warmth trips the auto-vent on the FIRST sun for one run and the SECOND for the other so every later humidity row shifts
 pass	gry1 a GRAY-CODE generator — each tick answers the threaded counter's Gray encoding (n XOR n>>1) then advances; the body XOR-popcounts consecutive answers proving the single-bit-change law
 pass	gs1 a user-declared GENERIC sum resolves by NAME in a param annotation — the applied (Container Int64) checks and the payload unwraps
 pass	gs2 a TWO-parameter generic sum by name — (Pair Int64 Int64) in the annotation, both payload slots extracted
@@ -6306,6 +6308,7 @@ pass	take-while where every element satisfies the predicate keeps the whole run
 pass	take-while where the first element fails the predicate returns the empty run
 pass	tax1 PROGRESSIVE tax brackets with a seed-shaped edge — assess splits the income into three bands via chained match binders over clamped compounds (ten twenty and thirty percent truncating), accumulating into the audit total, and the WIDER bracket taxes every income LESS while the sub-bracket income taxes to zero on both
 pass	tb1 a def RETURNS a tuple of two draws — the caller destructures the multi-value result of a performing helper
+pass	tel1 a TELESCOPE tracker with a slew-rate limit — track names a target locking within five degrees (else a nine-hundred miss with the gap's low digits), slew moves the azimuth toward the target by at most SEVEN degrees (a two-sided inline clamp of the signed difference) tagging an exact arrival, the read packs azimuth lock and arrival, and one seed starts within locking range so every row down to the read disagrees with the far-parked run
 pass	textually-identical performs are DISTINCT state-advancing reads, not a common subexpression
 pass	the ARM ENCODES its scalar op argument into framed Bytes and resumes them — body decodes
 pass	the ARM decodes a Bytes op argument with a bin pattern and resumes a parsed field
@@ -6920,6 +6923,7 @@ pass	xhsGdeep the perform buried TWO selector levels deep — an if-in-if routes
 pass	xhsGmatch the MATCH twin of the conditional mid-arm foreign perform — the same then-else split expressed as a boolean match scrutinee, exercising the match-arm out-state merge path of the selector freeze
 pass	xhsGrow GROWING-STATE shared-let with a mid-arm foreign perform — the step arm derives its binder from the list LENGTH, performs the outer note with it, answers the binder packed with the note's low digit, and threads the list GROWN by the binder; the growing next-state excludes the collapse so the distribute path must keep the two binder copies coherent
 pass	xhsH the foreign perform AS the selector — the note's answer is let-bound then ROUTES the branch (over nine takes a 7 tag, under packs the answer's low digit), both branches silent, the perform running exactly once as condition input; the inverse of the G family where the perform hides inside a branch
+pass	xhsMultiCtrl the inline control for the merged multi-slot probe — the binder inlined at every use
 pass	xhsTwo two DISTINCT outer handlers — inner step performs O.note(c2) then P.tick(c2), both foreign, both with the shared binder; tests #fa freeze for two handlers at different drain levels
 pass	xsw1 a CROSS-SWAPPING scalar pair — each dispatch computes both successors then installs them SWAPPED (a gets the b-derived value, b the a-derived), lineage crosses sides every step
 pass	za1 literal-arm dispatch on a draw — the MATCHED arm performs again, both calls exercised

@@ -13321,3 +13321,133 @@
             (drive n))))
       (export main)))
   (call main (: 3 Int64)) (output (: 0 Int64)))
+
+;; ── xhsMultiCtrl merged-multi-slot inline control (exclusion-audit closer), greenhouse latch, brew fermenter x5-compound, telescope signed-clamp (breaker batch 299) ──
+(case "xhsMultiCtrl the inline control for the merged multi-slot probe — the binder inlined at every use"
+  (input  (do
+            (effect T (op put (-> Int64 Int64 Int64)))
+            (effect I (op step (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle T (: (Map.empty) (Map Int64 Int64))
+                ((put (k v) m
+                  (match (Map.lookup m k)
+                    ((Some x) (resume x (Map.insert m k v)))
+                    ((None) (resume (: 99 Int64) (Map.insert m k v))))))
+                (handle I (: 0 Int64)
+                  ((step (x) col
+                    (resume (+ (* (+ col (+ x (% n 3))) 10)
+                               (% (T.put (+ col (+ x (% n 3))) (* (+ col (+ x (% n 3))) 2)) 10))
+                            (+ col (+ x (% n 3))))))
+                  (let ((a (I.step (: 3 Int64))))
+                    (let ((b (I.step (: 5 Int64))))
+                      (let ((r (T.put (: 4 Int64) (: 7 Int64))))
+                        (+ (* 1000 (+ (* 1000 a) b)) r)))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 49109008 Int64))
+  (call   main (: 0 Int64)) (output (: 39089099 Int64)))
+
+(case "grh1 a GREENHOUSE auto-vent — sunshine heats the house and crossing thirty with the vents SHUT trips them open (an eight-hundred alarm row with the temperature's low digits), misting adds three humidity but an open vent bleeds one back (a nine-tagged row), the read packs temperature humidity and vents, and the seed's starting warmth trips the auto-vent on the FIRST sun for one run and the SECOND for the other so every later humidity row shifts"
+  (input  (do
+            (effect G
+              (op sun (-> Int64 Int64))
+              (op mist (-> Int64))
+              (op read (-> Int64)))
+            (def (main (: n Int64))
+              (handle G (tuple (+ (: 24 Int64) (* (% n 3) 4)) (: 5 Int64) (: 0 Int64))
+                ((sun (d) st
+                  (match st
+                    ((tuple t h v)
+                      (if (if (> (+ t d) 30) (= v 0) false)
+                          (resume (+ (: 800 Int64) (% (+ t d) 100)) (tuple (+ t d) h (: 1 Int64)))
+                          (resume (+ (* (+ t d) 10) v) (tuple (+ t d) h v))))))
+                 (mist () st
+                  (match st
+                    ((tuple t h v)
+                      (if (= v 1)
+                          (resume (+ (* (+ h 2) 10) 9) (tuple t (+ h 2) v))
+                          (resume (* (+ h 3) 10) (tuple t (+ h 3) v))))))
+                 (read () st
+                  (match st
+                    ((tuple t h v)
+                      (resume (+ (* t 100) (+ (* h 10) v)) st)))))
+                (let ((a (G.sun (: 4 Int64))))
+                  (let ((b (G.mist)))
+                    (let ((c (G.sun (: 3 Int64))))
+                      (let ((d (G.mist)))
+                        (let ((f (G.read)))
+                          (+ (* 10000 (+ (* 1000 (+ (* 1000 (+ (* 1000 a) b)) c)) d)) f))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 8320793510993591 Int64))
+  (call   main (: 0 Int64)) (output (: 2800808311093201 Int64)))
+
+(case "brw1 a BREW fermenter with a stuck-fermentation rescue — each day the gravity drops by the yeast health floored at ten (an inline min), a drop under three counts as STUCK earning a four-point yeast boost and a seven-hundred alarm with the standing gravity, a healthy day answers gravity and the yeast's low digit, pitching adds yeast, the read packs all three, and the weak seed sticks on DAY ONE (rescuing early) while the strong one ferments clean until the floor"
+  (input  (do
+            (effect F
+              (op day (-> Int64))
+              (op pitch (-> Int64 Int64))
+              (op read (-> Int64)))
+            (def (main (: n Int64))
+              (handle F (tuple (: 60 Int64) (+ (: 2 Int64) (* (% n 3) 3)) (: 0 Int64))
+                ((day () st
+                  (match st
+                    ((tuple g y r)
+                      (if (< (if (< y (- g 10)) y (- g 10)) 3)
+                          (resume (+ (: 700 Int64) (- g (if (< y (- g 10)) y (- g 10))))
+                                  (tuple (- g (if (< y (- g 10)) y (- g 10))) (+ y 4) (+ r 1)))
+                          (resume (+ (* (- g (if (< y (- g 10)) y (- g 10))) 10) (% y 10))
+                                  (tuple (- g (if (< y (- g 10)) y (- g 10))) y r))))))
+                 (pitch (v) st
+                  (match st
+                    ((tuple g y r)
+                      (resume (* (+ y v) 10) (tuple g (+ y v) r)))))
+                 (read () st
+                  (match st
+                    ((tuple g y r)
+                      (resume (+ (* g 100) (+ (* y 10) r)) st)))))
+                (let ((a (F.day)))
+                  (let ((b (F.day)))
+                    (let ((c (F.pitch (: 1 Int64))))
+                      (let ((d (F.day)))
+                        (let ((f (F.read)))
+                          (+ (* 10000 (+ (* 10000 (+ (* 10000 (+ (* 10000 a) b)) c)) d)) f))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 5550505006004464460 Int64))
+  (call   main (: 0 Int64)) (output (: 7580526007004574571 Int64)))
+
+(case "tel1 a TELESCOPE tracker with a slew-rate limit — track names a target locking within five degrees (else a nine-hundred miss with the gap's low digits), slew moves the azimuth toward the target by at most SEVEN degrees (a two-sided inline clamp of the signed difference) tagging an exact arrival, the read packs azimuth lock and arrival, and one seed starts within locking range so every row down to the read disagrees with the far-parked run"
+  (input  (do
+            (effect T
+              (op track (-> Int64 Int64))
+              (op slew (-> Int64))
+              (op read (-> Int64)))
+            (def (dist (: a Int64) (: b Int64))
+              (if (> a b) (- a b) (- b a)))
+            (def (main (: n Int64))
+              (handle T (tuple (+ (: 10 Int64) (* (% n 3) 20)) (: 0 Int64) (: 0 Int64))
+                ((track (t2) st
+                  (match st
+                    ((tuple az tg lk)
+                      (if (<= (dist az t2) 5)
+                          (resume (+ (: 100 Int64) (dist az t2)) (tuple az t2 (: 1 Int64)))
+                          (resume (+ (: 900 Int64) (% (dist az t2) 100)) (tuple az t2 (: 0 Int64)))))))
+                 (slew () st
+                  (match st
+                    ((tuple az tg lk)
+                      (if (> (- tg az) 7)
+                          (resume (* (+ az 7) 10) (tuple (+ az 7) tg lk))
+                          (if (< (- tg az) -7)
+                              (resume (* (- az 7) 10) (tuple (- az 7) tg lk))
+                              (resume (+ (* tg 10) 1) (tuple tg tg lk)))))))
+                 (read () st
+                  (match st
+                    ((tuple az tg lk)
+                      (resume (+ (* az 100) (+ (* lk 10) (if (= az tg) 1 0))) st)))))
+                (let ((a (T.track (: 27 Int64))))
+                  (let ((b (T.slew)))
+                    (let ((c (T.track (: 30 Int64))))
+                      (let ((d (T.slew)))
+                        (let ((f (T.read)))
+                          (+ (* 10000 (+ (* 10000 (+ (* 10000 (+ (* 10000 a) b)) c)) d)) f))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 1030271010303013011 Int64))
+  (call   main (: 0 Int64)) (output (: 9170170091302402400 Int64)))

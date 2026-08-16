@@ -96,3 +96,16 @@ MATCHES + fills n=0 = 333811222 (their template had a placeholder 0 output —
 banked with real oracles). PASS ×3 wasm + ×1 rust + ×1 rust-async on origin
 3c06de590. The family hardening matrix is now complete: single/multi/
 conditional(4 shapes)/two-handlers performs + 2 no-touch controls.
+
+## xhsMulti merged-multi-slot audit (tick 1655) — SAFE DECLINE, audit CLOSES
+v-effects' last exclusion axis (slots.len()==1), authored from my side as the
+xh1-shape: outer T = Map-state put (answers PRIOR or 99), inner I.step
+let-binds c2, performs T.put(c2, c2*2) mid-arm, packs + threads c2.
+- xhsMulti (shared binder): CLEAN DECLINE — CDZ0101 unbound c2 (the freeze's
+  scope-escape signature; todo x3). NO wrong answer.
+- xhsMultiCtrl (inlined): PASSES with the hand-modeled oracles
+  (49109008/39089099) — model confirmed, distribute handles multi-slot.
+Verdict: the multi-slot exclusion is SAFE (decline, not miscompile) — same
+class as recursive-driver, unlike growing-state. All 3 collapse exclusions
+audited: 1 miscompile (fixed), 2 safe declines. AUDIT FULLY CLOSED.
+Both banked: xhsMultiCtrl promotable as a pass-pin; xhsMulti a todo-witness.
