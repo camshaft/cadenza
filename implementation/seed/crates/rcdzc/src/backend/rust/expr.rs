@@ -768,10 +768,10 @@ fn emit_value_reconstruct(
 /// BARE `(tuple …)` document that DIVERGED from the wasm face (measured: 35 vs 70 bytes for a
 /// `(tuple 5 105)`), so `Value.encode` was not a stable cross-backend content-address — a real bug the
 /// self-consistent round-trip corpus masked. A SCALAR's node is its bare render-name atom
-/// (`Int64`/`String`/`Bool`/`Char`/`Bytes`/…); a `Tuple`/`List`/`Record` is the structured
-/// `(Tuple …)`/`(List …)`/`(Record (: k T) …)` application (the RECORD field is a `(: name T)` colon
-/// ascription — the TYPE head is capitalized, matching `type_ast`). Covers exactly the shapes
-/// [`emit_value_form`] wires; others decline in lockstep.
+/// (`Int64`/`String`/`Bool`/`Char`/`Bytes`/…); a `Tuple`/`List` is the structured `(Tuple …)`/`(List …)`
+/// application; a `Record` is the LOWERCASE `(record (name T) …)` (mirroring the descriptor `type_node_of`,
+/// not `type_ast` — see the Record arm). Covers exactly the shapes [`emit_value_form`] wires; others
+/// decline in lockstep.
 fn emit_type_node(ty: &Ty, ncx: &crate::ty::NameCtx) -> Result<String, Reject> {
     match ty.strip_nominal() {
         Ty::Int(_)
@@ -803,14 +803,21 @@ fn emit_type_node(ty: &Ty, ncx: &crate::ty::NameCtx) -> Result<String, Reject> {
                 "{{ let __th = __b.name(\"List\"); let __te = {child}; __b.list(vec![__th, __te]) }}"
             ))
         }
+        // A RECORD's type node mirrors the DESCRIPTOR path `type_node_of` (what `Value.encode` uses), NOT
+        // `type_ast`: LOWERCASE `record` head (the SAME atom as the value form's `(record …)` head, so the
+        // codec interns it once), and each field is a bare `(name <type>)` node — head = field name, one
+        // child = the field's type node — NOT a `(: name T)` colon ascription. (The two differed: the
+        // runtime bakes `type_node_of` for the escaping-value descriptor, `type_ast` is the fixed-shape
+        // static-template renderer; using the latter emitted a capital `Record` + colon fields that DIVERGED
+        // from the wasm face — 9 vs 8 leaves — a real cross-backend bug v-runtime's per-side pin caught.)
         Ty::Record(fields) => {
             let mut s =
-                String::from("{ let __th = __b.name(\"Record\"); let mut __tc = vec![__th];");
+                String::from("{ let __th = __b.name(\"record\"); let mut __tc = vec![__th];");
             for (i, (sym, fty)) in fields.iter().enumerate() {
                 let fname = &*sym.name;
                 let child = emit_type_node(fty, ncx)?;
                 s.push_str(&format!(
-                    " let __tf{i} = {{ let __tcol = __b.name(\":\"); let __tk = __b.name(\"{fname}\"); let __tv = {child}; __b.list(vec![__tcol, __tk, __tv]) }}; __tc.push(__tf{i});"
+                    " let __tf{i} = {{ let __tk = __b.name(\"{fname}\"); let __tv = {child}; __b.list(vec![__tk, __tv]) }}; __tc.push(__tf{i});"
                 ));
             }
             s.push_str(" __b.list(__tc) }");
