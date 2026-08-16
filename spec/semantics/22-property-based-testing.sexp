@@ -1244,6 +1244,24 @@
   (call   main (: 5 Int64)) (output (: 5006 Int64))
   (call   main (: 3 Int64)) (output (: 3004 Int64)))
 
+(case "a Value.encode/Value.decode round-trip preserves a MAP's entries"
+  (doc    "Extends the round-trips to a `(Map Int64 Int64)` — the R2 value-form `(map (k v) …)` shape, entries
+           in CANONICAL KEY order. `Value.decode (Value.encode (map {n: n*10, n+1: 99})) == Some` of the same
+           map; the match looks up BOTH keys and folds `v(n)*1000 + v(n+1)` to prove each entry survives. `main
+           7` -> {7:70, 8:99} -> 70099, `main 3` -> {3:30, 4:99} -> 30099 (distinct); a lost/reordered entry
+           would differ. Pins the Map arm of the native codec: rust iterates the `BTreeMap` (already canonical
+           order, no sort) building `(map (k v) …)`, decode rebuilds the `BTreeMap`. Runs on wasm + rust + rust-async.")
+  (input  (do
+            (def (main (: n Int64))
+              (match (: (Value.decode (Value.encode (Map.insert (Map.insert Map.empty n (* n 10)) (+ n 1) 99)))
+                        (Option (Map Int64 Int64)))
+                ((Some m) (+ (* (Option.expect (Map.lookup m n) "k1") 1000)
+                             (Option.expect (Map.lookup m (+ n 1)) "k2")))
+                ((None u) (- 0 1))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 70099 Int64))
+  (call   main (: 3 Int64)) (output (: 30099 Int64)))
+
 ; --- The round-trip under LET-BINDER grounding: decode's target fixed by the binder annotation, not inline. ---
 
 (case "a Value.decode round-trip grounds its target from a LET-BINDER annotation, not only an inline ascription"

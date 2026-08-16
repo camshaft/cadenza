@@ -428,6 +428,18 @@ pub(super) fn closure_struct_ident(k: usize) -> String {
 /// miscompile). The result BYTES match the runtime's `value-encode` by construction (v-runtime: all three
 /// codecs share `ast-encoding.md`, and `codec::encode` canonicalizes) — though the round-trip cases only need
 /// rust-internal `decode∘encode = id`, which reusing `cadenza_ast::codec` for both directions guarantees.
+/// Whether `ty` is a scalar the runtime can ORDER + encode as a Set element / Map key (mirrors
+/// `const_key_order` / `set_elements_canonical`, which handle only scalars). A non-scalar element/key makes
+/// the wasm `value-encode` DECLINE, so the native rust codec must decline it too — else it would encode a
+/// value wasm rejects (a cross-backend divergence). `Float` is excluded: it is not `Ord` (no total canonical
+/// order), so a `BTreeSet<f64>`/float-keyed `BTreeMap` would not even compile.
+fn is_orderable_scalar_key(ty: &Ty) -> bool {
+    matches!(
+        ty.strip_nominal(),
+        Ty::Int(_) | Ty::Bool | Ty::Char | Ty::String | Ty::Symbol
+    )
+}
+
 fn emit_value_form(db: &mut Db, ty: &Ty, val_expr: &str) -> Result<String, Reject> {
     match ty.strip_nominal() {
         Ty::Bool => Ok(format!(
@@ -467,6 +479,24 @@ fn emit_value_form(db: &mut Db, ty: &Ty, val_expr: &str) -> Result<String, Rejec
                 "{{ let __lv = {val_expr}; let __lh = __b.name(\"list\"); let mut __lc = vec![__lh]; \
                  for __el in __lv.iter() {{ let __ev = __el.clone(); let __c = {child}; __lc.push(__c); }} \
                  __b.list(__lc) }}"
+            ))
+        }
+        // A MAP is a `BTreeMap<K, V>` rendered `(map (k1 v1) … (kn vn))` — head `map`, each entry a `(key
+        // value)` 2-list, in canonical KEY order (the `BTreeMap` iterates sorted = canonical, no sort). Only a
+        // SCALAR KEY is orderable (decline otherwise, matching the runtime); the VALUE is any encodable shape.
+        Ty::Map(k, v) => {
+            if !is_orderable_scalar_key(k) {
+                return Err(Reject::decline(
+                    "Value.encode native rust: Map key is not an orderable scalar (Int/Bool/Char/String/Symbol)",
+                ));
+            }
+            let kform = emit_value_form(db, k, "__mk")?;
+            let vform = emit_value_form(db, v, "__mvv")?;
+            Ok(format!(
+                "{{ let __mv = {val_expr}; let __mh = __b.name(\"map\"); let mut __mc = vec![__mh]; \
+                 for (__k, __v) in __mv.iter() {{ let __mk = __k.clone(); let __mvv = __v.clone(); \
+                 let __ke = {kform}; let __ve = {vform}; let __pair = __b.list(vec![__ke, __ve]); __mc.push(__pair); }} \
+                 __b.list(__mc) }}"
             ))
         }
         // A RECORD is a Rust TUPLE (`tuple_type(fields.values())`, so tuple position i == the i-th field in
@@ -636,6 +666,27 @@ fn emit_value_reconstruct(
                  Some(__out) }})()"
             ))
         }
+        // A MAP: check the `(map …)` shape, reconstruct each `(key value)` entry into a `BTreeMap`. Inverse
+        // of the Map encode; `?` on any key/value/shape mismatch → None.
+        Ty::Map(k, v) => {
+            if !is_orderable_scalar_key(k) {
+                return Err(Reject::decline(
+                    "Value.decode native rust: Map key is not an orderable scalar (Int/Bool/Char/String/Symbol)",
+                ));
+            }
+            let kc = emit_value_reconstruct(db, k, arenas, "__pair[0]")?;
+            let vc = emit_value_reconstruct(db, v, arenas, "__pair[1]")?;
+            Ok(format!(
+                "(|| {{ let __mitems = if let cadenza_ast::ast::Struct::List(__i) = {arenas}.get({node}) {{ __i }} else {{ return None }}; \
+                 if {arenas}.head_name({node}) != Some(\"map\") {{ return None }} \
+                 let mut __out = std::collections::BTreeMap::new(); \
+                 for __ix in 1..__mitems.len() {{ \
+                   let __pair = if let cadenza_ast::ast::Struct::List(__p) = {arenas}.get(__mitems[__ix]) {{ __p }} else {{ return None }}; \
+                   if __pair.len() != 2 {{ return None }} \
+                   let __kk = {kc}?; let __vv = {vc}?; __out.insert(__kk, __vv); }} \
+                 Some(__out) }})()"
+            ))
+        }
         // A RECORD: check the `(record (= k v) …)` shape, then for each field read the `(= k v)` triple's
         // VALUE (its 3rd child) and reconstruct positionally into the tuple (matching the encode's sorted-key
         // field order). Positional (not by-key) is sound because encode + decode iterate the SAME sorted-key
@@ -801,6 +852,16 @@ fn emit_type_node(ty: &Ty, ncx: &crate::ty::NameCtx) -> Result<String, Reject> {
             let child = emit_type_node(elem, ncx)?;
             Ok(format!(
                 "{{ let __th = __b.name(\"List\"); let __te = {child}; __b.list(vec![__th, __te]) }}"
+            ))
+        }
+        // Map type node: `(Map k v)` — mirror `type_node_of` (matches `render_name`). (Set's type node
+        // `(Set e)` is not wired here: Set `Value.encode` currently declines upstream at typing (CDZ0203),
+        // so the Set codec arm is unreachable — added when v-inference grounds it.)
+        Ty::Map(k, v) => {
+            let kc = emit_type_node(k, ncx)?;
+            let vc = emit_type_node(v, ncx)?;
+            Ok(format!(
+                "{{ let __th = __b.name(\"Map\"); let __tk = {kc}; let __tv = {vc}; __b.list(vec![__th, __tk, __tv]) }}"
             ))
         }
         // A RECORD's type node mirrors the DESCRIPTOR path `type_node_of` (what `Value.encode` uses), NOT
