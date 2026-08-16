@@ -1284,6 +1284,54 @@ mod tests {
     }
 
     #[test]
+    fn value_encode_of_a_framed_int_tuple_is_the_colon_framed_golden() {
+        // CROSS-BACKEND byte-identity pin (mirror of cdz-runtime's
+        // `value_encode_of_a_framed_int_tuple_is_the_colon_framed_golden`). `Value.encode (tuple 5 105)`
+        // at type `(Tuple Int64 Int64)` must produce the SAME 70-byte colon-framed document on BOTH
+        // backends: the wasm face is the cdz-runtime `value-encode` op; the native-rust face builds this
+        // exact framed `Arenas` and calls `cadenza_ast::codec::encode` (the codec the emitted rust links).
+        // cdz-runtime is a cdylib with no cadenza-ast dep, so the invariant is pinned PER-SIDE against the
+        // same golden bytes. This is the standing AUTO guard for the "bare-vs-framed" divergence class
+        // (a self-consistent per-backend round-trip once masked a 35-vs-70-byte bug): a future codec change
+        // that keeps round-trips green but shifts these bytes fails loud here.
+        let mut b = Builder::new();
+        // value form: (tuple 5 105)
+        let th = b.name("tuple");
+        let i5 = b.atom_leaf(Leaf::Int {
+            value: BigInt::from(5),
+            radix: Radix::Dec,
+        });
+        let i105 = b.atom_leaf(Leaf::Int {
+            value: BigInt::from(105),
+            radix: Radix::Dec,
+        });
+        let tuple_v = b.list(vec![th, i5, i105]);
+        // type node: (Tuple Int64 Int64)
+        let tn_head = b.name("Tuple");
+        let tn_a = b.name("Int64");
+        let tn_b = b.name("Int64");
+        let type_node = b.list(vec![tn_head, tn_a, tn_b]);
+        // frame: (: <value> <type-node>)
+        let colon = b.name(":");
+        let root = b.list(vec![colon, tuple_v, type_node]);
+        let a = b.finish(root);
+
+        let golden: &[u8] = b"cdzast\x00\x01\x06\n\x01:\n\x05tuple\x00\x01\x05\x00\x01i\n\x05Tuple\n\x05Int64\n\x00\x00\x00\x01\x00\x02\x00\x03\x01\x03\x01\x02\x03\x00\x04\x00\x05\x00\x05\x01\x03\x05\x06\x07\x01\x03\x00\x04\x08\t";
+        let got = encode(&a);
+        assert_eq!(
+            got.len(),
+            70,
+            "framed (tuple 5 105) encoded length changed (was 70): {} bytes",
+            got.len()
+        );
+        assert_eq!(
+            got, golden,
+            "cadenza_ast::codec::encode of the framed (tuple 5 105) diverged from the cross-backend golden \
+             (mirror of cdz-runtime's runtime value-encode pin)"
+        );
+    }
+
+    #[test]
     fn every_payload_leaf_kind_including_markers_round_trips_equal_through_the_codec() {
         // `round_trips()` above uses `sample()`, which only carries Int/Float/Str/Bool/Name — it does NOT
         // exercise Sym, Char, Bytes, or the two MARKER leaves (BadChar/BadEscape). `radix_sample()` carries
