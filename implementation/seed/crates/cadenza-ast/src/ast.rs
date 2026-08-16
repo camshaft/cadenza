@@ -199,6 +199,69 @@ pub struct Decimal {
     pub exponent: i64,
 }
 
+impl Decimal {
+    /// The EXACT shortest-decimal `Decimal` for an `f64` — the value-form `Leaf::Float` a native float
+    /// value encodes to. Mirrors rcdzc's `ast::Decimal::from_f64` and the cdz-runtime `float_leaf` so all
+    /// three codecs (compiler, native-rust-emit, runtime) produce BYTE-IDENTICAL Float leaves (the 3-codec
+    /// identity): a WHOLE value uses its full expansion (`{f:.0}`), a non-whole its shortest round-tripping
+    /// `{:e}` text; the (sign, digit string, base-10 exponent) decomposition then folds the fractional
+    /// digits into the exponent. `None` for a non-finite `f64` — nan/inf has no canonical value form, so
+    /// the encode declines (matching the runtime's trap). (rcdzc stores the significand as a base-256 byte
+    /// magnitude; here it is the crate's `BigInt`, built by parsing the digit string — same value.)
+    pub fn from_f64(f: f64) -> Option<Decimal> {
+        if !f.is_finite() {
+            return None;
+        }
+        let s = if f.fract() == 0.0 {
+            format!("{f:.0}")
+        } else {
+            format!("{f:e}")
+        };
+        Self::from_sci(&s)
+    }
+
+    /// `from_f64`'s `Float32` twin: a promoted `f32`'s shortest decimal differs from the `f64`'s
+    /// (`0.1f32` → `1e-1`, not `1.00000001…e-1`), so format the `f32` DIRECTLY. Matches the runtime
+    /// `float_leaf_f32` (always `{:e}`, no whole-value branch). `None` for a non-finite `f32`.
+    pub fn from_f32(f: f32) -> Option<Decimal> {
+        if !f.is_finite() {
+            return None;
+        }
+        Self::from_sci(&format!("{f:e}"))
+    }
+
+    /// Decompose a decimal/scientific text (`-2.5e-1`, `100`, `1.5e0`) into `(negative, significand,
+    /// exponent)`: split the sign, the `e` exponent, and the fractional digits (folded into the exponent).
+    /// The significand is the concatenated integer+fraction digit string parsed as a `BigInt`. `None` on a
+    /// malformed mantissa (a non-digit, or empty). Shared by `from_f64`/`from_f32` so both decompose identically.
+    fn from_sci(s: &str) -> Option<Decimal> {
+        let (negative, rest) = match s.strip_prefix('-') {
+            Some(r) => (true, r),
+            None => (false, s),
+        };
+        let (mantissa, exp10): (&str, i64) = match rest.split_once('e') {
+            Some((m, e)) => (m, e.parse().ok()?),
+            None => (rest, 0),
+        };
+        let (int_part, frac_part) = match mantissa.split_once('.') {
+            Some((i, fr)) => (i, fr),
+            None => (mantissa, ""),
+        };
+        let mut digits = String::from(int_part);
+        digits.push_str(frac_part);
+        let exponent = exp10 - frac_part.len() as i64;
+        if digits.is_empty() || !digits.bytes().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        let significand = BigInt::parse_bytes(digits.as_bytes(), 10)?;
+        Some(Decimal {
+            negative,
+            significand,
+            exponent,
+        })
+    }
+}
+
 /// The two arenas plus the root occurrence — the whole AST of one program unit.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Arenas {
@@ -755,6 +818,60 @@ impl Arenas {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
+
+    fn dec(neg: bool, sig: &str, exp: i64) -> Decimal {
+        Decimal {
+            negative: neg,
+            significand: BigInt::from_str(sig).unwrap(),
+            exponent: exp,
+        }
+    }
+
+    #[test]
+    fn decimal_from_f64_is_the_exact_shortest_decimal_decomposition() {
+        // The (sign, significand, exponent) each f64 decomposes to — matching rcdzc `Decimal::from_f64`
+        // + the runtime `float_leaf` (`{f:.0}` whole / `{:e}` shortest), the basis of the 3-codec Float
+        // byte-identity. A WHOLE value keeps its full integer expansion (100 → 100·10^0, not 1·10^2); a
+        // non-whole folds the fraction digits into the exponent (1.5 → 15·10^-1). Sign is separate so
+        // -0.0 stays distinct. nan/inf have no canonical form → None (the encode declines).
+        assert_eq!(Decimal::from_f64(1.5), Some(dec(false, "15", -1)));
+        assert_eq!(Decimal::from_f64(-0.25), Some(dec(true, "25", -2)));
+        assert_eq!(Decimal::from_f64(100.0), Some(dec(false, "100", 0)));
+        assert_eq!(Decimal::from_f64(0.0), Some(dec(false, "0", 0)));
+        assert_eq!(Decimal::from_f64(-0.0), Some(dec(true, "0", 0)));
+        assert_eq!(Decimal::from_f64(2.0), Some(dec(false, "2", 0)));
+        assert_eq!(Decimal::from_f64(f64::NAN), None);
+        assert_eq!(Decimal::from_f64(f64::INFINITY), None);
+        assert_eq!(Decimal::from_f64(f64::NEG_INFINITY), None);
+        // Round-trips to the same bits (the decomposition is exact, not lossy): reconstruct
+        // `<sig>e<exp>` and re-parse.
+        for &f in &[
+            1.5f64, -0.25, 100.0, 1.23456, 1e20, 6.022e23, -7.0, 0.0, -0.0,
+        ] {
+            let d = Decimal::from_f64(f).unwrap();
+            let s = format!(
+                "{}{}e{}",
+                if d.negative { "-" } else { "" },
+                d.significand,
+                d.exponent
+            );
+            assert_eq!(
+                f64::from_str(&s).unwrap().to_bits(),
+                f.to_bits(),
+                "from_f64({f}) reconstructed as {s} did not round-trip"
+            );
+        }
+    }
+
+    #[test]
+    fn decimal_from_f32_formats_the_f32_directly_not_the_promoted_f64() {
+        // A promoted f32's shortest decimal differs from the f64's: 0.1f32's shortest is `1e-1`, matching
+        // the runtime `float_leaf_f32` (always `{:e}`), NOT the f64 expansion of `0.1f32 as f64`.
+        assert_eq!(Decimal::from_f32(0.5f32), Some(dec(false, "5", -1)));
+        assert_eq!(Decimal::from_f32(0.1f32), Some(dec(false, "1", -1)));
+        assert_eq!(Decimal::from_f32(f32::NAN), None);
+    }
 
     #[test]
     fn suffix_kind_char_is_a_case_sensitive_bijection_with_from_char() {
