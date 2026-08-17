@@ -14505,3 +14505,113 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 101 Int64))
   (call   main (: 0 Int64)) (output (: 1020205 Int64)))
+
+;; ── Glassblower's bench, letterpress galley, cider press (breaker batch 311) ──
+(case "glb1 a GLASSBLOWER'S bench — each blow thins the wall by a third of the gather FLOORED at one and halves the gather (a would-be wall under two CRACKS instead, both fields frozen), heating adds gather, the read packs wall gather and cracks, and the seed's opening gather thins fast toward the crack line on one bench while the other's gentle thirds leave wall to spare"
+  (input  (do
+            (effect G
+              (op heat (-> Int64 Int64))
+              (op blow (-> Int64))
+              (op read (-> Int64)))
+            (def (main (: n Int64))
+              (handle G (tuple (+ (: 3 Int64) (* (% n 3) 6)) (: 9 Int64) (: 0 Int64))
+                ((heat (g) st
+                  (match st
+                    ((tuple gather wall cr)
+                      (resume (+ (* (+ gather g) 10) (% g 10)) (tuple (+ gather g) wall cr)))))
+                 (blow () st
+                  (match st
+                    ((tuple gather wall cr)
+                      (if (< (/ gather 3) 1)
+                          (if (< (- wall 1) 2)
+                              (resume (+ (: 900 Int64) (+ cr 1)) (tuple gather wall (+ cr 1)))
+                              (resume (+ (: 10 Int64) (% (- wall 1) 10))
+                                      (tuple (/ gather 2) (- wall 1) cr)))
+                          (if (< (- wall (/ gather 3)) 2)
+                              (resume (+ (: 900 Int64) (+ cr 1)) (tuple gather wall (+ cr 1)))
+                              (resume (+ (* (/ gather 3) 10) (% (- wall (/ gather 3)) 10))
+                                      (tuple (/ gather 2) (- wall (/ gather 3)) cr)))))))
+                 (read () st
+                  (match st
+                    ((tuple gather wall cr)
+                      (resume (+ (* wall 100) (+ (* gather 10) cr)) st)))))
+                (let ((a (G.blow)))
+                  (let ((b (G.heat (: 4 Int64))))
+                    (let ((c (G.blow)))
+                      (let ((d (G.blow)))
+                        (let ((f (G.read)))
+                          (+ (* 10000 (+ (* 1000 (+ (* 1000 (+ (* 1000 a) b)) c)) d)) f))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 360840240130320 Int64))
+  (call   main (: 0 Int64)) (output (: 180540170160610 Int64)))
+
+(case "tps1 a LETTERPRESS galley — setting a word takes its width plus a space when the twelve-em line holds it, else BREAKS the line (counted, the word opening the next line at its bare width), justifying pads the line to twelve recording the gap as respacing, the read packs lines width and respacing, and the seed's headline stub pushes one galley's words onto broken lines while the other sets them flush with a ZERO-gap justify"
+  (input  (do
+            (effect T
+              (op set (-> Int64 Int64))
+              (op justify (-> Int64))
+              (op read (-> Int64)))
+            (def (main (: n Int64))
+              (handle T (tuple (* (% n 3) 5) (: 0 Int64) (: 0 Int64))
+                ((set (w) st
+                  (match st
+                    ((tuple lw lines rs)
+                      (if (<= (+ lw (+ w 1)) 12)
+                          (resume (+ (* (+ lw (+ w 1)) 10) (% w 10))
+                                  (tuple (+ lw (+ w 1)) lines rs))
+                          (resume (+ (: 700 Int64) (+ (* (+ lines 1) 10) (% w 10)))
+                                  (tuple w (+ lines 1) rs))))))
+                 (justify () st
+                  (match st
+                    ((tuple lw lines rs)
+                      (resume (+ (* (- 12 lw) 10) (% (+ rs (- 12 lw)) 10))
+                              (tuple (: 12 Int64) lines (+ rs (- 12 lw)))))))
+                 (read () st
+                  (match st
+                    ((tuple lw lines rs)
+                      (resume (+ (* lines 100) (+ (* lw 10) rs)) st)))))
+                (let ((a (T.set (: 4 Int64))))
+                  (let ((b (T.set (: 6 Int64))))
+                    (let ((c (T.justify)))
+                      (let ((d (T.set (: 3 Int64))))
+                        (let ((f (T.read)))
+                          (+ (* 10000 (+ (* 1000 (+ (* 1000 (+ (* 1000 a) b)) c)) d)) f))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 1047160667230236 Int64))
+  (call   main (: 0 Int64)) (output (: 541260007130130 Int64)))
+
+(case "cdr1 a CIDER press splitting juice from pomace — pressing yields two-thirds of the hopper as juice (integer) with the REMAINDER going to pomace and the hopper emptying (a dry press answers nine-hundred with the pomace's low digit touching nothing), loading adds apples, the read packs juice hopper and pomace, and the seed's first pressing yields four-to-one on the full hopper against one-to-one on the meagre one with the split ratios diverging every round"
+  (input  (do
+            (effect C
+              (op load (-> Int64 Int64))
+              (op press (-> Int64))
+              (op read (-> Int64)))
+            (def (main (: n Int64))
+              (handle C (tuple (+ (: 2 Int64) (* (% n 3) 5)) (: 0 Int64) (: 0 Int64))
+                ((load (k) st
+                  (match st
+                    ((tuple hop juice pom)
+                      (resume (+ (* (+ hop k) 10) (% k 10)) (tuple (+ hop k) juice pom)))))
+                 (press () st
+                  (match st
+                    ((tuple hop juice pom)
+                      (if (= (/ (* hop 2) 3) 0)
+                          (resume (+ (: 900 Int64) (% pom 10)) st)
+                          (resume (+ (* (/ (* hop 2) 3) 10)
+                                     (% (+ pom (- hop (/ (* hop 2) 3))) 10))
+                                  (tuple (: 0 Int64)
+                                         (+ juice (/ (* hop 2) 3))
+                                         (+ pom (- hop (/ (* hop 2) 3)))))))))
+                 (read () st
+                  (match st
+                    ((tuple hop juice pom)
+                      (resume (+ (* juice 100) (+ (* hop 10) pom)) st)))))
+                (let ((a (C.press)))
+                  (let ((b (C.load (: 4 Int64))))
+                    (let ((c (C.press)))
+                      (let ((d (C.press)))
+                        (let ((f (C.read)))
+                          (+ (* 10000 (+ (* 1000 (+ (* 1000 (+ (* 1000 a) b)) c)) d)) f))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 430440259050605 Int64))
+  (call   main (: 0 Int64)) (output (: 110440239030303 Int64)))
