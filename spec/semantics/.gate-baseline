@@ -6216,6 +6216,7 @@ pass	splitting a tuple at its full arity yields an empty suffix
 pass	splitting a tuple at zero yields an empty prefix
 pass	splitting a tuple beyond its arity is rejected
 pass	splitting a tuple with a runtime element addresses the prefix and suffix
+pass	spr1 a SPRINKLER scheduler on a depleting tank — water runs a zone for the minimum of its indexed duration and the remaining tank (shortfalls accumulated), refill restores the seed-shaped capacity answering the shortfall so far, and the small tank starves two zones in the first pass and one in the second while the large tank never starves
 pass	sq1 two SEQUENTIAL handles of the SAME inner effect, each seeded by a fresh outer draw — independent inner threads, one advancing outer thread
 pass	sqm1 SQUARE-AND-MULTIPLY over the state — (base,acc) squares every dispatch, multiplies on 1-bits mod 1000, the n-bit's effect observed by a final read
 pass	sr1 a performing self-recursive walk's result SEEDS an inner handle, then a trailing outer draw
@@ -6885,6 +6886,7 @@ pass	vse10 two RESULT fields at different type args each encode their own Err pa
 pass	vse11 two LIST fields of different element types encode independently — the list control of the generic-instantiation family
 pass	vse7 TWO Option-sum sibling fields at DIFFERENT sum decls each keep their own value-form — the first instantiation's descriptor must not stamp the second
 pass	vse9 the Option-sum field sorting FIRST keeps both siblings intact — the sort-order control of the sibling-descriptor pair
+pass	vtc1 a VOTE-TO-CLOSE quorum — second registers answering the count until the seed-shaped threshold CLOSES the motion (answering a hundred plus the count; later ops answer minus a hundred), withdraw decrements while open clamping at zero, and the lower threshold closes one second earlier turning the tail into closed sentinels
 pass	vwp1 a VOLUME-WEIGHTED average price tracker — trade accrues (price*qty, qty) answering the running notional, vwap answers the truncated notional-over-volume or -1 before any trade, and the LEADING -1 row drives the whole packed total negative while the seed shifts one trade's price through both later readouts
 pass	wa1 wrapping-add as the next-state — a near-MAX seed wraps to a concrete near-MIN value on the second draw
 pass	wa2 wrapping-add of the op ARG and state in the resume value — wrap, exact-MAX, and identity rows
@@ -6918,6 +6920,7 @@ pass	wrapping-sub of the minimum integer from zero wraps back to the minimum
 pass	wrapping-sub on a runtime Int8 wraps at its signed min boundary
 pass	wrapping-sub on a runtime UInt8 wraps modulo 256
 pass	wrapping-sub wraps a boundary-crossing runtime Int64 at the min boundary
+pass	wrd1 a DIGIT-LADDER distance scorer — feed answers the per-digit Hamming distance between the three-digit guess and the seed-picked target computed by a recursive digit-walk callee, closest tracks the minimum, and the two targets rank the SAME guesses in different orders with each run holding a different exact-hit row
 pass	wtr1 the WATER-JUG puzzle over a five-cap and a three-cap jug — fill tops a jug, pour transfers the minimum of the source's content and the destination's headroom, empty drains, every answer packs both jugs as a*10+b, and the seed picks WHICH jug the routine works from so one run reaches the classic four-measure states while the other cycles
 pass	wx1 the state thread WRAPS at Int64.max — three draws straddle the wraparound and the comparisons see the seam
 pass	wx2 Int64.min and Int64.max cross the dispatch as OP ARGUMENTS and come back exact — a count arm tallies the trips

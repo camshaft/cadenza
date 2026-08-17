@@ -13950,3 +13950,101 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 3019122828182707 Int64))
   (call   main (: 0 Int64)) (output (: 2013081818111670 Int64)))
+
+;; ── Digit ladder, sprinkler zones, vote-to-close (breaker batch 305) ──
+(case "wrd1 a DIGIT-LADDER distance scorer — feed answers the per-digit Hamming distance between the three-digit guess and the seed-picked target computed by a recursive digit-walk callee, closest tracks the minimum, and the two targets rank the SAME guesses in different orders with each run holding a different exact-hit row"
+  (input  (do
+            (effect W
+              (op feed (-> Int64 Int64))
+              (op closest (-> Int64)))
+            (def (ddist (: a Int64) (: b Int64) (: k Int64) (: acc Int64))
+              (if (= k 0)
+                  acc
+                  (if (= (% a 10) (% b 10))
+                      (ddist (/ a 10) (/ b 10) (- k 1) acc)
+                      (ddist (/ a 10) (/ b 10) (- k 1) (+ acc 1)))))
+            (def (main (: n Int64))
+              (handle W (tuple (if (= (% n 3) 1) 345 375) (: 3 Int64))
+                ((feed (w) st
+                  (match st
+                    ((tuple target best)
+                      (match (ddist w target 3 0)
+                        (d
+                          (if (< d best)
+                              (resume d (tuple target d))
+                              (resume d (tuple target best))))))))
+                 (closest () st
+                  (match st ((tuple target best) (resume best st)))))
+                (let ((a (W.feed 345)))
+                  (let ((b (W.feed 325)))
+                    (let ((c (W.feed 375)))
+                      (let ((d (W.feed 340)))
+                        (let ((e (W.closest)))
+                          (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 1010100 Int64))
+  (call   main (: 0 Int64)) (output (: 101000200 Int64)))
+
+(case "spr1 a SPRINKLER scheduler on a depleting tank — water runs a zone for the minimum of its indexed duration and the remaining tank (shortfalls accumulated), refill restores the seed-shaped capacity answering the shortfall so far, and the small tank starves two zones in the first pass and one in the second while the large tank never starves"
+  (input  (do
+            (effect S
+              (op water (-> Int64 Int64))
+              (op refill (-> Int64)))
+            (def (dur (: z Int64))
+              (if (= z 0) 5 (if (= z 1) 8 3)))
+            (def (main (: n Int64))
+              (handle S (tuple (+ 10 n) (: 0 Int64))
+                ((water (z) st
+                  (match st
+                    ((tuple tank short)
+                      (if (< tank (dur z))
+                          (resume tank (tuple 0 (+ short (- (dur z) tank))))
+                          (resume (dur z) (tuple (- tank (dur z)) short))))))
+                 (refill () st
+                  (match st
+                    ((tuple tank short) (resume short (tuple (+ 10 n) short))))))
+                (let ((a (S.water 0)))
+                  (let ((b (S.water 1)))
+                    (let ((c (S.water 2)))
+                      (let ((d (S.refill)))
+                        (let ((e (S.water 1)))
+                          (let ((f (S.water 1)))
+                            (let ((g (S.refill)))
+                              (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 5080300080800 Int64))
+  (call   main (: 0 Int64)) (output (: 5050006080212 Int64)))
+
+(case "vtc1 a VOTE-TO-CLOSE quorum — second registers answering the count until the seed-shaped threshold CLOSES the motion (answering a hundred plus the count; later ops answer minus a hundred), withdraw decrements while open clamping at zero, and the lower threshold closes one second earlier turning the tail into closed sentinels"
+  (input  (do
+            (effect V
+              (op second (-> Int64))
+              (op withdraw (-> Int64)))
+            (def (main (: n Int64))
+              (handle V (tuple (: 0 Int64) (: 0 Int64))
+                ((second () st
+                  (match st
+                    ((tuple count closed)
+                      (if (= closed 1)
+                          (resume -100 st)
+                          (if (< (+ count 1) (+ (% n 3) 2))
+                              (resume (+ count 1) (tuple (+ count 1) 0))
+                              (resume (+ 100 (+ count 1)) (tuple (+ count 1) 1)))))))
+                 (withdraw () st
+                  (match st
+                    ((tuple count closed)
+                      (if (= closed 1)
+                          (resume -100 st)
+                          (if (< 0 count)
+                              (resume (- count 1) (tuple (- count 1) 0))
+                              (resume 0 st)))))))
+                (let ((a (V.second)))
+                  (let ((b (V.withdraw)))
+                    (let ((c (V.second)))
+                      (let ((d (V.second)))
+                        (let ((e (V.second)))
+                          (let ((f (V.withdraw)))
+                            (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 10001030200 Int64))
+  (call   main (: 0 Int64)) (output (: 10002009900 Int64)))
