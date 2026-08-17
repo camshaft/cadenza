@@ -1068,4 +1068,45 @@ mod tests {
     // over the whole corpus + v-wasm-opt's `tests::recursion` battery (heap-carrying loops where a
     // wrongly-shared handle drifts Perceus rc into an observable miscompile). The capturing-body gate above
     // IS unit-tested — it needs no module op, so it is cleanly reachable in the harness.
+
+    #[test]
+    fn sharing_aware_emit_is_a_noop_at_o1() {
+        // The B2 sharing-aware-emit INSTALL is gated to O2+ (a whole-body sharing analysis, tier-consistent
+        // with `GlobalCsePass`). At O1 it MUST early-return without touching the core column — else the
+        // default-level (`O1`) gate would see a perturbed emit. Pins the O2-gate on `run_sharing_aware_emit`.
+        let mut db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (main (: x Int64)) (+ x 1)) (export main))",
+        ));
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        assert!(!db.has_core_overrides(), "no override before the pass");
+        run_sharing_aware_emit(&mut db, &layout, OptLevel::O1);
+        assert!(
+            !db.has_core_overrides(),
+            "O1 leaves the core column untouched — the B2 install is gated O2+"
+        );
+    }
+
+    #[test]
+    fn sharing_aware_emit_leaves_a_repeated_scalar_untouched() {
+        // B2 binds only shared HEAP-handle nodes (the `reduce_handle` resume-value shares); a repeated
+        // SCALAR subexpression is `GlobalCsePass`'s domain, NOT B2's. `(+ (& x 7) (& x 7))` has a repeated
+        // scalar `(& x 7)` (count≥2) but `is_heap_type(Int64)` is false, so `b2_bind_plan` excludes it →
+        // EMPTY plan → the install is a byte-neutral no-op even at O2. Pins the heap-only scope of B2 (a
+        // future change that made B2 grab scalar repeats would double-share with GlobalCse — this catches
+        // it). The heap-share FIRING path is authoritatively covered by the corpus `--opt-sweep` (see the
+        // harness-limitation note above: `testkit::parse`/`Db::load` cannot seed a clean heap-share body).
+        let mut db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (main (: x Int64)) (+ (& x 7) (& x 7))) (export main))",
+        ));
+        let d = db.def_by_name("main").expect("def main");
+        let body = db.defs[d].body.expect("main body");
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let _ = crate::lower::core_of(&mut db, body);
+        run_sharing_aware_emit(&mut db, &layout, OptLevel::O2);
+        assert!(
+            !db.has_core_overrides(),
+            "a repeated SCALAR is not a heap share → b2_bind_plan is empty → B2 installs nothing (that \
+             repeat is GlobalCse's job, not B2's)"
+        );
+    }
 }
