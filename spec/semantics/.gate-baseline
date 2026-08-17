@@ -5125,6 +5125,7 @@ pass	ds1 FOUR discarded draws in a do-chain before the kept one — every discar
 pass	ds2 the DISCARDED statement is itself an op-result chain — both hops advance the thread even though the value dies
 pass	ds3 a DISCARDED handle expression whose interior draws from the outer thread — the frame opens, draws, closes, and the value dies
 pass	ds4 a DISCARDED if whose arms draw DIFFERENT counts — the taken branch's advances survive the discard
+pass	dth1 a DEAD-MAN'S switch — beat resets the miss counter answering the uptime tick, poll counts a miss answering it until the seed-shaped threshold LATCHES the alarm, and once latched EVERY answer is -9 forever (beats cannot clear it); the lower threshold latches six rows early and the long -9 tail pins the latch as absorbing
 pass	du1 a DURATION newtype state accumulates seconds across dispatches — the arm unwraps, adds at nanosecond scale, rewraps
 pass	du2 UInt64 overflow at the top of a DURATION state traps at RUNTIME — the second dispatch crosses MAX, n=0 threads unchanged
 pass	dv1 truncated division and dividend-sign modulo over DRAWS — negative dividends exercise the toward-zero rule through dispatch
@@ -6229,6 +6230,7 @@ pass	st3 the SHADOWING frame's arm draws the SAME effect — its dispatch escape
 pass	stacked line comments on a top-level form are all seen through
 pass	stg1 a STONE-TAKING game — take removes up to k stones clamped at the pile answering pile-times-ten plus whose turn it was, the player landing the pile at zero answers a hundred-plus-their-id, and the smaller pile ends three moves early so its tail is drained-pile wins for alternating players
 pass	stk2 a STICKY-ERR Result state — pushes accumulate while Ok, the over-20 sum flips the state to an absorbing Err whose pushes answer the negated code, reset reports-and-restores
+pass	stp1 TIERED flat-fee billing — use accrues usage answering it, bill answers the current tier's flat fee (five under ten, twelve under twenty-five, twenty above) resetting usage, total reads the collected fees, and the seed pre-loads usage so the FIRST bill lands in a different tier while the later cycles converge
 pass	straight-line add-then-subtract keeps the value but is not cancelled to the operand
 pass	string REVERSE walks scalars back-to-front and anti-commutes with concatenation
 pass	string concatenation
@@ -6310,6 +6312,7 @@ pass	take-while where every element satisfies the predicate keeps the whole run
 pass	take-while where the first element fails the predicate returns the empty run
 pass	tax1 PROGRESSIVE tax brackets with a seed-shaped edge — assess splits the income into three bands via chained match binders over clamped compounds (ten twenty and thirty percent truncating), accumulating into the audit total, and the WIDER bracket taxes every income LESS while the sub-bracket income taxes to zero on both
 pass	tb1 a def RETURNS a tuple of two draws — the caller destructures the multi-value result of a performing helper
+pass	tdr1 a RESERVOIR gate with a ratcheting threshold — inflow raises the level, gate releases HALF truncating only above the threshold (which ratchets up by one after every release), and the LOWER starting threshold releases on the very first gate while the higher one holds, the runs re-converging on the final held gate
 pass	tel1 a TELESCOPE tracker with a slew-rate limit — track names a target locking within five degrees (else a nine-hundred miss with the gap's low digits), slew moves the azimuth toward the target by at most SEVEN degrees (a two-sided inline clamp of the signed difference) tagging an exact arrival, the read packs azimuth lock and arrival, and one seed starts within locking range so every row down to the read disagrees with the far-parked run
 pass	textually-identical performs are DISTINCT state-advancing reads, not a common subexpression
 pass	the ARM ENCODES its scalar op argument into framed Bytes and resumes them — body decodes

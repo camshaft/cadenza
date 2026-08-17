@@ -13567,3 +13567,100 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 211010910612310 Int64))
   (call   main (: 0 Int64)) (output (: 9011019029030513 Int64)))
+
+;; ── Reservoir gate, deadman switch, tiered billing (breaker batch 301) ──
+(case "tdr1 a RESERVOIR gate with a ratcheting threshold — inflow raises the level, gate releases HALF truncating only above the threshold (which ratchets up by one after every release), and the LOWER starting threshold releases on the very first gate while the higher one holds, the runs re-converging on the final held gate"
+  (input  (do
+            (effect R
+              (op inflow (-> Int64 Int64))
+              (op gate (-> Int64)))
+            (def (main (: n Int64))
+              (handle R (tuple (: 0 Int64) (+ (% n 4) 4))
+                ((inflow (v) st
+                  (match st
+                    ((tuple level thresh) (resume (+ level v) (tuple (+ level v) thresh)))))
+                 (gate () st
+                  (match st
+                    ((tuple level thresh)
+                      (if (< thresh level)
+                          (resume (/ level 2)
+                                  (tuple (- level (/ level 2)) (+ thresh 1)))
+                          (resume 0 st))))))
+                (let ((a (R.inflow 5)))
+                  (let ((b (R.gate)))
+                    (let ((c (R.inflow 4)))
+                      (let ((d (R.gate)))
+                        (let ((e (R.inflow 6)))
+                          (let ((f (R.gate)))
+                            (let ((g (R.gate)))
+                              (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 5000904110500 Int64))
+  (call   main (: 0 Int64)) (output (: 5020703100500 Int64)))
+
+(case "dth1 a DEAD-MAN'S switch — beat resets the miss counter answering the uptime tick, poll counts a miss answering it until the seed-shaped threshold LATCHES the alarm, and once latched EVERY answer is -9 forever (beats cannot clear it); the lower threshold latches six rows early and the long -9 tail pins the latch as absorbing"
+  (input  (do
+            (effect D
+              (op beat (-> Int64))
+              (op poll (-> Int64)))
+            (def (main (: n Int64))
+              (handle D (tuple (: 0 Int64) (: 0 Int64) (: 0 Int64))
+                ((beat () st
+                  (match st
+                    ((tuple misses uptime latched)
+                      (if (= latched 1)
+                          (resume -9 st)
+                          (resume (+ uptime 1) (tuple 0 (+ uptime 1) 0))))))
+                 (poll () st
+                  (match st
+                    ((tuple misses uptime latched)
+                      (if (= latched 1)
+                          (resume -9 st)
+                          (if (< (+ misses 1) (+ (% n 3) 2))
+                              (resume (+ misses 1) (tuple (+ misses 1) uptime 0))
+                              (resume -9 (tuple (+ misses 1) uptime 1))))))))
+                (let ((a (D.beat)))
+                  (let ((b (D.poll)))
+                    (let ((c (D.poll)))
+                      (let ((d (D.beat)))
+                        (let ((e (D.poll)))
+                          (let ((f (D.poll)))
+                            (let ((g (D.poll)))
+                              (let ((h (D.beat)))
+                                (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g)) h)))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 101020201019091 Int64))
+  (call   main (: 0 Int64)) (output (: 100909090909091 Int64)))
+
+(case "stp1 TIERED flat-fee billing — use accrues usage answering it, bill answers the current tier's flat fee (five under ten, twelve under twenty-five, twenty above) resetting usage, total reads the collected fees, and the seed pre-loads usage so the FIRST bill lands in a different tier while the later cycles converge"
+  (input  (do
+            (effect B
+              (op use (-> Int64 Int64))
+              (op bill (-> Int64))
+              (op total (-> Int64)))
+            (def (main (: n Int64))
+              (handle B (tuple n (: 0 Int64))
+                ((use (u) st
+                  (match st
+                    ((tuple usage bills) (resume (+ usage u) (tuple (+ usage u) bills)))))
+                 (bill () st
+                  (match st
+                    ((tuple usage bills)
+                      (if (< usage 10)
+                          (resume 5 (tuple 0 (+ bills 5)))
+                          (if (< usage 25)
+                              (resume 12 (tuple 0 (+ bills 12)))
+                              (resume 20 (tuple 0 (+ bills 20))))))))
+                 (total () st
+                  (match st ((tuple usage bills) (resume bills st)))))
+                (let ((a (B.use 8)))
+                  (let ((b (B.bill)))
+                    (let ((c (B.use 20)))
+                      (let ((d (B.bill)))
+                        (let ((e (B.use 4)))
+                          (let ((f (B.bill)))
+                            (let ((g (B.total)))
+                              (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 18122012040529 Int64))
+  (call   main (: 0 Int64)) (output (: 8052012040522 Int64)))
