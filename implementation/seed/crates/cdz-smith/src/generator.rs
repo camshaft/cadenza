@@ -608,16 +608,44 @@ impl Gen<'_> {
 
     /// A GUARANTEED-TERMINATING recursive top-level def, exercising the self-call / recursion
     /// lowering (the F24 tail-resumptive-continuation + sft1 recursive-fold crash-cluster territory)
-    /// that the generator otherwise never reaches. Shape:
+    /// that the generator otherwise never reaches. Two shapes, chosen by a coin flip. The TAIL-
+    /// accumulator form `(do (def (f n acc) (if (<= n 0) acc (f (- n 1) (<arith> acc OPERAND)))) (f K 0))`
+    /// puts the SOLE self-call in TAIL position with a SECOND (accumulator) argument, reaching the
+    /// MULTI-ARG tail-call lowering (the `return_call` / differing-result-valtype path where invalid-
+    /// wasm finding 7529f6901 lived) — a shape the non-tail form never produces, since there the self-
+    /// call feeds into an arith op. The non-tail form is
     /// `(do (def (f n) (if (<= n 0) BASE (<arith> (f (- n 1)) OPERAND))) (f K))`.
-    /// Termination is structural: base case `(<= n 0)`, the SOLE recursive call passes the strictly-
-    /// decreasing `(- n 1)`, and the initial argument K is a small non-negative literal — so the
-    /// differential run always halts (no false hang). CRITICAL SAFETY INVARIANT: `f` is NEVER pushed
-    /// into scope, so the generated BASE/OPERAND sub-exprs cannot introduce a SECOND, non-decreasing
-    /// call to `f` (which would be unbounded recursion); only the parameter `n` is in scope for them.
+    /// Termination is structural for BOTH: base case `(<= n 0)`, the SOLE recursive call passes the
+    /// strictly-decreasing `(- n 1)`, and the initial argument K is a small non-negative literal — so
+    /// the differential run always halts (no false hang). CRITICAL SAFETY INVARIANT: `f` is NEVER
+    /// pushed into scope, so the generated BASE/OPERAND sub-exprs cannot introduce a SECOND,
+    /// non-decreasing call to `f` (which would be unbounded recursion); only `n` (and, in the
+    /// accumulator form, `acc`) are in scope for them.
     fn rec_def_expr(&mut self, depth: u32) {
         let f = self.env.fresh(); // deliberately NOT pushed into scope
         let n = self.env.fresh();
+        if self.cur.flip() {
+            // TAIL-accumulator form: the self-call is the direct else-branch, in tail position.
+            let acc = self.env.fresh();
+            let _ = write!(
+                self.out,
+                "(do (def ({f} {n} {acc}) (if (<= {n} 0) {acc} ({f} (- {n} 1) "
+            );
+            let mark = self.env.push(n.clone(), Kind::Num); // n + acc visible to OPERAND; f never is
+            self.env.push(acc.clone(), Kind::Num);
+            let op = match self.cur.choice(3) {
+                0 => "+",
+                1 => "-",
+                _ => "*",
+            };
+            let _ = write!(self.out, "({op} {acc} ");
+            self.expr(depth.saturating_sub(1), Kind::Num); // OPERAND (numeric; `f` not in scope → safe)
+            self.out.push_str("))))");
+            self.env.truncate(mark);
+            // initial call: K iterations, accumulator seeded at 0; K small bounds the tail recursion.
+            let _ = write!(self.out, " ({f} {} 0))", self.cur.range(0, 6));
+            return;
+        }
         let _ = write!(self.out, "(do (def ({f} {n}) (if (<= {n} 0) ");
         let mark = self.env.push(n.clone(), Kind::Num); // only `n` visible to sub-exprs, never `f`
         self.expr(depth.saturating_sub(1), Kind::Num); // BASE (numeric)
@@ -1003,6 +1031,51 @@ mod tests {
         assert!(
             hit,
             "no seed in the sweep emitted a recursive def (nested `(def (`)"
+        );
+    }
+
+    /// The TAIL-accumulator recursive form is reachable — some seed emits a THREE-parameter helper
+    /// def `(def (vA vB vC) ...)` (only the accumulator arm mints a 3-name param list; `main` takes
+    /// 0..=2 params and no other def is generated) — and every program that path can emit still
+    /// parses. Also asserts the termination structure holds: the helper carries a `(if (<= ` base-case
+    /// guard so the multi-arg tail recursion can't hang the differential run.
+    #[test]
+    fn some_seed_emits_a_tail_accumulator_recursive_def() {
+        // A `(def (` whose parenthesized param list holds exactly three `v<n>` identifiers.
+        fn has_three_param_def(src: &str) -> bool {
+            let mut rest = src;
+            while let Some(i) = rest.find("(def (") {
+                let after = &rest[i + "(def (".len()..];
+                if let Some(close) = after.find(')') {
+                    let params = &after[..close];
+                    let toks: Vec<&str> = params.split_whitespace().collect();
+                    if toks.len() == 3 && toks.iter().all(|t| t.starts_with('v')) {
+                        return true;
+                    }
+                }
+                rest = &rest[i + "(def (".len()..];
+            }
+            false
+        }
+        let mut hit = false;
+        for n in 0..8000u32 {
+            let seed = varied_seed(n);
+            let src = generate(&seed).source;
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "generated program did not parse:\n{src}"
+            );
+            if has_three_param_def(&src) {
+                hit = true;
+                assert!(
+                    src.contains("(if (<= "),
+                    "tail-accumulator helper is missing its base-case guard `(if (<= `:\n{src}"
+                );
+            }
+        }
+        assert!(
+            hit,
+            "no seed in the sweep emitted a tail-accumulator recursive def (3-param helper)"
         );
     }
 
