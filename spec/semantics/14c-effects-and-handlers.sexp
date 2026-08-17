@@ -14149,3 +14149,94 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: -2890920690100 Int64))
   (call   main (: 0 Int64)) (output (: -12991929791099 Int64)))
+
+;; ── Two-tank balancer, compound interest, bike cadence (breaker batch 307) ──
+(case "tnkB inline-thrice twin driven by the level difference — each siphon binds a quarter of the always-positive gap moving it A-to-B answering the transfer, pour tops tank A, levels reads the residual gap, and the seed sets tank B so the same siphon sequence converges through DIFFERENT geometric ladders to the same final gap (A stays the fuller tank throughout)"
+  (input  (do
+            (effect T
+              (op siphon (-> Int64))
+              (op pour (-> Int64 Int64))
+              (op levels (-> Int64)))
+            (def (main (: n Int64))
+              (handle T (tuple (: 40 Int64) (* n 2))
+                ((siphon () st
+                  (match st
+                    ((tuple a b)
+                      (resume (/ (- a b) 4)
+                              (tuple (- a (/ (- a b) 4)) (+ b (/ (- a b) 4)))))))
+                 (pour (v) st
+                  (match st
+                    ((tuple a b) (resume (+ a v) (tuple (+ a v) b)))))
+                 (levels () st
+                  (match st ((tuple a b) (resume (- a b) st)))))
+                (let ((p (T.siphon)))
+                  (let ((q (T.siphon)))
+                    (let ((r (T.pour 12)))
+                      (let ((s (T.siphon)))
+                        (let ((t (T.siphon)))
+                          (let ((u (T.siphon)))
+                            (let ((v (T.levels)))
+                              (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 p) q)) r)) s)) t)) u)) v))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 5024504020104 Int64))
+  (call   main (: 0 Int64)) (output (: 10053705030104 Int64)))
+
+(case "cpd1 a COMPOUND-INTEREST ladder — grow applies the seed rate percent truncating answering the new principal, skim withdraws answering the remainder, and the two-point rate difference compounds so the gap between the runs WIDENS every grow row while the skims subtract identically"
+  (input  (do
+            (effect C
+              (op grow (-> Int64))
+              (op skim (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle C (: 200 Int64)
+                ((grow () p
+                  (resume (+ p (/ (* p (+ (% n 4) 3)) 100))
+                          (+ p (/ (* p (+ (% n 4) 3)) 100))))
+                 (skim (v) p (resume (- p v) (- p v))))
+                (let ((a (C.grow)))
+                  (let ((b (C.grow)))
+                    (let ((c (C.skim 30)))
+                      (let ((d (C.grow)))
+                        (let ((e (C.grow)))
+                          (let ((f (C.skim 30)))
+                            (+ (* 1000 (+ (* 1000 (+ (* 1000 (+ (* 1000 (+ (* 1000 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 210220190199208178 Int64))
+  (call   main (: 0 Int64)) (output (: 206212182187192162 Int64)))
+
+(case "cyc1 a BICYCLE cadence over four gear ratios — shift moves the gear clamped to the range answering the landed ratio's tens digit, pedal answers rpm times the ratio over a hundred accumulating distance, the big downshift clamps BOTH runs to the same bottom gear so the tails converge while the opening gears diverge, and the final row reads the odometer"
+  (input  (do
+            (effect B
+              (op shift (-> Int64 Int64))
+              (op pedal (-> Int64 Int64))
+              (op odo (-> Int64)))
+            (def (ratio (: g Int64))
+              (if (= g 0) 20 (if (= g 1) 27 (if (= g 2) 34 41))))
+            (def (main (: n Int64))
+              (handle B (tuple (% n 4) (: 0 Int64))
+                ((shift (d) st
+                  (match st
+                    ((tuple g dist)
+                      (if (< (+ g d) 0)
+                          (resume 2 (tuple 0 dist))
+                          (if (< 3 (+ g d))
+                              (resume 4 (tuple 3 dist))
+                              (resume (/ (ratio (+ g d)) 10) (tuple (+ g d) dist)))))))
+                 (pedal (rpm) st
+                  (match st
+                    ((tuple g dist)
+                      (resume (/ (* rpm (ratio g)) 100)
+                              (tuple g (+ dist (/ (* rpm (ratio g)) 100)))))))
+                 (odo () st
+                  (match st ((tuple g dist) (resume dist st)))))
+                (let ((a (B.pedal 60)))
+                  (let ((b (B.shift 1)))
+                    (let ((c (B.pedal 60)))
+                      (let ((d (B.shift -3)))
+                        (let ((e (B.pedal 60)))
+                          (let ((f (B.shift 1)))
+                            (let ((g (B.pedal 90)))
+                              (let ((h (B.odo)))
+                                (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g)) h)))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 2004240212022480 Int64))
+  (call   main (: 0 Int64)) (output (: 1202160212022464 Int64)))
