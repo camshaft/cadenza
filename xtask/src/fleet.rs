@@ -8877,9 +8877,17 @@ fn maybe_run_gc(fleet: &Fleet) {
     //   (3) other FLEET-OWNED ephemeral scratch dirs > 60 MIN (concierge 2026-08-17, after /tmp hit 100%
     //       INODES — 1533 free of 1M — and wedged EVERY agent's Bash with ENOSPC; it self-cleared by luck):
     //       `nix-develop-*` (nix develop shell scratch — the dominant leak, dozens of dirs days old),
-    //       `rcdzc-gate-*` (rcdzc gate scratch), `libFuzzerTemp*` (the fuzzer's fork temp). All fleet-owned
-    //       and the 60-min floor protects any ACTIVE nix-develop shell / gate run / fuzz cycle (a live one's
-    //       dir has a fresh mtime). This is the same lease/dead-window reaper idea applied to /tmp inodes.
+    //       `rcdzc-gate-*` (rcdzc gate scratch), `libFuzzerTemp*` (the fuzzer's fork temp).
+    //       WHY THE 60-MIN FLOOR IS SAFE — two DIFFERENT invariants (reviewer 84c93b0cc, precise):
+    //         * rcdzc-gate / libFuzzerTemp / cdz-scratch: an ACTIVE run WRITES files into its dir during the
+    //           run, so a live dir has a FRESH mtime → the age floor is a true liveness proxy.
+    //         * nix-develop-*: these are VESTIGIAL EMPTY setup artifacts — nix creates the dir but does NOT
+    //           use it as the shell's live TMPDIR, so NOTHING refreshes its mtime over a shell's life
+    //           (empirically 505/505 were dead-PID AND empty). They're safe to reap because vestigial, NOT
+    //           because a live one has a fresh mtime. ⚠ FORWARD-GUARD: if a future nix ever used this dir as
+    //           the active shell TMPDIR, an idle-but-live develop shell >60min would have a STALE mtime and
+    //           this sweep could rm its live scratch — re-review the nix-develop case if that changes.
+    //       Same lease/dead-window reaper idea applied to /tmp inodes.
     // NOTE: nix does NOT build under /tmp (its daemon sandbox is /nix/var/nix/builds — v-nix confirmed), so
     // there is no nix-build-temp hog here beyond the develop-shell scratch swept in (3). `toolbox-telemetry`/
     // `mcs-telemetry` are NOT fleet-owned (routed to the toolbox owner), so they stay excluded.
