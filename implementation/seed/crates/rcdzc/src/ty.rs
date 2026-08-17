@@ -2064,7 +2064,7 @@ mod tests {
     // report solved fails HERE, not as a downstream miscompile. Mirrors the `has_free_var`/`has_any` twins.
     #[test]
     fn is_fully_solved_rejects_unresolved_axes_and_vars_recursively() {
-        use super::{FloatTy, IntTy, Sign, Ty, Width};
+        use super::{FloatTy, IntTy, Sign, Ty, Unit, Width};
         // SOLVED leaves + scalars.
         assert!(
             Ty::int64().is_fully_solved(),
@@ -2126,6 +2126,28 @@ mod tests {
         assert!(
             Ty::Tuple(vec![Ty::int64(), Ty::Bool].into()).is_fully_solved(),
             "a tuple of solved positions is solved"
+        );
+        // QUANTITY: a `Ty::Qty` is solved IFF its numeric `inner` is — the unit is a compile-time index
+        // erased before emission (`lower` strips the Qty to its inner), so it has no bearing on the slot
+        // valtype. A Qty over a Deferred-int inner must report UNSOLVED so B2 gate-P1 excludes it (else the
+        // slot binding gets an indeterminate valtype → 'no local slot' emit decline); a Qty over a solved
+        // inner is bind-safe regardless of the unit. Pinned here so the erased-to-inner invariant can't
+        // silently flip a future refactor into admitting an unsolved Qty share.
+        assert!(
+            Ty::Qty {
+                inner: Box::new(Ty::int64()),
+                unit: Unit::base("meter")
+            }
+            .is_fully_solved(),
+            "a Qty over a solved inner is solved (the unit is erased, inner fixes the valtype)"
+        );
+        assert!(
+            !Ty::Qty {
+                inner: Box::new(Ty::Int(IntTy::deferred())),
+                unit: Unit::base("meter")
+            }
+            .is_fully_solved(),
+            "a Qty over a Deferred-int inner is unsolved (recurses to inner — B2 gate-P1 must exclude it)"
         );
     }
 }
