@@ -13451,3 +13451,119 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 1030271010303013011 Int64))
   (call   main (: 0 Int64)) (output (: 9170170091302402400 Int64)))
+
+;; ── xhsGGrow selector-freeze x growing-fold composition guard, seismograph drift, cipher-wheel dual-moduli, toll-plaza inverse-compound (breaker batch 300) ──
+(case "xhsGGrow conditional mid-arm foreign perform WITH a growing List.push next-state — composition of the conditional-selector freeze (7106ad497) and the growing-state correct-fold (95f5ab8d2)"
+  (input  (do
+            (effect O (op note (-> Int64 Int64)))
+            (effect I (op step (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle O (: 0 Int64)
+                ((note (v) acc
+                  (resume (+ acc v) (+ acc v))))
+                (handle I (list)
+                  ((step (x) col
+                    (let ((c2 (+ (List.len col) (+ x (% n 3)))))
+                      (if (> c2 5)
+                          (let ((nv (O.note c2)))
+                            (resume (+ (* c2 10) (% nv 10)) (List.push col c2)))
+                          (resume (* c2 10) (List.push col c2))))))
+                  (let ((p (I.step (: 3 Int64))))
+                    (let ((q (I.step (: 5 Int64))))
+                      (let ((r (O.note (: 100 Int64))))
+                        (+ (* 1000 (+ (* 1000 p) q)) r)))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 40077107 Int64))
+  (call   main (: 0 Int64)) (output (: 30066106 Int64)))
+
+(case "ssm2 the SEISMOGRAPH at three readings — deviation over four logs an event (peak by inline max, baseline nudged up), quiet drifts one signed step, and the seeds disagree on whether the THIRD reading is an aftershock event or a quiet drift so even the event counts split"
+  (input  (do
+            (effect Q
+              (op sense (-> Int64 Int64))
+              (op read (-> Int64)))
+            (def (sgn (: d Int64))
+              (if (> d 0) 1 (if (< d 0) (: -1 Int64) 0)))
+            (def (main (: n Int64))
+              (handle Q (tuple (+ (: 8 Int64) (* (% n 3) 2)) (: 0 Int64) (: 0 Int64))
+                ((sense (mag) st
+                  (match st
+                    ((tuple base peak ev)
+                      (if (> (- mag base) 4)
+                          (resume (+ (: 700 Int64) (+ (* (- mag base) 10) (+ ev 1)))
+                                  (tuple (+ base 1)
+                                         (if (> (- mag base) peak) (- mag base) peak)
+                                         (+ ev 1)))
+                          (resume (* (+ (- mag base) 5) 10)
+                                  (tuple (+ base (sgn (- mag base))) peak ev))))))
+                 (read () st
+                  (match st
+                    ((tuple base peak ev)
+                      (resume (+ (* peak 100) (+ (* base 10) ev)) st)))))
+                (let ((a (Q.sense (: 15 Int64))))
+                  (let ((b (Q.sense (: 12 Int64))))
+                    (let ((c (Q.sense (: 16 Int64))))
+                      (let ((f (Q.read)))
+                        (+ (* 1000 (+ (* 1000 (+ (* 1000 a) b)) c)) f)))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 751060090631 Int64))
+  (call   main (: 0 Int64)) (output (: 771080762812 Int64)))
+
+(case "cwl1 a CIPHER WHEEL that slips every third letter — encoding adds the offset mod twenty-six and every THIRD encode advances the wheel one notch (a nine-tagged row counting the slip), other rows carry the stroke's residue tag, the read packs offset strokes and slips, and the seed's starting offset wraps one alphabet where the other doesn't so the ciphertext rows share nothing"
+  (input  (do
+            (effect C
+              (op enc (-> Int64 Int64))
+              (op read (-> Int64)))
+            (def (main (: n Int64))
+              (handle C (tuple (+ (: 3 Int64) (* (% n 3) 7)) (: 0 Int64) (: 0 Int64))
+                ((enc (c) st
+                  (match st
+                    ((tuple off k sl)
+                      (if (= (% (+ k 1) 3) 0)
+                          (resume (+ (* (% (+ c off) 26) 10) 9)
+                                  (tuple (+ off 1) (+ k 1) (+ sl 1)))
+                          (resume (+ (* (% (+ c off) 26) 10) (% (+ k 1) 3))
+                                  (tuple off (+ k 1) sl))))))
+                 (read () st
+                  (match st
+                    ((tuple off k sl)
+                      (resume (+ (* off 100) (+ (* k 10) sl)) st)))))
+                (let ((a (C.enc (: 7 Int64))))
+                  (let ((b (C.enc (: 20 Int64))))
+                    (let ((c (C.enc (: 4 Int64))))
+                      (let ((d (C.enc (: 25 Int64))))
+                        (let ((f (C.read)))
+                          (+ (* 10000 (+ (* 1000 (+ (* 1000 (+ (* 1000 a) b)) c)) d)) f))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 1710421491011141 Int64))
+  (call   main (: 0 Int64)) (output (: 1012320790310441 Int64)))
+
+(case "tol1 a TOLL PLAZA with an exact-change lane — a five rides the exact lane counting itself and feeding the till, an overpayment needs the till to COVER the change (the till keeps the toll, the change flows back) else the car is DELAYED with the till untouched, an underpayment bounces with a four-hundred tag, the read packs till exact and delayed, and the seed's float lets one plaza serve every car while the other delays all three overpayers"
+  (input  (do
+            (effect P
+              (op pay (-> Int64 Int64))
+              (op read (-> Int64)))
+            (def (main (: n Int64))
+              (handle P (tuple (* (% n 3) 3) (: 0 Int64) (: 0 Int64))
+                ((pay (amt) st
+                  (match st
+                    ((tuple till ex dl)
+                      (if (= amt 5)
+                          (resume (+ (: 100 Int64) (+ ex 1)) (tuple (+ till 5) (+ ex 1) dl))
+                          (if (> amt 5)
+                              (if (>= till (- amt 5))
+                                  (resume (+ (* (- amt 5) 10) 1) (tuple (+ till 5) ex dl))
+                                  (resume (+ (: 900 Int64) (+ dl 1)) (tuple till ex (+ dl 1))))
+                              (resume (+ (: 400 Int64) amt) st))))))
+                 (read () st
+                  (match st
+                    ((tuple till ex dl)
+                      (resume (+ (* till 100) (+ (* ex 10) dl)) st)))))
+                (let ((a (P.pay (: 7 Int64))))
+                  (let ((b (P.pay (: 5 Int64))))
+                    (let ((c (P.pay (: 14 Int64))))
+                      (let ((d (P.pay (: 11 Int64))))
+                        (let ((f (P.read)))
+                          (+ (* 10000 (+ (* 1000 (+ (* 1000 (+ (* 1000 a) b)) c)) d)) f))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 211010910612310 Int64))
+  (call   main (: 0 Int64)) (output (: 9011019029030513 Int64)))

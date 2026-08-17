@@ -109,3 +109,12 @@ Verdict: the multi-slot exclusion is SAFE (decline, not miscompile) — same
 class as recursive-driver, unlike growing-state. All 3 collapse exclusions
 audited: 1 miscompile (fixed), 2 safe declines. AUDIT FULLY CLOSED.
 Both banked: xhsMultiCtrl promotable as a pass-pin; xhsMulti a todo-witness.
+
+## xhsGGrow composition witness (tick 1665)
+v-effects' intersection probe: the foreign perform BOTH inside an if-then
+branch (7106ad497 selector-freeze territory) AND feeding a growing List.push
+next-state (95f5ab8d2 correct-fold territory) — both fixes triggered in one
+arm, never differential-tested before. Folds CORRECTLY: my independent model
+matches their oracles (40077107/30066106); verified PASS x3 wasm + rust +
+rust-async here (their opt-sweep O0..O3 also 0-divergence). Banked as the
+intersection regression guard; rides batch-300.

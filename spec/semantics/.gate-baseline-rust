@@ -4989,6 +4989,7 @@ pass	ct1 the LOOP BOUND is itself a draw — a first dispatch sizes the walk, th
 pass	cv1 an inner arm resumes with a CHAIN of two outer ops — O.b of O.a evaluated inside the arm, probe pins the double advance
 pass	cv2 TWO asks each running the in-arm chain — the second chain starts where the first left the outer thread
 pass	cv3 the in-arm chain routes through a PURE fn mid-hop — O.b of dbl of O.a, the pure call must not detach the thread
+pass	cwl1 a CIPHER WHEEL that slips every third letter — encoding adds the offset mod twenty-six and every THIRD encode advances the wheel one notch (a nine-tagged row counting the slip), other rows carry the stroke's residue tag, the read packs offset strokes and slips, and the seed's starting offset wraps one alphabet where the other doesn't so the ciphertext rows share nothing
 pass	cx1 a COUNTDOWN arm exhausts mid-sequence — positive states pass through, the floor returns a sentinel-free constant
 pass	cy1 a CYCLE detector — a bitmask accumulator of seen residues stops the walk on the first repeat
 pass	cz1 COLLATZ-driven dispatch counting — the walk observes each step, the counter state tallies data-dependent iteration counts
@@ -6233,6 +6234,7 @@ pass	ss3 nested SAME-effect handlers with independent STRING states — inner se
 pass	ss5 an op ARG selects WHICH tuple-state slot to bump — index-routed slot mutation, four dispatches revisit slot 0
 pass	ss6 the slot SELECTOR is derived from the state itself — |a mod 3| routes each bump, a same-slot revisit and a two-slot walk both pinned
 pass	ss7 a 2-ary op carries SELECTOR and MAGNITUDE — which slot and by how much are both payload-driven, a trailing read pins slot 0
+pass	ssm2 the SEISMOGRAPH at three readings — deviation over four logs an event (peak by inline max, baseline nudged up), quiet drifts one signed step, and the seeds disagree on whether the THIRD reading is an aftershock event or a quiet drift so even the event counts split
 pass	st1 a handle expression as ONE operand of an enclosing pure sum — the pure operand and the handled region compose
 pass	st1 the SAME effect handled at THREE depths — each draw resolves to the innermost open frame, outer frames resume as inner ones close
 pass	st2 TWO sibling handle expressions as operands of one sum — independent regions with different arms and seeds
@@ -6653,6 +6655,7 @@ pass	tmp1 a SIMULATED-ANNEALING acceptance schedule — cool decays the temperat
 pass	tmr1 a TRIPLE-MODULAR-REDUNDANCY voter — set writes one of three channel slots, vote answers the majority value or -1 counting the all-differ disagreements, and the seed corrupts channel zero so one run stays unanimous while the other walks through a majority flip, a full disagreement, and a healed two-vote majority
 pass	to-bytes of a sliced multibyte string is read twice and both reads see the right bytes
 pass	tok1 a TOKENIZER protocol — next-tok skips leading spaces, answers the token's byte-len, and threads the REST of the string; the drained stream answers zero forever
+pass	tol1 a TOLL PLAZA with an exact-change lane — a five rides the exact lane counting itself and feeding the till, an overpayment needs the till to COVER the change (the till keeps the toll, the change flows back) else the car is DELAYED with the till untouched, an underpayment bounces with a four-hundred tag, the read packs till exact and delayed, and the seed's float lets one plaza serve every car while the other delays all three overpayers
 pass	tp1 TWO ops each own a tuple-state SLOT — lo advances field 0, hi doubles field 1, interleaved
 pass	tp2 a SWAP op exchanges the tuple-state slots — interleaved readers observe the exchange
 pass	tp3 a NESTED tuple state ((a b) c) — the arm rebuilds the inner Fibonacci pair and bumps the outer counter per dispatch
@@ -6933,6 +6936,7 @@ pass	xhsC the outer perform takes a CONSTANT while the binder feeds answer and s
 pass	xhsD the DROPPED-frozen-arg complement — the outer note arm IGNORES its op param (answers the count, threads count plus one) while the inner step arm still let-binds the advanced column performs the outer note with it and resumes packing both; the frozen argument is dropped not escaped, and the fold is CORRECT
 pass	xhsF the MULTI-PERFORM variant — the inner step arm performs the outer note TWICE with the same shared binder before resuming with both answers' low digits and threading the binder; two frozen arguments must drain-bind independently in one arm
 pass	xhsG CONDITIONAL mid-arm foreign perform — the note rides only the THEN branch
+pass	xhsGGrow conditional mid-arm foreign perform WITH a growing List.push next-state — composition of the conditional-selector freeze (7106ad497) and the growing-state correct-fold (95f5ab8d2)
 pass	xhsGdeep the perform buried TWO selector levels deep — an if-in-if routes on parity then magnitude and only the even-and-large leaf performs the outer note, the other three leaves answer distinct tags without performing; the seeds route their FIRST step through different silent leaves before both reach the performing leaf on the second
 pass	xhsGmatch the MATCH twin of the conditional mid-arm foreign perform — the same then-else split expressed as a boolean match scrutinee, exercising the match-arm out-state merge path of the selector freeze
 pass	xhsGrow GROWING-STATE shared-let with a mid-arm foreign perform — the step arm derives its binder from the list LENGTH, performs the outer note with it, answers the binder packed with the note's low digit, and threads the list GROWN by the binder; the growing next-state excludes the collapse so the distribute path must keep the two binder copies coherent
