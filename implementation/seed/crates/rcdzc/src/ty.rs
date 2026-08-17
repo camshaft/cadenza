@@ -2056,4 +2056,76 @@ mod tests {
             "a powered factor escapes its base name"
         );
     }
+
+    // `is_fully_solved` is the B2 bind-safety gate P1 (core_analysis.rs) — a share whose type is NOT fully
+    // solved is excluded from the sharing-aware-emit plan (an unsolved slot valtype → 'no local slot' emit
+    // decline). It is an EXHAUSTIVE match over `Ty`, so a NEW `Ty` variant forces an arm choice — this test
+    // pins the soundness-critical cases so a future variant (or a refactor) that lets an unsolved type
+    // report solved fails HERE, not as a downstream miscompile. Mirrors the `has_free_var`/`has_any` twins.
+    #[test]
+    fn is_fully_solved_rejects_unresolved_axes_and_vars_recursively() {
+        use super::{FloatTy, IntTy, Sign, Ty, Width};
+        // SOLVED leaves + scalars.
+        assert!(
+            Ty::int64().is_fully_solved(),
+            "a Fixed-sign Fixed-width int is solved"
+        );
+        assert!(Ty::Bool.is_fully_solved(), "Bool is solved");
+        assert!(Ty::Unit.is_fully_solved(), "Unit is solved");
+        assert!(Ty::String.is_fully_solved(), "String is solved");
+        assert!(
+            Ty::Float(FloatTy {
+                width: Width::Fixed(64)
+            })
+            .is_fully_solved(),
+            "a Fixed-width float is solved"
+        );
+        // UNSOLVED: a bare `Any`, a free `Var`, or an int/float axis left Deferred/Var.
+        assert!(!Ty::Any.is_fully_solved(), "Any is unsolved");
+        assert!(!Ty::Var(0).is_fully_solved(), "a free type Var is unsolved");
+        assert!(
+            !Ty::Int(IntTy::deferred()).is_fully_solved(),
+            "a Deferred int axis is unsolved (the Record.with drift-guard shape)"
+        );
+        assert!(
+            !Ty::Int(IntTy {
+                sign: Sign::Var(0),
+                width: Width::Fixed(64)
+            })
+            .is_fully_solved(),
+            "a Var sign is unsolved even with a Fixed width"
+        );
+        assert!(
+            !Ty::Int(IntTy {
+                sign: Sign::Fixed(true),
+                width: Width::Var(0)
+            })
+            .is_fully_solved(),
+            "a Var width is unsolved even with a Fixed sign"
+        );
+        assert!(
+            !Ty::Float(FloatTy {
+                width: Width::Deferred
+            })
+            .is_fully_solved(),
+            "a Deferred float width is unsolved"
+        );
+        // RECURSES into container element/field positions — an unsolved element makes the whole unsolved.
+        assert!(
+            Ty::List(Box::new(Ty::int64())).is_fully_solved(),
+            "a list of a solved element is solved"
+        );
+        assert!(
+            !Ty::List(Box::new(Ty::Int(IntTy::deferred()))).is_fully_solved(),
+            "a list of a Deferred-int element is unsolved (recurses)"
+        );
+        assert!(
+            !Ty::Tuple(vec![Ty::int64(), Ty::Any].into()).is_fully_solved(),
+            "a tuple with an Any position is unsolved (recurses)"
+        );
+        assert!(
+            Ty::Tuple(vec![Ty::int64(), Ty::Bool].into()).is_fully_solved(),
+            "a tuple of solved positions is solved"
+        );
+    }
 }
