@@ -673,12 +673,14 @@ impl Gen<'_> {
     /// body performs a fixed, NON-recursive number of times, so the perform/resume fold is bounded.
     /// SAFETY: the effect name is NOT a value binding in [`Env`], so a generated sub-expr can never
     /// re-perform `E.o` into an unbounded loop; only the numeric param `p` (and, in the scalar variant,
-    /// the scalar state `s`) is visible. The handler state is one of three shapes (choice of 3): a scalar
+    /// the scalar state `s`) is visible. The handler state is one of four shapes (choice of 4): a scalar
     /// Int64; a 2-TUPLE whose arm projects both fields and rebuilds the pair through the resume (the
-    /// tuple-projection-through-handler-fold / cmb1-pom5 sharing-aware core-emit seam); or an
+    /// tuple-projection-through-handler-fold / cmb1-pom5 sharing-aware core-emit seam); an
     /// `(Option Int64)` SUM the arm DESTRUCTURES with a `match` on `Some`/`None`, threading a `(Some …)`
-    /// (the `Core::SumPayload`-extraction-across-the-arm / cmb1 re-descent seam). Int64 op/result/field/
-    /// payload types so it type-checks; a mismatch with the outer `want` is a clean decline. The perform
+    /// (the `Core::SumPayload`-extraction-across-the-arm / cmb1 re-descent seam); or a RECORD with a
+    /// scalar field and a HEAP list field, read-modify-written (record projection + `List.push`) through
+    /// the fold (the spec "AST-node accumulator"). Int64 op/result/field/payload types so it type-checks;
+    /// a mismatch with the outer `want` is a clean decline. The perform
     /// args and initial state are small literals so most programs RUN (feed the diff oracle); the resume
     /// value/state carry richer numeric sub-exprs (where a backend divergence surfaces).
     fn effect_handler_expr(&mut self, depth: u32) {
@@ -689,7 +691,7 @@ impl Gen<'_> {
         let oname = self.env.fresh(); // lowercase op name, e.g. v8 — a valid operation identifier
         let p = self.env.fresh();
         let s = self.env.fresh();
-        match self.cur.choice(3) {
+        match self.cur.choice(4) {
             1 => {
                 // TUPLE-state variant: the arm projects BOTH fields (`(. s 0)`/`(. s 1)`) and REBUILDS
                 // the pair threaded through the resume — reaching the tuple-projection-through-handler-
@@ -737,6 +739,32 @@ impl Gen<'_> {
                 self.out.push_str("))))"); // close advance-op, (Some …), (resume …), Some-arm
                 self.out.push_str(" (None (resume 0 (Some 0)))"); // None arm (balanced; unreached at runtime)
                 self.out.push_str(")))"); // close (match …), the op arm, the arm-list
+                self.out.push(' ');
+            }
+            3 => {
+                // RECORD-state variant: state is a `(record (= n …) (= xs (list)))` combining a scalar
+                // field and a HEAP (list) field; the arm PROJECTS both, advances the scalar, and rebuilds
+                // the record with the param PUSHED onto the list — reaching record construction +
+                // projection + heap-field read-modify-write threaded through the handler fold (the spec
+                // "AST-node accumulator" shape; the compound-with-heap-field companion of tuple/sum state).
+                // Resume value reads the scalar field; only the numeric `p` is pushed (the record `s` is
+                // read via projections), so it type-checks (Int64 scalar field / op / result).
+                let advance = match self.cur.choice(3) {
+                    0 => "+",
+                    1 => "-",
+                    _ => "*",
+                };
+                let _ = write!(
+                    self.out,
+                    "(do (effect {ename} (op {oname} (-> Int64 Int64))) (handle {ename} (record (= n {}) (= xs (list))) (({oname} ({p}) {s} (resume (. {s} n) (record (= n ({advance} (. {s} n) ",
+                    self.cur.range(0, 9),
+                );
+                let mark = self.env.push(p.clone(), Kind::Num); // p visible to the advance operand; s (record) read via projections
+                self.expr(depth.saturating_sub(1), Kind::Num); // scalar-field advance operand (may reference p)
+                self.env.truncate(mark);
+                self.out.push_str("))"); // close advance-op and the (= n …) field
+                let _ = write!(self.out, " (= xs ((. List push) (. {s} xs) {p}))"); // heap field: push p onto the list
+                self.out.push_str("))))"); // close (record …), (resume …), the op arm, the arm-list
                 self.out.push(' ');
             }
             _ => {
@@ -1199,6 +1227,7 @@ mod tests {
         let mut hit = false;
         let mut hit_tuple_state = false;
         let mut hit_sum_state = false;
+        let mut hit_record_state = false;
         for n in 0..8000u32 {
             let seed = varied_seed(n);
             let src = generate(&seed).source;
@@ -1220,6 +1249,10 @@ mod tests {
                 if src.contains("(Some ") && src.contains("(match ") {
                     hit_sum_state = true;
                 }
+                // The record-state variant threads a `(record …)` state with a heap field via `List push`.
+                if src.contains("(record ") && src.contains("(. List push)") {
+                    hit_record_state = true;
+                }
             }
         }
         assert!(hit, "no seed in the sweep emitted an effect handler");
@@ -1230,6 +1263,10 @@ mod tests {
         assert!(
             hit_sum_state,
             "no seed in the sweep emitted a SUM-state (Option) effect handler"
+        );
+        assert!(
+            hit_record_state,
+            "no seed in the sweep emitted a RECORD-state effect handler"
         );
     }
 
