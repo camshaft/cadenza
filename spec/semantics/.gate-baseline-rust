@@ -4745,6 +4745,7 @@ pass	bc2 short-circuit OR over two draws — the true-first row skips the second
 pass	bc3 a nested and-of-or short-circuit tree over draws — each row exercises a distinct skip pattern
 pass	bc3 an op RETURNS Bool consumed by a two-flag if ladder — a mod-3-dependent step makes all four paths reachable
 pass	bch1 a BATCH-coalescing writer — write buffers answering the count until the THIRD item self-flushes answering a hundred plus the batch sum, sync force-flushes the partial answering its sum or -1 when empty, and two seed-shaped values land in DIFFERENT batches so both the partial-sync and the self-flush rows carry the seed
+pass	bcn1 a BEACON whose sweep answer is a LET CHAIN INSIDE the resume's argument position — the arm binds the turn and the beam octant in nested lets scoped ONLY within the answer expression while the next-state tuple recomputes the same turn and the flash test inline outside their scope, log reads angle parity and flashes, and the seed aims the lamp so the two runs flash from different octants and drift apart by the accumulated turns
 pass	bcp1 Bytes.compact of the EFFECT-GROWN rope inside the arm — the compacted flat rep reads exactly at a computed index and re-threads
 pass	bd1 the arm CLASSIFIES its state into a tri-band SUM — the body matches Lo/Mid/Hi per dispatch as the thread climbs through the bands
 pass	bd2 the scoring CLOSURE captures a DRAW — the weight itself comes from the thread before the classified reads
@@ -5135,6 +5136,7 @@ pass	do1 ONE draw consumed by BOTH branches of an if with different weights — 
 pass	double negation of a runtime boolean is the identity
 pass	doubling a subnormal crosses UP into the minimum normal exactly
 pass	draining the event queue yields entries in time-order with FIFO same-time ties
+pass	drb1 a DRAWBRIDGE over a tidal channel — boat LET-BINDS the low-tide boolean ONCE and consumes it in TWO SEPARATE ifs, one selecting the answer's hundreds digit and one selecting the next-state tuple, a low-tide boat slips under advancing the tide by one and counting the crossing while a high-tide boat waits three tide steps crossing nothing, log reads tide and crossings without advancing, and the seed sets the starting tide so the runs disagree on which boats slip under
 pass	drm1 a DRUM sequencer over sixteenth-note steps — each hit answers the firing drums as a bitmask (kick on quarters, snare on the backbeats, hat on every seed-shaped division), cnt counts non-silent steps, and the halved hat rate turns every other row SILENT while the kick and snare rows coincide exactly
 pass	dropping a list pushed FROM a survivor must not free the shared spine
 pass	dropping a map derived by persistent insert must not free nodes shared with the survivor
@@ -5397,6 +5399,7 @@ pass	hmg1 a HAMMING-distance tracker with an XOR-folding reference — cmp answe
 pass	hnc1 the HANOI smallest-disk cycle — the small disk moves on every ODD move cycling pegs in the seed-picked direction (answering peg-times-ten plus one), even moves answer the small disk's resting peg, count reads the total, and the two directions trace MIRROR peg sequences that re-converge at the mid-cycle zero rows
 pass	ho2 a PURE factory returns a closure applied to a draw — the captured constant is pure, only the argument is drawn
 pass	hof1 a higher-order APPLY-TWICE over a draw — the fn value crosses the call while the thread advances underneath
+pass	hoh1 a HANDLE WHOSE INIT IS ITSELF A WHOLE HANDLE EXPRESSION — the outer Fibonacci pair-walker's starting tuple is computed by an inner two-dispatch counter handle that answers seed-plus-one while doubling its own state, both inner draws land in the outer init tuple, the inner handler is fully torn down before the outer installs, and the seed steers the inner counter so the two runs walk Fibonacci from different gates
 pass	host calls are observed in the order they were made
 pass	host calls in the seed AND the next-state slot — the FINAL dispatch's state call is elided
 pass	host calls issue only from the TAKEN arm of a fused match and in arm order

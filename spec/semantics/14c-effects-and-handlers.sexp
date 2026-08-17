@@ -14828,3 +14828,89 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 277152022391223023 Int64))
   (call   main (: 0 Int64)) (output (: 144382012268120010 Int64)))
+
+;; ── let-in-resume-arg beacon, handle-in-INIT Fibonacci gate, drawbridge Bool fan (breaker batch 314) ──
+
+(case "bcn1 a BEACON whose sweep answer is a LET CHAIN INSIDE the resume's argument position — the arm binds the turn and the beam octant in nested lets scoped ONLY within the answer expression while the next-state tuple recomputes the same turn and the flash test inline outside their scope, log reads angle parity and flashes, and the seed aims the lamp so the two runs flash from different octants and drift apart by the accumulated turns"
+  (input  (do
+            (effect L
+              (op sweep (-> Int64))
+              (op log (-> Int64)))
+            (def (main (: n Int64))
+              (handle L (tuple (% n 3) (: 0 Int64))
+                ((sweep () st
+                  (match st
+                    ((tuple ang flash)
+                      (resume (let ((turn (+ (* ang 3) 1)))
+                                (let ((beam (% turn 8)))
+                                  (+ (* beam 100)
+                                     (+ (* (% turn 10) 10)
+                                        (% (if (>= beam 4) (+ flash 1) flash) 10)))))
+                              (tuple (+ ang (+ (* ang 3) 1))
+                                     (if (>= (% (+ (* ang 3) 1) 8) 4) (+ flash 1) flash))))))
+                 (log () st
+                  (match st
+                    ((tuple ang flash)
+                      (resume (+ (* (% ang 10) 10) flash) st)))))
+                (let ((a (L.sweep)))
+                  (let ((b (L.sweep)))
+                    (let ((c (L.log)))
+                      (let ((d (L.sweep)))
+                        (let ((e (L.sweep)))
+                          (let ((f (L.sweep)))
+                            (+ (* 1000 (+ (* 1000 (+ (* 1000 (+ (* 1000 (+ (* 1000 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 441061011041061041 Int64))
+  (call   main (: 0 Int64)) (output (: 110441051061041061 Int64)))
+
+(case "hoh1 a HANDLE WHOSE INIT IS ITSELF A WHOLE HANDLE EXPRESSION — the outer Fibonacci pair-walker's starting tuple is computed by an inner two-dispatch counter handle that answers seed-plus-one while doubling its own state, both inner draws land in the outer init tuple, the inner handler is fully torn down before the outer installs, and the seed steers the inner counter so the two runs walk Fibonacci from different gates"
+  (input  (do
+            (effect B (op step (-> Int64)))
+            (effect F (op draw (-> Int64)))
+            (def (main (: n Int64))
+              (handle F (handle B (% n 3)
+                          ((step () s (resume (+ s 1) (* s 2))))
+                          (tuple (B.step) (B.step)))
+                ((draw () st
+                  (match st
+                    ((tuple x y)
+                      (resume (+ (* x 10) y) (tuple y (+ x y)))))))
+                (let ((a (F.draw)))
+                  (let ((b (F.draw)))
+                    (let ((c (F.draw)))
+                      (let ((d (F.draw)))
+                        (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 23355893 Int64))
+  (call   main (: 0 Int64)) (output (: 11122335 Int64)))
+
+(case "drb1 a DRAWBRIDGE over a tidal channel — boat LET-BINDS the low-tide boolean ONCE and consumes it in TWO SEPARATE ifs, one selecting the answer's hundreds digit and one selecting the next-state tuple, a low-tide boat slips under advancing the tide by one and counting the crossing while a high-tide boat waits three tide steps crossing nothing, log reads tide and crossings without advancing, and the seed sets the starting tide so the runs disagree on which boats slip under"
+  (input  (do
+            (effect L
+              (op boat (-> Int64))
+              (op log (-> Int64)))
+            (def (main (: n Int64))
+              (handle L (tuple (% n 3) (: 2 Int64) (: 0 Int64))
+                ((boat () st
+                  (match st
+                    ((tuple tide gate cross)
+                      (let ((low (< (% tide 4) gate)))
+                        (resume (+ (* (if low (: 2 Int64) (: 7 Int64)) 100)
+                                   (+ (* (% tide 10) 10) (% cross 10)))
+                                (if low
+                                    (tuple (+ tide 1) gate (+ cross 1))
+                                    (tuple (+ tide 3) gate cross)))))))
+                 (log () st
+                  (match st
+                    ((tuple tide gate cross)
+                      (resume (+ (* tide 10) cross) st)))))
+                (let ((a (L.boat)))
+                  (let ((b (L.boat)))
+                    (let ((c (L.boat)))
+                      (let ((d (L.log)))
+                        (let ((e (L.boat)))
+                          (let ((f (L.boat)))
+                            (+ (* 1000 (+ (* 1000 (+ (* 1000 (+ (* 1000 (+ (* 1000 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 210721251062762292 Int64))
+  (call   main (: 0 Int64)) (output (: 200211722052252763 Int64)))
