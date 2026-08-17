@@ -5309,6 +5309,7 @@ pass	generated string keys OVERWRITE by content and the first word's final value
 pass	generic user-sum values dedupe as set elements and key a map by rope-payload content
 pass	gl1 the let-lifted pure-guard equivalent of the gp1 dispatch shape — the pre-bound guard draw advances the state the arms read
 pass	gl2 the let-lifted pure-guard equivalent of the gp2 cascade — both guard draws pre-bound, all three arms reachable
+pass	gld1 a GOLD-PANNING yield decay — pan answers the current yield then decays it by a third truncating plus one unguarded (the stream never hits the floor), move relocates resetting the yield to the seed base minus a wear cost that grows two per move, total accumulates, and the richer claim decays through DIFFERENT residues while both wear down in lockstep
 pass	gp1 a PERFORMING guard on a wildcard pattern is a COMPILE ERROR (guards-side-effect-free, CDZ0407)
 pass	gp1 a match GUARD inside the handler ARM compares the op PAYLOAD against the live STATE binder — the guard routes admit/reject per dispatch
 pass	gp2 TWO guard arms where a guard PERFORMS — declines (multi-guard performing-condition fold gap)
@@ -5369,6 +5370,7 @@ pass	hi3 the arm-installed handle's OWN arm resumes with an OUTER draw — the r
 pass	hi4 the arm-installed handle ABORTS with an outer draw — the av face nested inside another handler's dispatch
 pass	hld1 an INVENTORY hold/settle/release protocol — hold reserves against available (on-hand minus already-held) answering the running held total or the NEGATED available on reject, settle deducts held from on-hand, release just drops the holds, and the seeds reject DIFFERENT holds
 pass	hmg1 a HAMMING-distance tracker with an XOR-folding reference — cmp answers the popcount of the value against the reference remembering the value, lock folds the last value INTO the reference by XOR answering the old one, and the seed reference propagates through both locks so the distance rows diverge after the first fold
+pass	hnc1 the HANOI smallest-disk cycle — the small disk moves on every ODD move cycling pegs in the seed-picked direction (answering peg-times-ten plus one), even moves answer the small disk's resting peg, count reads the total, and the two directions trace MIRROR peg sequences that re-converge at the mid-cycle zero rows
 pass	ho2 a PURE factory returns a closure applied to a draw — the captured constant is pure, only the argument is drawn
 pass	hof1 a higher-order APPLY-TWICE over a draw — the fn value crosses the call while the thread advances underneath
 pass	host calls are observed in the order they were made
@@ -6042,6 +6044,7 @@ pass	rr1 RECORD handler state updated by one arm, field-read by a SIBLING arm pl
 pass	rr1 one draw consumed THREE times (squared, scaled, summed) — a single dispatch, the binder multiply-read
 pass	rr2 the SQUARE of a difference of two draws — composite arithmetic over one advancing thread, zero row included
 pass	rrb1 a ROUND-ROBIN scheduler with a skip mask — turn advances cyclically to the next unskipped worker answering its id (or -1 when all four are out), skip marks a worker answering the popcount, and the SEED sets the starting position so the same skip sequence yields different service orders
+pass	rrl1 a REFILL-ON-READ rate limiter — every take first refills the bucket by the seed rate clamped at capacity ten then serves or answers the negated shortfall (tokens kept on refusal), and the faster drip keeps the refusals shallow while the slow one starves deeper on the same request stream
 pass	rs1 a RECORD state where each op owns a FIELD — bump advances a, scale multiplies b, interleaved
 pass	rs1 a RESULT built from draw parity crosses dispatch as an op ARGUMENT — Ok scales with state, Err folds in negated
 pass	rs2 the arm updates the record state via Record.with — field b is held by the functional update across dispatches

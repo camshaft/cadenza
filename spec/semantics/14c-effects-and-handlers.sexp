@@ -13861,3 +13861,92 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 610995408501 Int64))
   (call   main (: 0 Int64)) (output (: 598995004502 Int64)))
+
+;; ── Refill limiter, Hanoi cycle, gold panning (breaker batch 304) ──
+(case "rrl1 a REFILL-ON-READ rate limiter — every take first refills the bucket by the seed rate clamped at capacity ten then serves or answers the negated shortfall (tokens kept on refusal), and the faster drip keeps the refusals shallow while the slow one starves deeper on the same request stream"
+  (input  (do
+            (effect R (op take (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle R (: 5 Int64)
+                ((take (c) tokens
+                  (if (< 10 (+ tokens (+ (% n 3) 1)))
+                      (if (< 10 c)
+                          (resume (- 10 c) 10)
+                          (resume c (- 10 c)))
+                      (if (< (+ tokens (+ (% n 3) 1)) c)
+                          (resume (- (+ tokens (+ (% n 3) 1)) c) (+ tokens (+ (% n 3) 1)))
+                          (resume c (- (+ tokens (+ (% n 3) 1)) c))))))
+                (let ((a (R.take 4)))
+                  (let ((b (R.take 8)))
+                    (let ((c (R.take 3)))
+                      (let ((d (R.take 9)))
+                        (let ((e (R.take 2)))
+                          (let ((f (R.take 0)))
+                            (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 39702970200 Int64))
+  (call   main (: 0 Int64)) (output (: 39502930200 Int64)))
+
+(case "hnc1 the HANOI smallest-disk cycle — the small disk moves on every ODD move cycling pegs in the seed-picked direction (answering peg-times-ten plus one), even moves answer the small disk's resting peg, count reads the total, and the two directions trace MIRROR peg sequences that re-converge at the mid-cycle zero rows"
+  (input  (do
+            (effect H
+              (op move (-> Int64))
+              (op count (-> Int64)))
+            (def (main (: n Int64))
+              (handle H (tuple (: 0 Int64) (: 0 Int64))
+                ((move () st
+                  (match st
+                    ((tuple peg moves)
+                      (if (= (% (+ moves 1) 2) 1)
+                          (if (= (% n 3) 1)
+                              (resume (+ (* (% (+ peg 1) 3) 10) 1)
+                                      (tuple (% (+ peg 1) 3) (+ moves 1)))
+                              (resume (+ (* (% (+ peg 2) 3) 10) 1)
+                                      (tuple (% (+ peg 2) 3) (+ moves 1))))
+                          (resume (* peg 10) (tuple peg (+ moves 1)))))))
+                 (count () st
+                  (match st ((tuple peg moves) (resume moves st)))))
+                (let ((a (H.move)))
+                  (let ((b (H.move)))
+                    (let ((c (H.move)))
+                      (let ((d (H.move)))
+                        (let ((e (H.move)))
+                          (let ((f (H.move)))
+                            (let ((g (H.move)))
+                              (let ((h (H.count)))
+                                (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g)) h)))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 1110212001001107 Int64))
+  (call   main (: 0 Int64)) (output (: 2120111001002107 Int64)))
+
+(case "gld1 a GOLD-PANNING yield decay — pan answers the current yield then decays it by a third truncating plus one unguarded (the stream never hits the floor), move relocates resetting the yield to the seed base minus a wear cost that grows two per move, total accumulates, and the richer claim decays through DIFFERENT residues while both wear down in lockstep"
+  (input  (do
+            (effect G
+              (op pan (-> Int64))
+              (op move (-> Int64))
+              (op total (-> Int64)))
+            (def (main (: n Int64))
+              (handle G (tuple (+ 20 n) (: 0 Int64) (: 0 Int64))
+                ((pan () st
+                  (match st
+                    ((tuple y wear total)
+                      (resume y (tuple (- (- y (/ y 3)) 1) wear (+ total y))))))
+                 (move () st
+                  (match st
+                    ((tuple y wear total)
+                      (resume (- (+ 20 n) (+ wear 2))
+                              (tuple (- (+ 20 n) (+ wear 2)) (+ wear 2) total)))))
+                 (total () st
+                  (match st ((tuple y wear total) (resume total st)))))
+                (let ((a (G.pan)))
+                  (let ((b (G.pan)))
+                    (let ((c (G.pan)))
+                      (let ((d (G.move)))
+                        (let ((e (G.pan)))
+                          (let ((f (G.pan)))
+                            (let ((g (G.move)))
+                              (let ((h (G.total)))
+                                (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g)) h)))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 3019122828182707 Int64))
+  (call   main (: 0 Int64)) (output (: 2013081818111670 Int64)))
