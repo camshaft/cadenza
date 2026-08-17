@@ -769,18 +769,43 @@ impl Gen<'_> {
                 self.out.push(' ');
             }
             _ => {
+                // Scalar Int64 state. The arm body is EITHER a bare single `(resume …)` or (coin flip) a
+                // CONDITIONAL resume: an `if` on the state with a `(resume …)` in BOTH branches — a
+                // MULTI-RESUME-POINT arm (the F24-sibling / two-hole-refold territory the recent pyr3
+                // post-resume fixes touched) that a single-resume arm never produces. Each branch resumes
+                // exactly once, so termination is preserved (only one branch runs per perform).
                 let init = self.cur.range(0, 9);
                 let _ = write!(
                     self.out,
-                    "(do (effect {ename} (op {oname} (-> Int64 Int64))) (handle {ename} {init} (({oname} ({p}) {s} (resume "
+                    "(do (effect {ename} (op {oname} (-> Int64 Int64))) (handle {ename} {init} (({oname} ({p}) {s} "
                 );
-                let mark = self.env.push(p, Kind::Num); // p and s are both scalar Int64 here
-                self.env.push(s, Kind::Num);
-                self.expr(depth.saturating_sub(1), Kind::Num); // resume VALUE
-                self.out.push(' ');
-                self.expr(depth.saturating_sub(1), Kind::Num); // new STATE
+                let mark = self.env.push(p.clone(), Kind::Num); // p and s are both scalar Int64 here
+                self.env.push(s.clone(), Kind::Num);
+                if self.cur.flip() {
+                    let rel = match self.cur.choice(4) {
+                        0 => "<",
+                        1 => ">",
+                        2 => "<=",
+                        _ => ">=",
+                    };
+                    let _ = write!(
+                        self.out,
+                        "(if ({rel} {s} {}) (resume ",
+                        self.cur.range(0, 9)
+                    );
+                    self.expr(depth.saturating_sub(1), Kind::Num); // branch-1 resume VALUE
+                    let _ = write!(self.out, " (+ {s} {p})) (resume ");
+                    self.expr(depth.saturating_sub(1), Kind::Num); // branch-2 resume VALUE
+                    let _ = write!(self.out, " {s}))");
+                } else {
+                    self.out.push_str("(resume ");
+                    self.expr(depth.saturating_sub(1), Kind::Num); // resume VALUE
+                    self.out.push(' ');
+                    self.expr(depth.saturating_sub(1), Kind::Num); // new STATE
+                    self.out.push(')');
+                }
                 self.env.truncate(mark);
-                self.out.push_str("))) ");
+                self.out.push_str(")) "); // close the op arm and the arm-list
             }
         }
         // handled body: perform the op a FIXED 1..=2 times (no recursion → the fold is bounded).
@@ -1315,6 +1340,28 @@ mod tests {
             hit_record_state,
             "no seed in the sweep emitted a RECORD-state effect handler"
         );
+    }
+
+    /// The conditional-resume (MULTI-RESUME-POINT) scalar arm is reachable — some seed emits a handler
+    /// arm whose body is an `(if …)` with a `(resume …)` in BOTH branches — and every program that path
+    /// can emit still parses. The branch-1 `(resume V (+ s p))` immediately followed by branch-2
+    /// ` (resume …)` yields the distinctive `)) (resume ` substring no other arm produces. Guards the
+    /// two-hole-refold / F24-sibling reach against a refactor that drops it.
+    #[test]
+    fn some_seed_emits_a_conditional_resume_arm() {
+        let mut hit = false;
+        for n in 0..8000u32 {
+            let seed = varied_seed(n);
+            let src = generate(&seed).source;
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "generated program did not parse:\n{src}"
+            );
+            if src.contains("(handle ") && src.contains(")) (resume ") {
+                hit = true;
+            }
+        }
+        assert!(hit, "no seed in the sweep emitted a conditional-resume arm");
     }
 
     /// The two-op effect variant is reachable — some seed emits an `(effect …)` declaring TWO `(op …)`
