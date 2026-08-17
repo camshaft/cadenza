@@ -4731,6 +4731,7 @@ pass	bc2 monotonicity of THREE draws under a parity-dependent step — the and o
 pass	bc2 short-circuit OR over two draws — the true-first row skips the second draw
 pass	bc3 a nested and-of-or short-circuit tree over draws — each row exercises a distinct skip pattern
 pass	bc3 an op RETURNS Bool consumed by a two-flag if ladder — a mod-3-dependent step makes all four paths reachable
+pass	bch1 a BATCH-coalescing writer — write buffers answering the count until the THIRD item self-flushes answering a hundred plus the batch sum, sync force-flushes the partial answering its sum or -1 when empty, and two seed-shaped values land in DIFFERENT batches so both the partial-sync and the self-flush rows carry the seed
 pass	bcp1 Bytes.compact of the EFFECT-GROWN rope inside the arm — the compacted flat rep reads exactly at a computed index and re-threads
 pass	bd1 the arm CLASSIFIES its state into a tri-band SUM — the body matches Lo/Mid/Hi per dispatch as the thread climbs through the bands
 pass	bd2 the scoring CLOSURE captures a DRAW — the weight itself comes from the thread before the classified reads
@@ -5293,6 +5294,7 @@ pass	fx4 float sign TRICHOTOMY of a draw — positive scales, negative negates, 
 pass	fx5 the float state SATURATES to infinity mid-thread — a squaring ladder crosses Float64.max, the arm's finite/inf verdict flips per dispatch
 pass	fx6 NaN born in the ARM — s2−s2 is 0.0 while finite and NaN once the thread saturates; canonical equality distinguishes them per dispatch
 pass	fx7 NEGATIVE ZERO through the state thread — canonical equality separates -0.0 from +0.0, and IEEE addition washes the sign out mid-thread
+pass	fzk1 a FIZZBUZZ classifier with a seed-shaped first modulus — feed answers fifteen for both divisors, three for the first, five for the second, else the value itself (specials counted), and shrinking the first modulus from three to two RECLASSIFIES two of the five feeds including promoting a five-row to a fifteen-row
 pass	gbx1 a THREE-SPEED gearbox odometer — shift moves the gear clamped to the one-to-three range answering the landed gear, drive accrues time-times-the-gear's-speed into the odometer answering the total, and the seed's starting gear compounds through every drive so the odometers pull apart while the shift answers converge
 pass	gc1 a EUCLID-step arm — each dispatch advances (a,b) one gcd step, low digits of the descent spell the trace
 pass	gcd1 EUCLID with a logged trace — each remainder step performs, the accumulator sums the divisor chain, data-dependent step counts
@@ -5483,6 +5485,7 @@ pass	lf3 the arm pushes TWO elements per dispatch (both lengths read from the PR
 pass	lf4 a per-element dispatch comparing each element against the RISING state — amplify-or-pass per visit
 pass	lf5 TWO lists walked in LOCKSTEP with a per-pair 2-arg dispatch — length-guarded via projection helpers
 pass	lfs1 an EIGHT-BIT Fibonacci LFSR — step shifts right injecting the XOR of taps zero and two as the new high bit answering the register, peek masks the low nibble, and the two seeds fall into DIFFERENT orbits (one decays toward the injected-bit ladder, the other rings the high bits immediately)
+pass	lft1 an ELEVATOR load limiter — board adds the passenger's weight answering the load or REFUSING with the negated overage when the seed-shaped capacity would be exceeded (the load untouched), alight subtracts clamped at empty, trips counts refusals, and the same boarding sequence is refused ONCE on the roomy car and TWICE on the tight one with different overage readings
 pass	lhn1 a LUHN checksum accumulator — feed doubles every second digit by POSITION PARITY subtracting nine from two-digit doubles, chk answers 1 on a multiple of ten else the residue, and the seed-fed digit doubles on both runs but only one crosses the subtract-nine threshold
 pass	li1 draws choose BOTH the List.update target and the List.at read index — the collection edit follows the thread
 pass	li2 a list BUILT from pushed draws then read at a draw-picked index — construction and consumption share one thread

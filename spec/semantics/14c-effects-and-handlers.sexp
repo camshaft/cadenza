@@ -13769,3 +13769,95 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 39690929989 Int64))
   (call   main (: 0 Int64)) (output (: 19398989989 Int64)))
+
+;; ── Batch writer, fizzbuzz classifier, load limiter (breaker batch 303) ──
+(case "bch1 a BATCH-coalescing writer — write buffers answering the count until the THIRD item self-flushes answering a hundred plus the batch sum, sync force-flushes the partial answering its sum or -1 when empty, and two seed-shaped values land in DIFFERENT batches so both the partial-sync and the self-flush rows carry the seed"
+  (input  (do
+            (effect W
+              (op write (-> Int64 Int64))
+              (op sync (-> Int64)))
+            (def (main (: n Int64))
+              (handle W (tuple (: 0 Int64) (: 0 Int64))
+                ((write (v) st
+                  (match st
+                    ((tuple bsum bn)
+                      (if (= (+ bn 1) 3)
+                          (resume (+ 100 (+ bsum v)) (tuple 0 0))
+                          (resume (+ bn 1) (tuple (+ bsum v) (+ bn 1)))))))
+                 (sync () st
+                  (match st
+                    ((tuple bsum bn)
+                      (if (= bn 0)
+                          (resume -1 st)
+                          (resume bsum (tuple 0 0)))))))
+                (let ((a (W.write (+ (% n 4) 2))))
+                  (let ((b (W.write 4)))
+                    (let ((c (W.sync)))
+                      (let ((d (W.write 6)))
+                        (let ((e (W.write (+ (% n 3) 1))))
+                          (let ((f (W.write 8)))
+                            (let ((g (W.sync)))
+                              (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 1020801031599 Int64))
+  (call   main (: 0 Int64)) (output (: 1020601031499 Int64)))
+
+(case "fzk1 a FIZZBUZZ classifier with a seed-shaped first modulus — feed answers fifteen for both divisors, three for the first, five for the second, else the value itself (specials counted), and shrinking the first modulus from three to two RECLASSIFIES two of the five feeds including promoting a five-row to a fifteen-row"
+  (input  (do
+            (effect F
+              (op feed (-> Int64 Int64))
+              (op cnt (-> Int64)))
+            (def (main (: n Int64))
+              (handle F (: 0 Int64)
+                ((feed (v) specials
+                  (if (= (% v (+ (% n 3) 2)) 0)
+                      (if (= (% v 5) 0)
+                          (resume 15 (+ specials 1))
+                          (resume 3 (+ specials 1)))
+                      (if (= (% v 5) 0)
+                          (resume 5 (+ specials 1))
+                          (resume v specials))))
+                 (cnt () specials (resume specials specials)))
+                (let ((a (F.feed 6)))
+                  (let ((b (F.feed 10)))
+                    (let ((c (F.feed 7)))
+                      (let ((d (F.feed 30)))
+                        (let ((e (F.feed 4)))
+                          (let ((f (F.cnt)))
+                            (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 30507150403 Int64))
+  (call   main (: 0 Int64)) (output (: 31507150304 Int64)))
+
+(case "lft1 an ELEVATOR load limiter — board adds the passenger's weight answering the load or REFUSING with the negated overage when the seed-shaped capacity would be exceeded (the load untouched), alight subtracts clamped at empty, trips counts refusals, and the same boarding sequence is refused ONCE on the roomy car and TWICE on the tight one with different overage readings"
+  (input  (do
+            (effect L
+              (op board (-> Int64 Int64))
+              (op alight (-> Int64 Int64))
+              (op trips (-> Int64)))
+            (def (main (: n Int64))
+              (handle L (tuple (: 0 Int64) (: 0 Int64))
+                ((board (w) st
+                  (match st
+                    ((tuple load refused)
+                      (if (< (+ 100 (* n 5)) (+ load w))
+                          (resume (- (+ 100 (* n 5)) (+ load w)) (tuple load (+ refused 1)))
+                          (resume (+ load w) (tuple (+ load w) refused))))))
+                 (alight (w) st
+                  (match st
+                    ((tuple load refused)
+                      (if (< load w)
+                          (resume 0 (tuple 0 refused))
+                          (resume (- load w) (tuple (- load w) refused))))))
+                 (trips () st
+                  (match st ((tuple load refused) (resume refused st)))))
+                (let ((a (L.board 60)))
+                  (let ((b (L.board 50)))
+                    (let ((c (L.board 45)))
+                      (let ((d (L.alight 70)))
+                        (let ((e (L.board 45)))
+                          (let ((f (L.trips)))
+                            (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 610995408501 Int64))
+  (call   main (: 0 Int64)) (output (: 598995004502 Int64)))
