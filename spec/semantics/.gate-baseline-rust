@@ -5771,6 +5771,7 @@ pass	ordering an integer against a string is a type error
 pass	ordering two integers of different sign is rejected, not silently reinterpreted
 pass	ordering two integers of different width is rejected, not silently widened
 pass	ordering two rationals a hair apart at the i64 boundary is exact
+pass	orq1 an ORDER-BOOK spread tracker — bid raises the best bid and ask lowers the best ask (both answering the spread or -1 while a side is empty), a CROSSED book resets both sides answering zero, and the seed only shifts the opening bid so the first spread differs while the tightening ladder and the cross land identically
 pass	outer handler state threads AROUND a completed inner handle of a different effect
 pass	ov1 an if CONDITION from LET-bound draws — two draws feed a comparison that routes the branch
 pass	over-applying a constructor by several arguments is a type error
@@ -6162,6 +6163,7 @@ pass	set union is idempotent on generated inputs (re-delivering a set changes no
 pass	sets reached via DIFFERENCE and INTERSECTION equal the directly-built set
 pass	sf1 an inner SAME-effect handler's arm re-performs the effect it discharges — the re-perform routes to the OUTER handler, both states advance independently
 pass	sf2 the inner arm's NEXT-STATE re-performs to the outer — the forward sits in the state-thread position, not the resume value
+pass	sfl1 a PERFECT-SHUFFLE position tracker — each shuffle doubles the tracked card's position mod seven (the out-shuffle orbit on eight cards, position seven fixed), where packs position and shuffle count, and the two seeds ride the SAME 3-cycle orbit entered at different points so the rows are rotations of each other
 pass	sfu1 TWO-SENSOR weighted fusion — each read folds the sample into a running weighted mean by est*wsum plus v*w over the grown weight (truncating), the trusted sensor carries weight three while the seed shapes the second sensor's trust, and the final draw reads the accumulated weight
 pass	sg1 a string BUILT by a recursive walk of draws — one H/L character per dispatch, exact content compared
 pass	sg2 a stable PREFIX slice of a growing rope — String.slice (start,END) of the state per dispatch, prefix identical across growth
@@ -6659,6 +6661,7 @@ pass	tmr1 a TRIPLE-MODULAR-REDUNDANCY voter — set writes one of three channel 
 pass	to-bytes of a sliced multibyte string is read twice and both reads see the right bytes
 pass	tok1 a TOKENIZER protocol — next-tok skips leading spaces, answers the token's byte-len, and threads the REST of the string; the drained stream answers zero forever
 pass	tol1 a TOLL PLAZA with an exact-change lane — a five rides the exact lane counting itself and feeding the till, an overpayment needs the till to COVER the change (the till keeps the toll, the change flows back) else the car is DELAYED with the till untouched, an underpayment bounces with a four-hundred tag, the read packs till exact and delayed, and the seed's float lets one plaza serve every car while the other delays all three overpayers
+pass	tow1 a TUG-OF-WAR marker with a latching win line — each pull moves the marker toward its side answering the position until crossing plus-or-minus ten LATCHES the result (every later pull answers the frozen plus-or-minus hundred), where reads the final marker, and the offset seed loses THREE pulls early so its frozen tail overlaps the other run's still-live rows
 pass	tp1 TWO ops each own a tuple-state SLOT — lo advances field 0, hi doubles field 1, interleaved
 pass	tp2 a SWAP op exchanges the tuple-state slots — interleaved readers observe the exchange
 pass	tp3 a NESTED tuple state ((a b) c) — the arm rebuilds the inner Fibonacci pair and bumps the outer counter per dispatch

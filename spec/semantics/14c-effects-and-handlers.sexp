@@ -13664,3 +13664,108 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 18122012040529 Int64))
   (call   main (: 0 Int64)) (output (: 8052012040522 Int64)))
+
+;; ── Perfect shuffle, order book, tug of war (breaker batch 302) ──
+(case "sfl1 a PERFECT-SHUFFLE position tracker — each shuffle doubles the tracked card's position mod seven (the out-shuffle orbit on eight cards, position seven fixed), where packs position and shuffle count, and the two seeds ride the SAME 3-cycle orbit entered at different points so the rows are rotations of each other"
+  (input  (do
+            (effect S
+              (op shuffle (-> Int64))
+              (op where (-> Int64)))
+            (def (main (: n Int64))
+              (handle S (tuple (+ (% n 7) 1) (: 0 Int64))
+                ((shuffle () st
+                  (match st
+                    ((tuple pos count)
+                      (if (= pos 7)
+                          (resume 7 (tuple 7 (+ count 1)))
+                          (resume (% (* 2 pos) 7) (tuple (% (* 2 pos) 7) (+ count 1)))))))
+                 (where () st
+                  (match st
+                    ((tuple pos count) (resume (+ (* pos 10) count) st)))))
+                (let ((a (S.shuffle)))
+                  (let ((b (S.shuffle)))
+                    (let ((c (S.where)))
+                      (let ((d (S.shuffle)))
+                        (let ((e (S.shuffle)))
+                          (let ((f (S.shuffle)))
+                            (let ((g (S.where)))
+                              (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 1022204010225 Int64))
+  (call   main (: 0 Int64)) (output (: 2044201020445 Int64)))
+
+(case "orq1 an ORDER-BOOK spread tracker — bid raises the best bid and ask lowers the best ask (both answering the spread or -1 while a side is empty), a CROSSED book resets both sides answering zero, and the seed only shifts the opening bid so the first spread differs while the tightening ladder and the cross land identically"
+  (input  (do
+            (effect O
+              (op bid (-> Int64 Int64))
+              (op ask (-> Int64 Int64)))
+            (def (spread-of (: bb Int64) (: ba Int64))
+              (if (= bb 0) -1 (if (= ba 0) -1 (- ba bb))))
+            (def (main (: n Int64))
+              (handle O (tuple (: 0 Int64) (: 0 Int64))
+                ((bid (p) st
+                  (match st
+                    ((tuple bb ba)
+                      (if (< bb p)
+                          (if (= ba 0)
+                              (resume (spread-of p ba) (tuple p ba))
+                              (if (< p ba)
+                                  (resume (spread-of p ba) (tuple p ba))
+                                  (resume 0 (tuple 0 0))))
+                          (resume (spread-of bb ba) (tuple bb ba))))))
+                 (ask (p) st
+                  (match st
+                    ((tuple bb ba)
+                      (if (= ba 0)
+                          (if (< bb p)
+                              (resume (spread-of bb p) (tuple bb p))
+                              (resume 0 (tuple 0 0)))
+                          (if (< p ba)
+                              (if (< bb p)
+                                  (resume (spread-of bb p) (tuple bb p))
+                                  (resume 0 (tuple 0 0)))
+                              (resume (spread-of bb ba) (tuple bb ba))))))))
+                (let ((a (O.bid (+ (% n 4) 5))))
+                  (let ((b (O.ask 12)))
+                    (let ((c (O.bid 9)))
+                      (let ((d (O.ask 10)))
+                        (let ((e (O.bid 11)))
+                          (let ((f (O.ask 15)))
+                            (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: -9496990001 Int64))
+  (call   main (: 0 Int64)) (output (: -9296990001 Int64)))
+
+(case "tow1 a TUG-OF-WAR marker with a latching win line — each pull moves the marker toward its side answering the position until crossing plus-or-minus ten LATCHES the result (every later pull answers the frozen plus-or-minus hundred), where reads the final marker, and the offset seed loses THREE pulls early so its frozen tail overlaps the other run's still-live rows"
+  (input  (do
+            (effect T
+              (op pull (-> Int64 Int64 Int64))
+              (op where (-> Int64)))
+            (def (main (: n Int64))
+              (handle T (tuple (- (% n 4) 2) (: 0 Int64))
+                ((pull (side s) st
+                  (match st
+                    ((tuple pos won)
+                      (if (< 0 won)
+                          (resume 100 st)
+                          (if (< won 0)
+                              (resume -100 st)
+                              (if (= side 1)
+                                  (if (< 9 (+ pos s))
+                                      (resume 100 (tuple (+ pos s) 1))
+                                      (resume (+ pos s) (tuple (+ pos s) 0)))
+                                  (if (< (- pos s) -9)
+                                      (resume -100 (tuple (- pos s) -1))
+                                      (resume (- pos s) (tuple (- pos s) 0)))))))))
+                 (where () st
+                  (match st ((tuple pos won) (resume pos st)))))
+                (let ((a (T.pull 1 4)))
+                  (let ((b (T.pull -1 7)))
+                    (let ((c (T.pull -1 6)))
+                      (let ((d (T.pull 1 3)))
+                        (let ((e (T.pull -1 5)))
+                          (let ((f (T.where)))
+                            (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 39690929989 Int64))
+  (call   main (: 0 Int64)) (output (: 19398989989 Int64)))
