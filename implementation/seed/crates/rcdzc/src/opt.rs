@@ -540,14 +540,23 @@ pub(crate) mod cse {
 /// `collect_row_op_field_dups`'s `bk == bv` guard false → no double-dup). Both-backend full-corpus opt-sweep
 /// 0-div O0..O3 (wasm 6179 / rust 6082) — the bind-safety gates (`b2_bind_plan`: fully-solved-type,
 /// not-match-scrutinee, value-stability, trap-free OR unconditionally-reached) keep every admitted bind sound.
-/// GATE 4 admits a trapping share when its `scope_node`'s dominating frontier CONTAINS it (the
-/// unconditional-reach arm, not `is_trap_free` alone), so cmb1's guard-position divide reads ARE planned;
-/// but cmb1 has ~99 further divide shares that are BOTH trapping AND only conditionally reached (nested
-/// if-branches → frontier excludes them), so it is only PARTIALLY bound → its emit-re-descent shrinks enough
-/// to hit a clean instruction-budget DECLINE rather than hang, but not enough to COMPILE. Full cmb1 compile
-/// (828567056280870 / 615201506009920) needs the cmb1-FULL follow-on: PER-BRANCH binding (one plan entry per
-/// guarded-branch occurrence, `scope_node` = the guarded branch) — `value_range` cannot prove `k+1` nonzero
-/// (cross-iteration-inductive), so the trap-free arm cannot admit those 99; a non-blocking joint pure-opt.
+/// ⚠ cmb1/pom5/ksc1 are NOT un-hung by this (verified: cmb1 STILL HANGS at O2 on trunk, EXIT=124; NOT a
+/// regression — they hung pre-B2). Their re-descent-driving shares are the handler STATE-TUPLE `(c,k,mx)`
+/// (`Tuple([Int64;3])`), read K× via `Core::SumPayload` across the arm's branches — the `reduce_handle`
+/// continuation destructuring the resume payload — NOT the `(/ …)` divide (which is scalar `Int64`, not a
+/// heap candidate). Those tuple reads are genuine SumPayload SCRUTINEES, so P3 (not-a-match-scrutinee)
+/// CORRECTLY excludes them: binding the payload-source tuple once behind a `LocalRef` would break the
+/// SumPayload extraction (unsound — a Sum-typed-only P3 relax would MISCOMPILE, since the target is
+/// Tuple-typed yet a real SumPayload scrutinee). So cmb1's plan is EMPTY → nothing bound → the
+/// `mark_binder_dups` re-descent is unmitigated → it hangs. What B2 DID deliver: SOUNDNESS (the rq3/plt2
+/// O2/O3 miscompiles + the FIFO/Record.with/Sum-scrutinee install-hazards are gated out) and the
+/// effect-state read-once-per-path hang class where shares are admissible. cmb1-FULL (my emit lane,
+/// DEFERRED-pending-operator-priority, joint w/ v-core-opt) is NOT a gate refinement: it needs an EMIT-side
+/// MEMO on the SumPayload extraction (so the shared tuple's field-reads aren't re-descended per branch) OR
+/// per-branch de-sharing — both WITHOUT binding-once (unsound here). Genuinely deeper than the Let-slot
+/// mechanism. Non-blocking: cmb1/pom5/ksc1 are breaker PROBES (`.breaker-probes/`, NOT in the gated
+/// `spec/semantics` corpus, so they don't red the gate), and the residual failure is a compile HANG at O2,
+/// never a wrong answer — no correctness issue, purely an unfinished optimization.
 pub(crate) fn run_sharing_aware_emit(
     db: &mut crate::db::Db,
     layout: &crate::layout::Layout,
