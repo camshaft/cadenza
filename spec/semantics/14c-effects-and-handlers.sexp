@@ -14914,3 +14914,101 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 210721251062762292 Int64))
   (call   main (: 0 Int64)) (output (: 200211722052252763 Int64)))
+
+;; ── match-in-INIT bisection window, let-chain perform args, Bool ops under connectives (breaker batch 315) ──
+
+(case "wnw1 a BISECTION searcher whose starting window is picked by a MATCH IN THE HANDLE'S INIT POSITION — the init destructures a seed tuple and an if ladder inside the match arm chooses among three windows, narrow halves the window toward the guess counting probes and answering side midpoint and count, a CLOSED window answers a frozen readout without probing, span reads the gap, and the tight seed window closes two probes early so its last narrows freeze while the wide window is still hunting"
+  (input  (do
+            (effect L
+              (op narrow (-> Int64 Int64))
+              (op span (-> Int64)))
+            (def (main (: n Int64))
+              (handle L (match (tuple (% n 3) (: 0 Int64))
+                          ((tuple r z)
+                            (if (= r 0) (tuple (: 2 Int64) (: 9 Int64) z)
+                                (if (= r 1) (tuple (: 4 Int64) (: 6 Int64) z)
+                                    (tuple (: 1 Int64) (: 12 Int64) z)))))
+                ((narrow (g) st
+                  (match st
+                    ((tuple lo hi probes)
+                      (if (>= lo hi)
+                          (resume (+ (: 300 Int64) (+ (* (% lo 10) 10) (% probes 10))) st)
+                          (let ((mid (/ (+ lo hi) 2)))
+                            (if (<= g mid)
+                                (resume (+ (: 100 Int64) (+ (* (% mid 10) 10) (% (+ probes 1) 10)))
+                                        (tuple lo mid (+ probes 1)))
+                                (resume (+ (: 200 Int64) (+ (* (% mid 10) 10) (% (+ probes 1) 10)))
+                                        (tuple (+ mid 1) hi (+ probes 1)))))))))
+                 (span () st
+                  (match st
+                    ((tuple lo hi probes)
+                      (resume (+ (* (- hi lo) 10) (% probes 10)) st)))))
+                (let ((a (L.narrow 5)))
+                  (let ((b (L.narrow 3)))
+                    (let ((c (L.span)))
+                      (let ((d (L.narrow 7)))
+                        (let ((e (L.span)))
+                          (let ((f (L.narrow 2)))
+                            (+ (* 1000 (+ (* 1000 (+ (* 1000 (+ (* 1000 (+ (* 1000 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 151142002342002342 Int64))
+  (call   main (: 0 Int64)) (output (: 151132012223003333 Int64)))
+
+(case "pst1 a POSTMARK desk where every stamp weight is a LET CHAIN COMPUTED AT THE PERFORM SITE — the second stamp's argument let-binds the first answer's tens digit doubled-plus-one, the third stamp's argument chains two lets folding the second answer's low digit with the audit's remainder before a mod-seven clamp, stamp folds the weight into the total counting stamps and echoing weight and count, audit reads the total mod one hundred, and the seed sets the first weight so every downstream let chain carries different bindings between the runs"
+  (input  (do
+            (effect L
+              (op stamp (-> Int64 Int64))
+              (op audit (-> Int64)))
+            (def (main (: n Int64))
+              (handle L (tuple (: 0 Int64) (: 0 Int64))
+                ((stamp (w) st
+                  (match st
+                    ((tuple total stamps)
+                      (resume (+ (* w 10) (% (+ stamps 1) 10))
+                              (tuple (+ total w) (+ stamps 1))))))
+                 (audit () st
+                  (match st
+                    ((tuple total stamps)
+                      (resume (% total 100) st)))))
+                (let ((a (L.stamp (+ (% n 3) 2))))
+                  (let ((b (L.stamp (let ((h (/ a 10))) (+ (* h 2) 1)))))
+                    (let ((c (L.audit)))
+                      (let ((d (L.stamp (let ((u (% b 10)))
+                                          (let ((v (+ u (% c 10))))
+                                            (+ (% v 7) 1))))))
+                        (let ((e (L.audit)))
+                          (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 3172103313 Int64))
+  (call   main (: 0 Int64)) (output (: 2152073310 Int64)))
+
+(case "frn1 a FURNACE interlock composing BOOL-RETURNING OPS under and or and not — hot answers whether the temperature clears the ignition line advancing one degree, cold answers the temperature's evenness advancing two, the and skips its right draw when hot reports low, the or skips its right draw when cold reports even, the not inverts a lone hot draw, every skip is visible in the tally's call count, and the seed's starting temperature makes one run short-circuit where the other evaluates both sides"
+  (input  (do
+            (effect L
+              (op hot (-> Bool))
+              (op cold (-> Bool))
+              (op tally (-> Int64)))
+            (def (main (: n Int64))
+              (handle L (tuple (% n 3) (: 0 Int64))
+                ((hot () st
+                  (match st
+                    ((tuple t calls)
+                      (resume (>= t 2) (tuple (+ t 1) (+ calls 1))))))
+                 (cold () st
+                  (match st
+                    ((tuple t calls)
+                      (resume (= (% t 2) 0) (tuple (+ t 2) (+ calls 1))))))
+                 (tally () st
+                  (match st
+                    ((tuple t calls)
+                      (resume (+ (* t 10) calls) st)))))
+                (let ((a (if (and (L.hot) (L.cold)) (: 1 Int64) (: 2 Int64))))
+                  (let ((p (L.tally)))
+                    (let ((b (if (or (L.cold) (L.hot)) (: 3 Int64) (: 4 Int64))))
+                      (let ((q (L.tally)))
+                        (let ((c (if (not (L.hot)) (: 5 Int64) (: 6 Int64))))
+                          (let ((r (L.tally)))
+                            (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) p)) b)) q)) c)) r)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 22103420653 Int64))
+  (call   main (: 0 Int64)) (output (: 21103430654 Int64)))

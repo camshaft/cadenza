@@ -5300,6 +5300,7 @@ pass	four same-signature closure exports share one resource
 pass	fr1 a TRIPLING Float64 thread crosses a fixed threshold — three compares catch the crossing depth, exact integer-valued floats
 pass	fra1 a LOWEST-TERMS fraction state — each add cross-multiplies then renormalizes by an in-arm Euclid gcd, the n=1 seed collapses to exactly 1/1 mid-run
 pass	frm1 a LENGTH-PREFIXED frame protocol over a Bytes state — writers append [len,payload..] frames, the reader pops exactly one frame by its prefix and the drained read answers a sentinel
+pass	frn1 a FURNACE interlock composing BOOL-RETURNING OPS under and or and not — hot answers whether the temperature clears the ignition line advancing one degree, cold answers the temperature's evenness advancing two, the and skips its right draw when hot reports low, the or skips its right draw when cold reports even, the not inverts a lone hot draw, every skip is visible in the tally's call count, and the seed's starting temperature makes one run short-circuit where the other evaluates both sides
 pass	from-bytes decodes a 3-byte scalar split across BOTH seams of a 3-leaf rope
 pass	from-bytes rejects a torn sequence whose invalid continuation sits in the NEXT leaf
 pass	fs1 the SAME handle expression re-entered per recursion round — a FRESH region each iteration, seeds keyed by depth
@@ -5911,6 +5912,7 @@ pass	promoting a Float32 to Float64 is exact
 pass	prs1 TWIN parking meters — feed adds coins times the seed rate to one meter answering its minutes, tick decrements BOTH clamped at zero answering how many now read expired, and the slower rate expires meter one two ticks earlier walking the expired count up to two while the faster rate holds at one
 pass	ps1 a 100k-iteration tail loop that PERFORMS every iteration — dispatch itself must run in constant stack
 pass	psr1 a PREPEND-rope accumulator — each push prepends its piece so the OLDEST piece rides at the END, the closing slice proves the reversal order and the piece width varies by seed
+pass	pst1 a POSTMARK desk where every stamp weight is a LET CHAIN COMPUTED AT THE PERFORM SITE — the second stamp's argument let-binds the first answer's tens digit doubled-plus-one, the third stamp's argument chains two lets folding the second answer's low digit with the audit's remainder before a mod-seven clamp, stamp folds the weight into the total counting stamps and echoing weight and count, audit reads the total mod one hundred, and the seed sets the first weight so every downstream let chain carries different bindings between the runs
 pass	pts1 a 2D POINT under quarter-turn rotations and translations — rot maps (x,y) to (y,-x) answering a sign-tagged composite, mv translates answering the Manhattan norm, quad reads the quadrant, and the seeds trace different orbits around the origin
 pass	pure guards on fused-match arms read the payload binder and an enclosing capture
 pass	pushing an element of a different type onto a list is a type error
@@ -6928,6 +6930,7 @@ pass	widening a runtime signed narrow integer to Int64 sign-extends (total, emit
 pass	without- and with-REACHED records with runtime leaves equal the directly-built record
 pass	wlkC single-wall control — reflect only at the floor, ceiling unguarded
 pass	wnd1 a WIND-CHILL stepper — gust sets the wind answering temp minus twice the wind CLAMPED at minus thirty (extremes counted), warm raises the temperature answering it, ext reads the extreme count, and only the cold seed drives one gust past the clamp so its rows ride deep negative while the warm seed never clamps
+pass	wnw1 a BISECTION searcher whose starting window is picked by a MATCH IN THE HANDLE'S INIT POSITION — the init destructures a seed tuple and an if ladder inside the match arm chooses among three windows, narrow halves the window toward the guess counting probes and answering side midpoint and count, a CLOSED window answers a frozen readout without probing, span reads the gap, and the tight seed window closes two probes early so its last narrows freeze while the wide window is still hunting
 pass	wp2 a CHECKED-SHIFT computed perform arg feeding the two-lookup-match arm — shl scratch width does not alias the Option handle
 pass	wp3 a THREE-param op with two computed args through the two-lookup-match arm — every arg slot and the handle slot stay disjoint
 pass	wrap-narrowed values fill BOTH segments of a dispatching frame — the wrapped tag selects the arm
