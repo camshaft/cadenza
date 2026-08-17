@@ -14240,3 +14240,82 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 2004240212022480 Int64))
   (call   main (: 0 Int64)) (output (: 1202160212022464 Int64)))
+
+;; ── Twin meters, filter chain, pendulum (breaker batch 308) ──
+(case "prs1 TWIN parking meters — feed adds coins times the seed rate to one meter answering its minutes, tick decrements BOTH clamped at zero answering how many now read expired, and the slower rate expires meter one two ticks earlier walking the expired count up to two while the faster rate holds at one"
+  (input  (do
+            (effect P
+              (op feed (-> Int64 Int64 Int64))
+              (op tick (-> Int64)))
+            (def (dec1 (: v Int64)) (if (< 0 v) (- v 1) 0))
+            (def (exp1 (: v Int64)) (if (= v 0) 1 0))
+            (def (main (: n Int64))
+              (handle P (tuple (: 0 Int64) (: 0 Int64))
+                ((feed (i c) st
+                  (match st
+                    ((tuple m0 m1)
+                      (if (= i 0)
+                          (resume (+ m0 (* c (+ (% n 3) 2))) (tuple (+ m0 (* c (+ (% n 3) 2))) m1))
+                          (resume (+ m1 (* c (+ (% n 3) 2))) (tuple m0 (+ m1 (* c (+ (% n 3) 2)))))))))
+                 (tick () st
+                  (match st
+                    ((tuple m0 m1)
+                      (resume (+ (exp1 (dec1 m0)) (exp1 (dec1 m1)))
+                              (tuple (dec1 m0) (dec1 m1)))))))
+                (let ((a (P.feed 0 2)))
+                  (let ((b (P.feed 1 1)))
+                    (let ((c (P.tick)))
+                      (let ((d (P.tick)))
+                        (let ((e (P.tick)))
+                          (let ((f (P.tick)))
+                            (let ((g (P.tick)))
+                              (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 6030000010101 Int64))
+  (call   main (: 0 Int64)) (output (: 4020001010202 Int64)))
+
+(case "flt1 a TWO-STAGE sediment filter — pass traps the value's residue mod the seed then HALF of what remains answering the survivor, backwash resets the trap answering its contents, and the finer mesh traps MORE in stage one leaving less for stage two so the survivors differ while the last backwash CONVERGES"
+  (input  (do
+            (effect F
+              (op pass (-> Int64 Int64))
+              (op backwash (-> Int64)))
+            (def (main (: n Int64))
+              (handle F (: 0 Int64)
+                ((pass (v) trapped
+                  (match (% v (+ (% n 4) 2))
+                    (r1
+                      (match (/ (- v r1) 2)
+                        (r2
+                          (resume (- (- v r1) r2) (+ trapped (+ r1 r2))))))))
+                 (backwash () trapped (resume trapped 0)))
+                (let ((a (F.pass 23)))
+                  (let ((b (F.pass 14)))
+                    (let ((c (F.backwash)))
+                      (let ((d (F.pass 9)))
+                        (let ((e (F.backwash)))
+                          (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 1006210405 Int64))
+  (call   main (: 0 Int64)) (output (: 1107190405 Int64)))
+
+(case "pdl1 a PENDULUM with friction — each swing hands the active quantity across losing one (the phase field tracks which side holds it), a dead pendulum answers -1 forever, and the tall drop is still swinging at the sixth swing while the short one dies at the fifth with the zero-crossing row pinning the exact stop"
+  (input  (do
+            (effect P (op swing (-> Int64)))
+            (def (main (: n Int64))
+              (handle P (tuple (+ n 4) (: 0 Int64))
+                ((swing () st
+                  (match st
+                    ((tuple active phase)
+                      (if (= active 0)
+                          (resume -1 st)
+                          (resume (- active 1) (tuple (- active 1) (- 1 phase))))))))
+                (let ((a (P.swing)))
+                  (let ((b (P.swing)))
+                    (let ((c (P.swing)))
+                      (let ((d (P.swing)))
+                        (let ((e (P.swing)))
+                          (let ((f (P.swing)))
+                            (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 131211100908 Int64))
+  (call   main (: 0 Int64)) (output (: 30200999899 Int64)))
