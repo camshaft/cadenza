@@ -671,11 +671,14 @@ impl Gen<'_> {
     /// where `<body>` performs `E.o` a FIXED 1..=2 times. TERMINATION is structural: the single arm
     /// body is ALWAYS a bare `(resume <val> <newstate>)` — it resumes EXACTLY once — and the handled
     /// body performs a fixed, NON-recursive number of times, so the perform/resume fold is bounded.
-    /// SAFETY: the effect name is NOT a value binding in [`Env`], so a generated `<val>`/`<newstate>`
-    /// sub-expr can never re-perform `E.o` into an unbounded loop; only the numeric `p`/`s` are visible.
-    /// Int64 throughout (op sig, state, resume) so it types; a mismatch with the outer `want` is a clean
-    /// decline. Perform args + initial state are small literals so most programs RUN (feed the diff
-    /// oracle); the resume value/state are richer numeric sub-exprs (where a backend divergence surfaces).
+    /// SAFETY: the effect name is NOT a value binding in [`Env`], so a generated sub-expr can never
+    /// re-perform `E.o` into an unbounded loop; only the numeric param `p` (and, in the scalar variant,
+    /// the scalar state `s`) is visible. The state is a scalar Int64 OR (coin flip) a 2-TUPLE whose arm
+    /// projects both fields and rebuilds the pair through the resume — reaching the tuple-projection-
+    /// through-handler-fold lowering (the cmb1/pom5 sharing-aware core-emit seam). Int64 op/result/field
+    /// types so it type-checks; a mismatch with the outer `want` is a clean decline. Perform args +
+    /// initial state fields are small literals so most programs RUN (feed the diff oracle); the resume
+    /// value/state carry richer numeric sub-exprs (where a backend divergence surfaces).
     fn effect_handler_expr(&mut self, depth: u32) {
         let ename = {
             let v = self.env.fresh();
@@ -684,18 +687,41 @@ impl Gen<'_> {
         let oname = self.env.fresh(); // lowercase op name, e.g. v8 — a valid operation identifier
         let p = self.env.fresh();
         let s = self.env.fresh();
-        let init = self.cur.range(0, 9);
-        let _ = write!(
-            self.out,
-            "(do (effect {ename} (op {oname} (-> Int64 Int64))) (handle {ename} {init} (({oname} ({p}) {s} (resume "
-        );
-        let mark = self.env.push(p, Kind::Num); // p and s are visible to the resume sub-exprs
-        self.env.push(s, Kind::Num);
-        self.expr(depth.saturating_sub(1), Kind::Num); // resume VALUE
-        self.out.push(' ');
-        self.expr(depth.saturating_sub(1), Kind::Num); // new STATE
-        self.env.truncate(mark);
-        self.out.push_str("))) ");
+        if self.cur.flip() {
+            // TUPLE-state variant: the arm projects BOTH fields (`(. s 0)`/`(. s 1)`) and REBUILDS the
+            // pair threaded through the resume — reaching the tuple-projection-through-handler-fold
+            // lowering (the cmb1/pom5 sharing-aware core-emit seam: a handler STATE-TUPLE read across
+            // the resume) that a scalar state never exercises. Resume value reads both fields; new state
+            // advances field 0 by a generated numeric operand (over `p`) and holds field 1.
+            let advance = match self.cur.choice(3) {
+                0 => "+",
+                1 => "-",
+                _ => "*",
+            };
+            let _ = write!(
+                self.out,
+                "(do (effect {ename} (op {oname} (-> Int64 Int64))) (handle {ename} (tuple {} {}) (({oname} ({p}) {s} (resume (+ (. {s} 0) (. {s} 1)) (tuple ({advance} (. {s} 0) ",
+                self.cur.range(0, 9),
+                self.cur.range(0, 9),
+            );
+            let mark = self.env.push(p, Kind::Num); // only p is scalar; s is a tuple, read via projections
+            self.expr(depth.saturating_sub(1), Kind::Num); // field-0 advance operand (may reference p)
+            self.env.truncate(mark);
+            let _ = write!(self.out, ") (. {s} 1))))) "); // hold field 1; close tuple/resume/arm/arm-list
+        } else {
+            let init = self.cur.range(0, 9);
+            let _ = write!(
+                self.out,
+                "(do (effect {ename} (op {oname} (-> Int64 Int64))) (handle {ename} {init} (({oname} ({p}) {s} (resume "
+            );
+            let mark = self.env.push(p, Kind::Num); // p and s are both scalar Int64 here
+            self.env.push(s, Kind::Num);
+            self.expr(depth.saturating_sub(1), Kind::Num); // resume VALUE
+            self.out.push(' ');
+            self.expr(depth.saturating_sub(1), Kind::Num); // new STATE
+            self.env.truncate(mark);
+            self.out.push_str("))) ");
+        }
         // handled body: perform the op a FIXED 1..=2 times (no recursion → the fold is bounded).
         if self.cur.flip() {
             let _ = write!(self.out, "({ename}.{oname} {})", self.cur.range(0, 9));
@@ -1139,6 +1165,7 @@ mod tests {
     #[test]
     fn some_seed_emits_an_effect_handler() {
         let mut hit = false;
+        let mut hit_tuple_state = false;
         for n in 0..8000u32 {
             let seed = varied_seed(n);
             let src = generate(&seed).source;
@@ -1152,9 +1179,17 @@ mod tests {
                     src.contains("(resume "),
                     "effect handler is missing its single `(resume ` (would not terminate):\n{src}"
                 );
+                // The tuple-state variant threads a `(tuple …)` state read back via `(. s N)` projections.
+                if src.contains("(handle ") && src.contains("(tuple ") && src.contains("(. ") {
+                    hit_tuple_state = true;
+                }
             }
         }
         assert!(hit, "no seed in the sweep emitted an effect handler");
+        assert!(
+            hit_tuple_state,
+            "no seed in the sweep emitted a TUPLE-state effect handler"
+        );
     }
 
     /// Generation is deterministic in the seed (required for reproducing + shrinking a finding).
