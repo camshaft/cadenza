@@ -155,8 +155,15 @@ def dispatches_timer_fired_to_rearm_and_begin_tick() =
   let effs = apply(evt) in
   if List.len(effs) == 2 then
     (match List.at(effs, 0) with
-       | Some(t) => (if t.kind == "timer" and t.target == String.to-bytes("901000") then unit
-                     else trap("timer-fired must re-arm at fired+interval"))
+       | Some(t) =>
+         (if t.kind == "timer" and t.target == String.to-bytes("901000") then
+            // effs[1] is the effect that actually STARTS the tick — pin its identity too (a misrouted
+            // second effect would otherwise pass, since only effs[0] + len were checked).
+            (match List.at(effs, 1) with
+               | Some(b) => (if b.kind == "emit" and b.target == String.to-bytes("begin-tick") then unit
+                             else trap("timer-fired must ALSO emit begin-tick as effect 1"))
+               | None() => trap("timer-fired must emit begin-tick as effect 1"))
+          else trap("timer-fired must re-arm at fired+interval"))
        | None() => trap("timer-fired must re-arm"))
   else trap("timer-fired must fold to two effects")
 
@@ -198,8 +205,15 @@ def dispatches_actionable_inbox_to_act() =
     child-completed = None(),
   } in
   match List.at(apply(evt), 0) with
-    | Some(e) => (if e.kind == "emit" and e.target == String.to-bytes("act") then unit
-                  else trap("actionable inbox must act"))
+    | Some(e) =>
+      (if e.kind == "emit" and e.target == String.to-bytes("act") then
+         // The `act` emit must CARRY the inbox payload — a downstream actor needs it to act on. Pin the
+         // carry (the branch sets payload = event.payload; a regression to None() would strand the actor).
+         (match e.payload with
+            | Some(p) => (if p == String.to-bytes("ref abc") then unit
+                          else trap("act must carry the inbox payload unchanged"))
+            | None() => trap("act must carry the inbox payload, not drop it"))
+       else trap("actionable inbox must act"))
     | None() => trap("inbox must fold")
 
 @test
