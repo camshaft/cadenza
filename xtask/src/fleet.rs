@@ -8874,9 +8874,15 @@ fn maybe_run_gc(fleet: &Fleet) {
     //       cdz-run writes when cad-tests/gate run locally) OLDER THAN 60 MIN and NOT under a nix-warm-roots
     //       path — v-nix's tested-safe pattern: the 60-min floor guarantees no ACTIVE gate run is touched,
     //       the warm-roots exclusion protects the load-bearing warm-store GC roots.
+    //   (3) other FLEET-OWNED ephemeral scratch dirs > 60 MIN (concierge 2026-08-17, after /tmp hit 100%
+    //       INODES — 1533 free of 1M — and wedged EVERY agent's Bash with ENOSPC; it self-cleared by luck):
+    //       `nix-develop-*` (nix develop shell scratch — the dominant leak, dozens of dirs days old),
+    //       `rcdzc-gate-*` (rcdzc gate scratch), `libFuzzerTemp*` (the fuzzer's fork temp). All fleet-owned
+    //       and the 60-min floor protects any ACTIVE nix-develop shell / gate run / fuzz cycle (a live one's
+    //       dir has a fresh mtime). This is the same lease/dead-window reaper idea applied to /tmp inodes.
     // NOTE: nix does NOT build under /tmp (its daemon sandbox is /nix/var/nix/builds — v-nix confirmed), so
-    // there is no nix-build-temp hog here; the cdz-scratch sweep IS the nix/cdz-lane /tmp GC. The dominant
-    // observed hog (toolbox-telemetry-em, ~166K) is NOT fleet-owned — routed to the toolbox owner, not here.
+    // there is no nix-build-temp hog here beyond the develop-shell scratch swept in (3). `toolbox-telemetry`/
+    // `mcs-telemetry` are NOT fleet-owned (routed to the toolbox owner), so they stay excluded.
     let tmp_inode_pct = Command::new("df")
         .args(["-i", "/tmp"])
         .output()
@@ -8888,15 +8894,17 @@ fn maybe_run_gc(fleet: &Fleet) {
         let swept = Command::new("sh")
             .arg("-c")
             .arg(format!(
-                // (1) stale task logs; (2) v-nix's safe cdz-scratch pattern (>60min, warm-roots-excluded).
+                // (1) stale task logs; (2) cdz-scratch dirs; (3) other fleet-owned ephemeral scratch dirs
+                // (nix-develop / rcdzc-gate / libFuzzerTemp) — all >60min + warm-roots-excluded (v-nix's
+                // tested-safe pattern: the age floor never touches an ACTIVE shell/gate/fuzz run).
                 "find /tmp/claude-* -name '*.output' -type f -mmin +{cutoff_min} -delete 2>/dev/null; \
-                 find /tmp -maxdepth 1 -type d \\( -name 'cdz-test-manifest*' -o -name 'cdz-check*' -o -name 'cdz-check-imports*' \\) \
+                 find /tmp -maxdepth 1 -type d \\( -name 'cdz-test-manifest*' -o -name 'cdz-check*' -o -name 'cdz-check-imports*' -o -name 'nix-develop-*' -o -name 'rcdzc-gate-*' -o -name 'libFuzzerTemp*' \\) \
                    -mmin +60 -not -path '*nix-warm-roots*' -exec rm -rf {{}} + 2>/dev/null; \
                  df -i /tmp 2>/dev/null | tail -1 | awk '{{print $5}}'"
             ))
             .output();
         eprintln!(
-            "gc-hook: /tmp inodes at {}% (>= {TMP_INODE_SWEEP_PCT}%) → swept fleet-owned scratch (task logs >{}h + cdz-test/check dirs >60min, warm-roots-excluded). /tmp inodes now: {}. (toolbox-telemetry hog is not fleet-owned.)",
+            "gc-hook: /tmp inodes at {}% (>= {TMP_INODE_SWEEP_PCT}%) → swept fleet-owned scratch (task logs >{}h + cdz-test/check + nix-develop/rcdzc-gate/libFuzzerTemp dirs >60min, warm-roots-excluded). /tmp inodes now: {}. (toolbox/mcs-telemetry hog is not fleet-owned.)",
             tmp_inode_pct.unwrap_or(0),
             TMP_STALE_LOG_SECS / 3600,
             swept
