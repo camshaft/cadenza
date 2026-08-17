@@ -189,12 +189,27 @@ pub(crate) fn collect_node_refs(
     counts: &mut HashMap<StructId, u32>,
     order: &mut Vec<StructId>,
 ) {
+    node_refs_via(db, id, licm_children, counts, order);
+}
+
+/// The shared ref-counting first-seen DFS both [`collect_node_refs`] (value-position tree, `licm_children`)
+/// and [`b2_node_refs`] (complete `core_child_ids`, descends `MatchSum`) drive — parameterized by the
+/// `children` walker. Per-StructId reference COUNT into `counts` (a node reached twice counts 2), distinct
+/// StructIds in first-seen order into `order`; a shared subtree's interior is walked ONCE (the count
+/// captures its own multiplicity — descending per visit would over-count / blow up on a deep DAG).
+fn node_refs_via(
+    db: &mut Db,
+    id: StructId,
+    children: fn(&mut Db, StructId) -> Vec<StructId>,
+    counts: &mut HashMap<StructId, u32>,
+    order: &mut Vec<StructId>,
+) {
     let n = counts.entry(id).or_insert(0);
     *n += 1;
     if *n == 1 {
         order.push(id);
-        for child in licm_children(db, id) {
-            collect_node_refs(db, child, counts, order);
+        for child in children(db, id) {
+            node_refs_via(db, child, children, counts, order);
         }
     }
 }
@@ -226,22 +241,29 @@ pub(crate) fn collect_shared_heap_binding_candidates(db: &mut Db, body: StructId
     collect_node_refs(db, body, &mut counts, &mut order);
     let mut out: Vec<StructId> = Vec::new();
     for id in order {
-        // Shared: reached by ≥2 parent edges (the re-descent source).
-        if counts.get(&id).copied().unwrap_or(0) < 2 {
-            continue;
+        let count = counts.get(&id).copied().unwrap_or(0);
+        if is_shared_heap_node(db, id, count) {
+            out.push(id);
         }
-        // A LocalRef is already a slot read — binding it would be redundant / cyclic.
-        if matches!(core_of(db, id), Core::LocalRef { .. }) {
-            continue;
-        }
-        // Heap handle only: a scalar share is the scalar CSE's job (no dup/drop); a Unit owns no reference.
-        let ty = crate::infer::type_of(db, id);
-        if !is_heap_type(&ty) || matches!(ty.strip_nominal(), Ty::Unit) {
-            continue;
-        }
-        out.push(id);
     }
     out
+}
+
+/// Whether `id` is a SHARED HEAP-HANDLE node — the B2 gate-2 detection filter, shared by
+/// [`collect_shared_heap_binding_candidates`] and [`b2_bind_plan`]. Three conditions: (1) SHARED — reached
+/// by ≥2 parent edges (`count`, the re-descent source); (2) NOT already a slot read (`Core::LocalRef` —
+/// binding it would be redundant/cyclic); (3) a HEAP HANDLE — `is_heap_type` and not `Unit` (a scalar share
+/// is the scalar CSE's job with no dup/drop; a `Unit` owns no reference). `count` is the caller's
+/// `node_refs_via` reference count for `id`.
+fn is_shared_heap_node(db: &mut Db, id: StructId, count: u32) -> bool {
+    if count < 2 {
+        return false;
+    }
+    if matches!(core_of(db, id), Core::LocalRef { .. }) {
+        return false;
+    }
+    let ty = crate::infer::type_of(db, id);
+    is_heap_type(&ty) && !matches!(ty.strip_nominal(), Ty::Unit)
 }
 
 /// [B2] the FREE binders of `id`'s subtree — LocalRef/Param binders read within it that are NOT bound by a
@@ -346,17 +368,12 @@ pub(crate) fn b2_bind_plan(db: &mut Db, body: StructId) -> Vec<B2BindPlanEntry> 
 
     let mut plan: Vec<B2BindPlanEntry> = Vec::new();
     for id in order {
-        // (2) HEAP-SHARE.
-        if counts.get(&id).copied().unwrap_or(0) < 2 {
-            continue;
-        }
-        if matches!(core_of(db, id), Core::LocalRef { .. }) {
+        // (2) HEAP-SHARE: shared (count≥2), not a LocalRef, a heap handle (not Unit) — see is_shared_heap_node.
+        let count = counts.get(&id).copied().unwrap_or(0);
+        if !is_shared_heap_node(db, id, count) {
             continue;
         }
         let ty = crate::infer::type_of(db, id);
-        if !is_heap_type(&ty) || matches!(ty.strip_nominal(), Ty::Unit) {
-            continue;
-        }
         // (2b) FULLY-SOLVED TYPE (v-rb bind-safety whitelist P1): a slot binding fixes the slot's valtype
         // to the shared node's type up front; an unsolved type (a Deferred int sign/width — the shape v-rb's
         // install dump showed on 2 Record.with shares) yields an indeterminate slot valtype → emit fails
@@ -465,21 +482,20 @@ fn b2_is_dispatched_on(db: &mut Db, body: StructId, target: StructId) -> bool {
 }
 
 /// `collect_node_refs` twin using the COMPLETE `core_child_ids` traversal (descends `MatchSum` arms), for
-/// B2 detection. A shared sub-node's interior is walked once (the count captures its own multiplicity).
+/// B2 detection. Shares the ref-counting DFS via [`node_refs_via`] — only the child-walker differs.
 fn b2_node_refs(
     db: &mut Db,
     id: StructId,
     counts: &mut HashMap<StructId, u32>,
     order: &mut Vec<StructId>,
 ) {
-    let n = counts.entry(id).or_insert(0);
-    *n += 1;
-    if *n == 1 {
-        order.push(id);
-        for child in crate::backend::wasm::select::core_child_ids(db, id) {
-            b2_node_refs(db, child, counts, order);
-        }
-    }
+    node_refs_via(
+        db,
+        id,
+        crate::backend::wasm::select::core_child_ids,
+        counts,
+        order,
+    );
 }
 
 /// The occurrence ids of `target` reachable from `body` — for a shared node this is the SAME `StructId`
