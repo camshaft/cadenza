@@ -673,11 +673,13 @@ impl Gen<'_> {
     /// body performs a fixed, NON-recursive number of times, so the perform/resume fold is bounded.
     /// SAFETY: the effect name is NOT a value binding in [`Env`], so a generated sub-expr can never
     /// re-perform `E.o` into an unbounded loop; only the numeric param `p` (and, in the scalar variant,
-    /// the scalar state `s`) is visible. The state is a scalar Int64 OR (coin flip) a 2-TUPLE whose arm
-    /// projects both fields and rebuilds the pair through the resume — reaching the tuple-projection-
-    /// through-handler-fold lowering (the cmb1/pom5 sharing-aware core-emit seam). Int64 op/result/field
-    /// types so it type-checks; a mismatch with the outer `want` is a clean decline. Perform args +
-    /// initial state fields are small literals so most programs RUN (feed the diff oracle); the resume
+    /// the scalar state `s`) is visible. The handler state is one of three shapes (choice of 3): a scalar
+    /// Int64; a 2-TUPLE whose arm projects both fields and rebuilds the pair through the resume (the
+    /// tuple-projection-through-handler-fold / cmb1-pom5 sharing-aware core-emit seam); or an
+    /// `(Option Int64)` SUM the arm DESTRUCTURES with a `match` on `Some`/`None`, threading a `(Some …)`
+    /// (the `Core::SumPayload`-extraction-across-the-arm / cmb1 re-descent seam). Int64 op/result/field/
+    /// payload types so it type-checks; a mismatch with the outer `want` is a clean decline. The perform
+    /// args and initial state are small literals so most programs RUN (feed the diff oracle); the resume
     /// value/state carry richer numeric sub-exprs (where a backend divergence surfaces).
     fn effect_handler_expr(&mut self, depth: u32) {
         let ename = {
@@ -687,40 +689,70 @@ impl Gen<'_> {
         let oname = self.env.fresh(); // lowercase op name, e.g. v8 — a valid operation identifier
         let p = self.env.fresh();
         let s = self.env.fresh();
-        if self.cur.flip() {
-            // TUPLE-state variant: the arm projects BOTH fields (`(. s 0)`/`(. s 1)`) and REBUILDS the
-            // pair threaded through the resume — reaching the tuple-projection-through-handler-fold
-            // lowering (the cmb1/pom5 sharing-aware core-emit seam: a handler STATE-TUPLE read across
-            // the resume) that a scalar state never exercises. Resume value reads both fields; new state
-            // advances field 0 by a generated numeric operand (over `p`) and holds field 1.
-            let advance = match self.cur.choice(3) {
-                0 => "+",
-                1 => "-",
-                _ => "*",
-            };
-            let _ = write!(
-                self.out,
-                "(do (effect {ename} (op {oname} (-> Int64 Int64))) (handle {ename} (tuple {} {}) (({oname} ({p}) {s} (resume (+ (. {s} 0) (. {s} 1)) (tuple ({advance} (. {s} 0) ",
-                self.cur.range(0, 9),
-                self.cur.range(0, 9),
-            );
-            let mark = self.env.push(p, Kind::Num); // only p is scalar; s is a tuple, read via projections
-            self.expr(depth.saturating_sub(1), Kind::Num); // field-0 advance operand (may reference p)
-            self.env.truncate(mark);
-            let _ = write!(self.out, ") (. {s} 1))))) "); // hold field 1; close tuple/resume/arm/arm-list
-        } else {
-            let init = self.cur.range(0, 9);
-            let _ = write!(
-                self.out,
-                "(do (effect {ename} (op {oname} (-> Int64 Int64))) (handle {ename} {init} (({oname} ({p}) {s} (resume "
-            );
-            let mark = self.env.push(p, Kind::Num); // p and s are both scalar Int64 here
-            self.env.push(s, Kind::Num);
-            self.expr(depth.saturating_sub(1), Kind::Num); // resume VALUE
-            self.out.push(' ');
-            self.expr(depth.saturating_sub(1), Kind::Num); // new STATE
-            self.env.truncate(mark);
-            self.out.push_str("))) ");
+        match self.cur.choice(3) {
+            1 => {
+                // TUPLE-state variant: the arm projects BOTH fields (`(. s 0)`/`(. s 1)`) and REBUILDS
+                // the pair threaded through the resume — reaching the tuple-projection-through-handler-
+                // fold lowering (the cmb1/pom5 sharing-aware core-emit seam: a handler STATE-TUPLE read
+                // across the resume) that a scalar state never exercises. Resume value reads both fields;
+                // new state advances field 0 by a generated numeric operand (over `p`) and holds field 1.
+                let advance = match self.cur.choice(3) {
+                    0 => "+",
+                    1 => "-",
+                    _ => "*",
+                };
+                let _ = write!(
+                    self.out,
+                    "(do (effect {ename} (op {oname} (-> Int64 Int64))) (handle {ename} (tuple {} {}) (({oname} ({p}) {s} (resume (+ (. {s} 0) (. {s} 1)) (tuple ({advance} (. {s} 0) ",
+                    self.cur.range(0, 9),
+                    self.cur.range(0, 9),
+                );
+                let mark = self.env.push(p, Kind::Num); // only p is scalar; s is a tuple, read via projections
+                self.expr(depth.saturating_sub(1), Kind::Num); // field-0 advance operand (may reference p)
+                self.env.truncate(mark);
+                let _ = write!(self.out, ") (. {s} 1))))) "); // hold field 1; close tuple/resume/arm/arm-list
+            }
+            2 => {
+                // SUM-state variant: state is an `(Option Int64)`; the arm DESTRUCTURES it with a `match`
+                // on the `Some`/`None` constructors and threads a `(Some …)` — reaching the
+                // `Core::SumPayload` extraction across the handler arm (the cmb1 re-descent seam: a
+                // handler state read via SumPayload) that neither scalar nor tuple state hits. Seeded
+                // `(Some k)`, and every resume threads `(Some …)`, so the `None` arm (kept for match
+                // exhaustiveness/typing) is unreached at runtime; the payload `n` is numeric.
+                let advance = match self.cur.choice(3) {
+                    0 => "+",
+                    1 => "-",
+                    _ => "*",
+                };
+                let n = self.env.fresh();
+                let _ = write!(
+                    self.out,
+                    "(do (effect {ename} (op {oname} (-> Int64 Int64))) (handle {ename} (Some {}) (({oname} ({p}) {s} (match {s} ((Some {n}) (resume (+ {n} {p}) (Some ({advance} {n} ",
+                    self.cur.range(0, 9),
+                );
+                let mark = self.env.push(p, Kind::Num); // p and the payload n are numeric; s (Option) is not pushed
+                self.env.push(n, Kind::Num);
+                self.expr(depth.saturating_sub(1), Kind::Num); // Some-payload advance operand (may use p / n)
+                self.env.truncate(mark);
+                self.out.push_str("))))"); // close advance-op, (Some …), (resume …), Some-arm
+                self.out.push_str(" (None (resume 0 (Some 0)))"); // None arm (balanced; unreached at runtime)
+                self.out.push_str(")))"); // close (match …), the op arm, the arm-list
+                self.out.push(' ');
+            }
+            _ => {
+                let init = self.cur.range(0, 9);
+                let _ = write!(
+                    self.out,
+                    "(do (effect {ename} (op {oname} (-> Int64 Int64))) (handle {ename} {init} (({oname} ({p}) {s} (resume "
+                );
+                let mark = self.env.push(p, Kind::Num); // p and s are both scalar Int64 here
+                self.env.push(s, Kind::Num);
+                self.expr(depth.saturating_sub(1), Kind::Num); // resume VALUE
+                self.out.push(' ');
+                self.expr(depth.saturating_sub(1), Kind::Num); // new STATE
+                self.env.truncate(mark);
+                self.out.push_str("))) ");
+            }
         }
         // handled body: perform the op a FIXED 1..=2 times (no recursion → the fold is bounded).
         if self.cur.flip() {
@@ -1166,6 +1198,7 @@ mod tests {
     fn some_seed_emits_an_effect_handler() {
         let mut hit = false;
         let mut hit_tuple_state = false;
+        let mut hit_sum_state = false;
         for n in 0..8000u32 {
             let seed = varied_seed(n);
             let src = generate(&seed).source;
@@ -1180,8 +1213,12 @@ mod tests {
                     "effect handler is missing its single `(resume ` (would not terminate):\n{src}"
                 );
                 // The tuple-state variant threads a `(tuple …)` state read back via `(. s N)` projections.
-                if src.contains("(handle ") && src.contains("(tuple ") && src.contains("(. ") {
+                if src.contains("(tuple ") && src.contains("(. ") {
                     hit_tuple_state = true;
+                }
+                // The sum-state variant threads a `(Some …)` state destructured by a `(match …)` arm.
+                if src.contains("(Some ") && src.contains("(match ") {
+                    hit_sum_state = true;
                 }
             }
         }
@@ -1189,6 +1226,10 @@ mod tests {
         assert!(
             hit_tuple_state,
             "no seed in the sweep emitted a TUPLE-state effect handler"
+        );
+        assert!(
+            hit_sum_state,
+            "no seed in the sweep emitted a SUM-state (Option) effect handler"
         );
     }
 
