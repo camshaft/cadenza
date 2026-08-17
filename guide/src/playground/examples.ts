@@ -30,6 +30,11 @@ export interface Example {
   /// (A graded chapter EXERCISE differs: it's compared in the reader's LIVE surface, where a compound
   /// renders differently in ML vs s-expr, so exercise pins stay scalar-only — see check-examples.)
   expected?: string;
+  /// When `true`, this example is a teaching case authored to NOT compile (the "see the squiggle" type
+  /// error). The check-examples gate then asserts it DECLINES rather than runs — an intentional negative
+  /// case. Declared explicitly here (not sniffed from `source`) so re-authoring the example's body to a
+  /// different type error can't silently flip it back to a value-example that then fails the sweep.
+  expectError?: boolean;
 }
 
 export const EXAMPLES: Example[] = [
@@ -1346,6 +1351,7 @@ export const EXAMPLES: Example[] = [
     source: `(do
   (def (main) (+ 1 true))
   (export main))`,
+    expectError: true,
   },
 ];
 

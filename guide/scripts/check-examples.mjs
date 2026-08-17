@@ -559,9 +559,23 @@ try {
     );
     process.exit(1);
   }
+  // Pin the negative-case coverage: the playground must retain at least one `expectError` example (the
+  // "see the squiggle" type-error teaching case). Without this, dropping that example would silently
+  // remove the only assertion that the compiler still REJECTS bad code in the playground path.
+  if (!PLAYGROUND.some((p) => p.expectError)) {
+    console.error(
+      `check-examples: no playground example carries \`expectError: true\` — the intentional "see the ` +
+        `squiggle" type-error case was dropped, removing the sole assertion that the playground path still ` +
+        `rejects invalid programs. Restore an expectError example.`,
+    );
+    process.exit(1);
+  }
   for (const p of PLAYGROUND) {
     // The intentional "see the squiggle" example is authored to NOT compile — check it as expect="error".
-    const expect = /\(\+\s+1\s+true\)/.test(p.source) ? "error" : "value";
+    // Keyed off the example's explicit `expectError` field (declared in examples.ts), NOT sniffed from the
+    // source: re-authoring the example's body to a different type error must not silently reclassify it as a
+    // value-example (which would then misreport the intended decline as a sweep failure).
+    const expect = p.expectError ? "error" : "value";
     // An example MAY pin its exact result via `expected` — then the gate asserts the program runs to
     // THAT value, not merely "to some value", so a future compiler change that flips e.g. Collatz from
     // 111 to 42 is caught instead of silently accepted (a true regression test). A playground example
