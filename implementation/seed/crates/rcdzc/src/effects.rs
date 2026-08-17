@@ -10484,6 +10484,53 @@ fn rewrite_resume_to_refolded_context(
         let inlined = crate::eval::beta_reduce(db, lbody, &subst);
         return rewrite_resume_to_refolded_context(db, inlined, handle_body, perform, arms);
     }
+    // `(let ((x <init reaching a resume>)…) body)` — the resume sits in an INITIALIZER, binding `x` to the
+    // CONTINUATION RESULT, with the let BODY as that resume's post-continuation context `C[x]` (breaker's
+    // pyr3 post-resume let-binder gap: `(let ((r (resume s next))) (if (> r 35) then else))`). The generic
+    // recursion below WOULD rewrite the init's resume to its refolded continuation, but the let BODY's
+    // references to `x` resolve to the ORIGINAL initializer occurrence (the resume node), so after the
+    // rebuild they DANGLE at that bare resume and re-lower as "resume outside a lowered handler arm". Rewrite
+    // each resume-bearing init to its refolded continuation — PURE, every effect discharged — and INLINE it
+    // into the body's binder references (sound to duplicate a pure value), so no binder ref is left pointing
+    // at a bare resume. A sibling init reaching a FOREIGN perform is a two-hole SEQUENCE (its own leading
+    // hole), not this refold's job — decline. Guarded to the resume-NOT-in-body case (the branch above owns
+    // the resume-in-body shape) so the two are mutually exclusive.
+    if let Some(tail) = db.ast.as_form(node, "let").map(<[_]>::to_vec)
+        && tail.len() == 2
+        && count_resumes(db, tail[1]) == 0
+        && count_resumes(db, tail[0]) >= 1
+    {
+        let (bindings, lbody) = (tail[0], tail[1]);
+        let mut subst: HashMap<StructId, StructId> = HashMap::default();
+        if let Struct::List(pairs) = db.ast.get(bindings).clone() {
+            for pair in pairs {
+                if let Struct::List(kv) = db.ast.get(pair).clone()
+                    && kv.len() == 2
+                {
+                    if count_resumes(db, kv[1]) >= 1 {
+                        // The resume-bearing init: rewrite it to its refolded (pure) continuation, then map
+                        // the binder's references to that. Declines cleanly (`?`) if the recursive refold cannot
+                        // be served.
+                        let new_init = rewrite_resume_to_refolded_context(
+                            db,
+                            kv[1],
+                            handle_body,
+                            perform,
+                            arms,
+                        )?;
+                        subst.insert(kv[1], new_init);
+                    } else if reaches_any_perform(db, kv[1]) {
+                        return None;
+                    } else {
+                        // A pure sibling init — inline as-is (`initializer := initializer`, as the branch above).
+                        subst.insert(kv[1], kv[1]);
+                    }
+                }
+            }
+        }
+        let inlined = crate::eval::beta_reduce(db, lbody, &subst);
+        return rewrite_resume_to_refolded_context(db, inlined, handle_body, perform, arms);
+    }
     if let Resolved::Resume { value, next_state } = resolved_of(db, node) {
         // Build `C[value]` (the continuation with the hole filled by the resume value), then re-reduce it
         // under the same handler seeded with the resume's next-state — so a further discharged perform in
