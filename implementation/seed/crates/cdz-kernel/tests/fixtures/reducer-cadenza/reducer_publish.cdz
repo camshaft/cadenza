@@ -169,6 +169,36 @@ def every_published_effect_is_a_git_shell_effect() =
     | None() => trap("the publish sequence must include the push effect")
 
 @test
+def publish_sequence_is_add_then_commit_then_push() =
+  let evt = {
+    content-type = { family = "unit-complete", version = 1 },
+    payload = None(),
+    resumes = None(),
+    outcome = None(),
+    child-completed = None(),
+  } in
+  let effs = apply(evt) in
+  // Pin the ORDER by payload IDENTITY: add (0) -> commit (1) -> push (2). The three pipeline payloads
+  // are DISTINCT byte documents, so a reorder or duplication -- which the shape-only tests above (kind /
+  // target / payload-present) would NOT catch -- is caught here. `git add` must precede `git commit` must
+  // precede `git push`: a git-correctness invariant, stable across the const-literal form and the future
+  // runtime-`Ast.encode` form.
+  let ok0 =
+    (match List.at(effs, 0) with
+       | Some(e) => (match e.payload with | Some(p) => p == git-add-payload() | None() => false)
+       | None() => false) in
+  let ok1 =
+    (match List.at(effs, 1) with
+       | Some(e) => (match e.payload with | Some(p) => p == git-commit-payload() | None() => false)
+       | None() => false) in
+  let ok2 =
+    (match List.at(effs, 2) with
+       | Some(e) => (match e.payload with | Some(p) => p == git-push-payload() | None() => false)
+       | None() => false) in
+  if ok0 and ok1 and ok2 then unit
+  else trap("publish sequence must be add -> commit -> push IN ORDER (by payload identity)")
+
+@test
 def a_non_unit_event_publishes_nothing() =
   let evt = {
     content-type = { family = "message", version = 1 },
