@@ -315,7 +315,7 @@ impl Gen<'_> {
         }
         // Weighted toward leaves + operators + control flow (the shapes most likely to type and
         // reach codegen); the tail arms exercise ctors, access, ascription, and match.
-        match self.cur.choice(18) {
+        match self.cur.choice(19) {
             0..=2 => self.leaf(want),
             3 => self.if_expr(depth, want),
             4 => self.let_expr(depth, want),
@@ -331,6 +331,7 @@ impl Gen<'_> {
             14 => self.string_builtin_expr(depth),
             15 => self.rec_def_expr(depth),
             16 => self.effect_handler_expr(depth),
+            17 => self.effect_multiop_expr(depth),
             _ => self.match_expr(depth, want),
         }
     }
@@ -801,6 +802,52 @@ impl Gen<'_> {
         self.out.push_str("))"); // close (handle …), close (do …)
     }
 
+    /// A self-contained, GUARANTEED-TERMINATING TWO-op effect + handler, reaching multi-op DISPATCH —
+    /// the handler routes each perform to the matching op arm and threads ONE shared scalar state across
+    /// the two heterogeneous ops (the "continuation destructuring across arm branches" cmb1 territory)
+    /// that the single-op `effect_handler_expr` never exercises. Shape (nested `do`, no program surgery):
+    /// `(do (effect E (op o1 (-> Int64 Int64)) (op o2 (-> Int64 Int64)))
+    ///      (handle E <init> ((o1 (p) s (resume s (+ s <operand>))) (o2 (p) s (resume (+ s p) s)))
+    ///        (<op> (E.o1 a) (E.o2 b))))`.
+    /// TERMINATION/SAFETY as `effect_handler_expr`: each arm body is a bare single `(resume …)`, the body
+    /// performs a FIXED (non-recursive) count, and neither effect nor op names are value bindings, so a
+    /// generated operand can't re-perform into a loop. Int64 throughout so it type-checks.
+    fn effect_multiop_expr(&mut self, depth: u32) {
+        let e = {
+            let v = self.env.fresh();
+            format!("E{}", &v[1..]) // capitalized effect name, e.g. E7
+        };
+        let o1 = self.env.fresh();
+        let o2 = self.env.fresh();
+        let p1 = self.env.fresh();
+        let p2 = self.env.fresh();
+        let s = self.env.fresh();
+        let _ = write!(
+            self.out,
+            "(do (effect {e} (op {o1} (-> Int64 Int64)) (op {o2} (-> Int64 Int64))) (handle {e} {} (({o1} ({p1}) {s} (resume {s} (+ {s} ",
+            self.cur.range(0, 9),
+        );
+        let mark = self.env.push(p1, Kind::Num); // p1 and the shared scalar state s visible to the operand
+        self.env.push(s.clone(), Kind::Num);
+        self.expr(depth.saturating_sub(1), Kind::Num); // o1 new-state operand (may reference p1 / s)
+        self.env.truncate(mark);
+        self.out.push_str(")))"); // close (+ …), (resume …), the o1 arm
+        let _ = write!(self.out, " ({o2} ({p2}) {s} (resume (+ {s} {p2}) {s}))"); // o2 arm (balanced)
+        self.out.push(')'); // close the arm-list
+        let bodyop = match self.cur.choice(3) {
+            0 => "+",
+            1 => "-",
+            _ => "*",
+        };
+        let _ = write!(
+            self.out,
+            " ({bodyop} ({e}.{o1} {}) ({e}.{o2} {}))", // handled body: perform BOTH ops (balanced)
+            self.cur.range(0, 9),
+            self.cur.range(0, 9),
+        );
+        self.out.push_str("))"); // close (handle …), (do …)
+    }
+
     fn access_expr(&mut self, depth: u32) {
         // (. <expr> <name-or-index>)
         self.out.push_str("(. ");
@@ -1268,6 +1315,34 @@ mod tests {
             hit_record_state,
             "no seed in the sweep emitted a RECORD-state effect handler"
         );
+    }
+
+    /// The two-op effect variant is reachable — some seed emits an `(effect …)` declaring TWO `(op …)`
+    /// clauses — and every program that path can emit still parses. Guards the multi-op dispatch reach
+    /// (two handler arms routing distinct performs) against a refactor that drops it.
+    #[test]
+    fn some_seed_emits_a_two_op_effect() {
+        let mut hit = false;
+        for n in 0..8000u32 {
+            let seed = varied_seed(n);
+            let src = generate(&seed).source;
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "generated program did not parse:\n{src}"
+            );
+            // A two-op effect declaration carries two `(op ` clauses inside a single `(effect …)`.
+            if let Some(decl) = src.find("(effect ")
+                && let Some(end) = src[decl..].find("(handle ")
+                && src[decl..decl + end].matches("(op ").count() >= 2
+            {
+                hit = true;
+                assert!(
+                    src.contains("(resume "),
+                    "two-op effect handler is missing a `(resume `:\n{src}"
+                );
+            }
+        }
+        assert!(hit, "no seed in the sweep emitted a two-op effect");
     }
 
     /// Generation is deterministic in the seed (required for reproducing + shrinking a finding).
