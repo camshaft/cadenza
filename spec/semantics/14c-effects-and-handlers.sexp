@@ -14411,3 +14411,97 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 160203880590 Int64))
   (call   main (: 0 Int64)) (output (: 60203980701 Int64)))
+
+;; ── Drum pattern, plant pruning, popcorn kettle (breaker batch 310) ──
+(case "drm1 a DRUM sequencer over sixteenth-note steps — each hit answers the firing drums as a bitmask (kick on quarters, snare on the backbeats, hat on every seed-shaped division), cnt counts non-silent steps, and the halved hat rate turns every other row SILENT while the kick and snare rows coincide exactly"
+  (input  (do
+            (effect D
+              (op hit (-> Int64))
+              (op cnt (-> Int64)))
+            (def (maskof (: step Int64) (: hd Int64))
+              (+ (if (= (% step 4) 0) 1 0)
+                 (+ (if (= (% step 8) 4) 2 0)
+                    (if (= (% step hd) 0) 4 0))))
+            (def (main (: n Int64))
+              (handle D (tuple (: 0 Int64) (: 0 Int64))
+                ((hit () st
+                  (match st
+                    ((tuple step hits)
+                      (match (maskof step (+ (% n 3) 1))
+                        (m
+                          (if (< 0 m)
+                              (resume m (tuple (% (+ step 1) 16) (+ hits 1)))
+                              (resume 0 (tuple (% (+ step 1) 16) hits))))))))
+                 (cnt () st
+                  (match st ((tuple step hits) (resume hits st)))))
+                (let ((a (D.hit)))
+                  (let ((b (D.hit)))
+                    (let ((c (D.hit)))
+                      (let ((d (D.hit)))
+                        (let ((e (D.hit)))
+                          (let ((f (D.hit)))
+                            (let ((g (D.cnt)))
+                              (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 5000400070003 Int64))
+  (call   main (: 0 Int64)) (output (: 5040404070406 Int64)))
+
+(case "grw1 PLANT growth with pruning stress — day grows by the current rate, prune cuts back to the target answering the clippings AND slows the rate by one (bottoming at one) but only when it actually cut, and the fast grower gets pruned TWICE (stressed twice) while the slow one skips the first prune entirely as a zero-clip row"
+  (input  (do
+            (effect G
+              (op day (-> Int64))
+              (op prune (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle G (tuple (: 0 Int64) (+ (% n 4) 2))
+                ((day () st
+                  (match st
+                    ((tuple height rate)
+                      (resume (+ height rate) (tuple (+ height rate) rate)))))
+                 (prune (h) st
+                  (match st
+                    ((tuple height rate)
+                      (if (< h height)
+                          (if (< 1 rate)
+                              (resume (- height h) (tuple h (- rate 1)))
+                              (resume (- height h) (tuple h 1)))
+                          (resume 0 st))))))
+                (let ((a (G.day)))
+                  (let ((b (G.day)))
+                    (let ((c (G.prune 5)))
+                      (let ((d (G.day)))
+                        (let ((e (G.day)))
+                          (let ((f (G.prune 5)))
+                            (let ((g (G.day)))
+                              (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 4080308110607 Int64))
+  (call   main (: 0 Int64)) (output (: 2040006080306 Int64)))
+
+(case "pop1 a POPCORN kettle — each heat raises the temperature five degrees answering how many NEW kernels popped (thresholds every three degrees from the seed base, the count derived by differencing the running total), bowl reads the total, and the cool kettle pops a single late kernel while the hot one accelerates through five"
+  (input  (do
+            (effect P
+              (op heat (-> Int64))
+              (op bowl (-> Int64)))
+            (def (totpop (: temp Int64) (: base Int64))
+              (if (< temp base) 0 (+ (/ (- temp base) 3) 1)))
+            (def (main (: n Int64))
+              (handle P (tuple (: 0 Int64) (: 0 Int64))
+                ((heat () st
+                  (match st
+                    ((tuple temp popped)
+                      (match (totpop (+ temp 5) (+ 18 n))
+                        (tot
+                          (resume (- tot popped) (tuple (+ temp 5) tot)))))))
+                 (bowl () st
+                  (match st ((tuple temp popped) (resume popped st)))))
+                (let ((a (P.heat)))
+                  (let ((b (P.heat)))
+                    (let ((c (P.heat)))
+                      (let ((d (P.heat)))
+                        (let ((e (P.heat)))
+                          (let ((f (P.heat)))
+                            (let ((g (P.bowl)))
+                              (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 101 Int64))
+  (call   main (: 0 Int64)) (output (: 1020205 Int64)))

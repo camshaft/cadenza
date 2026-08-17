@@ -5132,6 +5132,7 @@ pass	do1 ONE draw consumed by BOTH branches of an if with different weights — 
 pass	double negation of a runtime boolean is the identity
 pass	doubling a subnormal crosses UP into the minimum normal exactly
 pass	draining the event queue yields entries in time-order with FIFO same-time ties
+pass	drm1 a DRUM sequencer over sixteenth-note steps — each hit answers the firing drums as a bitmask (kick on quarters, snare on the backbeats, hat on every seed-shaped division), cnt counts non-silent steps, and the halved hat rate turns every other row SILENT while the kick and snare rows coincide exactly
 pass	dropping a list pushed FROM a survivor must not free the shared spine
 pass	dropping a map derived by persistent insert must not free nodes shared with the survivor
 pass	dropping a rope built OVER a survivor must not free the shared child node
@@ -5348,6 +5349,7 @@ pass	greater-than on an unusual signed width orders a positive above the negativ
 pass	greater-than-or-equal
 pass	greater-than-or-equal of an integer and a float is rejected
 pass	grh1 a GREENHOUSE auto-vent — sunshine heats the house and crossing thirty with the vents SHUT trips them open (an eight-hundred alarm row with the temperature's low digits), misting adds three humidity but an open vent bleeds one back (a nine-tagged row), the read packs temperature humidity and vents, and the seed's starting warmth trips the auto-vent on the FIRST sun for one run and the SECOND for the other so every later humidity row shifts
+pass	grw1 PLANT growth with pruning stress — day grows by the current rate, prune cuts back to the target answering the clippings AND slows the rate by one (bottoming at one) but only when it actually cut, and the fast grower gets pruned TWICE (stressed twice) while the slow one skips the first prune entirely as a zero-clip row
 pass	gry1 a GRAY-CODE generator — each tick answers the threaded counter's Gray encoding (n XOR n>>1) then advances; the body XOR-popcounts consecutive answers proving the single-bit-change law
 pass	gs1 a user-declared GENERIC sum resolves by NAME in a param annotation — the applied (Container Int64) checks and the payload unwraps
 pass	gs2 a TWO-parameter generic sum by name — (Pair Int64 Int64) in the annotation, both payload slots extracted
@@ -5832,6 +5834,7 @@ pass	pk1 a BEGIN/END protocol arm — a Bool flag rejects double-begin and end-w
 pass	pkg1 FIRST-FIT bin packing over two capacity-ten bins — place walks the bins in order answering bin-index-times-a-hundred plus the remaining room (or -1 when nothing fits), loads packs both levels, and the seed's first item cascades every later placement
 pass	plt2 the LOOP-DRIVEN plateau tracker — the same three-let two-if arm that declines straight-line folds fine when one recursive driver walks the feed list
 pass	pm1 LITERAL match arms grade the state INSIDE the handler arm — a mod-4 walker crosses all four literal rows
+pass	pop1 a POPCORN kettle — each heat raises the temperature five degrees answering how many NEW kernels popped (thresholds every three degrees from the seed base, the count derived by differencing the running total), bowl reads the total, and the cool kettle pops a single late kernel while the hot one accelerates through five
 pass	popping a field yields its value and the remaining record
 pass	popping a tuple with a runtime element separates the head from the rest
 pass	popping a tuple yields element zero and the remaining tuple
