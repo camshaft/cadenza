@@ -5460,6 +5460,7 @@ pass	ivl1 INTERVAL OVERLAP counting — each add answers how many existing inter
 pass	iwr1 a SIGNED Int8 handler state — wrapping-add crosses the sign boundary through the thread, the widened answers expose the sign-extension
 pass	ix1 the op argument INDEXES a list held in a two-slot state — in-range reads project, out-of-range yields the arm's fallback
 pass	jin1 a SEPARATOR-JOIN builder — the comma inserts only BETWEEN elements via the count field, and an EMPTY piece still consumes a separator slot
+pass	jmp1 a TIRING frog on a ladder — each jump advances by the current stride which then SHRINKS by one bottoming at one, rest restores the seed stride answering the distance so far, and the longer opening stride tires through a different lattice (five-four-three versus three-two-one) so the gap between the frogs WIDENS at every row
 pass	jointly-total guards over one variant are still non-exhaustive (guards are opaque to the checker)
 pass	jos1 JOSEPHUS elimination — every dispatch advances the cursor k-1 around the SHRINKING ring by modulo, removes the survivor there by filtered rebuild, and answers the eliminated id
 pass	keyed lookups at different keys are not shared
@@ -5511,6 +5512,7 @@ pass	lo1 THIRTY dispatches in one region — the fold scales past the corpus's u
 pass	lo2 a NINE-level shadow tower (outer + eight) — one draw per level, the deepest doubling, strides 1-8
 pass	lo3 EIGHT ops in one effect, called in shuffled order — dispatch-table width, one op advancing mid-sequence
 pass	loc1 a LIST-OF-CLOSURES pipeline state — each add pushes a stage function, run folds the input through every staged closure in order, later stages compose after earlier runs
+pass	lok1 a CANAL lock filling toward a seed pool level — enter answers the full gap, each equalize raises the lock two clamped at the pool answering the new level, exit answers a hundred plus the trip count when the levels MATCH or the remaining gap negated, and the low pool completes passage on the third equalize while the high pool is still twelve short at the same row
 pass	looking up an absent key yields None
 pass	lp1 a LIST handler state — each feed pushes and returns the pre-push length, a summing walk reads the final list
 pass	lpc1 a LAMPORT CLOCK — local events tick the counter, receives jump it to max(local,remote)+1; the stale remote (already-past timestamp) still ticks by one through the max
@@ -6647,6 +6649,7 @@ pass	ti2b the inner arm's resume-VALUE performs the outer effect on EVERY dispat
 pass	ti3 cross-effect resume-value feed PLUS direct body interleave — B's arm and the body both advance A
 pass	ti4 THREE-effect chained cross-feed — C's arm performs B, B's arm performs A, two C dispatches walk the whole chain twice
 pass	ti5 a FOREIGN outer perform inside the inner region — A advances inside B's body, the post-region draw sees it
+pass	tid1 a TIDAL predictor on a triangle wave — read advances one hour answering the level (rising to the seed amplitude then falling), moor answers one when the current level covers the draft or the negated shortfall, and the smaller amplitude peaks EARLIER so the same moor probes catch one tide still rising and the other already ebbing
 pass	tie1 a TWO-POINTER merge of IMPLICIT arithmetic streams — the heads bind once through match binders, take answers the smaller advancing that stream's index, a TIE answers fifty-plus-the-value advancing the a-side, and the seed offsets stream a so one run opens with a tie and the other buries its tie mid-stream
 pass	tk-ann1 an ASCRIBED empty-Map seed (: Map.empty (Map (Tuple Int64 Int64) Int64)) used across three arms — the annotation grounds the element type every arm sees
 pass	tk1 a Map state with TUPLE keys built from consecutive draws — record twice, query a hit and a miss

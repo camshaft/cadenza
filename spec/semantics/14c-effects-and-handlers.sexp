@@ -14319,3 +14319,95 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 131211100908 Int64))
   (call   main (: 0 Int64)) (output (: 30200999899 Int64)))
+
+;; ── Tidal predictor, frog ladder, canal lock stairs (breaker batch 309) ──
+(case "tid1 a TIDAL predictor on a triangle wave — read advances one hour answering the level (rising to the seed amplitude then falling), moor answers one when the current level covers the draft or the negated shortfall, and the smaller amplitude peaks EARLIER so the same moor probes catch one tide still rising and the other already ebbing"
+  (input  (do
+            (effect T
+              (op read (-> Int64))
+              (op moor (-> Int64 Int64)))
+            (def (levl (: t Int64) (: amp Int64))
+              (if (< amp (% t (* 2 amp)))
+                  (- (* 2 amp) (% t (* 2 amp)))
+                  (% t (* 2 amp))))
+            (def (main (: n Int64))
+              (handle T (: 0 Int64)
+                ((read () t
+                  (resume (levl (+ t 1) (+ (% n 3) 2)) (+ t 1)))
+                 (moor (draft) t
+                  (if (< (levl t (+ (% n 3) 2)) draft)
+                      (resume (- (levl t (+ (% n 3) 2)) draft) t)
+                      (resume 1 t))))
+                (let ((a (T.read)))
+                  (let ((b (T.read)))
+                    (let ((c (T.moor 2)))
+                      (let ((d (T.read)))
+                        (let ((e (T.read)))
+                          (let ((f (T.moor 3)))
+                            (let ((g (T.read)))
+                              (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 1020103019901 Int64))
+  (call   main (: 0 Int64)) (output (: 1020100999701 Int64)))
+
+(case "jmp1 a TIRING frog on a ladder — each jump advances by the current stride which then SHRINKS by one bottoming at one, rest restores the seed stride answering the distance so far, and the longer opening stride tires through a different lattice (five-four-three versus three-two-one) so the gap between the frogs WIDENS at every row"
+  (input  (do
+            (effect J
+              (op jump (-> Int64))
+              (op rest (-> Int64)))
+            (def (main (: n Int64))
+              (handle J (tuple (: 0 Int64) (+ (% n 4) 3))
+                ((jump () st
+                  (match st
+                    ((tuple pos stride)
+                      (if (< 1 stride)
+                          (resume (+ pos stride) (tuple (+ pos stride) (- stride 1)))
+                          (resume (+ pos 1) (tuple (+ pos 1) 1))))))
+                 (rest () st
+                  (match st
+                    ((tuple pos stride) (resume pos (tuple pos (+ (% n 4) 3)))))))
+                (let ((a (J.jump)))
+                  (let ((b (J.jump)))
+                    (let ((c (J.jump)))
+                      (let ((d (J.rest)))
+                        (let ((e (J.jump)))
+                          (let ((f (J.jump)))
+                            (let ((g (J.rest)))
+                              (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 5091212172121 Int64))
+  (call   main (: 0 Int64)) (output (: 3050606091111 Int64)))
+
+(case "lok1 a CANAL lock filling toward a seed pool level — enter answers the full gap, each equalize raises the lock two clamped at the pool answering the new level, exit answers a hundred plus the trip count when the levels MATCH or the remaining gap negated, and the low pool completes passage on the third equalize while the high pool is still twelve short at the same row"
+  (input  (do
+            (effect L
+              (op enter (-> Int64))
+              (op equalize (-> Int64))
+              (op exit (-> Int64)))
+            (def (main (: n Int64))
+              (handle L (tuple (: 0 Int64) (: 0 Int64))
+                ((enter () st
+                  (match st
+                    ((tuple lock trips) (resume (- (+ n 6) lock) st))))
+                 (equalize () st
+                  (match st
+                    ((tuple lock trips)
+                      (if (< (+ lock 2) (+ n 6))
+                          (resume (+ lock 2) (tuple (+ lock 2) trips))
+                          (resume (+ n 6) (tuple (+ n 6) trips))))))
+                 (exit () st
+                  (match st
+                    ((tuple lock trips)
+                      (if (= lock (+ n 6))
+                          (resume (+ 101 trips) (tuple lock (+ trips 1)))
+                          (resume (- lock (+ n 6)) st))))))
+                (let ((a (L.enter)))
+                  (let ((b (L.equalize)))
+                    (let ((c (L.equalize)))
+                      (let ((d (L.exit)))
+                        (let ((e (L.equalize)))
+                          (let ((f (L.exit)))
+                            (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 160203880590 Int64))
+  (call   main (: 0 Int64)) (output (: 60203980701 Int64)))
