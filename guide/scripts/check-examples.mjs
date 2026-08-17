@@ -570,6 +570,21 @@ try {
     );
     process.exit(1);
   }
+  // THEME-VALIDITY invariant: the sidebar's "Examples" section groups by `theme` (v-guide-infra renders
+  // the buckets from this data). examples.ts is imported here with type-stripping (no typecheck), so a
+  // mistyped theme ("algorithm", a stray new bucket) would pass this sweep silently yet render a broken or
+  // empty nav bucket in the browser. Pin the closed set the Example union declares so a typo fails LOUDLY.
+  const THEMES = new Set(["basics", "algorithms", "data-and-collections", "numbers"]);
+  const badTheme = PLAYGROUND.filter((p) => !THEMES.has(p.theme));
+  if (badTheme.length) {
+    console.error(
+      `check-examples: playground example(s) with an unknown \`theme\`: ` +
+        `${badTheme.map((p) => `${p.id}="${p.theme}"`).join(", ")} — the sidebar groups by theme and only ` +
+        `renders {${[...THEMES].join(", ")}}. A typo'd/new theme ships an example into a broken/empty nav ` +
+        `bucket. Use a declared theme (or extend both the Example union and this guard together).`,
+    );
+    process.exit(1);
+  }
   for (const p of PLAYGROUND) {
     // The intentional "see the squiggle" example is authored to NOT compile — check it as expect="error".
     // Keyed off the example's explicit `expectError` field (declared in examples.ts), NOT sniffed from the
