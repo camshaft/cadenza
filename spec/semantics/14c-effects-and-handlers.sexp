@@ -14048,3 +14048,104 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 10001030200 Int64))
   (call   main (: 0 Int64)) (output (: 10002009900 Int64)))
+
+;; ── Traffic light cycle, metronome accents, wind chill (breaker batch 306) ──
+(case "lgt1 a TRAFFIC light with a demand sensor — tick counts down green-three yellow-one red-seed cycling on zero (answers pack color-times-ten plus remaining), demand during a LONG red shortens the remainder to one answering a hundred plus the old value (otherwise it just reads), and the seed-shaped red length changes both the red row and the demand's rebate"
+  (input  (do
+            (effect T
+              (op tick (-> Int64))
+              (op demand (-> Int64)))
+            (def (main (: n Int64))
+              (handle T (tuple (: 0 Int64) (: 3 Int64))
+                ((tick () st
+                  (match st
+                    ((tuple color rem)
+                      (if (= (- rem 1) 0)
+                          (if (= color 0)
+                              (resume 11 (tuple 1 1))
+                              (if (= color 1)
+                                  (resume (+ 20 (+ (% n 3) 2)) (tuple 2 (+ (% n 3) 2)))
+                                  (resume 3 (tuple 0 3))))
+                          (resume (+ (* color 10) (- rem 1)) (tuple color (- rem 1)))))))
+                 (demand () st
+                  (match st
+                    ((tuple color rem)
+                      (if (= color 2)
+                          (if (< 1 rem)
+                              (resume (+ 100 rem) (tuple 2 1))
+                              (resume (+ 20 rem) st))
+                          (resume (+ (* color 10) rem) st))))))
+                (let ((a (T.tick)))
+                  (let ((b (T.tick)))
+                    (let ((c (T.tick)))
+                      (let ((d (T.tick)))
+                        (let ((e (T.demand)))
+                          (let ((f (T.tick)))
+                            (let ((g (T.tick)))
+                              (let ((h (T.demand)))
+                                (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g)) h)))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 201112403030202 Int64))
+  (call   main (: 0 Int64)) (output (: 201112302030202 Int64)))
+
+(case "mrt1 a METRONOME with a downbeat accent — tick advances the beat wrapping at the seed-shaped bar length (counting bars), accent answers a hundred plus the bar count ON a downbeat or the beats remaining until the next one, and the four-beat bar catches the second accent ON the downbeat while the three-beat bar misses both"
+  (input  (do
+            (effect M
+              (op tick (-> Int64))
+              (op accent (-> Int64)))
+            (def (main (: n Int64))
+              (handle M (tuple (: 0 Int64) (: 0 Int64))
+                ((tick () st
+                  (match st
+                    ((tuple beat bars)
+                      (if (< (+ (% n 3) 3) (+ beat 1))
+                          (resume 1 (tuple 1 (+ bars 1)))
+                          (resume (+ beat 1) (tuple (+ beat 1) bars))))))
+                 (accent () st
+                  (match st
+                    ((tuple beat bars)
+                      (if (= beat 1)
+                          (resume (+ 100 bars) st)
+                          (resume (- (+ (% n 3) 4) beat) st))))))
+                (let ((a (M.tick)))
+                  (let ((b (M.tick)))
+                    (let ((c (M.tick)))
+                      (let ((d (M.accent)))
+                        (let ((e (M.tick)))
+                          (let ((f (M.tick)))
+                            (let ((g (M.accent)))
+                              (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 1020302040201 Int64))
+  (call   main (: 0 Int64)) (output (: 1020301010202 Int64)))
+
+(case "wnd1 a WIND-CHILL stepper — gust sets the wind answering temp minus twice the wind CLAMPED at minus thirty (extremes counted), warm raises the temperature answering it, ext reads the extreme count, and only the cold seed drives one gust past the clamp so its rows ride deep negative while the warm seed never clamps"
+  (input  (do
+            (effect W
+              (op gust (-> Int64 Int64))
+              (op warm (-> Int64 Int64))
+              (op ext (-> Int64)))
+            (def (main (: n Int64))
+              (handle W (tuple (- n 5) (: 0 Int64))
+                ((gust (v) st
+                  (match st
+                    ((tuple temp extremes)
+                      (if (< (- temp (* v 2)) -30)
+                          (resume -30 (tuple temp (+ extremes 1)))
+                          (resume (- temp (* v 2)) st)))))
+                 (warm (d) st
+                  (match st
+                    ((tuple temp extremes) (resume (+ temp d) (tuple (+ temp d) extremes)))))
+                 (ext () st
+                  (match st ((tuple temp extremes) (resume extremes st)))))
+                (let ((a (W.gust 4)))
+                  (let ((b (W.warm 6)))
+                    (let ((c (W.gust 10)))
+                      (let ((d (W.gust 16)))
+                        (let ((e (W.warm 20)))
+                          (let ((f (W.gust 16)))
+                            (let ((g (W.ext)))
+                              (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)) g))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: -2890920690100 Int64))
+  (call   main (: 0 Int64)) (output (: -12991929791099 Int64)))

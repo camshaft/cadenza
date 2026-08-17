@@ -5502,6 +5502,7 @@ pass	lf4 a per-element dispatch comparing each element against the RISING state 
 pass	lf5 TWO lists walked in LOCKSTEP with a per-pair 2-arg dispatch — length-guarded via projection helpers
 pass	lfs1 an EIGHT-BIT Fibonacci LFSR — step shifts right injecting the XOR of taps zero and two as the new high bit answering the register, peek masks the low nibble, and the two seeds fall into DIFFERENT orbits (one decays toward the injected-bit ladder, the other rings the high bits immediately)
 pass	lft1 an ELEVATOR load limiter — board adds the passenger's weight answering the load or REFUSING with the negated overage when the seed-shaped capacity would be exceeded (the load untouched), alight subtracts clamped at empty, trips counts refusals, and the same boarding sequence is refused ONCE on the roomy car and TWICE on the tight one with different overage readings
+pass	lgt1 a TRAFFIC light with a demand sensor — tick counts down green-three yellow-one red-seed cycling on zero (answers pack color-times-ten plus remaining), demand during a LONG red shortens the remainder to one answering a hundred plus the old value (otherwise it just reads), and the seed-shaped red length changes both the red row and the demand's rebate
 pass	lhn1 a LUHN checksum accumulator — feed doubles every second digit by POSITION PARITY subtracting nine from two-digit doubles, chk answers 1 on a multiple of ten else the residue, and the seed-fed digit doubles on both runs but only one crosses the subtract-nine threshold
 pass	li1 draws choose BOTH the List.update target and the List.at read index — the collection edit follows the thread
 pass	li2 a list BUILT from pushed draws then read at a draw-picked index — construction and consumption share one thread
@@ -5634,6 +5635,7 @@ pass	mr3 the NEXT callee in the mutual group is picked by draw parity — the de
 pass	mr4 an ACCUMULATOR threads the mutual pair — ev doubles it plus a draw, od triples it plus a draw, alternating scales
 pass	mr5 TWENTY alternating mutual levels with the scaling accumulator — depth stress on the cross-function fold
 pass	mrg1 a TWO-POINTER MERGE across two handlers — each holds a sorted list, the body pulls whichever head is smaller each step, and the sentinel head lets one side drain
+pass	mrt1 a METRONOME with a downbeat accent — tick advances the beat wrapping at the seed-shaped bar length (counting bars), accent answers a hundred plus the bar count ON a downbeat or the beats remaining until the next one, and the four-beat bar catches the second accent ON the downbeat while the three-beat bar misses both
 pass	mrv1 REMOVE-then-REINSERT churn on a Map state — del answers the removed value (0 when absent); for n=98 the second del hits the n+1 key it planted
 pass	ms1 a WHOLE nested handle expression as a MATCH's SCRUTINEE — the region builds an Option, the chosen arm draws again
 pass	ms1 an op returns a THREE-variant sum built from state parity — two sequential performing scrutinees, the second sees the advanced state
@@ -6911,6 +6913,7 @@ pass	widening a runtime narrow-width unsigned integer to Int64 zero-extends (tot
 pass	widening a runtime signed narrow integer to Int64 sign-extends (total, emits)
 pass	without- and with-REACHED records with runtime leaves equal the directly-built record
 pass	wlkC single-wall control — reflect only at the floor, ceiling unguarded
+pass	wnd1 a WIND-CHILL stepper — gust sets the wind answering temp minus twice the wind CLAMPED at minus thirty (extremes counted), warm raises the temperature answering it, ext reads the extreme count, and only the cold seed drives one gust past the clamp so its rows ride deep negative while the warm seed never clamps
 pass	wp2 a CHECKED-SHIFT computed perform arg feeding the two-lookup-match arm — shl scratch width does not alias the Option handle
 pass	wp3 a THREE-param op with two computed args through the two-lookup-match arm — every arg slot and the handle slot stay disjoint
 pass	wrap-narrowed values fill BOTH segments of a dispatching frame — the wrapped tag selects the arm
