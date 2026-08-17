@@ -4778,6 +4778,7 @@ pass	bitwise XOR toggles bits
 pass	bitwise XOR with negative one is the bitwise complement
 pass	bitwise XOR with zero is the operand (identity)
 pass	bkf1 EXPONENTIAL BACKOFF with a seed-shaped cap — fail accrues the current delay into the total then doubles it clamped at the cap, ok resets the delay to one answering the accumulated wait, and the higher cap lets one seed keep doubling where the other saturates two steps earlier
+pass	blc1 a BALANCE SCALE weighing TWO op arguments against each other — weigh's three-way arg-vs-arg comparison answers side and margin counting only LEFT wins, every weigh folds the signed difference into the running tilt, level reports the tilt's magnitude by sign-splitting WITHOUT abs tagging lean direction in the hundreds digit, and the seed loads the left pan of three weighings so one run balances twice level-right while the other tips left twice and reads a levelled beam last
 pass	bms1 a BITMASK SET in one Int64 — set ORs a shifted bit, clear ANDs with the XOR-complement answering whether the bit was live, popcount peels the mask; the clear of an absent high bit is a no-op zero
 pass	bmv1 BOYER-MOORE majority vote — the (leader,votes) state deposes on exhausted votes, the challenger seed flips the winner
 pass	bnfE 2-tuple FIFO control — (front, back) only, no counter
@@ -5478,6 +5479,7 @@ pass	iwr1 a SIGNED Int8 handler state — wrapping-add crosses the sign boundary
 pass	ix1 the op argument INDEXES a list held in a two-slot state — in-range reads project, out-of-range yields the arm's fallback
 pass	jin1 a SEPARATOR-JOIN builder — the comma inserts only BETWEEN elements via the count field, and an EMPTY piece still consumes a separator slot
 pass	jmp1 a TIRING frog on a ladder — each jump advances by the current stride which then SHRINKS by one bottoming at one, rest restores the seed stride answering the distance so far, and the longer opening stride tires through a different lattice (five-four-three versus three-two-one) so the gap between the frogs WIDENS at every row
+pass	jns1 a JOHNSON twisted-ring counter on TWO BOOL state slots and a pulse count — pulse shifts q into p and the NEGATION of p into q answering a bit-packed readout of both new flags plus an equality bit and the count, align SWAPS the flags only when they differ tagging swap and hold answers differently and touching no count, and the seed loads the ring so one run walks the four-phase cycle from inside while the other enters at the seam
 pass	jointly-total guards over one variant are still non-exhaustive (guards are opaque to the checker)
 pass	jos1 JOSEPHUS elimination — every dispatch advances the cursor k-1 around the SHRINKING ring by modulo, removes the survivor there by filtered rebuild, and answers the eliminated id
 pass	keyed lookups at different keys are not shared
@@ -5786,6 +5788,7 @@ pass	ordering an integer against a string is a type error
 pass	ordering two integers of different sign is rejected, not silently reinterpreted
 pass	ordering two integers of different width is rejected, not silently widened
 pass	ordering two rationals a hair apart at the i64 boundary is exact
+pass	org1 an ORGAN with three ranks and a stop selector — chord passes THREE pipe volumes and the state's selector picks WHICH argument sounds through a nested-if ladder folding it into the played total and stepping the selector two ranks around, swell re-aims the selector by the played total leaving the total untouched, and the seed sets the opening stop so the two runs sound different ranks from the same three-volume chords at every dispatch
 pass	orq1 an ORDER-BOOK spread tracker — bid raises the best bid and ask lowers the best ask (both answering the spread or -1 while a side is empty), a CROSSED book resets both sides answering zero, and the seed only shifts the opening bid so the first spread differs while the tightening ladder and the cross land identically
 pass	outer handler state threads AROUND a completed inner handle of a different effect
 pass	ov1 an if CONDITION from LET-bound draws — two draws feed a comparison that routes the branch

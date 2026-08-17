@@ -14728,3 +14728,103 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 210310030411301201 Int64))
   (call   main (: 0 Int64)) (output (: 110210020310411301 Int64)))
+
+;; ── Johnson twisted-ring two-Bool state, balance-scale arg-vs-arg, organ state-indexed arg select (breaker batch 313) ──
+
+(case "jns1 a JOHNSON twisted-ring counter on TWO BOOL state slots and a pulse count — pulse shifts q into p and the NEGATION of p into q answering a bit-packed readout of both new flags plus an equality bit and the count, align SWAPS the flags only when they differ tagging swap and hold answers differently and touching no count, and the seed loads the ring so one run walks the four-phase cycle from inside while the other enters at the seam"
+  (input  (do
+            (effect L
+              (op pulse (-> Int64))
+              (op align (-> Int64)))
+            (def (main (: n Int64))
+              (handle L (tuple (= (% n 3) 1) false (: 0 Int64))
+                ((pulse () st
+                  (match st
+                    ((tuple p q cnt)
+                      (resume (+ (* (+ (+ (if q (: 4 Int64) (: 0 Int64))
+                                          (if (not p) (: 2 Int64) (: 0 Int64)))
+                                       (if (= q (not p)) (: 1 Int64) (: 0 Int64)))
+                                    10)
+                                 (% (+ cnt 1) 10))
+                              (tuple q (not p) (+ cnt 1))))))
+                 (align () st
+                  (match st
+                    ((tuple p q cnt)
+                      (if (= p q)
+                          (resume (+ (: 30 Int64) (% cnt 10)) st)
+                          (resume (+ (: 70 Int64) (% cnt 10)) (tuple q p cnt)))))))
+                (let ((a (L.pulse)))
+                  (let ((b (L.pulse)))
+                    (let ((c (L.align)))
+                      (let ((d (L.pulse)))
+                        (let ((e (L.pulse)))
+                          (let ((f (L.pulse)))
+                            (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 112272132475 Int64))
+  (call   main (: 0 Int64)) (output (: 217232431425 Int64)))
+
+(case "blc1 a BALANCE SCALE weighing TWO op arguments against each other — weigh's three-way arg-vs-arg comparison answers side and margin counting only LEFT wins, every weigh folds the signed difference into the running tilt, level reports the tilt's magnitude by sign-splitting WITHOUT abs tagging lean direction in the hundreds digit, and the seed loads the left pan of three weighings so one run balances twice level-right while the other tips left twice and reads a levelled beam last"
+  (input  (do
+            (effect L
+              (op weigh (-> Int64 Int64 Int64))
+              (op level (-> Int64)))
+            (def (main (: n Int64))
+              (handle L (tuple (: 0 Int64) (: 0 Int64))
+                ((weigh (a b) st
+                  (match st
+                    ((tuple tilt lw)
+                      (if (> a b)
+                          (resume (+ (: 100 Int64) (+ (* (- a b) 10) (% (+ lw 1) 10)))
+                                  (tuple (+ tilt (- a b)) (+ lw 1)))
+                          (if (< a b)
+                              (resume (+ (: 200 Int64) (+ (* (- b a) 10) (% lw 10)))
+                                      (tuple (- tilt (- b a)) lw))
+                              (resume (+ (: 300 Int64) (% lw 10))
+                                      (tuple tilt lw)))))))
+                 (level () st
+                  (match st
+                    ((tuple tilt lw)
+                      (if (< tilt 0)
+                          (resume (+ (: 500 Int64) (+ (* (- 0 tilt) 10) (% lw 10))) st)
+                          (resume (+ (: 400 Int64) (+ (* tilt 10) (% lw 10))) st))))))
+                (let ((s (% n 3)))
+                  (let ((a (L.weigh (+ 2 s) 3)))
+                    (let ((b (L.weigh (+ 1 s) 2)))
+                      (let ((c (L.level)))
+                        (let ((d (L.weigh 4 (+ 2 s))))
+                          (let ((e (L.weigh 3 3)))
+                            (let ((f (L.level)))
+                              (+ (* 1000 (+ (* 1000 (+ (* 1000 (+ (* 1000 (+ (* 1000 a) b)) c)) d)) e)) f))))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 300300400111301411 Int64))
+  (call   main (: 0 Int64)) (output (: 210210520121301401 Int64)))
+
+(case "org1 an ORGAN with three ranks and a stop selector — chord passes THREE pipe volumes and the state's selector picks WHICH argument sounds through a nested-if ladder folding it into the played total and stepping the selector two ranks around, swell re-aims the selector by the played total leaving the total untouched, and the seed sets the opening stop so the two runs sound different ranks from the same three-volume chords at every dispatch"
+  (input  (do
+            (effect L
+              (op chord (-> Int64 Int64 Int64 Int64))
+              (op swell (-> Int64)))
+            (def (main (: n Int64))
+              (handle L (tuple (% n 3) (: 0 Int64))
+                ((chord (a b c) st
+                  (match st
+                    ((tuple sel played)
+                      (let ((v (if (= sel 0) a (if (= sel 1) b c))))
+                        (resume (+ (* (+ sel 1) 100) (+ (* v 10) (% (+ played v) 10)))
+                                (tuple (% (+ sel 2) 3) (+ played v)))))))
+                 (swell () st
+                  (match st
+                    ((tuple sel played)
+                      (resume (+ (* (% (+ sel played) 3) 10) (% played 10))
+                              (tuple (% (+ sel played) 3) played))))))
+                (let ((a (L.chord 4 7 2)))
+                  (let ((b (L.chord 5 1 8)))
+                    (let ((c (L.swell)))
+                      (let ((d (L.chord 3 6 9)))
+                        (let ((e (L.chord 2 2 2)))
+                          (let ((f (L.swell)))
+                            (+ (* 1000 (+ (* 1000 (+ (* 1000 (+ (* 1000 (+ (* 1000 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 277152022391223023 Int64))
+  (call   main (: 0 Int64)) (output (: 144382012268120010 Int64)))
