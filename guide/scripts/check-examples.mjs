@@ -525,13 +525,13 @@ try {
   // Vacuous-pass floor for the playground set (mirrors the chapter floor above): if a bad merge, a
   // rename, or an errant edit empties/shrinks `EXAMPLES`, the loop below would push zero examples and the
   // gate would go GREEN on an UNCHECKED playground — the same silent false-green the chapter floor guards.
-  // The dropdown ships 57 examples; assert a sane minimum so a broken/gutted array FAILS instead of
+  // The dropdown ships 59 examples; assert a sane minimum so a broken/gutted array FAILS instead of
   // passing on nothing. (A legit prune below the floor should lower it deliberately, not slip past.)
   // Floor tracks the grown library with a small margin for intentional churn — a gutted/halved array
   // must FAIL, not squeak past an over-loose bound.
-  if (!Array.isArray(PLAYGROUND) || PLAYGROUND.length < 50) {
+  if (!Array.isArray(PLAYGROUND) || PLAYGROUND.length < 55) {
     console.error(
-      `check-examples: expected ≥50 playground examples in src/playground/examples.ts, found ` +
+      `check-examples: expected ≥55 playground examples in src/playground/examples.ts, found ` +
         `${Array.isArray(PLAYGROUND) ? PLAYGROUND.length : "a non-array export"} — the EXAMPLES array was ` +
         `gutted/renamed (a vacuous pass would ship an unchecked playground dropdown).`,
     );
