@@ -585,6 +585,21 @@ try {
     );
     process.exit(1);
   }
+  // SURFACE-VALIDITY invariant: `surface` must be one of the compiler's declared surfaces (Surface =
+  // "ml" | "sexpr", src/compiler/worker.ts). Same type-stripping gap as theme — a typo ("sexp", "sexpr ")
+  // isn't caught by the (stripped) union, and would surface only as a confusing downstream compile error
+  // in the wrong surface rather than a pointed one here. (This does NOT restrict to sexpr — ml stays a
+  // valid authored surface; the separate guard below only forbids a non-sexpr `expected` PIN.)
+  const SURFACES = new Set(["ml", "sexpr"]);
+  const badSurface = PLAYGROUND.filter((p) => !SURFACES.has(p.surface));
+  if (badSurface.length) {
+    console.error(
+      `check-examples: playground example(s) with an unknown \`surface\`: ` +
+        `${badSurface.map((p) => `${p.id}="${p.surface}"`).join(", ")} — must be one of ` +
+        `{${[...SURFACES].join(", ")}}. A typo compiles the example in a bogus surface (confusing failure).`,
+    );
+    process.exit(1);
+  }
   for (const p of PLAYGROUND) {
     // The intentional "see the squiggle" example is authored to NOT compile — check it as expect="error".
     // Keyed off the example's explicit `expectError` field (declared in examples.ts), NOT sniffed from the
