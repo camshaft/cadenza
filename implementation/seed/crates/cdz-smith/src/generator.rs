@@ -315,7 +315,7 @@ impl Gen<'_> {
         }
         // Weighted toward leaves + operators + control flow (the shapes most likely to type and
         // reach codegen); the tail arms exercise ctors, access, ascription, and match.
-        match self.cur.choice(17) {
+        match self.cur.choice(18) {
             0..=2 => self.leaf(want),
             3 => self.if_expr(depth, want),
             4 => self.let_expr(depth, want),
@@ -330,6 +330,7 @@ impl Gen<'_> {
             13 => self.list_builtin_expr(depth),
             14 => self.string_builtin_expr(depth),
             15 => self.rec_def_expr(depth),
+            16 => self.effect_handler_expr(depth),
             _ => self.match_expr(depth, want),
         }
     }
@@ -660,6 +661,58 @@ impl Gen<'_> {
         self.env.truncate(mark);
         // initial call with a small non-negative literal bounds the recursion depth for the diff run
         let _ = write!(self.out, " ({f} {}))", self.cur.range(0, 6));
+    }
+
+    /// A self-contained, GUARANTEED-TERMINATING one-op effect + intra-program handler, reaching the
+    /// perform / handle / resume lowering — the effects crash-cluster territory (F24 tail-resumptive,
+    /// cmb1/pom5 sharing-aware core-emit, xhs1 cross-handler) the generator otherwise never produces.
+    /// Declared in a NESTED `do` (as main's body expr) so no top-level `program()` surgery is needed:
+    /// `(do (effect E (op o (-> Int64 Int64))) (handle E <init> ((o (p) s (resume <val> <newstate>))) <body>))`
+    /// where `<body>` performs `E.o` a FIXED 1..=2 times. TERMINATION is structural: the single arm
+    /// body is ALWAYS a bare `(resume <val> <newstate>)` — it resumes EXACTLY once — and the handled
+    /// body performs a fixed, NON-recursive number of times, so the perform/resume fold is bounded.
+    /// SAFETY: the effect name is NOT a value binding in [`Env`], so a generated `<val>`/`<newstate>`
+    /// sub-expr can never re-perform `E.o` into an unbounded loop; only the numeric `p`/`s` are visible.
+    /// Int64 throughout (op sig, state, resume) so it types; a mismatch with the outer `want` is a clean
+    /// decline. Perform args + initial state are small literals so most programs RUN (feed the diff
+    /// oracle); the resume value/state are richer numeric sub-exprs (where a backend divergence surfaces).
+    fn effect_handler_expr(&mut self, depth: u32) {
+        let ename = {
+            let v = self.env.fresh();
+            format!("E{}", &v[1..]) // capitalized effect name from the fresh `v{n}` suffix, e.g. E7
+        };
+        let oname = self.env.fresh(); // lowercase op name, e.g. v8 — a valid operation identifier
+        let p = self.env.fresh();
+        let s = self.env.fresh();
+        let init = self.cur.range(0, 9);
+        let _ = write!(
+            self.out,
+            "(do (effect {ename} (op {oname} (-> Int64 Int64))) (handle {ename} {init} (({oname} ({p}) {s} (resume "
+        );
+        let mark = self.env.push(p, Kind::Num); // p and s are visible to the resume sub-exprs
+        self.env.push(s, Kind::Num);
+        self.expr(depth.saturating_sub(1), Kind::Num); // resume VALUE
+        self.out.push(' ');
+        self.expr(depth.saturating_sub(1), Kind::Num); // new STATE
+        self.env.truncate(mark);
+        self.out.push_str("))) ");
+        // handled body: perform the op a FIXED 1..=2 times (no recursion → the fold is bounded).
+        if self.cur.flip() {
+            let _ = write!(self.out, "({ename}.{oname} {})", self.cur.range(0, 9));
+        } else {
+            let op = match self.cur.choice(3) {
+                0 => "+",
+                1 => "-",
+                _ => "*",
+            };
+            let _ = write!(
+                self.out,
+                "({op} ({ename}.{oname} {}) ({ename}.{oname} {}))",
+                self.cur.range(0, 9),
+                self.cur.range(0, 9)
+            );
+        }
+        self.out.push_str("))"); // close (handle …), close (do …)
     }
 
     fn access_expr(&mut self, depth: u32) {
@@ -1077,6 +1130,31 @@ mod tests {
             hit,
             "no seed in the sweep emitted a tail-accumulator recursive def (3-param helper)"
         );
+    }
+
+    /// The effect-handler arm is reachable — some seed emits an `(effect …)` declaration paired with
+    /// a `(handle …)` — and every program that path can emit still parses. Also asserts the
+    /// termination structure: any program carrying a handler has a `(resume ` in its arm, so the
+    /// perform/resume fold is bounded and the differential run can't hang.
+    #[test]
+    fn some_seed_emits_an_effect_handler() {
+        let mut hit = false;
+        for n in 0..8000u32 {
+            let seed = varied_seed(n);
+            let src = generate(&seed).source;
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "generated program did not parse:\n{src}"
+            );
+            if src.contains("(effect ") && src.contains("(handle ") {
+                hit = true;
+                assert!(
+                    src.contains("(resume "),
+                    "effect handler is missing its single `(resume ` (would not terminate):\n{src}"
+                );
+            }
+        }
+        assert!(hit, "no seed in the sweep emitted an effect handler");
     }
 
     /// Generation is deterministic in the seed (required for reproducing + shrinking a finding).
