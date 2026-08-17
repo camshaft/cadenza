@@ -15012,3 +15012,50 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 22103420653 Int64))
   (call   main (: 0 Int64)) (output (: 21103430654 Int64)))
+
+;; ── POST-RESUME arithmetic: additive tolls, multiplicative pairing, if-on-resume (breaker batch 316) ──
+;; First non-tail-position resumes in the corpus (previously all 1481 were tail). pyr3 (let-bound
+;; resume result) declines uniformly — held as todo-witness in .breaker-probes/2026-08-17-pyramid-unwind/.
+
+(case "pyr1 POST-RESUME ARITHMETIC in the arm — each tick's arm ADDS a thousandfold toll to whatever the resumed rest-of-body eventually returns, three dispatches stack three tolls that unwind INNERMOST-FIRST after the body's positional fold completes, each toll keyed to the state AT ITS OWN DISPATCH so a reordered unwind or a stale-state toll misprices the pyramid, and the seed shifts every toll together"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s (+ (resume s (+ s 2)) (* 1000 (+ s 1)))))
+                (let ((a (E.tick)))
+                  (let ((b (E.tick)))
+                    (let ((c (E.tick)))
+                      (+ a (+ (* 10 b) (* 100 c))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 12531 Int64))
+  (call   main (: 0 Int64)) (output (: 9420 Int64)))
+
+(case "pyr2 MULTIPLICATIVE post-resume tolls — each dispatch's arm MULTIPLIES the resumed rest-of-body value by its own state-plus-two factor, two dispatches compose two factors around the body's positional fold, and because the factors differ per dispatch the product pins the unwind pairing (which factor saw which intermediate) beyond what addition can distinguish"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (+ (% n 3) 1)
+                ((tick () s (* (resume s (+ s 1)) (+ s 2))))
+                (let ((a (E.tick)))
+                  (let ((b (E.tick)))
+                    (+ a (* 10 b))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 640 Int64))
+  (call   main (: 0 Int64)) (output (: 252 Int64)))
+
+(case "pyr4 an IF CONDITION DIRECTLY ON THE RESUME CALL — each arm tests whether the resumed rest-of-body value clears the line and answers small-plus-state when it does or a thousand-plus-state when it does not, the branch values are chosen so the outer frame always takes the OPPOSITE branch from the inner one, and the seed flips which branch the inner frame starts on so the two runs produce a thousandfold-apart answers from the same machine"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s
+                  (if (> (resume s (+ s 3)) 35)
+                      (+ s 1)
+                      (+ 1000 s))))
+                (let ((a (E.tick)))
+                  (let ((b (E.tick)))
+                    (+ a (* 10 b))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 1001 Int64))
+  (call   main (: 0 Int64)) (output (: 1 Int64)))
