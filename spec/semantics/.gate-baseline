@@ -4852,6 +4852,7 @@ pass	checked multiplication yields Some when it fits
 pass	checked subtraction yields None on underflow instead of trapping
 pass	checked subtraction yields Some of the difference when it fits
 pass	chg1 a BATTERY controller with a protected reserve — charge clamps at one hundred, draw refuses any request that would dip below the seed-shaped reserve answering the negated shortfall with the level UNTOUCHED, and the same draw sequence trips the refusal at DIFFERENT points per seed with the refused row's level surviving to the next draw
+pass	chn1 a BUTTER churn — churning turns a QUARTER of the cream to butter floored at one whole scoop (the empty churn answering nine hundred), pouring past ten SPILLS the excess (an eight-hundred row with the excess and the running spill's low digit), the read packs butter cream and spills, and the seed's cream quarters to different scoops every churn with one pail spilling its pour and the other taking it whole
 pass	ckp1 a CHECKPOINT/RESTORE protocol — save copies the live slot into the shadow slot, work mutates only the live one, restore copies the shadow back and later work resumes from the checkpoint
 pass	cl1 a NARROWING clamp arm — the [lo,hi] window shrinks by one each side per dispatch, three args meet three windows
 pass	cla1 the arm runs a PURE data-dependent-depth recursion on the crossed ARGUMENT — collatz length computed wholly inside one dispatch frame, the state accumulates the lengths and a final read exposes the total
@@ -5316,6 +5317,7 @@ pass	gl1 the let-lifted pure-guard equivalent of the gp1 dispatch shape — the 
 pass	gl2 the let-lifted pure-guard equivalent of the gp2 cascade — both guard draws pre-bound, all three arms reachable
 pass	glb1 a GLASSBLOWER'S bench — each blow thins the wall by a third of the gather FLOORED at one and halves the gather (a would-be wall under two CRACKS instead, both fields frozen), heating adds gather, the read packs wall gather and cracks, and the seed's opening gather thins fast toward the crack line on one bench while the other's gentle thirds leave wall to spare
 pass	gld1 a GOLD-PANNING yield decay — pan answers the current yield then decays it by a third truncating plus one unguarded (the stream never hits the floor), move relocates resetting the yield to the seed base minus a wear cost that grows two per move, total accumulates, and the richer claim decays through DIFFERENT residues while both wear down in lockstep
+pass	gnd1 a GONDOLA on a reflecting cable — move advances the car by the signed direction held in state binding the new position ONCE in a let consumed by the terminus test both answers and both next-states, REFLECTS at either terminus by negating the direction and counting the trip, answers pack the let-bound position an arithmetic direction bit and the trip count, span reads position and trips without advancing, and the seed places the start so one run reflects mid-sequence while the other reaches the far terminus one move later
 pass	gp1 a PERFORMING guard on a wildcard pattern is a COMPILE ERROR (guards-side-effect-free, CDZ0407)
 pass	gp1 a match GUARD inside the handler ARM compares the op PAYLOAD against the live STATE binder — the guard routes admit/reject per dispatch
 pass	gp2 TWO guard arms where a guard PERFORMS — declines (multi-guard performing-condition fold gap)
@@ -6968,6 +6970,7 @@ pass	za2 a COMPUTED scrutinee (difference of two draws) selects the performing a
 pass	za3 NESTED literal-arm dispatch — each level matches a let-bound draw, the innermost arm reads a third
 pass	zero divided by a runtime value folds to zero but keeps the zero-divisor guard
 pass	zgz1 a ZIGZAG codec accumulator — enc maps signed to unsigned (2v for non-negative, -2v-1 for negative) and folds the code into the state sum, dec UN-zigzags the accumulated sum whose parity decides the sign, and the seeds put the decode answers on opposite signs
+pass	zpl1 a ZIPLINE with a brake zone — gliding advances the position by speed times the hang time and gravity feeds the speed capped at nine, a brake in the zone past ten sheds four speed floored at one (a clean one-tag) while an early brake SCRAPES (counted, shedding one), the read packs position speed and scrapes, and the seed's launch speed reaches the zone before the brake on one line while the other scrapes short of it
 pass	α-equivalence (aconv) recognizes (λx.x) and (λy.y) as the same term up to bound-variable renaming
 pass	α-equivalence handles nesting and distinguishes a bound variable from a same-numbered free variable
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)

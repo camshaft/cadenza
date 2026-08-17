@@ -14615,3 +14615,116 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 430440259050605 Int64))
   (call   main (: 0 Int64)) (output (: 110440239030303 Int64)))
+
+;; ── zipline brake run, butter churn quarter-scoops, gondola reflecting cable (breaker batch 312) ──
+
+(case "zpl1 a ZIPLINE with a brake zone — gliding advances the position by speed times the hang time and gravity feeds the speed capped at nine, a brake in the zone past ten sheds four speed floored at one (a clean one-tag) while an early brake SCRAPES (counted, shedding one), the read packs position speed and scrapes, and the seed's launch speed reaches the zone before the brake on one line while the other scrapes short of it"
+  (input  (do
+            (effect Z
+              (op glide (-> Int64 Int64))
+              (op brake (-> Int64))
+              (op read (-> Int64)))
+            (def (main (: n Int64))
+              (handle Z (tuple (+ (: 2 Int64) (* (% n 3) 2)) (: 0 Int64) (: 0 Int64))
+                ((glide (t) st
+                  (match st
+                    ((tuple speed pos sc)
+                      (if (> (+ speed 2) 9)
+                          (resume (+ (* (% (+ pos (* speed t)) 100) 10) 9)
+                                  (tuple (: 9 Int64) (+ pos (* speed t)) sc))
+                          (resume (+ (* (% (+ pos (* speed t)) 100) 10) (% (+ speed 2) 10))
+                                  (tuple (+ speed 2) (+ pos (* speed t)) sc))))))
+                 (brake () st
+                  (match st
+                    ((tuple speed pos sc)
+                      (if (>= pos 10)
+                          (if (< (- speed 4) 1)
+                              (resume (: 11 Int64) (tuple (: 1 Int64) pos sc))
+                              (resume (+ (* (- speed 4) 10) 1) (tuple (- speed 4) pos sc)))
+                          (if (< (- speed 1) 1)
+                              (resume (+ (: 900 Int64) (+ sc 1)) (tuple (: 1 Int64) pos (+ sc 1)))
+                              (resume (+ (: 900 Int64) (+ sc 1)) (tuple (- speed 1) pos (+ sc 1))))))))
+                 (read () st
+                  (match st
+                    ((tuple speed pos sc)
+                      (resume (+ (* pos 100) (+ (* speed 10) sc)) st)))))
+                (let ((a (Z.glide (: 2 Int64))))
+                  (let ((b (Z.brake)))
+                    (let ((c (Z.glide (: 1 Int64))))
+                      (let ((f (Z.read)))
+                        (+ (* 10000 (+ (* 1000 (+ (* 1000 a) b)) c)) f)))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 869011371371 Int64))
+  (call   main (: 0 Int64)) (output (: 449010750751 Int64)))
+
+(case "chn1 a BUTTER churn — churning turns a QUARTER of the cream to butter floored at one whole scoop (the empty churn answering nine hundred), pouring past ten SPILLS the excess (an eight-hundred row with the excess and the running spill's low digit), the read packs butter cream and spills, and the seed's cream quarters to different scoops every churn with one pail spilling its pour and the other taking it whole"
+  (input  (do
+            (effect B
+              (op pour (-> Int64 Int64))
+              (op churn (-> Int64))
+              (op read (-> Int64)))
+            (def (main (: n Int64))
+              (handle B (tuple (+ (: 3 Int64) (* (% n 3) 6)) (: 0 Int64) (: 0 Int64))
+                ((pour (k) st
+                  (match st
+                    ((tuple cream butter sp)
+                      (if (> (+ cream k) 10)
+                          (resume (+ (: 800 Int64)
+                                     (+ (* (- (+ cream k) 10) 10)
+                                        (% (+ sp (- (+ cream k) 10)) 10)))
+                                  (tuple (: 10 Int64) butter (+ sp (- (+ cream k) 10))))
+                          (resume (+ (* (+ cream k) 10) (% k 10))
+                                  (tuple (+ cream k) butter sp))))))
+                 (churn () st
+                  (match st
+                    ((tuple cream butter sp)
+                      (if (= cream 0)
+                          (resume (: 900 Int64) st)
+                          (if (< (/ cream 4) 1)
+                              (resume (+ (: 10 Int64) (% (- cream 1) 10))
+                                      (tuple (- cream 1) (+ butter 1) sp))
+                              (resume (+ (* (/ cream 4) 10) (% (- cream (/ cream 4)) 10))
+                                      (tuple (- cream (/ cream 4)) (+ butter (/ cream 4)) sp)))))))
+                 (read () st
+                  (match st
+                    ((tuple cream butter sp)
+                      (resume (+ (* butter 100) (+ (* cream 10) sp)) st)))))
+                (let ((a (B.churn)))
+                  (let ((b (B.pour (: 4 Int64))))
+                    (let ((c (B.churn)))
+                      (let ((f (B.read)))
+                        (+ (* 10000 (+ (* 1000 (+ (* 1000 a) b)) c)) f)))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 278110280481 Int64))
+  (call   main (: 0 Int64)) (output (: 120640150250 Int64)))
+
+(case "gnd1 a GONDOLA on a reflecting cable — move advances the car by the signed direction held in state binding the new position ONCE in a let consumed by the terminus test both answers and both next-states, REFLECTS at either terminus by negating the direction and counting the trip, answers pack the let-bound position an arithmetic direction bit and the trip count, span reads position and trips without advancing, and the seed places the start so one run reflects mid-sequence while the other reaches the far terminus one move later"
+  (input  (do
+            (effect L
+              (op move (-> Int64))
+              (op span (-> Int64)))
+            (def (main (: n Int64))
+              (handle L (tuple (% n 3) (: 1 Int64) (: 0 Int64))
+                ((move () st
+                  (match st
+                    ((tuple pos dir trips)
+                      (let ((np (+ pos dir)))
+                        (if (if (= np 4) true (= np 0))
+                            (resume (+ (* np 100) (+ (* (/ (+ dir 1) 2) 10) (% (+ trips 1) 10)))
+                                    (tuple np (- 0 dir) (+ trips 1)))
+                            (resume (+ (* np 100) (+ (* (/ (+ dir 1) 2) 10) (% trips 10)))
+                                    (tuple np dir trips)))))))
+                 (span () st
+                  (match st
+                    ((tuple pos dir trips)
+                      (resume (+ (* pos 10) trips) st)))))
+                (let ((a (L.move)))
+                  (let ((b (L.move)))
+                    (let ((c (L.span)))
+                      (let ((d (L.move)))
+                        (let ((e (L.move)))
+                          (let ((f (L.move)))
+                            (+ (* 1000 (+ (* 1000 (+ (* 1000 (+ (* 1000 (+ (* 1000 a) b)) c)) d)) e)) f)))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 210310030411301201 Int64))
+  (call   main (: 0 Int64)) (output (: 110210020310411301 Int64)))
