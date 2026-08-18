@@ -8,3 +8,9 @@
   call in the TOLL (producer side). Non-recursive here — a recursive
   toll helper is the natural follow-up if this area heats up. PASS x3
   at 2d2a3116f.
+- `pyj2.sexp` — RECURSIVE helper as the toll: (dsum (* (+ s 7) 13)). The
+  unwind runs a data-dependent recursion per frame; recursion depth
+  varies with the seed through the toll argument (35 = fold 21 + dsum(104)
+  =5 + dsum(91)=10... model: s0=1: 21+dsum(117)+dsum(104); recorded from
+  CPS model 35/25). Completes the helper-toll pair: pyj1 non-recursive,
+  pyj2 recursive. PASS x3 at 5ae07931d.

@@ -15732,3 +15732,41 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 171 Int64))
   (call   main (: 0 Int64)) (trap "divide by zero"))
+
+;; ── trap ordering and discard elision: body-trap wins over a pending toll; discarded pure traps drop (breaker batch 331) ──
+;; Contrast law with dbf1 (batch 323): discarded-replay EFFECTS fire; discarded pure TRAPS are elided.
+
+(case "pyt5 the BODY TRAPS UNDER A PENDING TOLL — the replayed rest-of-body divides by the drawn answer so the zero seed traps INSIDE the resumed continuation while the frame's thousandfold toll is still pending, the trap wins over the pending post-resume work, and the nonzero seed completes the body and pays the toll"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s (+ (resume s (+ s 1)) (* 1000 (+ s 1)))))
+                (let ((a (E.tick)))
+                  (let ((b (/ 60 a)))
+                    (+ a (* 10 b))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 2601 Int64))
+  (call   main (: 0 Int64)) (trap "divide by zero"))
+
+(case "dsc1 a DISCARDED DIVISION NEVER TRAPS — the do-interior quotient is computed for no one and the zero divisor that would trap in value position is ELIDED with the rest of the dead expression, both seeds returning the constant tail unchanged, pinning that a pure trapping form in discard position is droppable (the CDZ0307 contract: a valueless pure form has no effect and a trap is not an effect)"
+  (input  (do
+            (def (main (: n Int64))
+              (do (/ 60 (% n 3)) (: 7 Int64)))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 7 Int64))
+  (call   main (: 0 Int64)) (output (: 7 Int64)))
+
+(case "pyt6 the WOULD-TRAP REPLAY IS DISCARD-ELIDED — the double-replaying arm's first replay runs a body whose division would trap on the zero seed, but the replay's value is discarded so the pure trapping tail is elided per the discard law and only the second replay's quotient survives, while the nonzero seed shows the first replay otherwise runs"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s
+                  (do (resume s (+ s 1))
+                      (resume (+ s 10) (+ s 2)))))
+                (let ((a (E.tick)))
+                  (/ 60 a))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 5 Int64))
+  (call   main (: 0 Int64)) (output (: 6 Int64)))
