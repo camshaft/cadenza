@@ -15510,3 +15510,44 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 631 Int64))
   (call   main (: 0 Int64)) (output (: 420 Int64)))
+
+;; ── non-Int surfaces: String state thread + Bool frame-count parity, fixed and data-dependent (breaker batch 326) ──
+
+(case "pys2 a STRING STATE THREAD GROWING THROUGH RESUMES — weave answers the current rope and appends a marker into the state thread, the seed picks ropes of DIFFERENT LENGTHS so the two draws' concatenated byte length separates the runs, and the rope value must flow through the tail resume's answer and state positions intact"
+  (input  (do
+            (effect E (op weave (-> String)))
+            (def (main (: n Int64))
+              (handle E (if (= (% n 3) 0) "a" "bb")
+                ((weave () s (resume s (String.concat s "x"))))
+                (let ((p (E.weave)))
+                  (let ((q (E.weave)))
+                    (String.byte-len (String.concat p q))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 5 Int64))
+  (call   main (: 0 Int64)) (output (: 3 Int64)))
+
+(case "pyb1 a BOOL-NEGATING POST-RESUME arm under a SHORT-CIRCUIT body — each frame NEGATES whatever the resumed rest-of-body returns and the or-body's short circuit decides HOW MANY negating frames stack, one seed answers true immediately stacking one negation while the other draws twice stacking two, and the double negation restores what the single negation flips"
+  (input  (do
+            (effect E (op probe (-> Bool)))
+            (def (main (: n Int64))
+              (if (handle E (% n 3)
+                    ((probe () s
+                      (not (resume (> s 0) (+ s 2)))))
+                    (or (E.probe) (E.probe)))
+                  (: 1 Int64) (: 2 Int64)))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 2 Int64))
+  (call   main (: 0 Int64)) (output (: 1 Int64)))
+
+(case "pyb2 THREE PARITY PROBES under a nested and-chain with negating frames — each draw answers its state's evenness and each frame negates the rest-of-body on the way out, the and-chain short-circuits at the FIRST odd state so the seeds stack one or two negations from the same three-probe body, and the final parity of stacked frames decides the branch"
+  (input  (do
+            (effect E (op probe (-> Bool)))
+            (def (main (: n Int64))
+              (if (handle E (% n 3)
+                    ((probe () s
+                      (not (resume (= (% s 2) 0) (+ s 1)))))
+                    (and (E.probe) (and (E.probe) (E.probe))))
+                  (: 1 Int64) (: 2 Int64)))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 1 Int64))
+  (call   main (: 0 Int64)) (output (: 2 Int64)))
