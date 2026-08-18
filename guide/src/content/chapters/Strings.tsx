@@ -224,6 +224,29 @@ export default function Strings() {
           </>
         }
       />
+
+      <Exercise
+        id="strings:3"
+        prompt={
+          <>
+            Now a character. Read the first character of <C>"Zebra"</C> and give its Unicode code point.
+            The letter <C>Z</C> is code point <C>90</C>, so pick the operation that turns a character into
+            its integer and the answer is <C>90</C>.
+          </>
+        }
+        starter={`(def (main)
+  (Char.?-int (Option.expect (String.scalar-at "Zebra" 0) "in range")))`}
+        solution={`(def (main)
+  (Char.to-int (Option.expect (String.scalar-at "Zebra" 0) "in range")))`}
+        expected="90"
+        hint={
+          <>
+            <C>String.scalar-at</C> hands you the character (an <C>Option Char</C>, unwrapped here by{" "}
+            <C>Option.expect</C>), and <C>Char.to-int</C> reads its code point. The total direction is{" "}
+            <C>to-int</C>; <C>from-int</C> is the fallible reverse.
+          </>
+        }
+      />
     </article>
   );
 }

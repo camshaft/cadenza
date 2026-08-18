@@ -161,7 +161,7 @@ export const CHAPTERS: Chapter[] = [
     title: "Strings & text",
     blurb: "Unicode text, joining, and character vs byte length.",
     section: "Fundamentals",
-    exercises: 2,
+    exercises: 3,
     Component: lazy(() => import("./chapters/Strings.tsx")),
   },
   {
