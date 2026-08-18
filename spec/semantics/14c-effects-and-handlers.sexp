@@ -15158,3 +15158,52 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 141 Int64))
   (call   main (: 0 Int64)) (output (: 130 Int64)))
+
+;; ── both-replays-consumed + cross-handler toll timing law: dispatch-order vs unwind-order (breaker batch 319) ──
+
+(case "dbr3 BOTH REPLAY VALUES CONSUMED — the arm SUMS two sequential resumes so neither replay is discarded, the answer is the two replays' body values added (each replay runs the whole tail with its own answer), and the multi-shot second-replay-wins rule from the discard shape gives way to both-contribute when the arm keeps both"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s
+                  (+ (resume s (+ s 1))
+                     (resume (+ s 10) (+ s 2)))))
+                (E.tick)))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 12 Int64))
+  (call   main (: 0 Int64)) (output (: 10 Int64)))
+
+(case "pyt1 a POST-RESUME TOLL that PERFORMS A FOREIGN EFFECT — each inner tick resumes then adds an OUTER levy to what the rest-of-body returned, the two levies fire during the innermost-first unwind so the outer handler's counter advances in unwind order not dispatch order, and the seed sets the levy schedule the unwinding frames drain"
+  (input  (do
+            (effect T (op levy (-> Int64)))
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle T (% n 3)
+                ((levy () t (resume t (+ t 5))))
+                (handle E (: 1 Int64)
+                  ((tick () s
+                    (+ (resume s (+ s 1)) (T.levy))))
+                  (let ((a (E.tick)))
+                    (let ((b (E.tick)))
+                      (+ a (* 10 b)))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 28 Int64))
+  (call   main (: 0 Int64)) (output (: 26 Int64)))
+
+(case "pyt2 the FOREIGN LEVY INSIDE THE RESUME'S ANSWER ARGUMENT — each inner tick levies the outer handler WHILE BUILDING its answer so the levies fire in DISPATCH order, the exact mirror of the post-resume toll whose levies fire in unwind order, and the pair pins that argument-position performs precede the suspend while post-resume performs follow the replay"
+  (input  (do
+            (effect T (op levy (-> Int64)))
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle T (% n 3)
+                ((levy () t (resume t (+ t 5))))
+                (handle E (: 1 Int64)
+                  ((tick () s
+                    (resume (+ s (T.levy)) (+ s 1))))
+                  (let ((a (E.tick)))
+                    (let ((b (E.tick)))
+                      (+ a (* 10 b)))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 82 Int64))
+  (call   main (: 0 Int64)) (output (: 71 Int64)))
