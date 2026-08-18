@@ -10531,6 +10531,41 @@ fn rewrite_resume_to_refolded_context(
         let inlined = crate::eval::beta_reduce(db, lbody, &subst);
         return rewrite_resume_to_refolded_context(db, inlined, handle_body, perform, arms);
     }
+    // `(match <scrutinee reaching a resume> (pat body)…)` — the resume is the match SCRUTINEE and an arm
+    // BINDER captures the resume RESULT (breaker's pyr7: `(match (resume s next) ((0) …) ((r) (+ (* r 2)
+    // s)))`). Same binder-refs dangling class as the let-init branch, one site over: a match-arm binder
+    // reference resolves to the SCRUTINEE occurrence (the bare resume node), so the generic recursion below
+    // rewrites the scrutinee's resume but leaves the arm-binder refs pointing at the original resume ->
+    // re-lower as "resume outside a lowered handler arm". Rewrite the scrutinee's resume to its refolded
+    // (PURE -- every effect discharged) continuation, then beta_reduce the whole match with {scrutinee :=
+    // refolded} so BOTH the scrutinee position AND every arm-binder reference splice the pure value (sound
+    // to duplicate). Guarded: the scrutinee reaches a resume and NO arm body does (an arm-body resume is the
+    // peel/tail path's shape, served elsewhere -- keeps this mutually exclusive with peel_resume_from_arm_body).
+    if let Resolved::Match {
+        scrutinee,
+        arms: match_arms,
+    } = resolved_of(db, node)
+        && count_resumes(db, scrutinee) >= 1
+        && match_arms.iter().all(|&(_, b)| count_resumes(db, b) == 0)
+    {
+        // Rewrite the scrutinee's resume to its refolded (PURE — every effect discharged) continuation, then
+        // REBUILD the match with `substitute_nodes` replacing the scrutinee node by identity with the
+        // refolded value. `substitute_nodes` rebuilds the arms FRESH (pattern + body copied together, so each
+        // arm's pattern↔body binder link is structurally preserved) and the copied binder-ref nodes carry no
+        // cached resolution; forget+re-resolve the rebuilt subtree so an arm binder — which resolves through
+        // its PATTERN to the scrutinee — RE-BINDS to the new pure scrutinee instead of the original resume
+        // node (which the generic recursion would leave it pointing at, re-lowering as "resume outside a
+        // lowered handler arm"; a separate pattern/body copy would instead orphan the ref → CDZ0101).
+        let new_scrut =
+            rewrite_resume_to_refolded_context(db, scrutinee, handle_body, perform, arms)?;
+        let mut sub: HashMap<StructId, StructId> = HashMap::default();
+        sub.insert(scrutinee, new_scrut);
+        let rebuilt = substitute_nodes(db, node, &sub);
+        reparent_under_handle_site(db, rebuilt, handle_body);
+        crate::resolve::forget_subtree(db, rebuilt);
+        crate::resolve::resolve_subtree(db, rebuilt);
+        return rewrite_resume_to_refolded_context(db, rebuilt, handle_body, perform, arms);
+    }
     if let Resolved::Resume { value, next_state } = resolved_of(db, node) {
         // Build `C[value]` (the continuation with the hole filled by the resume value), then re-reduce it
         // under the same handler seeded with the resume's next-state — so a further discharged perform in
