@@ -17,3 +17,8 @@ DECLINES. The filed issue's "bare-binder single arm declines" line was a
 stale-binary artifact — corrected with v-effects. Direct-compile
 diagnostics must use target/release-debug/cdz (the gate's profile), not
 target/release.
+
+UPDATE (tick 1755): pyr7 fix landed as e6eb3831b (match-scrutinee branch
+in the two-hole refold). pyr7 flips to PASS x3 with fresh binaries; pyr9
+stays pass; full ladder compiles clean. Both binder twins closed
+(let 6c52dbc3c, match e6eb3831b). pyr7+pyr9 promote in batch 321.

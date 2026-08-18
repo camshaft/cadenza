@@ -15207,3 +15207,56 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 82 Int64))
   (call   main (: 0 Int64)) (output (: 71 Int64)))
+
+;; ── post-resume compositions: per-activation replay divergence, state-binder lifetime, nested toll containment (breaker batch 320) ──
+
+(case "dbr4 CONDITIONAL DOUBLE REPLAY — a positive state replays the tail twice with the second replay winning while a zero state resumes once, the seed places the single-replay frame at different depths so one run double-replays at BOTH dispatches and the other threads a single first dispatch into a doubled second, mixing the one-shot and multi-shot paths in a single machine"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s
+                  (if (> s 0)
+                      (do (resume s (+ s 1))
+                          (resume (+ s 10) (+ s 2)))
+                      (resume s (+ s 1)))))
+                (let ((a (E.tick)))
+                  (let ((b (E.tick)))
+                    (+ a (* 10 b))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 141 Int64))
+  (call   main (: 0 Int64)) (output (: 110 Int64)))
+
+(case "pyr8 a POST-RESUME TOLL over a DESTRUCTURED TUPLE STATE — the arm matches the pair out of state then adds a thousandfold toll packing BOTH fields as captured at its own dispatch, the two frames' tolls unwind innermost-first with different field pairs, and a toll reading the post-resume tuple or the other frame's binding misprices both digits at once"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple (% n 3) (: 0 Int64))
+                ((tick () st
+                  (match st
+                    ((tuple v k)
+                      (+ (resume v (tuple (+ v 2) (+ k 1)))
+                         (* 1000 (+ (* v 10) k)))))))
+                (let ((a (E.tick)))
+                  (let ((b (E.tick)))
+                    (+ a (* 10 b))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 41031 Int64))
+  (call   main (: 0 Int64)) (output (: 21020 Int64)))
+
+(case "pyn1 POST-RESUME TOLLS AT BOTH NESTING LEVELS — the outer levy adds a thousandfold toll around a body whose second summand is a WHOLE INNER HANDLE running two hundredfold-tolled ticks, the inner pyramid unwinds completely inside the outer frame's replay before the outer toll settles, and the seed moves only the outer answer and toll leaving the inner arithmetic fixed"
+  (input  (do
+            (effect T (op levy (-> Int64)))
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle T (% n 3)
+                ((levy () t (+ (resume t (+ t 1)) (* 1000 (+ t 1)))))
+                (+ (T.levy)
+                   (handle E (: 1 Int64)
+                     ((tick () s (+ (resume s (+ s 1)) (* 100 s))))
+                     (let ((a (E.tick)))
+                       (let ((b (E.tick)))
+                         (+ a (* 10 b))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 2322 Int64))
+  (call   main (: 0 Int64)) (output (: 1321 Int64)))
