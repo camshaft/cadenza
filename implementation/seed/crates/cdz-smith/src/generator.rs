@@ -769,11 +769,14 @@ impl Gen<'_> {
                 self.out.push(' ');
             }
             _ => {
-                // Scalar Int64 state. The arm body is EITHER a bare single `(resume …)` or (coin flip) a
-                // CONDITIONAL resume: an `if` on the state with a `(resume …)` in BOTH branches — a
-                // MULTI-RESUME-POINT arm (the F24-sibling / two-hole-refold territory the recent pyr3
-                // post-resume fixes touched) that a single-resume arm never produces. Each branch resumes
-                // exactly once, so termination is preserved (only one branch runs per perform).
+                // Scalar Int64 state. The arm body is one of three (choice of 3): a bare single
+                // `(resume …)`; a CONDITIONAL resume — an `if` on the state with a `(resume …)` in BOTH
+                // branches, a MULTI-RESUME-POINT arm (the F24-sibling / two-hole-refold territory the
+                // pyr3 post-resume fixes touched); or a DISCARD-resume — the arm returns a plain value
+                // and NEVER resumes (zero-shot / tombstone: the handler drops the captured continuation
+                // and the `(handle …)` evaluates to the arm value directly), a distinct now-supported
+                // lowering a single-resume arm never produces. All total: at most one resume runs per
+                // perform, and discard performs none, so the fold stays bounded.
                 let init = self.cur.range(0, 9);
                 let _ = write!(
                     self.out,
@@ -781,28 +784,35 @@ impl Gen<'_> {
                 );
                 let mark = self.env.push(p.clone(), Kind::Num); // p and s are both scalar Int64 here
                 self.env.push(s.clone(), Kind::Num);
-                if self.cur.flip() {
-                    let rel = match self.cur.choice(4) {
-                        0 => "<",
-                        1 => ">",
-                        2 => "<=",
-                        _ => ">=",
-                    };
-                    let _ = write!(
-                        self.out,
-                        "(if ({rel} {s} {}) (resume ",
-                        self.cur.range(0, 9)
-                    );
-                    self.expr(depth.saturating_sub(1), Kind::Num); // branch-1 resume VALUE
-                    let _ = write!(self.out, " (+ {s} {p})) (resume ");
-                    self.expr(depth.saturating_sub(1), Kind::Num); // branch-2 resume VALUE
-                    let _ = write!(self.out, " {s}))");
-                } else {
-                    self.out.push_str("(resume ");
-                    self.expr(depth.saturating_sub(1), Kind::Num); // resume VALUE
-                    self.out.push(' ');
-                    self.expr(depth.saturating_sub(1), Kind::Num); // new STATE
-                    self.out.push(')');
+                match self.cur.choice(3) {
+                    0 => {
+                        let rel = match self.cur.choice(4) {
+                            0 => "<",
+                            1 => ">",
+                            2 => "<=",
+                            _ => ">=",
+                        };
+                        let _ = write!(
+                            self.out,
+                            "(if ({rel} {s} {}) (resume ",
+                            self.cur.range(0, 9)
+                        );
+                        self.expr(depth.saturating_sub(1), Kind::Num); // branch-1 resume VALUE
+                        let _ = write!(self.out, " (+ {s} {p})) (resume ");
+                        self.expr(depth.saturating_sub(1), Kind::Num); // branch-2 resume VALUE
+                        let _ = write!(self.out, " {s}))");
+                    }
+                    1 => {
+                        // DISCARD: arm returns a plain numeric value, NEVER resumes (zero-shot/tombstone).
+                        self.expr(depth.saturating_sub(1), Kind::Num);
+                    }
+                    _ => {
+                        self.out.push_str("(resume ");
+                        self.expr(depth.saturating_sub(1), Kind::Num); // resume VALUE
+                        self.out.push(' ');
+                        self.expr(depth.saturating_sub(1), Kind::Num); // new STATE
+                        self.out.push(')');
+                    }
                 }
                 self.env.truncate(mark);
                 self.out.push_str(")) "); // close the op arm and the arm-list
@@ -1291,9 +1301,10 @@ mod tests {
     }
 
     /// The effect-handler arm is reachable — some seed emits an `(effect …)` declaration paired with
-    /// a `(handle …)` — and every program that path can emit still parses. Also asserts the
-    /// termination structure: any program carrying a handler has a `(resume ` in its arm, so the
-    /// perform/resume fold is bounded and the differential run can't hang.
+    /// a `(handle …)` — and every program that path can emit still parses. (A handler need NOT carry a
+    /// `(resume …)`: the discard/tombstone arm is total by dropping its continuation — see
+    /// [`some_seed_emits_a_discard_resume_arm`]. Resume-bearing arms resume at most once per perform,
+    /// so the fold stays bounded either way.)
     #[test]
     fn some_seed_emits_an_effect_handler() {
         let mut hit = false;
@@ -1309,10 +1320,6 @@ mod tests {
             );
             if src.contains("(effect ") && src.contains("(handle ") {
                 hit = true;
-                assert!(
-                    src.contains("(resume "),
-                    "effect handler is missing its single `(resume ` (would not terminate):\n{src}"
-                );
                 // The tuple-state variant threads a `(tuple …)` state read back via `(. s N)` projections.
                 if src.contains("(tuple ") && src.contains("(. ") {
                     hit_tuple_state = true;
@@ -1362,6 +1369,27 @@ mod tests {
             }
         }
         assert!(hit, "no seed in the sweep emitted a conditional-resume arm");
+    }
+
+    /// The discard-resume (zero-shot / tombstone) arm is reachable — some seed emits a handler program
+    /// that contains a `(handle …)` yet NO `(resume …)` at all, which can only happen when the sole
+    /// handler's arm discards its continuation (every other handler-arm shape this generator emits
+    /// contains a `(resume …)`). Every such program still parses. Guards the zero-shot reach.
+    #[test]
+    fn some_seed_emits_a_discard_resume_arm() {
+        let mut hit = false;
+        for n in 0..8000u32 {
+            let seed = varied_seed(n);
+            let src = generate(&seed).source;
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "generated program did not parse:\n{src}"
+            );
+            if src.contains("(handle ") && !src.contains("(resume ") {
+                hit = true;
+            }
+        }
+        assert!(hit, "no seed in the sweep emitted a discard-resume arm");
     }
 
     /// The two-op effect variant is reachable — some seed emits an `(effect …)` declaring TWO `(op …)`
