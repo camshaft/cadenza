@@ -15,3 +15,10 @@
   thread resetting between dispatches collapses a distinct digit — the
   distinct-effect sibling of pysh5's same-effect dual ladders. PASS x3
   at 67ef1f754.
+- `hoh6.sexp` — the outer thread SPANS init and arm draws: the inner
+  handler's starting state comes from an outer draw (t0), and its arm
+  folds a SECOND outer draw (t0+7) into the answer — one continuous
+  thread through the frame-install boundary (18 = 10*t0 + t0+7 for
+  t0=1; 7 for t0=0). A thread reset at install collapses the gap.
+  Closes the hoh family: INIT-time draws (hoh3), arm-time draws (hoh4/
+  hoh5), and now the CONTINUITY between them. PASS x3 at b7972ffd6.
