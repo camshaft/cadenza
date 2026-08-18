@@ -19,7 +19,8 @@ export default function WhatsNext() {
         <Ch to="/pattern-matching">pattern matching</Ch>, and you've met the collections, namely{" "}
         <Ch to="/lists">lists</Ch>, <Ch to="/maps-sets">maps &amp; sets</Ch>, and lazy{" "}
         <Ch to="/iterators">iterators &amp; ranges</Ch>, along with the text and binary
-        types, <Ch to="/strings">strings</Ch>, <Ch to="/bytes">bytes</Ch> (and{" "}
+        types, <Ch to="/strings">strings</Ch> (down to the individual <C>Char</C>s that compose them),{" "}
+        <Ch to="/bytes">bytes</Ch> (and{" "}
         <Ch to="/binary-matching">binary matching</Ch> to build and destructure them), and{" "}
         <Ch to="/symbols">symbols</Ch>. You handle{" "}
         <Ch to="/errors">absence and errors</Ch> with <C>Option</C>/<C>Result</C>, and you know how
