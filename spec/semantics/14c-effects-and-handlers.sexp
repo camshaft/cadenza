@@ -15113,3 +15113,48 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 89 Int64))
   (call   main (: 0 Int64)) (output (: 42 Int64)))
+
+;; ── resume-for-effect-only tombstone + sequential double-resume multi-shot pins (breaker batch 318) ──
+
+(case "tmb1 the RESUME VALUE DISCARDED in a do sequence — each arm resumes for EFFECT ONLY then answers a tombstone keyed to its own dispatch state, the body's positional fold and the inner frame's tombstone are both thrown away so only the FIRST dispatch's tombstone survives the unwind, and the seed is visible solely through that first frame's captured state"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s
+                  (do (resume s (+ s 3))
+                      (+ (* s 100) 7))))
+                (let ((a (E.tick)))
+                  (let ((b (E.tick)))
+                    (+ a (* 10 b))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 107 Int64))
+  (call   main (: 0 Int64)) (output (: 7 Int64)))
+
+(case "dbr1 SEQUENTIAL DOUBLE RESUME in one arm — the arm resumes once discarding the outcome then resumes AGAIN with a shifted answer and state, a single-perform body so each resume replays just the tail, probing whether continuations are one-shot (second resume must be a defined error) or multi-shot (the second replay's value wins)"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s
+                  (do (resume s (+ s 1))
+                      (resume (+ s 10) (+ s 2)))))
+                (E.tick)))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 11 Int64))
+  (call   main (: 0 Int64)) (output (: 10 Int64)))
+
+(case "dbr2 DOUBLE RESUME over a TWO-PERFORM body — each of the two dispatches replays its tail twice so the body runs through FOUR leaf executions, the multi-shot second-replay-wins rule composes multiplicatively (the surviving answer threads the second replay at BOTH depths), and the seed shifts the surviving pair together"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s
+                  (do (resume s (+ s 1))
+                      (resume (+ s 10) (+ s 2)))))
+                (let ((a (E.tick)))
+                  (let ((b (E.tick)))
+                    (+ a (* 10 b))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 141 Int64))
+  (call   main (: 0 Int64)) (output (: 130 Int64)))
