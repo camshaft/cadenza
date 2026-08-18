@@ -313,6 +313,14 @@ run `cargo xtask fleet remove <you>`. This marks you `stopped` in the registry, 
 stop-file, and ends the loop — **but leaves your tmux window open** so the scrollback survives.
 A completed per-issue `fix` agent self-removes this way.
 
+To LOWER your cadence to a low-frequency monitor (still active, just ticking rarely — e.g. a role
+at a rest point) instead of stopping, use `cargo xtask fleet set-interval <you> <interval>` (e.g.
+`3h`). Do NOT do this with a raw `/loop <interval>` reschedule: `set-interval` persists the new
+interval to the registry, and the watchdog's stale window AND its re-arm both read that registry
+interval. A raw `/loop` leaves the registry at the old (short) interval, so the watchdog still
+computes a short stale window, trips every ~stale-window, and re-arms you back to the old cadence —
+silently reverting the change. `set-interval` is the only lever that actually sticks.
+
 ## If you're stuck (but never idle-waiting on the human)
 
 - Gate won't go green → leave the worktree dirty, STOP this tick, and let the next tick retry. Do
