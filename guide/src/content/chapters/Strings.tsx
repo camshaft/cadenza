@@ -118,8 +118,10 @@ export default function Strings() {
       <P>
         A string is a sequence of <em>characters</em> (Unicode scalar values), and <C>Char</C> is the
         type of a single one. A character literal is written <C>#\a</C>: a <C>#\</C> followed by the
-        scalar. Reach for a character when you want one element of the text rather than a substring.
+        scalar. Its Unicode scalar value (its code point) is read with <C>Char.to-int</C>, so <C>#\a</C>{" "}
+        is <C>97</C>:
       </P>
+      <Runnable source={`(Char.to-int #\\a)`} />
       <P>
         <C>String.scalar-at</C> reads the character at a scalar position, the single-character companion
         of <C>slice</C>. Like <C>at</C> and <C>slice</C> it's fallible, returning an <C>Option Char</C>, so
@@ -162,15 +164,10 @@ export default function Strings() {
 
       <P>
         Characters compare by their code point. <C>=</C> tests two characters for equality, and{" "}
-        <C>&lt;</C>, <C>&gt;</C>, <C>&lt;=</C>, and <C>&gt;=</C> order them by scalar value. Reading the two
-        characters of <C>"az"</C>, <C>#\a</C> (code point 97) sorts before <C>#\z</C> (122), so this
-        comparison is <C>true</C>:
+        <C>&lt;</C>, <C>&gt;</C>, <C>&lt;=</C>, and <C>&gt;=</C> order them by scalar value, so <C>#\a</C>{" "}
+        (code point 97) sorts before <C>#\z</C> (122) and this comparison is <C>true</C>:
       </P>
-      <Runnable
-        source={`(def (main)
-  (< (Option.expect (String.scalar-at "az" 0) "in range")
-     (Option.expect (String.scalar-at "az" 1) "in range")))`}
-      />
+      <Runnable source={`(< #\\a #\\z)`} />
 
       <P>
         Characters are one view of text. Underneath sits the raw encoding, the octets a file or a
