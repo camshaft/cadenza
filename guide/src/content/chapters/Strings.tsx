@@ -161,6 +161,18 @@ export default function Strings() {
       </Why>
 
       <P>
+        Characters compare by their code point. <C>=</C> tests two characters for equality, and{" "}
+        <C>&lt;</C>, <C>&gt;</C>, <C>&lt;=</C>, and <C>&gt;=</C> order them by scalar value. Reading the two
+        characters of <C>"az"</C>, <C>#\a</C> (code point 97) sorts before <C>#\z</C> (122), so this
+        comparison is <C>true</C>:
+      </P>
+      <Runnable
+        source={`(def (main)
+  (< (Option.expect (String.scalar-at "az" 0) "in range")
+     (Option.expect (String.scalar-at "az" 1) "in range")))`}
+      />
+
+      <P>
         Characters are one view of text. Underneath sits the raw encoding, the octets a file or a
         protocol actually carries. That's <em>bytes</em>, next.
       </P>
