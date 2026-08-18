@@ -15260,3 +15260,53 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 2322 Int64))
   (call   main (: 0 Int64)) (output (: 1321 Int64)))
+
+;; ── post-resume ladder closed: match-binder pass-witnesses for e6eb3831b + recursive-call rung (breaker batch 321) ──
+;; pyr7 (literal+binder over resume) declined until e6eb3831b; pyr9 (bare binder) folded already; both lock the fix.
+
+(case "pyr7 a MATCH BINDER on the resume result — the arm matches the resumed rest-of-body value against a zero literal falling through to a BINDER arm that reuses the value doubled-plus-state, the binder arm is the match twin of the let form the two-hole refold folds, and the runs disagree at both frames through the binder path"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s
+                  (match (resume s (+ s 3))
+                    (0 (+ 100 s))
+                    (r (+ (* r 2) s)))))
+                (let ((a (E.tick)))
+                  (let ((b (E.tick)))
+                    (+ a (* 10 b))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 173 Int64))
+  (call   main (: 0 Int64)) (output (: 126 Int64)))
+
+(case "pyr9 a BARE-BINDER MATCH on the resume result — the single match arm binds whatever the resumed rest-of-body returned with no literal alternatives at all and answers it tripled-plus-state, the minimal match-scrutinee-binder shape, tripling per frame so the unwind pairing is pinned by magnitude"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s
+                  (match (resume s (+ s 3))
+                    (r (+ (* r 3) s)))))
+                (let ((a (E.tick)))
+                  (let ((b (E.tick)))
+                    (+ a (* 10 b))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 382 Int64))
+  (call   main (: 0 Int64)) (output (: 279 Int64)))
+
+(case "pyh1 the RESUME RESULT FED THROUGH A RECURSIVE PURE HELPER — each arm digit-sums whatever the resumed rest-of-body returned before adding a hundredfold state toll, the helper recursion runs during the unwind on a value that does not exist until the tail completes, and the seed drives the two frames' digit-sums through different collapse depths"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (dsum (: x Int64))
+              (if (< x 10) x (+ (% x 10) (dsum (/ x 10)))))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s
+                  (+ (dsum (resume s (+ s 3))) (* 100 s))))
+                (let ((a (E.tick)))
+                  (let ((b (E.tick)))
+                    (+ a (* 10 b))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 109 Int64))
+  (call   main (: 0 Int64)) (output (: 6 Int64)))
