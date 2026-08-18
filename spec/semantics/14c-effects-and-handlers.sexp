@@ -15645,3 +15645,49 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 41010 Int64))
   (call   main (: 0 Int64)) (output (: 27000 Int64)))
+
+;; ── shadow uninstall re-routing + continuation escapes across region boundaries (breaker batch 329) ──
+
+(case "pysh2 the SHADOW UNINSTALLS BETWEEN OUTER DRAWS — an outer draw precedes the shadowing region and a THIRD draw follows it, the middle draw routes to the inner cheap-toll handler whose region closes before the third draw re-routes to the OUTER expensive-toll arm continuing the outer state where the first draw left it, and a shadow that leaks past its region steals both the third draw's state and its toll"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s (+ (resume s (+ s 1)) (* 1000 (+ s 1)))))
+                (+ (E.tick)
+                   (+ (* 10 (handle E (: 50 Int64)
+                              ((tick () s (+ (resume s (+ s 1)) (* 100 s))))
+                              (E.tick)))
+                      (* 1000 (E.tick))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 57501 Int64))
+  (call   main (: 0 Int64)) (output (: 54500 Int64)))
+
+(case "pyq1 a FOREIGN TOLLED PERFORM WHOSE CONTINUATION ESCAPES THE INNER REGION — the inner body performs on the tolled OUTER handler so the outer levy's continuation spans past the inner handle's close, the inner toll settles INSIDE that escaping continuation while the outer levy's own toll wraps the whole remainder including the tenfold scaling and the first draw's addition, and the composition orders three tolls across two frames and a region boundary"
+  (input  (do
+            (effect T (op levy (-> Int64)))
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle T (% n 3)
+                ((levy () t (+ (resume t (+ t 1)) (* 10000 (+ t 1)))))
+                (+ (T.levy)
+                   (* 10 (handle E (: 5 Int64)
+                           ((tick () s (+ (resume s (+ s 1)) (* 100 s))))
+                           (+ (E.tick) (T.levy)))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 55071 Int64))
+  (call   main (: 0 Int64)) (output (: 35060 Int64)))
+
+(case "pyq2 the ESCAPING LEVY AS THE INNER BODY'S LAST FORM — the tolled inner draw comes first and the foreign tolled levy second so the levy's continuation carries only the addition the inner toll and the region close, the outer toll wraps that short escape while the inner toll still settles inside it, and swapping the two summands crosses into the declined fold face"
+  (input  (do
+            (effect T (op levy (-> Int64)))
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle T (% n 3)
+                ((levy () t (+ (resume t (+ t 1)) (* 10000 (+ t 1)))))
+                (handle E (: 5 Int64)
+                  ((tick () s (+ (resume s (+ s 1)) (* 100 s))))
+                  (+ (* 10 (E.tick)) (T.levy)))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 20551 Int64))
+  (call   main (: 0 Int64)) (output (: 10550 Int64)))

@@ -19,3 +19,9 @@ fire; dsc1/pyt6 prove discarded-replay pure TRAPS do not. Effects are
 kept, pure work (including trapping pure work) is droppable. This is
 load-bearing spec behavior — worth the corpus pin so any move toward
 strict-trap semantics is a deliberate flag-day, not an accident.
+- `pyt8.sexp` — the surviving replay's ANSWER ARGUMENT traps: (resume
+  (/ 60 s) ...) in the second (winning) resume. Value position beats
+  discard elision — the zero seed traps while BUILDING the winning
+  replay (60 / trap). Sharpens the elision boundary: the trap dropped in
+  dsc1/pyt6 lived in the DISCARDED tail; a trap in the KEPT dataflow
+  still fires. PASS x3 at e11e4d3d8.
