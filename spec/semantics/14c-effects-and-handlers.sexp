@@ -15462,3 +15462,51 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 88 Int64))
   (call   main (: 0 Int64)) (output (: 85 Int64)))
+
+;; ── capture laws: op-arg toll, per-arm toll shapes, pre-suspend binding rides the continuation (breaker batch 325) ──
+
+(case "pyv1 the POST-RESUME TOLL KEYED TO THE OP ARGUMENT — each dispatch answers argument-plus-state threading their sum then adds a hundredfold toll of ITS OWN argument after the replay, the two arguments differ so the unwinding tolls must each recall the argument their dispatch received across the suspend, and a toll reading the other frame's argument or the state instead shifts the hundreds"
+  (input  (do
+            (effect E (op tick (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick (v) s
+                  (+ (resume (+ v s) (+ s v)) (* 100 v))))
+                (let ((a (E.tick 4)))
+                  (let ((b (E.tick 7)))
+                    (+ a (* 10 b))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 1225 Int64))
+  (call   main (: 0 Int64)) (output (: 1214 Int64)))
+
+(case "pym1 TWO OPS WITH DIFFERENT POST-RESUME TOLLS INTERLEAVED — hi answers plain state adding a thousandfold toll while lo answers doubled state adding only a hundredfold one, the body alternates hi lo hi so the unwind interleaves toll KINDS in reverse dispatch order, and a lowering that applies one op's toll shape to the other's frame misprices by an order of magnitude"
+  (input  (do
+            (effect E
+              (op hi (-> Int64))
+              (op lo (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((hi () s (+ (resume s (+ s 1)) (* 1000 (+ s 1))))
+                 (lo () s (+ (resume (* s 2) (+ s 2)) (* 100 s))))
+                (let ((a (E.hi)))
+                  (let ((b (E.lo)))
+                    (let ((c (E.hi)))
+                      (+ a (+ (* 10 b) (* 100 c))))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 7641 Int64))
+  (call   main (: 0 Int64)) (output (: 5420 Int64)))
+
+(case "pyw1 the TOLL COMPUTED BEFORE THE SUSPEND CONSUMED AFTER THE REPLAY — each arm let-binds a hundredfold toll from its pre-resume state then resumes and adds the SAVED binding to whatever the rest-of-body returned, the binding must ride the continuation across the suspend and the replay, and a lowering that recomputes the toll from post-resume state or drops the saved slot shifts every frame's contribution"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s
+                  (let ((t (* 100 (+ s 1))))
+                    (+ (resume s (+ s 2)) t))))
+                (let ((a (E.tick)))
+                  (let ((b (E.tick)))
+                    (+ a (* 10 b))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 631 Int64))
+  (call   main (: 0 Int64)) (output (: 420 Int64)))
