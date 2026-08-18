@@ -769,14 +769,16 @@ impl Gen<'_> {
                 self.out.push(' ');
             }
             _ => {
-                // Scalar Int64 state. The arm body is one of three (choice of 3): a bare single
+                // Scalar Int64 state. The arm body is one of four (choice of 4): a bare single
                 // `(resume …)`; a CONDITIONAL resume — an `if` on the state with a `(resume …)` in BOTH
                 // branches, a MULTI-RESUME-POINT arm (the F24-sibling / two-hole-refold territory the
-                // pyr3 post-resume fixes touched); or a DISCARD-resume — the arm returns a plain value
-                // and NEVER resumes (zero-shot / tombstone: the handler drops the captured continuation
-                // and the `(handle …)` evaluates to the arm value directly), a distinct now-supported
-                // lowering a single-resume arm never produces. All total: at most one resume runs per
-                // perform, and discard performs none, so the fold stays bounded.
+                // pyr3 post-resume fixes touched); a DISCARD-resume — the arm returns a plain value and
+                // NEVER resumes (zero-shot / tombstone: the handler drops the captured continuation and
+                // the `(handle …)` evaluates to the arm value directly); or a MULTI-SHOT double-resume —
+                // the arm resumes TWICE, combining the two continuation runs (the active replay/multi-
+                // shot territory). All terminate: conditional runs one resume per perform, discard none,
+                // and double-resume re-runs the continuation at most 2x (bounded — performs capped at 2,
+                // depth ≤ 5, so ≤ 2^depth, no unbounded recursion).
                 let init = self.cur.range(0, 9);
                 let _ = write!(
                     self.out,
@@ -784,7 +786,7 @@ impl Gen<'_> {
                 );
                 let mark = self.env.push(p.clone(), Kind::Num); // p and s are both scalar Int64 here
                 self.env.push(s.clone(), Kind::Num);
-                match self.cur.choice(3) {
+                match self.cur.choice(4) {
                     0 => {
                         let rel = match self.cur.choice(4) {
                             0 => "<",
@@ -805,6 +807,18 @@ impl Gen<'_> {
                     1 => {
                         // DISCARD: arm returns a plain numeric value, NEVER resumes (zero-shot/tombstone).
                         self.expr(depth.saturating_sub(1), Kind::Num);
+                    }
+                    2 => {
+                        // MULTI-SHOT double-resume: the arm resumes TWICE (both threading the SAME state
+                        // `s`), combining the two continuation runs — `(+ (resume V1 s) (resume V2 s))`.
+                        // The active replay/multi-shot territory (14c double-resume/triple-replay pins).
+                        // Bounded: re-runs the continuation at most 2x per perform, performs are capped at
+                        // 2 and depth ≤ 5, so the blowup is ≤ 2^depth (small) — no unbounded recursion.
+                        self.out.push_str("(+ (resume ");
+                        self.expr(depth.saturating_sub(1), Kind::Num); // resume-1 VALUE
+                        let _ = write!(self.out, " {s}) (resume ");
+                        self.expr(depth.saturating_sub(1), Kind::Num); // resume-2 VALUE
+                        let _ = write!(self.out, " {s}))");
                     }
                     _ => {
                         self.out.push_str("(resume ");
@@ -992,7 +1006,10 @@ mod tests {
     /// seeds drive every choice site with the SAME byte, which can make an arm gated behind two
     /// successive `choice`s structurally unreachable; a varied seed exercises every arm combination
     /// over a large-enough sweep, so these tests stay robust to grammar-distribution changes (adding
-    /// an `expr` arm shifts the modulus and would break hand-tuned fixed seeds).
+    /// an `expr` arm shifts the modulus and would break hand-tuned fixed seeds). NOTE: this sweep's byte
+    /// distribution does not reliably reach every DEEP arm-body residue (e.g. the scalar handler's
+    /// discard/double-resume body choices) — those are guarded by CRAFTED seeds instead (see
+    /// [`some_seed_emits_a_discard_resume_arm`] / [`some_seed_emits_a_double_resume_arm`]).
     fn varied_seed(n: u32) -> Vec<u8> {
         (0..24u32)
             .map(|i| {
@@ -1371,25 +1388,42 @@ mod tests {
         assert!(hit, "no seed in the sweep emitted a conditional-resume arm");
     }
 
-    /// The discard-resume (zero-shot / tombstone) arm is reachable — some seed emits a handler program
-    /// that contains a `(handle …)` yet NO `(resume …)` at all, which can only happen when the sole
-    /// handler's arm discards its continuation (every other handler-arm shape this generator emits
-    /// contains a `(resume …)`). Every such program still parses. Guards the zero-shot reach.
+    /// The discard-resume (zero-shot / tombstone) arm is reachable — driven by a CRAFTED seed that forces
+    /// main-body → effect_handler (b1 % 19 == 16) → scalar state (b2 % 4 == 0) → body choice discard
+    /// (b4 % 4 == 1). The whole program then contains a `(handle …)` yet NO `(resume …)` (the discard arm
+    /// abandons its continuation; every other arm shape emits a `(resume …)`), and it parses. (The generic
+    /// `varied_seed` sweep's byte distribution does not reach this deep body residue.)
     #[test]
     fn some_seed_emits_a_discard_resume_arm() {
-        let mut hit = false;
-        for n in 0..8000u32 {
-            let seed = varied_seed(n);
-            let src = generate(&seed).source;
-            assert!(
-                cadenza_syntax::sexpr::read(&src).is_ok(),
-                "generated program did not parse:\n{src}"
-            );
-            if src.contains("(handle ") && !src.contains("(resume ") {
-                hit = true;
-            }
-        }
-        assert!(hit, "no seed in the sweep emitted a discard-resume arm");
+        let seed = [0u8, 16, 0, 3, 1, 2, 2, 2, 2, 2, 2, 2];
+        let src = generate(&seed).source;
+        assert!(
+            cadenza_syntax::sexpr::read(&src).is_ok(),
+            "generated program did not parse:\n{src}"
+        );
+        assert!(
+            src.contains("(handle ") && !src.contains("(resume "),
+            "crafted seed did not emit a discard-resume arm (handler without resume):\n{src}"
+        );
+    }
+
+    /// The multi-shot double-resume arm is reachable — driven by a CRAFTED seed that forces
+    /// main-body → effect_handler (b1 % 19 == 16) → scalar state (b2 % 4 == 0) → body choice double
+    /// (b4 % 4 == 2). Asserts the arm emits the distinctive `(+ (resume … ) (resume … ))` (two resume
+    /// sites; a generated resume value never emits `(resume …)`) and that the program parses. (The
+    /// generic `varied_seed` sweep's byte distribution does not reach this deep body residue.)
+    #[test]
+    fn some_seed_emits_a_double_resume_arm() {
+        let seed = [0u8, 16, 0, 3, 2, 2, 2, 2, 2, 2, 2, 2];
+        let src = generate(&seed).source;
+        assert!(
+            cadenza_syntax::sexpr::read(&src).is_ok(),
+            "generated program did not parse:\n{src}"
+        );
+        assert!(
+            src.contains("(+ (resume "),
+            "crafted seed did not emit a double-resume arm:\n{src}"
+        );
     }
 
     /// The two-op effect variant is reachable — some seed emits an `(effect …)` declaring TWO `(op …)`
