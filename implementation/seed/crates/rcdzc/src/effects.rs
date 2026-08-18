@@ -10457,32 +10457,22 @@ fn rewrite_resume_to_refolded_context(
         && tail.len() == 2
         && count_resumes(db, tail[1]) >= 1
     {
-        let (bindings, lbody) = (tail[0], tail[1]);
-        let mut subst: HashMap<StructId, StructId> = HashMap::default();
-        if let Struct::List(pairs) = db.ast.get(bindings).clone() {
-            for pair in pairs {
-                if let Struct::List(kv) = db.ast.get(pair).clone()
-                    && kv.len() == 2
-                {
-                    // SOUNDNESS: a let binder may be referenced MORE THAN ONCE in the body (v-cad's PRNG uses
-                    // `s2` in both the resume value AND the next-state), so inlining DUPLICATES the init. That
-                    // is sound only if the init is PURE — an effectful init (`(let ((v (Amb.flip))) …)`)
-                    // duplicated would re-perform. Decline (leave the let for a later increment) if any init
-                    // reaches a perform. (A perform-bearing init is properly a two-hole SEQUENCE — its own
-                    // leading hole — not this let-refold's job.)
-                    if reaches_any_perform(db, kv[1]) {
-                        return None;
-                    }
-                    // A `let` reference resolves to `Ref { value: kv[1] }` — the INITIALIZER occurrence,
-                    // not the binder-name occurrence — so `beta_reduce` matches `subst` keyed by the
-                    // initializer. Map `initializer := initializer` so each body reference to the let binder
-                    // splices the (pure, closed) initializer expression in place.
-                    subst.insert(kv[1], kv[1]);
-                }
+        return refold_let_by_binder_inline(db, node, handle_body, perform, arms, |db, init| {
+            // SOUNDNESS: a let binder may be referenced MORE THAN ONCE in the body (v-cad's PRNG uses
+            // `s2` in both the resume value AND the next-state), so inlining DUPLICATES the init. That
+            // is sound only if the init is PURE — an effectful init (`(let ((v (Amb.flip))) …)`)
+            // duplicated would re-perform. Decline (leave the let for a later increment) if any init
+            // reaches a perform. (A perform-bearing init is properly a two-hole SEQUENCE — its own
+            // leading hole — not this let-refold's job.)
+            if reaches_any_perform(db, init) {
+                return None;
             }
-        }
-        let inlined = crate::eval::beta_reduce(db, lbody, &subst);
-        return rewrite_resume_to_refolded_context(db, inlined, handle_body, perform, arms);
+            // A `let` reference resolves to `Ref { value: init }` — the INITIALIZER occurrence, not the
+            // binder-name occurrence — so `beta_reduce` matches `subst` keyed by the initializer. Map
+            // `initializer := initializer` so each body reference to the let binder splices the (pure,
+            // closed) initializer expression in place.
+            Some(init)
+        });
     }
     // `(let ((x <init reaching a resume>)…) body)` — the resume sits in an INITIALIZER, binding `x` to the
     // CONTINUATION RESULT, with the let BODY as that resume's post-continuation context `C[x]` (breaker's
@@ -10500,36 +10490,19 @@ fn rewrite_resume_to_refolded_context(
         && count_resumes(db, tail[1]) == 0
         && count_resumes(db, tail[0]) >= 1
     {
-        let (bindings, lbody) = (tail[0], tail[1]);
-        let mut subst: HashMap<StructId, StructId> = HashMap::default();
-        if let Struct::List(pairs) = db.ast.get(bindings).clone() {
-            for pair in pairs {
-                if let Struct::List(kv) = db.ast.get(pair).clone()
-                    && kv.len() == 2
-                {
-                    if count_resumes(db, kv[1]) >= 1 {
-                        // The resume-bearing init: rewrite it to its refolded (pure) continuation, then map
-                        // the binder's references to that. Declines cleanly (`?`) if the recursive refold cannot
-                        // be served.
-                        let new_init = rewrite_resume_to_refolded_context(
-                            db,
-                            kv[1],
-                            handle_body,
-                            perform,
-                            arms,
-                        )?;
-                        subst.insert(kv[1], new_init);
-                    } else if reaches_any_perform(db, kv[1]) {
-                        return None;
-                    } else {
-                        // A pure sibling init — inline as-is (`initializer := initializer`, as the branch above).
-                        subst.insert(kv[1], kv[1]);
-                    }
-                }
+        return refold_let_by_binder_inline(db, node, handle_body, perform, arms, |db, init| {
+            if count_resumes(db, init) >= 1 {
+                // The resume-bearing init: rewrite it to its refolded (pure) continuation, then map the
+                // binder's references to that. Declines cleanly (`None`) if the recursive refold cannot be
+                // served.
+                rewrite_resume_to_refolded_context(db, init, handle_body, perform, arms)
+            } else if reaches_any_perform(db, init) {
+                None
+            } else {
+                // A pure sibling init — inline as-is (`initializer := initializer`, as the branch above).
+                Some(init)
             }
-        }
-        let inlined = crate::eval::beta_reduce(db, lbody, &subst);
-        return rewrite_resume_to_refolded_context(db, inlined, handle_body, perform, arms);
+        });
     }
     // `(match <scrutinee reaching a resume> (pat body)…)` — the resume is the match SCRUTINEE and an arm
     // BINDER captures the resume RESULT (breaker's pyr7: `(match (resume s next) ((0) …) ((r) (+ (* r 2)
@@ -10613,6 +10586,38 @@ fn rewrite_resume_to_refolded_context(
         }
         Struct::Atom(_) => Some(copy_pure(db, node)),
     }
+}
+
+/// Shared scaffolding for the two `(let …)` refold branches of [`rewrite_resume_to_refolded_context`]: match
+/// `node` as a two-element `let` form, walk each `(name init)` binding pair, ask `classify_init` for the
+/// substitution target of that init (or `None` to decline the whole fold), then `beta_reduce` the body under
+/// the collected `initializer := target` map and recurse. A `let` reference resolves to the INITIALIZER
+/// occurrence, so `beta_reduce`'s `subst` is keyed by `init` (never the binder name). The two call sites
+/// differ ONLY in their guard (resume-in-body vs resume-only-in-an-init) and `classify_init` — the guards are
+/// mutually exclusive and stay at the call sites (merging them would newly admit a resume-in-BOTH shape
+/// neither branch handles). Returns the refolded body, or `None` if `classify_init` declines any init.
+fn refold_let_by_binder_inline(
+    db: &mut Db,
+    node: StructId,
+    handle_body: StructId,
+    perform: StructId,
+    arms: &[HandleArm],
+    mut classify_init: impl FnMut(&mut Db, StructId) -> Option<StructId>,
+) -> Option<StructId> {
+    let tail = db.ast.as_form(node, "let").map(<[_]>::to_vec)?;
+    let (bindings, lbody) = (tail[0], tail[1]);
+    let mut subst: HashMap<StructId, StructId> = HashMap::default();
+    if let Struct::List(pairs) = db.ast.get(bindings).clone() {
+        for pair in pairs {
+            if let Struct::List(kv) = db.ast.get(pair).clone()
+                && kv.len() == 2
+            {
+                subst.insert(kv[1], classify_init(db, kv[1])?);
+            }
+        }
+    }
+    let inlined = crate::eval::beta_reduce(db, lbody, &subst);
+    rewrite_resume_to_refolded_context(db, inlined, handle_body, perform, arms)
 }
 
 /// Copy the one-hole context `handle_body` (the pure delimited continuation), replacing the sole hole
