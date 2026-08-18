@@ -15355,3 +15355,59 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 131 Int64))
   (call   main (: 0 Int64)) (output (: 110 Int64)))
+
+;; ── effects-visibility laws: replay/discard/abort all keep their foreign performs (breaker batch 323) ──
+
+(case "dbf1 a FOREIGN LEVY IN EACH REPLAY'S ANSWER ARGUMENT — both sequential resumes levy the outer handler while building their answers so the outer counter advances TWICE per dispatch once per replay, the surviving second replay carries the SECOND levy's value proving the discarded replay's levy still fired, and the seed shifts both levies together"
+  (input  (do
+            (effect T (op levy (-> Int64)))
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle T (% n 3)
+                ((levy () t (resume t (+ t 5))))
+                (handle E (: 1 Int64)
+                  ((tick () s
+                    (do (resume (+ s (T.levy)) (+ s 1))
+                        (resume (+ s (T.levy)) (+ s 2)))))
+                  (E.tick))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 7 Int64))
+  (call   main (: 0 Int64)) (output (: 6 Int64)))
+
+(case "tmb2 a SILENT POST-RESUME LEVY — each inner arm replays the tail then levies the outer handler DISCARDING the levy's value and answers a tombstone, the levies are observable ONLY through the outer audit read after the inner handle completes, and a dead-code elision that drops the valueless levy (its answer feeds nothing) shifts the audit by ten while leaving the inner result untouched"
+  (input  (do
+            (effect T (op levy (-> Int64)) (op audit (-> Int64)))
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle T (% n 3)
+                ((levy () t (resume t (+ t 5)))
+                 (audit () t (resume t t)))
+                (+ (* 100 (handle E (: 1 Int64)
+                            ((tick () s
+                              (do (resume s (+ s 1))
+                                  (T.levy)
+                                  (+ s 40))))
+                            (let ((a (E.tick)))
+                              (let ((b (E.tick)))
+                                (+ a (* 10 b))))))
+                   (T.audit))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 4111 Int64))
+  (call   main (: 0 Int64)) (output (: 4110 Int64)))
+
+(case "abl1 a FOREIGN LEVY BEFORE AN ABORT — the inner arm levies the outer handler then answers WITHOUT resuming so the body's pending addition is abandoned, the levy's state write survives the abandonment and surfaces in the outer audit, and dropping the doomed frame's levy (it precedes an abort so a lowering might skip the whole arm prefix) shifts the audit digit while the abort value holds"
+  (input  (do
+            (effect T (op levy (-> Int64)) (op audit (-> Int64)))
+            (effect E (op bail (-> Int64)))
+            (def (main (: n Int64))
+              (handle T (% n 3)
+                ((levy () t (resume t (+ t 5)))
+                 (audit () t (resume t t)))
+                (+ (* 100 (handle E (: 1 Int64)
+                            ((bail () s
+                              (do (T.levy) (+ s 900))))
+                            (+ (E.bail) 7)))
+                   (T.audit))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 90106 Int64))
+  (call   main (: 0 Int64)) (output (: 90105 Int64)))
