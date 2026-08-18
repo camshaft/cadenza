@@ -15770,3 +15770,43 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 5 Int64))
   (call   main (: 0 Int64)) (output (: 6 Int64)))
+
+;; ── eager INIT trap, value-position trap beats elision, tolls wrap the branch their continuation contains (breaker batch 332) ──
+
+(case "pyt7 the INIT TRAPS IN VALUE POSITION — the handler's starting value divides by the seed's residue so the zero seed traps BEFORE any frame installs or any dispatch runs, completing the trap-position triple: init traps eagerly, a discarded pure trap is elided, and a toll trap fires only at unwind"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (/ 60 (% n 3))
+                ((tick () s (+ (resume s (+ s 1)) (* 1000 s))))
+                (let ((a (E.tick)))
+                  (+ a (* 10 (E.tick))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 121670 Int64))
+  (call   main (: 0 Int64)) (trap "divide by zero"))
+
+(case "pyt8 the SURVIVING REPLAY'S ANSWER ARGUMENT TRAPS — the second resume's argument divides by the state so the zero seed traps while BUILDING the replay that would win, value position beats discard elision, and the nonzero seed rides the clean quotient through the surviving replay"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s
+                  (do (resume s (+ s 1))
+                      (resume (/ 60 s) (+ s 2)))))
+                (E.tick)))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 60 Int64))
+  (call   main (: 0 Int64)) (trap "divide by zero"))
+
+(case "pyi1 a TOLLED ARM UNDER A BRANCHING BODY — the first draw's answer picks which body branch performs the second draw so the two frames' tolls wrap DIFFERENT continuations per seed, the positive seed rides the hundred branch and the zero seed the two-hundred branch, and each frame's toll composes with whichever branch its continuation actually contains"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s (+ (resume s (+ s 1)) (* 1000 (+ s 1)))))
+                (if (> (E.tick) 0)
+                    (+ 100 (E.tick))
+                    (+ 200 (E.tick)))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 5102 Int64))
+  (call   main (: 0 Int64)) (output (: 3201 Int64)))

@@ -8,3 +8,10 @@
   xhs family pinned mid-arm foreign performs pre-resume in SEQUENCE
   position; hoh4 pins one INSIDE the answer expression with the ordering
   observable through the shared outer thread. PASS x3 at 5ae07931d.
+- `hoh5.sexp` — REPEATED foreign draws: both inner dispatches fold an
+  outer draw into their answers; the outer ladder climbs by sevens
+  ACROSS inner dispatches (t0, t0+7) while the inner doubles (1, 2).
+  Both second rungs land in the x1000 addend (28011 / 27010). Either
+  thread resetting between dispatches collapses a distinct digit — the
+  distinct-effect sibling of pysh5's same-effect dual ladders. PASS x3
+  at 67ef1f754.
