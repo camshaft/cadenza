@@ -21,3 +21,10 @@
   after the inner draw inside a +) folds too — consistent: in both
   passing shapes the levy is the LAST dispatch of the inner body. Face
   added to the fold-boundary flip-watch.
+- `pyq3.sexp` — the escaping levy's value is SCALED into the inner fold:
+  (+ (* 10 (E.tick)) (* 1000 (T.levy))). The levy's answer lands in the
+  inner arithmetic at x1000 while its continuation escapes with the
+  scaling + inner toll + region close (21550 / 10550 — both toll-order
+  models agree here since the tolls hit disjoint digit ranges). Extends
+  pyq2 (bare escape) with value-consumption at the escape site. PASS x3
+  at 8575e9099.

@@ -15856,3 +15856,46 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 46 Int64))
   (call   main (: 0 Int64)) (output (: 23 Int64)))
+
+;; ── recursive toll, answer-only replay divergence, per-site toll attachment (breaker batch 334) ──
+
+(case "pyj2 a RECURSIVE HELPER AS THE TOLL — each frame's post-resume toll digit-sums a thirteen-fold compound of its captured state so the unwind runs a data-dependent recursion per frame, the two frames' digit-sums collapse different products, and the recursion depth itself varies with the seed through the toll argument"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (dsum (: x Int64))
+              (if (< x 10) x (+ (% x 10) (dsum (/ x 10)))))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s (+ (resume s (+ s 1)) (dsum (* (+ s 7) 13)))))
+                (let ((a (E.tick)))
+                  (let ((b (E.tick)))
+                    (+ a (* 10 b))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 35 Int64))
+  (call   main (: 0 Int64)) (output (: 25 Int64)))
+
+(case "pyz3 REPLAYS DIVERGING ONLY IN THE ANSWER — both resumes thread the SAME next-state but answer one apart so the second replay's plus-one signature must appear at BOTH dispatch depths of the two-perform body, and a lowering that collapses same-state replays into one or returns the first answer drops the low bit at each depth"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s
+                  (do (resume (* s 10) (+ s 1))
+                      (resume (+ (* s 10) 1) (+ s 1)))))
+                (+ (E.tick) (* 100 (E.tick)))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 2111 Int64))
+  (call   main (: 0 Int64)) (output (: 1101 Int64)))
+
+(case "pyz4 the TOLL ATTACHES TO ONLY THE SECOND REPLAY — the first resume stands bare and discarded while the second carries a thousandfold post-resume toll, the toll fires once on the surviving replay's outcome and never for the bare one, and a lowering sharing one toll shape across both replay sites of the arm double-charges"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s
+                  (do (resume s (+ s 1))
+                      (+ (resume (+ s 10) (+ s 2)) (* 1000 (+ s 1))))))
+                (E.tick)))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 2011 Int64))
+  (call   main (: 0 Int64)) (output (: 1010 Int64)))

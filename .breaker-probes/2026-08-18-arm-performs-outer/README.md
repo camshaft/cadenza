@@ -22,3 +22,9 @@
   tolls 3000+2000 for s0=1). Composes pysh4's routing law with pyr1's
   toll law across the arm boundary — the toll of a dispatch RAISED BY AN
   ARM scopes like any other. PASS x3 at 942944f3f.
+- `pysh6.sexp` — TRIPLE shadow chain: three handlers over E stack; each
+  inner arm's self-perform routes exactly ONE level out, so the body's
+  single draw cascades L3 -> L2 -> L1 and folds back with each level's
+  state band (761 = 700 + 50 + (10*s0+1)). Depth-3 generalization of
+  pysh4's one-level routing law: skipping a level or self-capturing
+  breaks a distinct band. PASS x3 at 8575e9099.
