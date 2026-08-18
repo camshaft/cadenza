@@ -15691,3 +15691,44 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 20551 Int64))
   (call   main (: 0 Int64)) (output (: 10550 Int64)))
+
+;; ── arm self-perform routing (single + dual-ladder) and the trap-at-unwind toll (breaker batch 330) ──
+
+(case "pysh4 the SHADOWING ARM PERFORMS THE EFFECT IT HANDLES — the inner arm's own body draws E while building its answer and that draw routes to the OUTER arm because a handler arm runs OUTSIDE its own region, the outer's decorated answer folds into the inner's, and an arm that captured its own region instead would recurse on itself"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s (resume (+ (* s 10) 1) (+ s 1))))
+                (handle E (: 50 Int64)
+                  ((tick () s (resume (+ s (E.tick)) (+ s 1))))
+                  (E.tick))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 61 Int64))
+  (call   main (: 0 Int64)) (output (: 51 Int64)))
+
+(case "pysh5 REPEATED SELF-PERFORMS THREAD BOTH STATE LADDERS — two shadowed draws each route their arm's inner self-perform to the outer handler so the outer state ladder advances once per inner dispatch while the inner state doubles independently, both ladders' progressions land in both answers, and either ladder stalling or the self-perform re-entering the inner region misprices a distinct digit range"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s (resume (+ (* s 10) 1) (+ s 1))))
+                (handle E (: 50 Int64)
+                  ((tick () s (resume (+ s (E.tick)) (* s 2))))
+                  (+ (E.tick) (* 1000 (E.tick))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 121061 Int64))
+  (call   main (: 0 Int64)) (output (: 111051 Int64)))
+
+(case "pyt4 a POST-RESUME TOLL THAT TRAPS — each frame's toll divides a hundred by its captured pre-resume state so the zero seed's FIRST frame traps at unwind AFTER the whole body already ran to completion, the nonzero seed pays both quotient tolls cleanly, and a lowering that evaluates the toll before the resume would trap before the body ran at all"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s (+ (resume s (+ s 1)) (/ 100 s))))
+                (let ((a (E.tick)))
+                  (let ((b (E.tick)))
+                    (+ a (* 10 b))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 171 Int64))
+  (call   main (: 0 Int64)) (trap "divide by zero"))
