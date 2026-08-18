@@ -1135,6 +1135,33 @@ for (const [src, ann] of [["@test\ndef attr_above_probe() = 1", "@test"], ['@tag
   }
 }
 
+// cookTemplate self-check: pin that the extractor cooks a captured template body EXACTLY as JS would,
+// so the gate keeps compiling the same string the live <Runnable> runs. The motivating case is a `#\`
+// char literal (authored with a doubled backslash), which regressed to a hard CDZ0002 when the extractor
+// read raw text; a future "simplify" that dropped the cooking would silently reintroduce that divergence,
+// so gate it here. Each pair is [raw-body-between-backticks, cooked-value]. (String.raw keeps the fixtures
+// readable: the left side is the literal source text a `.tsx` carries between its backticks.)
+{
+  const cook = [
+    [String.raw`#\\a`, String.raw`#\a`], // doubled backslash cooks to one → a valid char literal (the fix)
+    [String.raw`(< #\\a #\\z)`, String.raw`(< #\a #\z)`],
+    [String.raw`b"\\x00\\xff"`, String.raw`b"\x00\xff"`], // byte-string escapes survive for the cadenza lexer
+    [String.raw`\\n`, String.raw`\n`], // doubled → single backslash-n (a cadenza escape, not a JS newline)
+    ["(Char.to-int c)", "(Char.to-int c)"], // backslash-free source is byte-identical
+    ["\\n", "\n"], // a SINGLE backslash-n cooks to a real newline, exactly as JS would
+    ["\\x41", "A"], // \xHH hex escape
+    ["\\u0041", "A"], // \uHHHH escape
+    ["\\u{1F600}", "\u{1F600}"], // \u{…} code-point escape
+    ["\\\\", "\\"], // an escaped backslash cooks to one
+    ["a\\", "a\\"], // a trailing lone backslash is preserved, not dropped
+  ];
+  for (const [raw, want] of cook) {
+    if (cookTemplate(raw) !== want) {
+      failures.push(`[cookTemplate self-check] cookTemplate(${JSON.stringify(raw)}) = ${JSON.stringify(cookTemplate(raw))}, want ${JSON.stringify(want)}`);
+    }
+  }
+}
+
 if (failures.length) {
   console.error("\nFAILURES:\n" + failures.map((f) => "  ✗ " + f).join("\n"));
   process.exit(1);
