@@ -15600,3 +15600,48 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 12661 Int64))
   (call   main (: 0 Int64)) (output (: 11660 Int64)))
+
+;; ── shadow-init composition law, RULED by the distinct-effect differential (breaker batch 328) ──
+;; My hand model initially under-counted: deep-handler continuations scope to the WHOLE rest of the
+;; handled body, so an outer post-resume toll composes with inner-draw threading. v-effects pinned the
+;; observed values as correct via inner=F (no shadowing) computing IDENTICAL results.
+
+(case "red2 the SHADOW-INIT DRAW with a PURE inner region — the control for the composition law: with no shadowed draw the outer toll fires exactly once per outer frame and the value matches the naive deep-handler model"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s (+ (resume s (+ s 1)) (* 1000 (+ s 1)))))
+                (handle E (* 10 (E.tick))
+                  ((tick () s (+ (resume s (+ s 1)) (* 100 s))))
+                  (: 7 Int64))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 2007 Int64))
+  (call   main (: 0 Int64)) (output (: 1007 Int64)))
+
+(case "red1 the SHADOW-INIT DRAW composed with one shadowed draw — the inner handle over the same effect seeds itself from the outer arm then serves a single draw, and the outer post-resume toll composes with the inner draw threading through the outer continuation (ruled correct by the distinct-effect differential: an inner handler over a DIFFERENT effect computes the identical value)"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s (+ (resume s (+ s 1)) (* 1000 (+ s 1)))))
+                (handle E (* 10 (E.tick))
+                  ((tick () s (+ (resume s (+ s 1)) (* 100 s))))
+                  (E.tick))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 7010 Int64))
+  (call   main (: 0 Int64)) (output (: 4000 Int64)))
+
+(case "pysh3 the SHADOW'S OWN INIT DRAWS FROM THE HANDLER IT IS ABOUT TO SHADOW — the inner handle over the same effect computes its starting value by performing on the still-unshadowed outer arm, the inner region then serves its one draw from that outer-drawn seed with the cheap toll, a final outer draw confirms the outer state advanced through the init, and both outer frames settle their expensive tolls around the whole inner region"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s (+ (resume s (+ s 1)) (* 1000 (+ s 1)))))
+                (+ (handle E (* 10 (E.tick))
+                     ((tick () s (+ (resume s (+ s 1)) (* 100 s))))
+                     (E.tick))
+                   (* 10000 (E.tick)))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 41010 Int64))
+  (call   main (: 0 Int64)) (output (: 27000 Int64)))
