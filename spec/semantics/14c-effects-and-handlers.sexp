@@ -15015,7 +15015,9 @@
 
 ;; ── POST-RESUME arithmetic: additive tolls, multiplicative pairing, if-on-resume (breaker batch 316) ──
 ;; First non-tail-position resumes in the corpus (previously all 1481 were tail). pyr3 (let-bound
-;; resume result) declines uniformly — held as todo-witness in .breaker-probes/2026-08-17-pyramid-unwind/.
+;; resume result) declined uniformly at batch-316 time; fix 6c52dbc3c (fold a let-bound resume
+;; result in the two-hole refold) landed the same evening and pyr3/pyr6 are corpus pass-pins below
+;; (batch 317).
 
 (case "pyr1 POST-RESUME ARITHMETIC in the arm — each tick's arm ADDS a thousandfold toll to whatever the resumed rest-of-body eventually returns, three dispatches stack three tolls that unwind INNERMOST-FIRST after the body's positional fold completes, each toll keyed to the state AT ITS OWN DISPATCH so a reordered unwind or a stale-state toll misprices the pyramid, and the seed shifts every toll together"
   (input  (do
@@ -15059,3 +15061,55 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 1001 Int64))
   (call   main (: 0 Int64)) (output (: 1 Int64)))
+
+;; ── POST-RESUME family complete: match-on-resume + the two let-binder pass-witnesses for 6c52dbc3c (breaker batch 317) ──
+;; pyr3/pyr6 declined before the two-hole-refold init-resume fix (6c52dbc3c) and flip to pass with it.
+
+(case "pyr5 a MATCH SCRUTINIZING THE RESUME CALL — each arm matches the resumed rest-of-body value mod three across three literal-guard arms adding a repdigit toll plus its own dispatch state, the inner frame's toll decides which arm the outer frame lands in, and the seed moves the inner frame across the arm boundary so the runs exit through different toll pairs"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s
+                  (match (% (resume s (+ s 3)) 3)
+                    (0 (+ 111 s))
+                    (1 (+ 222 s))
+                    (_ (+ 333 s)))))
+                (let ((a (E.tick)))
+                  (let ((b (E.tick)))
+                    (+ a (* 10 b))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 223 Int64))
+  (call   main (: 0 Int64)) (output (: 111 Int64)))
+
+(case "pyr3 the RESUME RESULT LET-BOUND and BRANCHED ON — each arm binds what the resumed rest-of-body returned then an if on that value picks between tripling-plus-state and adding a hundredfold state, the outer frame's branch decision depends on what the INNER frame's toll produced, and the seed flips the inner frame between the two branches so the runs unwind along different arithmetic paths entirely"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s
+                  (let ((r (resume s (+ s 3))))
+                    (if (> r 35)
+                        (+ (* r 3) s)
+                        (+ r (* 100 s))))))
+                (let ((a (E.tick)))
+                  (let ((b (E.tick)))
+                    (+ a (* 10 b))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 382 Int64))
+  (call   main (: 0 Int64)) (output (: 990 Int64)))
+
+(case "pyr6 the RESUME RESULT LET-BOUND into a PURE COMBINE — no branch at all, each arm binds the resumed rest-of-body value and answers twice-it-plus-state, the minimal let-bound-resume shape isolating the binder itself from any downstream control flow, doubling per frame so the unwind order is pinned by magnitude"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s
+                  (let ((r (resume s (+ s 1))))
+                    (+ (* 2 r) s))))
+                (let ((a (E.tick)))
+                  (let ((b (E.tick)))
+                    (+ a (* 10 b))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 89 Int64))
+  (call   main (: 0 Int64)) (output (: 42 Int64)))
