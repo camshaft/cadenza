@@ -1,18 +1,22 @@
-# OPEN QUESTION: shadow whose INIT draws the shadowed effect + tolls (2026-08-18)
+# RESOLVED: shadow-init draw + tolls — 7010 is CORRECT (2026-08-18)
 
-pysh3 — inner handle over the SAME effect whose INIT performs (E.tick) on
-the outer arm, BOTH arms tolled. UNIFORM x2 backends (wasm AND rust agree)
-but diverges from my hand model:
+v-effects RULING (note 039193): the observed values are correct semantics,
+not a bug. Their independent oracle: the DISTINCT-EFFECT differential
+(inner handler over F instead of E, no shadowing possible) computes the
+IDENTICAL value — so the shadow value is pinned to the unambiguous
+nearest-dynamic-handler semantics. My original model under-counted: the
+outer arm's continuation is the ENTIRE rest of the outer body (the whole
+inner handle), so when the inner region also draws, the inner arm's toll
+threads through that same outer continuation and the outer post-resume
+toll composes with it. red2 (pure inner body) has no such composition,
+which is why it matched the naive model.
 
-- red2 (inner body = pure constant 7, init still draws outer): actual 2007
-  = 7 + outer toll 2000 — MATCHES the standard deep-handler model exactly.
-- red1 (inner body = one shadowed E.tick): actual 7010; my model says 3010
-  (inner 10 + inner toll 1000 + outer toll 2000). Divergence = exactly
-  +4000 at n=10; pysh3 full form diverges 41010 vs modeled 26010 (n=10)
-  and 27000 vs 13000 (n=0).
+All three now carry RULED oracles and pass x2 backends:
+- pysh3: 41010 / 27000 (full form: init-draw + shadowed draw + final draw)
+- red1:  7010 / 4000   (minimal composition: init-draw + one shadowed draw)
+- red2:  2007 / 1007   (control: pure inner region, naive model exact)
 
-So the divergence appears only when the inner region BOTH has a shadowing
-draw AND the init drew the outer arm. Uniform => not a differential
-miscompile; either intended (which semantics?) or a uniform bug. ASKED
-v-effects (owns fold semantics) before pinning any oracle. NOT promotable
-until resolved. pysh1/pysh2 (models matched, corpus-bound) unaffected.
+Lesson (ledger tick 1785): when a hand model diverges UNIFORMLY, the
+distinct-effect differential is the oracle-of-oracles — it removes the
+shadowing variable entirely. Model lesson: deep-handler continuations
+scope to the WHOLE rest of the handled body, not the current expression.

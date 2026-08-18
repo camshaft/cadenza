@@ -15551,3 +15551,52 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 1 Int64))
   (call   main (: 0 Int64)) (output (: 2 Int64)))
+
+;; ── same-frame capture consistency, cross-frame INIT performs, shadowed toll routing (breaker batch 327) ──
+
+(case "pyk1 an INDEX-WEIGHTED post-resume toll — the state pairs a value with a dispatch counter and each frame's toll is their PRODUCT so the very first frame's toll is zeroed by its own index while the second frame pays value-times-one, a product of two captured fields distinguishing which frame's pair fed which toll beyond what either field alone could"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple (% n 3) (: 0 Int64))
+                ((tick () st
+                  (match st
+                    ((tuple v k)
+                      (+ (resume v (tuple (+ v 3) (+ k 1)))
+                         (* 100 (* v k)))))))
+                (let ((a (E.tick)))
+                  (let ((b (E.tick)))
+                    (+ a (* 10 b))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 441 Int64))
+  (call   main (: 0 Int64)) (output (: 330 Int64)))
+
+(case "hoh3 the INNER HANDLE'S INIT PERFORMS ON THE LIVE OUTER HANDLER — the starting value packs two outer levies drawn while only the outer handler exists, the levies advance the outer state in order before the inner frame installs, and both inner draws then echo the levy-built seed one tick apart"
+  (input  (do
+            (effect T (op levy (-> Int64)))
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle T (% n 3)
+                ((levy () t (resume t (+ t 5))))
+                (handle E (+ (T.levy) (* 10 (T.levy)))
+                  ((tick () s (resume s (+ s 1))))
+                  (let ((a (E.tick)))
+                    (let ((b (E.tick)))
+                      (+ a (* 100 b)))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 6261 Int64))
+  (call   main (: 0 Int64)) (output (: 5150 Int64)))
+
+(case "pysh1 the SAME EFFECT SHADOWED with DIFFERENT TOLL SHAPES — the outer handler charges a thousandfold toll and serves the first draw while an inner handler over the SAME effect charges only a hundredfold toll and serves the two draws inside its region, the inner pyramid settles its cheap tolls before the outer frame's expensive one, and routing any draw to the wrong depth changes both which toll fires and which state answers"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s (+ (resume s (+ s 1)) (* 1000 (+ s 1)))))
+                (+ (E.tick)
+                   (handle E (: 50 Int64)
+                     ((tick () s (+ (resume s (+ s 1)) (* 100 s))))
+                     (+ (E.tick) (* 10 (E.tick)))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 12661 Int64))
+  (call   main (: 0 Int64)) (output (: 11660 Int64)))

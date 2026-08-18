@@ -9,5 +9,5 @@
                      (E.tick))
                    (* 10000 (E.tick)))))
             (export main)))
-  (call   main (: 10 Int64)) (output (: 26010 Int64))
-  (call   main (: 0 Int64)) (output (: 13000 Int64)))
+  (call   main (: 10 Int64)) (output (: 41010 Int64))
+  (call   main (: 0 Int64)) (output (: 27000 Int64)))
