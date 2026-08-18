@@ -15411,3 +15411,54 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 90106 Int64))
   (call   main (: 0 Int64)) (output (: 90105 Int64)))
+
+;; ── post-resume compositions II: tolled INIT, constructor-position resume, value-out to a foreign handler (breaker batch 324) ──
+
+(case "hoh2 the INIT-COMPUTING INNER HANDLE CARRIES POST-RESUME TOLLS — the outer handler's starting value comes from an inner two-dispatch handle whose arms each add a hundredfold toll after their resume, the inner pyramid fully unwinds during INIT evaluation before the outer handler exists, and the outer draws then advance by sevens from the toll-laden seed"
+  (input  (do
+            (effect B (op step (-> Int64)))
+            (effect F (op draw (-> Int64)))
+            (def (main (: n Int64))
+              (handle F (handle B (% n 3)
+                          ((step () s (+ (resume (+ s 1) (* s 2)) (* 100 (+ s 1)))))
+                          (+ (B.step) (* 10 (B.step))))
+                ((draw () st
+                  (resume st (+ st 7))))
+                (let ((a (F.draw)))
+                  (let ((b (F.draw)))
+                    (+ a (* 1000 b))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 539532 Int64))
+  (call   main (: 0 Int64)) (output (: 218211 Int64)))
+
+(case "pyc1 the RESUME CALL INSIDE A TUPLE CONSTRUCTOR — the arm builds a pair of the resumed rest-of-body value and a state increment then destructures BOTH through a tuple pattern whose binders feed a doubled-plus-witness combine, the resume value passing through construction and pattern-binding rather than any direct binder, and the frames disagree on both tuple fields"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s
+                  (match (tuple (resume s (+ s 3)) (+ s 1))
+                    ((tuple r w) (+ (* r 2) w)))))
+                (let ((a (E.tick)))
+                  (let ((b (E.tick)))
+                    (+ a (* 10 b))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 176 Int64))
+  (call   main (: 0 Int64)) (output (: 129 Int64)))
+
+(case "pyf1 the RESUME VALUE FED TO A FOREIGN PERFORM — each inner arm hands whatever the resumed rest-of-body returned to the outer scaler which doubles it plus its own advancing state, the two scalings compose innermost-first during the unwind so the outer handler transforms the pyramid twice with different offsets, and the answer is the twice-scaled fold"
+  (input  (do
+            (effect T (op scale (-> Int64 Int64)))
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle T (% n 3)
+                ((scale (v) t (resume (+ (* v 2) t) (+ t 1))))
+                (handle E (: 1 Int64)
+                  ((tick () s
+                    (T.scale (resume s (+ s 1)))))
+                  (let ((a (E.tick)))
+                    (let ((b (E.tick)))
+                      (+ a (* 10 b)))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 88 Int64))
+  (call   main (: 0 Int64)) (output (: 85 Int64)))
