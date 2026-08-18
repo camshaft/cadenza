@@ -47,6 +47,28 @@ export default function PatternMatching() {
         guarantee you'll meet with sums below.
       </P>
 
+      <P>
+        The same shape works for characters. A <C>Char</C> literal is written <C>#\a</C> (the{" "}
+        <strong>Strings &amp; text</strong> chapter covers characters), and a <C>match</C> dispatches on one
+        by its Unicode code point. Here <C>is-vowel</C> answers whether a character is a lowercase vowel:
+      </P>
+      <Runnable
+        source={`(def (is-vowel c)
+  (match c
+    (#\\a true)
+    (#\\e true)
+    (#\\i true)
+    (#\\o true)
+    (#\\u true)
+    (_ false)))
+(def (main) (is-vowel #\\e))`}
+      />
+      <P>
+        <C>#\e</C> takes its arm, so the answer is <C>true</C>. Change it to a consonant like <C>#\z</C> and
+        the wildcard arm answers <C>false</C>. As with numbers and strings, the <C>_</C> arm is required,
+        since <C>Char</C> has far too many values for the compiler to see them all listed.
+      </P>
+
       <H2>Sum types</H2>
       <P>
         A sum type is a set of tagged variants. You declare it with <C>type</C>, build a value with one

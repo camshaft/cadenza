@@ -402,13 +402,67 @@ async function checkTestProgram(ex) {
 // multiline field). We match per-entry on that shape. A `files={[` marker that yields <2 entries, or an
 // entry missing name/source, is an authoring/extraction bug — THROW (the caller turns it into a hard fail),
 // mirroring the vacuous-floor discipline: a multi-file runnable must never silently extract nothing.
+// Interpret the escapes in a captured template-literal body EXACTLY as JS would when evaluating the
+// `…` at runtime — because that cooked value is what the live <Runnable> `source` prop receives, so the
+// gate must compile the SAME string the browser does. The extractor captures the RAW source text between
+// the backticks (no un-escaping), so without this a `#\a` char literal (authored `#\\a`) reached the
+// compiler as `#\\a` and hard-declined (CDZ0002), while the live app compiled the cooked `#\a`. Only
+// backslash sequences are transformed; every other character passes through byte-identical, so a source
+// with no backslash is unchanged. Mirrors template-literal cooked semantics (no interpolation: guide code
+// snippets carry no `${…}`); a cadenza-level escape written with a doubled backslash (`\\x00`, `\\n`)
+// survives as its single-backslash form for the cadenza lexer, matching the live path.
+function cookTemplate(raw) {
+  let out = "";
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (c !== "\\") {
+      out += c;
+      continue;
+    }
+    const n = raw[i + 1];
+    if (n === undefined) {
+      out += "\\";
+      break;
+    }
+    i++;
+    switch (n) {
+      case "n": out += "\n"; break;
+      case "r": out += "\r"; break;
+      case "t": out += "\t"; break;
+      case "b": out += "\b"; break;
+      case "f": out += "\f"; break;
+      case "v": out += "\v"; break;
+      case "0": out += "\0"; break;
+      case "\n": break; // line continuation: backslash-newline cooks to nothing
+      case "x": {
+        const hex = raw.slice(i + 1, i + 3);
+        if (/^[0-9a-fA-F]{2}$/.test(hex)) { out += String.fromCharCode(parseInt(hex, 16)); i += 2; } else { out += "x"; }
+        break;
+      }
+      case "u": {
+        if (raw[i + 1] === "{") {
+          const close = raw.indexOf("}", i + 2);
+          const hex = close > 0 ? raw.slice(i + 2, close) : "";
+          if (close > 0 && /^[0-9a-fA-F]+$/.test(hex)) { out += String.fromCodePoint(parseInt(hex, 16)); i = close; } else { out += "u"; }
+        } else {
+          const hex = raw.slice(i + 1, i + 5);
+          if (/^[0-9a-fA-F]{4}$/.test(hex)) { out += String.fromCharCode(parseInt(hex, 16)); i += 4; } else { out += "u"; }
+        }
+        break;
+      }
+      default: out += n; // \\ → \, \` → `, \$ → $, and any other \C → C (backslash dropped), as JS does
+    }
+  }
+  return out;
+}
+
 function extractFilesProp(attrs, file) {
   const entryRe =
     /\{\s*name:\s*"([^"]+)"\s*,\s*source:\s*`([\s\S]*?)`\s*(?:,\s*surface:\s*"(ml|sexpr)")?\s*(?:,\s*entry:\s*(true|false))?\s*,?\s*\}/g;
   const files = [];
   let m;
   while ((m = entryRe.exec(attrs))) {
-    files.push({ name: m[1], source: m[2], surface: m[3] ?? "sexpr", entry: m[4] === "true" });
+    files.push({ name: m[1], source: cookTemplate(m[2]), surface: m[3] ?? "sexpr", entry: m[4] === "true" });
   }
   if (files.length < 2) {
     throw new Error(
@@ -442,7 +496,7 @@ function extractExamples(tsx, file) {
     const attrs = tsx.slice(start, end);
     const grab = (name) => {
       const tl = new RegExp(`${name}=\\{\`([\\s\\S]*?)\`\\}`).exec(attrs);
-      if (tl) return tl[1];
+      if (tl) return cookTemplate(tl[1]);
       const s = new RegExp(`${name}="([^"]*)"`).exec(attrs);
       return s ? s[1] : null;
     };
