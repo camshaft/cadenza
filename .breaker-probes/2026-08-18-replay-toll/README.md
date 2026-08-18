@@ -7,3 +7,9 @@
   A lowering that runs the toll per replay would answer 2011+1000·k
   extra; one that tolls the FIRST replay's value answers 2001. Single-
   perform body keeps the replay tree linear. PASS x3 at 29f934387.
+- `pyd2.sexp` — the pre-suspend binding survives BOTH replays: t bound
+  before either resume, consumed once after the second (211 / 110 =
+  (s+10) + 100*(s+1)). A slot refreshed per replay or dropped by the
+  discard would misprice the hundreds. Composes pyw1 (binding rides one
+  suspend) with the multi-shot machinery (rides TWO suspend/replay
+  cycles + a discard). PASS x3 at 942944f3f.

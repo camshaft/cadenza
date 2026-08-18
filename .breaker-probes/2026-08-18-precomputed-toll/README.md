@@ -10,3 +10,8 @@
   binding it (so neither binder fix's surface). Exercises the newly
   refactored refold_let_by_binder_inline path from the pre-resume side.
   PASS x3 at 6acb06588.
+- `pyw2.sexp` — TWO pre-suspend bindings ride together: t1 (x100, s+1)
+  and t2 (x10, s+2) both let-bound before the resume, both summed after
+  the replay (831 / 600, CPS-modeled). Dropping or recomputing either
+  slot shifts a distinct digit range. Extends pyw1 (one slot) to the
+  multi-slot continuation frame. PASS x3 at 942944f3f.

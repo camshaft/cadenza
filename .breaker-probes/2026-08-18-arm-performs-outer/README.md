@@ -15,3 +15,10 @@
   a 61 + 1000*b 121... model: a=50+11=61, b=100+21=121 for s0=1). Either
   ladder stalling or a self-perform re-entering the inner region
   misprices a distinct digit range. PASS x3 at fd51d1f2b.
+- `pyi3.sexp` — the self-perform hits a TOLLED outer arm: the outer
+  dispatch triggered from INSIDE the inner arm wraps its x1000 toll
+  around everything downstream (the inner region's completion included),
+  and two outer frames stack (5521 / 3510, CPS-modeled: body 41+510,
+  tolls 3000+2000 for s0=1). Composes pysh4's routing law with pyr1's
+  toll law across the arm boundary — the toll of a dispatch RAISED BY AN
+  ARM scopes like any other. PASS x3 at 942944f3f.

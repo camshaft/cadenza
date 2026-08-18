@@ -15810,3 +15810,49 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 5102 Int64))
   (call   main (: 0 Int64)) (output (: 3201 Int64)))
+
+;; ── data-dependent frame depth with tolls, branch-divergent binder, def call as the toll (breaker batch 333) ──
+
+(case "pyi2 BRANCHES WITH UNEQUAL DISPATCH COUNTS under a tolled arm — the drawn parity routes to a one-draw branch or a TWO-draw branch so the seeds stack two or three tolled frames from the same program, the odd path's extra frame adds both an answer factor and a toll, and a lowering assuming a fixed frame count per body misprices the deeper seed"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s (+ (resume s (+ s 1)) (* 1000 (+ s 1)))))
+                (match (% (E.tick) 2)
+                  (0 (+ 100 (E.tick)))
+                  (_ (+ (* 200 (E.tick)) (E.tick))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 9403 Int64))
+  (call   main (: 0 Int64)) (output (: 3101 Int64)))
+
+(case "pyr10 the LET-BOUND REPLAY VALUE ROUTES AND FEEDS BOTH BRANCHES — each arm binds the rest-of-body value then an if picks between adding the state or doubling the value plus tenfold state, the seeds split the INNER frame's branch while the outer frame holds steady, and both the branch decision and the surviving arithmetic reuse the same binder across the suspend"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s
+                  (let ((r (resume s (+ s 1))))
+                    (if (> r 15)
+                        (+ r s)
+                        (+ (* 2 r) (* 10 s))))))
+                (let ((a (E.tick)))
+                  (let ((b (E.tick)))
+                    (+ a (* 10 b))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 24 Int64))
+  (call   main (: 0 Int64)) (output (: 30 Int64)))
+
+(case "pyj1 a PURE HELPER CALL AS THE TOLL — each frame's post-resume toll is a squaring def applied to the captured state so the toll routes through a real function call during the unwind, the two frames square different offsets, and the call rung joins the toll side of the ladder as pyh1 joined its consumer side"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (sq (: x Int64)) (* x x))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s (+ (resume s (+ s 1)) (sq (+ s 2)))))
+                (let ((a (E.tick)))
+                  (let ((b (E.tick)))
+                    (+ a (* 10 b))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 46 Int64))
+  (call   main (: 0 Int64)) (output (: 23 Int64)))
