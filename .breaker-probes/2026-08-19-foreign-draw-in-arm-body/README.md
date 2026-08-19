@@ -66,3 +66,58 @@ foreign perform TRIANGULARLY: the k-th A.tick re-runs the foreign performs of AL
 triangular in this foreign-perform-in-arm shape.) Banked pyfb-3tick-count.sexp,
 pyfb-4tick-count.sexp. Reported to v-effects — the T(N) signature pins the fix target:
 the continuation being re-walked per dispatch re-executes prior arms' foreign performs.
+
+## pyfb2-discarded — value-DISCARDED witness (requested by v-effects for the fix)
+Arm does (do (B.beat) (resume (+ s 1) (+ s 1))) — the foreign perform's VALUE is dropped
+by the do, but the effect (increment) must still run EXACTLY ONCE per dispatch, and the
+pure A-body value is preserved. Body (+ (A.tick)(A.tick)).
+- CORRECT (post-fix, oracle): 2 beats -> 20005/20003 (body 2seed+3 + 10000*2).
+- PRE-FIX (observed on trunk): 3 beats -> 30005/30003 (same triangular bug; confirms the
+  effect fires-and-duplicates even when the perform's value is discarded — pins that the
+  fix's "effectful leading stmt runs once" holds for value-dropped performs too).
+Oracle set to the CORRECT post-fix 20005/20003 so it auto-flips todo/fail -> pass when
+v-effects' do-peel fix (31c788101) lands. Banked as a fix-witness alongside pyfb1.
+
+## pyfb3-nextstate-binder — the safe-floor DECLINE case (distinct on-land expectation)
+Arm: (tick () s (let ((k (B.beat))) (resume (+ s 1) (+ s k)))) — the let-bound EFFECTFUL
+foreign draw k is READ BY the NEXT-STATE (not just the answer). v-effects' fix
+(31c788101) SAFE-FLOOR DECLINES this bind-once-share case (an effectful def-binder read by
+the next-state can't be run-once-and-threaded without the triangular re-execution, so it
+rejects rather than folds).
+- PRE-FIX (observed on trunk): 30006 (3 beats — the triangular bug is present here too).
+- POST-FIX EXPECTATION: cleanly DECLINES (todo), NOT a value. So this is a DECLINE-witness,
+  distinct from pyfb1/pyfb2 (which flip to PASS). Do NOT promote as a pass-witness; keep as
+  a decline-witness confirming the safe-floor boundary. If the fix instead FOLDS it to the
+  correct value (2 beats), that's a bonus (the fold got smarter) — re-derive oracle then.
+Banked as the safe-floor boundary witness. WATCH on 31c788101 land: expect decline.
+
+## ON-LAND VERIFICATION of fix 5208ad1f3 (tick 1893): PARTIAL — residual miscompile in pyfb1/pyfb3
+Fix 5208ad1f3 landed. Verified on a fresh post-fix build:
+- FIXED (value-position + pure-next-state family): pyfb2-discarded PASSES 20005/20003
+  (2 beats); pyfb-3tick = 30009 (3 beats); pyfb-4tick = 40014 (4 beats). Regression ladder
+  3/6/10 -> 3/4/... wait: these are the (do (B.beat) (resume pure)) shapes where k is NOT
+  read by next-state. They now fire N beats. CORRECT.
+- RESIDUAL MISCOMPILE (effectful let-bound k READ BY next-state): pyfb1 still runs to 502
+  (correct 302) and pyfb3 still 30006 — NEITHER declines NOR folds correctly. The fix
+  handles value-position and pure next-state, but when the effectful let-bound k feeds the
+  NEXT-STATE ((* s k) / (+ s k)), tick2's state is still mis-threaded (observed tick2 state=3,
+  should be 1) => 502. v-effects INTENDED this case to safe-floor DECLINE, but it neither
+  declines nor computes correctly — the safe-floor is not firing for the let-bound (vs
+  inline) effectful-k-in-next-state.
+RE-FILED to v-effects as a residual. pyfb1/pyfb3 STAY miscompile-witnesses (oracle: pyfb1
+correct=302/201, pyfb3 correct=... or decline). pyfb2-discarded/3tick/4tick are now
+PROMOTABLE pass-witnesses.
+
+## pyfb3-valonly — the let-peel VALUE-position case that FOLDS (boundary vs pyfb3)
+Arm: (tick () s (let ((k (B.beat))) (resume (+ s k) (+ s 1)))) — effectful let-bound k read
+ONLY by the resume VALUE, next-state PURE. FOLDS 402/301 on wasm+rust+rust-async (post-fix
+trunk 5208ad1f3; k runs once/dispatch). CONTRAST pyfb3 (k in next-state) still miscompiles
+30006. So the let-peel effectful-init boundary is: k-in-VALUE folds, k-in-NEXT-STATE
+miscompiles (v-effects' pending ctx-aware foreign-perform fix will make the latter DECLINE).
+pyfb3-valonly = PASS-witness pinning the folding side. v-effects confirmed pyfb3-valonly
+WOULD fold under their (reverted broad) change; it already folds on trunk today.
+Note: v-effects CORRECTION — pyfb3 goes through the LET-peel (twin of pyfb1's do-peel),
+a SEPARATE open miscompile the landed 5208ad1f3 did NOT touch; keep pyfb3 a MISCOMPILE-
+witness (not decline). Their broad let-peel decline over-declined 24 valid cases
+(discharged-op/recursive let-inits) → reverted; correct fix threads HandlerCtx + gates on
+FOREIGN perform (op not in ctx.arms).

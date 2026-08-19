@@ -16507,3 +16507,49 @@
   (export main)))
   (call   main (: 10 Int64)) (output (: 2707 Int64))
   (call   main (: 0 Int64)) (output (: 1903 Int64)))
+
+  ;; -- py3v1 3-variant user Sum resume answer + pyfb3-valonly effectful foreign draw read only by resume value folds + pynm1 two-level nested match in arm (breaker batch 347) --
+(case "py3v1 probe: op resumes a 3-VARIANT user Sum (Lo/Mid/Hi) selected by captured state via nested if; the body matches all three arms — wider tag space than 2-variant Ok/Err, both dispatches land in different variants as state threads across the seed boundary"
+  (input (do
+  (effect E (op tick (-> Sig)))
+  (type Sig (Lo Int64) (Mid Int64) (Hi Int64))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((tick () s
+        (resume (if (< s 1) (Lo (* s 10))
+                    (if (< s 2) (Mid (* s 100)) (Hi (* s 1000))))
+                (+ s 1))))
+      (+ (* 100 (match (E.tick) ((Lo x) x) ((Mid x) (+ x 1)) ((Hi x) (+ x 2))))
+         (match (E.tick) ((Lo x) x) ((Mid x) (+ x 1)) ((Hi x) (+ x 2))))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 12102 Int64))
+  (call   main (: 0 Int64)) (output (: 101 Int64)))
+(case "pyfb3-valonly: let-bound EFFECTFUL foreign draw k read ONLY by the resume VALUE (next-state pure) — the do-peel/let-peel value-position case that FOLDS (k runs once/dispatch), contrast pyfb3 where k feeds next-state and still miscompiles"
+  (input (do
+  (effect A (op tick (-> Int64)))
+  (effect B (op beat (-> Int64)))
+  (def (main (: n Int64))
+    (handle B (: 0 Int64)
+      ((beat () bs (resume (+ bs 1) (+ bs 1))))
+      (handle A (% n 3)
+        ((tick () s (let ((k (B.beat))) (resume (+ s k) (+ s 1)))))
+        (+ (A.tick) (* 100 (A.tick))))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 402 Int64))
+  (call   main (: 0 Int64)) (output (: 301 Int64)))
+(case "pynm1 probe: op takes an (Option (Option Int64)) arg and the arm NESTED-MATCHES it two levels deep to pick the resume; Some(Some x) adds x, Some(None) doubles, None scales-by-10 — two dispatches hit different nested arms"
+  (input (do
+  (effect E (op cmd (-> (Option (Option Int64)) Int64)))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((cmd (m) s
+        (match m
+          ((Some inner)
+            (match inner
+              ((Some x) (resume (+ s x) (+ s 1)))
+              ((None) (resume s (* s 2)))))
+          ((None) (resume (* s 10) (+ s 3))))))
+      (+ (* 100 (E.cmd (Some (Some 7)))) (E.cmd (None)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 820 Int64))
+  (call   main (: 0 Int64)) (output (: 710 Int64)))
