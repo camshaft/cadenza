@@ -8484,15 +8484,29 @@ fn ensure_named_gate_worktree(fleet: &Fleet, dir_name: &str, base: &str) -> Opti
 /// Every step ignores its exit status: on an already-clean tree each is a benign no-op, and we want the
 /// scrub to push as far toward pristine as it can rather than bail on the first no-op.
 fn scrub_gate_batch_worktree(wt: &Path) {
-    let git = |args: &[&str]| {
-        let _ = Command::new("git").current_dir(wt).args(args).output();
-    };
-    git(&["merge", "--abort"]);
-    git(&["checkout", "--detach", TRUNK]);
-    git(&["reset", "--hard", TRUNK]);
-    // `-e target` keeps the reused worktree's warm `target/` (build cache + cadenza-store); `-ffd` would
-    // nuke it and force a full rebuild every gate, defeating the reuse.
-    git(&["clean", "-fd", "-e", "target"]);
+    for args in scrub_gate_batch_worktree_steps() {
+        let _ = Command::new("git").current_dir(wt).args(&args).output();
+    }
+}
+
+/// The ordered `git` argument-vectors [`scrub_gate_batch_worktree`] runs to return a reused gate-batch
+/// worktree to pristine detached-trunk state. PURE (returns the arg lists, runs nothing) so the recovery
+/// SEQUENCE and its safety invariants are unit-pinned — most critically that the final `git clean` step
+/// ALWAYS carries `-e target` (preserves the warm `target/`: build cache + cadenza-store, the whole reason
+/// the worktree is reused) and NEVER gains `-x` / a force-recursive `-ffd` that would ignore the exclude
+/// and nuke it, forcing a full rebuild every gate. Pinned by
+/// `scrub_gate_batch_worktree_steps_abort_first_and_preserve_target`.
+fn scrub_gate_batch_worktree_steps() -> Vec<Vec<&'static str>> {
+    vec![
+        // Abort a half-finished merge FIRST (clears MERGE_HEAD + a conflicted index left by a SIGKILL
+        // mid-`git merge`) so the checkout/reset below run on a clean index.
+        vec!["merge", "--abort"],
+        vec!["checkout", "--detach", TRUNK],
+        vec!["reset", "--hard", TRUNK],
+        // `-e target` keeps the reused worktree's warm `target/` (build cache + cadenza-store); a bare
+        // `-ffd`/`-x` would nuke it and force a full rebuild every gate, defeating the reuse.
+        vec!["clean", "-fd", "-e", "target"],
+    ]
 }
 
 /// The verdict of GitHub Actions on a pushed candidate — the authority pr-sync consults instead of a
@@ -17590,6 +17604,36 @@ mod tests {
         assert!(!should_sweep_inodes(Some(13))); // the low-BYTES case that must still not sweep on bytes
         // Unknown (df failed/unparseable) → NEVER sweep (a df failure is not evidence of pressure).
         assert!(!should_sweep_inodes(None));
+    }
+
+    #[test]
+    fn scrub_gate_batch_worktree_steps_abort_first_and_preserve_target() {
+        // This scrub runs `git reset --hard` + `git clean` in a reused gate-batch worktree. A regression
+        // in the ORDER (checkout/reset before aborting a half-merge) or in the clean's excludes (losing
+        // `-e target`, or gaining `-x`) would fail the checkout on a dirty index / nuke the warm cache.
+        let steps = scrub_gate_batch_worktree_steps();
+
+        // Recovery ORDER: merge --abort FIRST, then get onto detached trunk, then reset residual changes.
+        assert_eq!(steps[0], vec!["merge", "--abort"]);
+        assert_eq!(steps[1], vec!["checkout", "--detach", TRUNK]);
+        assert_eq!(steps[2], vec!["reset", "--hard", TRUNK]);
+
+        // The `git clean` MUST preserve `target/` (warm build cache + cadenza-store) and MUST NOT gain a
+        // `-x` (deletes ignored files, incl target/) or a combined force-recursive flag bypassing excludes.
+        let clean = steps.last().expect("a clean step");
+        assert_eq!(clean[0], "clean");
+        assert!(
+            clean.contains(&"-e") && clean.contains(&"target"),
+            "clean must exclude target/"
+        );
+        assert!(
+            !clean.iter().any(|a| a.starts_with('-') && a.contains('x')),
+            "clean must not carry -x (would nuke ignored target/)"
+        );
+        assert!(
+            !clean.contains(&"-ffd"),
+            "clean must not force past the exclude with -ffd"
+        );
     }
 
     #[test]
