@@ -16236,6 +16236,23 @@
   (call   main (: 10 Int64)) (output (: 11462 Int64))
   (call   main (: 0 Int64)) (output (: 462 Int64)))
 
+  ;; -- pyre7 tail-resumptive sibling of pyre6: a nested closed handle in the resume-answer hole of a TAIL arm folds via the thread path (not the two-hole refold) --
+  (case "pyre7 a nested CLOSED HANDLE in the RESUME-ANSWER hole of a TAIL-resumptive arm (no post-resume toll) — the arm resumes in tail position so it folds via the tail thread path rather than the two-hole refold that pyre6 exercises; the inner handle self-discharges its own E to a constant that is added to the threaded state and fed as the answer, and because the answer position is reduced the whole nest folds to the same value as substituting the inner handle's literal result (referential transparency across the thread path)"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((tick () s
+        (resume (+ (handle E (: 40 Int64)
+                     ((tick () t (resume t (+ t 1))))
+                     (+ (E.tick) 2))
+                   s)
+                (+ s 1))))
+      (+ (E.tick) (* 10 (E.tick)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 483 Int64))
+  (call   main (: 0 Int64)) (output (: 472 Int64)))
+
   ;; -- pyq3 escaping-levy scaled into inner fold + pyv2 non-commutative difference toll + pyx1 passive peek reads surviving replay's state (breaker batch 342) --
 (case "pyq3 the ESCAPING LEVY'S VALUE IS SCALED INTO THE INNER FOLD — the last inner dispatch is a thousandfold-scaled outer levy so the escaping continuation carries the scaling the inner toll and the region close while the levy's answer lands in the inner body's own arithmetic, and both frames' tolls price their own captures around the shared value"
   (input  (do
