@@ -1,6 +1,16 @@
 # DESIGN: recursive-newtype un-erasure (Box-indirected nominal emission) on the Rust backend
 
-Status: **PROPOSED** (design pass; no code lands with this doc). Owner: `v-rust-backend`.
+Status: **RESOLVED — option-2 (accept the clean decline as a permanent floor)** (2026-08-19). Owner:
+`v-rust-backend`. The concierge greenlit the slice in principle (answer, greenlight-default), but the
+B1 prototype then hit the shared-lowering spec-MUST-erasure BLOCKER below: the `Mk` node is erased in
+`lower.rs` (cited to a `type-system.md` MUST) before any backend sees the core, so the ONLY fix is
+option-1 (the Rust backend re-synthesizes the box at the nominal boundary) — invasive, fights the
+spec-MUST the whole nominal model rests on, and high wasm-drift risk. Per the concierge's OWN guardrail
+("if a step's regression surface looks bigger than expected mid-slice, PAUSE + re-scope rather than
+force it"), and given the shape is rare (2 corpus cases) with an already-precise decline diagnostic
+(`fc4eb13a1`), the resolution is **option-2: keep the honest clean decline; wasm remains the backend
+for recursive-newtype programs.** This is a spec-mandated parity floor, NOT a bug. Reopen ONLY if a
+non-niche consumer appears AND the erasure model changes to leave a nominal node for the backend.
 
 ## The gap
 
@@ -110,10 +120,14 @@ The B1 prototype confirmed this: with the type un-erased, construct emitted the 
 The earlier increment plan (B1→B4, "one coherent slice") is **not viable as written** — it assumed
 the backend still had the `Mk` node. Do NOT implement it.
 
-**DECISION NEEDED (concierge ask sent):** is a recursive newtype worth option-1's invasive
-re-synthesis (fighting a spec-MUST erasure the whole nominal model is built on), or is option-2 (keep
-the clean decline as the floor) the right call? Leaning **option-2**: the erasure is load-bearing and
-spec-mandated, the shape is rare, and the decline is already honest — option-1's risk/reward is poor.
+**DECISION (2026-08-19): option-2 — keep the clean decline as a permanent floor.** (See the Status
+header.) The erasure is load-bearing and spec-mandated (`type-system.md` MUST), the shape is rare (2
+corpus cases), the decline is already honest (`fc4eb13a1` names the precise reason), and option-1's
+risk/reward is poor (invasive nominal-aware re-synthesis fighting a spec-MUST, high wasm-drift risk) —
+which the concierge's own "pause + re-scope if the regression surface is bigger than expected"
+guardrail directs away from forcing. Recursive newtype is therefore a **spec-mandated rust-vs-wasm
+parity floor**, not a fixable gap. The rust-coverage mission is at its practical ceiling: this + the
+first-class-type feature + the adapter-records case are the residual non-gaps.
 
 ## B1 PROTOTYPE FINDINGS (2026-07-30, validated then reverted)
 
