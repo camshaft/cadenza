@@ -16553,3 +16553,46 @@
   (export main)))
   (call   main (: 10 Int64)) (output (: 820 Int64))
   (call   main (: 0 Int64)) (output (: 710 Int64)))
+
+  ;; -- pyfb2-discarded foreign perform value-dropped runs once + pyfb4-single k-in-next-state folds at single dispatch + pytf2-ans tail-arm foreign perform in answer folds (breaker batch 348) --
+(case "pyfb2-discarded: A's arm performs B (value DISCARDED by do) then resumes purely; witnesses the foreign effect runs EXACTLY ONCE per dispatch even when its value is dropped, and the pure A-body value is preserved (correct = N beats)"
+  (input (do
+  (effect A (op tick (-> Int64)))
+  (effect B (op beat (-> Int64)) (op total (-> Int64)))
+  (def (main (: n Int64))
+    (handle B (: 0 Int64)
+      ((beat () bs (resume bs (+ bs 1)))
+       (total () bs (resume bs bs)))
+      (+ (handle A (% n 3)
+           ((tick () s (do (B.beat) (resume (+ s 1) (+ s 1)))))
+           (+ (A.tick) (A.tick)))
+         (* 10000 (B.total)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 20005 Int64))
+  (call   main (: 0 Int64)) (output (: 20003 Int64)))
+(case "pyfb4-single: pyfb3's shape (effectful let-bound k read by next-state) but a SINGLE A dispatch — folds correctly because there's no second dispatch to re-run the let (the distinguisher: multi-dispatch triggers the triangular miscompile, single-dispatch does not; as7-class)"
+  (input (do
+  (effect A (op tick (-> Int64)))
+  (effect B (op beat (-> Int64)))
+  (def (main (: n Int64))
+    (handle B (: 0 Int64)
+      ((beat () bs (resume (+ bs 1) (+ bs 1))))
+      (handle A (% n 3)
+        ((tick () s (let ((k (B.beat))) (resume (+ s 1) (+ s k)))))
+        (+ (A.tick) (: 100 Int64)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 102 Int64))
+  (call   main (: 0 Int64)) (output (: 101 Int64)))
+(case "pytf2-ans probe: TAIL arm with a bare foreign perform in the ANSWER hole folds (contrast: same foreign perform in the next-state hole declines)"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (effect F (op aux (-> Int64)))
+  (def (main (: n Int64))
+    (handle F (: 0 Int64)
+      ((aux () fs (resume (: 40 Int64) fs)))
+      (handle E (% n 3)
+        ((tick () s (resume (+ s (F.aux)) (+ s 1))))
+        (+ (E.tick) (* 10 (E.tick))))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 461 Int64))
+  (call   main (: 0 Int64)) (output (: 450 Int64)))

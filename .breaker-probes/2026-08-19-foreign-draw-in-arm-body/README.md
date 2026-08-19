@@ -121,3 +121,16 @@ a SEPARATE open miscompile the landed 5208ad1f3 did NOT touch; keep pyfb3 a MISC
 witness (not decline). Their broad let-peel decline over-declined 24 valid cases
 (discharged-op/recursive let-inits) → reverted; correct fix threads HandlerCtx + gates on
 FOREIGN perform (op not in ctx.arms).
+
+## pyfb4-single — the SINGLE-dispatch distinguisher (k-in-next-state FOLDS at 1 dispatch)
+v-effects' as7 insight: the effectful-let-bound-k-read-by-next-state shape (pyfb3, which
+MISCOMPILES at multi-dispatch) FOLDS correctly at a SINGLE dispatch — there's no second
+dispatch to re-run the let through the threaded next-state. pyfb4-single:
+  (tick () s (let ((k (B.beat))) (resume (+ s 1) (+ s k))))   ; body (+ (A.tick) 100) = 1 dispatch
+FOLDS 102/101 on wasm+rust+rust-async. So the DISTINGUISHER for the pyfb3 bug is
+MULTI-dispatch (the triangular re-run), not the arm shape itself. This constrains
+v-effects' eventual freeze-once fold fix: single-dispatch must STAY folding (pyfb4-single
+102/101, as7=6) while multi-dispatch (pyfb3) gets frozen-once. PASS-witness pinning the
+single-dispatch floor. v-effects reverted BOTH broad peel-decline attempts (over-declined
+single-dispatch as7 + discharged-op cases); correct fix = freeze-once fold gated on
+multi-dispatch, not a peel-level decline.
