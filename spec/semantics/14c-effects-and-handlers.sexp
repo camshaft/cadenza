@@ -16826,3 +16826,41 @@
   (export main)))
   (call   main (: 10 Int64)) (output (: 15051 Int64))
   (call   main (: 0 Int64)) (output (: 5050 Int64)))
+
+  ;; -- pynd1/pynd2 nested-do body regression pins for the printer fix (handle-body + let-body) + pybr1 bool-returning op used as if-guards (breaker batch 355) --
+(case "pynd1 probe: a NESTED do-block as the handler BODY (do A (do B C)) sequences four dispatches, discarding all but the final expression's value — this is the shape that broke the ML round-trip before the printer fix (6345bd197 keeps the inner block boundary); pins that the fixed printer preserves nested-do semantics and the discarded dispatches still advance the state"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((tick () s (resume (* s 10) (+ s 1))))
+      (do (E.tick)
+          (do (E.tick)
+              (+ (* 100 (E.tick)) (E.tick))))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 3040 Int64))
+  (call   main (: 0 Int64)) (output (: 2030 Int64)))
+(case "pynd2 probe: a NESTED do-block as a LET body — (let ((k 5)) (do A (do B (+ C k)))) exercises the fn/let greedy-body position of the printer round-trip fix (6345bd197 covered handle/let/fn bodies); the let binding survives into the innermost expression while the discarded dispatches advance the handler state"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((tick () s (resume (* s 10) (+ s 1))))
+      (let ((k (: 5 Int64)))
+        (do (E.tick)
+            (do (E.tick)
+                (+ (* 100 (E.tick)) k))))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 3005 Int64))
+  (call   main (: 0 Int64)) (output (: 2005 Int64)))
+(case "pybr1 probe: an op RETURNS a Bool computed from a comparison of the captured state — ge(t) answers (>= s t) and threads +1; the body uses the two boolean draws as if-guards selecting different constants, so the threaded state flips the first guard across seeds while the second stays true"
+  (input (do
+  (effect E (op ge (-> Int64 Bool)))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((ge (t) s (resume (>= s t) (+ s 1))))
+      (+ (if (E.ge (: 1 Int64)) (: 1000 Int64) (: 2000 Int64))
+         (if (E.ge (: 0 Int64)) (: 30 Int64) (: 40 Int64)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 1030 Int64))
+  (call   main (: 0 Int64)) (output (: 2030 Int64)))
