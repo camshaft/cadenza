@@ -1,4 +1,4 @@
-(case "pyfb3-nextstate-binder: let-bound EFFECTFUL foreign draw k READ BY the next-state (not just the answer) — v-effects' fix safe-floor DECLINES this bind-once-share case"
+(case "pyfb3-nextstate-binder: a let-bound nullary FOREIGN perform read by the threaded next-state under multi-dispatch now FOLDS once-per-dispatch (freeze-once, was the triangular extra-perform miscompile) — the B counter fires exactly N times for N A-dispatches, read back via a non-incrementing total"
   (input (do
   (effect A (op tick (-> Int64)))
   (effect B (op beat (-> Int64)) (op total (-> Int64)))
@@ -11,4 +11,5 @@
            (+ (A.tick) (A.tick)))
          (* 10000 (B.total)))))
   (export main)))
-  (call   main (: 10 Int64)) (output (: 0 Int64)))
+  (call   main (: 10 Int64)) (output (: 20004 Int64))
+  (call   main (: 0 Int64)) (output (: 20002 Int64)))

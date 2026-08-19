@@ -16671,3 +16671,46 @@
   (export main)))
   (call   main (: 10 Int64)) (output (: 62041020 Int64))
   (call   main (: 0 Int64)) (output (: 61040012 Int64)))
+
+  ;; -- pyfb1/pyfb3 freeze-once fold RESOLVED (foreign-counter draw read by next-state folds once-per-dispatch, was triangular miscompile) + pyid1 inner-arm-draws-outer (breaker batch 351) --
+  (case "pyfb1 a let-bound nullary FOREIGN counter draw read by BOTH the resume answer and the threaded next-state under multi-dispatch folds once-per-dispatch (freeze-once) — the arm binds k to a distinct-effect counter and uses it in the answer (+ s k) and next-state (* s k); before the fix the next-state re-ran the perform triangularly, now the foreign counter advances exactly once per A-dispatch"
+  (input (do
+  (effect A (op tick (-> Int64)))
+  (effect B (op beat (-> Int64)))
+  (def (main (: n Int64))
+    (handle B (: 0 Int64)
+      ((beat () bs (resume (+ bs 1) (+ bs 1))))
+      (handle A (% n 3)
+        ((tick () s (let ((k (B.beat))) (resume (+ s k) (* s k)))))
+        (+ (A.tick) (* 100 (A.tick))))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 302 Int64))
+  (call   main (: 0 Int64)) (output (: 201 Int64)))
+(case "pyfb3-nextstate-binder: a let-bound nullary FOREIGN perform read by the threaded next-state under multi-dispatch now FOLDS once-per-dispatch (freeze-once, was the triangular extra-perform miscompile) — the B counter fires exactly N times for N A-dispatches, read back via a non-incrementing total"
+  (input (do
+  (effect A (op tick (-> Int64)))
+  (effect B (op beat (-> Int64)) (op total (-> Int64)))
+  (def (main (: n Int64))
+    (handle B (: 0 Int64)
+      ((beat () bs (resume bs (+ bs 1)))
+       (total () bs (resume bs bs)))
+      (+ (handle A (% n 3)
+           ((tick () s (let ((k (B.beat))) (resume (+ s 1) (+ s k)))))
+           (+ (A.tick) (A.tick)))
+         (* 10000 (B.total)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 20004 Int64))
+  (call   main (: 0 Int64)) (output (: 20002 Int64)))
+(case "pyid1 probe: the INNER handler's arm itself draws from the OUTER effect (legal: outer encloses inner) — each inner I.now resumes its state plus a fresh outer O.get, so the two handler states thread independently and the inner answer folds in an outer sub-draw taken at the outer's current state"
+  (input (do
+  (effect O (op get (-> Int64)))
+  (effect I (op now (-> Int64)))
+  (def (main (: n Int64))
+    (handle O (+ (% n 3) (: 5 Int64))
+      ((get () s (resume (* s 10) (+ s 1))))
+      (handle I (: 2 Int64)
+        ((now () t (resume (+ t (O.get)) (+ t 1))))
+        (+ (I.now) (* 1000 (I.now))))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 73062 Int64))
+  (call   main (: 0 Int64)) (output (: 63052 Int64)))
