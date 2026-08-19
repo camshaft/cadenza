@@ -5543,15 +5543,7 @@ fn thread(
 /// unbindable in source — CDZ0210 in binder position — so a user can't introduce a colliding one and the match
 /// is unambiguous).
 fn contains_cv_ref(db: &Db, node: StructId) -> bool {
-    if let Some(name) = db.ast.as_name(node)
-        && name.starts_with("#cv")
-    {
-        return true;
-    }
-    match db.ast.get(node) {
-        Struct::List(children) => children.iter().any(|&c| contains_cv_ref(db, c)),
-        Struct::Atom(_) => false,
-    }
+    any_name(db, node, |nm| nm.starts_with("#cv"))
 }
 
 /// Whether `node`'s subtree mentions a NAME node equal to `name` (a purely syntactic scan). Used by the
@@ -5559,11 +5551,18 @@ fn contains_cv_ref(db: &Db, node: StructId) -> bool {
 /// (a body binder shows as `Poison(Unbound)`), so a resolution-based ref count can't be trusted — a stable
 /// name-string match is the safe witness for "the next-state reads this effectful def's binder".
 fn subtree_mentions_name(db: &Db, node: StructId, name: &str) -> bool {
+    any_name(db, node, |nm| nm == name)
+}
+
+/// Whether any NAME atom in `node`'s subtree satisfies `pred` — a purely syntactic DFS (`as_name`/`get` only,
+/// no resolution). The shared walker behind `contains_cv_ref` (`#cv`-prefix) and `subtree_mentions_name`
+/// (exact-name match); collapse the two identical recursions (v-code-cleanliness dedup lead).
+fn any_name(db: &Db, node: StructId, pred: impl Fn(&str) -> bool + Copy) -> bool {
     if let Some(nm) = db.ast.as_name(node) {
-        return nm == name;
+        return pred(nm);
     }
     match db.ast.get(node) {
-        Struct::List(children) => children.iter().any(|&c| subtree_mentions_name(db, c, name)),
+        Struct::List(children) => children.iter().any(|&c| any_name(db, c, pred)),
         Struct::Atom(_) => false,
     }
 }
