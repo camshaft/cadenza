@@ -330,7 +330,7 @@ impl Gen<'_> {
             13 => self.list_builtin_expr(depth),
             14 => self.string_builtin_expr(depth),
             15 => self.rec_def_expr(depth),
-            16 => self.effect_handler_expr(depth),
+            16 => self.effect_handler_expr(depth, want),
             17 => self.effect_multiop_expr(depth),
             _ => self.match_expr(depth, want),
         }
@@ -684,7 +684,7 @@ impl Gen<'_> {
     /// a mismatch with the outer `want` is a clean decline. The perform
     /// args and initial state are small literals so most programs RUN (feed the diff oracle); the resume
     /// value/state carry richer numeric sub-exprs (where a backend divergence surfaces).
-    fn effect_handler_expr(&mut self, depth: u32) {
+    fn effect_handler_expr(&mut self, depth: u32, want: Kind) {
         let ename = {
             let v = self.env.fresh();
             format!("E{}", &v[1..]) // capitalized effect name from the fresh `v{n}` suffix, e.g. E7
@@ -692,7 +692,59 @@ impl Gen<'_> {
         let oname = self.env.fresh(); // lowercase op name, e.g. v8 — a valid operation identifier
         let p = self.env.fresh();
         let s = self.env.fresh();
-        match self.cur.choice(4) {
+        // The four Int64-state variants (scalar/tuple/sum/record) RETURN Int64; the fifth (Bool state)
+        // RETURNS Bool. Pick the state shape from a modulus keyed on `want` so the handler's result type
+        // matches its hole and the program type-checks (a mismatch is a clean decline, but a wasted seed):
+        // a Bool/Any hole may take any of the five (Bool reachable); a Num/Str hole stays on the four
+        // Int64 shapes. `Kind::Bool` forces the Bool shape — the only handler that types in a Bool hole.
+        let shape = match want {
+            Kind::Bool => 4,
+            Kind::Any => self.cur.choice(5),
+            _ => self.cur.choice(4),
+        };
+        match shape {
+            4 => {
+                // BOOL-state variant: the effect op is `(-> Bool Bool)` and the handler threads a BOOL
+                // state — reaching the Bool value codec on the handler resume/fold path that the Int64
+                // state variants (scalar/tuple/sum/record) never exercise. The active effects-lowering
+                // frontier (pyth1/pyce1/pyad1/pymf1 resume+replay fixes) is all Int64-state; a non-Int
+                // handler state is the complementary differential coverage. Guaranteed well-typed and
+                // terminating: the resume value is `(and|or A B)` and the new state is `(not C)`, where
+                // A/B/C are in-scope Bool params (s, p) or Bool literals (a `leaf(Bool)` is terminal, so
+                // no depth recursion); the body performs the op a FIXED 1..=2 times combined with a Bool
+                // operator. Emits the whole program and RETURNS — the shared numeric tail body below would
+                // feed the Bool op integer (0..9) perform args and a numeric combining op.
+                let init = if self.cur.flip() { "true" } else { "false" };
+                let rop = if self.cur.flip() { "and" } else { "or" };
+                let _ = write!(
+                    self.out,
+                    "(do (effect {ename} (op {oname} (-> Bool Bool))) (handle {ename} {init} (({oname} ({p}) {s} (resume ({rop} "
+                );
+                let mark = self.env.push(p.clone(), Kind::Bool); // p and s are both Bool here
+                self.env.push(s.clone(), Kind::Bool);
+                self.leaf(Kind::Bool); // resume-value operand A (may reference s/p)
+                self.out.push(' ');
+                self.leaf(Kind::Bool); // resume-value operand B
+                self.out.push_str(") (not "); // close (rop A B); new state is (not C)
+                self.leaf(Kind::Bool); // new-state operand C
+                self.env.truncate(mark);
+                self.out.push_str(")))) "); // close (not C), (resume …), the op arm, the arm-list
+                // handled body: perform the Bool op a FIXED 1..=2 times combined with a Bool operator.
+                if self.cur.flip() {
+                    let barg = if self.cur.flip() { "true" } else { "false" };
+                    let _ = write!(self.out, "({ename}.{oname} {barg})");
+                } else {
+                    let bop = if self.cur.flip() { "and" } else { "or" };
+                    let a = if self.cur.flip() { "true" } else { "false" };
+                    let b = if self.cur.flip() { "true" } else { "false" };
+                    let _ = write!(
+                        self.out,
+                        "({bop} ({ename}.{oname} {a}) ({ename}.{oname} {b}))"
+                    );
+                }
+                self.out.push_str("))"); // close (handle …), close (do …)
+                return;
+            }
             1 => {
                 // TUPLE-state variant: the arm projects BOTH fields (`(. s 0)`/`(. s 1)`) and REBUILDS
                 // the pair threaded through the resume — reaching the tuple-projection-through-handler-
@@ -1452,6 +1504,31 @@ mod tests {
             }
         }
         assert!(hit, "no seed in the sweep emitted a two-op effect");
+    }
+
+    /// The BOOL-state effect handler is reachable — some seed emits an effect op typed `(-> Bool Bool)`
+    /// discharged by a `(handle …)`, threading a non-Int (Bool) handler state. This exercises the Bool
+    /// value codec on the handler resume/fold path that the Int64 state variants never reach (the
+    /// complementary differential coverage for the active effects-lowering frontier). Every program that
+    /// path can emit still parses. Guards the non-Int handler-state reach against a refactor that drops it.
+    #[test]
+    fn some_seed_emits_a_bool_state_effect_handler() {
+        let mut hit = false;
+        for n in 0..8000u32 {
+            let seed = varied_seed(n);
+            let src = generate(&seed).source;
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "generated program did not parse:\n{src}"
+            );
+            if src.contains("(-> Bool Bool)") && src.contains("(handle ") {
+                hit = true;
+            }
+        }
+        assert!(
+            hit,
+            "no seed in the sweep emitted a BOOL-state effect handler"
+        );
     }
 
     /// Generation is deterministic in the seed (required for reproducing + shrinking a finding).
