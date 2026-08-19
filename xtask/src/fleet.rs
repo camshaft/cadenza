@@ -8842,6 +8842,48 @@ fn parse_df_inode_pct(df_stdout: &str) -> Option<u64> {
         .and_then(|t| t.trim_end_matches('%').parse::<u64>().ok())
 }
 
+/// The `/tmp` scratch-DIR name patterns the inode sweep `rm -rf`s (see `maybe_run_gc` for the per-prefix
+/// safety rationale). EVERY entry is an `rm -rf` target reaped from `/tmp`'s immediate children, so keep
+/// this list TIGHT and each pattern ANCHORED to a fleet-owned prefix: a too-broad pattern (a bare `*`, an
+/// un-prefixed name) would delete live or foreign scratch. Pinned by
+/// `inode_sweep_command_pins_the_destructive_rm_invariants`.
+const INODE_SWEEP_DIR_PATTERNS: &[&str] = &[
+    "cdz-test-manifest*",
+    "cdz-check*",
+    "cdz-check-imports*",
+    "nix-develop-*",
+    "rcdzc-gate-*",
+    "libFuzzerTemp*",
+];
+
+/// Minimum age (minutes) a scratch dir must reach before the inode sweep reaps it — the LIVENESS FLOOR
+/// that guarantees no ACTIVE gate/shell/fuzz run is touched (a live run keeps a fresh mtime; see the
+/// per-prefix rationale in `maybe_run_gc`). Losing this floor would reap a running gate's scratch.
+const INODE_SWEEP_DIR_MIN_AGE_MIN: u64 = 60;
+
+/// Build the best-effort `/tmp` inode-sweep shell command. PURE (constructs the string, does no I/O) so
+/// its destructive-rm safety invariants are unit-testable without a filesystem. Three clauses:
+///   (1) delete stale task `.output` logs under `/tmp/claude-*` older than `cutoff_min`;
+///   (2) `rm -rf` the DEPTH-1 scratch DIRS matching [`INODE_SWEEP_DIR_PATTERNS`] older than
+///       [`INODE_SWEEP_DIR_MIN_AGE_MIN`], EXCLUDING any `*nix-warm-roots*` path (the load-bearing
+///       warm-store GC roots);
+///   (3) re-print `/tmp` inode use for the log line.
+/// The `-maxdepth 1 -type d` + age floor + warm-roots exclusion are the guards that keep clause (2) from
+/// ever descending into or reaping a live/foreign subtree — pinned by test.
+fn inode_sweep_command(cutoff_min: u64) -> String {
+    let name_clause = INODE_SWEEP_DIR_PATTERNS
+        .iter()
+        .map(|p| format!("-name '{p}'"))
+        .collect::<Vec<_>>()
+        .join(" -o ");
+    format!(
+        "find /tmp/claude-* -name '*.output' -type f -mmin +{cutoff_min} -delete 2>/dev/null; \
+         find /tmp -maxdepth 1 -type d \\( {name_clause} \\) \
+           -mmin +{INODE_SWEEP_DIR_MIN_AGE_MIN} -not -path '*nix-warm-roots*' -exec rm -rf {{}} + 2>/dev/null; \
+         df -i /tmp 2>/dev/null | tail -1 | awk '{{print $5}}'"
+    )
+}
+
 /// The pr-sync-loop nix-store GC hook (operator item 2; placement + contract agreed with v-nix 2026-08-08,
 /// option A). Called at the end of each `schedule-pass --execute` tick. Fires at most every
 /// [`GC_MIN_INTERVAL_SECS`] (timestamp-gated via `Fleet::gc_timestamp_path`), so it is a fast no-op on most
@@ -8898,18 +8940,13 @@ fn maybe_run_gc(fleet: &Fleet) {
         .filter(|o| o.status.success())
         .and_then(|o| parse_df_inode_pct(&String::from_utf8_lossy(&o.stdout)));
     if should_sweep_inodes(tmp_inode_pct) {
-        let cutoff_min = (TMP_STALE_LOG_SECS / 60).to_string();
+        // (1) stale task logs; (2) cdz-scratch dirs; (3) other fleet-owned ephemeral scratch dirs
+        // (nix-develop / rcdzc-gate / libFuzzerTemp) — all >60min + warm-roots-excluded (v-nix's
+        // tested-safe pattern: the age floor never touches an ACTIVE shell/gate/fuzz run). The command
+        // string is built by the pure `inode_sweep_command` so its rm invariants stay unit-pinned.
         let swept = Command::new("sh")
             .arg("-c")
-            .arg(format!(
-                // (1) stale task logs; (2) cdz-scratch dirs; (3) other fleet-owned ephemeral scratch dirs
-                // (nix-develop / rcdzc-gate / libFuzzerTemp) — all >60min + warm-roots-excluded (v-nix's
-                // tested-safe pattern: the age floor never touches an ACTIVE shell/gate/fuzz run).
-                "find /tmp/claude-* -name '*.output' -type f -mmin +{cutoff_min} -delete 2>/dev/null; \
-                 find /tmp -maxdepth 1 -type d \\( -name 'cdz-test-manifest*' -o -name 'cdz-check*' -o -name 'cdz-check-imports*' -o -name 'nix-develop-*' -o -name 'rcdzc-gate-*' -o -name 'libFuzzerTemp*' \\) \
-                   -mmin +60 -not -path '*nix-warm-roots*' -exec rm -rf {{}} + 2>/dev/null; \
-                 df -i /tmp 2>/dev/null | tail -1 | awk '{{print $5}}'"
-            ))
+            .arg(inode_sweep_command(TMP_STALE_LOG_SECS / 60))
             .output();
         eprintln!(
             "gc-hook: /tmp inodes at {}% (>= {TMP_INODE_SWEEP_PCT}%) → swept fleet-owned scratch (task logs >{}h + cdz-test/check + nix-develop/rcdzc-gate/libFuzzerTemp dirs >60min, warm-roots-excluded). /tmp inodes now: {}. (toolbox/mcs-telemetry hog is not fleet-owned.)",
@@ -17553,6 +17590,40 @@ mod tests {
         assert!(!should_sweep_inodes(Some(13))); // the low-BYTES case that must still not sweep on bytes
         // Unknown (df failed/unparseable) → NEVER sweep (a df failure is not evidence of pressure).
         assert!(!should_sweep_inodes(None));
+    }
+
+    #[test]
+    fn inode_sweep_command_pins_the_destructive_rm_invariants() {
+        // This command runs `rm -rf` over /tmp scratch — a regression that broadened its reach could
+        // delete a live gate/shell/fuzz run's working dir or foreign scratch. Pin the guards so a future
+        // edit that drops one FAILS here rather than silently at runtime.
+        let cmd = inode_sweep_command(TMP_STALE_LOG_SECS / 60);
+
+        // Clause (1): stale task logs are scoped to /tmp/claude-*, only *.output FILES, honor the cutoff.
+        assert!(cmd.contains("find /tmp/claude-* -name '*.output' -type f -mmin +1440 -delete"));
+
+        // Clause (2) is DEPTH-1 and DIR-only — never an unbounded recursive descent into a live subtree.
+        assert!(cmd.contains("find /tmp -maxdepth 1 -type d"));
+        assert!(!cmd.contains("find /tmp -type d")); // the depthless (unbounded) form must be absent
+
+        // Every intended fleet-owned scratch prefix is present, matched by an ANCHORED name pattern.
+        for pat in INODE_SWEEP_DIR_PATTERNS {
+            assert!(
+                cmd.contains(&format!("-name '{pat}'")),
+                "missing sweep pattern {pat}"
+            );
+        }
+
+        // The liveness floor + warm-roots exclusion GUARD the rm -rf — losing either reaps a live run or
+        // the load-bearing nix warm-store GC roots.
+        assert!(cmd.contains(&format!("-mmin +{INODE_SWEEP_DIR_MIN_AGE_MIN}")));
+        assert!(cmd.contains("-not -path '*nix-warm-roots*'"));
+        assert!(cmd.contains("-exec rm -rf {} +"));
+
+        // SAFETY: the rm path must never carry an unbounded target — no wildcard-all name, no bare /tmp rm.
+        assert!(!cmd.contains("-name '*'"));
+        assert!(!cmd.contains("rm -rf /tmp "));
+        assert!(!cmd.contains("rm -rf /tmp/*"));
     }
 
     #[test]
