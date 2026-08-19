@@ -469,6 +469,41 @@ struct HandlerCtx {
     /// path while rrb1/lru1/xh1 stay ALL on distribute → zero regression. The per-dispatch gate (hoistable /
     /// drain-safe / non-growing / single-slot / non-recursive) still applies on top for each firing dispatch.
     collapse_enabled: std::cell::Cell<bool>,
+    /// [pyfb3] THIS handler's discharged ops drawn >= 2 times (statically) in the handle body — the
+    /// multi-dispatch ops. Gates the nullary-foreign-perform-let collapse candidate: fires only for an op
+    /// drawn >=2 (a single dispatch folds the same shape strict via distribute, no heap slot — as7). Empty at
+    /// `new` (no body there); `reduce_handle` populates it from the body and re-evaluates `collapse_enabled`.
+    multi_dispatch_ops: std::cell::RefCell<std::collections::HashSet<(u32, u32)>>,
+}
+
+/// Decide `collapse_enabled` (the tpwJ per-handler ALL-OR-NOTHING mesh) over the op→arm map: enable the
+/// cross-scope tuple COLLAPSE only when >=1 arm is a collapse candidate AND EVERY arm MESHES (is itself a
+/// candidate, is abortive, or threads its state UNCHANGED). Iterates the MAP so each arm's candidate test gets
+/// ITS op identity (`multi_dispatch_ops` is keyed per-op). Called by `HandlerCtx::new` (empty multi set — body
+/// unavailable) and re-called by `reduce_handle` once the body's per-op draw counts are known.
+fn collapse_enabled_for(
+    db: &mut Db,
+    arms: &HashMap<(u32, u32), HandleArm>,
+    multi_dispatch_ops: &std::collections::HashSet<(u32, u32)>,
+) -> bool {
+    let any_candidate = arms
+        .iter()
+        .any(|(&op, a)| arm_is_collapse_candidate(db, a.body, op, multi_dispatch_ops, arms));
+    let all_mesh = arms.iter().all(|(&op, a)| {
+        if arm_is_collapse_candidate(db, a.body, op, multi_dispatch_ops, arms)
+            || !arm_has_resume(db, a.body)
+        {
+            return true;
+        }
+        // Threads the state UNCHANGED: EVERY resume next-state (peeled through match/if branches) is the arm's
+        // state binder — a distribute arm that reads a collapse-threaded `(. #st_vs 1)` projection and passes
+        // it straight through (safe, tpwJ's `fin`). A next-state that MODIFIES the state does not mesh (rrb1).
+        let mut nexts: Vec<StructId> = Vec::new();
+        let got = arm_resume_next_states(db, a.body, &mut nexts).is_some();
+        let state = a.state;
+        got && !nexts.is_empty() && nexts.iter().all(|&next| node_refs_binder(db, next, state))
+    });
+    any_candidate && all_mesh
 }
 
 /// One handler's state in a (possibly merged) [`HandlerCtx`]: the effect declaration whose operations
@@ -513,24 +548,12 @@ impl HandlerCtx {
         // tpwJ's `fin`). A distribute arm that MODIFIES the state cannot safely read a collapse-threaded
         // `(. #st_vs 1)` projection (rrb1 cross-path orphan), so if any arm fails to mesh, disable the collapse
         // and keep the whole handler on the distribute path. Decided ONCE here over all arms.
-        let arm_list: Vec<HandleArm> = arms.values().cloned().collect();
-        let any_candidate = arm_list
-            .iter()
-            .any(|a| arm_is_collapse_candidate(db, a.body));
-        let all_mesh = arm_list.iter().all(|a| {
-            if arm_is_collapse_candidate(db, a.body) || !arm_has_resume(db, a.body) {
-                return true;
-            }
-            // Threads the state UNCHANGED: EVERY resume next-state (peeled through match/if branches) is the
-            // arm's state binder. Such a distribute arm reads a collapse-threaded `(. #st_vs 1)` projection and
-            // passes it straight through — safe (tpwJ's `fin`). A next-state that MODIFIES the state does not
-            // mesh (rrb1).
-            let mut nexts: Vec<StructId> = Vec::new();
-            let got = arm_resume_next_states(db, a.body, &mut nexts).is_some();
-            let state = a.state;
-            got && !nexts.is_empty() && nexts.iter().all(|&next| node_refs_binder(db, next, state))
-        });
-        let collapse_enabled = any_candidate && all_mesh;
+        // At construction the handle BODY is not available, so the multi-dispatch set is EMPTY here — the
+        // nullary-foreign-perform-let candidate (pyfb3) needs the body's per-op draw count. `reduce_handle`
+        // populates `multi_dispatch_ops` from the body and RE-EVALUATES `collapse_enabled` right after `new`
+        // (before any thread reads it); this initial value covers the existing (body-independent) candidates.
+        let no_multi = std::collections::HashSet::default();
+        let collapse_enabled = collapse_enabled_for(db, &arms, &no_multi);
         HandlerCtx {
             arms,
             key,
@@ -541,6 +564,7 @@ impl HandlerCtx {
             temp_ctr: std::cell::Cell::new(0),
             bind_growing_state: std::cell::Cell::new(true),
             in_recursive_specialize: std::cell::Cell::new(false),
+            multi_dispatch_ops: std::cell::RefCell::new(std::collections::HashSet::default()),
             collapse_enabled: std::cell::Cell::new(collapse_enabled),
         }
     }
@@ -2104,6 +2128,18 @@ pub fn reduce_handle(
     } else {
         ctx
     };
+    // [pyfb3] Now that the handle BODY is available, compute this handler's per-op multi-dispatch set and
+    // RE-EVALUATE collapse_enabled. The nullary-foreign-perform-let collapse candidate (pyfb3/pyfb1-let) fires
+    // ONLY for an op drawn >=2 times in the body — a SINGLE dispatch folds the same shape strict via distribute
+    // (as7) with no heap slot, so collapsing it there would re-land the 07e85af7c heap-collapse regression.
+    // `HandlerCtx::new` decided collapse_enabled with an empty multi-set (body unavailable); redo it here.
+    {
+        let multi = ops_drawn_ge2(db, body, &ctx.arms);
+        *ctx.multi_dispatch_ops.borrow_mut() = multi;
+        let mdo = ctx.multi_dispatch_ops.borrow().clone();
+        let ce = collapse_enabled_for(db, &ctx.arms, &mdo);
+        ctx.collapse_enabled.set(ce);
+    }
     // ABORTIVE (E4) TYPE-CONSISTENCY GUARD. An abortive arm materializes its BODY as the abort value, which
     // becomes the value of the position the perform occupied — a position the type checker typed by the
     // op's declared RESULT type (a perform types as its result, never as the arm value). If the arm body's
@@ -6052,8 +6088,12 @@ fn thread_bounded(
                 && !ctx.in_recursive_specialize.get()
                 && (!arm_state_grows || arm_has_let_init_reaching_arg_perform(db, arm_body));
             let mut collapsed: Option<StructId> = None;
+            let is_candidate = {
+                let mdo = ctx.multi_dispatch_ops.borrow().clone();
+                arm_is_collapse_candidate(db, arm_body, (decl, idx), &mdo, &ctx.arms)
+            };
             if collapse_ok
-                && arm_is_collapse_candidate(db, arm_body)
+                && is_candidate
                 && let Some(combined0) = peel_tuple_value_state(db, arm_body)
             {
                 // FREEZE any mid-arm FOREIGN-perform argument into a kept `#st`-name computed against the
@@ -9742,11 +9782,121 @@ fn reaches_perform_with_args(db: &mut Db, node: StructId) -> bool {
     walk(db, node, 0)
 }
 
-/// A collapse CANDIDATE: either the cross-scope multi-use shared-let (tpwJ) or a mid-arm-foreign-perform
-/// let-init (xhs1) — both are corrupted by the distribute peel and correctly served by the tuple collapse.
-fn arm_is_collapse_candidate(db: &mut Db, body: StructId) -> bool {
+/// A collapse CANDIDATE: the cross-scope multi-use shared-let (tpwJ), a mid-arm-arg-bearing-foreign-perform
+/// let-init (xhs1), OR a NULLARY-foreign-perform let-init whose binder is read by the threaded next-state
+/// (pyfb3/pyfb1-let) — all corrupted by the distribute peel and correctly served by the tuple collapse.
+/// `op` is THIS arm's operation identity and `multi_dispatch_ops` the ops drawn >=2 in the handle body: the
+/// nullary-result branch fires ONLY when this arm's op is multi-dispatch (>=2 draws), because at a SINGLE
+/// dispatch the distribute path folds the same shape strict with NO heap slot (as7) — collapsing it there
+/// would re-land the 07e85af7c heap-collapse regression. `arms` is the handler's op→arm map (its keys are the
+/// discharged ops) — used to classify the let-init perform as FOREIGN (an op this handler does not discharge).
+fn arm_is_collapse_candidate(
+    db: &mut Db,
+    body: StructId,
+    op: (u32, u32),
+    multi_dispatch_ops: &std::collections::HashSet<(u32, u32)>,
+    arms: &HashMap<(u32, u32), HandleArm>,
+) -> bool {
     arm_has_let_shared_across_resume_slots(db, body)
         || arm_has_let_init_reaching_arg_perform(db, body)
+        || (multi_dispatch_ops.contains(&op)
+            && arm_has_nullary_foreign_perform_let_read_by_next_state(db, body, arms))
+}
+
+/// [pyfb3/pyfb1-let] Whether the arm has a tail-spine `(let ((k <NULLARY FOREIGN perform>)) (resume v s))`
+/// whose binder `k` is read by the threaded NEXT-STATE `s`. Under >=2 dispatches the distribute peel wraps the
+/// `let` around BOTH resume slots and the next-state's copy threads FORWARD, re-running the perform per
+/// dispatch (triangular extra-perform, breaker pyfb3). The collapse binds the whole `let` ONCE (perform runs
+/// once, `k` computed once) → correct. NULLARY (no args) distinguishes this from the arg-bearing xhs1 shape
+/// (`arm_has_let_init_reaching_arg_perform`); FOREIGN (op not in `arms`) — a discharged-op let-init would need
+/// threading, not a bind-once. Detected on the tail spine (follow `do`/`let`/`match`/`if` to the resume).
+fn arm_has_nullary_foreign_perform_let_read_by_next_state(
+    db: &mut Db,
+    body: StructId,
+    arms: &HashMap<(u32, u32), HandleArm>,
+) -> bool {
+    // A tail-spine `(let binds tail)`: check each binding for the nullary-foreign-perform shape whose binder is
+    // read by the tail's resume next-state, then recurse into the tail (nested lets).
+    if let Some(tail) = db.ast.as_form(body, "let").map(<[_]>::to_vec)
+        && tail.len() == 2
+        && let Struct::List(pairs) = db.ast.get(tail[0]).clone()
+    {
+        let tail_body = tail[1];
+        let mut next_states: Vec<StructId> = Vec::new();
+        arm_resume_next_states(db, tail_body, &mut next_states);
+        for p in pairs {
+            let Struct::List(kv) = db.ast.get(p).clone() else {
+                continue;
+            };
+            if kv.len() != 2 {
+                continue;
+            }
+            let (binder, init) = (kv[0], kv[1]);
+            // init is a DIRECT effect-op application, NULLARY (no args), FOREIGN (not one of this handler's ops).
+            let init_is_nullary_foreign_perform = match resolved_of(db, init) {
+                Resolved::Apply { head, args } => {
+                    args.is_empty()
+                        && crate::eval::effect_op_of(db, head)
+                            .is_some_and(|(d, i)| !arms.contains_key(&(d.0, i)))
+                }
+                _ => crate::eval::effect_op_of(db, init)
+                    .is_some_and(|(d, i)| !arms.contains_key(&(d.0, i))),
+            };
+            if init_is_nullary_foreign_perform
+                && let Some(name) = db.ast.as_name(binder).map(|n| n.to_string())
+                && next_states
+                    .iter()
+                    .any(|&s| subtree_mentions_name(db, s, &name))
+            {
+                return true;
+            }
+        }
+        return arm_has_nullary_foreign_perform_let_read_by_next_state(db, tail_body, arms);
+    }
+    // Follow the other tail-spine forms (do/match/if) to reach a `let`.
+    match db.ast.get(body).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| arm_has_nullary_foreign_perform_let_read_by_next_state(db, c, arms)),
+        Struct::Atom(_) => false,
+    }
+}
+
+/// The set of THIS handler's discharged ops drawn >= 2 times (statically) in the handle `body` — the
+/// multi-dispatch ops. Per-op scoped (an op X drawn once and op Y drawn 3x must NOT both count as multi):
+/// counts each `(decl,idx)` in `arms` separately. A recursive-driver single-static-draw is UNREACHABLE
+/// (breaker: arm-perform-under-shared-def is front-end scope-rejected, no-home CDZ0401), so a static count is
+/// a sound proxy for runtime dispatch count today; the collapse gate stays conservative (fires only at >=2).
+fn ops_drawn_ge2(
+    db: &mut Db,
+    body: StructId,
+    arms: &HashMap<(u32, u32), HandleArm>,
+) -> std::collections::HashSet<(u32, u32)> {
+    let mut out = std::collections::HashSet::default();
+    let keys: Vec<(u32, u32)> = arms.keys().copied().collect();
+    for op in keys {
+        if count_op_performs(db, body, op) >= 2 {
+            out.insert(op);
+        }
+    }
+    out
+}
+
+/// Count performs of a SPECIFIC op `(decl,idx)` in `node` (stops at lambdas — a nested handler/closure is a
+/// separate dispatch scope). Op-scoped sibling of `count_discharged_performs` (which counts ALL ctx ops).
+fn count_op_performs(db: &mut Db, node: StructId, op: (u32, u32)) -> u32 {
+    if let Resolved::Apply { head, .. } = resolved_of(db, node)
+        && crate::eval::effect_op_of(db, head).is_some_and(|(d, i)| (d.0, i) == op)
+    {
+        return 1;
+    }
+    if matches!(resolved_of(db, node), Resolved::Lambda { .. }) {
+        return 0;
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children.iter().map(|&c| count_op_performs(db, c, op)).sum(),
+        Struct::Atom(_) => 0,
+    }
 }
 
 fn arm_has_let_shared_across_resume_slots(db: &mut Db, arm_body: StructId) -> bool {
