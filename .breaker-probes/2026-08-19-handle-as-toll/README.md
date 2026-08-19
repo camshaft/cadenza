@@ -9,3 +9,9 @@
   a frame's DYING moments. Completes handle-expression positions:
   INIT (hoh1), body summand (pyn1), and now the TOLL itself. PASS x3
   at 3d3ef1d49.
+- `pyre2.sexp` — the toll region is SEEDED from the dying frame's
+  capture: (handle E (+ s 20) ...) inside the toll. The capture flows
+  INTO the region (52 = 10*s0 + 2*(s0+20)); nothing flows back. A
+  region seeded from post-resume state would shift by the advance.
+  Completes the handle-as-toll pair: pyre1 isolated (own seed), pyre2
+  capture-fed. PASS x3 at 0aa1396b4.
