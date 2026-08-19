@@ -16412,3 +16412,46 @@
   (export main)))
   (call   main (: 10 Int64)) (output (: 312 Int64))
   (call   main (: 0 Int64)) (output (: 211 Int64)))
+
+  ;; -- pyat1 answer-hole transforming inner handler folds + pyfn1 bare foreign perform in two-hole next-state folds + pysm1 Option-arg matched-in-arm (breaker batch 345) --
+(case "pyat1 probe: answer-hole dispatching nested handle with a TRANSFORMING inner handler (doubles state, two inner dispatches) = 22, distinct fold value from pyre6"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((tick () s
+        (+ (resume (handle E (: 5 Int64)
+                     ((tick () t (resume (* t 2) (+ t 1))))
+                     (+ (E.tick) (E.tick)))
+                   (* 10 s))
+           (* 1000 s))))
+      (+ (E.tick) (* 10 (E.tick)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 11242 Int64))
+  (call   main (: 0 Int64)) (output (: 242 Int64)))
+(case "pyfn1 probe: BARE foreign perform in a TWO-HOLE arm's NEXT-STATE hole (not a nested handle) — should FOLD unlike a nested handle in next-state"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (effect F (op aux (-> Int64)))
+  (def (main (: n Int64))
+    (handle F (: 0 Int64)
+      ((aux () fs (resume (: 40 Int64) fs)))
+      (handle E (% n 3)
+        ((tick () s (+ (resume (+ s 1) (F.aux)) (* 1000 s))))
+        (+ (E.tick) (* 10 (E.tick))))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 41412 Int64))
+  (call   main (: 0 Int64)) (output (: 40411 Int64)))
+(case "pysm1 probe: op takes an Option-typed ARGUMENT and the arm MATCHES it to choose the resume answer and next-state (Some carries an addend, None doubles the thread) — distinct from ops that RETURN Option"
+  (input (do
+  (effect O (op cmd (-> (Option Int64) Int64)))
+  (def (main (: n Int64))
+    (handle O (% n 3)
+      ((cmd (m) s
+        (match m
+          ((Some x) (resume (+ s x) (+ s 1)))
+          ((None) (resume s (* s 2))))))
+      (+ (* 100 (O.cmd (Some 7))) (O.cmd (None)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 802 Int64))
+  (call   main (: 0 Int64)) (output (: 701 Int64)))
