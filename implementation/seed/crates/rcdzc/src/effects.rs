@@ -5518,6 +5518,20 @@ fn contains_cv_ref(db: &Db, node: StructId) -> bool {
     }
 }
 
+/// Whether `node`'s subtree mentions a NAME node equal to `name` (a purely syntactic scan). Used by the
+/// `do`-peel's effectful-stmt guard: at the arm-return thread site a do-`def` binder resolves unreliably
+/// (a body binder shows as `Poison(Unbound)`), so a resolution-based ref count can't be trusted — a stable
+/// name-string match is the safe witness for "the next-state reads this effectful def's binder".
+fn subtree_mentions_name(db: &Db, node: StructId, name: &str) -> bool {
+    if let Some(nm) = db.ast.as_name(node) {
+        return nm == name;
+    }
+    match db.ast.get(node) {
+        Struct::List(children) => children.iter().any(|&c| subtree_mentions_name(db, c, name)),
+        Struct::Atom(_) => false,
+    }
+}
+
 /// Whether `prim` is an ACCUMULATING collection operation — one that takes a prior collection as its FIRST
 /// operand and produces a new collection embedding it (`prelude-and-resolution.md`; the set v-rust-backend
 /// root-caused as the O(k^N) shapes). Each re-substitutes the prior slot-state per dispatch, so a fold that
@@ -9848,17 +9862,56 @@ fn peel_resume_from_arm_body(db: &mut Db, arm_body: StructId) -> Option<(StructI
         let (&last, stmts) = items.split_last()?;
         let (v, s) = peel_resume_from_arm_body(db, last)?;
         let stmts = stmts.to_vec();
-        let wrap = |db: &mut Db, inner: StructId| -> StructId {
+        // A leading stmt that reaches a PERFORM (a mid-arm FOREIGN op — an outer handler's or a host op —
+        // that this fold does not discharge) is EFFECTFUL and must run EXACTLY ONCE per dispatch. It belongs
+        // around the VALUE only (the perform's result, sequenced into the continuation the resume returns
+        // into); wrapping it around the NEXT-STATE too would RE-RUN the effect, and since the next-state
+        // threads forward the duplicate re-accumulates every prior dispatch → the foreign perform fires
+        // TRIANGULARLY (breaker pyfb1: N draws → N(N+1)/2 performs, correct N). A PURE stmt (a `(def d e)`
+        // with a pure init, e.g. the accumulator `(def s2 (List.push s v))`) is value-idempotent, so it stays
+        // wrapped around BOTH — a binder it introduces may be referenced by the value OR the next-state.
+        let stmt_reaches_perform: Vec<bool> = stmts
+            .iter()
+            .map(|&st| reaches_any_perform(db, st))
+            .collect();
+        let any_effectful = stmt_reaches_perform.iter().any(|&b| b);
+        if any_effectful {
+            // SAFE FLOOR: an effectful `(def d <perform>)` whose binder `d` is read by the next-state cannot
+            // be dropped from the next-state (orphans `d`) nor duplicated (re-runs the effect) — that is the
+            // bind-once-and-share shape (needs the `#st`/freeze path). Decline (reject-not-miscompile) rather
+            // than mis-fold. A bare effectful stmt (pyfb1's `(B.beat)`, no binder) is unaffected.
+            for (i, &st) in stmts.iter().enumerate() {
+                if stmt_reaches_perform[i]
+                    && let Some(dtail) = db.ast.as_form(st, "def").map(<[_]>::to_vec)
+                    && let Some(&binder) = dtail.first()
+                    && let Some(name) = db.ast.as_name(binder).map(|n| n.to_string())
+                    && subtree_mentions_name(db, s, &name)
+                {
+                    return None;
+                }
+            }
+        }
+        let wrap = |db: &mut Db, inner: StructId, keep: &[bool]| -> StructId {
             let do_head = db.push_name("do");
             let mut children = vec![do_head];
-            for &st in &stmts {
-                children.push(copy_pure(db, st));
+            for (i, &st) in stmts.iter().enumerate() {
+                if keep[i] {
+                    children.push(copy_pure(db, st));
+                }
             }
             children.push(inner);
+            if children.len() == 2 {
+                // No leading stmts kept — drop the degenerate `(do inner)` wrapper, return `inner` bare.
+                return children[1];
+            }
             db.push_list(children)
         };
-        let vw = wrap(db, v);
-        let sw = wrap(db, s);
+        let all_true: Vec<bool> = stmts.iter().map(|_| true).collect();
+        // VALUE: all leading stmts (effects run once here). NEXT-STATE: pure stmts only (effectful ones
+        // already ran in the value position — do NOT re-run them per threaded dispatch).
+        let vw = wrap(db, v, &all_true);
+        let pure_only: Vec<bool> = stmt_reaches_perform.iter().map(|&b| !b).collect();
+        let sw = wrap(db, s, &pure_only);
         return Some((vw, sw));
     }
     // `(let ((x e)…) (resume v s))` — a resume in the TAIL of a `let` body. The resume IS the tail (the
