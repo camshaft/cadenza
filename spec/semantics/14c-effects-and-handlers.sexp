@@ -16276,3 +16276,48 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 311 Int64))
   (call   main (: 0 Int64)) (output (: 10 Int64)))
+
+  ;; -- pyce1 foreign draw in a resuming arm's answer + pyad1 foreign draw in an aborting arm's answer + pymf1 multi-shot per-replay foreign re-evaluation (breaker batch 343) --
+  (case "pyce1 a RESUMING arm answers with the state PLUS a draw of a distinct outer effect — the tick arm's resume answer folds in a foreign perform whose handler tail-resumes a constant, so the answer carries state + foreign value across the effect boundary and both dispatches in the body see their own foreign draw"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (effect F (op aux (-> Int64)))
+  (def (main (: n Int64))
+    (handle F (: 0 Int64)
+      ((aux () fs (resume (: 100 Int64) fs)))
+      (handle E (% n 3)
+        ((tick () s (resume (+ s (F.aux)) (+ s 1))))
+        (+ (E.tick) (* 10 (E.tick))))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 1121 Int64))
+  (call   main (: 0 Int64)) (output (: 1110 Int64)))
+  (case "pyad1 an ABORTING arm (no resume) whose answer DRAWS a distinct outer effect after a resuming sibling threads the state — the stop arm discards its continuation and answers a hundredfold of the state it inherited from the prior tick's next-state plus a foreign draw, so the aborted value reflects the threaded state not the seed"
+  (input (do
+  (effect E (op tick (-> Int64)) (op stop (-> Int64)))
+  (effect F (op aux (-> Int64)))
+  (def (main (: n Int64))
+    (handle F (: 0 Int64)
+      ((aux () fs (resume (: 100 Int64) fs)))
+      (handle E (% n 3)
+        ((tick () s (resume (+ s 1) (+ s 10)))
+         (stop () s (+ (* s 1000) (F.aux))))
+        (let ((a (E.tick)))
+          (+ a (E.stop))))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 11100 Int64))
+  (call   main (: 0 Int64)) (output (: 10100 Int64)))
+  (case "pymf1 a MULTI-SHOT arm resumes twice with each resume answer drawing a STATEFUL foreign counter — the two replays see distinct foreign values because the counter advances once per shot in arm evaluation order, so a shared or cached foreign draw across shots would collapse the sum and the distinct values prove per-replay re-evaluation"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (effect F (op aux (-> Int64)))
+  (def (main (: n Int64))
+    (handle F (: 0 Int64)
+      ((aux () fc (resume fc (+ fc 1))))
+      (handle E (% n 3)
+        ((tick () s
+          (+ (resume (+ s (F.aux)) (+ s 1))
+             (resume (+ s (F.aux)) (+ s 100)))))
+        (let ((x (E.tick))) (+ x 7)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 17 Int64))
+  (call   main (: 0 Int64)) (output (: 15 Int64)))
