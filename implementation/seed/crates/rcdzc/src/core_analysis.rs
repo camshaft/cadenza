@@ -381,13 +381,17 @@ pub(crate) fn b2_bind_plan(db: &mut Db, body: StructId) -> Vec<B2BindPlanEntry> 
         if !ty.is_fully_solved() {
             continue;
         }
-        // (2c) NOT A MATCH SCRUTINEE (v-rb bind-safety whitelist P3): a shared node that is ALSO dispatched
-        // on (a Match/MatchSum/MatchList scrutinee, or read by SumExpect/SumPayload) must stay a DIRECT
-        // construction — the rust backend's nested-variant lowering resolves the inner switch subject type
-        // from the entered-variant payload of the direct node; repointing it to a slot LocalRef loses that
-        // and DECLINES ('sum payload has no bound match arm'). A wasm-only sweep can't see this (wasm reads
-        // the payload directly) — so exclude any share dispatched on, on ALL backends.
-        if b2_is_dispatched_on(db, body, id) {
+        // (2c) P3-NARROW (v-rb rust-grounded): a dispatched-on share is excluded ONLY when a read of it is a
+        // SUM-VARIANT read (MatchSum/SumExpect, or a SumPayload with a `Payload` path step) — the rust
+        // backend resolves such a payload via a bind minted by a MatchSum arm on the DIRECT scrutinee, so a
+        // slotted LocalRef scrutinee has no bind and DECLINES ('sum payload has no bound match arm'), a
+        // rust-only decline the wasm sweep can't see. A share whose dispatch-reads are ALL Tuple/Record/List
+        // reads (Match/MatchList scrutinee, or SumPayload with an Elem/RestFrom-only path) is resolved
+        // DIRECTLY off the (slotted) scrutinee by dot-index/split → rust-slot-SAFE, so it is ADMITTED for
+        // bind-once. This narrows the old blanket "any dispatched-on share is excluded" P3 to exactly the
+        // sum-variant shape P3 was added for. cmb1's 127 shares are all Tuple state-tuple reads → all
+        // admitted (v-rb measured bind-once of them = both-backend 1 PASS, correct 828567056280870).
+        if b2_is_dispatched_on(db, body, id) && !b2_dispatch_rust_slot_safe(db, body, id) {
             continue;
         }
         // (3) NOT-A-TEMPLATE-SHARE / VALUE-STABILITY = LOOP-INVARIANCE.
@@ -479,6 +483,76 @@ fn b2_is_dispatched_on(db: &mut Db, body: StructId, target: StructId) -> bool {
         false
     }
     rec(db, body, target, &mut seen)
+}
+
+/// P3-NARROW (BOTH-BACKEND-safe intersection): whether every dispatch-read of `target` reachable from
+/// `body` is a NON-CONSUMING TUPLE/RECORD FIELD READ — a `SumPayload` whose path is a SINGLE `Elem(i)` step
+/// (an `arr-get` dot-index off the scrutinee) — AND `target` is Tuple/Record-typed. Only THIS shape is
+/// bind-once-safe on BOTH backends:
+///   • RUST (v-rb, `emit_sum_payload`/`ctx.sum_binds`, backend/rust/expr.rs): a Tuple/Record `Elem` read is
+///     resolved DIRECTLY off the (slotted) scrutinee by dot-index — no `MatchSum`-arm-minted bind — so a
+///     slotted `LocalRef` scrutinee resolves fine (why cmb1's tuple reads passed rust; a sum-variant
+///     `Payload` read instead needs the bind and declines).
+///   • WASM: an `arr-get` is a NON-CONSUMING read, so sharing the scrutinee via a slot does not perturb the
+///     Perceus linear-consumption accounting. A `MatchList` rest pattern lowers its tail binder to
+///     `SumPayload{RestFrom(k)}` = a `vec-split` that CONSUMES/reshapes the list in place (FBIP); binding
+///     such a scrutinee once and reading the slot K times is a use-after-free → wasm OUT-OF-BOUNDS (the
+///     TWO-LIST FIFO opt-sweep divergence — O2/O3 trap vs O1 value). So `MatchList`/`RestFrom` are EXCLUDED
+///     even though rust would not decline on them — the rust-safe set is WIDER than the both-backend-safe
+///     set, and the opt-sweep is the arbiter that caught the difference.
+/// EXCLUDED (any of): `Match`/`MatchList`/`MatchSum`/`SumExpect` scrutinee; a `SumPayload` with a `Payload`
+/// or `RestFrom` step, a multi-step path, or over a non-Tuple/Record scrutinee. Returns true IFF `target`
+/// is dispatched on (≥1 read) AND every read is this safe field-read shape — the caller uses it only to
+/// REFINE the dispatched-on exclusion. cmb1's 127 state-tuple shares are all single-`Elem` reads over a
+/// `Tuple` → admitted (v-rb measured bind-once of them = both-backend 1 PASS, correct 828567056280870).
+/// Conservative by construction: over-exclusion only forfeits the opt, never miscompiles. Bounded walk.
+fn b2_dispatch_rust_slot_safe(db: &mut Db, body: StructId, target: StructId) -> bool {
+    // Gate on the scrutinee's own type first — only a Tuple/Record has non-consuming `Elem` field reads.
+    let tty = crate::infer::type_of(db, target);
+    if !matches!(tty, Ty::Tuple(_) | Ty::Record(_)) {
+        return false;
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut any = false;
+    let mut all_safe = true;
+    fn rec(
+        db: &mut Db,
+        id: StructId,
+        target: StructId,
+        seen: &mut std::collections::HashSet<StructId>,
+        any: &mut bool,
+        all_safe: &mut bool,
+    ) {
+        if !seen.insert(id) {
+            return;
+        }
+        match core_of(db, id) {
+            // The ONLY safe shape: a single-`Elem` SumPayload = a non-consuming `arr-get` dot-index.
+            Core::SumPayload { scrutinee, path } if scrutinee == target => {
+                *any = true;
+                if !matches!(&path[..], [crate::core::PathStep::Elem(_)]) {
+                    *all_safe = false;
+                }
+            }
+            // Any OTHER dispatch read of the target is unsafe on at least one backend (sum-variant switch/
+            // unwrap on rust; consuming list split on wasm; scalar/length match — conservatively excluded).
+            Core::Match { scrutinee, .. }
+            | Core::MatchList { scrutinee, .. }
+            | Core::MatchSum { scrutinee, .. }
+            | Core::SumExpect { scrutinee, .. }
+                if scrutinee == target =>
+            {
+                *any = true;
+                *all_safe = false;
+            }
+            _ => {}
+        }
+        for c in crate::backend::wasm::select::core_child_ids(db, id) {
+            rec(db, c, target, seen, any, all_safe);
+        }
+    }
+    rec(db, body, target, &mut seen, &mut any, &mut all_safe);
+    any && all_safe
 }
 
 /// `collect_node_refs` twin using the COMPLETE `core_child_ids` traversal (descends `MatchSum` arms), for
@@ -1180,12 +1254,13 @@ mod tests {
         );
     }
 
-    // GATE P3 (not a match scrutinee, v-rb bind-safety whitelist): a shared heap node that is ALSO a
-    // Match scrutinee is EXCLUDED — binding it behind a slot breaks the rust backend's nested-variant
-    // subject resolution (a rust-only decline the wasm sweep can't catch). Here a shared list is both a
-    // MatchList scrutinee AND a concat operand (count≥2); it must NOT be planned.
+    // P3-NARROW, EXCLUDE arm (wasm-consuming): a shared list that is a MatchList scrutinee is EXCLUDED —
+    // a MatchList rest pattern lowers its tail binder to `SumPayload{RestFrom}` = a CONSUMING `vec-split`
+    // (FBIP), so binding the list once and reading the slot K times is a use-after-free → wasm OUT-OF-BOUNDS
+    // (the TWO-LIST FIFO opt-sweep divergence). Even though rust would resolve a slotted list scrutinee, the
+    // BOTH-BACKEND-safe set excludes MatchList. The narrow admits ONLY Tuple/Record single-`Elem` reads.
     #[test]
-    fn bind_plan_excludes_a_share_that_is_a_match_scrutinee() {
+    fn bind_plan_excludes_a_matchlist_scrutinee_share() {
         let mut db = crate::db::Db::load(crate::testkit::parse(
             "(module m (def (main) 0) (export main))",
         ));
@@ -1195,7 +1270,6 @@ mod tests {
             Core::ListNew { elems: [].into() },
             list_int.clone(),
         );
-        // xs is dispatched on (a MatchList scrutinee) with an empty-arm body, AND fed to a concat — count≥2.
         let empty_arm = synth_core(
             &mut db,
             Core::ListNew { elems: [].into() },
@@ -1226,10 +1300,135 @@ mod tests {
             b2_is_dispatched_on(&mut db, body, xs),
             "test premise: xs is a MatchList scrutinee reachable from body"
         );
+        assert!(
+            !b2_dispatch_rust_slot_safe(&mut db, body, xs),
+            "a MatchList scrutinee is NOT both-backend-safe (consuming vec-split → wasm OOB)"
+        );
         let plan = b2_bind_plan(&mut db, body);
         assert!(
             !plan.iter().any(|e| e.shared_id == xs),
-            "a shared heap node that is a match scrutinee is excluded (P3)"
+            "a MatchList-scrutinee share is EXCLUDED (P3-narrow, both-backend)"
+        );
+    }
+
+    // P3-NARROW, EXCLUDE arm (the retained safety property): a shared heap node read as a SUM-VARIANT
+    // scrutinee (here 2 SumExpect unwraps) is STILL EXCLUDED — the rust nested-variant resolver needs a
+    // bind minted by a MatchSum arm on the DIRECT scrutinee, so a slotted LocalRef scrutinee has no bind
+    // and declines. This is exactly the shape P3 was originally added for.
+    #[test]
+    fn bind_plan_excludes_a_sum_variant_scrutinee_share() {
+        let mut db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (main) 0) (export main))",
+        ));
+        let decl = synth_id_marker(&mut db);
+        let sum_ty = Ty::Sum {
+            decl,
+            args: vec![Ty::int64()].into(),
+        };
+        let p = synth_param(&mut db);
+        let shared = synth_core(
+            &mut db,
+            Core::SumNew {
+                disc: 0,
+                payloads: vec![p],
+            },
+            sum_ty,
+        );
+        let r1 = synth_core(
+            &mut db,
+            Core::SumExpect {
+                scrutinee: shared,
+                disc_present: 0,
+            },
+            Ty::int64(),
+        );
+        let r2 = synth_core(
+            &mut db,
+            Core::SumExpect {
+                scrutinee: shared,
+                disc_present: 0,
+            },
+            Ty::int64(),
+        );
+        let body = synth_core(
+            &mut db,
+            Core::Arith {
+                op: crate::resolved::Prim::Add,
+                lhs: r1,
+                rhs: r2,
+            },
+            Ty::int64(),
+        );
+        assert!(
+            b2_is_dispatched_on(&mut db, body, shared),
+            "test premise: the share is a SumExpect scrutinee reachable from body"
+        );
+        assert!(
+            !b2_dispatch_rust_slot_safe(&mut db, body, shared),
+            "a SumExpect (sum-variant) scrutinee is rust-slot-UNSAFE"
+        );
+        let plan = b2_bind_plan(&mut db, body);
+        assert!(
+            !plan.iter().any(|e| e.shared_id == shared),
+            "a sum-variant scrutinee share is EXCLUDED (P3-narrow retains this)"
+        );
+    }
+
+    // P3-NARROW, ADMIT arm (the cmb1 shape): a shared heap TUPLE read via SumPayload paths that are all
+    // `Elem` steps (tuple/record dot-index) is RUST-SLOT-SAFE — rust resolves each field DIRECTLY off the
+    // (slotted) scrutinee, no MatchSum bind — so it is ADMITTED for bind-once. cmb1's 127 state-tuple shares
+    // are exactly this shape (v-rb measured bind-once of them = both-backend 1 PASS).
+    #[test]
+    fn bind_plan_admits_a_tuple_elem_payload_share() {
+        let mut db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (main) 0) (export main))",
+        ));
+        let p = synth_param(&mut db);
+        let tup_ty = Ty::Tuple(vec![Ty::int64(), Ty::int64()].into());
+        let t = synth_core(
+            &mut db,
+            Core::Tuple {
+                elems: [p, p].into(),
+            },
+            tup_ty,
+        );
+        let r0 = synth_core(
+            &mut db,
+            Core::SumPayload {
+                scrutinee: t,
+                path: vec![crate::core::PathStep::Elem(0)].into(),
+            },
+            Ty::int64(),
+        );
+        let r1 = synth_core(
+            &mut db,
+            Core::SumPayload {
+                scrutinee: t,
+                path: vec![crate::core::PathStep::Elem(1)].into(),
+            },
+            Ty::int64(),
+        );
+        let body = synth_core(
+            &mut db,
+            Core::Arith {
+                op: crate::resolved::Prim::Add,
+                lhs: r0,
+                rhs: r1,
+            },
+            Ty::int64(),
+        );
+        assert!(
+            b2_is_dispatched_on(&mut db, body, t),
+            "test premise: the tuple is a SumPayload scrutinee reachable from body"
+        );
+        assert!(
+            b2_dispatch_rust_slot_safe(&mut db, body, t),
+            "a tuple read via Elem-only SumPayload paths is rust-slot-safe (dot-index off the local)"
+        );
+        let plan = b2_bind_plan(&mut db, body);
+        assert!(
+            plan.iter().any(|e| e.shared_id == t),
+            "a rust-slot-safe tuple/Elem-path scrutinee share is ADMITTED for bind-once (cmb1 shape)"
         );
     }
 }
