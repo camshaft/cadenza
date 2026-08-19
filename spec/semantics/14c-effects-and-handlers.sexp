@@ -16188,3 +16188,50 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 1706 Int64))
   (call   main (: 0 Int64)) (output (: 1705 Int64)))
+
+  ;; -- pyk3 fib-rotating tuple state under tolls + pyre6/pyre6-distinct nested closed handle in the resume-answer hole compiles (breaker batch 341) --
+  (case "pyk3 a FIBONACCI-ROTATING TUPLE STATE UNDER TOLLS — each dispatch answers a positional pack of both fields then rotates the pair Fibonacci-style while its toll charges a thousandfold of the FIRST field as captured, the rotation means each frame's captured first field is the previous frame's second, and a toll reading the rotated tuple instead of the captured one shifts the thousands by the rotation"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple (% n 3) (: 1 Int64))
+                ((tick () st
+                  (match st
+                    ((tuple a b)
+                      (+ (resume (+ (* a 10) b) (tuple b (+ a b)))
+                         (* 1000 a))))))
+                (+ (E.tick) (* 100 (E.tick)))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 3211 Int64))
+  (call   main (: 0 Int64)) (output (: 2101 Int64)))
+  (case "pyre6 a nested CLOSED HANDLE in the RESUME-ANSWER hole of a two-hole (non-tail) arm compiles correctly — the inner handle is a self-contained pure computation reducing to a constant that feeds the resume's answer while the next-state is plain arithmetic, and because the answer-hole position (unlike the next-state hole) survives the two-hole refold the whole nest folds to the same value as substituting the inner handle's literal result"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((tick () s
+        (+ (resume (handle E (: 40 Int64)
+                     ((tick () t (resume t (+ t 1))))
+                     (+ (E.tick) 2))
+                   (* 10 s))
+           (* 1000 s))))
+      (+ (E.tick) (* 10 (E.tick)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 11462 Int64))
+  (call   main (: 0 Int64)) (output (: 462 Int64)))
+  (case "pyre6-distinct a nested closed handle over a DISTINCT effect in the resume-answer hole of a two-hole arm — the inner handle discharges its own effect F entirely (a self-contained pure result) and feeds the outer E-handler's resume answer, confirming the answer-hole refold is correct regardless of whether the nested handle shares the outer effect or uses a fresh one"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (effect F (op ping (-> Int64)))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((tick () s
+        (+ (resume (handle F (: 40 Int64)
+                     ((ping () t (resume t (+ t 1))))
+                     (+ (F.ping) 2))
+                   (* 10 s))
+           (* 1000 s))))
+      (+ (E.tick) (* 10 (E.tick)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 11462 Int64))
+  (call   main (: 0 Int64)) (output (: 462 Int64)))
