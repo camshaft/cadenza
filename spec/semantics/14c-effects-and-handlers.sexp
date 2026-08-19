@@ -16714,3 +16714,37 @@
   (export main)))
   (call   main (: 10 Int64)) (output (: 73062 Int64))
   (call   main (: 0 Int64)) (output (: 63052 Int64)))
+
+  ;; -- pych1 conditional handler in an if-branch + pybf1 bool-arg-branched resume + py3t1 three-element tuple resume value (breaker batch 352) --
+(case "pych1 probe: the HANDLE expression sits inside ONE branch of an if — the effect region is installed only when the guard holds; the other branch is a pure constant, so both arms type the same and the handler is set up conditionally at runtime"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (main (: n Int64))
+    (if (> n 5)
+        (handle E (: 3 Int64)
+          ((tick () s (resume (* s 10) (+ s 1))))
+          (+ (E.tick) (E.tick)))
+        (: 999 Int64)))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 70 Int64))
+  (call   main (: 0 Int64)) (output (: 999 Int64)))
+(case "pybf1 probe: op flag(b) carries a BOOL argument and the arm branches the whole resume on it — true scales the state advancing +1, false adds a hundred doubling; two dispatches pass true then false so both branches fire and the next-state choice differs per branch"
+  (input (do
+  (effect E (op flag (-> Bool Int64)))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((flag (b) s (if b (resume (* s 10) (+ s 1)) (resume (+ s 100) (* s 2)))))
+      (+ (* 100 (E.flag true)) (E.flag false))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 1102 Int64))
+  (call   main (: 0 Int64)) (output (: 101 Int64)))
+(case "py3t1 probe: op resumes a THREE-element tuple built from the state (s, 2s, s+100); the body destructures all three fields in one match and packs them into distinct digit ranges, so a field-order swap or a dropped element scrambles the result"
+  (input (do
+  (effect E (op tick (-> (Tuple Int64 Int64 Int64))))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((tick () s (resume (tuple s (* s 2) (+ s 100)) (+ s 1))))
+      (match (E.tick) ((tuple a b c) (+ (* 1000 c) (+ (* 10 b) a))))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 101021 Int64))
+  (call   main (: 0 Int64)) (output (: 100000 Int64)))
