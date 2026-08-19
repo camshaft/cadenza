@@ -16284,6 +16284,19 @@
   (call   main (: 10 Int64)) (output (: 584 Int64))
   (call   main (: 0 Int64)) (output (: 573 Int64)))
 
+  ;; -- pyfv1 a FOREIGN perform INLINE in the resume VALUE folds correctly under >=2 nested-handler dispatches (value flows to the continuation once per dispatch, next-state pure) — the value-position analog of pyfb1; CONTRAST a foreign perform threaded into the NEXT-STATE (the pyfb1/pyfb3 duplication class) --
+  (case "pyfv1 a FOREIGN perform inline in the resume VALUE under a nested inner handler drawn TWICE — (tick () s (resume (+ s (B.beat)) (+ s 1))) — folds correctly: the outer B.beat runs EXACTLY ONCE per A dispatch because the resume value is spliced into the continuation once per dispatch and the next-state (+ s 1) is pure, so nothing re-threads the perform. Pins the value-position side of the foreign-perform-in-arm family (do-stmt fix pyfb1 landed 5208ad1f3): a foreign perform reaching the VALUE folds, only one threaded into the NEXT-STATE duplicates. Guards against a future freeze-once next-state fix regressing the value-position fold. B.beat returns bs+1 threading its own state, so dispatch1 adds 1, dispatch2 adds 2"
+  (input (do
+  (effect B (op beat (-> Int64)))
+  (effect A (op tick (-> Int64)))
+  (def (main (: n Int64))
+    (handle B (: 0 Int64) ((beat () bs (resume (+ bs 1) (+ bs 1))))
+      (handle A (% n 3) ((tick () s (resume (+ s (B.beat)) (+ s 1))))
+        (+ (A.tick) (A.tick)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 6 Int64))
+  (call   main (: 0 Int64)) (output (: 4 Int64)))
+
   ;; -- pyq3 escaping-levy scaled into inner fold + pyv2 non-commutative difference toll + pyx1 passive peek reads surviving replay's state (breaker batch 342) --
 (case "pyq3 the ESCAPING LEVY'S VALUE IS SCALED INTO THE INNER FOLD — the last inner dispatch is a thousandfold-scaled outer levy so the escaping continuation carries the scaling the inner toll and the region close while the levy's answer lands in the inner body's own arithmetic, and both frames' tolls price their own captures around the shared value"
   (input  (do
