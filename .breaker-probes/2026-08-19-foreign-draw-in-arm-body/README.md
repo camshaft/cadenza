@@ -134,3 +134,24 @@ v-effects' eventual freeze-once fold fix: single-dispatch must STAY folding (pyf
 single-dispatch floor. v-effects reverted BOTH broad peel-decline attempts (over-declined
 single-dispatch as7 + discharged-op cases); correct fix = freeze-once fold gated on
 multi-dispatch, not a peel-level decline.
+
+## pyfb5-inline-nextstate — INLINE next-state foreign perform DECLINES (as2 guard), vs pyfb3 let-bound miscompiles
+v-effects scope refinement: (resume (+ s 1) (+ s (B.beat))) — foreign perform INLINE directly
+in the tail-arm threaded next-state, multi-dispatch — DECLINES cleanly (the existing as1/as2
+safe-decline guard for a foreign perform directly in the next-state). Confirmed: declines
+"not yet reducible by the tail-resumptive fold". So the INLINE form is ALREADY safe.
+pyfb3's miscompile is specifically the LET-BOUND form (let ((k (B.beat))) (resume (+ s 1)
+(+ s k))): the perform is hoisted to a let-init and only the BINDER k appears in the
+next-state, so the as2 direct-perform guard doesn't fire → it slips through and miscompiles.
+So the narrowed bug locus is: LET-HOISTED foreign perform whose BINDER is read by the
+next-state under multi-dispatch. pyfb5-inline banked as a DECLINE-witness (oracle = correct
+fold 5/3, auto-flips to pass when the freeze-once fold covers it). 
+
+## FULL FOREIGN-PERFORM-IN-ARM BOUNDARY MAP (as of tick 1899)
+FOLD (pass-witnesses): pyfv1 (inline in VALUE), pyfb3-valonly (let-bound in VALUE),
+  pyfb2-discarded (do-stmt value dropped), pyfb4-single (let-bound-k-in-next-state at
+  SINGLE dispatch), pytf2-ans (tail answer), + as7 (v-effects single-dispatch lib test).
+DECLINE (safe, decline-witnesses): pyfb5-inline-nextstate (inline in NEXT-STATE, as2 guard),
+  pytf1 (tail bare-foreign next-state coverage-gap).
+MISCOMPILE (open, v-effects freeze-once fix pending): pyfb1 (let-bound-k in BOTH holes),
+  pyfb3 (let-bound-k in NEXT-STATE) — both multi-dispatch, let-hoisted, binder-in-next-state.

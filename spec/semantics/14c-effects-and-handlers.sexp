@@ -16596,3 +16596,41 @@
   (export main)))
   (call   main (: 10 Int64)) (output (: 461 Int64))
   (call   main (: 0 Int64)) (output (: 450 Int64)))
+
+  ;; -- py2a1 two-argument op uses both args + state + pypb1 parity-branched resume + pyx2 poke overwrites thread from argument (breaker batch 349) --
+(case "py2a1 probe: a TWO-ARGUMENT op combine(a,b) whose arm uses BOTH args and the captured state in the resume answer (a*s+b); two dispatches pass different arg pairs while the state threads"
+  (input (do
+  (effect E (op combine (-> Int64 Int64 Int64)))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((combine (a b) s (resume (+ (* a s) b) (+ s 1))))
+      (+ (* 100 (E.combine 3 5)) (E.combine 2 7))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 811 Int64))
+  (call   main (: 0 Int64)) (output (: 509 Int64)))
+(case "pypb1 probe: the arm BRANCHES the whole resume (answer AND next-state) on the captured state's PARITY — even states scale-by-10 advancing +3, odd states add 100 doubling; three dispatches walk a parity-alternating thread so both branches fire and the next-state choice steers the following dispatch's parity"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((tick () s
+        (if (= (% s 2) 0)
+            (resume (* s 10) (+ s 3))
+            (resume (+ s 100) (* s 2)))))
+      (+ (E.tick) (+ (* 1000 (E.tick)) (* 1000000 (E.tick))))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 105020101 Int64))
+  (call   main (: 0 Int64)) (output (: 60103000 Int64)))
+(case "pyx2 a POKE OVERWRITES THE THREAD FROM ITS ARGUMENT — the ticks advance the state incrementally while a poke answers the OLD state and replaces the thread wholesale with its argument, the third dispatch reads the transplanted seven rather than any incremental descendant, and a poke that merges instead of replacing or answers the new value shifts separate digit ranges"
+  (input  (do
+            (effect E (op tick (-> Int64)) (op poke (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s (resume (* s 10) (+ s 1)))
+                 (poke (v) s (resume s v)))
+                (+ (E.tick)
+                   (+ (* 10 (E.poke 7))
+                      (* 1000 (E.tick))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 70030 Int64))
+  (call   main (: 0 Int64)) (output (: 70010 Int64)))
