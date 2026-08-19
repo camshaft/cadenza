@@ -1457,7 +1457,16 @@ impl<'a> Printer<'a> {
                 self.doc.hardbreak();
             }
             let last = i + 1 == stmts.len();
-            if !last && (self.has_greedy_tail(s) || self.form_routes_delimit(s)) {
+            if self.as_do_seq(s).is_some() {
+                // A statement that is ITSELF a nested multi-statement `(do …)` must render as its
+                // OWN parenthesized block `( a; b )` — inlining it (the `print_stmt` do path) would
+                // splice its statements into THIS sequence and DROP the nested-`do` node, so the
+                // reparse yields a flat `(do … a b …)` (one fewer AST node), failing the surface
+                // round-trip. `expr` routes a `do` through `print_do`, which parenthesizes. Applies
+                // in EVERY slot (final or not): the root path already parenthesizes a nested-`do`
+                // via `expr`, so this makes the bare-body path (`let`/`fn`/`handle` body) consistent.
+                self.expr(s, 0);
+            } else if !last && (self.has_greedy_tail(s) || self.form_routes_delimit(s)) {
                 self.doc.word("(");
                 self.expr(s, 0);
                 self.doc.word(")");
@@ -4306,6 +4315,42 @@ mod tests {
             sexp.contains("(\"tuple\" (\"list\" (u8)) (\"list\" (u8)))"),
             "tuple stored as str-head positional descriptor, got: {sexp}"
         );
+    }
+
+    #[test]
+    fn a_nested_do_in_a_greedy_body_keeps_its_block_boundary_across_the_ml_round_trip() {
+        // Regression (v-metaprogramming handoff, breaker bucket do:1): a nested `(do B C)` used as the
+        // BODY of a handle/let/fn — a bare `expr(0)` body rendered by print_do_stmts — used to have its
+        // inner do INLINED into the parent sequence, dropping the inner-do node. The reparse then yields
+        // the FLAT `(do … B C)` (one fewer AST node). Idempotent (both sides flatten identically), so
+        // assert_roundtrip alone can't catch it — we need STRUCTURAL equality of the original arena vs
+        // the ML re-parse. Covers the final slot, a non-final slot, and the handle-body repro from the
+        // issue; each inner `(do …)` must survive as its own block.
+        for src in [
+            // handle body — the minimal harness repro from the issue (one outer `do`, export inside)
+            "(do (effect E (op tick (-> Int64))) \
+               (def (main (: n Int64)) \
+                 (handle E (% n 3) ((tick () s (resume s (+ s 1)))) \
+                   (do ((. E tick)) (do ((. E tick)) ((. E tick)))))) \
+               (export main))",
+            // let body, nested-do in the FINAL statement slot
+            "(def (main) (let ((x 1)) (do (a) (do (b) (c)))))",
+            // let body, nested-do in a NON-FINAL statement slot
+            "(def (main) (let ((x 1)) (do (do (a) (b)) (c))))",
+            // fn body, nested-do final slot
+            "(def (f (x)) (do (a) (do (b) (c))))",
+        ] {
+            let a = sexpr::read(src).expect("sexpr parses");
+            let printed = print(&a, 80);
+            let back = parser::read_ml(&printed);
+            assert!(back.ok(), "reparse of {printed:?}: {:?}", back.errors);
+            assert!(
+                a.structurally_eq(&back.arenas),
+                "nested-do block boundary lost in round-trip\n src:  {src}\n ml:   {printed}\n \
+                 back: {}",
+                sexpr::print(&back.arenas)
+            );
+        }
     }
 
     #[test]
