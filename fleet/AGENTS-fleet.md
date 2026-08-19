@@ -87,6 +87,14 @@ Every firing of your `/loop`, in order:
      ALWAYS locate your inbox via `cargo xtask fleet inbox <you>` (or the absolute hub path it prints),
      never a bare relative `.claude/...` glob. A genuinely-empty inbox and a wrong-path inbox both look
      like "0 files" to `ls` — only the canonical resolver tells them apart.
+   - **🪤 `cd` PERSISTS across your shell calls — a `cd` away from your worktree breaks the NEXT `cargo
+     xtask`.** Your Bash cwd carries over between tool calls. If you `cd` to the hub for a queue sweep, or
+     to the shared `claude-memory` repo to commit a note, and DON'T `cd` back, the next `cargo xtask fleet …`
+     runs from that other directory and fails `error: no such command: xtask` (memory isn't a cargo repo)
+     — or, worse, silently operates on the WRONG repo. This is easy to miss because the failing command
+     looks correct; the bug is the invisible cwd. FIX: prefer cwd-NEUTRAL forms — `git -C <path> …` and
+     absolute paths — over `cd`; and if you must `cd`, `cd` back to your worktree before the next `cargo
+     xtask`. (Verify with `pwd` after any hub/memory operation.)
 4. **Sync your base — at tick START, before you commit/send this tick's work.** Run **`cargo xtask
    fleet sync`** from your worktree — the safe base-sync. It `fetch`es, resets onto `trunk`, then
    cherry-picks back ONLY your commits that are not yet upstream BY PATCH-ID, so it lands you on the
