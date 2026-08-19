@@ -16253,6 +16253,22 @@
   (call   main (: 10 Int64)) (output (: 483 Int64))
   (call   main (: 0 Int64)) (output (: 472 Int64)))
 
+  ;; -- pytn1 tail-arm NEXT-STATE sibling of pyre7 (breaker probe): the tail thread path reduces a dispatching nested handle in the next-state, whereas the SAME shape in a two-hole arm (pyre3) miscompiled and now declines — pins the value-position decline set as two-hole-arm-specific --
+  (case "pytn1 a nested CLOSED HANDLE in the NEXT-STATE hole of a TAIL-resumptive arm folds via the thread path — the inner handle self-discharges its own E to a constant (42) that becomes the threaded next-state; because a tail arm threads its next-state through the distinct tail lowering (not the two-hole refold) it reduces the closed handle to its value correctly, so the whole nest folds to the same value as substituting the literal. CONTRAST pyre3 (the SAME dispatching-handle-in-next-state under a TWO-HOLE arm) which miscompiled and now DECLINES — the value-position decline set is two-hole-arm-specific; tail arms fold nested handles in both the answer hole (pyre7) and the next-state hole (this)"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((tick () s
+        (resume (+ s 1)
+                (handle E (: 40 Int64)
+                  ((tick () t (resume t (+ t 1))))
+                  (+ (E.tick) 2)))))
+      (+ (E.tick) (* 10 (E.tick)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 432 Int64))
+  (call   main (: 0 Int64)) (output (: 431 Int64)))
+
   ;; -- pyq3 escaping-levy scaled into inner fold + pyv2 non-commutative difference toll + pyx1 passive peek reads surviving replay's state (breaker batch 342) --
 (case "pyq3 the ESCAPING LEVY'S VALUE IS SCALED INTO THE INNER FOLD — the last inner dispatch is a thousandfold-scaled outer levy so the escaping continuation carries the scaling the inner toll and the region close while the levy's answer lands in the inner body's own arithmetic, and both frames' tolls price their own captures around the shared value"
   (input  (do
