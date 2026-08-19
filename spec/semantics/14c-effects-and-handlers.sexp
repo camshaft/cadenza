@@ -16455,3 +16455,42 @@
   (export main)))
   (call   main (: 10 Int64)) (output (: 802 Int64))
   (call   main (: 0 Int64)) (output (: 701 Int64)))
+
+  ;; -- pyab1 arg-vs-state branch in resume answer + pytd1 tuple resume-value destructured by body + pylc1 arm let-chain feeds both resume holes (breaker batch 346) --
+(case "pyab1 probe: resume answer BRANCHES on op arg vs captured state (if v>s then 100v else v+s); with v=1 the branch FLIPS by seed — only seed 0 crosses the threshold, so the first dispatch scales by 100 for n=0 but adds for higher seeds"
+  (input (do
+  (effect E (op tick (-> Int64 Int64)))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((tick (v) s
+        (resume (if (> v s) (* v 100) (+ v s)) (+ s 1))))
+      (let ((a (E.tick 1)))
+        (let ((b (E.tick 1)))
+          (+ (* 100 a) b)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 203 Int64))
+  (call   main (: 0 Int64)) (output (: 10002 Int64)))
+(case "pytd1 probe: op RETURNS a tuple resume value; the body DESTRUCTURES each dispatch's tuple result via match, two dispatches thread state so the tuple fields differ per call"
+  (input (do
+  (effect E (op split (-> (Tuple Int64 Int64))))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((split () s (resume (tuple (+ s 5) (* s 10)) (+ s 1))))
+      (let ((p (match (E.split) ((tuple a b) (+ a b)))))
+        (match (E.split) ((tuple c d) (+ (* 1000 p) (+ c d)))))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 16027 Int64))
+  (call   main (: 0 Int64)) (output (: 5016 Int64)))
+(case "pylc1 probe: arm binds a LET CHAIN of intermediates and the resume answer + next-state both reference earlier let-bindings (a used in b, both used in the resume)"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((tick () s
+        (let ((a (* s 2)))
+          (let ((b (+ a 3)))
+            (resume (+ a b) (+ b 1))))))
+      (+ (E.tick) (* 100 (E.tick)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 2707 Int64))
+  (call   main (: 0 Int64)) (output (: 1903 Int64)))
