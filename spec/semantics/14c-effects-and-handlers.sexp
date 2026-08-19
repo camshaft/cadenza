@@ -16338,3 +16338,46 @@
   (export main)))
   (call   main (: 10 Int64)) (output (: 17 Int64))
   (call   main (: 0 Int64)) (output (: 15 Int64)))
+
+  ;; -- pyth2 non-dispatching toll handle folds + pylh2 non-dispatching let-hoisted folds + pyft1 bare foreign perform in toll folds (narrowed dispatching-only toll guard boundary pins) (breaker batch 344) --
+  (case "pyth2 a NON-dispatching nested handle in the post-resume toll position FOLDS — the inner handle installs a handler but its body performs nothing (a constant), so unlike a dispatching nested handle (which the two-hole refold declines) the non-dispatching one reduces to its constant and the toll charges that constant per frame"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((tick () s
+        (+ (resume (+ s 1) (* 10 s))
+           (handle E (: 40 Int64)
+             ((tick () t (resume t (+ t 1))))
+             (: 7 Int64)))))
+      (+ (E.tick) (* 10 (E.tick)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 126 Int64))
+  (call   main (: 0 Int64)) (output (: 25 Int64)))
+  (case "pylh2 a NON-dispatching nested handle LET-HOISTED before resume FOLDS — the inner handle is bound in a let (evaluated before resume) and its value used post-resume; because its body performs nothing the narrowed dispatching-only toll guard lets it fold, confirming the guard keys on whether the nested handle's body dispatches, not on the let-hoist structure"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((tick () s
+        (let ((k (handle E (: 40 Int64)
+                   ((tick () t (resume t (+ t 1))))
+                   (: 7 Int64))))
+          (+ (resume (+ s 1) (* 10 s)) k))))
+      (+ (E.tick) (* 10 (E.tick)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 126 Int64))
+  (call   main (: 0 Int64)) (output (: 25 Int64)))
+  (case "pyft1 a BARE foreign perform in the post-resume toll position FOLDS — a distinct outer effect drawn directly (not wrapped in a nested handle) as the toll term folds correctly, the boundary pin showing the toll decline is scoped to a nested handle installation not to effect activity in the toll"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (effect F (op aux (-> Int64)))
+  (def (main (: n Int64))
+    (handle F (: 0 Int64)
+      ((aux () fs (resume (: 100 Int64) fs)))
+      (handle E (% n 3)
+        ((tick () s (+ (resume (+ s 1) (* 10 s)) (F.aux))))
+        (+ (E.tick) (* 10 (E.tick))))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 312 Int64))
+  (call   main (: 0 Int64)) (output (: 211 Int64)))
