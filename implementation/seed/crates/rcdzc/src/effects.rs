@@ -10440,6 +10440,23 @@ fn rewrite_resume_to_context(
 /// fold then declines cleanly — never a partial rewrite). SOUND ONLY for a ONE-SHOT arm (the caller checks
 /// `count_resumes == 1`): a single `resume` occurrence means `C` is spliced once, so the inner perform in
 /// `C` runs exactly once — no duplication.
+/// Whether `node` reaches a NESTED HANDLE — a `Resolved::Handle` or the desugared `handle-internal` head —
+/// anywhere in its subtree. Guards the two-hole refold's next-state threading: a next-state that is (or
+/// contains) a handle expression must not be threaded raw as a recursive-`reduce_handle` seed (breaker pyre3
+/// silent miscompile — the handle is threaded unevaluated instead of reduced to its value). A plain value /
+/// pure-arithmetic next-state has no nested handle and threads correctly.
+fn reaches_nested_handle(db: &mut Db, node: StructId) -> bool {
+    if matches!(resolved_of(db, node), Resolved::Handle { .. })
+        || db.ast.head_name(node) == Some(HANDLE_INTERNAL)
+    {
+        return true;
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children.iter().any(|&c| reaches_nested_handle(db, c)),
+        Struct::Atom(_) => false,
+    }
+}
+
 fn rewrite_resume_to_refolded_context(
     db: &mut Db,
     node: StructId,
@@ -10540,6 +10557,19 @@ fn rewrite_resume_to_refolded_context(
         return rewrite_resume_to_refolded_context(db, rebuilt, handle_body, perform, arms);
     }
     if let Resolved::Resume { value, next_state } = resolved_of(db, node) {
+        // SILENT-MISCOMPILE GUARD (breaker pyre3). The next-state threads forward as the SEED of the recursive
+        // `reduce_handle` below. If it is itself a NESTED HANDLE expression `(resume v (handle E … body))`, it
+        // is threaded RAW — not first reduced to its value — so a later dispatch reading the state observes the
+        // unevaluated handle in the seed slot and mis-evaluates it: a closed pure handle = 42 in next-state
+        // produced 415210 not the correct 47210 (uniform wasm+rust), whereas the referentially-equal pure
+        // ARITHMETIC `(* 6 7)` = 42 threads correctly. A pure sub-expression must be replaceable by its value;
+        // the fold isn't reducing a next-state-position handle, so it silently miscompiles. DECLINE (a clean
+        // todo, matching the let-hoisted sibling `(let ((ns (handle …))) (resume v ns))` which already
+        // declines) rather than thread a handle expression as a state seed. Narrow: only a next-state that
+        // REACHES a nested handle trips it — a plain value / pure-arithmetic next-state folds unchanged.
+        if reaches_nested_handle(db, next_state) {
+            return None;
+        }
         // Build `C[value]` (the continuation with the hole filled by the resume value), then re-reduce it
         // under the same handler seeded with the resume's next-state — so a further discharged perform in
         // `C` is handled by the recursive fold.
