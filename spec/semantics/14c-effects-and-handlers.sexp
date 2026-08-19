@@ -16634,3 +16634,40 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 70030 Int64))
   (call   main (: 0 Int64)) (output (: 70010 Int64)))
+
+  ;; -- pyaf1 answer-feeds-next-arg data-dependency chain + pyco1 closure escapes handle with captured draw + pydm1 div/mod packed resume answer (breaker batch 350) --
+(case "pyaf1 probe: a DATA-DEPENDENCY CHAIN across dispatches — each step(x) resumes x+s and the result feeds the NEXT dispatch's argument, so the three dispatches form a fold where the arg thread and the handler-state thread advance independently"
+  (input (do
+  (effect E (op step (-> Int64 Int64)))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((step (x) s (resume (+ x s) (+ s 1))))
+      (let ((a (E.step 1)))
+        (let ((b (E.step a)))
+          (let ((c (E.step b)))
+            (+ (* 100 c) (+ (* 10 b) a)))))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 742 Int64))
+  (call   main (: 0 Int64)) (output (: 421 Int64)))
+(case "pyco1 probe: the handled body RETURNS A CLOSURE that captured a drawn value, and the closure is applied AFTER the handle has returned — the captured draw must survive the handler teardown and be usable outside the effect region"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (main (: n Int64))
+    (let ((f (handle E (% n 3)
+               ((tick () s (resume s (+ s 1))))
+               (let ((d (E.tick)))
+                 (fn ((: x Int64)) (+ x d))))))
+      (f (: 100 Int64))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 101 Int64))
+  (call   main (: 0 Int64)) (output (: 100 Int64)))
+(case "pydm1 probe: resume answer packs INTEGER DIVISION and MODULO of the captured state (div*10 + mod) while the next-state advances by 7, so across three dispatches the quotient and remainder both shift and a div/mod confusion or wrong thread would scramble the packed digits"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (main (: n Int64))
+    (handle E (+ (% n 3) (: 5 Int64))
+      ((tick () s (resume (+ (* (/ s 3) 10) (% s 3)) (+ s 7))))
+      (+ (E.tick) (+ (* 1000 (E.tick)) (* 1000000 (E.tick))))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 62041020 Int64))
+  (call   main (: 0 Int64)) (output (: 61040012 Int64)))
