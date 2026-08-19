@@ -16787,3 +16787,42 @@
   (export main)))
   (call   main (: 10 Int64)) (output (: 5999 Int64))
   (call   main (: 0 Int64)) (output (: 4999 Int64)))
+
+  ;; -- pysd1 Set-state dedup+contains (flat-do) + pyhof1 op takes a function arg applied in the arm + pyts2 tuple-state field-swap (breaker batch 354) --
+(case "pysd1 probe: a SET-STATE handler enforces DEDUP across the seam — add(k) threads Set.insert and answers the new size, so re-adding an already-present key does not grow the set; a has(k) op reads membership, confirming the CHAMP set's dedup and contains both survive the resume threading"
+  (input (do
+  (effect E (op add (-> Int64 Int64)) (op has (-> Int64 Int64)))
+  (def (main (: n Int64))
+    (handle E (Set.of (list (% n 3)))
+      ((add (k) s (resume (Set.len (Set.insert s k)) (Set.insert s k)))
+       (has (k) s (resume (if (Set.contains s k) (: 1 Int64) (: 0 Int64)) s)))
+      (do (E.add (% n 3))
+          (E.add (: 7 Int64))
+          (+ (* 1000 (E.add (% n 3)))
+             (+ (* 100 (E.has (% n 3)))
+                (+ (* 10 (E.has (: 7 Int64)))
+                   (E.has (: 99 Int64))))))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 2110 Int64))
+  (call   main (: 5 Int64)) (output (: 2110 Int64)))
+(case "pyhof1 probe: the op takes a FUNCTION argument and the arm APPLIES it to the captured state before resuming — apply(f) resumes (f s); two dispatches pass different closures (multiply-by-ten then add-hundred) while the state threads, so the higher-order argument is invoked inside the handler arm at the current state"
+  (input (do
+  (effect E (op apply (-> (-> Int64 Int64) Int64)))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((apply (f) s (resume (f s) (+ s 1))))
+      (+ (* 100 (E.apply (fn ((: x Int64)) (* x 10))))
+         (E.apply (fn ((: y Int64)) (+ y 100))))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 1102 Int64))
+  (call   main (: 0 Int64)) (output (: 101 Int64)))
+(case "pyts2 probe: a TUPLE-STATE FIELD SWAP — the state is a pair, each tick answers a digit-packed function of both fields (a*10+b) and threads the SWAPPED pair (b, a) as the next-state, so the two dispatches read the fields in opposite roles and an order-insensitive swap or a wrong thread flips the packed value"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (main (: n Int64))
+    (handle E (tuple (% n 3) (: 5 Int64))
+      ((tick () s (match s ((tuple a b) (resume (+ (* a 10) b) (tuple b a))))))
+      (+ (* 1000 (E.tick)) (E.tick))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 15051 Int64))
+  (call   main (: 0 Int64)) (output (: 5050 Int64)))
