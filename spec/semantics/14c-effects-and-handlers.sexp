@@ -16235,3 +16235,44 @@
   (export main)))
   (call   main (: 10 Int64)) (output (: 11462 Int64))
   (call   main (: 0 Int64)) (output (: 462 Int64)))
+
+  ;; -- pyq3 escaping-levy scaled into inner fold + pyv2 non-commutative difference toll + pyx1 passive peek reads surviving replay's state (breaker batch 342) --
+(case "pyq3 the ESCAPING LEVY'S VALUE IS SCALED INTO THE INNER FOLD — the last inner dispatch is a thousandfold-scaled outer levy so the escaping continuation carries the scaling the inner toll and the region close while the levy's answer lands in the inner body's own arithmetic, and both frames' tolls price their own captures around the shared value"
+  (input  (do
+            (effect T (op levy (-> Int64)))
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle T (% n 3)
+                ((levy () t (+ (resume t (+ t 1)) (* 10000 (+ t 1)))))
+                (handle E (: 5 Int64)
+                  ((tick () s (+ (resume s (+ s 1)) (* 100 s))))
+                  (+ (* 10 (E.tick)) (* 1000 (T.levy))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 21550 Int64))
+  (call   main (: 0 Int64)) (output (: 10550 Int64)))
+(case "pyv2 a NON-COMMUTATIVE DIFFERENCE TOLL — each frame charges a hundredfold of the op argument MINUS the captured state so swapping the operands negates the toll, the two dispatches subtract different pairs, and the seed that RAISES the state SHRINKS the answer through both differences at once"
+  (input  (do
+            (effect E (op tick (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick (v) s
+                  (+ (resume (+ v s) (+ s 1)) (* 100 (- v s)))))
+                (let ((a (E.tick 7)))
+                  (let ((b (E.tick 4)))
+                    (+ a (* 10 b))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 868 Int64))
+  (call   main (: 0 Int64)) (output (: 1057 Int64)))
+(case "pyx1 a PASSIVE PEEK READS THE SURVIVING REPLAY'S STATE — the tick double-replays with the discarded replay adding one and the survivor TRIPLING the state, a second op then reads the state without advancing it, and the peek must see the survivor's tripled thread rather than the discarded increment or the pre-replay value"
+  (input  (do
+            (effect E (op tick (-> Int64)) (op peek (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s
+                  (do (resume s (+ s 1))
+                      (resume (+ s 10) (* s 3))))
+                 (peek () s (resume s s)))
+                (+ (E.tick) (* 100 (E.peek)))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 311 Int64))
+  (call   main (: 0 Int64)) (output (: 10 Int64)))
