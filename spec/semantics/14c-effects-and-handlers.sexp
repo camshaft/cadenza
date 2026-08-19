@@ -16040,3 +16040,56 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 18 Int64))
   (call   main (: 0 Int64)) (output (: 7 Int64)))
+
+;; ── heap collections meet the multi-shot machinery: heap-in-toll, growing-list thread, survivor push (breaker batch 338) ──
+;; The resume SEAM is scalar-only (heap operands crossing it decline) but heap ops fully contained in a
+;; toll fold, heap STATE threads fine, and divergent replays version the heap — no aliased-push leaks.
+
+(case "pyl1 a HEAP LIST BUILT AND MEASURED INSIDE THE TOLL — each frame's post-resume toll constructs a list whose LENGTH depends on the captured state then charges a hundredfold of it, the heap allocation happens during the unwind, and the state-gated size means the seeded frame builds the longer list"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s
+                  (+ (resume (* s 10) (+ s 1))
+                     (* 100 (List.len (if (> s 0)
+                                          (List.push (List.push (list) s) s)
+                                          (List.push (list) s)))))))
+                (+ (E.tick) (* 10 (E.tick)))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 610 Int64))
+  (call   main (: 0 Int64)) (output (: 400 Int64)))
+
+(case "pyl2 a GROWING LIST AS THE STATE THREAD — the seed becomes the list's head and every dispatch answers head-tenfold-plus-length while pushing the old length, both the seeded head and the growing length land in every answer, and a thread that rebuilds the list or drops the push loses one digit family each"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (list (% n 3))
+                ((tick () xs
+                  (resume (match (List.at xs 0)
+                            ((Some h) (+ (* h 10) (List.len xs)))
+                            ((None) (: -1 Int64)))
+                          (List.push xs (List.len xs)))))
+                (+ (E.tick) (* 100 (E.tick)))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 1211 Int64))
+  (call   main (: 0 Int64)) (output (: 201 Int64)))
+
+(case "pyl3 HEAP-LIST STATE THROUGH DIVERGENT REPLAYS — the discarded replay pushes a NINE and the survivor pushes a FIVE onto the shared starting list, the next dispatch reads slot one and finds the survivor's five never the discarded nine, and the seeded head rides both answers while the five stamps only the second"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (list (% n 3))
+                ((tick () xs
+                  (do (resume (List.len xs) (List.push xs 9))
+                      (resume (+ (match (List.at xs 0)
+                                   ((Some h) (* h 10))
+                                   ((None) (: -1 Int64)))
+                                 (match (List.at xs 1)
+                                   ((Some t) t)
+                                   ((None) (: 0 Int64))))
+                              (List.push xs 5)))))
+                (+ (E.tick) (* 100 (E.tick)))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 1510 Int64))
+  (call   main (: 0 Int64)) (output (: 500 Int64)))
