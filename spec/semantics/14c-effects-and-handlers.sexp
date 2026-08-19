@@ -15948,3 +15948,50 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 211 Int64))
   (call   main (: 0 Int64)) (output (: 110 Int64)))
+
+;; ── shadow topology: triple-nested cascade, sibling regions, arm-raised tolled dispatch (breaker batch 336) ──
+
+(case "pysh6 a TRIPLE SHADOW CHAIN OF SELF-PERFORMS — three handlers over the same effect stack and each inner arm's self-perform routes exactly ONE level out so the body's single draw cascades level by level to the outermost arm and the answers fold back in reverse, each level stamping its own state band, and any arm skipping a level or capturing its own region breaks a distinct digit band"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s (resume (+ (* s 10) 1) (+ s 1))))
+                (handle E (: 50 Int64)
+                  ((tick () s (resume (+ s (E.tick)) (* s 2))))
+                  (handle E (: 700 Int64)
+                    ((tick () s (resume (+ s (E.tick)) (+ s 1))))
+                    (E.tick)))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 761 Int64))
+  (call   main (: 0 Int64)) (output (: 751 Int64)))
+
+(case "pysh7 SIBLING SHADOW REGIONS SHARE ONE OUTER THREAD — two side-by-side handles over the same effect each self-perform to the shared outer arm, the outer state advances through the FIRST sibling into the SECOND so their answers carry consecutive rungs, and an outer thread that forks per region or resets between siblings collapses the rung gap"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s (resume (+ (* s 10) 1) (+ s 1))))
+                (+ (handle E (: 50 Int64)
+                     ((tick () s (resume (+ s (E.tick)) (+ s 1))))
+                     (E.tick))
+                   (* 1000 (handle E (: 800 Int64)
+                             ((tick () s (resume (+ s (E.tick)) (+ s 2))))
+                             (E.tick))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 821061 Int64))
+  (call   main (: 0 Int64)) (output (: 811051 Int64)))
+
+(case "pyi3 the SHADOWING ARM'S SELF-PERFORM HITS A TOLLED OUTER ARM — the inner arm draws the effect it handles and the draw routes to the outer handler whose thousandfold toll then wraps everything downstream of that dispatch including the inner region's completion, two outer frames stack their tolls around the whole computation, and mispricing either toll or misrouting the self-perform shifts separate digit ranges"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s (+ (resume s (+ s 1)) (* 1000 (+ s 1)))))
+                (+ (E.tick)
+                   (* 10 (handle E (: 50 Int64)
+                           ((tick () s (resume (+ s (E.tick)) (+ s 1))))
+                           (E.tick))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 5521 Int64))
+  (call   main (: 0 Int64)) (output (: 3510 Int64)))
