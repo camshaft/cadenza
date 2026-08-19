@@ -23,3 +23,9 @@
   sharing could leak the discarded push if the runtime aliased instead
   of versioning. Draft-1's answers didn't read slot 1 (weak observable)
   — strengthened before pinning. PASS x3 at 3020d9000.
+- `pyl4.sexp` — the heap TOMBSTONE reads the arm's ORIGINAL pre-replay
+  binding: both replays push (9 then 5) yet the surviving tombstone
+  reads len=1 and the seeded head (101 / 1) — neither push contaminates
+  the captured list. The heap twin of pyk3's capture-not-live law and
+  the tombstone complement of pyl3's survivor-visibility. PASS x3 at
+  3d3ef1d49.
