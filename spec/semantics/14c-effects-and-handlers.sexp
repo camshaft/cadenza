@@ -16864,3 +16864,39 @@
   (export main)))
   (call   main (: 10 Int64)) (output (: 1030 Int64))
   (call   main (: 0 Int64)) (output (: 2030 Int64)))
+
+  ;; -- pymt1 geometric tripling state + pystr1 String-state concat thread + py3w1 three-way arg-vs-state sign branch (breaker batch 356) --
+(case "pymt1 probe: a GEOMETRIC (tripling) state thread — each tick answers the current state and threads (* s 3), so three dispatches read s, 3s, 9s; packing them into separate digit ranges makes a wrong multiplier or a mis-threaded state visibly scramble the powers-of-three progression"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (main (: n Int64))
+    (handle E (+ (% n 3) (: 2 Int64))
+      ((tick () s (resume s (* s 3))))
+      (+ (E.tick) (+ (* 100 (E.tick)) (* 10000 (E.tick))))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 270903 Int64))
+  (call   main (: 0 Int64)) (output (: 180602 Int64)))
+(case "pystr1 probe: a STRING-STATE handler threads String.concat across the seam — grow() appends a fixed suffix answering the new length, so two grows extend the seed string and a size read returns the accumulated length; heap String state survives the resume threading"
+  (input (do
+  (effect E (op grow (-> Int64)) (op size (-> Int64)))
+  (def (main (: n Int64))
+    (handle E "ab"
+      ((grow () s (resume (String.scalar-len (String.concat s "xyz")) (String.concat s "xyz")))
+       (size () s (resume (String.scalar-len s) s)))
+      (+ (* 10000 (E.grow)) (+ (* 100 (E.grow)) (E.size)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 50808 Int64))
+  (call   main (: 0 Int64)) (output (: 50808 Int64)))
+(case "py3w1 probe: a THREE-WAY branch on the SIGN of (op-arg minus captured state) — cmd(v) scales by 10 when v>s, by 100 when v<s, answers zero when equal, threading a different advance per branch; two dispatches with different args cross the state boundary so both the greater and the equal/less arms fire across seeds"
+  (input (do
+  (effect E (op cmd (-> Int64 Int64)))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((cmd (v) s
+        (if (> v s) (resume (* v 10) (+ s 1))
+            (if (< v s) (resume (* v 100) (+ s 2))
+                (resume (: 0 Int64) (+ s 3))))))
+      (+ (* 1000 (E.cmd 5)) (E.cmd 1))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 50100 Int64))
+  (call   main (: 0 Int64)) (output (: 50000 Int64)))
