@@ -10452,19 +10452,33 @@ fn rewrite_resume_to_context(
 /// fold then declines cleanly — never a partial rewrite). SOUND ONLY for a ONE-SHOT arm (the caller checks
 /// `count_resumes == 1`): a single `resume` occurrence means `C` is spliced once, so the inner perform in
 /// `C` runs exactly once — no duplication.
-/// Whether the arm body `node` reaches a nested handle in a TOLL / continuation-context position — i.e.
-/// anywhere OUTSIDE a `resume`'s own argument subtrees. Skips a `resume` node whole: its ANSWER value folds
-/// correctly (spliced into the continuation and reduced, pyre6) and its NEXT-STATE is guarded separately
-/// (`reaches_nested_handle`, pyre3). A nested handle in the post-resume toll `(+ (resume …) (handle …))` is
-/// NOT reduced to its value by the refold and silently miscompiles (breaker pyth1) — so the two-hole block
-/// declines when this is true (reject-not-miscompile), without over-declining an answer-position handle.
+/// Whether the arm body `node` reaches a DISPATCHING nested handle in a TOLL / continuation-context position
+/// — a nested handle WHOSE BODY PERFORMS, sitting anywhere OUTSIDE a `resume`'s own argument subtrees. Skips
+/// a `resume` node whole: its ANSWER value folds correctly (spliced into the continuation and reduced,
+/// pyre6) and its NEXT-STATE is guarded separately (`reaches_nested_handle`, pyre3). A DISPATCHING nested
+/// handle in the post-resume toll `(+ (resume …) (handle E 40 … (+ (E.tick) 2)))` is not reduced to its
+/// value — its own dispatch leaks into the outer fold and silently miscompiles (breaker pyth1) — so the
+/// two-hole block declines when this is true (reject-not-miscompile). GATED TO DISPATCHING: a NON-dispatching
+/// nested handle in the toll (pure body, `(handle E 40 … (: 7))` = 7, breaker pyth2) folds CORRECTLY and must
+/// NOT be declined; the discriminator is whether the handle's BODY reaches a perform. A deeper dispatching
+/// handle nested inside a non-dispatching one is still caught (descent continues past a non-dispatching one).
 fn arm_toll_reaches_nested_handle(db: &mut Db, node: StructId) -> bool {
     // A `resume`'s args are handled elsewhere — skip the whole subtree (do not descend).
     if matches!(resolved_of(db, node), Resolved::Resume { .. }) {
         return false;
     }
-    if matches!(resolved_of(db, node), Resolved::Handle { .. })
-        || db.ast.head_name(node) == Some(HANDLE_INTERNAL)
+    // A nested handle whose BODY dispatches (performs) is the miscompiling case — flag it. Extract the body
+    // from `Resolved::Handle` (raw) or, post-desugar, the last child of a `(handle-internal seed arms… body)`.
+    let handle_body = match resolved_of(db, node) {
+        Resolved::Handle { body, .. } => Some(body),
+        _ if db.ast.head_name(node) == Some(HANDLE_INTERNAL) => match db.ast.get(node).clone() {
+            Struct::List(children) => children.last().copied(),
+            Struct::Atom(_) => None,
+        },
+        _ => None,
+    };
+    if let Some(body) = handle_body
+        && reaches_any_perform(db, body)
     {
         return true;
     }
