@@ -2624,6 +2624,18 @@ pub fn reduce_handle(
         // (`(if cond ABORT (resume …))`) — the refold would rewrite only the resuming branch and mis-splice.
         && !arm_partially_resumes(db, arm.body)
     {
+        // SILENT-MISCOMPILE GUARD (breaker pyth1). A nested closed HANDLE in the POST-RESUME TOLL position —
+        // `(+ (resume v s') (handle E 40 … (+ (E.tick) 2)))` — is NOT reduced to its value by the refold; its
+        // dispatches leak into the outer fold instead of folding to a self-contained 42, so a closed handle
+        // = 42 in the toll produced 1414 not the correct 196 (uniform wasm+rust+rust-async, distinct-effect
+        // identical → a genuine VALUE bug, not routing). The referentially-equal literal 42 in the toll folds
+        // correctly. DECLINE (reject-not-miscompile) when the arm body reaches a nested handle OUTSIDE a
+        // resume's own args — the resume subtree is skipped because its ANSWER value folds correctly via
+        // `splice_context` (pyre6, landed) and its NEXT-STATE is guarded separately in
+        // `rewrite_resume_to_refolded_context` (pyre3). Narrow: only a toll/context-position handle trips it.
+        if arm_toll_reaches_nested_handle(db, arm.body) {
+            return None;
+        }
         let mut subst: HashMap<StructId, StructId> = HashMap::default();
         if arm.params.len() == args.len() {
             for (&p, &a) in arm.params.iter().zip(args.iter()) {
@@ -10440,6 +10452,30 @@ fn rewrite_resume_to_context(
 /// fold then declines cleanly — never a partial rewrite). SOUND ONLY for a ONE-SHOT arm (the caller checks
 /// `count_resumes == 1`): a single `resume` occurrence means `C` is spliced once, so the inner perform in
 /// `C` runs exactly once — no duplication.
+/// Whether the arm body `node` reaches a nested handle in a TOLL / continuation-context position — i.e.
+/// anywhere OUTSIDE a `resume`'s own argument subtrees. Skips a `resume` node whole: its ANSWER value folds
+/// correctly (spliced into the continuation and reduced, pyre6) and its NEXT-STATE is guarded separately
+/// (`reaches_nested_handle`, pyre3). A nested handle in the post-resume toll `(+ (resume …) (handle …))` is
+/// NOT reduced to its value by the refold and silently miscompiles (breaker pyth1) — so the two-hole block
+/// declines when this is true (reject-not-miscompile), without over-declining an answer-position handle.
+fn arm_toll_reaches_nested_handle(db: &mut Db, node: StructId) -> bool {
+    // A `resume`'s args are handled elsewhere — skip the whole subtree (do not descend).
+    if matches!(resolved_of(db, node), Resolved::Resume { .. }) {
+        return false;
+    }
+    if matches!(resolved_of(db, node), Resolved::Handle { .. })
+        || db.ast.head_name(node) == Some(HANDLE_INTERNAL)
+    {
+        return true;
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| arm_toll_reaches_nested_handle(db, c)),
+        Struct::Atom(_) => false,
+    }
+}
+
 /// Whether `node` reaches a NESTED HANDLE — a `Resolved::Handle` or the desugared `handle-internal` head —
 /// anywhere in its subtree. Guards the two-hole refold's next-state threading: a next-state that is (or
 /// contains) a handle expression must not be threaded raw as a recursive-`reduce_handle` seed (breaker pyre3
