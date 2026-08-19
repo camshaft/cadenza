@@ -582,46 +582,76 @@ pub(crate) fn run_sharing_aware_emit(
         // (each captures `scope_node`'s CURRENT core as the new Let body → the second wraps the first, let*).
         // See backend/wasm/DESIGN-sharing-aware-emit-let-slot.md.
         let plan = crate::core_analysis::b2_bind_plan(db, body);
-        for e in &plan {
-            // rep_init: a fresh node holding the shared node's ORIGINAL core (the binding VALUE), captured
-            // BEFORE the member repoint below — it references the shared node's CHILDREN, not the shared id
-            // itself, so the id-repoint leaves the original computation intact.
-            let shared_core = crate::lower::core_of(db, e.shared_id);
-            let rep_init = crate::lower::synth_core(db, shared_core, e.ty.clone());
-            // A DISTINCT fresh binder id (the slot key) typed as the shared value: `is_heap_type_for_retain`
-            // sees the heap type so `mark_binder_dups` gives the slot the correct dup/drop; distinct from the
-            // value so `collect_row_op_field_dups`'s `bk == bv` guard is false (no double-count). Its core is
-            // only a key (never dereferenced for a Let binder).
-            let fresh_binder = crate::lower::synth_core(
-                db,
-                crate::core::Core::LocalRef { binder: rep_init },
-                e.ty.clone(),
-            );
-            // The Let BODY: a fresh node holding `scope_node`'s CURRENT core (so a prior same-scope Let is
-            // captured as this Let's body → nested let* bindings, never a clobber).
-            let scope_ty = crate::infer::type_of(db, e.scope_node);
-            let scope_core = crate::lower::core_of(db, e.scope_node);
-            let inner = crate::lower::synth_core(db, scope_core, scope_ty);
-            db.install_core_override(
-                e.scope_node,
-                crate::core::Core::Let {
-                    bindings: vec![(fresh_binder, rep_init)].into(),
-                    body: inner,
-                },
-            );
-            // Repoint the shared id (its K parents all read this one id) to read the slot.
-            for &m in &e.members {
-                db.install_core_override(
-                    m,
-                    crate::core::Core::LocalRef {
-                        binder: fresh_binder,
-                    },
-                );
-            }
-        }
+        install_b2_bind_entries(db, &plan);
         if !plan.is_empty() {
             trace!(target: "rcdzc::opt", def, entries = plan.len(),
                 "sharing-aware-emit: B2 bind plan INSTALLED (shared heap nodes bound into Let slots)");
+        }
+    }
+}
+
+/// Install one B2 bind plan's entries into the core column (the emit-coupled half — v-rb's lane). Split out
+/// of `run_sharing_aware_emit` so the install mechanics can be pinned by a white-box unit test on a SYNTHETIC
+/// plan (`testkit::parse`/`Db::load` cannot seed a clean heap-share body — see the scalar-repeat test — so the
+/// FIRING path is otherwise only reachable through the corpus `--opt-sweep`).
+///
+/// BIND-ONCE model (what `b2_bind_plan` actually emits today): each entry's `members` is `[shared_id]` — the
+/// ONE shared `StructId` itself (see `b2_member_occurrences`, core_analysis.rs:501-506; `b2_bind_plan`:411-413).
+/// The loop overrides that single id to `LocalRef{fresh_binder}`, and its K parent EDGES all follow uniformly
+/// (they reference `shared_id` by id, so `core_of(shared_id)` now returning `LocalRef` redirects every parent
+/// at once). That is why bind-once needs no per-parent work: child-override propagates to all readers.
+///
+/// ⚠ NOT a per-branch de-share primitive. A shared node is ONE `StructId` reached by K parent EDGES (NOT K
+/// distinct occurrence ids), and `install_core_override(node)` is ALL-OR-NOTHING across those parents. So this
+/// loop CANNOT point different parents of the same `shared_id` at different per-branch copies — cmb1-FULL's
+/// per-branch de-share needs an EDGE-level rewrite (redirect a specific parent→`shared_id` edge to a per-edge
+/// copy), a SEPARATE install (v-rb, in design w/ v-core-opt 2026-08-19). For cmb1's shares specifically — which
+/// are `SumPayload` SCRUTINEES (P3) — the de-share copy must be INLINE (a fresh direct value as the parent's
+/// operand), NEVER a slotted `LocalRef` (a `LocalRef` `SumPayload` operand re-breaks the rust nested-variant
+/// subject resolution P3 protects). So the future per-edge install rewrites `parent`'s child edge to a fresh
+/// copy of `shared_id`'s core, with no `Let`/binder — distinct from this bind-once slot install.
+pub(crate) fn install_b2_bind_entries(
+    db: &mut crate::db::Db,
+    plan: &[crate::core_analysis::B2BindPlanEntry],
+) {
+    for e in plan {
+        // rep_init: a fresh node holding the shared node's ORIGINAL core (the binding VALUE), captured
+        // BEFORE the member repoint below — it references the shared node's CHILDREN, not the shared id
+        // itself, so the id-repoint leaves the original computation intact.
+        let shared_core = crate::lower::core_of(db, e.shared_id);
+        let rep_init = crate::lower::synth_core(db, shared_core, e.ty.clone());
+        // A DISTINCT fresh binder id (the slot key) typed as the shared value: `is_heap_type_for_retain`
+        // sees the heap type so `mark_binder_dups` gives the slot the correct dup/drop; distinct from the
+        // value so `collect_row_op_field_dups`'s `bk == bv` guard is false (no double-count). Its core is
+        // only a key (never dereferenced for a Let binder). A FRESH one PER ENTRY → per-branch slots stay
+        // independent (never reuse a binder across entries).
+        let fresh_binder = crate::lower::synth_core(
+            db,
+            crate::core::Core::LocalRef { binder: rep_init },
+            e.ty.clone(),
+        );
+        // The Let BODY: a fresh node holding `scope_node`'s CURRENT core (so a prior same-scope Let is
+        // captured as this Let's body → nested let* bindings, never a clobber).
+        let scope_ty = crate::infer::type_of(db, e.scope_node);
+        let scope_core = crate::lower::core_of(db, e.scope_node);
+        let inner = crate::lower::synth_core(db, scope_core, scope_ty);
+        db.install_core_override(
+            e.scope_node,
+            crate::core::Core::Let {
+                bindings: vec![(fresh_binder, rep_init)].into(),
+                body: inner,
+            },
+        );
+        // Repoint the entry's members to read the slot. Today `members == [shared_id]` (bind-once): overriding
+        // that one id redirects all K parent edges uniformly (they reference it by id). The loop is written over
+        // a member LIST for generality, but the plan currently supplies exactly the shared id.
+        for &m in &e.members {
+            db.install_core_override(
+                m,
+                crate::core::Core::LocalRef {
+                    binder: fresh_binder,
+                },
+            );
         }
     }
 }
@@ -1107,6 +1137,66 @@ mod tests {
             !db.has_core_overrides(),
             "a repeated SCALAR is not a heap share → b2_bind_plan is empty → B2 installs nothing (that \
              repeat is GlobalCse's job, not B2's)"
+        );
+    }
+
+    #[test]
+    fn install_bind_once_repoints_the_shared_id_to_a_fresh_let_slot() {
+        // Pins the BIND-ONCE install contract `b2_bind_plan` actually emits: `members == [shared_id]` (the ONE
+        // shared `StructId`; see `b2_member_occurrences`), so the install binds a COPY of `shared_id`'s core into
+        // a fresh `Let` slot at `scope_node` and overrides `shared_id` itself to `LocalRef{fresh_binder}` — its K
+        // parent edges then all read the slot uniformly (they reference it by id). `testkit::parse`/`Db::load`
+        // cannot seed a clean heap-share body (so detection can't be unit-tested — the firing path is otherwise
+        // only reached via the corpus `--opt-sweep`), but the standalone `install_b2_bind_entries` consumes a
+        // plan slice directly, so this feeds a faithful one-entry `members == [shared_id]` plan and asserts:
+        // (1) `scope_node` → `Let` with a DISTINCT fresh binder, (2) `shared_id` → `LocalRef` of that binder,
+        // (3) the slot's initializer holds `shared_id`'s ORIGINAL core (the copy, not the LocalRef). NOTE this
+        // is bind-once only; per-branch de-share (cmb1-FULL) is a SEPARATE edge-rewrite install (node-override
+        // is all-or-nothing across a shared node's K parent edges — see the fn doc).
+        use crate::core::Core;
+        let mut db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (main (: x Int64)) (+ (+ x 1) (+ x 2))) (export main))",
+        ));
+        let d = db.def_by_name("main").expect("def main");
+        let body = db.defs[d].body.expect("main body");
+        // Pick a real child node as the shared id; `scope_node` = body (an ancestor). `members == [shared_id]`.
+        let child = *crate::backend::wasm::select::core_child_ids(&mut db, body)
+            .first()
+            .expect("body has a child node");
+        let ty = crate::infer::type_of(&mut db, child);
+        let child_core_before = crate::lower::core_of(&mut db, child);
+        let plan = vec![crate::core_analysis::B2BindPlanEntry {
+            scope_node: body,
+            shared_id: child,
+            ty,
+            members: vec![child], // the real bind-once shape: the shared id IS the (single) member
+        }];
+        install_b2_bind_entries(&mut db, &plan);
+
+        // (1) scope_node became a `Let` with a fresh binder + initializer, both DISTINCT from the shared id.
+        let (binder, rep_init) = match crate::lower::core_of(&mut db, body) {
+            Core::Let { bindings, .. } => (bindings[0].0, bindings[0].1),
+            other => panic!("scope_node not a Let: {other:?}"),
+        };
+        assert_ne!(
+            binder, child,
+            "the slot binder must be a DISTINCT fresh id (not the shared id)"
+        );
+        assert_ne!(
+            rep_init, child,
+            "the slot initializer must be a fresh COPY (not the shared id itself)"
+        );
+        // (2) the shared id now reads the slot — its K parents follow via this single child-override.
+        assert!(
+            matches!(crate::lower::core_of(&mut db, child), Core::LocalRef { binder: b } if b == binder),
+            "shared_id must be repointed to LocalRef of the slot binder"
+        );
+        // (3) the slot's initializer preserves the ORIGINAL computation (copied before the override), so the
+        // value bound is the shared node's own core — not the LocalRef the shared id was just overridden to.
+        assert_eq!(
+            crate::lower::core_of(&mut db, rep_init),
+            child_core_before,
+            "the slot initializer holds a copy of shared_id's ORIGINAL core"
         );
     }
 }
