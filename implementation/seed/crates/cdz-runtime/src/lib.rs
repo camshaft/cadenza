@@ -10081,6 +10081,70 @@ mod tests {
         assert_eq!(live_nodes(), 0, "no leak");
     }
 
+    /// The framed Rational descriptor `(: <num>/<den> Rational)` — tag-18 `Rational` leaf, wrapped in a
+    /// tag-15 `Framed` whose TypeNode is the childless name `Rational` (mirrors the BigInt descriptor:
+    /// one scalar-ish leaf under one frame).
+    fn framed_rational_descriptor() -> Vec<u8> {
+        let mut d = Vec::new();
+        desc_leb(&mut d, 2); // table_len = 2
+        d.push(18); // [0] Rational
+        // [1] Framed( TypeNode 'Rational' (0 children), inner → 0 )
+        d.push(15);
+        desc_name(&mut d, "Rational");
+        desc_leb(&mut d, 0);
+        desc_leb(&mut d, 0); // inner → 0
+        desc_leb(&mut d, 1); // root → 1
+        d
+    }
+
+    /// GOLDEN pin, RATIONAL shape (closes the 8+1 cross-backend `Value.encode` byte-identity guard;
+    /// v-rust-backend landed the native-rust Rational R2 arm on trunk `f62a6dc18`, `backend/rust/expr.rs`
+    /// `emit_value_form`: `Ty::Rational => __b.name(&val.to_display_string())` — a SINGLE NAME leaf, the
+    /// exact form this pins). `Value.encode` of `(Rational.of 3 4)` at `Rational` must render
+    /// `(: 3/4 Rational)` — the value is ONE `num/den` NAME leaf (lowest-terms, sign-on-numerator, den>0),
+    /// NOT a `(record num den)` and NOT the 2-BigInt-handle heap node. Byte-identical to v-rb's
+    /// `to_display_string()` NAME leaf by construction. Guarded three ways (iterative==recursive oracle,
+    /// decode∘encode==id, exact full-document bytes). `#[cfg(test)]`.
+    #[test]
+    fn value_encode_of_a_framed_rational_is_the_colon_framed_golden() {
+        reset();
+        let desc = framed_rational_descriptor();
+        let r = op_rational_of(op_bigint_of_i64(3), op_bigint_of_i64(4));
+        let got = op_value_encode_form(r, &desc).expect("encode framed rational");
+
+        let descriptor = decode_descriptor(&desc).expect("descriptor");
+        let mut b = DocBuilder::default();
+        let root = encode_value_recursive(&descriptor, &mut b, r, descriptor.root, 0)
+            .expect("recursive encode");
+        assert_eq!(got, b.finish(root), "iterative/recursive disagree on rational");
+
+        let back = op_value_decode(&got, &desc);
+        assert_ne!(back, Handle::NULL, "rational doc must decode");
+        assert_eq!(
+            got,
+            op_value_encode_form(back, &desc).expect("re-encode rational"),
+            "decode∘encode ≠ id on rational"
+        );
+        op_drop(back);
+
+        // FULL document: ':' , '3/4' (a single NAME leaf), 'Rational' (3 leaves) + spine. The value leaf
+        // is the num/den NAME text — NOT a KIND_INT (BigInt) and NOT a record.
+        let expect: &[u8] = &[
+            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, // cdzast\x00\x01
+            0x03, // 3 leaves
+            0x0a, 0x01, 0x3a, // ':'
+            0x0a, 0x03, 0x33, 0x2f, 0x34, // NAME '3/4'
+            0x0a, 0x08, 0x52, 0x61, 0x74, 0x69, 0x6f, 0x6e, 0x61, 0x6c, // 'Rational'
+            // struct spine:
+            0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x01, 0x03, 0x00, 0x01, 0x02, 0x03,
+        ];
+        assert_eq!(got, expect, "framed rational must be the full colon-framed golden document");
+        assert_eq!(got[8], 0x03, "rational leaf count = 3");
+
+        op_drop(r);
+        assert_eq!(live_nodes(), 0, "no leak");
+    }
+
     #[test]
     fn value_encode_form_matches_the_codec_for_a_recursive_sum() {
         reset();
