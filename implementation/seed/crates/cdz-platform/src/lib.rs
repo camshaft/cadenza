@@ -11,6 +11,7 @@
 
 mod blob_store;
 mod contract;
+mod event_registry;
 mod hash;
 mod hierarchy;
 mod kv;
@@ -20,6 +21,7 @@ mod str;
 
 pub use blob_store::{BlobStore, InMemoryBlobStore};
 pub use contract::Contract;
+pub use event_registry::EventRegistry;
 pub use hash::{Hash, base64url};
 pub use hierarchy::{Ancestors, Hierarchy};
 pub use kv::{InMemoryKvStore, KeyRange, KvKeyScan, KvScan, KvStore, prefix_range};
