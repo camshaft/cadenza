@@ -157,12 +157,15 @@ correct, root-installed system reducer to enforce the model.
 So the kernel's whole irreducible core is: execute a reducer step; schedule and interleave,
 carrying each response back to the reducer that emitted the request; keep the log; the direct
 reducer-facing accesses with swappable backends (the key-value store, a reducer's own id, and
-the content-addressed store); the `fire-after` timer; the root-only override registry; and
-one privileged wire — on an emitted effect, look up the system reducer for its contract,
-instantiate it, hand it the event, and honor its direct commands (run a reducer, respond,
-attach, monitor, arm a timer, notify, retire a context). Everything specific — routing,
-chaining, authorization, name resolution, lifecycle, what a timer means, input and output —
-is a content-addressed reducer, not kernel code. This is the point of the entire design and
+the content-addressed store); the `fire-after` timer; the root-only override registry; and one
+privileged primitive — **deliver an event into a reducer's log**, addressed by reducer-id. On
+an emitted effect the kernel looks up the system reducer for its contract and delivers the
+effect to it; the system reducer, in turn, is the only reducer allowed to use that deliver
+primitive, which is how it routes — handing a message to a handler, folding a response back to
+a caller. It needs no other special power: it arms timers with `fire-after` and watches
+reducers with `subscribe` like any reducer, and everything specific — routing, chaining,
+authorization, name resolution, lifecycle, what a timer means, input and output — is a
+content-addressed reducer, not kernel code. This is the point of the entire design and
 the line to hold: the kernel binary is the one thing that cannot be hot-swapped, so it is
 deployed **once** and kept as small as possible, while everything that will ever need to
 change is a content-addressed reducer, swapped by reference without redeploying the kernel.
@@ -402,11 +405,11 @@ Two events belong in the same session only if they must be strictly ordered rela
 each other or share a retention lifecycle. Choose session boundaries by ordering and
 shared fate, not by topic. The natural unit is one agent doing one bounded task.
 
-This interface is the ordinary reducer. The **system reducer** that shepherds an effect
-(section 4) is a distinct, privileged interface: it is driven by dispatch-lifecycle signals
-and emits direct kernel commands rather than routing everything as effects. It is a fold like
-any reducer — signals in, commands and state out — but its vocabulary differs, so it is its
-own interface, described in section 4.
+There is no second interface. The **system reducer** that shepherds an effect (section 4) is a
+reducer with this same interface; what sets it apart is one privileged capability — it may
+deliver an event into another reducer's log (section 4), which is how it routes — not a
+different trait. It receives the effect it shepherds through `on_message`, folds it against the
+context it holds, and drives handlers by delivering to them, all as an ordinary reducer.
 
 ### Terminating and failing
 
@@ -434,20 +437,24 @@ correlate the eventual result (below).
 ### The per-event system reducer
 
 Dispatching a request is not a kernel table lookup; it is the work of a **system reducer**,
-instantiated once for that effect. On an emitted request the kernel looks up the system
-reducer for the request's contract in the override registry (the default if none),
-instantiates it, and hands it the effect. That reducer does the rest: it assembles the
-handler chain across generations (section 3), moves the effect through it, tracks correlation
-and authority, and supervises the handlers — all as ordinary reducer state and direct kernel
-commands, with no dispatch vocabulary in the kernel.
+instantiated once for that effect. On an emitted request the kernel looks up the system reducer
+for the request's contract in the override registry (the default if none), instantiates it, and
+delivers the effect to it. That reducer does the rest: it assembles the handler chain across
+generations (section 3), moves the effect through it, tracks correlation and authority, and
+supervises the handlers — all as ordinary reducer state, with no dispatch vocabulary in the
+kernel.
 
-It is a **separate, privileged interface** from the ordinary reducer. It is driven by
-dispatch-lifecycle signals — a dispatch starting, a handler step returning, a monitor firing,
-a timer firing — and it emits **direct commands** rather than routed effects: run a reducer
-with an event, respond against a capability, attach to a context, mint a capability, monitor
-a handler, arm a timer, notify a handler, retire a context. Its own core loop must use these
-direct commands and never emit routed effects, or each of its own effects would spawn another
-system reducer without end.
+**It is a reducer, not a separate interface.** It has the same three entry points as any
+reducer: the effect it shepherds arrives on `on_message`, a handler's reply on `on_response`, a
+watched reducer's exit on `on_notification` (it `subscribe`d to that reducer). It drives the
+dispatch with ordinary means — it arms a deadline with the `fire-after` effect, watches a
+handler with `subscribe`, and ends the dispatch by returning `Break` — with one exception, the
+single power a plain reducer lacks: it may **deliver an event into another reducer's log**,
+addressed by reducer-id. That deliver primitive is the routing act — handing a message to the
+next handler in the chain, folding a response back to a caller — and it is granted only to the
+reducer the override registry names for a contract. Answering, forwarding, minting a capability,
+and attaching a grant are not primitives: answering and forwarding are delivering a response or
+message onward, and grants and capabilities are the reducer's own bookkeeping (below).
 
 Like every reducer it is an ephemeral instance whose state persists in the key-value store,
 and that state **is** the context (below). So it is both per-event and durable: the instance
@@ -509,14 +516,15 @@ an effect, store it in its key-value state, do other work across several folds, 
 suspended stack.
 
 Each handler holds exactly one **single-use, handler-bound capability**: its obligation to
-answer the party below it. It is bound to the handler (the platform checks the caller against
-the capability on use, so a leaked capability is useless to anyone else) and consumed on
-discharge (a second attempt is a deterministic, recorded rejection). The transforming
-middleware pins the rule — a handler discharges its one obligation exactly once, however it
-sources the answer:
+answer the party below it. The system reducer mints it and enforces it — it checks the
+sender (the kernel-stamped `from`, section 3) against the handler the capability was granted
+to, so a leaked capability is useless to anyone else, and it marks the capability spent on
+use, so a second attempt is a deterministic, recorded rejection. The kernel is not involved:
+its whole contribution is the unforgeable `from`. The transforming middleware pins the rule —
+a handler discharges its one obligation exactly once, however it sources the answer:
 
 - respond directly — consumes it;
-- forward transparently — the platform discharges it on the handler's behalf when the
+- forward transparently — the system reducer discharges it on the handler's behalf when the
   upstream answer arrives, with the same bytes, without re-entering the handler;
 - forward to transform — the handler emits a fresh upstream request (its own new capability
   for that), keeps its obligation open, receives the upstream answer in `on_response`, then
