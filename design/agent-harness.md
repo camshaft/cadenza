@@ -65,18 +65,19 @@ each end.
 
 ### One routing concept, used three ways
 
-- **Effect** — a program requests `perform(contract, input)` and later receives the
-  `output`. The output type in the contract is the result the program will get back.
-- **Message** — a program requests `send(to, contract, input)`. A message is an effect
-  whose contract output is unit: it is delivered as an inbound event in the target
-  session's log and produces no reply to the sender.
-- **Event** — everything delivered into a session's log arrives as `(contract, input)`.
-  A program reacts to an inbound event by matching on its contract-id.
+- **Effect** — a program requests a contract with an input and later receives its output.
+- **Message** — sending to another reducer is just an effect (an addressed send, section 3):
+  its output is the **delivery outcome** — whether the message reached the target or not —
+  not a special "unit / no reply" case. A message is nothing more than an effect.
+- **Event** — everything a reducer receives arrives as an event carrying a contract-id. An
+  event is one of two things, and the reducer is told which (section 3): the **output** of
+  an effect it performed (a response), or the **input** of an effect performed on it (a
+  message injected by another reducer, carrying its source).
 
 So "which requests may this program make", "which requests does this program answer",
 and "what may be delivered to this program" are all sets of contract-ids. A program's
-declared set of contracts is, at the same time, its **routing table** and its
-**capability manifest** (section 5).
+declared set of contracts is, at the same time, its **routing table** and the surface that
+authorization is expressed over (section 5).
 
 ### Grouping contracts into names
 
@@ -306,10 +307,9 @@ parent (section 7), so the child's identity certifies its provenance.
 
 The session's id is the hash of its genesis event, so it cannot be a field inside that
 event — and it needn't be delivered anywhere: a reducer reads its own id at any time as a
-direct read (above), and lists its handlers via the `list-handlers` effect (section 7).
-**Birth** is simply the
-first `reduce` — its `Response` carries an initial schema and payload, the session's seed
-state. That is all the kernel imposes; there is no separate "capabilities" or "purpose"
+direct read (section 3), and lists its handlers via the `list-handlers` effect (section 7).
+**Birth** is the reducer's first `on_message` — the seed the spawn delivered, an `id` plus a
+payload. That is all the kernel imposes; there is no separate "capabilities" or "purpose"
 field. A session's authority is the authz middleware in its handler chains (section 5), and
 any purpose or seed config is just content in the birth payload, interpreted by the reducer.
 
@@ -317,89 +317,88 @@ Configuration is not runtime state — it is early events the program folds into
 state. A program's initial prompt, policy, or seed data arrive as ordinary events. The
 events that set up a session can themselves be the output of another session.
 
-### The reduce interface
+### The reducer interface
 
-A reducer is called with the response to a prior request (or a runtime-level error), and
-returns the requests it now wants performed:
+Everything a reducer receives is an event carrying a contract-id, and it is one of two
+kinds — so a reducer has **two entry points**, and the runtime calls the one that fits:
 
 ```
-reduce(response: Result<Response, Error>) -> (list<Request>, Outcome)
+on_response(response: Result<Response, Error>) -> (list<Request>, Outcome)
+on_message(message: Message)                    -> (list<Request>, Outcome)
 
 type Response = {
-  id:                 Hash,   # the contract-id = hash(schema); the routing key, not a per-message id
-  schema:             Ast,    # the contract; its hash is the id
-  payload:            Ast,    # the value delivered — an effect result, or an inbound message
+  id:                 Hash,   # the contract-id (= the schema's hash); deref the schema from CAS if needed
+  payload:            Ast,    # the output value of the effect this responds to
   continuation-token: Bytes,  # echoes the request's token, so the reducer resumes
 }
 
+type Message = {
+  id:                 Hash,   # the contract-id
+  payload:            Ast,    # the input value of the effect being performed on this reducer
+  from:               Hash,   # the source reducer — envelope metadata to authenticate / route on
+  continuation-token: Bytes,  # correlates the reducer's reply back to the caller
+}
+
 type Request = {
-  id:                 Hash,             # the contract-id = hash(schema)
-  schema:             Ast,              # the contract to perform; its hash is the id
+  id:                 Hash,             # the contract-id (= the schema's hash)
   payload:            Ast,              # the input value
   continuation-token: Bytes,            # the reducer's token, returned on the response — the correlation
   deadline:           Option<Duration>, # optional: Err(Timeout) if unanswered within it
 }
 
 type Error   = Timeout | MissingHandler
-type Outcome = Continue | Break(Ast)
+type Outcome = Continue | Break(schema: Hash, reason: Ast)
 ```
 
-What comes in is a `Result`. `Ok(Response)` is a handler's answer — an effect result, or an
-inbound message delivered to the session. `Err(Error)` is a runtime-level failure to get any
-answer: **Timeout** (the request's deadline elapsed) or **MissingHandler** (no handler is
-registered for the contract). The error identifies the request it pertains to by its
-`continuation-token`, so the reducer resumes the right recovery path. A handler's *own*
-failure — an HTTP 500, a domain error — is not an `Error`: the handler answered, so it is an
-`Ok(Response)` whose payload is the contract's output, which may itself encode a failure.
-Whether to retry is therefore the reducer's judgment (from the error or the payload), not a
-kernel field.
+- **`on_response`** is the **output** side: a reply to a request this reducer performed
+  (`Ok(Response)`), or a runtime-level failure to get one — `Err(Timeout)` (its deadline
+  elapsed) or `Err(MissingHandler)` (nothing answers the contract). The failure is matched to
+  the request by its `continuation-token`. A handler's *own* failure — an HTTP 500, a domain
+  error — is not an `Error`: the handler answered, so it arrives as `Ok(Response)` whose
+  payload encodes the failure. Whether to retry is the reducer's judgment, not a kernel field.
+- **`on_message`** is the **input** side: an effect another reducer performed on this one, or
+  a message sent to it. The `Message` carries its **source** (`from`) as envelope metadata,
+  so the reducer can authenticate and route on who sent it — the reason these are two
+  functions and not one. The reducer answers by emitting its reply, correlated by the
+  message's `continuation-token`, which the runtime routes back to the caller's `on_response`.
 
-What goes out is a list of `Request`s, and a request may carry a **deadline**
-(`Option<Duration>`): with `Some(d)`, if no answer arrives within `d` the reducer receives
-`Err(Timeout)` and the runtime cancels the dispatch so no late answer ever folds; with
-`None`, the request has no timeout. The deadline is the reducer's own per-request control
-over how long it waits — attached at emission, not a fixed kernel policy.
+Both return the same **product**: the `Request`s to perform *and* an `Outcome`. `Continue`
+keeps the reducer running; `Break(schema, reason)` **terminates** it, carrying the reason for
+closure as a typed value — a schema hash plus the reason payload, a value like any other so a
+subscriber can decode it. The kernel imposes no normal-vs-error taxonomy on the reason; a
+clean completion and a failure are both `Break`s, distinguished only by the reason value,
+which a subscribing supervisor interprets (section 7). Because the return is a product, a
+reducer can emit final requests *and* `Break` in one call (send a result, notify a peer, then
+close); those final requests dispatch but their responses never fold (the session is now
+terminal), so they are fire-and-forget. A reducer ends *itself* only by returning `Break`,
+never by an effect. A reducer that instead traps or exhausts its fuel cannot return at all;
+the runtime captures that as an uncontrolled fold-failure (below).
 
-The return is a **product**: the `Request`s to perform *and* an `Outcome`. `Continue` means
-the reducer keeps running; `Break(Ast)` means it **terminates**, and the `Ast` is the reason
-for closure — always present. The kernel imposes no normal-vs-error taxonomy on that reason;
-whether a break is a clean completion or a failure is semantic content in the `Ast`, which a
-subscribing supervisor interprets (section 7). Because the return is a product, a reducer
-can emit final requests *and* `Break` in the same call (send a result, notify a peer, clean
-up, then close); those final requests are dispatched, but the session will not fold their
-responses (it is now terminal), so they are effectively fire-and-forget. A reducer ends
-itself by returning `Break`, not by emitting a close effect. A reducer that instead *traps*
-or exhausts its fuel cannot return at all; the runtime captures that as an uncontrolled
-fold-failure (below).
+A request may carry a **deadline** (`Option<Duration>`): with `Some(d)`, no answer within `d`
+delivers `Err(Timeout)` to `on_response` and cancels the dispatch (no late answer folds);
+`None` means no timeout. The deadline is the reducer's own per-request control, set at
+emission.
 
-`schema` and `payload` are Cadenza `Ast` values — the decoded form the reducer works with.
-On the wire and to the kernel a message is its `id` (the contract-id, = `hash(schema)`) plus
-the payload bytes; the kernel routes on that `id` and never decodes anything. The `schema`
-Ast is resolved from the `id` for the reducer's view. So "a message carries its schema hash"
-(the kernel's view) and "`schema: Ast`" (the reducer's view) are the same thing at two
-levels: an id + bytes routed by hash below, a decoded schema and payload above.
+**Identity by hash, schema by reference.** Every message carries only its `id` — the
+contract-id, which *is* the hash of the schema — plus the payload. The schema is not inlined;
+a reducer that needs the decoded schema derefs it from the content-addressed store by the id
+(section 8), lazily. So the wire and the kernel see an id + payload and route on the id, and
+never decode anything.
 
-`reduce` is a pure function of its input and the reducer's current state; a fresh instance
-runs each call and holds no memory between calls. Alongside the response, the reducer has
-access to **its own key-value store**, which it reads and writes during `reduce` to persist
-state (section 7); state is not passed in the signature, and its changes are the
-deterministic side output of the call, not separate events. The `continuation-token` is how
-a reducer bridges the gap between emitting a request and its response arriving as a later
-`reduce`: it stores what it needs in its key-value store keyed by the token, and looks it up
-when the response returns.
-
-Beyond the effects it returns, a reducer has a few **direct** accesses during `reduce` —
-called in-line and resolving within the same call, not routed through the effect chain or
-logged as separate events: its **key-value store** (read/write, above), its own **id** (a
-fixed read), and the **content-addressed store** (`cas-get`/`cas-put`, section 8). All three
-are deterministic — a reducer's own state, its fixed id, and content addressed by hash —
-which is why they are direct rather than effects. A direct call may still *await* an async
-backend (a `cas-get` reads from disk/cache/S3 without blocking the runtime, section 8); it
-just resolves within the same `reduce`. The async *effect* model is for the nondeterministic
-outside world; these three are not. Everything else — including listing the contracts a reducer has
-handlers for, its own or another's — is an **effect** (section 7), so it passes through the
-middleware chain and can be filtered or transformed there. (An effect's result is recorded,
-so replay stays deterministic regardless.)
+Each call is a pure function of its input and the reducer's current state; a fresh instance
+runs each call and holds no memory between calls. Beyond the requests it returns, a reducer
+has a few **direct** accesses during a call — resolving within the same call, not routed
+through the effect chain or logged as separate events: its **key-value store** (read/write,
+section 7, where it stores what it needs to continue, keyed by a request's
+`continuation-token`, and looks it up when the response returns), its own **id** (a fixed
+read), and the **content-addressed store** (`cas-get`/`cas-put`, section 8, including the
+lazy schema deref above). These are deterministic — own state, a fixed id, content addressed
+by hash — which is why they are direct rather than effects; a direct call may still *await*
+an async backend (a `cas-get` reads from disk/cache/S3 without blocking, section 8), it just
+resolves within the same call. The async *effect* model is for the nondeterministic outside
+world; these are not. Everything else — including listing the contracts a reducer has
+handlers for, its own or another's — is an **effect** (section 7), filterable through the
+middleware chain.
 
 Two events belong in the same session only if they must be strictly ordered relative to
 each other or share a retention lifecycle. Choose session boundaries by ordering and
@@ -407,10 +406,10 @@ shared fate, not by topic. The natural unit is one agent doing one bounded task.
 
 ### Terminating and failing
 
-A reducer ends itself by returning `Break(Ast)` (above), the `Ast` being its reason for
-closure (a clean completion or a failure — the reducer's own vocabulary). Distinct from that
-is an
-*uncontrolled* failure: a fold that traps, exhausts its fuel, or fails to instantiate, so it
+A reducer ends itself by returning `Break(schema, reason)` (above), the reason being a typed
+value describing its closure (a clean completion or a failure — the reducer's own
+vocabulary). Distinct from that is an *uncontrolled* failure: a fold that traps, exhausts its
+fuel, or fails to instantiate, so it
 cannot return anything at all. The runtime captures that as a **fold-failed** event naming
 the reason and the input whose fold failed, and moves on. Both are terminal and both notify
 subscribers (section 7); the difference is only whether the reducer described its own exit
@@ -458,14 +457,14 @@ one registry, one dispatch path keyed on the contract-id.
 ### Correlating a result to its request
 
 A reducer emits a request and returns; the answer arrives as a *later* `Response` (or an
-`Error`), in a later `reduce`. The reducer does not block or resume a suspended stack —
-there is no stack to resume, because each call is a fresh instance. Instead:
+`Error`), delivered to `on_response`. The reducer does not block or resume a suspended stack
+— there is no stack to resume, because each call is a fresh instance. Instead:
 
 - The reducer chooses a **continuation-token** when it emits the request and stores whatever
   it needs to continue in its key-value store, keyed by that token.
 - When the answer returns — the `Response` (or `Error`) — it carries the same
-  `continuation-token`, so the reducer's next `reduce` reads the token, looks up its
-  continuation, and proceeds.
+  `continuation-token`, so the next `on_response` reads the token, looks up its continuation,
+  and proceeds.
 
 Correlation is the `continuation-token`, not the `id` — the `id` is the contract-id, shared
 by every request of that contract, so it can't identify one outstanding request. The
@@ -485,7 +484,7 @@ it and never double-fires.
 
 ### What the reducer receives back
 
-A dispatched request resolves to one of (section 3, the `reduce` signature):
+A dispatched request resolves to one of (delivered to `on_response`, section 3):
 
 - **Ok(Response)** — a handler answered; the payload is the contract's output value. A
   handler's *domain* failure rides here too — the output type can encode it — because
@@ -501,61 +500,36 @@ deadline), escalate, or give up. Retryability is its judgment, not a kernel clas
 ### Answering an effect
 
 An effect is carried out by whichever **reducer** answers its contract-id — a peer session
-that declared it answers that contract, or one of the node's edge reducers (section 3).
-There is no separate executor; answering is the ordinary reducer interface, and routing is
-the same in both cases: find who answers the contract-id. An answering reducer may answer
-immediately or accept the effect and settle it later; while it is unsettled the dispatched
-event stays open and the caller's continuation waits. When the answer is ready, the
-runtime records the outcome against the request's continuation-token and the caller resumes.
+that declared it answers that contract, or one of the node's edge reducers (section 3). The
+answerer receives it through `on_message` (with the caller as `from`); there is no separate
+executor, and routing is the same in both cases: find who answers the contract-id. An
+answerer may reply immediately or accept the effect and reply later; while it is unsettled
+the dispatched event stays open and the caller's continuation waits. When the reply is ready,
+the runtime routes it back against the request's continuation-token and the caller resumes in
+`on_response`.
 
 An effect for which no reducer answers is a recorded failure, not a silent drop.
 
 ---
 
-## 5. Capabilities and authorization
+## 5. Authorization
 
-A **capability** is permission to perform a contract against a resource:
+Authorization is **middleware** — a reducer (or a chain of them) in front of the contracts it
+guards (section 3). The kernel holds no capability model and enforces nothing: it routes an
+effect up the chain, and the authz middleware either **forwards** it (permit) or **answers
+with a denial** that bubbles back to the caller as the effect's outcome. Because the
+middleware sits in the chain it sees the request's **resolved argument**, so it can gate on
+*what* is being done to *which resource*, not merely which contract — but exactly how it
+models that (capabilities, resource predicates, grants, groups, a policy language) is the
+middleware's own design, not the kernel's, and is deliberately out of this document. A policy
+engine such as Cedar is one such middleware, carrying its policies as content-addressed data
+referenced from the log; it is a wasm reducer, swapped by publishing a new hash, never a
+redeploy.
 
-```
-capability = (contract-id, resource-predicate)
-```
-
-The contract-id names the interaction; the resource predicate constrains it and is
-checked against the **resolved runtime input**, not just the contract. A capability is
-not "may perform the HTTP-get contract" but "may perform the HTTP-get contract with a URL
-whose host is in this allow-list"; not "may perform the push contract" but "with this
-repository". The contract-id alone is necessary but not sufficient — the predicate over
-the actual argument is what bounds the blast radius.
-
-There is one grant shape: a contract-id (or a group) plus a predicate. What a session may
-do is the set of contract-ids it is granted — not a probe over a fixed catalog of effect
-kinds.
-
-A capability may name a **group** (section 1) instead of a single contract; it authorizes
-exactly the group's member contracts, each still checked against the resource predicate.
-Because a group's identity pins its membership, a group-granted capability never widens
-when someone publishes a differently-named or extended group.
-
-A program's declared set of performable contracts is its manifest, derivable before it
-runs. What a program needs, what a session may do, and what the authorizer checks are the
-same set seen three ways.
-
-### Authorization is middleware
-
-Authorization is not a kernel step — it is **middleware in the chain** (section 3). An
-authz handler is installed in the chain for the contracts it guards; an effect bubbling up
-hits it, and it either **forwards** the request onward (permit) or **answers with a denial**
-that bubbles back down to the leaf as the effect's outcome. The capability set and the
-resource predicates are that middleware's own data and logic — the kernel holds none of it
-and enforces nothing; it only routes through the chain. A policy engine such as Cedar is
-one authz middleware, carrying its policies as content-addressed data referenced from the
-log; it is a wasm reducer, swapped by publishing a new hash, never a redeploy.
-
-Enforcement therefore rests on the chain being configured so the authz middleware wraps the
-contracts it must guard — established at bootstrap and controlled by the authority to
-register handlers, which is itself a capability gated the same way (grounded at the trust
-root, section 11). A denial is an ordinary recorded result, auditable like any other — not
-a special kernel event.
+Enforcement rests on the chain being configured so the authz middleware wraps the contracts
+it must guard — established at bootstrap and controlled by the authority to register
+handlers, itself gated the same way (grounded at the trust root, section 11). A denial is an
+ordinary recorded result, auditable like any other, not a special kernel event.
 
 Down the spawn tree, enforcement compounds: a child **inherits its parent's middleware**
 (section 7), so every effect a child emits traverses every ancestor's authz middleware
@@ -625,7 +599,10 @@ obligations the reducer depends on: a **canonical key order** (so prefix-scan an
 effects a reducer emits over it are replay-deterministic), and a root hash after each
 change. Prefix-scan is the primitive for the collections a reducer maintains (pending
 children, seen items, per-target working state); richer querying is a reducer keeping its
-own indexes, not new store operations.
+own indexes, not new store operations. The operations are **async** (like the CAS,
+section 8): the reducer awaits them, so a disk- or network-backed store fetches without
+blocking the runtime, while a `get` stays deterministic — a pure function of the key against
+the current state, regardless of backend latency.
 
 A structurally-shared backend yields that root hash cheaply — sharing almost all structure
 with the previous state — so the free-snapshot model (below) costs almost nothing; a
@@ -647,6 +624,13 @@ events would otherwise reconstruct: the state root, the id counter, the clock hi
 the set of open (dispatched-but-unsettled) obligations and armed timers, the spawned-child
 edges, and any close outcome.
 
+**Compaction is controlled, not automatic.** The system decides when — and whether — to
+prune, and the default is conservative: keep raw history, because the log is what lets an
+operator replay and inspect a session after the fact to diagnose what went wrong. Pruning
+trades that inspectability for space, so it is a deliberate retention policy (by session,
+age, or tier), never an eager background sweep that quietly erases history and the ability
+to debug from it.
+
 ### Replacing the program (self-modification)
 
 Replacing a session's program is an authorized event naming a new program hash (a pinned
@@ -660,7 +644,7 @@ schema the current program can read.
 
 Reducer lifecycle is the one thing the kernel manages, and it does so through built-in
 effects — contracts the kernel's own built-in reducers answer. (Self-termination is the
-exception: a reducer ends *itself* through its `reduce` return, not an effect — see below.)
+exception: a reducer ends *itself* through the `Outcome` it returns, not an effect — see below.)
 The built-in lifecycle effects:
 
 - **spawn(program, handlers, init)** creates a new session running `program`. It carries the
@@ -701,7 +685,7 @@ The built-in lifecycle effects:
   Any reducer with the capability may subscribe; supervision is one use (a parent subscribes
   to its children), but it is general pub/sub on lifecycle, not a hard-wired parent channel.
 - **terminate(reason)** ends *another* session by authority over it. (A session ends
-  *itself* by returning `Break(Ast)` from `reduce` — the `Ast` its reason for closure,
+  *itself* by returning `Break(schema, reason)` from a reduce call — its reason for closure,
   section 3 — not by an effect.) However a session ends — a self-exit
   outcome, a terminate, or an uncontrolled fold-failure — subscribers receive the terminal
   outcome as a lifecycle event. Once a session's log tail is terminal the runtime refuses
@@ -865,8 +849,8 @@ multiple operators land, section 11). The body is one of:
 - **timer-armed(deadline, continuation-token)** and **timer-fired(fired-time,
   continuation-token)** — the durable timer records (section 6).
 - **fold-failed(reason, caused-event)** — a fold that trapped or exhausted fuel (section 3).
-- **closed(reason)** / **terminated(by, reason)** — the session ended itself (its `reduce`
-  returned `Break(Ast)`, the `Ast` being the reason), or was ended by another (section 7).
+- **closed(reason)** / **terminated(by, reason)** — the session ended itself (it returned a
+  `Break(schema, reason)` outcome), or was ended by another (section 7).
 - **spawned(child)** — the immutable parent→child edge, recorded on spawn (section 7). A
   child's close/failure reaches subscribers as a delivered lifecycle effect, not a distinct
   kernel event.
