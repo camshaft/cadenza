@@ -349,6 +349,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdz-platform"
+version = "0.0.0"
+dependencies = [
+ "blake3",
+]
+
+[[package]]
 name = "cdz-rt"
 version = "0.0.0"
 
