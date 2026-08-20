@@ -34,6 +34,9 @@ use std::sync::Arc;
 /// canonical [`Arenas`], so `id` is a pure function of it and reproducible from the declaration alone.
 #[derive(Clone)]
 pub struct Contract {
+    /// The contract-id: the hash of the canonical declaration, computed once at construction (the getter
+    /// just returns it — hashing every call would be wasteful).
+    id: Hash,
     /// The contract's name — kept for the [`name`](Contract::name) accessor; it is also encoded inside the
     /// declaration (which is what the id is taken over).
     name: Str,
@@ -60,19 +63,23 @@ impl Contract {
         let output_ty = output(&mut b);
         let root = b.list(vec![head, name_node, input_ty, output_ty]);
         let arenas = b.finish(root);
-        // Canonicalize now so the stored declaration is the one canonical form its hash is taken over.
+        // Canonicalize now so the stored declaration is the one canonical form its hash is taken over,
+        // and compute the contract-id once here rather than on every `id()` call.
+        let declaration = canon::canonicalize(&arenas).into_owned();
+        let id = Hash::of(&codec::encode(&declaration));
         Self {
+            id,
             name: Str::from(name),
-            declaration: canon::canonicalize(&arenas).into_owned(),
+            declaration,
         }
     }
 
-    /// The contract-id: the hash of the canonical declaration (§1). Reproducible from the declaration
-    /// alone, so two contracts with equal declarations have equal ids, and any difference in name, input,
-    /// or output type gives a different id.
+    /// The contract-id: the hash of the canonical declaration (§1). Computed once at construction (above),
+    /// so this is a cheap getter. Reproducible from the declaration alone, so two contracts with equal
+    /// declarations have equal ids, and any difference in name, input, or output type gives a different id.
     #[must_use]
     pub fn id(&self) -> Hash {
-        Hash::of(&codec::encode(&self.declaration))
+        self.id
     }
 
     /// The contract's name.
