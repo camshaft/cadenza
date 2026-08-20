@@ -31,7 +31,7 @@
 //! the system reducer turns into `Err(MissingHandler)` (§4). The system reducer holds this in its own
 //! key-value state and reads it synchronously mid-fold, so the operations are plain synchronous methods.
 
-use crate::Hash;
+use crate::{ContractId, ReducerId};
 use std::collections::HashMap;
 
 /// The handler-chain registry: contract-id -> the ordered chain of reducer identifiers that answers it
@@ -43,7 +43,7 @@ pub struct HandlerRegistry {
     /// contract-id -> chain of reducer ids. An entry is always a non-empty chain: `set_handler` removes the
     /// key when handed an empty chain, so a present key means "this contract has a handler" with no empty
     /// special case for `resolve` to consider.
-    chains: HashMap<Hash, Vec<Hash>>,
+    chains: HashMap<ContractId, Vec<ReducerId>>,
 }
 
 impl HandlerRegistry {
@@ -61,7 +61,11 @@ impl HandlerRegistry {
     /// An **empty** chain removes the registration (equivalent to "no handler"): after it, `contract`
     /// resolves to `None` and no longer appears in any reducer's [`contracts_for`](Self::contracts_for). So
     /// there is no registered-but-empty state — a contract either has a non-empty chain or is unregistered.
-    pub fn set_handler(&mut self, contract: Hash, chain: Vec<Hash>) -> Option<Vec<Hash>> {
+    pub fn set_handler(
+        &mut self,
+        contract: ContractId,
+        chain: Vec<ReducerId>,
+    ) -> Option<Vec<ReducerId>> {
         if chain.is_empty() {
             self.chains.remove(&contract)
         } else {
@@ -74,7 +78,7 @@ impl HandlerRegistry {
     /// the system reducer reports as `Err(MissingHandler)`. Borrows the stored chain; the system reducer
     /// reads it to drive the reducers it names.
     #[must_use]
-    pub fn resolve(&self, contract: Hash) -> Option<&[Hash]> {
+    pub fn resolve(&self, contract: ContractId) -> Option<&[ReducerId]> {
         self.chains.get(&contract).map(Vec::as_slice)
     }
 
@@ -86,8 +90,8 @@ impl HandlerRegistry {
     /// A reducer that appears more than once across chains (or twice in one chain) yields each contract-id
     /// once; the caller learns which contracts it handles, not how many times it is wired in.
     #[must_use]
-    pub fn contracts_for(&self, reducer: Hash) -> Vec<Hash> {
-        let mut contracts: Vec<Hash> = self
+    pub fn contracts_for(&self, reducer: ReducerId) -> Vec<ContractId> {
+        let mut contracts: Vec<ContractId> = self
             .chains
             .iter()
             .filter(|(_, chain)| chain.contains(&reducer))
@@ -113,20 +117,22 @@ impl HandlerRegistry {
 #[cfg(test)]
 mod tests {
     use super::HandlerRegistry;
-    use crate::Hash;
+    use crate::{ContractId, Hash, ReducerId};
 
-    // Distinct hashes to stand in for contract-ids and reducer-ids; the registry only cares that they are
-    // distinct Hashes, not what they hash.
-    fn h(tag: &str) -> Hash {
-        Hash::of(tag.as_bytes())
+    // Distinct contract-ids and reducer-ids.
+    fn c(tag: &str) -> ContractId {
+        ContractId::from_hash(Hash::of(tag.as_bytes()))
+    }
+    fn rd(tag: &str) -> ReducerId {
+        ReducerId::from_hash(Hash::of(tag.as_bytes()))
     }
 
     #[test]
     fn resolve_returns_the_chain_in_the_order_it_was_registered() {
         let mut reg = HandlerRegistry::new();
-        let contract = h("http.get");
+        let contract = c("http.get");
         // a chain of three: authz wraps rate-limit wraps the edge handler, say.
-        let chain = vec![h("authz"), h("rate-limit"), h("http-edge")];
+        let chain = vec![rd("authz"), rd("rate-limit"), rd("http-edge")];
         assert!(reg.set_handler(contract, chain.clone()).is_none());
         // the registry preserves order exactly and interprets nothing about it.
         assert_eq!(reg.resolve(contract), Some(chain.as_slice()));
@@ -136,16 +142,16 @@ mod tests {
     #[test]
     fn an_unregistered_contract_resolves_to_none() {
         let reg = HandlerRegistry::new();
-        assert_eq!(reg.resolve(h("nobody-answers")), None);
+        assert_eq!(reg.resolve(c("nobody-answers")), None);
         assert!(reg.is_empty());
     }
 
     #[test]
     fn set_handler_replaces_the_whole_chain_and_returns_the_old_one() {
         let mut reg = HandlerRegistry::new();
-        let contract = h("mint-credential");
-        let first = vec![h("broker")];
-        let replacement = vec![h("authz"), h("broker")]; // upgraded: authz middleware prepended.
+        let contract = c("mint-credential");
+        let first = vec![rd("broker")];
+        let replacement = vec![rd("authz"), rd("broker")]; // upgraded: authz middleware prepended.
         reg.set_handler(contract, first.clone());
         // replacing returns exactly the prior chain, and the new one wins entirely (no merge).
         assert_eq!(reg.set_handler(contract, replacement.clone()), Some(first));
@@ -156,8 +162,8 @@ mod tests {
     #[test]
     fn setting_an_empty_chain_removes_the_registration() {
         let mut reg = HandlerRegistry::new();
-        let contract = h("timer.arm");
-        let chain = vec![h("timer-edge")];
+        let contract = c("timer.arm");
+        let chain = vec![rd("timer-edge")];
         reg.set_handler(contract, chain.clone());
         // removing returns the prior chain and leaves the contract unregistered — no empty-chain limbo.
         assert_eq!(reg.set_handler(contract, Vec::new()), Some(chain));
@@ -170,23 +176,23 @@ mod tests {
     #[test]
     fn contracts_for_is_the_reverse_lookup_sorted_and_deduplicated() {
         let mut reg = HandlerRegistry::new();
-        let authz = h("authz");
+        let authz = rd("authz");
         // authz is middleware in two different contracts' chains; the edge handlers differ.
-        reg.set_handler(h("http.get"), vec![authz, h("http-edge")]);
-        reg.set_handler(h("http.post"), vec![authz, h("http-edge")]);
-        reg.set_handler(h("clock.now"), vec![h("clock-edge")]); // authz not in this one.
+        reg.set_handler(c("http.get"), vec![authz, rd("http-edge")]);
+        reg.set_handler(c("http.post"), vec![authz, rd("http-edge")]);
+        reg.set_handler(c("clock.now"), vec![rd("clock-edge")]); // authz not in this one.
 
-        let mut expected = vec![h("http.get"), h("http.post")];
+        let mut expected = vec![c("http.get"), c("http.post")];
         expected.sort_unstable();
         assert_eq!(reg.contracts_for(authz), expected);
 
         // a reducer that appears twice in one chain still yields its contract once.
-        reg.set_handler(h("loop.contract"), vec![authz, h("mid"), authz]);
-        assert!(reg.contracts_for(authz).contains(&h("loop.contract")));
+        reg.set_handler(c("loop.contract"), vec![authz, rd("mid"), authz]);
+        assert!(reg.contracts_for(authz).contains(&c("loop.contract")));
         let n = reg
             .contracts_for(authz)
             .iter()
-            .filter(|c| **c == h("loop.contract"))
+            .filter(|x| **x == c("loop.contract"))
             .count();
         assert_eq!(
             n, 1,
@@ -194,18 +200,18 @@ mod tests {
         );
 
         // a reducer wired nowhere handles nothing.
-        assert_eq!(reg.contracts_for(h("orphan")), Vec::<Hash>::new());
+        assert_eq!(reg.contracts_for(rd("orphan")), Vec::<ContractId>::new());
     }
 
     #[test]
     fn contracts_for_reflects_removal() {
         let mut reg = HandlerRegistry::new();
-        let edge = h("edge");
-        reg.set_handler(h("a"), vec![edge]);
-        reg.set_handler(h("b"), vec![edge]);
+        let edge = rd("edge");
+        reg.set_handler(c("a"), vec![edge]);
+        reg.set_handler(c("b"), vec![edge]);
         assert_eq!(reg.contracts_for(edge).len(), 2);
         // removing one contract's chain drops it from the reverse lookup.
-        reg.set_handler(h("a"), Vec::new());
-        assert_eq!(reg.contracts_for(edge), vec![h("b")]);
+        reg.set_handler(c("a"), Vec::new());
+        assert_eq!(reg.contracts_for(edge), vec![c("b")]);
     }
 }

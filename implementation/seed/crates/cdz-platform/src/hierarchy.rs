@@ -23,7 +23,7 @@
 //! operations are plain synchronous methods; the mutator takes `&mut self` because the owner records a link
 //! as each reducer spawns and drops it when the reducer ends.
 
-use crate::Hash;
+use crate::ReducerId;
 use std::collections::{BTreeSet, HashMap};
 
 /// One reducer in the active tree: its parent and its live children. A **root** (a reducer created at
@@ -31,8 +31,8 @@ use std::collections::{BTreeSet, HashMap};
 /// roots are exactly the self-parented nodes.
 #[derive(Debug, Clone)]
 struct Node {
-    parent: Hash,
-    children: BTreeSet<Hash>,
+    parent: ReducerId,
+    children: BTreeSet<ReducerId>,
 }
 
 /// The spawn tree over the active set: for each live reducer, its parent and its children (§7). A parent
@@ -41,7 +41,7 @@ struct Node {
 /// set only by [`remove`](Hierarchy::remove) when it terminates.
 #[derive(Debug, Default, Clone)]
 pub struct Hierarchy {
-    nodes: HashMap<Hash, Node>,
+    nodes: HashMap<ReducerId, Node>,
 }
 
 impl Hierarchy {
@@ -54,7 +54,7 @@ impl Hierarchy {
     /// Add a **root** — a reducer created at genesis, with no parent. Returns `false` if the id is already
     /// in the set. A root is stored as its own parent, which is how [`parent`](Self::parent) and
     /// [`ancestors`](Self::ancestors) recognize the top of the tree.
-    pub fn insert_root(&mut self, id: Hash) -> bool {
+    pub fn insert_root(&mut self, id: ReducerId) -> bool {
         if self.nodes.contains_key(&id) {
             return false;
         }
@@ -75,7 +75,7 @@ impl Hierarchy {
     /// an existing parent, the child can never already be an ancestor of the parent, so no cycle can form and
     /// none is checked for. Returns `false` if `parent` is absent, `child` is already present, or the two are
     /// equal (a root is added with [`insert_root`](Self::insert_root), not here).
-    pub fn record_spawn(&mut self, child: Hash, parent: Hash) -> bool {
+    pub fn record_spawn(&mut self, child: ReducerId, parent: ReducerId) -> bool {
         if child == parent || self.nodes.contains_key(&child) || !self.nodes.contains_key(&parent) {
             return false;
         }
@@ -98,7 +98,7 @@ impl Hierarchy {
     /// a **leaf** — a reducer with live children is refused (`false`) so that teardown proceeds bottom-up and
     /// no descendant is left pointing at a parent that is gone. On success it is detached from its parent's
     /// children and its node dropped.
-    pub fn remove(&mut self, reducer: Hash) -> bool {
+    pub fn remove(&mut self, reducer: ReducerId) -> bool {
         match self.nodes.get(&reducer) {
             Some(node) if node.children.is_empty() => {
                 let parent = node.parent;
@@ -118,13 +118,13 @@ impl Hierarchy {
 
     /// Whether `reducer` is in the active set.
     #[must_use]
-    pub fn contains(&self, reducer: Hash) -> bool {
+    pub fn contains(&self, reducer: ReducerId) -> bool {
         self.nodes.contains_key(&reducer)
     }
 
     /// The parent of `reducer`, or `None` if it is a root or not in the active set.
     #[must_use]
-    pub fn parent(&self, reducer: Hash) -> Option<Hash> {
+    pub fn parent(&self, reducer: ReducerId) -> Option<ReducerId> {
         self.nodes
             .get(&reducer)
             .and_then(|node| (node.parent != reducer).then_some(node.parent))
@@ -132,7 +132,7 @@ impl Hierarchy {
 
     /// The live children of `reducer`, in ascending id order. Empty for a leaf or a reducer not in the set.
     /// This is the direction a parent walks to decide which descendants to propagate a new handler to (§3).
-    pub fn children(&self, reducer: Hash) -> impl Iterator<Item = Hash> + '_ {
+    pub fn children(&self, reducer: ReducerId) -> impl Iterator<Item = ReducerId> + '_ {
         self.nodes
             .get(&reducer)
             .into_iter()
@@ -143,7 +143,7 @@ impl Hierarchy {
     /// Empty for a root or an unknown reducer. This is the order the system reducer walks to build a chain
     /// across generations (§3): the reducer's own segment first, then each ancestor's in turn.
     #[must_use]
-    pub fn ancestors(&self, reducer: Hash) -> Ancestors<'_> {
+    pub fn ancestors(&self, reducer: ReducerId) -> Ancestors<'_> {
         Ancestors {
             hierarchy: self,
             next: self.parent(reducer),
@@ -153,7 +153,7 @@ impl Hierarchy {
     /// Whether `ancestor` lies on the path from `reducer` up to the root — the authority relation the spawn
     /// tree encodes (an ancestor's middleware governs everything a descendant does, §5).
     #[must_use]
-    pub fn is_ancestor(&self, ancestor: Hash, of: Hash) -> bool {
+    pub fn is_ancestor(&self, ancestor: ReducerId, of: ReducerId) -> bool {
         self.ancestors(of).any(|a| a == ancestor)
     }
 }
@@ -161,13 +161,13 @@ impl Hierarchy {
 /// Iterator over a reducer's ancestors, nearest first — see [`Hierarchy::ancestors`].
 pub struct Ancestors<'a> {
     hierarchy: &'a Hierarchy,
-    next: Option<Hash>,
+    next: Option<ReducerId>,
 }
 
 impl Iterator for Ancestors<'_> {
-    type Item = Hash;
+    type Item = ReducerId;
 
-    fn next(&mut self) -> Option<Hash> {
+    fn next(&mut self) -> Option<ReducerId> {
         let current = self.next?;
         self.next = self.hierarchy.parent(current);
         Some(current)
@@ -177,11 +177,11 @@ impl Iterator for Ancestors<'_> {
 #[cfg(test)]
 mod tests {
     use super::Hierarchy;
-    use crate::Hash;
+    use crate::{Hash, ReducerId};
 
-    // Distinct hashes standing in for reducer ids.
-    fn r(tag: &str) -> Hash {
-        Hash::of(tag.as_bytes())
+    // Distinct reducer ids.
+    fn r(tag: &str) -> ReducerId {
+        ReducerId::from_hash(Hash::of(tag.as_bytes()))
     }
 
     #[test]
@@ -219,7 +219,7 @@ mod tests {
         assert_eq!(h.parent(r("a1")), Some(r("a")));
         assert_eq!(h.parent(r("a")), Some(r("root")));
         // children, down (ascending id order, and only the direct children).
-        let mut root_children: Vec<Hash> = h.children(r("root")).collect();
+        let mut root_children: Vec<ReducerId> = h.children(r("root")).collect();
         let mut expected = vec![r("a"), r("b")];
         root_children.sort_unstable();
         expected.sort_unstable();
@@ -234,7 +234,7 @@ mod tests {
         h.insert_root(r("root"));
         h.record_spawn(r("parent"), r("root"));
         h.record_spawn(r("child"), r("parent"));
-        let chain: Vec<Hash> = h.ancestors(r("child")).collect();
+        let chain: Vec<ReducerId> = h.ancestors(r("child")).collect();
         assert_eq!(chain, vec![r("parent"), r("root")]);
         assert!(h.is_ancestor(r("root"), r("child")));
         assert!(h.is_ancestor(r("parent"), r("child")));

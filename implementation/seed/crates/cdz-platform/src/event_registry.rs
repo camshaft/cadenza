@@ -14,56 +14,60 @@
 //! Reached by direct read (the kernel resolves a contract mid-dispatch), so the operations are plain
 //! synchronous methods; the mutator takes `&mut self`.
 
-use crate::Hash;
+use crate::{ContractId, ProgramHash};
 use std::collections::HashMap;
 
-/// Maps a contract-id to the event-reducer implementation (by content hash) that shepherds its events, over
-/// a default that governs every contract without an explicit override (§3). [`resolve`](Self::resolve)
-/// therefore always yields a reducer — there is no "no event reducer" state, because the default always
-/// applies.
+/// Maps a contract-id to the **program** its event reducer is spawned from (a component by content hash),
+/// over a default program that governs every contract without an explicit override (§3).
+/// [`resolve`](Self::resolve) therefore always yields a program — there is no "no event reducer" state,
+/// because the default always applies.
 #[derive(Debug, Clone)]
 pub struct EventRegistry {
-    /// The event reducer that governs any contract without an explicit override — a wasm module bootstrapped
-    /// at setup.
-    default: Hash,
-    /// contract-id -> the event reducer that overrides the default for that contract.
-    overrides: HashMap<Hash, Hash>,
+    /// The program whose event reducer governs any contract without an explicit override — a wasm module
+    /// bootstrapped at setup.
+    default: ProgramHash,
+    /// contract-id -> the program that overrides the default for that contract.
+    overrides: HashMap<ContractId, ProgramHash>,
 }
 
 impl EventRegistry {
-    /// A registry whose `default` event reducer governs every contract, with no overrides yet.
+    /// A registry whose `default` program governs every contract, with no overrides yet.
     #[must_use]
-    pub fn new(default: Hash) -> Self {
+    pub fn new(default: ProgramHash) -> Self {
         Self {
             default,
             overrides: HashMap::new(),
         }
     }
 
-    /// The default event reducer — the one that governs any contract without an override.
+    /// The default program — the one whose event reducer governs any contract without an override.
     #[must_use]
-    pub fn default_reducer(&self) -> Hash {
+    pub fn default_reducer(&self) -> ProgramHash {
         self.default
     }
 
-    /// Install or replace the event reducer that governs `contract`, returning the override it replaced (if
-    /// any). This is the highest-privilege operation in the system — the security model depends on the
-    /// chosen reducer being correct — so a caller must be the root authority (enforced by the kernel that
-    /// owns this registry, not here).
-    pub fn set_override(&mut self, contract: Hash, event_reducer: Hash) -> Option<Hash> {
-        self.overrides.insert(contract, event_reducer)
+    /// Install or replace the program that governs `contract`, returning the override it replaced (if any).
+    /// This is the highest-privilege operation in the system — the security model depends on the chosen
+    /// program being correct — so a caller must be the root authority (enforced by the kernel that owns this
+    /// registry, not here).
+    pub fn set_override(
+        &mut self,
+        contract: ContractId,
+        program: ProgramHash,
+    ) -> Option<ProgramHash> {
+        self.overrides.insert(contract, program)
     }
 
     /// Remove `contract`'s override so it falls back to the default, returning the override that was removed
     /// (if any). Also root-only.
-    pub fn clear_override(&mut self, contract: Hash) -> Option<Hash> {
+    pub fn clear_override(&mut self, contract: ContractId) -> Option<ProgramHash> {
         self.overrides.remove(&contract)
     }
 
-    /// The event reducer that governs `contract`: its override if one is installed, otherwise the default.
-    /// This is the kernel's lookup on an emitted effect — always a reducer, never absent.
+    /// The program whose event reducer governs `contract`: its override if one is installed, otherwise the
+    /// default. This is the kernel's lookup on an emitted effect — always a program, never absent.
     #[must_use]
-    pub fn resolve(&self, contract: Hash) -> Hash {
+    pub fn resolve(&self, contract: ContractId) -> ProgramHash {
         self.overrides
             .get(&contract)
             .copied()
@@ -80,50 +84,65 @@ impl EventRegistry {
 #[cfg(test)]
 mod tests {
     use super::EventRegistry;
-    use crate::Hash;
+    use crate::{ContractId, Hash, ProgramHash};
 
-    fn h(tag: &str) -> Hash {
-        Hash::of(tag.as_bytes())
+    fn cid(tag: &str) -> ContractId {
+        ContractId::from_hash(Hash::of(tag.as_bytes()))
+    }
+    fn prog(tag: &str) -> ProgramHash {
+        ProgramHash::from_hash(Hash::of(tag.as_bytes()))
     }
 
     #[test]
     fn every_contract_resolves_to_the_default_until_overridden() {
-        let reg = EventRegistry::new(h("default-event-reducer"));
-        assert_eq!(reg.resolve(h("any.contract")), h("default-event-reducer"));
-        assert_eq!(reg.resolve(h("other.contract")), h("default-event-reducer"));
-        assert_eq!(reg.default_reducer(), h("default-event-reducer"));
+        let reg = EventRegistry::new(prog("default-event-reducer"));
+        assert_eq!(
+            reg.resolve(cid("any.contract")),
+            prog("default-event-reducer")
+        );
+        assert_eq!(
+            reg.resolve(cid("other.contract")),
+            prog("default-event-reducer")
+        );
+        assert_eq!(reg.default_reducer(), prog("default-event-reducer"));
         assert_eq!(reg.overrides(), 0);
     }
 
     #[test]
     fn an_override_governs_only_its_contract() {
-        let mut reg = EventRegistry::new(h("default"));
-        assert!(reg.set_override(h("session.spawn"), h("custom")).is_none());
-        // the overridden contract resolves to the custom reducer; everything else stays on the default.
-        assert_eq!(reg.resolve(h("session.spawn")), h("custom"));
-        assert_eq!(reg.resolve(h("http.get")), h("default"));
+        let mut reg = EventRegistry::new(prog("default"));
+        assert!(
+            reg.set_override(cid("session.spawn"), prog("custom"))
+                .is_none()
+        );
+        // the overridden contract resolves to the custom program; everything else stays on the default.
+        assert_eq!(reg.resolve(cid("session.spawn")), prog("custom"));
+        assert_eq!(reg.resolve(cid("http.get")), prog("default"));
         assert_eq!(reg.overrides(), 1);
     }
 
     #[test]
     fn set_override_replaces_and_returns_the_prior() {
-        let mut reg = EventRegistry::new(h("default"));
-        reg.set_override(h("c"), h("first"));
+        let mut reg = EventRegistry::new(prog("default"));
+        reg.set_override(cid("c"), prog("first"));
         // replacing returns exactly the prior override, and the new one wins.
-        assert_eq!(reg.set_override(h("c"), h("second")), Some(h("first")));
-        assert_eq!(reg.resolve(h("c")), h("second"));
+        assert_eq!(
+            reg.set_override(cid("c"), prog("second")),
+            Some(prog("first"))
+        );
+        assert_eq!(reg.resolve(cid("c")), prog("second"));
         assert_eq!(reg.overrides(), 1);
     }
 
     #[test]
     fn clearing_an_override_falls_back_to_the_default() {
-        let mut reg = EventRegistry::new(h("default"));
-        reg.set_override(h("c"), h("custom"));
+        let mut reg = EventRegistry::new(prog("default"));
+        reg.set_override(cid("c"), prog("custom"));
         // clearing returns the removed override and the contract goes back to the default.
-        assert_eq!(reg.clear_override(h("c")), Some(h("custom")));
-        assert_eq!(reg.resolve(h("c")), h("default"));
+        assert_eq!(reg.clear_override(cid("c")), Some(prog("custom")));
+        assert_eq!(reg.resolve(cid("c")), prog("default"));
         assert_eq!(reg.overrides(), 0);
         // clearing an absent override is a no-op.
-        assert_eq!(reg.clear_override(h("c")), None);
+        assert_eq!(reg.clear_override(cid("c")), None);
     }
 }

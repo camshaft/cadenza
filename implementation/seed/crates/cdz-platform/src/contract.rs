@@ -27,7 +27,7 @@
 //! payload against a contract as opaque bytes; what the types mean is the concern of the programs on each
 //! end.
 
-use crate::{Bytes, Hash, Str};
+use crate::{Bytes, ContractId, Hash, Str};
 use cadenza_ast::ast::{Builder, Leaf, StructId};
 use cadenza_ast::{canon, codec};
 use std::sync::Arc;
@@ -39,7 +39,7 @@ use std::sync::Arc;
 pub struct Contract {
     /// The contract-id: the hash of the canonical declaration, computed once at construction (the getter
     /// just returns it — hashing every call would be wasteful).
-    id: Hash,
+    id: ContractId,
     /// The contract's name — kept for the [`name`](Contract::name) accessor; it is also encoded inside the
     /// declaration (which is what the id is taken over).
     name: Str,
@@ -99,7 +99,7 @@ impl Contract {
         // contract-id is the hash of (so id() and declaration() are both cheap getters afterward).
         let canonical = canon::canonicalize(&arenas).into_owned();
         let declaration = Bytes::from(codec::encode(&canonical));
-        let id = Hash::of(&declaration);
+        let id = ContractId::from_hash(Hash::of(&declaration));
         Self {
             id,
             name,
@@ -111,7 +111,7 @@ impl Contract {
     /// so this is a cheap getter. Reproducible from the declaration alone, so two contracts with equal
     /// declarations have equal ids, and any difference in name, input, or output type gives a different id.
     #[must_use]
-    pub fn id(&self) -> Hash {
+    pub fn id(&self) -> ContractId {
         self.id
     }
 
