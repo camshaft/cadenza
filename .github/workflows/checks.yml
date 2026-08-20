@@ -272,98 +272,6 @@ jobs:
           cargo clippy --all-targets -- -D warnings
           cargo fmt --check
 
-  cdz-kernel:
-    # The v2 agent-harness KERNEL (implementation/seed/crates/cdz-kernel, v-agent-harness rebuild —
-    # design/agent-harness-kernel.md). Its OWN workspace (empty `[workspace]`), EXCLUDED from the seed
-    # workspace so the seed's `--workspace` jobs never pay for its (future) async/wasmtime tree — the same
-    # isolation cdz-cad uses. So test/clippy/fmt above don't cover it; gate it here. Pure native for v0
-    # (blake3 only), no wasm toolchain or runtime store needed. Covers the correctness-critical spine:
-    # durable dispatch + effect-id continuations + resource-scoped authz + deterministic replay recovery.
-    name: cdz-kernel
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup-rust
-        with:
-          wasm-tools: "true"
-          cache-key: cdz-kernel
-      - name: Rebuild the reducer-guest fixture from source + verify it's a valid, current component
-        working-directory: implementation/seed/crates/cdz-kernel
-        run: |
-          # The E2E test (component_reducer_e2e) loads the reducer-guest wasm COMPONENT built from
-          # tests/fixtures/reducer-guest (a wit-bindgen guest) — via the REDUCER_GUEST_COMPONENT env path
-          # this step writes below (the committed .wasm binary was removed — v-nix N2). This step builds the
-          # guest from source, verifies it's a VALID component (wasm-tools validate), and hands its path to
-          # the test step so the e2e tests exercise a FRESH build (no stale committed fixture to drift).
-          #
-          # Build the guest from source + `wasm-tools validate` it — NOT a byte-diff (the old `cmp` against
-          # a committed .wasm): even with the toolchain PINNED (rust-toolchain.toml + pinned wasm-tools/
-          # cargo-component) the bytes are NOT byte-identical across build environments (host-arch-dependent
-          # LTO/codegen layout — same functions, reordered; see runtime-cross-arch-determinism), so a cmp
-          # false-red'd on every batch since #131 (pr-sync note, trunk@455dcb7e7). There is NO committed
-          # reducer-guest .wasm anymore (v-nix N2 made it nix-built); the guest's CORRECTNESS is proven at
-          # test time — the cdz-kernel job below runs component_reducer_e2e, which reads the built component
-          # via the `REDUCER_GUEST_COMPONENT` env path and asserts it folds (effects + KV). So this step only
-          # needs to catch "source no longer produces a valid reducer component," which validate does robustly.
-          rustup target add wasm32-unknown-unknown
-          ( cd tests/fixtures/reducer-guest && cargo build --locked --target wasm32-unknown-unknown --release )
-          wasm-tools component new \
-            tests/fixtures/reducer-guest/target/wasm32-unknown-unknown/release/reducer_guest.wasm \
-            -o /tmp/reducer_guest.component.wasm
-          wasm-tools validate --features component-model /tmp/reducer_guest.component.wasm \
-            || { echo "::error::reducer-guest source no longer builds a valid wasm component"; exit 1; }
-      - name: Test + lint the cdz-kernel crate (standalone workspace)
-        working-directory: implementation/seed/crates/cdz-kernel
-        run: |
-          # The default build now includes wasmtime + the component host (wasm_host.rs binds
-          # wit/reducer.wit) — wasmtime is the kernel's core engine, no longer feature-gated — so the
-          # plain test/clippy below cover it (incl. WIT/binding drift: the generated Host trait must
-          # match the ReducerHost impl, AND the E2E test runs the guest fixture through apply).
-          #
-          # The component-reducer e2e tests read the guest component from REDUCER_GUEST_COMPONENT (no
-          # longer a committed include_bytes! binary — v-nix N2). The rebuild step above wrote it to
-          # /tmp/reducer_guest.component.wasm; export that so the e2e tests RUN. (Unset → they optional-
-          # skip, which is only for a bare local `cargo test` without the wasm build; CI always sets it.)
-          export REDUCER_GUEST_COMPONENT=/tmp/reducer_guest.component.wasm
-          cargo test
-          cargo clippy --all-targets -- -D warnings
-          cargo fmt --check
-          # `live-exec` gates the one real side-effecting executor (ShellExecutor, spawns a subprocess).
-          # TEST it (not just clippy) — the failure mode is behavioral: a real exit code flows into the
-          # fold, so a clippy-only gate would miss a regression on that path.
-          cargo clippy --all-targets --features live-exec -- -D warnings
-          cargo test --features live-exec
-
-  cdz-agent-host:
-    name: cdz-agent-host
-    # Full-CI-in-nix Model-A body-swap (v-nix + v-ft data-driven CI-speed, 2026-08-06): the hand-wired body
-    # (setup-rust + cold cargo builds of the cedar + reducer guest fixtures + the cdz-agent-host test/clippy/fmt
-    # + admin/live-net feature matrix) rebuilt cold every candidate (~15.8m) with NO /nix/store cache — the
-    # second-biggest advisory runner-cost + slot-hog after the nix-flake advisory (#2313). The nix check
-    # `checks.<sys>.cdz-agent-host-native` is a SUPERSET of the hand-wired job: identical matrix (test + clippy +
-    # fmt + --features admin test+clippy + live-net clippy + admin,live-net clippy) via the cached vendor, with
-    # the cedar + reducer guests as content-addressed nix derivations, AND it additionally RUNS the genesis
-    # round-trip E2E (env-wired). So this is a pure body-swap: keep the job NAME (advisory context
-    # `checks / cdz-agent-host` unchanged — verified NOT in ruleset 10560470's 10 required, so no ruleset edit;
-    # a red can't block merge), swap cold→cache-warm.
-    #
-    # 🪤 AARCH64 (ubuntu-24.04-arm), NOT x86: the genesis round-trip E2E this check runs resolves the genesis
-    # reducer's `cadenza:runtime/heap` dep BY CONTENT HASH from CDZ_STORE, and the value-heap runtime's content
-    # hash is per-arch non-deterministic (LTO lays core/alloc out host-dependently — the same reason gate/codegen/
-    # cad-tests are all aarch64). On x86 the reducer's baked heap-hash MISSES the x86-built store runtime →
-    # `BlobMissing` panic (observed: #2350 candidate, hash 39358be4…). So this check MUST run on the arch its
-    # recorded runtime hash was reproduced on (aarch64). That forfeits the x86-queue-lever ambition — this is
-    # an arm64 runner-cost win (15.8m cold→warm, like cad-tests), not the x86 slot-freer — but correctness first:
-    # a per-arch-hash-resolving check can't run cross-arch. (The old hand-wired x86 job SKIPPED genesis — no
-    # reducer env — so it never hit this; the swap RUNS genesis, which needs aarch64.)
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@v7
-      - uses: DeterminateSystems/nix-installer-action@v22
-      - uses: ./.github/actions/nix-store-cache
-      - name: cdz-agent-host test + clippy + fmt + feature matrix + genesis e2e (via nix, 2-way parallel split)
-        run: nix build .#checks.aarch64-linux.cdz-agent-host-native-core .#checks.aarch64-linux.cdz-agent-host-native-live-net --print-build-logs
-
   rcdzc-wasm:
     # The Cadenza COMPILER as a WASM artifact (implementation/seed/crates/rcdzc-wasm, v-agent-harness
     # minimal-kernel K1-dep wasm-swap — operator #54). EXCLUDED + wasm-only: it builds to wasm32-wasip1 (a
@@ -390,75 +298,6 @@ jobs:
           rustup target add wasm32-wasip1
           cargo build --target wasm32-wasip1
 
-  syntax-guest:
-    # The cadenza:syntax REDUCER-FACING WIT COMPONENT (implementation/seed/crates/cdz-syntax-guest,
-    # v-syntax P2 — design note p2-reducer-invoke-cadenza-syntax-as-composable-wit-dep). A thin
-    # wit-bindgen guest over the cadenza-syntax library exporting parse/query/doc; a reducer imports it
-    # by content-hash and compose_dep_into_linker links it leaves-first (pure compute, store_provider=
-    # None). EXCLUDED + wasm-only: its own `[workspace]`, builds to wasm32-unknown-unknown (cdylib), so
-    # the seed's `--workspace` jobs skip it — gate it here (like rcdzc-wasm/cdz-nfc). This job PRODUCES a
-    # valid cadenza:syntax component from source (guest-authoring = v-syntax's lane; the COMPOSE-
-    # CONSUMPTION test — a reducer linking it by hash — is v-agent-harness-host's, mirroring how the
-    # cedar/reducer guests split build-vs-link). Same build+lift+validate shape as the reducer-guest step
-    # in cdz-kernel: build the guest, lift it with `wasm-tools component new`, and `wasm-tools validate`
-    # the component — catches "source no longer builds a valid cadenza:syntax component" (NOT a byte-diff:
-    # the lifted bytes are host-arch-dependent, same reason reducer-guest dropped its cmp).
-    #
-    # runs-on ubuntu-24.04-arm (v-fleet-tooling CI-balance guidance): this is an ARCH-INDEPENDENT wasm32
-    # guest build (no per-arch runtime hash, no native-arch dep — unlike gate/codegen which stay arm for
-    # the runtime-hash reason), so it runs equally on either arch. The x86 required-pool ran ~3x arm's
-    # load, so arch-independent jobs go on arm (which has headroom) to keep the pool balanced.
-    name: syntax-guest wasm-component
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup-rust
-        with:
-          wasm-tools: "true"
-          cache-key: syntax-guest
-      - name: Lint the guest crate (native fmt/clippy over the standalone workspace)
-        working-directory: implementation/seed/crates/cdz-syntax-guest
-        run: |
-          # fmt/clippy run for the wasm target (the crate's only build target — a cdylib guest). This
-          # catches source/style drift without needing to lift; the build+validate step below proves it
-          # still produces a valid component.
-          rustup target add wasm32-unknown-unknown
-          cargo fmt --check
-          cargo clippy --target wasm32-unknown-unknown --release -- -D warnings
-      - name: Build + lift + validate the cadenza:syntax component
-        working-directory: implementation/seed/crates/cdz-syntax-guest
-        run: |
-          cargo build --locked --target wasm32-unknown-unknown --release
-          wasm-tools component new \
-            target/wasm32-unknown-unknown/release/cdz_syntax_guest.wasm \
-            -o /tmp/cdz_syntax_guest.component.wasm
-          wasm-tools validate --features component-model /tmp/cdz_syntax_guest.component.wasm \
-            || { echo "::error::cdz-syntax-guest source no longer builds a valid cadenza:syntax component"; exit 1; }
-
-  # ── Nix flake (ADVISORY / NON-REQUIRED — v-fleet-tooling seam answer 2026-08-03) ──────────────
-  # `nix flake check` reproduces the WHOLE build pipeline hermetically: the 5 wasm components
-  # (runtime/debug/nfc/reducer-guest/cedar-guest) built hash-from-bytes + their `-hash-parity` checks
-  # (each derived hash MUST equal the committed REQUIRED_RUNTIME_HASH / DEBUG_RUNTIME_HASH /
-  # REQUIRED_NFC_HASH), the S1 native seed compiler, rcdzc→wasm, and the S2/S3 cadenza-project build +
-  # test derivations. It's the reproducibility backstop for the other jobs: if a source change would
-  # move a component's content hash without the recorded hash being re-blessed, the parity check here
-  # goes red (the same guard `codegen` enforces natively, but end-to-end through nix).
-  #
-  # ADDED NON-REQUIRED first (additive-first — v-fleet-tooling's rec): it runs + reports on every
-  # candidate but does NOT gate auto-merge, so a nix-infra hiccup or a slow run can't red an author's
-  # PR fleet-wide (the cdz-agent-host unfiltered-job class of trap). Promote to REQUIRED in a
-  # deliberate follow-up once it's proven fast + stable across real candidates.
-  #
-  # NO nix-store cache in this first cut (deliberately minimal): a cold `nix flake check` rebuilds
-  # everything (the seed compiler's wasmtime+cranelift tree is the heavy part, ~1-2min), so this job
-  # is EXPECTED to be the slow one. Measuring its real wall-clock across candidates — advisory, so it
-  # can't throttle the lane — is exactly the prerequisite v-fleet-tooling flagged before promoting to
-  # required. Adding a store cache (GitHub-Actions-cache-backed) + the required promotion is the
-  # deliberate FOLLOW-UP once the cost is known.
-  #
-  # ubuntu-24.04-arm (aarch64) for the SAME runtime-hash reason as gate/codegen/guide-examples: the
-  # value-heap runtime's content hash is reproducible only per-arch, and the flake's `*-hash-parity`
-  # checks compare against the aarch64-recorded hash — on x86_64 they would spuriously disagree.
   nix-flake:
     name: nix flake check (advisory)
     runs-on: ubuntu-24.04-arm
@@ -487,14 +326,7 @@ jobs:
       # (those jobs still run); this just stops re-doing their work cold. (`nix flake check` locally still runs
       # everything.) Advisory + continue-on-error retained.
       - name: nix reproducibility backstop (scoped from full flake check)
-        # --extra-experimental-features ca-derivations: the backstop evaluates reducerCadenzaGenesisValid,
-        # which pulls the CONTENT-ADDRESSED reducer-cadenza-genesis (perf: stops corpus-closure rotation from
-        # re-running the genesis E2E). The DeterminateSystems runner ships nix-command+flakes but NOT
-        # ca-derivations, so eval failed "experimental Nix feature 'ca-derivations' is disabled". The flake's
-        # nixConfig.extra-experimental-features also declares it, but a GHA runner does NOT trust flake nixConfig
-        # by default (needs --accept-flake-config), so pass the feature DIRECTLY here — the reliable fix that
-        # doesn't depend on flake-config trust. (v-nix 2026-08-10, github-liaison advisory-RED report.)
-        run: nix build .#checks.aarch64-linux.flake-repro-backstop --print-build-logs --extra-experimental-features ca-derivations
+        run: nix build .#checks.aarch64-linux.flake-repro-backstop --print-build-logs
 
   roundtrip:
     # Every corpus program must round-trip through the syntax surfaces — guards cadenza-syntax

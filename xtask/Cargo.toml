@@ -27,8 +27,8 @@ cdz-rust-render = { path = "../implementation/seed/crates/cdz-rust-render" }
 # SHA-256 for the local build-cache tree-fingerprint (`hash_tree`), an internal cache key with no
 # cross-boundary contract. The CONTENT-ADDRESS digest (`content_address`) is blake3 (below).
 sha2 = "0.10"
-# blake3: the ONE unified content-address digest (operator 2026-08-08), matching `cdz_kernel::Hash::of`
-# so the store address == blob key == compose-dep +hash are a single digest across the fleet.
+# blake3: the ONE unified content-address digest (operator 2026-08-08), matching `cdz-run`'s
+# `content_address` so the store address == blob key == compose-dep +hash are a single digest across the fleet.
 blake3 = "1"
 # The fleet orchestrator (`fleet` subcommand) serializes its durable manifest + inbox messages as
 # JSON. Dev-desk only, like the rest of xtask's deps — never enters the shipped compiler.

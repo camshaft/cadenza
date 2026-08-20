@@ -12,15 +12,11 @@
   #         built + stripped as NORMAL (input-addressed) derivations; `packages.*-hash` is the content
   #         address DERIVED from the built bytes (never asserted). `checks.*-hash-parity` verifies each
   #         equals its committed hash (REQUIRED_RUNTIME_HASH / DEBUG_RUNTIME_HASH / REQUIRED_NFC_HASH).
-  #   N2  — `packages.reducer-guest` + `packages.cedar-guest` (+ `-hash` each) : the cdz-kernel
-  #         reducer-guest and cdz-agent-host cedar-policy-guest wasm components built from source, same
-  #         hash-falls-out shape.
   #   R2  — `packages.store` : every built component assembled into one content-addressed store dir
   #         (`<derived-hash>.wasm`), mirroring target/cadenza-store but built + addressed by nix.
   #   S1  — `packages.seed-compiler` : the NATIVE bootstrap toolchain (cdz + cdz-run binaries) via
   #         `buildRustPackage` (root Cargo.lock, tracked #1748). S2 cadenza-projects, S3 per-test skip.
-  #   rcdzc-wasm — `packages.rcdzc-wasm` (+ `-hash`) : the compiler as a wasm32-wasip1 module for the
-  #         agent kernel's blob store (v-agent-harness owns the store pointer + compile-effect ABI).
+  #   rcdzc-wasm — `packages.rcdzc-wasm` (+ `-hash`) : the compiler as a wasm32-wasip1 module.
   #   S2  — `packages.example-project` (+ the `buildCadenzaProject` fn) : build a Cadenza project
   #         (Project.cdz + sources) through nix via the S1 compiler → its wasm.
   #   S3  — `testCadenzaProject` (+ `checks.example-project-tests`) : run a project's @tests through nix
@@ -34,16 +30,6 @@
   # no second place to bump the version.
 
   description = "Cadenza build/test pipeline (Nix flake: N0 devShell + N1 runtime derivation)";
-
-  # ca-derivations is REQUIRED to evaluate/build this flake: reducer-cadenza-genesis is content-addressed
-  # (perf: it stops corpus-closure-rotation from re-running the genesis E2E — see its maker note). Declaring
-  # it here in nixConfig makes it AMBIENT for every flake consumer — GHA runners, a fresh dev machine, a local
-  # `nix flake check` — instead of assuming it's set host-side. Fixes the advisory nix-flake-check RED
-  # (`experimental Nix feature 'ca-derivations' is disabled` while evaluating reducerCadenzaGenesisValid): the
-  # DeterminateSystems GHA runner had nix-command+flakes but NOT ca-derivations, and the earlier
-  # comment's "enabled fleet-wide" only held for the fleet HOST (via nix.custom.conf), not GHA. `extra-`
-  # prefix APPENDS (doesn't clobber the caller's nix-command/flakes). v-nix 2026-08-10, github-liaison report.
-  nixConfig.extra-experimental-features = [ "ca-derivations" ];
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -715,255 +701,6 @@
           src = exampleProjectSrc;
         };
 
-        # Operator seq-144 ("get ALL the reducer stuff set up on nix"): run the agent-harness bootstrap
-        # reducers' behavioral @tests through nix, per-input-cached (v-harness-bootstrap owns the fixtures).
-        # SEED-COMPILER path (`cdz test` on the project), INDEPENDENT of the kernel host adapter — the
-        # heap-value @tests resolve the value-heap runtime by hash from my componentStore via CDZ_STORE
-        # (set by testCadenzaProject). (The COMPONENT build + REDUCER_CADENZA_COMPONENT env — the
-        # kernel-e2e half — is separate; the env wiring is adapter-gated on v-agent-harness.)
-        #   🪤 ROOT AT THE PROJECT DIR: testCadenzaProject runs `cdz test .` at the unpacked-src cwd with
-        #   the explicit "no upward manifest search" guard — so Project.cdz MUST be at the src root. A
-        #   repo-root fileset.toSource would nest it 6 dirs down (Project.cdz not at `.` → the guarded
-        #   search, github-liaison #2182). So root reducerCadenzaTestSrc AT the fixture dir (Project.cdz +
-        #   the reducer .cdz land at top level) — same rooting as exampleProjectTests. `cdz test` needs no
-        #   wit/ (the @tests are pure cdz-test, no component-target metadata — Project.cdz names no wit).
-        reducerCadenzaTestSrc = pkgs.lib.fileset.toSource {
-          root = ./implementation/seed/crates/cdz-kernel/tests/fixtures/reducer-cadenza;
-          fileset = ./implementation/seed/crates/cdz-kernel/tests/fixtures/reducer-cadenza;
-        };
-        reducerCadenzaTests = testCadenzaProject {
-          pname = "cdz-reducer-cadenza-tests";
-          src = reducerCadenzaTestSrc;
-        };
-
-        # seq-144 Part 2: compile a single Cadenza reducer .cdz to a wasm COMPONENT via the seed compiler.
-        # `cdz compile --target wasm --component-name <name>` emits a component DIRECTLY (no cargo / no
-        # vendor / no `wasm-tools component new` lift — unlike the Rust guests) — so this is seedCompiler-only
-        # + fully hermetic (compile records the runtime import BY HASH; it does NOT need the store at build,
-        # only at RUN — v-harness-bootstrap verified). The content hash falls out of the built bytes (same
-        # shape as reducer-guest/cedar-guest: no committed pin). All B1-B4 reducers export
-        # `cadenza:agent-kernel/fold` (genesis is an ordinary fold, not a separate world — v-hb confirmed).
-        # b1/b2 import just the value-heap runtime by hash; b3/genesis also import cadenza:agent-kernel/kv
-        # (host-served, unresolved at build — `wasm-tools validate` still passes, verified).
-        # GUARD-BY-CONSTRUCTION (v-nix 2026-08-09): mkCadenzaComponent takes NO `outputHash` — a
-        # reducer-cadenza component can NOT be made a FIXED-OUTPUT derivation, by design. WHY: every
-        # component this maker compiles embeds its runtime DEPENDENCY pin (the compiler bakes the current
-        # REQUIRED_RUNTIME_HASH into the emitted `cadenza:runtime/heap@…+<hash>` import). A FOD's output PATH
-        # is keyed on the hand-pinned hash, NOT its inputs, so on a runtime-ABI bump nix serves the STALE
-        # cached component (old runtime pin) while componentStore rebuilds to the new hash → the consumer's
-        # get_by_hash(<old>) → BlobMissing (this exact bug reded cdz-agent-host-native's genesis E2E on
-        # v-runtime's B0; the sibling cdzWasmPkg FOD reded guide-examples the same way — both reverted to
-        # input-addressed, 6b894c84b + f2ab207de). The "FOD fails loud on a stale pin" guard only fires on a
-        # COLD build; WARM it serves the stale path SILENTLY — the no-workaround-directive booby-trap. So
-        # these stay input-addressed unconditionally: seedCompiler is in nativeBuildInputs → a hash bump
-        # rotates seedCompiler → rotates the derivation → rebuilds → emits the CURRENT-runtime pin. The
-        # per-MR-throughput early-cutoff a FOD gave (skip a consumer's 60s+ E2E on unrelated compiler edits)
-        # must be recovered — if at all — via a content-addressed derivation (keys the path on the ACTUAL
-        # built bytes → byte-identical early-cutoff AND correct rebuild-on-bump, which a fixed pin
-        # structurally cannot), NOT a hand-pinned outputHash. Dropping the param makes reintroducing the bug
-        # an eval error (unexpected argument), not a silent runtime BlobMissing.
-        # `witWorld` (null | "pure" | "full"): when set, the reducer TARGETS a WIT world — materialize the
-        # world artifact via the `emit-wit-world` bin and pass it as the `wit-world:reducer-world=<path>`
-        # compile input (KIND_WIT_WORLD), so rcdzc's world-driven emit bytes-wraps the reducer to a
-        # bytes-provider component (DESIGN-binary-ast-abi §3b). Absent (B1-B3/genesis) → the ordinary
-        # handle-shaped fold emit, byte-identical to before.
-        mkCadenzaComponent = { name, cdzFile, componentName ? "cadenza:agent-kernel/fold", contentAddressed ? false, witWorld ? null }:
-          pkgs.stdenvNoCC.mkDerivation ({
-            pname = name;
-            version = "0.0.0";
-            src = reducerCadenzaTestSrc; # fixture-dir-rooted → the reducer .cdz are at the src top level.
-            nativeBuildInputs = [ seedCompiler ];
-            buildPhase = ''
-              runHook preBuild
-              export HOME="$TMPDIR/home"; mkdir -p "$HOME"
-              ${pkgs.lib.optionalString (witWorld != null) ''
-              # Materialize the ${witWorld}-fold WIT world (KIND_WIT_WORLD binary-AST) via the prebuilt
-              # emit-wit-world bin, then feed it as the wit-world:reducer-world input below.
-              ${emitWitWorld} ${witWorld} world.bin
-              ''}
-              # compile the single reducer .cdz → a wasm component (emitted to component.wasm in the cwd).
-              cdz compile ${cdzFile}${pkgs.lib.optionalString (witWorld != null) " wit-world:reducer-world=world.bin"} --target wasm --component-name ${componentName} -o component.wasm
-              runHook postBuild
-            '';
-            # match the flake's other single-wasm derivations (reducer-guest/rcdzc-wasm): write $out in
-            # installPhase, not the buildPhase (github-liaison #2182 consistency).
-            installPhase = ''
-              runHook preInstall
-              cp component.wasm "$out"
-              runHook postInstall
-            '';
-            # 🪤 dontFixup: $out is a single wasm FILE. stdenv's fixupPhase runs `strip` on file outputs,
-            # which truncates a wasm to ~54 bytes → a corrupt component in the store (the SAME trap rcdzcWasm
-            # guards; see its note "with fixup out=54B"). It's currently latent here — nativeBuildInputs is
-            # seedCompiler-only, no binutils strip in PATH, so fixup's strip is a no-op (components build
-            # intact: b1=497B). But that's INCIDENTAL: add a toolchain to nativeBuildInputs (or a stdenv
-            # default shift) and strip silently corrupts. Make the guard explicit, same as rcdzcWasm
-            # (github-liaison #2196 review).
-            dontFixup = true;
-          } // pkgs.lib.optionalAttrs contentAddressed {
-            # CONTENT-ADDRESSED (v-nix 2026-08-09, CI-wall-time lever): key the output PATH on the actual
-            # emitted bytes, not the input drv. WHY (vs input-addressed): this component is compiled by
-            # seedCompiler, whose drv rotates on ANY compiler-CLOSURE edit (rcdzc changes ~every commit). An
-            # INPUT-addressed output path therefore rotates on every such edit, so a heavy consumer (the
-            # genesis E2E in cdz-agent-host-native, ~10-12m) cache-MISSES + rebuilds on a large fraction of
-            # fleet MRs — the batch-gate long pole. But the emitted component is byte-IDENTICAL across a
-            # compiler edit that doesn't change the emit (EMPIRICALLY VERIFIED 2026-08-09: an inert rcdzc
-            # doc-comment edit rotated the drv 9lxb5…→8wyzg06… but the output stayed byte-identical, sha256
-            # 6c2c096d…, 2285 B). CA keys the consumer on THOSE bytes → it cache-HITS whenever the emit is
-            # unchanged, and correctly REBUILDS only when a compiler change actually moves the emit. This is
-            # the safe form of the early-cutoff the old FIXED-OUTPUT pin gave (byte-identical hit) WITHOUT the
-            # stale-serve hazard (a real emit change produces new bytes → new path → consumer rebuilds; a
-            # fixed pin instead served stale). Needs experimental-features ca-derivations (enabled fleet-wide
-            # in nix.custom.conf, v-ft 2026-08-09). $out is a single wasm FILE → flat mode.
-            __contentAddressed = true;
-            outputHashMode = "flat";
-            outputHashAlgo = "sha256";
-          });
-        reducerCadenzaB1 = mkCadenzaComponent { name = "reducer-cadenza-b1"; cdzFile = "reducer_b1.cdz"; };
-        reducerCadenzaB2 = mkCadenzaComponent { name = "reducer-cadenza-b2"; cdzFile = "reducer_b2.cdz"; };
-        reducerCadenzaB3 = mkCadenzaComponent { name = "reducer-cadenza-b3"; cdzFile = "reducer_b3.cdz"; };
-        # GENESIS is CONTENT-ADDRESSED (contentAddressed = true). It is the sole reducer-cadenza component
-        # injected into a heavy native check (cdz-agent-host-native's 60s+ genesis E2E), which cache-MISSED on
-        # every compiler-closure edit while genesis was input-addressed (the seedCompiler drv rotates ~every
-        # commit) — the batch-gate long pole (operator CI-wall-time directive). CA recovers the early-cutoff
-        # SAFELY: cache-hit when the emit is byte-identical, rebuild when it genuinely changes — unlike the
-        # old FIXED-OUTPUT pin (f2ab207de) which served a STALE component on v-runtime's B0 hash bump →
-        # BlobMissing. Empirically proven output-stable across an inert rcdzc edit (see the maker note).
-        # A1 (2026-08-12): genesis rewritten to the bytes fold boundary — single-Event apply, kv.put host-routed
-        # (escapes as the world's kv import, host-fused), inline-structural EffectRequest return. So it now
-        # TARGETS the FULL reducer world (fold.apply + kv), materialized via emit-wit-world "full" — witWorld =
-        # "full" drives rcdzc's world-driven bytes emit + fuses the kv.put escape against the world's kv import.
-        # Built WITHOUT the world it would DECLINE (the host-fused escape needs the world to fuse against), so
-        # this witWorld arg is co-landed same-batch with the fixture rewrite (v-agent-harness). PUT-ONLY (unit
-        # result) → unaffected by the kv.get option-result path.
-        reducerCadenzaGenesis = mkCadenzaComponent {
-          name = "reducer-cadenza-genesis";
-          cdzFile = "reducer_genesis.cdz";
-          witWorld = "full";
-          contentAddressed = true;
-        };
-        # PURE-GENESIS (A1 bytes fold boundary, DESIGN-binary-ast-abi §3b): the smallest REAL Cadenza reducer
-        # that exercises the WHOLE bytes round-trip — `apply(list<u8>) -> list<u8>` decoding a value-form Event
-        # doc and encoding a value-form effect-list doc — by TARGETING the pure-fold WIT world (fold.apply only,
-        # NO kv import). `witWorld = "pure"` materializes that world (186 B) via emit-wit-world + drives rcdzc's
-        # world-driven bytes emit, so the built component exports `cadenza:agent-kernel/fold`'s
-        # apply(list<u8>)->list<u8> and imports ONLY cadenza:runtime/heap (verified: no kv). Consumed by the
-        # cdz-agent-host pure-genesis E2E (host.rs real_pure_reducer_folds_an_event_through_the_a1_bytes_boundary)
-        # via env PURE_GENESIS_REDUCER_COMPONENT, exported in agentHostEnvSetup below (the E2E resolves the heap
-        # import from CDZ_STORE). CA for the same batch-gate early-cutoff reason as genesis (byte-identical hit
-        # across inert compiler edits).
-        reducerCadenzaPureGenesis = mkCadenzaComponent {
-          name = "reducer-cadenza-pure-genesis";
-          cdzFile = "reducer_pure.cdz";
-          componentName = "cadenza:agent-kernel/fold";
-          witWorld = "pure";
-          contentAddressed = true;
-        };
-        # REIFY-PROBE (schema-hash phase-1a completion gate): the FIRST reducer that PERFORMS a world-effect
-        # rather than hand-building an EffectRequest record — reducer_reify.cdz does `host Probe in
-        # ([Probe.fire(p)])`, a target-free single-Bytes perform. Probe is NOT a world import (only kv is), so
-        # the sync/async fork (is_world_import_op, 0a6538c01) takes the ASYNC branch → rcdzc's reify_effect_to_tuple
-        # (eb34621ad) lowers it to the 3-field no-target reify record {correlation=None, kind="effect/Probe",
-        # payload=Some(p)}, which the kernel's target-free-tolerant parse_effect_request (14b7c9885) accepts.
-        # Targets the PURE-FOLD world (fold.apply only, NO kv import — Probe escapes via the returned reified
-        # list, needing no import), so `witWorld = "pure"` reuses the SAME pure-fold artifact as pure-genesis.
-        # Consumed by cdz-kernel's component_reducer_e2e reify_probe_reducer_reifies_a_target_free_perform_end_to_end
-        # via env REIFY_PROBE_REDUCER_COMPONENT (exported in cdzKernelNativeCheck below). CA like the siblings.
-        reducerCadenzaReify = mkCadenzaComponent {
-          name = "reducer-cadenza-reify";
-          cdzFile = "reducer_reify.cdz";
-          componentName = "cadenza:agent-kernel/fold";
-          witWorld = "pure";
-          contentAddressed = true;
-        };
-        # VERTICAL (role-library #5, the COMPOSED self-hosting vertical role): ONE reducer that folds the WHOLE
-        # fleet loop by dispatching on event family — timer-fired -> re-arm + begin-tick, tick-start -> arm first
-        # timer, inbox/<kind> -> classify archive/act, unit-complete -> git add/commit/push. The capstone dogfood
-        # proving a self-hosting fleet agent runs as a single PURE FOLD over the landed timer/emit/git effects.
-        # Returns effects only (NO host import) -> targets the pure-fold world like reducer_pure/reify, so
-        # `witWorld = "pure"` reuses the same pure-fold artifact. Consumed by v-agent-harness-host's WHOLE-LOOP
-        # host e2e — driven through the REAL executor set (timer + emit + GitExecutor) over the A1 bytes boundary
-        # as the full tick->inbox-drain->work->MR self-hosting proof (genesis-seeded via a tick-start event whose
-        # payload is the first-deadline-ms u64 LE; the 900000ms interval is a fixed def in the reducer for now).
-        # CA like the siblings.
-        reducerCadenzaVertical = mkCadenzaComponent {
-          name = "reducer-cadenza-vertical";
-          cdzFile = "reducer_vertical.cdz";
-          componentName = "cadenza:agent-kernel/fold";
-          witWorld = "pure";
-          contentAddressed = true;
-        };
-        # PUBLISH (role-library, the MR/PUBLISH role): folds a unit-complete event into the git publish
-        # sequence (git add -> commit -> push) as returned effect records (kind = "shell", const-literal
-        # Ast.encode interim). PURE — returns effects only, NO host import — so it targets the pure-fold world
-        # like reducer_vertical/reify, `witWorld = "pure"`. Consumed by v-agent-harness-host's publish-sequence
-        # host e2e (real_publish_reducer_emits_the_git_add_commit_push_sequence...) via env
-        # CDZ_REDUCER_PUBLISH_COMPONENT (exported in agentHostEnvSetup below, + the shared CDZ_STORE for the
-        # cadenza:runtime/heap dep). CA like the siblings.
-        reducerCadenzaPublish = mkCadenzaComponent {
-          name = "reducer-cadenza-publish";
-          cdzFile = "reducer_publish.cdz";
-          componentName = "cadenza:agent-kernel/fold";
-          witWorld = "pure";
-          contentAddressed = true;
-        };
-        # KV-GENESIS (A1 bytes fold boundary): the sibling of pure-genesis that exercises the kv IMPORT end-to-end
-        # — reducer_kv.cdz PUTs a value under a fixed key on a seed event then GETs it back on a trigger event and
-        # echoes it, proving BOTH kv.put AND the kv.get option<list<u8>> host-result lift (rcdzc §3c GAP C,
-        # de24e9011) round-trip the same bytes through the host. Host-fused (kv escapes as the world import, no
-        # bind), so it TARGETS the FULL reducer world — `witWorld = "full"` (same as the genesis rewrite). Built
-        # WITHOUT the world it would DECLINE (host-fused escape needs the world to fuse against). NEW ADDITIVE
-        # derivation (unlike genesis, not an edit to an existing gated one), consumed by v-ah-host's kv-genesis
-        # E2E via env (armed separately; CDZ_KERNEL_BYTES_ABI NOT set here). CA like the other reducers.
-        reducerCadenzaKv = mkCadenzaComponent {
-          name = "reducer-cadenza-kv";
-          cdzFile = "reducer_kv.cdz";
-          witWorld = "full";
-          contentAddressed = true;
-        };
-        # INBOX-KV (role-library, the KV-backed inbox-drain role): the host-fused sibling of the pure
-        # reducer_inbox — folds an inbox/<kind> event but dedups on a KV seen-set (kv.get to check seen,
-        # kv.put to mark seen), so a re-delivered identical message drains to nothing. Host-fused (the kv
-        # calls escape as world imports, no bind), so it TARGETS the FULL reducer world — witWorld = "full"
-        # like reducerCadenzaKv (NOT pure like reducer-cadenza-vertical). Consumed by v-ah-host's inbox-dedup
-        # e2e (deliver an inbox event twice → exactly ONE act/archive then nothing) via env
-        # CDZ_REDUCER_INBOX_KV_COMPONENT (exported in agentHostEnvSetup below, + CDZ_STORE for the heap dep).
-        # CA like the other reducers.
-        reducerCadenzaInboxKv = mkCadenzaComponent {
-          name = "reducer-cadenza-inbox-kv";
-          cdzFile = "reducer_inbox_kv.cdz";
-          witWorld = "full";
-          contentAddressed = true;
-        };
-        # TICK-KV (role-library, the GENESIS-KV-SEEDED tick reducer): the host-fused tick role that reads its
-        # schedule from the KV genesis seed — KV[tick/interval-ms] + KV[tick/first-deadline-ms] — instead of a
-        # fixed def, then arms/re-arms the timer + emits begin-tick. Host-fused (kv.get escapes as a world
-        # import, no bind), so it TARGETS the FULL reducer world — witWorld = "full" like reducerCadenzaKv /
-        # reducerCadenzaInboxKv (NOT pure). Consumed by v-ah-host's kv-seeded-tick e2e (seed the two KV keys,
-        # deliver tick-start → assert timer armed at target=decimal(first-deadline); fire it → assert re-arm at
-        # decimal(fired+interval) + begin-tick) via env CDZ_REDUCER_TICK_KV_COMPONENT (exported in
-        # agentHostEnvSetup below, + CDZ_STORE for the heap dep). CA like the other reducers.
-        reducerCadenzaTickKv = mkCadenzaComponent {
-          name = "reducer-cadenza-tick-kv";
-          cdzFile = "reducer_tick_kv.cdz";
-          witWorld = "full";
-          contentAddressed = true;
-        };
-        # AGENT-LOOP (GAP-1 keystone, design/agent-harness-kernel.md §3): the agentic loop expressed as a FOLD
-        # over KV inbox state — message events append to the inbox under an "inbox/" prefix + enumerate the
-        # pending inbox via kv.prefix-scan then emit a "model" effect; model-response events dispatch a "tool"
-        # effect. The smallest honest demo that the harness hosts a REAL agent loop as a pure reducer over the
-        # A1 bytes boundary — no new kernel mechanism, just a fold over the existing kv + emit. Host-fused
-        # (kv.put + kv.prefix-scan escape as world imports), TARGETS the EXISTING full reducer world so
-        # `witWorld = "full"` + ZERO world change (no hash ripple for the other reducers; usage-based imports).
-        # NEW ADDITIVE derivation (like kv). COMPILE+VALIDATE only here (green today); the runtime prefix-scan
-        # enumeration is correct once v-cml's guest list-lift fix lands, then a v-ah runtime e2e follows. CA.
-        reducerCadenzaAgentLoop = mkCadenzaComponent {
-          name = "reducer-cadenza-agent-loop";
-          cdzFile = "reducer_agent_loop.cdz";
-          witWorld = "full";
-          contentAddressed = true;
-        };
 
         # Full-CI-in-nix increment 6e: the GHA `cad-tests` job — `cdz test` on the 4 committed
         # in-tree Cadenza PROJECTS (implementation/{cad,compiler-ml,choreography,iterators}). These are
@@ -1090,308 +827,6 @@
           '';
         };
 
-        # Full-CI-in-nix increment 4: the GHA `cdz-kernel` job (cargo test + clippy + fmt + the
-        # `--features live-exec` clippy/test) as a nix check. cdz-kernel is its OWN root-excluded
-        # [workspace] (path-deps cadenza-ast), so it vendors from its OWN committed Cargo.lock (158 pkgs,
-        # v-agent-harness `5a8bb10b0`). The CI job builds + validates the reducer-guest wasm then feeds it
-        # via REDUCER_GUEST_COMPONENT — but my `reducerGuest` derivation ALREADY produces a validated
-        # component, so the check just points the env at it (skips the redundant build+validate; the
-        # component-model validity is separately gated by checks.reducer-guest-valid). The base `cargo
-        # test` is hermetic + passes without the env (the component e2e is env-gated); passing it makes
-        # that e2e actually RUN. Advisory-by-omission → unilateral cargo-twin retire once green.
-        cdzKernelVendor = pkgs.rustPlatform.importCargoLock {
-          lockFile = ./implementation/seed/crates/cdz-kernel/Cargo.lock;
-        };
-        cdzKernelSrc = pkgs.lib.fileset.toSource {
-          root = ./.;
-          fileset = pkgs.lib.fileset.unions [
-            ./implementation/seed/crates/cdz-kernel
-            ./implementation/seed/crates/cadenza-ast
-            ./rust-toolchain.toml
-          ];
-        };
-        cdzKernelNativeCheck = pkgs.stdenvNoCC.mkDerivation {
-          pname = "cdz-kernel-native";
-          version = "0.0.0";
-          src = cdzKernelSrc;
-          nativeBuildInputs = [ rustToolchain ];
-          buildPhase = ''
-            runHook preBuild
-            ${mkCargoVendorEnv { vendor = cdzKernelVendor; }}
-            cd implementation/seed/crates/cdz-kernel
-            # Feed the pre-built, pre-validated reducer-guest component (my derivation) so the env-gated
-            # component-reducer e2e RUNS instead of skipping.
-            export REDUCER_GUEST_COMPONENT="${reducerGuest}"
-            # seq-144 last piece: feed the compiled B1 CADENZA reducer component + the value-heap store so
-            # reducer_cadenza_b1_e2e.rs drives a REAL rcdzc-compiled reducer through apply_handle_lowered
-            # (asserts vec-len==0, empty effects) instead of skipping. b1 imports the value-heap runtime, so
-            # CDZ_STORE (my hash-keyed componentStore ROOT DIR: <sha256hex>.wasm blobs + runtime.toml) is
-            # REQUIRED — the transitive nfc dep resolves by name via runtime.toml. The test FAILS LOUD if
-            # the reducer needs its heap but no store is provided (a silent skip there would hide broken
-            # wiring). Both come from my derivations (already built + validated). v-harness-bootstrap owns the
-            # fixture; v-agent-harness owns the test (landed on trunk); the env export is mine.
-            export REDUCER_CADENZA_COMPONENT="${reducerCadenzaB1}"
-            # B2 climb: feed the compiled B2 reducer so reducer_cadenza_b2_e2e.rs RUNS (asserts ONE Http
-            # effect to https://ok.host/x + correlation step-1) instead of skipping. Same sync
-            # apply_handle_lowered path + CDZ_STORE transitive-nfc resolution as b1.
-            export REDUCER_CADENZA_B2_COMPONENT="${reducerCadenzaB2}"
-            # B3 climb (seq-144 reducer-e2e tail CLOSE): feed the compiled B3 reducer so
-            # reducer_cadenza_b3_e2e.rs RUNS (drives a 'message' event through async apply_handle_lowered;
-            # asserts kv['count']==[1] — b3's bound handle-ABI kv.get(None→0)+put through the marshalled
-            # boundary, the first real-reducer KV-WRITE e2e — AND one Http effect to ok.host/x correlation
-            # step-1) instead of skipping. Same apply_handle_lowered path + CDZ_STORE transitive-nfc
-            # resolution as b1/b2. Closes the tail: b1+b2+b3+genesis all live in CI.
-            export REDUCER_CADENZA_B3_COMPONENT="${reducerCadenzaB3}"
-            # schema-hash phase-1a REIFY gate: feed the precompiled reify-probe reducer so
-            # component_reducer_e2e::reify_probe_reducer_reifies_a_target_free_perform_end_to_end RUNS instead of
-            # skipping — it drives a Some-payload event through the FIRST reducer that PERFORMS a world-effect
-            # (host Probe.fire, target-free single-Bytes) and asserts the reify chain folds to ONE effect
-            # (kind "effect/Probe", payload Inline(arg), token-free) across the A1 bytes boundary, proving rcdzc's
-            # reify_effect_to_tuple emit → wasm → kernel parse_effect_request end-to-end. Gates on this env +
-            # CDZ_STORE (the reducer imports cadenza:runtime/heap, resolved from the store, already exported
-            # below). Same pattern as REDUCER_CADENZA_B1/B2/B3_COMPONENT above.
-            export REIFY_PROBE_REDUCER_COMPONENT="${reducerCadenzaReify}"
-            export CDZ_STORE="${componentStore}"
-            cargo test --locked
-            cargo clippy --all-targets --locked -- -D warnings
-            cargo fmt --check
-            cargo clippy --all-targets --locked --features live-exec -- -D warnings
-            cargo test --locked --features live-exec
-            runHook postBuild
-          '';
-          installPhase = ''
-            runHook preInstall
-            echo "ok: cdz-kernel native (test + clippy + fmt + live-exec)" > "$out"
-            runHook postInstall
-          '';
-        };
-
-        # Full-CI-in-nix increment 5: the GHA `cdz-agent-host` job (cargo test + clippy + fmt, plus the
-        # `--features admin` test + the default/admin/live-net/admin,live-net clippy matrix). cdz-agent-host
-        # is its OWN root-excluded [workspace] (path-deps cdz-kernel → cadenza-ast), vendoring from its OWN
-        # committed Cargo.lock (309 pkgs, v-agent-harness-host). Feeds BOTH guest components from my
-        # derivations — CEDAR_POLICY_COMPONENT=${cedarGuest} (cedar authz e2e) + CDZ_REDUCER_COMPONENT=
-        # ${reducerGuest} (ComponentSessionFactory e2e) — so the env-gated e2es RUN (unset → they skip).
-        # Both are pre-validated by my derivations, so the check skips the CI job's build+validate-guest
-        # steps. Advisory-by-omission → unilateral cargo-twin retire once green.
-        cdzAgentHostVendor = pkgs.rustPlatform.importCargoLock {
-          lockFile = ./implementation/seed/crates/cdz-agent-host/Cargo.lock;
-          # cdz-agent-host gained an ALWAYS-ON git dependency (v-agent-harness-host #2084, operator
-          # seq-115/116: use s2n-quic's dc-metrics directly for histograms/reporting). importCargoLock
-          # can't fetch a git source hermetically without its tree hash, so pin it here. The KEY is
-          # "<name>-<version>" from the lock (NOT the git URL — see nixpkgs import-cargo-lock.nix); the
-          # VALUE is the git-tree hash for the pinned rev (7ec9f027…, `nix flake prefetch git+…?rev=`).
-          # A rev bump (the manifest is branch=main, though the lock pins the rev) → re-prefetch + re-pin.
-          outputHashes = {
-            "s2n-quic-dc-metrics-0.76.0" = "sha256-48vWZq7OSZcH1vf8qqH+DwnRyc+sH/BnJ+AhS6QrHBA=";
-          };
-        };
-        cdzAgentHostSrc = pkgs.lib.fileset.toSource {
-          root = ./.;
-          fileset = pkgs.lib.fileset.unions [
-            ./implementation/seed/crates/cdz-agent-host
-            ./implementation/seed/crates/cdz-kernel
-            ./implementation/seed/crates/cadenza-ast
-            ./rust-toolchain.toml
-          ];
-        };
-        # Uses the FULL stdenv (a C toolchain) + cmake + pkg-config, NOT stdenvNoCC: the `live-net`
-        # feature closure pulls aws-lc-sys (the aws-sdk/reqwest rustls-tls default crypto provider), whose
-        # build script drives a C/asm build via cmake. It happens to take a no-cmake path on this
-        # version/target today (the check built green under stdenvNoCC), but that's fragile — a future
-        # aws-lc-sys bump could require the C build, silently redding this check. Providing cmake +
-        # pkg-config + a cc up front makes it robust regardless of aws-lc-sys's build path (github-liaison
-        # #2018). Build tools only — this changes THIS derivation's store-path/hash (as any input change
-        # does in Nix), but produces no DOWNSTREAM consumed artifact (it's a lint+test check).
-        # 2-WAY PARALLEL SPLIT (v-nix, operator 12-MRs/hr throughput target 2026-08-09; concierge + v-ft
-        # signed off). cdz-agent-host-native was the batch-gate LONG POLE (~10-12m): ONE derivation ran 8
-        # sequential cargo passes (test/clippy/fmt × default/admin/live-net/admin,live-net feature combos).
-        # Split into TWO derivations that nix builds CONCURRENTLY → wall ≈ max(half) not sum(8). Partitioned
-        # along the DEPENDENCY-divergence boundary (the key design point): the `live-net` feature closure
-        # pulls the heavy aws-sdk/aws-lc-sys(cmake) chain, default/admin do NOT (admin adds only tokio
-        # subfeatures). So the CORE half (default + admin) never compiles the aws chain, and the LIVE-NET
-        # half compiles it once — each half stays internally sequential (shares ONE target/ like today, so
-        # no dep-recompile blowup), and only 2 run concurrently (well under v-ft's NIX_GATE_MAX_JOBS=4
-        # box-saturation cap — a 4-way per-feature split would 4× the aws dep-compile + risk the cap). BOTH
-        # halves fold into localGate (v-ft constraint 1: no split-out check left un-gated) + expose as
-        # checks.<sys>; both are the AARCH64 variants (constraint 3). Coverage is IDENTICAL — the same 8
-        # passes, repartitioned. The env-gated e2e wiring (guest components + CDZ_STORE) is shared via the
-        # `agentHostEnvSetup` preamble so both halves run the same e2es they did before the split. Before/
-        # after gate-wall-time read from pr-sync's --json blocks bracketing this land (measure-after, per
-        # concierge's ruling — the split is coverage-identical so correctness is baseline-independent).
-        agentHostEnvSetup = ''
-          # cdz-agent-host has a GIT dependency (s2n-quic-dc-metrics) — mkCargoVendorEnv's default
-          # (merged = false) sources the vendor's own config.toml, which carries the git source-
-          # replacement stanza, so the offline build resolves the git crate from the vendor.
-          ${mkCargoVendorEnv { vendor = cdzAgentHostVendor; }}
-          cd implementation/seed/crates/cdz-agent-host
-          # Feed the pre-built, pre-validated guest components (my derivations) so the env-gated cedar
-          # authz + ComponentSessionFactory e2es RUN instead of skipping.
-          export CEDAR_POLICY_COMPONENT="${cedarGuest}"
-          export CDZ_REDUCER_COMPONENT="${reducerGuest}"
-          # §4c publish→consume-through-a-hosted-agent E2Es (host.rs a_published_compiler_pointer_resolves…
-          # + a_consumer_agent_resolves_and_runs…): feed a REAL runnable reducer component so they RUN the
-          # publish→resolve→load→RUN arc instead of skipping. Must be DEP-FREE: the consume arc loads via
-          # AsyncComponentReducer::from_component_bytes + HostedSession::genesis with an EMPTY executor and NO
-          # with_resolved_deps/with_component_store, so a component importing cadenza:runtime/heap (all the
-          # reducer-cadenza ones) would fail the no-deps-attached fold error. reducerGuest imports only the
-          # kv HOST import (denied-but-settled by the empty executor → open_effects()==0 holds), NO runtime/heap
-          # component dep — so it loads + folds a turn to quiescence, proving the artifact RUNS (v-ah-host ruled).
-          # Same value as CDZ_REDUCER_COMPONENT, distinct var.
-          export CDZ_LIVE_REDUCER_COMPONENT="${reducerGuest}"
-          # signature-query part-1 E2E (#2711): reflect the lifted cadenza:syntax component; feed syntaxGuest
-          # so the CDZ_SYNTAX_COMPONENT-gated reflect E2E RUNS (unset → skips).
-          export CDZ_SYNTAX_COMPONENT="${syntaxGuest}"
-          # signature-query part-2 compose E2E (v-ah-host): feed the lifted consumer so the
-          # CDZ_SYNTAX_CONSUMER_COMPONENT-gated compose E2E RUNS (skip-when-either-unset).
-          export CDZ_SYNTAX_CONSUMER_COMPONENT="${consumerGuest}"
-          # seq-144 genesis tail: feed the compiled GENESIS Cadenza reducer + the value-heap store so
-          # v-ah-host's genesis round-trip E2E (host.rs real_genesis_reducer_folds_setup_events…) RUNS. The
-          # genesis reducer imports the value-heap runtime + transitive nfc, resolved by hash/name from
-          # CDZ_STORE (my hash-keyed componentStore). Distinct var from CDZ_REDUCER_COMPONENT.
-          export GENESIS_REDUCER_COMPONENT="${reducerCadenzaGenesis}"
-          # A1 pure-genesis (co-land step 2/3 completion): feed the precompiled PURE reducer bytes-provider
-          # component so v-ah-host's real_pure_reducer_folds_an_event_through_the_a1_bytes_boundary E2E
-          # (host.rs) RUNS instead of skipping — driving apply across the A1 bytes boundary
-          # (build_event_document → guest → parse_effect_list) through the real component. The e2e gates on
-          # BOTH this env AND CDZ_STORE (below): "pure" = no kv / no host caps, but the reducer still imports
-          # cadenza:runtime/heap (it builds structural records + String.to-bytes), resolved from the store
-          # like the genesis reducer's deps. Its List-rooted result value-encodes BARE (rcdzc result+param
-          # value-form both bare after 50b82e141 + 01c29a0f5), which parse_effect_list accepts.
-          export PURE_GENESIS_REDUCER_COMPONENT="${reducerCadenzaPureGenesis}"
-          # A1 kv-genesis: feed the precompiled KV reducer bytes-provider component so v-ah-host's
-          # real_kv_reducer_round_trips_stored_bytes_through_the_kv_host_import E2E RUNS instead of skipping —
-          # it PUTs a value under a key on a seed event then GETs it back on a trigger event and echoes it,
-          # proving BOTH kv.put AND the kv.get option<list<u8>> host-result lift (rcdzc §3c GAP C) round-trip
-          # the same bytes through the host. Gates on this env + CDZ_STORE (the kv reducer imports
-          # cadenza:runtime/heap, resolved from the store). Same pattern as PURE_GENESIS_REDUCER_COMPONENT.
-          export CDZ_KV_GENESIS_REDUCER_COMPONENT="${reducerCadenzaKv}"
-          # A1 agent-loop (GAP-1 keystone): feed the precompiled agent-loop reducer so v-ah-host's
-          # real_agent_loop_reducer_folds_the_message_model_tool_spine E2E RUNS instead of skipping — it drives
-          # a message event then a model-response event through the real component and asserts the model + tool
-          # effects fire (the agentic loop as a fold over KV inbox state, message → model → tool). Gates on this
-          # env + CDZ_STORE (the reducer imports cadenza:runtime/heap + host-fused kv, resolved from the store).
-          # Same pattern as CDZ_KV_GENESIS_REDUCER_COMPONENT above.
-          export CDZ_AGENT_LOOP_REDUCER_COMPONENT="${reducerCadenzaAgentLoop}"
-          # WHOLE-LOOP (role-library #5): feed the precompiled composed vertical reducer so v-ah-host's
-          # whole-loop host e2e RUNS instead of skipping — it drives reducer_vertical through the REAL executor
-          # set (timer + emit + git) over the A1 bytes boundary, folding the full tick→inbox-drain→work→MR
-          # self-hosting loop by event-family dispatch (the north-star dogfood). Genesis-seeded via a tick-start
-          # event whose payload is the first-deadline-ms u64 LE (the 900000ms interval is a fixed def in the
-          # reducer for now). Returns effects only (no host import) so it needs only CDZ_STORE for its
-          # cadenza:runtime/heap dep. Same pattern as CDZ_AGENT_LOOP_REDUCER_COMPONENT above.
-          export CDZ_REDUCER_VERTICAL_COMPONENT="${reducerCadenzaVertical}"
-          # PUBLISH (MR/publish role): feed the precompiled publish reducer so v-ah-host's publish-sequence
-          # host e2e RUNS instead of skipping — it drives a unit-complete event and asserts the git
-          # add->commit->push shell-effect sequence fires (real_publish_reducer_emits_the_git_add_commit_push_sequence).
-          # Pure (effects-only, no host import) so it needs only CDZ_STORE for its cadenza:runtime/heap dep.
-          # Same pattern as CDZ_REDUCER_VERTICAL_COMPONENT.
-          export CDZ_REDUCER_PUBLISH_COMPONENT="${reducerCadenzaPublish}"
-          # INBOX-DEDUP (KV-backed inbox-drain role): feed the precompiled host-fused inbox-kv reducer so
-          # v-ah-host's inbox-dedup e2e RUNS instead of skipping — it delivers an inbox/<kind> event TWICE and
-          # asserts exactly ONE act/archive then nothing, proving the KV seen-set dedup (kv.get check-seen +
-          # kv.put mark-seen) round-trips over the A1 bytes boundary. Host-fused (imports cadenza:agent-kernel/kv),
-          # gates on this env + CDZ_STORE (heap dep). Same pattern as CDZ_KV_GENESIS_REDUCER_COMPONENT.
-          export CDZ_REDUCER_INBOX_KV_COMPONENT="${reducerCadenzaInboxKv}"
-          # KV-SEEDED TICK: feed the precompiled host-fused tick-kv reducer so v-ah-host's kv-seeded-tick e2e
-          # RUNS instead of skipping — it seeds KV[tick/interval-ms] + KV[tick/first-deadline-ms], delivers a
-          # tick-start (asserts the timer arms at the seeded first-deadline) then fires it (asserts re-arm at
-          # fired+interval + begin-tick), proving the reducer reads its schedule from the KV genesis seed over
-          # the A1 bytes boundary. Host-fused (imports cadenza:agent-kernel/kv), gates on this env + CDZ_STORE
-          # (heap dep). Same pattern as CDZ_REDUCER_INBOX_KV_COMPONENT.
-          export CDZ_REDUCER_TICK_KV_COMPONENT="${reducerCadenzaTickKv}"
-          # (The A1 transition arming-switch CDZ_KERNEL_BYTES_ABI was dropped here once v-ah-host collapsed its
-          # reader in 813570fa5 — the genesis e2e now gates purely on GENESIS_REDUCER_COMPONENT + CDZ_STORE like
-          # pure/kv, so the export was a dead no-op. Dual-land: reader removed on origin FIRST, then this drop.)
-          # CDZ_STORE resolves the genesis reducer's value-heap runtime + transitive nfc.
-          export CDZ_STORE="${componentStore}"
-        '';
-        # The helper: one native-check half. `pname`/`passes` differ; everything else (src, the full stdenv
-        # C toolchain + cmake for aws-lc-sys, the env preamble) is shared. See the split note above.
-        mkAgentHostNative = { pname, passes }: pkgs.stdenv.mkDerivation {
-          inherit pname;
-          version = "0.0.0";
-          src = cdzAgentHostSrc;
-          nativeBuildInputs = [ rustToolchain pkgs.cmake pkgs.pkg-config ];
-          # cmake is here for aws-lc-sys's build script to CALL, not to configure THIS derivation (no
-          # CMakeLists.txt) — disable cmake's configure setup-hook so it doesn't hijack configurePhase.
-          dontUseCmakeConfigure = true;
-          buildPhase = ''
-            runHook preBuild
-            ${agentHostEnvSetup}
-            ${passes}
-            runHook postBuild
-          '';
-          installPhase = ''
-            runHook preInstall
-            echo "ok: ${pname}" > "$out"
-            runHook postInstall
-          '';
-        };
-        # CORE half: default + admin feature-sets (NO aws-sdk/live-net deps → no cmake-C aws-lc-sys build).
-        cdzAgentHostNativeCore = mkAgentHostNative {
-          pname = "cdz-agent-host-native-core";
-          passes = ''
-            cargo test --locked
-            cargo clippy --all-targets --locked -- -D warnings
-            cargo fmt --check
-            cargo test --locked --features admin
-            cargo clippy --all-targets --locked --features admin -- -D warnings
-          '';
-        };
-        # LIVE-NET half: the live-net + admin,live-net feature-sets (pulls the aws-sdk/aws-lc-sys chain once).
-        # Runs CONCURRENTLY with the core half. The live-net TEST (below) COMPILES the live-net test targets
-        # (the real GAP-2 coverage — a live-net-only compile break like the CanonicalResolver E0433 reds
-        # here); the network tests are ENV-GATED (CDZ_LIVE_HTTP_URL / AWS creds) so they SKIP without egress.
-        # live-aws-storage COVERAGE (v-nix + v-agent-harness-host 2026-08-13): the ENTIRE AWS-native storage
-        # backend — DynamoLogSink, the D1 log-body offload, and the D2 zstd cold-log compression — is behind the
-        # `live-aws-storage` feature, which NO other gate pass compiled, so a peer could break any of it (or its
-        # zstd-sys bundled-C vendor) and CI stayed green while only v-ah-host's local build caught it. This
-        # clippy pass closes that un-gated invariant fleet-wide. Lands on the LIVE-NET half because
-        # live-aws-storage shares the heavy aws-sdk/aws-lc-sys chain the half already compiles, so the marginal
-        # cost is ~the zstd-sys build, not a second aws-chain (proven green offline, ref 966bd2eff).
-        #   Both a clippy AND a test pass: originally clippy-only because 8 live-aws-storage lib tests
-        #   (dynamo_log::* / s3_blob::* / factory::offload_source_s3 / name_snapshot::s3::*) CONSTRUCTED a real
-        #   aws-smithy TLS client at from_conf, which panicked in the hermetic sandbox ("TrustStore … no valid
-        #   root certificates parsed" — no /etc/ssl CA bundle). v-ah-host then made all 3 live-aws-storage stores
-        #   (DynamoLogSink + S3BlobStore + S3NameStoreSnapshot) build their aws Client LAZILY (OnceCell, on first
-        #   I/O not from_conf), so the seam/key-format/offload/compress tests no longer touch TLS at construction
-        #   and run hermetically (v-nix re-verified 371/0 in the CA-less sandbox). So the test pass now gives
-        #   BEHAVIORAL coverage (offload/compress/snapshot round-trips), not just compile. Depends on the lazy
-        #   fix being in the same tree — it is on fleet-trunk (my base) so pr-sync merges it ahead of this.
-        cdzAgentHostNativeLiveNet = mkAgentHostNative {
-          pname = "cdz-agent-host-native-live-net";
-          passes = ''
-            cargo clippy --all-targets --locked --features live-net -- -D warnings
-            cargo clippy --all-targets --locked --features admin,live-net -- -D warnings
-            cargo test --locked --features live-net
-            cargo clippy --all-targets --locked --features live-aws-storage -- -D warnings
-            cargo test --locked --features live-aws-storage
-            # FULL-FEATURE-UNION clippy leg (v-nix + v-agent-harness-host 2026-08-14): the no-dep executor
-            # features — live-exec (GAP-1 ShellExecutor), live-fs (GAP-3 FsExecutor), live-ws (websocket
-            # outpost) — each gate ONLY the per-session WIRING in factory.rs/LiveExecutorSet::build
-            # (#[cfg(feature="live-*")] with_effect blocks registering the always-compiled executor structs).
-            # NO other gate pass compiled them, so a peer edit to that feature-gated wiring compile-broke ONLY
-            # under the flag and slipped past localGate. ONE union leg suffices: the crate owner (v-ah-host)
-            # verified the features are mutually compatible, and it rides the live-net half so the heavy
-            # aws-sdk/aws-lc-sys chain is already built — the marginal cost is just the std-only feature
-            # modules. --all-targets covers the daemon-bin combo too.
-            # (live-git was dropped here 2026-08-14: operator reversed GAP-6 — git is a userspace shell-wrapper,
-            # not a host GitExecutor — so v-ah-host removed the GitExecutor + the live-git feature. Consumer-off
-            # -first: this leg dropped live-git BEFORE v-ah-host deletes the now-empty `live-git = []` line.)
-            cargo clippy --all-targets --locked --features admin,live-net,live-aws-storage,live-ws,live-exec,live-fs -- -D warnings
-            # live-fs BEHAVIORAL coverage (v-nix + v-agent-harness-host 2026-08-15): the union clippy leg above
-            # only COMPILES the live-fs FsExecutor tests (--all-targets lints them), it never RUNS them — so a
-            # behavioral regression (a cdz-kernel Payload/EffectRequest refactor, an fs-path change) would keep CI
-            # green while breaking FsExecutor. This test pass EXECUTES them. HERMETIC: FsExecutor is pure std::fs
-            # (temp_dir read/write/glob) — NO subprocess, NO network — so it runs in the nix sandbox (writable
-            # TMPDIR). (live-exec is DELIBERATELY still clippy-only: ShellExecutor SPAWNS external programs the
-            # hermetic sandbox lacks by design, so it stays compile-gated + run locally pre-MR.) Rides this half
-            # so the aws chain is already built; marginal cost = the std-only fs test module. Same clippy->test
-            # behavioral upgrade as live-aws-storage above.
-            cargo test --locked --features live-fs
-          '';
-        };
         # ── N1: the value-heap runtime components AS input-addressed derivations (hash from output) ─
         #
         # `xtask build` produces TWO runtime components (build_component + canonicalize_runtime in
@@ -1577,251 +1012,6 @@
           vendor = nfcVendor;
         };
 
-        # ── emit-wit-world: the pure/full WIT-world binary-AST materializer (cdz-kernel tool) ──────
-        #
-        # A small dedicated derivation building JUST the `emit-wit-world` bin (cdz-kernel/src/bin), which
-        # writes a `KIND_WIT_WORLD` binary-AST world artifact (from the shared `cadenza-ast` builders) that
-        # `rcdzc` ingests as the `wit-world:reducer-world=<path>` input when precompiling a reducer to a
-        # bytes-provider component (DESIGN-binary-ast-abi §3b, pure-genesis co-land). Kept OUT of the
-        # seedCompiler set (it is a kernel tool, not the compiler; v-agent-harness agreed 2026-08-12).
-        #   - cdz-kernel is ROOT-EXCLUDED from the seed [workspace] with its OWN empty [workspace] + own
-        #     Cargo.lock (like reducer-guest/cedar-guest), so this builds standalone from the crate dir,
-        #     NOT `-p cdz-kernel` from the repo root (which fails — not a workspace member).
-        #   - it path-deps ONLY `cadenza-ast` (a leaf, no further path deps), so the fileset is exactly
-        #     the cdz-kernel dir + the cadenza-ast dir + rust-toolchain.toml; registry deps vendor from
-        #     cdz-kernel's own Cargo.lock via importCargoLock.
-        #   - 🪤 HEAVY BUILD: cdz-kernel UNCONDITIONALLY deps `wasmtime = "37"` + cranelift ("NOT optional
-        #     — the kernel's engine"), so even this tiny bin compiles the whole wasmtime/cranelift tree.
-        #     Pure-Rust (no aws-lc/ring/cmake — stdenvNoCC + rustToolchain suffices), but it rebuilds
-        #     whenever cdz-kernel's closure rotates. That is why it feeds only the (rebuild-anyway) genesis
-        #     component build, NOT the per-MR hot path directly.
-        emitWitWorldVendor = pkgs.rustPlatform.importCargoLock {
-          lockFile = ./implementation/seed/crates/cdz-kernel/Cargo.lock;
-        };
-        emitWitWorldSrc = pkgs.lib.fileset.toSource {
-          root = ./.;
-          fileset = pkgs.lib.fileset.unions [
-            ./implementation/seed/crates/cdz-kernel
-            ./implementation/seed/crates/cadenza-ast
-            ./rust-toolchain.toml
-          ];
-        };
-        emitWitWorld = pkgs.stdenvNoCC.mkDerivation {
-          pname = "emit-wit-world";
-          version = "0.0.0";
-          src = emitWitWorldSrc;
-          nativeBuildInputs = [ rustToolchain ];
-          buildPhase = ''
-            runHook preBuild
-            ${mkCargoVendorEnv { vendor = emitWitWorldVendor; }}
-            cd implementation/seed/crates/cdz-kernel
-            cargo build --release --locked --offline --bin emit-wit-world
-            runHook postBuild
-          '';
-          installPhase = ''
-            runHook preInstall
-            cp target/release/emit-wit-world "$out"
-            runHook postInstall
-          '';
-        };
-
-        # ── N2: the reducer-guest wasm COMPONENT as a content-addressed derivation ────────────────
-        #
-        # `cdz-kernel`'s component_reducer_e2e / async_component_reducer_e2e tests load a wasm-component
-        # reducer fixture. Today that's a COMMITTED binary (reducer_guest.component.wasm, `include_bytes!`);
-        # this builds it from source instead (operator "stop committing wasm"), so the committed binary
-        # can be deleted and the test reads the nix-built path (a companion cdz-kernel change wires the
-        # env var). Same normal-derivation, hash-falls-out shape as the runtimes — but SIMPLER:
-        #   - the guest is a plain `cargo build` (NOT `cargo component`, NO build-std), so vendoring is
-        #     just its OWN committed Cargo.lock (one importCargoLock, no rust-src std lock).
-        #   - `wit_bindgen::generate!` reads `../../../wit/reducer.wit` at compile time, so the source
-        #     fileset MUST include `cdz-kernel/wit` alongside the guest crate.
-        #   - the artifact is produced by `wasm-tools component new` (the LIFT of the core module into a
-        #     component) — NOT `strip`; the lifted component IS the content-addressed output.
-        reducerGuestVendor = pkgs.rustPlatform.importCargoLock {
-          lockFile = ./implementation/seed/crates/cdz-kernel/tests/fixtures/reducer-guest/Cargo.lock;
-        };
-        reducerGuestSrc = pkgs.lib.fileset.toSource {
-          root = ./.;
-          fileset = pkgs.lib.fileset.unions [
-            ./implementation/seed/crates/cdz-kernel/tests/fixtures/reducer-guest
-            ./implementation/seed/crates/cdz-kernel/wit
-            # Under the BYTES fold boundary the guest speaks `cadenza-ast` DIRECTLY (decodes the event
-            # doc + encodes the effect-list doc — DESIGN-binary-ast-abi §3d), so the guest crate carries a
-            # `cadenza-ast` PATH dep; the offline --locked build needs its source in the fileset to resolve
-            # the manifest (registry deps come from the guest's own Cargo.lock via importCargoLock).
-            ./implementation/seed/crates/cadenza-ast
-            ./rust-toolchain.toml
-          ];
-        };
-        reducerGuest = pkgs.stdenvNoCC.mkDerivation {
-          pname = "reducer-guest-component";
-          version = "0.0.0";
-          src = reducerGuestSrc;
-          nativeBuildInputs = [ rustToolchain pkgs.wasm-tools ];
-          buildPhase = ''
-            runHook preBuild
-            ${mkCargoVendorEnv { vendor = reducerGuestVendor; }}
-            cd implementation/seed/crates/cdz-kernel/tests/fixtures/reducer-guest
-            cargo build --release --target wasm32-unknown-unknown --locked --offline
-            runHook postBuild
-          '';
-          installPhase = ''
-            runHook preInstall
-            wasm-tools component new \
-              target/wasm32-unknown-unknown/release/reducer_guest.wasm \
-              -o "$out"
-            runHook postInstall
-          '';
-        };
-
-        # ── N2: the cedar-policy-guest wasm COMPONENT as a content-addressed derivation ───────────
-        #
-        # `cdz-agent-host`'s cedar_authz_e2e test drives a Cedar authorizer built from a wit-bindgen
-        # guest that embeds the real Cedar decision engine (`cedar-policy = "4"`). That component is
-        # ~3.3 MB, so it was NEVER committed — CI builds it and hands the path to the test via
-        # CEDAR_POLICY_COMPONENT (an optional-skip env; the test skips locally when unset). This builds
-        # it as a derivation instead, so the nix store serves it (no per-consumer rebuild). Same shape
-        # as reducer-guest, with two differences:
-        #   - the WIT is INSIDE the guest crate (`wit_bindgen::generate!({ path: "wit/authorizer.wit" })`),
-        #     so the fileset is JUST the guest dir — no separate wit dir.
-        #   - a 173-package Cedar-engine closure (still one importCargoLock, plain cargo build, no
-        #     build-std). ~37s cold; cached after.
-        cedarGuestVendor = pkgs.rustPlatform.importCargoLock {
-          lockFile =
-            ./implementation/seed/crates/cdz-agent-host/tests/fixtures/cedar-policy-guest/Cargo.lock;
-        };
-        cedarGuestSrc = pkgs.lib.fileset.toSource {
-          root = ./.;
-          fileset = pkgs.lib.fileset.unions [
-            ./implementation/seed/crates/cdz-agent-host/tests/fixtures/cedar-policy-guest
-            ./rust-toolchain.toml
-          ];
-        };
-        cedarGuest = pkgs.stdenvNoCC.mkDerivation {
-          pname = "cedar-policy-guest-component";
-          version = "0.0.0";
-          src = cedarGuestSrc;
-          nativeBuildInputs = [ rustToolchain pkgs.wasm-tools ];
-          buildPhase = ''
-            runHook preBuild
-            ${mkCargoVendorEnv { vendor = cedarGuestVendor; }}
-            cd implementation/seed/crates/cdz-agent-host/tests/fixtures/cedar-policy-guest
-            cargo build --release --target wasm32-unknown-unknown --locked --offline
-            runHook postBuild
-          '';
-          installPhase = ''
-            runHook preInstall
-            wasm-tools component new \
-              target/wasm32-unknown-unknown/release/cedar_policy_guest.wasm \
-              -o "$out"
-            runHook postInstall
-          '';
-        };
-
-        # N2 (v-syntax P2, 2026-08-07): the cadenza:syntax REDUCER-FACING WIT component — a wit-bindgen
-        # guest over cadenza-syntax exporting parse/query/doc, so a reducer can import it by content-hash
-        # and compose_dep_into_linker links it leaves-first (v-agent-harness-host's compose-consumption
-        # E2E consumes it via CDZ_SYNTAX_COMPONENT=${syntaxGuest}, mirroring reducer/cedar). Same shape as
-        # reducer-guest/cedar-guest: own [workspace] + committed Cargo.lock → reproducible content-hash, no
-        # committed .wasm pin. Build+lift+validate mirrors v-syntax's `syntax-guest` CI job (checks.yml):
-        # `cargo build --locked --target wasm32-unknown-unknown --release` → `wasm-tools component new`.
-        syntaxGuestVendor = pkgs.rustPlatform.importCargoLock {
-          lockFile = ./implementation/seed/crates/cdz-syntax-guest/Cargo.lock;
-        };
-        syntaxGuestSrc = pkgs.lib.fileset.toSource {
-          root = ./.;
-          # cdz-syntax-guest has PATH-deps on sibling crates (unlike cedar-guest which is self-contained):
-          # cdz-syntax-guest → cadenza-syntax → cadenza-ast (both first-party path deps). The fileset MUST
-          # include that closure or the offline build fails "failed to load manifest for cadenza-syntax"
-          # (v-syntax's CI job works because a full-repo checkout has them; a scoped nix fileset must list
-          # them). cadenza-ast is a leaf (no further path deps).
-          fileset = pkgs.lib.fileset.unions [
-            ./implementation/seed/crates/cdz-syntax-guest
-            ./implementation/seed/crates/cadenza-syntax
-            ./implementation/seed/crates/cadenza-ast
-            ./rust-toolchain.toml
-          ];
-        };
-        syntaxGuest = pkgs.stdenvNoCC.mkDerivation {
-          pname = "cdz-syntax-guest-component";
-          version = "0.0.0";
-          src = syntaxGuestSrc;
-          nativeBuildInputs = [ rustToolchain pkgs.wasm-tools ];
-          buildPhase = ''
-            runHook preBuild
-            ${mkCargoVendorEnv { vendor = syntaxGuestVendor; }}
-            cd implementation/seed/crates/cdz-syntax-guest
-            cargo build --release --target wasm32-unknown-unknown --locked --offline
-            runHook postBuild
-          '';
-          installPhase = ''
-            runHook preInstall
-            wasm-tools component new \
-              target/wasm32-unknown-unknown/release/cdz_syntax_guest.wasm \
-              -o "$out"
-            runHook postInstall
-          '';
-        };
-
-        # N2 part-2 (v-syntax #2673-consumer, v-ah compose E2E): the CONSUMER guest that IMPORTS
-        # cadenza:syntax as a content-addressed +hash dep and calls parse.read-sexpr in its fold (the
-        # flavor-2 direct-linked-cross-component demo). v-ah ruled option-i: THIS derivation templates
-        # syntaxGuest's resolved content-hash into the consumer's WIT import name at BUILD time (the
-        # committed source stays a `+SYNTAXGUESTHASH` placeholder). Mirrors rcdzc injecting the runtime
-        # hash into an emitted program's import (mod.rs:7801) + our syntaxGuest content-addressing.
-        # compose_dep_into_linker strips @ver+hash and matches only the bare `cadenza:syntax/parse`
-        # (v-ah wasm_host.rs:366), so the +hash is provenance hygiene, NOT a compose-match requirement —
-        # but templating the REAL hash is the right convention. No first-party path-deps (pure wit-bindgen
-        # guest), so the fileset is just the crate dir (simpler than syntaxGuest's sibling closure).
-        consumerGuestVendor = pkgs.rustPlatform.importCargoLock {
-          lockFile = ./implementation/seed/crates/cdz-syntax-consumer-guest/Cargo.lock;
-        };
-        consumerGuestSrc = pkgs.lib.fileset.toSource {
-          root = ./.;
-          fileset = pkgs.lib.fileset.unions [
-            ./implementation/seed/crates/cdz-syntax-consumer-guest
-            ./rust-toolchain.toml
-          ];
-        };
-        consumerGuest = pkgs.stdenvNoCC.mkDerivation {
-          pname = "cdz-syntax-consumer-guest-component";
-          version = "0.0.0";
-          src = consumerGuestSrc;
-          nativeBuildInputs = [ rustToolchain pkgs.wasm-tools pkgs.coreutils pkgs.b3sum ];
-          buildPhase = ''
-            runHook preBuild
-            ${mkCargoVendorEnv { vendor = consumerGuestVendor; }}
-            cd implementation/seed/crates/cdz-syntax-consumer-guest
-            # Template the RESOLVED syntaxGuest content-hash into the consumer's cadenza:syntax import
-            # name (option-i). The placeholder `+SYNTAXGUESTHASH` appears in BOTH the import
-            # (wit/consumer.wit) AND the vendored dep package decl (wit/deps/syntax/syntax.wit); both MUST
-            # get the SAME hash or wit resolution rejects the import-vs-package mismatch. --replace-fail
-            # aborts the build if the token is absent (never silently ship an un-templated placeholder).
-            #
-            # BLAKE3, NOT sha256 (v-ah ruling 2026-08-08): the composed WIT dep +hash is the kernel BLOB-STORE
-            # KEY. resolve_deps (wasm_host.rs) reads this hex off the import name and does blobs.get(hash), and
-            # the store keys by cdz_kernel::hash::Hash::of = blake3 (hash.rs:27). So the import MUST carry the
-            # blake3 Hash::of of the dep bytes, or resolve_deps hits DepMissing (a sha256 hex can never match a
-            # blake3-keyed store). This is a DIFFERENT address space from the on-disk sha256 CDZ_STORE
-            # (REQUIRED_RUNTIME_HASH / packages.syntax-guest-hash) — the documented dual-hash boundary
-            # (hash.rs:9-14): CDZ_STORE = sha256, kernel blob store (composed deps) = blake3. They never cross.
-            # b3sum --no-names → the same lowercase 64-char hex Hash::to_hex produces.
-            h=$(b3sum --no-names ${syntaxGuest})
-            substituteInPlace wit/consumer.wit wit/deps/syntax/syntax.wit \
-              --replace-fail "+SYNTAXGUESTHASH" "+$h"
-            cargo build --release --target wasm32-unknown-unknown --locked --offline
-            runHook postBuild
-          '';
-          installPhase = ''
-            runHook preInstall
-            wasm-tools component new \
-              target/wasm32-unknown-unknown/release/cdz_syntax_consumer_guest.wasm \
-              -o "$out"
-            runHook postInstall
-          '';
-        };
-
         # The content address of a built component = blake3 of its (stripped) bytes. DERIVED from the
         # artifact nix built — this is the Cadenza content-address a program pins, falling out of the
         # build rather than being asserted. Exposed as a `packages.*-hash` (a plain-text store file).
@@ -1849,7 +1039,7 @@
         componentStore = pkgs.runCommand "cdz-component-store" { } ''
           set -euo pipefail
           mkdir -p "$out"
-          for c in ${runtime} ${runtimeDebug} ${nfc} ${reducerGuest} ${cedarGuest} ${syntaxGuest}; do
+          for c in ${runtime} ${runtimeDebug} ${nfc}; do
             h=$(${pkgs.b3sum}/bin/b3sum --no-names "$c")
             ${pkgs.coreutils}/bin/cp "$c" "$out/$h.wasm"
           done
@@ -2290,25 +1480,6 @@
         packages.nfc = nfc;
         packages.nfc-hash = hashOf nfc "cdz-nfc-hash";
 
-        # N2: the reducer-guest wasm component, built from source (replaces the committed binary).
-        # `.#reducer-guest` is the lifted component; `.#reducer-guest-hash` its derived content address.
-        packages.reducer-guest = reducerGuest;
-        packages.reducer-guest-hash = hashOf reducerGuest "reducer-guest-hash";
-
-        # N2: the cedar-policy-guest wasm component (never committed — CI-built ~3.3 MB). `.#cedar-guest`
-        # is the lifted authorizer component; `.#cedar-guest-hash` its derived content address. A later
-        # increment points cdz-agent-host's CEDAR_POLICY_COMPONENT at this store path.
-        packages.cedar-guest = cedarGuest;
-        packages.cedar-guest-hash = hashOf cedarGuest "cedar-guest-hash";
-        # `.#syntax-guest` = the lifted cadenza:syntax component; `.#syntax-guest-hash` its derived content
-        # address (v-agent-harness-host's compose-test imports it by this hash). N2, v-syntax P2.
-        packages.syntax-guest = syntaxGuest;
-        packages.syntax-guest-hash = hashOf syntaxGuest "syntax-guest-hash";
-        # `.#syntax-consumer-guest` = the lifted part-2 consumer component (imports cadenza:syntax by
-        # +hash, calls parse.read-sexpr); `.#syntax-consumer-guest-hash` its content address. N2 part-2.
-        packages.syntax-consumer-guest = consumerGuest;
-        packages.syntax-consumer-guest-hash = hashOf consumerGuest "syntax-consumer-guest-hash";
-
         # R2: the content-addressed component store — every nix-built component as `<derived-hash>.wasm`
         # in one dir (mirrors target/cadenza-store, but built + addressed by nix). `nix build .#store`.
         packages.store = componentStore;
@@ -2339,37 +1510,6 @@
         # S3: run a project's tests through nix, cached per-input (skip unchanged). `.#example-project-tests`
         # is the witness (built by `testCadenzaProject`). Also a `checks` entry so `nix flake check` runs it.
         packages.example-project-tests = exampleProjectTests;
-
-        # seq-144: the agent-harness bootstrap reducers' @tests through nix (`.#reducer-cadenza-tests`).
-        packages.reducer-cadenza-tests = reducerCadenzaTests;
-
-        # seq-144 Part 2: the B1-B4 reducer wasm COMPONENTS (cdz-compiled) + their derived content hashes.
-        # `.#reducer-cadenza-b1` … `-genesis`; `-hash` each (the address the kernel store/e2e loads by).
-        packages.reducer-cadenza-b1 = reducerCadenzaB1;
-        packages.reducer-cadenza-b2 = reducerCadenzaB2;
-        packages.reducer-cadenza-b3 = reducerCadenzaB3;
-        packages.reducer-cadenza-genesis = reducerCadenzaGenesis;
-        packages.reducer-cadenza-pure-genesis = reducerCadenzaPureGenesis;
-        packages.reducer-cadenza-reify = reducerCadenzaReify;
-        packages.reducer-cadenza-vertical = reducerCadenzaVertical;
-        packages.reducer-cadenza-publish = reducerCadenzaPublish;
-        packages.reducer-cadenza-kv = reducerCadenzaKv;
-        packages.reducer-cadenza-inbox-kv = reducerCadenzaInboxKv;
-        packages.reducer-cadenza-tick-kv = reducerCadenzaTickKv;
-        packages.reducer-cadenza-agent-loop = reducerCadenzaAgentLoop;
-        packages.emit-wit-world = emitWitWorld;
-        packages.reducer-cadenza-b1-hash = hashOf reducerCadenzaB1 "reducer-cadenza-b1-hash";
-        packages.reducer-cadenza-b2-hash = hashOf reducerCadenzaB2 "reducer-cadenza-b2-hash";
-        packages.reducer-cadenza-b3-hash = hashOf reducerCadenzaB3 "reducer-cadenza-b3-hash";
-        packages.reducer-cadenza-genesis-hash = hashOf reducerCadenzaGenesis "reducer-cadenza-genesis-hash";
-        packages.reducer-cadenza-pure-genesis-hash = hashOf reducerCadenzaPureGenesis "reducer-cadenza-pure-genesis-hash";
-        packages.reducer-cadenza-reify-hash = hashOf reducerCadenzaReify "reducer-cadenza-reify-hash";
-        packages.reducer-cadenza-vertical-hash = hashOf reducerCadenzaVertical "reducer-cadenza-vertical-hash";
-        packages.reducer-cadenza-publish-hash = hashOf reducerCadenzaPublish "reducer-cadenza-publish-hash";
-        packages.reducer-cadenza-kv-hash = hashOf reducerCadenzaKv "reducer-cadenza-kv-hash";
-        packages.reducer-cadenza-inbox-kv-hash = hashOf reducerCadenzaInboxKv "reducer-cadenza-inbox-kv-hash";
-        packages.reducer-cadenza-tick-kv-hash = hashOf reducerCadenzaTickKv "reducer-cadenza-tick-kv-hash";
-        packages.reducer-cadenza-agent-loop-hash = hashOf reducerCadenzaAgentLoop "reducer-cadenza-agent-loop-hash";
 
         # PARITY CHECK (not a pin): assert the DERIVED hash of the nix-built runtime equals the hash
         # `xtask codegen` already recorded in runtime_abi.rs. This reads the committed value only to
@@ -2544,8 +1684,7 @@
             #   · the 3 end-to-end HASH-PARITY checks (nix-built component bytes' sha256 == the committed
             #     REQUIRED_RUNTIME_HASH / DEBUG_RUNTIME_HASH / REQUIRED_NFC_HASH). codegen enforces source-
             #     staleness natively, but NOT the through-nix hash-from-bytes reproduction — that's this.
-            #   · component VALIDITY (guest + reducer-cadenza components are well-formed wasm components).
-            #   · the project @test suites run through nix (example-project + reducer-cadenza b1-b4/genesis).
+            #   · the example project's @test suite run through nix.
             #   · the pure-eval closure-assert guard.
             # The advisory job runs `nix build .#checks.<sys>.flake-repro-backstop` (minutes, cache-warm) instead
             # of `nix flake check` (48m). Coverage of the required set is unchanged (those jobs still run); only
@@ -2553,10 +1692,7 @@
             flakeReproBackstop = pkgs.runCommand "flake-repro-backstop"
               {
                 inherit runtimeHashParity runtimeDebugHashParity nfcHashParity
-                  reducerGuestValid cedarGuestValid
-                  reducerCadenzaB1Valid reducerCadenzaB2Valid reducerCadenzaB3Valid reducerCadenzaGenesisValid
-                  reducerCadenzaPureGenesisValid reducerCadenzaReifyValid reducerCadenzaVerticalValid reducerCadenzaPublishValid reducerCadenzaKvValid reducerCadenzaInboxKvValid reducerCadenzaTickKvValid reducerCadenzaAgentLoopValid
-                  exampleProjectTests reducerCadenzaTests crateClosureAssert;
+                  exampleProjectTests crateClosureAssert;
               } ''
               echo "ok: flake reproducibility-backstop — hash-parity + component-validity + project-@tests + closure-assert" > $out
             '';
@@ -2565,22 +1701,6 @@
             runtimeHashParity = parity { name = "runtime"; drv = runtime; constName = "REQUIRED_RUNTIME_HASH"; };
             runtimeDebugHashParity = parity { name = "runtime-debug"; drv = runtimeDebug; constName = "DEBUG_RUNTIME_HASH"; };
             nfcHashParity = parity { name = "nfc"; drv = nfc; constName = "REQUIRED_NFC_HASH"; };
-            reducerGuestValid = validComponent { name = "reducer-guest"; drv = reducerGuest; };
-            cedarGuestValid = validComponent { name = "cedar-guest"; drv = cedarGuest; };
-            syntaxGuestValid = validComponent { name = "syntax-guest"; drv = syntaxGuest; };
-            syntaxConsumerGuestValid = validComponent { name = "syntax-consumer-guest"; drv = consumerGuest; };
-            reducerCadenzaB1Valid = validComponent { name = "reducer-cadenza-b1"; drv = reducerCadenzaB1; };
-            reducerCadenzaB2Valid = validComponent { name = "reducer-cadenza-b2"; drv = reducerCadenzaB2; };
-            reducerCadenzaB3Valid = validComponent { name = "reducer-cadenza-b3"; drv = reducerCadenzaB3; };
-            reducerCadenzaGenesisValid = validComponent { name = "reducer-cadenza-genesis"; drv = reducerCadenzaGenesis; };
-            reducerCadenzaPureGenesisValid = validComponent { name = "reducer-cadenza-pure-genesis"; drv = reducerCadenzaPureGenesis; };
-            reducerCadenzaReifyValid = validComponent { name = "reducer-cadenza-reify"; drv = reducerCadenzaReify; };
-            reducerCadenzaVerticalValid = validComponent { name = "reducer-cadenza-vertical"; drv = reducerCadenzaVertical; };
-            reducerCadenzaPublishValid = validComponent { name = "reducer-cadenza-publish"; drv = reducerCadenzaPublish; };
-            reducerCadenzaKvValid = validComponent { name = "reducer-cadenza-kv"; drv = reducerCadenzaKv; };
-            reducerCadenzaInboxKvValid = validComponent { name = "reducer-cadenza-inbox-kv"; drv = reducerCadenzaInboxKv; };
-            reducerCadenzaTickKvValid = validComponent { name = "reducer-cadenza-tick-kv"; drv = reducerCadenzaTickKv; };
-            reducerCadenzaAgentLoopValid = validComponent { name = "reducer-cadenza-agent-loop"; drv = reducerCadenzaAgentLoop; };
 
             # LOCAL-GATE bindings (v-nix+v-fleet-tooling 2026-08-06, GHA-outage fallback). The 3 required
             # checks that were inline `cargoWorkspaceCheck {…}` at their attr get `let`-bound here so BOTH
@@ -2651,21 +1771,14 @@
             #   codegen→codegenCheck · gate→gateCheck · wasm-runtime-build→runtimeHashParity (builds the
             #   runtime component + verifies REQUIRED_RUNTIME_HASH — a superset of the raw CI build) ·
             #   syntax-roundtrip→roundtripCheck · allocation-bench→benchCheck · guide-examples→guideExamplesCheck.
-            # The three ADVISORY natives (cdz-kernel/cdz-agent-host/cad-tests) are NOT in ruleset-10, so they
+            # The ADVISORY natives (cad-tests) are NOT in ruleset-10, so they
             # are deliberately EXCLUDED from the aggregate's fail-set (a red on them must not block merge,
             # matching prod). They stay independently buildable + warm via their own `checks.*` attrs; pr-sync
             # can build them separately for extra signal without gating. FAIL-CLOSED: the aggregate depends on
             # all 9 required, so `nix build` of it is red if ANY required check fails — no silent gap. aarch64.
             localGate = pkgs.runCommand "local-gate"
               {
-                # The 9 merge-required-minus-macos contexts PLUS the two workspace-ISOLATED native checks
-                # (cdz-agent-host-native, cdz-kernel-native). Those crates are excluded from the cargo
-                # workspace (so the macOS workspace test never reds on them) and were therefore NOT in this
-                # aggregate — gate-local skipped them, forcing pr-sync's --local-gate recipe to bolt on a
-                # manual `cargo test --manifest-path …` per crate. Folding them in makes the aggregate cover
-                # them (one green/red, hermetic + cached) and drops that manual step (v-nix+v-ft 2026-08-08).
-                # Both resolve the per-arch value-heap runtime hash from CDZ_STORE, so they MUST be the
-                # aarch64 derivations (#2348) — localGate IS the aarch64 aggregate, so that holds by construction.
+                # The 9 merge-required-minus-macos contexts.
                 # testCraneAggregate REPLACES the whole-workspace testCheck (operator 1-min-gate mandate,
                 # 2026-08-09): same coverage (per-crate tests + cdz == workspace, asserted by
                 # testCrateCoverageAssert), but a 1-crate edit reruns only that crate's test derivation
@@ -2676,7 +1789,7 @@
                 # advisory (exposed as a check but NOT in this fail-set).
                 inherit clippyShardA clippyShardB codegenCheck gateCheck gateCheckRust guideExamplesCheck
                   benchCheck runtimeHashParity fmtCheck testCraneAggregate roundtripCheck
-                  cdzAgentHostNativeCore cdzAgentHostNativeLiveNet cdzKernelNativeCheck mandateLintCheck;
+                  mandateLintCheck;
                 # gateCheckRust folded into the fail-set (v-nix+v-ft 2026-08-10): closes the RUST-backend gate
                 # hole — gateCheck is wasm-only, so a rust-only emit divergence (v-effects E0425 mutual-rec)
                 # reached trunk green. Narrow `--case mutual` subset (rustc-per-case → full 6686 is prohibitive
@@ -2692,7 +1805,7 @@
                 # take the hyphenated attr, so bind it explicitly from cdzCadProjectTests.)
                 cadTestCompilerMl = cdzCadProjectTests.cad-test-compiler-ml;
               } ''
-              echo "ok: local-gate — 9 merge-required contexts (ruleset-10 minus test-macos) + cdz-agent-host/kernel-native + mandate-lint + cad-test-compiler-ml (Core-shape spine guard), green on aarch64-nix" > $out
+              echo "ok: local-gate — 9 merge-required contexts (ruleset-10 minus test-macos) + mandate-lint + cad-test-compiler-ml (Core-shape spine guard), green on aarch64-nix" > $out
             '';
           in
           {
@@ -2703,29 +1816,9 @@
             runtime-hash-parity = runtimeHashParity;
             runtime-debug-hash-parity = runtimeDebugHashParity;
             nfc-hash-parity = nfcHashParity;
-            reducer-guest-valid = reducerGuestValid;
-            cedar-guest-valid = cedarGuestValid;
-            syntax-guest-valid = syntaxGuestValid;
-            syntax-consumer-guest-valid = syntaxConsumerGuestValid;
             # S3: the example project's @tests run through nix — a cache HIT when its sources are
             # unchanged (the "skip tests that haven't changed" win), a re-run + fail on a red test.
             example-project-tests = exampleProjectTests;
-            # seq-144: agent-harness bootstrap reducer @tests through nix (b1/b2/b3/genesis — 14 @tests).
-            reducer-cadenza-tests = reducerCadenzaTests;
-            # seq-144 Part 2: each B1-B4 reducer component is a valid wasm component (b3/genesis import kv
-            # host-served/unresolved — validate checks STRUCTURE not import-satisfaction, so still green).
-            reducer-cadenza-b1-valid = reducerCadenzaB1Valid;
-            reducer-cadenza-b2-valid = reducerCadenzaB2Valid;
-            reducer-cadenza-b3-valid = reducerCadenzaB3Valid;
-            reducer-cadenza-genesis-valid = reducerCadenzaGenesisValid;
-            reducer-cadenza-pure-genesis-valid = reducerCadenzaPureGenesisValid;
-            reducer-cadenza-reify-valid = reducerCadenzaReifyValid;
-            reducer-cadenza-vertical-valid = reducerCadenzaVerticalValid;
-            reducer-cadenza-publish-valid = reducerCadenzaPublishValid;
-            reducer-cadenza-kv-valid = reducerCadenzaKvValid;
-            reducer-cadenza-inbox-kv-valid = reducerCadenzaInboxKvValid;
-            reducer-cadenza-tick-kv-valid = reducerCadenzaTickKvValid;
-            reducer-cadenza-agent-loop-valid = reducerCadenzaAgentLoopValid;
 
             # Full-CI-in-nix increment 1: the LINT pair, mirroring checks.yml `fmt` + `clippy` exactly.
             # `nix flake check` now runs them; the checks.yml jobs stay in place (advisory overlap) until
@@ -2785,11 +1878,6 @@
             # Full-CI-in-nix increment 3: the native half of the GHA rcdzc-wasm job (the wasm build half
             # is the rcdzcWasm derivation / rcdzc-wasm-hash, already covered).
             rcdzc-wasm-native = rcdzcWasmNativeCheck;
-            # Full-CI-in-nix increment 4: the GHA cdz-kernel job (test + clippy + fmt + live-exec).
-            cdz-kernel-native = cdzKernelNativeCheck;
-            # Full-CI-in-nix increment 5: the GHA cdz-agent-host job (test + clippy + fmt + feature matrix).
-            cdz-agent-host-native-core = cdzAgentHostNativeCore;
-            cdz-agent-host-native-live-net = cdzAgentHostNativeLiveNet;
             # Full-CI-in-nix increment 6b: the GHA codegen job (cargo xtask codegen --check, ABI staleness).
             codegen-check = codegenCheck;
             # Full-CI-in-nix increment 6c: the GHA gate job (cargo xtask gate --check — THE behavior gate).
@@ -2902,19 +1990,12 @@
                 #    that go dead after those checks build, so without their own root a corpus MR rebuilds the
                 #    release deps cold, negating the crane conversion);
                 #  - the component store + the local-gate aggregate (pulls the 9 required checks' closure);
-                #  - the guest wasm COMPONENTS (cedar/reducer/syntax) — cargo-wasm build-inputs of
-                #    cdz-agent-host-native / cdz-kernel-native, NOT in those checks' runtime closure, so
-                #    without their own root the GC drops them and a candidate rebuilds the heavy cedar-policy
-                #    dep chain (~60s) cold (v-agent-harness-host ask 2026-08-09).
                 # --out-link registers each as an indirect GC-root so the store stays hot.
                 nix build \
                   ".#packages.${system}.cargo-artifacts" \
                   ".#packages.${system}.cargo-artifacts-release" \
                   ".#packages.${system}.cargo-artifacts-release-codegen" \
                   ".#packages.${system}.store" \
-                  ".#packages.${system}.cedar-guest" \
-                  ".#packages.${system}.reducer-guest" \
-                  ".#packages.${system}.syntax-guest" \
                   ".#checks.${system}.local-gate" \
                   --out-link "$root_dir/warm" --print-build-logs
                 echo "cdz warm-keep: done — local /nix/store warm layer pinned (gate-local stays fast)."
