@@ -320,6 +320,7 @@
           cadenza-syntax = "implementation/seed/crates/cadenza-syntax";
           cdz = "implementation/seed/crates/cdz";
           cdz-calc = "implementation/seed/crates/cdz-calc";
+          cdz-platform = "implementation/seed/crates/cdz-platform";
           cdz-corpus = "implementation/seed/crates/cdz-corpus";
           cdz-num = "implementation/seed/crates/cdz-num";
           cdz-rt = "implementation/seed/crates/cdz-rt";
@@ -1572,6 +1573,7 @@
               clippy-cdz-calc = mkCrateClippyCrane { crate = "cdz-calc"; extraSrc = [ ./implementation/seed/crates/cdz-runtime/src/bigint.rs ]; };
               clippy-cdz-corpus = mkCrateClippyCrane { crate = "cdz-corpus"; extraSrc = [ ./spec/semantics ]; };
               clippy-cdz-num = mkCrateClippyCrane { crate = "cdz-num"; extraSrc = [ ./implementation/seed/crates/cdz-runtime/src/bigint.rs ]; };
+              clippy-cdz-platform = mkCrateClippyCrane { crate = "cdz-platform"; };
               clippy-cdz-rt = mkCrateClippyCrane { crate = "cdz-rt"; };
               clippy-cdz-run = mkCrateClippyCrane { crate = "cdz-run"; extraSrc = [ ./implementation/compiler-ml ]; };
               clippy-cdz-rust-render = mkCrateClippyCrane { crate = "cdz-rust-render"; };
@@ -1599,6 +1601,7 @@
               test-cdz-calc = mkCrateTestCrane { crate = "cdz-calc"; extraSrc = [ ./implementation/seed/crates/cdz-runtime/src/bigint.rs ]; };
               test-cdz-corpus = mkCrateTestCrane { crate = "cdz-corpus"; extraSrc = [ ./spec/semantics ]; };
               test-cdz-num = mkCrateTestCrane { crate = "cdz-num"; extraSrc = [ ./implementation/seed/crates/cdz-runtime/src/bigint.rs ]; };
+              test-cdz-platform = mkCrateTestCrane { crate = "cdz-platform"; };
               test-cdz-rt = mkCrateTestCrane { crate = "cdz-rt"; };
               test-cdz-run = mkCrateTestCrane { crate = "cdz-run"; extraSrc = [ ./implementation/compiler-ml ]; };
               test-cdz-rust-render = mkCrateTestCrane { crate = "cdz-rust-render"; };
@@ -1660,9 +1663,9 @@
             # contexts → NO ruleset change (v-ft: a 2-way rebalance keeps the contexts). Target: both ~4-5m.
             clippyShardA = pkgs.runCommand "cargo-clippy-shard-a"
               {
-                inherit (perCrateClippyCrane) clippy-rcdzc clippy-cdz-num clippy-cdz-calc clippy-cadenza-syntax;
+                inherit (perCrateClippyCrane) clippy-rcdzc clippy-cdz-num clippy-cdz-calc clippy-cadenza-syntax clippy-cdz-platform;
               } ''
-              echo "ok: clippy shard A — rcdzc + cdz-num + cdz-calc + cadenza-syntax" > $out
+              echo "ok: clippy shard A — rcdzc + cdz-num + cdz-calc + cadenza-syntax + cdz-platform" > $out
             '';
             clippyShardB = pkgs.runCommand "cargo-clippy-shard-b"
               {

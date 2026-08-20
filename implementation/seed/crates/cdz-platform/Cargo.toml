@@ -1,0 +1,23 @@
+# cdz-platform — the Cadenza platform (design/cadenza-platform.md).
+#
+# A single unified crate for the whole platform runtime (NO host/kernel split — operator ruling
+# 2026-08-20). Built bottom-up: the lowest-level primitives first so the higher-level shape (contracts,
+# the reducer interface, the registry+router) rests on a settled foundation.
+#
+# This first slice is the CONTENT-HASH foundation (spec section 8): a `Hash` is the sole identity in the
+# system — a contract-id is the hash of a contract, a blob is addressed by the hash of its bytes, the CAS
+# is unpermissioned because the hash IS the capability. Everything downstream routes and addresses by it.
+#
+# A normal member of the seed workspace (picked up by the `crates/*` glob) so it gets per-crate clippy +
+# workspace-test coverage for free while it is light. DEP FLOOR is deliberately tiny (blake3 only, already
+# in the root lock); base64url rendering is hand-rolled + exhaustively tested rather than pulling a crate.
+# When a later slice adds the heavy wasm-runtime host (wasmtime), THAT slice moves this to its own excluded
+# `[workspace]` (a deliberate topology change, coordinated with v-nix) so the corpus gate never pays for it.
+[package]
+name = "cdz-platform"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+blake3 = "1" # the ONE content-address digest (fleet-unified on blake3, operator 2026-08-08)
