@@ -28,7 +28,6 @@ use futures_core::Stream;
 use std::collections::BTreeMap;
 use std::ops::Bound;
 use std::pin::Pin;
-use std::sync::Mutex;
 
 /// A key range over the canonical (lexicographic) key order — the same shape `BTreeMap::range` takes, but
 /// a concrete owned type (not a generic `RangeBounds`) because the [`KvStore`] scan methods are on a
@@ -84,11 +83,11 @@ pub trait KvStore: Send + Sync {
     async fn get(&self, key: &[u8]) -> Option<Bytes>;
 
     /// Insert or overwrite the value under `key`. Last write wins, as a map does.
-    async fn put(&self, key: Bytes, value: Bytes);
+    async fn put(&mut self, key: Bytes, value: Bytes);
 
     /// Remove the entry under `key`, returning `true` if one was present (and is now gone), `false` if
     /// there was nothing to remove.
-    async fn delete(&self, key: &[u8]) -> bool;
+    async fn delete(&mut self, key: &[u8]) -> bool;
 
     /// Stream every `(key, value)` whose key falls in `range`, in ascending key order. A lazy [`Stream`],
     /// not a materialized collection, so a scan that matches a great many keys does not load them all at
@@ -101,13 +100,13 @@ pub trait KvStore: Send + Sync {
     fn scan_keys(&self, range: KeyRange) -> KvKeyScan<'_>;
 }
 
-/// An in-memory [`KvStore`] — a `BTreeMap` behind a `Mutex`. For tests and single-process use; the smallest
-/// honest backend. A `BTreeMap` (not a hash map) keeps keys in the canonical ascending order the scans
-/// need. Runtime-agnostic: the lock is a `std::sync::Mutex` held only across the map operation (never
-/// across an `.await`), so this drives identically under tokio and under Bach.
+/// An in-memory [`KvStore`] — a plain `BTreeMap`. For tests and single-process use; the smallest honest
+/// backend. A `BTreeMap` (not a hash map) keeps keys in the canonical ascending order the scans need. The
+/// mutating methods take `&mut self`, so no interior mutability (a lock) is needed — the runtime owns the
+/// store exclusively in its event loop.
 #[derive(Default)]
 pub struct InMemoryKvStore {
-    entries: Mutex<BTreeMap<Bytes, Bytes>>,
+    entries: BTreeMap<Bytes, Bytes>,
 }
 
 impl InMemoryKvStore {
@@ -120,16 +119,13 @@ impl InMemoryKvStore {
     /// The number of entries held. Handy for tests and introspection.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.entries.lock().expect("kv-store mutex poisoned").len()
+        self.entries.len()
     }
 
     /// Whether the store holds no entries.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.entries
-            .lock()
-            .expect("kv-store mutex poisoned")
-            .is_empty()
+        self.entries.is_empty()
     }
 }
 
@@ -138,48 +134,32 @@ impl KvStore for InMemoryKvStore {
     async fn get(&self, key: &[u8]) -> Option<Bytes> {
         // `cloned()` on a Bytes is an O(1) refcount bump, not a copy. `Bytes: Borrow<[u8]>` lets a byte
         // slice look up a Bytes-keyed map without allocating a key.
-        self.entries
-            .lock()
-            .expect("kv-store mutex poisoned")
-            .get(key)
-            .cloned()
+        self.entries.get(key).cloned()
     }
 
-    async fn put(&self, key: Bytes, value: Bytes) {
-        self.entries
-            .lock()
-            .expect("kv-store mutex poisoned")
-            .insert(key, value);
+    async fn put(&mut self, key: Bytes, value: Bytes) {
+        self.entries.insert(key, value);
     }
 
-    async fn delete(&self, key: &[u8]) -> bool {
-        self.entries
-            .lock()
-            .expect("kv-store mutex poisoned")
-            .remove(key)
-            .is_some()
+    async fn delete(&mut self, key: &[u8]) -> bool {
+        self.entries.remove(key).is_some()
     }
 
     fn scan(&self, range: KeyRange) -> KvScan<'_> {
         // The trait promises a lazy stream so a disk/network backend can page a huge scan. An in-memory
-        // backend already holds its data resident, so it snapshots the requested range under the lock —
-        // the pairs are O(1) Bytes-refcount clones, and BTreeMap::range visits only the keys in range —
-        // then streams that snapshot, so the lock is never held across the consumer's awaits.
-        let pairs: Vec<(Bytes, Bytes)> = {
-            let guard = self.entries.lock().expect("kv-store mutex poisoned");
-            guard
-                .range(range)
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect()
-        };
+        // backend already holds its data resident, so it snapshots the requested range — the pairs are
+        // O(1) Bytes-refcount clones, and BTreeMap::range visits only the keys in range — then streams
+        // that snapshot.
+        let pairs: Vec<(Bytes, Bytes)> = self
+            .entries
+            .range(range)
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         Box::pin(futures_util::stream::iter(pairs))
     }
 
     fn scan_keys(&self, range: KeyRange) -> KvKeyScan<'_> {
-        let keys: Vec<Bytes> = {
-            let guard = self.entries.lock().expect("kv-store mutex poisoned");
-            guard.range(range).map(|(k, _)| k.clone()).collect()
-        };
+        let keys: Vec<Bytes> = self.entries.range(range).map(|(k, _)| k.clone()).collect();
         Box::pin(futures_util::stream::iter(keys))
     }
 }
@@ -198,7 +178,7 @@ mod tests {
 
     #[tokio::test]
     async fn put_then_get_round_trips() {
-        let kv = InMemoryKvStore::new();
+        let mut kv = InMemoryKvStore::new();
         kv.put(
             Bytes::from_static(b"tick/interval-ms"),
             Bytes::from_static(b"900000"),
@@ -218,7 +198,7 @@ mod tests {
 
     #[tokio::test]
     async fn put_overwrites_last_write_wins() {
-        let kv = InMemoryKvStore::new();
+        let mut kv = InMemoryKvStore::new();
         kv.put(Bytes::from_static(b"k"), Bytes::from_static(b"first"))
             .await;
         kv.put(Bytes::from_static(b"k"), Bytes::from_static(b"second"))
@@ -229,7 +209,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_removes_and_reports_presence() {
-        let kv = InMemoryKvStore::new();
+        let mut kv = InMemoryKvStore::new();
         kv.put(Bytes::from_static(b"k"), Bytes::from_static(b"v"))
             .await;
         assert!(kv.delete(b"k").await, "deleting a present key returns true");
@@ -240,7 +220,7 @@ mod tests {
 
     #[tokio::test]
     async fn scan_streams_a_range_of_pairs_ascending() {
-        let kv = InMemoryKvStore::new();
+        let mut kv = InMemoryKvStore::new();
         for (k, v) in [("c", "3"), ("a", "1"), ("e", "5"), ("b", "2"), ("d", "4")] {
             kv.put(
                 Bytes::from(k.as_bytes().to_vec()),
@@ -273,7 +253,7 @@ mod tests {
 
     #[tokio::test]
     async fn scan_keys_yields_only_keys() {
-        let kv = InMemoryKvStore::new();
+        let mut kv = InMemoryKvStore::new();
         kv.put(Bytes::from_static(b"a"), Bytes::from_static(b"1"))
             .await;
         kv.put(Bytes::from_static(b"b"), Bytes::from_static(b"2"))
@@ -287,7 +267,7 @@ mod tests {
 
     #[tokio::test]
     async fn prefix_range_scans_exactly_the_prefix() {
-        let kv = InMemoryKvStore::new();
+        let mut kv = InMemoryKvStore::new();
         for k in ["seen/a", "seen/b", "seen0", "seem", "tick/x"] {
             kv.put(Bytes::from(k.as_bytes().to_vec()), Bytes::from_static(b"1"))
                 .await;
@@ -331,7 +311,7 @@ mod tests {
         use futures_util::StreamExt;
         bach::sim(|| {
             async {
-                let kv = InMemoryKvStore::new();
+                let mut kv = InMemoryKvStore::new();
                 kv.put(Bytes::from_static(b"seen/msg-1"), Bytes::from_static(b"1"))
                     .await;
                 kv.put(Bytes::from_static(b"seen/msg-2"), Bytes::from_static(b"2"))

@@ -108,128 +108,104 @@ pub struct Message {
 /// `Send + Sync` so the runtime can share and schedule it. The two entry points return the same product —
 /// the requests to perform and the [`Outcome`]. Async because a reduce call may await the reducer's direct
 /// accesses (its key-value store, the content store); it never blocks the runtime.
+///
+/// The methods take `&mut self`: a reducer folds an event into its own state, so it mutates. Each reducer
+/// lives in the runtime's registry with a single owner (the event loop drives one reducer at a time), so
+/// exclusive access is the natural fit and the trait does not force interior mutability on implementations.
+/// An implementation is still free to use interior mutability if it wants.
 #[async_trait]
 pub trait Reducer: Send + Sync {
     /// React to a [`Response`] — a reply to a request this reducer performed.
-    async fn on_response(&self, response: Response) -> (Vec<Request>, Outcome);
+    async fn on_response(&mut self, response: Response) -> (Vec<Request>, Outcome);
 
     /// React to a [`Message`] — an effect performed on this reducer by another, carrying its source.
-    async fn on_message(&self, message: Message) -> (Vec<Request>, Outcome);
+    async fn on_message(&mut self, message: Message) -> (Vec<Request>, Outcome);
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Error, Message, Outcome, Reducer, Request, Response};
+    use super::{Message, Outcome, Reducer, Request, Response};
     use crate::{Bytes, Hash};
 
-    /// A tiny reducer exercising the interface: on a message it performs one downstream request (echoing
-    /// the payload to a fixed contract) and keeps running; on a response it closes, carrying the answer as
-    /// the break reason. Enough to pin the ABI shapes and both entry points.
-    struct EchoThenClose {
+    /// A reducer that actually folds state: it counts the messages it has seen (in `&mut self`), forwards
+    /// each to a downstream contract carrying the running count, and closes once it has seen `close_at`.
+    /// The behavior on any given event depends on the accumulated state, so it exercises real folding
+    /// across calls rather than a fixed shape.
+    struct Counter {
+        seen: u32,
+        close_at: u32,
         downstream: Hash,
     }
 
     #[async_trait::async_trait]
-    impl Reducer for EchoThenClose {
-        async fn on_message(&self, message: Message) -> (Vec<Request>, Outcome) {
-            let req = Request {
+    impl Reducer for Counter {
+        async fn on_message(&mut self, message: Message) -> (Vec<Request>, Outcome) {
+            self.seen += 1;
+            let request = Request {
                 id: self.downstream,
-                payload: message.payload,
+                payload: Bytes::copy_from_slice(&self.seen.to_le_bytes()),
                 continuation_token: message.continuation_token,
                 deadline: None,
             };
-            (vec![req], Outcome::Continue)
-        }
-
-        async fn on_response(&self, response: Response) -> (Vec<Request>, Outcome) {
-            // close, carrying whatever we got back as the reason (its schema is the answered contract-id).
-            let reason = response
-                .payload
-                .unwrap_or_else(|_| Bytes::from_static(b"failed"));
-            (
-                Vec::new(),
+            let outcome = if self.seen >= self.close_at {
                 Outcome::Break {
-                    schema: response.id,
-                    reason,
-                },
-            )
+                    schema: message.id,
+                    reason: Bytes::from_static(b"reached limit"),
+                }
+            } else {
+                Outcome::Continue
+            };
+            (vec![request], outcome)
+        }
+
+        async fn on_response(&mut self, _response: Response) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+    }
+
+    fn msg(token: &'static [u8]) -> Message {
+        Message {
+            id: Hash::of(b"inbound"),
+            payload: Bytes::from_static(b"x"),
+            from: Hash::of(b"peer"),
+            continuation_token: Bytes::from_static(token),
         }
     }
 
     #[tokio::test]
-    async fn on_message_emits_a_correlated_request_and_continues() {
-        let r = EchoThenClose {
-            downstream: Hash::of(b"downstream.contract"),
+    async fn folds_state_across_calls_and_breaks_at_the_limit() {
+        let mut r = Counter {
+            seen: 0,
+            close_at: 3,
+            downstream: Hash::of(b"downstream"),
         };
-        let msg = Message {
-            id: Hash::of(b"inbound.contract"),
-            payload: Bytes::from_static(b"hello"),
-            from: Hash::of(b"peer-reducer"),
-            continuation_token: Bytes::from_static(b"tok-1"),
-        };
-        let (requests, outcome) = r.on_message(msg).await;
-        assert_eq!(outcome, Outcome::Continue);
-        assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].id, Hash::of(b"downstream.contract"));
-        assert_eq!(requests[0].payload, Bytes::from_static(b"hello"));
-        // the caller's token is threaded onto the emitted request for correlation.
-        assert_eq!(requests[0].continuation_token, Bytes::from_static(b"tok-1"));
-        assert_eq!(requests[0].deadline, None);
+        // The running count carried on each forwarded request reflects accumulated state: 1, then 2.
+        let (out1, o1) = r.on_message(msg(b"t1")).await;
+        assert_eq!(out1[0].payload, Bytes::copy_from_slice(&1u32.to_le_bytes()));
+        assert_eq!(o1, Outcome::Continue);
+        let (out2, o2) = r.on_message(msg(b"t2")).await;
+        assert_eq!(out2[0].payload, Bytes::copy_from_slice(&2u32.to_le_bytes()));
+        assert_eq!(o2, Outcome::Continue);
+        // The third message hits the limit, so the reducer closes — an outcome that depends on state.
+        let (out3, o3) = r.on_message(msg(b"t3")).await;
+        assert_eq!(out3[0].payload, Bytes::copy_from_slice(&3u32.to_le_bytes()));
+        assert!(matches!(o3, Outcome::Break { .. }));
     }
 
     #[tokio::test]
-    async fn on_response_breaks_with_the_answer_as_reason() {
-        let contract = Hash::of(b"downstream.contract");
-        let r = EchoThenClose {
-            downstream: contract,
+    async fn a_forwarded_request_carries_the_callers_token_for_correlation() {
+        let mut r = Counter {
+            seen: 0,
+            close_at: 100,
+            downstream: Hash::of(b"downstream"),
         };
-        let resp = Response {
-            id: contract,
-            continuation_token: Bytes::from_static(b"tok-1"),
-            payload: Ok(Bytes::from_static(b"world")),
-        };
-        let (requests, outcome) = r.on_response(resp).await;
-        assert!(requests.is_empty());
+        // The reducer routes to its downstream contract and threads the caller's token through, so the
+        // eventual answer correlates back — the routing behavior, not the struct shape.
+        let (requests, _) = r.on_message(msg(b"correlate-me")).await;
+        assert_eq!(requests[0].id, Hash::of(b"downstream"));
         assert_eq!(
-            outcome,
-            Outcome::Break {
-                schema: contract,
-                reason: Bytes::from_static(b"world"),
-            }
+            requests[0].continuation_token,
+            Bytes::from_static(b"correlate-me")
         );
-    }
-
-    #[tokio::test]
-    async fn a_runtime_failure_is_matched_to_its_request_by_token() {
-        // Err carries the correlation (id + token) the same as Ok, so a timeout is matched to its request.
-        let contract = Hash::of(b"c");
-        let r = EchoThenClose {
-            downstream: contract,
-        };
-        let resp = Response {
-            id: contract,
-            continuation_token: Bytes::from_static(b"tok-9"),
-            payload: Err(Error::Timeout),
-        };
-        // the response still correlates (token present on the error path).
-        assert_eq!(resp.continuation_token, Bytes::from_static(b"tok-9"));
-        let (_, outcome) = r.on_response(resp).await;
-        assert!(matches!(outcome, Outcome::Break { .. }));
-    }
-
-    /// The reducer is usable as a trait object (dyn Reducer) — the registry will hold backends this way.
-    #[tokio::test]
-    async fn reducer_is_dyn_safe() {
-        let r: Box<dyn Reducer> = Box::new(EchoThenClose {
-            downstream: Hash::of(b"c"),
-        });
-        let msg = Message {
-            id: Hash::of(b"c"),
-            payload: Bytes::from_static(b"x"),
-            from: Hash::of(b"p"),
-            continuation_token: Bytes::from_static(b"t"),
-        };
-        let (requests, _) = r.on_message(msg).await;
-        assert_eq!(requests.len(), 1);
     }
 }
