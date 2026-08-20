@@ -16900,3 +16900,42 @@
   (export main)))
   (call   main (: 10 Int64)) (output (: 50100 Int64))
   (call   main (: 0 Int64)) (output (: 50000 Int64)))
+
+  ;; -- py3n1 three-level handler nest + pyhn1 helper-computed next-state + pymm1 max/min-clamp resume answer (breaker batch 357) --
+(case "py3n1 probe: a THREE-LEVEL handler nest (A over B over C) where the innermost body draws from ALL THREE effects — each op resumes a distinct transform of its own handler's state, so the three independent state threads (A doubles, B adds five, C adds nine hundred) route to their correct handlers and pack into separate digit ranges"
+  (input (do
+  (effect A (op a (-> Int64)))
+  (effect B (op b (-> Int64)))
+  (effect C (op c (-> Int64)))
+  (def (main (: n Int64))
+    (handle A (+ (% n 3) (: 100 Int64))
+      ((a () s (resume (* s 2) (+ s 1))))
+      (handle B (: 20 Int64)
+        ((b () s (resume (+ s 5) (+ s 1))))
+        (handle C (: 3 Int64)
+          ((c () s (resume (+ s 900) (+ s 1))))
+          (+ (A.a) (+ (* 10 (B.b)) (* 100 (C.c))))))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 90752 Int64))
+  (call   main (: 0 Int64)) (output (: 90750 Int64)))
+(case "pyhn1 probe: the resume NEXT-STATE is computed by a top-level pure HELPER function (nxt s = 2s+1) called from the arm — each dispatch answers ten-times the state and threads nxt(s), so the state follows a 2x+1 recurrence across three dispatches and the cross-function next-state call must thread correctly"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (nxt (: x Int64)) (+ (* x 2) 1))
+  (def (main (: n Int64))
+    (handle E (+ (% n 3) (: 1 Int64))
+      ((tick () s (resume (* s 10) (nxt s))))
+      (+ (E.tick) (+ (* 100 (E.tick)) (* 10000 (E.tick))))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 1105020 Int64))
+  (call   main (: 0 Int64)) (output (: 703010 Int64)))
+(case "pymm1 probe: the resume answer packs MAX*10 + MIN of the op-arg and the captured state — clamp(v) puts the larger in the tens place and the smaller in the ones, so the arm's if picks the ordering and two dispatches with different args straddle the threaded state"
+  (input (do
+  (effect E (op clamp (-> Int64 Int64)))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((clamp (v) s (resume (if (> v s) (+ (* v 10) s) (+ (* s 10) v)) (+ s 1))))
+      (+ (* 1000 (E.clamp 3)) (E.clamp 8))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 31082 Int64))
+  (call   main (: 0 Int64)) (output (: 30081 Int64)))
