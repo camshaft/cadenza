@@ -10,12 +10,14 @@ mod blob_store;
 mod contract;
 mod hash;
 mod kv;
+mod reducer;
 mod str;
 
 pub use blob_store::{BlobStore, InMemoryBlobStore};
 pub use contract::Contract;
 pub use hash::{Hash, base64url};
 pub use kv::{InMemoryKvStore, KeyRange, KvKeyScan, KvScan, KvStore, prefix_range};
+pub use reducer::{Error, Message, Outcome, Reducer, Request, Response};
 pub use str::Str;
 
 // Re-export the byte-buffer type the platform marshals through, so downstream code depends on the

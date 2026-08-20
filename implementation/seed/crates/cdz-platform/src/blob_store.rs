@@ -19,7 +19,6 @@
 use crate::{Bytes, Hash};
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 /// A content-addressed blob store: hash <-> bytes. The one store of §8; backends (in-memory, disk, S3)
 /// implement this and are swapped by reference. `Send + Sync` so it can be shared across the runtime's
@@ -30,7 +29,7 @@ pub trait BlobStore: Send + Sync {
     /// the bytes, so putting the same bytes twice yields the same hash and simply re-stores identical
     /// content. (No `Result`: a well-formed backend's put is a pure function of its input; a fallible
     /// backend absorbs transient I/O internally, e.g. by retry — this layer stays deterministic per §8/§9.)
-    async fn put(&self, bytes: Bytes) -> Hash;
+    async fn put(&mut self, bytes: Bytes) -> Hash;
 
     /// Fetch the bytes stored under `hash`, or `None` if the store does not hold it. `None` is genuine
     /// absence, not a transient failure.
@@ -40,12 +39,12 @@ pub trait BlobStore: Send + Sync {
     async fn has(&self, hash: Hash) -> bool;
 }
 
-/// An in-memory [`BlobStore`] — a plain hash-map behind a `Mutex`. For tests and single-process use; the
-/// smallest honest backend. Runtime-agnostic: the lock is a `std::sync::Mutex` held only across the map
-/// operation (never across an `.await`), so this drives identically under tokio and under Bach.
+/// An in-memory [`BlobStore`] — a plain hash-map. For tests and single-process use; the smallest honest
+/// backend. `put` takes `&mut self`, so no interior mutability (a lock) is needed — the runtime owns the
+/// store exclusively in its event loop.
 #[derive(Default)]
 pub struct InMemoryBlobStore {
-    blobs: Mutex<HashMap<Hash, Bytes>>,
+    blobs: HashMap<Hash, Bytes>,
 }
 
 impl InMemoryBlobStore {
@@ -58,45 +57,31 @@ impl InMemoryBlobStore {
     /// The number of distinct blobs held (by content hash). Handy for tests/introspection.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.blobs.lock().expect("blob-store mutex poisoned").len()
+        self.blobs.len()
     }
 
     /// Whether the store holds no blobs.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.blobs
-            .lock()
-            .expect("blob-store mutex poisoned")
-            .is_empty()
+        self.blobs.is_empty()
     }
 }
 
 #[async_trait]
 impl BlobStore for InMemoryBlobStore {
-    async fn put(&self, bytes: Bytes) -> Hash {
+    async fn put(&mut self, bytes: Bytes) -> Hash {
         let hash = Hash::of(&bytes);
-        // O(1) Bytes clone into the map; the guard is dropped before returning (no await held across it).
-        self.blobs
-            .lock()
-            .expect("blob-store mutex poisoned")
-            .insert(hash, bytes);
+        self.blobs.insert(hash, bytes); // O(1) Bytes clone into the map.
         hash
     }
 
     async fn get(&self, hash: Hash) -> Option<Bytes> {
         // `cloned()` on a Bytes is an O(1) refcount bump, not a copy.
-        self.blobs
-            .lock()
-            .expect("blob-store mutex poisoned")
-            .get(&hash)
-            .cloned()
+        self.blobs.get(&hash).cloned()
     }
 
     async fn has(&self, hash: Hash) -> bool {
-        self.blobs
-            .lock()
-            .expect("blob-store mutex poisoned")
-            .contains_key(&hash)
+        self.blobs.contains_key(&hash)
     }
 }
 
@@ -107,7 +92,7 @@ mod tests {
 
     #[tokio::test]
     async fn put_returns_the_content_hash_and_get_round_trips() {
-        let store = InMemoryBlobStore::new();
+        let mut store = InMemoryBlobStore::new();
         let bytes = Bytes::from_static(b"the hash is the capability");
         let h = store.put(bytes.clone()).await;
         // put returns the content hash of exactly those bytes.
@@ -127,7 +112,7 @@ mod tests {
 
     #[tokio::test]
     async fn put_is_idempotent_by_content() {
-        let store = InMemoryBlobStore::new();
+        let mut store = InMemoryBlobStore::new();
         let h1 = store.put(Bytes::from_static(b"same")).await;
         let h2 = store.put(Bytes::from_static(b"same")).await;
         // same bytes -> same hash, and only one blob is held.
@@ -141,7 +126,7 @@ mod tests {
 
     #[tokio::test]
     async fn stores_and_distinguishes_many_blobs() {
-        let store = InMemoryBlobStore::new();
+        let mut store = InMemoryBlobStore::new();
         let mut hashes = Vec::new();
         for i in 0..64u16 {
             hashes.push(
@@ -168,7 +153,7 @@ mod tests {
         use bach::ext::*;
         bach::sim(|| {
             async {
-                let store = InMemoryBlobStore::new();
+                let mut store = InMemoryBlobStore::new();
                 let h = store.put(Bytes::from_static(b"deterministic")).await;
                 assert_eq!(h, Hash::of(b"deterministic"));
                 assert_eq!(
