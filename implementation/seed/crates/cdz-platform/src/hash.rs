@@ -95,9 +95,9 @@ impl FromStr for Hash {
     }
 }
 
-/// base64url — the URL-safe base64 alphabet (`A-Z a-z 0-9 - _`), unpadded — the ONE textual byte
-/// encoding for the platform (section 8: "base64url … never hex"). Hand-rolled to keep the crate's dep
-/// floor at just blake3, and **allocation-free**: [`encode`] is a lazy `char` iterator and
+/// base64url — the URL-safe base64 alphabet (`A-Z a-z 0-9 - _`), unpadded — the one textual byte
+/// encoding for the platform (section 8: "base64url … never hex"). Hand-rolled to keep the crate
+/// depending on just blake3, and **allocation-free**: [`encode`] is a lazy `char` iterator and
 /// [`decode_into`] writes into a caller-sized buffer (a hash's length is always known, so the caller
 /// owns the buffer). Decoding is strict/canonical so a byte string has exactly one text form.
 pub mod base64url {

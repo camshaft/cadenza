@@ -1,18 +1,20 @@
-//! The handler registry (`design/cadenza-platform.md` §3/§4).
+//! The handler-chain registry (`design/cadenza-platform.md` §3/§4).
 //!
-//! The kernel keeps one registry and does one thing with it: given a message's contract-id, find the
-//! reducer(s) that should receive it. That is the whole of dispatch — no enumerated effect kinds, no family
-//! strings, no per-effect branches; the runtime never recognizes a request by a name in its own code, only
-//! by the handler a contract-id resolves to (§4). This module is that registry as a plain data structure,
-//! separate from the router that will drive reducers with it.
+//! A contract's handler is a **chain** of reducer identifiers, and this is the data structure that holds
+//! those chains: given a contract-id, find the chain that answers it. That is the whole of dispatch — no
+//! enumerated effect kinds, no family strings, no per-effect branches; nothing recognizes a request by a
+//! name, only by the handler a contract-id resolves to (§4). The chains are the **system reducer's** state
+//! (§4): the system reducer shepherds each effect and uses these chains to route it. This module is the
+//! chains as a plain data structure, separate from the system reducer that drives reducers with them, and
+//! separate from the kernel's own event-reducer override registry (§3), which maps a contract to the
+//! system-reducer implementation that governs it.
 //!
-//! A contract's handler is not a single reducer but a **chain** — an ordered list of reducer identifiers
-//! (§3, "handlers chain"). A chain is a stack of interceptors: a rate limiter wrapping an HTTP handler, an
-//! authorizer wrapping a credential mint, a logger wrapping anything. A reducer identifier is a [`Hash`]
-//! (the reducer's id); the registry stores identifiers, not reducer instances — resolving an id to a live
-//! reducer is the router's job. The registry keeps the chain in the order it was given and interprets
-//! nothing about it: which end a request enters and how it bubbles is the router's semantics, not the
-//! registry's.
+//! A chain is an ordered list of reducer identifiers (§3, "handlers chain") — a stack of interceptors: a
+//! rate limiter wrapping an HTTP handler, an authorizer wrapping a credential mint, a logger wrapping
+//! anything. A reducer identifier is a [`Hash`] (the reducer's id); this structure stores identifiers, not
+//! reducer instances — resolving an id to a live reducer is the system reducer's job. It keeps each chain in
+//! the order it was given and interprets nothing about it: which end a request enters and how it bubbles is
+//! the system reducer's semantics, not this structure's.
 //!
 //! Two operations back the built-in lifecycle effects (§7):
 //! - [`set_handler`](HandlerRegistry::set_handler) installs or **replaces** the whole chain for a contract
@@ -26,15 +28,15 @@
 //!   implemented.
 //!
 //! Dispatch is [`resolve`](HandlerRegistry::resolve): a contract-id maps to its chain, or to `None`, which
-//! the router turns into `Err(MissingHandler)` (§4). This is pure in-memory kernel state reached by direct
-//! call — not a swappable async backend like the key-value or content store — so the operations are plain
-//! synchronous methods.
+//! the system reducer turns into `Err(MissingHandler)` (§4). The system reducer holds this in its own
+//! key-value state and reads it synchronously mid-fold, so the operations are plain synchronous methods.
 
 use crate::Hash;
 use std::collections::HashMap;
 
-/// The kernel's handler registry: contract-id -> the ordered chain of reducer identifiers that answers it
-/// (§3/§4). Internal kernel state with a single owner (the event loop), so its mutator takes `&mut self`.
+/// The handler-chain registry: contract-id -> the ordered chain of reducer identifiers that answers it
+/// (§3/§4). Part of the system reducer's state, with a single owner (the system reducer folding one event
+/// at a time), so its mutator takes `&mut self`.
 #[derive(Debug, Default, Clone)]
 pub struct HandlerRegistry {
     /// contract-id -> chain of reducer ids. An entry is always a non-empty chain: `set_handler` removes the
@@ -68,8 +70,8 @@ impl HandlerRegistry {
 
     /// Resolve `contract` to its handler chain — the one dispatch lookup (§4). `Some(chain)` is the ordered
     /// reducer identifiers to route through (always non-empty); `None` means no handler is registered, which
-    /// the router reports as `Err(MissingHandler)`. Borrows the stored chain; the router reads it to drive
-    /// the reducers it names.
+    /// the system reducer reports as `Err(MissingHandler)`. Borrows the stored chain; the system reducer
+    /// reads it to drive the reducers it names.
     #[must_use]
     pub fn resolve(&self, contract: Hash) -> Option<&[Hash]> {
         self.chains.get(&contract).map(Vec::as_slice)

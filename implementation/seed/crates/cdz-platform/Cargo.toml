@@ -1,18 +1,18 @@
 # cdz-platform — the Cadenza platform (design/cadenza-platform.md).
 #
-# A single unified crate for the whole platform runtime (NO host/kernel split — operator ruling
+# A single unified crate for the whole platform runtime (no host/kernel split — operator ruling
 # 2026-08-20). Built bottom-up: the lowest-level primitives first so the higher-level shape (contracts,
-# the reducer interface, the registry+router) rests on a settled foundation.
-#
-# This first slice is the CONTENT-HASH foundation (spec section 8): a `Hash` is the sole identity in the
-# system — a contract-id is the hash of a contract, a blob is addressed by the hash of its bytes, the CAS
-# is unpermissioned because the hash IS the capability. Everything downstream routes and addresses by it.
+# the reducer interface, the system reducer and dispatch) rests on a settled foundation. On the crate now:
+# the content hash (the sole identity, §8), the value primitives (Str/Bytes, §12), the async blob and
+# key-value backends (§8/§7), contracts (§1), the reducer interface and its event types (§3), and the
+# handler-chain registry the system reducer routes through (§3/§4).
 #
 # A normal member of the seed workspace (picked up by the `crates/*` glob) so it gets per-crate clippy +
-# workspace-test coverage for free while it is light. DEP FLOOR is deliberately tiny (blake3 only, already
-# in the root lock); base64url rendering is hand-rolled + exhaustively tested rather than pulling a crate.
-# When a later slice adds the heavy wasm-runtime host (wasmtime), THAT slice moves this to its own excluded
-# `[workspace]` (a deliberate topology change, coordinated with v-nix) so the corpus gate never pays for it.
+# workspace-test coverage for free while it is light. We depend on as little as possible (blake3 in the
+# root lock, plus bytes/async-trait/tokio/futures); base64url rendering is hand-rolled and exhaustively
+# tested rather than pulling in another crate. When a later slice adds the heavy wasm-runtime host
+# (wasmtime), that slice moves this to its own excluded `[workspace]` (a deliberate topology change,
+# coordinated with v-nix) so the corpus gate never pays for it.
 [package]
 name = "cdz-platform"
 version = "0.0.0"
