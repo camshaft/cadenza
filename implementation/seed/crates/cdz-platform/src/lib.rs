@@ -8,10 +8,12 @@
 
 mod blob_store;
 mod hash;
+mod kv;
 mod str;
 
 pub use blob_store::{BlobStore, InMemoryBlobStore};
 pub use hash::{Hash, base64url};
+pub use kv::{InMemoryKvStore, KvStore};
 pub use str::Str;
 
 // Re-export the byte-buffer type the platform marshals through, so downstream code depends on the
