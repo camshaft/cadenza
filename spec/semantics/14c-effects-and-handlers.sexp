@@ -16939,3 +16939,38 @@
   (export main)))
   (call   main (: 10 Int64)) (output (: 31082 Int64))
   (call   main (: 0 Int64)) (output (: 30081 Int64)))
+
+;; -- pych2 Option-Char resume + pyfl1 Float64 half-step thread + pyres1 Result-answer parity (breaker batch 358) --
+(case "pych2 probe: an op RESUMES an (Option Char) computed from the handler state via Char.from-int — the alphabet position tracks the state, the body matches Some/None and reads the char back via Char.to-int; a Char (inside an Option) round-trips through the resume seam and the threaded state advances the code point per dispatch"
+  (input (do
+  (effect E (op letter (-> (Option Char))))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((letter () s (resume (Char.from-int (+ (: 97 Int64) s)) (+ s 1))))
+      (+ (* 1000 (match (E.letter) ((Some c) (Char.to-int c)) ((None) (: -1 Int64))))
+         (match (E.letter) ((Some c) (Char.to-int c)) ((None) (: -1 Int64))))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 98099 Int64))
+  (call   main (: 0 Int64)) (output (: 97098 Int64)))
+(case "pyfl1 probe: a FLOAT64 handler state threaded by half-step increments — tick answers the current float state and threads (+ s 0.5), so three dispatches read s, s+0.5, s+1.0 and their sum is 3s + 1.5; the seed is selected by n mod 3 among 0.0/1.0/2.0 so the float thread varies and exact half-steps stay representable"
+  (input (do
+  (effect E (op tick (-> Float64)))
+  (def (main (: n Int64))
+    (handle E (if (= (% n 3) (: 0 Int64)) (: 0.0 Float64)
+                  (if (= (% n 3) (: 1 Int64)) (: 1.0 Float64) (: 2.0 Float64)))
+      ((tick () s (resume s (+ s (: 0.5 Float64)))))
+      (+ (E.tick) (+ (E.tick) (E.tick)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 4.5 Float64))
+  (call   main (: 0 Int64)) (output (: 1.5 Float64)))
+(case "pyres1 probe: a RESULT-typed resume answer with parity-selected payload — step answers (Ok (* s 10)) on even state and (Err (+ s 100)) on odd, threading (+ s 1); the body folds Err to its negation, so the two dispatches cross the Ok/Err boundary and a sum-type answer with a varying payload rides the resume seam per dispatch"
+  (input (do
+  (effect E (op step (-> (Result Int64 Int64))))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((step () s (resume (if (= (% s 2) (: 0 Int64)) (Ok (* s 10)) (Err (+ s 100))) (+ s 1))))
+      (+ (* 1000 (match (E.step) ((Ok v) v) ((Err e) (- (: 0 Int64) e))))
+         (match (E.step) ((Ok v) v) ((Err e) (- (: 0 Int64) e))))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: -100980 Int64))
+  (call   main (: 0 Int64)) (output (: -101 Int64)))
