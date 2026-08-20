@@ -6,9 +6,11 @@
 //! is unpermissioned because the hash *is* the capability. Everything downstream — routing, the
 //! registry, the store — addresses by it, so it is the correct first primitive to settle.
 
+mod blob_store;
 mod hash;
 mod str;
 
+pub use blob_store::{BlobStore, InMemoryBlobStore};
 pub use hash::{Hash, base64url};
 pub use str::Str;
 
