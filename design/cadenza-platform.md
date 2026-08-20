@@ -95,8 +95,8 @@ hash equality, with no tolerant reader and no version range to match.
 
 1. **The runtime knows nothing specific.** No built-in knowledge of any contract, effect
    name, verb, family, or namespace — and no per-effect branch in its code. It routes
-   purely by looking up a contract-id's handler in the registry (section 3). A new
-   capability is a new contract plus something that answers it — never a runtime change.
+   purely by looking up a contract-id's handler chain (section 3). A new capability is a new
+   contract plus something that answers it — never a runtime change.
 2. **Everything is an event.** Requests, results, messages, timers firing, a program
    being replaced, a session closing — all are ordered, content-addressed events in a
    log.
@@ -126,79 +126,81 @@ hash equality, with no tolerant reader and no version range to match.
 
 ### The whole kernel
 
-The kernel is tiny. It is a single **reducer** interface plus a router that moves messages
-between registered reducers — nothing more. A reducer receives a message, updates its own
-state, and emits messages (effect requests) to be routed onward. That one interface is the
-same for everything that runs: an agent's task, a handler that answers a single contract,
-the boundary that performs input and output. There is no second trait — the thing that
-folds events and the thing that carries out effects are the one reducer trait.
+The kernel is tiny, and it is not the router. It is a **reducer-execution engine**: it runs
+a reducer step given `(reducer, event)`, schedules and interleaves those steps across
+sessions, keeps the deterministic event log, provides the direct-access backends (the
+key-value store, a reducer's own id, and the content-addressed store, section 8), and owns
+the one piece of pending-future state — the durable `fire-after` timer (section 6). It reads
+no payload and matches no name.
 
-The kernel keeps a **registry** and does one thing with it: deliver a message to the
-reducer that should receive it. A reducer is reached two ways:
+Assembling handler chains, moving an effect through them, tracking authority and correlation,
+supervising handlers, enforcing deadlines — none of it lives in the kernel. Each is the work
+of a **system reducer**: a wasm module, like every other reducer, instantiated **once per
+event** to shepherd that one effect (section 4). Because it is per-event there is no shared
+router state and no global chokepoint; because it is a reducer, its logic is content-addressed,
+swappable by hash, and replayed deterministically like any other reducer.
 
-- **as a handler for a contract** — `set-handler(contract-id, reducer)` registers a
-  reducer to answer a given contract. A message
-  tagged with that contract-id is delivered to that handler.
-- **as an addressable reducer** — an **enveloped** effect addressed to a specific reducer by
-  its **id**, point-to-point rather than routed by contract. The envelope names the target id
-  and wraps an **interior effect**. The send is itself an effect with its own middleware
-  chain: it bubbles up like any other (so authz, rate-limiting, and transform middleware
-  enforce who may send what to whom — not a privileged bypass). At the top the platform
-  **unwraps the envelope**, delivers the interior effect to the target reducer (which reduces
-  it as its own inbound, tagged with the interior effect's contract), and returns a
-  **delivery outcome** to the originator — delivered, or an error if no such reducer exists.
-  That outcome is a delivery *acknowledgement*, not the target's reply to the interior
-  effect; any reply is a separate message the target sends back.
+Which system reducer governs an effect is a lookup. The kernel keeps a small **event-reducer
+override registry** mapping a contract-id to the system-reducer implementation that shepherds
+that contract's events, with a default for everything else. This is how the platform
+customizes dispatch, supervision, or grant behavior for a particular contract without
+touching the kernel. The default is itself a wasm module, bootstrapped at setup rather than
+compiled in, so the kernel ships with no built-in dispatch logic at all.
 
-Every message carries the **schema-hash — the contract-id — of what it is**, so the kernel
-looks it up in the registry and moves the bytes. The kernel reads nothing else: it never
-parses a payload and never matches a name. Registering a handler is the one registration
-primitive; routing a message by its contract-id is the one dispatch step.
+The override registry is the **trust root**. Installing or changing an entry is the highest
+privilege in the system, because the entire security model rests on the chosen system reducer
+being correct — a wrong one could ignore authorization, forge grants, or misroute. So the
+registry is genesis-level configuration, settable only by the root authority; it is the one
+thing at the bottom that is not itself an event reducer, and everything above it trusts the
+correct, root-installed system reducer to enforce the model.
 
-A handler is itself a reducer, so while answering one contract it can emit its own effect
-requests, and those route onward to their handlers by the same lookup. Reducers emitting
-messages that route to reducers, all the way down — that composition is the whole system,
-and the kernel is only the router in the middle. Everything specific — input and output,
-name resolution, authorization, lifecycle, timers, log persistence, an agent's brain — is a
-reducer registered as a handler for some contract-id; the kernel itself contains none of it.
-
-So the kernel is only: the reducer interface; the registry and the router that delivers a
-message to the reducer for its contract-id; the scheduling that interleaves reducers and
-carries each response back to the reducer that emitted the request; and a few direct
-reducer-facing accesses with swappable backends — the key-value store, a reducer's own id,
-and the content-addressed store (section 8). That is the whole irreducible core.
-Authorization, name resolution, log persistence, lifecycle, timers, and input and output are
-**not** in it — each is a reducer. This is the
-point of the entire design and the line to hold: the kernel binary is the one thing that
-cannot be hot-swapped, so it is deployed **once** and kept as small as possible, while
-everything that will ever need to change is a content-addressed reducer, swapped by
-reference without redeploying the kernel.
+So the kernel's whole irreducible core is: execute a reducer step; schedule and interleave,
+carrying each response back to the reducer that emitted the request; keep the log; the direct
+reducer-facing accesses with swappable backends (the key-value store, a reducer's own id, and
+the content-addressed store); the `fire-after` timer; the root-only override registry; and
+one privileged wire — on an emitted effect, look up the system reducer for its contract,
+instantiate it, hand it the event, and honor its direct commands (run a reducer, respond,
+attach, monitor, arm a timer, notify, retire a context). Everything specific — routing,
+chaining, authorization, name resolution, lifecycle, what a timer means, input and output —
+is a content-addressed reducer, not kernel code. This is the point of the entire design and
+the line to hold: the kernel binary is the one thing that cannot be hot-swapped, so it is
+deployed **once** and kept as small as possible, while everything that will ever need to
+change is a content-addressed reducer, swapped by reference without redeploying the kernel.
 
 ### Handlers chain
 
 A contract's handler is a **chain of reducer identifiers** — an ordered list of references
-to other reducers, not a single one. Registering a handler installs or extends that chain
-(the set-handler effect, section 7). An effect request emitted by a **leaf** reducer
-bubbles **up** the chain, and each reducer in it in turn may:
+to other reducers, not a single one. It is a stack of interceptors: a rate limiter wrapping
+an HTTP handler, an authorizer wrapping a credential mint, a mock wrapping a live edge
+reducer, a logger wrapping anything. An effect request emitted by a **leaf** reducer travels
+the chain, and each reducer in it in turn may:
 
 - **answer it** — produce a response, which stops the ascent and bubbles back down;
 - **transform and forward it** — rewrite the request (even into a different contract) and
-  pass it to the next handler up; or
-- **emit its own effect requests** — which begin their own ascent through their contracts'
+  pass it to the next handler; or
+- **emit its own effect requests** — which begin their own dispatch through their contracts'
   chains.
 
-When a handler answers, the **response bubbles back down** the same path — each handler
-that forwarded may transform the response on the way — until it reaches the leaf reducer
-that first emitted the effect. A chain is thus a stack of interceptors: a rate limiter
-wrapping an HTTP handler, an authorizer wrapping a credential mint, a mock wrapping a live
-edge reducer, a logger wrapping anything.
+The order within a chain is the author's choice; the platform preserves it and interprets
+nothing about it, so it needs only to be documented and consistent. Answering, forwarding,
+and the single-use capability that discharges a response are the dispatch mechanics of
+section 4.
 
-The kernel gains no new machinery for this. Chaining falls out of handlers being reducers:
-forwarding an effect up is a reducer emitting an effect, and a response bubbling down is
-that effect's result — resumed and re-emitted by the forwarding handler (the same
-emit-and-resume of section 4). The kernel still only moves a message to the next reducer in
-the chain and moves the response back; the stack is an ordered registry entry, not special
-logic.
+**Chains span generations, and a child inherits nothing automatically.** When a handler is
+registered on a reducer, the system reducer notifies it (`on_notification`, below), and that
+reducer decides whether to propagate the handler to its children by registering it with them.
+A child reaches only what its ancestors have explicitly passed down — least privilege by
+default — and not propagating is how a handler stays private, with no barrier markers to
+maintain and no way for an ignored notification to widen a child's authority.
+
+What a child does gain always continues into its ancestors' chains. The system reducer wraps
+a propagated capability in the ancestors' interceptors — their authorization middleware above
+all — so every effect a descendant emits passes through every ancestor's guard before it can
+reach an edge. Authority only attenuates downward: a child prepends its own handlers and may
+restrict further, but can neither reach past an inherited guard nor remove one. Assembling the
+effective chain and enforcing this is the system reducer's work (section 4); because
+installing the system reducer is the highest privilege (the override registry, above), that
+enforcement is trustworthy rather than a matter of a parent's diligence.
 
 ### Two roles a reducer plays
 
@@ -290,12 +292,13 @@ events that set up a session can themselves be the output of another session.
 
 ### The reducer interface
 
-Everything a reducer receives is an event carrying a contract-id, and it is one of two
-kinds — so a reducer has **two entry points**, and the runtime calls the one that fits:
+Everything a reducer receives is an event carrying a contract-id, and it is one of a few
+kinds — so a reducer has **three entry points**, and the runtime calls the one that fits:
 
 ```
-on_response(response: Response) -> (list<Request>, Outcome)
-on_message(message: Message)    -> (list<Request>, Outcome)
+on_response(response: Response)         -> (list<Request>, Outcome)
+on_message(message: Message)            -> (list<Request>, Outcome)
+on_notification(notification: Notification) -> (list<Request>, Outcome)
 
 type Response = {
   id:                 Hash,               # the contract-id this answers (schema hash; deref from CAS if needed)
@@ -306,8 +309,18 @@ type Response = {
 type Message = {
   id:                 Hash,   # the contract-id
   payload:            Ast,    # the input value of the effect being performed on this reducer
-  from:               Hash,   # the source reducer — envelope metadata to authenticate / route on
+  from:               Origin, # the source — envelope metadata to authenticate / route on
   continuation-token: Bytes,  # correlates the reducer's reply back to the caller
+}
+
+type Origin = {
+  reducer: Hash,  # the sending reducer's id
+  host:    Hash,  # the host (node/runtime) that ran it — the hook for federated trust
+}
+
+type Notification = {
+  id:      Hash,  # the contract-id of the notification's schema
+  payload: Ast,   # the notification value — a plain typed value, no continuation-token, no Result
 }
 
 type Request = {
@@ -331,10 +344,21 @@ type Outcome = Continue | Break(schema: Hash, reason: Ast)
   an HTTP 500, a domain error — is not an `Err`: the handler answered, so it rides in
   `Ok(output)`. Whether to retry is the reducer's judgment, not a kernel field.
 - **`on_message`** is the **input** side: an effect another reducer performed on this one, or
-  a message sent to it. The `Message` carries its **source** (`from`) as envelope metadata,
-  so the reducer can authenticate and route on who sent it — the reason these are two
-  functions and not one. The reducer answers by emitting its reply, correlated by the
-  message's `continuation-token`, which the runtime routes back to the caller's `on_response`.
+  a message sent to it. The `Message` carries its **source** (`from`) as envelope metadata —
+  the sending reducer and the host that ran it — so the reducer can authenticate and route on
+  both who sent it and from where, the reason it is distinct from `on_response`. The reducer
+  answers by emitting its reply, correlated by the message's
+  `continuation-token`, which the runtime routes back to the caller's `on_response`.
+- **`on_notification`** is the **control-plane** side: an unsolicited platform event, such as
+  a new handler becoming available on this reducer (the trigger for propagation, above) or a
+  lifecycle event it subscribed to (spawned, closed, failed — section 7). It is shaped like a
+  response without a continuation-token: a contract-id plus a plain typed payload. There is no
+  `Result` — a notification is an event that happened, not the success-or-failure of a request
+  — and no correlation token, because nothing of the reducer's is being answered. Because the
+  channel is typed by contract-id, one entry point carries every kind of platform event; the
+  kernel hard-codes no notification vocabulary, and a reducer matches on the contract-id and
+  ignores the ones it does not handle. Making these a distinct entry point (rather than folding
+  them into `on_message`) means it is obvious a reducer must handle or explicitly ignore them.
 
 Both return the same **product**: the `Request`s to perform *and* an `Outcome`. `Continue`
 keeps the reducer running; `Break(schema, reason)` **terminates** it, carrying the reason for
@@ -378,6 +402,12 @@ Two events belong in the same session only if they must be strictly ordered rela
 each other or share a retention lifecycle. Choose session boundaries by ordering and
 shared fate, not by topic. The natural unit is one agent doing one bounded task.
 
+This interface is the ordinary reducer. The **system reducer** that shepherds an effect
+(section 4) is a distinct, privileged interface: it is driven by dispatch-lifecycle signals
+and emits direct kernel commands rather than routing everything as effects. It is a fold like
+any reducer — signals in, commands and state out — but its vocabulary differs, so it is its
+own interface, described in section 4.
+
 ### Terminating and failing
 
 A reducer ends itself by returning `Break(schema, reason)` (above), the reason being a typed
@@ -401,31 +431,127 @@ kernel authorize step: authorization is middleware in the chain (section 5), a h
 any other. A request also carries a **continuation-token** the reducer chooses, to
 correlate the eventual result (below).
 
-### Dispatch is a registry lookup
+### The per-event system reducer
 
-Dispatching a request uses the registry from section 3: the request's contract-id resolves
-to its handler, and the runtime moves the input bytes there and records the result bytes
-that come back. That is the whole of dispatch — no enumerated effect kinds, no family
-strings, no namespace prefixes, no per-effect branches; the runtime never recognizes a
-request by a name in its own code, only by the handler a contract-id resolves to. Handlers
-are registered as data at bootstrap and come from three places, all resolved the same way:
+Dispatching a request is not a kernel table lookup; it is the work of a **system reducer**,
+instantiated once for that effect. On an emitted request the kernel looks up the system
+reducer for the request's contract in the override registry (the default if none),
+instantiates it, and hands it the effect. That reducer does the rest: it assembles the
+handler chain across generations (section 3), moves the effect through it, tracks correlation
+and authority, and supervises the handlers — all as ordinary reducer state and direct kernel
+commands, with no dispatch vocabulary in the kernel.
 
-- **peer sessions** that declared they answer a contract;
-- **edge reducers** the node provides for primitive input and output (network, subprocess,
-  clock);
-- the **runtime's own built-in reducers** for its structural operations — the reducer
-  lifecycle effects (spawn / set-handler / list-handlers / subscribe / terminate, section 7),
-  delivering a message to another session's log, and arming a timer — reached by a registered
-  contract-id like any other reducer, never by a verb the runtime hard-codes. (The
-  content-addressed store is reached by direct call, not an effect — section 8.)
+It is a **separate, privileged interface** from the ordinary reducer. It is driven by
+dispatch-lifecycle signals — a dispatch starting, a handler step returning, a monitor firing,
+a timer firing — and it emits **direct commands** rather than routed effects: run a reducer
+with an event, respond against a capability, attach to a context, mint a capability, monitor
+a handler, arm a timer, notify a handler, retire a context. Its own core loop must use these
+direct commands and never emit routed effects, or each of its own effects would spawn another
+system reducer without end.
 
-So messaging, timers, and lifecycle are not special request kinds — they are contracts
-answered by runtime-provided reducers. Sending a message is a request whose contract input
-names a target session and a payload; arming a timer is a request against the timer
-contract; spawning a child, closing, and replacing a program are requests against the
-lifecycle contracts. The fold emits all of them the same way, and the runtime dispatches
-all of them the same way. There is no hard-coded effect vocabulary anywhere in the kernel —
-one registry, one dispatch path keyed on the contract-id.
+Like every reducer it is an ephemeral instance whose state persists in the key-value store,
+and that state **is** the context (below). So it is both per-event and durable: the instance
+is fresh per event, but its context persists and can outlive a single dispatch, so a later
+event addressed to the same context id re-instantiates the reducer and loads it. Because each
+event has its own instance, dispatches never share router state and never serialize through a
+common cell — two effects, even within one session, are handled independently.
+
+Messaging, timers, and lifecycle are not special request kinds — they are contracts answered
+by provided reducers (section 7), dispatched exactly like any other effect. There is no
+hard-coded effect vocabulary anywhere in the kernel. A message sent point-to-point to a
+specific reducer by its **id** (rather than routed by contract) is delivered directly, not
+run through a chain — that is how a reducer queries a system reducer's context without
+spawning a further dispatch.
+
+### The request context
+
+A leaf that emits a request chooses a **continuation-token** to correlate the eventual answer,
+but that token never travels upward. Dispatching the effect instantiates a system reducer
+(above), and **that instance is the context**: its id is the id of the instantiated reducer,
+derived like any other reducer id, and it is what travels with the effect. A handler holds the
+context id, never the leaf's token, so it can neither see nor spoof the leaf's correlation.
+
+The system reducer **records everything the context holds** — the leaf's token and where the
+answer folds back, the outstanding capabilities, and any metadata handlers attach — in its own
+state, and it learns all of it the ordinary way: by receiving plain events from other reducers
+and recording what it needs. A handler **attaches** metadata by sending the system reducer an
+event carrying the value and its **schema** (contract-id); the reducer records that value
+against its **author** — the sending reducer and the host that ran it, which the kernel stamps
+as the message's `from` (section 3), so no handler can claim to be another and a grant stays
+attributable to a reducer-on-a-host even across a federation. Attachments are append-only: nothing is
+overwritten or removed, and a grant is reversed by attaching a revocation, so the accumulated
+history — who established what, in what order — is always reconstructable. A later handler can
+therefore trust that, say, the authorization reducer attached a particular grant, and gate on
+it. The **lineage** — which handlers a request passed through — is the base case: the system
+reducer records each hop as the effect advances, with attachments the richer attributed layer
+on top. Other reducers do not read the context directly; they **request** what they need by
+sending the system reducer a message it chooses to answer, so context access is itself a
+governed exchange rather than an open read.
+
+The context id is unforgeable in the same sense any reducer id is: it is the hash of the
+instantiated reducer's genesis, so a handler that was not handed it cannot guess or construct
+it, and the platform acts only on ids it issued. A context that never leaves one operator
+needs nothing more; a cryptographic, attenuating construction is where this extends if a
+context ever crosses a trust boundary a peer cannot take on faith (section 11).
+
+### Forward, respond, and single-use capabilities
+
+A handler acts on an effect by emitting one of two built-in effects, keyed by the context
+rather than a raw token:
+
+- **`forward`** — permit and pass the (possibly rewritten, even re-contracted) request on to
+  the next hop.
+- **`respond`** — answer or deny; the reply bubbles back down.
+
+These are ordinary emitted effects, not a synchronous return value, so a handler may receive
+an effect, store it in its key-value state, do other work across several folds, and emit its
+`forward` or `respond` only later. Deferral is free — the correlation is the context, not a
+suspended stack.
+
+Each handler holds exactly one **single-use, handler-bound capability**: its obligation to
+answer the party below it. It is bound to the handler (the platform checks the caller against
+the capability on use, so a leaked capability is useless to anyone else) and consumed on
+discharge (a second attempt is a deterministic, recorded rejection). The transforming
+middleware pins the rule — a handler discharges its one obligation exactly once, however it
+sources the answer:
+
+- respond directly — consumes it;
+- forward transparently — the platform discharges it on the handler's behalf when the
+  upstream answer arrives, with the same bytes, without re-entering the handler;
+- forward to transform — the handler emits a fresh upstream request (its own new capability
+  for that), keeps its obligation open, receives the upstream answer in `on_response`, then
+  responds, which consumes the obligation.
+
+Capabilities are minted lazily, one hop at a time, because the chain is dynamic — the system
+reducer does not statically know where an effect will land. Correlation is the context and
+the capability, never the `id` (which is the contract-id, shared by every request of that
+contract).
+
+### Supervision
+
+The per-event system reducer is the **supervisor** of its dispatch. An obligation has exactly
+three ways to retire, all owned by it:
+
+- the **respond capability** — the handler discharges voluntarily (success);
+- a **monitor** on the handler — it detects an exit or crash and turns the open obligation
+  into a failure that bubbles down;
+- a **deadline timer** — on fire it notifies the working handlers that the deadline is
+  exceeded, then bubbles `Err(Timeout)` down and retires the capability.
+
+The deadline is the system reducer's policy, built on the raw `fire-after` timer the kernel
+provides (section 6): what a timeout *means* — who is told, any grace, what bubbles — is
+decided in the system reducer, not the kernel. The "deadline exceeded" notice reaches a working
+handler through the ordinary `on_notification` channel, so there is no new handler-side
+mechanism; it is cooperative — the handler may wind down its work, but it may also ignore the
+notice, so the system reducer still hard-retires the capability and bubbles `Err(Timeout)`
+regardless.
+
+The supervision tree is the dispatch tree. A handler that emits its own effect starts a
+nested dispatch with its own per-event supervisor; failures propagate up through the ordinary
+response mechanism — a nested failure surfaces as an `Err` on the handler's `on_response`,
+which the handler may let fail its own obligation, which its supervisor then sees — not
+through a separate supervision channel. A context is retired once every obligation against it
+has resolved by one of the three paths.
 
 ### Correlating a result to its request
 
@@ -480,10 +606,11 @@ deadline), escalate, or give up. Retryability is its judgment, not a kernel clas
 An effect is carried out by whichever **reducer** answers its contract-id — a peer session
 that declared it answers that contract, or one of the node's edge reducers (section 3). The
 answerer receives it through `on_message` (with the caller as `from`); there is no separate
-executor, and routing is the same in both cases: find who answers the contract-id. An
-answerer may reply immediately or accept the effect and reply later; while it is unsettled
-the dispatched event stays open and the caller's continuation waits. When the reply is ready,
-the runtime routes it back against the request's continuation-token and the caller resumes in
+executor, and routing is the same in both cases: the system reducer moves the effect to who
+answers the contract-id. An answerer may reply immediately or accept the effect and reply
+later; while it is unsettled its obligation stays open and the caller's continuation waits.
+When the reply is ready the answerer emits `respond` against its single-use capability
+(section above), the platform routes it back down the chain, and the caller resumes in
 `on_response`.
 
 An effect for which no reducer answers is a recorded failure, not a silent drop.
@@ -493,8 +620,8 @@ An effect for which no reducer answers is a recorded failure, not a silent drop.
 ## 5. Authorization
 
 Authorization is **middleware** — a reducer (or a chain of them) in front of the contracts it
-guards (section 3). The kernel holds no capability model and enforces nothing: it routes an
-effect up the chain, and the authz middleware either **forwards** it (permit) or **answers
+guards (section 3). The kernel holds no capability model and enforces nothing; an effect is
+routed up the chain, and the authz middleware either **forwards** it (permit) or **answers
 with a denial** that bubbles back to the caller as the effect's outcome. Because the
 middleware sits in the chain it sees the request's **resolved argument**, so it can gate on
 *what* is being done to *which resource*, not merely which contract — but exactly how it
@@ -504,16 +631,23 @@ engine such as Cedar is one such middleware, carrying its policies as content-ad
 referenced from the log; it is a wasm reducer, swapped by publishing a new hash, never a
 redeploy.
 
+An authz middleware records its decision by **attaching a grant to the request context**
+(section 4): an attribution the platform stamps with the authz reducer's own id. A downstream
+handler then trusts the grant because it can see who attached it — it can, for instance,
+refuse to act unless an authorization handler it recognizes appears in the lineage with a
+matching grant. This is how a permit travels with the request rather than being re-derived at
+every hop, and why the context's attributions are unforgeable and append-only.
+
 Enforcement rests on the chain being configured so the authz middleware wraps the contracts
 it must guard — established at bootstrap and controlled by the authority to register
 handlers, itself gated the same way (grounded at the trust root, section 11). A denial is an
 ordinary recorded result, auditable like any other, not a special kernel event.
 
-Down the spawn tree, enforcement compounds: a child **inherits its parent's middleware**
-(section 7), so every effect a child emits traverses every ancestor's authz middleware
-before reaching an edge. Authority therefore only ever attenuates downward — a child can add
-restriction but never remove an inherited guard — so privilege escalation by spawning is
-structurally impossible.
+Down the spawn tree, enforcement compounds: the system reducer wraps every capability it
+propagates to a child in the ancestors' authz middleware (section 3), so every effect a child
+emits traverses every ancestor's guard before reaching an edge. Authority therefore only ever
+attenuates downward — a child can add restriction but never reach past or remove an inherited
+guard — so privilege escalation by spawning is structurally impossible.
 
 ### Down-scoping through a published program
 
@@ -551,10 +685,13 @@ Reacting is the whole scheduling model. There is no polling. A program instance 
 returns, and the session waits in one of two ways, each with a clean wake:
 
 - **Waiting on an outstanding effect.** A reducer may attach a **deadline** to a request
-  (section 3); if no answer arrives in time, it receives `Err(Timeout)` and wakes to
-  recover, and the runtime cancels the dispatch. A hung model call or shell command becomes
-  an ordinary `Err(Timeout)`, not a stuck session — so a reducer that must not wedge on a
-  hung answer sets a deadline; the anti-stuck guarantee is per-request and opt-in.
+  (section 3). The kernel provides only the raw `fire-after` timer; enforcing the deadline is
+  the system reducer's job (section 4): on fire it notifies the working handlers that the
+  deadline is exceeded (cooperative cleanup, through `on_notification`), then hard-retires the
+  obligation and bubbles `Err(Timeout)` down, so the waiting reducer wakes to recover and no
+  late answer can fold. A hung model call or shell command becomes an ordinary `Err(Timeout)`,
+  not a stuck session — so a reducer that must not wedge on a hung answer sets a deadline; the
+  anti-stuck guarantee is per-request and opt-in.
 - **Idle, waiting for input.** Any delivered message wakes the session. Idle costs
   nothing and is instantly revivable.
 
@@ -635,18 +772,22 @@ The built-in lifecycle effects:
   spawned-child edge in the parent's log and the parent link in the child; the link is
   immutable on both sides.
 
-  **The child inherits the parent's middleware.** For every contract, the child's handler
-  chain continues *into the parent's chain*, so every effect a child emits passes through the
-  parent's middleware — and transitively every ancestor's — before it can reach an edge. A
-  child's own handlers may only be **prepended** (adding interception or restriction); it can
-  never detach that inherited tail, and `set-handler` on the child cannot remove it. This is
-  what attenuates authority down the spawn tree and makes privilege escalation structurally
-  impossible: a child can only ever do a subset of what its parent could, because the
-  parent's authz middleware runs on everything the child does (section 5).
+  **A child's authority is what its ancestors propagate to it.** A child inherits nothing
+  automatically; a handler reaches it only when the reducer that handler is registered on
+  chooses to propagate it (section 3). Whatever the child does hold, the system reducer wraps
+  in the ancestors' middleware, so every effect the child emits passes through the parent's
+  guards — and transitively every ancestor's — before it can reach an edge. A child's own
+  handlers are **prepended** (adding interception or restriction); it can neither reach past
+  an inherited guard nor remove one. This is what attenuates authority down the spawn tree and
+  makes privilege escalation structurally impossible: a child can only ever do a subset of
+  what its ancestors permit, because their authz middleware runs on everything it does
+  (section 5).
 - **set-handler(contract-id, chain)** installs or replaces the chain of reducer identifiers
-  for a contract in a session. This is how a session is **upgraded over time** — a new
-  handler added, a chain extended or reordered — without respawning it; the handler
-  analogue of replacing the program (above).
+  for a contract in a session — how a session is **upgraded over time** (a handler added, a
+  chain extended or reordered) without respawning it; the handler analogue of replacing the
+  program (above). It is answered by the system reducer, which owns the chain state, and
+  registering a handler is what raises the new-handler notification (section 3) that lets a
+  reducer decide whether to propagate it to its children.
 - **list-handlers(reducer)** returns the contracts a reducer has handlers for — each as its
   `contract-id` and `schema`. The target may be the caller itself or any other reducer (so a
   reducer can discover what a peer can handle before messaging it). This is an **effect**: it
@@ -855,8 +996,13 @@ needing no new kernel mechanism.
   built entirely from sessions and effects; none of it needs new runtime mechanism.
 - **Multiple operators and trust** — signed provenance, node enrollment and identity,
   short-lived scoped credentials brokered just-in-time, and cross-operator policy. The
-  event envelope reserves room for a signature and producer identity from the start; the
-  machinery that verifies them is later.
+  message envelope already carries both parts of a producer identity — a `from` naming the
+  sending reducer *and* the host that ran it (section 3) — so a receiver can gate on
+  reducer-on-host, and a grant attached to a request context stays attributable to a
+  reducer-on-host across a federation (section 4). What is later is the machinery that
+  authenticates a peer host and enrolls it into a trust tier, and signatures that harden the
+  envelope where hosts do not mutually authenticate at transport; the identity the envelope
+  carries is in scope from the start.
 - **Federation** — many nodes in a mesh, effects routed to the right node by trust tier,
   and a hub that folds session reducers while edge nodes run only edge reducers. This
   document specifies a single node.
