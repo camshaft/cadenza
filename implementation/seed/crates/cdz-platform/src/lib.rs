@@ -11,6 +11,7 @@
 
 mod blob_store;
 mod contract;
+mod event_reducer;
 mod hash;
 mod kv;
 mod reducer;
@@ -19,6 +20,7 @@ mod str;
 
 pub use blob_store::{BlobStore, InMemoryBlobStore};
 pub use contract::Contract;
+pub use event_reducer::{Command, Delivered, DirectDispatch, Effect, EventReducer, HandlerResult};
 pub use hash::{Hash, base64url};
 pub use kv::{InMemoryKvStore, KeyRange, KvKeyScan, KvScan, KvStore, prefix_range};
 pub use reducer::{Error, Message, Notification, Origin, Outcome, Reducer, Request, Response};
