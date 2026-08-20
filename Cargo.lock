@@ -353,6 +353,7 @@ name = "cdz-platform"
 version = "0.0.0"
 dependencies = [
  "blake3",
+ "bytes",
 ]
 
 [[package]]

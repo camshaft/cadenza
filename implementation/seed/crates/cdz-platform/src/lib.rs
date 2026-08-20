@@ -7,5 +7,11 @@
 //! registry, the store — addresses by it, so it is the correct first primitive to settle.
 
 mod hash;
+mod str;
 
 pub use hash::{Hash, base64url};
+pub use str::Str;
+
+// Re-export the byte-buffer type the platform marshals through, so downstream code depends on the
+// platform's chosen `Bytes` (spec §12: every byte buffer is `bytes::Bytes`, never `Vec<u8>`).
+pub use bytes::Bytes;

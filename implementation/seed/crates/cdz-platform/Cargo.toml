@@ -21,3 +21,5 @@ publish = false
 
 [dependencies]
 blake3 = "1" # the ONE content-address digest (fleet-unified on blake3, operator 2026-08-08)
+bytes = "1"  # every byte buffer is bytes::Bytes, never Vec<u8> (spec §12) — O(1) clone as it threads through
+
