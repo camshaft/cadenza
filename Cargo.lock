@@ -413,6 +413,7 @@ dependencies = [
  "bach",
  "blake3",
  "bytes",
+ "cadenza-ast",
  "futures-core",
  "futures-util",
  "tokio",

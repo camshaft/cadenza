@@ -7,11 +7,13 @@
 //! registry, the store — addresses by it, so it is the correct first primitive to settle.
 
 mod blob_store;
+mod contract;
 mod hash;
 mod kv;
 mod str;
 
 pub use blob_store::{BlobStore, InMemoryBlobStore};
+pub use contract::Contract;
 pub use hash::{Hash, base64url};
 pub use kv::{InMemoryKvStore, KeyRange, KvKeyScan, KvScan, KvStore, prefix_range};
 pub use str::Str;
