@@ -20,6 +20,16 @@ edition = "2024"
 publish = false
 
 [dependencies]
-blake3 = "1" # the ONE content-address digest (fleet-unified on blake3, operator 2026-08-08)
+blake3 = "1" # the one content-address digest (fleet-unified on blake3, operator 2026-08-08)
 bytes = "1"  # every byte buffer is bytes::Bytes, never Vec<u8> (spec §12) — O(1) clone as it threads through
+async-trait = "0.1" # dyn-safe async traits, so a store/kv backend is a swappable trait object (spec §8)
+# tokio is the platform's async runtime (spec §9 shared async runtime). A main dep per operator directive
+# 2026-08-20; the trait layers stay runtime-agnostic (await-only, no tokio primitives) so they also run
+# under the Bach simulator in tests. Minimal features for now; the scheduler layer widens them later.
+tokio = { version = "1", features = ["rt", "macros"] }
+
+[dev-dependencies]
+# Bach (Cameron's crate) — a discrete-event simulation runtime for deterministic async testing. Drives the
+# runtime-agnostic trait futures in simulated time so store/kv behavior is deterministic + snapshotable.
+bach = "0.1"
 
