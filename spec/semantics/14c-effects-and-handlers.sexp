@@ -17167,3 +17167,40 @@
             (export main)))
   (call   main (: 100 Int64)) (output (: 100101 Int64))
   (call   main (: 255 Int64)) (output (: 255000 Int64)))
+
+;; -- pyif1 conditional resume both if-arms + pymt2 three-way data-dependent resume + pyhc1 recursive-helper resume answer (breaker batch 363) --
+(case "pyif1 probe: the arm branches on state parity and RESUMES in BOTH if-branches with DIFFERENT answer and next-state — even s resumes (* s 100) threading (+ s 1), odd s resumes (* s 10) threading (+ s 3); three dispatches follow a data-dependent path through the two resume sites, so the tail fold must handle two distinct resume calls that reconverge (each its own answer AND its own state advance)"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((tick () s (if (= (% s 2) (: 0 Int64))
+                      (resume (* s 100) (+ s 1))
+                      (resume (* s 10) (+ s 3)))))
+      (+ (E.tick) (+ (E.tick) (E.tick)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 460 Int64))
+  (call   main (: 0 Int64)) (output (: 410 Int64)))
+(case "pymt2 probe: a THREE-WAY data-dependent resume — the arm branches on (% s 3) via nested if and resumes differently in each of three branches (s%3=0 -> (* s 100) thread +1; =1 -> (* s 10) thread +2; else -> s thread +3); four dispatches walk a state-dependent path across all three resume sites, so the tail fold reconverges three distinct resume calls each with its own answer AND state advance"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (main (: n Int64))
+    (handle E (% n 4)
+      ((tick () s (if (= (% s 3) (: 0 Int64)) (resume (* s 100) (+ s 1))
+                    (if (= (% s 3) (: 1 Int64)) (resume (* s 10) (+ s 2))
+                      (resume s (+ s 3))))))
+      (+ (E.tick) (+ (E.tick) (+ (E.tick) (E.tick))))))
+  (export main)))
+  (call   main (: 1 Int64)) (output (: 950 Int64))
+  (call   main (: 0 Int64)) (output (: 350 Int64)))
+(case "pyhc1 probe: the resume ANSWER is computed by a RECURSIVE top-level helper applied to the state — sumto x = x(x+1)/2 via self-recursion, so each tick resumes (sumto s) threading (+ s 1); a recursive helper call (not a simple arithmetic expr) sits in the answer position and must run to completion per dispatch while the state threads"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (sumto (: x Int64)) (if (<= x (: 0 Int64)) (: 0 Int64) (+ x (sumto (- x (: 1 Int64))))))
+  (def (main (: n Int64))
+    (handle E (+ (% n 3) (: 1 Int64))
+      ((tick () s (resume (sumto s) (+ s 1))))
+      (+ (* 1000 (E.tick)) (E.tick))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 3006 Int64))
+  (call   main (: 0 Int64)) (output (: 1003 Int64)))

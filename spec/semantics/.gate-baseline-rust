@@ -1562,6 +1562,7 @@ pass	a consistent annotation type-checks against the inferred type
 pass	a const Ast-list FILTERED by a nested recursive comment-peeler const-evaluates at compile time
 pass	a const closure re-passed through a recursive driver specializes and computes correctly
 pass	a const collection recursively folded UNROLLS to its result at compile time
+pass	a const collection recursively folded is rejected, not compiled to an infinite loop
 pass	a const list recursively FILTERED (conditional include) folds to a constant
 pass	a const list whose elements are BYTES LITERALS recursively folds — a BytesOf is a const value
 pass	a const parameter rejects an argument that depends on runtime data
@@ -1672,6 +1673,7 @@ pass	a decimal token trailing letters is a malformed literal, not an unbound nam
 pass	a declaration in a do block shadows an outer binding
 pass	a decoded field re-encodes into the same-width segment without an explicit narrow
 pass	a decoded length field re-encodes a length-prefixed frame end to end
+pass	a decoded payload feeds ordinary arithmetic
 pass	a decomposed literal indexes and measures by its normalized length, not the raw scalar count
 pass	a deep NESTED-VARIANT pattern selects a runtime recursive sum by spine depth
 pass	a deep balanced tree is built and folded to a scalar, consuming both children
@@ -2891,6 +2893,7 @@ pass	a quantity raised to the zeroth power is a dimensionless one
 pass	a quantity read from a map COMBINES with a fresh same-dimension quantity
 pass	a quantity whose reference-scaled magnitude overflows its inner Int is rejected
 pass	a quantity's erased value is the identical numeric value the bare literal has
+pass	a quote carrying a symbol literal declines — no Ast.Symbol variant to reify it into
 pass	a quote carrying a symbol literal reifies to an Ast.Symbol value
 pass	a quote inside a tagged-template hole reaches the tag function as an Ast value
 pass	a quote of a char literal reifies to an Ast.Char value
@@ -3466,6 +3469,7 @@ pass	a runtime-built BigInt sum-payload literal probe falls through on a non-mat
 pass	a runtime-built BigInt sum-payload literal probe matches its constructor
 pass	a runtime-built generic user sum escapes with its parametric type frame
 pass	a runtime-built list nested in a tuple crosses the host boundary rendering the nested collection
+pass	a runtime-built open-sum variant decodes through the schema
 pass	a runtime-built string crosses the boundary as its value form
 pass	a runtime-computed BigInt result crosses the host boundary
 pass	a runtime-computed Rational crosses the host boundary as its exact value
@@ -3544,6 +3548,8 @@ pass	a scaled cube dimension raises its prefix scale to the power (km³ → ×1e
 pass	a scaled derived quantity displays with BOTH scales folded into the magnitude
 pass	a scaled reciprocal dimension folds the denominator prefix scale (1/ms → ×1000 per second)
 pass	a scaled-unit PARAMETER annotation keeps its scale across the type round-trip (mixed-scale combine)
+pass	a schema decode's Err result is handled as data on its own branch
+pass	a schema decode's Ok result is matched to recover the decoded payload
 pass	a scientific-notation float literal denotes the scaled value
 pass	a scientific-notation literal annotated Rational scales the numerator
 pass	a scrutinee FAILING the pattern reaches the catch-all WITHOUT running the guard's perform
@@ -4214,6 +4220,7 @@ pass	an OPTION handler state TOGGLES its variant per perform
 pass	an OPTION payload quantity renders scaled to its reference in the value form
 pass	an ORDER-PRESERVING dedup threads a seen-Set and an out-List as twin accumulators
 pass	an OVERFLOWING literal to a narrow effect-op parameter is rejected
+pass	an Ok and an Err decode compose through one shared handler
 pass	an Ok carrying a bare None type-checks under a whole-expression annotation
 pass	an Option (sum) entry argument is marshalled as a native Option
 pass	an Option built by an if with the nullary branch first type-checks
@@ -4586,9 +4593,11 @@ pass	an odd-width signed division overflow traps at the declared width (Int24 mi
 pass	an odd-width unsigned shift result exceeding the declared width traps (UInt4: 3<<3)
 pass	an offered ordering is total and deterministic
 pass	an open sum nested as another sum's payload matches with an inner wildcard
+pass	an open sum payload that does not match its schema yields a typed failure, not a trap
 pass	an open sum with a guarded named arm plus an open-tail arm is exhaustive
 pass	an open sum's open-tail arm dispatches a NAMED-but-uncovered variant, not only unnamed ones
 pass	an open sum's open-tail arm dispatches a variant the specific arms do not name
+pass	an open sum's payload decodes against a schema to a typed result
 pass	an open-row function accepts a runtime MERGE result and reads the carried field
 pass	an open-row function is applied at TWO different record widths in one program
 pass	an open-row function over a Record.with result reads the UPDATED value
@@ -5998,12 +6007,14 @@ pass	pyfn1 probe: BARE foreign perform in a TWO-HOLE arm's NEXT-STATE hole (not 
 pass	pyft1 a BARE foreign perform in the post-resume toll position FOLDS — a distinct outer effect drawn directly (not wrapped in a nested handle) as the toll term folds correctly, the boundary pin showing the toll decline is scoped to a nested handle installation not to effect activity in the toll
 pass	pyfv1 a FOREIGN perform inline in the resume VALUE under a nested inner handler drawn TWICE — (tick () s (resume (+ s (B.beat)) (+ s 1))) — folds correctly: the outer B.beat runs EXACTLY ONCE per A dispatch because the resume value is spliced into the continuation once per dispatch and the next-state (+ s 1) is pure, so nothing re-threads the perform. Pins the value-position side of the foreign-perform-in-arm family (do-stmt fix pyfb1 landed 5208ad1f3): a foreign perform reaching the VALUE folds, only one threaded into the NEXT-STATE duplicates. Guards against a future freeze-once next-state fix regressing the value-position fold. B.beat returns bs+1 threading its own state, so dispatch1 adds 1, dispatch2 adds 2
 pass	pyh1 the RESUME RESULT FED THROUGH A RECURSIVE PURE HELPER — each arm digit-sums whatever the resumed rest-of-body returned before adding a hundredfold state toll, the helper recursion runs during the unwind on a value that does not exist until the tail completes, and the seed drives the two frames' digit-sums through different collapse depths
+pass	pyhc1 probe: the resume ANSWER is computed by a RECURSIVE top-level helper applied to the state — sumto x = x(x+1)/2 via self-recursion, so each tick resumes (sumto s) threading (+ s 1); a recursive helper call (not a simple arithmetic expr) sits in the answer position and must run to completion per dispatch while the state threads
 pass	pyhn1 probe: the resume NEXT-STATE is computed by a top-level pure HELPER function (nxt s = 2s+1) called from the arm — each dispatch answers ten-times the state and threads nxt(s), so the state follows a 2x+1 recurrence across three dispatches and the cross-function next-state call must thread correctly
 pass	pyhof1 probe: the op takes a FUNCTION argument and the arm APPLIES it to the captured state before resuming — apply(f) resumes (f s); two dispatches pass different closures (multiply-by-ten then add-hundred) while the state threads, so the higher-order argument is invoked inside the handler arm at the current state
 pass	pyi1 a TOLLED ARM UNDER A BRANCHING BODY — the first draw's answer picks which body branch performs the second draw so the two frames' tolls wrap DIFFERENT continuations per seed, the positive seed rides the hundred branch and the zero seed the two-hundred branch, and each frame's toll composes with whichever branch its continuation actually contains
 pass	pyi2 BRANCHES WITH UNEQUAL DISPATCH COUNTS under a tolled arm — the drawn parity routes to a one-draw branch or a TWO-draw branch so the seeds stack two or three tolled frames from the same program, the odd path's extra frame adds both an answer factor and a toll, and a lowering assuming a fixed frame count per body misprices the deeper seed
 pass	pyi3 the SHADOWING ARM'S SELF-PERFORM HITS A TOLLED OUTER ARM — the inner arm draws the effect it handles and the draw routes to the outer handler whose thousandfold toll then wraps everything downstream of that dispatch including the inner region's completion, two outer frames stack their tolls around the whole computation, and mispricing either toll or misrouting the self-perform shifts separate digit ranges
 pass	pyid1 probe: the INNER handler's arm itself draws from the OUTER effect (legal: outer encloses inner) — each inner I.now resumes its state plus a fresh outer O.get, so the two handler states thread independently and the inner answer folds in an outer sub-draw taken at the outer's current state
+pass	pyif1 probe: the arm branches on state parity and RESUMES in BOTH if-branches with DIFFERENT answer and next-state — even s resumes (* s 100) threading (+ s 1), odd s resumes (* s 10) threading (+ s 3); three dispatches follow a data-dependent path through the two resume sites, so the tail fold must handle two distinct resume calls that reconverge (each its own answer AND its own state advance)
 pass	pyj1 a PURE HELPER CALL AS THE TOLL — each frame's post-resume toll is a squaring def applied to the captured state so the toll routes through a real function call during the unwind, the two frames square different offsets, and the call rung joins the toll side of the ladder as pyh1 joined its consumer side
 pass	pyj2 a RECURSIVE HELPER AS THE TOLL — each frame's post-resume toll digit-sums a thirteen-fold compound of its captured state so the unwind runs a data-dependent recursion per frame, the two frames' digit-sums collapse different products, and the recursion depth itself varies with the seed through the toll argument
 pass	pyk1 an INDEX-WEIGHTED post-resume toll — the state pairs a value with a dispatch counter and each frame's toll is their PRODUCT so the very first frame's toll is zeroed by its own index while the second frame pays value-times-one, a product of two captured fields distinguishing which frame's pair fed which toll beyond what either field alone could
@@ -6023,6 +6034,7 @@ pass	pymo1 probe: a TWO-OP effect sharing one threaded state — inc answers s a
 pass	pymo3 probe: a THREE-OP effect over a TUPLE state where each op touches a different field — adda answers a and threads (a+1, b), addb answers b and threads (a, b+10), rd answers a*100+b and threads unchanged; the body interleaves adda/addb/adda/addb/rd so three distinct ops read and independently advance the two fields of one shared tuple state through the tail-resumptive fold
 pass	pymr1 probe: a MAP-STATE handler with insert-then-read-across-the-seam — put(k,v) threads Map.insert as the next-state, and a later fetch(k) must see the value the earlier put wrote (heap read-after-write through the resume seam), while a fetch of the seeded key still returns the seed
 pass	pymt1 probe: a GEOMETRIC (tripling) state thread — each tick answers the current state and threads (* s 3), so three dispatches read s, 3s, 9s; packing them into separate digit ranges makes a wrong multiplier or a mis-threaded state visibly scramble the powers-of-three progression
+pass	pymt2 probe: a THREE-WAY data-dependent resume — the arm branches on (% s 3) via nested if and resumes differently in each of three branches (s%3=0 -> (* s 100) thread +1; =1 -> (* s 10) thread +2; else -> s thread +3); four dispatches walk a state-dependent path across all three resume sites, so the tail fold reconverges three distinct resume calls each with its own answer AND state advance
 pass	pymu1 probe: a two-op effect where bump answers UNIT (advances state only, no meaningful value) and peek answers (* s 100) reading the state — interleaved via let/do as peek,bump,peek,bump,peek; the UNIT-answering op threads (+ s 3) while the reader leaves state unchanged, testing a Unit resume-answer alongside a value-answer in one shared-state tail fold
 pass	pymx1 probe: a MAP-STATE handler with REMOVE across the seam — rm(k) threads Map.remove as the next-state and answers the shrunk length, so a later get(k) of the removed key returns None while a get of a surviving key still returns its value; delete-then-lookup consistency through the resume seam
 pass	pyn1 POST-RESUME TOLLS AT BOTH NESTING LEVELS — the outer levy adds a thousandfold toll around a body whose second summand is a WHOLE INNER HANDLE running two hundredfold-tolled ticks, the inner pyramid unwinds completely inside the outer frame's replay before the outer toll settles, and the seed moves only the outer answer and toll leaving the inner arithmetic fixed
@@ -6608,6 +6620,7 @@ pass	the composed slice view EQUALS its flat twin and keys a Map by canonical co
 pass	the compound comparator drives a full INSERTION SORT over runtime tuples
 pass	the conditional-shot-count arm's SINGLE-shot branch (same program, other input)
 pass	the cross-handler op-arg lift fires 100 times inside a recursive accumulator loop
+pass	the decode error's kind is matchable
 pass	the default-integer pragma is definition-site scoped, not use-site
 pass	the difference contains the elements not in the second set
 pass	the difference of a set with itself is empty
