@@ -1,7 +1,0 @@
-# The repo-root .gitignore ignores `Cargo.lock` globally (only the root workspace lock is un-ignored there).
-# But cdz-kernel is its OWN root-excluded [workspace], so it has its own leaf Cargo.lock — and that lock
-# MUST be tracked for a hermetic offline build: v-nix's full-CI-in-nix jobs (nixifying the cdz-kernel
-# native test/clippy/fmt) vendor deps from the git-tracked lock (a nix derivation sees only tracked files),
-# and `--locked` CI needs it pinned for determinism. So we COMMIT this crate's Cargo.lock — un-ignore it
-# here (scoped to this dir) — same as the sibling leaf workspaces (cdz-runtime/cdz-nfc/rcdzc-wasm/the guests).
-!Cargo.lock

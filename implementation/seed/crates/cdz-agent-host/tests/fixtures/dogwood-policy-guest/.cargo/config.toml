@@ -1,6 +1,0 @@
-# getrandom 0.3's wasm_js backend needs BOTH the crate feature (in Cargo.toml) AND this cfg flag — the
-# feature alone is insufficient (getrandom's own compile_error says so). Scoped to the wasm32 target so a
-# native build of this fixture (if ever) is unaffected. This is the lever that makes dogwood's transitive
-# getrandom compile to wasm32-unknown-unknown; paired with uuid's `js` feature it clears the whole tree.
-[target.wasm32-unknown-unknown]
-rustflags = ['--cfg', 'getrandom_backend="wasm_js"']

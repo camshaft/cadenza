@@ -338,7 +338,7 @@ mod tests {
             "implementation/seed/crates/cadenza-syntax/tests/suite/corpus_roundtrip.rs"
         )));
         assert!(is_integration_test_path(Path::new(
-            "implementation/seed/crates/cdz-agent-host/tests/common/mod.rs"
+            "implementation/seed/crates/cdz/tests/common/mod.rs"
         )));
         // A `src/**` file — even one named tests.rs or under a `tests` MODULE dir under src — is NOT a
         // cargo integration test (it's an in-crate unit test, which the mandate WANTS).
@@ -353,15 +353,15 @@ mod tests {
         )));
         // A non-.rs file under tests/ (a fixture) is not flagged.
         assert!(!is_integration_test_path(Path::new(
-            "implementation/seed/crates/cdz-kernel/tests/fixtures/reducer.cdz"
+            "implementation/seed/crates/cdz/tests/fixtures/example.cdz"
         )));
         // A guest wasm-component CRATE under `tests/fixtures/**/src` is a build fixture, NOT a test
         // binary — it must survive the flip (its own Cargo.toml/src).
         assert!(!is_integration_test_path(Path::new(
-            "implementation/seed/crates/cdz-agent-host/tests/fixtures/cedar-policy-guest/src/lib.rs"
+            "implementation/seed/crates/cdz/tests/fixtures/some-guest/src/lib.rs"
         )));
         assert!(!is_integration_test_path(Path::new(
-            "implementation/seed/crates/cdz-kernel/tests/fixtures/reducer-guest/src/lib.rs"
+            "implementation/seed/crates/cadenza-syntax/tests/fixtures/other-guest/src/lib.rs"
         )));
         // A nested crate anywhere under `tests/` (a `src/` after `tests/`) is a sub-crate's own source.
         assert!(!is_integration_test_path(Path::new(
@@ -451,7 +451,7 @@ mod tests {
             "implementation/seed/crates/rcdzc/src/backend/wasm/runtime_abi.rs"
         ));
         assert!(!is_runtime_abi_hash_home(
-            "implementation/seed/crates/cdz-kernel/src/event.rs"
+            "implementation/seed/crates/cdz/src/main.rs"
         ));
     }
 }

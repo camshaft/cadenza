@@ -36,29 +36,6 @@ exclude = [
     # (nothing in the seed depends on it), built + tested on demand by a dedicated CI job. It builds
     # standalone (`cargo build`/`cargo test` from its own dir), with its own `[workspace]` table.
     "implementation/seed/crates/cdz-cad",
-    # `cdz-kernel` (the v2 agent-harness kernel, v-agent-harness — design/agent-harness-kernel.md) is
-    # excluded because it will grow a heavy async/wasmtime tree (the reducer host + effect executors) the
-    # seed's `--workspace` build + corpus gate must never pay. It is a leaf crate (nothing in the seed
-    # depends on it) with its own `[workspace]` table; the v0 build (blake3-only, in-memory + file-backed
-    # log, no network) builds + tests standalone, run by a dedicated CI job. Excluded up front so later
-    # slices drop in without a workspace-topology change.
-    "implementation/seed/crates/cdz-kernel",
-    # `cdz-agent-host` (the REAL kernel effect executors + Cedar authorizer, v-agent-harness-host) is
-    # excluded for the SAME reason as cdz-kernel: it path-deps cdz-kernel (an excluded crate) and will
-    # grow a network/AWS-SDK/wasmtime tree (the Bedrock model executor, real HTTP client, Cedar-as-wasm
-    # authorizer) the seed's `--workspace` build + corpus gate must never pay. It is a leaf crate
-    # (nothing in the seed depends on it) with its own `[workspace]` table; the default build (hermetic,
-    # no network) builds + tests standalone, run by a dedicated CI job. Its network executors are behind
-    # a `live-net` feature so the default gate stays hermetic (mirrors cdz-kernel's `live-exec`).
-    "implementation/seed/crates/cdz-agent-host",
-    # `cdz-session-run` (the DRIVE-ONLY edge binary for the platform-conformance suite, v-platform-conformance)
-    # is excluded for the SAME reason as cdz-kernel: it path-deps cdz-kernel (an excluded crate), so it carries
-    # the kernel's wasmtime+tokio tree the seed's `--workspace` build + corpus gate must never pay. It is a leaf
-    # binary (nothing in the seed depends on it) with its own `[workspace]` table; xtask builds it + shells out
-    # to it ONLY for the platform gate, and `cargo xtask check` gates it standalone (fmt/build/clippy against its
-    # own manifest, mirroring cdz-wasm). Excluded up front so later platform-suite slices drop in without a
-    # workspace-topology change.
-    "implementation/seed/crates/cdz-session-run",
     # `rcdzc-wasm` (the Cadenza compiler as a WASM artifact, v-agent-runtime minimal-kernel K1-dep wasm-swap)
     # is excluded because it ONLY builds for a wasm target (`cargo build --target wasm32-wasip1 -p rcdzc-wasm`),
     # like cdz-runtime/cdz-wasm — the native seed `--workspace` build must never try to build a cdylib-for-wasm
@@ -72,25 +49,6 @@ exclude = [
     # runtime does not. Leaf crate (nothing in the seed depends on it; the compiler emits an IMPORT on it,
     # not a build dep), own `[workspace]` table, built to wasm + published to CAS on demand.
     "implementation/seed/crates/cdz-nfc",
-    # `cdz-syntax-guest` (the cadenza:syntax reducer-facing WIT component, v-syntax P2 — design note
-    # `p2-reducer-invoke-cadenza-syntax-as-composable-wit-dep`) is excluded because it ONLY builds for
-    # wasm32-unknown-unknown (a cadenza:syntax component a reducer imports by content-hash and
-    # `compose_dep_into_linker` links leaves-first), like cdz-nfc/cdz-runtime — the native seed
-    # `--workspace` build + corpus gate must never build a cdylib-for-wasm crate. It is a thin wit-bindgen
-    # guest over the `cadenza-syntax` member library (lean, no cedar/cli), delegating parse/query/doc to
-    # it and carrying ASTs across the boundary as cdzast bytes. Leaf crate (nothing in the seed depends on
-    # it; a reducer imports the lifted component, not a build dep), own `[workspace]` table, built to wasm
-    # + lifted with `wasm-tools component new` on demand.
-    "implementation/seed/crates/cdz-syntax-guest",
-    # `cdz-syntax-consumer-guest` (the P2 part-2 CONSUMER guest, v-syntax) is excluded for the SAME reason
-    # as cdz-syntax-guest: it ONLY builds for wasm32-unknown-unknown (a wit-bindgen reducer guest whose
-    # world IMPORTS cadenza:syntax by content-hash + drives a call via `compose_dep_into_linker`), so the
-    # native seed `--workspace` build must never build a cdylib-for-wasm crate. It is the MIRROR of the
-    # producer cdz-syntax-guest (that EXPORTS cadenza:syntax; this IMPORTS it). Its cadenza:syntax import
-    # name carries a `+SYNTAXGUESTHASH` placeholder v-nix's flake templates to the resolved producer hash
-    # at build. Leaf crate (nothing in the seed depends on it; the host loads the lifted component), own
-    # `[workspace]` table, built to wasm + lifted with `wasm-tools component new` on demand.
-    "implementation/seed/crates/cdz-syntax-consumer-guest",
 ]
 
 [profile.dev]

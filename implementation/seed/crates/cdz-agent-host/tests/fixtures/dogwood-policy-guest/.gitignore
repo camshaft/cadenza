@@ -1,7 +1,0 @@
-# The repo-root .gitignore ignores `Cargo.lock` globally (workspace crates lock via the seed root).
-# But cedar-policy-guest is a SEPARATE, dependency-declaring wasm32 fixture crate whose build MUST be
-# byte-reproducible: its lifted component is content-addressed (the cdz-agent-host CI job's
-# `wasm-tools component new` + the coming v-nix N2 Nix FOD both need a stable output hash), and floating
-# deps would break that. So we COMMIT this crate's Cargo.lock — un-ignore it here (scoped to this dir),
-# while still ignoring build output. `--locked` guest builds are then deterministic in CI + Nix.
-!Cargo.lock

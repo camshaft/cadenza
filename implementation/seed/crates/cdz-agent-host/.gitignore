@@ -1,8 +1,0 @@
-# The repo-root .gitignore ignores `Cargo.lock` globally (root-workspace crates lock via the seed root).
-# But cdz-agent-host is its OWN [workspace] (root-excluded — it path-deps the excluded cdz-kernel + grows
-# a heavy async/wasmtime/reqwest tree), so it needs its OWN Cargo.lock to build reproducibly offline. The
-# full-CI-in-nix arc (v-nix) nixifies this crate's native test/clippy/fmt as a hermetic nix derivation,
-# which can only vendor from a git-tracked lock. So we COMMIT this crate's Cargo.lock — un-ignore it here
-# (scoped to this dir) — mirroring the cedar-policy-guest fixture. Authorized by v-agent-harness-host
-# (the crate owner) 2026-08-04. `--locked` builds are then deterministic in CI + Nix.
-!Cargo.lock
