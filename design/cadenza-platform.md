@@ -443,13 +443,12 @@ a handler, arm a timer, notify a handler, retire a context. Its own core loop mu
 direct commands and never emit routed effects, or each of its own effects would spawn another
 system reducer without end.
 
-Like every reducer it is an ephemeral instance whose state lives in the key-value store —
-here keyed by the **context id** (below). That is what makes it both per-event and durable:
-the instance is fresh per event, but the context it operates on persists and can outlive any
-single dispatch, so a later event referencing the same context id gets a fresh instance that
-loads it and continues. Because each event has its own instance, dispatches never share
-router state and never serialize through a common cell — two effects, even within one
-session, are handled independently.
+Like every reducer it is an ephemeral instance whose state persists in the key-value store,
+and that state **is** the context (below). So it is both per-event and durable: the instance
+is fresh per event, but its context persists and can outlive a single dispatch, so a later
+event addressed to the same context id re-instantiates the reducer and loads it. Because each
+event has its own instance, dispatches never share router state and never serialize through a
+common cell — two effects, even within one session, are handled independently.
 
 Messaging, timers, and lifecycle are not special request kinds — they are contracts answered
 by provided reducers (section 7), dispatched exactly like any other effect. There is no
@@ -461,29 +460,32 @@ spawning a further dispatch.
 ### The request context
 
 A leaf that emits a request chooses a **continuation-token** to correlate the eventual answer,
-but that token never travels upward. The platform creates a **context** holding the leaf's
-token and where the answer folds back, and issues an **unforgeable id** that stands for it.
-That id — not the leaf's token — is what travels, so a handler can neither see nor spoof the
-leaf's correlation.
+but that token never travels upward. Dispatching the effect instantiates a system reducer
+(above), and **that instance is the context**: its id is the id of the instantiated reducer,
+derived like any other reducer id, and it is what travels with the effect. A handler holds the
+context id, never the leaf's token, so it can neither see nor spoof the leaf's correlation.
 
-Handlers **attach** metadata to the context, and each attachment records **who attached it**
-(the handler id), the **schema** (contract-id) of the value, and the value itself.
-Attachments are append-only: nothing is overwritten or removed, and a grant is reversed by
-attaching a revocation, so the accumulated history — who established what, in what order — is
-always reconstructable. Because the platform records each author, a later handler can trust
-that, say, the authorization handler attached a particular grant, and gate on it. The
-**lineage** — which handlers a request passed through — is the base case of this: a presence
-record the platform stamps as the effect advances, with attachments the richer attributed
-layer on top. Other reducers do not read the context directly; they **request** what they
-need by sending the system reducer a message it chooses to answer, so context access is
-itself a governed exchange rather than an open read.
+The system reducer **records everything the context holds** — the leaf's token and where the
+answer folds back, the outstanding capabilities, and any metadata handlers attach — in its own
+state, and it learns all of it the ordinary way: by receiving plain events from other reducers
+and recording what it needs. A handler **attaches** metadata by sending the system reducer an
+event carrying the value and its **schema** (contract-id); the reducer records that value
+against its **author** — the sender's id, which the kernel stamps as the message's `from`
+(section 3), so no handler can claim to be another. Attachments are append-only: nothing is
+overwritten or removed, and a grant is reversed by attaching a revocation, so the accumulated
+history — who established what, in what order — is always reconstructable. A later handler can
+therefore trust that, say, the authorization reducer attached a particular grant, and gate on
+it. The **lineage** — which handlers a request passed through — is the base case: the system
+reducer records each hop as the effect advances, with attachments the richer attributed layer
+on top. Other reducers do not read the context directly; they **request** what they need by
+sending the system reducer a message it chooses to answer, so context access is itself a
+governed exchange rather than an open read.
 
-The id is unforgeable without a secret: it is a kernel-issued handle, derived
-deterministically (over the leaf session, its token, and a sequence) rather than drawn at
-random, and validated against the platform's own record on use, with the holder tracked. A
-context that never leaves one operator needs nothing more; a cryptographic, attenuating
-construction is where this extends if a context ever crosses a trust boundary a peer cannot
-take on faith (section 11).
+The context id is unforgeable in the same sense any reducer id is: it is the hash of the
+instantiated reducer's genesis, so a handler that was not handed it cannot guess or construct
+it, and the platform acts only on ids it issued. A context that never leaves one operator
+needs nothing more; a cryptographic, attenuating construction is where this extends if a
+context ever crosses a trust boundary a peer cannot take on faith (section 11).
 
 ### Forward, respond, and single-use capabilities
 
