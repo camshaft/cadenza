@@ -693,13 +693,15 @@ impl Gen<'_> {
         let p = self.env.fresh();
         let s = self.env.fresh();
         // The four Int64-state variants (scalar/tuple/sum/record) RETURN Int64; the fifth (Bool state)
-        // RETURNS Bool. Pick the state shape from a modulus keyed on `want` so the handler's result type
-        // matches its hole and the program type-checks (a mismatch is a clean decline, but a wasted seed):
-        // a Bool/Any hole may take any of the five (Bool reachable); a Num/Str hole stays on the four
-        // Int64 shapes. `Kind::Bool` forces the Bool shape — the only handler that types in a Bool hole.
+        // RETURNS Bool and the sixth (String state) RETURNS String. Pick the state shape from a modulus
+        // keyed on `want` so the handler's result type matches its hole and the program type-checks (a
+        // mismatch is a clean decline, but a wasted seed): an Any hole may take any of the six (Bool +
+        // String reachable); a Num hole stays on the four Int64 shapes; a Bool/Str hole forces its matching
+        // non-Int shape (the only handler that types in that hole).
         let shape = match want {
             Kind::Bool => 4,
-            Kind::Any => self.cur.choice(5),
+            Kind::Str => 5,
+            Kind::Any => self.cur.choice(6),
             _ => self.cur.choice(4),
         };
         match shape {
@@ -741,6 +743,48 @@ impl Gen<'_> {
                         self.out,
                         "({bop} ({ename}.{oname} {a}) ({ename}.{oname} {b}))"
                     );
+                }
+                self.out.push_str("))"); // close (handle …), close (do …)
+                return;
+            }
+            5 => {
+                // STRING-state variant: the effect op is `(-> String String)` and the handler threads a
+                // STRING state — reaching the String value codec (heap-allocated / length-prefixed) on the
+                // handler resume/fold path, the heap-value analogue of the Bool/Int scalar-state arms and
+                // the differential complement to the breaker's String-state pins (e.g. pystr1). Guaranteed
+                // well-typed and terminating: the resume value and new state are `(String.concat …)` over
+                // the in-scope String params (s, p) and string literals (a `leaf(Str)` is terminal, so no
+                // depth recursion); the body performs the op a FIXED 1..=2 times concatenated. Emits the
+                // whole program and RETURNS — the shared numeric tail body below would feed the String op
+                // integer (0..9) perform args and a numeric combining op.
+                let _ = write!(
+                    self.out,
+                    "(do (effect {ename} (op {oname} (-> String String))) (handle {ename} "
+                );
+                self.string_lit(); // initial String state
+                let _ = write!(self.out, " (({oname} ({p}) {s} (resume (String.concat ");
+                let mark = self.env.push(p.clone(), Kind::Str); // p and s are both String here
+                self.env.push(s.clone(), Kind::Str);
+                self.leaf(Kind::Str); // resume-value operand A (may reference s/p)
+                self.out.push(' ');
+                self.leaf(Kind::Str); // resume-value operand B
+                self.out.push_str(") (String.concat "); // close (String.concat A B); new state is another concat
+                self.leaf(Kind::Str); // new-state operand C
+                self.out.push(' ');
+                self.leaf(Kind::Str); // new-state operand D
+                self.env.truncate(mark);
+                self.out.push_str(")))) "); // close 2nd (String.concat …), (resume …), the op arm, the arm-list
+                // handled body: perform the String op a FIXED 1..=2 times concatenated.
+                if self.cur.flip() {
+                    let _ = write!(self.out, "({ename}.{oname} ");
+                    self.string_lit();
+                    self.out.push(')');
+                } else {
+                    let _ = write!(self.out, "(String.concat ({ename}.{oname} ");
+                    self.string_lit();
+                    let _ = write!(self.out, ") ({ename}.{oname} ");
+                    self.string_lit();
+                    self.out.push_str("))");
                 }
                 self.out.push_str("))"); // close (handle …), close (do …)
                 return;
@@ -1528,6 +1572,32 @@ mod tests {
         assert!(
             hit,
             "no seed in the sweep emitted a BOOL-state effect handler"
+        );
+    }
+
+    /// The STRING-state effect handler is reachable — some seed emits an effect op typed
+    /// `(-> String String)` discharged by a `(handle …)`, threading a non-Int (String) handler state.
+    /// This exercises the heap String value codec on the handler resume/fold path (the heap-value
+    /// analogue of the Bool-state reach; complementary differential coverage for the effects frontier).
+    /// Every program that path can emit still parses. Guards the String handler-state reach against a
+    /// refactor that drops it.
+    #[test]
+    fn some_seed_emits_a_string_state_effect_handler() {
+        let mut hit = false;
+        for n in 0..8000u32 {
+            let seed = varied_seed(n);
+            let src = generate(&seed).source;
+            assert!(
+                cadenza_syntax::sexpr::read(&src).is_ok(),
+                "generated program did not parse:\n{src}"
+            );
+            if src.contains("(-> String String)") && src.contains("(handle ") {
+                hit = true;
+            }
+        }
+        assert!(
+            hit,
+            "no seed in the sweep emitted a STRING-state effect handler"
         );
     }
 
