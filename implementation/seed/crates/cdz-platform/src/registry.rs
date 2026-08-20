@@ -35,8 +35,9 @@ use crate::Hash;
 use std::collections::HashMap;
 
 /// The handler-chain registry: contract-id -> the ordered chain of reducer identifiers that answers it
-/// (§3/§4). Part of the system reducer's state, with a single owner (the system reducer folding one event
-/// at a time), so its mutator takes `&mut self`.
+/// (§3/§4). Part of the routing substrate the kernel maintains as sessions register handlers; the system
+/// reducer reads it through the privileged API to route, and its mutator takes `&mut self` since the owner
+/// updates it as `set-handler` lands.
 #[derive(Debug, Default, Clone)]
 pub struct HandlerRegistry {
     /// contract-id -> chain of reducer ids. An entry is always a non-empty chain: `set_handler` removes the
