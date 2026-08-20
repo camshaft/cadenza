@@ -28,6 +28,14 @@ impl Str {
         Self(Bytes::new())
     }
 
+    /// A `Str` from a `'static str` — `const`, so it can back a `static`/`const` item. Mirrors
+    /// `Bytes::from_static`: no allocation, the string literal's own static bytes back it. Valid UTF-8
+    /// holds by construction (the source is a `str`).
+    #[must_use]
+    pub const fn from_static(s: &'static str) -> Self {
+        Self(Bytes::from_static(s.as_bytes()))
+    }
+
     /// Borrow the text. Zero-cost: the invariant guarantees the bytes are valid UTF-8.
     #[must_use]
     pub fn as_str(&self) -> &str {
@@ -181,6 +189,17 @@ mod tests {
         assert_eq!(Str::from(String::from("héllo")).as_str(), "héllo");
         // into_bytes gives back the same bytes.
         assert_eq!(Str::from("x").into_bytes(), Bytes::from_static(b"x"));
+    }
+
+    #[test]
+    fn from_static_is_const_and_backs_const_and_static_items() {
+        // usable in a `const` item (proves it is a genuine const fn)...
+        const HI: Str = Str::from_static("hi");
+        assert_eq!(HI, "hi");
+        // ...and a `static` item.
+        static NAME: Str = Str::from_static("cadenza");
+        assert_eq!(NAME.as_str(), "cadenza");
+        assert!(Str::from_static("").is_empty());
     }
 
     #[test]
