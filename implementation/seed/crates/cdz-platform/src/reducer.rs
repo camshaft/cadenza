@@ -26,7 +26,7 @@
 //! [`Bytes`] because the runtime routes on the `id` and never decodes a payload; a reducer that needs the
 //! structured value decodes it (and derefs the schema from the store by `id`) itself, lazily.
 
-use crate::{Bytes, Hash};
+use crate::{Bytes, ContractId, HostId, ReducerId};
 use async_trait::async_trait;
 use std::time::Duration;
 
@@ -55,7 +55,7 @@ pub enum Outcome {
     /// supervisor decodes.
     Break {
         /// The contract-id (schema hash) of the reason value.
-        schema: Hash,
+        schema: ContractId,
         /// The reason value in its canonical encoding.
         reason: Bytes,
     },
@@ -66,7 +66,7 @@ pub enum Outcome {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Request {
     /// The contract-id: the hash of the schema being requested.
-    pub id: Hash,
+    pub id: ContractId,
     /// The input value, in its canonical encoding.
     pub payload: Bytes,
     /// The token the reducer chooses to correlate the eventual response back to this request. Unique per
@@ -83,7 +83,7 @@ pub struct Request {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Response {
     /// The contract-id this answers (schema hash).
-    pub id: Hash,
+    pub id: ContractId,
     /// The token from the originating request — present on both `Ok` and `Err`.
     pub continuation_token: Bytes,
     /// The result: `Ok` the contract's output value (canonical bytes; a handler's *domain* failure rides
@@ -99,9 +99,9 @@ pub struct Response {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Origin {
     /// The sending reducer's id.
-    pub reducer: Hash,
+    pub reducer: ReducerId,
     /// The host (node/runtime) that ran the sending reducer.
-    pub host: Hash,
+    pub host: HostId,
 }
 
 /// An effect another reducer performed on this one, delivered to [`on_message`](Reducer::on_message). It
@@ -112,7 +112,7 @@ pub struct Origin {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Message {
     /// The contract-id of the effect being performed on this reducer.
-    pub id: Hash,
+    pub id: ContractId,
     /// The input value of that effect, in its canonical encoding.
     pub payload: Bytes,
     /// The source — the sending reducer and the host that ran it — to authenticate or route on.
@@ -131,7 +131,7 @@ pub struct Message {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Notification {
     /// The contract-id of the notification's schema.
-    pub id: Hash,
+    pub id: ContractId,
     /// The notification value, in its canonical encoding.
     pub payload: Bytes,
 }
@@ -164,7 +164,18 @@ pub trait Reducer: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::{Message, Notification, Origin, Outcome, Reducer, Request, Response};
-    use crate::{Bytes, Hash};
+    use crate::{Bytes, ContractId, Hash, HostId, ReducerId};
+
+    // Typed-id helpers over distinct hashes.
+    fn cid(tag: &[u8]) -> ContractId {
+        ContractId::from_hash(Hash::of(tag))
+    }
+    fn rid(tag: &[u8]) -> ReducerId {
+        ReducerId::from_hash(Hash::of(tag))
+    }
+    fn hid(tag: &[u8]) -> HostId {
+        HostId::from_hash(Hash::of(tag))
+    }
 
     /// A reducer that actually folds state: it counts the messages it has seen (in `&mut self`), forwards
     /// each to a downstream contract carrying the running count, and closes once it has seen `close_at`.
@@ -174,8 +185,8 @@ mod tests {
     struct Counter {
         seen: u32,
         close_at: u32,
-        downstream: Hash,
-        propagate: Hash,
+        downstream: ContractId,
+        propagate: ContractId,
     }
 
     #[async_trait::async_trait]
@@ -224,18 +235,18 @@ mod tests {
         Counter {
             seen: 0,
             close_at,
-            downstream: Hash::of(b"downstream"),
-            propagate: Hash::of(b"propagate"),
+            downstream: cid(b"downstream"),
+            propagate: cid(b"propagate"),
         }
     }
 
     fn msg(token: &'static [u8]) -> Message {
         Message {
-            id: Hash::of(b"inbound"),
+            id: cid(b"inbound"),
             payload: Bytes::from_static(b"x"),
             from: Origin {
-                reducer: Hash::of(b"peer"),
-                host: Hash::of(b"host-a"),
+                reducer: rid(b"peer"),
+                host: hid(b"host-a"),
             },
             continuation_token: Bytes::from_static(token),
         }
@@ -263,7 +274,7 @@ mod tests {
         // The reducer routes to its downstream contract and threads the caller's token through, so the
         // eventual answer correlates back — the routing behavior, not the struct shape.
         let (requests, _) = r.on_message(msg(b"correlate-me")).await;
-        assert_eq!(requests[0].id, Hash::of(b"downstream"));
+        assert_eq!(requests[0].id, cid(b"downstream"));
         assert_eq!(
             requests[0].continuation_token,
             Bytes::from_static(b"correlate-me")
@@ -276,17 +287,17 @@ mod tests {
         // The `propagate` notification is acted on: forwarded downstream carrying its payload.
         let (out, o) = r
             .on_notification(Notification {
-                id: Hash::of(b"propagate"),
+                id: cid(b"propagate"),
                 payload: Bytes::from_static(b"new-handler"),
             })
             .await;
-        assert_eq!(out[0].id, Hash::of(b"downstream"));
+        assert_eq!(out[0].id, cid(b"downstream"));
         assert_eq!(out[0].payload, Bytes::from_static(b"new-handler"));
         assert_eq!(o, Outcome::Continue);
         // An unrelated notification is ignored — no requests — and a notification never counts as a message.
         let (out2, _) = r
             .on_notification(Notification {
-                id: Hash::of(b"some-lifecycle-event"),
+                id: cid(b"some-lifecycle-event"),
                 payload: Bytes::from_static(b"ignored"),
             })
             .await;
@@ -298,8 +309,8 @@ mod tests {
     /// trusted host, and denies (drops) the rest. This exercises `from` carrying the host, the hook for
     /// federated trust — routing on where an effect came from, not only which reducer sent it.
     struct HostGate {
-        trusted_host: Hash,
-        downstream: Hash,
+        trusted_host: HostId,
+        downstream: ContractId,
     }
 
     #[async_trait::async_trait]
@@ -328,23 +339,23 @@ mod tests {
     #[tokio::test]
     async fn a_reducer_can_authenticate_on_the_origin_host() {
         let mut gate = HostGate {
-            trusted_host: Hash::of(b"host-a"),
-            downstream: Hash::of(b"downstream"),
+            trusted_host: hid(b"host-a"),
+            downstream: cid(b"downstream"),
         };
         let from_trusted = Message {
-            id: Hash::of(b"inbound"),
+            id: cid(b"inbound"),
             payload: Bytes::from_static(b"v"),
             from: Origin {
-                reducer: Hash::of(b"peer"),
-                host: Hash::of(b"host-a"),
+                reducer: rid(b"peer"),
+                host: hid(b"host-a"),
             },
             continuation_token: Bytes::from_static(b"t"),
         };
         // Same sending reducer, different host — the host is what the gate keys on.
         let from_untrusted = Message {
             from: Origin {
-                reducer: Hash::of(b"peer"),
-                host: Hash::of(b"host-b"),
+                reducer: rid(b"peer"),
+                host: hid(b"host-b"),
             },
             ..from_trusted.clone()
         };
