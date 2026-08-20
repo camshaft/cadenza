@@ -157,15 +157,18 @@ correct, root-installed system reducer to enforce the model.
 So the kernel's whole irreducible core is: execute a reducer step; schedule and interleave,
 carrying each response back to the reducer that emitted the request; keep the log; the direct
 reducer-facing accesses with swappable backends (the key-value store, a reducer's own id, and
-the content-addressed store); the `fire-after` timer; the root-only override registry; and one
-privileged primitive — **deliver an event into a reducer's log**, addressed by reducer-id. On
-an emitted effect the kernel looks up the system reducer for its contract and delivers the
-effect to it; the system reducer, in turn, is the only reducer allowed to use that deliver
-primitive, which is how it routes — handing a message to a handler, folding a response back to
-a caller. It needs no other special power: it arms timers with `fire-after` and watches
-reducers with `subscribe` like any reducer, and everything specific — routing, chaining,
-authorization, name resolution, lifecycle, what a timer means, input and output — is a
-content-addressed reducer, not kernel code. This is the point of the entire design and
+the content-addressed store); the `fire-after` timer; the routing substrate it maintains as
+sessions register handlers and spawn — the handler registrations and the parent links of the
+spawn tree; the root-only override registry; and a small **privileged API** granted only to the
+system reducer. That API is two things: **deliver an event into a reducer's log** (addressed by
+reducer-id) — the routing act — and **read the routing substrate**: the handler chain registered
+for a contract, and the reducer hierarchy. On an emitted effect the kernel looks up the system
+reducer for its contract and delivers the effect to it; that reducer reads the handlers and the
+hierarchy to assemble the chain across generations, then delivers along it — handing a message
+to a handler, folding a response back to a caller. Beyond that privileged API it is an ordinary
+reducer: it arms timers with `fire-after` and watches reducers with `subscribe` like any
+reducer, and everything specific — chaining policy, authorization, name resolution, lifecycle,
+what a timer means, input and output — is a content-addressed reducer, not kernel code. This is the point of the entire design and
 the line to hold: the kernel binary is the one thing that cannot be hot-swapped, so it is
 deployed **once** and kept as small as possible, while everything that will ever need to
 change is a content-addressed reducer, swapped by reference without redeploying the kernel.
@@ -447,11 +450,13 @@ kernel.
 reducer: the effect it shepherds arrives on `on_message`, a handler's reply on `on_response`, a
 watched reducer's exit on `on_notification` (it `subscribe`d to that reducer). It drives the
 dispatch with ordinary means — it arms a deadline with the `fire-after` effect, watches a
-handler with `subscribe`, and ends the dispatch by returning `Break` — with one exception, the
-single power a plain reducer lacks: it may **deliver an event into another reducer's log**,
-addressed by reducer-id. That deliver primitive is the routing act — handing a message to the
-next handler in the chain, folding a response back to a caller — and it is granted only to the
-reducer the override registry names for a contract. Answering, forwarding, and attaching a grant
+handler with `subscribe`, and ends the dispatch by returning `Break`. What a plain reducer
+lacks is a small **privileged API**, granted only to the reducer the override registry names
+for a contract: it may **read the routing substrate** — the handler chain registered for a
+contract and the reducer hierarchy (the parent links of the spawn tree) — so it can assemble
+the effective chain across generations and know whom to call, and it may **deliver an event
+into another reducer's log**, addressed by reducer-id, which is the routing act — handing a
+message to the next handler in the chain, folding a response back to a caller. Answering, forwarding, and attaching a grant
 are not primitives: answering and forwarding are delivering a response or message onward, and
 grants and the record of who still owes an answer are the reducer's own bookkeeping (below).
 
