@@ -82,51 +82,18 @@ impl fmt::Debug for Hash {
 }
 
 /// Parse a hash from its base64url text form (the inverse of `Display`). Decodes straight into the fixed
-/// 32-byte array — no allocation. A text of the wrong decoded length is [`HashParseError::WrongLength`].
+/// 32-byte array — no allocation. The error is a [`base64url::DecodeError`]: a text that decodes to some
+/// other length surfaces as [`base64url::DecodeError::OutputLenMismatch`] against the 32-byte target, so
+/// "not a valid hash" needs no separate error type on top of the decoder's.
 impl FromStr for Hash {
-    type Err = HashParseError;
+    type Err = base64url::DecodeError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut buf = [0u8; 32];
-        match base64url::decode_into(s, &mut buf) {
-            Ok(()) => Ok(Self(buf)),
-            // The text is valid base64url but does not decode to exactly 32 bytes -> not a digest.
-            Err(base64url::DecodeError::OutputLenMismatch { expected, .. }) => {
-                Err(HashParseError::WrongLength(expected))
-            }
-            Err(e) => Err(HashParseError::NotBase64url(e)),
-        }
+        base64url::decode_into(s, &mut buf)?;
+        Ok(Self(buf))
     }
 }
-
-/// Why a string is not a valid hash text.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum HashParseError {
-    /// The text is not valid canonical base64url (bad character, impossible length, or non-canonical
-    /// trailing bits).
-    NotBase64url(base64url::DecodeError),
-    /// Valid base64url, but not exactly 32 bytes — so not a blake3 digest. Carries the decoded length.
-    WrongLength(usize),
-}
-
-impl fmt::Display for HashParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotBase64url(e) => write!(f, "hash text is not valid base64url: {e}"),
-            Self::WrongLength(n) => {
-                write!(f, "hash text decoded to {n} bytes, expected {}", Hash::LEN)
-            }
-        }
-    }
-}
-
-impl fmt::Debug for HashParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self, f)
-    }
-}
-
-impl std::error::Error for HashParseError {}
 
 /// base64url — the URL-safe base64 alphabet (`A-Z a-z 0-9 - _`), unpadded — the ONE textual byte
 /// encoding for the platform (section 8: "base64url … never hex"). Hand-rolled to keep the crate's dep
@@ -350,8 +317,8 @@ pub mod base64url {
 
 #[cfg(test)]
 mod tests {
+    use super::Hash;
     use super::base64url::{self, DecodeError};
-    use super::{Hash, HashParseError};
 
     /// Test helper: collect the encode iterator into a `String` (the tests want to compare text).
     fn enc(bytes: &[u8]) -> String {
@@ -476,26 +443,32 @@ mod tests {
 
     #[test]
     fn hash_from_str_rejects_wrong_length_and_bad_text() {
-        // Valid base64url but not 32 bytes -> WrongLength (3 bytes here). from_str checks the decoded
-        // length first (a 32-byte buffer), so a non-43-char text is WrongLength regardless of its chars.
-        assert_eq!("Zm9v".parse::<Hash>(), Err(HashParseError::WrongLength(3)));
+        // Valid base64url but not 32 bytes -> OutputLenMismatch against the 32-byte target (3 bytes here).
+        // from_str decodes into a fixed [u8;32], so a non-43-char text mismatches regardless of its chars.
+        assert_eq!(
+            "Zm9v".parse::<Hash>(),
+            Err(DecodeError::OutputLenMismatch {
+                expected: 3,
+                got: 32
+            })
+        );
         // A 43-char text (decodes to exactly 32 bytes) with a bad char reaches char-validation ->
-        // NotBase64url. Take a real hash's text and corrupt one char to a non-alphabet '!'.
+        // InvalidChar. Take a real hash's text and corrupt one char to a non-alphabet '!'.
         let good = Hash::of(b"corrupt me").to_string();
         assert_eq!(good.len(), 43);
         let bad = format!("{}!", &good[..42]); // still 43 chars, but char 43 is invalid
-        assert!(matches!(
-            bad.parse::<Hash>(),
-            Err(HashParseError::NotBase64url(_))
-        ));
+        assert_eq!(bad.parse::<Hash>(), Err(DecodeError::InvalidChar('!')));
         // A truncated hash text is rejected (either wrong decoded length or a non-canonical group).
         let h = Hash::of(b"x").to_string();
         assert!(h[..h.len() - 1].parse::<Hash>().is_err());
-        // A canonical base64url that decodes to a valid-but-wrong length is specifically WrongLength:
+        // A canonical base64url that decodes to a valid-but-wrong length mismatches the 32-byte target:
         // 44 chars ("A" * 44) is canonical and decodes to 33 bytes.
         assert_eq!(
             "A".repeat(44).parse::<Hash>(),
-            Err(HashParseError::WrongLength(33))
+            Err(DecodeError::OutputLenMismatch {
+                expected: 33,
+                got: 32
+            })
         );
     }
 

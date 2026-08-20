@@ -8,4 +8,4 @@
 
 mod hash;
 
-pub use hash::{Hash, HashParseError};
+pub use hash::{Hash, base64url};
