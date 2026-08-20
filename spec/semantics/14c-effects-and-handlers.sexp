@@ -17008,3 +17008,43 @@
   (export main)))
   (call   main (: 10 Int64)) (output (: 203 Int64))
   (call   main (: 0 Int64)) (output (: 102 Int64)))
+
+;; -- pymo1 two-op shared state + pymo3 three-op tuple-field state + pymu1 Unit-answer bump plus reader (breaker batch 360) --
+(case "pymo1 probe: a TWO-OP effect sharing one threaded state — inc answers s and threads (+ s 5), get answers (* s 10) and threads s unchanged; the body interleaves inc/get/inc/get so the two ops read and advance the SAME handler state in alternation, testing that the tail-resumptive fold threads state across DISTINCT ops of one effect (not just repeated dispatch of a single op)"
+  (input (do
+  (effect E (op inc (-> Int64)) (op get (-> Int64)))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((inc () s (resume s (+ s 5)))
+       (get () s (resume (* s 10) s)))
+      (+ (* 1000 (E.inc)) (+ (* 100 (E.get)) (+ (* 10 (E.inc)) (E.get))))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 7170 Int64))
+  (call   main (: 0 Int64)) (output (: 5150 Int64)))
+(case "pymo3 probe: a THREE-OP effect over a TUPLE state where each op touches a different field — adda answers a and threads (a+1, b), addb answers b and threads (a, b+10), rd answers a*100+b and threads unchanged; the body interleaves adda/addb/adda/addb/rd so three distinct ops read and independently advance the two fields of one shared tuple state through the tail-resumptive fold"
+  (input (do
+  (effect E (op adda (-> Int64)) (op addb (-> Int64)) (op rd (-> Int64)))
+  (def (main (: n Int64))
+    (handle E (tuple (% n 3) (: 0 Int64))
+      ((adda () s (match s ((tuple a b) (resume a (tuple (+ a 1) b)))))
+       (addb () s (match s ((tuple a b) (resume b (tuple a (+ b 10))))))
+       (rd () s (match s ((tuple a b) (resume (+ (* a 100) b) s)))))
+      (+ (* 10000 (E.adda)) (+ (* 1000 (E.addb)) (+ (* 100 (E.adda)) (+ (* 10 (E.addb)) (E.rd)))))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 10620 Int64))
+  (call   main (: 0 Int64)) (output (: 420 Int64)))
+(case "pymu1 probe: a two-op effect where bump answers UNIT (advances state only, no meaningful value) and peek answers (* s 100) reading the state — interleaved via let/do as peek,bump,peek,bump,peek; the UNIT-answering op threads (+ s 3) while the reader leaves state unchanged, testing a Unit resume-answer alongside a value-answer in one shared-state tail fold"
+  (input (do
+  (effect E (op bump (-> Unit Unit)) (op peek (-> Int64)))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((bump (u) s (resume unit (+ s 3)))
+       (peek () s (resume (* s 100) s)))
+      (let ((x (E.peek)))
+        (do (E.bump)
+            (let ((y (E.peek)))
+              (do (E.bump)
+                  (+ (* 1000 x) (+ y (E.peek)))))))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 101100 Int64))
+  (call   main (: 0 Int64)) (output (: 900 Int64)))
