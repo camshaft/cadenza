@@ -185,9 +185,8 @@ the chain, and each reducer in it in turn may:
   chains.
 
 The order within a chain is the author's choice; the platform preserves it and interprets
-nothing about it, so it needs only to be documented and consistent. Answering, forwarding,
-and the single-use capability that discharges a response are the dispatch mechanics of
-section 4.
+nothing about it, so it needs only to be documented and consistent. Answering, forwarding, and
+how the event reducer tracks who still owes a response are the dispatch mechanics of section 4.
 
 **Chains span generations, and a child inherits nothing automatically.** When a handler is
 registered on a reducer, the system reducer notifies it (`on_notification`, below), and that
@@ -452,9 +451,9 @@ handler with `subscribe`, and ends the dispatch by returning `Break` — with on
 single power a plain reducer lacks: it may **deliver an event into another reducer's log**,
 addressed by reducer-id. That deliver primitive is the routing act — handing a message to the
 next handler in the chain, folding a response back to a caller — and it is granted only to the
-reducer the override registry names for a contract. Answering, forwarding, minting a capability,
-and attaching a grant are not primitives: answering and forwarding are delivering a response or
-message onward, and grants and capabilities are the reducer's own bookkeeping (below).
+reducer the override registry names for a contract. Answering, forwarding, and attaching a grant
+are not primitives: answering and forwarding are delivering a response or message onward, and
+grants and the record of who still owes an answer are the reducer's own bookkeeping (below).
 
 Like every reducer it is an ephemeral instance whose state persists in the key-value store,
 and that state **is** the context (below). So it is both per-event and durable: the instance
@@ -479,8 +478,8 @@ derived like any other reducer id, and it is what travels with the effect. A han
 context id, never the leaf's token, so it can neither see nor spoof the leaf's correlation.
 
 The system reducer **records everything the context holds** — the leaf's token and where the
-answer folds back, the outstanding capabilities, and any metadata handlers attach — in its own
-state, and it learns all of it the ordinary way: by receiving plain events from other reducers
+answer folds back, the obligations it is still waiting on, and any metadata handlers attach — in
+its own state, and it learns all of it the ordinary way: by receiving plain events from other reducers
 and recording what it needs. A handler **attaches** metadata by sending the system reducer an
 event carrying the value and its **schema** (contract-id); the reducer records that value
 against its **author** — the sending reducer and the host that ran it, which the kernel stamps
@@ -501,10 +500,9 @@ it, and the platform acts only on ids it issued. A context that never leaves one
 needs nothing more; a cryptographic, attenuating construction is where this extends if a
 context ever crosses a trust boundary a peer cannot take on faith (section 11).
 
-### Forward, respond, and single-use capabilities
+### Forward, respond, and pending obligations
 
-A handler acts on an effect by emitting one of two built-in effects, keyed by the context
-rather than a raw token:
+A handler acts on an effect by emitting one of two built-in effects:
 
 - **`forward`** — permit and pass the (possibly rewritten, even re-contracted) request on to
   the next hop.
@@ -512,46 +510,48 @@ rather than a raw token:
 
 These are ordinary emitted effects, not a synchronous return value, so a handler may receive
 an effect, store it in its key-value state, do other work across several folds, and emit its
-`forward` or `respond` only later. Deferral is free — the correlation is the context, not a
-suspended stack.
+`forward` or `respond` only later. Deferral is free.
 
-Each handler holds exactly one **single-use, handler-bound capability**: its obligation to
-answer the party below it. The system reducer mints it and enforces it — it checks the
-sender (the kernel-stamped `from`, section 3) against the handler the capability was granted
-to, so a leaked capability is useless to anyone else, and it marks the capability spent on
-use, so a second attempt is a deterministic, recorded rejection. The kernel is not involved:
-its whole contribution is the unforgeable `from`. The transforming middleware pins the rule —
-a handler discharges its one obligation exactly once, however it sources the answer:
+The event reducer needs no capability or minted token to keep this straight; the attribution
+already does it. When it delivers an effect to a handler it records a **pending obligation**
+for that handler, and when a `respond` or `forward` comes back it matches it by the
+kernel-stamped `from` (section 3): a handler can only discharge an obligation recorded against
+its own identity, so a leaked correlation is useless to anyone else, and the entry is dropped
+on discharge, so a second attempt finds nothing pending and is a deterministic, recorded
+rejection. The kernel is not involved beyond stamping `from`. Where a handler holds more than
+one obligation at once — the same reducer sitting at two positions in a chain — the ordinary
+`continuation_token` the event reducer chose for each delivery, echoed on the reply,
+distinguishes them; it is the same correlation token the whole system uses, not a new
+mechanism.
 
-- respond directly — consumes it;
-- forward transparently — the system reducer discharges it on the handler's behalf when the
-  upstream answer arrives, with the same bytes, without re-entering the handler;
-- forward to transform — the handler emits a fresh upstream request (its own new capability
-  for that), keeps its obligation open, receives the upstream answer in `on_response`, then
-  responds, which consumes the obligation.
+A transforming middleware answers once, however it sources the answer:
 
-Capabilities are minted lazily, one hop at a time, because the chain is dynamic — the system
-reducer does not statically know where an effect will land. Correlation is the context and
-the capability, never the `id` (which is the contract-id, shared by every request of that
-contract).
+- respond directly — the obligation is discharged;
+- forward transparently — the event reducer answers on the handler's behalf when the upstream
+  answer arrives, with the same bytes, without re-entering the handler;
+- forward to transform — the handler emits a fresh upstream request, keeps its obligation open,
+  receives the upstream answer in `on_response`, then responds, discharging it.
+
+Correlation is the context and the `from`, never the `id` (which is the contract-id, shared by
+every request of that contract).
 
 ### Supervision
 
-The per-event system reducer is the **supervisor** of its dispatch. An obligation has exactly
-three ways to retire, all owned by it:
+The per-event system reducer is the **supervisor** of its dispatch. A pending obligation has
+exactly three ways to retire, all owned by it:
 
-- the **respond capability** — the handler discharges voluntarily (success);
+- a **`respond`** — the handler answers, discharging its obligation (success);
 - a **monitor** on the handler — it detects an exit or crash and turns the open obligation
   into a failure that bubbles down;
 - a **deadline timer** — on fire it notifies the working handlers that the deadline is
-  exceeded, then bubbles `Err(Timeout)` down and retires the capability.
+  exceeded, then bubbles `Err(Timeout)` down and clears the obligation.
 
 The deadline is the system reducer's policy, built on the raw `fire-after` timer the kernel
 provides (section 6): what a timeout *means* — who is told, any grace, what bubbles — is
 decided in the system reducer, not the kernel. The "deadline exceeded" notice reaches a working
 handler through the ordinary `on_notification` channel, so there is no new handler-side
 mechanism; it is cooperative — the handler may wind down its work, but it may also ignore the
-notice, so the system reducer still hard-retires the capability and bubbles `Err(Timeout)`
+notice, so the system reducer still clears the obligation and bubbles `Err(Timeout)`
 regardless.
 
 The supervision tree is the dispatch tree. A handler that emits its own effect starts a
@@ -617,9 +617,9 @@ answerer receives it through `on_message` (with the caller as `from`); there is 
 executor, and routing is the same in both cases: the system reducer moves the effect to who
 answers the contract-id. An answerer may reply immediately or accept the effect and reply
 later; while it is unsettled its obligation stays open and the caller's continuation waits.
-When the reply is ready the answerer emits `respond` against its single-use capability
-(section above), the platform routes it back down the chain, and the caller resumes in
-`on_response`.
+When the reply is ready the answerer emits `respond`, the system reducer matches it to the
+open obligation by the answerer's `from` (section above) and routes it back down the chain,
+and the caller resumes in `on_response`.
 
 An effect for which no reducer answers is a recorded failure, not a silent drop.
 
