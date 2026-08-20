@@ -49,18 +49,30 @@ pub type KvKeyScan<'a> = Pin<Box<dyn Stream<Item = Bytes> + Send + 'a>>;
 /// where the successor increments the last byte below `0xFF` and drops trailing `0xFF` bytes. An empty
 /// prefix, or an all-`0xFF` prefix, has no finite successor, so the upper bound is unbounded (the scan
 /// runs to the end). This is the prefix scan expressed as a range.
+///
+/// Takes an owned [`Bytes`]: the prefix is moved into the lower bound with no copy (an owned `Bytes` is
+/// what the range needs), and the only copy is the one buffer required to compute the exclusive upper
+/// bound (a distinct, mutated successor). A caller with a `'static` prefix passes `Bytes::from_static`
+/// (itself zero-copy).
 #[must_use]
-pub fn prefix_range(prefix: &[u8]) -> KeyRange {
-    let start = Bound::Included(Bytes::copy_from_slice(prefix));
+pub fn prefix_range(prefix: Bytes) -> KeyRange {
+    // Compute the exclusive upper bound (the successor) in its own buffer — the one unavoidable copy,
+    // since the successor is a mutated, distinct value from the prefix.
     let mut end = prefix.to_vec();
-    while let Some(&last) = end.last() {
-        if last < 0xFF {
-            *end.last_mut().expect("non-empty: just checked last()") = last + 1;
-            return (start, Bound::Excluded(Bytes::from(end)));
+    let upper = loop {
+        match end.last() {
+            Some(&last) if last < 0xFF => {
+                *end.last_mut().expect("non-empty: matched last()") = last + 1;
+                break Bound::Excluded(Bytes::from(end));
+            }
+            Some(_) => {
+                end.pop(); // trailing 0xFF cannot be incremented: drop it and carry.
+            }
+            None => break Bound::Unbounded, // empty (or all-0xFF) prefix has no finite successor.
         }
-        end.pop(); // trailing 0xFF: it cannot be incremented, so drop it and carry.
-    }
-    (start, Bound::Unbounded)
+    };
+    // Move the prefix into the lower bound — no copy.
+    (Bound::Included(prefix), upper)
 }
 
 /// A key-value store: `Bytes` keys to `Bytes` values (§7). Backends (in memory, persistent, disk) implement
@@ -281,19 +293,32 @@ mod tests {
                 .await;
         }
         // "seen/" must match seen/a and seen/b only — NOT "seen0" (next byte after '/') or "seem".
-        let keys: Vec<Bytes> = kv.scan_keys(prefix_range(b"seen/")).collect().await;
+        let keys: Vec<Bytes> = kv
+            .scan_keys(prefix_range(Bytes::from_static(b"seen/")))
+            .collect()
+            .await;
         assert_eq!(
             keys,
             vec![Bytes::from_static(b"seen/a"), Bytes::from_static(b"seen/b")]
         );
         // an all-0xFF prefix runs to the end (unbounded upper); an empty prefix scans everything.
-        assert_eq!(kv.scan_keys(prefix_range(b"")).count().await, 5);
+        assert_eq!(
+            kv.scan_keys(prefix_range(Bytes::from_static(b"")))
+                .count()
+                .await,
+            5
+        );
         // a prefix ending in 0xFF still bounds correctly.
         kv.put(Bytes::from_static(&[0xFF, 0x01]), Bytes::from_static(b"x"))
             .await;
         kv.put(Bytes::from_static(&[0xFF, 0xFF]), Bytes::from_static(b"y"))
             .await;
-        assert_eq!(kv.scan_keys(prefix_range(&[0xFF])).count().await, 2);
+        assert_eq!(
+            kv.scan_keys(prefix_range(Bytes::from_static(&[0xFF])))
+                .count()
+                .await,
+            2
+        );
     }
 
     /// The store drives correctly under Cameron's Bach simulator — put/get/delete and both scans run on the
@@ -312,10 +337,25 @@ mod tests {
                 kv.put(Bytes::from_static(b"seen/msg-2"), Bytes::from_static(b"2"))
                     .await;
                 assert_eq!(kv.get(b"seen/msg-1").await, Some(Bytes::from_static(b"1")));
-                assert_eq!(kv.scan(prefix_range(b"seen/")).count().await, 2);
-                assert_eq!(kv.scan_keys(prefix_range(b"seen/")).count().await, 2);
+                assert_eq!(
+                    kv.scan(prefix_range(Bytes::from_static(b"seen/")))
+                        .count()
+                        .await,
+                    2
+                );
+                assert_eq!(
+                    kv.scan_keys(prefix_range(Bytes::from_static(b"seen/")))
+                        .count()
+                        .await,
+                    2
+                );
                 assert!(kv.delete(b"seen/msg-1").await);
-                assert_eq!(kv.scan_keys(prefix_range(b"seen/")).count().await, 1);
+                assert_eq!(
+                    kv.scan_keys(prefix_range(Bytes::from_static(b"seen/")))
+                        .count()
+                        .await,
+                    1
+                );
             }
             .group("kv-store")
             .primary()
