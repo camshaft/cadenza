@@ -6,8 +6,10 @@
 //! are get, put, delete, and a streaming range-scan over the canonical key order (with a keys-only
 //! variant) — the primitive for the collections a reducer maintains (pending children, seen items,
 //! per-target working state). A prefix scan is just a range scan over the prefix's key range, via the
-//! [`prefix_range`] helper. The remaining §7 obligation, a content-addressed root hash after each change,
-//! is a later slice.
+//! [`prefix_range`] helper. A [`root_hash`](KvStore::root_hash) names the whole state by content: a
+//! deterministic function of the current entries in canonical key order, so equal content hashes equal
+//! regardless of insertion history and any change moves it — the primitive a snapshot `(event-index,
+//! state-root-hash, program-hash)` is built on (§7).
 //!
 //! Keys and values are both [`Bytes`], and keys order lexicographically — the canonical key order the
 //! scan walks, and why the in-memory backend is a `BTreeMap` (sorted) rather than a hash map. Small values
@@ -22,7 +24,7 @@
 //! (they only await), so they drive under tokio in production and under the Bach simulator in deterministic
 //! tests alike.
 
-use crate::Bytes;
+use crate::{Bytes, Hash};
 use async_trait::async_trait;
 use futures_core::Stream;
 use std::collections::BTreeMap;
@@ -99,6 +101,17 @@ pub trait KvStore: Send + Sync {
     /// Like [`scan`](KvStore::scan) but the stream yields only the keys in `range` — for when the caller
     /// enumerates keys without needing the value bytes.
     fn scan_keys(&self, range: KeyRange) -> KvKeyScan<'_>;
+
+    /// A content-addressed hash of the entire current state (§7). It is a deterministic function of the
+    /// entries in canonical (ascending) key order, so two stores holding equal content hash equal no matter
+    /// the order their keys were inserted or deleted, and any change to any key or value moves it. This is
+    /// what a snapshot `(event-index, state-root-hash, program-hash)` records, and what a reducer's replay
+    /// verifies against.
+    ///
+    /// Async like the rest of the trait so a backend that keeps state off-box can compute or fetch the root
+    /// without blocking the runtime; a structurally-shared backend yields it cheaply (sharing almost all
+    /// structure with the prior state), a simpler backend just recomputes it.
+    async fn root_hash(&self) -> Hash;
 }
 
 /// An in-memory [`KvStore`] — a `BTreeMap` behind a `Mutex`. For tests and single-process use; the smallest
@@ -181,6 +194,23 @@ impl KvStore for InMemoryKvStore {
             guard.range(range).map(|(k, _)| k.clone()).collect()
         };
         Box::pin(futures_util::stream::iter(keys))
+    }
+
+    async fn root_hash(&self) -> Hash {
+        // Stream the entries through the digest under the lock (never held across an await), in the
+        // BTreeMap's canonical ascending key order — so the result depends only on content, not on the
+        // order keys were inserted or removed. Each entry is length-prefixed (key length, key, value
+        // length, value) so the key/value boundary is unambiguous: {"a": "bc"} and {"ab": "c"} feed
+        // different bytes and hash differently. An empty store hashes the empty input — a stable constant.
+        let guard = self.entries.lock().expect("kv-store mutex poisoned");
+        let mut hasher = blake3::Hasher::new();
+        for (key, value) in guard.iter() {
+            hasher.update(&(key.len() as u64).to_le_bytes());
+            hasher.update(key);
+            hasher.update(&(value.len() as u64).to_le_bytes());
+            hasher.update(value);
+        }
+        Hash::from_bytes(*hasher.finalize().as_bytes())
     }
 }
 
@@ -321,6 +351,85 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn root_hash_is_deterministic_and_order_independent() {
+        // Two stores holding the same content hash equal, no matter the insertion order — the root names
+        // content, not history.
+        let a = InMemoryKvStore::new();
+        let b = InMemoryKvStore::new();
+        for (k, v) in [("x", "1"), ("y", "2"), ("z", "3")] {
+            a.put(
+                Bytes::from(k.as_bytes().to_vec()),
+                Bytes::from(v.as_bytes().to_vec()),
+            )
+            .await;
+        }
+        // b: same entries, reversed insertion order.
+        for (k, v) in [("z", "3"), ("y", "2"), ("x", "1")] {
+            b.put(
+                Bytes::from(k.as_bytes().to_vec()),
+                Bytes::from(v.as_bytes().to_vec()),
+            )
+            .await;
+        }
+        assert_eq!(a.root_hash().await, b.root_hash().await);
+        // Two empty stores share one stable root, distinct from any populated one.
+        let empty1 = InMemoryKvStore::new();
+        let empty2 = InMemoryKvStore::new();
+        assert_eq!(empty1.root_hash().await, empty2.root_hash().await);
+        assert_ne!(empty1.root_hash().await, a.root_hash().await);
+    }
+
+    #[tokio::test]
+    async fn root_hash_moves_on_every_change_and_returns_when_reverted() {
+        let kv = InMemoryKvStore::new();
+        let empty = kv.root_hash().await;
+        // a put moves it.
+        kv.put(Bytes::from_static(b"k"), Bytes::from_static(b"v"))
+            .await;
+        let after_put = kv.root_hash().await;
+        assert_ne!(empty, after_put);
+        // overwriting the value to something different moves it again.
+        kv.put(Bytes::from_static(b"k"), Bytes::from_static(b"w"))
+            .await;
+        assert_ne!(after_put, kv.root_hash().await);
+        // rewriting the same value is a no-op for the root (content-addressed, not history).
+        kv.put(Bytes::from_static(b"k"), Bytes::from_static(b"w"))
+            .await;
+        let after_rewrite = kv.root_hash().await;
+        kv.put(Bytes::from_static(b"k"), Bytes::from_static(b"w"))
+            .await;
+        assert_eq!(after_rewrite, kv.root_hash().await);
+        // deleting back to empty returns to the empty root exactly.
+        kv.put(Bytes::from_static(b"k"), Bytes::from_static(b"v"))
+            .await;
+        assert!(kv.delete(b"k").await);
+        assert_eq!(empty, kv.root_hash().await);
+    }
+
+    #[tokio::test]
+    async fn root_hash_is_unambiguous_across_the_key_value_boundary() {
+        // Without length-prefixing, {"a": "bc"} and {"ab": "c"} would feed the same bytes to the digest and
+        // collide. They must hash differently.
+        let ab_c = InMemoryKvStore::new();
+        ab_c.put(Bytes::from_static(b"ab"), Bytes::from_static(b"c"))
+            .await;
+        let a_bc = InMemoryKvStore::new();
+        a_bc.put(Bytes::from_static(b"a"), Bytes::from_static(b"bc"))
+            .await;
+        assert_ne!(ab_c.root_hash().await, a_bc.root_hash().await);
+        // and two entries vs one concatenated entry are likewise distinct.
+        let two = InMemoryKvStore::new();
+        two.put(Bytes::from_static(b"a"), Bytes::from_static(b"1"))
+            .await;
+        two.put(Bytes::from_static(b"b"), Bytes::from_static(b"2"))
+            .await;
+        let one = InMemoryKvStore::new();
+        one.put(Bytes::from_static(b"ab"), Bytes::from_static(b"12"))
+            .await;
+        assert_ne!(two.root_hash().await, one.root_hash().await);
+    }
+
     /// The store drives correctly under Cameron's Bach simulator — put/get/delete and both scans run on the
     /// deterministic discrete-event runtime rather than tokio. Because the trait and in-memory impl are
     /// runtime-agnostic (await-only, no tokio primitives; the scans are snapshot streams), Bach drives them
@@ -349,6 +458,9 @@ mod tests {
                         .await,
                     2
                 );
+                // the root hash reacts to a change under the simulator too, and reverts when the change is
+                // undone — the async digest drives on Bach's runtime unchanged.
+                let before_delete = kv.root_hash().await;
                 assert!(kv.delete(b"seen/msg-1").await);
                 assert_eq!(
                     kv.scan_keys(prefix_range(Bytes::from_static(b"seen/")))
@@ -356,6 +468,10 @@ mod tests {
                         .await,
                     1
                 );
+                assert_ne!(before_delete, kv.root_hash().await);
+                kv.put(Bytes::from_static(b"seen/msg-1"), Bytes::from_static(b"1"))
+                    .await;
+                assert_eq!(before_delete, kv.root_hash().await);
             }
             .group("kv-store")
             .primary()
