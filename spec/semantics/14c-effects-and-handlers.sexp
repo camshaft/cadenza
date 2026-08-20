@@ -17048,3 +17048,45 @@
   (export main)))
   (call   main (: 10 Int64)) (output (: 101100 Int64))
   (call   main (: 0 Int64)) (output (: 900 Int64)))
+
+;; -- pynd3 inner-delegates-outer + pynd4 three-level outward delegation + pynd5 perform-in-helper-fn (breaker batch 361) --
+(case "pynd3 probe: nested handlers of TWO effects where the INNER handler's arm performs the OUTER effect — Out.oo answers (* s 10) threading (+ s 1), In.ii answers (+ t (Out.oo)) threading (+ t 1); each In.ii dispatch performs a fresh Out.oo that must route past the inner In handler to the outer Out handler and thread Out's state INDEPENDENTLY, so the two Out.oo calls see s0 then s0+1 (a cross-effect delegation the tail fold must not shadow or double-count)"
+  (input (do
+  (effect Out (op oo (-> Int64)))
+  (effect In (op ii (-> Int64)))
+  (def (main (: n Int64))
+    (handle Out (% n 3)
+      ((oo () s (resume (* s 10) (+ s 1))))
+      (handle In (: 100 Int64)
+        ((ii () t (resume (+ t (Out.oo)) (+ t 1))))
+        (+ (In.ii) (In.ii)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 231 Int64))
+  (call   main (: 0 Int64)) (output (: 211 Int64)))
+(case "pynd4 probe: THREE nested handlers (A/B/C) where each inner arm delegates OUTWARD — C.cc performs both B.bb and A.aa, B.bb performs A.aa, A.aa is the base; each perform must route past the intervening handlers to its own handler and thread that effect's state independently, so A's counter advances across ALL delegated performs (from C, from B, and directly) while B and C keep their own"
+  (input (do
+  (effect A (op aa (-> Int64)))
+  (effect B (op bb (-> Int64)))
+  (effect C (op cc (-> Int64)))
+  (def (main (: n Int64))
+    (handle A (% n 3)
+      ((aa () s (resume (* s 10) (+ s 1))))
+      (handle B (: 5 Int64)
+        ((bb () s (resume (+ s (A.aa)) (+ s 1))))
+        (handle C (: 0 Int64)
+          ((cc () s (resume (+ (B.bb) (A.aa)) (+ s 1))))
+          (+ (C.cc) (C.cc))))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 111 Int64))
+  (call   main (: 0 Int64)) (output (: 71 Int64)))
+(case "pynd5 probe: the handled body calls a HELPER FUNCTION that performs the effect — (def (twice) (+ (E.tick) (E.tick))) is called from inside the handle body, so two of the three tick dispatches originate in a SEPARATE function frame yet must route to the enclosing handler and thread its state in call order (twice's two ticks then the direct tick)"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (twice) (+ (E.tick) (E.tick)))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((tick () s (resume (* s 10) (+ s 1))))
+      (+ (twice) (* 1000 (E.tick)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 30030 Int64))
+  (call   main (: 0 Int64)) (output (: 20010 Int64)))
