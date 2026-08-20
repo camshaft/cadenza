@@ -1,18 +1,20 @@
-# Agent harness
+# Cadenza platform
 
 > An ultra-minimal, generic runtime for programs that react to events. This document is the
-> vision — what the harness is, described on its own terms.
+> vision — what the platform is, described on its own terms.
 
 ## Purpose
 
-An agent harness is a small, generic runtime for running programs that react to
+The Cadenza platform is a small, generic runtime for running programs that react to
 events. Its whole job is: accept an event into a log, run the current program for
 that log, authorize the requests the program makes, carry them out, and record the
 results back into the log as more events.
 
-The runtime knows nothing about agents, models, tools, Cadenza, or any particular
-capability. Adding a new thing an agent can do never means changing the runtime.
-Everything specific is a program, a contract, or an event.
+The platform is general. Acting as an agent harness — running the loops that drive AI
+agents — is one thing it does, but it is not specific to that: it is a substrate for any
+program that reacts to events. The runtime knows nothing about agents, models, tools,
+Cadenza, or any particular capability. Adding a new thing a program can do never means
+changing the runtime. Everything specific is a program, a contract, or an event.
 
 The word for the running instance is a **node**. Everything that runs on a node is a
 **reducer** — the single kind of participant (section 3). A node hosts session reducers
@@ -79,37 +81,6 @@ and "what may be delivered to this program" are all sets of contract-ids. A prog
 declared set of contracts is, at the same time, its **routing table** and the surface that
 authorization is expressed over (section 5).
 
-### Grouping contracts into names
-
-A **group** is a named set of contracts. It is content-addressed and nominal exactly like
-a contract:
-
-```
-group    = (name, members)        # members: contract-ids, and (nested) other group-ids
-group-id = hash(group)
-```
-
-A group is a way to name, grant, and answer a set of contracts at once. Its uses:
-
-- **Capabilities.** A capability may name a group instead of listing each contract:
-  granting a group grants exactly its member contracts (section 5).
-- **Answering.** A reducer may declare it answers a group, meaning it answers every
-  member contract — an edge reducer answers the whole `http` group rather than each
-  operation separately.
-- **Organizing names.** Contract names stay plain labels; a group is how they are gathered
-  into a named namespace (a `github` group over the `github.push` and `github.pull`
-  contracts).
-
-A group is an organizing and granting convenience, **not** a new matching rule. It never
-softens dispatch: an effect always targets exactly one contract and routes by that
-contract's exact hash (there is no "route to the group"). And membership is part of the
-group's hash, so a group identity pins its members exactly — granting group `G`
-authorizes precisely those members, and adding a contract to a group produces a *different*
-group with a new hash rather than silently widening any existing grant. Referring to a
-group by its hash is exact; referring to "the current version of a named group" is a
-mutable-name resolution that freezes to a specific hash when used (the mutable-name
-machinery is later work, section 11).
-
 ### No strings, no versions, no enumerated kinds
 
 Identity is the contract hash and nothing else. There are no `family` strings, no separate
@@ -166,7 +137,7 @@ The kernel keeps a **registry** and does one thing with it: deliver a message to
 reducer that should receive it. A reducer is reached two ways:
 
 - **as a handler for a contract** — `set-handler(contract-id, reducer)` registers a
-  reducer to answer a given contract (or a group of contracts, section 1). A message
+  reducer to answer a given contract. A message
   tagged with that contract-id is delivered to that handler.
 - **as an addressable reducer** — an **enveloped** effect addressed to a specific reducer by
   its **id**, point-to-point rather than routed by contract. The envelope names the target id
@@ -273,7 +244,7 @@ Only two capabilities genuinely cannot be pure WASI, and they are the entire nat
 beyond the kernel binary:
 
 - **subprocess / shell** — WASI has no process-exec interface, so running a command needs
-  either a small custom host import (a harness change) or a native reducer outside the
+  either a small custom host import (a platform change) or a native reducer outside the
   sandbox. Isolate and minimize it.
 - **the durable timer** — arming a future wake is the kernel's own reactive mechanism (its
   one piece of pending-future state, section 6); reading the clock is WASI, arming a wake is
@@ -323,13 +294,13 @@ Everything a reducer receives is an event carrying a contract-id, and it is one 
 kinds — so a reducer has **two entry points**, and the runtime calls the one that fits:
 
 ```
-on_response(response: Result<Response, Error>) -> (list<Request>, Outcome)
-on_message(message: Message)                    -> (list<Request>, Outcome)
+on_response(response: Response) -> (list<Request>, Outcome)
+on_message(message: Message)    -> (list<Request>, Outcome)
 
 type Response = {
-  id:                 Hash,   # the contract-id (= the schema's hash); deref the schema from CAS if needed
-  payload:            Ast,    # the output value of the effect this responds to
-  continuation-token: Bytes,  # echoes the request's token, so the reducer resumes
+  id:                 Hash,               # the contract-id this answers (schema hash; deref from CAS if needed)
+  continuation-token: Bytes,              # correlates back to the original request — present on ok AND error
+  payload:            Result<Ast, Error>, # the result: Ok(output value) or Err(runtime failure)
 }
 
 type Message = {
@@ -350,12 +321,15 @@ type Error   = Timeout | MissingHandler
 type Outcome = Continue | Break(schema: Hash, reason: Ast)
 ```
 
-- **`on_response`** is the **output** side: a reply to a request this reducer performed
-  (`Ok(Response)`), or a runtime-level failure to get one — `Err(Timeout)` (its deadline
-  elapsed) or `Err(MissingHandler)` (nothing answers the contract). The failure is matched to
-  the request by its `continuation-token`. A handler's *own* failure — an HTTP 500, a domain
-  error — is not an `Error`: the handler answered, so it arrives as `Ok(Response)` whose
-  payload encodes the failure. Whether to retry is the reducer's judgment, not a kernel field.
+- **`on_response`** is the **output** side: a reply to a request this reducer performed. A
+  `Response` always carries the `id` and `continuation-token` that correlate it to the
+  original request, and its `payload` is the **result** — `Ok(output value)`, or a
+  runtime-level failure `Err(Timeout)` (the deadline elapsed) / `Err(MissingHandler)` (nothing
+  answers the contract). Putting the result in the payload — rather than wrapping the whole
+  `Response` in a `Result` — is what lets a *failure* still carry its correlation, so the
+  reducer can match a timeout back to the request that timed out. A handler's *own* failure —
+  an HTTP 500, a domain error — is not an `Err`: the handler answered, so it rides in
+  `Ok(output)`. Whether to retry is the reducer's judgment, not a kernel field.
 - **`on_message`** is the **input** side: an effect another reducer performed on this one, or
   a message sent to it. The `Message` carries its **source** (`from`) as envelope metadata,
   so the reducer can authenticate and route on who sent it — the reason these are two
@@ -436,8 +410,7 @@ strings, no namespace prefixes, no per-effect branches; the runtime never recogn
 request by a name in its own code, only by the handler a contract-id resolves to. Handlers
 are registered as data at bootstrap and come from three places, all resolved the same way:
 
-- **peer sessions** that declared they answer a contract (or a group of contracts,
-  section 1);
+- **peer sessions** that declared they answer a contract;
 - **edge reducers** the node provides for primitive input and output (network, subprocess,
   clock);
 - the **runtime's own built-in reducers** for its structural operations — the reducer
@@ -456,15 +429,16 @@ one registry, one dispatch path keyed on the contract-id.
 
 ### Correlating a result to its request
 
-A reducer emits a request and returns; the answer arrives as a *later* `Response` (or an
-`Error`), delivered to `on_response`. The reducer does not block or resume a suspended stack
-— there is no stack to resume, because each call is a fresh instance. Instead:
+A reducer emits a request and returns; the answer arrives as a *later* `Response` — its
+payload the result (`Ok`/`Err`) — delivered to `on_response`. The reducer does not block or
+resume a suspended stack — there is no stack to resume, because each call is a fresh
+instance. Instead:
 
 - The reducer chooses a **continuation-token** when it emits the request and stores whatever
   it needs to continue in its key-value store, keyed by that token.
-- When the answer returns — the `Response` (or `Error`) — it carries the same
-  `continuation-token`, so the next `on_response` reads the token, looks up its continuation,
-  and proceeds.
+- When the answer returns — always a `Response`, whether the result is `Ok` or `Err` — it
+  carries the same `continuation-token`, so the next `on_response` reads the token, looks up
+  its continuation, and proceeds.
 
 Correlation is the `continuation-token`, not the `id` — the `id` is the contract-id, shared
 by every request of that contract, so it can't identify one outstanding request. The
@@ -484,15 +458,19 @@ it and never double-fires.
 
 ### What the reducer receives back
 
-A dispatched request resolves to one of (delivered to `on_response`, section 3):
+The `Response` delivered to `on_response` (section 3) carries the correlation (`id`,
+`continuation-token`) and a `payload` that is one of:
 
-- **Ok(Response)** — a handler answered; the payload is the contract's output value. A
+- **Ok(output)** — a handler answered; the payload is the contract's output value. A
   handler's *domain* failure rides here too — the output type can encode it — because
   answering with an error is still answering.
 - **Err(MissingHandler)** — no handler is registered for the contract; nothing could answer.
 - **Err(Timeout)** — the request carried a deadline that elapsed with no answer. A timeout
   **cancels** the dispatch: the runtime guarantees no late answer for that request will ever
   fold, so a reducer never has to handle a response arriving after it gave up.
+
+Because the correlation lives on the `Response` and not in the `Result`, a failure is
+matched to its originating request the same way a success is.
 
 The reducer decides what a failure means for it — retry (re-emit, perhaps under a new
 deadline), escalate, or give up. Retryability is its judgment, not a kernel classification.
@@ -520,7 +498,7 @@ effect up the chain, and the authz middleware either **forwards** it (permit) or
 with a denial** that bubbles back to the caller as the effect's outcome. Because the
 middleware sits in the chain it sees the request's **resolved argument**, so it can gate on
 *what* is being done to *which resource*, not merely which contract — but exactly how it
-models that (capabilities, resource predicates, grants, groups, a policy language) is the
+models that (capabilities, resource predicates, grants, a policy language) is the
 middleware's own design, not the kernel's, and is deliberately out of this document. A policy
 engine such as Cedar is one such middleware, carrying its policies as content-addressed data
 referenced from the log; it is a wasm reducer, swapped by publishing a new hash, never a
@@ -706,7 +684,7 @@ closed, terminated, failed); the strategy is out of it (section 11).
 There is exactly one store: a content-addressed **blob store** mapping a hash to its
 bytes. That is its whole interface — put bytes and get a hash, get bytes by hash, ask
 whether a hash is present. Everything the system keeps by hash lives in it: log blobs,
-large state values, model payloads, contract and group declarations, and program
+large state values, model payloads, contract declarations, and program
 components. There is no separate component store. A WebAssembly component is not special —
 it is bytes in the blob store, addressed by its hash exactly like any other value, and
 fetching a program or one of its dependencies is the same get-by-hash as fetching a
