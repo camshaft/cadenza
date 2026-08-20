@@ -12,15 +12,11 @@
   #         built + stripped as NORMAL (input-addressed) derivations; `packages.*-hash` is the content
   #         address DERIVED from the built bytes (never asserted). `checks.*-hash-parity` verifies each
   #         equals its committed hash (REQUIRED_RUNTIME_HASH / DEBUG_RUNTIME_HASH / REQUIRED_NFC_HASH).
-  #   N2  — (removed) the old agent-platform guest/reducer wasm components. The platform (kernel, host,
-  #         reducers, guests) was nuked for a clean rebuild against design/cadenza-platform.md; this flake
-  #         now builds only the language toolchain (runtime + NFC + seed compiler + corpus gate).
   #   R2  — `packages.store` : every built component assembled into one content-addressed store dir
   #         (`<derived-hash>.wasm`), mirroring target/cadenza-store but built + addressed by nix.
   #   S1  — `packages.seed-compiler` : the NATIVE bootstrap toolchain (cdz + cdz-run binaries) via
   #         `buildRustPackage` (root Cargo.lock, tracked #1748). S2 cadenza-projects, S3 per-test skip.
-  #   rcdzc-wasm — `packages.rcdzc-wasm` (+ `-hash`) : the compiler as a wasm32-wasip1 module for the
-  #         agent kernel's blob store (v-agent-harness owns the store pointer + compile-effect ABI).
+  #   rcdzc-wasm — `packages.rcdzc-wasm` (+ `-hash`) : the compiler as a wasm32-wasip1 module.
   #   S2  — `packages.example-project` (+ the `buildCadenzaProject` fn) : build a Cadenza project
   #         (Project.cdz + sources) through nix via the S1 compiler → its wasm.
   #   S3  — `testCadenzaProject` (+ `checks.example-project-tests`) : run a project's @tests through nix
