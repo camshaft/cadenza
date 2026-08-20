@@ -16974,3 +16974,37 @@
   (export main)))
   (call   main (: 10 Int64)) (output (: -100980 Int64))
   (call   main (: 0 Int64)) (output (: -101 Int64)))
+
+;; -- pyos1 Option-state thread + pyrs1 Result-state (Err recovers) + pystr2 growing String-state (breaker batch 359) --
+(case "pyos1 probe: an (Option Int64) HANDLER STATE threaded across three dispatches — tick answers (Some v -> v*10 / None -> -1) and threads (Some v -> Some(v+1) / None -> Some 0); the seed is None when n%3=0 else Some(n%3), so the state slot carries a two-arm SUM VALUE and a match reads/rebuilds it per dispatch as it threads"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (main (: n Int64))
+    (handle E (if (= (% n 3) (: 0 Int64)) (None) (Some (% n 3)))
+      ((tick () s (resume (match s ((Some v) (* v 10)) ((None) (: -1 Int64)))
+                          (match s ((Some v) (Some (+ v 1))) ((None) (Some (: 0 Int64)))))))
+      (+ (* 1000 (E.tick)) (+ (* 100 (E.tick)) (E.tick)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 12030 Int64))
+  (call   main (: 0 Int64)) (output (: -990 Int64)))
+(case "pyrs1 probe: a (Result Int64 Int64) HANDLER STATE threaded across three dispatches — tick answers (Ok v -> v*10 / Err e -> -e) and threads (Ok v -> Ok(v+1) / Err e -> Ok e, recovering on the first tick); seed Err 7 when n%3=0 else Ok(n%3), so the state slot carries a two-arm SUM and the Err arm recovers into Ok mid-thread"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (main (: n Int64))
+    (handle E (if (= (% n 3) (: 0 Int64)) (Err (: 7 Int64)) (Ok (% n 3)))
+      ((tick () s (resume (match s ((Ok v) (* v 10)) ((Err e) (- (: 0 Int64) e)))
+                          (match s ((Ok v) (Ok (+ v 1))) ((Err e) (Ok e))))))
+      (+ (* 1000 (E.tick)) (+ (* 100 (E.tick)) (E.tick)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 12030 Int64))
+  (call   main (: 0 Int64)) (output (: 80 Int64)))
+(case "pystr2 probe: a STRING handler state that GROWS per dispatch — tick answers (String.scalar-len s) and threads (String.concat s \"x\"), so each dispatch reads the current length then appends; seed is a 1/2/3-char string by n%3, exercising a heap String value threaded and rebuilt across the resume seam"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (main (: n Int64))
+    (handle E (if (= (% n 3) (: 0 Int64)) "a" (if (= (% n 3) (: 1 Int64)) "ab" "abc"))
+      ((tick () s (resume (String.scalar-len s) (String.concat s "x"))))
+      (+ (* 100 (E.tick)) (E.tick))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 203 Int64))
+  (call   main (: 0 Int64)) (output (: 102 Int64)))
