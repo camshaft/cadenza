@@ -5,12 +5,15 @@
 //! reducer with the same interface: it receives an event, updates its own state, and emits effect
 //! requests. There is no separate executor.
 //!
-//! Everything a reducer receives is an event carrying a contract-id, and it is one of two kinds, so a
-//! reducer has two entry points and the runtime calls the one that fits:
+//! Everything a reducer receives is an event carrying a contract-id, and it is one of a few kinds, so a
+//! reducer has three entry points and the runtime calls the one that fits:
 //! - [`on_response`](Reducer::on_response) — the output side: a reply to a request this reducer performed.
 //! - [`on_message`](Reducer::on_message) — the input side: an effect another reducer performed on this
-//!   one (or a message sent to it), carrying its source so the reducer can authenticate and route on who
-//!   sent it.
+//!   one (or a message sent to it), carrying its [`Origin`] — the sending reducer and the host that ran
+//!   it — so the reducer can authenticate and route on who sent it and from where.
+//! - [`on_notification`](Reducer::on_notification) — the control-plane side: an unsolicited platform event
+//!   such as a new handler becoming available or a lifecycle event, typed by contract-id like anything
+//!   else, so one entry point carries every kind and a reducer handles or ignores each by its id.
 //!
 //! Both return the same product: the [`Request`]s to perform next, and an [`Outcome`] (`Continue` to keep
 //! running, or `Break` to terminate the reducer carrying a typed reason). Each call is a pure function of
@@ -88,53 +91,91 @@ pub struct Response {
     pub payload: Result<Bytes, Error>,
 }
 
+/// The source of a [`Message`] (§3): the sending reducer and the host that ran it. The kernel stamps both
+/// as envelope metadata a reducer cannot forge, so a reducer authenticates and routes on who sent an effect
+/// and from where. Carrying the `host` alongside the `reducer` is the hook for federated trust: a receiver
+/// can gate on reducer-on-host, and a grant attributed to an `Origin` stays attributable across a
+/// federation (§4/§11).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Origin {
+    /// The sending reducer's id.
+    pub reducer: Hash,
+    /// The host (node/runtime) that ran the sending reducer.
+    pub host: Hash,
+}
+
 /// An effect another reducer performed on this one, delivered to [`on_message`](Reducer::on_message). It
-/// carries its source (`from`) as envelope metadata so the reducer can authenticate and route on who sent
-/// it — the reason `on_message` is distinct from `on_response`. The reducer answers by emitting its reply,
-/// correlated by this `continuation_token`, which the runtime routes back to the caller's `on_response`.
+/// carries its [`Origin`] (`from`) — the sending reducer and its host — as envelope metadata so the reducer
+/// can authenticate and route on who sent it and from where, the reason `on_message` is distinct from
+/// `on_response`. The reducer answers by emitting its reply, correlated by this `continuation_token`, which
+/// the runtime routes back to the caller's `on_response`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Message {
     /// The contract-id of the effect being performed on this reducer.
     pub id: Hash,
     /// The input value of that effect, in its canonical encoding.
     pub payload: Bytes,
-    /// The source reducer's id — envelope metadata to authenticate or route on.
-    pub from: Hash,
+    /// The source — the sending reducer and the host that ran it — to authenticate or route on.
+    pub from: Origin,
     /// The caller's token; the reducer's reply is correlated back to the caller by it.
     pub continuation_token: Bytes,
 }
 
-/// The one interface every participant implements (§3): receive an event, update state, emit requests.
-/// `Send + Sync` so the runtime can share and schedule it. The two entry points return the same product —
-/// the requests to perform and the [`Outcome`]. Async because a reduce call may await the reducer's direct
-/// accesses (its key-value store, the content store); it never blocks the runtime.
+/// An unsolicited platform control-plane event, delivered to [`on_notification`](Reducer::on_notification):
+/// a new handler becoming available (the trigger for propagation, §3), or a lifecycle event a reducer
+/// subscribed to (spawned / closed / failed, §7). It is shaped like a response without a
+/// `continuation_token` — a contract-id and a plain typed payload. There is no `continuation_token`
+/// (nothing of the reducer's is being answered) and no `Result` (a notification is an event that happened,
+/// not the success-or-failure of a request); an error condition, where one applies, lives in the payload's
+/// own schema. Because it is typed by `id`, one entry point carries every kind of platform event.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Notification {
+    /// The contract-id of the notification's schema.
+    pub id: Hash,
+    /// The notification value, in its canonical encoding.
+    pub payload: Bytes,
+}
+
+/// The one interface every ordinary participant implements (§3): receive an event, update state, emit
+/// requests. `Send + Sync` so the runtime can share and schedule it. The three entry points return the same
+/// product — the requests to perform and the [`Outcome`]. Async because a reduce call may await the
+/// reducer's direct accesses (its key-value store, the content store); it never blocks the runtime.
 ///
 /// The methods take `&mut self`: a reducer folds an event into its own state, so it mutates. Each reducer
 /// lives in the runtime's registry with a single owner (the event loop drives one reducer at a time), so
 /// exclusive access is the natural fit and the trait does not force interior mutability on implementations.
 /// An implementation is still free to use interior mutability if it wants.
+///
+/// The system reducer that shepherds an effect (§4) is a distinct, privileged interface, not this one.
 #[async_trait]
 pub trait Reducer: Send + Sync {
     /// React to a [`Response`] — a reply to a request this reducer performed.
     async fn on_response(&mut self, response: Response) -> (Vec<Request>, Outcome);
 
-    /// React to a [`Message`] — an effect performed on this reducer by another, carrying its source.
+    /// React to a [`Message`] — an effect performed on this reducer by another, carrying its [`Origin`].
     async fn on_message(&mut self, message: Message) -> (Vec<Request>, Outcome);
+
+    /// React to a [`Notification`] — an unsolicited platform control-plane event. A reducer that has no
+    /// interest in a given notification simply returns `(Vec::new(), Outcome::Continue)`; ignoring the
+    /// control plane is safe (for handler-availability, not propagating fails closed, §3).
+    async fn on_notification(&mut self, notification: Notification) -> (Vec<Request>, Outcome);
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Message, Outcome, Reducer, Request, Response};
+    use super::{Message, Notification, Origin, Outcome, Reducer, Request, Response};
     use crate::{Bytes, Hash};
 
     /// A reducer that actually folds state: it counts the messages it has seen (in `&mut self`), forwards
     /// each to a downstream contract carrying the running count, and closes once it has seen `close_at`.
-    /// The behavior on any given event depends on the accumulated state, so it exercises real folding
-    /// across calls rather than a fixed shape.
+    /// It also reacts to one control-plane notification — the `propagate` contract — by forwarding it
+    /// downstream, and ignores every other notification. The behavior on any given event depends on the
+    /// accumulated state and the event's contract-id, so it exercises real folding rather than a fixed shape.
     struct Counter {
         seen: u32,
         close_at: u32,
         downstream: Hash,
+        propagate: Hash,
     }
 
     #[async_trait::async_trait]
@@ -161,24 +202,48 @@ mod tests {
         async fn on_response(&mut self, _response: Response) -> (Vec<Request>, Outcome) {
             (Vec::new(), Outcome::Continue)
         }
+
+        async fn on_notification(&mut self, notification: Notification) -> (Vec<Request>, Outcome) {
+            // Only the `propagate` notification does anything: forward it downstream. Every other
+            // control-plane event is ignored (returns no requests), which is the safe default.
+            if notification.id == self.propagate {
+                let request = Request {
+                    id: self.downstream,
+                    payload: notification.payload,
+                    continuation_token: Bytes::from_static(b"propagate"),
+                    deadline: None,
+                };
+                (vec![request], Outcome::Continue)
+            } else {
+                (Vec::new(), Outcome::Continue)
+            }
+        }
+    }
+
+    fn counter(close_at: u32) -> Counter {
+        Counter {
+            seen: 0,
+            close_at,
+            downstream: Hash::of(b"downstream"),
+            propagate: Hash::of(b"propagate"),
+        }
     }
 
     fn msg(token: &'static [u8]) -> Message {
         Message {
             id: Hash::of(b"inbound"),
             payload: Bytes::from_static(b"x"),
-            from: Hash::of(b"peer"),
+            from: Origin {
+                reducer: Hash::of(b"peer"),
+                host: Hash::of(b"host-a"),
+            },
             continuation_token: Bytes::from_static(token),
         }
     }
 
     #[tokio::test]
     async fn folds_state_across_calls_and_breaks_at_the_limit() {
-        let mut r = Counter {
-            seen: 0,
-            close_at: 3,
-            downstream: Hash::of(b"downstream"),
-        };
+        let mut r = counter(3);
         // The running count carried on each forwarded request reflects accumulated state: 1, then 2.
         let (out1, o1) = r.on_message(msg(b"t1")).await;
         assert_eq!(out1[0].payload, Bytes::copy_from_slice(&1u32.to_le_bytes()));
@@ -194,11 +259,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_forwarded_request_carries_the_callers_token_for_correlation() {
-        let mut r = Counter {
-            seen: 0,
-            close_at: 100,
-            downstream: Hash::of(b"downstream"),
-        };
+        let mut r = counter(100);
         // The reducer routes to its downstream contract and threads the caller's token through, so the
         // eventual answer correlates back — the routing behavior, not the struct shape.
         let (requests, _) = r.on_message(msg(b"correlate-me")).await;
@@ -206,6 +267,97 @@ mod tests {
         assert_eq!(
             requests[0].continuation_token,
             Bytes::from_static(b"correlate-me")
+        );
+    }
+
+    #[tokio::test]
+    async fn reacts_to_a_control_plane_notification_and_ignores_unknown_ones() {
+        let mut r = counter(100);
+        // The `propagate` notification is acted on: forwarded downstream carrying its payload.
+        let (out, o) = r
+            .on_notification(Notification {
+                id: Hash::of(b"propagate"),
+                payload: Bytes::from_static(b"new-handler"),
+            })
+            .await;
+        assert_eq!(out[0].id, Hash::of(b"downstream"));
+        assert_eq!(out[0].payload, Bytes::from_static(b"new-handler"));
+        assert_eq!(o, Outcome::Continue);
+        // An unrelated notification is ignored — no requests — and a notification never counts as a message.
+        let (out2, _) = r
+            .on_notification(Notification {
+                id: Hash::of(b"some-lifecycle-event"),
+                payload: Bytes::from_static(b"ignored"),
+            })
+            .await;
+        assert!(out2.is_empty());
+        assert_eq!(r.seen, 0, "notifications are not messages");
+    }
+
+    /// A reducer that authenticates on the message's `Origin`: it forwards only effects that came from a
+    /// trusted host, and denies (drops) the rest. This exercises `from` carrying the host, the hook for
+    /// federated trust — routing on where an effect came from, not only which reducer sent it.
+    struct HostGate {
+        trusted_host: Hash,
+        downstream: Hash,
+    }
+
+    #[async_trait::async_trait]
+    impl Reducer for HostGate {
+        async fn on_message(&mut self, message: Message) -> (Vec<Request>, Outcome) {
+            if message.from.host == self.trusted_host {
+                let request = Request {
+                    id: self.downstream,
+                    payload: message.payload,
+                    continuation_token: message.continuation_token,
+                    deadline: None,
+                };
+                (vec![request], Outcome::Continue)
+            } else {
+                (Vec::new(), Outcome::Continue)
+            }
+        }
+        async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_reducer_can_authenticate_on_the_origin_host() {
+        let mut gate = HostGate {
+            trusted_host: Hash::of(b"host-a"),
+            downstream: Hash::of(b"downstream"),
+        };
+        let from_trusted = Message {
+            id: Hash::of(b"inbound"),
+            payload: Bytes::from_static(b"v"),
+            from: Origin {
+                reducer: Hash::of(b"peer"),
+                host: Hash::of(b"host-a"),
+            },
+            continuation_token: Bytes::from_static(b"t"),
+        };
+        // Same sending reducer, different host — the host is what the gate keys on.
+        let from_untrusted = Message {
+            from: Origin {
+                reducer: Hash::of(b"peer"),
+                host: Hash::of(b"host-b"),
+            },
+            ..from_trusted.clone()
+        };
+        let (out_ok, _) = gate.on_message(from_trusted).await;
+        assert_eq!(
+            out_ok.len(),
+            1,
+            "an effect from the trusted host is forwarded"
+        );
+        let (out_denied, _) = gate.on_message(from_untrusted).await;
+        assert!(
+            out_denied.is_empty(),
+            "an effect from another host is dropped"
         );
     }
 }

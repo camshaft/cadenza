@@ -1,10 +1,13 @@
 //! The Cadenza platform runtime (`design/cadenza-platform.md`).
 //!
-//! A single unified crate, built bottom-up. This first slice is the content-hash foundation
-//! (spec section 8): [`Hash`], the sole identity in the system. A contract-id is the hash of a
-//! contract declaration; a blob is addressed by the hash of its bytes; the content-addressed store
-//! is unpermissioned because the hash *is* the capability. Everything downstream — routing, the
-//! registry, the store — addresses by it, so it is the correct first primitive to settle.
+//! A single unified crate, built bottom-up. The foundation is the content hash ([`Hash`], §8) — the sole
+//! identity in the system: a contract-id is the hash of a contract declaration, a blob is addressed by the
+//! hash of its bytes, and the content-addressed store is unpermissioned because the hash *is* the
+//! capability. Over it sit the value primitives ([`Str`], [`Bytes`], §12), the swappable async backends
+//! (the [`BlobStore`] §8 and the [`KvStore`] §7), the [`Contract`] whose declaration hashes to its id (§1),
+//! the ordinary [`Reducer`] interface and its event types (§3), and the [`HandlerRegistry`] of handler
+//! chains the system reducer routes through (§3/§4). The system reducer, dispatch, and the request context
+//! come next (§4).
 
 mod blob_store;
 mod contract;
@@ -18,7 +21,7 @@ pub use blob_store::{BlobStore, InMemoryBlobStore};
 pub use contract::Contract;
 pub use hash::{Hash, base64url};
 pub use kv::{InMemoryKvStore, KeyRange, KvKeyScan, KvScan, KvStore, prefix_range};
-pub use reducer::{Error, Message, Outcome, Reducer, Request, Response};
+pub use reducer::{Error, Message, Notification, Origin, Outcome, Reducer, Request, Response};
 pub use registry::HandlerRegistry;
 pub use str::Str;
 
