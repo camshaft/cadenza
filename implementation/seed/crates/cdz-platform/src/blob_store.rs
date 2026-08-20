@@ -1,6 +1,6 @@
 //! The content-addressed blob store (`design/cadenza-platform.md` §8).
 //!
-//! There is exactly ONE store: a mapping from a [`Hash`] to its bytes. Its whole interface is: put bytes
+//! There is exactly one store: a mapping from a [`Hash`] to its bytes. Its whole interface is: put bytes
 //! (getting back their hash), get bytes by hash, and ask whether a hash is present. Everything the system
 //! keeps by hash lives here — log blobs, large state values, contract declarations, wasm components — a
 //! component is not special, it is bytes addressed by its hash like any other value.
@@ -13,7 +13,7 @@
 //! blocking the runtime — but they stay deterministic: `get(hash)` is a pure function of the hash
 //! (content-addressed, the same bytes every time) and `put(bytes)` a pure function of the bytes, so
 //! awaiting a fetch changes only timing, never the result. The trait is [`async_trait`] so a backend is a
-//! dyn-safe swappable trait object, and the methods are runtime-AGNOSTIC (they only await), so they run
+//! dyn-safe swappable trait object, and the methods are runtime-agnostic (they only await), so they run
 //! under tokio in production and under the Bach simulator in deterministic tests alike.
 
 use crate::{Bytes, Hash};
