@@ -309,8 +309,13 @@ type Response = {
 type Message = {
   id:                 Hash,   # the contract-id
   payload:            Ast,    # the input value of the effect being performed on this reducer
-  from:               Hash,   # the source reducer — envelope metadata to authenticate / route on
+  from:               Origin, # the source — envelope metadata to authenticate / route on
   continuation-token: Bytes,  # correlates the reducer's reply back to the caller
+}
+
+type Origin = {
+  reducer: Hash,  # the sending reducer's id
+  host:    Hash,  # the host (node/runtime) that ran it — the hook for federated trust
 }
 
 type Notification = {
@@ -339,9 +344,10 @@ type Outcome = Continue | Break(schema: Hash, reason: Ast)
   an HTTP 500, a domain error — is not an `Err`: the handler answered, so it rides in
   `Ok(output)`. Whether to retry is the reducer's judgment, not a kernel field.
 - **`on_message`** is the **input** side: an effect another reducer performed on this one, or
-  a message sent to it. The `Message` carries its **source** (`from`) as envelope metadata,
-  so the reducer can authenticate and route on who sent it — the reason it is distinct from
-  `on_response`. The reducer answers by emitting its reply, correlated by the message's
+  a message sent to it. The `Message` carries its **source** (`from`) as envelope metadata —
+  the sending reducer and the host that ran it — so the reducer can authenticate and route on
+  both who sent it and from where, the reason it is distinct from `on_response`. The reducer
+  answers by emitting its reply, correlated by the message's
   `continuation-token`, which the runtime routes back to the caller's `on_response`.
 - **`on_notification`** is the **control-plane** side: an unsolicited platform event, such as
   a new handler becoming available on this reducer (the trigger for propagation, above) or a
@@ -470,8 +476,9 @@ answer folds back, the outstanding capabilities, and any metadata handlers attac
 state, and it learns all of it the ordinary way: by receiving plain events from other reducers
 and recording what it needs. A handler **attaches** metadata by sending the system reducer an
 event carrying the value and its **schema** (contract-id); the reducer records that value
-against its **author** — the sender's id, which the kernel stamps as the message's `from`
-(section 3), so no handler can claim to be another. Attachments are append-only: nothing is
+against its **author** — the sending reducer and the host that ran it, which the kernel stamps
+as the message's `from` (section 3), so no handler can claim to be another and a grant stays
+attributable to a reducer-on-a-host even across a federation. Attachments are append-only: nothing is
 overwritten or removed, and a grant is reversed by attaching a revocation, so the accumulated
 history — who established what, in what order — is always reconstructable. A later handler can
 therefore trust that, say, the authorization reducer attached a particular grant, and gate on
@@ -989,8 +996,13 @@ needing no new kernel mechanism.
   built entirely from sessions and effects; none of it needs new runtime mechanism.
 - **Multiple operators and trust** — signed provenance, node enrollment and identity,
   short-lived scoped credentials brokered just-in-time, and cross-operator policy. The
-  event envelope reserves room for a signature and producer identity from the start; the
-  machinery that verifies them is later.
+  message envelope already carries both parts of a producer identity — a `from` naming the
+  sending reducer *and* the host that ran it (section 3) — so a receiver can gate on
+  reducer-on-host, and a grant attached to a request context stays attributable to a
+  reducer-on-host across a federation (section 4). What is later is the machinery that
+  authenticates a peer host and enrolls it into a trust tier, and signatures that harden the
+  envelope where hosts do not mutually authenticate at transport; the identity the envelope
+  carries is in scope from the start.
 - **Federation** — many nodes in a mesh, effects routed to the right node by trust tier,
   and a hub that folds session reducers while edge nodes run only edge reducers. This
   document specifies a single node.
