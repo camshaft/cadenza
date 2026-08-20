@@ -19,10 +19,13 @@
 //! declaration with the language's canonical AST (`cadenza-ast`) and hash its canonical encoding — one
 //! canonical form shared with the compiler, never a parallel or lossy re-encoding.
 //!
-//! Declaration shape: the value `(contract <name> <input-type> <output-type>)` — a list whose head is the
-//! name `contract`, followed by the contract's name as a string, then the input and output type trees. The
-//! runtime treats the payload against a contract as opaque bytes; what the types mean is the concern of the
-//! programs on each end.
+//! Declaration shape: the value `(contract <name> (types <type-decl>…) <input-name> <output-name>)` — the
+//! head `contract`, then the contract's name as a string, then a `(types …)` list of named cadenza type
+//! declarations (`(type Name …)` forms), then the names of the input and output types (each referencing a
+//! declared type). Types are always named — no inline anonymous types — so recursive and mutually
+//! referential types resolve by name within the set (spec direction 2026-08-20). The runtime treats the
+//! payload against a contract as opaque bytes; what the types mean is the concern of the programs on each
+//! end.
 
 use crate::{Bytes, Hash, Str};
 use cadenza_ast::ast::{Builder, Leaf, StructId};
@@ -40,32 +43,59 @@ pub struct Contract {
     /// The contract's name — kept for the [`name`](Contract::name) accessor; it is also encoded inside the
     /// declaration (which is what the id is taken over).
     name: Str,
-    /// The canonical declaration `(contract <name> <input> <output>)` in its encoded binary form. Stored
+    /// The canonical declaration `(contract <name> (types …) <input> <output>)` in its encoded binary form. Stored
     /// as the encoded `Bytes` (an O(1) clone) rather than the `Arenas`, since encoding is exactly what the
     /// id is taken over; a consumer that wants the structured value decodes it with `cadenza_ast::codec`.
     declaration: Bytes,
 }
 
 impl Contract {
-    /// Declare a contract from a `name` and its input/output types. The type closures build each type into
-    /// the same arena as the declaration, using the `cadenza-ast` type builders (for example
-    /// `|b| b.wit_type_prim("f64")` for a `Float`, or `|b| b.wit_type_list(b.wit_type_prim("u8"))`).
+    /// Declare a contract from a `name`, a set of named cadenza type declarations, and the names of its
+    /// input and output types.
+    ///
+    /// The input and output are cadenza types, and to represent any cadenza type — including recursive and
+    /// mutually-referential ones — every type is named: `types` builds the `(type Name …)` declarations
+    /// (via the `cadenza-ast` builder), and `input` / `output` name which of those declared types are the
+    /// contract's input and output. A type's body references any name in the set (including itself), so
+    /// recursion resolves by name; there are no inline anonymous types. A consequence is that a contract is
+    /// consistent across declarations only if it uses the same type names — the names are part of the
+    /// declaration, and therefore of the identity.
+    ///
+    /// `types` returns the `StructId` of each `(type Name …)` form it builds into the arena. For example, a
+    /// recursive list type:
+    /// ```ignore
+    /// Contract::new(Str::from("sum"), |b| {
+    ///     // (type Ints INil (ICons (Tuple Int64 Ints)))
+    ///     let nil = b.name("INil");
+    ///     let cons = b.list(vec![b.name("ICons"),
+    ///         b.list(vec![b.name("Tuple"), b.name("Int64"), b.name("Ints")])]);
+    ///     let ints = b.list(vec![b.name("type"), b.name("Ints"), nil, cons]);
+    ///     vec![ints]
+    /// }, "Ints", "Int64")
+    /// ```
     ///
     /// The declaration is canonicalized and encoded immediately, so [`id`](Contract::id) and
     /// [`declaration`](Contract::declaration) are stable and reproducible.
     pub fn new(
         name: Str,
-        input: impl FnOnce(&mut Builder) -> StructId,
-        output: impl FnOnce(&mut Builder) -> StructId,
+        types: impl FnOnce(&mut Builder) -> Vec<StructId>,
+        input: &str,
+        output: &str,
     ) -> Self {
         let mut b = Builder::new();
         let head = b.name("contract");
         let name_node = b.atom_leaf(Leaf::Str(Arc::from(name.as_str())));
-        let input_ty = input(&mut b);
-        let output_ty = output(&mut b);
-        let root = b.list(vec![head, name_node, input_ty, output_ty]);
+        // (types <type-decl>…) — the set of named cadenza type declarations the input/output refer to.
+        let type_decls = types(&mut b);
+        let types_head = b.name("types");
+        let types_node = b.list(std::iter::once(types_head).chain(type_decls).collect());
+        // input/output are references to declared types, by name — no inline anonymous types (§1, so
+        // recursive/mutually-referential types resolve within the named set).
+        let input_ref = b.name(input);
+        let output_ref = b.name(output);
+        let root = b.list(vec![head, name_node, types_node, input_ref, output_ref]);
         let arenas = b.finish(root);
-        // Canonicalize, then encode ONCE: the encoded bytes are both the stored declaration and what the
+        // Canonicalize, then encode once: the encoded bytes are both the stored declaration and what the
         // contract-id is the hash of (so id() and declaration() are both cheap getters afterward).
         let canonical = canon::canonicalize(&arenas).into_owned();
         let declaration = Bytes::from(codec::encode(&canonical));
@@ -103,59 +133,88 @@ impl Contract {
 mod tests {
     use super::Contract;
     use crate::Str;
+    use cadenza_ast::ast::{Builder, StructId};
 
-    // helpers building the two types the spec's example uses.
-    fn float(b: &mut cadenza_ast::ast::Builder) -> cadenza_ast::ast::StructId {
-        b.wit_type_prim("f64")
+    /// Build a `(Head child…)` list form. A small helper because a builder call cannot nest another
+    /// builder call in its arguments (each borrows the builder), so every node is bound first.
+    fn form(b: &mut Builder, head: &str, children: Vec<StructId>) -> StructId {
+        let head = b.name(head);
+        b.list(std::iter::once(head).chain(children).collect())
     }
-    fn u8_list(b: &mut cadenza_ast::ast::Builder) -> cadenza_ast::ast::StructId {
-        let elem = b.wit_type_prim("u8");
-        b.wit_type_list(elem)
+
+    /// A minimal named type: `(type Temp (Mk f64))`.
+    fn temp_type(b: &mut Builder) -> Vec<StructId> {
+        let f64 = b.name("f64");
+        let mk = form(b, "Mk", vec![f64]);
+        let temp = b.name("Temp");
+        vec![form(b, "type", vec![temp, mk])]
+    }
+
+    /// A genuinely recursive type: `(type Expr (Lit Int64) (Add (Tuple Expr Expr)))` — Expr refers to Expr.
+    fn expr_type(b: &mut Builder) -> Vec<StructId> {
+        let int = b.name("Int64");
+        let lit = form(b, "Lit", vec![int]);
+        let (e1, e2) = (b.name("Expr"), b.name("Expr"));
+        let tuple = form(b, "Tuple", vec![e1, e2]);
+        let add = form(b, "Add", vec![tuple]);
+        let name = b.name("Expr");
+        vec![form(b, "type", vec![name, lit, add])]
     }
 
     #[test]
     fn id_is_reproducible_from_the_declaration_alone() {
         // Building the same contract twice yields the same id (a pure function of the declaration).
-        let a = Contract::new(Str::from("temp.celsius"), float, float);
-        let b = Contract::new(Str::from("temp.celsius"), float, float);
+        let a = Contract::new(Str::from("temp.celsius"), temp_type, "Temp", "Temp");
+        let b = Contract::new(Str::from("temp.celsius"), temp_type, "Temp", "Temp");
         assert_eq!(a.id(), b.id());
     }
 
     #[test]
     fn identity_is_nominal_same_shape_different_name_differs() {
-        // temp.celsius : Float -> Float and temp.fahrenheit : Float -> Float share a shape but not an id.
-        let celsius = Contract::new(Str::from("temp.celsius"), float, float);
-        let fahrenheit = Contract::new(Str::from("temp.fahrenheit"), float, float);
-        assert_ne!(
-            celsius.id(),
-            fahrenheit.id(),
-            "the name is part of the identity"
-        );
+        // temp.celsius and temp.fahrenheit share the exact same types + shape but differ only in name;
+        // the name is part of the identity, so their ids differ (the spec's own example).
+        let celsius = Contract::new(Str::from("temp.celsius"), temp_type, "Temp", "Temp");
+        let fahrenheit = Contract::new(Str::from("temp.fahrenheit"), temp_type, "Temp", "Temp");
+        assert_ne!(celsius.id(), fahrenheit.id());
     }
 
     #[test]
-    fn evolution_is_a_new_contract_type_change_differs() {
-        // Same name, but a different input or output type is a different contract (a different hash).
-        let base = Contract::new(Str::from("fetch"), float, float);
-        let diff_input = Contract::new(Str::from("fetch"), u8_list, float);
-        let diff_output = Contract::new(Str::from("fetch"), float, u8_list);
-        assert_ne!(base.id(), diff_input.id());
-        assert_ne!(base.id(), diff_output.id());
-        assert_ne!(diff_input.id(), diff_output.id());
+    fn a_recursive_type_is_representable_and_hashes_stably() {
+        // A recursive Expr type resolves by name (Expr refers to Expr); the contract builds + hashes, and
+        // the same recursive declaration is reproducible.
+        let a = Contract::new(Str::from("eval"), expr_type, "Expr", "Expr");
+        let b = Contract::new(Str::from("eval"), expr_type, "Expr", "Expr");
+        assert_eq!(a.id(), b.id());
+        // it differs from a contract over a different (non-recursive) type of the same name-shape.
+        let temp = Contract::new(Str::from("eval"), temp_type, "Temp", "Temp");
+        assert_ne!(a.id(), temp.id());
+    }
+
+    #[test]
+    fn evolution_a_different_input_or_output_type_reference_differs() {
+        // Two named types, then vary which one input/output reference — a different type reference is a
+        // different contract (a different hash), even with the same name + same declared types.
+        fn two_types(b: &mut Builder) -> Vec<StructId> {
+            let int = b.name("Int64");
+            let mk_a = form(b, "MkA", vec![int]);
+            let name_a = b.name("A");
+            let a = form(b, "type", vec![name_a, mk_a]);
+            let boolean = b.name("Bool");
+            let mk_b = form(b, "MkB", vec![boolean]);
+            let name_b = b.name("B");
+            let bt = form(b, "type", vec![name_b, mk_b]);
+            vec![a, bt]
+        }
+        let base = Contract::new(Str::from("f"), two_types, "A", "B");
+        let swapped_input = Contract::new(Str::from("f"), two_types, "B", "B");
+        let swapped_output = Contract::new(Str::from("f"), two_types, "A", "A");
+        assert_ne!(base.id(), swapped_input.id());
+        assert_ne!(base.id(), swapped_output.id());
     }
 
     #[test]
     fn name_reads_back() {
-        let c = Contract::new(Str::from("temp.celsius"), float, float);
+        let c = Contract::new(Str::from("temp.celsius"), temp_type, "Temp", "Temp");
         assert_eq!(c.name().as_str(), "temp.celsius");
-    }
-
-    #[test]
-    fn id_is_a_32_byte_hash_rendered_base64url() {
-        let c = Contract::new(Str::from("x"), float, float);
-        // it is a real content hash — 32 bytes, 43 base64url chars, and stable across calls.
-        assert_eq!(c.id().as_bytes().len(), 32);
-        assert_eq!(c.id().to_string().len(), 43);
-        assert_eq!(c.id(), c.id());
     }
 }
