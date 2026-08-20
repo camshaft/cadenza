@@ -50,25 +50,25 @@ pub type KvKeyScan<'a> = Pin<Box<dyn Stream<Item = Bytes> + Send + 'a>>;
 /// prefix, or an all-`0xFF` prefix, has no finite successor, so the upper bound is unbounded (the scan
 /// runs to the end). This is the prefix scan expressed as a range.
 ///
-/// Takes an owned [`Bytes`]: the prefix is moved into the lower bound with no copy (an owned `Bytes` is
-/// what the range needs), and the only copy is the one buffer required to compute the exclusive upper
-/// bound (a distinct, mutated successor). A caller with a `'static` prefix passes `Bytes::from_static`
-/// (itself zero-copy).
+/// Takes an owned [`Bytes`]: the prefix is moved into the lower bound with no copy. The successor (the
+/// exclusive upper bound) is computed lazily — we first scan for the last byte below `0xFF` without
+/// allocating, then allocate only that shrunken prefix (dropping trailing `0xFF` bytes, which have no
+/// successor) and bump its final byte. An empty or all-`0xFF` prefix has no finite successor, so the
+/// upper bound is unbounded and nothing is allocated at all. A caller with a `'static` prefix passes
+/// `Bytes::from_static` (itself zero-copy).
 #[must_use]
 pub fn prefix_range(prefix: Bytes) -> KeyRange {
-    // Compute the exclusive upper bound (the successor) in its own buffer — the one unavoidable copy,
-    // since the successor is a mutated, distinct value from the prefix.
-    let mut end = prefix.to_vec();
-    let upper = loop {
-        match end.last() {
-            Some(&last) if last < 0xFF => {
-                *end.last_mut().expect("non-empty: matched last()") = last + 1;
-                break Bound::Excluded(Bytes::from(end));
-            }
-            Some(_) => {
-                end.pop(); // trailing 0xFF cannot be incremented: drop it and carry.
-            }
-            None => break Bound::Unbounded, // empty (or all-0xFF) prefix has no finite successor.
+    // Scan (no allocation) for the last byte that can be incremented; trailing 0xFF bytes have no
+    // successor and are dropped from the upper bound.
+    let upper = match prefix.iter().rposition(|&b| b < 0xFF) {
+        // Empty, or every byte is 0xFF: no finite successor exists, so scan to the end. No allocation.
+        None => Bound::Unbounded,
+        // Allocate only now, and only the [0..=i] prefix (trailing 0xFF dropped — potentially smaller
+        // than the prefix), then bump its last byte to form the exclusive upper bound.
+        Some(i) => {
+            let mut succ = prefix[..=i].to_vec();
+            succ[i] += 1;
+            Bound::Excluded(Bytes::from(succ))
         }
     };
     // Move the prefix into the lower bound — no copy.
