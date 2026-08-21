@@ -49,7 +49,7 @@ pub use registry::HandlerRegistry;
 pub use runtime::BachRuntime;
 pub use runtime::{Runtime, TokioRuntime};
 pub use str::Str;
-pub use system::{System, SystemError, TaskSystem};
+pub use system::{ExitNotice, ReducerKind, Spawn, System, SystemError, TaskSystem};
 
 // Re-export the byte-buffer type the platform marshals through, so downstream code depends on the
 // platform's chosen `Bytes` (spec §12: every byte buffer is `bytes::Bytes`, never `Vec<u8>`).
