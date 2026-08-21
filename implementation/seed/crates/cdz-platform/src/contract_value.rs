@@ -139,3 +139,126 @@ pub fn read_hash(arenas: &cadenza_ast::ast::Arenas, id: StructId) -> Option<Hash
         <[u8; Hash::LEN]>::try_from(bytes.as_ref()).ok()?,
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        as_bare_ctor, as_qctor, bare_ctor, bytes_leaf, qctor, read_bytes, read_hash, record,
+        record_field,
+    };
+    use crate::{Hash, HashTag};
+    use cadenza_ast::ast::Builder;
+
+    // Build a value with `build`, finish the arena, and hand back `(arenas, root)` to read from.
+    fn built(build: impl FnOnce(&mut Builder) -> super::StructId) -> cadenza_ast::ast::Arenas {
+        let mut b = Builder::new();
+        let root = build(&mut b);
+        b.finish(root)
+    }
+
+    #[test]
+    fn a_qualified_constructor_round_trips_and_rejects_the_wrong_name() {
+        // An applied `T.C` payload reads back as its tail; the payload leaf reads back byte-for-byte.
+        let arenas = built(|b| {
+            let x = bytes_leaf(b, b"payload");
+            qctor(b, "Event", "Message", vec![x])
+        });
+        let tail = as_qctor(&arenas, arenas.root, "Event", "Message").expect("an Event.Message");
+        assert_eq!(tail.len(), 1);
+        assert_eq!(
+            read_bytes(&arenas, tail[0]).as_deref(),
+            Some(b"payload".as_slice())
+        );
+        // Neither the type nor the constructor name may differ.
+        assert!(as_qctor(&arenas, arenas.root, "Event", "Response").is_none());
+        assert!(as_qctor(&arenas, arenas.root, "Other", "Message").is_none());
+        // A qualified constructor is not a prelude (bare) constructor.
+        assert!(as_bare_ctor(&arenas, arenas.root, "Event").is_none());
+    }
+
+    #[test]
+    fn a_nullary_qualified_constructor_has_an_empty_tail() {
+        let arenas = built(|b| qctor(b, "Outcome", "Delivered", vec![]));
+        let tail =
+            as_qctor(&arenas, arenas.root, "Outcome", "Delivered").expect("an Outcome.Delivered");
+        assert!(tail.is_empty());
+    }
+
+    #[test]
+    fn a_prelude_constructor_round_trips_and_does_not_cross_with_qualified() {
+        let arenas = built(|b| {
+            let v = bytes_leaf(b, b"answer");
+            bare_ctor(b, "Ok", vec![v])
+        });
+        let tail = as_bare_ctor(&arenas, arenas.root, "Ok").expect("an Ok(..)");
+        assert_eq!(tail.len(), 1);
+        assert_eq!(
+            read_bytes(&arenas, tail[0]).as_deref(),
+            Some(b"answer".as_slice())
+        );
+        assert!(as_bare_ctor(&arenas, arenas.root, "Err").is_none());
+        // A prelude constructor is not a qualified one.
+        assert!(as_qctor(&arenas, arenas.root, "Ok", "Ok").is_none());
+    }
+
+    #[test]
+    fn a_record_reads_its_fields_by_name_regardless_of_order() {
+        let arenas = built(|b| {
+            let id = bytes_leaf(b, b"the-id");
+            let parent = bytes_leaf(b, b"the-parent");
+            record(b, vec![("id", id), ("parent", parent)])
+        });
+        // Fields are addressed by name, not position — read them in the opposite order.
+        let parent = record_field(&arenas, arenas.root, "parent").expect("a parent field");
+        let id = record_field(&arenas, arenas.root, "id").expect("an id field");
+        assert_eq!(
+            read_bytes(&arenas, id).as_deref(),
+            Some(b"the-id".as_slice())
+        );
+        assert_eq!(
+            read_bytes(&arenas, parent).as_deref(),
+            Some(b"the-parent".as_slice())
+        );
+        // A missing field, and a record read as a non-record, are both `None`.
+        assert!(record_field(&arenas, arenas.root, "absent").is_none());
+    }
+
+    #[test]
+    fn readers_reject_a_mismatched_shape() {
+        // A qualified constructor is not a record, and its `record_field` is `None`; a record is not a
+        // qualified constructor. Each reader is total and rejects the wrong shape rather than panicking.
+        let qc = built(|b| qctor(b, "T", "C", vec![]));
+        assert!(record_field(&qc, qc.root, "id").is_none());
+        let rec = built(|b| record(b, vec![]));
+        assert!(as_qctor(&rec, rec.root, "record", "record").is_none());
+        // `read_bytes` on a list (not an atom) is `None`.
+        assert!(read_bytes(&rec, rec.root).is_none());
+    }
+
+    #[test]
+    fn bytes_leaves_round_trip_including_empty() {
+        let arenas = built(|b| bytes_leaf(b, b""));
+        assert_eq!(
+            read_bytes(&arenas, arenas.root).as_deref(),
+            Some(b"".as_slice())
+        );
+        let arenas = built(|b| bytes_leaf(b, &[0x00, 0xFF, 0x13, 0x37]));
+        assert_eq!(
+            read_bytes(&arenas, arenas.root).as_deref(),
+            Some([0x00, 0xFF, 0x13, 0x37].as_slice())
+        );
+    }
+
+    #[test]
+    fn read_hash_round_trips_a_tagged_hash_and_rejects_a_wrong_length_leaf() {
+        // A hash crosses as its 33 raw bytes (tag + digest) and reads back equal, tag preserved.
+        let h = Hash::of(HashTag::Contract, b"a contract declaration");
+        let arenas = built(|b| bytes_leaf(b, h.as_bytes()));
+        let read = read_hash(&arenas, arenas.root).expect("a hash");
+        assert_eq!(read, h);
+        assert_eq!(read.tag(), Some(HashTag::Contract));
+        // A leaf that is not exactly `Hash::LEN` bytes is not a hash.
+        let short = built(|b| bytes_leaf(b, b"too short"));
+        assert!(read_hash(&short, short.root).is_none());
+    }
+}
