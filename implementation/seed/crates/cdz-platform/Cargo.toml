@@ -21,10 +21,12 @@ publish = false
 
 [features]
 # Test-support: swappable pieces for exercising components in isolation, without the full system — a
-# program store backed by registered Rust factories, and whatever other component overrides tests need.
-# They live under the crate's `testing` module. On automatically under `cfg(test)`; enable this feature to
-# reach them from another crate's tests. None of it is part of the production surface.
-testing = []
+# program store backed by registered Rust factories, and the reducer tasks running on bach (the
+# deterministic simulator) instead of tokio. They live under the crate's `testing` module. On automatically
+# under `cfg(test)`; enable this feature to reach them from another crate's tests. Enabling it pulls in bach
+# because `rt` (the reducer-task executor) runs on bach whenever `cfg(any(test, feature = "testing"))`.
+# None of it is part of the production surface.
+testing = ["dep:bach"]
 
 [dependencies]
 # cadenza-ast is the LANGUAGE's canonical AST + type system (not the compiler) — the value model contracts
@@ -38,12 +40,17 @@ async-trait = "0.1" # dyn-safe async traits, so a store/kv backend is a swappabl
 # tokio is the platform's async runtime (spec §9 shared async runtime). A main dep per operator directive
 # 2026-08-20; the trait layers stay runtime-agnostic (await-only, no tokio primitives) so they also run
 # under the Bach simulator in tests. Minimal features for now; the scheduler layer widens them later.
-tokio = { version = "1", features = ["rt", "macros"] }
+tokio = { version = "1", features = ["rt", "macros", "sync"] }
 futures-core = "0.3" # the Stream trait, for the kv prefix-scan (a lazy stream, not a materialized Vec)
 futures-util = "0.3" # stream helpers (stream::iter) to back a scan; StreamExt in tests
+# Bach (Cameron's crate) — a discrete-event simulation runtime for deterministic async testing. It is the
+# `rt` executor (spawn + channels) for the reducer tasks under `cfg(any(test, feature = "testing"))`, so it
+# is an OPTIONAL normal dependency the `testing` feature enables (for another crate's tests). It is also a
+# dev-dependency below, so this crate's own `cfg(test)` build always has it without the feature.
+bach = { version = "0.1", optional = true }
 
 [dev-dependencies]
-# Bach (Cameron's crate) — a discrete-event simulation runtime for deterministic async testing. Drives the
-# runtime-agnostic trait futures in simulated time so store/kv behavior is deterministic + snapshotable.
+# Bach for this crate's own tests (cfg(test)): drives the reducer tasks + the runtime-agnostic store/kv
+# futures in deterministic simulated time. (Also an optional normal dep above, for the `testing` feature.)
 bach = "0.1"
 

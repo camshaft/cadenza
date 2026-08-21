@@ -27,8 +27,11 @@ mod ids;
 mod kv;
 mod program;
 mod reducer;
+mod reducers;
 mod registry;
-mod runtime;
+// The async-runtime primitives (spawn + channels) the reducer tasks run on — bach under test, tokio in
+// production. Internal plumbing; not part of the public surface.
+mod rt;
 mod str;
 
 pub use blob_store::{BlobStore, InMemoryBlobStore};
@@ -41,8 +44,8 @@ pub use ids::{ContractId, HostId, ProgramHash, ReducerId};
 pub use kv::{InMemoryKvStore, KeyRange, KvKeyScan, KvScan, KvStore, prefix_range};
 pub use program::ProgramStore;
 pub use reducer::{Error, Message, Notification, Origin, Outcome, Reducer, Request, Response};
+pub use reducers::Reducers;
 pub use registry::HandlerRegistry;
-pub use runtime::Runtime;
 pub use str::Str;
 
 // Re-export the byte-buffer type the platform marshals through, so downstream code depends on the
