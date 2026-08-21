@@ -39,7 +39,7 @@ pub use hash::{Hash, base64url};
 pub use hierarchy::{Ancestors, Hierarchy};
 pub use ids::{ContractId, HostId, ProgramHash, ReducerId};
 pub use kv::{InMemoryKvStore, KeyRange, KvKeyScan, KvScan, KvStore, prefix_range};
-pub use programs::Programs;
+pub use programs::{InMemoryProgramStore, ProgramStore};
 pub use reducer::{Error, Message, Notification, Origin, Outcome, Reducer, Request, Response};
 pub use registry::HandlerRegistry;
 pub use runtime::Runtime;

@@ -16,27 +16,27 @@
 //! slice.
 
 use crate::{
-    ContractId, Deliver, Delivered, EventRegistry, Outcome, ProgramHash, Programs, Reducer,
+    ContractId, Deliver, Delivered, EventRegistry, Outcome, ProgramHash, ProgramStore, Reducer,
     ReducerId, Request, deliver_contract,
 };
 use std::collections::HashMap;
 
 /// The in-memory runtime: the set of running reducers keyed by [`ReducerId`], the [`EventRegistry`] that
-/// says which program a contract's event reducer is spawned from, and the [`Programs`] that instantiate a
-/// program hash into a fresh reducer. It runs reducer steps, routes contracts, and spawns the event reducer
+/// says which program a contract's event reducer is spawned from, and the [`ProgramStore`] that instantiates
+/// a program hash into a fresh reducer. It runs reducer steps, routes contracts, and spawns the event reducer
 /// a route resolves to; a spawned event reducer is then run like any other reducer.
 pub struct Runtime {
     reducers: HashMap<ReducerId, Box<dyn Reducer>>,
     events: EventRegistry,
-    programs: Programs,
+    programs: Box<dyn ProgramStore>,
 }
 
 impl Runtime {
     /// A runtime with no running reducers yet, over the given event registry (which names the default event
-    /// reducer program and any overrides) and the given programs (which instantiate a program hash into a
-    /// reducer — the default event reducer's factory is registered here at setup).
+    /// reducer program and any overrides) and the given program store (which instantiates a program hash
+    /// into a reducer — the default event reducer's factory is registered in it at setup).
     #[must_use]
-    pub fn new(events: EventRegistry, programs: Programs) -> Self {
+    pub fn new(events: EventRegistry, programs: Box<dyn ProgramStore>) -> Self {
         Self {
             reducers: HashMap::new(),
             events,
@@ -77,9 +77,8 @@ impl Runtime {
     /// the resolved program has no registered factory — a misconfiguration, since routing always resolves to
     /// a program but the kernel may not know how to instantiate it. The spawned reducer is not registered in
     /// the running set; it is ephemeral, run for this one event.
-    #[must_use]
-    pub fn spawn_event_reducer(&self, contract: ContractId) -> Option<Box<dyn Reducer>> {
-        self.programs.spawn(self.route(contract))
+    pub async fn spawn_event_reducer(&self, contract: ContractId) -> Option<Box<dyn Reducer>> {
+        self.programs.spawn(self.route(contract)).await
     }
 
     /// Run one step of the reducer `target`: fold `event` through its matching entry point and return the
@@ -115,8 +114,8 @@ impl Runtime {
 mod tests {
     use super::Runtime;
     use crate::{
-        Bytes, ContractId, Deliver, Delivered, EventRegistry, Hash, HostId, Message, Notification,
-        Origin, Outcome, ProgramHash, Programs, Reducer, ReducerId, Request, Response,
+        Bytes, ContractId, Deliver, Delivered, EventRegistry, Hash, HostId, InMemoryProgramStore,
+        Message, Notification, Origin, Outcome, ProgramHash, Reducer, ReducerId, Request, Response,
     };
 
     fn cid(tag: &[u8]) -> ContractId {
@@ -158,7 +157,7 @@ mod tests {
     fn runtime() -> Runtime {
         Runtime::new(
             EventRegistry::new(prog(b"default-event-program")),
-            Programs::new(),
+            Box::new(InMemoryProgramStore::new()),
         )
     }
 
@@ -236,7 +235,7 @@ mod tests {
         // With no override, every contract routes to the default program; an override wins for its contract.
         let mut events = EventRegistry::new(prog(b"default"));
         events.set_override(cid(b"session.spawn"), prog(b"session-program"));
-        let rt = Runtime::new(events, Programs::new());
+        let rt = Runtime::new(events, Box::new(InMemoryProgramStore::new()));
         assert_eq!(rt.route(cid(b"http.get")), prog(b"default"));
         assert_eq!(rt.route(cid(b"session.spawn")), prog(b"session-program"));
     }
@@ -248,15 +247,16 @@ mod tests {
         // by running the fresh reducer and reading which entry point it dispatched to.
         let mut events = EventRegistry::new(prog(b"default-event-program"));
         events.set_override(cid(b"session.spawn"), prog(b"session-program"));
-        let mut programs = Programs::new();
+        let mut programs = InMemoryProgramStore::new();
         programs.register(prog(b"default-event-program"), || Box::new(Probe));
         programs.register(prog(b"session-program"), || Box::new(Probe));
-        let rt = Runtime::new(events, programs);
+        let rt = Runtime::new(events, Box::new(programs));
 
         // A contract with no override spawns the default program's reducer; the override spawns its own.
         for contract in [cid(b"http.get"), cid(b"session.spawn")] {
             let mut reducer = rt
                 .spawn_event_reducer(contract)
+                .await
                 .expect("the routed program has a registered factory");
             let (out, _) = reducer
                 .on_message(Message {
@@ -270,15 +270,15 @@ mod tests {
         }
     }
 
-    #[test]
-    fn spawn_event_reducer_is_none_when_the_routed_program_has_no_factory() {
-        // Routing always resolves to a program, but if the kernel has no factory for it the event reducer
-        // cannot be instantiated — a misconfiguration surfaced as `None`, not a panic.
+    #[tokio::test]
+    async fn spawn_event_reducer_is_none_when_the_routed_program_has_no_factory() {
+        // Routing always resolves to a program, but if the store cannot instantiate it the event reducer
+        // cannot be spawned — a misconfiguration surfaced as `None`, not a panic.
         let rt = Runtime::new(
             EventRegistry::new(prog(b"unregistered-default")),
-            Programs::new(),
+            Box::new(InMemoryProgramStore::new()),
         );
-        assert!(rt.spawn_event_reducer(cid(b"http.get")).is_none());
+        assert!(rt.spawn_event_reducer(cid(b"http.get")).await.is_none());
     }
 
     #[tokio::test]
