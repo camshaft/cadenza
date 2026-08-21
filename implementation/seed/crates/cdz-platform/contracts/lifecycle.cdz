@@ -1,0 +1,50 @@
+// The lifecycle contract — the schema of the control-plane notification the system delivers to a
+// reducer's watchers when a watched reducer terminates (design/cadenza-platform.md section 7). A
+// supervision link is a one-way subscription: it asks the system to deliver the watched reducer's
+// lifecycle events into the watcher's mailbox as notifications, and the watcher decides in its own fold
+// what the event means for it. This file is the source of truth for that notification's schema and is
+// real Cadenza: `cargo xtask codegen` validates it with the `cdz` binary and generates
+// `src/contracts/lifecycle.rs` from it. Re-run `cargo xtask codegen` after editing; `--check` fails if
+// the committed generated file is stale. The compiler is a codegen-time tool only — it never ships.
+//
+// The `@test` definitions are not part of the generated schema (codegen extracts only the `type`
+// declarations). They are the conformance proof: each builds a fully-literal event value whose helper's
+// `-> Event` return type ascribes it against the schema, and `cargo xtask codegen` runs them with
+// `cdz test`. So a value of the shape `Lifecycle::encode` marshals is proven to be a value of the schema
+// type.
+
+// A terminated reducer's lifecycle event, delivered as a control-plane notification (folded through the
+// watcher's on_notification). `reducer` names who ended; the variant says how. Every hash and opaque
+// payload is Bytes.
+//  - Exited: the reducer closed itself with a typed reason (its Break) — `schema` is the reason value's
+//    schema hash, `reason` its canonical bytes.
+//  - Crashed: the reducer's task ended without a typed reason (a panic, or its mailbox closing) — there is
+//    no reason to report, only who ended.
+type Event =
+  | Exited(Record(reducer: Bytes, schema: Bytes, reason: Bytes))
+  | Crashed(Record(reducer: Bytes))
+
+// A lifecycle notification is one-way: it is folded through on_notification and nothing replies to it, so
+// the contract's output is the unit `Ack` — present only because a contract declares an output type, and
+// never built or sent.
+type Ack =
+  | Ack
+
+// --- conformance proofs: a fully-literal value of each event kind, ascribed against the schema type ---
+def an-exited-event() -> Event =
+  Event.Exited({ reducer = b"reducer", schema = b"schema", reason = b"reason" })
+
+def a-crashed-event() -> Event =
+  Event.Crashed({ reducer = b"reducer" })
+
+@test
+def exited-event-conforms() =
+  match an-exited-event() with
+  | Event.Exited(e) => if e.reason == b"reason" then unit else trap("exited reason mismatch")
+  | _ => trap("expected an Event.Exited")
+
+@test
+def crashed-event-conforms() =
+  match a-crashed-event() with
+  | Event.Crashed(e) => if e.reducer == b"reducer" then unit else trap("crashed reducer mismatch")
+  | _ => trap("expected an Event.Crashed")

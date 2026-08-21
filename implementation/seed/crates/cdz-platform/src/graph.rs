@@ -64,6 +64,15 @@ impl EdgeKind {
     pub fn spawn() -> Self {
         Self(Hash::of(b"cdz-platform.edge.spawn"))
     }
+
+    /// The supervision edge, `watcher -> watched` (§7). A one-way subscription: it asks for the watched
+    /// reducer's lifecycle events to be delivered to the watcher when it terminates. Free many-to-many, and
+    /// need not follow the spawn tree — the two directions of a parent/child supervision link are two
+    /// independent edges of this kind. The [`watchers`](ReducerGraph::watchers) convenience reads it.
+    #[must_use]
+    pub fn watch_exit() -> Self {
+        Self(Hash::of(b"cdz-platform.edge.watch-exit"))
+    }
 }
 
 /// A direction to read a node's edges of a kind: its **out**-edges (`node -> others`) or its **in**-edges
@@ -150,6 +159,15 @@ pub trait ReducerGraph: Send + Sync {
     /// spawn tree encodes (an ancestor's middleware governs everything a descendant does, §5).
     async fn is_ancestor(&self, ancestor: ReducerId, of: ReducerId) -> bool {
         self.ancestors(of).await.contains(&ancestor)
+    }
+
+    /// The reducers watching `reducer` for its exit — the in-edges of the
+    /// [`watch_exit`](EdgeKind::watch_exit) kind, in ascending id order. The system reads these when
+    /// `reducer` terminates, to deliver its lifecycle event to each. Empty for an unwatched or unknown
+    /// reducer.
+    async fn watchers(&self, reducer: ReducerId) -> Vec<ReducerId> {
+        self.neighbors(reducer, EdgeKind::watch_exit(), Dir::In)
+            .await
     }
 }
 
@@ -407,5 +425,30 @@ mod tests {
         let mut expected = vec![r("y"), r("z")];
         expected.sort_unstable();
         assert_eq!(reached, expected, "every other node once, and it returns");
+    }
+
+    #[tokio::test]
+    async fn watch_exit_edges_are_read_by_watchers() {
+        // The two directions of a parent/child supervision link are independent watch_exit edges, and
+        // `watchers(x)` reads whoever subscribed to x's exit — regardless of the spawn direction.
+        let g = InMemoryReducerGraph::new();
+        for id in ["parent", "child"] {
+            g.insert(r(id)).await;
+        }
+        spawn(&g, r("child"), r("parent")).await;
+        // parent watches child: parent -> child on watch_exit.
+        assert!(
+            g.link(r("parent"), r("child"), EdgeKind::watch_exit())
+                .await
+        );
+        // child watches parent: child -> parent on watch_exit (independent, opposite direction).
+        assert!(
+            g.link(r("child"), r("parent"), EdgeKind::watch_exit())
+                .await
+        );
+        assert_eq!(g.watchers(r("child")).await, vec![r("parent")]);
+        assert_eq!(g.watchers(r("parent")).await, vec![r("child")]);
+        // the spawn edge is untouched by the watch links.
+        assert_eq!(g.parent(r("child")).await, Some(r("parent")));
     }
 }
