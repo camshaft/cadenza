@@ -140,13 +140,13 @@ impl Lifecycle {
 #[cfg(test)]
 mod tests {
     use super::{Lifecycle, lifecycle_contract};
-    use crate::{Bytes, ContractId, Hash, ReducerId};
+    use crate::{Bytes, ContractId, ReducerId};
 
     fn cid(tag: &[u8]) -> ContractId {
-        ContractId::from_hash(Hash::of(tag))
+        ContractId::of(tag)
     }
     fn rid(tag: &[u8]) -> ReducerId {
-        ReducerId::from_hash(Hash::of(tag))
+        ReducerId::of(tag)
     }
 
     fn round_trips(e: &Lifecycle) {

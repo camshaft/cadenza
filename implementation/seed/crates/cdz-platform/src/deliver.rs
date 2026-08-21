@@ -229,19 +229,19 @@ fn one<const N: usize>(items: &[StructId]) -> Option<[StructId; N]> {
 mod tests {
     use super::{Deliver, Delivered, deliver_contract};
     use crate::{
-        Bytes, ContractId, Error, Hash, HostId, Message, Notification, Origin, ReducerId, Response,
+        Bytes, ContractId, Error, HostId, Message, Notification, Origin, ReducerId, Response,
     };
 
     fn cid(tag: &[u8]) -> ContractId {
-        ContractId::from_hash(Hash::of(tag))
+        ContractId::of(tag)
     }
     fn rid(tag: &[u8]) -> ReducerId {
-        ReducerId::from_hash(Hash::of(tag))
+        ReducerId::of(tag)
     }
     fn origin() -> Origin {
         Origin {
             reducer: rid(b"peer"),
-            host: HostId::from_hash(Hash::of(b"host-a")),
+            host: HostId::of(b"host-a"),
         }
     }
 

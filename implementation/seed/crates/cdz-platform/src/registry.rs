@@ -117,14 +117,14 @@ impl HandlerRegistry {
 #[cfg(test)]
 mod tests {
     use super::HandlerRegistry;
-    use crate::{ContractId, Hash, ReducerId};
+    use crate::{ContractId, ReducerId};
 
     // Distinct contract-ids and reducer-ids.
     fn c(tag: &str) -> ContractId {
-        ContractId::from_hash(Hash::of(tag.as_bytes()))
+        ContractId::of(tag.as_bytes())
     }
     fn rd(tag: &str) -> ReducerId {
-        ReducerId::from_hash(Hash::of(tag.as_bytes()))
+        ReducerId::of(tag.as_bytes())
     }
 
     #[test]

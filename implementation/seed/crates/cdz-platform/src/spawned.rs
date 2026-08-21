@@ -94,10 +94,10 @@ impl Spawned {
 #[cfg(test)]
 mod tests {
     use super::{Spawned, spawned_contract};
-    use crate::{Hash, ReducerId};
+    use crate::ReducerId;
 
     fn rid(tag: &[u8]) -> ReducerId {
-        ReducerId::from_hash(Hash::of(tag))
+        ReducerId::of(tag)
     }
 
     #[test]
