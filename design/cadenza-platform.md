@@ -158,14 +158,15 @@ So the kernel's whole irreducible core is: execute a reducer step; schedule and 
 carrying each response back to the reducer that emitted the request; keep the log; the direct
 reducer-facing accesses with swappable backends (the key-value store, a reducer's own id, and
 the content-addressed store); the `fire-after` timer; the routing substrate it maintains as
-sessions register handlers and spawn — the handler registrations and the parent links of the
-spawn tree; the root-only override registry; and a small **privileged API** granted only to the
+sessions register handlers and spawn — one **reducer graph** holding the spawn tree, the
+supervision links, and the handler chains (a contract's chain is its own edges, keyed by the
+contract-id); the root-only override registry; and a small **privileged API** granted only to the
 system reducer. That API is two things: **deliver an event into a reducer's log** (addressed by
-reducer-id) — the routing act — and **read the routing substrate**: the handler chain registered
-for a contract, and the reducer hierarchy. On an emitted effect the kernel looks up the system
-reducer for its contract and delivers the effect to it; that reducer reads the handlers and the
-hierarchy to assemble the chain across generations, then delivers along it — handing a message
-to a handler, folding a response back to a caller. Beyond that privileged API it is an ordinary
+reducer-id) — the routing act — and **read the routing substrate**: a contract's handler chain
+and the spawn tree, both in the one reducer graph. On an emitted effect the kernel looks up the
+system reducer for its contract and delivers the effect to it; that reducer reads the graph to
+assemble the chain across generations, then delivers along it — handing a message to a handler,
+folding a response back to a caller. Beyond that privileged API it is an ordinary
 reducer: it arms timers with `fire-after` and watches reducers with `subscribe` like any
 reducer, and everything specific — chaining policy, authorization, name resolution, lifecycle,
 what a timer means, input and output — is a content-addressed reducer, not kernel code. This is the point of the entire design and
@@ -456,9 +457,9 @@ watched reducer's exit on `on_notification` (it `subscribe`d to that reducer). I
 dispatch with ordinary means — it arms a deadline with the `fire-after` effect, watches a
 handler with `subscribe`, and ends the dispatch by returning `Break`. What a plain reducer
 lacks is a small **privileged API**, granted only to the reducer the override registry names
-for a contract: it may **read the routing substrate** — the handler chain registered for a
-contract and the reducer hierarchy (the parent links of the spawn tree) — so it can assemble
-the effective chain across generations and know whom to call, and it may **deliver an event
+for a contract: it may **read the routing substrate** — a contract's handler chain and the
+spawn tree, both held in the one reducer graph — so it can assemble the effective chain across
+generations and know whom to call, and it may **deliver an event
 into another reducer's log**, addressed by reducer-id, which is the routing act — handing a
 message to the next handler in the chain, folding a response back to a caller. Answering, forwarding, and attaching a grant
 are not primitives: answering and forwarding are delivering a response or message onward, and
