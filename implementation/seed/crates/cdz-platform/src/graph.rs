@@ -28,7 +28,7 @@
 //! the system records an edge as each reducer spawns and drops a node when it ends, concurrently with
 //! reads. Queries return owned `Vec`s (not borrowing iterators) so they cross the async trait boundary.
 
-use crate::{Hash, ReducerId};
+use crate::{Hash, HashTag, ReducerId};
 use async_trait::async_trait;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Mutex;
@@ -62,7 +62,10 @@ impl EdgeKind {
     /// kind.
     #[must_use]
     pub fn spawn() -> Self {
-        Self(Hash::of(b"cdz-platform.edge.spawn"))
+        Self(Hash::of(
+            HashTag::SystemProperty,
+            b"cdz-platform.edge.spawn",
+        ))
     }
 
     /// The supervision edge, `watcher -> watched` (§7). A one-way subscription: it asks for the watched
@@ -71,7 +74,10 @@ impl EdgeKind {
     /// independent edges of this kind. The [`watchers`](ReducerGraph::watchers) convenience reads it.
     #[must_use]
     pub fn watch_exit() -> Self {
-        Self(Hash::of(b"cdz-platform.edge.watch-exit"))
+        Self(Hash::of(
+            HashTag::SystemProperty,
+            b"cdz-platform.edge.watch-exit",
+        ))
     }
 }
 
@@ -283,11 +289,11 @@ impl ReducerGraph for InMemoryReducerGraph {
 #[cfg(test)]
 mod tests {
     use super::{Dir, EdgeKind, InMemoryReducerGraph, ReducerGraph};
-    use crate::{Hash, ReducerId};
+    use crate::{Hash, HashTag, ReducerId};
 
     // Distinct reducer ids.
     fn r(tag: &str) -> ReducerId {
-        ReducerId::from_hash(Hash::of(tag.as_bytes()))
+        ReducerId::of(tag.as_bytes())
     }
 
     // Link a spawn edge `child -> parent`, the shape the system establishes at each spawn.
@@ -393,7 +399,7 @@ mod tests {
         // The generality: an ad-hoc edge kind a consumer mints coexists with `spawn` over the same nodes,
         // and neighbours are read per kind without crosstalk.
         let g = InMemoryReducerGraph::new();
-        let watches = EdgeKind::from_hash(Hash::of(b"example.watches"));
+        let watches = EdgeKind::from_hash(Hash::of(HashTag::SystemProperty, b"example.watches"));
         g.insert(r("a")).await;
         g.insert(r("b")).await;
         spawn(&g, r("a"), r("b")).await; // a -> b as a spawn edge
@@ -413,7 +419,7 @@ mod tests {
         // `reach` carries a visited set, so even a malformed cyclic edge kind (which the spawn tree never
         // forms) cannot make it loop.
         let g = InMemoryReducerGraph::new();
-        let loops = EdgeKind::from_hash(Hash::of(b"example.loops"));
+        let loops = EdgeKind::from_hash(Hash::of(HashTag::SystemProperty, b"example.loops"));
         for id in ["x", "y", "z"] {
             g.insert(r(id)).await;
         }

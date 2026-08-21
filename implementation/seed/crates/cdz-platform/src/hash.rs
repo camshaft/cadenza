@@ -1,65 +1,142 @@
 //! Content hashing — the platform's sole identity (`design/cadenza-platform.md` section 8).
 //!
-//! A [`Hash`] is the blake3 digest of some bytes. It names *and* authorizes: the content-addressed
-//! store is unpermissioned because possessing a hash is what lets you read its bytes ("the hash is the
-//! capability"). Two things reduce to hashing: a contract-id is the hash of a contract declaration
-//! (section 1), and a blob is addressed by the hash of its bytes (section 8). So this is the bottom
-//! primitive everything else routes and addresses by.
+//! A [`Hash`] is **self-describing**: a one-byte [`HashTag`] saying what the hash names, followed by the
+//! blake3 digest of the content. It names *and* authorizes: the content-addressed store is unpermissioned
+//! because possessing a hash is what lets you read its bytes ("the hash is the capability"). Two things
+//! reduce to hashing: a contract-id is the hash of a contract declaration (section 1), and a blob is
+//! addressed by the hash of its bytes (section 8). So this is the bottom primitive everything else routes
+//! and addresses by.
+//!
+//! The leading tag makes a hash tell you what it is at runtime, the way the typed id newtypes
+//! ([`ids`](crate::ids)) do at compile time: given a bare hash off the wire or stored as a graph edge kind,
+//! you can still tell a contract-id from a reducer-id from a raw blob. The tag is a self-description, not a
+//! cryptographic commitment — the digest is what commits to the content, so re-tagging a hash does not let
+//! anyone forge content for it; a use site that cares checks the tag against what it expects.
 //!
 //! Algorithm: **blake3** — the one content-address digest the fleet unified on (operator 2026-08-08),
-//! fast and 32 bytes. A `Hash` is those 32 raw bytes: a fixed-size digest, so `[u8; 32]` (`Copy`, no
-//! allocation) is its representation — the "`Bytes`, not `Vec<u8>`" convention is for *variable-length*
-//! buffers, not a fixed digest.
+//! fast and 32 bytes. A `Hash` is the tag byte plus those 32 digest bytes: a fixed-size `[u8; 33]` (`Copy`,
+//! no allocation) — the "`Bytes`, not `Vec<u8>`" convention is for *variable-length* buffers, not a fixed
+//! digest.
 //!
 //! Text form: **base64url** — the URL-safe alphabet, unpadded — never hex, wherever a hash is rendered
 //! as text (a name, a log line, an error, a wire field); section 8. [`Hash`]'s `Display` and `FromStr`
-//! are that rendering and its inverse, and neither allocates: `Display` streams chars to the formatter,
-//! and `FromStr` decodes into the fixed 32-byte array in place.
+//! are that rendering and its inverse over all 33 bytes, and neither allocates: `Display` streams chars to
+//! the formatter, and `FromStr` decodes into the fixed 33-byte array in place.
 
 use std::fmt;
 use std::fmt::Write as _; // brings `Formatter::write_char` into scope for the allocation-free Display
 use std::str::FromStr;
 
-/// The blake3 content hash of some bytes — the platform's sole identity (section 8).
+/// What a [`Hash`] names — the leading byte of every hash, so a hash is self-describing at runtime. Each
+/// value has a typed-id counterpart in [`ids`](crate::ids) (the compile-time version of the same
+/// distinction); `Blob` is a raw content address (the store), and `SystemProperty` tags the platform's own
+/// well-known hashes, such as the structural edge kinds of the reducer graph (spawn, watch-exit).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[repr(u8)]
+pub enum HashTag {
+    /// A contract-id — the hash of a contract declaration (section 1).
+    Contract = 1,
+    /// A reducer/session id — the hash of a genesis (section 3).
+    Reducer = 2,
+    /// A program hash — the content of a program a reducer is spawned from (section 3/8).
+    Program = 3,
+    /// A host id — the identity of a host a reducer runs on (section 3/11).
+    Host = 4,
+    /// A raw content address — a blob in the store (section 8).
+    Blob = 5,
+    /// A platform-internal well-known hash — e.g. a structural edge kind of the reducer graph.
+    SystemProperty = 6,
+}
+
+impl HashTag {
+    /// The tag from its byte, or `None` if the byte is not a known tag (e.g. a hash minted by a newer
+    /// version). Reading is total, so a foreign tag is `None`, never a panic.
+    #[must_use]
+    pub const fn from_byte(byte: u8) -> Option<Self> {
+        match byte {
+            1 => Some(Self::Contract),
+            2 => Some(Self::Reducer),
+            3 => Some(Self::Program),
+            4 => Some(Self::Host),
+            5 => Some(Self::Blob),
+            6 => Some(Self::SystemProperty),
+            _ => None,
+        }
+    }
+}
+
+/// The self-describing blake3 content hash of some bytes — the platform's sole identity (section 8): a
+/// leading [`HashTag`] byte, then the 32-byte digest.
 ///
 /// `Copy` + cheaply comparable: a hash threads through routing, dispatch, and the store constantly, so
-/// it must be trivially clonable. Ordering is by raw bytes (a total order for use as a map/set key).
+/// it must be trivially clonable. Ordering is by raw bytes (tag first, then digest — a total order for use
+/// as a map/set key).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct Hash([u8; 32]);
+pub struct Hash([u8; 33]);
 
 impl Hash {
-    /// The number of raw bytes in a hash (blake3's 256-bit digest).
-    pub const LEN: usize = 32;
+    /// The number of raw bytes in a hash — the tag byte plus blake3's 256-bit digest.
+    pub const LEN: usize = 33;
 
-    /// The number of base64url characters in a hash's text form (`ceil(32 * 4 / 3)`, unpadded).
-    pub const TEXT_LEN: usize = 43;
+    /// The number of digest bytes (blake3's 256-bit output), after the tag byte.
+    pub const DIGEST_LEN: usize = 32;
 
-    /// The content hash of `bytes`. Deterministic: the same bytes always hash equal (that is what makes
-    /// content addressing work), so this is a pure function of its input.
+    /// The number of base64url characters in a hash's text form (`33 * 4 / 3`, unpadded — 33 is a multiple
+    /// of 3, so there is no padding remainder).
+    pub const TEXT_LEN: usize = 44;
+
+    /// The content hash of `bytes`, tagged as `tag`. Deterministic: the same tag and bytes always hash
+    /// equal (that is what makes content addressing work), so this is a pure function of its inputs.
     #[must_use]
-    pub fn of(bytes: &[u8]) -> Self {
-        Self(*blake3::hash(bytes).as_bytes())
+    pub fn of(tag: HashTag, bytes: &[u8]) -> Self {
+        Self::from_digest(tag, blake3::hash(bytes).as_bytes())
     }
 
-    /// Begin an **incremental** hash: feed pieces with [`Hasher::update`], then [`Hasher::finalize`]. This
-    /// hashes several fields without allocating and copying them into one combined buffer first — e.g.
-    /// deriving an id from a few fixed-size fields plus a variable-length one. Feeding all the bytes as one
-    /// `update` gives exactly the same digest as [`Hash::of`] of those bytes.
+    /// Begin an **incremental** hash tagged as `tag`: feed pieces with [`Hasher::update`], then
+    /// [`Hasher::finalize`]. This hashes several fields without allocating and copying them into one
+    /// combined buffer first — e.g. deriving an id from a few fixed-size fields plus a variable-length one.
+    /// Feeding all the bytes as one `update` gives exactly the same digest as [`Hash::of`] of those bytes.
     #[must_use]
-    pub fn hasher() -> Hasher {
-        Hasher(blake3::Hasher::new())
+    pub fn hasher(tag: HashTag) -> Hasher {
+        Hasher {
+            tag,
+            inner: blake3::Hasher::new(),
+        }
     }
 
-    /// Wrap 32 raw digest bytes as a `Hash` (e.g. read back from the store or the wire).
-    #[must_use]
-    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+    /// Assemble a hash from a tag and a raw 32-byte digest.
+    fn from_digest(tag: HashTag, digest: &[u8; 32]) -> Self {
+        let mut bytes = [0u8; Self::LEN];
+        bytes[0] = tag as u8;
+        bytes[1..].copy_from_slice(digest);
         Self(bytes)
     }
 
-    /// The raw digest bytes. A hash IS raw bytes (section 8); this is the on-wire / in-store form.
+    /// Wrap 33 raw bytes (the tag byte followed by the digest) as a `Hash` (e.g. read back from the store or
+    /// the wire).
     #[must_use]
-    pub const fn as_bytes(&self) -> &[u8; 32] {
+    pub const fn from_bytes(bytes: [u8; 33]) -> Self {
+        Self(bytes)
+    }
+
+    /// The raw bytes — the tag byte followed by the digest. A hash IS raw bytes (section 8); this is the
+    /// on-wire / in-store form.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 33] {
         &self.0
+    }
+
+    /// What this hash names, or `None` if its leading byte is not a known [`HashTag`].
+    #[must_use]
+    pub const fn tag(&self) -> Option<HashTag> {
+        HashTag::from_byte(self.0[0])
+    }
+
+    /// The 32-byte blake3 digest (the content commitment), without the tag byte. Recompute
+    /// `blake3(content)` and compare against this to verify a hash names given content.
+    #[must_use]
+    pub fn digest(&self) -> &[u8; 32] {
+        <&[u8; 32]>::try_from(&self.0[1..]).expect("a 33-byte hash has a 32-byte digest")
     }
 
     /// The base64url text of this hash as a lazy `char` iterator — the ONE textual form (section 8),
@@ -70,30 +147,27 @@ impl Hash {
     }
 }
 
-/// An incremental hash builder — feed bytes with [`update`](Hasher::update), then [`finalize`](Hasher::finalize)
-/// to a [`Hash`]. blake3 under the hood; the same digest as [`Hash::of`] over the concatenation of the fed
-/// bytes. Feeding fixed-size fields before a variable-length one keeps the concatenation unambiguous (the
-/// fixed fields can always be split back off), which is why an id derived from several fields does not need
-/// separators.
-pub struct Hasher(blake3::Hasher);
+/// An incremental hash builder tagged with a [`HashTag`] — feed bytes with [`update`](Hasher::update), then
+/// [`finalize`](Hasher::finalize) to a [`Hash`]. blake3 under the hood; the same digest as [`Hash::of`]
+/// over the concatenation of the fed bytes. Feeding fixed-size fields before a variable-length one keeps
+/// the concatenation unambiguous (the fixed fields can always be split back off), which is why an id
+/// derived from several fields does not need separators.
+pub struct Hasher {
+    tag: HashTag,
+    inner: blake3::Hasher,
+}
 
 impl Hasher {
     /// Feed `bytes` into the hash, returning `self` so calls chain.
     pub fn update(&mut self, bytes: &[u8]) -> &mut Self {
-        self.0.update(bytes);
+        self.inner.update(bytes);
         self
     }
 
-    /// Finish and return the [`Hash`] of everything fed so far.
+    /// Finish and return the tagged [`Hash`] of everything fed so far.
     #[must_use]
     pub fn finalize(&self) -> Hash {
-        Hash(*self.0.finalize().as_bytes())
-    }
-}
-
-impl Default for Hasher {
-    fn default() -> Self {
-        Hash::hasher()
+        Hash::from_digest(self.tag, self.inner.finalize().as_bytes())
     }
 }
 
@@ -118,14 +192,15 @@ impl fmt::Debug for Hash {
 }
 
 /// Parse a hash from its base64url text form (the inverse of `Display`). Decodes straight into the fixed
-/// 32-byte array — no allocation. The error is a [`base64url::DecodeError`]: a text that decodes to some
-/// other length surfaces as [`base64url::DecodeError::OutputLenMismatch`] against the 32-byte target, so
-/// "not a valid hash" needs no separate error type on top of the decoder's.
+/// 33-byte array (tag + digest) — no allocation. The error is a [`base64url::DecodeError`]: a text that
+/// decodes to some other length surfaces as [`base64url::DecodeError::OutputLenMismatch`] against the
+/// 33-byte target, so "not a valid hash" needs no separate error type on top of the decoder's. (The leading
+/// byte need not be a known tag; [`Hash::tag`] reports `None` for an unrecognized one.)
 impl FromStr for Hash {
     type Err = base64url::DecodeError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut buf = [0u8; 32];
+        let mut buf = [0u8; 33];
         base64url::decode_into(s, &mut buf)?;
         Ok(Self(buf))
     }
@@ -353,8 +428,8 @@ pub mod base64url {
 
 #[cfg(test)]
 mod tests {
-    use super::Hash;
     use super::base64url::{self, DecodeError};
+    use super::{Hash, HashTag};
 
     /// Test helper: collect the encode iterator into a `String` (the tests want to compare text).
     fn enc(bytes: &[u8]) -> String {
@@ -453,91 +528,131 @@ mod tests {
     #[test]
     fn hash_of_matches_blake3_and_is_deterministic() {
         // Golden: the documented blake3 digest of the empty input — pins the ALGORITHM (a swap to
-        // sha256 or a different digest would flip this).
-        let empty = Hash::of(b"");
+        // sha256 or a different digest would flip this). The digest is the content commitment, after the
+        // tag byte.
+        let empty = Hash::of(HashTag::Blob, b"");
         let blake3_empty_hex = "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262";
-        assert_eq!(hex(empty.as_bytes()), blake3_empty_hex);
+        assert_eq!(hex(empty.digest()), blake3_empty_hex);
         // Deterministic + distinguishing.
-        assert_eq!(Hash::of(b"cadenza"), Hash::of(b"cadenza"));
-        assert_ne!(Hash::of(b"cadenza"), Hash::of(b"cadenzb"));
-        assert_eq!(Hash::LEN, 32);
+        assert_eq!(
+            Hash::of(HashTag::Blob, b"cadenza"),
+            Hash::of(HashTag::Blob, b"cadenza")
+        );
+        assert_ne!(
+            Hash::of(HashTag::Blob, b"cadenza"),
+            Hash::of(HashTag::Blob, b"cadenzb")
+        );
+        assert_eq!(Hash::LEN, 33);
+        assert_eq!(Hash::DIGEST_LEN, 32);
+    }
+
+    #[test]
+    fn a_hash_is_self_describing_and_the_tag_is_readable() {
+        // The tag rides in the leading byte and reads back; the digest is unaffected by it.
+        let contract = Hash::of(HashTag::Contract, b"same content");
+        let reducer = Hash::of(HashTag::Reducer, b"same content");
+        assert_eq!(contract.tag(), Some(HashTag::Contract));
+        assert_eq!(reducer.tag(), Some(HashTag::Reducer));
+        // Same content, different tag: distinct hashes, but the same digest (the tag is not hashed in).
+        assert_ne!(contract, reducer);
+        assert_eq!(contract.digest(), reducer.digest());
+        // A byte that is not a known tag reads back as None (a hash from a newer version stays parseable).
+        let mut raw = *contract.as_bytes();
+        raw[0] = 0xFF;
+        assert_eq!(Hash::from_bytes(raw).tag(), None);
+        assert_eq!(HashTag::from_byte(2), Some(HashTag::Reducer));
+        assert_eq!(HashTag::from_byte(0), None);
     }
 
     #[test]
     fn hash_text_is_base64url_and_round_trips() {
-        let h = Hash::of(b"the hash is the capability");
+        let h = Hash::of(HashTag::Contract, b"the hash is the capability");
         let text = h.to_string();
         assert_eq!(text, h.text().collect::<String>());
         assert_eq!(text, base64url::encode(h.as_bytes()).collect::<String>());
-        // 32 bytes -> 43 unpadded base64url chars.
+        // 33 bytes -> 44 unpadded base64url chars.
         assert_eq!(text.len(), Hash::TEXT_LEN);
-        assert_eq!(text.len(), 43);
+        assert_eq!(text.len(), 44);
         assert!(!text.contains('='), "unpadded");
-        // Display -> FromStr is the identity.
-        assert_eq!(text.parse::<Hash>().unwrap(), h);
+        // Display -> FromStr is the identity, tag included.
+        let parsed = text.parse::<Hash>().unwrap();
+        assert_eq!(parsed, h);
+        assert_eq!(parsed.tag(), Some(HashTag::Contract));
     }
 
     #[test]
     fn hash_from_str_rejects_wrong_length_and_bad_text() {
-        // Valid base64url but not 32 bytes -> OutputLenMismatch against the 32-byte target (3 bytes here).
-        // from_str decodes into a fixed [u8;32], so a non-43-char text mismatches regardless of its chars.
+        // Valid base64url but not 33 bytes -> OutputLenMismatch against the 33-byte target (3 bytes here).
+        // from_str decodes into a fixed [u8;33], so a non-44-char text mismatches regardless of its chars.
         assert_eq!(
             "Zm9v".parse::<Hash>(),
             Err(DecodeError::OutputLenMismatch {
                 expected: 3,
-                got: 32
+                got: 33
             })
         );
-        // A 43-char text (decodes to exactly 32 bytes) with a bad char reaches char-validation ->
+        // A 44-char text (decodes to exactly 33 bytes) with a bad char reaches char-validation ->
         // InvalidChar. Take a real hash's text and corrupt one char to a non-alphabet '!'.
-        let good = Hash::of(b"corrupt me").to_string();
-        assert_eq!(good.len(), 43);
-        let bad = format!("{}!", &good[..42]); // still 43 chars, but char 43 is invalid
+        let good = Hash::of(HashTag::Blob, b"corrupt me").to_string();
+        assert_eq!(good.len(), 44);
+        let bad = format!("{}!", &good[..43]); // still 44 chars, but char 44 is invalid
         assert_eq!(bad.parse::<Hash>(), Err(DecodeError::InvalidChar('!')));
         // A truncated hash text is rejected (either wrong decoded length or a non-canonical group).
-        let h = Hash::of(b"x").to_string();
+        let h = Hash::of(HashTag::Blob, b"x").to_string();
         assert!(h[..h.len() - 1].parse::<Hash>().is_err());
-        // A canonical base64url that decodes to a valid-but-wrong length mismatches the 32-byte target:
-        // 44 chars ("A" * 44) is canonical and decodes to 33 bytes.
+        // A canonical base64url that decodes to a valid-but-wrong length mismatches the 33-byte target:
+        // 43 chars ("A" * 43) is canonical and decodes to 32 bytes.
         assert_eq!(
-            "A".repeat(44).parse::<Hash>(),
+            "A".repeat(43).parse::<Hash>(),
             Err(DecodeError::OutputLenMismatch {
-                expected: 33,
-                got: 32
+                expected: 32,
+                got: 33
             })
         );
     }
 
     #[test]
     fn hash_from_bytes_and_as_bytes_are_inverse() {
-        let bytes = *Hash::of(b"roundtrip the raw digest").as_bytes();
+        let bytes = *Hash::of(HashTag::Blob, b"roundtrip the raw digest").as_bytes();
         assert_eq!(*Hash::from_bytes(bytes).as_bytes(), bytes);
     }
 
     #[test]
     fn hash_debug_shows_base64url() {
-        let h = Hash::of(b"debug");
+        let h = Hash::of(HashTag::Blob, b"debug");
         assert_eq!(format!("{h:?}"), format!("Hash({h})"));
     }
 
     #[test]
     fn incremental_hasher_matches_one_shot_and_chains() {
         // Feeding pieces incrementally equals hashing their concatenation in one shot — so an id built
-        // field-by-field needs no combined buffer.
-        let mut h = Hash::hasher();
+        // field-by-field needs no combined buffer. Same tag on both sides.
+        let mut h = Hash::hasher(HashTag::Reducer);
         let built = h
             .update(b"the hash ")
             .update(b"is the ")
             .update(b"capability")
             .finalize();
-        assert_eq!(built, Hash::of(b"the hash is the capability"));
+        assert_eq!(
+            built,
+            Hash::of(HashTag::Reducer, b"the hash is the capability")
+        );
+        assert_eq!(built.tag(), Some(HashTag::Reducer));
         // A single update equals `Hash::of`.
-        assert_eq!(Hash::hasher().update(b"x").finalize(), Hash::of(b"x"));
+        assert_eq!(
+            Hash::hasher(HashTag::Reducer).update(b"x").finalize(),
+            Hash::of(HashTag::Reducer, b"x")
+        );
+        // The tag is part of the identity: the same bytes under a different tag differ.
+        assert_ne!(
+            Hash::hasher(HashTag::Reducer).update(b"x").finalize(),
+            Hash::hasher(HashTag::Contract).update(b"x").finalize()
+        );
         // Order matters (it is a concatenation), so different field boundaries with the same total bytes
         // are only equal when the bytes are identical — distinct content stays distinct.
         assert_ne!(
-            Hash::hasher().update(b"ab").finalize(),
-            Hash::hasher().update(b"ba").finalize()
+            Hash::hasher(HashTag::Reducer).update(b"ab").finalize(),
+            Hash::hasher(HashTag::Reducer).update(b"ba").finalize()
         );
     }
 

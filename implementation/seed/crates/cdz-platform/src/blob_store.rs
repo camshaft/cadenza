@@ -16,7 +16,7 @@
 //! dyn-safe swappable trait object, and the methods are runtime-agnostic (they only await), so they run
 //! under tokio in production and under the Bach simulator in deterministic tests alike.
 
-use crate::{Bytes, Hash};
+use crate::{Bytes, Hash, HashTag};
 use async_trait::async_trait;
 use std::collections::HashMap;
 
@@ -70,7 +70,7 @@ impl InMemoryBlobStore {
 #[async_trait]
 impl BlobStore for InMemoryBlobStore {
     async fn put(&mut self, bytes: Bytes) -> Hash {
-        let hash = Hash::of(&bytes);
+        let hash = Hash::of(HashTag::Blob, &bytes);
         self.blobs.insert(hash, bytes); // O(1) Bytes clone into the map.
         hash
     }
@@ -88,7 +88,7 @@ impl BlobStore for InMemoryBlobStore {
 #[cfg(test)]
 mod tests {
     use super::{BlobStore, InMemoryBlobStore};
-    use crate::{Bytes, Hash};
+    use crate::{Bytes, Hash, HashTag};
 
     #[tokio::test]
     async fn put_returns_the_content_hash_and_get_round_trips() {
@@ -96,7 +96,7 @@ mod tests {
         let bytes = Bytes::from_static(b"the hash is the capability");
         let h = store.put(bytes.clone()).await;
         // put returns the content hash of exactly those bytes.
-        assert_eq!(h, Hash::of(&bytes));
+        assert_eq!(h, Hash::of(HashTag::Blob, &bytes));
         // get by that hash returns the same bytes.
         assert_eq!(store.get(h).await, Some(bytes));
         assert!(store.has(h).await);
@@ -105,7 +105,7 @@ mod tests {
     #[tokio::test]
     async fn get_and_has_report_absence() {
         let store = InMemoryBlobStore::new();
-        let absent = Hash::of(b"never stored");
+        let absent = Hash::of(HashTag::Blob, b"never stored");
         assert_eq!(store.get(absent).await, None);
         assert!(!store.has(absent).await);
     }
@@ -155,14 +155,14 @@ mod tests {
             async {
                 let mut store = InMemoryBlobStore::new();
                 let h = store.put(Bytes::from_static(b"deterministic")).await;
-                assert_eq!(h, Hash::of(b"deterministic"));
+                assert_eq!(h, Hash::of(HashTag::Blob, b"deterministic"));
                 assert_eq!(
                     store.get(h).await,
                     Some(Bytes::from_static(b"deterministic"))
                 );
                 assert!(store.has(h).await);
                 // genuine absence under the simulator too.
-                assert_eq!(store.get(Hash::of(b"absent")).await, None);
+                assert_eq!(store.get(Hash::of(HashTag::Blob, b"absent")).await, None);
             }
             .group("blob-store")
             .primary()

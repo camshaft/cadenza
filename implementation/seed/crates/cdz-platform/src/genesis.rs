@@ -11,7 +11,7 @@
 //! two fixed-size fields (program hash, parent id) are fed first and the variable-length nonce last, which
 //! keeps the concatenation unambiguous without separators.
 
-use crate::{Bytes, Hash, ProgramHash, ReducerId};
+use crate::{Bytes, Hash, HashTag, ProgramHash, ReducerId};
 
 /// What a reducer is spawned from: the program it runs, the spawn `nonce` its parent chose, and its parent.
 /// Its [`id`](Genesis::id) is the hash of these — the reducer's identity.
@@ -31,7 +31,7 @@ impl Genesis {
     /// hashed concatenation is unambiguous.
     #[must_use]
     pub fn id(&self) -> ReducerId {
-        let mut hasher = Hash::hasher();
+        let mut hasher = Hash::hasher(HashTag::Reducer);
         hasher
             .update(self.program.hash().as_bytes())
             .update(self.parent.hash().as_bytes())
@@ -43,13 +43,13 @@ impl Genesis {
 #[cfg(test)]
 mod tests {
     use super::Genesis;
-    use crate::{Bytes, Hash, ProgramHash, ReducerId};
+    use crate::{Bytes, ProgramHash, ReducerId};
 
     fn prog(tag: &[u8]) -> ProgramHash {
-        ProgramHash::from_hash(Hash::of(tag))
+        ProgramHash::of(tag)
     }
     fn rid(tag: &[u8]) -> ReducerId {
-        ReducerId::from_hash(Hash::of(tag))
+        ReducerId::of(tag)
     }
 
     fn genesis(program: &[u8], nonce: &'static [u8], parent: &[u8]) -> Genesis {

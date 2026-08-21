@@ -92,13 +92,13 @@ impl EventRegistry for InMemoryEventRegistry {
 #[cfg(test)]
 mod tests {
     use super::{EventRegistry, InMemoryEventRegistry};
-    use crate::{ContractId, Hash, ProgramHash};
+    use crate::{ContractId, ProgramHash};
 
     fn cid(tag: &str) -> ContractId {
-        ContractId::from_hash(Hash::of(tag.as_bytes()))
+        ContractId::of(tag.as_bytes())
     }
     fn prog(tag: &str) -> ProgramHash {
-        ProgramHash::from_hash(Hash::of(tag.as_bytes()))
+        ProgramHash::of(tag.as_bytes())
     }
 
     #[tokio::test]

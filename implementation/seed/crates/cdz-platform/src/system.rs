@@ -312,20 +312,20 @@ impl<S> Drop for DeregisterOnDrop<S> {
 mod tests {
     use super::{Links, ReducerKind, Spawn, System, TaskSystem};
     use crate::{
-        BachRuntime, Bytes, ContractId, Deliver, Delivered, Hash, HostId, InMemoryReducerGraph,
+        BachRuntime, Bytes, ContractId, Deliver, Delivered, HostId, InMemoryReducerGraph,
         Lifecycle, Message, Notification, Origin, Outcome, ProgramHash, Reducer, ReducerGraph,
         ReducerId, Request, Response, Spawned, TokioRuntime, lifecycle_contract, spawned_contract,
     };
     use std::sync::Arc;
 
     fn cid(tag: &[u8]) -> ContractId {
-        ContractId::from_hash(Hash::of(tag))
+        ContractId::of(tag)
     }
     fn rid(tag: &[u8]) -> ReducerId {
-        ReducerId::from_hash(Hash::of(tag))
+        ReducerId::of(tag)
     }
     fn prog(tag: &[u8]) -> ProgramHash {
-        ProgramHash::from_hash(Hash::of(tag))
+        ProgramHash::of(tag)
     }
     /// A root spawn (its own parent) with no supervision links — the default shape most tests want.
     fn root(id: ReducerId, program: ProgramHash, kind: ReducerKind) -> Spawn {
@@ -340,7 +340,7 @@ mod tests {
     fn origin() -> Origin {
         Origin {
             reducer: rid(b"peer"),
-            host: HostId::from_hash(Hash::of(b"host-a")),
+            host: HostId::of(b"host-a"),
         }
     }
     fn a_message(id: ContractId) -> Delivered {

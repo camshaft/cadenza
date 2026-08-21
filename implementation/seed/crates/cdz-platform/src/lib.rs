@@ -41,7 +41,7 @@ pub use deliver::{Deliver, Delivered, deliver_contract};
 pub use event_registry::{EventRegistry, InMemoryEventRegistry};
 pub use genesis::Genesis;
 pub use graph::{Dir, EdgeKind, InMemoryReducerGraph, ReducerGraph};
-pub use hash::{Hash, Hasher, base64url};
+pub use hash::{Hash, HashTag, Hasher, base64url};
 pub use ids::{ContractId, HostId, ProgramHash, ReducerId};
 pub use kv::{InMemoryKvStore, KeyRange, KvKeyScan, KvScan, KvStore, prefix_range};
 pub use lifecycle::{Lifecycle, lifecycle_contract};

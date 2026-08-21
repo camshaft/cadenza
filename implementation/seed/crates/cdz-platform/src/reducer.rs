@@ -164,17 +164,17 @@ pub trait Reducer: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::{Message, Notification, Origin, Outcome, Reducer, Request, Response};
-    use crate::{Bytes, ContractId, Hash, HostId, ReducerId};
+    use crate::{Bytes, ContractId, HostId, ReducerId};
 
     // Typed-id helpers over distinct hashes.
     fn cid(tag: &[u8]) -> ContractId {
-        ContractId::from_hash(Hash::of(tag))
+        ContractId::of(tag)
     }
     fn rid(tag: &[u8]) -> ReducerId {
-        ReducerId::from_hash(Hash::of(tag))
+        ReducerId::of(tag)
     }
     fn hid(tag: &[u8]) -> HostId {
-        HostId::from_hash(Hash::of(tag))
+        HostId::of(tag)
     }
 
     /// A reducer that actually folds state: it counts the messages it has seen (in `&mut self`), forwards

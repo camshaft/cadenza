@@ -27,7 +27,7 @@
 //! payload against a contract as opaque bytes; what the types mean is the concern of the programs on each
 //! end.
 
-use crate::{Bytes, ContractId, Hash, Str};
+use crate::{Bytes, ContractId, Str};
 use cadenza_ast::ast::{Builder, Leaf, StructId};
 use cadenza_ast::{canon, codec};
 use std::sync::Arc;
@@ -99,7 +99,7 @@ impl Contract {
         // contract-id is the hash of (so id() and declaration() are both cheap getters afterward).
         let canonical = canon::canonicalize(&arenas).into_owned();
         let declaration = Bytes::from(codec::encode(&canonical));
-        let id = ContractId::from_hash(Hash::of(&declaration));
+        let id = ContractId::of(&declaration);
         Self {
             id,
             name,

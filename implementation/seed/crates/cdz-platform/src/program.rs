@@ -100,12 +100,12 @@ mod tests {
     use super::ProgramStore;
     use super::testing::Store;
     use crate::{
-        Bytes, ContractId, Hash, HostId, Message, Notification, Origin, Outcome, ProgramHash,
-        Reducer, ReducerId, Request, Response,
+        Bytes, ContractId, HostId, Message, Notification, Origin, Outcome, ProgramHash, Reducer,
+        ReducerId, Request, Response,
     };
 
     fn prog(tag: &[u8]) -> ProgramHash {
-        ProgramHash::from_hash(Hash::of(tag))
+        ProgramHash::of(tag)
     }
 
     /// A reducer that carries a private counter, so two spawns from the same factory can be shown to be
@@ -149,11 +149,11 @@ mod tests {
         let mut a = store.spawn(prog(b"p")).await.expect("registered");
         let b = store.spawn(prog(b"p")).await.expect("registered");
         a.on_message(Message {
-            id: ContractId::from_hash(Hash::of(b"c")),
+            id: ContractId::of(b"c"),
             payload: Bytes::new(),
             from: Origin {
-                reducer: ReducerId::from_hash(Hash::of(b"r")),
-                host: HostId::from_hash(Hash::of(b"h")),
+                reducer: ReducerId::of(b"r"),
+                host: HostId::of(b"h"),
             },
             continuation_token: Bytes::new(),
         })
