@@ -858,6 +858,15 @@ it is bytes in the blob store, addressed by its hash exactly like any other valu
 fetching a program or one of its dependencies is the same get-by-hash as fetching a
 payload.
 
+A hash is **self-describing**: a one-byte tag naming what it identifies — a contract, a
+reducer, a program, a host, a raw blob, or a platform-internal property — followed by the
+content digest. The tag lets a bare hash be classified at runtime — a contract-id told
+apart from a reducer-id, a handler-chain edge from a structural one — without a side table,
+the same distinction the typed identifiers carry in code. It is a self-description, not a
+commitment: the digest is what binds the content, so a hash cannot be forged to name
+different bytes, and re-tagging one only mislabels it — a reader that cares checks the tag
+against what it expects.
+
 Reducers and the kernel reach the store through **direct calls** — `cas-put(bytes) -> hash`
 and `cas-get(hash) -> bytes` — not effects. This is deliberate: a reducer routinely resolves
 and stores content mid-fold (deref a hash it was handed, put a value and keep the hash), and
