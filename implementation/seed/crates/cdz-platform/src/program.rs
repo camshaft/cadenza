@@ -171,4 +171,22 @@ mod tests {
         assert_eq!(store.len(), 1);
         assert!(store.spawn(prog(b"p")).await.is_some());
     }
+
+    /// The store instantiates a reducer under Cameron's Bach simulator as under tokio — `spawn` is
+    /// await-only, so the runtime-agnostic store drives unchanged on the deterministic simulator.
+    #[test]
+    fn program_store_spawns_under_the_bach_simulator() {
+        use bach::ext::*;
+        bach::sim(|| {
+            async {
+                let mut store = Store::new();
+                store.register(prog(b"p"), || Box::new(Counting { seen: 0 }));
+                assert!(store.spawn(prog(b"p")).await.is_some());
+                assert!(store.spawn(prog(b"absent")).await.is_none());
+            }
+            .group("program-store")
+            .primary()
+            .spawn();
+        });
+    }
 }
