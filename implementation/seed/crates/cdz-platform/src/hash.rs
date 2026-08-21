@@ -41,6 +41,15 @@ impl Hash {
         Self(*blake3::hash(bytes).as_bytes())
     }
 
+    /// Begin an **incremental** hash: feed pieces with [`Hasher::update`], then [`Hasher::finalize`]. This
+    /// hashes several fields without allocating and copying them into one combined buffer first — e.g.
+    /// deriving an id from a few fixed-size fields plus a variable-length one. Feeding all the bytes as one
+    /// `update` gives exactly the same digest as [`Hash::of`] of those bytes.
+    #[must_use]
+    pub fn hasher() -> Hasher {
+        Hasher(blake3::Hasher::new())
+    }
+
     /// Wrap 32 raw digest bytes as a `Hash` (e.g. read back from the store or the wire).
     #[must_use]
     pub const fn from_bytes(bytes: [u8; 32]) -> Self {
@@ -58,6 +67,33 @@ impl Hash {
     /// (an explicit, opt-in allocation) rather than every render paying for one.
     pub fn text(&self) -> base64url::Encode<'_> {
         base64url::encode(&self.0)
+    }
+}
+
+/// An incremental hash builder — feed bytes with [`update`](Hasher::update), then [`finalize`](Hasher::finalize)
+/// to a [`Hash`]. blake3 under the hood; the same digest as [`Hash::of`] over the concatenation of the fed
+/// bytes. Feeding fixed-size fields before a variable-length one keeps the concatenation unambiguous (the
+/// fixed fields can always be split back off), which is why an id derived from several fields does not need
+/// separators.
+pub struct Hasher(blake3::Hasher);
+
+impl Hasher {
+    /// Feed `bytes` into the hash, returning `self` so calls chain.
+    pub fn update(&mut self, bytes: &[u8]) -> &mut Self {
+        self.0.update(bytes);
+        self
+    }
+
+    /// Finish and return the [`Hash`] of everything fed so far.
+    #[must_use]
+    pub fn finalize(&self) -> Hash {
+        Hash(*self.0.finalize().as_bytes())
+    }
+}
+
+impl Default for Hasher {
+    fn default() -> Self {
+        Hash::hasher()
     }
 }
 
@@ -482,6 +518,27 @@ mod tests {
     fn hash_debug_shows_base64url() {
         let h = Hash::of(b"debug");
         assert_eq!(format!("{h:?}"), format!("Hash({h})"));
+    }
+
+    #[test]
+    fn incremental_hasher_matches_one_shot_and_chains() {
+        // Feeding pieces incrementally equals hashing their concatenation in one shot — so an id built
+        // field-by-field needs no combined buffer.
+        let mut h = Hash::hasher();
+        let built = h
+            .update(b"the hash ")
+            .update(b"is the ")
+            .update(b"capability")
+            .finalize();
+        assert_eq!(built, Hash::of(b"the hash is the capability"));
+        // A single update equals `Hash::of`.
+        assert_eq!(Hash::hasher().update(b"x").finalize(), Hash::of(b"x"));
+        // Order matters (it is a concatenation), so different field boundaries with the same total bytes
+        // are only equal when the bytes are identical — distinct content stays distinct.
+        assert_ne!(
+            Hash::hasher().update(b"ab").finalize(),
+            Hash::hasher().update(b"ba").finalize()
+        );
     }
 
     /// lowercase hex of raw bytes — TEST-ONLY, to pin the digest against the well-known hex vector.
