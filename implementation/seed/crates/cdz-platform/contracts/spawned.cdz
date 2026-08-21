@@ -1,0 +1,33 @@
+// The spawned contract — the schema of the birth notification the system delivers to a reducer as its
+// very first event (design/cadenza-platform.md section 7). Before any message reaches it, a reducer is
+// told who it is: its own id and its parent's id. This file is the source of truth for that notification's
+// schema and is real Cadenza: `cargo xtask codegen` validates it with the `cdz` binary and generates
+// `src/contracts/spawned.rs` from it. Re-run `cargo xtask codegen` after editing; `--check` fails if the
+// committed generated file is stale. The compiler is a codegen-time tool only — it never ships.
+//
+// The `@test` definition is not part of the generated schema (codegen extracts only the `type`
+// declarations). It is the conformance proof: it builds a fully-literal event value whose helper's
+// `-> Event` return type ascribes it against the schema, and `cargo xtask codegen` runs it with
+// `cdz test`. So a value of the shape `Spawned::encode` marshals is proven to be a value of the schema
+// type.
+
+// A reducer's birth event, delivered as its first control-plane notification (folded through
+// on_notification). `id` is the reducer's own id; `parent` is the reducer that spawned it — its own id
+// again for a root, which is its own parent. Both are hashes carried as Bytes.
+type Event =
+  | Spawned(Record(id: Bytes, parent: Bytes))
+
+// A birth notification is one-way: it is folded through on_notification and nothing replies to it, so the
+// contract's output is the unit `Ack` — present only because a contract declares an output type, and never
+// built or sent.
+type Ack =
+  | Ack
+
+// --- conformance proof: a fully-literal event, ascribed against the schema type ---
+def a-spawned-event() -> Event =
+  Event.Spawned({ id = b"id", parent = b"parent" })
+
+@test
+def spawned-event-conforms() =
+  match a-spawned-event() with
+  | Event.Spawned(e) => if e.parent == b"parent" then unit else trap("spawned parent mismatch")

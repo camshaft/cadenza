@@ -20,7 +20,7 @@
 
 use crate::{
     Bytes, ContractId, Deliver, Delivered, EdgeKind, Lifecycle, Outcome, ProgramHash, ProgramStore,
-    Reducer, ReducerGraph, ReducerId, Request, Runtime, deliver_contract,
+    Reducer, ReducerGraph, ReducerId, Request, Runtime, Spawned, deliver_contract,
 };
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -180,6 +180,13 @@ impl<R: Runtime> System for TaskSystem<R> {
             }
         }
         let (sender, mut inbox) = R::channel();
+        // The birth notification is the reducer's first event: its own id and its parent, so it knows who it
+        // is before any message. Sent into the mailbox before the task starts draining, so it folds first
+        // (once the program has loaded). A root learns its parent is itself.
+        R::send(
+            &sender,
+            Delivered::Notification(Spawned { id, parent }.into_notification()),
+        );
         self.reducers
             .lock()
             .expect("reducers lock")
@@ -307,7 +314,7 @@ mod tests {
     use crate::{
         BachRuntime, Bytes, ContractId, Deliver, Delivered, Hash, HostId, InMemoryReducerGraph,
         Lifecycle, Message, Notification, Origin, Outcome, ProgramHash, Reducer, ReducerGraph,
-        ReducerId, Request, Response, TokioRuntime, lifecycle_contract,
+        ReducerId, Request, Response, Spawned, TokioRuntime, lifecycle_contract, spawned_contract,
     };
     use std::sync::Arc;
 
@@ -677,7 +684,13 @@ mod tests {
         // Drive the child to its close, then give the sim time to route any lifecycle notification.
         assert!(system.deliver(child, a_message(cid(b"go"))).await.unwrap());
         bach::time::sleep(core::time::Duration::from_millis(1)).await;
-        heard_rx.try_recv().ok()
+        // Skip the parent's own birth notification; return the first lifecycle event it heard, if any.
+        while let Ok(n) = heard_rx.try_recv() {
+            if n.id == lifecycle_contract() {
+                return Some(n);
+            }
+        }
+        None
     }
 
     #[test]
@@ -767,7 +780,15 @@ mod tests {
                 // Close the parent; the child hears the parent's typed exit naming the parent.
                 assert!(system.deliver(parent, a_message(cid(b"go"))).await.unwrap());
                 bach::time::sleep(core::time::Duration::from_millis(1)).await;
-                let heard = heard_rx.try_recv().expect("the child heard the parent");
+                // Skip the child's own birth notification; find the parent's lifecycle event.
+                let mut exit = None;
+                while let Ok(n) = heard_rx.try_recv() {
+                    if n.id == lifecycle_contract() {
+                        exit = Some(n);
+                        break;
+                    }
+                }
+                let heard = exit.expect("the child heard the parent's exit");
                 assert_eq!(
                     Lifecycle::decode(&heard.payload),
                     Some(Lifecycle::Exited {
@@ -775,6 +796,64 @@ mod tests {
                         schema: cid(b"finished"),
                         reason: Bytes::from_static(b"done"),
                     })
+                );
+            }
+            .group("system")
+            .primary()
+            .spawn();
+        });
+    }
+
+    #[test]
+    fn a_spawned_reducer_is_told_its_id_and_parent_first() {
+        use bach::ext::*;
+        bach::sim(|| {
+            async {
+                // A parent and a child, each recording its notifications on its own channel, so the child's
+                // first event can be read without interleaving. The child is spawned under the parent.
+                let parent = rid(b"parent");
+                let child = rid(b"child");
+                let (p_heard, _p_rx) = bach::sync::mpsc::unbounded_channel();
+                let (c_heard, mut c_rx) = bach::sync::mpsc::unbounded_channel();
+
+                let mut store = crate::testing::program::Store::new();
+                store.register(prog(b"parent-prog"), move || {
+                    Box::new(Watcher {
+                        heard: p_heard.clone(),
+                    })
+                });
+                store.register(prog(b"child-prog"), move || {
+                    Box::new(Watcher {
+                        heard: c_heard.clone(),
+                    })
+                });
+
+                let system = TaskSystem::<BachRuntime>::new(
+                    Arc::new(store),
+                    Arc::new(InMemoryReducerGraph::new()),
+                );
+                system
+                    .spawn(root(parent, prog(b"parent-prog"), ReducerKind::Ordinary))
+                    .await
+                    .unwrap();
+                system
+                    .spawn(Spawn {
+                        id: child,
+                        program: prog(b"child-prog"),
+                        parent,
+                        kind: ReducerKind::Ordinary,
+                        links: Links::NONE,
+                    })
+                    .await
+                    .unwrap();
+                bach::time::sleep(core::time::Duration::from_millis(1)).await;
+
+                // The child's very first event is its birth notification, naming itself and its parent.
+                let birth = c_rx.try_recv().expect("the child heard its birth");
+                assert_eq!(birth.id, spawned_contract());
+                assert_eq!(
+                    Spawned::decode(&birth.payload),
+                    Some(Spawned { id: child, parent })
                 );
             }
             .group("system")
