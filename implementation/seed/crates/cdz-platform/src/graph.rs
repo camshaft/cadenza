@@ -260,6 +260,22 @@ struct Node {
     into: HashMap<EdgeKind, BTreeSet<(u32, ReducerId)>>,
 }
 
+/// Remove `edge` from `map[kind]`, dropping the `kind` entry entirely if that empties it — so a kind key in
+/// an edge map always implies a non-empty set, which [`ReducerGraph::in_kinds`] (and thus `contracts_for`)
+/// relies on to not report a kind whose edges are all gone.
+fn drop_edge(
+    map: &mut HashMap<EdgeKind, BTreeSet<(u32, ReducerId)>>,
+    kind: EdgeKind,
+    edge: (u32, ReducerId),
+) {
+    if let Some(set) = map.get_mut(&kind) {
+        set.remove(&edge);
+        if set.is_empty() {
+            map.remove(&kind);
+        }
+    }
+}
+
 /// An in-memory [`ReducerGraph`] — the active graph as a local adjacency map. For tests and single-process
 /// use; a distributed build tracks the same edges in a replicated structure. Interior mutability (a
 /// `Mutex`), since the system records and drops edges behind a shared `Arc`.
@@ -321,10 +337,8 @@ impl ReducerGraph for InMemoryReducerGraph {
         // in-edges of that kind.
         for (kind, tos) in &removed.out {
             for (weight, to) in tos {
-                if let Some(target) = nodes.get_mut(to)
-                    && let Some(set) = target.into.get_mut(kind)
-                {
-                    set.remove(&(*weight, node));
+                if let Some(target) = nodes.get_mut(to) {
+                    drop_edge(&mut target.into, *kind, (*weight, node));
                 }
             }
         }
@@ -332,10 +346,8 @@ impl ReducerGraph for InMemoryReducerGraph {
         // out-edges of that kind.
         for (kind, froms) in &removed.into {
             for (weight, from) in froms {
-                if let Some(source) = nodes.get_mut(from)
-                    && let Some(set) = source.out.get_mut(kind)
-                {
-                    set.remove(&(*weight, node));
+                if let Some(source) = nodes.get_mut(from) {
+                    drop_edge(&mut source.out, *kind, (*weight, node));
                 }
             }
         }
@@ -381,10 +393,8 @@ impl ReducerGraph for InMemoryReducerGraph {
             .map(|set| set.into_iter().collect())
             .unwrap_or_default();
         for (weight, target) in &prior {
-            if let Some(t) = nodes.get_mut(target)
-                && let Some(set) = t.into.get_mut(&kind)
-            {
-                set.remove(&(*weight, from));
+            if let Some(t) = nodes.get_mut(target) {
+                drop_edge(&mut t.into, kind, (*weight, from));
             }
         }
         // Link the new chain, each target at its position; a target present in the active set also gets the
@@ -679,5 +689,78 @@ mod tests {
             vec![r("authz"), r("mid"), r("authz")]
         );
         assert_eq!(g.contracts_for(r("authz")).await, vec![contract]);
+    }
+
+    #[tokio::test]
+    async fn removing_a_handler_clears_it_from_every_chain_it_fronts() {
+        let g = InMemoryReducerGraph::new();
+        for id in ["a", "b", "authz", "edge"] {
+            g.insert(r(id)).await;
+        }
+        // `authz` sits in two owners' chains; removing it must drop it from both, leaving the rest in order.
+        g.set_chain(r("a"), c("http.get"), vec![r("authz"), r("edge")])
+            .await;
+        g.set_chain(r("b"), c("http.post"), vec![r("authz"), r("edge")])
+            .await;
+        assert!(g.remove(r("authz")).await);
+        assert_eq!(g.resolve(r("a"), c("http.get")).await, vec![r("edge")]);
+        assert_eq!(g.resolve(r("b"), c("http.post")).await, vec![r("edge")]);
+        // and `edge` keeps its position — removal drops only the removed node's link, not the whole chain.
+        assert_eq!(g.contracts_for(r("edge")).await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn removing_a_chain_owner_drops_its_chains_from_the_reverse_lookup() {
+        let g = InMemoryReducerGraph::new();
+        for id in ["owner", "handler"] {
+            g.insert(r(id)).await;
+        }
+        g.set_chain(r("owner"), c("http.get"), vec![r("handler")])
+            .await;
+        assert_eq!(g.contracts_for(r("handler")).await, vec![c("http.get")]);
+        // Removing the owner drops its out-edges and the reverse edges on its handlers.
+        assert!(g.remove(r("owner")).await);
+        assert!(g.contracts_for(r("handler")).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_contract_out_edge_does_not_shadow_a_spawn_parent() {
+        // An owner has both a spawn parent and a handler chain; each kind is read on its own — resolving a
+        // contract never returns the parent, and `parent` never returns a handler.
+        let g = InMemoryReducerGraph::new();
+        for id in ["owner", "parent", "handler"] {
+            g.insert(r(id)).await;
+        }
+        g.link(r("owner"), r("parent"), EdgeKind::spawn()).await;
+        g.set_chain(r("owner"), c("http.get"), vec![r("handler")])
+            .await;
+        assert_eq!(g.parent(r("owner")).await, Some(r("parent")));
+        assert_eq!(
+            g.resolve(r("owner"), c("http.get")).await,
+            vec![r("handler")]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_chain_may_reference_a_handler_not_yet_in_the_active_set() {
+        // A chain records a forward edge to each id whether or not it is a live node yet, so `resolve`
+        // returns the whole chain; a handler gains its reverse edge (so `contracts_for` sees it) only once
+        // it is in the active set at set time.
+        let g = InMemoryReducerGraph::new();
+        g.insert(r("owner")).await;
+        g.insert(r("live")).await;
+        // `future` is not inserted.
+        g.set_chain(r("owner"), c("http.get"), vec![r("live"), r("future")])
+            .await;
+        assert_eq!(
+            g.resolve(r("owner"), c("http.get")).await,
+            vec![r("live"), r("future")],
+            "the full chain resolves, including the not-yet-live handler"
+        );
+        assert_eq!(g.contracts_for(r("live")).await, vec![c("http.get")]);
+        assert!(
+            g.contracts_for(r("future")).await.is_empty(),
+            "no reverse edge for a handler that was not in the active set at set time"
+        );
     }
 }
