@@ -4,23 +4,25 @@
 //! Every reducer is driven by a **program**, named by content hash. Whenever the kernel spawns a reducer —
 //! the event reducer a contract routes to (§4), a child reducer a session spawns (§7), any reducer at all —
 //! it must instantiate that program into a live reducer instance. This is that step: a generic store from a
-//! [`ProgramHash`] to a fresh [`Reducer`]. It is agnostic to what the program is and how it is realized —
-//! the same interface serves an in-memory build that registers Rust reducers and a content-addressed build
-//! that resolves a wasm component from the blob store and instantiates it.
+//! [`ProgramHash`] to a fresh [`Reducer`]. It is agnostic to what the program is and how it is realized.
 //!
-//! The operation is **async** because a real backend resolves the program's bytes from the content-addressed
-//! store (a local cache, S3) before instantiating — awaiting a fetch must not block the runtime. The trait
-//! is [`async_trait`] so a backend is a dyn-safe swappable trait object, runtime-agnostic (it only awaits):
-//! tokio in production, the Bach simulator in deterministic tests. [`InMemoryProgramStore`] is the smallest
-//! honest backend — a map of program hash to a Rust factory — for tests and single-process use.
+//! In production there is one realization: resolve the program's wasm component from the content-addressed
+//! blob store and instantiate it into a wasm reducer. That backend does not exist yet. The only backend that
+//! ships today is [`testing::Store`], gated behind `cfg(any(test, feature = "testing"))` — a map of program
+//! hash to a Rust factory, for wiring reducers into the runtime in tests. It is deliberately not a general
+//! "in-memory" backend: outside tests the store is always the CAS-plus-wasm loader.
+//!
+//! The operation is **async** because the production backend resolves bytes from the store before
+//! instantiating, and awaiting a fetch must not block the runtime. The trait is [`async_trait`] so a backend
+//! is a dyn-safe swappable trait object, runtime-agnostic (it only awaits): tokio in production, the Bach
+//! simulator in deterministic tests.
 
 use crate::{ProgramHash, Reducer};
 use async_trait::async_trait;
-use std::collections::HashMap;
 
-/// A store that instantiates a reducer from its [`ProgramHash`] — the program that drives it. Backends
-/// (in-memory factories, a wasm-component loader over the blob store) implement this and are swapped by
-/// reference. `Send + Sync` so it can be shared across the runtime's concurrent tasks behind a box/`Arc`.
+/// A store that instantiates a reducer from its [`ProgramHash`] — the program that drives it. The production
+/// backend resolves a wasm component from the blob store and instantiates it; tests use [`testing::Store`].
+/// `Send + Sync` so it can be shared across the runtime's concurrent tasks behind a box/`Arc`.
 #[async_trait]
 pub trait ProgramStore: Send + Sync {
     /// Instantiate `program` into a fresh reducer, or `None` if the store cannot (an unknown program — a
@@ -33,64 +35,73 @@ pub trait ProgramStore: Send + Sync {
     async fn contains(&self, program: ProgramHash) -> bool;
 }
 
-/// A factory that builds a fresh [`Reducer`] — how [`InMemoryProgramStore`] realizes a program without a
-/// wasm loader. `Fn` (reusable — one program is instantiated many times, once per event/spawn); `Send +
-/// Sync` so the store stays so.
-type Factory = Box<dyn Fn() -> Box<dyn Reducer> + Send + Sync>;
+/// A [`ProgramStore`] for tests: program hash to a Rust factory, so a test can make native reducers
+/// instantiable without the CAS-plus-wasm loader. Gated behind `cfg(any(test, feature = "testing"))` — it is
+/// test-only scaffolding, never a production backend (outside tests, programs always load from the store).
+#[cfg(any(test, feature = "testing"))]
+pub mod testing {
+    use super::{ProgramStore, async_trait};
+    use crate::{ProgramHash, Reducer};
+    use std::collections::HashMap;
 
-/// An in-memory [`ProgramStore`] — each program hash mapped to a Rust factory. The smallest honest backend:
-/// for tests and single-process use, and how native reducers (the reference event reducer, native children)
-/// are made instantiable before a wasm loader exists.
-#[derive(Default)]
-pub struct InMemoryProgramStore {
-    factories: HashMap<ProgramHash, Factory>,
-}
+    /// A factory that builds a fresh [`Reducer`]. `Fn` (reusable — one program is instantiated many times,
+    /// once per event/spawn); `Send + Sync` so the store stays so.
+    type Factory = Box<dyn Fn() -> Box<dyn Reducer> + Send + Sync>;
 
-impl InMemoryProgramStore {
-    /// An empty store — nothing instantiable yet.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    /// A test [`ProgramStore`]: each program hash mapped to a Rust factory. Register the reducers a test
+    /// needs, then hand it to the runtime as the program store.
+    #[derive(Default)]
+    pub struct Store {
+        factories: HashMap<ProgramHash, Factory>,
     }
 
-    /// Register the factory that instantiates `program`, replacing any already registered under that hash.
-    /// The factory builds a fresh reducer each call (once per event/spawn), so it captures only what every
-    /// instance shares — never per-instance mutable state.
-    pub fn register(
-        &mut self,
-        program: ProgramHash,
-        factory: impl Fn() -> Box<dyn Reducer> + Send + Sync + 'static,
-    ) {
-        self.factories.insert(program, Box::new(factory));
+    impl Store {
+        /// An empty store — nothing instantiable yet.
+        #[must_use]
+        pub fn new() -> Self {
+            Self::default()
+        }
+
+        /// Register the factory that instantiates `program`, replacing any already registered under that
+        /// hash. The factory builds a fresh reducer each call (once per event/spawn), so it captures only
+        /// what every instance shares — never per-instance mutable state.
+        pub fn register(
+            &mut self,
+            program: ProgramHash,
+            factory: impl Fn() -> Box<dyn Reducer> + Send + Sync + 'static,
+        ) {
+            self.factories.insert(program, Box::new(factory));
+        }
+
+        /// The number of registered programs.
+        #[must_use]
+        pub fn len(&self) -> usize {
+            self.factories.len()
+        }
+
+        /// Whether no program is registered.
+        #[must_use]
+        pub fn is_empty(&self) -> bool {
+            self.factories.is_empty()
+        }
     }
 
-    /// The number of registered programs.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.factories.len()
-    }
+    #[async_trait]
+    impl ProgramStore for Store {
+        async fn spawn(&self, program: ProgramHash) -> Option<Box<dyn Reducer>> {
+            self.factories.get(&program).map(|factory| factory())
+        }
 
-    /// Whether no program is registered.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.factories.is_empty()
-    }
-}
-
-#[async_trait]
-impl ProgramStore for InMemoryProgramStore {
-    async fn spawn(&self, program: ProgramHash) -> Option<Box<dyn Reducer>> {
-        self.factories.get(&program).map(|factory| factory())
-    }
-
-    async fn contains(&self, program: ProgramHash) -> bool {
-        self.factories.contains_key(&program)
+        async fn contains(&self, program: ProgramHash) -> bool {
+            self.factories.contains_key(&program)
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{InMemoryProgramStore, ProgramStore};
+    use super::ProgramStore;
+    use super::testing::Store;
     use crate::{
         Bytes, ContractId, Hash, HostId, Message, Notification, Origin, Outcome, ProgramHash,
         Reducer, ReducerId, Request, Response,
@@ -122,7 +133,7 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_instantiates_a_registered_program_and_is_none_otherwise() {
-        let mut store = InMemoryProgramStore::new();
+        let mut store = Store::new();
         assert!(store.is_empty());
         store.register(prog(b"default-event"), || Box::new(Counting { seen: 0 }));
         assert!(store.contains(prog(b"default-event")).await);
@@ -135,7 +146,7 @@ mod tests {
 
     #[tokio::test]
     async fn each_spawn_is_a_fresh_instance_with_its_own_state() {
-        let mut store = InMemoryProgramStore::new();
+        let mut store = Store::new();
         store.register(prog(b"p"), || Box::new(Counting { seen: 0 }));
         // Two spawns are independent: stepping one does not affect the other (per-event/spawn instantiation).
         let mut a = store.spawn(prog(b"p")).await.expect("registered");
@@ -156,7 +167,7 @@ mod tests {
 
     #[tokio::test]
     async fn register_replaces_the_factory_for_a_program() {
-        let mut store = InMemoryProgramStore::new();
+        let mut store = Store::new();
         store.register(prog(b"p"), || Box::new(Counting { seen: 0 }));
         store.register(prog(b"p"), || Box::new(Counting { seen: 99 }));
         // Still one program; the second factory won.

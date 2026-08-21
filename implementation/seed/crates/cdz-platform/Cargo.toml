@@ -19,6 +19,12 @@ version = "0.0.0"
 edition = "2024"
 publish = false
 
+[features]
+# The test-only program store (`programs::testing::Store`) — a Rust-factory backend for wiring reducers
+# into the runtime in tests. On automatically under `cfg(test)`; enable this feature to use it from another
+# crate's tests. Production always loads programs from the content-addressed store, never through this.
+testing = []
+
 [dependencies]
 # cadenza-ast is the LANGUAGE's canonical AST + type system (not the compiler) — the value model contracts
 # are declared in and hashed over (spec §1/§12; operator ruling 2026-08-20 "use the canonical AST crate
