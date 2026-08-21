@@ -26,6 +26,7 @@ mod graph;
 mod hash;
 mod ids;
 mod kv;
+mod lifecycle;
 mod program;
 mod reducer;
 mod registry;
@@ -42,6 +43,7 @@ pub use graph::{Dir, EdgeKind, InMemoryReducerGraph, ReducerGraph};
 pub use hash::{Hash, Hasher, base64url};
 pub use ids::{ContractId, HostId, ProgramHash, ReducerId};
 pub use kv::{InMemoryKvStore, KeyRange, KvKeyScan, KvScan, KvStore, prefix_range};
+pub use lifecycle::{Lifecycle, lifecycle_contract};
 pub use program::ProgramStore;
 pub use reducer::{Error, Message, Notification, Origin, Outcome, Reducer, Request, Response};
 pub use registry::HandlerRegistry;
@@ -49,7 +51,7 @@ pub use registry::HandlerRegistry;
 pub use runtime::BachRuntime;
 pub use runtime::{Runtime, TokioRuntime};
 pub use str::Str;
-pub use system::{System, SystemError, TaskSystem};
+pub use system::{Links, ReducerKind, Spawn, System, SystemError, TaskSystem};
 
 // Re-export the byte-buffer type the platform marshals through, so downstream code depends on the
 // platform's chosen `Bytes` (spec §12: every byte buffer is `bytes::Bytes`, never `Vec<u8>`).

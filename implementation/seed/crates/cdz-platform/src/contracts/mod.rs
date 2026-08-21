@@ -4,3 +4,4 @@
 //! `contracts/<name>.cdz` wires itself in on the next `cargo xtask codegen`.
 
 pub mod deliver;
+pub mod lifecycle;
