@@ -39,7 +39,7 @@ pub use deliver::{Deliver, Delivered, deliver_contract};
 pub use event_registry::{EventRegistry, InMemoryEventRegistry};
 pub use genesis::Genesis;
 pub use hash::{Hash, Hasher, base64url};
-pub use hierarchy::{Ancestors, Hierarchy};
+pub use hierarchy::{Hierarchy, InMemoryHierarchy};
 pub use ids::{ContractId, HostId, ProgramHash, ReducerId};
 pub use kv::{InMemoryKvStore, KeyRange, KvKeyScan, KvScan, KvStore, prefix_range};
 pub use program::ProgramStore;
