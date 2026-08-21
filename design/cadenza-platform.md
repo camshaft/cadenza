@@ -284,12 +284,16 @@ it from the log and never re-mints it. A spawned session's genesis also records 
 parent (section 7), so the child's identity certifies its provenance.
 
 The session's id is the hash of its genesis event, so it cannot be a field inside that
-event — and it needn't be delivered anywhere: a reducer reads its own id at any time as a
-direct read (section 3), and lists its handlers via the `list-handlers` effect (section 7).
-**Birth** is the reducer's first `on_message` — the seed the spawn delivered, an `id` plus a
-payload. That is all the kernel imposes; there is no separate "capabilities" or "purpose"
-field. A session's authority is the authz middleware in its handler chains (section 5), and
-any purpose or seed config is just content in the birth payload, interpreted by the reducer.
+event. On spawn the reducer is told who it is: its **birth** is a `spawned` notification —
+its first event, ahead of any message — carrying its own id and its parent's, so it knows
+its identity and its provenance before it folds anything. It is a typed notification like
+any other, folded through `on_notification` (section 3); a reducer that does not need it
+ignores it. (A reducer can also read its own id at any time as a direct read, section 3, and
+lists its handlers via the `list-handlers` effect, section 7.) The **seed** the spawn
+configures — an init payload — arrives as birth content the reducer folds next; there is no
+separate "capabilities" or "purpose" field. A session's authority is the authz middleware in
+its handler chains (section 5), and any purpose or seed config is just content in that
+payload, interpreted by the reducer.
 
 Configuration is not runtime state — it is early events the program folds into its own
 state. A program's initial prompt, policy, or seed data arrive as ordinary events. The
@@ -813,9 +817,19 @@ The built-in lifecycle effects:
   reducer has, not how it is implemented. (Only a reducer's own **id** is a direct read,
   section 3.)
 - **subscribe(reducer, lifecycle-events)** asks the runtime to deliver another reducer's
-  lifecycle events — spawned, closed (with outcome), failed — to the subscriber as effects.
-  Any reducer with the capability may subscribe; supervision is one use (a parent subscribes
-  to its children), but it is general pub/sub on lifecycle, not a hard-wired parent channel.
+  lifecycle events — `spawned`, `exited` (a clean close, carrying the typed `Break` reason),
+  `crashed` (an uncontrolled failure) — to the subscriber. Each is a typed notification like
+  any other, folded through the subscriber's `on_notification` and naming the reducer it is
+  about. Any reducer with the capability may subscribe; supervision is one use (a parent
+  subscribes to its children), but it is general pub/sub on lifecycle, not a hard-wired parent
+  channel. A subscription is a **pure subscription**: the runtime delivers the event and
+  enacts no reaction of its own — the subscriber decides for itself what a peer's exit means,
+  including ending itself, whose own exit then reaches *its* subscribers, so a cascade is the
+  same mechanism rather than a separate primitive. A spawn may also establish these
+  subscriptions **atomically with the child**, one per direction and independently — the
+  parent watching the child, the child watching the parent, either, both, or neither — fixing
+  supervision at creation rather than by a later call that could race the child's first events
+  or its exit.
 - **terminate(reason)** ends *another* session by authority over it. (A session ends
   *itself* by returning `Break(schema, reason)` from a reduce call — its reason for closure,
   section 3 — not by an effect.) However a session ends — a self-exit
