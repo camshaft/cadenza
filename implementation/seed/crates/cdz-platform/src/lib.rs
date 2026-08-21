@@ -29,9 +29,6 @@ mod program;
 mod reducer;
 mod reducers;
 mod registry;
-// The async-runtime primitives (spawn + channels) the reducer tasks run on — bach under test, tokio in
-// production. Internal plumbing; not part of the public surface.
-mod rt;
 mod str;
 
 pub use blob_store::{BlobStore, InMemoryBlobStore};
@@ -44,7 +41,9 @@ pub use ids::{ContractId, HostId, ProgramHash, ReducerId};
 pub use kv::{InMemoryKvStore, KeyRange, KvKeyScan, KvScan, KvStore, prefix_range};
 pub use program::ProgramStore;
 pub use reducer::{Error, Message, Notification, Origin, Outcome, Reducer, Request, Response};
-pub use reducers::Reducers;
+#[cfg(any(test, feature = "testing"))]
+pub use reducers::BachRuntime;
+pub use reducers::{Load, Reducers, Runtime, TokioRuntime, reducer_id};
 pub use registry::HandlerRegistry;
 pub use str::Str;
 
