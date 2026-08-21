@@ -30,11 +30,12 @@ mod reducer;
 mod registry;
 mod runtime;
 mod str;
+mod system;
 
 pub use blob_store::{BlobStore, InMemoryBlobStore};
 pub use contract::Contract;
 pub use deliver::{Deliver, Delivered, deliver_contract};
-pub use event_registry::EventRegistry;
+pub use event_registry::{EventRegistry, InMemoryEventRegistry};
 pub use hash::{Hash, base64url};
 pub use hierarchy::{Ancestors, Hierarchy};
 pub use ids::{ContractId, HostId, ProgramHash, ReducerId};
@@ -42,8 +43,11 @@ pub use kv::{InMemoryKvStore, KeyRange, KvKeyScan, KvScan, KvStore, prefix_range
 pub use program::ProgramStore;
 pub use reducer::{Error, Message, Notification, Origin, Outcome, Reducer, Request, Response};
 pub use registry::HandlerRegistry;
-pub use runtime::Runtime;
+#[cfg(any(test, feature = "testing"))]
+pub use runtime::BachRuntime;
+pub use runtime::{Runtime, TokioRuntime};
 pub use str::Str;
+pub use system::{System, SystemError, TaskSystem};
 
 // Re-export the byte-buffer type the platform marshals through, so downstream code depends on the
 // platform's chosen `Bytes` (spec §12: every byte buffer is `bytes::Bytes`, never `Vec<u8>`).
