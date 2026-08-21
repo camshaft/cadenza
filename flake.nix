@@ -588,7 +588,7 @@
               rcdzc = [ "cadenza-ast" "cadenza-syntax" "cdz-num" "cdz-rt" "cdz-run" "rcdzc" ];
               cadenza-syntax = [ "cadenza-ast" "cadenza-syntax" ];
               cdz-num = [ "cdz-num" ];
-              xtask = [ "cdz-rust-render" "xtask" ];
+              xtask = [ "cadenza-ast" "cdz-rust-render" "xtask" ];
             };
             mismatches = builtins.filter (n: (crateClosure n) != expected.${n})
               (builtins.attrNames expected);

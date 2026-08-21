@@ -559,27 +559,38 @@ fn emit_ctor(arenas: &Arenas, ty: &str, var: StructId) -> Option<TokenStream> {
             }
         }
         Ctor::Record(fields) => {
-            let params: Vec<syn::Ident> = fields
+            // A named-fields struct so both the builder and reader name the record's fields rather than
+            // being positional (review: "generate rust structs so we can name the expected fields").
+            let rec_struct = syn::Ident::new(
+                &format!("{}{}", to_pascal(ty), to_pascal(&ctor)),
+                Span::call_site(),
+            );
+            let field_idents: Vec<syn::Ident> = fields
                 .iter()
                 .map(|f| syn::Ident::new(&to_snake(f), Span::call_site()))
                 .collect();
             let field_names: Vec<&str> = fields.iter().map(String::as_str).collect();
-            let n = fields.len();
             let as_ = syn::Ident::new(&format!("as_{build}"), Span::call_site());
-            let doc_read = format!(
-                " Read the {n} field(s) of a `{ty}.{ctor}` value, in declared order, or `None`."
-            );
+            let struct_doc =
+                format!(" The fields of a `{ty}.{ctor}` value — each a built value occurrence.");
+            let doc_read = format!(" Read a `{ty}.{ctor}` value's fields by name, or `None`.");
             quote! {
+                #[doc = #struct_doc]
+                pub struct #rec_struct {
+                    #(pub #field_idents: StructId,)*
+                }
                 #[doc = #doc_build]
-                pub fn #build(b: &mut Builder #(, #params: StructId)*) -> StructId {
-                    let rec = v::record(b, vec![#((#field_names, #params)),*]);
+                pub fn #build(b: &mut Builder, fields: #rec_struct) -> StructId {
+                    let rec = v::record(b, vec![#((#field_names, fields.#field_idents)),*]);
                     v::qctor(b, #ty, #ctor, vec![rec])
                 }
                 #[doc = #doc_read]
-                pub fn #as_(arenas: &Arenas, id: StructId) -> Option<[StructId; #n]> {
+                pub fn #as_(arenas: &Arenas, id: StructId) -> Option<#rec_struct> {
                     let t = v::as_qctor(arenas, id, #ty, #ctor)?;
                     let [rec] = <[StructId; 1]>::try_from(t).ok()?;
-                    Some([#(v::record_field(arenas, rec, #field_names)?),*])
+                    Some(#rec_struct {
+                        #(#field_idents: v::record_field(arenas, rec, #field_names)?,)*
+                    })
                 }
             }
         }
@@ -599,6 +610,25 @@ fn record_field_names(arenas: &Arenas, record: StructId) -> Vec<String> {
             arenas.as_name(*kv.first()?).map(str::to_string)
         })
         .collect()
+}
+
+/// A Cadenza name to a PascalCase Rust type identifier: drop `-`/`_` separators and capitalize the first
+/// letter of each segment (`Envelope` → `Envelope`, `deliver-envelope` → `DeliverEnvelope`). A type and
+/// constructor name are concatenated to name a record's field-struct (`Event` + `Message` → `EventMessage`).
+fn to_pascal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut cap = true;
+    for c in s.chars() {
+        if c == '-' || c == '_' {
+            cap = true;
+        } else if cap {
+            out.extend(c.to_uppercase());
+            cap = false;
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// A Cadenza name to a snake_case Rust identifier: `-` → `_`, and an underscore before each interior

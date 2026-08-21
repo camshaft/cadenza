@@ -52,11 +52,42 @@ def a-notification-envelope() -> Envelope =
   Envelope.Deliver({ target = b"target",
                      event = Event.Notification({ id = b"id", payload = b"" }) })
 
+// Each test destructures the built value and asserts a field, so it exercises the shape and a value, not
+// just that construction type-checks (a returned `unit` passes; a `trap` fails).
 @test
-def message-envelope-conforms() = match a-message-envelope() with | Envelope.Deliver(_) => unit
+def message-envelope-conforms() =
+  match a-message-envelope() with
+  | Envelope.Deliver(d) =>
+    match d.event with
+    | Event.Message(m) => if m.payload == b"payload" then unit else trap("message payload mismatch")
+    | _ => trap("expected an Event.Message")
+
 @test
-def response-ok-envelope-conforms() = match a-response-ok-envelope() with | Envelope.Deliver(_) => unit
+def response-ok-envelope-conforms() =
+  match a-response-ok-envelope() with
+  | Envelope.Deliver(d) =>
+    match d.event with
+    | Event.Response(r) =>
+      (match r.result with
+       | Ok(answer) => if answer == b"answer" then unit else trap("response answer mismatch")
+       | Err(_) => trap("expected an Ok result"))
+    | _ => trap("expected an Event.Response")
+
 @test
-def response-err-envelope-conforms() = match a-response-err-envelope() with | Envelope.Deliver(_) => unit
+def response-err-envelope-conforms() =
+  match a-response-err-envelope() with
+  | Envelope.Deliver(d) =>
+    match d.event with
+    | Event.Response(r) =>
+      (match r.result with
+       | Err(Timeout) => unit
+       | _ => trap("expected an Err(Timeout) result"))
+    | _ => trap("expected an Event.Response")
+
 @test
-def notification-envelope-conforms() = match a-notification-envelope() with | Envelope.Deliver(_) => unit
+def notification-envelope-conforms() =
+  match a-notification-envelope() with
+  | Envelope.Deliver(d) =>
+    match d.event with
+    | Event.Notification(n) => if n.id == b"id" then unit else trap("notification id mismatch")
+    | _ => trap("expected an Event.Notification")

@@ -99,7 +99,16 @@ impl Deliver {
                 let host = v::bytes_leaf(b, m.from.host.hash().as_bytes());
                 let payload = v::bytes_leaf(b, &m.payload);
                 let token = v::bytes_leaf(b, &m.continuation_token);
-                c::event_message(b, id, reducer, host, payload, token)
+                c::event_message(
+                    b,
+                    c::EventMessage {
+                        id,
+                        reducer,
+                        host,
+                        payload,
+                        token,
+                    },
+                )
             }
             Delivered::Response(r) => {
                 let id = v::bytes_leaf(b, r.id.hash().as_bytes());
@@ -117,15 +126,15 @@ impl Deliver {
                         v::bare_ctor(b, "Err", vec![e])
                     }
                 };
-                c::event_response(b, id, token, result)
+                c::event_response(b, c::EventResponse { id, token, result })
             }
             Delivered::Notification(n) => {
                 let id = v::bytes_leaf(b, n.id.hash().as_bytes());
                 let payload = v::bytes_leaf(b, &n.payload);
-                c::event_notification(b, id, payload)
+                c::event_notification(b, c::EventNotification { id, payload })
             }
         };
-        c::envelope_deliver(b, target, event)
+        c::envelope_deliver(b, c::EnvelopeDeliver { target, event })
     }
 
     /// The deliver [`Request`](crate::Request) an event reducer emits to carry this out: against the
@@ -150,9 +159,9 @@ impl Deliver {
         use crate::contracts::deliver as c;
 
         let arenas = codec::decode(bytes)?;
-        let [target, event] = c::as_envelope_deliver(&arenas, arenas.root)?;
-        let target = ReducerId::from_hash(v::read_hash(&arenas, target)?);
-        let event = decode_event(&arenas, event)?;
+        let env = c::as_envelope_deliver(&arenas, arenas.root)?;
+        let target = ReducerId::from_hash(v::read_hash(&arenas, env.target)?);
+        let event = decode_event(&arenas, env.event)?;
         Some(Self { target, event })
     }
 }
@@ -163,28 +172,28 @@ fn decode_event(arenas: &cadenza_ast::ast::Arenas, id: StructId) -> Option<Deliv
     use crate::contract_value as v;
     use crate::contracts::deliver as c;
 
-    if let Some([id_, reducer, host, payload, token]) = c::as_event_message(arenas, id) {
+    if let Some(m) = c::as_event_message(arenas, id) {
         return Some(Delivered::Message(Message {
-            id: ContractId::from_hash(v::read_hash(arenas, id_)?),
+            id: ContractId::from_hash(v::read_hash(arenas, m.id)?),
             from: Origin {
-                reducer: ReducerId::from_hash(v::read_hash(arenas, reducer)?),
-                host: HostId::from_hash(v::read_hash(arenas, host)?),
+                reducer: ReducerId::from_hash(v::read_hash(arenas, m.reducer)?),
+                host: HostId::from_hash(v::read_hash(arenas, m.host)?),
             },
-            payload: v::read_bytes(arenas, payload)?,
-            continuation_token: v::read_bytes(arenas, token)?,
+            payload: v::read_bytes(arenas, m.payload)?,
+            continuation_token: v::read_bytes(arenas, m.token)?,
         }));
     }
-    if let Some([id_, token, result]) = c::as_event_response(arenas, id) {
+    if let Some(r) = c::as_event_response(arenas, id) {
         return Some(Delivered::Response(Response {
-            id: ContractId::from_hash(v::read_hash(arenas, id_)?),
-            continuation_token: v::read_bytes(arenas, token)?,
-            payload: decode_result(arenas, result)?,
+            id: ContractId::from_hash(v::read_hash(arenas, r.id)?),
+            continuation_token: v::read_bytes(arenas, r.token)?,
+            payload: decode_result(arenas, r.result)?,
         }));
     }
-    if let Some([id_, payload]) = c::as_event_notification(arenas, id) {
+    if let Some(n) = c::as_event_notification(arenas, id) {
         return Some(Delivered::Notification(Notification {
-            id: ContractId::from_hash(v::read_hash(arenas, id_)?),
-            payload: v::read_bytes(arenas, payload)?,
+            id: ContractId::from_hash(v::read_hash(arenas, n.id)?),
+            payload: v::read_bytes(arenas, n.payload)?,
         }));
     }
     None
@@ -312,13 +321,11 @@ mod tests {
             }),
         };
         let arenas = cadenza_ast::codec::decode(&d.encode()).expect("well-formed value");
-        let [_target, event] =
-            c::as_envelope_deliver(&arenas, arenas.root).expect("an Envelope.Deliver value");
-        // `event` is an `Event.Message` whose five fields read back, the payload being the request body.
-        let [_id, _reducer, _host, payload, _token] =
-            c::as_event_message(&arenas, event).expect("an Event.Message value");
+        let env = c::as_envelope_deliver(&arenas, arenas.root).expect("an Envelope.Deliver value");
+        // `event` is an `Event.Message` whose fields read back by name, the payload being the request body.
+        let m = c::as_event_message(&arenas, env.event).expect("an Event.Message value");
         assert_eq!(
-            v::read_bytes(&arenas, payload).as_deref(),
+            v::read_bytes(&arenas, m.payload).as_deref(),
             Some(b"body".as_slice())
         );
     }

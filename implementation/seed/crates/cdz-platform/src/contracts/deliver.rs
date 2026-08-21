@@ -120,86 +120,105 @@ pub fn error_missing_handler(b: &mut Builder) -> StructId {
 pub fn is_error_missing_handler(arenas: &Arenas, id: StructId) -> bool {
     v::as_qctor(arenas, id, "Error", "MissingHandler").is_some_and(|t| t.is_empty())
 }
+/// The fields of a `Event.Message` value — each a built value occurrence.
+pub struct EventMessage {
+    pub id: StructId,
+    pub reducer: StructId,
+    pub host: StructId,
+    pub payload: StructId,
+    pub token: StructId,
+}
 /// Build a canonical `Event.Message` value.
-pub fn event_message(
-    b: &mut Builder,
-    id: StructId,
-    reducer: StructId,
-    host: StructId,
-    payload: StructId,
-    token: StructId,
-) -> StructId {
+pub fn event_message(b: &mut Builder, fields: EventMessage) -> StructId {
     let rec = v::record(
         b,
         vec![
-            ("id", id),
-            ("reducer", reducer),
-            ("host", host),
-            ("payload", payload),
-            ("token", token),
+            ("id", fields.id),
+            ("reducer", fields.reducer),
+            ("host", fields.host),
+            ("payload", fields.payload),
+            ("token", fields.token),
         ],
     );
     v::qctor(b, "Event", "Message", vec![rec])
 }
-/// Read the 5 field(s) of a `Event.Message` value, in declared order, or `None`.
-pub fn as_event_message(arenas: &Arenas, id: StructId) -> Option<[StructId; 5usize]> {
+/// Read a `Event.Message` value's fields by name, or `None`.
+pub fn as_event_message(arenas: &Arenas, id: StructId) -> Option<EventMessage> {
     let t = v::as_qctor(arenas, id, "Event", "Message")?;
     let [rec] = <[StructId; 1]>::try_from(t).ok()?;
-    Some([
-        v::record_field(arenas, rec, "id")?,
-        v::record_field(arenas, rec, "reducer")?,
-        v::record_field(arenas, rec, "host")?,
-        v::record_field(arenas, rec, "payload")?,
-        v::record_field(arenas, rec, "token")?,
-    ])
+    Some(EventMessage {
+        id: v::record_field(arenas, rec, "id")?,
+        reducer: v::record_field(arenas, rec, "reducer")?,
+        host: v::record_field(arenas, rec, "host")?,
+        payload: v::record_field(arenas, rec, "payload")?,
+        token: v::record_field(arenas, rec, "token")?,
+    })
+}
+/// The fields of a `Event.Response` value — each a built value occurrence.
+pub struct EventResponse {
+    pub id: StructId,
+    pub token: StructId,
+    pub result: StructId,
 }
 /// Build a canonical `Event.Response` value.
-pub fn event_response(
-    b: &mut Builder,
-    id: StructId,
-    token: StructId,
-    result: StructId,
-) -> StructId {
-    let rec = v::record(b, vec![("id", id), ("token", token), ("result", result)]);
+pub fn event_response(b: &mut Builder, fields: EventResponse) -> StructId {
+    let rec = v::record(
+        b,
+        vec![
+            ("id", fields.id),
+            ("token", fields.token),
+            ("result", fields.result),
+        ],
+    );
     v::qctor(b, "Event", "Response", vec![rec])
 }
-/// Read the 3 field(s) of a `Event.Response` value, in declared order, or `None`.
-pub fn as_event_response(arenas: &Arenas, id: StructId) -> Option<[StructId; 3usize]> {
+/// Read a `Event.Response` value's fields by name, or `None`.
+pub fn as_event_response(arenas: &Arenas, id: StructId) -> Option<EventResponse> {
     let t = v::as_qctor(arenas, id, "Event", "Response")?;
     let [rec] = <[StructId; 1]>::try_from(t).ok()?;
-    Some([
-        v::record_field(arenas, rec, "id")?,
-        v::record_field(arenas, rec, "token")?,
-        v::record_field(arenas, rec, "result")?,
-    ])
+    Some(EventResponse {
+        id: v::record_field(arenas, rec, "id")?,
+        token: v::record_field(arenas, rec, "token")?,
+        result: v::record_field(arenas, rec, "result")?,
+    })
+}
+/// The fields of a `Event.Notification` value — each a built value occurrence.
+pub struct EventNotification {
+    pub id: StructId,
+    pub payload: StructId,
 }
 /// Build a canonical `Event.Notification` value.
-pub fn event_notification(b: &mut Builder, id: StructId, payload: StructId) -> StructId {
-    let rec = v::record(b, vec![("id", id), ("payload", payload)]);
+pub fn event_notification(b: &mut Builder, fields: EventNotification) -> StructId {
+    let rec = v::record(b, vec![("id", fields.id), ("payload", fields.payload)]);
     v::qctor(b, "Event", "Notification", vec![rec])
 }
-/// Read the 2 field(s) of a `Event.Notification` value, in declared order, or `None`.
-pub fn as_event_notification(arenas: &Arenas, id: StructId) -> Option<[StructId; 2usize]> {
+/// Read a `Event.Notification` value's fields by name, or `None`.
+pub fn as_event_notification(arenas: &Arenas, id: StructId) -> Option<EventNotification> {
     let t = v::as_qctor(arenas, id, "Event", "Notification")?;
     let [rec] = <[StructId; 1]>::try_from(t).ok()?;
-    Some([
-        v::record_field(arenas, rec, "id")?,
-        v::record_field(arenas, rec, "payload")?,
-    ])
+    Some(EventNotification {
+        id: v::record_field(arenas, rec, "id")?,
+        payload: v::record_field(arenas, rec, "payload")?,
+    })
+}
+/// The fields of a `Envelope.Deliver` value — each a built value occurrence.
+pub struct EnvelopeDeliver {
+    pub target: StructId,
+    pub event: StructId,
 }
 /// Build a canonical `Envelope.Deliver` value.
-pub fn envelope_deliver(b: &mut Builder, target: StructId, event: StructId) -> StructId {
-    let rec = v::record(b, vec![("target", target), ("event", event)]);
+pub fn envelope_deliver(b: &mut Builder, fields: EnvelopeDeliver) -> StructId {
+    let rec = v::record(b, vec![("target", fields.target), ("event", fields.event)]);
     v::qctor(b, "Envelope", "Deliver", vec![rec])
 }
-/// Read the 2 field(s) of a `Envelope.Deliver` value, in declared order, or `None`.
-pub fn as_envelope_deliver(arenas: &Arenas, id: StructId) -> Option<[StructId; 2usize]> {
+/// Read a `Envelope.Deliver` value's fields by name, or `None`.
+pub fn as_envelope_deliver(arenas: &Arenas, id: StructId) -> Option<EnvelopeDeliver> {
     let t = v::as_qctor(arenas, id, "Envelope", "Deliver")?;
     let [rec] = <[StructId; 1]>::try_from(t).ok()?;
-    Some([
-        v::record_field(arenas, rec, "target")?,
-        v::record_field(arenas, rec, "event")?,
-    ])
+    Some(EnvelopeDeliver {
+        target: v::record_field(arenas, rec, "target")?,
+        event: v::record_field(arenas, rec, "event")?,
+    })
 }
 /// Build a canonical `Outcome.Delivered` value.
 pub fn outcome_delivered(b: &mut Builder) -> StructId {
