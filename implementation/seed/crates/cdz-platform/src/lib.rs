@@ -11,6 +11,7 @@
 
 mod blob_store;
 mod contract;
+mod deliver;
 mod event_registry;
 mod hash;
 mod hierarchy;
@@ -23,6 +24,7 @@ mod str;
 
 pub use blob_store::{BlobStore, InMemoryBlobStore};
 pub use contract::Contract;
+pub use deliver::{Deliver, Delivered, deliver_contract};
 pub use event_registry::EventRegistry;
 pub use hash::{Hash, base64url};
 pub use hierarchy::{Ancestors, Hierarchy};
@@ -30,7 +32,7 @@ pub use ids::{ContractId, HostId, ProgramHash, ReducerId};
 pub use kv::{InMemoryKvStore, KeyRange, KvKeyScan, KvScan, KvStore, prefix_range};
 pub use reducer::{Error, Message, Notification, Origin, Outcome, Reducer, Request, Response};
 pub use registry::HandlerRegistry;
-pub use runtime::{Delivered, Runtime};
+pub use runtime::Runtime;
 pub use str::Str;
 
 // Re-export the byte-buffer type the platform marshals through, so downstream code depends on the
