@@ -19,6 +19,13 @@ version = "0.0.0"
 edition = "2024"
 publish = false
 
+[features]
+# Test-support: swappable pieces for exercising components in isolation, without the full system — a
+# program store backed by registered Rust factories, and whatever other component overrides tests need.
+# They live under the crate's `testing` module. On automatically under `cfg(test)`; enable this feature to
+# reach them from another crate's tests. None of it is part of the production surface.
+testing = []
+
 [dependencies]
 # cadenza-ast is the LANGUAGE's canonical AST + type system (not the compiler) — the value model contracts
 # are declared in and hashed over (spec §1/§12; operator ruling 2026-08-20 "use the canonical AST crate

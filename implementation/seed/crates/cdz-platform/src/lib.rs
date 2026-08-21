@@ -25,6 +25,7 @@ mod hash;
 mod hierarchy;
 mod ids;
 mod kv;
+mod program;
 mod reducer;
 mod registry;
 mod runtime;
@@ -38,6 +39,7 @@ pub use hash::{Hash, base64url};
 pub use hierarchy::{Ancestors, Hierarchy};
 pub use ids::{ContractId, HostId, ProgramHash, ReducerId};
 pub use kv::{InMemoryKvStore, KeyRange, KvKeyScan, KvScan, KvStore, prefix_range};
+pub use program::ProgramStore;
 pub use reducer::{Error, Message, Notification, Origin, Outcome, Reducer, Request, Response};
 pub use registry::HandlerRegistry;
 pub use runtime::Runtime;
@@ -46,3 +48,14 @@ pub use str::Str;
 // Re-export the byte-buffer type the platform marshals through, so downstream code depends on the
 // platform's chosen `Bytes` (spec §12: every byte buffer is `bytes::Bytes`, never `Vec<u8>`).
 pub use bytes::Bytes;
+
+/// Test-support: swappable pieces for exercising components in isolation, without standing up the full
+/// system. Each component's test helpers are re-exported here under the component's name (so a component's
+/// production surface stays free of test scaffolding). Behind the `testing` feature (on automatically under
+/// `cfg(test)`); enable it to reach these from another crate's tests.
+#[cfg(any(test, feature = "testing"))]
+pub mod testing {
+    /// The [`program`](crate::program) module's test helpers — `program::Store`, a program store backed by
+    /// registered Rust factories instead of the content-addressed store.
+    pub use crate::program::testing as program;
+}
