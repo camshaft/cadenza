@@ -21,6 +21,12 @@
 //!    the byte back — so no opcode or magic number is hand-written. `wasm-encoder` is already the
 //!    byte ORACLE the rcdzc tests diff the hand-emitted bytes against; this makes it the SOURCE of
 //!    those bytes too, not just the after-the-fact check.
+//!
+//!  - `cdz-platform/src/deliver_schema.rs` — the built-in `deliver` contract's schema, projected from
+//!    its Cadenza source `cdz-platform/contracts/deliver.sexp`. The source is TYPECHECKED with the
+//!    compiler (rcdzc, the same stack `cdz check` runs) so the generated schema is provably valid
+//!    Cadenza and the source's conformance values type-ascribe against it; the generated file is plain
+//!    Cadenza-AST builder calls, so `cdz-platform` never links the compiler. See its own section banner.
 
 use crate::{Paths, build_component_with_features, content_address};
 use proc_macro2::{Span, TokenStream};
@@ -95,6 +101,7 @@ struct Op {
 pub fn run(paths: &Paths, check: bool) {
     generate_runtime_abi(paths, check);
     generate_wasm_abi(paths, check);
+    generate_deliver_schema(paths, check);
 }
 
 /// Generate `runtime_abi.rs` from the runtime WIT (see the `runtime_abi` bullet in the module doc).
@@ -204,6 +211,187 @@ fn emit_or_check(out: &PathBuf, source: &str, check: bool, oracle: &str, summary
         std::process::exit(1);
     }
     println!("xtask codegen: wrote {} ({summary})", out.display());
+}
+
+// ================================================================================================
+// deliver_schema — generate the built-in `deliver` contract's schema from its Cadenza source.
+//
+// The deliver contract (`design/cadenza-platform.md` section 4) is the one built-in contract the kernel
+// recognizes, and — like every contract — its identity is the hash of its declared schema. That schema
+// must be VALID Cadenza, and a value the runtime marshals against it must type-ascribe to the schema
+// type; a hand-authored schema can silently be neither. So the schema's source of truth is a real
+// Cadenza file, `cdz-platform/contracts/deliver.sexp`, which codegen TYPECHECKS with the compiler (the
+// same rcdzc `cdz check` uses) and then projects into `cdz-platform/src/deliver_schema.rs` as plain
+// Cadenza-AST builder calls the platform feeds to `Contract::new`. The compiler runs ONLY here at
+// codegen time; the generated file is dependency-free builder calls, so `cdz-platform` never links it.
+// The source's conformance `def`s (fully-literal envelope values ascribed against `Deliver-Envelope`)
+// make the typecheck fail if the shape `Deliver::encode` marshals could not be a value of the schema
+// type — that is what ties the runtime encoder to the schema.
+// ================================================================================================
+
+/// Generate `cdz-platform/src/deliver_schema.rs` from `cdz-platform/contracts/deliver.sexp` (see the
+/// section banner above). In `check` mode, regenerate in memory and compare without writing — the same
+/// staleness gate the ABI tables use, so a forgotten `cargo xtask codegen` after editing the source
+/// fails `xtask check`.
+fn generate_deliver_schema(paths: &Paths, check: bool) {
+    let src_path = paths
+        .seed
+        .join("crates/cdz-platform/contracts/deliver.sexp");
+    let out = paths.seed.join("crates/cdz-platform/src/deliver_schema.rs");
+    let source_text = std::fs::read_to_string(&src_path).unwrap_or_else(|e| {
+        eprintln!("xtask codegen: read {}: {e}", src_path.display());
+        std::process::exit(1);
+    });
+
+    // Parse the module, then TYPECHECK it against the compiler — codegen refuses to emit a schema from a
+    // source that is not valid Cadenza (so review comment: "the schema must actually validate as a valid
+    // Cadenza construct" is enforced, not hoped), and the source's conformance `def`s prove a marshalled
+    // value type-ascribes against the schema type.
+    let arenas = cadenza_syntax::sexpr::read(&source_text).unwrap_or_else(|e| {
+        eprintln!(
+            "xtask codegen: {} is not readable Cadenza: {e:?}",
+            src_path.display()
+        );
+        std::process::exit(1);
+    });
+    typecheck_or_exit(&arenas, &src_path);
+
+    // The top-level `(type …)` declarations, in source order — the schema. Everything else in the module
+    // (the module head, the conformance `def`s, the `export`) is ignored here; it exists to make the
+    // typecheck meaningful.
+    let decls = type_decls(&arenas);
+    if decls.is_empty() {
+        eprintln!(
+            "xtask codegen: {} declares no `(type …)` — a contract schema needs at least one type",
+            src_path.display()
+        );
+        std::process::exit(1);
+    }
+
+    let body = format_tokens(render_deliver_schema(&arenas, &decls));
+    let source = format!("{}{body}", deliver_schema_banner());
+    let summary = format!(
+        "{} type declarations, from {}",
+        decls.len(),
+        src_path.display()
+    );
+    emit_or_check(
+        &out,
+        &source,
+        check,
+        "the deliver contract Cadenza source",
+        &summary,
+    );
+}
+
+/// Typecheck a parsed module with the compiler exactly as `cdz check` does — encode the AST, run the
+/// query-only Diagnostics request through the compiler stack, and exit non-zero if any diagnostic is an
+/// error. This is the gate that makes the generated schema provably valid Cadenza.
+fn typecheck_or_exit(arenas: &cadenza_syntax::Arenas, src: &std::path::Path) {
+    let ast = cadenza_syntax::codec::encode(arenas);
+    let sidecar =
+        rcdzc::sidecar::encode(&[rcdzc::Request::Query(rcdzc::sidecar::Query::Diagnostics)]);
+    let inputs = vec![
+        rcdzc::Artifact::new(rcdzc::Artifact::KIND_AST, "main", ast),
+        rcdzc::Artifact::new(rcdzc::sidecar::KIND_SIDECAR, "drive", sidecar),
+    ];
+    // Query-only run (no emit target); the stack guard keeps a pathologically deep input a decline.
+    let out = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
+    if out.has_error() {
+        eprintln!(
+            "xtask codegen: {} does not typecheck — its schema or a conformance value is not valid \
+             Cadenza:",
+            src.display()
+        );
+        for d in out
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == rcdzc::Severity::Error)
+        {
+            eprintln!("  {}", d.message);
+        }
+        std::process::exit(1);
+    }
+}
+
+/// The module's top-level `(type …)` declaration occurrences, in source order.
+fn type_decls(arenas: &cadenza_syntax::Arenas) -> Vec<cadenza_syntax::StructId> {
+    let items = match arenas.get(arenas.root) {
+        cadenza_syntax::Struct::List(items) => items.clone(),
+        cadenza_syntax::Struct::Atom(_) => return Vec::new(),
+    };
+    items
+        .into_iter()
+        .filter(|&id| arenas.head_name(id) == Some("type"))
+        .collect()
+}
+
+/// Render the generated `deliver_schema.rs` body: a `schema(b)` builder function that reconstructs each
+/// type declaration through the Cadenza-AST builder and returns them, ready to hand to `Contract::new`.
+/// Type declarations are names and lists only, so the emitter needs just `b.name` / `b.list`.
+fn render_deliver_schema(
+    arenas: &cadenza_syntax::Arenas,
+    decls: &[cadenza_syntax::StructId],
+) -> TokenStream {
+    let mut stmts: Vec<TokenStream> = Vec::new();
+    let mut counter = 0usize;
+    let decl_idents: Vec<syn::Ident> = decls
+        .iter()
+        .map(|&d| emit_node(arenas, d, &mut stmts, &mut counter))
+        .collect();
+
+    quote! {
+        use cadenza_ast::ast::{Builder, StructId};
+
+        #[doc = " The `deliver` contract's schema: its named Cadenza type declarations, in source order."]
+        #[doc = " Handed to `Contract::new` as the contract's types (input `Deliver-Envelope`, output"]
+        #[doc = " `Deliver-Outcome`). Generated from `contracts/deliver.sexp`, which the compiler"]
+        #[doc = " typechecks at codegen time, so this is provably a valid Cadenza schema."]
+        pub fn schema(b: &mut Builder) -> Vec<StructId> {
+            #(#stmts)*
+            vec![#(#decl_idents),*]
+        }
+    }
+}
+
+/// Emit the builder statements that reconstruct the node at `id`, returning the identifier bound to it.
+/// Post-order: children first (so their identifiers exist), then the parent's `b.list`. A type
+/// declaration is names and lists only; any other atom is a bug in the source classification.
+fn emit_node(
+    arenas: &cadenza_syntax::Arenas,
+    id: cadenza_syntax::StructId,
+    stmts: &mut Vec<TokenStream>,
+    counter: &mut usize,
+) -> syn::Ident {
+    if let Some(name) = arenas.as_name(id) {
+        let ident = fresh_ident(counter);
+        let name = name.to_string();
+        stmts.push(quote!(let #ident = b.name(#name);));
+        return ident;
+    }
+    match arenas.get(id) {
+        cadenza_syntax::Struct::List(items) => {
+            let items = items.clone();
+            let children: Vec<syn::Ident> = items
+                .iter()
+                .map(|&c| emit_node(arenas, c, stmts, counter))
+                .collect();
+            let ident = fresh_ident(counter);
+            stmts.push(quote!(let #ident = b.list(vec![#(#children),*]);));
+            ident
+        }
+        cadenza_syntax::Struct::Atom(_) => panic!(
+            "xtask codegen: a `(type …)` declaration in deliver.sexp holds a non-name atom — a type \
+             declaration is built from names and lists only (a compiler/parse invariant changed)"
+        ),
+    }
+}
+
+/// A fresh temporary identifier `v0`, `v1`, … for the builder statements.
+fn fresh_ident(counter: &mut usize) -> syn::Ident {
+    let ident = syn::Ident::new(&format!("v{counter}"), Span::call_site());
+    *counter += 1;
+    ident
 }
 
 /// Build BOTH runtime components and return their content addresses `(release, debug_counters)` —
@@ -1228,6 +1416,22 @@ fn runtime_abi_banner() -> String {
      //! envelope blob, no baked-in op index (imports resolve by name). Regenerate with `cargo xtask\n\
      //! codegen`; `cargo xtask codegen --check` (a hard gate in `xtask check`) fails if it drifts from\n\
      //! the runtime WIT or the built runtime's bytes. Plain data — no dependency, so it ships.\n\n"
+        .to_string()
+}
+
+/// The `//!` banner prepended to `deliver_schema.rs` — the "do-not-edit / regenerate" notice, plus what
+/// the file is and where it comes from.
+fn deliver_schema_banner() -> String {
+    "//! @generated by `cargo xtask codegen` from cdz-platform/contracts/deliver.sexp — DO NOT hand-edit.\n\
+     //!\n\
+     //! The `deliver` contract's schema (`design/cadenza-platform.md` section 4) as Cadenza-AST builder\n\
+     //! calls: `schema(b)` reconstructs the contract's named type declarations, which `deliver_contract`\n\
+     //! hands to `Contract::new` (input `Deliver-Envelope`, output `Deliver-Outcome`). The source is real\n\
+     //! Cadenza that codegen TYPECHECKS with the compiler before generating this file, so the schema is\n\
+     //! provably valid Cadenza and a marshalled envelope value type-ascribes against it. Edit the schema\n\
+     //! in `deliver.sexp`, then regenerate with `cargo xtask codegen`; `cargo xtask codegen --check` (a\n\
+     //! hard gate in `xtask check`) fails if this file is stale. Plain builder calls — no dependency on\n\
+     //! the compiler, so it ships in `cdz-platform` (the compiler stays a codegen-time dev-desk tool).\n\n"
         .to_string()
 }
 

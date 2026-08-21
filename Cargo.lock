@@ -3252,11 +3252,13 @@ name = "xtask"
 version = "0.0.0"
 dependencies = [
  "blake3",
+ "cadenza-syntax",
  "cdz-rust-render",
  "clap",
  "prettyplease",
  "proc-macro2",
  "quote",
+ "rcdzc",
  "serde",
  "serde_json",
  "sha2",
