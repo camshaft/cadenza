@@ -16,8 +16,8 @@
 //! slice.
 
 use crate::{
-    ContractId, Deliver, Delivered, EventRegistry, Outcome, ProgramHash, ProgramStore, Reducer,
-    ReducerId, Request, deliver_contract,
+    ContractId, Deliver, Delivered, EventRegistry, Message, Origin, Outcome, ProgramHash,
+    ProgramStore, Reducer, ReducerId, Request, deliver_contract,
 };
 use std::collections::HashMap;
 
@@ -79,6 +79,43 @@ impl Runtime {
     /// the running set; it is ephemeral, run for this one event.
     pub async fn spawn_event_reducer(&self, contract: ContractId) -> Option<Box<dyn Reducer>> {
         self.programs.spawn(self.route(contract)).await
+    }
+
+    /// Dispatch an emitted effect (§4). Spawn the event reducer that governs the effect's contract, deliver
+    /// the effect to it as an `on_message` — stamping the emitter's authenticated `from` — and carry out the
+    /// delivers it emits (the event reducer handing the effect along the handler chain). Returns the follow-on
+    /// requests to dispatch next: each carried-out deliver's target emissions, plus any request the event
+    /// reducer emitted that is not a deliver (its own effect, which begins its own dispatch through its
+    /// contract). `None` if the routed program has no registered factory to spawn.
+    ///
+    /// This is one dispatch step. Iterating it to quiescence and folding a handler's response back to its
+    /// caller — the settling and pending-obligation tracking of §4 — is the event reducer's logic plus a
+    /// scheduler, layered on this and [`carry_out`](Self::carry_out).
+    pub async fn dispatch(&mut self, effect: Request, from: Origin) -> Option<Vec<Request>> {
+        let mut event_reducer = self.spawn_event_reducer(effect.id).await?;
+        let message = Message {
+            id: effect.id,
+            payload: effect.payload,
+            from,
+            continuation_token: effect.continuation_token,
+        };
+        let (emitted, _outcome) = event_reducer.on_message(message).await;
+        let mut follow_on = Vec::new();
+        for request in emitted {
+            if request.id == deliver_contract() {
+                // A deliver — carry it out (run the target). Its target's emissions are the next round; a
+                // malformed envelope or unregistered target yields nothing to continue (supervision is a
+                // later slice).
+                if let Some((target_emitted, _)) = self.carry_out(request).await {
+                    follow_on.extend(target_emitted);
+                }
+            } else {
+                // Not a deliver — the event reducer's own effect. It begins its own dispatch through its
+                // contract's chain, so surface it for the next round rather than carrying it out here.
+                follow_on.push(request);
+            }
+        }
+        Some(follow_on)
     }
 
     /// Run one step of the reducer `target`: fold `event` through its matching entry point and return the
@@ -338,5 +375,73 @@ mod tests {
             deadline: None,
         };
         assert!(rt.carry_out(not_a_deliver).await.is_none());
+    }
+
+    /// A stub event reducer standing in for the real one: on the effect, it delivers a message to a fixed
+    /// target reducer (the chain's first handler) — enough to exercise the kernel's dispatch step.
+    struct DeliverTo {
+        target: ReducerId,
+    }
+
+    #[async_trait::async_trait]
+    impl Reducer for DeliverTo {
+        async fn on_message(&mut self, m: Message) -> (Vec<Request>, Outcome) {
+            let deliver = Deliver {
+                target: self.target,
+                event: Delivered::Message(m),
+            }
+            .into_request();
+            (vec![deliver], Outcome::Continue)
+        }
+        async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_delivers_the_effect_to_its_event_reducer_and_carries_out_the_delivers() {
+        // Register a handler (the target) and an event-reducer program that delivers the effect to it. The
+        // default program governs every contract, so any effect spawns this event reducer.
+        let handler = rid(b"handler");
+        let mut programs = crate::testing::program::Store::new();
+        programs.register(prog(b"default-event-program"), move || {
+            Box::new(DeliverTo { target: handler })
+        });
+        let mut rt = Runtime::new(
+            EventRegistry::new(prog(b"default-event-program")),
+            Box::new(programs),
+        );
+        rt.register(handler, Box::new(Probe));
+
+        // Dispatching an effect spawns the event reducer, delivers the effect to it, and carries out the
+        // deliver it emits — reaching the handler, whose emission comes back as the follow-on to dispatch next.
+        let effect = Request {
+            id: cid(b"http.get"),
+            payload: Bytes::from_static(b"a request"),
+            continuation_token: Bytes::from_static(b"tok"),
+            deadline: None,
+        };
+        let follow_on = rt
+            .dispatch(effect, origin())
+            .await
+            .expect("the default event-reducer program is registered");
+        // The handler's `on_message` emission is the one follow-on request.
+        assert_eq!(follow_on.len(), 1);
+        assert_eq!(follow_on[0].id, cid(b"on_message"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_is_none_when_no_event_reducer_program_is_registered() {
+        let mut rt = runtime(); // default program has no factory in `runtime()`
+        let effect = Request {
+            id: cid(b"http.get"),
+            payload: Bytes::from_static(b"x"),
+            continuation_token: Bytes::from_static(b"t"),
+            deadline: None,
+        };
+        assert!(rt.dispatch(effect, origin()).await.is_none());
     }
 }
