@@ -34,7 +34,7 @@ mod str;
 pub use blob_store::{BlobStore, InMemoryBlobStore};
 pub use contract::Contract;
 pub use deliver::{Deliver, Delivered, deliver_contract};
-pub use event_registry::EventRegistry;
+pub use event_registry::{EventRegistry, InMemoryEventRegistry};
 pub use hash::{Hash, base64url};
 pub use hierarchy::{Ancestors, Hierarchy};
 pub use ids::{ContractId, HostId, ProgramHash, ReducerId};
@@ -42,8 +42,11 @@ pub use kv::{InMemoryKvStore, KeyRange, KvKeyScan, KvScan, KvStore, prefix_range
 pub use program::ProgramStore;
 pub use reducer::{Error, Message, Notification, Origin, Outcome, Reducer, Request, Response};
 #[cfg(any(test, feature = "testing"))]
-pub use reducers::BachRuntime;
-pub use reducers::{Load, Reducers, Runtime, TokioRuntime, reducer_id};
+pub use reducers::{BachExecutor, BachRuntime};
+pub use reducers::{
+    Executor, Load, Reducers, Runtime, RuntimeError, TaskRuntime, TokioExecutor, TokioRuntime,
+    reducer_id,
+};
 pub use registry::HandlerRegistry;
 pub use str::Str;
 
