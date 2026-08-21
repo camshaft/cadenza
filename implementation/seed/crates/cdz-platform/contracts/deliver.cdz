@@ -1,0 +1,62 @@
+// The deliver contract — the schema of the one built-in contract the kernel recognizes
+// (design/cadenza-platform.md section 4). This file is the source of truth for the schema and is real
+// Cadenza: `cargo xtask codegen` validates it with the `cdz` binary and generates
+// `src/contracts/deliver.rs` (the type declarations, as Cadenza-AST builder calls) from it. Because the
+// generation is compiler-checked, the schema cannot drift into something that is not valid Cadenza.
+// Re-run `cargo xtask codegen` after editing this file; `cargo xtask codegen --check` fails if the
+// committed generated file is stale. The compiler is a codegen-time tool only — it never enters the
+// shipped crate.
+//
+// The `@test` definitions are not part of the generated schema (codegen extracts only the `type`
+// declarations). They are the conformance proof: each builds a fully-literal envelope value whose
+// helper's `-> Envelope` return type ascribes it against the schema, and `cargo xtask codegen` runs them
+// with `cdz test`. So a value of the shape `Deliver::encode` marshals is proven to be a value of the
+// schema type — the operator's requirement that the built value type-ascribe against the schema and the
+// cadenza compiler accept it.
+
+type Error =
+  | Timeout
+  | MissingHandler
+
+// The three kinds of event that may be injected into a reducer's log — one per entry point the target
+// folds it through (on_message / on_response / on_notification). Every hash and opaque payload is Bytes.
+type Event =
+  | Message(Record(id: Bytes, reducer: Bytes, host: Bytes, payload: Bytes, token: Bytes))
+  | Response(Record(id: Bytes, token: Bytes, result: Result(Bytes, Error)))
+  | Notification(Record(id: Bytes, payload: Bytes))
+
+// The envelope (the contract's input): deliver `event` into the log of the reducer named by `target`.
+type Envelope =
+  | Deliver(Record(target: Bytes, event: Event))
+
+// The outcome (the contract's output): delivered, or failed with a reason.
+type Outcome =
+  | Delivered
+  | Failed(Bytes)
+
+// --- conformance proofs: a fully-literal value of each event kind, ascribed against the schema type ---
+def a-message-envelope() -> Envelope =
+  Envelope.Deliver({ target = b"target",
+                     event = Event.Message({ id = b"id", reducer = b"reducer", host = b"host",
+                                             payload = b"payload", token = b"token" }) })
+
+def a-response-ok-envelope() -> Envelope =
+  Envelope.Deliver({ target = b"target",
+                     event = Event.Response({ id = b"id", token = b"token", result = Ok(b"answer") }) })
+
+def a-response-err-envelope() -> Envelope =
+  Envelope.Deliver({ target = b"target",
+                     event = Event.Response({ id = b"id", token = b"token", result = Err(Error.Timeout) }) })
+
+def a-notification-envelope() -> Envelope =
+  Envelope.Deliver({ target = b"target",
+                     event = Event.Notification({ id = b"id", payload = b"" }) })
+
+@test
+def message-envelope-conforms() = match a-message-envelope() with | Envelope.Deliver(_) => unit
+@test
+def response-ok-envelope-conforms() = match a-response-ok-envelope() with | Envelope.Deliver(_) => unit
+@test
+def response-err-envelope-conforms() = match a-response-err-envelope() with | Envelope.Deliver(_) => unit
+@test
+def notification-envelope-conforms() = match a-notification-envelope() with | Envelope.Deliver(_) => unit
