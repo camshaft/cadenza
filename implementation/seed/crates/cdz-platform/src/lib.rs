@@ -31,6 +31,7 @@ mod program;
 mod reducer;
 mod registry;
 mod runtime;
+mod spawned;
 mod str;
 mod system;
 
@@ -50,6 +51,7 @@ pub use registry::HandlerRegistry;
 #[cfg(any(test, feature = "testing"))]
 pub use runtime::BachRuntime;
 pub use runtime::{Runtime, TokioRuntime};
+pub use spawned::{Spawned, spawned_contract};
 pub use str::Str;
 pub use system::{Links, ReducerKind, Spawn, System, SystemError, TaskSystem};
 
