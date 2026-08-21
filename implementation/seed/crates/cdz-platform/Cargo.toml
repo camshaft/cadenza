@@ -20,9 +20,10 @@ edition = "2024"
 publish = false
 
 [features]
-# The test-only program store (`programs::testing::Store`) — a Rust-factory backend for wiring reducers
-# into the runtime in tests. On automatically under `cfg(test)`; enable this feature to use it from another
-# crate's tests. Production always loads programs from the content-addressed store, never through this.
+# Test-support: swappable pieces for exercising components in isolation, without the full system — a
+# program store backed by registered Rust factories, and whatever other component overrides tests need.
+# They live under the crate's `testing` module. On automatically under `cfg(test)`; enable this feature to
+# reach them from another crate's tests. None of it is part of the production surface.
 testing = []
 
 [dependencies]

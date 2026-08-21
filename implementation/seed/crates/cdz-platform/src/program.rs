@@ -3,16 +3,13 @@
 //!
 //! Every reducer is driven by a **program**, named by content hash. Whenever the kernel spawns a reducer —
 //! the event reducer a contract routes to (§4), a child reducer a session spawns (§7), any reducer at all —
-//! it must instantiate that program into a live reducer instance. This is that step: a generic store from a
-//! [`ProgramHash`] to a fresh [`Reducer`]. It is agnostic to what the program is and how it is realized.
+//! it instantiates that program into a live reducer instance. This is that step: a generic store from a
+//! [`ProgramHash`] to a fresh [`Reducer`], agnostic to what the program is and how it is realized. The
+//! production realization resolves the program's wasm component from the content-addressed blob store and
+//! instantiates it into a wasm reducer; [`testing::Store`] maps a program hash to a Rust factory for wiring
+//! reducers into the runtime in tests.
 //!
-//! In production there is one realization: resolve the program's wasm component from the content-addressed
-//! blob store and instantiate it into a wasm reducer. That backend does not exist yet. The only backend that
-//! ships today is [`testing::Store`], gated behind `cfg(any(test, feature = "testing"))` — a map of program
-//! hash to a Rust factory, for wiring reducers into the runtime in tests. It is deliberately not a general
-//! "in-memory" backend: outside tests the store is always the CAS-plus-wasm loader.
-//!
-//! The operation is **async** because the production backend resolves bytes from the store before
+//! The operation is **async** because a backend resolves the program's bytes from the store before
 //! instantiating, and awaiting a fetch must not block the runtime. The trait is [`async_trait`] so a backend
 //! is a dyn-safe swappable trait object, runtime-agnostic (it only awaits): tokio in production, the Bach
 //! simulator in deterministic tests.

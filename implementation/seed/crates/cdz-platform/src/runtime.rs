@@ -157,7 +157,7 @@ mod tests {
     fn runtime() -> Runtime {
         Runtime::new(
             EventRegistry::new(prog(b"default-event-program")),
-            Box::new(crate::programs::testing::Store::new()),
+            Box::new(crate::testing::program::Store::new()),
         )
     }
 
@@ -235,7 +235,7 @@ mod tests {
         // With no override, every contract routes to the default program; an override wins for its contract.
         let mut events = EventRegistry::new(prog(b"default"));
         events.set_override(cid(b"session.spawn"), prog(b"session-program"));
-        let rt = Runtime::new(events, Box::new(crate::programs::testing::Store::new()));
+        let rt = Runtime::new(events, Box::new(crate::testing::program::Store::new()));
         assert_eq!(rt.route(cid(b"http.get")), prog(b"default"));
         assert_eq!(rt.route(cid(b"session.spawn")), prog(b"session-program"));
     }
@@ -247,7 +247,7 @@ mod tests {
         // by running the fresh reducer and reading which entry point it dispatched to.
         let mut events = EventRegistry::new(prog(b"default-event-program"));
         events.set_override(cid(b"session.spawn"), prog(b"session-program"));
-        let mut programs = crate::programs::testing::Store::new();
+        let mut programs = crate::testing::program::Store::new();
         programs.register(prog(b"default-event-program"), || Box::new(Probe));
         programs.register(prog(b"session-program"), || Box::new(Probe));
         let rt = Runtime::new(events, Box::new(programs));
@@ -276,7 +276,7 @@ mod tests {
         // cannot be spawned — a misconfiguration surfaced as `None`, not a panic.
         let rt = Runtime::new(
             EventRegistry::new(prog(b"unregistered-default")),
-            Box::new(crate::programs::testing::Store::new()),
+            Box::new(crate::testing::program::Store::new()),
         );
         assert!(rt.spawn_event_reducer(cid(b"http.get")).await.is_none());
     }
