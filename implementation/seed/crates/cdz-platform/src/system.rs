@@ -8,22 +8,26 @@
 //! configuration a [`Spawn`] describes, deliver an event to a reducer, ask whether one is running. Its
 //! operations are async and fallible so a durable-actor backend (awaiting a replicated store, and able to
 //! fail) fits the same trait as an in-memory one; it is used behind `dyn`, so the platform holds an
-//! `Arc<dyn System>` and is not generic over the backend. Tracking the spawn tree is the system's own job —
-//! it records the spawn edge, the supervision links, and the reducer's [kind](ReducerKind) as it spawns,
-//! through the [`ReducerGraph`](crate::ReducerGraph) it holds (a local map here, a replicated structure on a
-//! durable backend). Deriving a reducer's id from its genesis and routing a contract to its program are the
-//! layer *above* this — they compose a `System` with the other substrates, rather than living inside it.
+//! `Arc<dyn System>` and is not generic over the backend. The system records the spawn tree, the supervision
+//! links, and each reducer's [kind](ReducerKind) in the [`ReducerGraph`](crate::ReducerGraph) it holds, and
+//! it owns dispatch's first act: when a reducer emits an ordinary effect, the system looks up the system
+//! reducer for that contract in the [`EventRegistry`](crate::EventRegistry), instantiates a fresh per-event
+//! context, and delivers the effect to it (§4). Deriving a *top-level* reducer's id from its genesis is the
+//! layer above this; the per-event context ids the system derives itself, from each reducer's rolling hash.
 //!
 //! [`TaskSystem`] is the in-memory `System`, generic over its [`Runtime`](crate::Runtime) (tokio in
 //! production, bach in tests): each reducer is a task draining a channel mailbox, loading its program inside
 //! its own task so a slow load blocks no one.
 
 use crate::{
-    Bytes, ContractId, Deliver, Delivered, EdgeKind, Lifecycle, Outcome, ProgramHash, ProgramStore,
-    Reducer, ReducerGraph, ReducerId, Request, Runtime, Spawned, deliver_contract,
+    Bytes, ContractId, Deliver, Delivered, EdgeKind, EventRegistry, Genesis, Hash, HashTag, HostId,
+    Lifecycle, Message, Origin, Outcome, ProgramHash, ProgramStore, Reducer, ReducerGraph,
+    ReducerId, Request, Runtime, Spawned, deliver_contract,
 };
 use async_trait::async_trait;
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 /// A failure carrying out a system operation — a backend's store or transport error. The in-memory system
@@ -102,6 +106,10 @@ pub struct Spawn {
     pub id: ReducerId,
     /// The program it runs, by content hash.
     pub program: ProgramHash,
+    /// The spawn nonce from its genesis. The `id` already commits to it (the id is the hash of the genesis),
+    /// but the system also needs it directly: it seeds the reducer's **rolling hash**, from which each
+    /// per-event context id the reducer's effects spawn is derived (§4).
+    pub nonce: Bytes,
     /// The reducer that spawned it. A **root** created at genesis is its own parent (`parent == id`).
     pub parent: ReducerId,
     /// Its privilege: only an [`Event`](ReducerKind::Event) reducer's delivers are carried out.
@@ -134,25 +142,34 @@ pub trait System: Send + Sync {
 }
 
 /// The in-memory [`System`], generic over its [`Runtime`](crate::Runtime): each reducer an async task on the
-/// runtime, draining a channel mailbox. It holds the program store and loads a spawned reducer's program
-/// inside that reducer's own task, so a slow load blocks no one.
+/// runtime, draining a channel mailbox. Its state lives in a [`Shared`] behind an `Arc`, so a running
+/// reducer's own task can spawn and deliver in turn — the recursion the router needs to route an emitted
+/// effect to the system reducer that shepherds it. It loads a spawned reducer's program inside that reducer's
+/// own task, so a slow load blocks no one.
 pub struct TaskSystem<R: Runtime> {
-    reducers: Arc<Mutex<HashMap<ReducerId, R::Sender>>>,
-    programs: Arc<dyn ProgramStore>,
-    graph: Arc<dyn ReducerGraph>,
+    shared: Arc<Shared<R>>,
 }
 
 impl<R: Runtime> TaskSystem<R> {
-    /// A system with no running reducers, loading programs from `programs` and tracking the spawn tree and
-    /// supervision links in `graph`. Whoever composes the system keeps a clone of `graph` to read the tree
-    /// (e.g. the privileged event reducer walking ancestors); the system holds it to record spawns, resolve a
-    /// terminating reducer's watchers, and reclaim its edges.
+    /// A system with no running reducers. `programs` instantiates a reducer from its program hash; `graph`
+    /// tracks the spawn tree, supervision links, and handler chains; `events` maps a contract to the system
+    /// reducer that shepherds it (§4); and `host` is this node's id, stamped as the `from` host on every
+    /// message the system routes, so an effect is attributable to a reducer-on-a-host (§3).
     #[must_use]
-    pub fn new(programs: Arc<dyn ProgramStore>, graph: Arc<dyn ReducerGraph>) -> Self {
+    pub fn new(
+        programs: Arc<dyn ProgramStore>,
+        graph: Arc<dyn ReducerGraph>,
+        events: Arc<dyn EventRegistry>,
+        host: HostId,
+    ) -> Self {
         Self {
-            reducers: Arc::new(Mutex::new(HashMap::new())),
-            programs,
-            graph,
+            shared: Arc::new(Shared {
+                reducers: Arc::new(Mutex::new(HashMap::new())),
+                programs,
+                graph,
+                events,
+                host,
+            }),
         }
     }
 }
@@ -160,126 +177,185 @@ impl<R: Runtime> TaskSystem<R> {
 #[async_trait]
 impl<R: Runtime> System for TaskSystem<R> {
     async fn spawn(&self, spawn: Spawn) -> Result<(), SystemError> {
-        let Spawn {
-            id,
-            program,
-            parent,
-            kind,
-            links,
-        } = spawn;
-        // Record the spawn tree and supervision edges before the task starts. A root has no parent edge; a
-        // child links to its parent, plus a watch_exit edge per requested supervision direction (§7).
-        self.graph.insert(id).await;
-        if parent != id {
-            self.graph.link(id, parent, EdgeKind::spawn()).await;
-            if links.parent_watches_child {
-                self.graph.link(parent, id, EdgeKind::watch_exit()).await;
-            }
-            if links.child_watches_parent {
-                self.graph.link(id, parent, EdgeKind::watch_exit()).await;
-            }
-        }
-        let (sender, mut inbox) = R::channel();
-        // The birth notification is the reducer's first event: its own id and its parent, so it knows who it
-        // is before any message. Sent into the mailbox before the task starts draining, so it folds first
-        // (once the program has loaded). A root learns its parent is itself.
-        R::send(
-            &sender,
-            Delivered::Notification(Spawned { id, parent }.into_notification()),
-        );
-        self.reducers
-            .lock()
-            .expect("reducers lock")
-            .insert(id, sender);
-        let reducers = Arc::clone(&self.reducers);
-        let programs = Arc::clone(&self.programs);
-        let graph = Arc::clone(&self.graph);
-        R::spawn(async move {
-            // Reclaim the mailbox on any exit — loop end, break, a failed load, or an unwinding crash.
-            let _guard = DeregisterOnDrop {
-                reducers: Arc::clone(&reducers),
-                id,
-            };
-            // The typed reason this reducer closed with, captured when it returns `Break` so its watchers can
-            // be told how it ended.
-            let mut break_reason: Option<(ContractId, Bytes)> = None;
-            // Load the program inside the reducer's own task, so a slow load blocks no one. A failed load
-            // falls straight through to the cleanup below.
-            if let Some(mut reducer) = programs.spawn(program).await {
-                while let Some(event) = R::recv(&mut inbox).await {
-                    let (requests, outcome) = fold(&mut reducer, event).await;
-                    for request in requests {
-                        // Delivering an event into another reducer's log is the one privileged act (§4): only
-                        // an event reducer may do it. An ordinary reducer's deliver is routed for it by its
-                        // event reducer, so a deliver it emits directly is ignored here.
-                        if kind == ReducerKind::Event
-                            && request.id == deliver_contract()
-                            && let Some(deliver) = Deliver::decode(&request.payload)
-                        {
-                            let peer = reducers
-                                .lock()
-                                .expect("reducers lock")
-                                .get(&deliver.target)
-                                .cloned();
-                            if let Some(peer) = peer {
-                                R::send(&peer, deliver.event);
-                            }
-                        }
-                    }
-                    if let Outcome::Break { schema, reason } = outcome {
-                        break_reason = Some((schema, reason));
-                        break;
-                    }
-                }
-            }
-            // On a clean close, tell every watcher how this reducer ended, then leave the graph. Watchers are
-            // read before removal, since removal drops the watch_exit edges. A crash unwinds past this — its
-            // watchers are not told here (crash notification is host-observed, a later slice) and its graph
-            // node lingers until a supervisor reaps it; the mailbox, though, is always reclaimed by the guard.
-            if let Some((schema, reason)) = break_reason {
-                let notice = Delivered::Notification(
-                    Lifecycle::Exited {
-                        reducer: id,
-                        schema,
-                        reason,
-                    }
-                    .into_notification(),
-                );
-                for watcher in graph.watchers(id).await {
-                    let mailbox = reducers
-                        .lock()
-                        .expect("reducers lock")
-                        .get(&watcher)
-                        .cloned();
-                    if let Some(mailbox) = mailbox {
-                        R::send(&mailbox, notice.clone());
-                    }
-                }
-            }
-            graph.remove(id).await;
-        });
+        Arc::clone(&self.shared).launch(spawn).await;
         Ok(())
     }
 
     async fn deliver(&self, target: ReducerId, event: Delivered) -> Result<bool, SystemError> {
+        Ok(self.shared.send(target, event))
+    }
+
+    async fn contains(&self, id: ReducerId) -> Result<bool, SystemError> {
+        Ok(self.shared.contains(id))
+    }
+}
+
+/// The system's shared state, held behind an `Arc` so a running reducer's own task can route the effects it
+/// emits — spawning the system reducer for a contract and delivering to it — without routing through a
+/// separate, central router.
+struct Shared<R: Runtime> {
+    reducers: Arc<Mutex<HashMap<ReducerId, R::Sender>>>,
+    programs: Arc<dyn ProgramStore>,
+    graph: Arc<dyn ReducerGraph>,
+    events: Arc<dyn EventRegistry>,
+    host: HostId,
+}
+
+impl<R: Runtime> Shared<R> {
+    /// Deliver an event into a reducer's mailbox; `false` if none is running under `target`.
+    fn send(&self, target: ReducerId, event: Delivered) -> bool {
         let sender = self
             .reducers
             .lock()
             .expect("reducers lock")
             .get(&target)
             .cloned();
-        Ok(match sender {
+        match sender {
             Some(sender) => R::send(&sender, event),
             None => false,
-        })
+        }
     }
 
-    async fn contains(&self, id: ReducerId) -> Result<bool, SystemError> {
-        Ok(self
-            .reducers
+    /// Whether a reducer is running under `id`.
+    fn contains(&self, id: ReducerId) -> bool {
+        self.reducers
             .lock()
             .expect("reducers lock")
-            .contains_key(&id))
+            .contains_key(&id)
+    }
+
+    /// Start running the reducer a [`Spawn`] describes: record its place in the graph, give it a mailbox,
+    /// deliver its birth notification, then drive it in its own task — folding events, routing the effects it
+    /// emits, honoring its delivers if it is privileged, and reclaiming it and notifying its watchers when it
+    /// closes. Takes `self` by `Arc` so the task can retain it to route in turn. Returns a boxed future
+    /// (rather than an `async fn`) so the recursion — a reducer's task launching the system reducer for an
+    /// effect it emits — goes through a type-erased indirection, which both breaks the infinite future type
+    /// and lets the `Send` bound be stated explicitly instead of inferred through the cycle.
+    fn launch(self: Arc<Self>, spawn: Spawn) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        Box::pin(async move {
+            let Spawn {
+                id,
+                program,
+                nonce,
+                parent,
+                kind,
+                links,
+            } = spawn;
+            // Record the spawn tree and supervision edges before the task starts (§7). A root has no parent edge;
+            // a child links to its parent, plus a watch_exit edge per requested supervision direction.
+            self.graph.insert(id).await;
+            if parent != id {
+                self.graph.link(id, parent, EdgeKind::spawn()).await;
+                if links.parent_watches_child {
+                    self.graph.link(parent, id, EdgeKind::watch_exit()).await;
+                }
+                if links.child_watches_parent {
+                    self.graph.link(id, parent, EdgeKind::watch_exit()).await;
+                }
+            }
+            let (sender, mut inbox) = R::channel();
+            // The birth notification is the reducer's first event: its own id and parent (§7), sent before the
+            // task drains so it folds first once the program has loaded.
+            R::send(
+                &sender,
+                Delivered::Notification(Spawned { id, parent }.into_notification()),
+            );
+            self.reducers
+                .lock()
+                .expect("reducers lock")
+                .insert(id, sender);
+            let shared = self;
+            R::spawn(async move {
+                // Reclaim the mailbox on any exit — loop end, break, a failed load, or an unwinding crash.
+                let _guard = DeregisterOnDrop {
+                    reducers: Arc::clone(&shared.reducers),
+                    id,
+                };
+                let mut break_reason: Option<(ContractId, Bytes)> = None;
+                // The rolling hash each per-event context id is derived from — seeded with this reducer's nonce
+                // and advanced once per routed effect, so every effect gets a distinct, replay-stable context
+                // (§4).
+                let mut rolling = Hash::of(HashTag::SystemProperty, &nonce);
+                // Load the program inside the reducer's own task, so a slow load blocks no one.
+                if let Some(mut reducer) = shared.programs.spawn(program).await {
+                    while let Some(event) = R::recv(&mut inbox).await {
+                        let (requests, outcome) = fold(&mut reducer, event).await;
+                        for request in requests {
+                            if request.id == deliver_contract() {
+                                // Delivering an event into another reducer's log is the one privileged act (§4):
+                                // honored only from an event reducer. An ordinary reducer's deliver is routed for
+                                // it, so a deliver it emits directly is ignored.
+                                if kind == ReducerKind::Event
+                                    && let Some(deliver) = Deliver::decode(&request.payload)
+                                {
+                                    shared.send(deliver.target, deliver.event);
+                                }
+                            } else {
+                                // An ordinary effect: the kernel looks up the system reducer for the contract,
+                                // instantiates a fresh per-event context, and delivers the effect to it (§4).
+                                rolling = Hash::of(HashTag::SystemProperty, rolling.as_bytes());
+                                let context_nonce = Bytes::copy_from_slice(rolling.as_bytes());
+                                let program = shared.events.resolve(request.id).await;
+                                let context = Genesis {
+                                    program,
+                                    nonce: context_nonce.clone(),
+                                    parent: id,
+                                }
+                                .id();
+                                // Spawn the system reducer (privileged) if this context is not already running,
+                                // then deliver the effect to it stamped with the emitter's origin.
+                                if !shared.contains(context) {
+                                    // `launch` returns a boxed future, so this recursive call is type-erased.
+                                    Arc::clone(&shared)
+                                        .launch(Spawn {
+                                            id: context,
+                                            program,
+                                            nonce: context_nonce,
+                                            parent: id,
+                                            kind: ReducerKind::Event,
+                                            links: Links::NONE,
+                                        })
+                                        .await;
+                                }
+                                shared.send(
+                                    context,
+                                    Delivered::Message(Message {
+                                        id: request.id,
+                                        payload: request.payload,
+                                        from: Origin {
+                                            reducer: id,
+                                            host: shared.host,
+                                        },
+                                        continuation_token: request.continuation_token,
+                                    }),
+                                );
+                            }
+                        }
+                        if let Outcome::Break { schema, reason } = outcome {
+                            break_reason = Some((schema, reason));
+                            break;
+                        }
+                    }
+                }
+                // On a clean close, tell every watcher how this reducer ended, then leave the graph (§7). A crash
+                // unwinds past this (crash notification is host-observed, a later slice); the mailbox is always
+                // reclaimed by the guard.
+                if let Some((schema, reason)) = break_reason {
+                    let notice = Delivered::Notification(
+                        Lifecycle::Exited {
+                            reducer: id,
+                            schema,
+                            reason,
+                        }
+                        .into_notification(),
+                    );
+                    for watcher in shared.graph.watchers(id).await {
+                        shared.send(watcher, notice.clone());
+                    }
+                }
+                shared.graph.remove(id).await;
+            });
+        })
     }
 }
 
@@ -312,9 +388,10 @@ impl<S> Drop for DeregisterOnDrop<S> {
 mod tests {
     use super::{Links, ReducerKind, Spawn, System, TaskSystem};
     use crate::{
-        BachRuntime, Bytes, ContractId, Deliver, Delivered, HostId, InMemoryReducerGraph,
-        Lifecycle, Message, Notification, Origin, Outcome, ProgramHash, Reducer, ReducerGraph,
-        ReducerId, Request, Response, Spawned, TokioRuntime, lifecycle_contract, spawned_contract,
+        BachRuntime, Bytes, ContractId, Deliver, Delivered, HostId, InMemoryEventRegistry,
+        InMemoryReducerGraph, Lifecycle, Message, Notification, Origin, Outcome, ProgramHash,
+        Reducer, ReducerGraph, ReducerId, Request, Response, Spawned, TokioRuntime,
+        lifecycle_contract, spawned_contract,
     };
     use std::sync::Arc;
 
@@ -332,6 +409,7 @@ mod tests {
         Spawn {
             id,
             program,
+            nonce: Bytes::from_static(b"nonce"),
             parent: id,
             kind,
             links: Links::NONE,
@@ -411,8 +489,12 @@ mod tests {
                 });
 
                 let graph = Arc::new(InMemoryReducerGraph::new());
-                let system =
-                    TaskSystem::<BachRuntime>::new(Arc::new(store), Arc::clone(&graph) as _);
+                let system = TaskSystem::<BachRuntime>::new(
+                    Arc::new(store),
+                    Arc::clone(&graph) as _,
+                    Arc::new(InMemoryEventRegistry::new(prog(b"sys"))),
+                    HostId::of(b"node"),
+                );
                 // The router is a privileged event reducer (its deliver is honored) and a root; the sink is
                 // an ordinary reducer spawned under it.
                 system
@@ -423,6 +505,7 @@ mod tests {
                     .spawn(Spawn {
                         id: sink,
                         program: prog(b"sink"),
+                        nonce: Bytes::from_static(b"nonce"),
                         parent: router,
                         kind: ReducerKind::Ordinary,
                         links: Links::NONE,
@@ -479,6 +562,8 @@ mod tests {
                 let system = TaskSystem::<BachRuntime>::new(
                     Arc::new(store),
                     Arc::new(InMemoryReducerGraph::new()),
+                    Arc::new(InMemoryEventRegistry::new(prog(b"sys"))),
+                    HostId::of(b"node"),
                 );
                 // This time the router is an ordinary reducer, so the deliver it emits is dropped.
                 system
@@ -489,6 +574,7 @@ mod tests {
                     .spawn(Spawn {
                         id: sink,
                         program: prog(b"sink"),
+                        nonce: Bytes::from_static(b"nonce"),
                         parent: router,
                         kind: ReducerKind::Ordinary,
                         links: Links::NONE,
@@ -523,6 +609,8 @@ mod tests {
                 let system = TaskSystem::<BachRuntime>::new(
                     Arc::new(store),
                     Arc::new(InMemoryReducerGraph::new()),
+                    Arc::new(InMemoryEventRegistry::new(prog(b"sys"))),
+                    HostId::of(b"node"),
                 );
                 assert!(
                     !system
@@ -546,6 +634,8 @@ mod tests {
                 let system = TaskSystem::<BachRuntime>::new(
                     Arc::new(store),
                     Arc::new(InMemoryReducerGraph::new()),
+                    Arc::new(InMemoryEventRegistry::new(prog(b"sys"))),
+                    HostId::of(b"node"),
                 );
                 system
                     .spawn(root(rid(b"x"), prog(b"absent"), ReducerKind::Ordinary))
@@ -586,8 +676,12 @@ mod tests {
 
         let mut store = crate::testing::program::Store::new();
         store.register(prog(b"term"), || Box::new(Terminating));
-        let system =
-            TaskSystem::<TokioRuntime>::new(Arc::new(store), Arc::new(InMemoryReducerGraph::new()));
+        let system = TaskSystem::<TokioRuntime>::new(
+            Arc::new(store),
+            Arc::new(InMemoryReducerGraph::new()),
+            Arc::new(InMemoryEventRegistry::new(prog(b"sys"))),
+            HostId::of(b"node"),
+        );
         let id = rid(b"term-1");
         system
             .spawn(root(id, prog(b"term"), ReducerKind::Ordinary))
@@ -656,7 +750,12 @@ mod tests {
             })
         });
         store.register(prog(b"closer"), || Box::new(Closer));
-        TaskSystem::<BachRuntime>::new(Arc::new(store), Arc::new(InMemoryReducerGraph::new()))
+        TaskSystem::<BachRuntime>::new(
+            Arc::new(store),
+            Arc::new(InMemoryReducerGraph::new()),
+            Arc::new(InMemoryEventRegistry::new(prog(b"sys"))),
+            HostId::of(b"node"),
+        )
     }
 
     /// Spawn a watching parent and a closing child under it, deliver one message to the child so it closes,
@@ -674,6 +773,7 @@ mod tests {
             .spawn(Spawn {
                 id: child,
                 program: prog(b"closer"),
+                nonce: Bytes::from_static(b"nonce"),
                 parent,
                 kind: ReducerKind::Ordinary,
                 links,
@@ -757,6 +857,8 @@ mod tests {
                 let system = TaskSystem::<BachRuntime>::new(
                     Arc::new(store),
                     Arc::new(InMemoryReducerGraph::new()),
+                    Arc::new(InMemoryEventRegistry::new(prog(b"sys"))),
+                    HostId::of(b"node"),
                 );
                 // Parent is the closer (root); child is the watcher, subscribed to the parent's exit.
                 system
@@ -767,6 +869,7 @@ mod tests {
                     .spawn(Spawn {
                         id: child,
                         program: prog(b"watcher"),
+                        nonce: Bytes::from_static(b"nonce"),
                         parent,
                         kind: ReducerKind::Ordinary,
                         links: Links {
@@ -831,6 +934,8 @@ mod tests {
                 let system = TaskSystem::<BachRuntime>::new(
                     Arc::new(store),
                     Arc::new(InMemoryReducerGraph::new()),
+                    Arc::new(InMemoryEventRegistry::new(prog(b"sys"))),
+                    HostId::of(b"node"),
                 );
                 system
                     .spawn(root(parent, prog(b"parent-prog"), ReducerKind::Ordinary))
@@ -840,6 +945,7 @@ mod tests {
                     .spawn(Spawn {
                         id: child,
                         program: prog(b"child-prog"),
+                        nonce: Bytes::from_static(b"nonce"),
                         parent,
                         kind: ReducerKind::Ordinary,
                         links: Links::NONE,
@@ -855,6 +961,106 @@ mod tests {
                     Spawned::decode(&birth.payload),
                     Some(Spawned { id: child, parent })
                 );
+            }
+            .group("system")
+            .primary()
+            .spawn();
+        });
+    }
+
+    /// A reducer that, on its first message, emits one ordinary (non-deliver) effect against `contract`,
+    /// then closes — so the system must route that effect to the system reducer for the contract.
+    struct Emitter {
+        contract: ContractId,
+    }
+    #[async_trait::async_trait]
+    impl Reducer for Emitter {
+        async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
+            let request = Request {
+                id: self.contract,
+                payload: Bytes::from_static(b"effect"),
+                continuation_token: Bytes::from_static(b"k"),
+                deadline: None,
+            };
+            (
+                vec![request],
+                Outcome::Break {
+                    schema: cid(b"done"),
+                    reason: Bytes::from_static(b"emitted"),
+                },
+            )
+        }
+        async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+    }
+
+    /// A stand-in system reducer: it records the origin and contract of the effect routed to it, then closes.
+    struct SystemStub {
+        saw: bach::sync::mpsc::UnboundedSender<(ReducerId, ContractId)>,
+    }
+    #[async_trait::async_trait]
+    impl Reducer for SystemStub {
+        async fn on_message(&mut self, m: Message) -> (Vec<Request>, Outcome) {
+            let _ = self.saw.send((m.from.reducer, m.id));
+            (
+                Vec::new(),
+                Outcome::Break {
+                    schema: cid(b"shepherded"),
+                    reason: Bytes::new(),
+                },
+            )
+        }
+        async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+    }
+
+    #[test]
+    fn the_system_routes_an_ordinary_effect_to_the_system_reducer_for_its_contract() {
+        use bach::ext::*;
+        bach::sim(|| {
+            async {
+                let emitter = rid(b"emitter");
+                let http = cid(b"http.get");
+                let (saw, mut saw_rx) = bach::sync::mpsc::unbounded_channel();
+
+                let mut store = crate::testing::program::Store::new();
+                store.register(prog(b"emitter"), move || {
+                    Box::new(Emitter { contract: http })
+                });
+                store.register(prog(b"sys"), move || {
+                    Box::new(SystemStub { saw: saw.clone() })
+                });
+
+                // The event registry routes every contract to the `sys` program by default.
+                let system = TaskSystem::<BachRuntime>::new(
+                    Arc::new(store),
+                    Arc::new(InMemoryReducerGraph::new()),
+                    Arc::new(InMemoryEventRegistry::new(prog(b"sys"))),
+                    HostId::of(b"node"),
+                );
+                system
+                    .spawn(root(emitter, prog(b"emitter"), ReducerKind::Ordinary))
+                    .await
+                    .unwrap();
+
+                // Deliver a message so the emitter emits its effect; the system routes it to a freshly
+                // spawned system reducer, which sees it as a message from the emitter on the http.get
+                // contract.
+                assert!(
+                    system
+                        .deliver(emitter, a_message(cid(b"go")))
+                        .await
+                        .unwrap()
+                );
+                assert_eq!(saw_rx.recv().await, Some((emitter, http)));
             }
             .group("system")
             .primary()
