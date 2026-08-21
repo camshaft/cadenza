@@ -12,20 +12,17 @@
 //! contract to its program are the layer *above* this — they compose a `System` with the other substrates,
 //! rather than living inside it.
 //!
-//! Two things are submodules here:
-//!  - [`runtime`] — the [`Runtime`] trait, the async runtime a task-based system runs on (spawn a task, make
-//!    a mailbox channel). [`TokioRuntime`] in production, [`BachRuntime`] (the simulator) in tests. Static (a
-//!    generic bound), so the system composes over it with no dynamic dispatch and no duplicated logic.
-//!  - [`task`] — [`TaskSystem`], the in-memory `System`, generic over its `Runtime`: each reducer a task
-//!    draining a channel mailbox, loading its program inside its own task so a slow load blocks no one.
+//! [`TaskSystem`] is the in-memory `System`, generic over its [`Runtime`](crate::Runtime) (tokio in
+//! production, bach in tests): each reducer is a task draining a channel mailbox, loading its program inside
+//! its own task so a slow load blocks no one.
 
-#[cfg(any(test, feature = "testing"))]
-pub use runtime::BachRuntime;
-pub use runtime::{Runtime, TokioRuntime};
-pub use task::TaskSystem;
-
-use crate::{Delivered, ProgramHash, ReducerId};
+use crate::{
+    Deliver, Delivered, Outcome, ProgramHash, ProgramStore, Reducer, ReducerId, Request, Runtime,
+    deliver_contract,
+};
 use async_trait::async_trait;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 /// A failure carrying out a system operation — a backend's store or transport error. The in-memory system
 /// never returns one; a durable-actor backend surfaces its failures here.
@@ -74,212 +71,122 @@ pub trait System: Send + Sync {
     async fn contains(&self, id: ReducerId) -> Result<bool, SystemError>;
 }
 
-/// The [`Runtime`] trait — the async runtime a task-based [`System`] runs on — and its two implementations,
-/// [`TokioRuntime`] and [`BachRuntime`].
-mod runtime {
-    use crate::Delivered;
-    use std::future::Future;
+/// The in-memory [`System`], generic over its [`Runtime`](crate::Runtime): each reducer an async task on the
+/// runtime, draining a channel mailbox. It holds the program store and loads a spawned reducer's program
+/// inside that reducer's own task, so a slow load blocks no one.
+pub struct TaskSystem<R: Runtime> {
+    reducers: Arc<Mutex<HashMap<ReducerId, R::Sender>>>,
+    programs: Arc<dyn ProgramStore>,
+}
 
-    /// The async runtime a [`TaskSystem`](super::TaskSystem) runs on: spawning a task and a mailbox channel.
-    /// A static trait (a generic bound, never `dyn`), so the system composes over it with no dynamic dispatch
-    /// and no duplicated runtime logic. tokio and bach are runtimes; a durable backend is a whole
-    /// [`System`](super::System), not a `Runtime`.
-    pub trait Runtime: Send + Sync + 'static {
-        /// A mailbox sender — cloneable so many peers can hold a handle to one reducer's mailbox.
-        type Sender: Clone + Send + Sync + 'static;
-        /// A mailbox receiver — the reducer's own end, drained by its loop.
-        type Receiver: Send + 'static;
-
-        /// Create a reducer's mailbox: an unbounded channel of delivered events.
-        fn channel() -> (Self::Sender, Self::Receiver);
-        /// Deliver an event into a mailbox. `false` if the receiving end is gone.
-        fn send(sender: &Self::Sender, event: Delivered) -> bool;
-        /// Receive the next delivered event, or `None` when the mailbox closes.
-        fn recv(
-            receiver: &mut Self::Receiver,
-        ) -> impl Future<Output = Option<Delivered>> + Send + '_;
-        /// Spawn `future` as a task on the runtime.
-        fn spawn<F: Future<Output = ()> + Send + 'static>(future: F);
-    }
-
-    /// The production runtime: tokio tasks and channels.
-    pub struct TokioRuntime;
-
-    impl Runtime for TokioRuntime {
-        type Sender = tokio::sync::mpsc::UnboundedSender<Delivered>;
-        type Receiver = tokio::sync::mpsc::UnboundedReceiver<Delivered>;
-
-        fn channel() -> (Self::Sender, Self::Receiver) {
-            tokio::sync::mpsc::unbounded_channel()
-        }
-        fn send(sender: &Self::Sender, event: Delivered) -> bool {
-            sender.send(event).is_ok()
-        }
-        fn recv(
-            receiver: &mut Self::Receiver,
-        ) -> impl Future<Output = Option<Delivered>> + Send + '_ {
-            receiver.recv()
-        }
-        fn spawn<F: Future<Output = ()> + Send + 'static>(future: F) {
-            tokio::spawn(future);
-        }
-    }
-
-    /// The test runtime: bach-simulator tasks and channels (deterministic). Gated with the test-support code,
-    /// since bach only drives the reducers under test.
-    #[cfg(any(test, feature = "testing"))]
-    pub struct BachRuntime;
-
-    #[cfg(any(test, feature = "testing"))]
-    impl Runtime for BachRuntime {
-        type Sender = bach::sync::mpsc::UnboundedSender<Delivered>;
-        type Receiver = bach::sync::mpsc::UnboundedReceiver<Delivered>;
-
-        fn channel() -> (Self::Sender, Self::Receiver) {
-            bach::sync::mpsc::unbounded_channel()
-        }
-        fn send(sender: &Self::Sender, event: Delivered) -> bool {
-            sender.send(event).is_ok()
-        }
-        fn recv(
-            receiver: &mut Self::Receiver,
-        ) -> impl Future<Output = Option<Delivered>> + Send + '_ {
-            receiver.recv()
-        }
-        fn spawn<F: Future<Output = ()> + Send + 'static>(future: F) {
-            bach::task::spawn(future);
+impl<R: Runtime> TaskSystem<R> {
+    /// A system with no running reducers, loading programs from `programs`.
+    #[must_use]
+    pub fn new(programs: Arc<dyn ProgramStore>) -> Self {
+        Self {
+            reducers: Arc::new(Mutex::new(HashMap::new())),
+            programs,
         }
     }
 }
 
-/// [`TaskSystem`] — the in-memory [`System`](super::System), generic over its [`Runtime`](super::Runtime).
-mod task {
-    use super::runtime::Runtime;
-    use super::{System, SystemError};
-    use crate::{
-        Deliver, Delivered, Outcome, ProgramHash, ProgramStore, Reducer, ReducerId, Request,
-        deliver_contract,
-    };
-    use async_trait::async_trait;
-    use std::collections::HashMap;
-    use std::sync::{Arc, Mutex};
-
-    /// The in-memory system: each reducer an async task on the runtime `R`, draining a channel mailbox. It
-    /// holds the program store and loads a spawned reducer's program inside that reducer's own task.
-    pub struct TaskSystem<R: Runtime> {
-        reducers: Arc<Mutex<HashMap<ReducerId, R::Sender>>>,
-        programs: Arc<dyn ProgramStore>,
-    }
-
-    impl<R: Runtime> TaskSystem<R> {
-        /// A system with no running reducers, loading programs from `programs`.
-        #[must_use]
-        pub fn new(programs: Arc<dyn ProgramStore>) -> Self {
-            Self {
-                reducers: Arc::new(Mutex::new(HashMap::new())),
-                programs,
-            }
-        }
-    }
-
-    #[async_trait]
-    impl<R: Runtime> System for TaskSystem<R> {
-        async fn spawn(&self, id: ReducerId, program: ProgramHash) -> Result<(), SystemError> {
-            let (sender, mut inbox) = R::channel();
-            self.reducers
-                .lock()
-                .expect("reducers lock")
-                .insert(id, sender);
-            let reducers = Arc::clone(&self.reducers);
-            let programs = Arc::clone(&self.programs);
-            R::spawn(async move {
-                // Reclaim the mailbox on any exit — loop end, break, a failed load, or an unwinding crash.
-                let _guard = DeregisterOnDrop {
-                    reducers: Arc::clone(&reducers),
-                    id,
-                };
-                // Load the program inside the reducer's own task, so a slow load blocks no one.
-                let Some(mut reducer) = programs.spawn(program).await else {
-                    return;
-                };
-                while let Some(event) = R::recv(&mut inbox).await {
-                    let (requests, outcome) = fold(&mut reducer, event).await;
-                    for request in requests {
-                        if request.id == deliver_contract()
-                            && let Some(deliver) = Deliver::decode(&request.payload)
-                        {
-                            let peer = reducers
-                                .lock()
-                                .expect("reducers lock")
-                                .get(&deliver.target)
-                                .cloned();
-                            if let Some(peer) = peer {
-                                R::send(&peer, deliver.event);
-                            }
+#[async_trait]
+impl<R: Runtime> System for TaskSystem<R> {
+    async fn spawn(&self, id: ReducerId, program: ProgramHash) -> Result<(), SystemError> {
+        let (sender, mut inbox) = R::channel();
+        self.reducers
+            .lock()
+            .expect("reducers lock")
+            .insert(id, sender);
+        let reducers = Arc::clone(&self.reducers);
+        let programs = Arc::clone(&self.programs);
+        R::spawn(async move {
+            // Reclaim the mailbox on any exit — loop end, break, a failed load, or an unwinding crash.
+            let _guard = DeregisterOnDrop {
+                reducers: Arc::clone(&reducers),
+                id,
+            };
+            // Load the program inside the reducer's own task, so a slow load blocks no one.
+            let Some(mut reducer) = programs.spawn(program).await else {
+                return;
+            };
+            while let Some(event) = R::recv(&mut inbox).await {
+                let (requests, outcome) = fold(&mut reducer, event).await;
+                for request in requests {
+                    if request.id == deliver_contract()
+                        && let Some(deliver) = Deliver::decode(&request.payload)
+                    {
+                        let peer = reducers
+                            .lock()
+                            .expect("reducers lock")
+                            .get(&deliver.target)
+                            .cloned();
+                        if let Some(peer) = peer {
+                            R::send(&peer, deliver.event);
                         }
                     }
-                    if let Outcome::Break { .. } = outcome {
-                        break;
-                    }
                 }
-            });
-            Ok(())
-        }
-
-        async fn deliver(&self, target: ReducerId, event: Delivered) -> Result<bool, SystemError> {
-            let sender = self
-                .reducers
-                .lock()
-                .expect("reducers lock")
-                .get(&target)
-                .cloned();
-            Ok(match sender {
-                Some(sender) => R::send(&sender, event),
-                None => false,
-            })
-        }
-
-        async fn contains(&self, id: ReducerId) -> Result<bool, SystemError> {
-            Ok(self
-                .reducers
-                .lock()
-                .expect("reducers lock")
-                .contains_key(&id))
-        }
+                if let Outcome::Break { .. } = outcome {
+                    break;
+                }
+            }
+        });
+        Ok(())
     }
 
-    /// Fold one delivered event through a reducer's matching entry point.
-    async fn fold(reducer: &mut Box<dyn Reducer>, event: Delivered) -> (Vec<Request>, Outcome) {
-        match event {
-            Delivered::Message(message) => reducer.on_message(message).await,
-            Delivered::Response(response) => reducer.on_response(response).await,
-            Delivered::Notification(notification) => reducer.on_notification(notification).await,
-        }
+    async fn deliver(&self, target: ReducerId, event: Delivered) -> Result<bool, SystemError> {
+        let sender = self
+            .reducers
+            .lock()
+            .expect("reducers lock")
+            .get(&target)
+            .cloned();
+        Ok(match sender {
+            Some(sender) => R::send(&sender, event),
+            None => false,
+        })
     }
 
-    /// Removes a reducer's mailbox from the system's map when dropped — so a reducer whose task ends any way,
-    /// including an unwinding crash, leaves no entry behind.
-    struct DeregisterOnDrop<S> {
-        reducers: Arc<Mutex<HashMap<ReducerId, S>>>,
-        id: ReducerId,
+    async fn contains(&self, id: ReducerId) -> Result<bool, SystemError> {
+        Ok(self
+            .reducers
+            .lock()
+            .expect("reducers lock")
+            .contains_key(&id))
     }
+}
 
-    impl<S> Drop for DeregisterOnDrop<S> {
-        fn drop(&mut self) {
-            self.reducers
-                .lock()
-                .expect("reducers lock")
-                .remove(&self.id);
-        }
+/// Fold one delivered event through a reducer's matching entry point.
+async fn fold(reducer: &mut Box<dyn Reducer>, event: Delivered) -> (Vec<Request>, Outcome) {
+    match event {
+        Delivered::Message(message) => reducer.on_message(message).await,
+        Delivered::Response(response) => reducer.on_response(response).await,
+        Delivered::Notification(notification) => reducer.on_notification(notification).await,
+    }
+}
+
+/// Removes a reducer's mailbox from the system's map when dropped — so a reducer whose task ends any way,
+/// including an unwinding crash, leaves no entry behind.
+struct DeregisterOnDrop<S> {
+    reducers: Arc<Mutex<HashMap<ReducerId, S>>>,
+    id: ReducerId,
+}
+
+impl<S> Drop for DeregisterOnDrop<S> {
+    fn drop(&mut self) {
+        self.reducers
+            .lock()
+            .expect("reducers lock")
+            .remove(&self.id);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{BachRuntime, System, TaskSystem, TokioRuntime};
+    use super::{System, TaskSystem};
     use crate::{
-        Bytes, ContractId, Deliver, Delivered, Hash, HostId, Message, Notification, Origin,
-        Outcome, ProgramHash, Reducer, ReducerId, Request, Response,
+        BachRuntime, Bytes, ContractId, Deliver, Delivered, Hash, HostId, Message, Notification,
+        Origin, Outcome, ProgramHash, Reducer, ReducerId, Request, Response, TokioRuntime,
     };
     use std::sync::Arc;
 
