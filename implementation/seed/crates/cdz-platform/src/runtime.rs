@@ -5,29 +5,19 @@
 //! [`EventRegistry`]). This is that core for the native, in-memory build — before wasm loading, a reducer
 //! is any [`Reducer`] value held in a map by its [`ReducerId`].
 //!
-//! Two primitives live here. **Routing** ([`route`](Runtime::route)) is the lookup on an emitted effect:
+//! Three primitives live here. **Routing** ([`route`](Runtime::route)) is the lookup on an emitted effect:
 //! the [`ContractId`] resolves to the [`ProgramHash`] the kernel spawns that contract's event reducer from.
 //! **Running** ([`run`](Runtime::run)) folds an event through a reducer's matching entry point and returns
-//! what it emitted. What the runtime does with those emitted requests — above all carrying out `deliver`,
-//! the one privileged primitive that injects an event into another reducer's log — is the next slice; this
-//! establishes the store and the two primitives it builds on.
+//! what it emitted. **Carrying out** ([`carry_out`](Runtime::carry_out)) recognizes a `deliver` request —
+//! the one privileged primitive that injects an event into another reducer's log (§4) — and runs its
+//! target. Wiring these into the full dispatch loop (spawning the event reducer per event, feeding its
+//! emitted requests back) is a later slice.
 
 use crate::{
-    ContractId, EventRegistry, Message, Notification, Outcome, ProgramHash, Reducer, ReducerId,
-    Request, Response,
+    ContractId, Deliver, Delivered, EventRegistry, Outcome, ProgramHash, Reducer, ReducerId,
+    Request, deliver_contract,
 };
 use std::collections::HashMap;
-
-/// An event delivered to a reducer, selecting the entry point it folds through: the three kinds an ordinary
-/// [`Reducer`] receives. The runtime dispatches each to `on_message` / `on_response` / `on_notification`.
-pub enum Delivered {
-    /// Deliver to `on_message` — an effect performed on the reducer.
-    Message(Message),
-    /// Deliver to `on_response` — a reply to a request the reducer performed.
-    Response(Response),
-    /// Deliver to `on_notification` — a platform control-plane event.
-    Notification(Notification),
-}
 
 /// The in-memory runtime: the set of running reducers, keyed by [`ReducerId`], plus the [`EventRegistry`]
 /// that says which program a contract's event reducer is spawned from. It runs reducer steps and routes
@@ -90,14 +80,27 @@ impl Runtime {
             Delivered::Notification(notification) => reducer.on_notification(notification).await,
         })
     }
+
+    /// Carry out an emitted request if it is a **deliver** — the routing act (§4): recognize the built-in
+    /// [`deliver_contract`], decode the [`Deliver`] envelope, and run the target with the delivered event.
+    /// Returns the target's result, or `None` if the request is not a deliver, its envelope is malformed, or
+    /// no reducer is registered under the target. (Only the event reducer the [`EventRegistry`] names may
+    /// legitimately emit a deliver; enforcing that privilege is the kernel's, above this method.)
+    pub async fn carry_out(&mut self, request: Request) -> Option<(Vec<Request>, Outcome)> {
+        if request.id != deliver_contract() {
+            return None;
+        }
+        let envelope = Deliver::decode(&request.payload)?;
+        self.run(envelope.target, envelope.event).await
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Delivered, Runtime};
+    use super::Runtime;
     use crate::{
-        Bytes, ContractId, EventRegistry, Hash, HostId, Message, Notification, Origin, Outcome,
-        ProgramHash, Reducer, ReducerId, Request, Response,
+        Bytes, ContractId, Deliver, Delivered, EventRegistry, Hash, HostId, Message, Notification,
+        Origin, Outcome, ProgramHash, Reducer, ReducerId, Request, Response,
     };
 
     fn cid(tag: &[u8]) -> ContractId {
@@ -238,5 +241,43 @@ mod tests {
             )
             .await;
         assert!(out.is_none());
+    }
+
+    #[tokio::test]
+    async fn carry_out_delivers_a_deliver_request_to_its_target() {
+        let mut rt = runtime();
+        let target = rid(b"probe");
+        rt.register(target, Box::new(Probe));
+        // A deliver request (as an event reducer would emit) that injects a message into the target's log.
+        let request = Deliver {
+            target,
+            event: Delivered::Message(Message {
+                id: cid(b"http.get"),
+                payload: Bytes::from_static(b"x"),
+                from: origin(),
+                continuation_token: Bytes::from_static(b"t"),
+            }),
+        }
+        .into_request();
+        let (out, _) = rt
+            .carry_out(request)
+            .await
+            .expect("delivered to the target");
+        // It reached the target's on_message entry point.
+        assert_eq!(out[0].id, cid(b"on_message"));
+    }
+
+    #[tokio::test]
+    async fn carry_out_ignores_a_non_deliver_request() {
+        let mut rt = runtime();
+        rt.register(rid(b"probe"), Box::new(Probe));
+        // A request against some other contract is not a deliver — the runtime does not carry it out.
+        let not_a_deliver = Request {
+            id: cid(b"some.contract"),
+            payload: Bytes::from_static(b""),
+            continuation_token: Bytes::from_static(b""),
+            deadline: None,
+        };
+        assert!(rt.carry_out(not_a_deliver).await.is_none());
     }
 }

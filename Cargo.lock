@@ -3252,6 +3252,7 @@ name = "xtask"
 version = "0.0.0"
 dependencies = [
  "blake3",
+ "cadenza-ast",
  "cdz-rust-render",
  "clap",
  "prettyplease",
