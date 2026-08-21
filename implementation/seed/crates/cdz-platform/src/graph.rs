@@ -3,17 +3,22 @@
 //!
 //! Every relationship between reducers the system reasons about is an edge in one directed graph over the
 //! active reducer set, labelled by an [`EdgeKind`]. The spawn tree is the [`EdgeKind::spawn`] edges (each a
-//! `child -> parent` link); other relationships — a supervision subscription, a capability grant, a
-//! federation trust link — are simply other edge kinds over the same nodes. Because an edge kind is a hash,
-//! a new relationship is a new hash a consumer mints, needing no change to this trait or its backends: the
-//! graph stores and queries edges without knowing what any kind *means*, and the meaning lives with the
-//! consumer that mints the kind.
+//! `child -> parent` link); a supervision subscription is a [`watch_exit`](EdgeKind::watch_exit) edge; and a
+//! **handler chain** is a set of weighted `owner -> handler` edges whose kind *is the contract-id* it
+//! answers ([`for_contract`](EdgeKind::for_contract)) — so the whole routing substrate is one structure, not
+//! a spawn tree plus a separate registry. Other relationships — a capability grant, a federation trust link
+//! — are simply more edge kinds over the same nodes. Because an edge kind is a hash, a new relationship is a
+//! new hash a consumer mints, needing no change to this trait or its backends: the graph stores and queries
+//! edges without knowing what any kind *means*, and the meaning lives with the consumer that mints the kind.
+//! An edge carries a **weight**, so a kind whose edges are ordered (a handler chain) comes back in order,
+//! while unweighted edges (the spawn tree, a subscription) order by id.
 //!
-//! Together with the handler chains ([`HandlerRegistry`](crate::HandlerRegistry)), the spawn edges are the
-//! **routing substrate** the kernel maintains as sessions spawn: the system reducer walks a reducer's
-//! [`ancestors`](ReducerGraph::ancestors) to assemble a handler chain across generations — own segment
-//! first, then parent's, then grandparents' — and to reason about authority down the tree, since a child's
-//! effects pass through its ancestors' middleware (§5).
+//! This is the **routing substrate** the kernel maintains as sessions register handlers and spawn: the
+//! system reducer [`resolve`](ReducerGraph::resolve)s a contract to the chain that answers it, and walks a
+//! reducer's [`ancestors`](ReducerGraph::ancestors) to reason about authority down the tree, since a child's
+//! effects pass through its ancestors' middleware (§5). The tag byte of a hash keeps the kinds apart: a
+//! contract-tagged edge kind is a handler chain, so [`contracts_for`](ReducerGraph::contracts_for) reads a
+//! reducer's contract-tagged in-edges without confusing them with the structural spawn/watch-exit kinds.
 //!
 //! It holds only the **active set** — the reducers currently alive. A node is added when it spawns and
 //! removed when it terminates ([`remove`](ReducerGraph::remove), which drops every edge incident to it), so
@@ -28,7 +33,7 @@
 //! the system records an edge as each reducer spawns and drops a node when it ends, concurrently with
 //! reads. Queries return owned `Vec`s (not borrowing iterators) so they cross the async trait boundary.
 
-use crate::{Hash, HashTag, ReducerId};
+use crate::{ContractId, Hash, HashTag, ReducerId};
 use async_trait::async_trait;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Mutex;
@@ -79,6 +84,17 @@ impl EdgeKind {
             b"cdz-platform.edge.watch-exit",
         ))
     }
+
+    /// The edge kind for a contract's handler chain: the contract-id *is* the edge kind. An `owner ->
+    /// handler` edge of this kind, ordered by weight, is one link of the chain that answers `contract` for
+    /// `owner` (§3/§4) — the handler chains and the spawn tree are the one routing substrate. Since a
+    /// contract-id is [`Contract`](HashTag::Contract)-tagged, these kinds are distinguishable from the
+    /// structural [`spawn`](Self::spawn) / [`watch_exit`](Self::watch_exit) kinds, which
+    /// [`contracts_for`](ReducerGraph::contracts_for) relies on.
+    #[must_use]
+    pub fn for_contract(contract: ContractId) -> Self {
+        Self(contract.hash())
+    }
 }
 
 /// A direction to read a node's edges of a kind: its **out**-edges (`node -> others`) or its **in**-edges
@@ -91,9 +107,11 @@ pub enum Dir {
     In,
 }
 
-/// A directed graph over the active reducer set with edges labelled by [`EdgeKind`]. The five core
-/// operations (`insert` / `link` / `remove` / `contains` / `neighbors`) are what a backend implements;
-/// [`reach`](Self::reach) and the spawn-tree conveniences are derived over them.
+/// A directed graph over the active reducer set with edges labelled by [`EdgeKind`]. The core operations
+/// (`insert` / `link` / `set_edges` / `remove` / `contains` / `neighbors` / `in_kinds`) are what a backend
+/// implements; [`reach`](Self::reach), the spawn-tree conveniences, and the handler-chain conveniences
+/// ([`resolve`](Self::resolve) / [`set_chain`](Self::set_chain) / [`contracts_for`](Self::contracts_for))
+/// are derived over them.
 #[async_trait]
 pub trait ReducerGraph: Send + Sync {
     /// Add `node` to the active set with no edges, returning `false` if it is already present.
@@ -112,9 +130,27 @@ pub trait ReducerGraph: Send + Sync {
     /// Whether `node` is in the active set.
     async fn contains(&self, node: ReducerId) -> bool;
 
-    /// The direct neighbours of `node` along `kind` edges in direction `dir`, in ascending id order. Empty
-    /// for an unknown node or one with no such edges.
+    /// The direct neighbours of `node` along `kind` edges in direction `dir`, in **weight then id** order —
+    /// so a weighted chain comes back in its chain order, and unweighted edges (all weight 0) in ascending
+    /// id order. Empty for an unknown node or one with no such edges.
     async fn neighbors(&self, node: ReducerId, kind: EdgeKind, dir: Dir) -> Vec<ReducerId>;
+
+    /// Replace all `kind` out-edges of `from` with `targets`, in order — each `targets[i]` linked at weight
+    /// `i`, so [`neighbors(from, kind, Out)`](Self::neighbors) returns them in exactly this order. Returns
+    /// the prior ordered targets (empty if none). An empty `targets` clears the kind's edges, so a kind is
+    /// either an ordered non-empty chain or absent — the atomic whole-chain replace `set-handler` needs
+    /// (§7). `from` must be in the active set (else it is a no-op returning empty); a target not yet in the
+    /// active set is still recorded as an out-edge, but gains no reverse edge until it joins.
+    async fn set_edges(
+        &self,
+        from: ReducerId,
+        kind: EdgeKind,
+        targets: Vec<ReducerId>,
+    ) -> Vec<ReducerId>;
+
+    /// The distinct kinds of `node`'s in-edges, ascending — what relationships point *at* it.
+    /// [`contracts_for`](Self::contracts_for) filters these to the contract-tagged ones.
+    async fn in_kinds(&self, node: ReducerId) -> Vec<EdgeKind>;
 
     /// The nodes reachable from `node` by following `kind` edges in direction `dir`, nearest first and not
     /// including `node` itself. A breadth-first walk carrying a visited set, so a cycle — which a
@@ -175,16 +211,53 @@ pub trait ReducerGraph: Send + Sync {
         self.neighbors(reducer, EdgeKind::watch_exit(), Dir::In)
             .await
     }
+
+    /// The handler chain that answers `contract` for `reducer` — its `owner -> handler`
+    /// [`for_contract`](EdgeKind::for_contract) out-edges in chain order (§3/§4). Empty if `reducer`
+    /// registers no handler for `contract`, which the system reducer reports as `MissingHandler`.
+    async fn resolve(&self, reducer: ReducerId, contract: ContractId) -> Vec<ReducerId> {
+        self.neighbors(reducer, EdgeKind::for_contract(contract), Dir::Out)
+            .await
+    }
+
+    /// Install or replace the whole handler `chain` for `contract` on `reducer`, returning the prior chain
+    /// (empty if none) — the `set-handler` effect (§7). An empty `chain` removes the registration.
+    async fn set_chain(
+        &self,
+        reducer: ReducerId,
+        contract: ContractId,
+        chain: Vec<ReducerId>,
+    ) -> Vec<ReducerId> {
+        self.set_edges(reducer, EdgeKind::for_contract(contract), chain)
+            .await
+    }
+
+    /// The contracts `reducer` fronts a handler for — the reverse lookup behind `list-handlers` (§7): its
+    /// contract-tagged in-edge kinds, since a reducer in a chain for `contract` has an in-edge of kind
+    /// [`for_contract(contract)`](EdgeKind::for_contract). Returns just the contract-ids (the surface a peer
+    /// may see), never the chains behind them, ascending and deduplicated (a reducer wired into a contract
+    /// more than once yields it once).
+    async fn contracts_for(&self, reducer: ReducerId) -> Vec<ContractId> {
+        self.in_kinds(reducer)
+            .await
+            .into_iter()
+            .filter(|kind| kind.hash().tag() == Some(HashTag::Contract))
+            .map(|kind| ContractId::from_hash(kind.hash()))
+            .collect()
+    }
 }
 
-/// One node in the active graph: its edges grouped by kind, in each direction. A `BTreeSet` per
-/// `(kind, direction)` keeps neighbours in ascending id order and deduplicates.
+/// One node in the active graph: its edges grouped by kind, in each direction. Each edge carries a `weight`,
+/// and a `BTreeSet` of `(weight, peer)` per `(kind, direction)` keeps neighbours in weight-then-id order and
+/// deduplicates. Unweighted edges (from [`link`](ReducerGraph::link)) use weight 0, so they order by id as
+/// before; a chain (from [`set_edges`](ReducerGraph::set_edges)) uses positional weights, so it keeps its
+/// order — the same reducer at two positions is two distinct `(weight, peer)` entries.
 #[derive(Debug, Default)]
 struct Node {
-    /// Edges leaving this node: for each kind, the nodes it points to.
-    out: HashMap<EdgeKind, BTreeSet<ReducerId>>,
-    /// Edges entering this node: for each kind, the nodes that point to it.
-    into: HashMap<EdgeKind, BTreeSet<ReducerId>>,
+    /// Edges leaving this node: for each kind, the `(weight, target)` it points to.
+    out: HashMap<EdgeKind, BTreeSet<(u32, ReducerId)>>,
+    /// Edges entering this node: for each kind, the `(weight, source)` that point to it.
+    into: HashMap<EdgeKind, BTreeSet<(u32, ReducerId)>>,
 }
 
 /// An in-memory [`ReducerGraph`] — the active graph as a local adjacency map. For tests and single-process
@@ -219,13 +292,14 @@ impl ReducerGraph for InMemoryReducerGraph {
         if !nodes.contains_key(&from) || !nodes.contains_key(&to) {
             return false;
         }
+        // An unweighted edge: weight 0, so `neighbors` orders it by id among its kind.
         let added = nodes
             .get_mut(&from)
             .expect("from present, just checked")
             .out
             .entry(kind)
             .or_default()
-            .insert(to);
+            .insert((0, to));
         if added {
             nodes
                 .get_mut(&to)
@@ -233,7 +307,7 @@ impl ReducerGraph for InMemoryReducerGraph {
                 .into
                 .entry(kind)
                 .or_default()
-                .insert(from);
+                .insert((0, from));
         }
         added
     }
@@ -243,23 +317,25 @@ impl ReducerGraph for InMemoryReducerGraph {
         let Some(removed) = nodes.remove(&node) else {
             return false;
         };
-        // Drop the reverse of every out-edge: for each `node -> to`, remove `node` from `to`'s in-edges.
+        // Drop the reverse of every out-edge: for each `node -[w]-> to`, remove `(w, node)` from `to`'s
+        // in-edges of that kind.
         for (kind, tos) in &removed.out {
-            for to in tos {
+            for (weight, to) in tos {
                 if let Some(target) = nodes.get_mut(to)
                     && let Some(set) = target.into.get_mut(kind)
                 {
-                    set.remove(&node);
+                    set.remove(&(*weight, node));
                 }
             }
         }
-        // Drop the reverse of every in-edge: for each `from -> node`, remove `node` from `from`'s out-edges.
+        // Drop the reverse of every in-edge: for each `from -[w]-> node`, remove `(w, node)` from `from`'s
+        // out-edges of that kind.
         for (kind, froms) in &removed.into {
-            for from in froms {
+            for (weight, from) in froms {
                 if let Some(source) = nodes.get_mut(from)
                     && let Some(set) = source.out.get_mut(kind)
                 {
-                    set.remove(&node);
+                    set.remove(&(*weight, node));
                 }
             }
         }
@@ -279,9 +355,65 @@ impl ReducerGraph for InMemoryReducerGraph {
             Dir::Out => &n.out,
             Dir::In => &n.into,
         };
+        // The set is ordered by `(weight, peer)`, so this yields weight-then-id order; drop the weight.
         edges
             .get(&kind)
-            .map(|set| set.iter().copied().collect())
+            .map(|set| set.iter().map(|(_, peer)| *peer).collect())
+            .unwrap_or_default()
+    }
+
+    async fn set_edges(
+        &self,
+        from: ReducerId,
+        kind: EdgeKind,
+        targets: Vec<ReducerId>,
+    ) -> Vec<ReducerId> {
+        let mut nodes = self.nodes.lock().expect("graph lock");
+        if !nodes.contains_key(&from) {
+            return Vec::new();
+        }
+        // Take the prior edges of this kind out of `from` (weight-ordered), and drop their reverse edges.
+        let prior: Vec<(u32, ReducerId)> = nodes
+            .get_mut(&from)
+            .expect("from present, just checked")
+            .out
+            .remove(&kind)
+            .map(|set| set.into_iter().collect())
+            .unwrap_or_default();
+        for (weight, target) in &prior {
+            if let Some(t) = nodes.get_mut(target)
+                && let Some(set) = t.into.get_mut(&kind)
+            {
+                set.remove(&(*weight, from));
+            }
+        }
+        // Link the new chain, each target at its position; a target present in the active set also gets the
+        // reverse edge (so `contracts_for` and `remove` see it).
+        for (i, target) in targets.iter().enumerate() {
+            let weight = i as u32;
+            nodes
+                .get_mut(&from)
+                .expect("from present, just checked")
+                .out
+                .entry(kind)
+                .or_default()
+                .insert((weight, *target));
+            if let Some(t) = nodes.get_mut(target) {
+                t.into.entry(kind).or_default().insert((weight, from));
+            }
+        }
+        prior.into_iter().map(|(_, peer)| peer).collect()
+    }
+
+    async fn in_kinds(&self, node: ReducerId) -> Vec<EdgeKind> {
+        let nodes = self.nodes.lock().expect("graph lock");
+        nodes
+            .get(&node)
+            .map(|n| {
+                let mut kinds: Vec<EdgeKind> = n.into.keys().copied().collect();
+                kinds.sort_unstable();
+                kinds
+            })
             .unwrap_or_default()
     }
 }
@@ -289,11 +421,15 @@ impl ReducerGraph for InMemoryReducerGraph {
 #[cfg(test)]
 mod tests {
     use super::{Dir, EdgeKind, InMemoryReducerGraph, ReducerGraph};
-    use crate::{Hash, HashTag, ReducerId};
+    use crate::{ContractId, Hash, HashTag, ReducerId};
 
     // Distinct reducer ids.
     fn r(tag: &str) -> ReducerId {
         ReducerId::of(tag.as_bytes())
+    }
+    // Distinct contract-ids (each a valid Contract-tagged edge kind).
+    fn c(tag: &str) -> ContractId {
+        ContractId::of(tag.as_bytes())
     }
 
     // Link a spawn edge `child -> parent`, the shape the system establishes at each spawn.
@@ -456,5 +592,92 @@ mod tests {
         assert_eq!(g.watchers(r("parent")).await, vec![r("child")]);
         // the spawn edge is untouched by the watch links.
         assert_eq!(g.parent(r("child")).await, Some(r("parent")));
+    }
+
+    #[tokio::test]
+    async fn set_chain_resolves_in_order_and_replace_returns_prior() {
+        let g = InMemoryReducerGraph::new();
+        for id in ["owner", "authz", "rate-limit", "edge"] {
+            g.insert(r(id)).await;
+        }
+        let http = c("http.get");
+        // A fresh chain: authz wraps rate-limit wraps the edge handler. Nothing was there before.
+        assert!(
+            g.set_chain(
+                r("owner"),
+                http,
+                vec![r("authz"), r("rate-limit"), r("edge")]
+            )
+            .await
+            .is_empty()
+        );
+        // resolve returns the chain in exactly the order it was set — the weights preserve it, not id order.
+        assert_eq!(
+            g.resolve(r("owner"), http).await,
+            vec![r("authz"), r("rate-limit"), r("edge")]
+        );
+        // Replacing returns the prior chain and the new one wins entirely (no merge).
+        let prior = g
+            .set_chain(r("owner"), http, vec![r("authz"), r("edge")])
+            .await;
+        assert_eq!(prior, vec![r("authz"), r("rate-limit"), r("edge")]);
+        assert_eq!(
+            g.resolve(r("owner"), http).await,
+            vec![r("authz"), r("edge")]
+        );
+        // An empty chain removes the registration, returning the prior chain; then resolve is empty.
+        assert_eq!(
+            g.set_chain(r("owner"), http, Vec::new()).await,
+            vec![r("authz"), r("edge")]
+        );
+        assert!(g.resolve(r("owner"), http).await.is_empty());
+        // A contract with no handler resolves empty.
+        assert!(g.resolve(r("owner"), c("nobody-answers")).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn contracts_for_reads_contract_tagged_in_edges_not_structural_ones() {
+        let g = InMemoryReducerGraph::new();
+        for id in ["owner", "authz", "edge"] {
+            g.insert(r(id)).await;
+        }
+        // authz is middleware in two contracts' chains on the owner; edge only in one.
+        g.set_chain(r("owner"), c("http.get"), vec![r("authz"), r("edge")])
+            .await;
+        g.set_chain(r("owner"), c("http.post"), vec![r("authz")])
+            .await;
+        // authz also sits under the owner in the spawn tree and is watched by it — structural in-edges that
+        // must NOT show up as contracts.
+        g.link(r("authz"), r("owner"), EdgeKind::spawn()).await;
+        g.link(r("owner"), r("authz"), EdgeKind::watch_exit()).await;
+
+        let mut contracts = g.contracts_for(r("authz")).await;
+        contracts.sort_unstable();
+        let mut expected = vec![c("http.get"), c("http.post")];
+        expected.sort_unstable();
+        assert_eq!(
+            contracts, expected,
+            "only the contract-tagged in-edge kinds"
+        );
+        // edge fronts only one contract; a reducer wired nowhere fronts none.
+        assert_eq!(g.contracts_for(r("edge")).await, vec![c("http.get")]);
+        assert!(g.contracts_for(r("owner")).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_handler_can_appear_twice_in_one_chain() {
+        let g = InMemoryReducerGraph::new();
+        for id in ["owner", "authz", "mid"] {
+            g.insert(r(id)).await;
+        }
+        let contract = c("loop.contract");
+        // The same reducer at two positions is kept (distinct weights), and its contract still lists once.
+        g.set_chain(r("owner"), contract, vec![r("authz"), r("mid"), r("authz")])
+            .await;
+        assert_eq!(
+            g.resolve(r("owner"), contract).await,
+            vec![r("authz"), r("mid"), r("authz")]
+        );
+        assert_eq!(g.contracts_for(r("authz")).await, vec![contract]);
     }
 }
