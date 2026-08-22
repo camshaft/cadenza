@@ -10,20 +10,24 @@
 //! — into one ordered log, then run a checker over that log. Recording never alters a run; it only
 //! observes it.
 //!
-//! This slice lands the store-observation foundation:
+//! Landed so far:
 //! - [`ObservationLog`] — the one ordered, cheaply-clonable log of [`Record`]s (who / what / when).
 //! - [`RecordingKvStore`] and [`RecordingBlobStore`] — decorators that log every store call and defer
 //!   to the wrapped backend, so a run can be observed by swapping in a recording store (the stores are
 //!   swappable trait objects by design, §7/§8).
+//! - [`RecordingProgramStore`] and [`RecordingReducer`] — the event tap: wrap the program store handed
+//!   to the kernel, and every reducer it instantiates records the events it folds, the requests it
+//!   emits, and its close (§3/§4/§10) — capturing the whole system's event flow with no kernel change.
 //!
-//! Still to come, in later slices: the event tap at the kernel's delivery choke point (recording every
-//! delivered and emitted event with its emitter), the driver that runs a reducer set to quiescence, and
-//! the checker ABI (a wasm program that reads the log and asserts).
+//! Still to come: the driver that runs a reducer set to quiescence, and the checker ABI (a wasm program
+//! that reads the log and asserts).
 
+mod event;
 mod log;
 mod store;
 
-pub use log::{BlobOp, Entry, KvOp, ObservationLog, Record};
+pub use event::{RecordingProgramStore, RecordingReducer};
+pub use log::{BlobOp, Entry, EventKind, EventOp, KvOp, ObservationLog, Record};
 pub use store::{RecordingBlobStore, RecordingKvStore};
 
 #[cfg(test)]
@@ -217,6 +221,234 @@ mod tests {
                 assert!(records.windows(2).all(|w| w[0].time_ns <= w[1].time_ns));
             }
             .group("observation-log")
+            .primary()
+            .spawn();
+        });
+    }
+}
+
+#[cfg(test)]
+mod event_tap_tests {
+    use super::{
+        Entry, EventKind, EventOp, ObservationLog, RecordingProgramStore, RecordingReducer,
+    };
+    use bytes::Bytes;
+    use cdz_platform::{
+        ContractId, HostId, Message, Notification, Origin, Outcome, ProgramHash, Reducer,
+        ReducerId, Request, Response, Spawned, spawned_contract,
+    };
+
+    /// A fixed clock — the event-tap tests assert on record order and content, not timestamps, so a
+    /// constant time is enough (seq gives the order regardless).
+    fn clock0() -> u64 {
+        0
+    }
+
+    /// A reducer that, on its first message, emits one effect against a contract and closes.
+    struct EmitAndClose {
+        contract: ContractId,
+    }
+    #[async_trait::async_trait]
+    impl Reducer for EmitAndClose {
+        async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
+            let request = Request {
+                id: self.contract,
+                payload: Bytes::from_static(b"effect"),
+                continuation_token: Bytes::from_static(b"k"),
+                deadline: None,
+            };
+            (
+                vec![request],
+                Outcome::Break {
+                    schema: ContractId::of(b"done"),
+                    reason: Bytes::from_static(b"emitted"),
+                },
+            )
+        }
+        async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+    }
+
+    /// A reducer that closes on its first message — a stand-in system reducer for the routed effect.
+    struct JustClose;
+    #[async_trait::async_trait]
+    impl Reducer for JustClose {
+        async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
+            (
+                Vec::new(),
+                Outcome::Break {
+                    schema: ContractId::of(b"shepherded"),
+                    reason: Bytes::new(),
+                },
+            )
+        }
+        async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_recording_reducer_logs_birth_delivered_emitted_and_close_attributed_to_its_learned_id()
+     {
+        let program = ProgramHash::of(b"p");
+        let me = ReducerId::of(b"self");
+        let parent = ReducerId::of(b"parent");
+        let host = HostId::of(b"node");
+        let log = ObservationLog::new();
+        let mut r = RecordingReducer::new(
+            Box::new(EmitAndClose {
+                contract: ContractId::of(b"eff"),
+            }),
+            program,
+            host,
+            log.clone(),
+            clock0,
+        );
+
+        // Birth first — the reducer learns its own id from it (§3), so even this record is attributed to
+        // the learned id, not the program.
+        r.on_notification(Spawned { id: me, parent }.into_notification())
+            .await;
+        // Then a message that makes it emit an effect and close.
+        let (_reqs, outcome) = r
+            .on_message(Message {
+                id: ContractId::of(b"go"),
+                payload: Bytes::from_static(b"x"),
+                from: Origin {
+                    reducer: ReducerId::of(b"caller"),
+                    host: HostId::of(b"other-node"),
+                },
+                continuation_token: Bytes::from_static(b"t"),
+            })
+            .await;
+        assert!(matches!(outcome, Outcome::Break { .. }));
+
+        let records = log.snapshot();
+        assert_eq!(records.len(), 4);
+        let expected_source = Origin { reducer: me, host };
+        assert!(
+            records.iter().all(|r| r.source == expected_source),
+            "every record attributed to the learned id on this host"
+        );
+        // 1) the birth notification.
+        assert!(matches!(
+            &records[0].entry,
+            Entry::Event(EventOp::Delivered { kind: EventKind::Notification, contract, .. })
+                if *contract == spawned_contract()
+        ));
+        // 2) the delivered message, carrying its emitter Origin.
+        assert!(matches!(
+            &records[1].entry,
+            Entry::Event(EventOp::Delivered { kind: EventKind::Message, from: Some(o), .. })
+                if o.reducer == ReducerId::of(b"caller")
+        ));
+        // 3) the emitted effect.
+        assert!(matches!(
+            &records[2].entry,
+            Entry::Event(EventOp::Emitted { contract, .. }) if *contract == ContractId::of(b"eff")
+        ));
+        // 4) the close, carrying the typed reason.
+        assert!(matches!(
+            &records[3].entry,
+            Entry::Event(EventOp::Closed { schema, .. }) if *schema == ContractId::of(b"done")
+        ));
+    }
+
+    #[test]
+    fn the_program_store_seam_captures_the_whole_systems_event_flow_under_bach() {
+        use bach::ext::*;
+        use cdz_platform::{
+            BachRuntime, InMemoryEventRegistry, InMemoryReducerGraph, Links, ReducerKind, Runtime,
+            Spawn, System, TaskSystem,
+        };
+        use std::sync::Arc;
+
+        bach::sim(|| {
+            async {
+                let log = ObservationLog::new();
+                let host = HostId::of(b"node");
+                let clock = BachRuntime::now as fn() -> u64;
+                let emitter = ReducerId::of(b"emitter");
+                let http = ContractId::of(b"http.get");
+
+                let mut store = cdz_platform::testing::program::Store::new();
+                store.register(ProgramHash::of(b"emitter"), move || {
+                    Box::new(EmitAndClose { contract: http })
+                });
+                store.register(ProgramHash::of(b"sys"), || Box::new(JustClose));
+
+                // Wrap the program store: every reducer the kernel instantiates through it — the emitter and
+                // the per-event system reducer it spawns to route the effect — is recorded.
+                let recording = RecordingProgramStore::new(store, host, log.clone(), clock);
+                let system = TaskSystem::<BachRuntime>::new(
+                    Arc::new(recording),
+                    Arc::new(InMemoryReducerGraph::new()),
+                    Arc::new(InMemoryEventRegistry::new(ProgramHash::of(b"sys"))),
+                    host,
+                );
+                system
+                    .spawn(Spawn {
+                        id: emitter,
+                        program: ProgramHash::of(b"emitter"),
+                        nonce: Bytes::from_static(b"nonce"),
+                        parent: emitter,
+                        kind: ReducerKind::Ordinary,
+                        links: Links::NONE,
+                    })
+                    .await
+                    .unwrap();
+                system
+                    .deliver(
+                        emitter,
+                        cdz_platform::Delivered::Message(Message {
+                            id: ContractId::of(b"go"),
+                            payload: Bytes::from_static(b"x"),
+                            from: Origin {
+                                reducer: ReducerId::of(b"caller"),
+                                host,
+                            },
+                            continuation_token: Bytes::from_static(b"t"),
+                        }),
+                    )
+                    .await
+                    .unwrap();
+                // Let the simulator route everything to quiescence (deterministic; no timers here).
+                bach::time::sleep(core::time::Duration::from_millis(1)).await;
+
+                let records = log.snapshot();
+                // The emitter recorded emitting the http.get effect and then closing.
+                assert!(
+                    records.iter().any(|r| matches!(&r.entry,
+                        Entry::Event(EventOp::Emitted { contract, .. }) if *contract == http)
+                        && r.source.reducer == emitter),
+                    "the emitter's effect was recorded"
+                );
+                assert!(
+                    records
+                        .iter()
+                        .any(|r| matches!(&r.entry, Entry::Event(EventOp::Closed { .. }))
+                            && r.source.reducer == emitter),
+                    "the emitter's close was recorded"
+                );
+                // The system reducer — spawned by the kernel through the SAME recording store — recorded
+                // receiving the routed effect as a message from the emitter. This proves the seam captures
+                // kernel-spawned reducers, not only the ones the harness spawns directly.
+                assert!(
+                    records.iter().any(|r| matches!(&r.entry,
+                        Entry::Event(EventOp::Delivered {
+                            kind: EventKind::Message, contract, from: Some(o), ..
+                        }) if *contract == http && o.reducer == emitter)),
+                    "the kernel-spawned system reducer's receipt of the routed effect was recorded"
+                );
+            }
+            .group("itest")
             .primary()
             .spawn();
         });
