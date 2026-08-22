@@ -1,0 +1,45 @@
+// The timer contract — the kernel's one timer primitive (design/cadenza-platform.md section 6). Time is not
+// an input to a fold; it is an event a reducer receives. `fire-after(duration)` is the ONLY timer primitive:
+// a reducer arms it, and the runtime later wakes the session by delivering a `Fired` event carrying the
+// recorded fire time. Absolute deadlines and crons are built on top (read `now`, compute the delay, arm
+// `fire-after`); the raw primitive knows only a relative duration. A native, system-owned reducer answers
+// this contract (the timer is entirely dependent on how the runtime models time), so — unlike a guest
+// reducer — it is never a wasm program; but its input and output are ordinary content-addressed values of
+// this schema, marshalled through the one canonical codec like every other contract.
+//
+// Like `deliver.cdz`, this file is the source of truth for the schema and is real Cadenza: `cargo xtask
+// codegen` validates it with the `cdz` binary and generates `src/contracts/timer.rs` (the type declarations,
+// as Cadenza-AST builder calls) from it, then wires `pub mod timer` into `src/contracts/mod.rs`. Re-run
+// `cargo xtask codegen` after editing; `cargo xtask codegen --check` fails if the generated file is stale.
+//
+// The arm and the fire both carry a single `UInt64`: a fire-after delay and a recorded fire time are both
+// non-negative, so the unsigned width is the intended leaf (operator decision 2026-08-22). The delay is in
+// NANOSECONDS. They cross as the value model's arbitrary-precision integer leaf
+// (`crate::contract_value::uint_leaf` / `read_uint`), which enforces the non-negative range on decode. There
+// is no correlation token in the value: an arm is an ordinary request, so the wake correlates back to the
+// arming reducer through the request's own standard continuation-token (operator review 2026-08-22), not a
+// bespoke field.
+
+// The envelope (the contract's input): arm a timer that fires `duration` NANOSECONDS from now.
+type Envelope =
+  | FireAfter(UInt64)
+
+// The event delivered to the arming reducer when the timer fires: the recorded fire time (the runtime's
+// clock at the moment it fired — the reducer never reads the clock itself, it only folds this).
+type Event =
+  | Fired(UInt64)
+
+// --- conformance proofs: a fully-literal value of each type, ascribed against the schema type ---
+def an-arm() -> Envelope = Envelope.FireAfter(5000)
+
+def a-fired() -> Event = Event.Fired(1724371200)
+
+@test
+def arm-conforms() =
+  match an-arm() with
+  | Envelope.FireAfter(d) => if d == 5000 then unit else trap("duration mismatch")
+
+@test
+def fired-conforms() =
+  match a-fired() with
+  | Event.Fired(t) => if t == 1724371200 then unit else trap("fired_time mismatch")

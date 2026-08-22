@@ -15,7 +15,8 @@
 //! a malformed value is a rejected value, never a panic.
 
 use crate::{Bytes, Hash};
-use cadenza_ast::ast::{Builder, Leaf, Struct, StructId};
+use cadenza_ast::ast::{Builder, Leaf, Radix, Struct, StructId};
+use num_bigint::BigInt;
 use std::sync::Arc;
 
 // --- builders ---
@@ -64,6 +65,19 @@ pub fn record(b: &mut Builder, fields: Vec<(&str, StructId)>) -> StructId {
 #[must_use]
 pub fn bytes_leaf(b: &mut Builder, bytes: &[u8]) -> StructId {
     b.atom_leaf(Leaf::Bytes(Arc::from(bytes)))
+}
+
+/// An unsigned-integer leaf carrying `value` — how a native Cadenza `UInt64` (and the narrower unsigned
+/// ints) field crosses in a contract value. The value model's integer is arbitrary-precision (`Leaf::Int`);
+/// the schema's declared type is what fixes the width and signedness, so this builder is width-agnostic and
+/// [`read_uint`] below enforces the non-negative range. Written in decimal (the base is display-only; it does
+/// not change the value).
+#[must_use]
+pub fn uint_leaf(b: &mut Builder, value: u64) -> StructId {
+    b.atom_leaf(Leaf::Int {
+        value: BigInt::from(value),
+        radix: Radix::Dec,
+    })
 }
 
 // --- readers (the exact inverses; total) ---
@@ -131,6 +145,19 @@ pub fn read_bytes(arenas: &cadenza_ast::ast::Arenas, id: StructId) -> Option<Byt
     }
 }
 
+/// The value of an integer leaf as a `u64`, or `None` if `id` is not an integer leaf or the value is
+/// negative or too large to fit `u64`. The inverse of [`uint_leaf`].
+#[must_use]
+pub fn read_uint(arenas: &cadenza_ast::ast::Arenas, id: StructId) -> Option<u64> {
+    match arenas.get(id) {
+        Struct::Atom(leaf) => match arenas.leaf(*leaf) {
+            Leaf::Int { value, .. } => u64::try_from(value).ok(),
+            _ => None,
+        },
+        Struct::List(_) => None,
+    }
+}
+
 /// A [`Hash`] read from a `Bytes` leaf of exactly `Hash::LEN` bytes, or `None`.
 #[must_use]
 pub fn read_hash(arenas: &cadenza_ast::ast::Arenas, id: StructId) -> Option<Hash> {
@@ -143,11 +170,11 @@ pub fn read_hash(arenas: &cadenza_ast::ast::Arenas, id: StructId) -> Option<Hash
 #[cfg(test)]
 mod tests {
     use super::{
-        as_bare_ctor, as_qctor, bare_ctor, bytes_leaf, qctor, read_bytes, read_hash, record,
-        record_field,
+        as_bare_ctor, as_qctor, bare_ctor, bytes_leaf, qctor, read_bytes, read_hash, read_uint,
+        record, record_field, uint_leaf,
     };
     use crate::{Hash, HashTag};
-    use cadenza_ast::ast::Builder;
+    use cadenza_ast::ast::{Builder, Leaf, Radix};
 
     // Build a value with `build`, finish the arena, and hand back `(arenas, root)` to read from.
     fn built(build: impl FnOnce(&mut Builder) -> super::StructId) -> cadenza_ast::ast::Arenas {
@@ -247,6 +274,28 @@ mod tests {
             read_bytes(&arenas, arenas.root).as_deref(),
             Some([0x00, 0xFF, 0x13, 0x37].as_slice())
         );
+    }
+
+    #[test]
+    fn unsigned_integers_round_trip_and_the_reader_enforces_range() {
+        // Unsigned values round-trip, including the full range up to u64::MAX.
+        for v in [0u64, 42, u64::MAX] {
+            let arenas = built(|b| uint_leaf(b, v));
+            assert_eq!(read_uint(&arenas, arenas.root), Some(v));
+        }
+        // The reader enforces the declared non-negative range: a negative value is not a valid u64.
+        let neg = built(|b| {
+            b.atom_leaf(Leaf::Int {
+                value: (-1).into(),
+                radix: Radix::Dec,
+            })
+        });
+        assert_eq!(read_uint(&neg, neg.root), None, "a negative is not a u64");
+        // A non-integer leaf (bytes) and a list are not a uint.
+        let bytes = built(|b| bytes_leaf(b, b"x"));
+        assert!(read_uint(&bytes, bytes.root).is_none());
+        let list = built(|b| qctor(b, "T", "C", vec![]));
+        assert!(read_uint(&list, list.root).is_none());
     }
 
     #[test]

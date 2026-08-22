@@ -33,6 +33,7 @@ mod runtime;
 mod spawned;
 mod str;
 mod system;
+mod timer;
 
 pub use blob_store::{BlobStore, InMemoryBlobStore};
 pub use contract::Contract;
@@ -52,6 +53,7 @@ pub use runtime::{Runtime, TokioRuntime};
 pub use spawned::{Spawned, spawned_contract};
 pub use str::Str;
 pub use system::{Links, ReducerKind, Spawn, System, SystemError, TaskSystem};
+pub use timer::{FireAfter, Fired, timer_contract};
 
 // Re-export the byte-buffer type the platform marshals through, so downstream code depends on the
 // platform's chosen `Bytes` (spec §12: every byte buffer is `bytes::Bytes`, never `Vec<u8>`).
