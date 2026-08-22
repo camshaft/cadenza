@@ -422,6 +422,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdz-platform-itest"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "bach",
+ "bytes",
+ "cdz-platform",
+ "futures-util",
+ "tokio",
+]
+
+[[package]]
 name = "cdz-rt"
 version = "0.0.0"
 
