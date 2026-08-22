@@ -8,7 +8,7 @@
 The Cadenza platform is a small, generic runtime for running programs that react to
 events. Its whole job is: accept an event into a log, run the current program for
 that log, authorize the requests the program makes, carry them out, and record the
-results back into the log as more events.
+results back as more events it reacts to.
 
 The platform is general. Acting as an agent harness — running the loops that drive AI
 agents — is one thing it does, but it is not specific to that: it is a substrate for any
@@ -98,15 +98,18 @@ hash equality, with no tolerant reader and no version range to match.
    purely by looking up a contract-id's handler chain (section 3). A new capability is a new
    contract plus something that answers it — never a runtime change.
 2. **Everything is an event.** Requests, results, messages, timers firing, a program
-   being replaced, a session closing — all are ordered, content-addressed events in a
-   log.
-3. **A program is a pure function of its log.** It reads state, reacts to one event, and
-   returns requests. All nondeterminism (a model's output, an HTTP response, the clock,
-   randomness) enters only as recorded result events. Replay re-reads the recorded
-   results; it never re-runs the outside world.
-4. **Reads are effects; writes are local.** A program only ever appends to its own log.
-   Reaching anything outside — another session, the network, the clock — is an effect
-   whose recorded result becomes part of the program's own history.
+   being replaced, a session closing — each is an event a reducer receives and reacts to,
+   one at a time, in the order it arrives.
+3. **A reducer is a pure function of its event and its state.** It reads its state, reacts
+   to one event, updates its state, and returns effects. Its state lives in a durable
+   key-value store that is itself persistent and recoverable — there is no separate
+   append-only log the state is rebuilt from. Nondeterminism (a model's output, an HTTP
+   response, the clock, randomness) enters only as the recorded result of an effect, which
+   the reducer folds into its state; recovery resumes from that durable state, it never
+   re-runs the outside world.
+4. **Reads are effects; writes are local.** A reducer only ever writes its own state (its
+   key-value store). Reaching anything outside — another session, the network, the clock —
+   is an effect whose recorded result lands as an event the reducer folds into that state.
 5. **Reacting to an appended event is the only way a program runs.** There is no polling
    loop. Delivering a message, a timer firing, a result landing — each is an append, and
    each append runs the program once and returns.
@@ -128,8 +131,9 @@ hash equality, with no tolerant reader and no version range to match.
 
 The kernel is tiny, and it is not the router. It is a **reducer-execution engine**: it runs
 a reducer step given `(reducer, event)`, schedules and interleaves those steps across
-sessions, keeps the deterministic event log, provides the direct-access backends (the
-key-value store, a reducer's own id, and the content-addressed store, section 8), and owns
+sessions, delivers each reducer its events in a deterministic order, provides the
+direct-access backends (the key-value store, a reducer's own id, and the content-addressed
+store, section 8), and owns
 the one piece of pending-future state — the durable `fire-after` timer (section 6). It reads
 no payload and matches no name.
 
@@ -138,7 +142,7 @@ supervising handlers, enforcing deadlines — none of it lives in the kernel. Ea
 of a **system reducer**: a wasm module, like every other reducer, instantiated **once per
 event** to shepherd that one effect (section 4). Because it is per-event there is no shared
 router state and no global chokepoint; because it is a reducer, its logic is content-addressed,
-swappable by hash, and replayed deterministically like any other reducer.
+swappable by hash, and run deterministically like any other reducer.
 
 Which system reducer governs an effect is a lookup. The kernel keeps a small **event-reducer
 override registry** mapping a contract-id to the system-reducer implementation that shepherds
@@ -155,7 +159,8 @@ thing at the bottom that is not itself an event reducer, and everything above it
 correct, root-installed system reducer to enforce the model.
 
 So the kernel's whole irreducible core is: execute a reducer step; schedule and interleave,
-carrying each response back to the reducer that emitted the request; keep the log; the direct
+carrying each response back to the reducer that emitted the request; deliver each reducer its
+events in order; the direct
 reducer-facing accesses with swappable backends (the key-value store, a reducer's own id, and
 the content-addressed store); the `fire-after` timer; the routing substrate it maintains as
 sessions register handlers and spawn — one **reducer graph** holding the spawn tree, the
@@ -212,16 +217,16 @@ enforcement is trustworthy rather than a matter of a parent's diligence.
 
 The one interface is shared, but a reducer plays one of two roles:
 
-- **Session reducers** are logged and replayable. Their state is a projection of an
-  append-only event log, and each fold is a pure function of `(event, state)` (principle
-  3). Agents, supervisors, the authorizer, a memory store — everything with durable,
-  auditable history — is a session reducer.
+- **Session reducers** are durable and deterministic. Their state lives in the persistent
+  key-value store, and each fold is a pure function of `(event, state)` (principle 3).
+  Agents, supervisors, the authorizer, a memory store — everything with durable state — is
+  a session reducer.
 - **Edge reducers** are the node's boundary with the outside world. They carry out
   primitive input and output — network, subprocess, clock — and are where nondeterminism
   enters the system, as the recorded result of an effect. An edge reducer answers a message
   exactly as any reducer does: it receives the message and emits a result. Principle 3
   still holds for the sessions that call it, because the edge reducer's output is recorded
-  in the caller's log and replay reads the recording.
+  as the caller's result event and folded into the caller's durable state.
 
 ### Everything is a wasm module
 
@@ -263,26 +268,28 @@ interface is a plain wasm reducer, evolvable without touching the binary.
 
 ### Session
 
-A **session** is a logged reducer. It is:
+A **session** is a durable reducer. It is:
 
-- a signed, content-addressed, append-only **event log** with a total order within the
-  session (there is no order across sessions),
-- an attached **state** (a key-value map, section 7) that is a projection of the log,
+- its **state** — a key-value map (section 7), persistent and recoverable, which is the
+  session's whole memory; there is no separate log the state is derived from,
 - a **program** (the reducer), named by content hash,
 - its **handler chains** — what it answers and what it may perform, including the authz
   middleware that governs it (sections 3, 5).
 
-A session is identified by the hash of its first event (its genesis), so its identity
-certifies its own origin.
+A session is identified by the hash of its genesis (the program, spawn-nonce, and parent
+it was created from), so its identity certifies its own origin. An **event log**, if a
+deployment keeps one, is an *observation* of what happened to the session — for audit or
+analysis — not the source its state is rebuilt from (section 9).
 
 ### Genesis
 
-The first event names the program to run (by content hash) and a per-session
+A session's genesis names the program to run (by content hash) and a per-session
 `spawn-nonce` supplied by whatever created the session. The runtime does not read a
 clock or draw randomness (principle 3), so this entropy is provided from outside at
-creation and recorded in the genesis event, which makes it replay-stable: recovery reads
-it from the log and never re-mints it. A spawned session's genesis also records its
-parent (section 7), so the child's identity certifies its provenance.
+creation and fixed in the genesis, which makes the session's identity stable across runs:
+it is part of the reducer's durable identity and is never re-minted. A spawned session's
+genesis also records its parent (section 7), so the child's identity certifies its
+provenance.
 
 The session's id is the hash of its genesis event, so it cannot be a field inside that
 event. On spawn the reducer is told who it is: its **birth** is a `spawned` notification —
@@ -396,7 +403,7 @@ never decode anything.
 Each call is a pure function of its input and the reducer's current state; a fresh instance
 runs each call and holds no memory between calls. Beyond the requests it returns, a reducer
 has a few **direct** accesses during a call — resolving within the same call, not routed
-through the effect chain or logged as separate events: its **key-value store** (read/write,
+through the effect chain and not separate events: its **key-value store** (read/write,
 section 7, where it stores what it needs to continue, keyed by a request's
 `continuation-token`, and looks it up when the response returns), its own **id** (a fixed
 read), and the **content-addressed store** (`cas-get`/`cas-put`, section 8, including the
@@ -436,7 +443,7 @@ replacement (section 7).
 ## 4. Requests, dispatch, and results
 
 The fold returns requests. Every request names a **contract** and carries an input. The
-runtime routes each and records the outcome back into the log as a later event. There is no
+runtime routes each and records the outcome back as a later event the reducer folds. There is no
 kernel authorize step: authorization is middleware in the chain (section 5), a handler like
 any other. A request also carries a **continuation-token** the reducer chooses, to
 correlate the eventual result (below).
@@ -646,7 +653,7 @@ middleware sits in the chain it sees the request's **resolved argument**, so it 
 models that (capabilities, resource predicates, grants, a policy language) is the
 middleware's own design, not the kernel's, and is deliberately out of this document. A policy
 engine such as Cedar is one such middleware, carrying its policies as content-addressed data
-referenced from the log; it is a wasm reducer, swapped by publishing a new hash, never a
+it holds by hash in its state; it is a wasm reducer, swapped by publishing a new hash, never a
 redeploy.
 
 An authz middleware records its decision by **attaching a grant to the request context**
@@ -681,12 +688,12 @@ program that internally wields more than X exposes.
 
 ## 6. Time and reacting
 
-Time is not an input to a fold; it is an event in the log. A program never reads a
+Time is not an input to a fold; it is an event a reducer receives. A program never reads a
 wall-clock during a fold — that would make the same event fold differently tomorrow.
 Two contracts cover all of time:
 
-- **now** — an effect whose result is the current time, recorded in the log. This is how
-  a program learns the time, deterministically. It is capability-gated: a program can be
+- **now** — an effect whose result is the current time, recorded as a result event. This is
+  how a program learns the time, deterministically. It is capability-gated: a program can be
   denied the clock entirely.
 - **fire-after(duration)** — the only timer primitive. The runtime wakes the session
   later by delivering a timer-fired event carrying the recorded fire time. Absolute
@@ -696,8 +703,9 @@ Two contracts cover all of time:
 
 The timer's arm event records an **absolute deadline anchor** so that a session which
 moves between nodes computes the right remaining time; the program still never reads the
-clock, because it only ever sees the recorded fired time. Live, the timer runs against a
-real clock; on replay, no clock runs — the recorded fire is read straight from the log.
+clock, because it only ever sees the recorded fired time. The timer runs against the
+runtime's clock, but the reducer never reads that clock itself — it sees only the fired time
+delivered in the timer-fired event and folded into its state.
 
 Reacting is the whole scheduling model. There is no polling. A program instance runs,
 returns, and the session waits in one of two ways, each with a clean wake:
@@ -729,7 +737,7 @@ does not materialize everything at once), and a content-addressed **root hash**.
 may hold state in memory for tests, in a structurally-shared persistent map, or on disk or
 over the network for state too large for RAM; the reducer only ever sees the interface. Two
 obligations the reducer depends on: a **canonical key order** (so prefix-scan and the
-effects a reducer emits over it are replay-deterministic), and a root hash after each
+effects a reducer emits over it are deterministic across runs), and a root hash after each
 change. Prefix-scan is the primitive for the collections a reducer maintains (pending
 children, seen items, per-target working state); richer querying is a reducer keeping its
 own indexes, not new store operations. The operations are **async** (like the CAS,
@@ -738,40 +746,39 @@ blocking the runtime, while a `get` stays deterministic — a pure function of t
 the current state, regardless of backend latency.
 
 A structurally-shared backend yields that root hash cheaply — sharing almost all structure
-with the previous state — so the free-snapshot model (below) costs almost nothing; a
-simpler backend still provides a root hash, just less cheaply. State reads during a fold are
+with the previous state — so a verifiable state root after every change costs almost
+nothing; a simpler backend still provides a root hash, just less cheaply. State reads during a fold are
 point-in-time: folding event N sees state as left by folds up to N−1, never a live or
-future value. State changes are not logged as their own events; they are the deterministic
-side output of folding and rebuild themselves on replay, so the log stays thin.
+future value. State changes are the deterministic side output of folding, written to the
+durable store as the fold commits; they are not separate events, and the store — not a
+log — is what persists and what recovery reads.
 
 Small values live inline; large values (transcripts, diffs, model payloads) are stored in
 the shared content-addressed store and held in state as a hash.
 
-### Snapshots and compaction
+### State retention and observation
 
-A **snapshot** is exactly `(event-index N, state-root-hash, program-hash)` — nothing more.
-A valid snapshot exists at every event for free; which ones to keep is a retention choice,
-not a compute one. Old raw events may be pruned behind a snapshot. A checkpoint that lets
-recovery resume without the pruned prefix carries the derived resident facts the pruned
-events would otherwise reconstruct: the state root, the id counter, the clock high-water,
-the set of open (dispatched-but-unsettled) obligations and armed timers, the spawned-child
-edges, and any close outcome.
+Because the durable store keeps a reducer's state, there is no log prefix to replay and so
+no checkpoint is needed to resume — recovery is just reading the current state (section 9).
+The "resident facts" a log-based checkpoint would otherwise reconstruct — the state itself,
+the id counter, the clock high-water, the open (dispatched-but-unsettled) obligations, the
+armed timers, the spawned-child edges — are all ordinary durable state already, held by the
+store, the system reducer, and the reducer graph; nothing rebuilds them from a prefix. The
+store's own compaction (structural sharing, its content-addressed root hash) is the backend's
+concern, not a platform event.
 
-**Compaction is controlled, not automatic.** The system decides when — and whether — to
-prune, and the default is conservative: keep raw history, because the log is what lets an
-operator replay and inspect a session after the fact to diagnose what went wrong. Pruning
-trades that inspectability for space, so it is a deliberate retention policy (by session,
-age, or tier), never an eager background sweep that quietly erases history and the ability
-to debug from it.
+What *is* a retention choice is any **observation log** a deployment keeps (section 9): how
+much audit history to hold and for how long, trading space for inspectability. That is a
+deliberate policy (by session, age, or tier), never an eager sweep — and it never affects how
+a reducer behaves, only what can be inspected after the fact.
 
 ### Replacing the program (self-modification)
 
 Replacing a session's program is an authorized event naming a new program hash (a pinned
 hash, never a mutable name). From the next event the runtime runs the new program, which
 inherits the existing state. The only constraint is that the new program can read the
-existing state's schema. Do not prune a raw event that would still be needed to
-deterministically re-apply a replacement, and only compact behind a snapshot whose state
-schema the current program can read.
+existing state's schema: the durable state persists across the swap and nothing is replayed,
+so a replacement takes over from the current state as it stands.
 
 ### Reducer lifecycle (built-in effects)
 
@@ -836,7 +843,7 @@ The built-in lifecycle effects:
   section 3 — not by an effect.) However a session ends — a self-exit
   outcome, a terminate, or an uncontrolled fold-failure — subscribers receive the terminal
   outcome as a lifecycle event. Once a session's log tail is terminal the runtime refuses
-  every further fold; the log and state are retained and queryable. There is no
+  every further fold; its state is retained and queryable. There is no
   un-terminate — recovering from a bad state is a fresh spawn.
 
 What a subscriber *does* with a terminal outcome or a failure it is watching — restart,
@@ -913,39 +920,47 @@ transitive dependencies resolve by the same recursion.
 ### The kernel does not persist — storage is a reducer
 
 The kernel holds the in-memory routing and the in-flight correlation state, and folds
-reducers over their event streams. It does not write files and owns no log-store. Durably
-recording a session's event stream — and reading it back to recover — is a **reducer
-layer**: an edge reducer registered as the handler for the log's append and read contracts.
-The kernel routes an append the same way it routes any effect; where the bytes land (a
-local file, an in-memory buffer for tests, a replicated remote store) is that reducer's
-business, swappable without touching the kernel. It composes with the chain (section 3): a
-replication handler can wrap a local-file persistence handler, so one event is recorded
-locally and shipped to a replica in a single chain, no kernel change.
+reducers over their events. It does not write files and owns no store. A reducer's durable
+**state** lives in the key-value store (section 7) — a swappable backend, an in-memory map
+for tests or a replicated datastore in production, that keeps and recovers that state on its
+own; the kernel neither persists nor recovers it. An **observation log**, if a deployment
+keeps one, is likewise a reducer layer: an edge reducer registered as the handler for the
+log's append contract, where the bytes land (a local file, a remote store) its business,
+composed in a chain like any other (section 3) — a replication handler can wrap a local one,
+no kernel change.
 
-This is the same shape as the blob store above — log persistence and content-addressed
-storage are both boundary reducers the kernel knows nothing about. Determinism and replay
-are unaffected: the kernel still defines the ordered event stream a reducer folds (single
-writer per session, events in routed order, section 9); persistence only durably keeps and
-replays that stream. The ordering discipline is the kernel's; the storage is the reducer's.
+This is the same shape as the blob store above — the key-value backend, log observation, and
+content-addressed storage are all boundary concerns the kernel knows nothing about.
+Determinism is unaffected: the kernel still delivers each reducer its events one at a time in
+routed order (single writer per reducer, section 9), and the store keeps the state those
+folds produce. The ordering discipline is the kernel's; the durability is the store's.
 
 ---
 
-## 9. Determinism, replay, and scheduling
+## 9. Determinism, recovery, and scheduling
 
-Determinism lives in the log, not in the scheduler. The guarantees:
+Determinism is per-reducer, not in the scheduler. The guarantees:
 
-- **A fold is a pure function of `(event, state)`.** The runtime is the only writer of a
-  session's log, and it folds events in recorded order. The same event and state produce
-  the same requests and the same state writes every time.
-- **Nondeterminism enters only as recorded results.** A model output, an HTTP body, the
-  time, a timer's fire — each is captured as a result event with its content and the order
-  it landed. Replay re-reads those events; it never re-runs the effect or re-races
-  concurrent effects.
+- **A fold is a pure function of `(event, state)`.** Each reducer is single-threaded: the
+  runtime delivers events into its queue and it folds them one at a time, so its result
+  depends only on its state and the order of its queue — which, from the reducer's own
+  vantage, is fixed. The same event and state produce the same effects and the same state
+  writes every time.
+- **State is durable; recovery is the store's job.** A reducer's state lives in the
+  persistent key-value store, which the storage layer keeps and recovers (below). A crash
+  resumes the reducer from its last durable state; there is no log to replay, because the
+  state itself is what persists — the platform offloads durability onto the store. This is
+  what lets a distributed, replicated store back the platform without paying to keep and
+  replay a per-session append-only log, which does not scale. Nondeterminism — a model
+  output, an HTTP body, the time, a timer's fire — enters only as the recorded result of an
+  effect, folded into that durable state, so recovery never re-runs the effect or re-races
+  concurrent ones: the state (and the state of the edge reducer that performed the effect)
+  already reflects it.
 - **Async scheduling does not affect fold results.** The node may run many sessions
   concurrently and yield a running fold at fuel intervals to interleave others. Which fold
   runs when is a scheduling decision, not a fold input. Fuel accounting is deterministic
-  per `(event, state)`, and a fuel-exhaustion abort is a recorded fold-failure, so replay
-  reaches the same outcome. If any host call the guest makes charged fuel in a way that
+  per `(event, state)`, and a fuel-exhaustion abort is a recorded fold-failure, so
+  re-executing the same event against the same state reaches the same outcome. If any host call the guest makes charged fuel in a way that
   varied with wall-clock or host state, that would be a determinism defect to fix, not to
   work around.
 - **Canonical encodings.** Every event, value, state root, and contract has one canonical
@@ -955,9 +970,12 @@ Determinism lives in the log, not in the scheduler. The guarantees:
   (frozen engine, canonical float handling, frozen map layout forever) is deferred
   (section 11).
 
-Determinism is also an audit and safety property: a program cannot act one way live and
-replay benign, because replay reconstructs from the recorded log. Human inspection must be
-able to render the raw log, not only a program's projection of it.
+An **observation log** is an optional audit capability: a deployment may record every event
+a reducer folds, for inspection or analysis. It does not back the state — the durable
+key-value store does — so it can be as complete or as sparse as a deployment wants, and
+turning it off changes only what can be audited, never how a reducer behaves. Where one is
+kept, human inspection should be able to render the raw events, not only a program's
+projection of them.
 
 ### Nothing blocks the runtime
 
@@ -972,46 +990,44 @@ store, log persistence, and every edge reducer present an async interface for ex
 reason; folds are bounded and yield by fuel (above). A blocking call in an `async` function
 is a defect, not a shortcut.
 
-### The log is not the model's context
+### The model's context is a projection
 
-The immutable log records what actually happened. The context a program assembles for a
-model is a *projection derived from* the log, not the log itself. A program may present a
-model a clean, compressed view (dropping resolved struggle) while the log keeps the full
-truth — two objects, two consumers, one immutable source. This keeps replay and audit
-intact while letting a program show a model a tidy history. It matters here because a
-compiler gives a ground-truth check on what is valid, so a program can compress to a
-verified outcome rather than a guess; the specifics are a program's concern, not the
-runtime's.
+The context a program assembles for a model is a *projection derived from* its state (and
+any observation log), not that state itself. A program may present a model a clean,
+compressed view — dropping resolved struggle — while its durable state keeps the full truth:
+two objects, two consumers, one source. This lets a program show a model a tidy history
+without losing what actually happened. It matters here because a compiler gives a
+ground-truth check on what is valid, so a program can compress to a verified outcome rather
+than a guess; the specifics are a program's concern, not the runtime's.
 
 ---
 
-## 10. What the log contains
+## 10. The event vocabulary
 
-The event vocabulary is small and grows only deliberately. Every event carries an
-envelope: its position in the session, its causal parent (the event, possibly in another
-session, that led to it), and room for a signature and producer identity (recorded when
-multiple operators land, section 11). The body is one of:
+The events a reducer exchanges are few and grow only deliberately — and they are exactly
+what an observation log (section 9) records, if a deployment keeps one. Every event carries
+an envelope: its causal parent (the event, possibly in another session, that led to it), and
+room for a signature and producer identity (recorded when multiple operators land, section
+11). The body is one of:
 
 - **genesis** — the session's first event: the program hash, the spawn-nonce, and the
   optional parent.
 - **inbound(contract, input)** — something delivered into this session: a message from a
   peer, an ingress from outside, or an operator request. Identified by contract-id.
-- **dispatched(contract, input, idempotency-key, deadline, continuation-token)** — the
-  durable record written before an effect is routed, correlated by continuation-token
-  (section 4).
+- **dispatched(contract, input, idempotency-key, deadline, continuation-token)** — an effect
+  routed for a reducer, correlated by continuation-token; the system reducer tracks the
+  outstanding ones in its own state (section 4).
 - **result(contract, outcome, continuation-token)** — the outcome of a dispatched effect,
   correlated by its continuation-token. A denial is one such outcome (an error the authz
   middleware answered with, section 5), not a distinct kernel event.
 - **timer-armed(deadline, continuation-token)** and **timer-fired(fired-time,
-  continuation-token)** — the durable timer records (section 6).
+  continuation-token)** — the timer events (section 6).
 - **fold-failed(reason, caused-event)** — a fold that trapped or exhausted fuel (section 3).
 - **closed(reason)** / **terminated(by, reason)** — the session ended itself (it returned a
   `Break(schema, reason)` outcome), or was ended by another (section 7).
 - **spawned(child)** — the immutable parent→child edge, recorded on spawn (section 7). A
   child's close/failure reaches subscribers as a delivered lifecycle effect, not a distinct
   kernel event.
-- **checkpoint(descriptor)** — a durable snapshot of derived resident state for
-  prune-and-recover (section 7).
 
 No event carries a family, a content-type, or a version — each carries a single `contract`
 (a contract-id).
@@ -1049,8 +1065,9 @@ needing no new kernel mechanism.
 - **Resource virtualization and a shared build cache** — separating the authority to fetch
   from elastic, unprivileged compute, and memoizing builds fleet-wide by content hash.
   Valuable, but a layer above the runtime.
-- **Cross-version replay** — a frozen determinism ABI so a future runtime replays an old
-  log bit-identically (section 9). Deferred in favor of within-version replay.
+- **Cross-version determinism** — a frozen determinism ABI so a future runtime re-executes
+  an old session's events bit-identically (section 9). Deferred in favor of within-version
+  determinism.
 
 ---
 
