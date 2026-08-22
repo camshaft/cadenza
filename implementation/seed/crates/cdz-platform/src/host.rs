@@ -20,10 +20,23 @@ wasmtime::component::bindgen!({
     path: "wit/world.wit",
     imports: { default: async },
     exports: { default: async },
+    // Derive equality on the generated records/variants so the conversion layer can be asserted field-for-
+    // field in tests; every WIT type here is over bytes/enums, so `PartialEq`/`Eq` are well-defined.
+    additional_derives: [PartialEq, Eq],
 });
 
-use crate::{BlobStore, Bytes, EdgeKind, Hash, KvStore, ReducerGraph, ReducerId};
+use crate::{
+    BlobStore, Bytes, ContractId, EdgeKind, Error, Hash, KvStore, Message, Notification, Origin,
+    Outcome, ReducerGraph, ReducerId, Request, Response,
+};
 use std::sync::Arc;
+use std::time::Duration;
+
+// The generated WIT reducer/value types, aliased to disambiguate from the crate's own same-named types
+// (`Message`, `Response`, `Notification`, `Request`, `Outcome`, `Origin`, `Error`). The conversions below
+// translate between the two: the crate types the runtime speaks and the WIT records the guest folds.
+use cadenza::platform::reducer as wit_reducer;
+use cadenza::platform::types as wit_types;
 
 /// A reducer-id or edge-kind crosses the WIT boundary as its raw hash bytes; a value that is not exactly
 /// `Hash::LEN` bytes names nothing, so it converts to `None` and the graph op treats it as a miss.
@@ -184,6 +197,110 @@ impl From<cadenza::platform::graph::Dir> for crate::Dir {
     }
 }
 
+// ── The event ↔ WIT conversion layer (§3) ───────────────────────────────────────────────────────────────
+// Driving a reducer component is: build the WIT event record the guest folds, call its export, and read back
+// the WIT `step` it returns. The runtime speaks the crate's own strongly-typed events (`Message`, `Response`,
+// `Notification`, `Request`, `Outcome`); the guest speaks the generated WIT records. These functions are the
+// one place the two meet — the driver (the following slice) composes them around a wasmtime call, so the
+// mapping is written and tested once here, independent of any guest.
+//
+// A typed id crosses the boundary as its raw hash bytes (§8). Outbound (crate → WIT) is total: a crate id is
+// always a well-formed hash. Inbound (WIT → crate, decoding a guest's step) is fallible: a guest could emit a
+// contract-id that is not `Hash::LEN` bytes, and the driver rejects the whole step rather than trusting it.
+
+/// A reducer's step could not be decoded: the guest emitted bytes that name no valid id. The driver treats a
+/// malformed step as a misbehaving guest and rejects it (rather than panicking); it never arises from a
+/// well-formed component.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StepError {
+    /// A contract-id — on an emitted request, or a close reason's schema — was not exactly `Hash::LEN` bytes.
+    MalformedContractId,
+}
+
+/// A contract-id read back from the guest: its raw hash bytes, or `None` if they do not name a hash.
+fn to_contract(bytes: &[u8]) -> Option<ContractId> {
+    Some(ContractId::from_hash(Hash::from_bytes(
+        <[u8; Hash::LEN]>::try_from(bytes).ok()?,
+    )))
+}
+
+// ── Outbound: the events the host delivers into the guest ──
+
+fn origin_to_wit(origin: Origin) -> wit_types::Origin {
+    wit_types::Origin {
+        reducer: origin.reducer.hash().as_bytes().to_vec(),
+        host: origin.host.hash().as_bytes().to_vec(),
+    }
+}
+
+fn error_to_wit(error: Error) -> wit_types::Error {
+    match error {
+        Error::Timeout => wit_types::Error::Timeout,
+        Error::MissingHandler => wit_types::Error::MissingHandler,
+    }
+}
+
+fn message_to_wit(message: &Message) -> wit_reducer::Message {
+    wit_reducer::Message {
+        contract: message.id.hash().as_bytes().to_vec(),
+        sender: origin_to_wit(message.from),
+        payload: message.payload.to_vec(),
+        token: message.continuation_token.to_vec(),
+    }
+}
+
+fn response_to_wit(response: &Response) -> wit_reducer::Response {
+    wit_reducer::Response {
+        contract: response.id.hash().as_bytes().to_vec(),
+        token: response.continuation_token.to_vec(),
+        // A handler's domain error is an ordinary output value in `Ok`; only a runtime-level `Error` is `Err`.
+        answer: match &response.payload {
+            Ok(payload) => Ok(payload.to_vec()),
+            Err(error) => Err(error_to_wit(*error)),
+        },
+    }
+}
+
+fn notification_to_wit(notification: &Notification) -> wit_reducer::Notification {
+    wit_reducer::Notification {
+        contract: notification.id.hash().as_bytes().to_vec(),
+        payload: notification.payload.to_vec(),
+    }
+}
+
+// ── Inbound: the step the guest returns ──
+
+fn request_from_wit(request: wit_reducer::Request) -> Result<Request, StepError> {
+    Ok(Request {
+        id: to_contract(&request.contract).ok_or(StepError::MalformedContractId)?,
+        payload: Bytes::from(request.payload),
+        continuation_token: Bytes::from(request.token),
+        // The WIT deadline is nanoseconds so the ABI carries no `Duration`; `None` is no deadline.
+        deadline: request.deadline_nanos.map(Duration::from_nanos),
+    })
+}
+
+fn outcome_from_wit(outcome: wit_reducer::Outcome) -> Result<Outcome, StepError> {
+    match outcome {
+        wit_reducer::Outcome::Continue => Ok(Outcome::Continue),
+        wit_reducer::Outcome::Close(closed) => Ok(Outcome::Break {
+            schema: to_contract(&closed.schema).ok_or(StepError::MalformedContractId)?,
+            reason: Bytes::from(closed.reason),
+        }),
+    }
+}
+
+/// Decode a guest's [`step`](wit_reducer::Step) into the crate's `(requests, outcome)` product. Fails if any
+/// emitted id is malformed; a well-formed guest never trips this.
+fn step_from_wit(step: wit_reducer::Step) -> Result<(Vec<Request>, Outcome), StepError> {
+    let requests = step
+        .requests
+        .into_iter()
+        .map(request_from_wit)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((requests, outcome_from_wit(step.outcome)?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::HostState;
@@ -272,5 +389,145 @@ mod tests {
         );
         // A malformed (wrong-length) node names nothing.
         assert!(!Graph::contains(&mut host, b"not a hash".to_vec()).await);
+    }
+
+    // ── The event ↔ WIT conversion layer ──
+    use super::{StepError, message_to_wit, notification_to_wit, response_to_wit, step_from_wit};
+    use super::{wit_reducer, wit_types};
+    use crate::{
+        Bytes, ContractId, Error, HostId, Message, Notification, Origin, Outcome, Response,
+    };
+    use std::time::Duration;
+
+    fn cid(tag: &[u8]) -> ContractId {
+        ContractId::of(tag)
+    }
+
+    #[test]
+    fn a_message_maps_every_field_and_stamps_the_origin() {
+        let message = Message {
+            id: cid(b"inbound"),
+            payload: Bytes::from_static(b"the-input"),
+            from: Origin {
+                reducer: ReducerId::of(b"peer"),
+                host: HostId::of(b"host-a"),
+            },
+            continuation_token: Bytes::from_static(b"tok"),
+        };
+        let wit = message_to_wit(&message);
+        assert_eq!(wit.contract, message.id.hash().as_bytes().to_vec());
+        assert_eq!(wit.payload, b"the-input");
+        assert_eq!(wit.token, b"tok");
+        // The origin is carried as the sender's two raw hashes — the kernel-stamped provenance a reducer
+        // authenticates on.
+        assert_eq!(wit.sender.reducer, ReducerId::of(b"peer").hash().as_bytes());
+        assert_eq!(wit.sender.host, HostId::of(b"host-a").hash().as_bytes());
+    }
+
+    #[test]
+    fn a_response_carries_an_ok_payload_or_a_runtime_error() {
+        // An answered request: the output value rides in `Ok`.
+        let ok = response_to_wit(&Response {
+            id: cid(b"c"),
+            continuation_token: Bytes::from_static(b"t"),
+            payload: Ok(Bytes::from_static(b"out")),
+        });
+        assert_eq!(ok.answer, Ok(b"out".to_vec()));
+        // A runtime-level failure is `Err`, distinct from a handler's domain error (which would be an `Ok`
+        // value). Both crate errors map to their WIT counterpart.
+        let timeout = response_to_wit(&Response {
+            id: cid(b"c"),
+            continuation_token: Bytes::from_static(b"t"),
+            payload: Err(Error::Timeout),
+        });
+        assert_eq!(timeout.answer, Err(wit_types::Error::Timeout));
+        let missing = response_to_wit(&Response {
+            id: cid(b"c"),
+            continuation_token: Bytes::from_static(b"t"),
+            payload: Err(Error::MissingHandler),
+        });
+        assert_eq!(missing.answer, Err(wit_types::Error::MissingHandler));
+    }
+
+    #[test]
+    fn a_notification_maps_its_contract_and_payload() {
+        let wit = notification_to_wit(&Notification {
+            id: cid(b"lifecycle"),
+            payload: Bytes::from_static(b"spawned"),
+        });
+        assert_eq!(wit.contract, cid(b"lifecycle").hash().as_bytes().to_vec());
+        assert_eq!(wit.payload, b"spawned");
+    }
+
+    #[test]
+    fn a_step_decodes_its_requests_and_a_continue_outcome() {
+        let step = wit_reducer::Step {
+            requests: vec![wit_reducer::Request {
+                contract: cid(b"downstream").hash().as_bytes().to_vec(),
+                payload: b"req".to_vec(),
+                token: b"corr".to_vec(),
+                deadline_nanos: Some(1_500),
+            }],
+            outcome: wit_reducer::Outcome::Continue,
+        };
+        let (requests, outcome) = step_from_wit(step).expect("well-formed step");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].id, cid(b"downstream"));
+        assert_eq!(requests[0].payload, Bytes::from_static(b"req"));
+        assert_eq!(requests[0].continuation_token, Bytes::from_static(b"corr"));
+        // The nanosecond deadline round-trips back to a `Duration`.
+        assert_eq!(requests[0].deadline, Some(Duration::from_nanos(1_500)));
+        assert_eq!(outcome, Outcome::Continue);
+    }
+
+    #[test]
+    fn a_close_outcome_decodes_its_typed_reason() {
+        let step = wit_reducer::Step {
+            requests: Vec::new(),
+            outcome: wit_reducer::Outcome::Close(wit_reducer::Closed {
+                schema: cid(b"done").hash().as_bytes().to_vec(),
+                reason: b"finished".to_vec(),
+            }),
+        };
+        let (requests, outcome) = step_from_wit(step).expect("well-formed step");
+        assert!(requests.is_empty());
+        assert_eq!(
+            outcome,
+            Outcome::Break {
+                schema: cid(b"done"),
+                reason: Bytes::from_static(b"finished"),
+            }
+        );
+    }
+
+    #[test]
+    fn a_step_naming_a_malformed_id_is_rejected() {
+        // A request whose contract-id is not `Hash::LEN` bytes: a misbehaving guest, so the whole step is
+        // rejected rather than trusted.
+        let bad_request = wit_reducer::Step {
+            requests: vec![wit_reducer::Request {
+                contract: b"not a real hash".to_vec(),
+                payload: Vec::new(),
+                token: Vec::new(),
+                deadline_nanos: None,
+            }],
+            outcome: wit_reducer::Outcome::Continue,
+        };
+        assert_eq!(
+            step_from_wit(bad_request),
+            Err(StepError::MalformedContractId)
+        );
+        // The same guard applies to a close reason's schema.
+        let bad_close = wit_reducer::Step {
+            requests: Vec::new(),
+            outcome: wit_reducer::Outcome::Close(wit_reducer::Closed {
+                schema: b"nope".to_vec(),
+                reason: Vec::new(),
+            }),
+        };
+        assert_eq!(
+            step_from_wit(bad_close),
+            Err(StepError::MalformedContractId)
+        );
     }
 }
