@@ -22,15 +22,18 @@ wasmtime::component::bindgen!({
     exports: { default: async },
 });
 
-use crate::ReducerId;
+use crate::{BlobStore, Bytes, Hash, ReducerId};
 
 /// The host state threaded through a running reducer component's wasmtime store — what the host imports read
-/// and write on the reducer's behalf. For now it carries the reducer's own id (the `identity` import); the
-/// key-value store, content-addressed store, and — for an event reducer — the graph/deliver/provenance are
-/// added as those imports are implemented.
+/// and write on the reducer's behalf. For now it carries the reducer's own id (the `identity` import) and the
+/// content-addressed store (the `blobs` import); the key-value store and — for an event reducer — the
+/// graph/deliver/provenance are added as those imports are implemented. (The `blobs` store is owned here for
+/// now; wiring it to the one shared node-wide store is a later assembly step.)
 struct HostState {
     /// This reducer's id (§3), returned by the `identity` import.
     id: ReducerId,
+    /// The content-addressed store (§8), backing the `blobs` import.
+    blobs: Box<dyn BlobStore>,
 }
 
 impl cadenza::platform::identity::Host for HostState {
@@ -39,17 +42,47 @@ impl cadenza::platform::identity::Host for HostState {
     }
 }
 
+impl cadenza::platform::blobs::Host for HostState {
+    async fn get(&mut self, hash: Vec<u8>) -> Option<Vec<u8>> {
+        // A malformed hash (not exactly `Hash::LEN` bytes) names nothing, so it reads back as absent.
+        let hash = Hash::from_bytes(<[u8; Hash::LEN]>::try_from(hash.as_slice()).ok()?);
+        self.blobs.get(hash).await.map(|bytes| bytes.to_vec())
+    }
+
+    async fn put(&mut self, bytes: Vec<u8>) -> Vec<u8> {
+        self.blobs.put(Bytes::from(bytes)).await.as_bytes().to_vec()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::HostState;
+    use super::cadenza::platform::blobs::Host as _;
     use super::cadenza::platform::identity::Host as _;
-    use crate::ReducerId;
+    use crate::{InMemoryBlobStore, ReducerId};
+
+    fn host(id: ReducerId) -> HostState {
+        HostState {
+            id,
+            blobs: Box::new(InMemoryBlobStore::new()),
+        }
+    }
 
     #[tokio::test]
     async fn identity_returns_the_reducers_own_id() {
         // The `identity` host import hands the guest its own reducer-id, as the id's raw hash bytes.
         let id = ReducerId::of(b"me");
-        let mut host = HostState { id };
+        let mut host = host(id);
         assert_eq!(host.id().await, id.hash().as_bytes().to_vec());
+    }
+
+    #[tokio::test]
+    async fn blobs_round_trip_and_a_malformed_hash_is_absent() {
+        let mut host = host(ReducerId::of(b"me"));
+        // `put` stores the bytes and returns their content hash; `get` reads them back by that hash.
+        let hash = host.put(b"a blob".to_vec()).await;
+        assert_eq!(host.get(hash).await.as_deref(), Some(b"a blob".as_slice()));
+        // A hash the store does not hold reads back as absent, and so does a malformed (wrong-length) hash.
+        assert_eq!(host.get(b"not a real hash".to_vec()).await, None);
     }
 }
