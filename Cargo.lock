@@ -416,6 +416,7 @@ dependencies = [
  "cadenza-ast",
  "futures-core",
  "futures-util",
+ "num-bigint",
  "tokio",
 ]
 

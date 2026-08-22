@@ -34,6 +34,9 @@ testing = ["dep:bach"]
 # for all encoding and contract identification"). Depending on the language is right; only depending on the
 # compiler (rcdzc) would be the coupling to avoid.
 cadenza-ast = { path = "../cadenza-ast" }
+# arbitrary-precision integer, matching cadenza-ast's value model (its `Leaf::Int` is a `BigInt`), so a
+# contract value can carry a native Cadenza integer field (Int64/UInt64) rather than only opaque bytes.
+num-bigint = "0.4"
 blake3 = "1" # the one content-address digest (fleet-unified on blake3, operator 2026-08-08)
 bytes = "1"  # every byte buffer is bytes::Bytes, never Vec<u8> (spec §12) — O(1) clone as it threads through
 async-trait = "0.1" # dyn-safe async traits, so a store/kv backend is a swappable trait object (spec §8)
