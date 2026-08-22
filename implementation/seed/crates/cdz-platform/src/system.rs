@@ -25,6 +25,7 @@ use crate::{
     ReducerGraph, ReducerId, Request, Response, Runtime, Spawned, deliver_contract, timer_contract,
 };
 use async_trait::async_trait;
+use futures_util::FutureExt; // catch_unwind, to turn a fold panic into a Crashed notification (§7)
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -280,7 +281,16 @@ impl<R: Runtime> Shared<R> {
                 // Load the program inside the reducer's own task, so a slow load blocks no one.
                 if let Some(mut reducer) = shared.programs.spawn(program).await {
                     while let Some(event) = R::recv(&mut inbox).await {
-                        let (requests, outcome) = fold(&mut reducer, event).await;
+                        let (requests, outcome) =
+                            match std::panic::AssertUnwindSafe(fold(&mut reducer, event))
+                                .catch_unwind()
+                                .await
+                            {
+                                Ok(folded) => folded,
+                                // A panic in a fold is an uncontrolled crash: stop draining and fall through
+                                // to the `Crashed` notification below (`break_reason` stays `None`).
+                                Err(_panic) => break,
+                            };
                         for request in requests {
                             if request.id == deliver_contract() {
                                 // Delivering an event into another reducer's log is the one privileged act (§4):
@@ -365,21 +375,21 @@ impl<R: Runtime> Shared<R> {
                         }
                     }
                 }
-                // On a clean close, tell every watcher how this reducer ended, then leave the graph (§7). A crash
-                // unwinds past this (crash notification is host-observed, a later slice); the mailbox is always
-                // reclaimed by the guard.
-                if let Some((schema, reason)) = break_reason {
-                    let notice = Delivered::Notification(
-                        Lifecycle::Exited {
-                            reducer: id,
-                            schema,
-                            reason,
-                        }
-                        .into_notification(),
-                    );
-                    for watcher in shared.graph.watchers(id).await {
-                        shared.send(watcher, notice.clone());
-                    }
+                // Tell every watcher how this reducer ended, then leave the graph (§7): a clean Break is an
+                // `Exited` carrying its typed reason; any other end — a fold that panicked (caught above), the
+                // mailbox closing, or a program that failed to load — is a `Crashed` naming only who ended. The
+                // mailbox is always reclaimed by the guard.
+                let ended = match break_reason {
+                    Some((schema, reason)) => Lifecycle::Exited {
+                        reducer: id,
+                        schema,
+                        reason,
+                    },
+                    None => Lifecycle::Crashed { reducer: id },
+                };
+                let notice = Delivered::Notification(ended.into_notification());
+                for watcher in shared.graph.watchers(id).await {
+                    shared.send(watcher, notice.clone());
                 }
                 shared.graph.remove(id).await;
             });
@@ -767,7 +777,23 @@ mod tests {
         }
     }
 
-    /// Register a `watcher` program and a `closer` program in a fresh store-backed system.
+    /// A reducer that panics on its first message — an uncontrolled crash, distinct from a typed `Break`.
+    struct Panicker;
+    #[async_trait::async_trait]
+    impl Reducer for Panicker {
+        async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
+            panic!("panicker crashed");
+        }
+        async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+    }
+
+    /// Register a `watcher` program, a `closer` program, and a `panicker` program in a fresh store-backed
+    /// system.
     fn watcher_and_closer(
         heard: bach::sync::mpsc::UnboundedSender<Notification>,
     ) -> TaskSystem<BachRuntime> {
@@ -778,6 +804,7 @@ mod tests {
             })
         });
         store.register(prog(b"closer"), || Box::new(Closer));
+        store.register(prog(b"panicker"), || Box::new(Panicker));
         TaskSystem::<BachRuntime>::new(
             Arc::new(store),
             Arc::new(InMemoryReducerGraph::new()),
@@ -843,6 +870,58 @@ mod tests {
                         reason: Bytes::from_static(b"done"),
                     })
                 );
+            }
+            .group("system")
+            .primary()
+            .spawn();
+        });
+    }
+
+    #[test]
+    fn a_child_that_panics_notifies_a_watching_parent_with_crashed() {
+        use bach::ext::*;
+        bach::sim(|| {
+            async {
+                // A fold panic is an uncontrolled crash: the system catches it and tells the watching parent
+                // via a `Crashed` lifecycle notification naming the child — distinct from a typed `Exited`,
+                // and it does not take down the system.
+                let parent = rid(b"parent");
+                let child = rid(b"child");
+                let (heard, mut heard_rx) = bach::sync::mpsc::unbounded_channel();
+                let system = watcher_and_closer(heard);
+                system
+                    .spawn(root(parent, prog(b"watcher"), ReducerKind::Ordinary))
+                    .await
+                    .unwrap();
+                system
+                    .spawn(Spawn {
+                        id: child,
+                        program: prog(b"panicker"),
+                        nonce: Bytes::from_static(b"nonce"),
+                        parent,
+                        kind: ReducerKind::Ordinary,
+                        links: Links {
+                            parent_watches_child: true,
+                            child_watches_parent: false,
+                        },
+                    })
+                    .await
+                    .unwrap();
+
+                // Deliver a message so the child panics. Waiting on the channel (bach advances time; its
+                // deadlock detection covers a crash that never surfaces), skip the parent's own birth
+                // notification and find the child's lifecycle event.
+                assert!(system.deliver(child, a_message(cid(b"go"))).await.unwrap());
+                let crashed = loop {
+                    let n = heard_rx
+                        .recv()
+                        .await
+                        .expect("the parent heard the child's crash");
+                    if n.id == lifecycle_contract() {
+                        break Lifecycle::decode(&n.payload);
+                    }
+                };
+                assert_eq!(crashed, Some(Lifecycle::Crashed { reducer: child }));
             }
             .group("system")
             .primary()
