@@ -139,21 +139,11 @@ interface state {
   put: func(key: bytes, value: bytes);
   // Remove `key` if present.
   delete: func(key: bytes);
-  // A content-addressed root hash over the whole state after the current changes — a verifiable state root
-  // (§7).
-  root: func() -> bytes;
 
-  // A streaming prefix-scan (§7): a cursor over the entries whose key starts with `prefix`, in canonical key
-  // order, so a large scan never materializes at once. Dropping the cursor ends the scan.
-  resource prefix-scan {
-    // The next entry in key order, or nothing when the scan is exhausted.
-    next: func() -> option<entry>;
-  }
-  record entry {
-    key: bytes,
-    value: bytes,
-  }
-  scan: func(prefix: bytes) -> prefix-scan;
+  // TODO(§7): a streaming prefix-scan and a content-addressed root hash belong here too. The prefix-scan is a
+  // cursor `resource` (a host wasmtime resource backed by the key-value scan) and the root is a verifiable
+  // state root; both are added in a dedicated slice — the root once the key-value store grows a root-hash
+  // (currently punted), the scan once its host-side cursor is wired.
 }
 
 // The content-addressed store (§8): the one unpermissioned blob store, addressed by the hash of the bytes —

@@ -22,7 +22,7 @@ wasmtime::component::bindgen!({
     exports: { default: async },
 });
 
-use crate::{BlobStore, Bytes, Hash, ReducerId};
+use crate::{BlobStore, Bytes, Hash, KvStore, ReducerId};
 
 /// The host state threaded through a running reducer component's wasmtime store — what the host imports read
 /// and write on the reducer's behalf. For now it carries the reducer's own id (the `identity` import) and the
@@ -34,6 +34,8 @@ struct HostState {
     id: ReducerId,
     /// The content-addressed store (§8), backing the `blobs` import.
     blobs: Box<dyn BlobStore>,
+    /// The reducer's own key-value state (§7), backing the `state` import.
+    kv: Box<dyn KvStore>,
 }
 
 impl cadenza::platform::identity::Host for HostState {
@@ -54,17 +56,36 @@ impl cadenza::platform::blobs::Host for HostState {
     }
 }
 
+impl cadenza::platform::state::Host for HostState {
+    async fn get(&mut self, key: Vec<u8>) -> Option<Vec<u8>> {
+        self.kv.get(&key).await.map(|value| value.to_vec())
+    }
+
+    async fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
+        self.kv.put(Bytes::from(key), Bytes::from(value)).await;
+    }
+
+    async fn delete(&mut self, key: Vec<u8>) {
+        // The WIT `delete` reports nothing; the key-value store's whether-it-was-present is not surfaced.
+        self.kv.delete(&key).await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::HostState;
-    use super::cadenza::platform::blobs::Host as _;
-    use super::cadenza::platform::identity::Host as _;
-    use crate::{InMemoryBlobStore, ReducerId};
+    // The `blobs` and `state` imports both have `get`/`put`, so use named trait aliases and fully-qualified
+    // calls to disambiguate.
+    use super::cadenza::platform::blobs::Host as Blobs;
+    use super::cadenza::platform::identity::Host as Identity;
+    use super::cadenza::platform::state::Host as State;
+    use crate::{InMemoryBlobStore, InMemoryKvStore, ReducerId};
 
     fn host(id: ReducerId) -> HostState {
         HostState {
             id,
             blobs: Box::new(InMemoryBlobStore::new()),
+            kv: Box::new(InMemoryKvStore::new()),
         }
     }
 
@@ -73,16 +94,36 @@ mod tests {
         // The `identity` host import hands the guest its own reducer-id, as the id's raw hash bytes.
         let id = ReducerId::of(b"me");
         let mut host = host(id);
-        assert_eq!(host.id().await, id.hash().as_bytes().to_vec());
+        assert_eq!(Identity::id(&mut host).await, id.hash().as_bytes().to_vec());
     }
 
     #[tokio::test]
     async fn blobs_round_trip_and_a_malformed_hash_is_absent() {
         let mut host = host(ReducerId::of(b"me"));
         // `put` stores the bytes and returns their content hash; `get` reads them back by that hash.
-        let hash = host.put(b"a blob".to_vec()).await;
-        assert_eq!(host.get(hash).await.as_deref(), Some(b"a blob".as_slice()));
+        let hash = Blobs::put(&mut host, b"a blob".to_vec()).await;
+        assert_eq!(
+            Blobs::get(&mut host, hash).await.as_deref(),
+            Some(b"a blob".as_slice())
+        );
         // A hash the store does not hold reads back as absent, and so does a malformed (wrong-length) hash.
-        assert_eq!(host.get(b"not a real hash".to_vec()).await, None);
+        assert_eq!(
+            Blobs::get(&mut host, b"not a real hash".to_vec()).await,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn state_get_put_delete() {
+        let mut host = host(ReducerId::of(b"me"));
+        // Absent key reads back as nothing; put then get returns the value; delete removes it.
+        assert_eq!(State::get(&mut host, b"k".to_vec()).await, None);
+        State::put(&mut host, b"k".to_vec(), b"v".to_vec()).await;
+        assert_eq!(
+            State::get(&mut host, b"k".to_vec()).await.as_deref(),
+            Some(b"v".as_slice())
+        );
+        State::delete(&mut host, b"k".to_vec()).await;
+        assert_eq!(State::get(&mut host, b"k".to_vec()).await, None);
     }
 }
