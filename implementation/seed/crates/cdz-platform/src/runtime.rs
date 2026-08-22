@@ -8,6 +8,7 @@
 
 use crate::Delivered;
 use std::future::Future;
+use std::time::Duration;
 
 /// The async runtime a [`TaskSystem`](crate::TaskSystem) runs on: spawning a task and creating a reducer's
 /// mailbox channel. Static, so the system composes over it with no dynamic dispatch.
@@ -25,6 +26,15 @@ pub trait Runtime: Send + Sync + 'static {
     fn recv(receiver: &mut Self::Receiver) -> impl Future<Output = Option<Delivered>> + Send + '_;
     /// Spawn `future` as a task on the runtime.
     fn spawn<F: Future<Output = ()> + Send + 'static>(future: F);
+    /// A future that completes after `duration` on the runtime's clock — the wait a `fire-after` timer arms
+    /// (§6). Real time under tokio; simulated, deterministic time under bach.
+    fn sleep(duration: Duration) -> impl Future<Output = ()> + Send;
+    /// The runtime's clock now, in nanoseconds. Stamped into a `Fired` event as the recorded fire time (§6),
+    /// which a reducer folds without ever reading a clock itself. Real (wall-clock) time under tokio;
+    /// simulated, deterministic time (since the simulation started) under bach — so a `fire-after` test folds
+    /// the same recorded time every run. This is the runtime's own clock, distinct from the capability-gated
+    /// `now` effect a program requests to learn the time.
+    fn now() -> u64;
 }
 
 /// The production runtime: tokio tasks and channels.
@@ -45,6 +55,19 @@ impl Runtime for TokioRuntime {
     }
     fn spawn<F: Future<Output = ()> + Send + 'static>(future: F) {
         tokio::spawn(future);
+    }
+    fn sleep(duration: Duration) -> impl Future<Output = ()> + Send {
+        tokio::time::sleep(duration)
+    }
+    fn now() -> u64 {
+        // Wall-clock nanoseconds since the Unix epoch, saturating (the epoch is always in the past, and u64
+        // nanos covers year ~2554). A monotonic clock has no cross-node meaning; wall-clock is what a recorded
+        // fire time means in production.
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
+            .unwrap_or(0)
     }
 }
 
@@ -69,5 +92,14 @@ impl Runtime for BachRuntime {
     }
     fn spawn<F: Future<Output = ()> + Send + 'static>(future: F) {
         bach::task::spawn(future);
+    }
+    fn sleep(duration: Duration) -> impl Future<Output = ()> + Send {
+        bach::time::sleep(duration)
+    }
+    fn now() -> u64 {
+        // Deterministic simulated time since the simulation started, in nanoseconds — so a `fire-after` test
+        // folds the same recorded fire time every run.
+        u64::try_from(bach::time::Instant::now().elapsed_since_start().as_nanos())
+            .unwrap_or(u64::MAX)
     }
 }
