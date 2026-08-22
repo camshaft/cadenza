@@ -43,7 +43,7 @@ async-trait = "0.1" # dyn-safe async traits, so a store/kv backend is a swappabl
 # tokio is the platform's async runtime (spec §9 shared async runtime). A main dep per operator directive
 # 2026-08-20; the trait layers stay runtime-agnostic (await-only, no tokio primitives) so they also run
 # under the Bach simulator in tests. Minimal features for now; the scheduler layer widens them later.
-tokio = { version = "1", features = ["rt", "macros", "sync"] }
+tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
 futures-core = "0.3" # the Stream trait, for the kv prefix-scan (a lazy stream, not a materialized Vec)
 futures-util = "0.3" # stream helpers (stream::iter) to back a scan; StreamExt in tests
 # Bach (Cameron's crate) — a discrete-event simulation runtime for deterministic async testing. It is the

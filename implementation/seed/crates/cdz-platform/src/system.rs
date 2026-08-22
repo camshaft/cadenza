@@ -20,15 +20,16 @@
 //! its own task so a slow load blocks no one.
 
 use crate::{
-    Bytes, ContractId, Deliver, Delivered, EdgeKind, EventRegistry, Genesis, Hash, HashTag, HostId,
-    Lifecycle, Message, Origin, Outcome, ProgramHash, ProgramStore, Reducer, ReducerGraph,
-    ReducerId, Request, Runtime, Spawned, deliver_contract,
+    Bytes, ContractId, Deliver, Delivered, EdgeKind, EventRegistry, FireAfter, Fired, Genesis,
+    Hash, HashTag, HostId, Lifecycle, Message, Origin, Outcome, ProgramHash, ProgramStore, Reducer,
+    ReducerGraph, ReducerId, Request, Response, Runtime, Spawned, deliver_contract, timer_contract,
 };
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// A failure carrying out a system operation — a backend's store or transport error. The in-memory system
 /// never returns one; a durable-actor backend surfaces its failures here.
@@ -290,6 +291,33 @@ impl<R: Runtime> Shared<R> {
                                 {
                                     shared.send(deliver.target, deliver.event);
                                 }
+                            } else if request.id == timer_contract() {
+                                // Arm a fire-after timer (§6) — any reducer may. The runtime waits the
+                                // duration on its clock, then wakes the arming reducer with the `Fired` event
+                                // AS THE RESPONSE to this request, correlated by the request's own standard
+                                // continuation-token (not a bespoke field). The recorded fire time is stamped
+                                // from the runtime's clock; the reducer folds it without reading a clock
+                                // itself. Enforcing a request deadline on top of this raw wake is the system
+                                // reducer's policy (§4), not the kernel's.
+                                if let Some(arm) = FireAfter::decode(&request.payload) {
+                                    let shared = Arc::clone(&shared);
+                                    let armed = id;
+                                    let token = request.continuation_token;
+                                    R::spawn(async move {
+                                        R::sleep(Duration::from_nanos(arm.duration)).await;
+                                        let fired = Fired {
+                                            fired_time: R::now(),
+                                        };
+                                        shared.send(
+                                            armed,
+                                            Delivered::Response(Response {
+                                                id: timer_contract(),
+                                                continuation_token: token,
+                                                payload: Ok(fired.encode()),
+                                            }),
+                                        );
+                                    });
+                                }
                             } else {
                                 // An ordinary effect: the kernel looks up the system reducer for the contract,
                                 // instantiates a fresh per-event context, and delivers the effect to it (§4).
@@ -388,10 +416,10 @@ impl<S> Drop for DeregisterOnDrop<S> {
 mod tests {
     use super::{Links, ReducerKind, Spawn, System, TaskSystem};
     use crate::{
-        BachRuntime, Bytes, ContractId, Deliver, Delivered, HostId, InMemoryEventRegistry,
-        InMemoryReducerGraph, Lifecycle, Message, Notification, Origin, Outcome, ProgramHash,
-        Reducer, ReducerGraph, ReducerId, Request, Response, Spawned, TokioRuntime,
-        lifecycle_contract, spawned_contract,
+        BachRuntime, Bytes, ContractId, Deliver, Delivered, FireAfter, Fired, HostId,
+        InMemoryEventRegistry, InMemoryReducerGraph, Lifecycle, Message, Notification, Origin,
+        Outcome, ProgramHash, Reducer, ReducerGraph, ReducerId, Request, Response, Spawned,
+        TokioRuntime, lifecycle_contract, spawned_contract, timer_contract,
     };
     use std::sync::Arc;
 
@@ -1061,6 +1089,152 @@ mod tests {
                         .unwrap()
                 );
                 assert_eq!(saw_rx.recv().await, Some((emitter, http)));
+            }
+            .group("system")
+            .primary()
+            .spawn();
+        });
+    }
+
+    /// A reducer that arms a fire-after timer on its first message, then waits; when the timer fires (as the
+    /// response to that arm), it records the recorded fire time and the echoed continuation-token, then closes.
+    struct Armer {
+        duration: u64,
+        token: Bytes,
+        heard: bach::sync::mpsc::UnboundedSender<(Bytes, u64)>,
+    }
+    #[async_trait::async_trait]
+    impl Reducer for Armer {
+        async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
+            // Arm the timer (durations are nanoseconds), correlating the wake with the standard
+            // continuation-token every request carries — no bespoke token rides in the value.
+            let arm = FireAfter {
+                duration: self.duration,
+            };
+            (
+                vec![arm.into_request(self.token.clone())],
+                Outcome::Continue,
+            )
+        }
+        async fn on_response(&mut self, r: Response) -> (Vec<Request>, Outcome) {
+            if r.id == timer_contract()
+                && let Ok(payload) = &r.payload
+                && let Some(fired) = Fired::decode(payload)
+            {
+                let _ = self.heard.send((r.continuation_token, fired.fired_time));
+                return (
+                    Vec::new(),
+                    Outcome::Break {
+                        schema: cid(b"woke"),
+                        reason: Bytes::new(),
+                    },
+                );
+            }
+            (Vec::new(), Outcome::Continue)
+        }
+        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+    }
+
+    #[test]
+    fn a_reducer_that_arms_a_fire_after_timer_is_woken_after_the_duration() {
+        use bach::ext::*;
+        bach::sim(|| {
+            async {
+                let armer = rid(b"armer");
+                let (heard, mut heard_rx) = bach::sync::mpsc::unbounded_channel();
+                let mut store = crate::testing::program::Store::new();
+                store.register(prog(b"armer"), move || {
+                    Box::new(Armer {
+                        duration: 10_000_000,
+                        token: Bytes::from_static(b"awaiting"),
+                        heard: heard.clone(),
+                    })
+                });
+                let system = TaskSystem::<BachRuntime>::new(
+                    Arc::new(store),
+                    Arc::new(InMemoryReducerGraph::new()),
+                    Arc::new(InMemoryEventRegistry::new(prog(b"sys"))),
+                    HostId::of(b"node"),
+                );
+                system
+                    .spawn(root(armer, prog(b"armer"), ReducerKind::Ordinary))
+                    .await
+                    .unwrap();
+
+                // Deliver a message so it arms a 10ms timer, then wait on the wake: bach advances simulated
+                // time to fire it (and its deadlock detection would catch a timer that never fires). The wake
+                // is the response to the arm, carrying the arm's standard continuation-token back and a
+                // recorded fire time at or past the 10ms (10_000_000ns) it waited on the deterministic clock.
+                assert!(system.deliver(armer, a_message(cid(b"go"))).await.unwrap());
+                let (token, fired_time) = heard_rx.recv().await.expect("the timer fired");
+                assert_eq!(token, Bytes::from_static(b"awaiting"));
+                assert!(fired_time >= 10_000_000, "recorded fire time {fired_time}");
+            }
+            .group("system")
+            .primary()
+            .spawn();
+        });
+    }
+
+    #[test]
+    fn concurrent_timers_fire_independently_each_woken_with_its_own_token() {
+        // Two reducers arm timers of different durations at once. Each must be woken on its OWN schedule and
+        // with its OWN continuation-token — pinning that a per-arm sleep task is isolated (no cross-talk) and
+        // the wake correlates by the arm's token, not by which timer happened to fire.
+        use bach::ext::*;
+        bach::sim(|| {
+            async {
+                let (heard, mut heard_rx) = bach::sync::mpsc::unbounded_channel();
+                let mut store = crate::testing::program::Store::new();
+                // A short (10ms) and a long (50ms) timer, each with a distinct token.
+                let short_heard = heard.clone();
+                store.register(prog(b"short"), move || {
+                    Box::new(Armer {
+                        duration: 10_000_000,
+                        token: Bytes::from_static(b"short"),
+                        heard: short_heard.clone(),
+                    })
+                });
+                store.register(prog(b"long"), move || {
+                    Box::new(Armer {
+                        duration: 50_000_000,
+                        token: Bytes::from_static(b"long"),
+                        heard: heard.clone(),
+                    })
+                });
+                let system = TaskSystem::<BachRuntime>::new(
+                    Arc::new(store),
+                    Arc::new(InMemoryReducerGraph::new()),
+                    Arc::new(InMemoryEventRegistry::new(prog(b"sys"))),
+                    HostId::of(b"node"),
+                );
+                let short = rid(b"short");
+                let long = rid(b"long");
+                system
+                    .spawn(root(short, prog(b"short"), ReducerKind::Ordinary))
+                    .await
+                    .unwrap();
+                system
+                    .spawn(root(long, prog(b"long"), ReducerKind::Ordinary))
+                    .await
+                    .unwrap();
+                // Both arm their timers. Waiting on the channel, the short (10ms) timer must wake FIRST — its
+                // task sleeps independently of the long (50ms) one — each with its own continuation-token and
+                // a recorded fire time past its own duration. The strict order + distinct tokens pin per-arm
+                // task isolation (no cross-talk) and token-correlation.
+                assert!(system.deliver(short, a_message(cid(b"go"))).await.unwrap());
+                assert!(system.deliver(long, a_message(cid(b"go"))).await.unwrap());
+
+                let (token, fired_time) =
+                    heard_rx.recv().await.expect("the short timer fired first");
+                assert_eq!(token, Bytes::from_static(b"short"));
+                assert!((10_000_000..50_000_000).contains(&fired_time));
+
+                let (token, fired_time) = heard_rx.recv().await.expect("the long timer fired next");
+                assert_eq!(token, Bytes::from_static(b"long"));
+                assert!(fired_time >= 50_000_000, "recorded fire time {fired_time}");
             }
             .group("system")
             .primary()
