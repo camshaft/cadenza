@@ -1,0 +1,43 @@
+// The fire-after timer contracts — the one time primitive (design/cadenza-platform.md section 6). A reducer
+// arms a timer by performing the `Arm` contract (a duration in milliseconds plus a token it chooses to
+// correlate the wake); when the duration elapses the runtime delivers a `Fired` notification carrying that
+// token back to the reducer. Absolute deadlines and crons are built on top by the reducer. This file is the
+// source of truth for both schemas and is real Cadenza: `cargo xtask codegen` validates it with the `cdz`
+// binary and generates `src/contracts/fire_after.rs`. Re-run `cargo xtask codegen` after editing;
+// `--check` fails if the committed generated file is stale. The compiler is a codegen-time tool only.
+//
+// The `@test` definitions are the conformance proof (codegen extracts only the `type` declarations and runs
+// the tests with `cdz test`): each builds a fully-literal value whose helper's return type ascribes it
+// against the schema, so a value of the shape the encoder marshals is proven to be a value of the schema.
+
+// Arming a timer: fire after `millis` milliseconds, and echo `token` on the wake so the reducer can tell its
+// timers apart. `millis` is the little-endian bytes of a 64-bit count; `token` is opaque.
+type Arm =
+  | Arm(Record(millis: Bytes, token: Bytes))
+
+// The wake the runtime delivers when the timer elapses — a control-plane notification carrying the token the
+// reducer armed the timer with.
+type Fired =
+  | Fired(Record(token: Bytes))
+
+// The output of arming — a timer arm is one-way (nothing replies to it), so the contract's output is the
+// unit `Ack`, present only because a contract declares an output type and never built or sent.
+type Ack =
+  | Ack
+
+// --- conformance proofs ---
+def an-arm() -> Arm =
+  Arm.Arm({ millis = b"\x05\x00\x00\x00\x00\x00\x00\x00", token = b"t" })
+
+def a-fired() -> Fired =
+  Fired.Fired({ token = b"t" })
+
+@test
+def arm-conforms() =
+  match an-arm() with
+  | Arm.Arm(a) => if a.token == b"t" then unit else trap("arm token mismatch")
+
+@test
+def fired-conforms() =
+  match a-fired() with
+  | Fired.Fired(f) => if f.token == b"t" then unit else trap("fired token mismatch")

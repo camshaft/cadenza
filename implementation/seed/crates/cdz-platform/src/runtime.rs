@@ -8,6 +8,7 @@
 
 use crate::Delivered;
 use std::future::Future;
+use std::time::Duration;
 
 /// The async runtime a [`TaskSystem`](crate::TaskSystem) runs on: spawning a task and creating a reducer's
 /// mailbox channel. Static, so the system composes over it with no dynamic dispatch.
@@ -25,6 +26,10 @@ pub trait Runtime: Send + Sync + 'static {
     fn recv(receiver: &mut Self::Receiver) -> impl Future<Output = Option<Delivered>> + Send + '_;
     /// Spawn `future` as a task on the runtime.
     fn spawn<F: Future<Output = ()> + Send + 'static>(future: F);
+    /// A future that completes after `duration` on the runtime's clock — the one time primitive the system
+    /// needs, so a `fire-after` effect can wake a reducer later (§6). Real time under tokio; simulated,
+    /// deterministic time under bach.
+    fn sleep(duration: Duration) -> impl Future<Output = ()> + Send;
 }
 
 /// The production runtime: tokio tasks and channels.
@@ -45,6 +50,9 @@ impl Runtime for TokioRuntime {
     }
     fn spawn<F: Future<Output = ()> + Send + 'static>(future: F) {
         tokio::spawn(future);
+    }
+    fn sleep(duration: Duration) -> impl Future<Output = ()> + Send {
+        tokio::time::sleep(duration)
     }
 }
 
@@ -69,5 +77,8 @@ impl Runtime for BachRuntime {
     }
     fn spawn<F: Future<Output = ()> + Send + 'static>(future: F) {
         bach::task::spawn(future);
+    }
+    fn sleep(duration: Duration) -> impl Future<Output = ()> + Send {
+        bach::time::sleep(duration)
     }
 }
