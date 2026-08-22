@@ -97,6 +97,17 @@ impl EdgeKind {
     }
 }
 
+/// Read an edge kind back from the raw bytes of the hash it carries — how a kind arrives when a consumer's
+/// self-minted relationship crosses a boundary as a byte slice (a WIT payload). Fails (a wrong-length slice
+/// names no hash) with the same error as [`Hash::try_from`].
+impl TryFrom<&[u8]> for EdgeKind {
+    type Error = std::array::TryFromSliceError;
+
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        Ok(Self::from_hash(Hash::try_from(bytes)?))
+    }
+}
+
 /// A direction to read a node's edges of a kind: its **out**-edges (`node -> others`) or its **in**-edges
 /// (`others -> node`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

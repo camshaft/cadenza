@@ -44,6 +44,15 @@ macro_rules! hash_id {
             }
         }
 
+        #[doc = concat!("Read a `", stringify!($name), "` back from the raw bytes of the hash it carries — how it arrives when it crosses a boundary that carries an id as a byte slice (a WIT payload, a stored key). Fails (a wrong-length slice names no hash) with the same error as [`Hash::try_from`]; the tag is not required to match this role's [`TAG`](Self::TAG), since a hash is bytes.")]
+        impl TryFrom<&[u8]> for $name {
+            type Error = std::array::TryFromSliceError;
+
+            fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+                Ok(Self::from_hash(Hash::try_from(bytes)?))
+            }
+        }
+
         impl fmt::Display for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 fmt::Display::fmt(&self.0, f)
@@ -126,5 +135,26 @@ mod tests {
         let id = ContractId::of(b"temp.celsius");
         assert_eq!(id.to_string(), id.hash().to_string());
         assert!(format!("{id:?}").starts_with("ContractId("));
+    }
+
+    #[test]
+    fn try_from_slice_reads_an_id_back_from_its_bytes_and_rejects_wrong_length() {
+        // The bytes an id crosses a boundary as (a WIT payload, a stored key) reconstruct it exactly.
+        let id = ReducerId::of(b"a-reducer");
+        assert_eq!(
+            ReducerId::try_from(id.hash().as_bytes().as_slice()).unwrap(),
+            id
+        );
+        // A wrong-length slice names no id.
+        assert!(ReducerId::try_from(b"short".as_slice()).is_err());
+        // The tag is not required to match the role — a hash is bytes, so a `ContractId`'s bytes read back
+        // as a `ReducerId` (the caller vouches for what the bytes name; the length is all that is checked).
+        let from_contract = ContractId::of(b"x").hash();
+        assert_eq!(
+            ReducerId::try_from(from_contract.as_bytes().as_slice())
+                .unwrap()
+                .hash(),
+            from_contract
+        );
     }
 }
