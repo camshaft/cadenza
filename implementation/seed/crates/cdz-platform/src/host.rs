@@ -299,6 +299,179 @@ fn step_from_wit(step: wit_reducer::Step) -> Result<(Vec<Request>, Outcome), Ste
     Ok((requests, outcome_from_wit(step.outcome)?))
 }
 
+// ── The wasm reducer driver (§3) ─────────────────────────────────────────────────────────────────────────
+// Turning a reducer component into a live [`Reducer`](crate::Reducer): a wasmtime `Store` holding the
+// component's [`HostState`] and an instantiated world. Folding an event is build-the-record → call-the-guest
+// → decode-the-step, composing the conversions above. The host imports are async (the `bindgen!` above), so
+// instantiation and every fold run on an async store — a disk/network-backed backend an import awaits never
+// blocks the host thread.
+
+use crate::{Reducer, ReducerKind};
+use async_trait::async_trait;
+use wasmtime::component::{Component, Linker};
+use wasmtime::{Config, Engine, Store};
+
+/// The wasmtime [`Engine`] reducer components are compiled and run on: async (host imports may await) with the
+/// component model enabled. One engine is shared by every reducer on a host — it is the compilation context,
+/// cheap to clone, and holds no per-instance state.
+fn reducer_engine() -> Result<Engine, wasmtime::Error> {
+    let mut config = Config::new();
+    // Async so an awaiting host import (a disk/network KV or blob read) parks only the reducer, not the host
+    // thread (§3/§9).
+    config.async_support(true);
+    config.wasm_component_model(true);
+    Engine::new(&config)
+}
+
+/// Wire the host imports a reducer of the given [`ReducerKind`] may hold into `linker`, each backed by the
+/// [`HostState`] in the store. The kind decides the capability set (§3 trust root): EVERY reducer gets its own
+/// state, the content-addressed store, and its own id, but only an event reducer gets the privileged imports —
+/// the routing `graph` (and `deliver`/`provenance` once their node-shared context lands). This is the
+/// least-privilege wiring the world design rests on: an ordinary reducer's linker simply has no `graph`
+/// import, so a component that tries to import it fails to instantiate against that linker (the capability is
+/// enforced by what the kernel wires, never a runtime check an ordinary reducer could attempt).
+fn add_host_imports(
+    linker: &mut Linker<HostState>,
+    kind: ReducerKind,
+) -> Result<(), wasmtime::Error> {
+    // The floor every reducer stands on.
+    cadenza::platform::identity::add_to_linker::<_, HostData>(linker, |s| s)?;
+    cadenza::platform::blobs::add_to_linker::<_, HostData>(linker, |s| s)?;
+    cadenza::platform::state::add_to_linker::<_, HostData>(linker, |s| s)?;
+    // Privileged: only an event reducer may read and mutate the routing substrate (and, later, deliver and
+    // read program provenance).
+    if matches!(kind, ReducerKind::Event) {
+        cadenza::platform::graph::add_to_linker::<_, HostData>(linker, |s| s)?;
+    }
+    Ok(())
+}
+
+/// The `HasData` marker tying the generated host-import traits to [`HostState`] as the store data: every
+/// import reads and writes the one `HostState` the store holds, so the projection is the identity.
+struct HostData;
+impl wasmtime::component::HasData for HostData {
+    type Data<'a> = &'a mut HostState;
+}
+
+/// The engine and the wired host-import linkers — built once and shared by every reducer on a host. Nothing
+/// here varies per reducer: the engine is the shared compilation context, and each linker is a fixed
+/// capability set. There is one linker PER [`ReducerKind`] — the least-privilege split (§3): the ordinary
+/// linker wires only state/blobs/identity, the event linker adds the privileged `graph` (and, later,
+/// deliver/provenance). Both are built once and reused; instantiating against the linker for a reducer's kind
+/// is what enforces its capabilities (an ordinary reducer instantiated against the ordinary linker cannot
+/// resolve a `graph` import, so it simply cannot hold that capability).
+///
+/// Instantiation then reuses as much as possible: `preinstantiate` resolves a component's imports against the
+/// kind's linker ONCE (an [`EventReducerWorldPre`] — the reusable, import-resolved form), and each reducer is a
+/// cheap `instantiate` on a fresh store from that. What is NOT shared is the [`Store`]: it holds the instance's
+/// live state — its [`HostState`] and the guest's linear memory — so it is inherently per-reducer. (The
+/// per-program `Component`/[`EventReducerWorldPre`] is cached a layer up, by the program store keyed on the
+/// program hash, so even `preinstantiate` runs once per program, not once per reducer.)
+struct ReducerHost {
+    engine: Engine,
+    ordinary_linker: Linker<HostState>,
+    event_linker: Linker<HostState>,
+}
+
+impl ReducerHost {
+    /// Build the shared engine and wire one linker per reducer kind — once per host.
+    fn new() -> Result<Self, wasmtime::Error> {
+        let engine = reducer_engine()?;
+        let mut ordinary_linker = Linker::new(&engine);
+        add_host_imports(&mut ordinary_linker, ReducerKind::Ordinary)?;
+        let mut event_linker = Linker::new(&engine);
+        add_host_imports(&mut event_linker, ReducerKind::Event)?;
+        Ok(Self {
+            engine,
+            ordinary_linker,
+            event_linker,
+        })
+    }
+
+    /// The linker holding exactly the capabilities a reducer of `kind` is allowed.
+    fn linker_for(&self, kind: ReducerKind) -> &Linker<HostState> {
+        match kind {
+            ReducerKind::Ordinary => &self.ordinary_linker,
+            ReducerKind::Event => &self.event_linker,
+        }
+    }
+
+    /// Resolve `component`'s imports against the linker for `kind` once, yielding the reusable pre-instantiated
+    /// world. A component that imports more than its kind is granted (an ordinary reducer importing `graph`)
+    /// fails here — the capability split is enforced at link time. A program store caches this keyed on the
+    /// program hash, so the import-linking work happens once per program; every reducer of that program then
+    /// instantiates cheaply from it.
+    fn preinstantiate(
+        &self,
+        component: &Component,
+        kind: ReducerKind,
+    ) -> Result<EventReducerWorldPre<HostState>, wasmtime::Error> {
+        EventReducerWorldPre::new(self.linker_for(kind).instantiate_pre(component)?)
+    }
+
+    /// Instantiate a live reducer from a pre-instantiated world, backing its host imports with `host`. Only
+    /// this per-reducer step allocates a fresh [`Store`] (the reducer's own state); the engine, linker, and
+    /// `pre` are all shared. Async because the component model instantiates on an async store.
+    async fn instantiate(
+        &self,
+        pre: &EventReducerWorldPre<HostState>,
+        host: HostState,
+    ) -> Result<WasmReducer, wasmtime::Error> {
+        let mut store = Store::new(&self.engine, host);
+        let world = pre.instantiate_async(&mut store).await?;
+        Ok(WasmReducer { store, world })
+    }
+}
+
+/// A [`Reducer`](crate::Reducer) backed by a wasm component: the wasmtime `Store` carrying its [`HostState`]
+/// and the instantiated event-reducer world. Each folded event builds the WIT record, calls the matching
+/// guest export, and decodes the returned step. It is `Send` but not `Sync` (a `Store` is not `Sync`) — which
+/// is exactly what [`Reducer`](crate::Reducer) requires, since the runtime moves a reducer into its own task
+/// and drives it only through `&mut` from there. Built by [`ReducerHost::instantiate`].
+struct WasmReducer {
+    store: Store<HostState>,
+    world: EventReducerWorld,
+}
+
+// The three entry points share the same shape: encode the event, call the guest, decode the step. A wasm
+// trap or a guest returning a malformed step is a failed fold — it panics, which the system's per-fold
+// `catch_unwind` turns into the reducer's `Crashed` lifecycle event (§7), the same as any other fold failure.
+#[async_trait]
+impl Reducer for WasmReducer {
+    async fn on_message(&mut self, message: Message) -> (Vec<Request>, Outcome) {
+        let event = message_to_wit(&message);
+        let step = self
+            .world
+            .cadenza_platform_guest()
+            .call_on_message(&mut self.store, &event)
+            .await
+            .expect("reducer on_message trapped");
+        step_from_wit(step).expect("reducer returned a malformed step")
+    }
+
+    async fn on_response(&mut self, response: Response) -> (Vec<Request>, Outcome) {
+        let event = response_to_wit(&response);
+        let step = self
+            .world
+            .cadenza_platform_guest()
+            .call_on_response(&mut self.store, &event)
+            .await
+            .expect("reducer on_response trapped");
+        step_from_wit(step).expect("reducer returned a malformed step")
+    }
+
+    async fn on_notification(&mut self, notification: Notification) -> (Vec<Request>, Outcome) {
+        let event = notification_to_wit(&notification);
+        let step = self
+            .world
+            .cadenza_platform_guest()
+            .call_on_notification(&mut self.store, &event)
+            .await
+            .expect("reducer on_notification trapped");
+        step_from_wit(step).expect("reducer returned a malformed step")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::HostState;
@@ -528,4 +701,10 @@ mod tests {
             Err(StepError::MalformedContractId)
         );
     }
+
+    // The end-to-end driver test — instantiate the reducer-echo guest component, drive a message, assert the
+    // echo + the identity import round-trip — is deferred to the slice that wires the guest component into the
+    // reproducible nix build (operator: no committed .wasm fixture; the guest is built by cargo-component in
+    // the wasm CI job). It loads the nix-built artifact rather than an `include_bytes!` of a checked-in file.
+    // (Verified locally against a `cargo component build` of guests/reducer-echo before that wiring landed.)
 }

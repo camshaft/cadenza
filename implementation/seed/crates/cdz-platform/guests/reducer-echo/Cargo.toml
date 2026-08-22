@@ -1,0 +1,45 @@
+# cdz-platform-reducer-echo — a minimal reducer GUEST component, the host driver's end-to-end test fixture.
+#
+# A real wasm component targeting the `reducer-world` of the platform ABI (`../../wit/world.wit`): it
+# implements the `guest` export (on-message / on-response / on-notification) and calls the `identity` host
+# import, so instantiating and driving it exercises the whole path — the host provides the imports, the guest
+# folds an event and returns a `step`. The behaviour is a trivial echo (see src/lib.rs), enough to assert the
+# conversions and import wiring round-trip through a genuine component rather than a mock.
+#
+# Standalone (its own `[workspace]`) so the native seed `cargo build`/gate ignores it — exactly like cdz-nfc
+# and cdz-runtime. It is built for wasm32-unknown-unknown by `cargo component build` (NOT the routine gate),
+# and only the host tests behind the `host` feature consume the result.
+[workspace]
+
+[package]
+name = "cdz-platform-reducer-echo"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# The wit-bindgen runtime the generated component bindings need (same version cdz-nfc pins).
+wit-bindgen-rt = { version = "0.44", features = ["bitflags"] }
+
+# A no_std wasm component ships its own allocator (same as cdz-nfc / cdz-runtime) so it imports no wasi.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+talc = "5"
+
+[package.metadata.component]
+package = "cadenza:platform"
+
+# Target the SHARED platform ABI — no WIT duplication, so the guest is bound to the exact world the host
+# drives. `reducer-world` is the ordinary reducer (state/blobs/identity imports + the guest export); the
+# privileged event-reducer-world is a superset the host can still instantiate this component against.
+[package.metadata.component.target]
+path = "../../wit"
+world = "reducer-world"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = true
+codegen-units = 1
