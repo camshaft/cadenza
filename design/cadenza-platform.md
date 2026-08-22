@@ -89,6 +89,26 @@ schema change is a new contract — a new hash; a program answers a declared set
 contract-ids; an effect with no answering handler is a recorded failure. Routing is exact
 hash equality, with no tolerant reader and no version range to match.
 
+### Identity, validation, and documentation are separate
+
+The contract-id — the hash of the declaration — is the whole of a contract's *identity*, and
+that is deliberately all it is. Two further things attach to a contract without being part of
+that identity, and keeping them apart is what keeps the model clean:
+
+- **Validation** — whether a byte payload actually *is* a value of the contract's declared
+  type. This is a pure function of the schema, so it is *derived from* the contract, never a
+  program someone associates with it: the platform checks adherence by compiling the schema
+  into a validator and running it (section 4), and answers a malformed payload with a
+  schema-violation rather than passing bad bytes to a handler.
+- **Documentation** — what the contract is for and how to use it. This is human intent, not
+  derivable from the schema, so it is an *additive annotation* keyed by contract-id: any
+  number of documents may describe a contract, and none of them touches its identity or
+  routing.
+
+So "which contract is this" is the hash, "does this payload conform" is a derived, canonical
+check, and "what does it mean" is annotation — three separate things, never conflated into one
+"contract object."
+
 ---
 
 ## 2. Principles
@@ -167,8 +187,9 @@ sessions register handlers and spawn — one **reducer graph** holding the spawn
 supervision links, and the handler chains (a contract's chain is its own edges, keyed by the
 contract-id); the root-only override registry; and a small **privileged API** granted only to the
 system reducer. That API is two things: **deliver an event into a reducer's log** (addressed by
-reducer-id) — the routing act — and **read the routing substrate**: a contract's handler chain
-and the spawn tree, both in the one reducer graph. On an emitted effect the kernel looks up the
+reducer-id) — the routing act — and **read the routing substrate**: a contract's handler chain,
+the spawn tree, and the program-hash a given reducer runs (used for the provenance check in
+section 4), all in the one reducer graph. On an emitted effect the kernel looks up the
 system reducer for its contract and delivers the effect to it; that reducer reads the graph to
 assemble the chain across generations, then delivers along it — handing a message to a handler,
 folding a response back to a caller. Beyond that privileged API it is an ordinary
@@ -265,6 +286,34 @@ beyond the kernel binary:
 
 The aim is to shrink that residue toward nothing: every capability that fits a standard WASI
 interface is a plain wasm reducer, evolvable without touching the binary.
+
+### Running a program as a pure function
+
+Alongside running long-lived reducers, the kernel can run a program **once, as a pure
+function**: `run(program-hash, contract, input) -> output`. It is shaped like `spawn` + one
+addressed request + `terminate`, but the kernel provides it directly, because only the kernel
+can make it *pure* — and purity is what makes it cacheable:
+
+- **No capabilities.** The program runs with an empty capability set (section 5); every effect
+  it attempts is denied. All it can do is return its output — and a return is the fold's
+  result, not an emitted effect — so it cannot read the outside world, message a peer, arm a
+  timer, or write durable state.
+- **Null birth.** Its birth context is canonical-null: its id, its parent, its genesis nonce,
+  and its host (section 3, section 7) are fixed and identical on every invocation. So the
+  program cannot vary its behavior on *who* ran it, *where*, or *when* — there is nothing to
+  observe but the input.
+
+With no capabilities and no birth to observe, and a reducer being deterministic anyway
+(section 9), the output is a pure function of `(program-hash, input)`. So the kernel
+**memoizes** it — an LRU keyed by `(program-hash, input-hash) -> output`, and a hit skips
+execution entirely. Because the host is nulled too, the result does not depend on which node
+ran it: the cache is content-addressed and node-independent, so a result computed anywhere is
+valid everywhere.
+
+A `run` program is a computation, not a routable participant — nothing can address it (it
+answers only the one request, then it is gone), so it needs no real identity and leaves no
+trace. A program that genuinely needs an identity, a parent, or the world is a stateful
+reducer: `spawn` it. `run` is for the pure case, and its first use is validation (section 4).
 
 ### Session
 
@@ -639,6 +688,36 @@ open obligation by the answerer's `from` (section above) and routes it back down
 and the caller resumes in `on_response`.
 
 An effect for which no reducer answers is a recorded failure, not a silent drop.
+
+### Validating a payload against its contract
+
+A contract declares the type of its input and its output, so a payload either *is* a value of
+that type or it is not — and the platform checks, rather than taking the emitter's word for it.
+Validation is the **system reducer's** policy, applied at the boundary like authorization
+(section 5): before an effect or message reaches a handler's fold, the system reducer confirms
+the payload adheres to the contract, and answers a non-conforming one with an
+`Err(schema-violation)` that bubbles back to the sender — an ordinary recorded outcome, like a
+denial, not a special kernel event. Once a payload passes, downstream reducers may trust it
+conforms and need no defensive decoding.
+
+The validator is not a program someone registers against a contract; it is **derived from the
+schema**. The system reducer fetches the schema (it is the content the contract-id addresses),
+compiles it into a validator with `run(compiler-hash, …, schema) -> validator-hash`, then
+checks the payload with `run(validator-hash, …, payload) -> verdict`. Both are ordinary
+pure-function runs (section 3), so a schema compiles once ever per `(compiler-hash, schema)`
+and a repeated payload validates for free. The **compiler is a parameter, not baked in** — it
+is just another content-addressed program — so validation semantics are pinned by the chosen
+`compiler-hash` and can be evolved by pointing at a new one, without changing any contract-id.
+
+Validation would otherwise recurse — to check the compiler's input you would compile *its*
+contract, whose input you would check… — so it is grounded by **provenance**: the system
+reducer validates only inputs that came from *outside*, and trusts an input it emitted itself
+or a response to a request it made. "Emitted by me" is judged by program-hash, not id — the
+per-event system-reducer contexts are distinct ids running the *same* program, so the reducer
+compares `program_of(origin)` (the privileged program-hash read, section 3) against its own,
+and because the kernel stamps `origin` unforgeably (section 3) the trust cannot be spoofed. The
+compile-and-validate machinery is thus self-emitted and never re-validated; only external
+payloads are checked — exactly the set that needs it.
 
 ---
 
