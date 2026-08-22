@@ -1,0 +1,195 @@
+// The reducer ABI (design/cadenza-platform.md §3) — the strongly-typed WIT world every reducer is a
+// component of. A reducer is a content-addressed wasm module; the host instantiates it and drives it
+// through the exports here, and the reducer reaches the host (its state, the content-addressed store, its
+// own id) through the imports here. There is no custom native host: everything a reducer touches is a
+// standard component-model interface, so a reducer evolves by publishing a new module hash, never a host
+// redeploy (§2 principle 7).
+//
+// ── STRONGLY TYPED, WITH A CARRIED PAYLOAD ──────────────────────────────────────────────────────────
+// The reducer interface is typed: the entry points, the event envelopes (who sent it, the correlation
+// token, the contract-id), the emitted requests, and the outcome are all WIT types. The one thing carried
+// as opaque bytes is the contract *payload* — the input or output *value* of a contract — because that value
+// is contract-specific (§1) and the guest decodes it against the exact contract it was built for, through the
+// one canonical codec (§12). So the shape is fully typed and only the per-contract value is bytes: typed
+// where the platform owns the meaning, carried where the program does.
+//
+// ── ALL HOST IMPORTS ARE ASYNC ──────────────────────────────────────────────────────────────────────
+// Every host import (state, the content-addressed store) is provided asynchronously by the host, so a
+// disk- or network-backed backend never blocks the host thread while a reducer awaits it. This is a host
+// concern (the runtime runs the component on an async store): from the guest's view the calls look
+// ordinary — it awaits a result — so the interface below declares plain functions and the async-ness is the
+// host's, invisible to the reducer.
+//
+// ── TWO WORLDS ──────────────────────────────────────────────────────────────────────────────────────
+// This file declares the ORDINARY reducer world (`reducer`): the state and content-addressed-store imports
+// every reducer may hold. The PRIVILEGED system-reducer world — which adds delivering an event into another
+// reducer's log, reading the routing substrate, and reading a reducer's program-hash (§3/§4) — is a
+// superset declared in a later slice; the ordinary world here is the floor.
+package cadenza:platform;
+
+// The value types the reducer ABI is expressed over.
+interface types {
+  // A content hash — the sole identity in the system (§8): a contract, a reducer, a host, a program are
+  // each named by one. Carried as its raw bytes (a leading tag byte identifies what it names, §8); the host
+  // never imposes a struct on it, so the guest may compare and store it opaquely.
+  type hash = list<u8>;
+  // The identity of a contract: the hash of its declaration (§1). Routing is exact equality on this.
+  type contract-id = hash;
+  // A running reducer's identity (§3).
+  type reducer-id = hash;
+  // The identity of a node (§3) — the host a message was sent from.
+  type host-id = hash;
+
+  // A contract value in its canonical binary encoding (§12) — a contract's input or output. Opaque to the
+  // platform: the guest decodes it against the contract it names. This is the one carried-as-bytes part of
+  // the otherwise strongly-typed interface.
+  type payload = list<u8>;
+  // A caller-chosen token echoed back on the response, correlating a reply to the request it answers (§4).
+  type continuation-token = list<u8>;
+
+  // Where a message came from (§3): the sending reducer and the host that ran it. The kernel stamps both as
+  // envelope metadata a reducer cannot forge, so a reducer authenticates and routes on who sent an effect.
+  record origin {
+    reducer: reducer-id,
+    host: host-id,
+  }
+
+  // A runtime-level failure answering an effect (§4) — distinct from a handler's own domain error, which is
+  // an ordinary output value riding in the payload.
+  variant error {
+    // No answer arrived within the request's deadline (§4/§6).
+    timeout,
+    // No reducer answers the contract (§4).
+    missing-handler,
+    // The payload did not adhere to the contract's declared type (§4 validation).
+    schema-violation,
+  }
+}
+
+// The events a reducer folds, the requests it emits, and how a fold ends (§3/§4/§7).
+interface reducer {
+  use types.{contract-id, reducer-id, payload, continuation-token, origin, error};
+
+  // An effect performed ON this reducer by another (§3), folded through `on-message`. `sender` is the
+  // kernel-stamped origin; `payload` is the contract's input value.
+  record message {
+    contract: contract-id,
+    sender: origin,
+    payload: payload,
+    token: continuation-token,
+  }
+
+  // A reply to a request this reducer performed (§4), folded through `on-response`. Correlated to the
+  // request by `token`; `answer` is the contract's output value or a runtime failure.
+  record response {
+    contract: contract-id,
+    token: continuation-token,
+    answer: result<payload, error>,
+  }
+
+  // An unsolicited platform control-plane event (§3/§7) — a lifecycle event, a handler-availability change —
+  // folded through `on-notification`.
+  record notification {
+    contract: contract-id,
+    payload: payload,
+  }
+
+  // An effect this reducer emits (§3/§4): a request against a contract, carrying the input value and a
+  // correlation token, and optionally a deadline after which an unanswered request fails `timeout` (§4/§6).
+  record request {
+    contract: contract-id,
+    payload: payload,
+    token: continuation-token,
+    deadline-nanos: option<u64>,
+  }
+
+  // How a fold ends (§7): keep the session running for the next event, or close it with a typed reason —
+  // `schema` is the reason value's contract, `reason` its canonical bytes — which reaches the session's
+  // lifecycle subscribers as its `exited` event.
+  variant outcome {
+    continue,
+    close(closed),
+  }
+  record closed {
+    schema: contract-id,
+    reason: payload,
+  }
+
+  // What every entry point returns: the effects to perform this fold, and whether to continue or close.
+  record step {
+    requests: list<request>,
+    outcome: outcome,
+  }
+}
+
+// A reducer's own durable state (§7): a key-value store the reducer alone writes. Async on the host so a
+// disk/network backend never blocks; the guest awaits an ordinary result. Keys have a canonical order so a
+// prefix-scan and the effects emitted over it are deterministic across runs.
+interface state {
+  // A key or a stored value — arbitrary bytes.
+  type bytes = list<u8>;
+
+  // Read the value at `key`, or nothing if absent.
+  get: func(key: bytes) -> option<bytes>;
+  // Write `value` at `key`.
+  put: func(key: bytes, value: bytes);
+  // Remove `key` if present.
+  delete: func(key: bytes);
+  // A content-addressed root hash over the whole state after the current changes — a verifiable state root
+  // (§7).
+  root: func() -> bytes;
+
+  // A streaming prefix-scan (§7): a cursor over the entries whose key starts with `prefix`, in canonical key
+  // order, so a large scan never materializes at once. Dropping the cursor ends the scan.
+  resource prefix-scan {
+    // The next entry in key order, or nothing when the scan is exhausted.
+    next: func() -> option<entry>;
+  }
+  record entry {
+    key: bytes,
+    value: bytes,
+  }
+  scan: func(prefix: bytes) -> prefix-scan;
+}
+
+// The content-addressed store (§8): the one unpermissioned blob store, addressed by the hash of the bytes —
+// the hash *is* the capability, so any holder of a hash may read it. Async on the host.
+interface blobs {
+  use types.{hash};
+
+  // Read the bytes named by `hash`, or nothing if the store does not hold them.
+  get: func(hash: hash) -> option<list<u8>>;
+  // Store `bytes`, returning the hash that names them (§8).
+  put: func(bytes: list<u8>) -> hash;
+}
+
+// A reducer's own identity (§3) — a direct read, not an effect.
+interface identity {
+  use types.{reducer-id};
+
+  // This reducer's id.
+  id: func() -> reducer-id;
+}
+
+// The reducer entry points every reducer exports (§3): the host folds each delivered event through the
+// matching one, and the reducer returns the effects to perform and whether to continue or close.
+interface guest {
+  use reducer.{message, response, notification, step};
+
+  // Fold an effect performed on this reducer.
+  on-message: func(msg: message) -> step;
+  // Fold a reply to a request this reducer performed.
+  on-response: func(resp: response) -> step;
+  // Fold a platform control-plane event.
+  on-notification: func(note: notification) -> step;
+}
+
+// The ordinary reducer: a component that folds its events (the `guest` export) and reaches its own state,
+// the content-addressed store, and its own id (the imports). This is the floor every reducer stands on; the
+// privileged system-reducer world is a superset added in a later slice (§4).
+world reducer-world {
+  import state;
+  import blobs;
+  import identity;
+  export guest;
+}
