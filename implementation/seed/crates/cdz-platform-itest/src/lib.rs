@@ -18,15 +18,24 @@
 //! - [`RecordingProgramStore`] and [`RecordingReducer`] — the event tap: wrap the program store handed
 //!   to the kernel, and every reducer it instantiates records the events it folds, the requests it
 //!   emits, and its close (§3/§4/§10) — capturing the whole system's event flow with no kernel change.
+//! - [`Harness`] — the run-to-quiescence driver: spawn a reducer set, deliver initial events, drive the
+//!   platform under the bach simulator to quiescence, and return the log for a checker. Behind the `sim`
+//!   feature (it picks the simulator runtime); always available in this crate's own tests.
 //!
-//! Still to come: the driver that runs a reducer set to quiescence, and the checker ABI (a wasm program
-//! that reads the log and asserts).
+//! Still to come: the checker ABI (a wasm program that reads the log and asserts).
 
 mod event;
 mod log;
 mod store;
+// The driver drives the platform under the bach simulator, so it is compiled only where that runtime is
+// available: this crate's own tests, and an explicit `sim`-feature build (which enables cdz-platform's
+// `testing` feature and its BachRuntime). A plain build stays free of the simulator.
+#[cfg(any(test, feature = "sim"))]
+mod harness;
 
 pub use event::{RecordingProgramStore, RecordingReducer};
+#[cfg(any(test, feature = "sim"))]
+pub use harness::Harness;
 pub use log::{BlobOp, Entry, EventKind, EventOp, KvOp, ObservationLog, Record};
 pub use store::{RecordingBlobStore, RecordingKvStore};
 
@@ -452,5 +461,142 @@ mod event_tap_tests {
             .primary()
             .spawn();
         });
+    }
+}
+
+#[cfg(test)]
+mod harness_tests {
+    use super::{Entry, EventKind, EventOp, Harness};
+    use bytes::Bytes;
+    use cdz_platform::{
+        ContractId, Delivered, HostId, Links, Message, Notification, Origin, Outcome, ProgramHash,
+        Reducer, ReducerId, ReducerKind, Request, Response, Spawn,
+    };
+
+    /// A reducer that emits one effect against a contract and closes on its first message.
+    struct EmitAndClose {
+        contract: ContractId,
+    }
+    #[async_trait::async_trait]
+    impl Reducer for EmitAndClose {
+        async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
+            (
+                vec![Request {
+                    id: self.contract,
+                    payload: Bytes::from_static(b"effect"),
+                    continuation_token: Bytes::from_static(b"k"),
+                    deadline: None,
+                }],
+                Outcome::Break {
+                    schema: ContractId::of(b"done"),
+                    reason: Bytes::from_static(b"emitted"),
+                },
+            )
+        }
+        async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+    }
+
+    /// A stand-in system reducer: closes on the routed effect it receives.
+    struct JustClose;
+    #[async_trait::async_trait]
+    impl Reducer for JustClose {
+        async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
+            (
+                Vec::new(),
+                Outcome::Break {
+                    schema: ContractId::of(b"shepherded"),
+                    reason: Bytes::new(),
+                },
+            )
+        }
+        async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+    }
+
+    /// Build a fresh harness for the same run — an emitter that performs one effect and closes, plus the
+    /// default system reducer that shepherds it — so it can be run more than once.
+    fn emitter_run() -> Harness<cdz_platform::testing::program::Store> {
+        let emitter = ReducerId::of(b"emitter");
+        let http = ContractId::of(b"http.get");
+        let mut store = cdz_platform::testing::program::Store::new();
+        store.register(ProgramHash::of(b"emitter"), move || {
+            Box::new(EmitAndClose { contract: http })
+        });
+        store.register(ProgramHash::of(b"sys"), || Box::new(JustClose));
+
+        Harness::new(store, ProgramHash::of(b"sys"))
+            .host(HostId::of(b"node"))
+            .spawn(Spawn {
+                id: emitter,
+                program: ProgramHash::of(b"emitter"),
+                nonce: Bytes::from_static(b"nonce"),
+                parent: emitter,
+                kind: ReducerKind::Ordinary,
+                links: Links::NONE,
+            })
+            .deliver(
+                emitter,
+                Delivered::Message(Message {
+                    id: ContractId::of(b"go"),
+                    payload: Bytes::from_static(b"x"),
+                    from: Origin {
+                        reducer: ReducerId::of(b"caller"),
+                        host: HostId::of(b"node"),
+                    },
+                    continuation_token: Bytes::from_static(b"t"),
+                }),
+            )
+    }
+
+    #[test]
+    fn the_driver_runs_a_reducer_set_to_quiescence_and_returns_the_event_log() {
+        let http = ContractId::of(b"http.get");
+        let emitter = ReducerId::of(b"emitter");
+        let records = emitter_run().run();
+
+        assert!(!records.is_empty(), "the run produced observations");
+        // The emitter emitted its effect and then closed.
+        assert!(
+            records.iter().any(|r| matches!(&r.entry,
+                Entry::Event(EventOp::Emitted { contract, .. }) if *contract == http)
+                && r.source.reducer == emitter),
+            "the emitter's effect was recorded"
+        );
+        assert!(
+            records
+                .iter()
+                .any(|r| matches!(&r.entry, Entry::Event(EventOp::Closed { .. }))
+                    && r.source.reducer == emitter),
+            "the emitter's close was recorded"
+        );
+        // The kernel-spawned system reducer received the routed effect as a message from the emitter, so
+        // the run drove past the initial delivery through the effect's dispatch to quiescence.
+        assert!(
+            records.iter().any(|r| matches!(&r.entry,
+                Entry::Event(EventOp::Delivered {
+                    kind: EventKind::Message, contract, from: Some(o), ..
+                }) if *contract == http && o.reducer == emitter)),
+            "the routed effect reached the system reducer"
+        );
+    }
+
+    #[test]
+    fn the_driver_is_deterministic_two_identical_runs_produce_the_same_log() {
+        // Determinism via bach is part of the harness contract (operator directive): the same run, driven
+        // under the deterministic simulator, produces byte-for-byte the same observation log every time —
+        // same events, same order (seq), same simulated timestamps. This is exactly what lets a checker
+        // assert over the log without flake.
+        let first = emitter_run().run();
+        let second = emitter_run().run();
+        assert_eq!(first, second, "two identical runs yield an identical log");
     }
 }

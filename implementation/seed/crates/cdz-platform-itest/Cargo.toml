@@ -21,6 +21,15 @@ version = "0.0.0"
 edition = "2024"
 publish = false
 
+[features]
+# The run-to-quiescence driver (Harness) drives the platform under the bach simulator, so it needs both
+# the bach crate and cdz-platform's BachRuntime (behind that crate's `testing` feature). Enabling `sim`
+# turns both on. The log and the recording decorators (stores + event tap) are runtime-agnostic and need
+# neither this feature nor bach, so a plain build stays light; only the driver pulls the simulator in.
+# The driver is also always available in this crate's own tests (cfg(test)), where bach is a
+# dev-dependency and the cdz-platform dev-dependency already enables `testing`.
+sim = ["dep:bach", "cdz-platform/testing"]
+
 [dependencies]
 # The platform whose run we observe. Default features only: the observation log and the recording
 # store decorators layer over cdz-platform's public trait surface (KvStore, BlobStore, the typed ids,
@@ -32,6 +41,10 @@ bytes = "1"
 # The recording decorators implement cdz-platform's #[async_trait] store traits, so a recording store
 # is itself a swappable KvStore/BlobStore trait object drop-in.
 async-trait = "0.1"
+# Bach (the deterministic simulator) is the runtime the Harness driver runs the platform on. An optional
+# normal dependency the `sim` feature enables — a plain build (log + recording decorators only) never
+# pulls it in. It is also a dev-dependency below, so this crate's own tests always have it without `sim`.
+bach = { version = "0.1", optional = true }
 
 [dev-dependencies]
 # The platform's test-support, enabled only for this crate's test/bench build (a dev-dependency),
