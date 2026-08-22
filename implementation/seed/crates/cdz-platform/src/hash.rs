@@ -147,6 +147,20 @@ impl Hash {
     }
 }
 
+/// Read a hash back from raw bytes (section 8) — the on-wire / in-store form a hash arrives as when it
+/// crosses a boundary that carries it as a byte slice (a WIT payload, a stored key). Fails if the slice is
+/// not exactly [`Hash::LEN`] bytes, so a wrong-length slice names no hash rather than being silently
+/// truncated or padded. The tag byte is not validated here (an unknown tag is still a well-formed hash, just
+/// one [`tag`](Hash::tag) reports as `None`) — this is the length-checked counterpart of the infallible
+/// [`from_bytes`](Hash::from_bytes).
+impl TryFrom<&[u8]> for Hash {
+    type Error = std::array::TryFromSliceError;
+
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        Ok(Self::from_bytes(<[u8; Self::LEN]>::try_from(bytes)?))
+    }
+}
+
 /// An incremental hash builder tagged with a [`HashTag`] — feed bytes with [`update`](Hasher::update), then
 /// [`finalize`](Hasher::finalize) to a [`Hash`]. blake3 under the hood; the same digest as [`Hash::of`]
 /// over the concatenation of the fed bytes. Feeding fixed-size fields before a variable-length one keeps
@@ -615,6 +629,16 @@ mod tests {
     fn hash_from_bytes_and_as_bytes_are_inverse() {
         let bytes = *Hash::of(HashTag::Blob, b"roundtrip the raw digest").as_bytes();
         assert_eq!(*Hash::from_bytes(bytes).as_bytes(), bytes);
+    }
+
+    #[test]
+    fn try_from_a_slice_round_trips_and_rejects_a_wrong_length() {
+        let h = Hash::of(HashTag::Blob, b"round-trip through a slice");
+        // A slice of exactly `Hash::LEN` bytes reconstructs the hash it came from.
+        assert_eq!(Hash::try_from(h.as_bytes().as_slice()).unwrap(), h);
+        // Anything shorter or longer names no hash.
+        assert!(Hash::try_from(b"too short".as_slice()).is_err());
+        assert!(Hash::try_from([0u8; Hash::LEN + 1].as_slice()).is_err());
     }
 
     #[test]

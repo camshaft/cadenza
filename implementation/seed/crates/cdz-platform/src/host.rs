@@ -39,16 +39,14 @@ use cadenza::platform::reducer as wit_reducer;
 use cadenza::platform::types as wit_types;
 
 /// A reducer-id or edge-kind crosses the WIT boundary as its raw hash bytes; a value that is not exactly
-/// `Hash::LEN` bytes names nothing, so it converts to `None` and the graph op treats it as a miss.
+/// `Hash::LEN` bytes names nothing (`ReducerId`/`EdgeKind`'s `TryFrom<&[u8]>` rejects it), so it converts to
+/// `None` and the graph op treats it as a miss. Naming the miss-on-malformed intent once keeps the graph
+/// call sites reading as plain lookups.
 fn to_reducer(bytes: &[u8]) -> Option<ReducerId> {
-    Some(ReducerId::from_hash(Hash::from_bytes(
-        <[u8; Hash::LEN]>::try_from(bytes).ok()?,
-    )))
+    ReducerId::try_from(bytes).ok()
 }
 fn to_kind(bytes: &[u8]) -> Option<EdgeKind> {
-    Some(EdgeKind::from_hash(Hash::from_bytes(
-        <[u8; Hash::LEN]>::try_from(bytes).ok()?,
-    )))
+    EdgeKind::try_from(bytes).ok()
 }
 fn from_reducers(ids: Vec<ReducerId>) -> Vec<Vec<u8>> {
     ids.into_iter()
