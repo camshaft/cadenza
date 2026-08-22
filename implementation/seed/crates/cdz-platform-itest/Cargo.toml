@@ -1,0 +1,47 @@
+# cdz-platform-itest — an executable integration-test harness for the Cadenza platform
+# (design/cadenza-platform.md).
+#
+# The platform runs opaque program blobs and reducers to completion; this crate observes that run and
+# lets a checker assert over what happened. It is the design's optional observation log (§9) made
+# concrete for tests: record every event a reducer folds and every store operation it makes — what,
+# by whom, and when — into one language-neutral log, then run a checker over that log.
+#
+# The observation must make no assumption that a program is Cadenza, or Rust, or anything: inputs are
+# opaque blobs and the checker is a wasm program. So the log records only the platform-level facts a
+# deployment could observe of any reducer — the delivered/emitted events and the key-value and blob
+# store calls — never a program's internal shape. That neutrality is the contract this crate builds.
+#
+# A normal member of the seed workspace (the `crates/*` glob), so it gets per-crate clippy and
+# workspace-test coverage. It layers over cdz-platform's public trait surface (the swappable KvStore
+# and BlobStore backends, §7/§8) and adds no heavy dependency of its own; the wasm-checker execution
+# path arrives with cdz-platform's wasm host slice and stays behind a feature then, like the host does.
+[package]
+name = "cdz-platform-itest"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+# The platform whose run we observe. Default features only: the observation log and the recording
+# store decorators layer over cdz-platform's public trait surface (KvStore, BlobStore, the typed ids,
+# and the event value types), none of which needs the testing or host feature.
+cdz-platform = { path = "../cdz-platform" }
+# Every byte buffer is bytes::Bytes, never Vec<u8> (spec §12) — a recorded key/value/payload is an
+# O(1) refcount clone as it lands in the log, not a copy.
+bytes = "1"
+# The recording decorators implement cdz-platform's #[async_trait] store traits, so a recording store
+# is itself a swappable KvStore/BlobStore trait object drop-in.
+async-trait = "0.1"
+
+[dev-dependencies]
+# The platform's test-support, enabled only for this crate's test/bench build (a dev-dependency),
+# never for a normal build: it exposes BachRuntime, whose deterministic `now` clock the tests stamp
+# records with to prove the log is deterministic under the simulator.
+cdz-platform = { path = "../cdz-platform", features = ["testing"] }
+# tokio drives the async store traits in the crate's own unit tests (the plain-await tests).
+tokio = { version = "1", features = ["rt", "macros"] }
+# futures-util's StreamExt drains a recorded scan's stream in tests.
+futures-util = "0.3"
+# Bach (the deterministic simulator) drives the same store futures in simulated time — the seam that
+# proves the log is deterministic under bach, matching cdz-platform's own store tests.
+bach = "0.1"
