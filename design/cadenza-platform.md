@@ -695,17 +695,21 @@ Two contracts cover all of time:
 - **now** — an effect whose result is the current time, recorded as a result event. This is
   how a program learns the time, deterministically. It is capability-gated: a program can be
   denied the clock entirely.
-- **fire-after(duration)** — the only timer primitive. The runtime wakes the session
-  later by delivering a timer-fired event carrying the recorded fire time. Absolute
-  deadlines and crons are built on top: to fire at a wall-clock moment, a program reads
-  `now`, computes the delay, and arms `fire-after`; a cron is a program that, on each fire,
-  does its work and arms the next timer from the recorded fire time.
+- **fire-after(duration)** — the only timer primitive. A reducer arms it as an ordinary
+  request whose payload is a relative `duration` (in nanoseconds); the runtime waits that
+  long on its clock and then wakes the reducer with the **fired time as the response to that
+  request**, correlated by the request's own continuation-token — there is no separate arm
+  event and no bespoke correlation field. Absolute deadlines and crons are built on top: to
+  fire at a wall-clock moment, a program reads `now`, computes the delay, and arms
+  `fire-after`; a cron is a program that, on each fire, does its work and arms the next timer
+  from the recorded fire time.
 
-The timer's arm event records an **absolute deadline anchor** so that a session which
-moves between nodes computes the right remaining time; the program still never reads the
-clock, because it only ever sees the recorded fired time. The timer runs against the
-runtime's clock, but the reducer never reads that clock itself — it sees only the fired time
-delivered in the timer-fired event and folded into its state.
+The reducer never reads the runtime's clock itself — it only ever sees the recorded fired
+time carried in the response and folded into its state, so the fold is deterministic and
+migration-safe regardless of which node ran the timer. A pending timer is bound to the
+reducer that armed it: when that reducer's session ends — closing, breaking, or crashing —
+its still-pending arms are cancelled, so a timer never fires into a reducer that is gone and
+none outlives its owner.
 
 Reacting is the whole scheduling model. There is no polling. A program instance runs,
 returns, and the session waits in one of two ways, each with a clean wake:
@@ -1020,8 +1024,9 @@ room for a signature and producer identity (recorded when multiple operators lan
 - **result(contract, outcome, continuation-token)** — the outcome of a dispatched effect,
   correlated by its continuation-token. A denial is one such outcome (an error the authz
   middleware answered with, section 5), not a distinct kernel event.
-- **timer-armed(deadline, continuation-token)** and **timer-fired(fired-time,
-  continuation-token)** — the timer events (section 6).
+- **fire-after(duration, continuation-token)** — a reducer arming a timer (an ordinary
+  request carrying the relative duration) — and **timer-fired(fired-time, continuation-token)**
+  — the recorded fire time delivered back as that request's result — the timer events (section 6).
 - **fold-failed(reason, caused-event)** — a fold that trapped or exhausted fuel (section 3).
 - **closed(reason)** / **terminated(by, reason)** — the session ended itself (it returned a
   `Break(schema, reason)` outcome), or was ended by another (section 7).
