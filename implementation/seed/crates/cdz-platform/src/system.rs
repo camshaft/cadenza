@@ -19,6 +19,7 @@
 //! production, bach in tests): each reducer is a task draining a channel mailbox, loading its program inside
 //! its own task so a slow load blocks no one.
 
+use crate::cancel::CancelScope;
 use crate::{
     Bytes, ContractId, Deliver, Delivered, EdgeKind, EventRegistry, FireAfter, Fired, Genesis,
     Hash, HashTag, HostId, Lifecycle, Message, Origin, Outcome, ProgramHash, ProgramStore, Reducer,
@@ -273,6 +274,10 @@ impl<R: Runtime> Shared<R> {
                     reducers: Arc::clone(&shared.reducers),
                     id,
                 };
+                // The cancellation scope for this reducer's in-flight timer tasks. Dropping it when the task
+                // ends any way — clean close, break, mailbox close, or an unwinding crash — cancels every arm
+                // still pending, so no timer outlives the reducer that armed it (§6/§7).
+                let timers = CancelScope::new();
                 let mut break_reason: Option<(ContractId, Bytes)> = None;
                 // The rolling hash each per-event context id is derived from — seeded with this reducer's nonce
                 // and advanced once per routed effect, so every effect gets a distinct, replay-stable context
@@ -313,7 +318,10 @@ impl<R: Runtime> Shared<R> {
                                     let shared = Arc::clone(&shared);
                                     let armed = id;
                                     let token = request.continuation_token;
-                                    R::spawn(async move {
+                                    // Spawn the wait-then-wake future through this reducer's cancel scope, so
+                                    // it is aborted if the reducer exits before it fires (§6/§7). The scope
+                                    // only wraps the future; the runtime still does the spawning.
+                                    R::spawn(timers.wrap(async move {
                                         R::sleep(Duration::from_nanos(arm.duration)).await;
                                         let fired = Fired {
                                             fired_time: R::now(),
@@ -326,7 +334,7 @@ impl<R: Runtime> Shared<R> {
                                                 payload: Ok(fired.encode()),
                                             }),
                                         );
-                                    });
+                                    }));
                                 }
                             } else {
                                 // An ordinary effect: the kernel looks up the system reducer for the contract,
@@ -1216,6 +1224,33 @@ mod tests {
         }
     }
 
+    /// A reducer that arms a timer and closes in the same fold — so it exits with a fire-after still pending,
+    /// which the system must cancel.
+    struct ArmThenClose {
+        duration: u64,
+    }
+    #[async_trait::async_trait]
+    impl Reducer for ArmThenClose {
+        async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
+            let arm = FireAfter {
+                duration: self.duration,
+            };
+            (
+                vec![arm.into_request(Bytes::from_static(b"pending"))],
+                Outcome::Break {
+                    schema: cid(b"closed"),
+                    reason: Bytes::new(),
+                },
+            )
+        }
+        async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+    }
+
     #[test]
     fn a_reducer_that_arms_a_fire_after_timer_is_woken_after_the_duration() {
         use bach::ext::*;
@@ -1314,6 +1349,66 @@ mod tests {
                 let (token, fired_time) = heard_rx.recv().await.expect("the long timer fired next");
                 assert_eq!(token, Bytes::from_static(b"long"));
                 assert!(fired_time >= 50_000_000, "recorded fire time {fired_time}");
+            }
+            .group("system")
+            .primary()
+            .spawn();
+        });
+    }
+
+    #[test]
+    fn a_reducers_pending_timer_is_cancelled_when_it_exits() {
+        use bach::ext::*;
+        bach::sim(|| {
+            async {
+                // A reducer arms a 100ms timer then closes in the same fold, so it exits with the arm still
+                // pending — the system must cancel it, not let it fire into the void (or a later reducer). To
+                // observe that, we re-use the SAME id for a fresh reducer that would forward any fire it
+                // receives: if the pending timer had NOT been cancelled, its late `Fired` would land on the
+                // reused id and show up on the channel.
+                let id = rid(b"ephemeral");
+                let (heard, mut heard_rx) = bach::sync::mpsc::unbounded_channel();
+                let mut store = crate::testing::program::Store::new();
+                store.register(prog(b"arm-then-close"), || {
+                    Box::new(ArmThenClose {
+                        duration: 100_000_000,
+                    })
+                });
+                // The catcher never arms its own timer (it is delivered no message); it only forwards a `Fired`
+                // response — which should never arrive, because the earlier arm was cancelled on exit.
+                store.register(prog(b"catcher"), move || {
+                    Box::new(Armer {
+                        duration: 0,
+                        token: Bytes::new(),
+                        heard: heard.clone(),
+                    })
+                });
+                let system = TaskSystem::<BachRuntime>::new(
+                    Arc::new(store),
+                    Arc::new(InMemoryReducerGraph::new()),
+                    Arc::new(InMemoryEventRegistry::new(prog(b"sys"))),
+                    HostId::of(b"node"),
+                );
+                system
+                    .spawn(root(id, prog(b"arm-then-close"), ReducerKind::Ordinary))
+                    .await
+                    .unwrap();
+                // Arm the 100ms timer and close; give the sim a moment for the reducer to fold, exit, and
+                // cancel its pending arm.
+                assert!(system.deliver(id, a_message(cid(b"go"))).await.unwrap());
+                bach::time::sleep(core::time::Duration::from_millis(1)).await;
+                // Re-use the id for a fresh reducer that would catch a leaked late fire.
+                system
+                    .spawn(root(id, prog(b"catcher"), ReducerKind::Ordinary))
+                    .await
+                    .unwrap();
+                // Advance well past the original 100ms duration. A cancelled arm never fires, so nothing
+                // reaches the reused id. (A negative assertion needs a timed check, not a blocking `recv`.)
+                bach::time::sleep(core::time::Duration::from_millis(200)).await;
+                assert!(
+                    heard_rx.try_recv().is_err(),
+                    "the pending timer was cancelled on exit, so no fire reached the reused id"
+                );
             }
             .group("system")
             .primary()
