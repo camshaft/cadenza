@@ -27,6 +27,10 @@ mod event_registry;
 mod genesis;
 mod graph;
 mod hash;
+// The wasm-runtime host (§3) — wasmtime instantiates a reducer component and drives it through the WIT world.
+// Behind the `host` feature (off by default) so the routine build/gate never pays for the heavy runtime.
+#[cfg(feature = "host")]
+mod host;
 mod ids;
 mod kv;
 mod lifecycle;

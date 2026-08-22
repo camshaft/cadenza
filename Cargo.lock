@@ -418,6 +418,7 @@ dependencies = [
  "futures-util",
  "num-bigint",
  "tokio",
+ "wasmtime",
 ]
 
 [[package]]
