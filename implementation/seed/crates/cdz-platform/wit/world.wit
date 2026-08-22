@@ -22,7 +22,7 @@
 //
 // ── TWO WORLDS ──────────────────────────────────────────────────────────────────────────────────────
 // This file declares the ORDINARY reducer world (`reducer`): the state and content-addressed-store imports
-// every reducer may hold. The PRIVILEGED system-reducer world — which adds delivering an event into another
+// every reducer may hold. The PRIVILEGED event-reducer world — which adds delivering an event into another
 // reducer's log, reading the routing substrate, and reading a reducer's program-hash (§3/§4) — is a
 // superset declared in a later slice; the ordinary world here is the floor.
 package cadenza:platform;
@@ -39,6 +39,10 @@ interface types {
   type reducer-id = hash;
   // The identity of a node (§3) — the host a message was sent from.
   type host-id = hash;
+
+  // The identity of a program: the content hash of a reducer's wasm module (§8). A reducer runs a program;
+  // `routing.program-of` reads which one, for the provenance check that grounds validation (§4).
+  type program-hash = hash;
 
   // A contract value in its canonical binary encoding (§12) — a contract's input or output. Opaque to the
   // platform: the guest decodes it against the contract it names. This is the one carried-as-bytes part of
@@ -186,10 +190,109 @@ interface guest {
 
 // The ordinary reducer: a component that folds its events (the `guest` export) and reaches its own state,
 // the content-addressed store, and its own id (the imports). This is the floor every reducer stands on; the
-// privileged system-reducer world is a superset added in a later slice (§4).
+// privileged event-reducer world below is a superset.
 world reducer-world {
   import state;
   import blobs;
   import identity;
+  export guest;
+}
+
+// ── The privileged event-reducer surface (§3/§4) ────────────────────────────────────────────────────
+// An event reducer is an ordinary reducer plus the privileged access the kernel grants only to it, because
+// the whole security model rests on the chosen event reducer being correct (§3 trust root). That access is
+// two things: the reducer GRAPH — the one general structure holding the spawn tree, the supervision links,
+// and the handler chains — which it both reads and updates to route, supervise, and validate; and DELIVER —
+// injecting an event into a reducer's log, the routing act itself.
+//
+// These are host IMPORTS, not effects, and that is the deliberate line: kernel primitives are explicit,
+// static WIT imports; userspace interaction is schema/contract-based effects. The kernel surface is small
+// and stable, so it gains nothing from the dynamic contract machinery and much from being static — a
+// component's imports ARE its capability set, so whether it may deliver or touch the graph is visible in its
+// world and wired by the kernel only for the modules the trust root installs (§3), never a runtime-checked
+// privilege an ordinary reducer could even attempt. (Delivery is not a routed effect for a second reason:
+// routing an effect *is* reading the graph and delivering along the chain, so the routing act cannot itself
+// be a routed effect without circularity. A userspace *message* to a peer is still an ordinary effect, §1 —
+// that is the layer above, which this primitive implements.)
+
+// The reducer graph (§3): the one routing substrate, kept general-purpose — a set of reducer nodes and
+// typed, directed, weighted edges between them. An edge KIND is a hash, so the well-known relationships (the
+// spawn tree, supervision, and a contract's handler chain — whose kind IS the contract-id) and any
+// relationship an event reducer mints for itself are the same structure, read and mutated through one API.
+// Async on the host. This is the primitive; the conveniences (a contract's chain, a reducer's parent or
+// watchers) are reads an event reducer composes from `neighbors`/`in-kinds`, not separate host calls.
+interface graph {
+  use types.{reducer-id};
+
+  // An edge kind — a hash. The spawn tree, supervision, and each contract's handler chain are well-known
+  // kinds; an event reducer may mint its own from any hash.
+  type edge-kind = list<u8>;
+
+  // The direction of an edge relative to a node: edges leaving it, or edges entering it.
+  enum dir {
+    outgoing,
+    incoming,
+  }
+
+  // Add `node` to the active set with no edges; false if it is already present.
+  insert: func(node: reducer-id) -> bool;
+  // Whether `node` is in the active set.
+  contains: func(node: reducer-id) -> bool;
+  // Remove `node` and every edge incident to it — either direction, any kind; false if it was absent.
+  remove: func(node: reducer-id) -> bool;
+
+  // Add a `kind` edge `source -> target`; false if either endpoint is absent or the edge already exists.
+  link: func(source: reducer-id, target: reducer-id, kind: edge-kind) -> bool;
+  // Replace all of `source`'s `kind` out-edges with `targets`, in order (each linked at its index as its
+  // weight), returning the prior ordered targets; an empty `targets` clears the kind. This is the atomic
+  // whole-chain replace a handler-chain update needs (§7).
+  set-edges: func(source: reducer-id, kind: edge-kind, targets: list<reducer-id>) -> list<reducer-id>;
+
+  // `node`'s direct neighbours along `kind` edges in direction `dir`, in weight-then-id order (so a weighted
+  // chain returns in chain order). Empty for an unknown node or one with no such edges.
+  neighbors: func(node: reducer-id, kind: edge-kind, dir: dir) -> list<reducer-id>;
+  // The distinct kinds of `node`'s in-edges — what relationships point at it.
+  in-kinds: func(node: reducer-id) -> list<edge-kind>;
+  // The nodes reachable from `node` by following `kind` edges in `dir`, nearest first, excluding `node`.
+  reach: func(node: reducer-id, kind: edge-kind, dir: dir) -> list<reducer-id>;
+}
+
+// The routing act (§4): deliver an event into a reducer's log, addressed by reducer-id. This is the
+// privileged mechanism the event reducer uses to route — having read the graph for a contract's chain, it
+// hands a message to the next handler or folds a response back to a caller by delivering here. A host import
+// present only in this world (an ordinary reducer cannot name it), so the capability is static.
+interface deliver {
+  use types.{reducer-id};
+  use reducer.{message, response, notification};
+
+  // Inject an event into the log of the reducer named by `target`, one function per entry point the target
+  // folds it through. Each returns whether the target received it — the delivery outcome (§1); false is an
+  // unknown or gone target.
+  deliver-message: func(target: reducer-id, event: message) -> bool;
+  deliver-response: func(target: reducer-id, event: response) -> bool;
+  deliver-notification: func(target: reducer-id, event: notification) -> bool;
+}
+
+// A privileged read of which program a reducer runs (§3/§4), separate from the graph's edges. The basis of
+// the provenance check that grounds validation: an input whose origin runs the same program as the event
+// reducer is self-emitted and trusted, so validation does not recurse; `origin` is kernel-stamped and this
+// read is authoritative, so the trust cannot be spoofed.
+interface provenance {
+  use types.{reducer-id, program-hash};
+
+  program-of: func(reducer: reducer-id) -> program-hash;
+}
+
+// The event reducer: an ordinary reducer plus the reducer graph (read and update), the deliver primitive, and
+// the program-hash read.
+// The override registry names which content-addressed module governs a contract's events, and only that
+// module is instantiated in this world (§3 trust root).
+world event-reducer-world {
+  import state;
+  import blobs;
+  import identity;
+  import graph;
+  import deliver;
+  import provenance;
   export guest;
 }
