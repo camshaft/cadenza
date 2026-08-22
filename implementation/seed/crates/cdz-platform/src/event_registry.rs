@@ -149,4 +149,23 @@ mod tests {
         assert_eq!(reg.overrides(), 0);
         assert_eq!(reg.clear_override(cid("c")), None);
     }
+
+    /// The registry resolves under Cameron's Bach simulator, not just tokio — `resolve` is await-only and
+    /// the in-memory map is runtime-agnostic, so Bach drives it unchanged (the seam for deterministic
+    /// dispatch, where routing an effect resolves the system reducer for its contract).
+    #[test]
+    fn event_registry_resolves_under_the_bach_simulator() {
+        use bach::ext::*;
+        bach::sim(|| {
+            async {
+                let mut reg = InMemoryEventRegistry::new(prog("default"));
+                reg.set_override(cid("http.get"), prog("custom"));
+                assert_eq!(reg.resolve(cid("http.get")).await, prog("custom"));
+                assert_eq!(reg.resolve(cid("other")).await, prog("default"));
+            }
+            .group("event-registry")
+            .primary()
+            .spawn();
+        });
+    }
 }

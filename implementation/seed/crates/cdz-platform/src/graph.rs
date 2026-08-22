@@ -763,4 +763,25 @@ mod tests {
             "no reverse edge for a handler that was not in the active set at set time"
         );
     }
+
+    /// The graph answers under Cameron's Bach simulator as under tokio — its operations are await-only over
+    /// an in-memory map, so the routing substrate drives unchanged on the deterministic simulator (the seam
+    /// for replaying dispatch, which reads the spawn tree and handler chains from here).
+    #[test]
+    fn graph_drives_under_the_bach_simulator() {
+        use bach::ext::*;
+        bach::sim(|| {
+            async {
+                let g = InMemoryReducerGraph::new();
+                g.insert(r("root")).await;
+                g.insert(r("child")).await;
+                g.link(r("child"), r("root"), EdgeKind::spawn()).await;
+                assert_eq!(g.parent(r("child")).await, Some(r("root")));
+                assert_eq!(g.children(r("root")).await, vec![r("child")]);
+            }
+            .group("reducer-graph")
+            .primary()
+            .spawn();
+        });
+    }
 }
