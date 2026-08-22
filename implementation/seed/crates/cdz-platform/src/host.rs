@@ -22,7 +22,26 @@ wasmtime::component::bindgen!({
     exports: { default: async },
 });
 
-use crate::{BlobStore, Bytes, Hash, KvStore, ReducerId};
+use crate::{BlobStore, Bytes, EdgeKind, Hash, KvStore, ReducerGraph, ReducerId};
+use std::sync::Arc;
+
+/// A reducer-id or edge-kind crosses the WIT boundary as its raw hash bytes; a value that is not exactly
+/// `Hash::LEN` bytes names nothing, so it converts to `None` and the graph op treats it as a miss.
+fn to_reducer(bytes: &[u8]) -> Option<ReducerId> {
+    Some(ReducerId::from_hash(Hash::from_bytes(
+        <[u8; Hash::LEN]>::try_from(bytes).ok()?,
+    )))
+}
+fn to_kind(bytes: &[u8]) -> Option<EdgeKind> {
+    Some(EdgeKind::from_hash(Hash::from_bytes(
+        <[u8; Hash::LEN]>::try_from(bytes).ok()?,
+    )))
+}
+fn from_reducers(ids: Vec<ReducerId>) -> Vec<Vec<u8>> {
+    ids.into_iter()
+        .map(|id| id.hash().as_bytes().to_vec())
+        .collect()
+}
 
 /// The host state threaded through a running reducer component's wasmtime store — what the host imports read
 /// and write on the reducer's behalf. For now it carries the reducer's own id (the `identity` import) and the
@@ -36,6 +55,10 @@ struct HostState {
     blobs: Box<dyn BlobStore>,
     /// The reducer's own key-value state (§7), backing the `state` import.
     kv: Box<dyn KvStore>,
+    /// The one shared reducer graph (§3), backing the privileged `graph` import — an event reducer both reads
+    /// and updates it to route and supervise. Shared (an `Arc`), since it is the node-wide routing substrate,
+    /// not per-reducer; an ordinary reducer holds the handle but its linker never wires the `graph` import.
+    graph: Arc<dyn ReducerGraph>,
 }
 
 impl cadenza::platform::identity::Host for HostState {
@@ -71,22 +94,126 @@ impl cadenza::platform::state::Host for HostState {
     }
 }
 
+impl cadenza::platform::graph::Host for HostState {
+    async fn insert(&mut self, node: Vec<u8>) -> bool {
+        match to_reducer(&node) {
+            Some(node) => self.graph.insert(node).await,
+            None => false,
+        }
+    }
+
+    async fn contains(&mut self, node: Vec<u8>) -> bool {
+        match to_reducer(&node) {
+            Some(node) => self.graph.contains(node).await,
+            None => false,
+        }
+    }
+
+    async fn remove(&mut self, node: Vec<u8>) -> bool {
+        match to_reducer(&node) {
+            Some(node) => self.graph.remove(node).await,
+            None => false,
+        }
+    }
+
+    async fn link(&mut self, source: Vec<u8>, target: Vec<u8>, kind: Vec<u8>) -> bool {
+        match (to_reducer(&source), to_reducer(&target), to_kind(&kind)) {
+            (Some(source), Some(target), Some(kind)) => self.graph.link(source, target, kind).await,
+            _ => false,
+        }
+    }
+
+    async fn set_edges(
+        &mut self,
+        source: Vec<u8>,
+        kind: Vec<u8>,
+        targets: Vec<Vec<u8>>,
+    ) -> Vec<Vec<u8>> {
+        let (Some(source), Some(kind)) = (to_reducer(&source), to_kind(&kind)) else {
+            return Vec::new();
+        };
+        // A malformed target names nothing, so it is dropped from the chain rather than aborting the set.
+        let targets = targets.iter().filter_map(|t| to_reducer(t)).collect();
+        from_reducers(self.graph.set_edges(source, kind, targets).await)
+    }
+
+    async fn neighbors(
+        &mut self,
+        node: Vec<u8>,
+        kind: Vec<u8>,
+        dir: cadenza::platform::graph::Dir,
+    ) -> Vec<Vec<u8>> {
+        let (Some(node), Some(kind)) = (to_reducer(&node), to_kind(&kind)) else {
+            return Vec::new();
+        };
+        from_reducers(self.graph.neighbors(node, kind, dir.into()).await)
+    }
+
+    async fn in_kinds(&mut self, node: Vec<u8>) -> Vec<Vec<u8>> {
+        match to_reducer(&node) {
+            Some(node) => self
+                .graph
+                .in_kinds(node)
+                .await
+                .into_iter()
+                .map(|kind| kind.hash().as_bytes().to_vec())
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    async fn reach(
+        &mut self,
+        node: Vec<u8>,
+        kind: Vec<u8>,
+        dir: cadenza::platform::graph::Dir,
+    ) -> Vec<Vec<u8>> {
+        let (Some(node), Some(kind)) = (to_reducer(&node), to_kind(&kind)) else {
+            return Vec::new();
+        };
+        from_reducers(self.graph.reach(node, kind, dir.into()).await)
+    }
+}
+
+impl From<cadenza::platform::graph::Dir> for crate::Dir {
+    fn from(dir: cadenza::platform::graph::Dir) -> Self {
+        match dir {
+            cadenza::platform::graph::Dir::Outgoing => crate::Dir::Out,
+            cadenza::platform::graph::Dir::Incoming => crate::Dir::In,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::HostState;
     // The `blobs` and `state` imports both have `get`/`put`, so use named trait aliases and fully-qualified
     // calls to disambiguate.
     use super::cadenza::platform::blobs::Host as Blobs;
+    use super::cadenza::platform::graph::Dir;
+    use super::cadenza::platform::graph::Host as Graph;
     use super::cadenza::platform::identity::Host as Identity;
     use super::cadenza::platform::state::Host as State;
-    use crate::{InMemoryBlobStore, InMemoryKvStore, ReducerId};
+    use crate::{
+        Hash, HashTag, InMemoryBlobStore, InMemoryKvStore, InMemoryReducerGraph, ReducerId,
+    };
+    use std::sync::Arc;
 
     fn host(id: ReducerId) -> HostState {
         HostState {
             id,
             blobs: Box::new(InMemoryBlobStore::new()),
             kv: Box::new(InMemoryKvStore::new()),
+            graph: Arc::new(InMemoryReducerGraph::new()),
         }
+    }
+
+    /// The raw hash bytes of a reducer-id / edge-kind, as they cross the WIT boundary.
+    fn rid_bytes(tag: &[u8]) -> Vec<u8> {
+        ReducerId::of(tag).hash().as_bytes().to_vec()
+    }
+    fn kind_bytes(tag: &[u8]) -> Vec<u8> {
+        Hash::of(HashTag::SystemProperty, tag).as_bytes().to_vec()
     }
 
     #[tokio::test]
@@ -125,5 +252,25 @@ mod tests {
         );
         State::delete(&mut host, b"k".to_vec()).await;
         assert_eq!(State::get(&mut host, b"k".to_vec()).await, None);
+    }
+
+    #[tokio::test]
+    async fn graph_insert_link_and_read_back() {
+        let mut host = host(ReducerId::of(b"me"));
+        let (a, b, kind) = (rid_bytes(b"a"), rid_bytes(b"b"), kind_bytes(b"edge"));
+        assert!(Graph::insert(&mut host, a.clone()).await);
+        assert!(Graph::insert(&mut host, b.clone()).await);
+        assert!(Graph::link(&mut host, a.clone(), b.clone(), kind.clone()).await);
+        // `a`'s outgoing `kind` neighbours are `[b]`; `b`'s incoming are `[a]`.
+        assert_eq!(
+            Graph::neighbors(&mut host, a.clone(), kind.clone(), Dir::Outgoing).await,
+            vec![b.clone()]
+        );
+        assert_eq!(
+            Graph::neighbors(&mut host, b, kind, Dir::Incoming).await,
+            vec![a]
+        );
+        // A malformed (wrong-length) node names nothing.
+        assert!(!Graph::contains(&mut host, b"not a hash".to_vec()).await);
     }
 }
