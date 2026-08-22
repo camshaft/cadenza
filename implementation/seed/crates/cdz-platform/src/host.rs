@@ -21,3 +21,35 @@ wasmtime::component::bindgen!({
     imports: { default: async },
     exports: { default: async },
 });
+
+use crate::ReducerId;
+
+/// The host state threaded through a running reducer component's wasmtime store — what the host imports read
+/// and write on the reducer's behalf. For now it carries the reducer's own id (the `identity` import); the
+/// key-value store, content-addressed store, and — for an event reducer — the graph/deliver/provenance are
+/// added as those imports are implemented.
+struct HostState {
+    /// This reducer's id (§3), returned by the `identity` import.
+    id: ReducerId,
+}
+
+impl cadenza::platform::identity::Host for HostState {
+    async fn id(&mut self) -> Vec<u8> {
+        self.id.hash().as_bytes().to_vec()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HostState;
+    use super::cadenza::platform::identity::Host as _;
+    use crate::ReducerId;
+
+    #[tokio::test]
+    async fn identity_returns_the_reducers_own_id() {
+        // The `identity` host import hands the guest its own reducer-id, as the id's raw hash bytes.
+        let id = ReducerId::of(b"me");
+        let mut host = HostState { id };
+        assert_eq!(host.id().await, id.hash().as_bytes().to_vec());
+    }
+}
