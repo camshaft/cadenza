@@ -27,6 +27,12 @@ publish = false
 # because `rt` (the reducer-task executor) runs on bach whenever `cfg(any(test, feature = "testing"))`.
 # None of it is part of the production surface.
 testing = ["dep:bach"]
+# The wasm-runtime host (§3): wasmtime instantiates a reducer component and drives it through the WIT world
+# (wit/world.wit). Behind a feature and OFF by default, so the routine workspace build/gate and the flake's
+# default per-crate closure never build the heavy runtime — only an explicit `--features host` build (and a
+# dedicated CI job) does. wasmtime is already a workspace dependency (cdz-run/rcdzc), so this adds no new
+# lock entries. Async, so a disk/network-backed host import never blocks the host thread (spec §3/§9).
+host = ["dep:wasmtime"]
 
 [dependencies]
 # cadenza-ast is the LANGUAGE's canonical AST + type system (not the compiler) — the value model contracts
@@ -51,6 +57,15 @@ futures-util = "0.3" # stream helpers (stream::iter) to back a scan; StreamExt i
 # is an OPTIONAL normal dependency the `testing` feature enables (for another crate's tests). It is also a
 # dev-dependency below, so this crate's own `cfg(test)` build always has it without the feature.
 bach = { version = "0.1", optional = true }
+# The wasm-runtime host, behind the `host` feature (above) — off by default. Matches the workspace's
+# wasmtime (cdz-run/rcdzc): component-model to instantiate reducer components, cranelift to compile them,
+# async so host imports never block the host thread.
+wasmtime = { version = "37", default-features = false, features = [
+    "runtime",
+    "cranelift",
+    "component-model",
+    "async",
+], optional = true }
 
 [dev-dependencies]
 # Bach for this crate's own tests (cfg(test)): drives the reducer tasks + the runtime-agnostic store/kv
