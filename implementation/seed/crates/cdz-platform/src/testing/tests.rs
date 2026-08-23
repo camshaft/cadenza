@@ -549,3 +549,31 @@ fn checkers_pass_on_a_matching_log_and_fail_with_reasons_otherwise() {
         ["expected a key-value write, but the run made none"]
     );
 }
+
+#[test]
+fn the_log_records_each_spawns_name_and_id_so_it_is_self_describing() {
+    let run = emitter_run().run();
+    // The log itself carries the name→id assignment: a Spawn record naming "emitter", whose source is the
+    // id the harness derived — so anything reading the log (including a wasm checker over a serialized log)
+    // derefs the name to its id with no out-of-band map.
+    let (id_in_log, program) = run
+        .records
+        .iter()
+        .find_map(|r| match &r.entry {
+            Entry::Spawn(info) if info.name == "emitter" => Some((r.source.reducer, info.program)),
+            _ => None,
+        })
+        .expect("the log records the emitter spawn by name");
+    assert_eq!(
+        id_in_log, run.ids["emitter"],
+        "the recorded id matches the name→id assignment"
+    );
+    assert_eq!(program, ProgramHash::of(b"emitter"));
+    // Spawn records lead the log — the run's setup, ahead of any reducer's birth or events.
+    let first_spawn = run
+        .records
+        .iter()
+        .find(|r| matches!(&r.entry, Entry::Spawn(_)))
+        .expect("a spawn record");
+    assert_eq!(first_spawn.seq, 0, "spawn records lead the log");
+}

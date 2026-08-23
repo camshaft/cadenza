@@ -29,11 +29,12 @@
 //! never settles (a periodically re-arming timer) is bounded by `run_for` rather than running forever.
 
 use super::checker::{CheckOutcome, Checker};
-use super::observation::{ObservationLog, Record};
+use super::observation::{Entry, ObservationLog, Record, SpawnInfo};
 use super::recording::RecordingProgramStore;
 use crate::{
     BachRuntime, Bytes, Delivered, Genesis, HostId, InMemoryEventRegistry, InMemoryReducerGraph,
-    Links, ProgramHash, ProgramStore, ReducerId, ReducerKind, Runtime, Spawn, System, TaskSystem,
+    Links, Origin, ProgramHash, ProgramStore, ReducerId, ReducerKind, Runtime, Spawn, Str, System,
+    TaskSystem,
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -247,7 +248,9 @@ impl<P: ProgramStore + 'static> Harness<P> {
         // Resolve names to genesis-derived ids (pure, deterministic — done before the sim). Each spawn's id
         // is the hash of its genesis; a child's parent resolves to that parent's id, a root's to the anchor.
         let mut ids: BTreeMap<String, ReducerId> = BTreeMap::new();
-        let mut kernel_spawns: Vec<Spawn> = Vec::with_capacity(spawns.len());
+        // Each kernel spawn paired with the name the run gave it, so the run can record the name→id
+        // assignment into the log before spawning.
+        let mut kernel_spawns: Vec<(Str, Spawn)> = Vec::with_capacity(spawns.len());
         for spec in spawns {
             let parent_id = match &spec.parent {
                 Parent::Root => root_anchor(),
@@ -275,14 +278,17 @@ impl<P: ProgramStore + 'static> Harness<P> {
                 Parent::Root => id,
                 Parent::Named(_) => parent_id,
             };
-            kernel_spawns.push(Spawn {
-                id,
-                program: spec.program,
-                nonce,
-                parent: kernel_parent,
-                kind: spec.kind,
-                links: spec.links,
-            });
+            kernel_spawns.push((
+                Str::from(spec.name.as_str()),
+                Spawn {
+                    id,
+                    program: spec.program,
+                    nonce,
+                    parent: kernel_parent,
+                    kind: spec.kind,
+                    links: spec.links,
+                },
+            ));
         }
         let resolved_deliveries: Vec<(ReducerId, Delivered)> = deliveries
             .into_iter()
@@ -306,7 +312,7 @@ impl<P: ProgramStore + 'static> Harness<P> {
                 let recording = RecordingProgramStore::new(
                     programs,
                     host,
-                    log,
+                    log.clone(),
                     BachRuntime::now as fn() -> u64,
                 );
                 let system = TaskSystem::<BachRuntime>::new(
@@ -315,7 +321,25 @@ impl<P: ProgramStore + 'static> Harness<P> {
                     Arc::new(InMemoryEventRegistry::new(system_program)),
                     host,
                 );
-                for spawn in kernel_spawns {
+                // Record the name→id assignment into the log first, so the log is self-describing: a
+                // reader derefs a name to the reducer id it was given (the record's source) without any
+                // out-of-band map. These lead the log, ahead of any reducer's birth or events.
+                for (name, spawn) in &kernel_spawns {
+                    log.record(
+                        BachRuntime::now(),
+                        Origin {
+                            reducer: spawn.id,
+                            host,
+                        },
+                        Entry::Spawn(SpawnInfo {
+                            name: name.clone(),
+                            program: spawn.program,
+                            parent: spawn.parent,
+                            kind: spawn.kind,
+                        }),
+                    );
+                }
+                for (_name, spawn) in kernel_spawns {
                     system
                         .spawn(spawn)
                         .await
