@@ -50,6 +50,17 @@ pub fn schema(b: &mut Builder) -> Vec<StructId> {
     let v30 = b.list(vec![v27, v28, v29]);
     vec![v26, v30]
 }
+/// The contract this module declares — built from its `@!contract` / `@!input` /
+/// `@!output` pragmas and its schema. The one place the contract's name and input/output
+/// type references live is the `.cdz` source; `*_contract()` calls this.
+pub fn contract() -> crate::Contract {
+    crate::Contract::new(
+        crate::Str::from_static("cdz-platform.lifecycle"),
+        schema,
+        "Event",
+        "Ack",
+    )
+}
 /// The fields of a `Event.Exited` value — each a built value occurrence.
 pub struct EventExited {
     pub reducer: StructId,

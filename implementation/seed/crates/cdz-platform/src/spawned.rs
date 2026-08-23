@@ -9,7 +9,7 @@
 //! generated from `contracts/spawned.cdz` ([`crate::contracts::spawned`]). Decoding is total:
 //! [`Spawned::decode`] returns `None` on any input that is not a well-formed spawned value.
 
-use crate::{Bytes, Contract, ContractId, Notification, ReducerId, Str};
+use crate::{Bytes, Contract, ContractId, Notification, ReducerId};
 use cadenza_ast::ast::{Builder, StructId};
 use cadenza_ast::codec;
 use std::sync::OnceLock;
@@ -22,14 +22,7 @@ use std::sync::OnceLock;
 pub fn spawned_contract() -> ContractId {
     static SPAWNED: OnceLock<Contract> = OnceLock::new();
     SPAWNED
-        .get_or_init(|| {
-            Contract::new(
-                Str::from_static("cdz-platform.spawned"),
-                crate::contracts::spawned::schema,
-                "Event",
-                "Ack",
-            )
-        })
+        .get_or_init(crate::contracts::spawned::contract)
         .id()
 }
 

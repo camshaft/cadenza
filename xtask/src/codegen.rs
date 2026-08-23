@@ -312,7 +312,8 @@ fn generate_contracts(paths: &Paths, check: bool) {
             std::process::exit(1);
         }
 
-        let body = format_tokens(render_schema(&arenas, &decls, &name));
+        let identity = contract_identity(&arenas);
+        let body = format_tokens(render_schema(&arenas, &decls, &name, identity.as_ref()));
         let source = format!("{}{body}", contract_banner(&name));
         let summary = format!("{} type declarations, from {}", decls.len(), src.display());
         emit_or_check(
@@ -439,7 +440,12 @@ fn unwrap_comment(arenas: &Arenas, id: StructId) -> StructId {
 /// matching READER. The builders/readers name the constructor and its fields and defer the canonical value
 /// SHAPE to `crate::contract_value`, so both the schema and the value marshalling are generated from the
 /// one source and cannot drift from each other or from the compiler's canonical encoding.
-fn render_schema(arenas: &Arenas, decls: &[StructId], name: &str) -> TokenStream {
+fn render_schema(
+    arenas: &Arenas,
+    decls: &[StructId],
+    name: &str,
+    identity: Option<&(String, String, String)>,
+) -> TokenStream {
     let mut stmts: Vec<TokenStream> = Vec::new();
     let mut counter = 0usize;
     let decl_idents: Vec<syn::Ident> = decls
@@ -448,6 +454,23 @@ fn render_schema(arenas: &Arenas, decls: &[StructId], name: &str) -> TokenStream
         .collect();
 
     let bindings = decls.iter().flat_map(|&d| emit_value_bindings(arenas, d));
+
+    // When the source declares its identity (the `@!contract`/`@!input`/`@!output` pragmas), generate the
+    // `contract()` constructor from them — so a contract's name and its input/output type references live
+    // ONLY in the `.cdz`, and the platform's `*_contract()` calls this instead of restating the strings.
+    // A `.cdz` with no `@!contract` pragma (a non-contract schema, if one ever exists) generates only the
+    // schema.
+    let contract_fn = match identity {
+        Some((contract_name, input, output)) => quote! {
+            #[doc = " The contract this module declares — built from its `@!contract` / `@!input` /"]
+            #[doc = " `@!output` pragmas and its schema. The one place the contract's name and input/output"]
+            #[doc = " type references live is the `.cdz` source; `*_contract()` calls this."]
+            pub fn contract() -> crate::Contract {
+                crate::Contract::new(crate::Str::from_static(#contract_name), schema, #input, #output)
+            }
+        },
+        None => quote! {},
+    };
 
     let doc = format!(
         " The `{name}` contract's schema: its named Cadenza type declarations, in source order, ready"
@@ -470,8 +493,30 @@ fn render_schema(arenas: &Arenas, decls: &[StructId], name: &str) -> TokenStream
             vec![#(#decl_idents),*]
         }
 
+        #contract_fn
+
         #(#bindings)*
     }
+}
+
+/// Read a contract module's identity — its `@!contract` name and its `@!input` / `@!output` type
+/// references — from the decoded source, or `None` if it declares no `@!contract` pragma (not a contract).
+/// The three pragmas are top-level `(pragma <key> <arg>)` forms of the `(do …)` module (each possibly
+/// comment-wrapped); `contract`'s arg is a string, `input`/`output`'s a type name. Mirrors
+/// `cdz_contract::contract_from_module`'s reading so the generated `contract()` computes the same id.
+fn contract_identity(arenas: &Arenas) -> Option<(String, String, String)> {
+    let forms = arenas.as_form(arenas.root, "do")?;
+    let arg = |key: &str| -> Option<StructId> {
+        forms.iter().copied().find_map(|f| {
+            let f = unwrap_comment(arenas, f);
+            let args = arenas.as_form(f, "pragma")?;
+            (args.len() == 2 && arenas.as_name(args[0]) == Some(key)).then_some(args[1])
+        })
+    };
+    let name = arenas.as_str(arg("contract")?)?.to_string();
+    let input = arenas.as_name(arg("input")?)?.to_string();
+    let output = arenas.as_name(arg("output")?)?.to_string();
+    Some((name, input, output))
 }
 
 /// A declared constructor's shape, as introspected from a `(type T …)` declaration.

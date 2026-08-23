@@ -23,7 +23,7 @@
 
 use crate::{
     Bytes, Contract, ContractId, Error, HostId, Message, Notification, Origin, ReducerId, Request,
-    Response, Str,
+    Response,
 };
 use cadenza_ast::ast::{Builder, StructId};
 use cadenza_ast::codec;
@@ -37,14 +37,7 @@ use std::sync::OnceLock;
 pub fn deliver_contract() -> ContractId {
     static DELIVER: OnceLock<Contract> = OnceLock::new();
     DELIVER
-        .get_or_init(|| {
-            Contract::new(
-                Str::from_static("cdz-platform.deliver"),
-                crate::contracts::deliver::schema,
-                "Envelope",
-                "Outcome",
-            )
-        })
+        .get_or_init(crate::contracts::deliver::contract)
         .id()
 }
 
