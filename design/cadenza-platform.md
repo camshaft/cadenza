@@ -192,10 +192,10 @@ the spawn tree, and the program-hash a given reducer runs (used for the provenan
 section 4), all in the one reducer graph. On an emitted effect the kernel looks up the
 event reducer for its contract and delivers the effect to it; that reducer reads the graph to
 assemble the chain across generations, then delivers along it — handing a message to a handler,
-folding a response back to a caller. (Two planned extensions widen this same privileged tier —
-privileged external I/O over WASI and access to a secrets store, so an event reducer can make
-authenticated outbound calls while shepherding an effect — sequenced after the current critical
-path, section 11.) Beyond that privileged API it is an ordinary
+folding a response back to a caller. (Three planned extensions widen this same privileged tier —
+privileged external I/O over WASI, access to a secrets store, and a shell pipeline, so an event
+reducer can make authenticated outbound calls and run chained shell commands while shepherding an
+effect — sequenced after the current critical path, section 11.) Beyond that privileged API it is an ordinary
 reducer: it arms timers with `fire-after` and watches reducers with `subscribe` like any
 reducer, and everything specific — chaining policy, authorization, name resolution, lifecycle,
 what a timer means, input and output — is a content-addressed reducer, not kernel code. This is the point of the entire design and
@@ -1133,9 +1133,9 @@ No event carries a family, a content-type, or a version — each carries a singl
 
 These belong to the larger vision but are outside this document's core. They are named so
 the boundary is explicit. Most are composition over the primitives above, needing no new
-kernel mechanism; two — privileged external I/O for event reducers, and secrets — extend the
-privileged event-reducer tier (section 3) with new mechanism and are sequenced after the
-current critical path, not built speculatively.
+kernel mechanism; three — privileged external I/O for event reducers, secrets, and a shell
+pipeline — extend the privileged event-reducer tier (section 3) with new mechanism and are
+sequenced after the current critical path, not built speculatively.
 
 - **Supervision library** — reusable one-for-one restart, retry-with-backoff, and a
   restart-intensity ceiling, all as reducers composing the spawn / subscribe / close
@@ -1181,6 +1181,17 @@ current critical path, not built speculatively.
   secret access — are redacted or excluded from anything the log records; a leaked secret in
   an audit trail is a breach, not a blemish. The redaction boundary is fixed with the harness
   that owns the observation log.
+- **Shell pipeline.** Subprocess/shell is one of the two capabilities that genuinely cannot be
+  pure WASI (section 3, "everything is a wasm module") — WASI has no process-exec — so the
+  platform designs it rather than importing it. The primitive an event reducer is granted is
+  not a single `exec` but a **chain**: spawn a sequence of shell commands, pipe each stage's
+  stdio to the next stage or to a **named output**, and capture the final result. Piping
+  between stages avoids buffering whole intermediate streams through a reducer, and named
+  outputs let a stage's stream land somewhere addressable rather than only flowing onward. It
+  is granted only to the event reducer (the privileged tier, like the two above) and isolated
+  as the native residue section 3 calls for. The no-secrets-in-logs discipline applies here
+  too: if a secret flows through a command's environment or arguments, it is redacted from
+  anything the observation log records, exactly as for the secrets store.
 
 ---
 
