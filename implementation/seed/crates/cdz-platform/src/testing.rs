@@ -47,7 +47,9 @@ mod spec;
 /// registered Rust factories instead of the content-addressed store.
 pub use crate::program::testing as program;
 pub use checker::{CheckOutcome, Checker};
-pub use checker_protocol::{check_contract, verdict_contract};
+pub use checker_protocol::{
+    check_contract, decode_check, decode_verdict, encode_check, encode_verdict, verdict_contract,
+};
 pub use harness::{Harness, Parent, Run, SpawnSpec};
 pub use log_value::{deserialize as deserialize_log, serialize as serialize_log};
 pub use observation::{
