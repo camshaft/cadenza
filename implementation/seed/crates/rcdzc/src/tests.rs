@@ -998,6 +998,122 @@ fn a_list_leaf_param_lifts_via_memory_and_runs() {
     );
 }
 
+/// A synthetic core for a `g() -> record{a:u32, b:u32}` guest: a record RESULT flattens to two values,
+/// which exceeds MAX_FLAT_RESULTS, so it SPILLS — the core returns an i32 pointer to the record laid out in
+/// linear memory at its canonical field offsets ([0, 4]). This core lays {a:11, b:22} at offset 8 (a data
+/// segment) and `g` returns 8; the canon lift reads the record back from memory. Exports `memory` + a stub
+/// `cabi_realloc` (the lift binds it; a read-only result lift never calls it).
+fn core_returns_record_by_pointer() -> Vec<u8> {
+    use wasm_encoder::*;
+    let mut m = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function(vec![], vec![ValType::I32]); // type 0: g () -> i32 (the return pointer)
+    types
+        .ty()
+        .function(vec![ValType::I32; 4], vec![ValType::I32]); // type 1: cabi_realloc stub
+    m.section(&types);
+    let mut funcs = FunctionSection::new();
+    funcs.function(0); // func 0: g
+    funcs.function(1); // func 1: cabi_realloc
+    m.section(&funcs);
+    let mut mems = MemorySection::new();
+    mems.memory(MemoryType {
+        minimum: 1,
+        maximum: None,
+        memory64: false,
+        shared: false,
+        page_size_log2: None,
+    });
+    m.section(&mems);
+    let mut exports = ExportSection::new();
+    exports.export("g", ExportKind::Func, 0);
+    exports.export("cabi_realloc", ExportKind::Func, 1);
+    exports.export("memory", ExportKind::Memory, 0);
+    m.section(&exports);
+    let mut code = CodeSection::new();
+    let mut g = Function::new(vec![]);
+    g.instruction(&Instruction::I32Const(8)); // the record lives at offset 8
+    g.instruction(&Instruction::End);
+    code.function(&g);
+    let mut realloc = Function::new(vec![]);
+    realloc.instruction(&Instruction::I32Const(0)); // stub — never called for a read-only result lift
+    realloc.instruction(&Instruction::End);
+    code.function(&realloc);
+    m.section(&code);
+    // record{ a: u32 = 11, b: u32 = 22 } at canonical offsets [0, 4] from base 8 (little-endian i32s).
+    let mut data = DataSection::new();
+    data.active(0, &ConstExpr::i32_const(8), vec![11, 0, 0, 0, 22, 0, 0, 0]);
+    m.section(&data);
+    m.finish()
+}
+
+/// W4c: a guest interface func returning a RECORD spills the result to linear memory (returned by pointer)
+/// and the canon lift reads it back — the shape of a reducer's `step` result. `g() -> record{a,b}` where
+/// the core lays {a:11, b:22} in memory and returns the pointer; wasmtime lifts the record from the
+/// canonical offsets. Proves the result-spill lift end to end with a synthetic core, no value-heap runtime.
+#[test]
+fn a_record_result_spills_to_memory_and_lifts() {
+    use crate::backend::wasm::envelope::{TypedFunc, TypedInterface, assemble_typed_interface};
+    use crate::wit_world::WitType;
+    use wasmtime::component::{Component, Linker, Val};
+    use wasmtime::{Engine, Store};
+
+    let core = core_returns_record_by_pointer();
+    let r = WitType::Record(vec![
+        ("a".to_string(), WitType::U32),
+        ("b".to_string(), WitType::U32),
+    ]);
+    let iface = TypedInterface {
+        name: "cadenza:demo/guest".to_string(),
+        types: vec![("r".to_string(), r.clone())],
+        funcs: vec![TypedFunc {
+            name: "g".to_string(),
+            params: vec![],
+            result: Some(r),
+        }],
+    };
+    let component = assemble_typed_interface(&core, &iface);
+
+    let engine = Engine::default();
+    let comp =
+        Component::from_binary(&engine, &component).expect("record-result interface validates");
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store = Store::new(&engine, ());
+    let instance = linker.instantiate(&mut store, &comp).expect("instantiate");
+    let iface_idx = instance
+        .get_export_index(&mut store, None, "cadenza:demo/guest")
+        .expect("interface export present");
+    let g_idx = instance
+        .get_export_index(&mut store, Some(&iface_idx), "g")
+        .expect("g export present");
+    let func = instance.get_func(&mut store, g_idx).expect("g is a func");
+    let mut results = [Val::Bool(false)];
+    func.call(&mut store, &[], &mut results).expect("call");
+    func.post_return(&mut store).expect("post_return");
+    match &results[0] {
+        Val::Record(fields) => {
+            let field = |name: &str| {
+                fields
+                    .iter()
+                    .find(|(k, _)| k == name)
+                    .map(|(_, v)| v)
+                    .expect("field present")
+            };
+            assert_eq!(
+                u32::from_val(field("a")),
+                11,
+                "spilled record result field a"
+            );
+            assert_eq!(
+                u32::from_val(field("b")),
+                22,
+                "spilled record result field b"
+            );
+        }
+        other => panic!("expected a record result, got {other:?}"),
+    }
+}
+
 /// Whether calling export `name` with `args` TRAPS (an `unreachable` from an overflow guard). Returns
 /// `true` if the call errored (a wasm trap), `false` if it returned normally.
 fn call_traps(component_bytes: &[u8], name: &str, args: &[wasmtime::component::Val]) -> bool {
