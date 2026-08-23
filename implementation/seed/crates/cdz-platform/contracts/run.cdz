@@ -1,0 +1,43 @@
+@!contract "cdz-platform.run"
+@!input Request
+@!output Output
+
+// The run contract — the pure-function invocation primitive as an EFFECT (design/cadenza-platform.md
+// section 3). run(program, contract, input) -> output instantiates `program` with an empty capability set
+// and a null birth, folds `input` (delivered against `contract`), and returns its output. As this contract,
+// a reducer emits a Run request and receives the Output as the response, correlated by the request's own
+// continuation-token; the synchronous guest host-call form (returning inline) is the dual (section 3). The
+// result is a pure function of (program-hash, input) and is memoized, so a repeated run is free.
+//
+// Like deliver.cdz / timer.cdz, this file is the source of truth for the schema and is real Cadenza: `cargo
+// xtask codegen` validates it with the `cdz` binary and generates `src/contracts/run.rs` (the type
+// declarations as Cadenza-AST builder calls), then wires `pub mod run` into `src/contracts/mod.rs`. Re-run
+// `cargo xtask codegen` after editing; `cargo xtask codegen --check` fails if the generated file is stale.
+//
+// Every field crosses as Bytes: `program` and `contract` are the raw bytes of a program-hash and a
+// contract-id, and `input` / the output are opaque contract values (the run program decodes `input` against
+// `contract`, and its caller decodes the output against `contract`'s output type).
+
+// The request (the contract's input): run `program` with `input`, delivered against `contract`.
+type Request =
+  | Run(Record(program: Bytes, contract: Bytes, input: Bytes))
+
+// The output (the contract's output): the value the run program returned, opaque bytes.
+type Output =
+  | Output(Bytes)
+
+// --- conformance proofs: a fully-literal value of each type, ascribed against the schema type ---
+def a-run() -> Request =
+  Request.Run({ program = b"prog", contract = b"contract", input = b"in" })
+
+def an-output() -> Output = Output.Output(b"result")
+
+@test
+def run-conforms() =
+  match a-run() with
+  | Request.Run(r) => if r.input == b"in" then unit else trap("run input mismatch")
+
+@test
+def output-conforms() =
+  match an-output() with
+  | Output.Output(o) => if o == b"result" then unit else trap("run output mismatch")
