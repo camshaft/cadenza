@@ -29,7 +29,8 @@
 
 use super::observation::{BlobOp, Entry, EventKind, EventOp, KvOp, Record, SpawnInfo};
 use crate::contract_value::{
-    bytes_leaf, qctor, read_bytes, read_uint, record, record_field, uint_leaf,
+    as_bare_ctor, as_qctor, bare_ctor, bytes_leaf, qctor, read_bytes, read_uint, record,
+    record_field, uint_leaf,
 };
 use crate::{
     Bytes, ContractId, Error, Hash, HostId, Origin, ProgramHash, ReducerId, ReducerKind, Str,
@@ -183,33 +184,57 @@ fn read_kv(arenas: &Arenas, id: StructId, tag: &str) -> Option<KvOp> {
     })
 }
 
+// A scan bound as a Cadenza SUM `((. Bound <kind>) …)` — `unbounded` nullary, `included`/`excluded` carrying
+// the key bytes. A sum (not a `bound`-tagged record with an optional `key`) so a Cadenza checker decodes it
+// into a `Bound` sum by constructor name; symmetric with the entry sum (see [`tagged`]).
 fn bound_value(b: &mut Builder, bound: &Bound<Bytes>) -> StructId {
     match bound {
-        Bound::Unbounded => {
-            let kind = str_leaf(b, "unbounded");
-            record(b, vec![("bound", kind)])
-        }
+        Bound::Unbounded => qctor(b, "Bound", "unbounded", vec![]),
         Bound::Included(key) => {
-            let kind = str_leaf(b, "included");
             let key = bytes_leaf(b, key);
-            record(b, vec![("bound", kind), ("key", key)])
+            qctor(b, "Bound", "included", vec![key])
         }
         Bound::Excluded(key) => {
-            let kind = str_leaf(b, "excluded");
             let key = bytes_leaf(b, key);
-            record(b, vec![("bound", kind), ("key", key)])
+            qctor(b, "Bound", "excluded", vec![key])
         }
     }
 }
 
 fn read_bound(arenas: &Arenas, id: StructId) -> Option<Bound<Bytes>> {
-    let kind = str_at(arenas, field(arenas, id, "bound")?)?;
-    Some(match kind {
-        "unbounded" => Bound::Unbounded,
-        "included" => Bound::Included(read_bytes(arenas, field(arenas, id, "key")?)?),
-        "excluded" => Bound::Excluded(read_bytes(arenas, field(arenas, id, "key")?)?),
-        _ => return None,
-    })
+    if as_qctor(arenas, id, "Bound", "unbounded").is_some() {
+        return Some(Bound::Unbounded);
+    }
+    if let Some(tail) = as_qctor(arenas, id, "Bound", "included") {
+        let [key] = <[StructId; 1]>::try_from(tail).ok()?;
+        return Some(Bound::Included(read_bytes(arenas, key)?));
+    }
+    if let Some(tail) = as_qctor(arenas, id, "Bound", "excluded") {
+        let [key] = <[StructId; 1]>::try_from(tail).ok()?;
+        return Some(Bound::Excluded(read_bytes(arenas, key)?));
+    }
+    None
+}
+
+// An optional value as the prelude `Option` value-form — `(Some <inner>)` / `(None)` — so a Cadenza checker
+// decodes a field declared `option(T)`. Used where a field is logically present-or-absent (a `delivered`
+// event's `from`/`error`): it must be a FIXED-shape option field, not a conditionally-omitted record field,
+// because a Cadenza record type carries all its fields.
+fn option_value(b: &mut Builder, inner: Option<StructId>) -> StructId {
+    match inner {
+        Some(x) => bare_ctor(b, "Some", vec![x]),
+        None => bare_ctor(b, "None", vec![]),
+    }
+}
+fn read_option(arenas: &Arenas, id: StructId) -> Option<Option<StructId>> {
+    if let Some(tail) = as_bare_ctor(arenas, id, "Some") {
+        let [x] = <[StructId; 1]>::try_from(tail).ok()?;
+        return Some(Some(x));
+    }
+    if as_bare_ctor(arenas, id, "None").is_some() {
+        return Some(None);
+    }
+    None
 }
 
 // --- blob ---
@@ -269,21 +294,24 @@ fn event_value(b: &mut Builder, op: &EventOp) -> StructId {
             let contract = bytes_leaf(b, contract.hash().as_bytes());
             let token = bytes_leaf(b, continuation_token);
             let payload = bytes_leaf(b, payload);
-            let mut fields = vec![
-                ("event-kind", event_kind),
-                ("contract", contract),
-                ("token", token),
-                ("payload", payload),
-            ];
-            if let Some(o) = from {
-                let o = origin_value(b, o);
-                fields.push(("from", o));
-            }
-            if let Some(e) = error {
-                let e = str_leaf(b, error_str(*e));
-                fields.push(("error", e));
-            }
-            tagged(b, "delivered", fields)
+            // `from`/`error` are always-present OPTION fields (Some/None), not conditionally-omitted, so the
+            // `delivered` record has a fixed shape a Cadenza checker can decode.
+            let from_inner = from.as_ref().map(|o| origin_value(b, o));
+            let from_v = option_value(b, from_inner);
+            let error_inner = error.as_ref().map(|e| str_leaf(b, error_str(*e)));
+            let error_v = option_value(b, error_inner);
+            tagged(
+                b,
+                "delivered",
+                vec![
+                    ("event-kind", event_kind),
+                    ("contract", contract),
+                    ("token", token),
+                    ("payload", payload),
+                    ("from", from_v),
+                    ("error", error_v),
+                ],
+            )
         }
         EventOp::Emitted {
             contract,
@@ -337,15 +365,15 @@ fn read_event(arenas: &Arenas, id: StructId, tag: &str) -> Option<EventOp> {
         "delivered" => EventOp::Delivered {
             kind: read_event_kind(str_at(arenas, field(arenas, id, "event-kind")?)?)?,
             contract: read_contract(arenas, field(arenas, id, "contract")?)?,
-            from: match field(arenas, id, "from") {
-                None => None,
+            from: match read_option(arenas, field(arenas, id, "from")?)? {
                 Some(f) => Some(read_origin(arenas, f)?),
+                None => None,
             },
             continuation_token: read_bytes(arenas, field(arenas, id, "token")?)?,
             payload: read_bytes(arenas, field(arenas, id, "payload")?)?,
-            error: match field(arenas, id, "error") {
-                None => None,
+            error: match read_option(arenas, field(arenas, id, "error")?)? {
                 Some(e) => Some(read_error(str_at(arenas, e)?)?),
+                None => None,
             },
         },
         "emitted" => EventOp::Emitted {
