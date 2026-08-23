@@ -320,6 +320,11 @@
           cadenza-syntax = "implementation/seed/crates/cadenza-syntax";
           cdz = "implementation/seed/crates/cdz";
           cdz-calc = "implementation/seed/crates/cdz-calc";
+          # cdz-contract (#3026): the dep-minimal content-hash + contract-id crate cdz-platform now depends on.
+          # A ROOT workspace member (no own [workspace]), so it MUST be registered here — else the crane
+          # deps-layer src omits its Cargo.toml and the whole workspace fails to load (`cargo check` can't
+          # read a member's manifest). The other crates/* dirs absent from this map are standalone [workspace]s.
+          cdz-contract = "implementation/seed/crates/cdz-contract";
           cdz-platform = "implementation/seed/crates/cdz-platform";
           cdz-corpus = "implementation/seed/crates/cdz-corpus";
           cdz-num = "implementation/seed/crates/cdz-num";
@@ -1050,6 +1055,31 @@
           vendor = reducerEchoVendor;
         };
 
+        # The INTERIM reducer-echo CHECKER guest — same build shape as reducer-echo (a standalone
+        # cargo-component reducer targeting the shared reducer-world). A run names it as its `checker`; it
+        # verifies (by a byte-substring check, no log decode) that reducer-echo echoed and emits a `verdict`.
+        # TEMPORARY (operator, 2026-08-23): to be DELETED with reducer-echo the moment rcdzc can emit a
+        # reducer-world component from a `.cdz` (v-rust-backend record-path W4c-b), replaced by a Cadenza
+        # checker. Built + materialized reproducibly exactly like reducer-echo meanwhile.
+        reducerEchoCheckVendor = pkgs.rustPlatform.importCargoLock {
+          lockFile = ./implementation/seed/crates/cdz-platform/guests/reducer-echo-check/Cargo.lock;
+        };
+        reducerEchoCheckSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [
+            ./implementation/seed/crates/cdz-platform/guests/reducer-echo-check
+            ./implementation/seed/crates/cdz-platform/wit
+            ./rust-toolchain.toml
+          ];
+        };
+        reducerEchoCheck = mkStripComponent {
+          pname = "cdz-platform-reducer-echo-check-component";
+          crateDir = "cdz-platform/guests/reducer-echo-check";
+          artifact = "cdz_platform_reducer_echo_check";
+          src = reducerEchoCheckSrc;
+          vendor = reducerEchoCheckVendor;
+        };
+
         # ── the integration-test HARNESS framework (design/cadenza-platform.md §9) ─────────────────
         #
         # The shape the operator asked for (PR #2994 review): a directory of PROGRAMS compiled once into a
@@ -1063,6 +1093,7 @@
         # emits reducer-world components — coordinated with v-rust-backend. Add a program = one entry.)
         harnessPrograms = {
           "reducer-echo" = reducerEcho;
+          "reducer-echo-check" = reducerEchoCheck;
         };
 
         # `platformItest`: the `cdz-platform-itest` executable built ONCE (behind testing+host → wasmtime),
@@ -1636,6 +1667,10 @@
         packages.reducer-echo = reducerEcho;
         packages.reducer-echo-hash = hashOf reducerEcho "cdz-platform-reducer-echo-hash";
 
+        # The interim reducer-echo CHECKER guest (temporary; see the derivation note). `.#reducer-echo-check`.
+        packages.reducer-echo-check = reducerEchoCheck;
+        packages.reducer-echo-check-hash = hashOf reducerEchoCheck "cdz-platform-reducer-echo-check-hash";
+
         # The integration-test executable, built ONCE (§9) — `nix build .#cdz-platform-itest` →
         # result/bin/cdz-platform-itest. Shared by every harness run so a test/program change never rebuilds it.
         packages.cdz-platform-itest = platformItest;
@@ -1854,7 +1889,7 @@
             flakeReproBackstop = pkgs.runCommand "flake-repro-backstop"
               {
                 inherit runtimeHashParity runtimeDebugHashParity nfcHashParity
-                  reducerEchoValid harnessRunsAll exampleProjectTests crateClosureAssert;
+                  reducerEchoValid reducerEchoCheckValid harnessRunsAll exampleProjectTests crateClosureAssert;
               } ''
               echo "ok: flake reproducibility-backstop — hash-parity + component-validity + project-@tests + closure-assert" > $out
             '';
@@ -1868,6 +1903,8 @@
             # check: a future WIT/guest/toolchain change that silently produced a broken component fails the
             # flake here. This is what rebuilds-and-verifies the guest from source, replacing a committed .wasm.
             reducerEchoValid = validComponent { name = "reducer-echo"; drv = reducerEcho; };
+            # Same validity guard for the interim checker guest (temporary; deleted with reducer-echo on W4c-b).
+            reducerEchoCheckValid = validComponent { name = "reducer-echo-check"; drv = reducerEchoCheck; };
 
             # The HARNESS-RUN checks (§9), the shape the operator asked for on #2994: iterate every `*.ml`
             # spec in the harness-runs directory and build ONE check derivation per run via `mkHarnessRun`
@@ -2016,6 +2053,7 @@
             # component (also part of flake-repro-backstop). This is what rebuilds-and-verifies the guest
             # from source, replacing the committed .wasm the operator vetoed.
             reducer-echo-valid = reducerEchoValid;
+            reducer-echo-check-valid = reducerEchoCheckValid;
             # The integration-test harness runs (§9): `harness-runs` is the aggregate; each individual run is
             # exposed below as `checks.<sys>.harness-<name>` (spread from harnessRunChecks) so `nix flake
             # check` runs them all AND CI can build/cache one run in isolation. `.#packages.cdz-platform-itest`
