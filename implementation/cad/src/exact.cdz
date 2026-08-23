@@ -101,6 +101,13 @@ type Solid =
   | Revolve(Profile(a), a)       // sweep a 2-D profile about the y-axis by `degrees` (exact Rational angle;
                                  // the angular tessellation is f64 inside the mesh driver, like Sphere/Cylinder —
                                  // the model carries the exact degrees, no in-model trig)
+  | Detail(Int64, Solid(a))      // an OpenSCAD-`$fn`-style tessellation-resolution OVERRIDE for a subtree: the
+                                 // `Int64` segment count sets how finely the mesh driver approximates the curved
+                                 // leaves inside `child` (sphere/cylinder/circle + revolve/Bézier sweep),
+                                 // overriding the inherited/ambient resolution (a deeper Detail overrides again —
+                                 // innermost wins). A pure MESH hint: the count is coordinate-independent (never
+                                 // an `a`) and changes NO geometry, so `bounding-box` and every exact fold treat
+                                 // it as a transparent wrapper — the same model at any detail is the same shape.
 
 /// An exact axis-aligned bounding box: the min and max corners (both `Vec3(Rational)`).
 type Aabb =
@@ -124,6 +131,14 @@ def v3(x: Rational, y: Rational, z: Rational) = Vec3.V3(x, y, z)
 
 /// Build an exact 2-D vector.
 def v2(x: Rational, y: Rational) = Vec2.V2(x, y)
+
+/// Wrap a subtree in an OpenSCAD-`$fn`-style tessellation-resolution OVERRIDE — the mesh driver renders every
+/// curved leaf inside `child` at `segments` divisions (overriding the ambient/inherited resolution; a nested
+/// `detail` overrides again — innermost wins). A pure MESH hint: it changes no geometry, so a high-detail seat
+/// and a coarse base can share one exact model. Typed over the exact `Solid(Rational)` model — like the other
+/// builders here (`v3`/`line-to`/…) and, per the units model, a resolution is applied after lowering to bare
+/// Rational (a segment count is not a length). Example: `detail((64 : Int64), Solid.Sphere(5 / 1))`.
+def detail(segments: Int64, child: Solid(Rational)) = Solid.Detail(segments, child)
 
 /// ---- Path builders (rsolid-matched ergonomics: start a path, then chain segments) -------------------
 /// Cadenza has no `self`-consuming method chain, so a path is a VALUE threaded through these fns — the
@@ -352,6 +367,8 @@ def bounding-box(s: Solid(Rational)) = match s with
     (match profile-half-extent(p) with | Vec2.V2(rx, ry) =>
       aabbr-of-corners(Vec3.V3(rzero() - rx, rzero() - ry, rzero() - rx),
                        Vec3.V3(rx, ry, rx)))
+  // A Detail is a MESH hint (tessellation resolution), NOT geometry — its box is exactly its child's box.
+  | Solid.Detail(_, of) => bounding-box(of)
 
 /// The exact size (max − min) of a bounding box — the "how big" answer, exact.
 def aabbr-size(b: Aabb) =
@@ -408,6 +425,11 @@ def simplify-r(s: Solid(Rational)) = match s with
   // Circle → Empty — is a possible later identity; today a profile always yields geometry.)
   | Solid.ExtrudeLinear(p, h) => Solid.ExtrudeLinear(p, h)
   | Solid.Revolve(p, d) => Solid.Revolve(p, d)
+  // A Detail wraps its child like a transform: a Detail of Empty is Empty (nothing to tessellate); otherwise
+  // rebuild the node, keeping the segment count, over the simplified child. Never adds/removes geometry.
+  | Solid.Detail(n, of) =>
+    let so = simplify-r(of) in
+    (if solidr-is-empty(so) then Solid.Empty else Solid.Detail(n, so))
 
 /// ============================ @test suite (R1 exact-geometry proof) ============================
 
@@ -1003,6 +1025,8 @@ type SolidR =
   | Mirror(Vec3R, SolidR)
   | ExtrudeLinear(ProfileR, Rational)
   | Revolve(ProfileR, Rational)
+  | Detail(Int64, SolidR)        // the monomorphic mirror of `Solid.Detail` — a tessellation-resolution
+                                 // override for the wrapped subtree (the mesh driver reads the Int64 count)
 
 /// Lower one exact vector into the monomorphic mirror (identity on the three Rational coordinates).
 def lower-vec3(v: Vec3(Rational)) =
@@ -1050,6 +1074,7 @@ def lower(s: Solid(Rational)) = match s with
   | Solid.Mirror(n, of) => SolidR.Mirror(lower-vec3(n), lower(of))
   | Solid.ExtrudeLinear(p, h) => SolidR.ExtrudeLinear(lower-profile(p), h)
   | Solid.Revolve(p, d) => SolidR.Revolve(lower-profile(p), d)
+  | Solid.Detail(n, of) => SolidR.Detail(n, lower(of))
 
 @test
 def lower-preserves-every-constructor-and-coordinate() =
@@ -1118,6 +1143,61 @@ def lower-maps-rotate-and-mirror-to-the-render-form() =
             | _ => trap("Mirror lost"))
          else trap("rotate z-degrees lost")))
     | _ => trap("Rotate lost")
+
+@test
+def lower-maps-detail-to-the-render-form() =
+  // Detail carries an Int64 segment count + a child; lower maps it 1:1 to SolidR.Detail, preserving the count
+  // and lowering the child. Pins the render-grammar-to-driver contract for the tessellation-override node
+  // (the mesh driver parses `(Detail <count> <child>)` and meshes the child at that resolution).
+  let tree = Solid.Detail((64 : Int64), Solid.Sphere(5 / 2)) in
+  match lower(tree) with
+    | SolidR.Detail(n, child) =>
+      (if n == (64 : Int64) then
+        (match child with
+          | SolidR.Sphere(r) => (if r == 5 / 2 then unit else trap("detail child radius lost"))
+          | _ => trap("detail child (Sphere) lost"))
+       else trap("detail segment count lost"))
+    | _ => trap("lower(Detail) should be SolidR.Detail")
+
+@test
+def detail-builder-constructs-the-override-node() =
+  // The `detail(segments, child)` builder is sugar for `Solid.Detail`. Pin it constructs the node with the
+  // count + child intact (destructure — a whole-Solid `==` isn't available since Solid transitively holds a List).
+  let built = detail((32 : Int64), Solid.Sphere(3 / 1)) in
+  match built with
+    | Solid.Detail(n, child) =>
+      (if n == (32 : Int64) then
+        (match child with
+          | Solid.Sphere(r) => (if r == 3 / 1 then unit else trap("builder child radius lost"))
+          | _ => trap("builder child (Sphere) lost"))
+       else trap("builder segment count lost"))
+    | _ => trap("detail(...) should build a Solid.Detail")
+
+@test
+def detail-is-transparent-to-bounding-box() =
+  // Detail is a MESH hint, not geometry: the bounding box of Detail(n, child) equals the child's box exactly,
+  // for any count. A regression folding the count into geometry, or dropping the child, would change the box.
+  let cube = Solid.Cube(v3(4 / 1, 2 / 1, 6 / 1)) in
+  let detailed = Solid.Detail((8 : Int64), cube) in
+  if v3-eq(aabbr-size(bounding-box(detailed)), aabbr-size(bounding-box(cube)))
+  then unit else trap("Detail must be transparent to bounding-box (a mesh hint, not geometry)")
+
+@test
+def simplify-r-preserves-a-real-detail-and-prunes-an-empty-one() =
+  // A Detail wraps like a transform: Detail of Empty simplifies to Empty; Detail of real geometry SURVIVES
+  // (node kept + count preserved, child simplified). Pins both arms so a regression that always-empties, drops
+  // the child, or loses the count can't slip.
+  let dead = Solid.Detail((16 : Int64), Solid.Empty) in
+  let real = Solid.Detail((16 : Int64), Solid.Cube(v3(2 / 1, 2 / 1, 2 / 1))) in
+  if solidr-is-empty(simplify-r(dead)) then
+    (match simplify-r(real) with
+      | Solid.Detail(n, _) =>
+        (if n == (16 : Int64) then
+          (if v3-eq(aabbr-size(bounding-box(simplify-r(real))), v3(2 / 1, 2 / 1, 2 / 1)) then unit
+           else trap("simplify-r must preserve the detailed cube's 2x2x2 extent"))
+         else trap("simplify-r must preserve the Detail segment count"))
+      | _ => trap("simplify-r must keep a Detail of real geometry, not drop it"))
+  else trap("Detail of Empty must simplify to Empty")
 
 @test
 def mirror-across-x-bounds-exactly() =
@@ -1251,6 +1331,6 @@ def simplify-r-preserves-a-real-rotate-and-mirror() =
 
 export { Vec3.*, Vec2.*, Profile.*, PathSeg.*, Path.*, Solid.*, Aabb.*, SolidR.*, Vec3R.*, Vec2R.*, ProfileR.*,
          PathSegR.*, PathR.*, rmin, rmax, rabs, rzero, v3, v2, v3-x, v3-y, v3-z, v3-add, v3-mul, v3-min, v3-max,
-         v3-eq, v3-mirror, profile-half-extent, path-start, path-append, move-to, line-to, line-by, cubic-to, cubic-by, v2max,
+         v3-eq, v3-mirror, detail, profile-half-extent, path-start, path-append, move-to, line-to, line-by, cubic-to, cubic-by, v2max,
          path-half-extent, aabbr-union, aabbr-intersect, aabbr-empty, aabbr-of-corners, bounding-box, aabbr-size,
          solidr-is-empty, simplify-r, lower-vec3, lower-vec2, lower-profile, lower-path, lower }

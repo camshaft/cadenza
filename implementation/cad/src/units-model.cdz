@@ -110,6 +110,9 @@ def lower(s: Solid(Qty(Rational, Unit.base(#"meter")))) = match s with
   | Solid.Mirror(n, of) => Solid.Mirror(lower-v(n), lower(of))
   | Solid.ExtrudeLinear(p, h) => Solid.ExtrudeLinear(lower-p(p), Qty.value(h))
   | Solid.Revolve(p, d) => Solid.Revolve(lower-p(p), Qty.value(d))
+  // Detail carries an Int64 segment count (a resolution, NOT a length) — pass it through unchanged and lower
+  // the child. Like Rotate/Mirror above, this arm exists for exhaustiveness; the count needs no unit unwrap.
+  | Solid.Detail(n, of) => Solid.Detail(n, lower(of))
 
 /// ============================ @test suite (S3 — units-carrying model + lower, exact meters) ============================
 
