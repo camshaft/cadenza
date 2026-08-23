@@ -111,6 +111,15 @@ enum Cmd {
         /// diff).
         #[arg(long, conflicts_with_all = ["save", "check"])]
         opt_sweep: bool,
+        /// Run only shard `I` of `N` (1-based), format `I/N`: partition the corpus files deterministically
+        /// (round-robin over the sorted file list) into `N` groups and run only group `I`. Splits the
+        /// long full-corpus gate into parallel CI jobs each short enough to finish before a runner reclaim
+        /// (the nightly rust gate). With `--check`, the baseline compare is SCOPED to the cases this shard
+        /// runs — it flags regressions among them but does NOT treat the other shards' baseline cases as
+        /// "vanished" (they are simply in another shard). Rejected with `--save` (a shard would clobber the
+        /// baseline with a partial snapshot).
+        #[arg(long, conflicts_with_all = ["save", "opt_sweep"])]
+        shard: Option<String>,
     },
     /// The omnibus health check: cargo fmt --check, workspace build, tests, clippy (`-D warnings`),
     /// the wasm runtime build, and the behavior gate. Each step's output is captured to a log file
@@ -290,7 +299,16 @@ fn main() {
             check,
             target,
             opt_sweep,
+            shard,
         } => {
+            let shard = shard
+                .as_deref()
+                .map(parse_shard)
+                .transpose()
+                .unwrap_or_else(|e| {
+                    eprintln!("xtask gate --shard: {e}");
+                    std::process::exit(2);
+                });
             let gate_opts = GateOpts {
                 files,
                 store,
@@ -302,6 +320,7 @@ fn main() {
                     GateTargetArg::Rust => GateTarget::Rust,
                     GateTargetArg::RustAsync => GateTarget::RustAsync,
                 },
+                shard,
             };
             if opt_sweep {
                 gate_opt_sweep(&paths, profile, &gate_opts);
@@ -3299,6 +3318,10 @@ struct GateOpts {
     save: bool,
     check: bool,
     target: GateTarget,
+    /// `Some((i, n))` (1-based `i`) to run only shard `i` of `n` — a deterministic round-robin partition
+    /// of the flat CASE list (every `n`-th case), so shards balance regardless of per-file case counts.
+    /// `None` runs the whole (default or given) set.
+    shard: Option<(usize, usize)>,
 }
 
 /// Run one or more corpus files through the pipeline and grade each case against its recorded
@@ -3325,10 +3348,25 @@ fn gate(paths: &Paths, profile: &str, opts: GateOpts) {
     // cases; fanning the cases across cores collapses that wait. Order is PRESERVED (each result is
     // written to its own index) because the baseline compare (`check_baseline`/`save_baseline`) is
     // positional — a race in verdict order would spuriously flag regressions.
-    let records: Vec<CorpusRecord> = files
+    let mut records: Vec<CorpusRecord> = files
         .iter()
         .flat_map(|file| read_corpus(&tools, file))
         .collect();
+    // `--shard I/N`: keep only every `n`-th case (offset `i-1`) of the flat, order-stable case list. Case-
+    // level (not file-level) so shards balance even though per-file case counts vary wildly (e.g. one file
+    // holds ~1774 cases). Parsing all files is cheap; the cost is the per-case compile, which is what we
+    // split. `--check` is scoped to the run cases (see `check_baseline`'s `subset`), so the other shards'
+    // cases are not treated as regressions/vanished.
+    if let Some((i, n)) = opts.shard {
+        let before = records.len();
+        records = records
+            .into_iter()
+            .enumerate()
+            .filter(|(k, _)| k % n == i - 1)
+            .map(|(_, r)| r)
+            .collect();
+        println!("gate: shard {i}/{n} — {} of {before} cases", records.len());
+    }
     let graded = grade_all_parallel(&tools, &opts.store, records, opts.target);
 
     // Reassemble the tally + the ordered verdict list from the in-order graded results.
@@ -3374,7 +3412,12 @@ fn gate(paths: &Paths, profile: &str, opts: GateOpts) {
     if opts.check {
         // A regression (a case that used to pass and now doesn't) fails the check even if the
         // totals look fine — the trap the raw counts hide. Newly-passing cases are reported, not failed.
-        std::process::exit(check_baseline(paths, &verdicts, opts.target));
+        std::process::exit(check_baseline(
+            paths,
+            &verdicts,
+            opts.target,
+            opts.shard.is_some(),
+        ));
     }
     if fail > 0 {
         std::process::exit(1);
@@ -3656,11 +3699,19 @@ fn grade_all_parallel(
     let cursor = AtomicUsize::new(0);
 
     // Cap workers at the machine's parallelism (min 1). More threads than cores buys nothing here —
-    // the pipeline stages are separate processes the OS already schedules across cores.
-    let workers = std::thread::available_parallelism()
+    // the pipeline stages are separate processes the OS already schedules across cores. `CDZ_GATE_JOBS`
+    // (a positive integer) caps it lower: each worker holds a live rustc/cdz-run subprocess, so on a
+    // memory-tight runner a lower cap bounds peak RSS (the sharded nightly's OOM lever) at the cost of
+    // parallelism. An unset/zero/unparseable value falls back to the core count.
+    let cores = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1)
         .max(1);
+    let workers = std::env::var("CDZ_GATE_JOBS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&j| j >= 1)
+        .map_or(cores, |j| j.min(cores));
 
     std::thread::scope(|scope| {
         for _ in 0..workers {
@@ -4272,6 +4323,28 @@ fn expected_value(payload: &str) -> String {
 /// the `NN-feature` naming convention (a numeric prefix) — only digit-led stems are corpus files (never
 /// an ordinary docs `.md` like `README.md`). The corpus is `.sexp`-only (the markdown-literate `.md`
 /// twin feature was removed per operator direction — the s-expression source is the single form).
+/// Parse a `--shard` spec `"I/N"` into 1-based `(i, n)`, validating `1 <= i <= n` and `n >= 1`.
+fn parse_shard(spec: &str) -> Result<(usize, usize), String> {
+    let (i, n) = spec
+        .split_once('/')
+        .ok_or_else(|| format!("expected `I/N` (e.g. `1/8`), got `{spec}`"))?;
+    let i: usize = i
+        .trim()
+        .parse()
+        .map_err(|_| format!("shard index `{i}` is not a number"))?;
+    let n: usize = n
+        .trim()
+        .parse()
+        .map_err(|_| format!("shard count `{n}` is not a number"))?;
+    if n == 0 {
+        return Err("shard count N must be >= 1".into());
+    }
+    if i == 0 || i > n {
+        return Err(format!("shard index I must be in 1..={n} (got {i})"));
+    }
+    Ok((i, n))
+}
+
 fn default_corpus_files(paths: &Paths) -> Vec<PathBuf> {
     let dir = paths.repo.join("spec/semantics");
     let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
@@ -4598,7 +4671,17 @@ fn merge_baseline(ours: &Path, theirs: &Path) {
 /// Compare current verdicts to the baseline. Returns the process exit code: non-zero if any case
 /// REGRESSED (baseline pass → now not pass) or a baseline case vanished. Newly-passing cases and
 /// new cases are reported but do not fail the check.
-fn check_baseline(paths: &Paths, verdicts: &[(String, Verdict)], target: GateTarget) -> i32 {
+/// `subset` (a `--shard` run) scopes the compare to the cases actually run: it flags REGRESSIONS among
+/// them but does NOT treat baseline cases absent from this run as "vanished" (they belong to the other
+/// shards). A full run (`subset = false`) keeps the vanished check, which catches a case silently dropped
+/// from the corpus. Vanished-detection for a sharded nightly is left to the full-corpus `gate --save`
+/// discipline (removing a case re-saves the baseline), so no shard needs it.
+fn check_baseline(
+    paths: &Paths,
+    verdicts: &[(String, Verdict)],
+    target: GateTarget,
+    subset: bool,
+) -> i32 {
     let path = baseline_path(paths, target);
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
@@ -4686,7 +4769,13 @@ fn check_baseline(paths: &Paths, verdicts: &[(String, Verdict)], target: GateTar
 
     for (desc, &was) in &base {
         match now.get(desc.as_str()) {
-            None => vanished.push(desc.clone()),
+            // A baseline case absent from this run: a dropped case (full run) — but under `--shard` it is
+            // simply in another shard, so subset mode does not count it as vanished.
+            None => {
+                if !subset {
+                    vanished.push(desc.clone());
+                }
+            }
             Some(&is) => {
                 if was == Verdict::Pass && is != Verdict::Pass {
                     regressed.push(format!("{desc} ({} → {})", was.tag(), is.tag()));
