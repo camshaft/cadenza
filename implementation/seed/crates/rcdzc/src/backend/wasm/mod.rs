@@ -8435,6 +8435,7 @@ fn canon_write_ops(
 /// crosses as `(ptr, len)` and copies out of memory (`BytesLeaf`, two i32); a NESTED record builds a `Nested`
 /// rebuild over its own fields (the message's `sender` shape). Declines any other compound field.
 fn param_field_rebuild(
+    db: &mut Db,
     gty: &crate::ty::Ty,
     wty: &crate::wit_world::WitType,
     param_vts: &mut Vec<u8>,
@@ -8453,8 +8454,23 @@ fn param_field_rebuild(
             let WitType::Record(wfs) = wty else {
                 return None;
             };
-            let (fields, slots) = record_fields_rebuild(map, wfs, param_vts)?;
+            let (fields, slots) = record_fields_rebuild(db, map, wfs, param_vts)?;
             Some(FieldRebuild::Nested(fields, slots))
+        }
+        // A variant/result PARAM field (the response's `answer: result<…>`): the canon lift hands the
+        // flattened `(disc, payload…)`; the wrapper reads them and rebuilds the guest sum cell. This slice
+        // reuses the closure-arg `fixed_shape_option_scalar_arg` — a two-variant Option/Result whose payload
+        // arms are scalar or a fixed-shape tuple/record. A `list<u8>`/enum payload arm (result<list<u8>,
+        // error>) is NOT yet covered there and declines (a later slice extends the reader).
+        Ty::Sum { .. } => {
+            // The canon lift flattens a variant to `(disc: i32, payload-join…)`. `fixed_shape_option_scalar_arg`
+            // returns only the PAYLOAD valtypes (the closure convention passes the disc separately), so prepend
+            // the disc's i32 — matching `flattened_param_count` (1 disc + the payload leaves) + `emit_sum_field`
+            // (disc at the cursor, payload at cursor+1).
+            let (_slot, vts, rebuild) = fixed_shape_option_scalar_arg(db, gty)?;
+            param_vts.push(ValType::I32.byte());
+            param_vts.extend(vts.iter().map(|vt| vt.byte()));
+            Some(FieldRebuild::Sum(Box::new(rebuild)))
         }
         _ => {
             let fr = scalar_field_rebuild(gty)?;
@@ -8473,6 +8489,7 @@ fn param_field_rebuild(
 /// record like `message{contract, sender, payload, token}` or its nested `sender{reducer, host}` (name-lex
 /// `host, reducer`) both cross correctly.
 fn record_fields_rebuild(
+    db: &mut Db,
     map: &std::collections::BTreeMap<crate::resolved::Symbol, crate::ty::Ty>,
     wfs: &[(String, crate::wit_world::WitType)],
     param_vts: &mut Vec<u8>,
@@ -8491,7 +8508,7 @@ fn record_fields_rebuild(
     for (wname, fw) in wfs {
         let slot = guest_kebab.iter().position(|g| g == wname)?; // NAME-MATCH
         let fg = gtys[slot].clone();
-        rebuild.push(param_field_rebuild(&fg, fw, param_vts)?); // appends WIT-order vts
+        rebuild.push(param_field_rebuild(db, &fg, fw, param_vts)?); // appends WIT-order vts
         slots.push(slot as u32);
     }
     Some((rebuild, slots))
@@ -8593,7 +8610,7 @@ fn record_interface_export(
                     let WitType::Record(wfs) = wty else {
                         return None;
                     };
-                    let (rebuild, slots) = record_fields_rebuild(map, wfs, &mut param_vts)?;
+                    let (rebuild, slots) = record_fields_rebuild(db, map, wfs, &mut param_vts)?;
                     params.push(Some(rebuild));
                     param_slots.push(Some(slots));
                     any_record = true;
