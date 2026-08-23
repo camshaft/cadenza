@@ -537,13 +537,13 @@ pub fn emit(
                     });
                 }
             }
-            // A spilled record RESULT reads each field off the returned handle (`arr-get` + the unbox op),
-            // so those ops must be imported too.
-            if let serialize::ResultLower::SpillScalarRecord { fields, .. } = &w.result {
-                used.insert("arr-get");
-                for f in fields {
-                    used.insert(f.read);
-                }
+            // A spilled compound RESULT reads its value off the returned handle via the recursive canonical
+            // writer — collect every runtime op that plan calls (`arr-get`/`vec-len`/`vec-get`/`bytes-*` +
+            // each scalar unbox) so they are imported.
+            if let serialize::ResultLower::SpillRecord { write, .. } = &w.result {
+                canon_write_ops(write, &mut |op| {
+                    used.insert(op);
+                });
             }
         }
     }
@@ -8027,6 +8027,122 @@ fn scalar_interface_export(
     })
 }
 
+/// How to read ONE scalar VALUE off its value-heap handle and store it canonically: `(read-op, narrow-i64→
+/// i32?, store-opcode)`. `get-int` yields i64, so a ≤32-bit slot narrows + stores an i32-width store; a
+/// 64-bit slot stores i64. `None` if `f` is not an aliased-width scalar.
+fn scalar_result_read_store(f: &crate::ty::Ty) -> Option<(&'static str, bool, u8)> {
+    use crate::backend::wasm::wasm_abi::op;
+    use crate::ty::Ty;
+    Some(match f.strip_nominal() {
+        Ty::Int(it) => {
+            let w = it.ground_width();
+            if w <= 8 {
+                ("get-int", true, op::I32_STORE8)
+            } else if w <= 16 {
+                ("get-int", true, op::I32_STORE16)
+            } else if w <= 32 {
+                ("get-int", true, op::I32_STORE)
+            } else {
+                ("get-int", false, op::I64_STORE)
+            }
+        }
+        Ty::Bool => ("get-bool", false, op::I32_STORE8),
+        Ty::Float(ft) if ft.ground_width() == 64 => ("get-float", false, op::F64_STORE),
+        Ty::Float(ft) if ft.ground_width() == 32 => ("get-float32", false, op::F32_STORE),
+        _ => return None,
+    })
+}
+
+/// Build the recursive [`serialize::CanonWrite`] that lowers a value-heap value of type `gty` (WIT `wty`) to
+/// its canonical-ABI memory form — the reducer result-lower. A scalar unboxes + stores; a `Bytes`/`list<u8>`
+/// copies its bytes out; a record recurses per field at canonical offsets (with the WIT-vs-name-lex field-
+/// order SOUNDNESS guard); a `list<T>` writes an element array (recursive element write). Declines a
+/// variant/option/other compound (a later slice).
+fn canon_write_of(
+    gty: &crate::ty::Ty,
+    wty: &crate::wit_world::WitType,
+) -> Option<serialize::CanonWrite> {
+    use crate::backend::wasm::serialize::{CanonField, CanonWrite};
+    use crate::backend::wasm::wit_ctype;
+    use crate::ty::Ty;
+    use crate::wit_world::WitType;
+    match gty.strip_nominal() {
+        Ty::Bytes => Some(CanonWrite::Bytes),
+        Ty::Record(map) => {
+            let WitType::Record(wfs) = wty else {
+                return None;
+            };
+            if wfs.len() != map.len() {
+                return None;
+            }
+            let wit_order: Vec<&str> = wfs.iter().map(|(n, _)| n.as_str()).collect();
+            let lex_order: Vec<&str> = map.keys().map(|s| s.name.as_ref()).collect();
+            if wit_order != lex_order {
+                return None;
+            }
+            let wtys: Vec<WitType> = wfs.iter().map(|(_, t)| t.clone()).collect();
+            let offsets = wit_ctype::record_field_offsets(&wtys);
+            let mut fields = Vec::new();
+            for (i, ((fg, (_, fw)), off)) in
+                map.values().zip(wfs.iter()).zip(offsets.iter()).enumerate()
+            {
+                fields.push(CanonField {
+                    index: i as u32,
+                    offset: *off,
+                    write: canon_write_of(fg, fw)?,
+                });
+            }
+            Some(CanonWrite::Record { fields })
+        }
+        Ty::List(elem_g) => {
+            let WitType::List(elem_w) = wty else {
+                return None;
+            };
+            Some(CanonWrite::List {
+                elem_size: wit_ctype::canonical_size(elem_w),
+                elem_align: wit_ctype::canonical_align(elem_w),
+                elem: Box::new(canon_write_of(elem_g, elem_w)?),
+            })
+        }
+        _ => {
+            let (read, wrap_i64, store) = scalar_result_read_store(gty)?;
+            Some(CanonWrite::Scalar {
+                read,
+                wrap_i64,
+                store,
+            })
+        }
+    }
+}
+
+/// Register (via `out`) every runtime op the recursive canonical writer `cw` emits, so the wrapper's core
+/// imports them: `arr-get` + a scalar's unbox for a record; `vec-len`/`vec-get` for a list; `bytes-len`/
+/// `bytes-get` for a `Bytes` leaf.
+fn canon_write_ops(
+    cw: &crate::backend::wasm::serialize::CanonWrite,
+    out: &mut impl FnMut(&'static str),
+) {
+    use crate::backend::wasm::serialize::CanonWrite;
+    match cw {
+        CanonWrite::Scalar { read, .. } => out(read),
+        CanonWrite::Bytes => {
+            out("bytes-len");
+            out("bytes-get");
+        }
+        CanonWrite::Record { fields } => {
+            out("arr-get");
+            for f in fields {
+                canon_write_ops(&f.write, out);
+            }
+        }
+        CanonWrite::List { elem, .. } => {
+            out("vec-len");
+            out("vec-get");
+            canon_write_ops(elem, out);
+        }
+    }
+}
+
 /// Build the [`serialize::FieldRebuild`] for ONE record field (recursively), appending its flattened core
 /// valtypes to `param_vts` in field order. A scalar boxes one flattened leaf; a `list<u8>`/`Bytes` leaf
 /// crosses as `(ptr, len)` and copies out of memory (`BytesLeaf`, two i32); a NESTED record builds a `Nested`
@@ -8117,77 +8233,30 @@ fn record_interface_export(
             other => Some(vec![valtype_of(other)?.byte()]),
         }
     }
-    // How to read ONE scalar field off a returned record handle and store it into the canonical return area:
-    // `(read-op, narrow-i64→i32?, store-opcode)`. `get-int` yields i64, so a ≤32-bit slot narrows + stores an
-    // i32-width store; a 64-bit slot stores i64. `None` if `f` is not an aliased-width scalar.
-    fn scalar_result_read_store(f: &Ty) -> Option<(&'static str, bool, u8)> {
-        use crate::backend::wasm::wasm_abi::op;
-        Some(match f.strip_nominal() {
-            Ty::Int(it) => {
-                let w = it.ground_width();
-                if w <= 8 {
-                    ("get-int", true, op::I32_STORE8)
-                } else if w <= 16 {
-                    ("get-int", true, op::I32_STORE16)
-                } else if w <= 32 {
-                    ("get-int", true, op::I32_STORE)
-                } else {
-                    ("get-int", false, op::I64_STORE)
-                }
-            }
-            Ty::Bool => ("get-bool", false, op::I32_STORE8),
-            Ty::Float(ft) if ft.ground_width() == 64 => ("get-float", false, op::F64_STORE),
-            Ty::Float(ft) if ft.ground_width() == 32 => ("get-float32", false, op::F32_STORE),
-            _ => return None,
-        })
-    }
     // Build the result-lower + core result valtypes for a member's result. A scalar/unit passes straight
     // through (the def returns it raw); an all-scalar RECORD that SPILLS (flattens to >1 canonical value) is
     // written to a memory return area at canonical offsets, the core returning the area pointer. A flat
     // (1-value) record, a `list<u8>`/nested/variant field, or a WIT-vs-name-lex field-order mismatch → `None`
     // (a later slice, or a soundness decline).
     fn record_result_lower(gr: &Ty, wr: &WitType) -> Option<(serialize::ResultLower, Vec<u8>)> {
-        use crate::backend::wasm::serialize::{ResultLower, ScalarResultField};
+        use crate::backend::wasm::serialize::ResultLower;
         use crate::backend::wasm::wit_ctype;
+        // A scalar/unit result the def returns raw.
         if let Some(vts) = scalar_result_vts(gr) {
             return Some((ResultLower::Passthrough, vts));
         }
-        let Ty::Record(map) = gr else {
-            return None;
-        };
-        let WitType::Record(wfs) = wr else {
-            return None;
-        };
-        // Field-order soundness (as on the param side): WIT order must equal name-lex `Ty::Record` order, or a
-        // field's stored offset would not match the slot the def wrote it to.
-        let wit_order: Vec<&str> = wfs.iter().map(|(n, _)| n.as_str()).collect();
-        let lex_order: Vec<&str> = map.keys().map(|s| s.name.as_ref()).collect();
-        if wit_order != lex_order {
-            return None;
-        }
-        // Only a SPILLING record (flat count > MAX_FLAT_RESULTS) is handled; a flat 1-value record result is a
-        // later slice (the core returns the flattened scalar, not a pointer — a different lower).
+        // Otherwise a compound that SPILLS to memory (flat count > MAX_FLAT_RESULTS): build the recursive
+        // canonical writer. A flat 1-value record (a single-scalar-field record) is a later slice — the core
+        // would return the flattened scalar, not a pointer (a different lower); decline here.
         if !wit_ctype::sig_needs_memory(&[], Some(wr)) {
             return None;
         }
-        let wtys: Vec<WitType> = wfs.iter().map(|(_, t)| t.clone()).collect();
-        let offsets = wit_ctype::record_field_offsets(&wtys);
-        let mut fields = Vec::new();
-        for (i, (gty, off)) in map.values().zip(offsets.iter()).enumerate() {
-            let (read, wrap_i64, store) = scalar_result_read_store(gty)?;
-            fields.push(ScalarResultField {
-                index: i as u32,
-                read,
-                wrap_i64,
-                store,
-                offset: *off,
-            });
-        }
+        let write = canon_write_of(gr, wr)?;
         Some((
-            ResultLower::SpillScalarRecord {
+            ResultLower::SpillRecord {
                 size: wit_ctype::canonical_size(wr),
                 align: wit_ctype::canonical_align(wr),
-                fields,
+                write,
             },
             vec![crate::backend::wasm::lir::ValType::I32.byte()],
         ))

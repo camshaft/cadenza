@@ -1784,6 +1784,251 @@ fn a_record_result_guest_compiles_and_runs_via_result_spill() {
     assert_eq!(get("b"), 42, "spilled record result: b == 2*m.x == 42");
 }
 
+/// A KIND_WIT_WORLD `f(m: record{x: s64}) -> record{xs: list<s64>}` — a LIST result field (`list<request>` in
+/// a real reducer's Step). The result-lower's recursive canonical writer allocates an element array, writes
+/// each element at its stride, and stores `(ptr, len)`.
+fn list_result_world_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let s64 = |b: &mut Builder| {
+        let h = b.name("s64");
+        b.list(vec![h])
+    };
+    // param: ("record" (x (s64)))
+    let x_ty = s64(&mut b);
+    let x_name = b.name("x");
+    let x_field = b.list(vec![x_name, x_ty]);
+    let prec_head = b.atom_leaf(Leaf::Str("record".into()));
+    let prec = b.list(vec![prec_head, x_field]);
+    // result: ("record" (xs ("list" (s64))))
+    let elem_ty = s64(&mut b);
+    let list_head = b.atom_leaf(Leaf::Str("list".into()));
+    let list_ty = b.list(vec![list_head, elem_ty]);
+    let xs_name = b.name("xs");
+    let xs_field = b.list(vec![xs_name, list_ty]);
+    let rrec_head = b.atom_leaf(Leaf::Str("record".into()));
+    let rrec = b.list(vec![rrec_head, xs_field]);
+    let func_h = b.name("func");
+    let param_h = b.name("param");
+    let pn = b.name("m");
+    let param_node = b.list(vec![param_h, pn, prec]);
+    let result_h = b.name("result");
+    let result_node = b.list(vec![result_h, rrec]);
+    let func = b.list(vec![func_h, param_node, result_node]);
+    let member_h = b.name("member");
+    let mn = b.name("f");
+    let member = b.list(vec![member_h, mn, func]);
+    let exp_h = b.name("export");
+    let iname = b.name("iface");
+    let export = b.list(vec![exp_h, iname, member]);
+    let world_h = b.name("world");
+    let wn = b.name("w");
+    let world = b.list(vec![world_h, wn, export]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+/// W4c-b: a guest returning a record with a `list<s64>` field compiles + runs — the recursive canonical
+/// result WRITER's list case (`requests: list<request>` in a reducer's Step). `f(m) = {xs: [m.x, 2*m.x]}`;
+/// `f({x:5}) == {xs: [5, 10]}` — proving the element array is allocated + each element written at its stride.
+#[test]
+fn a_list_result_guest_compiles_and_runs() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime) = find_runtime_wasm() else {
+        return;
+    };
+    let src = "(module m (def (f (: m (Record (x Int64)))) \
+                 (record (xs (list (. m x) (+ (. m x) (. m x)))))) (export f))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:demo/iface"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                list_result_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "list-result guest must emit: {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("emits a component");
+    let opts = cdz_run::RunOpts {
+        export: None,
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    let result = cdz_run::run_reducer_typed(
+        bytes,
+        "cadenza:demo/iface",
+        "f",
+        &[Val::Record(vec![("x".to_string(), Val::S64(5))])],
+        &opts,
+    )
+    .expect("run the list-result member");
+    let Val::Record(fields) = &result else {
+        panic!("record result must be a Val::Record, got {result:?}");
+    };
+    let (_, xs) = fields.iter().find(|(n, _)| n == "xs").expect("xs field");
+    let Val::List(items) = xs else {
+        panic!("xs must be a Val::List, got {xs:?}");
+    };
+    let got: Vec<i64> = items.iter().map(i64::from_val).collect();
+    assert_eq!(
+        got,
+        vec![5, 10],
+        "list result: xs == [m.x, 2*m.x] == [5, 10]"
+    );
+}
+
+/// A KIND_WIT_WORLD `f(m: record{x: s64}) -> record{items: list<record{a: s64, b: s64}>}` — a LIST OF RECORDS
+/// result, the structural heart of a reducer Step's `requests: list<request>`. The recursive writer composes
+/// its List case (element array + stride) with its Record case (per-field write) at each element.
+fn list_of_records_world_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let s64 = |b: &mut Builder| {
+        let h = b.name("s64");
+        b.list(vec![h])
+    };
+    // param: ("record" (x (s64)))
+    let x_ty = s64(&mut b);
+    let x_name = b.name("x");
+    let x_field = b.list(vec![x_name, x_ty]);
+    let prec_head = b.atom_leaf(Leaf::Str("record".into()));
+    let prec = b.list(vec![prec_head, x_field]);
+    // element record: ("record" (a (s64)) (b (s64)))
+    let a_ty = s64(&mut b);
+    let a_name = b.name("a");
+    let a_field = b.list(vec![a_name, a_ty]);
+    let eb_ty = s64(&mut b);
+    let eb_name = b.name("b");
+    let eb_field = b.list(vec![eb_name, eb_ty]);
+    let erec_head = b.atom_leaf(Leaf::Str("record".into()));
+    let erec = b.list(vec![erec_head, a_field, eb_field]);
+    // result: ("record" (items ("list" <elem-record>)))
+    let list_head = b.atom_leaf(Leaf::Str("list".into()));
+    let list_ty = b.list(vec![list_head, erec]);
+    let items_name = b.name("items");
+    let items_field = b.list(vec![items_name, list_ty]);
+    let rrec_head = b.atom_leaf(Leaf::Str("record".into()));
+    let rrec = b.list(vec![rrec_head, items_field]);
+    let func_h = b.name("func");
+    let param_h = b.name("param");
+    let pn = b.name("m");
+    let param_node = b.list(vec![param_h, pn, prec]);
+    let result_h = b.name("result");
+    let result_node = b.list(vec![result_h, rrec]);
+    let func = b.list(vec![func_h, param_node, result_node]);
+    let member_h = b.name("member");
+    let mn = b.name("f");
+    let member = b.list(vec![member_h, mn, func]);
+    let exp_h = b.name("export");
+    let iname = b.name("iface");
+    let export = b.list(vec![exp_h, iname, member]);
+    let world_h = b.name("world");
+    let wn = b.name("w");
+    let world = b.list(vec![world_h, wn, export]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+/// W4c-b: a guest returning a `list<record{a,b}>` compiles + runs — List∘Record composition, the shape of a
+/// Step's `requests: list<request>` (minus the byte leaves + option). `f(m) = {items: [{a:m.x, b:2*m.x}]}`;
+/// `f({x:7}) == {items: [{a:7, b:14}]}`.
+#[test]
+fn a_list_of_records_result_guest_compiles_and_runs() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime) = find_runtime_wasm() else {
+        return;
+    };
+    let src = "(module m (def (f (: m (Record (x Int64)))) \
+                 (record (items (list (record (a (. m x)) (b (+ (. m x) (. m x)))))))) (export f))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:demo/iface"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                list_of_records_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "list-of-records guest must emit: {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("emits a component");
+    let opts = cdz_run::RunOpts {
+        export: None,
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    let result = cdz_run::run_reducer_typed(
+        bytes,
+        "cadenza:demo/iface",
+        "f",
+        &[Val::Record(vec![("x".to_string(), Val::S64(7))])],
+        &opts,
+    )
+    .expect("run the list-of-records member");
+    let Val::Record(fields) = &result else {
+        panic!("record result must be a Val::Record, got {result:?}");
+    };
+    let (_, items) = fields.iter().find(|(n, _)| n == "items").expect("items");
+    let Val::List(elems) = items else {
+        panic!("items must be a Val::List, got {items:?}");
+    };
+    assert_eq!(elems.len(), 1, "one request element");
+    let Val::Record(e0) = &elems[0] else {
+        panic!("element must be a record, got {:?}", elems[0]);
+    };
+    let ea = |name: &str| {
+        e0.iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| i64::from_val(v))
+            .unwrap()
+    };
+    assert_eq!(
+        (ea("a"), ea("b")),
+        (7, 14),
+        "list-of-records: [{{a:7, b:14}}]"
+    );
+}
+
 /// A KIND_WIT_WORLD `f(m: record{data: list<u8>}) -> record{n: s64, twice: s64}` — a `list<u8>` LEAF param
 /// AND a spilled record result in ONE member, so the wrapper uses BOTH memory paths (bytes copy-in + result
 /// spill) and all four scratch locals. Fields name-lex.
