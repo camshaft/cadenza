@@ -18,6 +18,11 @@ use manifold_csg::manifold::Manifold;
 /// overrides it.
 pub const DEFAULT_SEGMENTS: i32 = 32;
 
+/// The floor on a tessellation segment count: fewer than 3 sides can't close a curved loop. A `Detail`
+/// override (or any threaded count) below this is clamped up rather than producing a degenerate mesh. Mirrors
+/// the browser driver's `MIN_SEGMENTS` and the CLI's `--segments` minimum.
+pub const MIN_SEGMENTS: i32 = 3;
+
 /// A triangle mesh in the neutral form every export target wants: vertex POSITIONS (x, y, z per vertex, so
 /// `positions.len()` is a multiple of 3) and triangle INDICES (three vertex indices per triangle, so
 /// `indices.len()` is a multiple of 3). Produced from a manifold `MeshGL`; consumed by the 3MF/glTF/STL
@@ -94,6 +99,11 @@ pub fn to_manifold_with_segments(solid: &Solid, segments: i32) -> Manifold {
         Solid::Revolve(p, degrees) => {
             Manifold::revolve(&profile_to_cross_section(p, segments), segments, *degrees)
         }
+        // An OpenSCAD-`$fn`-style resolution override: mesh the child with the node's LOCAL segment count
+        // instead of the inherited one, clamped to a closable loop. A deeper `Detail` overrides again
+        // (dynamic scoping — the innermost enclosing `Detail` wins), and unwrapped geometry outside any
+        // `Detail` keeps the ambient `segments`. A mesh hint only — the child's geometry is unchanged.
+        Solid::Detail(n, of) => to_manifold_with_segments(of, (*n).max(MIN_SEGMENTS)),
     }
 }
 
@@ -382,6 +392,67 @@ mod tests {
             0,
             "intersection of two disjoint cubes is empty geometry"
         );
+    }
+
+    // ── Detail: the OpenSCAD-`$fn`-style tessellation-resolution override node ────────────────────────
+
+    #[test]
+    fn detail_overrides_the_inherited_segment_count() {
+        // `(Detail n child)` meshes the child at n segments regardless of the ambient count threaded in: a
+        // Detail-64 sphere is finer than a Detail-8 one even when BOTH are meshed at the same ambient default,
+        // because the inner override wins.
+        let coarse = mesh_with_segments(
+            &parse_solid("(: (Detail 8 (Sphere 5/1)) SolidR)").unwrap(),
+            32,
+        );
+        let fine = mesh_with_segments(
+            &parse_solid("(: (Detail 64 (Sphere 5/1)) SolidR)").unwrap(),
+            32,
+        );
+        assert!(
+            fine.triangle_count() > coarse.triangle_count(),
+            "the Detail override sets the child's tessellation, not the ambient count"
+        );
+    }
+
+    #[test]
+    fn detail_is_dynamically_scoped_innermost_wins() {
+        // A nested Detail overrides an outer one for its subtree: Detail 8 (Detail 64 (Sphere)) meshes the
+        // sphere at 64 (the innermost), identical to a bare Detail 64.
+        let nested = mesh(&parse_solid("(: (Detail 8 (Detail 64 (Sphere 5/1))) SolidR)").unwrap());
+        let inner = mesh(&parse_solid("(: (Detail 64 (Sphere 5/1)) SolidR)").unwrap());
+        assert_eq!(
+            nested.triangle_count(),
+            inner.triangle_count(),
+            "the innermost Detail wins (dynamic scoping)"
+        );
+    }
+
+    #[test]
+    fn detail_count_below_min_is_clamped_not_degenerate() {
+        // A count under 3 can't close a curved loop; the mesh clamps up to MIN_SEGMENTS rather than emptying.
+        // Detail 0 and Detail 3 mesh the same real geometry.
+        let zero = mesh(&parse_solid("(: (Detail 0 (Sphere 5/1)) SolidR)").unwrap());
+        let floor = mesh(&parse_solid("(: (Detail 3 (Sphere 5/1)) SolidR)").unwrap());
+        assert!(!zero.is_empty(), "a clamped-up Detail meshes real geometry");
+        assert_eq!(
+            zero.triangle_count(),
+            floor.triangle_count(),
+            "Detail 0 clamps to the same mesh as Detail 3 (MIN_SEGMENTS)"
+        );
+    }
+
+    #[test]
+    fn detail_is_a_mesh_hint_and_does_not_change_a_polyhedral_child() {
+        // Detail is a MESH HINT, not geometry: wrapping a cube (no curved leaves) in any Detail meshes the
+        // SAME 12-triangle box — the tessellation count is irrelevant to a polyhedral child, so the shape is
+        // unchanged. (For a curved child the shape is likewise the same solid, only tessellated finer.)
+        let bare = mesh(&parse_solid("(: (Cube (: (tuple 2/1 2/1 2/1) Vec3)) SolidR)").unwrap());
+        let detailed = mesh(
+            &parse_solid("(: (Detail 128 (Cube (: (tuple 2/1 2/1 2/1) Vec3))) SolidR)").unwrap(),
+        );
+        assert_eq!(detailed.triangle_count(), bare.triangle_count());
+        assert_eq!(detailed.triangle_count(), 12);
     }
 
     // ── P-D: extrude / revolve / path profiles (the exact.cdz Profile+Path render forms) ─────────────

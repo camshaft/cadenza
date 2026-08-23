@@ -85,6 +85,13 @@ pub enum Solid {
     ExtrudeLinear(Profile, f64),
     /// Sweep a 2-D profile about the y-axis by `degrees` — the Cadenza `Revolve`.
     Revolve(Profile, f64),
+    /// An OpenSCAD-`$fn`-style tessellation-resolution OVERRIDE for a subtree — the Cadenza `Detail(n, child)`.
+    /// It carries a local segment count that overrides the inherited/ambient resolution when meshing `child`
+    /// (a deeper `Detail` overrides again — dynamic scoping, innermost wins). It is a MESH hint ONLY: it wraps
+    /// its child transparently and changes no geometry (bounding box, leaf/node structure ignore the count), so
+    /// the same model at any detail is the same exact shape, tessellated coarser/finer. The count is stored as
+    /// parsed and clamped to a closable loop at mesh time (see `mesh::MIN_SEGMENTS`).
+    Detail(i32, Box<Solid>),
 }
 
 /// A 2-D cross-section the driver lifts into a 3-D `Solid` via `ExtrudeLinear`/`Revolve` (the Cadenza
@@ -133,7 +140,8 @@ impl Solid {
             Solid::Translate(_, s)
             | Solid::Rotate(_, s)
             | Solid::Mirror(_, s)
-            | Solid::Scale(_, s) => s.leaf_count(),
+            | Solid::Scale(_, s)
+            | Solid::Detail(_, s) => s.leaf_count(),
         }
     }
 
@@ -152,7 +160,8 @@ impl Solid {
             Solid::Translate(_, s)
             | Solid::Rotate(_, s)
             | Solid::Mirror(_, s)
-            | Solid::Scale(_, s) => 1 + s.node_count(),
+            | Solid::Scale(_, s)
+            | Solid::Detail(_, s) => 1 + s.node_count(),
         }
     }
 }
@@ -383,6 +392,13 @@ impl Parser<'_> {
                 let deg = self.parse_rational()?;
                 Solid::Revolve(p, deg)
             }
+            "Detail" => {
+                // `(Detail <count> <child>)` — a tessellation-resolution override for the subtree. The count is
+                // an integer segment count; the child is a Solid meshed at that resolution (see mesh.rs).
+                let n = self.parse_segment_count()?;
+                let s = self.parse_solid_value()?;
+                Solid::Detail(n, Box::new(s))
+            }
             other => return Err(ParseError(format!("unknown Solid constructor `{other}`"))),
         };
         self.expect_close()?;
@@ -497,6 +513,22 @@ impl Parser<'_> {
         Ok(seg)
     }
 
+    /// Parse a `Detail` SEGMENT-COUNT leaf — the tessellation resolution the override node carries. The model
+    /// renders it as an integer (`Int`), so it arrives as a bare integer atom (`32`); a rational `n/d` or float
+    /// is accepted defensively and FLOORED to a whole count (the count has no fractional meaning). A NaN/±inf
+    /// atom is malformed here (unlike a coordinate, a resolution is never NaN) → a clean parse error. The value
+    /// is stored as-parsed and clamped to a closable loop at mesh time (`mesh::MIN_SEGMENTS`), not here — so the
+    /// tree faithfully records what the model asked for.
+    fn parse_segment_count(&mut self) -> Result<i32, ParseError> {
+        let n = self.parse_rational()?;
+        if !n.is_finite() {
+            return Err(ParseError(
+                "Detail segment count must be a finite integer".into(),
+            ));
+        }
+        Ok(n.floor() as i32)
+    }
+
     /// Parse a RATIONAL number leaf `n/d` (the exact model renders coordinates as normalized fractions,
     /// e.g. `50/1`, `127/20`) and evaluate it to the `f64` the mesh kernel uses — division at the leaf
     /// keeps the MODEL exact while the geometry backend works in float. A bare integer `n` (no `/`) or the
@@ -533,9 +565,10 @@ mod tests {
     // exercises all six PathSeg kinds — so this is a grammar-COMPLETENESS guard: if a new arm is added to the
     // model's `lower` without a matching driver parser arm (the render-blank class), this fails to parse.
     // Left subtree (9 nodes / 3 leaves): Intersection, Difference, Union, Cube, Sphere, Cylinder, Scale,
-    // Translate, Empty. Right subtree adds Rotate→ExtrudeLinear(PathProfile) and Mirror→Revolve(Circle) under
-    // a Union → +6 nodes / +2 leaves. Total 15 nodes / 5 leaves.
-    const ALL_VARIANTS: &str = "(: (Union (Intersection (Difference (Union (Cube (: (tuple 2/1 2/1 2/1) Vec3)) (Sphere 3/2)) (Cylinder 3/1 1/2)) (Scale (: (tuple 2/1 2/1 2/1) Vec3) (Translate (: (tuple 1/1 0/1 0/1) Vec3) (Empty unit)))) (Union (Rotate (: (tuple 0/1 0/1 45/1) Vec3) (ExtrudeLinear (PathProfile (list (MoveToAbs (tuple 0/1 0/1)) (LineToAbs (tuple 4/1 0/1)) (LineToRel (tuple 0/1 2/1)) (MoveToRel (tuple 1/1 1/1)) (CubicToAbs (tuple 6/1 0/1) (tuple 3/1 5/1) (tuple 5/1 0/1)) (CubicToRel (tuple 1/1 0/1) (tuple 0/1 1/1) (tuple 1/1 1/1)))) 4/1)) (Mirror (: (tuple 1/1 0/1 0/1) Vec3) (Revolve (Circle 3/1) 360/1)))) Solid)";
+    // Translate, Empty. Right subtree adds Rotate→ExtrudeLinear(PathProfile) and Mirror→Detail→Revolve(Circle)
+    // under a Union → +7 nodes / +2 leaves (the Detail is a mesh-hint wrapper, no leaf). Total 16 nodes / 5
+    // leaves. The `Detail` wrapping the Revolve pins the tessellation-override arm in the completeness guard.
+    const ALL_VARIANTS: &str = "(: (Union (Intersection (Difference (Union (Cube (: (tuple 2/1 2/1 2/1) Vec3)) (Sphere 3/2)) (Cylinder 3/1 1/2)) (Scale (: (tuple 2/1 2/1 2/1) Vec3) (Translate (: (tuple 1/1 0/1 0/1) Vec3) (Empty unit)))) (Union (Rotate (: (tuple 0/1 0/1 45/1) Vec3) (ExtrudeLinear (PathProfile (list (MoveToAbs (tuple 0/1 0/1)) (LineToAbs (tuple 4/1 0/1)) (LineToRel (tuple 0/1 2/1)) (MoveToRel (tuple 1/1 1/1)) (CubicToAbs (tuple 6/1 0/1) (tuple 3/1 5/1) (tuple 5/1 0/1)) (CubicToRel (tuple 1/1 0/1) (tuple 0/1 1/1) (tuple 1/1 1/1)))) 4/1)) (Mirror (: (tuple 1/1 0/1 0/1) Vec3) (Detail 12 (Revolve (Circle 3/1) 360/1))))) Solid)";
 
     #[test]
     fn parses_a_single_cube() {
@@ -596,11 +629,11 @@ mod tests {
     #[test]
     fn parses_every_variant_and_counts_match() {
         let s = parse_solid(ALL_VARIANTS).unwrap();
-        // Leaves: Cube, Sphere, Cylinder + ExtrudeLinear + Revolve = 5 (Empty/booleans/transforms are structure).
+        // Leaves: Cube, Sphere, Cylinder + ExtrudeLinear + Revolve = 5 (Empty/booleans/transforms/Detail are structure).
         assert_eq!(s.leaf_count(), 5);
         // Nodes: 9 in the left subtree (Intersection, Difference, Union, Cube, Sphere, Cylinder, Scale,
-        // Translate, Empty) + the outer Union + Rotate + ExtrudeLinear + Mirror + Revolve + inner Union = 15.
-        assert_eq!(s.node_count(), 15);
+        // Translate, Empty) + the outer Union + Rotate + ExtrudeLinear + Mirror + Detail + Revolve + inner Union = 16.
+        assert_eq!(s.node_count(), 16);
     }
 
     #[test]
@@ -629,6 +662,30 @@ mod tests {
         // Defensive: nested solids render bare; the parser must accept a bare top-level node as well.
         let s = parse_solid("(Sphere 3/1)").unwrap();
         assert_eq!(s, Solid::Sphere(3.0));
+    }
+
+    #[test]
+    fn parses_a_detail_override_node() {
+        // `(Detail n child)` — the tessellation-resolution override. It parses to a transform-like wrapper: 1
+        // leaf (the sphere), 2 nodes (Detail + Sphere). The count is a bare integer atom.
+        let s = parse_solid("(: (Detail 12 (Sphere 3/1)) Solid)").unwrap();
+        assert_eq!(s, Solid::Detail(12, Box::new(Solid::Sphere(3.0))));
+        assert_eq!(s.leaf_count(), 1);
+        assert_eq!(s.node_count(), 2);
+    }
+
+    #[test]
+    fn a_detail_count_floors_a_non_integer_and_rejects_a_nan() {
+        // A count has no fractional meaning → a rational/float count FLOORS (15/2 = 7.5 → 7); a NaN count is
+        // malformed (a resolution is never NaN, unlike a coordinate) → a clean parse error, not a NaN in the tree.
+        match parse_solid("(: (Detail 15/2 (Sphere 1/1)) Solid)").unwrap() {
+            Solid::Detail(n, _) => assert_eq!(n, 7, "15/2 = 7.5 floors to 7"),
+            other => panic!("expected a Detail, got {other:?}"),
+        }
+        assert!(
+            parse_solid("(: (Detail NaN (Sphere 1/1)) Solid)").is_err(),
+            "a NaN Detail count is malformed"
+        );
     }
 
     #[test]
