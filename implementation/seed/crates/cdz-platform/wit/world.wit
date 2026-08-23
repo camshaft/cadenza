@@ -169,6 +169,23 @@ interface identity {
   id: func() -> reducer-id;
 }
 
+// Run a program once as a pure function (§3): a synchronous, blocking host call, not an effect. The host
+// instantiates `program` with an empty capability set and a null birth, folds `input` against `contract`,
+// and returns the program's output value inline — within the same fold, with no continuation-token round
+// trip. It is a DIRECT read, the same shape as `state`/`blobs` above, because a pure run is deterministic
+// (its output is a function of the program and the input) and the host memoizes it: a guest composes pure
+// sub-computation — a userspace validator, a schema-to-checker compile (§4) — with no effect plumbing, and
+// a pure function that calls it stays pure. Available to every reducer (the ordinary world's floor): a
+// deterministic empty-capability sub-run grants nothing, so it needs no privilege.
+interface run {
+  use types.{program-hash, contract-id, payload, error};
+
+  // Run `program` on `input` against `contract`, returning its output value, or an `error` if the program
+  // is not in the store (`missing-handler`) or failed to produce a result — it faulted or never returned
+  // (`faulted`). The output is opaque bytes the caller decodes against `contract`'s output type.
+  run: func(program: program-hash, contract: contract-id, input: payload) -> result<payload, error>;
+}
+
 // The reducer entry points every reducer exports (§3): the host folds each delivered event through the
 // matching one, and the reducer returns the effects to perform and whether to continue or close.
 interface guest {
@@ -189,6 +206,7 @@ world reducer-world {
   import state;
   import blobs;
   import identity;
+  import run;
   export guest;
 }
 
@@ -285,6 +303,7 @@ world event-reducer-world {
   import state;
   import blobs;
   import identity;
+  import run;
   import graph;
   import deliver;
   import provenance;
