@@ -2924,6 +2924,151 @@ fn an_option_param_field_is_read_by_the_wrapper() {
     );
 }
 
+/// A KIND_WIT_WORLD `f(m: record{a: result<list<u8>, enum>}) -> s64` — a RESULT param field whose Ok arm is a
+/// `list<u8>` and whose Err arm is an all-nullary `enum`, the exact shape of the reducer response's
+/// `answer: result<payload, error>`. Model of on-response's read side (slice 2 of the param variant reader).
+fn result_bytes_enum_param_world_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let s64 = |b: &mut Builder| {
+        let h = b.name("s64");
+        b.list(vec![h])
+    };
+    // ok arm: ("list" (u8))
+    let u8h = b.name("u8");
+    let u8p = b.list(vec![u8h]);
+    let list_head = b.atom_leaf(Leaf::Str("list".into()));
+    let ok_ty = b.list(vec![list_head, u8p]);
+    // err arm: ("enum" timeout missing schema faulted) — all-nullary, guest decl order.
+    let enum_head = b.atom_leaf(Leaf::Str("enum".into()));
+    let c0 = b.name("timeout");
+    let c1 = b.name("missing");
+    let c2 = b.name("schema");
+    let c3 = b.name("faulted");
+    let err_ty = b.list(vec![enum_head, c0, c1, c2, c3]);
+    // a field: (a ("result" <ok> <err>))
+    let result_head = b.atom_leaf(Leaf::Str("result".into()));
+    let a_ty = b.list(vec![result_head, ok_ty, err_ty]);
+    let a_name = b.name("a");
+    let a_field = b.list(vec![a_name, a_ty]);
+    let rec_head = b.atom_leaf(Leaf::Str("record".into()));
+    let prec = b.list(vec![rec_head, a_field]);
+    let res_ty = s64(&mut b);
+    let func_h = b.name("func");
+    let param_h = b.name("param");
+    let pn = b.name("m");
+    let param_node = b.list(vec![param_h, pn, prec]);
+    let result_h = b.name("result");
+    let result_node = b.list(vec![result_h, res_ty]);
+    let func = b.list(vec![func_h, param_node, result_node]);
+    let member_h = b.name("member");
+    let mn = b.name("f");
+    let member = b.list(vec![member_h, mn, func]);
+    let exp_h = b.name("export");
+    let iname = b.name("iface");
+    let export = b.list(vec![exp_h, iname, member]);
+    let world_h = b.name("world");
+    let wn = b.name("w");
+    let world = b.list(vec![world_h, wn, export]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+/// W4c-b (slice 2): a RESULT param field with a `list<u8>` (Ok) and an `enum` (Err) arm is READ by the wrapper
+/// — the on-response `answer: result<payload, error>` read side. `f(m: record{a: result<list<u8>, error>})`
+/// matches `m.a`: `Ok(bs) => Bytes.len(bs)`, `Err(e) => <10 + e's disc>`. Feeding `Ok([1,2,3])` → 3 exercises
+/// the Bytes arm (ptr/len copy-in inside the sum); `Err(timeout)` → 10 and `Err(faulted)` → 13 exercise the
+/// Enum arm (the flattened disc leaf rebuilt into the guest error cell, disc-preserving). A misread of the
+/// Bytes arm's 2 leaves would misalign the enum disc and flip the Err results.
+#[test]
+fn a_result_bytes_enum_param_field_is_read_by_the_wrapper() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime) = find_runtime_wasm() else {
+        return;
+    };
+    let src = "(module m (type Error Timeout Missing Schema Faulted) \
+                 (def (f (: m (Record (a (Result Bytes Error))))) \
+                   (match (. m a) \
+                     ((Result.Ok bs) (Bytes.len bs)) \
+                     ((Result.Err e) (match e (Error.Timeout 10) (Error.Missing 11) \
+                                        (Error.Schema 12) (Error.Faulted 13))))) \
+                 (export f))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:demo/iface"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                result_bytes_enum_param_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "result<list<u8>, enum> param guest must emit: {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("component");
+    if std::env::var("VRB_DUMP_RESULT_PARAM").is_ok() {
+        std::fs::write("/tmp/v-rb-result-param.wasm", bytes).unwrap();
+    }
+    let opts = cdz_run::RunOpts {
+        export: None,
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    let call = |a: Val| {
+        cdz_run::run_reducer_typed(
+            bytes,
+            "cadenza:demo/iface",
+            "f",
+            &[Val::Record(vec![("a".to_string(), a)])],
+            &opts,
+        )
+        .expect("run the result-param member")
+    };
+    // Ok arm: a 3-byte list → Bytes.len == 3 (the Bytes sum-arm's ptr/len copy-in).
+    assert_eq!(
+        i64::from_val(&call(Val::Result(Ok(Some(Box::new(Val::List(vec![
+            Val::U8(1),
+            Val::U8(2),
+            Val::U8(3)
+        ]))))))),
+        3,
+        "Ok([1,2,3]) → Bytes.len 3"
+    );
+    // Err arm: the enum disc is rebuilt into the guest error cell (10 + decl disc).
+    assert_eq!(
+        i64::from_val(&call(Val::Result(Err(Some(Box::new(Val::Enum(
+            "timeout".to_string()
+        ))))))),
+        10,
+        "Err(timeout) → 10 (enum disc 0)"
+    );
+    assert_eq!(
+        i64::from_val(&call(Val::Result(Err(Some(Box::new(Val::Enum(
+            "faulted".to_string()
+        ))))))),
+        13,
+        "Err(faulted) → 13 (enum disc 3, so the Bytes arm's 2 leaves aligned)"
+    );
+}
+
 fn option_result_world_bytes() -> Vec<u8> {
     use crate::ast::{Builder, Leaf};
     let mut b = Builder::new();
