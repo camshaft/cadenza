@@ -72,3 +72,13 @@ wasmtime = { version = "37", default-features = false, features = [
 # futures in deterministic simulated time. (Also an optional normal dep above, for the `testing` feature.)
 bach = "0.1"
 
+# The platform integration-test executable: it takes opaque program-blob file paths, runs them through the
+# platform under the bach simulator, and prints the observation log for a checker (design/cadenza-platform.md
+# §9). It needs the `testing` utilities (the harness + observation log) and the `host` (the wasm program
+# store that instantiates the blobs), so it is gated on both features — the routine light build pulls in
+# neither the harness nor wasmtime; a `--features "testing host"` build (the nix host check) builds it.
+[[bin]]
+name = "cdz-platform-itest"
+path = "src/bin/cdz-platform-itest.rs"
+required-features = ["testing", "host"]
+

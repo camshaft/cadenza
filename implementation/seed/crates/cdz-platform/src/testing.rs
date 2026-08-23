@@ -20,6 +20,9 @@
 //! - [`Harness`] — the run-to-quiescence driver: spawn a named reducer set, deliver initial events, drive
 //!   the platform under the bach simulator to quiescence deterministically, and return the [`Run`] (the
 //!   log plus the name→id assignment) for a checker.
+//! - [`HarnessSpec`] — a whole run decoded from a **Cadenza binary AST**: the executable's input is one
+//!   Cadenza value describing the blobs (inline or by path), the tasks to spawn, and the system reducer, so
+//!   the harness is driven by a serializable value rather than a command line.
 //! - [`Checker`] / [`CheckOutcome`] — the assertion side: read a [`Run`] and decide pass/fail. The native
 //!   realization of the checker contract (a wasm checker implements the same judgement over a serialized
 //!   log later); any `Fn(&Run) -> CheckOutcome` is a checker.
@@ -28,6 +31,7 @@ mod checker;
 mod harness;
 mod observation;
 mod recording;
+mod spec;
 
 /// The [`program`](crate::program) module's test helpers — `program::Store`, a program store backed by
 /// registered Rust factories instead of the content-addressed store.
@@ -40,6 +44,7 @@ pub use observation::{
 pub use recording::{
     RecordingBlobStore, RecordingKvStore, RecordingProgramStore, RecordingReducer,
 };
+pub use spec::{BlobSource, BlobSpec, HarnessSpec, SpecError};
 
 #[cfg(test)]
 mod tests;
