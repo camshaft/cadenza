@@ -64,6 +64,38 @@ fn units_typed_mixed_block_meshes_and_bounds_are_exact_meters() {
     );
 }
 
+/// A `detail(n, difference(cube 4, sphere 5/2))` model — the OpenSCAD-`$fn` tessellation-OVERRIDE node.
+/// Captured from `cdz run` on a program that lowers `detail((8 : Int64), Solid.Difference(Cube 4, Sphere 5/2))`
+/// (the exact.cdz builder). The Int64 count renders as a BARE INTEGER atom (`8`), the child follows — so the
+/// render form the driver parses is `(Detail <count> <child>)`, confirmed end-to-end. The `-64` variant is the
+/// same model at a higher count. These pin the whole model↔driver contract for the resolution override.
+const DETAIL_8: &str =
+    "(: (Detail 8 (Difference (Cube (: (tuple 4/1 4/1 4/1) Vec3R)) (Sphere 5/2))) SolidR)";
+const DETAIL_64: &str =
+    "(: (Detail 64 (Difference (Cube (: (tuple 4/1 4/1 4/1) Vec3R)) (Sphere 5/2))) SolidR)";
+
+#[test]
+fn detail_wrapped_model_meshes_overrides_tessellation_and_is_bounds_transparent() {
+    // The model↔driver contract for the $fn override: the exact render of a `detail(n, …)` model parses +
+    // meshes; the count sets the child's tessellation (64 finer than 8); and Detail is a MESH hint — the box
+    // is the underlying geometry's (the base cube 4×4×4, the sphere being an internal cutout), unaffected by n.
+    let coarse = mesh(&parse_solid(DETAIL_8).expect("detail-8 model parses"));
+    let fine = mesh(&parse_solid(DETAIL_64).expect("detail-64 model parses"));
+    assert!(!coarse.is_empty(), "the detail-wrapped model has geometry");
+    assert!(
+        fine.triangle_count() > coarse.triangle_count(),
+        "the Detail override sets the child's tessellation (64 finer than 8), got {} vs {}",
+        fine.triangle_count(),
+        coarse.triangle_count()
+    );
+    let b = bounds(&parse_solid(DETAIL_8).unwrap()).expect("the detailed model has bounds");
+    let d = b.dimensions();
+    assert!(
+        approx(d[0], 4.0) && approx(d[1], 4.0) && approx(d[2], 4.0),
+        "Detail is transparent to bounds: box = the base cube 4×4×4, got {d:?}"
+    );
+}
+
 #[test]
 fn washer_bounds_match_the_outer_cylinder() {
     let s = parse_solid(WASHER).expect("washer parses");
