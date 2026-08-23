@@ -682,6 +682,45 @@ pub struct WrapperDesc {
     pub params: Vec<Option<Vec<FieldRebuild>>>,
     /// The compiled def's absolute core func index to `call` after building its args.
     pub def_abs: u32,
+    /// How the wrapper turns the def's return value into the boundary result — pass a scalar straight through,
+    /// or read a returned record HANDLE's fields and spill them to a return area in memory.
+    pub result: ResultLower,
+}
+
+/// How a boundary wrapper produces its result from the value the compiled def returns.
+pub enum ResultLower {
+    /// Return the def's result unchanged — a scalar the def returns raw (matching the flattened boundary
+    /// scalar) or `unit` (no result). `WrapperDesc::result_vts` is that flattened scalar (or empty).
+    Passthrough,
+    /// The def returns a value-heap RECORD HANDLE whose fields are scalars; the boundary result is that
+    /// record, which (flattening to >1 core value, or laid canonically) SPILLS to linear memory — the wrapper
+    /// allocates a return area (`cabi_realloc`), writes each field at its canonical offset, and returns the
+    /// area pointer (`result_vts = [i32]`). Needs memory + `cabi_realloc` (`wrapper_needs_memory` covers it).
+    SpillScalarRecord {
+        /// The record's canonical byte size (the `cabi_realloc` request).
+        size: u32,
+        /// The record's canonical alignment (the `cabi_realloc` align arg).
+        align: u32,
+        /// Per field, how to read it off the handle and store it into the area.
+        fields: Vec<ScalarResultField>,
+    },
+}
+
+/// One field of a [`ResultLower::SpillScalarRecord`]: read record slot `index` off the returned handle
+/// (`arr-get` + `read` unbox), optionally narrow the unboxed i64 to i32 (a ≤32-bit int field), and store at
+/// `offset` with `store`.
+pub struct ScalarResultField {
+    /// The record slot to read (`arr-get(handle, index)`), in name-lex (`Ty::Record`) order = the WIT order.
+    pub index: u32,
+    /// The unbox op: `get-int` (→i64), `get-bool` (→i32), `get-float` (→f64), or `get-float32` (→f32).
+    pub read: &'static str,
+    /// Narrow the unboxed i64 to i32 before the store — a ≤32-bit int field (`get-int` yields i64, but the
+    /// canonical slot is 4/2/1 bytes so the store is an i32 store).
+    pub wrap_i64: bool,
+    /// The store opcode (`i64.store`/`i32.store`/`i32.store8`/`i32.store16`/`f64.store`/`f32.store`).
+    pub store: u8,
+    /// The store's canonical byte offset from the return-area pointer.
+    pub offset: u32,
 }
 
 fn core_module_impl(
@@ -703,12 +742,15 @@ fn core_module_impl(
     // ALL of this (extra functype/func/code/export + the memory & global sections); false → byte-identical to
     // before. This DEFINE path is distinct from the host-string `needs_memory` IMPORT path (`mem`.`mem`); the
     // two never coexist here (a reducer guest performs no host-string call), so memory 0 has one owner.
+    // Memory is needed when a wrapper reads a `list<u8>` leaf out of it (a bytes param) OR writes a spilled
+    // record RESULT into it (a `SpillScalarRecord` — the wrapper allocates a return area via `cabi_realloc`).
     let wrapper_needs_memory = wrappers.iter().any(|w| {
         w.params
             .iter()
             .flatten()
             .flatten()
             .any(FieldRebuild::has_bytes_leaf)
+            || matches!(w.result, ResultLower::SpillScalarRecord { .. })
     });
     let n_realloc = wrapper_needs_memory as usize; // 0 or 1 extra defined func (`cabi_realloc`)
 
@@ -905,32 +947,35 @@ fn core_module_impl(
                 .unwrap_or_else(|| panic!("wrapper needs runtime op `{name}` in the import set"))
                 as u64
         };
+        // `cabi_realloc`'s absolute core func index — the wrapper calls it to allocate a spilled-result area.
+        let realloc_abs = (import_count + n + n_wrap) as u64;
         for wrap in wrappers {
             let mut body = Vec::new();
-            // A wrapper carrying a `list<u8>` leaf reserves two reusable i32 scratch locals (a `buf` handle +
-            // a copy counter) AFTER the flattened params — indices `param_count` and `param_count + 1`; its
-            // copy-in loop threads them. Otherwise no locals (the cell handle stays on the stack) —
-            // byte-identical to before.
+            // Scratch i32 locals, reserved AFTER the flattened params (indices from `param_count`): a wrapper
+            // with a `list<u8>` leaf uses two (a `buf` handle + a copy counter); one whose result spills to
+            // memory uses two more (the returned record handle + the return-area pointer). The bytes locals
+            // come first, then the result locals. No bytes + no spill → zero locals, byte-identical to before.
+            let p = wrap.param_vts.len() as u32;
             let has_bytes = wrap
                 .params
                 .iter()
                 .flatten()
                 .flatten()
                 .any(FieldRebuild::has_bytes_leaf);
-            let scratch = if has_bytes {
-                let base = wrap.param_vts.len() as u32;
-                // one local-decl group of 2 i32.
+            let is_spill = matches!(wrap.result, ResultLower::SpillScalarRecord { .. });
+            let n_scratch = if has_bytes { 2 } else { 0 } + if is_spill { 2 } else { 0 };
+            if n_scratch > 0 {
                 body.extend_from_slice(&uleb_bytes(1));
-                body.extend_from_slice(&uleb_bytes(2));
+                body.extend_from_slice(&uleb_bytes(n_scratch as u64));
                 body.push(wasm_abi::CORE_I32);
-                Some((base, base + 1))
             } else {
                 body.extend_from_slice(&uleb_bytes(0));
-                None
-            };
+            }
+            let scratch = if has_bytes { Some((p, p + 1)) } else { None };
+            let result_base = p + if has_bytes { 2 } else { 0 }; // rec = result_base, retptr = result_base+1
             let mut leaf = 0u32;
-            for p in &wrap.params {
-                match p {
+            for pp in &wrap.params {
+                match pp {
                     None => {
                         body.push(op::LOCAL_GET);
                         uleb128(leaf as u64, &mut body);
@@ -940,7 +985,25 @@ fn core_module_impl(
                 }
             }
             body.push(op::CALL);
-            uleb128(wrap.def_abs as u64, &mut body);
+            uleb128(wrap.def_abs as u64, &mut body); // → [def result]
+            // Result: a scalar/unit passes straight through; a record spills to a memory return area.
+            if let ResultLower::SpillScalarRecord {
+                size,
+                align,
+                fields,
+            } = &wrap.result
+            {
+                emit_record_result_spill(
+                    result_base,
+                    result_base + 1,
+                    realloc_abs,
+                    *size,
+                    *align,
+                    fields,
+                    &imp,
+                    &mut body,
+                );
+            }
             body.push(op::END);
             let mut entry = uleb_bytes(body.len() as u64);
             entry.extend_from_slice(&body);
@@ -2361,6 +2424,62 @@ fn emit_bytes_leaf_copy_in(
     // leave buf on the stack for the caller's arr-set
     out.push(op::LOCAL_GET);
     uleb128(buf as u64, out);
+}
+
+/// Emit the RESULT-SPILL for a wrapper whose def returns a value-heap RECORD HANDLE: store the handle
+/// (on the stack from the def `call`) to `rec`, allocate a `size`-byte return area (`cabi_realloc(0, 0,
+/// align, size)`) into `retptr`, write each scalar field at its canonical offset (`arr-get(rec, index)` →
+/// unbox `read` → optional i64→i32 narrow → `store` at `retptr + offset`), and leave `retptr` on the stack as
+/// the boundary result. The canon lift reads the record back out of memory from that pointer.
+#[allow(clippy::too_many_arguments)]
+fn emit_record_result_spill(
+    rec: u32,
+    retptr: u32,
+    realloc_abs: u64,
+    size: u32,
+    align: u32,
+    fields: &[ScalarResultField],
+    imp: &dyn Fn(&str) -> u64,
+    out: &mut Vec<u8>,
+) {
+    use crate::backend::wasm::wasm_abi::op;
+    let const_i32 = |v: i64, out: &mut Vec<u8>| {
+        out.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(v, out);
+    };
+    // rec = def result handle (currently on the stack).
+    out.push(op::LOCAL_SET);
+    uleb128(rec as u64, out);
+    // retptr = cabi_realloc(old_ptr=0, old_size=0, align, size)
+    const_i32(0, out);
+    const_i32(0, out);
+    const_i32(align as i64, out);
+    const_i32(size as i64, out);
+    out.push(op::CALL);
+    uleb128(realloc_abs, out);
+    out.push(op::LOCAL_SET);
+    uleb128(retptr as u64, out);
+    // Per field: store(retptr + offset) = [maybe wrap](read(arr-get(rec, index))).
+    for f in fields {
+        out.push(op::LOCAL_GET); // store address base
+        uleb128(retptr as u64, out);
+        out.push(op::LOCAL_GET); // the record handle
+        uleb128(rec as u64, out);
+        const_i32(f.index as i64, out);
+        out.push(op::CALL);
+        uleb128(imp("arr-get"), out); // → element handle
+        out.push(op::CALL);
+        uleb128(imp(f.read), out); // → unboxed scalar
+        if f.wrap_i64 {
+            out.push(op::I32_WRAP_I64);
+        }
+        out.push(f.store);
+        out.push(0x00); // align hint (natural / conservative)
+        uleb128(f.offset as u64, out); // canonical offset immediate
+    }
+    // Return the area pointer.
+    out.push(op::LOCAL_GET);
+    uleb128(retptr as u64, out);
 }
 
 /// Push a closure `call`'s arguments onto the stack in the lifted body's order, threading ZERO OR MORE
