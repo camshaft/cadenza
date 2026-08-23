@@ -34,6 +34,7 @@
 use crate::backend::wasm::encode::{section, uleb_bytes, uleb128, wasm_vec};
 use crate::backend::wasm::runtime_abi::RtOp;
 use crate::backend::wasm::wasm_abi;
+use crate::wit_world::WitType;
 
 /// The component-model preamble (`\0asm` + component-layer version) — from the generated `wasm_abi`
 /// table (`Component::HEADER` as `wasm-encoder` writes it), not a hand-typed byte string.
@@ -525,6 +526,166 @@ fn assemble_bare_bytes(core: &[u8], exports: &[BoundaryExport]) -> Vec<u8> {
     out.extend_from_slice(&type_sec);
     out.extend_from_slice(&canon_sec);
     out.extend_from_slice(&export_sec);
+    out
+}
+
+// ── Typed INTERFACE export (step W4c) ─────────────────────────────────────────────────────────────────
+// A guest that exports funcs carrying NAMED WIT types (records/variants) cannot export them at the
+// component top level — the component-model validator rejects a top-level func export whose signature
+// references a named type ("func not valid to be used as export"; only structural `list`/`option`/`result`
+// work bare, which is why the `list<u8>` bare shape above validates). Such funcs must live inside an
+// exported INSTANCE (a WIT interface) that also exports the named types, so the interface is self-contained.
+// This assembler emits that shape: the reducer world's `export guest`.
+
+/// One func of a typed interface: its name + WIT param/result types (the per-contract payload rides as a
+/// `list<u8>` leaf, §12 — the ENVELOPE record/variant is what is typed here).
+#[allow(dead_code)]
+pub struct TypedFunc {
+    pub name: String,
+    pub params: Vec<(String, WitType)>,
+    pub result: Option<WitType>,
+}
+
+/// A WIT interface a guest exports as a component instance: the named types it exports (each must be
+/// exported by name for the interface to be self-contained) and its funcs.
+#[allow(dead_code)]
+pub struct TypedInterface {
+    /// The fully-qualified interface name the instance is exported under, e.g. `cadenza:platform/guest`.
+    pub name: String,
+    /// The named value types the interface exports (declaration order); each becomes an indexed defined
+    /// type the instance re-exports by name, and a func param/result of the same type references it.
+    pub types: Vec<(String, WitType)>,
+    /// The interface's funcs; the embedded `core` module must export, per func, a core function named
+    /// `<func.name>` whose signature is that func's canonical-ABI flattening.
+    pub funcs: Vec<TypedFunc>,
+}
+
+/// Add `ty` to `table`, DEDUPING against the whole-type occurrences already in `memo` — so a func param of
+/// a named interface type references that named type's index rather than a duplicate (matching how a WIT
+/// `func(m: msg)` references the interface's `record msg`). Top-level dedup: nested shared sub-types may
+/// still duplicate, which is valid (structural), just not minimal.
+fn add_memo(
+    ty: &WitType,
+    table: &mut Vec<crate::backend::wasm::wit_ctype::CDef>,
+    memo: &mut Vec<(WitType, crate::backend::wasm::wit_ctype::CRef)>,
+) -> crate::backend::wasm::wit_ctype::CRef {
+    if let Some((_, r)) = memo.iter().find(|(t, _)| t == ty) {
+        return r.clone();
+    }
+    let r = crate::backend::wasm::wit_ctype::add_wit_type(ty, table)
+        .expect("an interface type / param / result must be a value type");
+    memo.push((ty.clone(), r.clone()));
+    r
+}
+
+/// Assemble a component that exports the WIT interface `iface` as an instance (the reducer world's
+/// `export guest`). Section order: core module(1), core-instance(2), func aliases(6), type section(7:
+/// defined types then functypes), canon lifts(8), the exported instance(5: `FromExports` of the named
+/// types + the lifted funcs), the top-level instance export(11). NON-SPILLING MVP — every param/result
+/// flattens without spilling (no `list`/`string` leaf, within the 16/1 flat limits), so the lifts carry no
+/// Memory/Realloc options and the core module needs no memory/realloc. (A spilling leaf is a later slice.)
+#[allow(dead_code)]
+pub fn assemble_typed_interface(core: &[u8], iface: &TypedInterface) -> Vec<u8> {
+    use crate::backend::wasm::wit_ctype::{CRef, emit_cdef, emit_functype};
+    // One func's lifted signature: its (name, type-ref) params and its optional result type-ref.
+    type Sig = (Vec<(String, CRef)>, Option<CRef>);
+    let m = iface.funcs.len();
+
+    // Shared defined-type table: the named types first (their indices are what the instance re-exports),
+    // then each func's param/result types (deduped so a func param of a named type reuses its index).
+    let mut table = Vec::new();
+    let mut memo: Vec<(WitType, CRef)> = Vec::new();
+    let mut named: Vec<(String, CRef)> = Vec::new();
+    for (n, ty) in &iface.types {
+        named.push((n.clone(), add_memo(ty, &mut table, &mut memo)));
+    }
+    let mut sigs: Vec<Sig> = Vec::new();
+    for f in &iface.funcs {
+        let prefs = f
+            .params
+            .iter()
+            .map(|(n, ty)| (n.clone(), add_memo(ty, &mut table, &mut memo)))
+            .collect();
+        let rref = f
+            .result
+            .as_ref()
+            .map(|t| add_memo(t, &mut table, &mut memo));
+        sigs.push((prefs, rref));
+    }
+    let functype_base = table.len() as u32;
+
+    // sec 6: alias each func's core export (core funcs 0..m).
+    let mut alias_items = Vec::new();
+    for f in &iface.funcs {
+        alias_items.extend_from_slice(&core_alias_item(0, &f.name));
+    }
+    let alias_sec = section(sec::ALIAS, &wasm_vec(m, &alias_items));
+
+    // sec 7: defined types (component types 0..d), then one functype per func (types d..d+m).
+    let mut type_items = Vec::new();
+    for def in &table {
+        type_items.extend_from_slice(&emit_cdef(def));
+    }
+    for (prefs, rref) in &sigs {
+        type_items.extend_from_slice(&emit_functype(prefs, rref.as_ref()));
+    }
+    let type_sec = section(sec::COMPONENT_TYPE, &wasm_vec(table.len() + m, &type_items));
+
+    // sec 8: canon lift func j (core func j) with its functype (component type functype_base + j).
+    let mut canon_items = Vec::new();
+    for j in 0..m {
+        canon_items.extend_from_slice(&canon_lift_item(j as u32, functype_base + j as u32));
+    }
+    let canon_sec = section(sec::CANON, &wasm_vec(m, &canon_items));
+
+    // sec 5: the exported instance, built `FromExports` (tag 0x01) — export each named type then each lifted
+    // func. Item grammar: `<00 extern-name-kind=plain> <namelen> <name> <sort> <idx>`; sorts are type=0x03,
+    // func=0x01.
+    let mut inst_items = Vec::new();
+    for (n, r) in &named {
+        let idx = match r {
+            CRef::Idx(i) => *i,
+            CRef::Prim(_) => {
+                panic!("a named interface type must be a compound (an indexed defined type)")
+            }
+        };
+        inst_items.push(0x00); // extern-name kind: plain
+        inst_items.extend_from_slice(&uleb_bytes(n.len() as u64));
+        inst_items.extend_from_slice(n.as_bytes());
+        inst_items.push(0x03); // sort: type
+        uleb128(idx as u64, &mut inst_items);
+    }
+    for (j, f) in iface.funcs.iter().enumerate() {
+        inst_items.push(0x00); // extern-name kind: plain
+        inst_items.extend_from_slice(&uleb_bytes(f.name.len() as u64));
+        inst_items.extend_from_slice(f.name.as_bytes());
+        inst_items.push(0x01); // sort: func
+        uleb128(j as u64, &mut inst_items);
+    }
+    let n_inst_exports = named.len() + m;
+    let mut inst_def = vec![0x01]; // instance definition: FromExports
+    uleb128(n_inst_exports as u64, &mut inst_def);
+    inst_def.extend_from_slice(&inst_items);
+    let instance_sec = section(sec::COMPONENT_INSTANCE, &wasm_vec(1, &inst_def));
+
+    // sec 11: export instance 0 under the interface name — `<00 kind=plain> <namelen> <name> <05 sort=instance> <idx> <00 no-type>`.
+    let mut export_item = vec![0x00];
+    export_item.extend_from_slice(&uleb_bytes(iface.name.len() as u64));
+    export_item.extend_from_slice(iface.name.as_bytes());
+    export_item.push(0x05); // sort: instance
+    uleb128(0u64, &mut export_item); // the sole instance
+    export_item.push(0x00); // no type ascription
+    let export_sec = section(sec::COMPONENT_EXPORT, &wasm_vec(1, &export_item));
+
+    let mut out = Vec::new();
+    out.extend_from_slice(COMPONENT_MAGIC);
+    out.extend_from_slice(&core_module_section(core)); // sec 1
+    out.extend_from_slice(&section(sec::CORE_INSTANCE, &[0x01, 0x00, 0x00, 0x00])); // sec 2
+    out.extend_from_slice(&alias_sec); // sec 6
+    out.extend_from_slice(&type_sec); // sec 7
+    out.extend_from_slice(&canon_sec); // sec 8
+    out.extend_from_slice(&instance_sec); // sec 5
+    out.extend_from_slice(&export_sec); // sec 11
     out
 }
 

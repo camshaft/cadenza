@@ -780,6 +780,99 @@ fn run_returns_with<T: FromVal>(
     T::from_val(&results[0])
 }
 
+/// A synthetic core module exporting `add: (i32, i32) -> i32` = `a + b` — the canonical-ABI FLATTENING of a
+/// `(m: record{a:u32, b:u32}) -> u32` component signature, so a `canon lift` over it isolates the typed
+/// interface ENVELOPE from any compiler emit or runtime. No imports / memory: a record of scalars flattens
+/// to its fields, passed to the core directly.
+fn core_add_two_i32() -> Vec<u8> {
+    use wasm_encoder::*;
+    let mut m = Module::new();
+    let mut types = TypeSection::new();
+    types
+        .ty()
+        .function(vec![ValType::I32, ValType::I32], vec![ValType::I32]);
+    m.section(&types);
+    let mut funcs = FunctionSection::new();
+    funcs.function(0);
+    m.section(&funcs);
+    let mut exports = ExportSection::new();
+    exports.export("add", ExportKind::Func, 0);
+    m.section(&exports);
+    let mut code = CodeSection::new();
+    let mut f = Function::new(vec![]);
+    f.instruction(&Instruction::LocalGet(0));
+    f.instruction(&Instruction::LocalGet(1));
+    f.instruction(&Instruction::I32Add);
+    f.instruction(&Instruction::End);
+    code.function(&f);
+    m.section(&code);
+    m.finish()
+}
+
+/// W4c: a guest that EXPORTS A WIT INTERFACE (an instance) whose func carries a native record param
+/// VALIDATES and RUNS under wasmtime — the reducer world's `export guest` shape. The record `{a, b}`
+/// flattens to `(i32, i32)`, which `canon lift` passes to the synthetic `add` core func inside the exported
+/// `cadenza:demo/guest` instance. (A top-level func export of a record is invalid — records are named
+/// types; they must live in an exported interface, which is what this exercises.)
+#[test]
+fn a_typed_interface_export_validates_and_runs() {
+    use crate::backend::wasm::envelope::{TypedFunc, TypedInterface, assemble_typed_interface};
+    use crate::wit_world::WitType;
+    use wasmtime::component::{Component, Linker, Val};
+    use wasmtime::{Engine, Store};
+
+    let core = core_add_two_i32();
+    let msg = WitType::Record(vec![
+        ("a".to_string(), WitType::U32),
+        ("b".to_string(), WitType::U32),
+    ]);
+    let iface = TypedInterface {
+        name: "cadenza:demo/guest".to_string(),
+        types: vec![("msg".to_string(), msg.clone())],
+        funcs: vec![TypedFunc {
+            name: "add".to_string(),
+            params: vec![("m".to_string(), msg)],
+            result: Some(WitType::U32),
+        }],
+    };
+    let component = assemble_typed_interface(&core, &iface);
+
+    // structural: the interface-export component fully validates under wasmtime.
+    let engine = Engine::default();
+    let comp =
+        Component::from_binary(&engine, &component).expect("typed interface component validates");
+
+    // behavior: navigate the exported interface instance and call add({a:2, b:3}) == 5.
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store = Store::new(&engine, ());
+    let instance = linker.instantiate(&mut store, &comp).expect("instantiate");
+    let iface_idx = instance
+        .get_export_index(&mut store, None, "cadenza:demo/guest")
+        .expect("interface export present");
+    let add_idx = instance
+        .get_export_index(&mut store, Some(&iface_idx), "add")
+        .expect("add export present");
+    let func = instance
+        .get_func(&mut store, add_idx)
+        .expect("add is a func");
+    let mut results = [Val::Bool(false)];
+    func.call(
+        &mut store,
+        &[Val::Record(vec![
+            ("a".to_string(), Val::U32(2)),
+            ("b".to_string(), Val::U32(3)),
+        ])],
+        &mut results,
+    )
+    .expect("call");
+    func.post_return(&mut store).expect("post_return");
+    assert_eq!(
+        u32::from_val(&results[0]),
+        5,
+        "add({{a:2, b:3}}) through the exported guest interface == 5"
+    );
+}
+
 /// Whether calling export `name` with `args` TRAPS (an `unreachable` from an overflow guard). Returns
 /// `true` if the call errored (a wasm trap), `false` if it returned normally.
 fn call_traps(component_bytes: &[u8], name: &str, args: &[wasmtime::component::Val]) -> bool {
