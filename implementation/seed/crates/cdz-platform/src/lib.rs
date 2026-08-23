@@ -71,8 +71,4 @@ pub use bytes::Bytes;
 /// production surface stays free of test scaffolding). Behind the `testing` feature (on automatically under
 /// `cfg(test)`); enable it to reach these from another crate's tests.
 #[cfg(any(test, feature = "testing"))]
-pub mod testing {
-    /// The [`program`](crate::program) module's test helpers — `program::Store`, a program store backed by
-    /// registered Rust factories instead of the content-addressed store.
-    pub use crate::program::testing as program;
-}
+pub mod testing;
