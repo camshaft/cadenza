@@ -95,7 +95,7 @@ impl<P: ProgramStore + ?Sized> Runner<P> {
         // host imports (§3 empty capability set) — the program cannot read the world or write durable state,
         // which is what makes its output a pure function of the input and its memoization sound. Identical on
         // every invocation.
-        let mut reducer = self
+        let reducer = self
             .programs
             .spawn(
                 program,
@@ -107,26 +107,7 @@ impl<P: ProgramStore + ?Sized> Runner<P> {
             .await
             .ok_or(RunError::UnknownProgram)?;
 
-        // Deliver the input as one addressed message with a null origin and no continuation token, and
-        // capture a fold trap as a RunError rather than unwinding (§3 fold-failure).
-        let message = Message {
-            id: contract,
-            payload: input,
-            from: null_origin(),
-            continuation_token: Bytes::new(),
-        };
-        let folded = std::panic::AssertUnwindSafe(reducer.on_message(message))
-            .catch_unwind()
-            .await;
-
-        // Every effect is denied: the emitted requests are dropped (never routed), so the only output is the
-        // fold's result — a `Break` whose reason is the output value. A `Continue` means the program tried to
-        // await an effect (which can never answer here) instead of returning, so it produced no output.
-        let output = match folded {
-            Ok((_denied_requests, Outcome::Break { reason, .. })) => reason,
-            Ok((_requests, Outcome::Continue)) => return Err(RunError::DidNotReturn),
-            Err(_panic) => return Err(RunError::Faulted),
-        };
+        let output = drive_pure(reducer, contract, input).await?;
         self.cache
             .lock()
             .expect("run memo lock")
@@ -135,8 +116,38 @@ impl<P: ProgramStore + ?Sized> Runner<P> {
     }
 }
 
+/// Fold one input into a freshly-instantiated pure reducer and return its output — the pure-execution
+/// semantics shared by both invocation forms of `run` (the [`Runner`] effect above and the synchronous
+/// `run` host import). The input is delivered as one addressed [`Message`] with a null [`Origin`] and no
+/// continuation token; a fold trap is caught as [`RunError::Faulted`] rather than unwinding (§3
+/// fold-failure). Because a pure reducer has no capabilities, every effect it emits is denied — the requests
+/// are dropped, never routed, so no response ever folds — and the only output is the fold's result: a
+/// `Break` whose reason is the output value. A `Continue` means the program tried to await an effect (which
+/// can never answer here) instead of returning, so it produced no output ([`RunError::DidNotReturn`]).
+pub(crate) async fn drive_pure(
+    mut reducer: Box<dyn crate::Reducer>,
+    contract: ContractId,
+    input: Bytes,
+) -> Result<Bytes, RunError> {
+    let message = Message {
+        id: contract,
+        payload: input,
+        from: null_origin(),
+        continuation_token: Bytes::new(),
+    };
+    let folded = std::panic::AssertUnwindSafe(reducer.on_message(message))
+        .catch_unwind()
+        .await;
+    match folded {
+        Ok((_denied_requests, Outcome::Break { reason, .. })) => Ok(reason),
+        Ok((_requests, Outcome::Continue)) => Err(RunError::DidNotReturn),
+        Err(_panic) => Err(RunError::Faulted),
+    }
+}
+
 /// The canonical-null reducer-id every pure run is born under — fixed, so a run cannot observe *who* ran it.
-fn null_run_id() -> ReducerId {
+/// Shared with the synchronous `run` host import so its sub-program has the same null birth as the effect form.
+pub(crate) fn null_run_id() -> ReducerId {
     ReducerId::of(b"cdz-platform.run.null")
 }
 
@@ -151,15 +162,17 @@ fn null_origin() -> Origin {
 
 /// A bounded LRU cache of pure-run outputs, keyed by `(program-hash, input-hash)`. `order` holds keys
 /// least-recently-used first; a `get`/`put` moves the key to the most-recently-used end, and an insert over
-/// capacity evicts the front. Small and lock-guarded — a memo, not a hot path.
-struct Cache {
+/// capacity evicts the front. Small and lock-guarded — a memo, not a hot path. Shared by both invocation
+/// forms of `run`: the [`Runner`] (the effect) holds one, and the synchronous `run` host import holds one on
+/// the instantiation core (so a host's pure runs share a memo across the fold that called `run`).
+pub(crate) struct Cache {
     map: HashMap<(ProgramHash, Hash), Bytes>,
     order: Vec<(ProgramHash, Hash)>,
     capacity: usize,
 }
 
 impl Cache {
-    fn new(capacity: usize) -> Self {
+    pub(crate) fn new(capacity: usize) -> Self {
         Self {
             map: HashMap::new(),
             order: Vec::new(),
@@ -167,7 +180,13 @@ impl Cache {
         }
     }
 
-    fn get(&mut self, key: &(ProgramHash, Hash)) -> Option<Bytes> {
+    /// The default memo capacity — the number of distinct `(program, input)` results kept before the
+    /// least-recently-used is evicted (matches [`Runner::DEFAULT_CAPACITY`]). Used by the synchronous `run`
+    /// host import's memo (behind the `host` feature; the [`Runner`] uses its own constant).
+    #[cfg(feature = "host")]
+    pub(crate) const DEFAULT_CAPACITY: usize = Runner::<dyn ProgramStore>::DEFAULT_CAPACITY;
+
+    pub(crate) fn get(&mut self, key: &(ProgramHash, Hash)) -> Option<Bytes> {
         let value = self.map.get(key)?.clone();
         self.touch(key);
         Some(value)
@@ -181,7 +200,7 @@ impl Cache {
         }
     }
 
-    fn put(&mut self, key: (ProgramHash, Hash), value: Bytes) {
+    pub(crate) fn put(&mut self, key: (ProgramHash, Hash), value: Bytes) {
         if self.capacity == 0 {
             return; // memoization disabled
         }
