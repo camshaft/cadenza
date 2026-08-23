@@ -2105,9 +2105,10 @@ impl<'a> Printer<'a> {
     /// Print a WIT type DESCRIPTOR back to its inline-world surface type — the inverse of the parser's
     /// `wit_type_desc_of`, so a world member round-trips. A primitive `(name)` prints bare `name`; a
     /// `("list" <elem>)` prints `list(<elem>)`; an `("option" <inner>)` prints `option(<inner>)`; a
-    /// `("record" (f <ty>)…)` prints the brace record type `{f: <ty>, …}`. A node that is NOT one of these
-    /// descriptor shapes prints via the generic expr surface (a raw type node the lowering left as-is —
-    /// e.g. a variant/result type whose inline surface is not yet wired).
+    /// `("record" (f <ty>)…)` prints the brace record type `{f: <ty>, …}`; a `("result" <ok> <err>)` prints
+    /// `result` / `result(<ok>)` / `result(_, <err>)` / `result(<ok>, <err>)` (`_` = an absent arm). A node
+    /// that is NOT one of these descriptor shapes prints via the generic expr surface (a raw type node the
+    /// lowering left as-is — e.g. a variant type whose inline surface is not yet wired).
     fn print_wit_type(&mut self, ty: StructId) {
         // Primitive `(name)`: a one-element list whose sole child is a NAME atom -> bare `name`.
         if let Struct::List(kids) = self.a.get(ty)
@@ -2187,6 +2188,46 @@ impl<'a> Printer<'a> {
                 self.print_wit_type(*fty);
             }
             self.doc.word("}");
+            return;
+        }
+        // `result` `("result" <ok> <err>)`: STR head + exactly two slots, each a type descriptor OR the
+        // `("none")` absent-marker. Print the WIT-faithful surface — `result` (both absent), `result(<ok>)`
+        // (err absent), `result(_, <err>)` (ok absent), `result(<ok>, <err>)` (both present); `_` spells an
+        // absent arm. Extract the slot ids + presence FIRST so the arena borrow releases before recursing.
+        let result_arms: Option<(StructId, StructId, bool, bool)> = match self.a.get(ty) {
+            Struct::List(kids) if kids.len() == 3 && self.a.as_str(kids[0]) == Some("result") => {
+                let (ok, err) = (kids[1], kids[2]);
+                Some((
+                    ok,
+                    err,
+                    self.a.head_ctor(ok) == Some("none"),
+                    self.a.head_ctor(err) == Some("none"),
+                ))
+            }
+            _ => None,
+        };
+        if let Some((ok, err, ok_absent, err_absent)) = result_arms {
+            self.doc.word("result");
+            match (ok_absent, err_absent) {
+                (true, true) => {} // bare `result`
+                (false, true) => {
+                    self.doc.word("(");
+                    self.print_wit_type(ok);
+                    self.doc.word(")");
+                }
+                (true, false) => {
+                    self.doc.word("(_, ");
+                    self.print_wit_type(err);
+                    self.doc.word(")");
+                }
+                (false, false) => {
+                    self.doc.word("(");
+                    self.print_wit_type(ok);
+                    self.doc.word(", ");
+                    self.print_wit_type(err);
+                    self.doc.word(")");
+                }
+            }
             return;
         }
         // Not a recognized descriptor — the raw type node the lowering left as-is.
@@ -4385,6 +4426,63 @@ mod tests {
         assert!(
             !sexp.contains("(Record"),
             "the name-head (Record (: …)) type node must be fully lowered, got: {sexp}"
+        );
+    }
+
+    #[test]
+    fn inline_world_result_member_type_round_trips() {
+        // A `result` world-member type lowers to the canonical str-head `("result" <ok> <err>)` descriptor
+        // (matching rcdzc's parse_wit_type + cadenza-ast wit_type_result) and prints back to the WIT-faithful
+        // surface, so a world binding a result member round-trips ML->ML. All four arm-presence spellings —
+        // both present, err absent, ok absent (`_`), and bare `result` — are covered; `Response.answer =
+        // result<payload, error>` (v-platform's reducer world) is the both-present shape.
+        let both = assert_roundtrip(
+            "world W = | export i = | f : (x : u8) -> result(bool, string)",
+            80,
+        );
+        assert!(
+            both.contains("-> result(bool, string)"),
+            "both arms present: {both}"
+        );
+        let no_err = assert_roundtrip("world W = | export i = | f : (x : u8) -> result(u8)", 80);
+        assert!(no_err.contains("-> result(u8)"), "err arm absent: {no_err}");
+        let no_ok = assert_roundtrip(
+            "world W = | export i = | f : (x : u8) -> result(_, string)",
+            80,
+        );
+        assert!(
+            no_ok.contains("-> result(_, string)"),
+            "ok arm absent (`_`): {no_ok}"
+        );
+        let bare = assert_roundtrip("world W = | export i = | f : (x : u8) -> result", 80);
+        assert!(
+            bare.contains("-> result") && !bare.contains("-> result("),
+            "bare result (both arms absent): {bare}"
+        );
+
+        // The stored descriptors are the canonical str-head form; an absent arm is the ("none") marker.
+        let parsed = parser::read_ml(
+            "world W = | export i = | f : (x : u8) -> result(bool, string) \
+             | g : (x : u8) -> result(u8) \
+             | h : (x : u8) -> result(_, string) \
+             | k : (x : u8) -> result",
+        );
+        let sexp = sexpr::print(&parsed.arenas);
+        assert!(
+            sexp.contains("(\"result\" (bool) (string))"),
+            "both-present stored as ('result' <ok> <err>), got: {sexp}"
+        );
+        assert!(
+            sexp.contains("(\"result\" (u8) (\"none\"))"),
+            "err-absent stored with ('none') err slot, got: {sexp}"
+        );
+        assert!(
+            sexp.contains("(\"result\" (\"none\") (string))"),
+            "ok-absent stored with ('none') ok slot, got: {sexp}"
+        );
+        assert!(
+            sexp.contains("(\"result\" (\"none\") (\"none\"))"),
+            "bare result stored with both ('none') slots, got: {sexp}"
         );
     }
 

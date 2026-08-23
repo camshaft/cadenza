@@ -2758,6 +2758,8 @@ impl<'a> Parser<'a> {
         if let Some(name) = self.builder.as_name(ty).map(str::to_string) {
             return match name.as_str() {
                 "unit" | "Unit" => self.builder.wit_type_unit(),
+                // A bare `result` (no arms) — WIT's `result` with neither an ok nor an err type.
+                "result" | "Result" => self.builder.wit_type_result(None, None),
                 n if is_wit_primitive(n) => self.builder.wit_type_prim(n),
                 _ => ty,
             };
@@ -2789,8 +2791,33 @@ impl<'a> Parser<'a> {
             Some((h, args)) if h == "record" || h == "Record" => {
                 self.wit_type_record_desc_of(&args).unwrap_or(ty)
             }
+            // `result(T, E)` / `result(T)` / `result(_, E)` — a WIT result with 0-2 arms. Each arm is a type
+            // descriptor, or the WIT wildcard `_` spelling an ABSENT arm (`result<_, E>` / `result<T>`).
+            Some((h, args)) if (h == "result" || h == "Result") && args.len() <= 2 => {
+                let ok = if args.is_empty() {
+                    None
+                } else {
+                    self.wit_result_arm_of(args[0])
+                };
+                let err = if args.len() < 2 {
+                    None
+                } else {
+                    self.wit_result_arm_of(args[1])
+                };
+                self.builder.wit_type_result(ok, err)
+            }
             _ => ty,
         }
+    }
+
+    /// Lower one arm of a `result(…)` type-application: the WIT wildcard `_` spells an ABSENT arm (→ `None`,
+    /// which `Builder::wit_type_result` renders as the `("none")` marker); any other node is a present type,
+    /// lowered via [`Self::wit_type_desc_of`].
+    fn wit_result_arm_of(&mut self, arg: StructId) -> Option<StructId> {
+        if self.builder.as_name(arg) == Some("_") {
+            return None;
+        }
+        Some(self.wit_type_desc_of(arg))
     }
 
     /// Lower a record-TYPE node's field args — each a canonical `(: fname T)` ascription — to the WIT
