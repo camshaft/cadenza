@@ -920,13 +920,21 @@
         #              derivation — that would rebuild + defeat the dedup). `out` stays byte-identical, so
         #              adding `raw` is a true no-op on REQUIRED_RUNTIME_HASH. Only the runtime sets emitRaw
         #              (nfc's hash is content_address of the stripped nfc; it reads no custom section).
-        mkStripComponent = { pname, crateDir, artifact, src, vendor, features ? [ ], emitRaw ? false }:
+        # `stampNfc` (default null): a component derivation whose content address is stamped INLINE into
+        # this component's `cadenza:nfc/normalize` import before the strip — turning the bare import into the
+        # self-describing `cadenza:nfc/normalize@0.0.0+<hash>` so a runtime resolves NFC purely from the
+        # import (no runtime.toml/mapping; operator directive 2026-08-23). Only the value-heap runtimes set it
+        # (`mkRuntime`); the NFC component + guests leave it null. Hash computed at build time via
+        # `cdz-contract blob` (no IFD); stamp applied by the `cdz-component-rewrite` CLI, mirroring
+        # `xtask build`'s `stamp_nfc_into_heap` so nix and the self-build agree byte-for-byte.
+        mkStripComponent = { pname, crateDir, artifact, src, vendor, features ? [ ], emitRaw ? false, stampNfc ? null }:
           pkgs.stdenvNoCC.mkDerivation {
             inherit pname src;
             version = "0.0.0";
             outputs = if emitRaw then [ "out" "raw" ] else [ "out" ];
 
-            nativeBuildInputs = [ rustToolchain pkgs.wasm-tools pkgs.cargo-component ];
+            nativeBuildInputs = [ rustToolchain pkgs.wasm-tools pkgs.cargo-component ]
+              ++ pkgs.lib.optionals (stampNfc != null) [ contractHasher cdzComponentRewrite ];
 
             featuresArg = pkgs.lib.optionalString (features != [ ])
               ("--features " + pkgs.lib.concatStringsSep "," features);
@@ -958,14 +966,34 @@
               ${pkgs.lib.optionalString emitRaw ''
                 cp target/wasm32-unknown-unknown/release/${artifact}.wasm "$raw"
               ''}
-              wasm-tools strip -a \
-                target/wasm32-unknown-unknown/release/${artifact}.wasm \
-                -o "$out"
+              ${if stampNfc != null then ''
+                # STAMP the NFC address inline into the heap's `cadenza:nfc/normalize` import BEFORE strip
+                # (strip -a removes any `producers` the re-encode adds; the stamped+stripped bytes are the
+                # content-addressed artifact). The address is the NFC component's own content address, read
+                # here with the same `cdz-contract blob` the store keys by — so the stamped `+hash` matches
+                # `<store>/<hash>.wasm`. `$out` = stamped+stripped; `$raw` (above) stays the pre-stamp build
+                # (cdz-abi intact for codegen). Mirrors `xtask build`'s `stamp_nfc_into_heap`.
+                nfc_hash=$(cdz-contract blob ${stampNfc})
+                cdz-component-rewrite \
+                  target/wasm32-unknown-unknown/release/${artifact}.wasm \
+                  target/wasm32-unknown-unknown/release/${artifact}.nfc-stamped.wasm \
+                  "cadenza:nfc/normalize=0.0.0+$nfc_hash"
+                wasm-tools strip -a \
+                  target/wasm32-unknown-unknown/release/${artifact}.nfc-stamped.wasm \
+                  -o "$out"
+              '' else ''
+                wasm-tools strip -a \
+                  target/wasm32-unknown-unknown/release/${artifact}.wasm \
+                  -o "$out"
+              ''}
               runHook postInstall
             '';
           };
 
-        # The value-heap runtime derivations bind mkStripComponent to the cdz-runtime crate.
+        # The value-heap runtime derivations bind mkStripComponent to the cdz-runtime crate. `stampNfc = nfc`
+        # stamps the NFC component's content address inline into the heap's `cadenza:nfc/normalize` import
+        # (self-describing dep — no runtime.toml/mapping; operator directive 2026-08-23). `nfc` is itself a
+        # plain (unstamped) mkStripComponent, so there is no cycle.
         mkRuntime = { pname, features, emitRaw ? false }:
           mkStripComponent {
             inherit pname features emitRaw;
@@ -973,6 +1001,7 @@
             artifact = "cdz_runtime";
             src = runtimeSrc;
             vendor = runtimeVendor;
+            stampNfc = nfc;
           };
 
         # The RELEASE runtime — what a shipped program pins (REQUIRED_RUNTIME_HASH). emitRaw = true adds the
@@ -1174,6 +1203,30 @@
           '';
         };
 
+        # `cdzComponentRewrite`: the `cdz-component-rewrite` CLI, built ONCE like `contractHasher` (plain
+        # cargo over the offline root vendor, `-p cdz-component-rewrite`). The value-heap runtime build
+        # (`mkRuntime` via `stampNfc`) shells out to it to stamp the NFC component's content address INLINE
+        # into the heap's `cadenza:nfc/normalize` import — making the heap self-describing (the runtime
+        # resolves NFC purely from the import name, no `runtime.toml`/mapping; operator directive 2026-08-23),
+        # exactly as `cargo xtask build` does. Reuses `platformItestSrc` (includes `crates/`) + `seedCargoVendor`.
+        cdzComponentRewrite = pkgs.stdenvNoCC.mkDerivation {
+          pname = "cdz-component-rewrite";
+          version = "0.0.0";
+          src = platformItestSrc;
+          nativeBuildInputs = [ rustToolchain ];
+          buildPhase = ''
+            runHook preBuild
+            ${mkCargoVendorEnv { vendor = seedCargoVendor; }}
+            cargo build --release --locked -p cdz-component-rewrite --bin cdz-component-rewrite
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            install -Dm755 target/release/cdz-component-rewrite "$out/bin/cdz-component-rewrite"
+            runHook postInstall
+          '';
+        };
+
         # Just the contract sources — the narrowest input so the mapping re-derives only when a contract's
         # schema/pragmas change, not on any seed-crate edit. `cdz-contract hash` walks these `*.cdz`, parses
         # each with the pinned `cdz` binary, and emits the deterministic (sorted) name→base64url-id JSON.
@@ -1303,23 +1356,24 @@
         componentStore = pkgs.runCommand "cdz-component-store" { nativeBuildInputs = [ contractHasher ]; } ''
           set -euo pipefail
           mkdir -p "$out"
+          # Store every component (both heaps + the NFC dependency) by its content address — a pure CAS.
+          # The heaps import `cadenza:nfc/normalize@0.0.0+<nfc-hash>` inline (stamped by `mkRuntime`), so a
+          # runtime resolves its NFC dependency to `<store>/<nfc-hash>.wasm` DIRECTLY from the import — the
+          # NFC file must be present here (this loop stores it), but no manifest maps to it.
           for c in ${runtime} ${runtimeDebug} ${nfc}; do
             h=$(cdz-contract blob "$c")
             ${pkgs.coreutils}/bin/cp "$c" "$out/$h.wasm"
           done
-          # `cdz-run` resolves the runtime's NFC dependency (FINDING#23) by reading `runtime.toml` from the
-          # store (the `nfc = "<hash>"` line → `<store>/<hash>.wasm`), and the runtime/debug hashes from
-          # it too — WITHOUT this manifest every heap case that composes the runtime fails to resolve NFC.
-          # `xtask build` writes exactly this file (main.rs:466); mirror its format so a program run against
-          # THIS nix store composes identically to one run against target/cadenza-store.
+          # An INFORMATIONAL manifest of the heap builds — NOT read by any executable to resolve anything
+          # (the NFC dep is self-describing inline in each heap; operator directive 2026-08-23: no mapping
+          # file passed to executables). Mirrors `xtask build`'s runtime.toml (no `nfc =` line).
           rt=$(cdz-contract blob ${runtime})
           dbg=$(cdz-contract blob ${runtimeDebug})
-          nfc=$(cdz-contract blob ${nfc})
           cat > "$out/runtime.toml" <<EOF
-          # Cadenza content-addressed store — the value-heap runtime + its NFC dependency.
+          # Cadenza content-addressed store — the value-heap runtime builds (informational; the NFC
+          # dependency is resolved from each heap's self-describing inline import, not from this file).
           runtime = "$rt"
           debug_runtime = "$dbg"
-          nfc = "$nfc"
           EOF
         '';
 
