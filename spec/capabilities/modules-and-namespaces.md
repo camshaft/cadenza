@@ -79,6 +79,10 @@ A module directive that changes the meaning of the module's definitions MUST be 
 
 A module directive MUST be resolved at compile time and MUST NOT introduce any runtime representation of its own into the emitted component, so that a directive affects how the module is compiled without adding runtime cost or crossing the boundary.
 
+### A Contract Module Declares Its Identity
+
+A module MAY declare that it is a contract — a named input-to-output shape another component targets — through module directives rather than a bespoke form, so that a contract's identity is expressed in the same fixed-set vocabulary as any other directive. The `contract` directive names the contract and MUST take exactly one string argument, its name. The `input` and `output` directives each MUST take exactly one argument, the name of a type the module declares, giving the input and output types of the contract `name : Input -> Output`. A `contract`/`input`/`output` directive whose argument does not match that shape MUST be rejected with a machine-readable diagnostic, like any other directive. The contract's identity is therefore the module's type declarations together with these directives, so a tool MAY read them from the module's canonical form to derive the contract's content-addressed identity without a registry outside the module.
+
 ## Dependency Resolution
 
 ### Dependencies Resolve By Content Address
