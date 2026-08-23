@@ -17,8 +17,14 @@
 //!   (= run-for 3600000000000)                 ; optional; virtual-time horizon in NANOSECONDS (default 1h)
 //!   (= blobs   ("list" <blob>…))              ; the program blobs, by name
 //!   (= spawns  ("list" <spawn>…))             ; the tasks to spawn, in order
-//!   (= deliver ("list" <delivery>…)))         ; optional; the initial events to inject, in order
+//!   (= deliver ("list" <delivery>…))          ; optional; the initial events to inject, in order
+//!   (= checker "check")))                      ; optional; the blob name of the checker reducer (§9)
 //! ```
+//!
+//! The `checker`, if present, names a program blob the harness runs over the completed observation log to
+//! decide pass/fail: it is delivered the whole log and emits a verdict. The harness just executes it as a
+//! wasm reducer — it knows nothing of how the checker was authored (a declarative set of checks compiled to
+//! a Cadenza reducer, or hand-written); that transform is separate, upstream, and never seen here.
 //!
 //! A `<delivery>` names a `target` task and carries exactly one event to inject into it — a `message` (an
 //! effect folded through `on_message`) or a `notification` (a control-plane event folded through
@@ -105,6 +111,12 @@ pub struct HarnessSpec {
     /// The initial events to inject once the tasks are spawned, each paired with the task name to deliver it
     /// into, in order. Empty for a run whose only stimulus is the reducers' births.
     pub deliveries: Vec<(String, DeliveryEvent)>,
+    /// The blob name of the run's **checker** program, if any — a reducer the harness runs over the completed
+    /// observation log to decide pass/fail (§9). It is delivered the whole log and emits a verdict; the
+    /// harness just executes it as a wasm reducer, knowing nothing of how it was authored (a declarative
+    /// set of checks compiled to a Cadenza reducer program, or hand-written). `None` for a run with no
+    /// end-of-run check.
+    pub checker: Option<String>,
 }
 
 /// An event the harness injects into a task's mailbox as a run's initial stimulus (§4). The schema's
@@ -288,12 +300,15 @@ impl HarnessSpec {
                 .collect::<Result<_, _>>()?,
         };
 
+        let checker = str_field(arenas, root, "checker")?.map(str::to_string);
+
         Ok(HarnessSpec {
             system,
             run_for,
             blobs,
             spawns,
             deliveries,
+            checker,
         })
     }
 
@@ -371,6 +386,10 @@ impl HarnessSpec {
                 .collect();
             let deliver = list_value(b, items);
             fields.push(("deliver", deliver));
+        }
+        if let Some(checker) = &self.checker {
+            let checker = str_leaf(b, checker);
+            fields.push(("checker", checker));
         }
         record(b, fields)
     }
@@ -718,6 +737,19 @@ mod tests {
         assert_eq!(spec.run_for, None);
         assert!(spec.blobs.is_empty());
         assert!(spec.spawns.is_empty());
+        assert_eq!(spec.checker, None, "no checker field ⇒ no end-of-run check");
+    }
+
+    #[test]
+    fn reads_the_checker_blob_name() {
+        // A run may name a checker program — a reducer the harness runs over the completed log (§9).
+        let arenas = built(|b| {
+            let system = s(b, "sys");
+            let checker = s(b, "assert-echo");
+            record(b, vec![("system", system), ("checker", checker)])
+        });
+        let spec = HarnessSpec::read(&arenas, arenas.root).expect("a system + checker is valid");
+        assert_eq!(spec.checker.as_deref(), Some("assert-echo"));
     }
 
     #[test]
@@ -737,6 +769,7 @@ mod tests {
             ],
             spawns: vec![],
             deliveries: vec![],
+            checker: None,
         };
         // The loader is invoked for the path blob only, with the exact path string.
         let mut loaded = Vec::new();
@@ -765,6 +798,7 @@ mod tests {
             }],
             spawns: vec![],
             deliveries: vec![],
+            checker: None,
         };
         let result = spec.build(|_| Err("no such file"));
         assert_eq!(result.err(), Some("no such file"));
@@ -906,6 +940,7 @@ mod tests {
                     },
                 ),
             ],
+            checker: Some("check".to_string()),
         };
         let bytes = spec.encode();
         assert_eq!(HarnessSpec::decode(&bytes), Ok(spec));
@@ -920,6 +955,7 @@ mod tests {
             blobs: vec![],
             spawns: vec![],
             deliveries: vec![],
+            checker: None,
         };
         assert_eq!(HarnessSpec::decode(&spec.encode()), Ok(spec));
     }
