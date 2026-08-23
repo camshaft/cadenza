@@ -69,6 +69,32 @@ jobs:
       - name: Run the full ignored probe set (leak / UAF / enumeration — no name filter)
         run: cargo test -p rcdzc --lib -- --ignored --test-threads=1
 
+  # build-store — build the value-heap runtime store ONCE and share it with the rust-gate shards as an
+  # artifact, so each of the 12 shards DOWNLOADS it instead of running the ~8-min cold `cargo xtask build`
+  # (cargo-component build-std of the runtime). That build DOMINATED each shard's wall-clock and pushed the
+  # total past the ~15-min free-runner reclaim window, so shards kept dying exit-143 mid-build even after the
+  # CARGO_BUILD_JOBS cap (v-nix 2026-08-23: the cap moved the deaths ~5-6min → ~10-12min but did not clear
+  # them — the death is build-dominated, not gate-dominated, so a shard-count bump alone wouldn't fix it).
+  # With the store pre-built + downloaded, a shard does only setup (~2min) + the gate cases (~2-4min), well
+  # under the window. Same aarch64 runner as the shards (the store's REQUIRED_RUNTIME_HASH is arch-specific).
+  build-store:
+    name: build the shared runtime store
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-rust
+        with:
+          wasm-tools: "true"
+          # Share the shards' cache key so this build warms the same deps cache the shards restore.
+          cache-key: rust-gate-full
+      - name: Build the runtime store
+        run: cargo xtask build
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cadenza-store
+          path: target/cadenza-store
+          retention-days: 1
+
   # rust-gate-full — the FULL rust-backend gate (all ~6686 .gate-baseline-rust cases), NIGHTLY (v-nix+v-ft
   # 2026-08-10). The per-MR localGate runs only a NARROW rust-backend subset (checks.<sys>.gate-check-rust =
   # `--case mutual`, the divergence-prone mutual-recursion class) because `--target rust` is a rustc-invocation
@@ -79,27 +105,32 @@ jobs:
   # gate-check-rust `--case` or case-id set for the new divergence class — the widen-on-new-class pattern, same
   # as re-recording a baseline). Builds the store first (like rc-leak-full) so the rust emit resolves the runtime.
   #
-  # SHARDED (v-nix 2026-08-23): the full gate is >1hr of rustc, and the free ubuntu-24.04-arm runner has been
-  # reclaimed at ~15 min wall for 5+ days straight (exit 143 SIGTERM ~13-14 min into the gate step), so the
-  # whole-corpus job NEVER completed — a persistent RED that was infra, not a corpus regression. Split into a
-  # matrix: `cargo xtask gate --shard I/N` round-robins the sorted corpus files into N groups, so each shard
-  # gates ~1/N of the cases (warm ~5 min, well under the ~15 min reclaim window). `--check --shard` scopes the
-  # baseline compare to the cases the shard runs (regressions only; the other shards' cases are not "vanished").
-  # The union of the shards is the whole corpus, so coverage is unchanged; the run is green iff every shard is.
-  # fail-fast:false so one shard's regression still lets the others report. Bump N if a shard ever reclaims.
+  # SHARDED (v-nix 2026-08-23): the full gate is >1hr of rustc, and the free ubuntu-24.04-arm runner is
+  # reclaimed at ~15 min wall (exit 143 SIGTERM), so the whole-corpus job NEVER completed — infra, not a
+  # corpus regression. Split into a matrix: `cargo xtask gate --shard I/N` round-robins the sorted corpus
+  # files into N groups, so each shard gates ~1/N of the cases. `--check --shard` scopes the baseline compare
+  # to the cases the shard runs (regressions only; other shards' cases are not "vanished"). The union of the
+  # shards is the whole corpus, so coverage is unchanged; the run is green iff every shard is. fail-fast:false
+  # so one shard's regression still lets the others report.
+  #
+  # SHARED STORE (v-nix 2026-08-23): sharding alone didn't clear the evictions — each shard still ran the
+  # ~8-min cold `cargo xtask build` (runtime store), which dominated its wall-clock and kept pushing it past
+  # the reclaim window (deaths mid-build, even after the CARGO_BUILD_JOBS cap). The store is now built ONCE by
+  # the `build-store` job and DOWNLOADED here (the gate consumes a pre-built store — main.rs:715 — never
+  # rebuilds it), so a shard does only setup + the gate cases, well under the window. If a shard still
+  # reclaims after this, THEN bump N (the gate cases are now the only variable cost).
   rust-gate-full:
     name: rust-backend gate (shard ${{ matrix.shard }}/12)
     runs-on: ubuntu-24.04-arm
+    # The store is built ONCE by `build-store` and downloaded below — no per-shard `cargo xtask build`.
+    needs: build-store
     strategy:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
-    # CARGO_BUILD_JOBS caps concurrent rustc during the COLD build (setup-rust tools + `cargo xtask build`'s
-    # runtime store + the gate's per-case rustc). The residual exit-143 deaths after sharding are host
-    # memory-pressure evictions during that cold build phase (2/12 shards died ~5-6 min in, while compiling
-    # build-std / cdz-runtime, before any gate case ran) — NOT a corpus regression. Halving build parallelism
-    # (default 4 on the arm runner → 2) lowers each shard's peak RSS so the runner stops reclaiming it. Set
-    # job-wide so it also bounds the build step (CDZ_GATE_JOBS below only caps the gate step's case rustc).
+    # CARGO_BUILD_JOBS still caps concurrent rustc within the shard's remaining builds (the gate tools + the
+    # per-case rustc) as a belt-and-suspenders memory bound; the heavy runtime-store build that dominated the
+    # shard and drove the exit-143 evictions is gone (pre-built + downloaded), so this is now a minor guard.
     env:
       CARGO_BUILD_JOBS: "2"
     steps:
@@ -107,11 +138,14 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           wasm-tools: "true"
-          # Shared key across shards: they build the same tools/deps, so a warm cache (from a prior run or a
-          # sibling shard) makes each shard's setup ~2 min instead of a cold ~7 min.
+          # Shared key across shards + build-store: they build the same tools/deps, so a warm cache makes
+          # each shard's setup ~2 min instead of a cold ~7 min.
           cache-key: rust-gate-full
-      - name: Build the runtime store
-        run: cargo xtask build
+      - name: Download the shared runtime store
+        uses: actions/download-artifact@v8
+        with:
+          name: cadenza-store
+          path: target/cadenza-store
       - name: rust-backend gate (shard ${{ matrix.shard }}/12)
         # `CDZ_GATE_JOBS` caps concurrent gate CASES (each a rustc invocation) within the shard; the
         # job-level `CARGO_BUILD_JOBS` above caps rustc WITHIN each such build. Both bound peak memory so the
