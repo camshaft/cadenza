@@ -52,7 +52,7 @@ pub use hash::{Hash, HashTag, Hasher, base64url};
 pub use ids::{ContractId, HostId, ProgramHash, ReducerId};
 pub use kv::{InMemoryKvStore, KeyRange, KvKeyScan, KvScan, KvStore, prefix_range};
 pub use lifecycle::{Lifecycle, lifecycle_contract};
-pub use program::ProgramStore;
+pub use program::{ProgramStore, SpawnContext};
 pub use reducer::{Error, Message, Notification, Origin, Outcome, Reducer, Request, Response};
 #[cfg(any(test, feature = "testing"))]
 pub use runtime::BachRuntime;

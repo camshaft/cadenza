@@ -16,8 +16,8 @@
 use super::observation::{BlobOp, Entry, EventKind, EventOp, KvOp, ObservationLog};
 use crate::{
     BlobStore, Bytes, Hash, HostId, KeyRange, KvKeyScan, KvScan, KvStore, Message, Notification,
-    Origin, Outcome, ProgramHash, ProgramStore, Reducer, ReducerId, Request, Response, Spawned,
-    spawned_contract,
+    Origin, Outcome, ProgramHash, ProgramStore, Reducer, ReducerId, Request, Response,
+    SpawnContext,
 };
 use async_trait::async_trait;
 
@@ -166,50 +166,47 @@ impl<B: BlobStore> BlobStore for RecordingBlobStore<B> {
 
 /// A [`Reducer`] that records every event it folds, every request it emits, and its close to an
 /// [`ObservationLog`], then defers to the wrapped reducer (`design/cadenza-platform.md` §3/§4/§10).
-/// Attributes records to the reducer's own id, learned from its birth notification (§3).
+/// Attributes records to the reducer's own id, which the kernel provides at spawn (§3).
 ///
 /// The kernel instantiates every reducer through the [`ProgramStore`] the harness hands the system, so
 /// wrapping that store (see [`RecordingProgramStore`]) wraps every reducer in one of these — capturing
 /// the whole system's event flow with no change to the kernel's routing.
 pub struct RecordingReducer {
     inner: Box<dyn Reducer>,
-    /// The reducer's own id, learned from its birth `spawned` notification — a reducer's first event
-    /// (§3). Every recorded event is attributed to it.
-    me: Option<ReducerId>,
+    /// The reducer's own id — known at construction from the [`SpawnContext`](crate::SpawnContext) the
+    /// kernel passes to `ProgramStore::spawn` (the id it derived from the genesis, §3). Every recorded
+    /// event is attributed to it.
+    id: ReducerId,
     host: HostId,
     log: ObservationLog,
     now: fn() -> u64,
 }
 
 impl RecordingReducer {
-    /// Wrap `inner`, recording to `log`, stamping records with `now` (the runtime clock), and attributing
-    /// them to `host` plus the reducer's own id, learned from its birth notification.
+    /// Wrap `inner` — the reducer with id `id` on `host` — recording to `log`, stamping records with `now`
+    /// (the runtime clock). The id comes from the spawn context, so it is known before the first fold and
+    /// every record (including the birth notification) is attributed correctly.
     pub fn new(
         inner: Box<dyn Reducer>,
+        id: ReducerId,
         host: HostId,
         log: ObservationLog,
         now: fn() -> u64,
     ) -> Self {
         Self {
             inner,
-            me: None,
+            id,
             host,
             log,
             now,
         }
     }
 
-    /// This reducer as an [`Origin`] — its id on this host. The id is learned from the reducer's birth
-    /// `spawned` notification, which the runtime always delivers as its first event (§3), before any
-    /// message or response; so by the time anything is recorded the id is known. If it is somehow not —
-    /// a reducer recording before its birth — that is a broken invariant, so panic rather than attribute
-    /// the event to the wrong reducer.
+    /// This reducer as an [`Origin`] — its id on this host. The id is fixed at construction from the spawn
+    /// context (§3), so there is no unknown-id case.
     fn source(&self) -> Origin {
         Origin {
-            reducer: self.me.expect(
-                "a reducer's id is set before it records: its birth `spawned` notification is always \
-                 its first event (design/cadenza-platform.md §3)",
-            ),
+            reducer: self.id,
             host: self.host,
         }
     }
@@ -276,14 +273,6 @@ impl Reducer for RecordingReducer {
     }
 
     async fn on_notification(&mut self, notification: Notification) -> (Vec<Request>, Outcome) {
-        // Learn our own id from the birth notification (§3), before recording, so even birth is attributed
-        // to the right reducer. Birth is a reducer's first event, so this resolves `me` up front.
-        if self.me.is_none()
-            && notification.id == spawned_contract()
-            && let Some(spawned) = Spawned::decode(&notification.payload)
-        {
-            self.me = Some(spawned.id);
-        }
         self.record(EventOp::Delivered {
             kind: EventKind::Notification,
             contract: notification.id,
@@ -323,10 +312,14 @@ impl<P> RecordingProgramStore<P> {
 
 #[async_trait]
 impl<P: ProgramStore> ProgramStore for RecordingProgramStore<P> {
-    async fn spawn(&self, program: ProgramHash) -> Option<Box<dyn Reducer>> {
-        let inner = self.inner.spawn(program).await?;
+    async fn spawn(&self, program: ProgramHash, ctx: SpawnContext) -> Option<Box<dyn Reducer>> {
+        // Capture the reducer's id from the spawn context before delegating, so the RecordingReducer knows
+        // it up front (no birth-learning needed).
+        let id = ctx.id;
+        let inner = self.inner.spawn(program, ctx).await?;
         Some(Box::new(RecordingReducer::new(
             inner,
+            id,
             self.host,
             self.log.clone(),
             self.now,
