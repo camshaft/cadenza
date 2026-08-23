@@ -3063,14 +3063,197 @@ fn a_typed_reducer_with_a_scalar_host_import_emits_and_loads() {
     );
 }
 
-/// W4c-b-iii ANCHOR (decline-don't-miscompile): a typed reducer performing `identity.id : () -> list<u8>`
-/// — a host op whose `list<u8>` RESULT needs linear memory — DECLINES cleanly. The combined
-/// typed-interface + host-import assembler now composes a MEMORYLESS host op (see
-/// `a_typed_reducer_with_a_scalar_host_import_emits_and_loads`), but a memory-needing host op requires
-/// unifying the wrapper's DEFINED memory with the host-op lower's shared memory — the next slice. Locks the
-/// clean decline (no mis-emit) until it lands.
+/// A single-member (`on-message`) reducer world importing a host op with a `list<u8>` PARAM + scalar result:
+/// `cadenza:platform/hasher`.`hash` (`func(list<u8>) -> u64`). The param needs linear memory (read from the
+/// shared `"mem"`), so this drives the SHARED-`"mem"` combined assembler
+/// (`assemble_typed_interface_with_host_runtime_mem`) on the Memory-only-lower path (no lower-realloc, since
+/// the result is scalar).
+fn bytes_param_host_import_world_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let list_u8 = |b: &mut Builder| {
+        let u8h = b.name("u8");
+        let u8p = b.list(vec![u8h]);
+        let lh = b.atom_leaf(Leaf::Str("list".into()));
+        b.list(vec![lh, u8p])
+    };
+    let field = |b: &mut Builder, name: &str, ty| {
+        let n = b.name(name);
+        b.list(vec![n, ty])
+    };
+    let record = |b: &mut Builder, fields: Vec<crate::ast::StructId>| {
+        let h = b.atom_leaf(Leaf::Str("record".into()));
+        let mut v = vec![h];
+        v.extend(fields);
+        b.list(v)
+    };
+    let bytes_field = |b: &mut Builder, name: &str| {
+        let t = list_u8(b);
+        field(b, name, t)
+    };
+    let message = {
+        let m_contract = bytes_field(&mut b, "contract");
+        let m_payload = bytes_field(&mut b, "payload");
+        let m_token = bytes_field(&mut b, "token");
+        record(&mut b, vec![m_contract, m_payload, m_token])
+    };
+    let step = {
+        let request = {
+            let r_contract = bytes_field(&mut b, "contract");
+            let r_payload = bytes_field(&mut b, "payload");
+            let r_token = bytes_field(&mut b, "token");
+            let r_deadline = {
+                let u64h = b.name("u64");
+                let u64t = b.list(vec![u64h]);
+                let oh = b.atom_leaf(Leaf::Str("option".into()));
+                let ot = b.list(vec![oh, u64t]);
+                field(&mut b, "deadline-nanos", ot)
+            };
+            record(&mut b, vec![r_contract, r_payload, r_token, r_deadline])
+        };
+        let requests_list = {
+            let lh = b.atom_leaf(Leaf::Str("list".into()));
+            b.list(vec![lh, request])
+        };
+        let closed = {
+            let c_schema = bytes_field(&mut b, "schema");
+            let c_reason = bytes_field(&mut b, "reason");
+            record(&mut b, vec![c_schema, c_reason])
+        };
+        let outcome = {
+            let cont_case = {
+                let n = b.name("continue");
+                b.list(vec![n])
+            };
+            let close_case = {
+                let n = b.name("close");
+                b.list(vec![n, closed])
+            };
+            let vh = b.atom_leaf(Leaf::Str("variant".into()));
+            b.list(vec![vh, cont_case, close_case])
+        };
+        let s_requests = field(&mut b, "requests", requests_list);
+        let s_outcome = field(&mut b, "outcome", outcome);
+        record(&mut b, vec![s_requests, s_outcome])
+    };
+    let on_message = {
+        let func_h = b.name("func");
+        let param_h = b.name("param");
+        let pn = b.name("m");
+        let param_node = b.list(vec![param_h, pn, message]);
+        let result_h = b.name("result");
+        let result_node = b.list(vec![result_h, step]);
+        let func = b.list(vec![func_h, param_node, result_node]);
+        let member_h = b.name("member");
+        let mn = b.name("on-message");
+        b.list(vec![member_h, mn, func])
+    };
+    let exp_h = b.name("export");
+    let iname = b.name("guest");
+    let export = b.list(vec![exp_h, iname, on_message]);
+    // import cadenza:platform/hasher { hash: func(bytes: list<u8>) -> u64 }  (list param, scalar result)
+    let hash_member = {
+        let func_h = b.name("func");
+        let p1h = b.name("param");
+        let p1n = b.name("bytes");
+        let p1ty = list_u8(&mut b);
+        let p1 = b.list(vec![p1h, p1n, p1ty]);
+        let result_h = b.name("result");
+        let u64h = b.name("u64");
+        let u64t = b.list(vec![u64h]);
+        let rnode = b.list(vec![result_h, u64t]);
+        let func = b.list(vec![func_h, p1, rnode]);
+        let member_h = b.name("member");
+        let mn = b.name("hash");
+        b.list(vec![member_h, mn, func])
+    };
+    let imp_h = b.name("import");
+    let hasher_name = b.name("cadenza:platform/hasher");
+    let hasher = b.list(vec![imp_h, hasher_name, hash_member]);
+    let world_h = b.name("world");
+    let wn = b.name("w");
+    let world = b.list(vec![world_h, wn, export, hasher]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+/// W4c-b-iii: a typed reducer performing a host op with a `list<u8>` PARAM + scalar result (`hasher.hash :
+/// (list<u8>) -> u64`) EMITS + VALIDATES + LOADS via the SHARED-`"mem"` combined assembler
+/// (`assemble_typed_interface_with_host_runtime_mem`). The `list<u8>` param is read from the shared memory
+/// the wrapper core imports (`"mem"`.`"mem"`) — the same memory its record `list<u8>`-leaf handling uses — so
+/// the host op lowers with a Memory option. `onMessage` sets `deadline-nanos = Some(hasher.hash(m.payload))`.
+/// Proves the shared-mem path for a memory-PARAM host op (the common `state.put`/hash/log shape); a
+/// compound-RESULT op (identity.id) awaits the shared-allocator slice.
 #[test]
-fn an_identity_performing_reducer_declines_until_shared_memory_host_composition() {
+fn a_typed_reducer_with_a_bytes_param_host_import_emits_and_loads() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (type Outcome Continue (Close (Record (schema Bytes) (reason Bytes)))) \
+                 (effect hasher (op hash (-> Bytes UInt64))) \
+                 (def (onMessage (: m (Record (contract Bytes) (payload Bytes) (token Bytes)))) \
+                   (host (hasher) \
+                     (record \
+                       (requests (list (record \
+                                         (contract (. m contract)) \
+                                         (payload (. m payload)) \
+                                         (token (. m token)) \
+                                         (deadline-nanos (Option.Some (hasher.hash (. m payload))))))) \
+                       (outcome Outcome.Continue)))) \
+                 (export onMessage))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:platform/guest"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                bytes_param_host_import_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "the bytes-param-host-import reducer must emit (shared-mem combined assembler): {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("the bytes-param-host-import reducer emits a component");
+    if std::env::var("VRB_DUMP_BYTES_PARAM_HOST").is_ok() {
+        std::fs::write("/tmp/v-rb-bytes-param-host.wasm", bytes).unwrap();
+    }
+    let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+    v.validate_all(bytes)
+        .expect("the bytes-param-host-import reducer component validates");
+    let req = cdz_run::required_runtime(bytes)
+        .expect("the bytes-param-host-import reducer component loads on the pinned wasmtime");
+    assert!(
+        req.is_some_and(|r| r.import_name.contains("cadenza:runtime/heap")),
+        "the reducer composes the value-heap runtime"
+    );
+    assert!(
+        String::from_utf8_lossy(bytes).contains("cadenza:platform/hasher"),
+        "the reducer imports the hasher host interface at the world's FQ name"
+    );
+}
+
+/// W4c-b-iii ANCHOR (decline-don't-miscompile): a typed reducer performing `identity.id : () -> list<u8>` —
+/// a host op with a COMPOUND (`list<u8>`) RESULT — DECLINES cleanly. The shared-`"mem"` combined assembler
+/// composes a host op with a `list<u8>`/`string` PARAM (Memory-only lower — see
+/// `a_typed_reducer_with_a_bytes_param_host_import_emits_and_loads`), but a COMPOUND-RESULT op additionally
+/// needs the host-op lower to carry a Realloc option available at lower-time, which needs one shared
+/// allocator (mem module provides memory + realloc, wrapper imports both) — the next slice. Locks the clean
+/// decline (no mis-emit) until it lands.
+#[test]
+fn an_identity_performing_reducer_declines_until_shared_allocator() {
     use crate::testkit::parse;
     let src = "(module m \
                  (type Outcome Continue (Close (Record (schema Bytes) (reason Bytes)))) \
@@ -3103,7 +3286,7 @@ fn an_identity_performing_reducer_declines_until_shared_memory_host_composition(
     );
     assert!(
         out.has_error(),
-        "an identity.id (list<u8>-result) reducer must decline until the shared-memory host composition lands"
+        "identity.id (list<u8>-result) must decline until the shared-allocator slice lands"
     );
     assert!(
         out.artifact(crate::backend::Target::Wasm.artifact_kind())
@@ -3113,8 +3296,8 @@ fn an_identity_performing_reducer_declines_until_shared_memory_host_composition(
     assert!(
         out.diagnostics
             .iter()
-            .any(|d| d.message.contains("shared-memory composition")),
-        "the decline names the shared-memory host-composition slice: {:?}",
+            .any(|d| d.message.contains("shared-allocator")),
+        "the decline names the shared-allocator slice: {:?}",
         out.diagnostics
             .iter()
             .map(|d| &d.message)
