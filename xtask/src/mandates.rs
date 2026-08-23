@@ -17,10 +17,11 @@
 //!    GONE (the fleet reached zero non-fixture `tests/*.rs`); no per-file escape. The only excluded
 //!    trees are vendored `reference/` and `tests/fixtures/**` guest wasm-component crates (not test
 //!    binaries).
-//!  - **no-hard-coded-runtime-hash** — a bare 64-hex string literal in NON-test source is a hard-coded
-//!    content address (operator no-hard-coded-runtime-names). Excludes the codegen'd `runtime_abi.rs`
+//!  - **no-hard-coded-runtime-hash** — a bare content-address string literal in NON-test source is a
+//!    hard-coded content address (operator no-hard-coded-runtime-names): a 45-char base62 (the platform
+//!    `Hash` text form, §8) or a legacy 64-hex string. Excludes the codegen'd `runtime_abi.rs`
 //!    hash-constant home, `#[cfg(test)]` golden-hash assertions, and a `mandate:allow` line. syn-based:
-//!    parses only files whose lines contain a 64-hex literal (a tiny population), skips test-gated items.
+//!    parses only files whose lines contain such a literal (a tiny population), skips test-gated items.
 //!
 //! no-hex-except-tracing and no-thin-wrapper-fns are DELIBERATELY NOT gate-lint rules (concierge ruling
 //! 2026-08-09): both need DATA-FLOW / judgment a source-scan cannot do — no-hex would flood on all ~127
@@ -440,7 +441,10 @@ mod tests {
     #[test]
     fn hard_coded_hash_finder_ignores_non_hash_strings() {
         // Not 64 chars, has uppercase, or non-hex → not a (legacy hex) content-address literal.
-        assert!(hash_hits("const A: &str = \"deadbeef\";").is_empty(), "short");
+        assert!(
+            hash_hits("const A: &str = \"deadbeef\";").is_empty(),
+            "short"
+        );
         // A 64-char string with a non-hex char is not a hex hash (uppercase would BE base62 but is 64,
         // not 45, chars — so neither shape matches).
         let almost = "z652838621bb88fcdc0a348bd81a5c8cc84eefa960af78c5cf7885b2811b2614";
@@ -462,7 +466,9 @@ mod tests {
             "  x = \"{b62}\"; // mandate:allow no-hard-coded-runtime-hash: external fixed id"
         )));
         // A bare hash with no escape passes the prefilter.
-        assert!(line_has_content_address_literal(&format!("  x = \"{b62}\";")));
+        assert!(line_has_content_address_literal(&format!(
+            "  x = \"{b62}\";"
+        )));
         // Interface-name embedding (heap@0.0.0+<hash>) is NOT a bare content-address string (the run after
         // the opening quote is `cadenza`, stopped by `:`), so not matched by this rule — that pattern is a
         // separate concern; this rule is exactly bare content-address literals, the tightest form. Holds
