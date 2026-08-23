@@ -1139,17 +1139,50 @@
         # through to the fixed-scalar-param export path, declining a record-of-bytes `message` param (the
         # empirical gap v-nix hit + v-rb diagnosed 2026-08-23; #3117 also derives it from an FQ in-source
         # export, but passing it explicitly here is encoding-agnostic to how the probe declares its export).
-        mkCadenzaGuest = { pname, src, componentName ? null, entry ? null }:
+        # `witWorld` (default null): the path to a `KIND_WIT_WORLD` binary-AST artifact (produced by
+        # `cargo xtask world-artifact` = `worldArtifacts` below) declaring the reducer's world — its imports
+        # AND its typed guest export — from the shared `cdz-platform/wit/world.wit` (single source of truth).
+        # Passed as the `wit-world:reducer-world=<bin>` compile input. A reducer that only ECHOES (no host
+        # import) can type its export with a small INLINE `(world …)` and needs no artifact; a reducer that
+        # CALLS a host import (`state`/`identity`/`blobs`) needs the world's IMPORT declarations, which the
+        # external artifact provides (the inline form declares only the export). `witWorldName` names which
+        # world in the artifact to bind (the platform reducer world).
+        mkCadenzaGuest = { pname, src, componentName ? null, entry ? null, witWorld ? null, witWorldName ? "reducer-world" }:
           pkgs.runCommand pname
             { nativeBuildInputs = [ seedCompiler pkgs.wasm-tools ]; } ''
             set -euo pipefail
             cdz compile ${src} --target wasm -o guest.wasm \
+              ${pkgs.lib.optionalString (witWorld != null) "wit-world:${witWorldName}=${witWorld}"} \
               ${pkgs.lib.optionalString (componentName != null) "--component-name ${componentName}"} \
               ${pkgs.lib.optionalString (entry != null) "--entry ${entry}"}
             # Canonicalize (strip the tool-version `producers` sections) so the guest's content address is
             # reproducible cross-host, exactly like the Rust guests (mkStripComponent) + the runtime.
             wasm-tools strip -a guest.wasm -o "$out"
           '';
+
+        # `worldArtifacts`: the platform reducer worlds as `KIND_WIT_WORLD` binary artifacts, generated ONCE
+        # from `cdz-platform/wit/world.wit` by `cargo xtask world-artifact` (single source of truth), for a
+        # host-import-calling Cadenza guest to consume via `mkCadenzaGuest`'s `witWorld`. Built like
+        # `contractHasher` (plain cargo over the offline root vendor, `-p xtask`); reuses `platformItestSrc`
+        # (has xtask + the wit). Writes `reducer-world.bin` + `event-reducer-world.bin` to `$out`.
+        worldArtifacts = pkgs.stdenvNoCC.mkDerivation {
+          pname = "cdz-platform-world-artifacts";
+          version = "0.0.0";
+          src = platformItestSrc;
+          nativeBuildInputs = [ rustToolchain ];
+          buildPhase = ''
+            runHook preBuild
+            ${mkCargoVendorEnv { vendor = seedCargoVendor; }}
+            cargo build --release --locked -p xtask --bin xtask
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            mkdir -p "$out"
+            ./target/release/xtask world-artifact --out "$out"
+            runHook postInstall
+          '';
+        };
 
         # The Cadenza-authored reducer-echo guest (`guests/reducer-echo-cdz/reducer.cdz`, by v-platform): a
         # `.cdz` reducer compiled to a `cadenza:platform/guest`-exporting wasm component. Registered in
@@ -1159,6 +1192,18 @@
           pname = "cdz-platform-reducer-echo-cdz-component";
           src = ./implementation/seed/crates/cdz-platform/guests/reducer-echo-cdz/reducer.cdz;
           componentName = "cadenza:platform/guest";
+        };
+
+        # A Cadenza reducer that PERFORMS a host import: `on-message` reads its own reducer id
+        # (`identity.id` — a compound `list<u8>` host result, exercising the shared-allocator slice #3121)
+        # and stamps it as the echoed request's token, proving a host value flows through the guest and back.
+        # Consumes the external `reducer-world.bin` (`witWorld`) for the `cadenza:platform/identity` IMPORT
+        # declaration (its inline export alone can't declare imports). Registered as `reducer-identity-cdz`.
+        cadenzaReducerIdentity = mkCadenzaGuest {
+          pname = "cdz-platform-reducer-identity-cdz-component";
+          src = ./implementation/seed/crates/cdz-platform/guests/reducer-identity-cdz/reducer.cdz;
+          componentName = "cadenza:platform/guest";
+          witWorld = "${worldArtifacts}/reducer-world.bin";
         };
 
         # ── the integration-test HARNESS framework (design/cadenza-platform.md §9) ─────────────────
@@ -1177,6 +1222,8 @@
           "reducer-echo-check" = reducerEchoCheck;
           # The Cadenza-compiled reducer guest — same slot as the Rust `reducer-echo`, fed by `cdz compile`.
           "reducer-echo-cdz" = cadenzaReducerEcho;
+          # A Cadenza reducer that CALLS a host import (identity.id) — the host-import-driving fixture.
+          "reducer-identity-cdz" = cadenzaReducerIdentity;
         };
 
         # `platformItest`: the `cdz-platform-itest` executable built ONCE (behind testing+host → wasmtime),
@@ -1853,6 +1900,11 @@
         # The Cadenza-compiled reducer guest (`cdz compile reducer.cdz --target wasm`). `.#reducer-echo-cdz`.
         packages.reducer-echo-cdz = cadenzaReducerEcho;
         packages.reducer-echo-cdz-hash = hashOf cadenzaReducerEcho "cdz-platform-reducer-echo-cdz-hash";
+
+        # The host-import-calling Cadenza reducer (performs identity.id). `.#reducer-identity-cdz`;
+        # `.#world-artifacts` exposes the KIND_WIT_WORLD binaries it consumes.
+        packages.reducer-identity-cdz = cadenzaReducerIdentity;
+        packages.world-artifacts = worldArtifacts;
 
         # The interim reducer-echo CHECKER guest (temporary; see the derivation note). `.#reducer-echo-check`.
         packages.reducer-echo-check = reducerEchoCheck;
