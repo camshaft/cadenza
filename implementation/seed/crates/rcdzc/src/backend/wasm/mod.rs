@@ -1530,6 +1530,12 @@ fn host_op_comp_functype(
         // so it is COMPUTED by the caller (`host_effect_instance_type`'s prepend order) and threaded in.
         item.push(0x00);
         encode::uleb128(list_pairs_type_idx as u64, &mut item);
+    } else if h.result_bytes {
+        // A bare `list<u8>` (Bytes) result (`identity.id`/`blobs.put`): a single unnamed result referencing
+        // the shared `(list u8)` DEFINED type by its instance-type-local index `list_type_idx` — the same
+        // type a Bytes PARAM references (line above), just in result position.
+        item.push(0x00);
+        encode::uleb128(list_type_idx as u64, &mut item);
     } else {
         match h.result {
             Some(r) => item.extend_from_slice(&[0x00, r.comp_byte()]),
@@ -9029,7 +9035,7 @@ fn emit_bytes_provider_member(
     // (kv.put) → base h+k, byte-identical.
     let needs_realloc = host_imports
         .iter()
-        .any(|hi| hi.result_option_bytes || hi.result_list_byte_pairs)
+        .any(|hi| hi.result_option_bytes || hi.result_list_byte_pairs || hi.result_bytes)
         as u32;
     let layout = layout
         .with_import_base(h + k + needs_realloc)

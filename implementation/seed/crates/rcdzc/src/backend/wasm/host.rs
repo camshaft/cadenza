@@ -72,6 +72,13 @@ pub struct HostImport {
     /// with a scalar `result` and with `result_option_bytes`. (The lift + component type are the ACTIVATION
     /// slice; this flag rides the same spilled-retptr core ABI as `result_option_bytes`.)
     pub result_list_byte_pairs: bool,
+    /// The result is a bare `list<u8>` (guest `Bytes`) — a world import like `identity.id : () ->
+    /// reducer-id` (`reducer-id = list<u8>`) or `blobs.put : (list<u8>) -> hash`. A `list<u8>` flattens to
+    /// `(ptr, len)` (2 flat > 1), so it SPILLS to a caller-provided 8-byte return area the host writes
+    /// `(ptr, len)` into; the guest lifts it into a value-heap `Bytes` handle (`bytes-alloc` + copy-in),
+    /// like the `option<list<u8>>` lift minus the disc/None arm. Host-boundary only; mutually exclusive with
+    /// a scalar `result`, `result_option_bytes`, and `result_list_byte_pairs`.
+    pub result_bytes: bool,
 }
 
 /// Whether `ty` is the built-in `Option<Bytes>` (guest `option<list<u8>>` at the host boundary) — a `Sum`
@@ -434,14 +441,20 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
             // The kv prefix-scan compound result `list<tuple<list<u8>,list<u8>>>` — a spilled compound like
             // `option<list<u8>>` (host-boundary only). Never coexists with a scalar `result` or the option.
             let result_list_byte_pairs = !peer_bound && is_list_byte_pairs(&result);
-            let result_abi =
-                if matches!(result, Ty::Unit) || result_option_bytes || result_list_byte_pairs {
-                    None
-                } else if peer_bound {
-                    extern_abi_val_type(&result)
-                } else {
-                    abi_val_type(&result)
-                };
+            // A bare `list<u8>` (Bytes) result — a world import returning a hash/id (`identity.id`,
+            // `blobs.put`). Spilled + lifted like `option<list<u8>>`, minus the disc. Host-boundary only.
+            let result_bytes = !peer_bound && matches!(result, Ty::Bytes);
+            let result_abi = if matches!(result, Ty::Unit)
+                || result_option_bytes
+                || result_list_byte_pairs
+                || result_bytes
+            {
+                None
+            } else if peer_bound {
+                extern_abi_val_type(&result)
+            } else {
+                abi_val_type(&result)
+            };
             let imp = HostImport {
                 effect: effect.to_string(),
                 op: op.to_string(),
@@ -449,6 +462,7 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                 result: result_abi,
                 result_option_bytes,
                 result_list_byte_pairs,
+                result_bytes,
             };
             if !out.iter().any(|h| h.effect == imp.effect && h.op == imp.op) {
                 out.push(imp);
@@ -827,11 +841,17 @@ pub fn first_unrepresentable_host_op(
         // the same `allow_option_bytes` gate (the flag = "this is the bytes provider", not option-specific).
         let result_is_liftable_list_byte_pairs =
             allow_option_bytes && !peer_bound && is_list_byte_pairs(&result);
+        // A bare `list<u8>` (Bytes) result lifts into a value-heap `Bytes` on the SAME host-fused path (the
+        // select `(ptr,len)`→`bytes-alloc`+copy-in lift, minus the option disc) — representable under the same
+        // gate. A world import returning a hash/id (`identity.id`, `blobs.put`) is this shape.
+        let result_is_liftable_bytes =
+            allow_option_bytes && !peer_bound && matches!(result, Ty::Bytes);
         if !matches!(result, Ty::Unit)
             && !ty_undetermined(&result)
             && !abi_ok(&result)
             && !result_is_liftable_option_bytes
             && !result_is_liftable_list_byte_pairs
+            && !result_is_liftable_bytes
         {
             return Some((op.to_string(), "result", result.render_name(&db.name_ctx())));
         }
