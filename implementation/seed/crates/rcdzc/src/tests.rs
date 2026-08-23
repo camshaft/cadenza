@@ -7030,6 +7030,64 @@ fn a_no_redeclare_world_import_perform_resolves_via_the_injected_effect() {
     }
 }
 
+/// MULTI-INTERFACE no-redeclare: the platform reducer-world imports SEVERAL interfaces (state / blobs /
+/// identity / run). A reducer that declares such a world in source and performs imports from MORE THAN ONE
+/// of them — with NO hand-written `(effect …)` decls — must have the load-time sidecar synthesize ONE effect
+/// per import interface, so every perform resolves + lowers to a synchronous `Core::HostCall`. Pins that
+/// `inject_world_import_effects` handles a multi-import world (not just the single-interface case), across
+/// mixed shapes: a nullary `list<u8>` result (identity.id) and a single-arg `option<list<u8>>` result
+/// (state.get → Option Bytes).
+#[test]
+fn a_multi_interface_no_redeclare_world_synthesizes_an_effect_per_import() {
+    use crate::core::Core;
+    use crate::db::Db;
+    use crate::lower::core_of;
+    // In-source world importing TWO interfaces; WIT descriptors are STRING-head canonical forms.
+    let src = "(module m \
+                 (world reducer \
+                   (import identity (member id (func (result (\"list\" (u8)))))) \
+                   (import state (member get (func (param key (\"list\" (u8))) \
+                     (result (\"option\" (\"list\" (u8)))))))) \
+                 (def (fetch-id) (host (identity) ((. identity id)))) \
+                 (def (lookup (: k Bytes)) (host (state) ((. state get) k))) \
+                 (def (main) 0) \
+                 (export main))";
+    let mut db = Db::load(crate::testkit::parse(src));
+    // Neither un-declared interface name is unbound — both injected effects bound them.
+    let diags = crate::compile::diagnostics(&mut db);
+    for name in ["identity", "state"] {
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.message.contains(&format!("unbound name `{name}`"))),
+            "the injected effect must bind `{name}` (no CDZ0101): {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+    // fetch-id → HostCall{identity, id, [], Bytes}.
+    let fetch = db.def_by_name("fetch-id").expect("def fetch-id");
+    let fetch_body = db.defs[fetch].body.expect("fetch-id body");
+    match core_of(&mut db, fetch_body) {
+        Core::HostCall {
+            effect, op, args, ..
+        } => {
+            assert_eq!((&*effect, &*op, args.len()), ("identity", "id", 0));
+        }
+        other => panic!("identity.id must lower to a HostCall, got {other:?}"),
+    }
+    // lookup → HostCall{state, get, [k], Option Bytes}.
+    let lookup = db.def_by_name("lookup").expect("def lookup");
+    let lookup_body = db.defs[lookup].body.expect("lookup body");
+    match core_of(&mut db, lookup_body) {
+        Core::HostCall {
+            effect, op, args, ..
+        } => {
+            assert_eq!((&*effect, &*op, args.len()), ("state", "get", 1));
+        }
+        other => panic!("state.get must lower to a HostCall, got {other:?}"),
+    }
+}
+
 /// §3c full-A BEHAVIORAL: the FIRST full-A slice end-to-end — a CLOSURE-free, HOST/PEER-import-free pure
 /// reducer (`apply(Event) -> List<EffectRequest>`) whose `apply` member the target WIT WORLD declares as a
 /// `list<u8>`-in / `list<u8>`-out boundary EMITS through `emit_bytes_provider_member` — the compound param
