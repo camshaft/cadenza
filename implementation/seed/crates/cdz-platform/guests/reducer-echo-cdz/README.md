@@ -18,3 +18,19 @@ Scope note (2026-08-23): `on-message` here echoes a record-of-bytes to bytes —
 shape. The full platform `guest` interface is `on-message: func(message) -> step` and adds
 `on-response`/`on-notification`; growing this probe toward the full typed `step` result and the host
 imports (`state`/`blobs`) tracks v-rust-backend's world-export + shared-allocator slices.
+
+## `reducer-step.ml` — the faithful `message → step` echo (staged, awaiting typed-export emit)
+
+`reducer-step.ml` (authored by v-platform) is the reducer the platform host can actually *drive*:
+`on-message: (message) -> step` — folds a delivered `message` and emits one request echoing the payload
+plus `Continue`, matching the real `cadenza:platform/guest` interface (`world.wit`). It is front-end clean
+(`cdz check` exit 0).
+
+It is NOT yet wired into `harnessPrograms` because the guest EXPORT does not TYPE yet: compiled today
+(with `--component-name cadenza:platform/guest`, or against the external `KIND_WIT_WORLD` artifact) it emits
+an untyped heap export `on-message: func(u32) -> u32`, not the WIT-typed `message -> step` the host binds.
+A typed export needs an inline `(world …)` declaring the full `message`/`step` member signatures (the path
+that typed `reducer.sexp`'s record→bytes export) — the inline-typed-world surface gap (routed to v-syntax)
+— OR external-artifact export typing (routed to v-rust-backend). The moment a typed `message -> step`
+export emits, this file is wired into `mkCadenzaGuest` + `harnessPrograms` and driven by a spawn/deliver
+harness run. Kept here so the authored, verified source is version-controlled, not lost in a fleet note.
