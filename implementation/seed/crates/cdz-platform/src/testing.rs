@@ -17,9 +17,14 @@
 //! - [`RecordingReducer`] / [`RecordingProgramStore`] — the event tap: wrap the program store the kernel
 //!   instantiates reducers through, and every reducer records the events it folds, emits, and closes with
 //!   (§3/§4/§10) — the whole system's event flow, with no change to the kernel.
-//! - [`Harness`] — the run-to-quiescence driver: spawn a reducer set, deliver initial events, drive the
-//!   platform under the bach simulator to quiescence deterministically, and return the log for a checker.
+//! - [`Harness`] — the run-to-quiescence driver: spawn a named reducer set, deliver initial events, drive
+//!   the platform under the bach simulator to quiescence deterministically, and return the [`Run`] (the
+//!   log plus the name→id assignment) for a checker.
+//! - [`Checker`] / [`CheckOutcome`] — the assertion side: read a [`Run`] and decide pass/fail. The native
+//!   realization of the checker contract (a wasm checker implements the same judgement over a serialized
+//!   log later); any `Fn(&Run) -> CheckOutcome` is a checker.
 
+mod checker;
 mod harness;
 mod observation;
 mod recording;
@@ -27,6 +32,7 @@ mod recording;
 /// The [`program`](crate::program) module's test helpers — `program::Store`, a program store backed by
 /// registered Rust factories instead of the content-addressed store.
 pub use crate::program::testing as program;
+pub use checker::{CheckOutcome, Checker};
 pub use harness::{Harness, Parent, Run, SpawnSpec};
 pub use observation::{BlobOp, Entry, EventKind, EventOp, KvOp, ObservationLog, Record};
 pub use recording::{
