@@ -1028,8 +1028,15 @@ permits a child to resolve only a certain key prefix, and hashes outside that pr
 reach the child. Access control lives there, in userspace, not on the CAS.
 
 A hash is raw bytes. Wherever one is rendered as text — in a name, a log line, an error, a
-display, or a textual wire field — it is **base64url** (the URL-safe alphabet, unpadded),
-never hex.
+display, or a textual wire field — it is **base62** (the digits and letters `0-9 A-Z a-z`, no
+separators), never hex. base62 is the compact encoding whose alphabet is legal on *every*
+surface a hash text reaches: the runtime content-address rides in a WebAssembly
+component-import semver build-metadata suffix, whose grammar admits only `[0-9A-Za-z-]`, so
+base64url's `_` was invalid there. base62 drops `-`/`_` entirely, so it is the single encoding
+used uniformly everywhere — no per-surface exception. A 33-byte tagged hash is a fixed 45
+base62 characters (`62^45 > 2^264 > 62^44`), computed by changing the base of the whole hash
+as one big-endian integer; the alphabet is digit-ordered, so the text sorts the same way the
+raw bytes do (tag first, then digest).
 
 ### Resolving what a program needs
 
@@ -1250,5 +1257,5 @@ are not negotiable.
   that is cloned as it flows through the system, and `Str` makes that a refcount bump rather
   than an allocation and copy. It also gives text and bytes one representation, so a value
   crosses the text/binary boundary without re-allocating.
-- The other two standing conventions live with the topics they constrain: **base64url for
+- The other two standing conventions live with the topics they constrain: **base62 for
   every textual hash** (section 8) and **no blocking call on an async task** (section 9).

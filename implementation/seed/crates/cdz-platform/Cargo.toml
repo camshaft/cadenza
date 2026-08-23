@@ -9,7 +9,7 @@
 #
 # A normal member of the seed workspace (picked up by the `crates/*` glob) so it gets per-crate clippy +
 # workspace-test coverage for free while it is light. We depend on as little as possible (blake3 in the
-# root lock, plus bytes/async-trait/tokio/futures); base64url rendering is hand-rolled and exhaustively
+# root lock, plus bytes/async-trait/tokio/futures); base62 rendering is hand-rolled and exhaustively
 # tested rather than pulling in another crate. When a later slice adds the heavy wasm-runtime host
 # (wasmtime), that slice moves this to its own excluded `[workspace]` (a deliberate topology change,
 # coordinated with v-nix) so the corpus gate never pays for it.

@@ -9,7 +9,7 @@
 //!
 //! Each is a transparent, `Copy` wrapper: build one from content with `of` (which stamps the matching
 //! [`HashTag`] into the hash, so the role is self-describing at runtime too), or wrap an existing hash with
-//! `from_hash`, and read the underlying hash with `hash`. They render (Display) as the base64url of the
+//! `from_hash`, and read the underlying hash with `hash`. They render (Display) as the base62 of the
 //! hash they carry, tagged in Debug with their role.
 
 use crate::{Hash, HashTag};

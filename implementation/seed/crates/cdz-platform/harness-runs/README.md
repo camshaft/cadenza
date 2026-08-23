@@ -10,7 +10,7 @@ Each `*.ml` file here describes one whole integration-test run as a Cadenza valu
   AST-validated structural transform — not text substitution), looked up in the wasm store by name;
 - a run may refer to a contract **by name** with `contract = "<name>"` (a string, e.g.
   `contract = "cdz-platform.deliver"`); nix resolves the name to the contract's content-address via the
-  `cdz-contract hash` mapping over `../contracts` and rewrites the field to the base64url contract-id.
+  `cdz-contract hash` mapping over `../contracts` and rewrites the field to the base62 contract-id.
   The names are the `@!contract` declarations in `../contracts/*.cdz`. A raw-bytes contract
   (`contract = b"…"`) is left as-is, so a spec can use either form; an unknown name is a hard build error;
 - the transformed value is encoded to the binary AST (`cdz convert --to binary`) and fed to the
@@ -43,7 +43,7 @@ read by name, so order does not matter):
   - `notification = { contract = …, payload = b"…" }` — a control-plane event folded through
     `on_notification`.
 
-  A `contract` is either a contract **name** (`contract = "cdz-platform.deliver"`, resolved to a base64url
+  A `contract` is either a contract **name** (`contract = "cdz-platform.deliver"`, resolved to a base62
   id as above) or raw bytes (`contract = b"…33 bytes"`).
 - `checker` — optional; the blob name of a reducer the harness runs over the completed observation log to
   decide pass/fail (§9). The whole log is delivered to it and it emits a verdict; the harness executes it as

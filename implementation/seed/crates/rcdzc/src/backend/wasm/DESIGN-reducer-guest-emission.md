@@ -35,7 +35,7 @@ the runtime dep is imported by content address, resolved from the CAS by the hos
 exact subcommand + flags are pinned when the emit lands (see status); a sample guest `.cdz` ships with it.
 
 The emitted `.wasm` imports `cadenza:runtime/heap@0.0.0+<addr>` (building records/`Bytes` uses the value
-heap); the address is the base64url of the full tagged `Hash` (§8 canonical text — the tree-wide
+heap); the address is the base62 of the full tagged `Hash` (§8 canonical text — the tree-wide
 lockstep flip from lowercase-hex), which the host / nix compose resolves from the CAS.
 
 ## The emit pipeline

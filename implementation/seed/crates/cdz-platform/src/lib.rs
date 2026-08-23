@@ -54,7 +54,7 @@ pub use graph::{Dir, EdgeKind, InMemoryReducerGraph, ReducerGraph};
 // The content hash (§8) and the contract-id computation (§1) live in the dep-minimal `cdz-contract` crate
 // (so they can become a wasm component); re-exported here so the whole platform still reaches them as
 // `crate::Hash` / `cdz_platform::Hash` and there is one implementation of each, not a copy.
-pub use cdz_contract::{Hash, HashTag, Hasher, base64url};
+pub use cdz_contract::{Hash, HashTag, Hasher, base62};
 // The wasm program store (§3/§8): the production backend that loads a program's component from the CAS and
 // instantiates it as a reducer. Behind the `host` feature — the integration harness wraps it as any other
 // `ProgramStore` to drive real wasm reducers.

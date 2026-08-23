@@ -4,7 +4,7 @@
 //! any other program can turn into a wasm component:
 //!
 //! - [`Hash`] — the self-describing content hash that is the system's sole identity (§8): a [`HashTag`] byte
-//!   plus a blake3 digest, rendered as [`base64url`] text. A blob is addressed by the hash of its bytes; an
+//!   plus a blake3 digest, rendered as [`base62`] text. A blob is addressed by the hash of its bytes; an
 //!   id is the hash of what it names.
 //! - [`contract_id`] / [`contract_declaration`] — a contract's identity (§1): its declaration
 //!   `(contract <name> (types…) <input> <output>)` built with the canonical Cadenza AST, canonicalized and
@@ -12,7 +12,7 @@
 //!   declaration — this crate, the platform's `Contract`, a nix step over a directory of contracts — agrees
 //!   by construction.
 //!
-//! `cdz-platform` depends on this crate and re-exports [`Hash`]/[`HashTag`]/[`Hasher`]/[`base64url`], and its
+//! `cdz-platform` depends on this crate and re-exports [`Hash`]/[`HashTag`]/[`Hasher`]/[`base62`], and its
 //! `Contract` derives its id through [`contract_declaration`] — so the hashing and the declaration encoding
 //! live here once, with no second copy.
 
@@ -22,4 +22,4 @@ mod hash;
 pub use contract::{
     contract_declaration, contract_from_module, contract_id, contract_id_from_module,
 };
-pub use hash::{Hash, HashTag, Hasher, base64url};
+pub use hash::{Hash, HashTag, Hasher, base62};
