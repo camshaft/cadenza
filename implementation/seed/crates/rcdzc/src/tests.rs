@@ -6563,6 +6563,118 @@ fn a_host_fused_kv_put_reducer_emits_and_loads() {
     );
 }
 
+/// A KIND_WIT_WORLD declaring a NULLARY, `list<u8>`-returning import: export interface `fold` member
+/// `apply` (list<u8>->list<u8>) AND import interface `cadenza:agent-kernel/identity` member `id`
+/// (NO params -> list<u8>) — the `identity.id : () -> reducer-id` shape the operator's generic
+/// world-import directive names. Exercises the zero-param + `list<u8>`-result branch of `parse_wit_func`
+/// / `parse_wit_type` and drives a NULLARY synchronous `Core::HostCall` (v-inference generic-surface B0).
+fn reducer_nullary_identity_import_world_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let byte_list = |b: &mut Builder| {
+        let hh = b.atom_leaf(Leaf::Str("list".into()));
+        let uh = b.name("u8");
+        let u = b.list(vec![uh]);
+        b.list(vec![hh, u])
+    };
+    // export fold { apply: func(input: list<u8>) -> list<u8> }
+    let a_in = byte_list(&mut b);
+    let a_out = byte_list(&mut b);
+    let apply = {
+        let func_h = b.name("func");
+        let param_h = b.name("param");
+        let pn = b.name("input");
+        let pnode = b.list(vec![param_h, pn, a_in]);
+        let result_h = b.name("result");
+        let rnode = b.list(vec![result_h, a_out]);
+        let func = b.list(vec![func_h, pnode, rnode]);
+        let member_h = b.name("member");
+        let mn = b.name("apply");
+        b.list(vec![member_h, mn, func])
+    };
+    let exp_h = b.name("export");
+    let ename = b.name("fold");
+    let fold = b.list(vec![exp_h, ename, apply]);
+    // import cadenza:agent-kernel/identity { id: func() -> list<u8> } — ZERO params.
+    let id_out = byte_list(&mut b);
+    let id_member = {
+        let func_h = b.name("func");
+        let result_h = b.name("result");
+        let rnode = b.list(vec![result_h, id_out]);
+        let func = b.list(vec![func_h, rnode]); // no param nodes → nullary
+        let member_h = b.name("member");
+        let mn = b.name("id");
+        b.list(vec![member_h, mn, func])
+    };
+    let imp_h = b.name("import");
+    let id_iface_name = b.name("cadenza:agent-kernel/identity");
+    let identity = b.list(vec![imp_h, id_iface_name, id_member]);
+    // world reducer { export fold; import identity }
+    let world_h = b.name("world");
+    let wn = b.name("reducer");
+    let world = b.list(vec![world_h, wn, fold, identity]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+/// B0 (generic world-import surface, v-inference FRONT-END invariant): a NULLARY, `list<u8>`-returning
+/// world import (`identity.id : () -> reducer-id`, the shape the operator's no-hardcoded-interfaces
+/// directive names) TYPES + LOWERS to a synchronous `Core::HostCall{args:[], result:Bytes}` — driven
+/// purely off the declared `world.wit` via `is_world_import_op`, with ZERO per-interface arms. The perform
+/// is a zero-arg application of the member projection `((. identity id))` (v-syntax ruling) under
+/// `(host (identity) …)`. This pins the front-end half generically for a nullary + `list<u8>` import,
+/// DECOUPLED from the backend boundary-emit increment (Bytes/`list<u8>` host results don't cross the
+/// component boundary yet — `backend/wasm/mod.rs:182`, v-rust-backend's lane), so it stays green while
+/// that increment lands.
+#[test]
+fn a_nullary_list_u8_world_import_lowers_to_a_synchronous_host_call() {
+    use crate::core::Core;
+    use crate::db::Db;
+    use crate::lower::core_of;
+    // A reducer performs the nullary import identity.id() under `(host (identity) …)`. is_world_import_op
+    // reads the declared world (set manually — Db::load, unlike compile::compile, does not populate it), so
+    // the perform is a SYNCHRONOUS host import: it stays a Core::HostCall (NOT reified to a record).
+    let src = "(module m \
+                 (effect identity (op id (-> Bytes))) \
+                 (def (apply (: e (Record (ct String) (pl Bytes)))) \
+                   (host (identity) ((. identity id)))) \
+                 (export apply))";
+    let mut db = Db::load(crate::testkit::parse(src));
+    db.wit_world = Some(reducer_nullary_identity_import_world_bytes());
+    let d = db.def_by_name("apply").expect("def apply");
+    let body = db.defs[d].body.expect("apply has a body");
+    match core_of(&mut db, body) {
+        Core::HostCall {
+            effect,
+            op,
+            args,
+            result,
+        } => {
+            assert_eq!(
+                &*effect, "identity",
+                "the host call carries the import interface short name"
+            );
+            assert_eq!(
+                &*op, "id",
+                "the host call carries the import member name verbatim"
+            );
+            assert!(
+                args.is_empty(),
+                "a nullary import perform lowers to a HostCall with ZERO args, got {}",
+                args.len()
+            );
+            assert!(
+                matches!(result, crate::ty::Ty::Bytes),
+                "the nullary import's list<u8> result types as Bytes, got {result:?}"
+            );
+        }
+        other => panic!(
+            "a nullary world-import perform must lower to a synchronous Core::HostCall (driven off \
+             is_world_import_op, no per-interface arm), got {other:?}"
+        ),
+    }
+}
+
 /// §3c full-A BEHAVIORAL: the FIRST full-A slice end-to-end — a CLOSURE-free, HOST/PEER-import-free pure
 /// reducer (`apply(Event) -> List<EffectRequest>`) whose `apply` member the target WIT WORLD declares as a
 /// `list<u8>`-in / `list<u8>`-out boundary EMITS through `emit_bytes_provider_member` — the compound param
