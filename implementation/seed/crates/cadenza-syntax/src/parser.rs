@@ -5187,6 +5187,45 @@ mod tests {
     }
 
     #[test]
+    fn inline_world_aggregate_members_encode_identically_to_the_builders() {
+        // The cross-source identity guarantee EXTENDED to the aggregate member types (record + result — the
+        // shapes v-platform's reducer world uses at the boundary: a record message/request, a
+        // result-of-payload-or-error answer). The inline surface `{f: T, …}` / `result(A, B)` must lower to
+        // the EXACT SAME canonical tree the shared `wit_type_record`/`wit_type_result` builders produce, so
+        // a typed-member world is one content-hash whether it comes from the inline decl, an external
+        // artifact, or v-cml's emit. If `wit_type_desc_of` ever drifts from a builder shape (a field
+        // reorder, a head-kind flip, a wrong result slot), this fails. (Variant is covered once its surface
+        // — PR #2989 — lands; its builder identity is already gated in cadenza-ast.)
+        let parsed = parse_ok(
+            "world W = | export r = \
+             | step : (msg : {id: string, payload: list(u8)}) -> result(bool, string)",
+        );
+
+        let mut b = crate::Builder::new();
+        // msg: record { id: string, payload: list(u8) } — fields in declaration order, matching the surface.
+        let id_ty = b.wit_type_prim("string");
+        let payload_ty = {
+            let u8 = b.wit_type_prim("u8");
+            b.wit_type_list(u8)
+        };
+        let msg = b.wit_type_record(&[("id", id_ty), ("payload", payload_ty)]);
+        // result(bool, string) — both arms present.
+        let ok = b.wit_type_prim("bool");
+        let err = b.wit_type_prim("string");
+        let res = b.wit_type_result(Some(ok), Some(err));
+        let sig = b.wit_func_sig(&[("msg", msg)], res);
+        let iface = b.wit_interface(crate::ast::WitDir::Export, "r", &[("step", sig)]);
+        let root = b.world_schema_tree("W", &[iface]);
+        let built = b.finish(root);
+
+        assert_eq!(
+            crate::codec::encode(&parsed),
+            crate::codec::encode(&built),
+            "inline record+result member world must encode identically to the shared builders"
+        );
+    }
+
+    #[test]
     fn inline_pure_fold_world_encodes_identically_to_the_kernel_artifact_form() {
         // The CROSS-SOURCE BYTE-IDENTITY gate v-agent-harness cleared (build_type dedup landed cf1433380):
         // the inline surface for v-ah's `pure_fold_world_artifact` must encode BYTE-IDENTICALLY to the
