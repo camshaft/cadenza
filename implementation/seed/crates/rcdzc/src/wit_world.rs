@@ -546,26 +546,37 @@ pub fn synthesize_world_import_effect_decls(
 /// `KIND_WIT_WORLD` artifact world (not present in the ast at load) is a follow-up (thread via the
 /// `load_linked` linkage seam); reference reducers declare the world in-source, so this ships that path.
 pub fn inject_world_import_effects(ast: &mut Arenas) {
-    use crate::backend::common::export_name::kebab_extern_name;
     let Some(world_form) = top_world_form(ast) else {
         return;
     };
-    // Effect names the guest ALREADY declares in source (kebab-normalized). A hand-written `(effect X …)`
-    // for a world-import interface — the REDECLARE path, or an interface carrying an `enum`/`variant` type
-    // the guest must declare in full (its type name is not recoverable from the world descriptor) — WINS:
-    // synthesizing a second `(effect X …)` for the same interface would be a DUPLICATE definition (CDZ0201).
-    // So the sidecar SKIPS any interface the guest already declares, and only fills in the un-declared ones.
+    // Encode the world subtree to the SAME bytes the `db.wit_world` population uses (compile.rs), then
+    // inject the synthesized effect decls (the shared bytes-driven path also serves the external-artifact
+    // world — see `inject_world_import_effects_from_bytes`).
+    let bytes = crate::codec::encode(&crate::sidecar::extract_subtree(ast, world_form));
+    inject_world_import_effects_from_bytes(ast, &bytes);
+}
+
+/// Inject the synthesized `(effect …)` decls for a world given its ENCODED bytes — the shared core of the
+/// no-redeclare sidecar, driven either by an in-source `(world …)` (via [`inject_world_import_effects`], in
+/// `Db::load_linked`) OR by an EXTERNAL `KIND_WIT_WORLD` artifact (called from `compile` BEFORE `Db::load`,
+/// so a reducer delivered with an artifact world gets the same no-redeclare surface as an in-source one).
+/// Synthesizes an `(effect <iface> (op …)…)` per import interface and appends it as a top-level module
+/// member — SKIPPING any interface the guest ALREADY declares (a hand-written `(effect X …)` — the redeclare
+/// path, or an `enum`/`variant`-carrying interface whose type name is not recoverable from the world
+/// descriptor — WINS; a second `(effect X …)` would be a duplicate). This skip also makes the two drivers
+/// composable: if `compile` injects the artifact effects first, a later in-source pre-pass sees them
+/// declared and skips, so an interface is never synthesized twice.
+pub fn inject_world_import_effects_from_bytes(ast: &mut Arenas, world_bytes: &[u8]) {
+    use crate::backend::common::export_name::kebab_extern_name;
+    // Effect names the module already declares (kebab-normalized) — hand-written OR already-synthesized.
     let declared: std::collections::HashSet<String> = top_level_items(ast)
         .into_iter()
         .filter_map(|it| ast.as_form(it, "effect").and_then(|t| t.first().copied()))
         .filter_map(|name_node| ast.as_name(name_node).map(kebab_extern_name))
         .collect();
-    // Encode the world subtree to the SAME bytes the `db.wit_world` population uses (compile.rs), then
-    // synthesize the effect decls into `ast` and splice in only those the guest has not declared.
-    let bytes = crate::codec::encode(&crate::sidecar::extract_subtree(ast, world_form));
-    let decls = synthesize_world_import_effect_decls(ast, Some(&bytes));
+    let decls = synthesize_world_import_effect_decls(ast, Some(world_bytes));
     for decl in decls {
-        // The synthesized decl is `(effect <name> …)`; skip it if the guest already declares that effect
+        // The synthesized decl is `(effect <name> …)`; skip it if the module already declares that effect
         // (its nodes stay unreferenced in the arena — inert, not scanned as a top-level member).
         let name = ast
             .as_form(decl, "effect")
