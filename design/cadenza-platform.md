@@ -192,7 +192,10 @@ the spawn tree, and the program-hash a given reducer runs (used for the provenan
 section 4), all in the one reducer graph. On an emitted effect the kernel looks up the
 event reducer for its contract and delivers the effect to it; that reducer reads the graph to
 assemble the chain across generations, then delivers along it — handing a message to a handler,
-folding a response back to a caller. Beyond that privileged API it is an ordinary
+folding a response back to a caller. (Two planned extensions widen this same privileged tier —
+privileged external I/O over WASI and access to a secrets store, so an event reducer can make
+authenticated outbound calls while shepherding an effect — sequenced after the current critical
+path, section 11.) Beyond that privileged API it is an ordinary
 reducer: it arms timers with `fire-after` and watches reducers with `subscribe` like any
 reducer, and everything specific — chaining policy, authorization, name resolution, lifecycle,
 what a timer means, input and output — is a content-addressed reducer, not kernel code. This is the point of the entire design and
@@ -1129,8 +1132,10 @@ No event carries a family, a content-type, or a version — each carries a singl
 ## 11. Beyond this document
 
 These belong to the larger vision but are outside this document's core. They are named so
-the boundary is explicit — and, tellingly, each is composition over the primitives above,
-needing no new kernel mechanism.
+the boundary is explicit. Most are composition over the primitives above, needing no new
+kernel mechanism; two — privileged external I/O for event reducers, and secrets — extend the
+privileged event-reducer tier (section 3) with new mechanism and are sequenced after the
+current critical path, not built speculatively.
 
 - **Supervision library** — reusable one-for-one restart, retry-with-backoff, and a
   restart-intensity ceiling, all as reducers composing the spawn / subscribe / close
@@ -1160,6 +1165,22 @@ needing no new kernel mechanism.
 - **Cross-version determinism** — a frozen determinism ABI so a future runtime re-executes
   an old session's events bit-identically (section 9). Deferred in favor of within-version
   determinism.
+- **Privileged external I/O for event reducers (WASI).** Edge reducers already reach the
+  outside world through WASI (section 3); the event reducer is where *privileged* external
+  interactions belong — an outbound API call an event reducer makes as part of shepherding an
+  effect, alongside its `deliver` / read-graph / `program-of` capabilities (section 3, section
+  4). This extends the privileged tier with WASI host access granted only to the event
+  reducer the override registry names, so the capability stays a static, root-installed
+  property of that tier — not a runtime-checked privilege an ordinary reducer could attempt.
+- **Secrets.** A privileged secrets store — API keys, certificates — exposed to the event
+  reducer so it can authenticate the privileged outbound calls above. Access is governed like
+  any privileged-tier capability (granted by the trust root, gated by authz middleware,
+  section 5). **Hard invariant: a secret value never enters an observation log.** The log
+  (section 9, section 10) records events and the reducer's store/blob touches, so the secrets
+  interface is designed so that secret values — and ideally the fact and shape of a specific
+  secret access — are redacted or excluded from anything the log records; a leaked secret in
+  an audit trail is a breach, not a blemish. The redaction boundary is fixed with the harness
+  that owns the observation log.
 
 ---
 
