@@ -255,6 +255,29 @@ pub fn emit_type_section_body(table: &[CDef]) -> Vec<u8> {
     out
 }
 
+/// The component-model FUNCTYPE bytes for a boundary function — one component `type`-section entry:
+/// `0x40 <params-vec> <result>`. Each param is `<namelen> <name> <valtype>`; the result is `0x00 <valtype>`
+/// (one unnamed result) or `0x01 0x00` (the zero-named-results form = no result / `unit`). A param or result
+/// valtype references a defined type by index (a compound) or inlines a primitive byte, via its [`CRef`] —
+/// so a func carrying records/variants references the defined types laid earlier in the same section. This
+/// is the general form of `envelope::comp_functype`, whose result was only ever a primitive or `list<u8>`.
+pub fn emit_functype(params: &[(String, CRef)], result: Option<&CRef>) -> Vec<u8> {
+    let mut out = vec![wasm_abi::COMP_FUNCTYPE_FORM];
+    uleb128(params.len() as u64, &mut out);
+    for (name, r) in params {
+        encode_name(name, &mut out);
+        encode_cref(r, &mut out);
+    }
+    match result {
+        Some(r) => {
+            out.push(0x00); // one unnamed result, inline
+            encode_cref(r, &mut out);
+        }
+        None => out.extend_from_slice(&[0x01, 0x00]), // zero named results = no result
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -461,5 +484,88 @@ mod tests {
                 CDef::List(CRef::Idx(0)),
             ]
         );
+    }
+
+    /// Assert our type section for a func signature — the param/result defined types, then the functype
+    /// referencing them — is byte-identical to wasm-encoder's. Flattens params-then-result (both sides in
+    /// the same order, so the defined-type indices line up), the functype being the section's last entry.
+    fn assert_functype_identical(params: &[(&str, WitType)], result: Option<WitType>) {
+        // ours
+        let mut table = Vec::new();
+        let param_refs: Vec<(String, CRef)> = params
+            .iter()
+            .map(|(n, t)| {
+                (
+                    n.to_string(),
+                    add_wit_type(t, &mut table).expect("value type"),
+                )
+            })
+            .collect();
+        let result_ref = result
+            .as_ref()
+            .map(|t| add_wit_type(t, &mut table).expect("value type"));
+        let mut body = Vec::new();
+        uleb128(table.len() as u64 + 1, &mut body); // the defined types + the one functype entry
+        for def in &table {
+            body.extend_from_slice(&emit_cdef(def));
+        }
+        body.extend_from_slice(&emit_functype(&param_refs, result_ref.as_ref()));
+        let mut mine = wasm_abi::COMPONENT_MAGIC.to_vec();
+        mine.push(wasm_abi::COMP_SEC_TYPE);
+        mine.extend_from_slice(&uleb_bytes(body.len() as u64));
+        mine.extend_from_slice(&body);
+
+        // oracle
+        let mut ts = wasm_encoder::ComponentTypeSection::new();
+        let mut next = 0u32;
+        let oracle_params: Vec<(String, wasm_encoder::ComponentValType)> = params
+            .iter()
+            .map(|(n, t)| (n.to_string(), oracle_add(&mut ts, t, &mut next)))
+            .collect();
+        let oracle_result = result.as_ref().map(|t| oracle_add(&mut ts, t, &mut next));
+        ts.function()
+            .params(oracle_params.iter().map(|(n, v)| (n.as_str(), *v)))
+            .result(oracle_result);
+        let mut c = wasm_encoder::Component::new();
+        c.section(&ts);
+        let oracle = c.finish();
+
+        assert_eq!(
+            mine, oracle,
+            "functype section differs for params={params:?} result={result:?}"
+        );
+    }
+
+    #[test]
+    fn functype_with_a_record_param_and_scalar_result_matches_oracle() {
+        // on-message-ish: (msg: record{contract, token}) -> u32 — a defined-type param, an inline result.
+        assert_functype_identical(
+            &[(
+                "msg",
+                rec(&[
+                    ("contract", WitType::List(Box::new(WitType::U8))),
+                    ("token", WitType::List(Box::new(WitType::U8))),
+                ]),
+            )],
+            Some(WitType::U32),
+        );
+    }
+
+    #[test]
+    fn functype_with_no_result_is_the_void_form() {
+        // state.put-ish: (key: list<u8>, value: list<u8>) -> () — the zero-named-results (void) form.
+        assert_functype_identical(
+            &[
+                ("key", WitType::List(Box::new(WitType::U8))),
+                ("value", WitType::List(Box::new(WitType::U8))),
+            ],
+            None,
+        );
+    }
+
+    #[test]
+    fn functype_with_a_compound_result_references_it_by_index() {
+        // () -> step-ish record result — the result is a defined type referenced by index, not inline.
+        assert_functype_identical(&[], Some(rec(&[("keep-going", WitType::Bool)])));
     }
 }
