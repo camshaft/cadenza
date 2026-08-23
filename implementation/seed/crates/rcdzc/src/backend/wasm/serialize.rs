@@ -923,9 +923,14 @@ fn core_module_impl(
     let mut export_items = Vec::new();
     let mut export_n = 0usize;
     for e in &layout.exports {
-        // A wrapper SHADOWS the def's export under the same name (the interface aliases the wrapper); the
-        // def stays internal (still a core func the wrapper calls, just unexported).
-        if wrappers.iter().any(|w| w.name == e.name) {
+        // A wrapper SHADOWS the def's export (the interface aliases the wrapper); the def stays internal
+        // (still a core func the wrapper calls, just unexported). Matched by kebab-normalized name — the
+        // wrapper's name is the WIT member (`on-message`, kebab) while the def's export is the guest name
+        // (`onMessage`), so a raw compare would miss the shadow and leave a stray def export.
+        if wrappers.iter().any(|w| {
+            crate::backend::common::export_name::kebab_extern_name(&w.name)
+                == crate::backend::common::export_name::kebab_extern_name(&e.name)
+        }) {
             continue;
         }
         let abs = layout.abs(e.def).ok_or_else(|| {

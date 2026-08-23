@@ -7935,7 +7935,15 @@ fn world_bytes_crossing_export(layout: &Layout, world_bytes: &[u8]) -> Option<us
     let world = parse_target_world(&arenas, arenas.root)?;
     for iface in &world.exports {
         for member in &iface.members {
-            let Some(e) = layout.exports.iter().find(|e| e.name == member.name) else {
+            // Bind by kebab-normalized name: the WIT member (`on-message`, kebab) matches a guest export
+            // (`onMessage`) under the same rule fields/variants/exports cross under (a Cadenza def cannot be
+            // named `on-message`). Both sides normalized (a WIT member is already kebab — idempotent).
+            let mk = crate::backend::common::export_name::kebab_extern_name(&member.name);
+            let Some(e) = layout
+                .exports
+                .iter()
+                .find(|e| crate::backend::common::export_name::kebab_extern_name(&e.name) == mk)
+            else {
                 continue;
             };
             // The current bytes-boundary slice is a single-compound-param member (widened later); require the
@@ -7993,7 +8001,13 @@ fn scalar_interface_export(
     let export_iface = world.exports.first()?;
     let mut funcs = Vec::with_capacity(export_iface.members.len());
     for member in &export_iface.members {
-        let e = layout.exports.iter().find(|e| e.name == member.name)?;
+        // Bind the WIT member to a guest export by kebab-normalized name (a Cadenza def `onMessage` binds to
+        // the WIT `on-message` member — same rule as fields/variants/exports).
+        let mk = crate::backend::common::export_name::kebab_extern_name(&member.name);
+        let e = layout
+            .exports
+            .iter()
+            .find(|e| crate::backend::common::export_name::kebab_extern_name(&e.name) == mk)?;
         if member.func.params.len() != e.params.len() {
             return None;
         }
@@ -8460,7 +8474,13 @@ fn record_interface_export(
     let mut funcs = Vec::new();
     let mut any_record = false;
     for member in &export_iface.members {
-        let e = layout.exports.iter().find(|e| e.name == member.name)?;
+        // Bind the WIT member to a guest export by kebab-normalized name (a Cadenza def `onMessage` binds to
+        // the WIT `on-message` member — same rule as fields/variants/exports).
+        let mk = crate::backend::common::export_name::kebab_extern_name(&member.name);
+        let e = layout
+            .exports
+            .iter()
+            .find(|e| crate::backend::common::export_name::kebab_extern_name(&e.name) == mk)?;
         if member.func.params.len() != e.params.len() {
             return None;
         }

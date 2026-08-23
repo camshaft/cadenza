@@ -2247,7 +2247,7 @@ fn reducer_echo_world_bytes() -> Vec<u8> {
     let result_node = b.list(vec![result_h, step]);
     let func = b.list(vec![func_h, param_node, result_node]);
     let member_h = b.name("member");
-    let mn = b.name("f");
+    let mn = b.name("on-message"); // the REAL WIT member name (kebab) the platform host drives
     let member = b.list(vec![member_h, mn, func]);
     let exp_h = b.name("export");
     let iname = b.name("iface");
@@ -2275,9 +2275,10 @@ fn the_identity_less_reducer_echo_round_trips() {
     let Some(runtime) = find_runtime_wasm() else {
         return;
     };
+    // Guest def `onMessage` binds to the WIT `on-message` member by kebab-normalized name.
     let src = "(module m \
                  (type Outcome Continue (Close (Record (schema Bytes) (reason Bytes)))) \
-                 (def (f (: m (Record (contract Bytes) \
+                 (def (onMessage (: m (Record (contract Bytes) \
                                       (sender (Record (reducer Bytes) (host Bytes))) \
                                       (payload Bytes) (token Bytes)))) \
                    (record \
@@ -2287,7 +2288,7 @@ fn the_identity_less_reducer_echo_round_trips() {
                                        (token (. m token)) \
                                        (deadline-nanos Option.None)))) \
                      (outcome Outcome.Continue))) \
-                 (export f))";
+                 (export onMessage))";
     let out = crate::compile::compile(
         &[
             crate::abi::Artifact::new(
@@ -2335,8 +2336,9 @@ fn the_identity_less_reducer_echo_round_trips() {
         ("payload".to_string(), bv(&[3, 4, 5])),
         ("token".to_string(), bv(&[9, 9])),
     ]);
-    let result = cdz_run::run_reducer_typed(bytes, "cadenza:platform/guest", "f", &[msg], &opts)
-        .expect("run on-message");
+    let result =
+        cdz_run::run_reducer_typed(bytes, "cadenza:platform/guest", "on-message", &[msg], &opts)
+            .expect("run on-message");
     let Val::Record(step) = &result else {
         panic!("step record, got {result:?}");
     };
