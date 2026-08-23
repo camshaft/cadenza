@@ -12,22 +12,29 @@
 //!
 //! ## The value shape
 //! The log is a list of record values; each record is a record with the three questions it answers plus its
-//! entry, and an entry is a `tag`-discriminated record:
+//! entry, and an entry is an `Entry` **sum** whose constructor names the kind (the former tag) and whose
+//! payload is a record of that kind's fields:
 //! ```text
 //! ("list" <record>…)
 //! <record>  = ("record" (= seq <u>) (= time <u>) (= source <origin>) (= entry <entry>))
 //! <origin>  = ("record" (= reducer b"…") (= host b"…"))
-//! <entry>   = ("record" (= tag "kv-put") (= key b"…") (= value b"…"))            ; and one shape per tag
+//! <entry>   = ((. Entry kv-put) ("record" (= key b"…") (= value b"…")))          ; one constructor per kind
 //! ```
-//! Every id/hash crosses as its raw bytes, every payload/key as opaque bytes, every flag as `0`/`1`, so no
-//! fidelity is lost. Decoding is total: any malformation is a rejected log ([`deserialize`] returns `None`),
-//! never a panic.
+//! Encoding the entry as a sum (not a `tag`-discriminated record) is what lets a Cadenza **checker**
+//! `Value.decode` the whole heterogeneous log into a `List(Entry)`: a value-form sum decodes into a Cadenza
+//! sum by constructor name, whereas a record with a `tag` field plus per-kind fields has no single fixed
+//! record type. Every id/hash crosses as its raw bytes, every payload/key as opaque bytes, every flag as
+//! `0`/`1`, so no fidelity is lost. Decoding is total: any malformation is a rejected log ([`deserialize`]
+//! returns `None`), never a panic.
 
 use super::observation::{BlobOp, Entry, EventKind, EventOp, KvOp, Record, SpawnInfo};
-use crate::contract_value::{bytes_leaf, read_bytes, read_uint, record, record_field, uint_leaf};
+use crate::contract_value::{
+    bytes_leaf, qctor, read_bytes, read_uint, record, record_field, uint_leaf,
+};
 use crate::{
     Bytes, ContractId, Error, Hash, HostId, Origin, ProgramHash, ReducerId, ReducerKind, Str,
 };
+use cadenza_ast::ast::Struct;
 use cadenza_ast::ast::{Arenas, Builder, Leaf, StructId};
 use cadenza_ast::codec;
 use std::ops::Bound;
@@ -105,12 +112,14 @@ fn entry_value(b: &mut Builder, e: &Entry) -> StructId {
 }
 
 fn read_entry(arenas: &Arenas, id: StructId) -> Option<Entry> {
-    let tag = str_at(arenas, field(arenas, id, "tag")?)?;
+    let (tag, inner) = entry_ctor(arenas, id)?;
     Some(match tag {
-        "kv-get" | "kv-put" | "kv-delete" | "kv-scan" => Entry::Kv(read_kv(arenas, id, tag)?),
-        "blob-put" | "blob-get" | "blob-has" => Entry::Blob(read_blob(arenas, id, tag)?),
-        "delivered" | "emitted" | "closed" | "failed" => Entry::Event(read_event(arenas, id, tag)?),
-        "spawn" => Entry::Spawn(read_spawn(arenas, id)?),
+        "kv-get" | "kv-put" | "kv-delete" | "kv-scan" => Entry::Kv(read_kv(arenas, inner, tag)?),
+        "blob-put" | "blob-get" | "blob-has" => Entry::Blob(read_blob(arenas, inner, tag)?),
+        "delivered" | "emitted" | "closed" | "failed" => {
+            Entry::Event(read_event(arenas, inner, tag)?)
+        }
+        "spawn" => Entry::Spawn(read_spawn(arenas, inner)?),
         _ => return None,
     })
 }
@@ -443,11 +452,31 @@ fn read_reducer_kind(s: &str) -> Option<ReducerKind> {
 
 // --- primitive helpers ---
 
-/// A `("record" (= tag <tag>) …fields)` — a tag-discriminated entry record.
-fn tagged(b: &mut Builder, tag: &str, mut fields: Vec<(&'static str, StructId)>) -> StructId {
-    let tag = str_leaf(b, tag);
-    fields.insert(0, ("tag", tag));
-    record(b, fields)
+/// An `Entry` sum value `((. Entry <tag>) ("record" (= <field> <value>)…))` — the constructor named by `tag`
+/// wrapping a record of the tag-specific fields. Encoding the entry as a CADENZA SUM (not a tag-discriminated
+/// record) is what lets a Cadenza checker `Value.decode` the whole heterogeneous log into a `List(Entry)`: a
+/// value-form sum decodes into a Cadenza sum by constructor name (kebab-matched), whereas a record with a
+/// `tag` field plus per-tag fields has no single fixed record type. The native `deserialize` round-trips it
+/// via [`entry_ctor`].
+fn tagged(b: &mut Builder, tag: &str, fields: Vec<(&'static str, StructId)>) -> StructId {
+    let rec = record(b, fields.into_iter().map(|(n, v)| (n as &str, v)).collect());
+    qctor(b, "Entry", tag, vec![rec])
+}
+
+/// Read an `Entry` sum value back: its constructor name (the former tag) and the payload record the
+/// tag-specific readers pull their fields from. `None` if `id` is not an `((. Entry <ctor>) <record>)` value.
+fn entry_ctor(arenas: &Arenas, id: StructId) -> Option<(&str, StructId)> {
+    let Struct::List(items) = arenas.get(id) else {
+        return None;
+    };
+    let (&head, tail) = items.split_first()?;
+    let m = arenas.as_form(head, ".")?;
+    if m.len() != 2 || arenas.as_name(m[0]) != Some("Entry") {
+        return None;
+    }
+    let ctor = arenas.as_name(m[1])?;
+    let [inner] = <[StructId; 1]>::try_from(tail).ok()?;
+    Some((ctor, inner))
 }
 
 fn str_leaf(b: &mut Builder, text: &str) -> StructId {
