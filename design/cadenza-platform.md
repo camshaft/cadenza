@@ -958,6 +958,14 @@ commitment: the digest is what binds the content, so a hash cannot be forged to 
 different bytes, and re-tagging one only mislabels it — a reader that cares checks the tag
 against what it expects.
 
+**The store keys on content, not on the tag.** Lookup matches the digest alone and ignores
+the leading tag byte, so the same bytes stored once are reachable by *any* hash over them,
+whatever its kind. This is what lets a program be loaded by the very hash that names it as a
+program: the kernel `cas-get`s a reducer's component by its program hash, and the store
+returns the same bytes a raw-blob hash over that component would — no separate program store,
+no re-tagging step, and no duplicate entry per kind. The tag is a typed *view* the caller
+places on content it already holds; the digest is the identity and the capability.
+
 Reducers and the kernel reach the store through **direct calls** — `cas-put(bytes) -> hash`
 and `cas-get(hash) -> bytes` — not effects. This is deliberate: a reducer routinely resolves
 and stores content mid-fold (deref a hash it was handed, put a value and keep the hash), and
