@@ -18,8 +18,7 @@
 //! [`Record::seq`] is that order, assigned as each record is appended. A checker takes a
 //! [`snapshot`](ObservationLog::snapshot) of the records once the run is quiescent.
 
-use bytes::Bytes;
-use cdz_platform::{Hash, Origin};
+use crate::{Bytes, ContractId, Error, Hash, Origin};
 use std::ops::Bound;
 use std::sync::{Arc, Mutex};
 
@@ -53,6 +52,8 @@ pub enum Entry {
     Kv(KvOp),
     /// A call to the content-addressed blob store (§8).
     Blob(BlobOp),
+    /// An event the reducer folded, emitted, or closed with (§3/§4/§10).
+    Event(EventOp),
 }
 
 /// A key-value store operation, with enough of its outcome to assert over — whether a `get` hit, what
@@ -88,6 +89,53 @@ pub enum BlobOp {
     Get { hash: Hash, hit: bool },
     /// `has(hash)` — `present` is the answer.
     Has { hash: Hash, present: bool },
+}
+
+/// Which entry point folded a delivered event (`design/cadenza-platform.md` §3) — the observable
+/// distinction the runtime routes on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EventKind {
+    /// `on_message` — an effect performed on the reducer, carrying its source `Origin`.
+    Message,
+    /// `on_response` — a reply to a request the reducer performed.
+    Response,
+    /// `on_notification` — an unsolicited control-plane event (birth, a lifecycle event, a new handler).
+    Notification,
+}
+
+/// An event observed at a reducer (`design/cadenza-platform.md` §3/§4/§10). The three things a fold does
+/// that are observable at the reducer boundary: an event is delivered into it, it emits requests, and it
+/// may close itself. These are exactly what the design's observation log records — the event vocabulary
+/// of §10, seen without decoding a payload or knowing the program's language. The reducer this happened
+/// at is the enclosing [`Record::source`]; every buffer is [`Bytes`] (O(1) clone).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EventOp {
+    /// An event delivered into the reducer's mailbox and folded by it. `kind` is the entry point;
+    /// `contract` is the event's contract-id. `from` is the emitter's `Origin` — present only for a
+    /// message (a response's or notification's source is the runtime). `continuation_token` correlates a
+    /// message/response (empty for a notification). `payload` is the delivered value, or a response's
+    /// `Ok` bytes; `error` is `Some` for a response that delivered a runtime failure (`Err`) instead.
+    Delivered {
+        kind: EventKind,
+        contract: ContractId,
+        from: Option<Origin>,
+        continuation_token: Bytes,
+        payload: Bytes,
+        error: Option<Error>,
+    },
+    /// A request the reducer emitted from a fold — an effect it performs, a timer it arms, or (for an
+    /// event reducer) a deliver it routes. `contract` is the request's contract-id, `payload` its input
+    /// value, `continuation_token` the token it will correlate the response by, and `has_deadline`
+    /// whether it set a per-request deadline.
+    Emitted {
+        contract: ContractId,
+        payload: Bytes,
+        continuation_token: Bytes,
+        has_deadline: bool,
+    },
+    /// The reducer terminated itself, returning `Break(schema, reason)` — the typed reason for its
+    /// closure (§3). A clean completion and a failure are both closes, distinguished only by the reason.
+    Closed { schema: ContractId, reason: Bytes },
 }
 
 /// The observation log: a cheaply-clonable handle over shared, append-only records. Clone it to hand
