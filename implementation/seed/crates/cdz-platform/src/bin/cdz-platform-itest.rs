@@ -4,17 +4,23 @@
 //! spawn, and the system reducer — decodes it (`cdz_platform::testing::HarnessSpec`), drives it through the
 //! platform under the bach simulator over a real [`WasmProgramStore`], and prints the observation log. The
 //! description is a language-neutral Cadenza value, not an argv convention: a program blob is opaque bytes,
-//! given inline in the AST or by a path this executable reads, so a run is a self-contained value a checker
-//! can also produce. That rendered log is what a checker asserts over (a checker component is a later slice;
-//! for now a caller — e.g. the nix `--features host` check — asserts on the printed log).
+//! given inline in the AST or by a path this executable reads, so a run is a self-contained value.
 //!
-//! Usage: `cdz-platform-itest <harness.ast>`. Exit 0 on a completed run; exit 2 on a usage/IO/decode error.
+//! If the description names a **checker** program, the executable runs it after the main run: it spawns the
+//! checker as a reducer, delivers it the whole observation log (a `check` message), and reads the pass/fail
+//! `verdict` it emits (§9) — the harness just executes a wasm reducer, knowing nothing of how the checker was
+//! authored. The main log always prints to stdout; the exit code carries the verdict, so a caller (the nix
+//! `--features host` check) enforces the check by exit code alone.
+//!
+//! Usage: `cdz-platform-itest <harness.ast>`. Exit 0 on a completed run with no checker or a passing checker;
+//! exit 1 on a failing checker (its reasons print to stderr); exit 2 on a usage/IO/decode error.
 //!
 //! Behind the `testing` (harness + observation log + AST decoder) and `host` (the wasm program store that
 //! instantiates the blobs) features, so the routine light build pulls in neither the harness nor wasmtime.
 
 use cdz_platform::testing::{
-    HarnessSpec, ObservationLog, RecordingBlobStore, RecordingKvStore, render,
+    BlobSource, CheckOutcome, Harness, HarnessSpec, ObservationLog, RecordingBlobStore,
+    RecordingKvStore, SpawnSpec, check_message, render, verdict_in,
 };
 use cdz_platform::{
     BachRuntime, BlobStore, Bytes, HostId, InMemoryBlobStore, InMemoryKvStore,
@@ -49,9 +55,21 @@ fn main() -> ExitCode {
     };
 
     match run(spec) {
-        Ok(log) => {
-            print!("{log}");
-            ExitCode::SUCCESS
+        Ok(report) => {
+            print!("{}", report.log);
+            match report.outcome {
+                // No checker configured, or the checker passed: a successful run.
+                None | Some(CheckOutcome::Pass) => ExitCode::SUCCESS,
+                // The checker failed (or emitted no verdict): report the reasons and exit nonzero, so a
+                // caller (the nix `--features host` check) enforces the verdict by exit code alone.
+                Some(CheckOutcome::Fail { reasons }) => {
+                    eprintln!("checker FAILED:");
+                    for reason in reasons {
+                        eprintln!("  - {reason}");
+                    }
+                    ExitCode::from(1)
+                }
+            }
         }
         Err(e) => {
             eprintln!("{e}");
@@ -85,59 +103,122 @@ fn host() -> HostId {
     HostId::of(b"cdz-platform-itest")
 }
 
-/// Resolve the description's blobs (reading any `path`-sourced blob from disk), seed a content-addressed
-/// store, drive the run to quiescence under bach over a [`WasmProgramStore`], and return the rendered log.
-fn run(spec: HarnessSpec) -> Result<String, RunError> {
-    let harness = spec.build(|path| {
-        std::fs::read(path)
-            .map(Bytes::from)
-            .map_err(|e| RunError(format!("cannot read blob {path}: {e}")))
-    })?;
-    // One observation log, shared by the run's event tap AND by each reducer's key-value and blob stores, so
-    // a reducer's KV and blob calls are recorded in the one ordered log alongside the events it folds (§7/§8/
-    // §9) — the whole of the observation log, not just its event half.
-    let log = ObservationLog::new();
-    let host = host();
-    let store_log = log.clone();
-    let run = harness.host(host).log(log).run(move |cas| {
-        // Each reducer gets a fresh in-memory key-value and content store, each wrapped in a recording
-        // decorator over the shared log and attributed to that reducer's `Origin`.
-        let kv_log = store_log.clone();
-        let make_kv: Arc<dyn Fn(ReducerId) -> Box<dyn KvStore> + Send + Sync> =
-            Arc::new(move |id| {
-                Box::new(RecordingKvStore::new(
-                    InMemoryKvStore::new(),
-                    Origin { reducer: id, host },
-                    kv_log.clone(),
-                    BachRuntime::now as fn() -> u64,
-                ))
-            });
-        let blob_log = store_log.clone();
-        let make_blobs: Arc<dyn Fn(ReducerId) -> Box<dyn BlobStore> + Send + Sync> =
-            Arc::new(move |id| {
-                Box::new(RecordingBlobStore::new(
-                    InMemoryBlobStore::new(),
-                    Origin { reducer: id, host },
-                    blob_log.clone(),
-                    BachRuntime::now as fn() -> u64,
-                ))
-            });
-        WasmProgramStore::new(
-            cas,
-            make_blobs,
-            make_kv,
-            Arc::new(InMemoryReducerGraph::new()),
-        )
-        .expect("build the wasm program store (the wasm engine must initialize)")
+/// The blob name of the placeholder system reducer the checker phase routes to. The checker's verdict is
+/// read from the emitted-request observation, not from a system reducer handling it, so a non-component
+/// placeholder is enough — a routed verdict is recorded and then declined, never crashing the run.
+const CHECKER_SYSTEM: &str = "$checker-system";
+
+/// The result of running a description: the rendered observation log of the main run, and — if the run named
+/// a checker — its verdict. `outcome` is `None` when no checker was configured.
+struct Report {
+    log: String,
+    outcome: Option<CheckOutcome>,
+}
+
+/// Read a program blob from a filesystem path, as the harness's blob loader does.
+fn load_blob(path: &str) -> Result<Bytes, RunError> {
+    std::fs::read(path)
+        .map(Bytes::from)
+        .map_err(|e| RunError(format!("cannot read blob {path}: {e}")))
+}
+
+/// A [`WasmProgramStore`] over `cas` whose per-reducer key-value and blob stores record into `log` (attributed
+/// to each reducer's [`Origin`] on this `host`), so a reducer's store calls join its events in the one log
+/// (§7/§8/§9). Built the same way for the main run and the checker run.
+fn wasm_store(cas: Arc<dyn BlobStore>, log: ObservationLog, host: HostId) -> WasmProgramStore {
+    let kv_log = log.clone();
+    let make_kv: Arc<dyn Fn(ReducerId) -> Box<dyn KvStore> + Send + Sync> = Arc::new(move |id| {
+        Box::new(RecordingKvStore::new(
+            InMemoryKvStore::new(),
+            Origin { reducer: id, host },
+            kv_log.clone(),
+            BachRuntime::now as fn() -> u64,
+        ))
     });
-    Ok(render(&run.records))
+    let make_blobs: Arc<dyn Fn(ReducerId) -> Box<dyn BlobStore> + Send + Sync> =
+        Arc::new(move |id| {
+            Box::new(RecordingBlobStore::new(
+                InMemoryBlobStore::new(),
+                Origin { reducer: id, host },
+                log.clone(),
+                BachRuntime::now as fn() -> u64,
+            ))
+        });
+    WasmProgramStore::new(
+        cas,
+        make_blobs,
+        make_kv,
+        Arc::new(InMemoryReducerGraph::new()),
+    )
+    .expect("build the wasm program store (the wasm engine must initialize)")
+}
+
+/// Drive the run to quiescence under bach over a [`WasmProgramStore`], then — if the description named a
+/// `checker` program — run that checker over the completed observation log and read its verdict. The harness
+/// just executes the checker as a wasm reducer: it spawns it, delivers it the whole log, and reads the
+/// [`verdict`](verdict_in) request it emits (§9). Returns the rendered main log and the checker's outcome.
+fn run(spec: HarnessSpec) -> Result<Report, RunError> {
+    let host = host();
+
+    // Resolve the checker program's bytes before `build` consumes the description's blobs. The checker must
+    // be one of the run's registered blobs (it is seeded into the store like any program).
+    let checker = match &spec.checker {
+        None => None,
+        Some(name) => {
+            let blob = spec.blobs.iter().find(|b| &b.name == name).ok_or_else(|| {
+                RunError(format!(
+                    "checker blob '{name}' is not registered with the run"
+                ))
+            })?;
+            let bytes = match &blob.source {
+                BlobSource::Inline(bytes) => bytes.clone(),
+                BlobSource::Path(path) => load_blob(path)?,
+            };
+            Some((name.clone(), bytes))
+        }
+    };
+
+    // The main run: drive the described scenario to quiescence, recording into one shared log.
+    let main_harness = spec.build(load_blob)?;
+    let main_log = ObservationLog::new();
+    let store_log = main_log.clone();
+    let main_run = main_harness
+        .host(host)
+        .log(main_log)
+        .run(move |cas| wasm_store(cas, store_log, host));
+
+    // The checker run: if a checker was named, spawn it, deliver it the whole main log, and read its verdict.
+    // A named checker that emits no verdict (e.g. its bytes are not a valid component, so it never runs) is a
+    // failed check — the run declared a check that did not report.
+    let outcome = checker.map(|(name, bytes)| {
+        let checker_log = ObservationLog::new();
+        let store_log = checker_log.clone();
+        let checker_run = Harness::new(CHECKER_SYSTEM)
+            .blob(
+                CHECKER_SYSTEM,
+                Bytes::from_static(b"cdz-platform-itest:checker-no-system"),
+            )
+            .blob(name.clone(), bytes)
+            .spawn(SpawnSpec::new("checker", name))
+            .deliver("checker", check_message(&main_run.records))
+            .host(host)
+            .log(checker_log)
+            .run(move |cas| wasm_store(cas, store_log, host));
+        verdict_in(&checker_run.records)
+            .unwrap_or_else(|| CheckOutcome::fail("the checker emitted no verdict"))
+    });
+
+    Ok(Report {
+        log: render(&main_run.records),
+        outcome,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::run;
     use cdz_platform::Bytes;
-    use cdz_platform::testing::{BlobSource, BlobSpec, HarnessSpec};
+    use cdz_platform::testing::{BlobSource, BlobSpec, CheckOutcome, HarnessSpec, SpawnSpec};
 
     #[test]
     fn a_run_records_the_spawn_of_each_blob_even_when_the_bytes_are_not_a_component() {
@@ -160,14 +241,71 @@ mod tests {
                     source: BlobSource::Inline(Bytes::from_static(b"not a wasm component")),
                 },
             ],
-            spawns: vec![cdz_platform::testing::SpawnSpec::new("greeter", "greeter")],
+            spawns: vec![SpawnSpec::new("greeter", "greeter")],
             deliveries: vec![],
             checker: None,
         };
-        let log = run(spec).expect("inline blobs never invoke the path loader");
+        let report = run(spec).expect("inline blobs never invoke the path loader");
         assert!(
-            log.contains("spawn \"greeter\""),
-            "the run records the spawn of the named blob:\n{log}"
+            report.log.contains("spawn \"greeter\""),
+            "the run records the spawn of the named blob:\n{}",
+            report.log
+        );
+        assert!(report.outcome.is_none(), "no checker ⇒ no verdict");
+    }
+
+    #[test]
+    fn a_named_checker_that_never_runs_is_a_failed_check() {
+        // A run names a checker, but its bytes are not a valid component, so it never spawns and emits no
+        // verdict. The executable treats a declared-but-silent checker as a failure — the two-phase control
+        // flow runs the checker phase and enforces "a named check must report". (A real passing checker is
+        // exercised by the nix `--features host` check against a compiled checker guest.)
+        let spec = HarnessSpec {
+            system: "$system".to_string(),
+            run_for: None,
+            blobs: vec![
+                BlobSpec {
+                    name: "$system".to_string(),
+                    source: BlobSource::Inline(Bytes::from_static(b"itest:no-system-reducer")),
+                },
+                BlobSpec {
+                    name: "worker".to_string(),
+                    source: BlobSource::Inline(Bytes::from_static(b"not a wasm component")),
+                },
+                BlobSpec {
+                    name: "check".to_string(),
+                    source: BlobSource::Inline(Bytes::from_static(b"not a wasm component either")),
+                },
+            ],
+            spawns: vec![SpawnSpec::new("worker", "worker")],
+            deliveries: vec![],
+            checker: Some("check".to_string()),
+        };
+        let report = run(spec).expect("inline blobs never invoke the path loader");
+        assert!(
+            matches!(report.outcome, Some(CheckOutcome::Fail { .. })),
+            "a named checker that emits no verdict fails the run: {:?}",
+            report.outcome
+        );
+    }
+
+    #[test]
+    fn an_unregistered_checker_blob_is_an_error() {
+        // Naming a checker blob that the run does not register is a usage error, not a silent no-op.
+        let spec = HarnessSpec {
+            system: "$system".to_string(),
+            run_for: None,
+            blobs: vec![BlobSpec {
+                name: "$system".to_string(),
+                source: BlobSource::Inline(Bytes::from_static(b"itest:no-system-reducer")),
+            }],
+            spawns: vec![],
+            deliveries: vec![],
+            checker: Some("absent".to_string()),
+        };
+        assert!(
+            run(spec).is_err(),
+            "an unregistered checker blob is rejected"
         );
     }
 }
