@@ -389,6 +389,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdz-component-rewrite"
+version = "0.0.0"
+dependencies = [
+ "wasm-encoder 0.239.0",
+ "wasmparser 0.239.0",
+]
+
+[[package]]
 name = "cdz-contract"
 version = "0.0.0"
 dependencies = [
