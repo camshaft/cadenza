@@ -2471,6 +2471,311 @@ fn the_identity_less_reducer_echo_round_trips() {
     }
 }
 
+/// The FULL 3-member reducer world — `on-message`/`on-response`/`on-notification`, matching
+/// `cdz-platform/wit/world.wit` exactly so the emitted component is drivable by v-platform's host. `message`
+/// (decl-ordered, nested `sender`), `response` (`contract, token, answer: result<list<u8>, error>` where
+/// `error` is the 4-nullary `variant`), `notification` (`contract, payload`); each member returns the shared
+/// `step`. Exactly one exported interface with all three members.
+fn reducer_full_world_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let list_u8 = |b: &mut Builder| {
+        let u8h = b.name("u8");
+        let u8p = b.list(vec![u8h]);
+        let lh = b.atom_leaf(Leaf::Str("list".into()));
+        b.list(vec![lh, u8p])
+    };
+    let field = |b: &mut Builder, name: &str, ty| {
+        let n = b.name(name);
+        b.list(vec![n, ty])
+    };
+    let record = |b: &mut Builder, fields: Vec<crate::ast::StructId>| {
+        let h = b.atom_leaf(Leaf::Str("record".into()));
+        let mut v = vec![h];
+        v.extend(fields);
+        b.list(v)
+    };
+    let bytes_field = |b: &mut Builder, name: &str| {
+        let t = list_u8(b);
+        field(b, name, t)
+    };
+    // The shared `step` record (requests: list<request>, outcome: variant{continue, close(closed)}).
+    let step = |b: &mut Builder| {
+        let request = {
+            let r_contract = bytes_field(b, "contract");
+            let r_payload = bytes_field(b, "payload");
+            let r_token = bytes_field(b, "token");
+            let r_deadline = {
+                let u64h = b.name("u64");
+                let u64t = b.list(vec![u64h]);
+                let oh = b.atom_leaf(Leaf::Str("option".into()));
+                let ot = b.list(vec![oh, u64t]);
+                field(b, "deadline-nanos", ot)
+            };
+            record(b, vec![r_contract, r_payload, r_token, r_deadline])
+        };
+        let requests_list = {
+            let lh = b.atom_leaf(Leaf::Str("list".into()));
+            b.list(vec![lh, request])
+        };
+        let closed = {
+            let c_schema = bytes_field(b, "schema");
+            let c_reason = bytes_field(b, "reason");
+            record(b, vec![c_schema, c_reason])
+        };
+        let outcome = {
+            let cont_case = {
+                let n = b.name("continue");
+                b.list(vec![n])
+            };
+            let close_case = {
+                let n = b.name("close");
+                b.list(vec![n, closed])
+            };
+            let vh = b.atom_leaf(Leaf::Str("variant".into()));
+            b.list(vec![vh, cont_case, close_case])
+        };
+        let s_requests = field(b, "requests", requests_list);
+        let s_outcome = field(b, "outcome", outcome);
+        record(b, vec![s_requests, s_outcome])
+    };
+    let mk_member = |b: &mut Builder, mname: &str, pname: &str, param_ty| {
+        let step_ty = step(b);
+        let func_h = b.name("func");
+        let param_h = b.name("param");
+        let pn = b.name(pname);
+        let param_node = b.list(vec![param_h, pn, param_ty]);
+        let result_h = b.name("result");
+        let result_node = b.list(vec![result_h, step_ty]);
+        let func = b.list(vec![func_h, param_node, result_node]);
+        let member_h = b.name("member");
+        let mn = b.name(mname);
+        b.list(vec![member_h, mn, func])
+    };
+    // message{contract, sender{reducer, host}, payload, token} — decl order.
+    let message = {
+        let sender = {
+            let s_reducer = bytes_field(&mut b, "reducer");
+            let s_host = bytes_field(&mut b, "host");
+            record(&mut b, vec![s_reducer, s_host])
+        };
+        let m_contract = bytes_field(&mut b, "contract");
+        let m_sender = field(&mut b, "sender", sender);
+        let m_payload = bytes_field(&mut b, "payload");
+        let m_token = bytes_field(&mut b, "token");
+        record(&mut b, vec![m_contract, m_sender, m_payload, m_token])
+    };
+    // response{contract, token, answer: result<list<u8>, error>} — error = 4-nullary variant.
+    let response = {
+        let r_contract = bytes_field(&mut b, "contract");
+        let r_token = bytes_field(&mut b, "token");
+        let answer = {
+            let ok_ty = list_u8(&mut b);
+            let err_ty = {
+                let vh = b.atom_leaf(Leaf::Str("variant".into()));
+                let mut cases = vec![vh];
+                for c in ["timeout", "missing-handler", "schema-violation", "faulted"] {
+                    let n = b.name(c);
+                    cases.push(b.list(vec![n]));
+                }
+                b.list(cases)
+            };
+            let rh = b.atom_leaf(Leaf::Str("result".into()));
+            let a_ty = b.list(vec![rh, ok_ty, err_ty]);
+            field(&mut b, "answer", a_ty)
+        };
+        record(&mut b, vec![r_contract, r_token, answer])
+    };
+    // notification{contract, payload}.
+    let notification = {
+        let n_contract = bytes_field(&mut b, "contract");
+        let n_payload = bytes_field(&mut b, "payload");
+        record(&mut b, vec![n_contract, n_payload])
+    };
+    let on_message = mk_member(&mut b, "on-message", "m", message);
+    let on_response = mk_member(&mut b, "on-response", "r", response);
+    let on_notification = mk_member(&mut b, "on-notification", "n", notification);
+    let exp_h = b.name("export");
+    let iname = b.name("iface");
+    let export = b.list(vec![exp_h, iname, on_message, on_response, on_notification]);
+    let world_h = b.name("world");
+    let wn = b.name("w");
+    let world = b.list(vec![world_h, wn, export]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+/// W4c-b SUNSET-CORE capstone: the FULL 3-member conforming reducer-echo. One guest defines `onMessage`
+/// (echo → step), `onResponse` (inert: reads the `response` incl. `answer: result<list<u8>, error>`, returns
+/// an empty step), and `onNotification` (inert: reads `notification`, empty step), all bound by kebab name to
+/// the real `on-message`/`on-response`/`on-notification` members. Proves a single component EXPORTS all three
+/// typed members (message/response/notification params + the variant `error` arm + shared `step` result) and
+/// each RUNS under wasmtime — the artifact v-platform drives (`on_message` still echoes; the other two accept
+/// their envelopes soundly). Env-gated dump `/tmp/v-rb-reducer-echo-3.wasm` for the handoff.
+#[test]
+fn the_full_three_member_reducer_echo_compiles_and_runs() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime) = find_runtime_wasm() else {
+        return;
+    };
+    let src = "(module m \
+                 (type Outcome Continue (Close (Record (schema Bytes) (reason Bytes)))) \
+                 (type Error Timeout MissingHandler SchemaViolation Faulted) \
+                 (def (onMessage (: m (Record (contract Bytes) \
+                                      (sender (Record (reducer Bytes) (host Bytes))) \
+                                      (payload Bytes) (token Bytes)))) \
+                   (record \
+                     (requests (list (record \
+                                       (contract (. m contract)) \
+                                       (payload (. m payload)) \
+                                       (token (. m token)) \
+                                       (deadline-nanos Option.None)))) \
+                     (outcome Outcome.Continue))) \
+                 (def (onResponse (: r (Record (contract Bytes) (token Bytes) \
+                                       (answer (Result Bytes Error))))) \
+                   (record (requests (list)) (outcome Outcome.Continue))) \
+                 (def (onNotification (: n (Record (contract Bytes) (payload Bytes)))) \
+                   (record (requests (list)) (outcome Outcome.Continue))) \
+                 (export onMessage) (export onResponse) (export onNotification))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:platform/guest"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                reducer_full_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "3-member reducer guest must emit: {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("component");
+    if std::env::var("VRB_DUMP_REDUCER_ECHO").is_ok() {
+        std::fs::write("/tmp/v-rb-reducer-echo-3.wasm", bytes).unwrap();
+    }
+    let opts = cdz_run::RunOpts {
+        export: None,
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    let bv = |bs: &[u8]| Val::List(bs.iter().map(|b| Val::U8(*b)).collect());
+    let get = |fs: &[(String, Val)], n: &str| fs.iter().find(|(k, _)| k == n).unwrap().1.clone();
+    let expect_empty_continue = |result: &Val, who: &str| {
+        let Val::Record(step) = result else {
+            panic!("{who}: step record, got {result:?}");
+        };
+        assert_eq!(
+            get(step, "requests"),
+            Val::List(vec![]),
+            "{who}: no requests"
+        );
+        match get(step, "outcome") {
+            Val::Variant(c, p) => {
+                assert_eq!(c, "continue", "{who}: continue");
+                assert!(p.is_none(), "{who}: nullary");
+            }
+            o => panic!("{who}: outcome variant, got {o:?}"),
+        }
+    };
+
+    // on-message echoes (the drivable path).
+    let msg = Val::Record(vec![
+        ("contract".to_string(), bv(&[0xAA, 0xBB])),
+        (
+            "sender".to_string(),
+            Val::Record(vec![
+                ("reducer".to_string(), bv(&[1])),
+                ("host".to_string(), bv(&[2])),
+            ]),
+        ),
+        ("payload".to_string(), bv(&[3, 4, 5])),
+        ("token".to_string(), bv(&[9, 9])),
+    ]);
+    let r_msg =
+        cdz_run::run_reducer_typed(bytes, "cadenza:platform/guest", "on-message", &[msg], &opts)
+            .expect("run on-message");
+    let Val::Record(step) = &r_msg else {
+        panic!("on-message step record, got {r_msg:?}");
+    };
+    let Val::List(requests) = get(step, "requests") else {
+        panic!("requests list");
+    };
+    assert_eq!(requests.len(), 1, "on-message emits one request");
+
+    // on-response accepts the response envelope (incl. the variant `error` arm) and returns an empty step.
+    let resp = Val::Record(vec![
+        ("contract".to_string(), bv(&[0x10])),
+        ("token".to_string(), bv(&[0x20])),
+        (
+            "answer".to_string(),
+            Val::Result(Ok(Some(Box::new(bv(&[7, 7, 7]))))),
+        ),
+    ]);
+    let r_resp = cdz_run::run_reducer_typed(
+        bytes,
+        "cadenza:platform/guest",
+        "on-response",
+        &[resp],
+        &opts,
+    )
+    .expect("run on-response (Ok answer)");
+    expect_empty_continue(&r_resp, "on-response Ok");
+    // The Err (variant error) arm too.
+    let resp_err = Val::Record(vec![
+        ("contract".to_string(), bv(&[0x11])),
+        ("token".to_string(), bv(&[0x21])),
+        (
+            "answer".to_string(),
+            Val::Result(Err(Some(Box::new(Val::Variant(
+                "missing-handler".to_string(),
+                None,
+            ))))),
+        ),
+    ]);
+    let r_resp_err = cdz_run::run_reducer_typed(
+        bytes,
+        "cadenza:platform/guest",
+        "on-response",
+        &[resp_err],
+        &opts,
+    )
+    .expect("run on-response (Err answer)");
+    expect_empty_continue(&r_resp_err, "on-response Err");
+
+    // on-notification accepts its envelope and returns an empty step.
+    let note = Val::Record(vec![
+        ("contract".to_string(), bv(&[0x30])),
+        ("payload".to_string(), bv(&[0x40, 0x41])),
+    ]);
+    let r_note = cdz_run::run_reducer_typed(
+        bytes,
+        "cadenza:platform/guest",
+        "on-notification",
+        &[note],
+        &opts,
+    )
+    .expect("run on-notification");
+    expect_empty_continue(&r_note, "on-notification");
+}
+
 /// W4c-b soundness: the record result writer PERMUTES fields by NAME, not by the guest's name-lex slot order.
 /// The WIT result declares its fields in NON-name-lex order — `record{second: s64, first: s64}` (`second`
 /// FIRST, but name-lex is `first` < `second`) — the shape of the real `step{requests, outcome}` /
