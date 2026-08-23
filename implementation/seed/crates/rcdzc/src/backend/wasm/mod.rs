@@ -2893,9 +2893,11 @@ fn nested_fixed_shape_tuple_arg(
             nested_fixed_shape_tuple_arg(f)
         {
             // A nested fixed-shape compound field: its leaves flatten into the SAME depth-first sequence.
+            // A guest-constructed tuple/record — its slots are the construction order (identity).
             leaf_bytes.extend(sub_bytes);
             leaf_vts.extend(sub_vts);
-            rebuild_fields.push(FieldRebuild::Nested(sub_rebuild));
+            let ident: Vec<u32> = (0..sub_rebuild.len() as u32).collect();
+            rebuild_fields.push(FieldRebuild::Nested(sub_rebuild, ident));
             shape_fields.push(TupleFieldShape::Nested(sub_shape));
         } else {
             return None; // a field that is neither an aliased-width scalar nor a fixed-shape compound
@@ -8342,9 +8344,8 @@ fn param_field_rebuild(
             let WitType::Record(wfs) = wty else {
                 return None;
             };
-            Some(FieldRebuild::Nested(record_fields_rebuild(
-                map, wfs, param_vts,
-            )?))
+            let (fields, slots) = record_fields_rebuild(map, wfs, param_vts)?;
+            Some(FieldRebuild::Nested(fields, slots))
         }
         _ => {
             let fr = scalar_field_rebuild(gty)?;
@@ -8354,37 +8355,15 @@ fn param_field_rebuild(
     }
 }
 
-/// The per-field [`serialize::FieldRebuild`]s for a record's fields (recursively), with the WIT-vs-name-lex
-/// field-order SOUNDNESS guard (a mismatch would land a field's flattened leaf in the wrong cell slot). The
-/// entry point for both a top-level record param and a nested-record field.
+/// Build a record's per-field rebuilds + name-lex SLOTS, PERMUTED BY NAME — the entry for both a top-level
+/// record param and a nested-record field, at any WIT field order. Iterates the WIT fields IN WIT ORDER (so
+/// `param_vts` + the wrapper's flattened-leaf cursor are the actual canon-lift param order), matching each
+/// WIT field to its guest field BY NAME (kebab-normalized, the same rule as variant cases + exports).
+/// Returns the rebuild (WIT order) + `slots` (each WIT field's name-lex cell position) — the wrapper
+/// `arr-set`s each field at its slot. A WIT field with no name match declines. So a declaration-ordered
+/// record like `message{contract, sender, payload, token}` or its nested `sender{reducer, host}` (name-lex
+/// `host, reducer`) both cross correctly.
 fn record_fields_rebuild(
-    map: &std::collections::BTreeMap<crate::resolved::Symbol, crate::ty::Ty>,
-    wfs: &[(String, crate::wit_world::WitType)],
-    param_vts: &mut Vec<u8>,
-) -> Option<Vec<crate::backend::wasm::serialize::FieldRebuild>> {
-    if wfs.len() != map.len() {
-        return None;
-    }
-    let wit_order: Vec<&str> = wfs.iter().map(|(n, _)| n.as_str()).collect();
-    let lex_order: Vec<&str> = map.keys().map(|s| s.name.as_ref()).collect();
-    if wit_order != lex_order {
-        return None;
-    }
-    let mut sub = Vec::new();
-    for (fg, (_, fw)) in map.values().zip(wfs.iter()) {
-        sub.push(param_field_rebuild(fg, fw, param_vts)?);
-    }
-    Some(sub)
-}
-
-/// The TOP-LEVEL record param builder — like [`record_fields_rebuild`] but PERMUTED BY NAME (so a
-/// declaration-ordered WIT record like the real `message{contract, sender, payload, token}` works, whose WIT
-/// order ≠ the guest's name-lex slot order). Iterates the WIT fields IN WIT ORDER (so `param_vts` + the
-/// wrapper's flattened-leaf cursor are in the actual param order the canon lift produces), matching each WIT
-/// field to its guest field BY NAME (kebab-normalized). Returns the rebuild (WIT order) + `slots` (each WIT
-/// field's name-lex cell slot) — the wrapper `arr-set`s each field at its slot. A field with no name match,
-/// or a nested record whose OWN order is non-name-lex (declined by `record_fields_rebuild`), declines.
-fn record_param_rebuild(
     map: &std::collections::BTreeMap<crate::resolved::Symbol, crate::ty::Ty>,
     wfs: &[(String, crate::wit_world::WitType)],
     param_vts: &mut Vec<u8>,
@@ -8499,7 +8478,7 @@ fn record_interface_export(
                     let WitType::Record(wfs) = wty else {
                         return None;
                     };
-                    let (rebuild, slots) = record_param_rebuild(map, wfs, &mut param_vts)?;
+                    let (rebuild, slots) = record_fields_rebuild(map, wfs, &mut param_vts)?;
                     params.push(Some(rebuild));
                     param_slots.push(Some(slots));
                     any_record = true;

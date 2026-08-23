@@ -2077,8 +2077,12 @@ pub enum FieldRebuild {
         extend: Option<bool>,
     },
     /// A nested fixed-shape compound field: rebuild its own sub-cell (recursively, consuming the next
-    /// contiguous run of flattened leaf params) → an i32 handle the parent `arr-set`s AS-IS (no box op).
-    Nested(Vec<FieldRebuild>),
+    /// contiguous run of flattened leaf params) → an i32 handle the parent `arr-set`s AS-IS (no box op). The
+    /// `Vec<u32>` is the sub-cell's per-field SLOTS (each sub-field's name-lex cell position) — so a nested
+    /// WIT record whose field order ≠ name-lex (the message's `sender{reducer, host}`, name-lex `host,
+    /// reducer`) still lands its fields in the right slots. Identity `(0..n)` for a guest-constructed
+    /// tuple/record (the closure-arg path).
+    Nested(Vec<FieldRebuild>, Vec<u32>),
     /// A `list<u8>` leaf: the canon lift flattens it to `(ptr: i32, len: i32)` — TWO consecutive
     /// flattened core params. The wrapper allocates a guest `Bytes` of `len` (`bytes-alloc`), copies
     /// `len` bytes out of linear memory 0 starting at `ptr` (`i32.load8_u` + `bytes-set` per byte), and
@@ -2095,7 +2099,7 @@ impl FieldRebuild {
     fn leaf_count(&self) -> u32 {
         match self {
             FieldRebuild::Scalar { .. } => 1,
-            FieldRebuild::Nested(sub) => sub.iter().map(FieldRebuild::leaf_count).sum(),
+            FieldRebuild::Nested(sub, _) => sub.iter().map(FieldRebuild::leaf_count).sum(),
             // A `list<u8>` flattens to `(ptr, len)` — two core params.
             FieldRebuild::BytesLeaf => 2,
         }
@@ -2107,7 +2111,7 @@ impl FieldRebuild {
     pub fn collect_box_ops(&self, out: &mut impl FnMut(&'static str)) {
         match self {
             FieldRebuild::Scalar { box_op, .. } => out(box_op),
-            FieldRebuild::Nested(sub) => {
+            FieldRebuild::Nested(sub, _) => {
                 for f in sub {
                     f.collect_box_ops(out);
                 }
@@ -2124,7 +2128,7 @@ impl FieldRebuild {
     pub fn has_bytes_leaf(&self) -> bool {
         match self {
             FieldRebuild::Scalar { .. } => false,
-            FieldRebuild::Nested(sub) => sub.iter().any(FieldRebuild::has_bytes_leaf),
+            FieldRebuild::Nested(sub, _) => sub.iter().any(FieldRebuild::has_bytes_leaf),
             FieldRebuild::BytesLeaf => true,
         }
     }
@@ -2387,9 +2391,10 @@ fn emit_cell_rebuild(
                 out.push(op::CALL);
                 uleb128(imp(box_op), out);
             }
-            FieldRebuild::Nested(sub) => {
-                // Rebuild the nested sub-cell (consumes its own leaves) → an i32 handle stored AS-IS.
-                emit_cell_rebuild(sub, cursor, imp, scratch, None, out); // → [arr, i, sub-handle]
+            FieldRebuild::Nested(sub, sub_slots) => {
+                // Rebuild the nested sub-cell (consumes its own leaves in WIT order) → an i32 handle stored
+                // AS-IS. Its own fields permute into their name-lex slots via `sub_slots`.
+                emit_cell_rebuild(sub, cursor, imp, scratch, Some(sub_slots), out); // → [arr, i, sub-handle]
             }
             FieldRebuild::BytesLeaf => {
                 let (buf, ctr) = scratch.expect("a BytesLeaf needs the wrapper's scratch locals");
