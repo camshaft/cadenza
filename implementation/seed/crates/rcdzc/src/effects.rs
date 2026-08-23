@@ -5609,7 +5609,7 @@ fn is_accumulating_collection_prim(prim: crate::resolved::Prim) -> bool {
 /// reach follows `Ref`/`Let`-body/`Match`-arms/`If`-branches to find the producing op — a top-level shape
 /// match alone would miss it.
 ///
-/// ⚠ EXCLUDES a next-state that REACHES A PERFORM (`reaches_any_perform`): a host/foreign perform in the
+/// EXCLUDES a next-state that REACHES A PERFORM (`reaches_any_perform`): a host/foreign perform in the
 /// next-state slot must be discharged IN PLACE by the enclosing fold (it is the effect the dispatch runs) —
 /// hoisting it into an `#st` let-init reorders/elides it (breaker: `(host (ask) …)` next-state call trapped
 /// "host-call ask.ask" + a final-dispatch state-call elided). Binding is for a PURE growing state only; a
@@ -6205,7 +6205,7 @@ fn thread_bounded(
             // piece) — else copy-prop re-inlines the single-use binding and the blow-up returns; this fold-side
             // emission + that keep co-land as a co-gated pair.
             //
-            // ⚠ SEED-GRAFT CONTRACT (v-rb): the growing state may carry a `#seed` ref (a heap handle-seed
+            // SEED-GRAFT CONTRACT (v-rb): the growing state may carry a `#seed` ref (a heap handle-seed
             // let-lift, bound OUTER by apply_seed_wrap; e.g. `(List.push #seed22 t)`). Register the state
             // BY REFERENCE to the ORIGINAL (pre-`deep_fresh_copy`) node so its `#seed` ref stays ATTACHED —
             // a `deep_fresh_copy` here would re-push the `#seed` ref DETACHED (orphan → CDZ0101 unbound
@@ -9603,7 +9603,7 @@ fn freeze_foreign_perform_args(db: &mut Db, node: StructId, ctx: &HandlerCtx) ->
     // dispatch's incoming state. A bare arm-local binder ref in the selector (`(> c2 5)`) then RE-CAPTURES the
     // next dispatch's binder there, selecting the wrong branch and mis-applying the performing branch's
     // advance. The perform ARG is frozen to `#fa`; the SELECTOR was not, so freeze its refs too.
-    // ⚠ GATED on a BRANCH/ARM that reaches an EFFECT-OP-WITH-ARGS perform (`reaches_perform_with_args`, the
+    // GATED on a BRANCH/ARM that reaches an EFFECT-OP-WITH-ARGS perform (`reaches_perform_with_args`, the
     // same ctx-independent predicate the collapse candidate uses) — the xhsG/xhsGmatch shape (a mid-arm foreign
     // perform inside a branch/arm) which is what makes the merge forward a state-advancing selector. When NO
     // branch performs such an op, the merge collapses to the incoming state (no forwarded selector, no
@@ -9733,7 +9733,7 @@ fn peel_tuple_value_state(db: &mut Db, arm_body: StructId) -> Option<StructId> {
 /// DUPLICATING the foreign perform (breaker xhsC: a constant-arg outer note RE-EXECUTES 3x across 2 dispatches)
 /// and — when a binder feeds the perform arg — threading its two copies against different incoming state
 /// (xhs1). The COLLAPSE binds the whole arm once (perform runs once, binder computed once) → correct.
-/// ⚠ ARG-BEARING ONLY (pr-sync reject of 07e85af7c): a NULLARY foreign perform let-init — `(let ((x (A.get)))
+/// ARG-BEARING ONLY (pr-sync reject of 07e85af7c): a NULLARY foreign perform let-init — `(let ((x (A.get)))
 /// (resume t (+ t x)))`, the as7 fold-strict shape — is EXCLUDED. `thread_bounded`'s let-arm threads a nullary
 /// perform's init exactly ONCE (no arg to re-derive), so DISTRIBUTE already folds as7 correctly (strict → 6);
 /// widening the collapse to it wrongly heap-collapsed that fold-strict case. The xhs miscompile class is

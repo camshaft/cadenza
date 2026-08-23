@@ -540,7 +540,7 @@ pub(crate) mod cse {
 /// `collect_row_op_field_dups`'s `bk == bv` guard false → no double-dup). Both-backend full-corpus opt-sweep
 /// 0-div O0..O3 (wasm 6179 / rust 6082) — the bind-safety gates (`b2_bind_plan`: fully-solved-type,
 /// not-match-scrutinee, value-stability, trap-free OR unconditionally-reached) keep every admitted bind sound.
-/// ⚠ cmb1/pom5/ksc1 are NOT un-hung by this (verified: cmb1 STILL HANGS at O2 on trunk, EXIT=124; NOT a
+/// cmb1/pom5/ksc1 are NOT un-hung by this (verified: cmb1 STILL HANGS at O2 on trunk, EXIT=124; NOT a
 /// regression — they hung pre-B2). Their re-descent-driving shares are the handler STATE-TUPLE `(c,k,mx)`
 /// (`Tuple([Int64;3])`), read K× via `Core::SumPayload` across the arm's branches — the `reduce_handle`
 /// continuation destructuring the resume payload — NOT the `(/ …)` divide (which is scalar `Int64`, not a
@@ -601,7 +601,7 @@ pub(crate) fn run_sharing_aware_emit(
 /// (they reference `shared_id` by id, so `core_of(shared_id)` now returning `LocalRef` redirects every parent
 /// at once). That is why bind-once needs no per-parent work: child-override propagates to all readers.
 ///
-/// ⚠ NOT a per-branch de-share primitive. A shared node is ONE `StructId` reached by K parent EDGES (NOT K
+/// NOT a per-branch de-share primitive. A shared node is ONE `StructId` reached by K parent EDGES (NOT K
 /// distinct occurrence ids), and `install_core_override(node)` is ALL-OR-NOTHING across those parents. So this
 /// loop CANNOT point different parents of the same `shared_id` at different per-branch copies — cmb1-FULL's
 /// per-branch de-share needs an EDGE-level rewrite (redirect a specific parent→`shared_id` edge to a per-edge
