@@ -27,11 +27,16 @@
 //!   language-neutral log a checker reads (§9), where the human [`render`] is lossy. Every id, token, and
 //!   payload crosses byte-exact, so a checker can assert on values the rendered text elides; symmetric with
 //!   the harness input, which is itself a Cadenza value ([`HarnessSpec`]).
+//! - [`check_contract`] / [`verdict_contract`] — the checker **protocol** contracts (§9): the operator's
+//!   design is that the end-of-run checker is a reducer-shaped guest, delivered the whole log via a `check`
+//!   message and emitting a `verdict` request. These are the two contract ids that carry that protocol
+//!   (real Cadenza schemas, `contracts/{check,verdict}.cdz`).
 //! - [`Checker`] / [`CheckOutcome`] — the assertion side: read a [`Run`] and decide pass/fail. The native
 //!   realization of the checker contract (a wasm checker implements the same judgement over a serialized
 //!   log later); any `Fn(&Run) -> CheckOutcome` is a checker.
 
 mod checker;
+mod checker_protocol;
 mod harness;
 mod log_value;
 mod observation;
@@ -42,6 +47,7 @@ mod spec;
 /// registered Rust factories instead of the content-addressed store.
 pub use crate::program::testing as program;
 pub use checker::{CheckOutcome, Checker};
+pub use checker_protocol::{check_contract, verdict_contract};
 pub use harness::{Harness, Parent, Run, SpawnSpec};
 pub use log_value::{deserialize as deserialize_log, serialize as serialize_log};
 pub use observation::{

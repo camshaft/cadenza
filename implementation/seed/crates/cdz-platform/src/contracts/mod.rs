@@ -3,7 +3,9 @@
 //! One `pub mod` per built-in contract, projected from the contract sources so a new
 //! `contracts/<name>.cdz` wires itself in on the next `cargo xtask codegen`.
 
+pub mod check;
 pub mod deliver;
 pub mod lifecycle;
 pub mod spawned;
 pub mod timer;
+pub mod verdict;

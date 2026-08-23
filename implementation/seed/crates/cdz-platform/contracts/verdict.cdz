@@ -1,0 +1,34 @@
+// The verdict contract — what the end-of-run CHECKER emits to report the run's pass/fail
+// (design/cadenza-platform.md section 9). The checker (a reducer-shaped guest delivered the observation log
+// via the `check` contract) emits a `verdict` request; the harness — a driver, not a reducer, so it cannot
+// receive an on_response reply — reads the emitted verdict from the observation stream. A separate contract
+// the checker emits (rather than a reply to `check`) is therefore the correct mechanism.
+//
+// This file is real Cadenza and is the source of truth for the schema: `cargo xtask codegen` validates it
+// with the `cdz` binary and generates src/contracts/verdict.rs from it. Re-run `cargo xtask codegen` after
+// editing; `cargo xtask codegen --check` fails if the committed generated file is stale.
+
+// The verdict (the contract's input, i.e. the value the checker emits): whether the run passed, and human-
+// readable messages (empty when it passed clean; the reasons when it failed).
+type Verdict =
+  | Verdict(Record(pass: Bool, messages: List(String)))
+
+// The output type — a verdict is one-way (the harness reads it; nothing replies), so the unit Ack.
+type Ack =
+  | Ack
+
+// --- conformance proofs: a fully-literal verdict of each outcome, ascribed against the schema type ---
+def a-pass() -> Verdict = Verdict.Verdict({ pass = true, messages = ([] : List(String)) })
+
+def a-fail() -> Verdict =
+  Verdict.Verdict({ pass = false, messages = List.push(([] : List(String)), "assertion failed") })
+
+@test
+def pass-conforms() =
+  match a-pass() with
+  | Verdict.Verdict(v) => if v.pass then unit else trap("expected a passing verdict")
+
+@test
+def fail-conforms() =
+  match a-fail() with
+  | Verdict.Verdict(v) => if v.pass then trap("expected a failing verdict") else unit

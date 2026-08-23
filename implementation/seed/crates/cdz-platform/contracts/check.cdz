@@ -1,0 +1,33 @@
+// The check contract — carries the whole observation log to the end-of-run CHECKER
+// (design/cadenza-platform.md section 9). The operator design is that the checker reuses the reducer
+// interface: it is a reducer-shaped wasm guest that is delivered the whole run's observation log as a
+// message (folded through on_message) and emits a `verdict` request reporting pass/fail. This contract is
+// the log-in half of that protocol.
+//
+// The log crosses as its serialized observation-log value (cdz_platform::testing::serialize_log — the
+// section 9 log as a Cadenza value), carried here as opaque Bytes; the checker deserializes it. Carrying it
+// as Bytes mirrors how every contract carries a user payload (deliver.cdz), and keeps the log's own shape in
+// exactly one place (the serializer), not mirrored into this schema.
+//
+// This file is real Cadenza and is the source of truth for the schema: `cargo xtask codegen` validates it
+// with the `cdz` binary and generates src/contracts/check.rs from it. Re-run `cargo xtask codegen` after
+// editing; `cargo xtask codegen --check` fails if the committed generated file is stale. The compiler is a
+// codegen-time tool only — it never ships.
+
+// The envelope (the contract's input): here is the whole observation log to check, as its serialized bytes.
+type Envelope =
+  | Check(Bytes)
+
+// The output type. A checker never replies to the check message — it emits a separate `verdict` request the
+// harness reads — so the output is the unit Ack, present only because a contract declares an output type and
+// never built or sent.
+type Ack =
+  | Ack
+
+// --- conformance proof: a fully-literal envelope, ascribed against the schema type ---
+def a-check() -> Envelope = Envelope.Check(b"observation-log-bytes")
+
+@test
+def check-conforms() =
+  match a-check() with
+  | Envelope.Check(log) => if log == b"observation-log-bytes" then unit else trap("check log mismatch")
