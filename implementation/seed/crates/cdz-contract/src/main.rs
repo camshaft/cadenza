@@ -9,6 +9,7 @@
 //!
 //! ```text
 //! cdz-contract hash <dir> [--cdz <path>] [--out <file>]
+//! cdz-contract blob <file>
 //! ```
 //!
 //! `hash` reads every `*.cdz` under `<dir>`, and for each contract module (one carrying the `@!contract` /
@@ -17,6 +18,12 @@
 //! a valid module but declares no contract is skipped; a source the `cdz` binary cannot parse is a hard
 //! error. `--cdz` sets the parser binary (else `$CDZ`, else `cdz` on `PATH`); `--out` writes the mapping to a
 //! file instead of stdout.
+//!
+//! `blob` reads one `<file>` and prints its raw content address — `Hash::of(HashTag::Blob, bytes)` rendered
+//! base62 (§8), no trailing newline — the SAME string `cdz-run`'s and `xtask`'s `content_address` produce and
+//! the store's `put()` keys by. It exists so the nix build (`flake.nix` `hashOf` / the component store / the
+//! runtime-hash parity check) names an artifact by the exact platform content address, not a bare `b3sum`
+//! hex that would disagree with the tagged base62 the compiler pins in a `+<hash>` import.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -27,7 +34,7 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(Error::Usage(msg)) => {
             eprintln!(
-                "cdz-contract: {msg}\n\nusage: cdz-contract hash <dir> [--cdz <path>] [--out <file>]"
+                "cdz-contract: {msg}\n\nusage: cdz-contract hash <dir> [--cdz <path>] [--out <file>]\n       cdz-contract blob <file>"
             );
             ExitCode::from(2)
         }
@@ -55,9 +62,26 @@ struct HashArgs {
 fn run(args: &[String]) -> Result<(), Error> {
     match args.first().map(String::as_str) {
         Some("hash") => hash(parse_hash(&args[1..])?),
+        Some("blob") => blob(&args[1..]),
         Some(other) => Err(Error::Usage(format!("unknown subcommand `{other}`"))),
         None => Err(Error::Usage("no subcommand given".into())),
     }
+}
+
+/// `blob <file>`: print the raw content address of `<file>` — `Hash::of(HashTag::Blob, bytes)` rendered
+/// base62 (§8), no trailing newline. The one text form every content-address producer emits (this,
+/// `cdz-run`/`xtask` `content_address`, the store's `put()`), so the nix build can name an artifact by the
+/// exact platform address a `+<hash>` import pins. Exactly one positional argument; no options.
+fn blob(args: &[String]) -> Result<(), Error> {
+    let [path] = args else {
+        return Err(Error::Usage(
+            "blob takes exactly one <file> argument".into(),
+        ));
+    };
+    let bytes = std::fs::read(path)
+        .map_err(|e| Error::Failed(format!("reading {path}: {e}")))?;
+    print!("{}", cdz_contract::Hash::of(cdz_contract::HashTag::Blob, &bytes));
+    Ok(())
 }
 
 /// Parse `hash`'s arguments: a single positional `<dir>`, plus optional `--cdz <path>` and `--out <file>`.
@@ -207,8 +231,23 @@ fn escape(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{escape, render_json};
+    use super::{Error, blob, escape, render_json};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn blob_requires_exactly_one_file_argument() {
+        // No file / two files is a usage error (exit 2), not a run failure — the arg shape is fixed.
+        assert!(matches!(blob(&[]), Err(Error::Usage(_))));
+        assert!(matches!(
+            blob(&["a".to_string(), "b".to_string()]),
+            Err(Error::Usage(_))
+        ));
+        // A path that does not exist is a run failure (I/O), naming the file.
+        assert!(matches!(
+            blob(&["/no/such/blob/file".to_string()]),
+            Err(Error::Failed(_))
+        ));
+    }
 
     #[test]
     fn json_is_sorted_by_name_and_well_formed() {

@@ -32,11 +32,13 @@ cdz-rust-render = { path = "../implementation/seed/crates/cdz-rust-render" }
 # re-project each contract's type declarations into `src/contracts/<name>.rs` as builder calls.
 cadenza-ast = { path = "../implementation/seed/crates/cadenza-ast" }
 # SHA-256 for the local build-cache tree-fingerprint (`hash_tree`), an internal cache key with no
-# cross-boundary contract. The CONTENT-ADDRESS digest (`content_address`) is blake3 (below).
+# cross-boundary contract. The CONTENT-ADDRESS digest (`content_address`) is `cdz-contract` (below).
 sha2 = "0.10"
-# blake3: the ONE unified content-address digest (operator 2026-08-08), matching `cdz-run`'s
-# `content_address` so the store address == blob key == compose-dep +hash are a single digest across the fleet.
-blake3 = "1"
+# The platform's content-address primitive: `content_address` delegates to
+# `Hash::of(HashTag::Blob, bytes).to_string()` (a Blob-tagged blake3 digest rendered base62, design §8),
+# so the store address == blob key == compose-dep `+hash` == `REQUIRED_RUNTIME_HASH` are a single string
+# across the fleet, byte-identical to `cdz-run`'s `content_address` and the store's own `put()`.
+cdz-contract = { path = "../implementation/seed/crates/cdz-contract" }
 # The fleet orchestrator (`fleet` subcommand) serializes its durable manifest + inbox messages as
 # JSON. Dev-desk only, like the rest of xtask's deps — never enters the shipped compiler.
 serde = { version = "1", features = ["derive"] }

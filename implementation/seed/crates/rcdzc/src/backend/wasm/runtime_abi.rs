@@ -91,15 +91,13 @@ pub const RUNTIME_IFACE: &str = "cadenza:runtime/heap";
 /// The BLAKE3 content address of the value-heap runtime component this ABI was generated
 /// against — the runtime a program built with this compiler requires. Regenerated from the
 /// built runtime bytes, so it tracks a runtime-code change automatically.
-pub const REQUIRED_RUNTIME_HASH: &str =
-    "9a5728f5f569ce120bcfcb7cb919ff659f332440350f693b5a5be5bca86504ec";
+pub const REQUIRED_RUNTIME_HASH: &str = "05U7pVMdRkUPmO3I63EtpHmaCdkOXA3OIfwaWz5uPwYrE";
 /// The BLAKE3 content address of the DEBUG-COUNTERS runtime build — the same runtime code
 /// with the `live-objects` leak counter compiled in (`--features debug-counters`). A shipped
 /// program pins `REQUIRED_RUNTIME_HASH` (the release build); a Perceus leak-check harness
 /// composes THIS build to assert `live-objects == 0` after a run. Recorded here so the harness
 /// locates the debug runtime by content address (from the store), never by rebuilding it.
-pub const DEBUG_RUNTIME_HASH: &str =
-    "945f9896a3a4f8eb465ed404fbd0adcfa63e0c4d8ad49deb666df73cf7f1964c";
+pub const DEBUG_RUNTIME_HASH: &str = "05Si6MGI6kTb20dTy2m74R4PJrmTmc7dtKObmeE0Nxbq8";
 /// The NFC-normalization interface — the plain WIT name the value-heap RUNTIME imports for
 /// Unicode Normalization Form C. FINDING#23 (operator ruling d): NFC lives in a SEPARATE
 /// component (the heavy `unicode-normalization` tables); the runtime's WIT `world` declares
@@ -114,8 +112,7 @@ pub const NFC_IFACE: &str = "cadenza:nfc/normalize";
 /// (the store records `nfc = "<hash>"`; cdz-run/main.rs verify the loaded bytes against it). The
 /// NFC dep lives on the RUNTIME's world, so the NFC-code hash feeds `REQUIRED_RUNTIME_HASH`
 /// (the runtime that imports NFC hashes differently); it is not a separate program-import hash.
-pub const REQUIRED_NFC_HASH: &str =
-    "b2a4957895809e29d3e5d15adbca4408a952c8de6c47eadc80e26fe38427d7ed";
+pub const REQUIRED_NFC_HASH: &str = "05Zt7vNrKO3xBrZ9EhMG0dIl2XV53G218sS5kz7OoofIT";
 /// The runtime's INLINE-UNIT handle — the value `arr-alloc(0)` returns (a compile-time-known
 /// handle carrying the empty tuple/unit, no heap node). DERIVED from the runtime's `cdz-abi`
 /// custom section (read at codegen, then stripped), so the compiler can push it as a constant

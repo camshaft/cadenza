@@ -26,9 +26,11 @@ wasmtime = { version = "37", default-features = false, features = ["runtime", "c
 # Typed CLI with generated --help — the same parser the rest of the workspace uses.
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
-# Verify a store artifact's content address (BLAKE3) equals the hash the component requires — the
-# unified content-address digest (operator ruling 2026-08-08), same as cdz-kernel::hash::Hash::of.
-blake3 = "1"
+# The platform's content-address primitive: `Hash::of(HashTag::Blob, bytes).to_string()` is the ONE
+# store address — a Blob-tagged blake3 digest rendered base62 (design §8). `content_address` delegates
+# here so a store artifact's address is byte-identical to the store's own `put()` (blob_store.rs) and to
+# the `+<hash>` dep suffix the compiler emits. Dep-minimal (cadenza-ast + blake3), so it stays light.
+cdz-contract = { path = "../cdz-contract" }
 # Canonical value rendering (string escape, decimal form) — reused so a runner-printed value is
 # byte-identical to what the front-end prints and reads back.
 cadenza-syntax = { path = "../cadenza-syntax" }

@@ -17,10 +17,11 @@
 //!    GONE (the fleet reached zero non-fixture `tests/*.rs`); no per-file escape. The only excluded
 //!    trees are vendored `reference/` and `tests/fixtures/**` guest wasm-component crates (not test
 //!    binaries).
-//!  - **no-hard-coded-runtime-hash** — a bare 64-hex string literal in NON-test source is a hard-coded
-//!    content address (operator no-hard-coded-runtime-names). Excludes the codegen'd `runtime_abi.rs`
+//!  - **no-hard-coded-runtime-hash** — a bare content-address string literal in NON-test source is a
+//!    hard-coded content address (operator no-hard-coded-runtime-names): a 45-char base62 (the platform
+//!    `Hash` text form, §8) or a legacy 64-hex string. Excludes the codegen'd `runtime_abi.rs`
 //!    hash-constant home, `#[cfg(test)]` golden-hash assertions, and a `mandate:allow` line. syn-based:
-//!    parses only files whose lines contain a 64-hex literal (a tiny population), skips test-gated items.
+//!    parses only files whose lines contain such a literal (a tiny population), skips test-gated items.
 //!
 //! no-hex-except-tracing and no-thin-wrapper-fns are DELIBERATELY NOT gate-lint rules (concierge ruling
 //! 2026-08-09): both need DATA-FLOW / judgment a source-scan cannot do — no-hex would flood on all ~127
@@ -91,12 +92,18 @@ fn no_new_integration_tests(repo: &Path) -> Result<Vec<Violation>, String> {
     Ok(out)
 }
 
-/// The `no-hard-coded-runtime-hash` mandate: a bare 64-hex string literal (`"<64 lowercase hex>"`) in
-/// NON-TEST Rust source is a hard-coded content-address — the operator's no-hard-coded-runtime-names
-/// directive (a hash pinned in source drifts silently on a `REQUIRED_RUNTIME_HASH` bump — exactly the
-/// class of the guide-FOD / genesis-reducer-compose breakage a runtime-hash bump caused, and the pinned
+/// The `no-hard-coded-runtime-hash` mandate: a bare content-address string literal in NON-TEST Rust
+/// source is a hard-coded content-address — the operator's no-hard-coded-runtime-names directive (a hash
+/// pinned in source drifts silently on a `REQUIRED_RUNTIME_HASH` bump — exactly the class of the guide-FOD
+/// / genesis-reducer-compose breakage a runtime-hash bump caused, and the pinned
 /// `cadenza:runtime/heap@0.0.0+<hash>` the operator flagged). A content address must be DERIVED (read
 /// the live hash / an input-addressed artifact), never a literal.
+///
+/// Two shapes are a content-address literal: the platform text form — a `"<45 base62 chars>"`
+/// (`0-9A-Za-z`, the `cdz_contract::Hash` `Display`, §8) — and the legacy `"<64 lowercase hex>"` a raw
+/// blake3 digest rendered before the base62 flip. Both are flagged so a stale hex pin AND a new base62 pin
+/// are caught. base62 is exactly `Hash::TEXT_LEN` (45) chars, so a whole-literal length match keeps this
+/// specific (an ordinary alphanumeric string of some other length does not trip it).
 ///
 /// EXCLUSIONS (why the current tree is clean, so this is a going-forward guard, not a fleet-redder):
 ///  - `rcdzc/src/backend/wasm/runtime_abi.rs` — the CODEGEN'd home of `REQUIRED_RUNTIME_HASH` /
@@ -126,20 +133,20 @@ fn no_hard_coded_runtime_hash(repo: &Path) -> Result<Vec<Violation>, String> {
         }
         let src = std::fs::read_to_string(&f)
             .map_err(|e| format!("cannot read {} for the hash mandate: {e}", f.display()))?;
-        // Cheap prefilter: only parse files that actually contain a 64-hex-looking literal (parsing
-        // every .rs with syn would be needless work — the population is tiny).
-        if !line_has_hex64_literal(&src) {
+        // Cheap prefilter: only parse files that actually contain a content-address-looking literal
+        // (parsing every .rs with syn would be needless work — the population is tiny).
+        if !line_has_content_address_literal(&src) {
             continue;
         }
         let file = syn::parse_file(&src)
             .map_err(|e| format!("cannot parse {} for the hash mandate: {e}", f.display()))?;
-        let mut finder = Hex64Finder::default();
+        let mut finder = HashLiteralFinder::default();
         syn::visit::visit_file(&mut finder, &file);
         for lit in finder.hits {
             out.push(Violation {
                 file: f.clone(),
                 reason: format!(
-                    "hard-coded 64-hex content address \"{}…\" in non-test source — a runtime/content \
+                    "hard-coded content address \"{}…\" in non-test source — a runtime/content \
                      hash must be DERIVED (read the live `REQUIRED_RUNTIME_HASH` / an input-addressed \
                      artifact), never pinned as a literal (it drifts silently on a hash bump — the \
                      operator no-hard-coded-runtime-names directive). If this is a genuinely-fixed \
@@ -159,30 +166,36 @@ fn is_runtime_abi_hash_home(rel_slash: &str) -> bool {
     rel_slash.ends_with("rcdzc/src/backend/wasm/runtime_abi.rs")
 }
 
-/// A cheap line-level prefilter: does the source contain a `"<64 lowercase hex>"` literal AND lack a
-/// `mandate:allow no-hard-coded-runtime-hash` escape on that line? Used to skip syn-parsing files that
-/// can't possibly hit. (The authoritative check is the syn visitor; this only avoids needless parses.)
-fn line_has_hex64_literal(src: &str) -> bool {
+/// A cheap line-level prefilter: does the source contain a content-address-shaped literal (a 64-lowercase-
+/// hex or a 45-char base62 quoted run) AND lack a `mandate:allow no-hard-coded-runtime-hash` escape on that
+/// line? Used to skip syn-parsing files that can't possibly hit. (The authoritative check is the syn
+/// visitor; this only avoids needless parses.)
+fn line_has_content_address_literal(src: &str) -> bool {
     src.lines().any(|l| {
-        !l.contains("mandate:allow no-hard-coded-runtime-hash") && line_contains_hex64_string(l)
+        !l.contains("mandate:allow no-hard-coded-runtime-hash") && line_contains_hash_string(l)
     })
 }
 
-/// Does a single line contain a double-quoted run of exactly 64 lowercase-hex characters?
-fn line_contains_hex64_string(line: &str) -> bool {
+/// Does a single line contain a double-quoted run that is a content-address literal — exactly 64
+/// lowercase-hex characters (legacy raw digest) or exactly 45 base62 characters (`0-9A-Za-z`, the platform
+/// `Hash` text form, §8)? The run must fill the whole literal (quote to quote), so a longer/shorter
+/// alphanumeric string does not match.
+fn line_contains_hash_string(line: &str) -> bool {
     let bytes = line.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'"' {
-            // count the hex run immediately after the quote
             let start = i + 1;
+            // The maximal alphanumeric run right after the quote; a hash literal is that whole run.
             let mut j = start;
-            while j < bytes.len() && bytes[j].is_ascii_hexdigit() && !bytes[j].is_ascii_uppercase()
-            {
+            while j < bytes.len() && bytes[j].is_ascii_alphanumeric() {
                 j += 1;
             }
-            if j - start == 64 && j < bytes.len() && bytes[j] == b'"' {
-                return true;
+            if j < bytes.len() && bytes[j] == b'"' {
+                let run = &line[start..j];
+                if is_hash_literal(run) {
+                    return true;
+                }
             }
         }
         i += 1;
@@ -190,17 +203,28 @@ fn line_contains_hex64_string(line: &str) -> bool {
     false
 }
 
-/// A `syn` visitor that collects bare 64-lowercase-hex string literals, SKIPPING any item gated by
-/// `#[cfg(test)]` (a test golden-hash assertion is a legitimate witness, not a runtime dependency). The
-/// `mandate:allow` escape is handled by the line prefilter before parsing, so a file whose only hex
-/// literal carries the escape never reaches here.
+/// Is `s` a content-address literal — a 64-char all-lowercase-hex string (legacy raw blake3 digest) or a
+/// 45-char base62 string (`0-9A-Za-z`, the platform `Hash` text form, §8)? Both are exact-width, so an
+/// alphanumeric string of any other length is not a hash.
+fn is_hash_literal(s: &str) -> bool {
+    let is_hex64 = s.len() == 64
+        && s.bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase());
+    let is_base62_45 = s.len() == 45 && s.bytes().all(|b| b.is_ascii_alphanumeric());
+    is_hex64 || is_base62_45
+}
+
+/// A `syn` visitor that collects content-address string literals (64-lowercase-hex or 45-char base62),
+/// SKIPPING any item gated by `#[cfg(test)]` (a test golden-hash assertion is a legitimate witness, not a
+/// runtime dependency). The `mandate:allow` escape is handled by the line prefilter before parsing, so a
+/// file whose only such literal carries the escape never reaches here.
 #[derive(Default)]
-struct Hex64Finder {
+struct HashLiteralFinder {
     hits: Vec<String>,
     in_test: usize,
 }
 
-impl<'ast> syn::visit::Visit<'ast> for Hex64Finder {
+impl<'ast> syn::visit::Visit<'ast> for HashLiteralFinder {
     fn visit_item(&mut self, item: &'ast syn::Item) {
         let gated = item_attrs(item).is_some_and(has_cfg_test);
         if gated {
@@ -215,10 +239,7 @@ impl<'ast> syn::visit::Visit<'ast> for Hex64Finder {
     fn visit_lit_str(&mut self, lit: &'ast syn::LitStr) {
         if self.in_test == 0 {
             let v = lit.value();
-            if v.len() == 64
-                && v.bytes()
-                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
-            {
+            if is_hash_literal(&v) {
                 self.hits.push(v);
             }
         }
@@ -389,9 +410,9 @@ mod tests {
         ));
     }
 
-    fn hex64_hits(src: &str) -> Vec<String> {
+    fn hash_hits(src: &str) -> Vec<String> {
         let file = syn::parse_file(src).expect("parse");
-        let mut f = Hex64Finder::default();
+        let mut f = HashLiteralFinder::default();
         syn::visit::visit_file(&mut f, &file);
         f.hits
     }
@@ -399,49 +420,64 @@ mod tests {
     #[test]
     fn hard_coded_hash_finder_flags_non_test_literals_only() {
         let hex = "0652838621bb88fcdc0a348bd81a5c8cc84eefa960af78c5cf7885b2811b2614";
-        // A bare 64-hex literal in ordinary (non-test) source is flagged.
+        // A bare 64-hex literal (legacy raw digest) in ordinary (non-test) source is flagged.
         let flagged = format!("const H: &str = \"{hex}\";");
-        assert_eq!(hex64_hits(&flagged), vec![hex.to_string()]);
+        assert_eq!(hash_hits(&flagged), vec![hex.to_string()]);
+        // A 45-char base62 literal (the platform Hash text form, §8) is likewise flagged.
+        let b62 = "05jmLkKthwJA6JwfqGJrnJmYouvD6erfbnP1jMgVdHsrV";
+        assert_eq!(b62.len(), 45);
+        assert_eq!(
+            hash_hits(&format!("const H: &str = \"{b62}\";")),
+            vec![b62.to_string()]
+        );
         // The SAME literal inside a `#[cfg(test)]` module is NOT flagged (a golden-hash assertion).
         let in_test = format!("#[cfg(test)]\nmod tests {{\n  const H: &str = \"{hex}\";\n}}");
-        assert!(hex64_hits(&in_test).is_empty(), "test-gated hash is exempt");
+        assert!(hash_hits(&in_test).is_empty(), "test-gated hash is exempt");
         // A #[cfg(test)] fn body is likewise exempt.
-        let in_test_fn = format!("#[cfg(test)]\nfn t() {{ let _ = \"{hex}\"; }}");
-        assert!(hex64_hits(&in_test_fn).is_empty());
+        let in_test_fn = format!("#[cfg(test)]\nfn t() {{ let _ = \"{b62}\"; }}");
+        assert!(hash_hits(&in_test_fn).is_empty());
     }
 
     #[test]
     fn hard_coded_hash_finder_ignores_non_hash_strings() {
-        // Not 64 chars, has uppercase, or non-hex → not a content-address literal.
+        // Not 64 chars, has uppercase, or non-hex → not a (legacy hex) content-address literal.
         assert!(
-            hex64_hits("const A: &str = \"deadbeef\";").is_empty(),
+            hash_hits("const A: &str = \"deadbeef\";").is_empty(),
             "short"
         );
-        let upper = "0652838621BB88FCDC0A348BD81A5C8CC84EEFA960AF78C5CF7885B2811B2614";
-        assert!(
-            hex64_hits(&format!("const A: &str = \"{upper}\";")).is_empty(),
-            "uppercase is not our lowercase-hex content address"
-        );
-        // A 64-char string with a non-hex char is not flagged.
+        // A 64-char string with a non-hex char is not a hex hash (uppercase would BE base62 but is 64,
+        // not 45, chars — so neither shape matches).
         let almost = "z652838621bb88fcdc0a348bd81a5c8cc84eefa960af78c5cf7885b2811b2614";
-        assert!(hex64_hits(&format!("const A: &str = \"{almost}\";")).is_empty());
+        assert!(hash_hits(&format!("const A: &str = \"{almost}\";")).is_empty());
+        // An alphanumeric literal of a length that is neither 64 nor 45 is not a hash (width is exact).
+        let wrong_len = "05jmLkKthwJA6JwfqGJrnJmYouvD6erfbnP1jMgVdHsr"; // 44 chars, one short
+        assert_eq!(wrong_len.len(), 44);
+        assert!(hash_hits(&format!("const A: &str = \"{wrong_len}\";")).is_empty());
     }
 
     #[test]
-    fn hex64_line_prefilter_matches_the_syn_finder() {
+    fn hash_line_prefilter_matches_the_syn_finder() {
         let hex = "b2a4957895809e29d3e5d15adbca4408a952c8de6c47eadc80e26fe38427d7ed";
-        assert!(line_contains_hex64_string(&format!("  x = \"{hex}\";")));
+        let b62 = "05jmLkKthwJA6JwfqGJrnJmYouvD6erfbnP1jMgVdHsrV";
+        assert!(line_contains_hash_string(&format!("  x = \"{hex}\";")));
+        assert!(line_contains_hash_string(&format!("  x = \"{b62}\";")));
         // The mandate:allow escape suppresses the line-level prefilter.
-        assert!(!line_has_hex64_literal(&format!(
-            "  x = \"{hex}\"; // mandate:allow no-hard-coded-runtime-hash: external fixed id"
+        assert!(!line_has_content_address_literal(&format!(
+            "  x = \"{b62}\"; // mandate:allow no-hard-coded-runtime-hash: external fixed id"
         )));
         // A bare hash with no escape passes the prefilter.
-        assert!(line_has_hex64_literal(&format!("  x = \"{hex}\";")));
-        // Interface-name embedding (heap@0.0.0+<hash>) is NOT a bare 64-hex string, so not matched by
-        // this rule (that pattern is a separate concern — this rule is exactly bare content-address
-        // literals, the tightest unambiguous form).
-        assert!(!line_contains_hex64_string(&format!(
+        assert!(line_has_content_address_literal(&format!(
+            "  x = \"{b62}\";"
+        )));
+        // Interface-name embedding (heap@0.0.0+<hash>) is NOT a bare content-address string (the run after
+        // the opening quote is `cadenza`, stopped by `:`), so not matched by this rule — that pattern is a
+        // separate concern; this rule is exactly bare content-address literals, the tightest form. Holds
+        // for both the legacy hex and the base62 suffix.
+        assert!(!line_contains_hash_string(&format!(
             "  x = \"cadenza:runtime/heap@0.0.0+{hex}\";"
+        )));
+        assert!(!line_contains_hash_string(&format!(
+            "  x = \"cadenza:runtime/heap@0.0.0+{b62}\";"
         )));
     }
 
