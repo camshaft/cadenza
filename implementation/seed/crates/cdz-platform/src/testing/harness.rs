@@ -80,7 +80,7 @@ pub enum Parent {
 /// from its genesis and the program from the blob's content (§3/§8), so a caller never writes a hash. Refer
 /// to the task by name in a [`deliver`](Harness::deliver) or as another spawn's [`Parent`]. The spawn nonce
 /// is the task name's bytes, so sibling tasks with distinct names get distinct, reproducible ids.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpawnSpec {
     name: String,
     blob: String,
