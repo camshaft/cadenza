@@ -2107,9 +2107,9 @@ impl<'a> Printer<'a> {
     /// `("list" <elem>)` prints `list(<elem>)`; an `("option" <inner>)` prints `option(<inner>)`; a
     /// `("record" (f <ty>)…)` prints the brace record type `{f: <ty>, …}`; a `("result" <ok> <err>)` prints
     /// `result` / `result(<ok>)` / `result(_, <err>)` / `result(<ok>, <err>)` (`_` = an absent arm); a
-    /// `("variant" (Case <ty>?)…)` prints `variant(Case, Case2(<ty>), …)` (a bare case is payload-less). A
-    /// node that is NOT one of these descriptor shapes prints via the generic expr surface (a raw type node
-    /// the lowering left as-is).
+    /// `("variant" (Case <ty>?)…)` prints `variant(Case, Case2(<ty>), …)` (a bare case is payload-less); an
+    /// `("enum" A …)` / `("flags" A …)` prints `enum(A, …)` / `flags(A, …)`. A node that is NOT one of these
+    /// descriptor shapes prints via the generic expr surface (a raw type node the lowering left as-is).
     fn print_wit_type(&mut self, ty: StructId) {
         // Primitive `(name)`: a one-element list whose sole child is a NAME atom -> bare `name`.
         if let Struct::List(kids) = self.a.get(ty)
@@ -2269,6 +2269,34 @@ impl<'a> Printer<'a> {
                     self.print_wit_type(*p);
                     self.doc.word(")");
                 }
+            }
+            self.doc.word(")");
+            return;
+        }
+        // `enum`/`flags` `("enum"|"flags" Name…)`: STR head + bare NAME cases/bits -> `enum(Name, …)` /
+        // `flags(Name, …)`, the inverse of `wit_type_desc_of`'s enum/flags arms. Collect the head kind +
+        // (owned) names first so the arena borrow releases before touching the doc.
+        let enum_flags: Option<(&'static str, Vec<String>)> = match self.a.get(ty) {
+            Struct::List(kids) => match kids.first().and_then(|&h| self.a.as_str(h)) {
+                Some(head @ ("enum" | "flags")) => {
+                    let names: Option<Vec<String>> = kids[1..]
+                        .iter()
+                        .map(|&c| self.a.as_name(c).map(str::to_string))
+                        .collect();
+                    names.map(|ns| (if head == "enum" { "enum" } else { "flags" }, ns))
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some((head, names)) = enum_flags {
+            self.doc.word(head);
+            self.doc.word("(");
+            for (i, n) in names.iter().enumerate() {
+                if i > 0 {
+                    self.doc.word(", ");
+                }
+                self.doc.word(emit_name(n));
             }
             self.doc.word(")");
             return;
@@ -4554,6 +4582,43 @@ mod tests {
         assert!(
             sexp.contains("(\"variant\" (Continue) (Break (u8)))"),
             "variant stored as str-head with (Case)/(Case ty) entries, got: {sexp}"
+        );
+    }
+
+    #[test]
+    fn inline_world_enum_and_flags_member_types_round_trip() {
+        // `enum(A, …)` and `flags(A, …)` world-member types lower to the canonical str-head `("enum" A …)`
+        // / `("flags" A …)` descriptors (bare-NAME cases/bits, matching rcdzc's parse_wit_type +
+        // cadenza-ast wit_type_enum/wit_type_flags) and print back, so a world binding them round-trips
+        // ML->ML. They share the node shape but are DISTINCT types — the head keyword selects which.
+        let printed = assert_roundtrip(
+            "world W = | export i = \
+             | color : (x : u8) -> enum(Red, Green, Blue) \
+             | perms : (x : u8) -> flags(Read, Write)",
+            100,
+        );
+        assert!(
+            printed.contains("-> enum(Red, Green, Blue)"),
+            "enum round-trips: {printed}"
+        );
+        assert!(
+            printed.contains("-> flags(Read, Write)"),
+            "flags round-trips: {printed}"
+        );
+        // Stored as the canonical str-head descriptors with bare-NAME children (NOT the name-head `(enum …)`
+        // application), and enum vs flags stay distinct.
+        let parsed = parser::read_ml(
+            "world W = | export i = | color : (x : u8) -> enum(Red, Green) \
+             | perms : (x : u8) -> flags(Read, Write)",
+        );
+        let sexp = sexpr::print(&parsed.arenas);
+        assert!(
+            sexp.contains("(\"enum\" Red Green)"),
+            "enum stored as str-head with bare-name cases, got: {sexp}"
+        );
+        assert!(
+            sexp.contains("(\"flags\" Read Write)"),
+            "flags stored as str-head with bare-name bits, got: {sexp}"
         );
     }
 
