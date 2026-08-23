@@ -13,10 +13,12 @@
 //! Behind the `testing` (harness + observation log + AST decoder) and `host` (the wasm program store that
 //! instantiates the blobs) features, so the routine light build pulls in neither the harness nor wasmtime.
 
-use cdz_platform::testing::{HarnessSpec, render};
+use cdz_platform::testing::{
+    HarnessSpec, ObservationLog, RecordingBlobStore, RecordingKvStore, render,
+};
 use cdz_platform::{
-    BlobStore, Bytes, InMemoryBlobStore, InMemoryKvStore, InMemoryReducerGraph, KvStore, ReducerId,
-    WasmProgramStore,
+    BachRuntime, BlobStore, Bytes, HostId, InMemoryBlobStore, InMemoryKvStore,
+    InMemoryReducerGraph, KvStore, Origin, ReducerId, Runtime, WasmProgramStore,
 };
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -77,6 +79,12 @@ impl std::fmt::Display for RunError {
     }
 }
 
+/// This node's host id — stamped on the `from` of routed messages and on the `Origin` of every recorded
+/// store call, so events and store calls a reducer makes are attributed to the same reducer-on-host.
+fn host() -> HostId {
+    HostId::of(b"cdz-platform-itest")
+}
+
 /// Resolve the description's blobs (reading any `path`-sourced blob from disk), seed a content-addressed
 /// store, drive the run to quiescence under bach over a [`WasmProgramStore`], and return the rendered log.
 fn run(spec: HarnessSpec) -> Result<String, RunError> {
@@ -85,13 +93,35 @@ fn run(spec: HarnessSpec) -> Result<String, RunError> {
             .map(Bytes::from)
             .map_err(|e| RunError(format!("cannot read blob {path}: {e}")))
     })?;
-    let run = harness.run(|cas| {
-        // Each reducer gets a fresh in-memory state and content view; recording those store calls into the
-        // observation log (wrapping these in RecordingKv/BlobStore) is a later slice — this records events.
-        let make_blobs: Arc<dyn Fn(ReducerId) -> Box<dyn BlobStore> + Send + Sync> =
-            Arc::new(|_id| Box::new(InMemoryBlobStore::new()));
+    // One observation log, shared by the run's event tap AND by each reducer's key-value and blob stores, so
+    // a reducer's KV and blob calls are recorded in the one ordered log alongside the events it folds (§7/§8/
+    // §9) — the whole of the observation log, not just its event half.
+    let log = ObservationLog::new();
+    let host = host();
+    let store_log = log.clone();
+    let run = harness.host(host).log(log).run(move |cas| {
+        // Each reducer gets a fresh in-memory key-value and content store, each wrapped in a recording
+        // decorator over the shared log and attributed to that reducer's `Origin`.
+        let kv_log = store_log.clone();
         let make_kv: Arc<dyn Fn(ReducerId) -> Box<dyn KvStore> + Send + Sync> =
-            Arc::new(|_id| Box::new(InMemoryKvStore::new()));
+            Arc::new(move |id| {
+                Box::new(RecordingKvStore::new(
+                    InMemoryKvStore::new(),
+                    Origin { reducer: id, host },
+                    kv_log.clone(),
+                    BachRuntime::now as fn() -> u64,
+                ))
+            });
+        let blob_log = store_log.clone();
+        let make_blobs: Arc<dyn Fn(ReducerId) -> Box<dyn BlobStore> + Send + Sync> =
+            Arc::new(move |id| {
+                Box::new(RecordingBlobStore::new(
+                    InMemoryBlobStore::new(),
+                    Origin { reducer: id, host },
+                    blob_log.clone(),
+                    BachRuntime::now as fn() -> u64,
+                ))
+            });
         WasmProgramStore::new(
             cas,
             make_blobs,
