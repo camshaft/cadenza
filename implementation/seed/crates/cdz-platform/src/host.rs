@@ -989,9 +989,9 @@ impl WasmProgramStore {
 /// Alias every function a dependency instance exports into `linker` under `import_name` — the parent's
 /// import is that instance, and the linker matches the name verbatim (so the `+<hash>` suffix is kept). The
 /// dependency exports a single interface (the runtime's heap ops, NFC's transform, …); each of its functions
-/// is forwarded to the live dependency instance via `func_new`, mirroring the value-heap composition
-/// `cdz-run` performs. The function names come from the dependency's own type, so the wiring always matches
-/// the composed component.
+/// is forwarded to the live dependency instance via `func_new_async` (the reducer engine is async, so the
+/// forwarded call runs on the async path), mirroring the value-heap composition `cdz-run` performs. The
+/// function names come from the dependency's own type, so the wiring always matches the composed component.
 fn alias_instance_exports(
     store: &mut Store<HostState>,
     linker: &mut Linker<HostState>,
@@ -1022,10 +1022,17 @@ fn alias_instance_exports(
                 .ok_or_else(|| {
                     wasmtime::Error::msg(format!("dependency export `{func_name}` is not a func"))
                 })?;
-            iface.func_new(func_name, move |mut ctx, params, results| {
-                func.call(&mut ctx, params, results)?;
-                func.post_return(&mut ctx)?;
-                Ok(())
+            // Forward asynchronously: the reducer engine has async support enabled (host imports may await a
+            // disk/network backend), and wasmtime requires `call_async`/`post_return_async` — not the sync
+            // `call` — for any func call under an async config. A composed dependency func (the value-heap
+            // runtime's ops, which call into nfc) is invoked from inside a guest fold, on the async path, so
+            // the sync `call` panics ("must use `call_async` when async support is enabled").
+            iface.func_new_async(func_name, move |mut ctx, params, results| {
+                Box::new(async move {
+                    func.call_async(&mut ctx, params, results).await?;
+                    func.post_return_async(&mut ctx).await?;
+                    Ok(())
+                })
             })?;
         }
     }
