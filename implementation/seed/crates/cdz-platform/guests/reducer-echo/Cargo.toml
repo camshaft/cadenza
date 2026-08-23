@@ -38,6 +38,14 @@ package = "cadenza:platform"
 path = "../../wit"
 world = "reducer-world"
 
+# The `run` host-import (world.wit, added by the run host-import) returns result<payload, error>, and
+# wit-bindgen emits `impl std::error::Error` for that error type — which does not compile in this no_std
+# guest (`std` is unresolved). `std_feature` gates all std-requiring generated code behind a `std` cargo
+# feature this crate never enables, so the impl is dropped. The guest does not call `run`, so losing the
+# error trait impl is inert.
+[package.metadata.component.bindings]
+std_feature = true
+
 [profile.release]
 panic = "abort"
 opt-level = "s"
