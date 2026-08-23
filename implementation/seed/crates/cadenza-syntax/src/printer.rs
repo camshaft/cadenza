@@ -2104,9 +2104,10 @@ impl<'a> Printer<'a> {
 
     /// Print a WIT type DESCRIPTOR back to its inline-world surface type — the inverse of the parser's
     /// `wit_type_desc_of`, so a world member round-trips. A primitive `(name)` prints bare `name`; a
-    /// `("list" <elem>)` prints `list(<elem>)`; an `("option" <inner>)` prints `option(<inner>)`. A node
-    /// that is NOT one of these descriptor shapes prints via the generic expr surface (a raw type node
-    /// the lowering left as-is — e.g. a record/tuple type outside the shared MVP scope).
+    /// `("list" <elem>)` prints `list(<elem>)`; an `("option" <inner>)` prints `option(<inner>)`; a
+    /// `("record" (f <ty>)…)` prints the brace record type `{f: <ty>, …}`. A node that is NOT one of these
+    /// descriptor shapes prints via the generic expr surface (a raw type node the lowering left as-is —
+    /// e.g. a variant/result type whose inline surface is not yet wired).
     fn print_wit_type(&mut self, ty: StructId) {
         // Primitive `(name)`: a one-element list whose sole child is a NAME atom -> bare `name`.
         if let Struct::List(kids) = self.a.get(ty)
@@ -2151,6 +2152,41 @@ impl<'a> Printer<'a> {
                 self.print_wit_type(e);
             }
             self.doc.word(")");
+            return;
+        }
+        // `record` `("record" (fname <ty>)…)`: STR head + `(name ty)` field pairs -> `{fname: <ty>, …}`
+        // (the brace record-TYPE surface, which `wit_type_desc_of` reads back to the same descriptor). An
+        // empty record is `{}`. Collect the (owned name, type-id) pairs FIRST so the arena borrow releases
+        // before the recursive `print_wit_type` (which mutates the doc).
+        let record_fields: Option<Vec<(String, StructId)>> = match self.a.get(ty) {
+            Struct::List(kids)
+                if kids.first().and_then(|&h| self.a.as_str(h)) == Some("record") =>
+            {
+                Some(
+                    kids[1..]
+                        .iter()
+                        .filter_map(|&f| match self.a.get(f) {
+                            Struct::List(pair) if pair.len() == 2 => {
+                                self.a.as_name(pair[0]).map(|n| (n.to_string(), pair[1]))
+                            }
+                            _ => None,
+                        })
+                        .collect(),
+                )
+            }
+            _ => None,
+        };
+        if let Some(fields) = record_fields {
+            self.doc.word("{");
+            for (i, (fname, fty)) in fields.iter().enumerate() {
+                if i > 0 {
+                    self.doc.word(", ");
+                }
+                self.doc.word(emit_name(fname));
+                self.doc.word(": ");
+                self.print_wit_type(*fty);
+            }
+            self.doc.word("}");
             return;
         }
         // Not a recognized descriptor — the raw type node the lowering left as-is.
@@ -4314,6 +4350,41 @@ mod tests {
         assert!(
             sexp.contains("(\"tuple\" (\"list\" (u8)) (\"list\" (u8)))"),
             "tuple stored as str-head positional descriptor, got: {sexp}"
+        );
+    }
+
+    #[test]
+    fn inline_world_record_member_type_round_trips() {
+        // A record TYPE `{f: T, …}` as a world-member param/result lowers to the canonical str-head
+        // descriptor `("record" (f <T>)…)` (matching rcdzc's parse_wit_type + cadenza-ast wit_type_record)
+        // AND prints back to the brace surface, so a world binding a record member round-trips ML->ML. This
+        // is the shape a reducer guest uses for a message/request record (v-platform's reducer world).
+        let printed = assert_roundtrip(
+            "world W = | export i = \
+             | step : (msg : {id : string, payload : list(u8)}) -> {ok : bool}",
+            80,
+        );
+        assert!(
+            printed.contains("msg : {id: string, payload: list(u8)}"),
+            "record param round-trips as a brace type: {printed}"
+        );
+        assert!(
+            printed.contains("-> {ok: bool}"),
+            "record result round-trips as a brace type: {printed}"
+        );
+        // The stored descriptor is the canonical str-head record form (a `(name ty)` pair per field, field
+        // types themselves lowered), NOT the name-head `(Record (: …))` type-application node.
+        let parsed = parser::read_ml(
+            "world W = | export i = | step : (msg : {id : string, payload : list(u8)}) -> bool",
+        );
+        let sexp = sexpr::print(&parsed.arenas);
+        assert!(
+            sexp.contains("(\"record\" (id (string)) (payload (\"list\" (u8))))"),
+            "record stored as canonical str-head descriptor with lowered field types, got: {sexp}"
+        );
+        assert!(
+            !sexp.contains("(Record"),
+            "the name-head (Record (: …)) type node must be fully lowered, got: {sexp}"
         );
     }
 
