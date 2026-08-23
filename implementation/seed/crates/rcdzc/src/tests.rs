@@ -2776,6 +2776,177 @@ fn the_full_three_member_reducer_echo_compiles_and_runs() {
     expect_empty_continue(&r_note, "on-notification");
 }
 
+/// W4c-b-iii: a single-member (`on-message`) reducer world that ALSO imports `cadenza:platform/identity`
+/// (`id: () -> list<u8>`) — the identity-token reducer-echo world. Drives the GENERIC world-import emit: the
+/// guest performs `identity.id` (a 0-arg `list<u8>` host import) and threads the result into `request.token`.
+fn identity_token_world_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let list_u8 = |b: &mut Builder| {
+        let u8h = b.name("u8");
+        let u8p = b.list(vec![u8h]);
+        let lh = b.atom_leaf(Leaf::Str("list".into()));
+        b.list(vec![lh, u8p])
+    };
+    let field = |b: &mut Builder, name: &str, ty| {
+        let n = b.name(name);
+        b.list(vec![n, ty])
+    };
+    let record = |b: &mut Builder, fields: Vec<crate::ast::StructId>| {
+        let h = b.atom_leaf(Leaf::Str("record".into()));
+        let mut v = vec![h];
+        v.extend(fields);
+        b.list(v)
+    };
+    let bytes_field = |b: &mut Builder, name: &str| {
+        let t = list_u8(b);
+        field(b, name, t)
+    };
+    // message{contract, payload, token} (minimal — no nested sender needed for this slice).
+    let message = {
+        let m_contract = bytes_field(&mut b, "contract");
+        let m_payload = bytes_field(&mut b, "payload");
+        let m_token = bytes_field(&mut b, "token");
+        record(&mut b, vec![m_contract, m_payload, m_token])
+    };
+    // step{requests: list<request>, outcome} — same shape as the other reducer worlds.
+    let step = {
+        let request = {
+            let r_contract = bytes_field(&mut b, "contract");
+            let r_payload = bytes_field(&mut b, "payload");
+            let r_token = bytes_field(&mut b, "token");
+            let r_deadline = {
+                let u64h = b.name("u64");
+                let u64t = b.list(vec![u64h]);
+                let oh = b.atom_leaf(Leaf::Str("option".into()));
+                let ot = b.list(vec![oh, u64t]);
+                field(&mut b, "deadline-nanos", ot)
+            };
+            record(&mut b, vec![r_contract, r_payload, r_token, r_deadline])
+        };
+        let requests_list = {
+            let lh = b.atom_leaf(Leaf::Str("list".into()));
+            b.list(vec![lh, request])
+        };
+        let closed = {
+            let c_schema = bytes_field(&mut b, "schema");
+            let c_reason = bytes_field(&mut b, "reason");
+            record(&mut b, vec![c_schema, c_reason])
+        };
+        let outcome = {
+            let cont_case = {
+                let n = b.name("continue");
+                b.list(vec![n])
+            };
+            let close_case = {
+                let n = b.name("close");
+                b.list(vec![n, closed])
+            };
+            let vh = b.atom_leaf(Leaf::Str("variant".into()));
+            b.list(vec![vh, cont_case, close_case])
+        };
+        let s_requests = field(&mut b, "requests", requests_list);
+        let s_outcome = field(&mut b, "outcome", outcome);
+        record(&mut b, vec![s_requests, s_outcome])
+    };
+    let on_message = {
+        let func_h = b.name("func");
+        let param_h = b.name("param");
+        let pn = b.name("m");
+        let param_node = b.list(vec![param_h, pn, message]);
+        let result_h = b.name("result");
+        let result_node = b.list(vec![result_h, step]);
+        let func = b.list(vec![func_h, param_node, result_node]);
+        let member_h = b.name("member");
+        let mn = b.name("on-message");
+        b.list(vec![member_h, mn, func])
+    };
+    let exp_h = b.name("export");
+    let iname = b.name("guest");
+    let export = b.list(vec![exp_h, iname, on_message]);
+    // import cadenza:platform/identity { id: func() -> list<u8> }
+    let id_member = {
+        let func_h = b.name("func");
+        let result_h = b.name("result");
+        let rty = list_u8(&mut b);
+        let rnode = b.list(vec![result_h, rty]);
+        let func = b.list(vec![func_h, rnode]); // no param nodes = 0-arg
+        let member_h = b.name("member");
+        let mn = b.name("id");
+        b.list(vec![member_h, mn, func])
+    };
+    let imp_h = b.name("import");
+    let id_name = b.name("cadenza:platform/identity");
+    let identity = b.list(vec![imp_h, id_name, id_member]);
+    let world_h = b.name("world");
+    let wn = b.name("w");
+    let world = b.list(vec![world_h, wn, export, identity]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+/// W4c-b-iii ANCHOR (current gap, decline-don't-miscompile): a typed reducer guest that PERFORMS a world
+/// import (`identity.id`, a 0-arg `list<u8>` host result) exercises the GENERIC world-import emit. Today it
+/// DECLINES cleanly at the FIRST backend layer — the host-op RESULT marshalling emits only scalar/unit host
+/// results (plus the bytes-provider `option<list<u8>>` lift), not a bare `list<u8>` (`Bytes`) result. (A
+/// SECOND layer follows once that lands: the typed interface-instance emit path composes only the runtime and
+/// must also thread `host_imports`.) This locks the honest decline (no mis-emit) and is the harness the
+/// feature flips to green. `onMessage` sets `request.token = identity.id()`.
+#[test]
+fn an_identity_performing_reducer_declines_cleanly_until_generic_world_import_emit() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (type Outcome Continue (Close (Record (schema Bytes) (reason Bytes)))) \
+                 (effect identity (op id (-> Unit Bytes))) \
+                 (def (onMessage (: m (Record (contract Bytes) (payload Bytes) (token Bytes)))) \
+                   (host (identity) \
+                     (record \
+                       (requests (list (record \
+                                         (contract (. m contract)) \
+                                         (payload (. m payload)) \
+                                         (token (identity.id unit)) \
+                                         (deadline-nanos Option.None)))) \
+                       (outcome Outcome.Continue)))) \
+                 (export onMessage))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:platform/guest"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                identity_token_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    // No mis-emit: declines with no wasm artifact, naming the host-result boundary gap (the FIRST layer of
+    // the generic world-import emit — a `Bytes` host result). Flip to an emit+validate assertion when it lands.
+    assert!(
+        out.has_error(),
+        "an identity-performing reducer must decline until the generic world-import emit lands"
+    );
+    assert!(
+        out.artifact(crate::backend::Target::Wasm.artifact_kind())
+            .is_none(),
+        "the decline emits no wasm artifact (no mis-emit)"
+    );
+    assert!(
+        out.diagnostics
+            .iter()
+            .any(|d| d.message.contains("id") && d.message.contains("no component boundary form")),
+        "the decline names the host-op `id` result boundary gap: {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
 /// W4c-b soundness: the record result writer PERMUTES fields by NAME, not by the guest's name-lex slot order.
 /// The WIT result declares its fields in NON-name-lex order — `record{second: s64, first: s64}` (`second`
 /// FIRST, but name-lex is `first` < `second`) — the shape of the real `step{requests, outcome}` /
