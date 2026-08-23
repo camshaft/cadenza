@@ -884,3 +884,71 @@ fn a_shared_log_records_a_reducers_kv_and_blob_calls_alongside_its_events() {
         "the delivered message is in the same log — events and store calls interleaved"
     );
 }
+
+#[test]
+fn a_real_runs_log_round_trips_through_the_structured_serializer() {
+    // The structured observation log (`serialize_log` / `deserialize_log`) is the language-neutral form a
+    // checker reads (§9). Its own tests round-trip hand-built records of every variant; this pins that the
+    // records a REAL harness run actually produces — a spawn (name→id), a delivered message, and a reducer's
+    // KV and blob calls — round-trip byte-for-byte too. It is the cross-module guard between `observation`
+    // (what a run records) and `log_value` (how the log serializes): a new `Entry` a run emits but the
+    // serializer does not handle would break this, catching the omission at the gate.
+    let log = ObservationLog::new();
+    let store_log = log.clone();
+    let owner = Origin {
+        reducer: ReducerId::of(b"storer-backend"),
+        host: HostId::of(b"h"),
+    };
+
+    let run = Harness::new("sys")
+        .blob("sys", Bytes::from_static(b"sys"))
+        .blob("storer", Bytes::from_static(b"storer"))
+        .spawn(SpawnSpec::new("storer", "storer"))
+        .deliver(
+            "storer",
+            Delivered::Message(Message {
+                id: ContractId::of(b"go"),
+                payload: Bytes::from_static(b"x"),
+                from: Origin {
+                    reducer: ReducerId::of(b"caller"),
+                    host: HostId::of(b"ingress"),
+                },
+                continuation_token: Bytes::from_static(b"t"),
+            }),
+        )
+        .log(log)
+        .run(move |_cas| {
+            let mut store = crate::program::testing::Store::new();
+            store.register(ProgramHash::of(b"storer"), move || {
+                Box::new(Storer {
+                    kv: RecordingKvStore::new(
+                        InMemoryKvStore::new(),
+                        owner,
+                        store_log.clone(),
+                        tick_clock as fn() -> u64,
+                    ),
+                    blobs: RecordingBlobStore::new(
+                        InMemoryBlobStore::new(),
+                        owner,
+                        store_log.clone(),
+                        tick_clock as fn() -> u64,
+                    ),
+                })
+            });
+            store
+        });
+
+    // A rich log: at least a spawn, a delivered event, and the KV + blob store calls.
+    assert!(
+        run.records.len() >= 4,
+        "the scenario produces a rich log:\n{}",
+        crate::testing::render(&run.records)
+    );
+    // The whole real log round-trips through the Cadenza-value serializer, byte-for-byte.
+    let bytes = crate::testing::serialize_log(&run.records);
+    assert_eq!(
+        crate::testing::deserialize_log(&bytes),
+        Some(run.records.clone()),
+        "a real run's observation log must survive serialize_log → deserialize_log intact"
+    );
+}
