@@ -31,20 +31,16 @@ type Error =
   | SchemaViolation
   | Faulted
 
-def empty-requests() =
-  ([] : List(Record(contract: Bytes, payload: Bytes, token: Bytes, deadlineNanos: Option(UInt64))))
-
-def keep-alive() = { requests = empty-requests(), outcome = Outcome.Continue }
-
 def on-message(
   msg: Record(contract: Bytes, sender: Record(reducer: Bytes, host: Bytes), payload: Bytes, token: Bytes)
 ) =
-  { requests = List.push(empty-requests(),
-                         { contract = msg.contract, payload = msg.payload, token = msg.token, deadlineNanos = None }),
+  { requests = [{ contract = msg.contract, payload = msg.payload, token = msg.token, deadlineNanos = None }],
     outcome = Outcome.Continue }
 
-def on-response(_resp: Record(contract: Bytes, token: Bytes, answer: Result(Bytes, Error))) = keep-alive()
+def on-response(_resp: Record(contract: Bytes, token: Bytes, answer: Result(Bytes, Error))) =
+  { requests = [], outcome = Outcome.Continue }
 
-def on-notification(_note: Record(contract: Bytes, payload: Bytes)) = keep-alive()
+def on-notification(_note: Record(contract: Bytes, payload: Bytes)) =
+  { requests = [], outcome = Outcome.Continue }
 
 export { on-message, on-response, on-notification }
