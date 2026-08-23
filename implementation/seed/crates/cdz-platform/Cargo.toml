@@ -32,7 +32,7 @@ testing = ["dep:bach"]
 # default per-crate closure never build the heavy runtime — only an explicit `--features host` build (and a
 # dedicated CI job) does. wasmtime is already a workspace dependency (cdz-run/rcdzc), so this adds no new
 # lock entries. Async, so a disk/network-backed host import never blocks the host thread (spec §3/§9).
-host = ["dep:wasmtime"]
+host = ["dep:wasmtime", "dep:tikv-jemallocator"]
 
 [dependencies]
 # cadenza-ast is the LANGUAGE's canonical AST + type system (not the compiler) — the value model contracts
@@ -70,6 +70,12 @@ wasmtime = { version = "37", default-features = false, features = [
     "component-model",
     "async",
 ], optional = true }
+# jemalloc as the global allocator for the integration-test EXECUTABLE only (behind `host`, off by default,
+# so the routine workspace build/gate never pulls it — same gating as wasmtime). The itest binary drives a
+# whole platform run + wasmtime + the bach observation log, which is allocation-heavy; jemalloc cuts its
+# allocator overhead and fragmentation (operator suggestion 2026-08-23). Allocator choice is invisible to the
+# observation log (seq/time/id are logical, address-independent), so it does not affect Bach determinism.
+tikv-jemallocator = { version = "0.6", optional = true }
 
 [dev-dependencies]
 # Bach for this crate's own tests (cfg(test)): drives the reducer tasks + the runtime-agnostic store/kv
