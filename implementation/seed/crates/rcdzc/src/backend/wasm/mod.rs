@@ -1143,21 +1143,22 @@ pub fn emit(
         });
     }
 
-    // DECLINE-DON'T-MISCOMPILE: the world declares a TYPED record-param export interface (the reducer `guest`
-    // shape) and a component name is set, yet `record_interface_export` did NOT fire above — so a world export
-    // member has no matching guest def (a PARTIAL guest — e.g. only `on-message` against a 3-member
-    // `guest`), or a member's shape is unsupported. Without this, the guest silently falls through to the
-    // raw heap-handle export (`on-message: u32 -> u32`), a component the platform host cannot bind. A
-    // component MUST export every member of the interface it exports, so decline clearly.
+    // DECLINE-DON'T-MISCOMPILE: the world declares a TYPED record-param export interface and a component
+    // name is set, yet `record_interface_export` did NOT fire above — so some member the exported interface
+    // declares has no matching guest def (a PARTIAL guest: the program defines only a subset of the
+    // interface's members), or a member's shape is unsupported. Without this, the program silently falls
+    // through to the raw heap-handle export (`u32 -> u32`), a component the boundary cannot bind. A component
+    // MUST export every member of the interface it exports, so decline clearly. Purely world/WIT-shape-driven
+    // — this is generic over ANY declared export interface, not any particular interface or member set.
     if db.component_name.is_some()
         && let Some(world_bytes) = db.wit_world.clone()
         && world_has_typed_record_export(&world_bytes)
     {
         return Err(Reject::decline(
-            "the guest does not fully implement the world's typed export interface: every member the world's \
-             export interface declares (e.g. the reducer `guest`'s on-message/on-response/on-notification) \
-             must have a matching guest def of the right shape — a partial guest cannot cross the typed \
-             interface-instance boundary (a component exports every func of the interface it exports)",
+            "the program does not fully implement the world's typed export interface: a component that \
+             exports an interface must define every member that interface declares, each with a matching \
+             definition of the right shape; this program defines only some of them, so it cannot cross the \
+             typed interface-instance boundary",
         ));
     }
 
@@ -8243,10 +8244,11 @@ fn emit_recursive_sum_resource(
 /// or contract shape is hard-coded, so the compiler stays generic over any WIT (the fold's `apply` is merely
 /// the first member that satisfies this, not a special case).
 /// Whether the target world declares an EXPORT interface with a `record`-param member — the domain of the
-/// typed interface-instance emit (`record_interface_export`, the reducer `guest` shape: `on-message`/… take
-/// a `message`/… record). Used to (a) admit a compound host result in the guard, and (b) turn a
-/// `record_interface_export` miss into a clean DECLINE rather than a silent heap-handle fallback (a reducer
-/// whose world declares a typed export the guest does not fully implement).
+/// typed interface-instance emit (`record_interface_export`). Used to (a) admit a compound host result in
+/// the guard, and (b) turn a `record_interface_export` miss into a clean DECLINE rather than a silent
+/// heap-handle fallback (a program whose world declares a typed export interface it does not fully
+/// implement). Purely world/WIT-shape-driven — no interface or member name is hard-coded, so the compiler
+/// stays generic over any WIT export.
 fn world_has_typed_record_export(world_bytes: &[u8]) -> bool {
     let Some(arenas) = crate::codec::decode(world_bytes) else {
         return false;

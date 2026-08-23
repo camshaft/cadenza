@@ -1422,6 +1422,57 @@ fn a_multi_export_record_interface_guest_compiles_and_runs() {
     assert_eq!(i64::from_val(&g), 9, "multi-export: g({{b: 9}}) == 9");
 }
 
+/// GENERIC partial-export decline: the partial-guest decline is driven purely off the world's WIT shape, NOT
+/// any particular interface. Here the world is `two_member_record_world_bytes` — an interface `iface` with
+/// arbitrarily-named record-param members `f`/`g` (NO reducer/`guest`/on-message knowledge anywhere). A guest
+/// that defines only `f` (not `g`) must DECLINE, exactly as a partial reducer guest does: a component must
+/// export every member of the interface it exports. This pins the operator's generic-compiler invariant — the
+/// decline is not reducer-specific — so a future change that special-cased a particular interface would flip
+/// this from decline to (mis-)emit and fail the gate.
+#[test]
+fn a_partial_guest_of_any_multi_member_interface_declines_cleanly() {
+    use crate::testkit::parse;
+    // Only `f` — `g` (the world's other member) is unimplemented.
+    let src = "(module m \
+                 (def (f (: m (Record (a Int64)))) (. m a)) \
+                 (export f))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:demo/iface"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                two_member_record_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        out.has_error(),
+        "a partial guest (1 of 2 interface members) must decline, not silently heap-fall"
+    );
+    assert!(
+        out.artifact(crate::backend::Target::Wasm.artifact_kind())
+            .is_none(),
+        "no wasm artifact — no silent heap-handle mis-emit"
+    );
+    assert!(
+        out.diagnostics.iter().any(|d| d
+            .message
+            .contains("does not fully implement the world's typed export interface")),
+        "the generic decline names the missing-export-member cause: {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
 /// A KIND_WIT_WORLD `f(m: record{a: list<u8>, sub: record{b: list<u8>}}) -> s64` — a NESTED record field
 /// carrying a `list<u8>` leaf, the shape of a reducer message's `sender` (a record-within-record with byte
 /// leaves). Fields name-lex at every level (`a` < `sub`).
