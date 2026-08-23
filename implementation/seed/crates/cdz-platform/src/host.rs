@@ -97,11 +97,42 @@ struct HostState {
     /// not wired a real one), so the import path never branches on its absence; an ordinary reducer never has
     /// the import anyway.
     delivery: Arc<dyn Delivery>,
+    /// The pure-run capability backing the synchronous `run` host import (§3) — the shared [`Instantiator`],
+    /// which both instantiates the sub-program and holds the pure-run memo, reached without a path back to the
+    /// store (acyclic). Every reducer carries it, pure ones included: `run` sits on the ordinary world's floor
+    /// and a pure program may call `run` to compose other pure programs. `None` only where no run capability is
+    /// wired at all (a bare [`HostState`] built for a non-run test).
+    run: Option<Arc<Instantiator>>,
 }
 
 impl cadenza::platform::identity::Host for HostState {
     async fn id(&mut self) -> Vec<u8> {
         self.id.hash().as_bytes().to_vec()
+    }
+}
+
+impl cadenza::platform::run::Host for HostState {
+    async fn run(
+        &mut self,
+        program: Vec<u8>,
+        contract: Vec<u8>,
+        input: Vec<u8>,
+    ) -> Result<Vec<u8>, wit_types::Error> {
+        // A malformed program/contract hash names no program — there is nothing to run, so it is a `faulted`
+        // run (no answer at all), the same category as a program that crashes or never returns.
+        let program =
+            ProgramHash::try_from(program.as_slice()).map_err(|_| wit_types::Error::Faulted)?;
+        let contract = to_contract(&contract).ok_or(wit_types::Error::Faulted)?;
+        // Every reducer instantiated by the store carries the run capability (the shared instantiation core);
+        // `None` only in a bare test HostState, where there is nothing to answer with — a `faulted` run.
+        let inst = self.run.as_ref().ok_or(wit_types::Error::Faulted)?;
+        match inst.run_pure(program, contract, Bytes::from(input)).await {
+            Ok(output) => Ok(output.to_vec()),
+            // No program to run maps to `missing-handler`; a fault or a program that never returned is the
+            // general `faulted` — the same mapping the run effect uses (§3/§4).
+            Err(RunError::UnknownProgram) => Err(wit_types::Error::MissingHandler),
+            Err(RunError::DidNotReturn | RunError::Faulted) => Err(wit_types::Error::Faulted),
+        }
     }
 }
 
@@ -440,7 +471,9 @@ fn notification_from_wit(notification: wit_reducer::Notification) -> Option<Noti
 // instantiation and every fold run on an async store — a disk/network-backed backend an import awaits never
 // blocks the host thread.
 
-use crate::{HashTag, ProgramHash, ProgramStore, Provenance, Reducer, ReducerKind, SpawnContext};
+use crate::{
+    HashTag, ProgramHash, ProgramStore, Provenance, Reducer, ReducerKind, RunError, SpawnContext,
+};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::future::Future;
@@ -473,15 +506,18 @@ fn add_host_imports(
     linker: &mut Linker<HostState>,
     kind: ReducerKind,
 ) -> Result<(), wasmtime::Error> {
-    // A pure `run` reducer (§3) has an EMPTY capability set — no imports at all, so it cannot read the
-    // outside world, message a peer, arm a timer, or write durable state. A component that imports anything
-    // fails to instantiate against this linker, which is exactly how the empty capability set is enforced
-    // (by what is wired, not a runtime check). This is what makes a `run`'s output a pure function of its
-    // input, so its memoization is sound.
+    // `run` is on the floor for EVERY reducer, a pure one included: a pure, deterministic, empty-effect
+    // sub-run grants nothing observable, so a pure component may still call `run` to compose *other* pure
+    // programs (§3) and stay pure itself. It is the only import a pure reducer gets — the rest of the empty
+    // capability set (no state, no blobs, no peer, no timer, no durable write) is what keeps a pure run's
+    // output a pure function of its input, so its memoization is sound; a component that tries to import
+    // anything else fails to instantiate against the pure linker.
+    cadenza::platform::run::add_to_linker::<_, HostData>(linker, |s| s)?;
     if matches!(kind, ReducerKind::Pure) {
         return Ok(());
     }
-    // The floor every non-pure reducer stands on.
+    // The rest of the floor every non-pure reducer stands on — its own state, the content-addressed store,
+    // and its id.
     cadenza::platform::identity::add_to_linker::<_, HostData>(linker, |s| s)?;
     cadenza::platform::blobs::add_to_linker::<_, HostData>(linker, |s| s)?;
     cadenza::platform::state::add_to_linker::<_, HostData>(linker, |s| s)?;
@@ -520,8 +556,9 @@ struct ReducerHost {
     engine: Engine,
     ordinary_linker: Linker<HostState>,
     event_linker: Linker<HostState>,
-    /// The empty linker a pure [`run`](crate::Runner) reducer instantiates against — no host imports, so an
-    /// effect or state access it attempts cannot even resolve (§3 empty capability set).
+    /// The linker a pure [`run`](crate::Runner) reducer instantiates against — only the `run` import, so it
+    /// may compose other pure programs but any effect, state, or world access it attempts cannot even resolve
+    /// (§3 otherwise-empty capability set).
     pure_linker: Linker<HostState>,
 }
 
@@ -534,7 +571,7 @@ impl ReducerHost {
         let mut event_linker = Linker::new(&engine);
         add_host_imports(&mut event_linker, ReducerKind::Event)?;
         let mut pure_linker = Linker::new(&engine);
-        add_host_imports(&mut pure_linker, ReducerKind::Pure)?; // wires nothing — the empty capability set
+        add_host_imports(&mut pure_linker, ReducerKind::Pure)?; // wires only `run` — otherwise empty (§3)
         Ok(Self {
             engine,
             ordinary_linker,
@@ -701,12 +738,15 @@ fn component_dependencies(engine: &Engine, component: &Component) -> Vec<Compone
 }
 
 /// The per-host instantiation core: the reducer-independent machinery for turning a program's content-
-/// addressed bytes into a live reducer. It holds only host-wide state — the wasm engine and per-kind
-/// linkers ([`ReducerHost`]), the content-addressed store components load from, and the compiled-component
-/// cache — and never references a per-reducer [`HostState`]. That acyclic shape is the point: a reducer's
-/// synchronous `run` host-import instantiates the program it is handed as a pure reducer (§3), so it needs
-/// this core, and it can hold an `Arc<Instantiator>` without a reference cycle back to the store that
-/// created it. [`WasmProgramStore`] holds one and shares it.
+/// addressed bytes into a live reducer, and the pure-run capability the synchronous `run` host import (§3)
+/// is served from. It holds only host-wide state — the wasm engine and per-kind linkers ([`ReducerHost`]),
+/// the content-addressed store components load from, the compiled-component cache, and the pure-run memo —
+/// and never references a per-reducer [`HostState`]. That acyclic shape is the point: a running reducer's
+/// `run` host import instantiates the program it is handed as a *pure* sub-reducer, and that sub-reducer is
+/// itself given the same `Arc<Instantiator>` so it too may call `run` (a pure computation composing pure
+/// sub-computation, the design intent). The recursion lives in the call stack, not the object graph: the
+/// core points only at leaf resources, never back at a `HostState` or the store, so there is no cycle and no
+/// `Weak`. [`WasmProgramStore`] holds one and shares it.
 struct Instantiator {
     host: ReducerHost,
     /// The content-addressed store components are loaded from (read-only here — `get` by hash).
@@ -716,16 +756,21 @@ struct Instantiator {
     /// one entry (the digest, like the store, ignores the hash kind). A `Component` is cheaply clonable
     /// (internally reference-counted).
     compiled: Mutex<HashMap<[u8; Hash::DIGEST_LEN], Component>>,
+    /// The pure-run memo (§3): a bounded LRU of `(program, input) -> output` shared by every synchronous
+    /// `run` on this host, so a repeated pure run — including one a fold makes and one nested inside it —
+    /// skips execution. Sound because a pure run is deterministic (empty capabilities, null birth).
+    memo: Mutex<crate::run::Cache>,
 }
 
 impl Instantiator {
     /// Build the instantiation core: the shared engine and per-kind linkers ([`ReducerHost::new`]) over the
-    /// content store `cas`. Fails only if the wasm engine/linkers cannot be built.
+    /// content store `cas`, with an empty pure-run memo. Fails only if the wasm engine/linkers cannot be built.
     fn new(cas: Arc<dyn BlobStore>) -> Result<Self, wasmtime::Error> {
         Ok(Self {
             host: ReducerHost::new()?,
             cas,
             compiled: Mutex::new(HashMap::new()),
+            memo: Mutex::new(crate::run::Cache::new(crate::run::Cache::DEFAULT_CAPACITY)),
         })
     }
 
@@ -829,12 +874,60 @@ impl Instantiator {
     async fn contains(&self, program: ProgramHash) -> bool {
         self.cas.has(program.hash()).await
     }
+
+    /// Run `program` once as a pure function of `input` against `contract` — the capability behind the
+    /// synchronous `run` host import (§3). Instantiates the program as a pure reducer (empty capabilities,
+    /// null birth) whose own `run` import is served by *this same* core, so it too may run pure
+    /// sub-programs; folds the input; returns the output, memoized. `&Arc<Self>` because the pure sub-reducer
+    /// is handed a clone of this core to recurse through — the recursion is on the stack, the object graph
+    /// stays acyclic (the core never points back at a [`HostState`]).
+    async fn run_pure(
+        self: &Arc<Self>,
+        program: ProgramHash,
+        contract: ContractId,
+        input: Bytes,
+    ) -> Result<Bytes, RunError> {
+        let key = (program, Hash::of(HashTag::Blob, &input));
+        // Memo hit — drop the lock before any await (never hold a std Mutex across `.await`).
+        if let Some(output) = self.memo.lock().expect("run memo lock").get(&key) {
+            return Ok(output);
+        }
+        let host_state = null_host_state(crate::run::null_run_id(), Some(Arc::clone(self)));
+        let reducer = self
+            .instantiate_program(program, ReducerKind::Pure, host_state)
+            .await
+            .ok_or(RunError::UnknownProgram)?;
+        let output = crate::run::drive_pure(reducer, contract, input).await?;
+        self.memo
+            .lock()
+            .expect("run memo lock")
+            .put(key, output.clone());
+        Ok(output)
+    }
+}
+
+/// The [`HostState`] a pure sub-program is instantiated with. A pure reducer's linker wires only `run` (§3
+/// empty-capability set otherwise), so the state/blobs/graph/provenance/delivery backends are never touched —
+/// they exist only because a `Store` must carry a `HostState` — but `run` is threaded through: `run` is
+/// `Some(inst)` so a pure program may itself call `run` to invoke other pure programs, the whole computation
+/// staying deterministic.
+fn null_host_state(id: ReducerId, run: Option<Arc<Instantiator>>) -> HostState {
+    HostState {
+        id,
+        blobs: Box::new(crate::InMemoryBlobStore::new()),
+        kv: Box::new(crate::InMemoryKvStore::new()),
+        graph: Arc::new(crate::InMemoryReducerGraph::new()),
+        provenance: Arc::new(crate::NoProvenance),
+        delivery: Arc::new(crate::NoDelivery),
+        run,
+    }
 }
 
 pub struct WasmProgramStore {
-    /// The shared per-host instantiation core (engine, linkers, content store, compiled cache), held via
-    /// `Arc` so a reducer's synchronous `run`/`spawn` host-import can share it without a cycle back to this
-    /// store — the acyclic wiring those imports rest on.
+    /// The shared per-host instantiation core (engine, linkers, content store, compiled cache, pure-run memo),
+    /// held via `Arc` so a reducer's synchronous `run` host import can share it — both to instantiate the
+    /// program it runs and as the run capability itself — without a cycle back to this store (the acyclic
+    /// wiring the run import rests on). Cloned into each reducer's [`HostState`] as its `run` capability.
     inst: Arc<Instantiator>,
     /// Builds each reducer's `blobs` host-import backend (its view of the content store, §8).
     make_blobs: BlobsFactory,
@@ -952,6 +1045,7 @@ impl ProgramStore for WasmProgramStore {
             graph: Arc::clone(&self.graph),
             provenance: self.provenance.clone(),
             delivery: self.delivery.clone(),
+            run: Some(Arc::clone(&self.inst)),
         };
         self.inst
             .instantiate_program(program, ctx.kind, host_state)
@@ -986,6 +1080,7 @@ mod tests {
             graph: Arc::new(InMemoryReducerGraph::new()),
             provenance: Arc::new(crate::NoProvenance),
             delivery: Arc::new(crate::NoDelivery),
+            run: None,
         }
     }
 
@@ -1003,6 +1098,53 @@ mod tests {
         let id = ReducerId::of(b"me");
         let mut host = host(id);
         assert_eq!(Identity::id(&mut host).await, id.hash().as_bytes().to_vec());
+    }
+
+    /// A HostState whose `run` capability is a real (empty) [`Instantiator`] — no programs in its store, so a
+    /// run resolves the error paths without a wasm program. The success path (a run returns a pure program's
+    /// output) needs a real wasm pure component and is covered by the reducer-world guest e2e, not natively.
+    fn host_with_empty_run() -> HostState {
+        let inst = Arc::new(
+            super::Instantiator::new(Arc::new(InMemoryBlobStore::new())).expect("wasm engine"),
+        );
+        let mut h = host(ReducerId::of(b"caller"));
+        h.run = Some(inst);
+        h
+    }
+
+    #[tokio::test]
+    async fn run_host_import_maps_errors_to_the_runtime_error() {
+        use super::cadenza::platform::run::Host as Run;
+        let mut h = host_with_empty_run();
+        // A program not in the store cannot be run — mapped to `missing-handler`.
+        let absent = crate::ProgramHash::of(b"absent");
+        assert_eq!(
+            Run::run(
+                &mut h,
+                absent.hash().as_bytes().to_vec(),
+                [0u8; Hash::LEN].to_vec(),
+                b"x".to_vec(),
+            )
+            .await,
+            Err(super::wit_types::Error::MissingHandler)
+        );
+        // A malformed program hash names no program — a faulted run, not a panic.
+        assert_eq!(
+            Run::run(&mut h, b"not-a-hash".to_vec(), vec![], vec![]).await,
+            Err(super::wit_types::Error::Faulted)
+        );
+        // No run capability wired at all is also a faulted run (a bare HostState).
+        let mut bare = host(ReducerId::of(b"caller"));
+        assert_eq!(
+            Run::run(
+                &mut bare,
+                crate::ProgramHash::of(b"p").hash().as_bytes().to_vec(),
+                [0u8; Hash::LEN].to_vec(),
+                vec![],
+            )
+            .await,
+            Err(super::wit_types::Error::Faulted)
+        );
     }
 
     #[tokio::test]
