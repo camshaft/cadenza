@@ -1053,3 +1053,163 @@ fn a_checker_reducer_folds_the_delivered_log_and_emits_a_verdict_the_harness_rea
         render(&fail.records)
     );
 }
+
+/// A reducer that echoes: on a message it emits one request on the SAME contract carrying the SAME payload,
+/// then continues. A native stand-in for the reducer-echo guest, so a checker can assert the echo (§9).
+struct Echoer;
+#[async_trait::async_trait]
+impl Reducer for Echoer {
+    async fn on_message(&mut self, m: Message) -> (Vec<Request>, Outcome) {
+        (
+            vec![Request {
+                id: m.id,
+                payload: m.payload.clone(),
+                continuation_token: m.continuation_token.clone(),
+                deadline: None,
+            }],
+            Outcome::Continue,
+        )
+    }
+    async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
+        (Vec::new(), Outcome::Continue)
+    }
+    async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
+        (Vec::new(), Outcome::Continue)
+    }
+}
+
+/// A checker reducer that asserts an ECHO in the delivered log: some message delivered on a contract with a
+/// payload was answered by a request the same reducer emitted on the same contract with the same payload.
+/// This is the shape of the reducer-echo v2 assertion (contract + payload echo), authored natively as a
+/// reference; the wasm checker guest asserts the same over a serialized log.
+struct EchoAssertChecker;
+#[async_trait::async_trait]
+impl Reducer for EchoAssertChecker {
+    async fn on_message(&mut self, m: Message) -> (Vec<Request>, Outcome) {
+        let verdict = if m.id == check_contract() {
+            match decode_check(&m.payload).and_then(|log| deserialize_log(&log)) {
+                Some(records) => {
+                    let delivered: Vec<(ContractId, Bytes)> = records
+                        .iter()
+                        .filter_map(|r| match &r.entry {
+                            Entry::Event(EventOp::Delivered {
+                                kind: EventKind::Message,
+                                contract,
+                                payload,
+                                ..
+                            }) => Some((*contract, payload.clone())),
+                            _ => None,
+                        })
+                        .collect();
+                    let echoed = |c: &ContractId, p: &Bytes| {
+                        records.iter().any(|r| {
+                            matches!(&r.entry, Entry::Event(EventOp::Emitted { contract, payload, .. })
+                                if contract == c && payload == p)
+                        })
+                    };
+                    if delivered.iter().any(|(c, p)| echoed(c, p)) {
+                        encode_verdict(true, &[])
+                    } else {
+                        encode_verdict(false, &[Str::from("no delivered message was echoed back")])
+                    }
+                }
+                None => encode_verdict(false, &[Str::from("log did not decode")]),
+            }
+        } else {
+            encode_verdict(false, &[Str::from("unexpected contract")])
+        };
+        (
+            vec![Request {
+                id: verdict_contract(),
+                payload: verdict,
+                continuation_token: Bytes::new(),
+                deadline: None,
+            }],
+            Outcome::Break {
+                schema: ContractId::of(b"checked"),
+                reason: Bytes::new(),
+            },
+        )
+    }
+    async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
+        (Vec::new(), Outcome::Continue)
+    }
+    async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
+        (Vec::new(), Outcome::Continue)
+    }
+}
+
+#[test]
+fn a_checker_asserts_an_echo_relationship_in_the_log() {
+    // The realistic checker shape (reducer-echo v2): a checker reads the whole log and asserts a delivered
+    // message was echoed back as an emitted request on the same contract with the same payload. It passes
+    // over an echoer's run and fails over a run with no echo — proving a checker can relate two events in
+    // the log, the pattern the wasm checker guest will implement.
+    fn checker_run(log_to_check: &[super::Record]) -> Run {
+        Harness::new("sys")
+            .blob("sys", Bytes::from_static(b"sys"))
+            .blob("checker", Bytes::from_static(b"checker"))
+            .spawn(SpawnSpec::new("checker", "checker"))
+            .deliver("checker", check_message(log_to_check))
+            .run(|_cas| {
+                let mut store = crate::program::testing::Store::new();
+                store.register(ProgramHash::of(b"checker"), || Box::new(EchoAssertChecker));
+                store.register(ProgramHash::of(b"sys"), || Box::new(JustClose));
+                store
+            })
+    }
+
+    let deliver_go = || {
+        Delivered::Message(Message {
+            id: ContractId::of(b"go"),
+            payload: Bytes::from_static(b"ping"),
+            from: Origin {
+                reducer: ReducerId::of(b"caller"),
+                host: HostId::of(b"ingress"),
+            },
+            continuation_token: Bytes::from_static(b"t"),
+        })
+    };
+
+    // An echoer's run: the delivered (go, "ping") is echoed back as an emitted (go, "ping") → the checker passes.
+    let echo_run = Harness::new("sys")
+        .blob("sys", Bytes::from_static(b"sys"))
+        .blob("echoer", Bytes::from_static(b"echoer"))
+        .spawn(SpawnSpec::new("echoer", "echoer"))
+        .deliver("echoer", deliver_go())
+        .run(|_cas| {
+            let mut store = crate::program::testing::Store::new();
+            store.register(ProgramHash::of(b"echoer"), || Box::new(Echoer));
+            store.register(ProgramHash::of(b"sys"), || Box::new(JustClose));
+            store
+        });
+    let pass = checker_run(&echo_run.records);
+    assert_eq!(
+        verdict_in(&pass.records),
+        Some(CheckOutcome::Pass),
+        "the checker passes when the delivered message was echoed:\n{}",
+        render(&echo_run.records)
+    );
+
+    // A run that only closes: the delivered message is never echoed → the checker fails with its reason.
+    let no_echo_run = Harness::new("sys")
+        .blob("sys", Bytes::from_static(b"sys"))
+        .blob("mute", Bytes::from_static(b"mute"))
+        .spawn(SpawnSpec::new("mute", "mute"))
+        .deliver("mute", deliver_go())
+        .run(|_cas| {
+            let mut store = crate::program::testing::Store::new();
+            store.register(ProgramHash::of(b"mute"), || Box::new(JustClose));
+            store.register(ProgramHash::of(b"sys"), || Box::new(JustClose));
+            store
+        });
+    let fail = checker_run(&no_echo_run.records);
+    assert_eq!(
+        verdict_in(&fail.records),
+        Some(CheckOutcome::Fail {
+            reasons: vec!["no delivered message was echoed back".to_string()],
+        }),
+        "the checker fails when nothing echoed:\n{}",
+        render(&no_echo_run.records)
+    );
+}
