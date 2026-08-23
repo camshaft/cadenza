@@ -442,6 +442,79 @@ pub fn wit_type_to_type_expr(db: &mut crate::db::Db, t: &WitType) -> Option<Stru
     })
 }
 
+/// Synthesize a source-AST `(effect <iface> (op <op> <arrow>)…)` DECL for each world-IMPORT interface,
+/// deriving every member's arrow `(-> <param-expr>… <result-expr>)` from its declared WIT signature via
+/// [`wit_type_to_type_expr`]. These are the decls the no-redeclare pre-pass injects into a guest's module
+/// BEFORE resolve (v-syntax's b-prime plan): a guest that performs a NAMED world import — `(host (iface)
+/// ((. iface op) args…))` — then resolves + types against the derived effect WITHOUT a hand-written
+/// `(effect …)` decl, and all downstream (resolve / infer / lower / [`is_world_import_op`]) sees an ORDINARY
+/// effect (which then re-derives it as a synchronous `Core::HostCall`), so genericity + no drift come for
+/// free.
+///
+/// The decl NAME is the import interface's SHORT kebab name (`cadenza:agent-kernel/identity` → `identity`),
+/// matching what a guest writes in `(host (identity) …)` and what [`is_world_import_op`] binds. A NULLARY op
+/// is the single-element arrow `(-> R)` (the elided-unit convention). A member whose signature carries a
+/// type [`wit_type_to_type_expr`] does not map (`enum`/`variant`/`flags`) is SKIPPED (the guest falls back to
+/// a hand decl for it until that increment); an interface with no mappable member yields no decl. Returns
+/// the decl nodes in `db`'s arena, in world-declaration order; empty when the world is absent/undecodable.
+pub fn synthesize_world_import_effect_decls(
+    db: &mut crate::db::Db,
+    world_bytes: Option<&[u8]>,
+) -> Vec<StructId> {
+    use crate::backend::common::export_name::kebab_extern_name;
+    fn short(fq: &str) -> &str {
+        fq.rsplit('/').next().unwrap_or(fq)
+    }
+    let Some(bytes) = world_bytes else {
+        return Vec::new();
+    };
+    let Some(arenas) = crate::codec::decode(bytes) else {
+        return Vec::new();
+    };
+    let Some(world) = parse_target_world(&arenas, arenas.root) else {
+        return Vec::new();
+    };
+    let mut decls = Vec::new();
+    for iface in &world.imports {
+        let mut ops = Vec::new();
+        for member in &iface.members {
+            // `(-> <param-expr>… <result-expr>)` — a nullary op is the single-element `(-> R)`. A member
+            // with a not-yet-mappable param/result type is skipped (the guest hand-declares it meanwhile).
+            let mut arrow_kids = vec![db.push_name("->")];
+            let mut mappable = true;
+            for (_pname, pty) in &member.func.params {
+                match wit_type_to_type_expr(db, pty) {
+                    Some(n) => arrow_kids.push(n),
+                    None => {
+                        mappable = false;
+                        break;
+                    }
+                }
+            }
+            if !mappable {
+                continue;
+            }
+            let Some(result_expr) = wit_type_to_type_expr(db, &member.func.result) else {
+                continue;
+            };
+            arrow_kids.push(result_expr);
+            let arrow = db.push_list(arrow_kids);
+            let op_head = db.push_name("op");
+            let op_name = db.push_name(&kebab_extern_name(&member.name));
+            ops.push(db.push_list(vec![op_head, op_name, arrow]));
+        }
+        if ops.is_empty() {
+            continue;
+        }
+        let effect_head = db.push_name("effect");
+        let iface_name = db.push_name(&kebab_extern_name(short(&iface.name)));
+        let mut effect_kids = vec![effect_head, iface_name];
+        effect_kids.extend(ops);
+        decls.push(db.push_list(effect_kids));
+    }
+    decls
+}
+
 /// Whether a guest [`Ty`] has a value-form document (so `value-encode`/`value-decode` can bridge it to a
 /// declared `list<u8>`). Everything with a runtime value form qualifies; the non-value types (a function, a
 /// type-value, an unresolved var, `Any`, a continuation, `unit`) do not.
@@ -1516,5 +1589,117 @@ mod tests {
             wit_type_to_type_expr(&mut db, &WitType::Enum(vec!["a".into(), "b".into()])),
             None
         );
+    }
+
+    /// `synthesize_world_import_effect_decls` builds one `(effect <short-name> (op <op> <arrow>)…)` decl per
+    /// world-import interface, with each op's arrow derived from its WIT signature — the decls the
+    /// no-redeclare pre-pass injects. Verifies the effect/op NAMES (FQ import → short kebab) and that the
+    /// derived arrows RESOLVE to the intended effect-op types (nullary `(-> R)` = Unit->R; single-arg with
+    /// an option result; the 3-node multi-arg arrow shape).
+    #[test]
+    fn synthesize_world_import_effect_decls_builds_resolvable_effects() {
+        use crate::db::Db;
+        let mut b = Builder::new();
+        let byte_list = |b: &mut Builder| {
+            let hh = b.atom_leaf(Leaf::Str("list".into()));
+            let uh = b.name("u8");
+            let u = b.list(vec![uh]);
+            b.list(vec![hh, u])
+        };
+        // import cadenza:agent-kernel/identity { id: () -> list<u8> }
+        let id_res = byte_list(&mut b);
+        let id = member(&mut b, "id", vec![], id_res);
+        let ih1 = b.name("import");
+        let in1 = b.name("cadenza:agent-kernel/identity");
+        let identity = b.list(vec![ih1, in1, id]);
+        // import cadenza:agent-kernel/state { get: (list<u8>) -> option<list<u8>>;
+        //   put: (list<u8>, list<u8>) -> unit }
+        let gk = byte_list(&mut b);
+        let gi = byte_list(&mut b);
+        let gr = opt(&mut b, gi);
+        let get = member(&mut b, "get", vec![("key", gk)], gr);
+        let pk = byte_list(&mut b);
+        let pv = byte_list(&mut b);
+        let pr = unit(&mut b);
+        let put = member(&mut b, "put", vec![("key", pk), ("value", pv)], pr);
+        let ih2 = b.name("import");
+        let in2 = b.name("cadenza:agent-kernel/state");
+        let state = b.list(vec![ih2, in2, get, put]);
+        let wh = b.name("world");
+        let wn = b.name("reducer");
+        let world = b.list(vec![wh, wn, identity, state]);
+        let a = b.finish(world);
+        let bytes = crate::codec::encode(&a);
+
+        let mut db = Db::load(crate::testkit::parse(
+            "(module m (def (main) 0) (export main))",
+        ));
+        let decls = synthesize_world_import_effect_decls(&mut db, Some(&bytes));
+        assert_eq!(decls.len(), 2, "one (effect …) decl per import interface");
+
+        // Navigate a synthesized `(effect NAME (op OP ARROW)…)` decl.
+        fn parts(db: &Db, d: StructId) -> (String, Vec<(String, StructId)>) {
+            let Struct::List(kids) = db.ast.get(d) else {
+                panic!("effect decl is a list")
+            };
+            assert_eq!(db.ast.as_name(kids[0]), Some("effect"));
+            let name = db.ast.as_name(kids[1]).unwrap().to_string();
+            let ops = kids[2..]
+                .iter()
+                .map(|&op| {
+                    let Struct::List(ok) = db.ast.get(op) else {
+                        panic!("op is a list")
+                    };
+                    assert_eq!(db.ast.as_name(ok[0]), Some("op"));
+                    (db.ast.as_name(ok[1]).unwrap().to_string(), ok[2])
+                })
+                .collect();
+            (name, ops)
+        }
+
+        let (n0, ops0) = parts(&db, decls[0]);
+        assert_eq!(n0, "identity", "FQ import name → short kebab effect name");
+        assert_eq!(ops0.len(), 1);
+        assert_eq!(ops0[0].0, "id");
+        // A nullary `(-> Bytes)` resolves to `Unit -> Bytes` (the elided-unit convention).
+        let id_arrow = ops0[0].1;
+        assert_eq!(
+            crate::eval::typeval_of(&mut db, id_arrow),
+            Some(Ty::Fn(Box::new(Ty::Unit), Box::new(Ty::Bytes))),
+            "the derived identity.id arrow resolves to Unit -> Bytes"
+        );
+
+        let (n1, ops1) = parts(&db, decls[1]);
+        assert_eq!(n1, "state");
+        assert_eq!(
+            ops1.iter().map(|o| o.0.as_str()).collect::<Vec<_>>(),
+            vec!["get", "put"]
+        );
+        // get: (list<u8>) -> option<list<u8>> → Bytes -> Option Bytes.
+        let opt_bytes = {
+            let occ = db
+                .type_decls
+                .iter()
+                .find(|t| t.name == "Option")
+                .unwrap()
+                .occ;
+            db.normalize_sum(occ, vec![Ty::Bytes])
+        };
+        let get_arrow = ops1[0].1;
+        assert_eq!(
+            crate::eval::typeval_of(&mut db, get_arrow),
+            Some(Ty::Fn(Box::new(Ty::Bytes), Box::new(opt_bytes))),
+            "the derived state.get arrow resolves to Bytes -> Option Bytes"
+        );
+        // put: (list<u8>, list<u8>) -> unit — the multi-arg arrow `(-> Bytes Bytes Unit)` (4 nodes).
+        let put_arrow = ops1[1].1;
+        let Struct::List(ak) = db.ast.get(put_arrow) else {
+            panic!("arrow is a list")
+        };
+        assert_eq!(db.ast.as_name(ak[0]), Some("->"));
+        assert_eq!(ak.len(), 4, "(-> Bytes Bytes Unit) is a 4-node arrow");
+
+        // An absent world → no decls.
+        assert!(synthesize_world_import_effect_decls(&mut db, None).is_empty());
     }
 }
