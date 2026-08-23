@@ -852,8 +852,8 @@
         # DESIGN (operator north star 2026-08-03): the content hash is DERIVED FROM THE BUILT BYTES,
         # never asserted. So each runtime is a NORMAL (input-addressed) derivation — NOT a fixed-output
         # derivation with a pinned/read `outputHash`. The build produces the stripped wasm; the hash
-        # FALLS OUT as `sha256(that output)`, exposed via `packages.*-hash`. Nothing in this file names
-        # a 64-hex literal or reads one from `runtime_abi.rs` — `runtime_abi.rs`'s recorded hash becomes
+        # FALLS OUT as the platform content address of that output (`hashOf`), exposed via `packages.*-hash`.
+        # This runtime derivation pins no content-address literal — `runtime_abi.rs`'s recorded hash becomes
         # a CONSUMER of this nix-built truth (a later increment inverts `xtask codegen` to read it),
         # not the source. The gate proving parity (nix hash == the committed REQUIRED_RUNTIME_HASH)
         # lives in `checks.*` below, comparing the DERIVED hash to what the build already records —
@@ -1270,18 +1270,20 @@
             echo "ok: harness run '${name}' exited 0 (ast ${ast})" > "$out"
           '';
 
-        # The content address of a built component = blake3 of its (stripped) bytes. DERIVED from the
-        # artifact nix built — this is the Cadenza content-address a program pins, falling out of the
-        # build rather than being asserted. Exposed as a `packages.*-hash` (a plain-text store file).
-        # BLAKE3 content-address (dual-hash COLLAPSE, operator ruling 2026-08-08: unify tree-wide on blake3 for
-        # speed). Was sha256sum; the kernel's Hash::of is blake3, so every content-address — *-hash packages,
-        # componentStore filenames, runtime.toml, the parity checks vs REQUIRED_RUNTIME_HASH, and the compose-dep
-        # import (already blake3) — is now the same blake3 Hash::of. b3sum --no-names → the lowercase 64-char hex
-        # Hash::to_hex produces. Co-lands with v-ah's component_store Hash::of flip + v-rust-backend's codegen
-        # regen of REQUIRED_RUNTIME_HASH/DEBUG_RUNTIME_HASH (else the parity checks red on the stale sha256 constant).
+        # The content address of a built component = the platform content address of its (stripped) bytes:
+        # `Hash::of(HashTag::Blob, bytes)` rendered base62 (§8), computed by the `cdz-contract blob` CLI so it
+        # is byte-identical to `cdz-run`'s / `xtask`'s `content_address` and the store's own `put()`. DERIVED
+        # from the artifact nix built — the Cadenza content-address a program pins, falling out of the build
+        # rather than being asserted. Exposed as a `packages.*-hash` (a plain-text store file).
+        #   base62, NOT hex: the address must equal the `+<hash>` a program pins on its runtime import
+        #   (`cadenza:runtime/heap@0.0.0+<hash>`), and that suffix rides a component-import semver
+        #   build-metadata field whose grammar rejects base64url's `_` — so base62 (`0-9A-Za-z`) is the one
+        #   text form everywhere (§8). Every content-address here — *-hash packages, componentStore filenames,
+        #   runtime.toml, the parity checks vs REQUIRED_RUNTIME_HASH — routes through this same CLI, so a
+        #   `hashOf` output can be handed straight to a `+suffix` or a `<hash>.wasm` filename.
         hashOf = drv: name:
-          pkgs.runCommand name { } ''
-            ${pkgs.b3sum}/bin/b3sum --no-names ${drv} | ${pkgs.coreutils}/bin/tr -d '\n' > $out
+          pkgs.runCommand name { nativeBuildInputs = [ contractHasher ]; } ''
+            cdz-contract blob ${drv} > $out
           '';
 
         # ── R2: the content-addressed component STORE ─────────────────────────────────────────────
@@ -1293,12 +1295,13 @@
         # component derivations, so it's cache-shareable + rebuilt only when a component changes.
         # (A later increment has the runtime/harness RESOLVE from this store; that's a cross-territory
         # change coordinated with v-runtime + the harness — this increment only PRODUCES the store.)
-        # BLAKE3 (dual-hash collapse) — filenames + runtime.toml use b3sum, matching the kernel Hash::of.
-        componentStore = pkgs.runCommand "cdz-component-store" { } ''
+        # Filenames + runtime.toml use the platform content address (`cdz-contract blob` = base62 Blob hash),
+        # matching `content_address` / the store's `put()` so a program resolves the runtime identically here.
+        componentStore = pkgs.runCommand "cdz-component-store" { nativeBuildInputs = [ contractHasher ]; } ''
           set -euo pipefail
           mkdir -p "$out"
           for c in ${runtime} ${runtimeDebug} ${nfc}; do
-            h=$(${pkgs.b3sum}/bin/b3sum --no-names "$c")
+            h=$(cdz-contract blob "$c")
             ${pkgs.coreutils}/bin/cp "$c" "$out/$h.wasm"
           done
           # `cdz-run` resolves the runtime's NFC dependency (FINDING#23) by reading `runtime.toml` from the
@@ -1306,9 +1309,9 @@
           # it too — WITHOUT this manifest every heap case that composes the runtime fails to resolve NFC.
           # `xtask build` writes exactly this file (main.rs:466); mirror its format so a program run against
           # THIS nix store composes identically to one run against target/cadenza-store.
-          rt=$(${pkgs.b3sum}/bin/b3sum --no-names ${runtime})
-          dbg=$(${pkgs.b3sum}/bin/b3sum --no-names ${runtimeDebug})
-          nfc=$(${pkgs.b3sum}/bin/b3sum --no-names ${nfc})
+          rt=$(cdz-contract blob ${runtime})
+          dbg=$(cdz-contract blob ${runtimeDebug})
+          nfc=$(cdz-contract blob ${nfc})
           cat > "$out/runtime.toml" <<EOF
           # Cadenza content-addressed store — the value-heap runtime + its NFC dependency.
           runtime = "$rt"
@@ -1793,9 +1796,10 @@
         # `xtask codegen` already recorded in runtime_abi.rs. This reads the committed value only to
         # COMPARE — the flake never uses it as the build's asserted output. It catches a divergence
         # between the nix build and the xtask build (e.g. a toolchain/vendor drift) at `nix flake
-        # check` time. `runtime_abi.rs` is `@generated by cargo xtask codegen`; we extract the 64-hex
+        # check` time. `runtime_abi.rs` is `@generated by cargo xtask codegen`; we extract the base62 hash
         # literal following the named `pub const … : &str =` declaration (guarded: the split MUST match,
-        # else we THROW rather than compare against a stray literal; case-insensitive hex).
+        # else we THROW rather than compare against a stray literal). The recorded hash is now the platform
+        # content address — a 45-char base62 string (`0-9A-Za-z`, §8), not the old 64-hex.
         checks =
           let
             abi = builtins.readFile
@@ -1806,16 +1810,16 @@
                 parts = builtins.split decl abi;
                 afterDecl = if builtins.length parts >= 3 then pkgs.lib.last parts else null;
                 m = if afterDecl == null then null
-                    else builtins.match "[^\"]*\"([0-9a-fA-F]{64})\".*" afterDecl;
+                    else builtins.match "[^\"]*\"([0-9A-Za-z]{45})\".*" afterDecl;
               in
               if afterDecl == null then
                 throw "flake.nix: `${decl}` not found in runtime_abi.rs (codegen shape changed?)"
               else if m == null then
-                throw "flake.nix: `${decl}` found but no 64-hex literal followed it"
+                throw "flake.nix: `${decl}` found but no 45-char base62 literal followed it"
               else builtins.head m;
             parity = { name, drv, constName }:
-              pkgs.runCommand "${name}-hash-parity" { } ''
-                got=$(${pkgs.b3sum}/bin/b3sum --no-names ${drv})
+              pkgs.runCommand "${name}-hash-parity" { nativeBuildInputs = [ contractHasher ]; } ''
+                got=$(cdz-contract blob ${drv})
                 want=${recordedHash constName}
                 if [ "$got" != "$want" ]; then
                   echo "PARITY FAIL: nix-built ${name} hash $got != runtime_abi.rs ${constName} $want" >&2

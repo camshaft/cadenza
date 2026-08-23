@@ -7349,18 +7349,16 @@ fn emit(paths: &Paths, profile: &str, file: &Path, from: &str, out: Option<PathB
     println!("wrote {}", out.display());
 }
 
-/// BLAKE3 of the bytes, lowercase hex — the ONE unified content-address digest (operator ruling
-/// 2026-08-08 unified content addressing on blake3, superseding concierge ruling (A) 2026-08-05 which
-/// had kept the external store on SHA-256). This MUST match `cdz-run`'s `content_address`
-/// (`blake3::hash(bytes)`), so the store address == blob-store key == compose-dep `+hash` are
-/// one digest. (The local build-cache `hash_tree` below is an internal fingerprint, NOT a content
-/// address that crosses the store/compose boundary, so it stays SHA-256 — no cross-boundary contract.)
+/// The platform content address of the bytes — a `HashTag::Blob`-tagged blake3 digest rendered base62
+/// (`design/cadenza-platform.md` §8), via [`cdz_contract::Hash`]. This is the ONE unified content-address
+/// string: it MUST match `cdz-run`'s `content_address` (which delegates to the same call) and the store's
+/// own `put()` (`Hash::of(HashTag::Blob, bytes)`), so the store address == blob-store key == compose-dep
+/// `+hash` == `REQUIRED_RUNTIME_HASH` are one 45-char string. base62 (not hex, not base64url) because the
+/// `+hash` rides a component-import semver build-metadata suffix, whose grammar rejects `_`. (The local
+/// build-cache `hash_tree` below is an internal fingerprint, NOT a content address that crosses the
+/// store/compose boundary, so it stays SHA-256 — no cross-boundary contract.)
 pub(crate) fn content_address(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(64);
-    for b in blake3::hash(bytes).as_bytes() {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
+    cdz_contract::Hash::of(cdz_contract::HashTag::Blob, bytes).to_string()
 }
 
 /// CANONICALIZE a built runtime component for content-addressing: strip ALL custom sections
