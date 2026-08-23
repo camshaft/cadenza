@@ -1,0 +1,54 @@
+@!contract "cdz-platform.forward"
+@!input Envelope
+@!output Outcome
+
+// The forward contract — one of the two built-in effects a handler emits to act on an effect delivered to
+// it (design/cadenza-platform.md section 4; the other is respond.cdz). `forward` permits the effect and
+// passes it to the next handler in the chain, possibly rewritten — even re-contracted into a different
+// contract. It is an ordinary emitted effect, not a synchronous return, so a handler may defer it across
+// folds. The event reducer decides the next hop from the chain it assembled; forward names no target, only
+// the (possibly new) request to pass on.
+//
+// The event reducer matches the forward to the open obligation by the handler's kernel-stamped `from`
+// (section 3) and the `token` echoed here — the continuation-token the event reducer chose when it
+// delivered the effect (it cannot ride on the emitted Request's own continuation-token, which is the
+// handler's correlation for the forward effect's own answer, so it travels in the envelope). `contract` and
+// `payload` are the request to pass on: the same contract and bytes to forward transparently, or a new
+// contract-id and payload to transform. Both cross as opaque Bytes (a contract-id's raw bytes, a contract
+// value in canonical form).
+//
+// Like deliver.cdz / run.cdz, this file is the source of truth for the schema and is real Cadenza: `cargo
+// xtask codegen` validates it with the `cdz` binary and generates `src/contracts/forward.rs`, then wires
+// `pub mod forward` into `src/contracts/mod.rs`. Re-run `cargo xtask codegen` after editing; `cargo xtask
+// codegen --check` fails if the generated file is stale.
+
+// The envelope (the contract's input): permit the obligation correlated by `token` and pass the request
+// named by `contract` with `payload` to the next handler.
+type Envelope =
+  | Forward(Record(token: Bytes, contract: Bytes, payload: Bytes))
+
+// The outcome (the contract's output): the forward was recorded and passed on, or failed with a reason
+// (e.g. no such open obligation, or it was already discharged).
+type Outcome =
+  | Accepted
+  | Failed(Bytes)
+
+// --- conformance proofs: a fully-literal value of each type, ascribed against the schema type ---
+def a-forward() -> Envelope =
+  Envelope.Forward({ token = b"token", contract = b"http.get", payload = b"a rewritten request" })
+
+def an-accepted() -> Outcome = Outcome.Accepted
+
+@test
+def forward-conforms() =
+  match a-forward() with
+  | Envelope.Forward(f) =>
+    if f.contract == b"http.get"
+    then (if f.payload == b"a rewritten request" then unit else trap("forward payload mismatch"))
+    else trap("forward contract mismatch")
+
+@test
+def forward-outcome-conforms() =
+  match an-accepted() with
+  | Outcome.Accepted => unit
+  | Outcome.Failed(_) => trap("expected an Accepted outcome")

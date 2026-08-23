@@ -24,6 +24,7 @@ mod contract_value;
 mod contracts;
 mod deliver;
 mod event_registry;
+mod forward;
 mod genesis;
 mod graph;
 // The wasm-runtime host (§3) — wasmtime instantiates a reducer component and drives it through the WIT world.
@@ -35,6 +36,7 @@ mod kv;
 mod lifecycle;
 mod program;
 mod reducer;
+mod respond;
 // The pure-function kernel primitive `run(program, contract, input) -> output` (§3): instantiate a program
 // with no capabilities and a null birth, fold one input, return the output, and memoize the result. The
 // foundation for schema validation (§4).
@@ -49,6 +51,7 @@ pub use blob_store::{BlobStore, InMemoryBlobStore};
 pub use contract::Contract;
 pub use deliver::{Deliver, Delivered, deliver_contract};
 pub use event_registry::{EventRegistry, InMemoryEventRegistry};
+pub use forward::{Forward, forward_contract};
 pub use genesis::Genesis;
 pub use graph::{Dir, EdgeKind, InMemoryReducerGraph, ReducerGraph};
 // The content hash (§8) and the contract-id computation (§1) live in the dep-minimal `cdz-contract` crate
@@ -65,6 +68,7 @@ pub use kv::{InMemoryKvStore, KeyRange, KvKeyScan, KvScan, KvStore, prefix_range
 pub use lifecycle::{Lifecycle, lifecycle_contract};
 pub use program::{ProgramStore, SpawnContext};
 pub use reducer::{Error, Message, Notification, Origin, Outcome, Reducer, Request, Response};
+pub use respond::{Respond, respond_contract};
 pub use run::{Run, RunError, RunOutput, Runner, run_contract};
 #[cfg(any(test, feature = "testing"))]
 pub use runtime::BachRuntime;

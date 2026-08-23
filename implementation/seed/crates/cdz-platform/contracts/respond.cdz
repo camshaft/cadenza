@@ -1,0 +1,68 @@
+@!contract "cdz-platform.respond"
+@!input Envelope
+@!output Outcome
+
+// The respond contract — one of the two built-in effects a handler emits to act on an effect delivered to
+// it (design/cadenza-platform.md section 4; the other is forward.cdz). `respond` answers or denies: the
+// handler supplies the answer and the event reducer routes it back down the chain to the caller,
+// discharging the handler's pending obligation. It is an ordinary emitted effect, not a synchronous return,
+// so a handler may store the delivered effect, do other work across folds, and respond only later.
+//
+// The event reducer matches the response to the open obligation by the handler's kernel-stamped `from`
+// (section 3) and the `token` echoed here — the continuation-token the event reducer chose when it
+// delivered the effect. That token cannot ride on the emitted Request's own continuation-token (which is the
+// handler's correlation for the respond effect's own answer), so it travels in the envelope. The `answer` is
+// the contract's output value or a runtime failure: a handler's domain failure is still an `Ok` output (the
+// output type encodes it), while `Err` is a runtime error, exactly as a Response carries it (section 4).
+//
+// Like deliver.cdz / run.cdz, this file is the source of truth for the schema and is real Cadenza: `cargo
+// xtask codegen` validates it with the `cdz` binary and generates `src/contracts/respond.rs`, then wires
+// `pub mod respond` into `src/contracts/mod.rs`. Re-run `cargo xtask codegen` after editing; `cargo xtask
+// codegen --check` fails if the generated file is stale. Every hash and opaque payload crosses as Bytes.
+
+type Error =
+  | Timeout
+  | MissingHandler
+  | SchemaViolation
+  | Faulted
+
+// The envelope (the contract's input): answer the obligation correlated by `token` with `answer`.
+type Envelope =
+  | Respond(Record(token: Bytes, answer: Result(Bytes, Error)))
+
+// The outcome (the contract's output): the answer was recorded and routed, or failed with a reason (e.g. no
+// such open obligation, or it was already discharged).
+type Outcome =
+  | Accepted
+  | Failed(Bytes)
+
+// --- conformance proofs: a fully-literal value of each type, ascribed against the schema type ---
+def a-respond-ok() -> Envelope =
+  Envelope.Respond({ token = b"token", answer = Ok(b"answer") })
+
+def a-respond-err() -> Envelope =
+  Envelope.Respond({ token = b"token", answer = Err(Error.MissingHandler) })
+
+def a-failed() -> Outcome = Outcome.Failed(b"no such obligation")
+
+@test
+def respond-ok-conforms() =
+  match a-respond-ok() with
+  | Envelope.Respond(r) =>
+    (match r.answer with
+     | Ok(answer) => if answer == b"answer" then unit else trap("respond answer mismatch")
+     | Err(_) => trap("expected an Ok answer"))
+
+@test
+def respond-err-conforms() =
+  match a-respond-err() with
+  | Envelope.Respond(r) =>
+    (match r.answer with
+     | Err(MissingHandler) => unit
+     | _ => trap("expected an Err(MissingHandler) answer"))
+
+@test
+def respond-outcome-conforms() =
+  match a-failed() with
+  | Outcome.Failed(reason) => if reason == b"no such obligation" then unit else trap("reason mismatch")
+  | Outcome.Accepted => trap("expected a Failed outcome")
