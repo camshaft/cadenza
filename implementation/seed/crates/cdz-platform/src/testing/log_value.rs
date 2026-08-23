@@ -29,7 +29,7 @@
 
 use super::observation::{BlobOp, Entry, EventKind, EventOp, KvOp, Record, SpawnInfo};
 use crate::contract_value::{
-    bytes_leaf, qctor, read_bytes, read_uint, record, record_field, uint_leaf,
+    bare_ctor, bytes_leaf, qctor, read_bytes, read_uint, record, record_field, uint_leaf,
 };
 use crate::{
     Bytes, ContractId, Error, Hash, HostId, Origin, ProgramHash, ReducerId, ReducerKind, Str,
@@ -269,21 +269,25 @@ fn event_value(b: &mut Builder, op: &EventOp) -> StructId {
             let contract = bytes_leaf(b, contract.hash().as_bytes());
             let token = bytes_leaf(b, continuation_token);
             let payload = bytes_leaf(b, payload);
-            let mut fields = vec![
-                ("event-kind", event_kind),
-                ("contract", contract),
-                ("token", token),
-                ("payload", payload),
-            ];
-            if let Some(o) = from {
-                let o = origin_value(b, o);
-                fields.push(("from", o));
-            }
-            if let Some(e) = error {
-                let e = str_leaf(b, error_str(*e));
-                fields.push(("error", e));
-            }
-            tagged(b, "delivered", fields)
+            // `from` and `error` are ALWAYS-PRESENT Option fields (`(Some …)` / `(None unit)`), never
+            // conditionally-omitted, so the delivered record has one fixed shape a Cadenza checker
+            // `Value.decode`s into a single record type (§9 checker decodability).
+            let from_inner = from.as_ref().map(|o| origin_value(b, o));
+            let from = option_value(b, from_inner);
+            let error_inner = error.as_ref().map(|e| str_leaf(b, error_str(*e)));
+            let error = option_value(b, error_inner);
+            tagged(
+                b,
+                "delivered",
+                vec![
+                    ("event-kind", event_kind),
+                    ("contract", contract),
+                    ("from", from),
+                    ("token", token),
+                    ("payload", payload),
+                    ("error", error),
+                ],
+            )
         }
         EventOp::Emitted {
             contract,
@@ -337,16 +341,12 @@ fn read_event(arenas: &Arenas, id: StructId, tag: &str) -> Option<EventOp> {
         "delivered" => EventOp::Delivered {
             kind: read_event_kind(str_at(arenas, field(arenas, id, "event-kind")?)?)?,
             contract: read_contract(arenas, field(arenas, id, "contract")?)?,
-            from: match field(arenas, id, "from") {
-                None => None,
-                Some(f) => Some(read_origin(arenas, f)?),
-            },
+            from: read_option(arenas, field(arenas, id, "from")?, read_origin)?,
             continuation_token: read_bytes(arenas, field(arenas, id, "token")?)?,
             payload: read_bytes(arenas, field(arenas, id, "payload")?)?,
-            error: match field(arenas, id, "error") {
-                None => None,
-                Some(e) => Some(read_error(str_at(arenas, e)?)?),
-            },
+            error: read_option(arenas, field(arenas, id, "error")?, |a, i| {
+                read_error(str_at(a, i)?)
+            })?,
         },
         "emitted" => EventOp::Emitted {
             contract: read_contract(arenas, field(arenas, id, "contract")?)?,
@@ -477,6 +477,42 @@ fn entry_ctor(arenas: &Arenas, id: StructId) -> Option<(&str, StructId)> {
     let ctor = arenas.as_name(m[1])?;
     let [inner] = <[StructId; 1]>::try_from(tail).ok()?;
     Some((ctor, inner))
+}
+
+/// Encode an `Option<T>` as its canonical Cadenza value — `(Some <v>)`, or the nullary `(None unit)` — the
+/// form R2 `Value.encode` produces. Used for a delivered entry's `from`/`error` so they are ALWAYS-PRESENT
+/// fields of one fixed record shape (a Cadenza checker `Value.decode`s them into an `Option`), never fields
+/// that appear only for some deliveries.
+fn option_value(b: &mut Builder, inner: Option<StructId>) -> StructId {
+    match inner {
+        Some(v) => bare_ctor(b, "Some", vec![v]),
+        None => {
+            let unit = b.name("unit");
+            bare_ctor(b, "None", vec![unit])
+        }
+    }
+}
+
+/// Read an `Option<T>` value `(Some <v>)` / `(None unit)`, applying `read_inner` to the `Some` payload.
+/// `None` (the outer `Option`, i.e. a rejected log) if `id` is neither constructor.
+fn read_option<T>(
+    arenas: &Arenas,
+    id: StructId,
+    read_inner: impl FnOnce(&Arenas, StructId) -> Option<T>,
+) -> Option<Option<T>> {
+    let Struct::List(items) = arenas.get(id) else {
+        return None;
+    };
+    let (&head, tail) = items.split_first()?;
+    match arenas.as_name(head)? {
+        "Some" => {
+            let [v] = <[StructId; 1]>::try_from(tail).ok()?;
+            Some(Some(read_inner(arenas, v)?))
+        }
+        // The nullary `(None unit)` — the `unit` payload is a placeholder, ignored.
+        "None" => Some(None),
+        _ => None,
+    }
 }
 
 fn str_leaf(b: &mut Builder, text: &str) -> StructId {
@@ -730,5 +766,38 @@ mod tests {
         };
         assert_eq!(*contract, ContractId::of(b"echo"));
         assert_eq!(continuation_token.as_ref(), token.as_slice());
+    }
+
+    #[test]
+    fn a_delivered_entry_always_carries_its_from_and_error_option_fields() {
+        // The fixed-shape contract: `from`/`error` are ALWAYS-PRESENT Option fields, so the delivered record
+        // has one shape a Cadenza checker `Value.decode`s into a single record type — even when both are
+        // absent. Round-trip alone would not catch a regression to conditionally-omitted fields; this pins
+        // that the fields (and the nullary `(None unit)` value) are always emitted.
+        let log = vec![rec(
+            0,
+            Entry::Event(EventOp::Delivered {
+                kind: EventKind::Message,
+                contract: ContractId::of(b"c"),
+                from: None,
+                continuation_token: Bytes::new(),
+                payload: Bytes::new(),
+                error: None,
+            }),
+        )];
+        let bytes = serialize(&log);
+        let arenas = cadenza_ast::codec::decode(&bytes).expect("a decodable log");
+        let items = super::list_items(&arenas, arenas.root).expect("the log is a list");
+        let entry = super::field(&arenas, items[0], "entry").expect("the record has an entry");
+        let (ctor, inner) = super::entry_ctor(&arenas, entry).expect("the entry is an Entry sum");
+        assert_eq!(ctor, "delivered");
+        assert!(
+            super::field(&arenas, inner, "from").is_some(),
+            "`from` is present even when None"
+        );
+        assert!(
+            super::field(&arenas, inner, "error").is_some(),
+            "`error` is present even when None"
+        );
     }
 }
