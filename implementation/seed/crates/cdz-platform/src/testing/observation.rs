@@ -18,7 +18,7 @@
 //! [`Record::seq`] is that order, assigned as each record is appended. A checker takes a
 //! [`snapshot`](ObservationLog::snapshot) of the records once the run is quiescent.
 
-use crate::{Bytes, ContractId, Error, Hash, Origin};
+use crate::{Bytes, ContractId, Error, Hash, Origin, ProgramHash, ReducerId, ReducerKind, Str};
 use std::ops::Bound;
 use std::sync::{Arc, Mutex};
 
@@ -43,9 +43,9 @@ pub struct Record {
 }
 
 /// What a [`Record`] observed. A closed set of platform-level facts — the operations the platform
-/// itself mediates for a reducer, observable without decoding a payload or knowing the program's
-/// language. Key-value and blob store calls are here now; delivered and emitted events arrive with the
-/// event tap (a later slice), extending this enum without changing what is already recorded.
+/// mediates for a reducer and the setup a run performs, observable without decoding a payload or knowing
+/// the program's language: a key-value or blob store call, an event a reducer folded/emitted/closed with,
+/// or the harness assigning a spawn its name and id at the start of a run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Entry {
     /// A call to the reducer's key-value store (§7).
@@ -54,6 +54,27 @@ pub enum Entry {
     Blob(BlobOp),
     /// An event the reducer folded, emitted, or closed with (§3/§4/§10).
     Event(EventOp),
+    /// The harness spawned a reducer and assigned it a name — recorded at the start of a run so the log
+    /// is self-describing: a reader derefs a name to the reducer id ([`Record::source`]) it was assigned,
+    /// with no out-of-band metadata (§3).
+    Spawn(SpawnInfo),
+}
+
+/// A reducer the harness spawned at the start of a run, and the name the run gave it — the log's record
+/// of the name→id assignment (`design/cadenza-platform.md` §3). The assigned reducer id is the enclosing
+/// [`Record::source`]'s reducer (the id derived from this genesis); this carries the human name and the
+/// rest of the genesis, so anything reading the log can map a name to its id and see what was spawned.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpawnInfo {
+    /// The name the run gave this spawn — the handle a delivery, another spawn's parent, or a checker
+    /// refers to it by.
+    pub name: Str,
+    /// The program it runs, by content hash.
+    pub program: ProgramHash,
+    /// Its parent reducer (its own id for a root).
+    pub parent: ReducerId,
+    /// Its privilege — ordinary, or a privileged event/system reducer.
+    pub kind: ReducerKind,
 }
 
 /// A key-value store operation, with enough of its outcome to assert over — whether a `get` hit, what
