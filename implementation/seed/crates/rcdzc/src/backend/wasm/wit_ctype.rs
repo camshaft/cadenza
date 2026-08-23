@@ -404,6 +404,39 @@ pub fn flatten_func_core_sig(
     (core_params, core_results)
 }
 
+/// Whether a value type contains a `list`/`string` leaf anywhere — a leaf that crosses through linear
+/// memory as `(ptr, len)`, so a func carrying it must lift/lower with the Memory+Realloc canon options.
+fn ty_touches_memory(t: &WitType) -> bool {
+    match t {
+        WitType::List(_) | WitType::String => true,
+        WitType::Record(fs) => fs.iter().any(|(_, ft)| ty_touches_memory(ft)),
+        WitType::Tuple(es) => es.iter().any(ty_touches_memory),
+        WitType::Option(inner) => ty_touches_memory(inner),
+        WitType::Variant(cs) => cs
+            .iter()
+            .any(|(_, p)| p.as_ref().is_some_and(ty_touches_memory)),
+        WitType::Result { ok, err } => {
+            ok.as_deref().is_some_and(ty_touches_memory)
+                || err.as_deref().is_some_and(ty_touches_memory)
+        }
+        _ => false,
+    }
+}
+
+/// Whether a boundary function's `canon lift` needs the Memory + Realloc options — true iff its signature
+/// touches linear memory: a `list`/`string` leaf anywhere, OR params that spill (over [`MAX_FLAT_PARAMS`]),
+/// OR a result that spills (over [`MAX_FLAT_RESULTS`], returned by pointer). A pure fixed-scalar signature
+/// needs neither (its args cross in registers) — the [`crate::backend::wasm::envelope`] assembler uses this
+/// to pick the plain lift vs the Memory+Realloc lift and whether to alias the core's memory + realloc.
+pub fn sig_needs_memory(params: &[WitType], result: Option<&WitType>) -> bool {
+    if params.iter().any(ty_touches_memory) || result.is_some_and(ty_touches_memory) {
+        return true;
+    }
+    let params_flat: usize = params.iter().map(|t| flatten(t).len()).sum();
+    let result_flat: usize = result.map(|t| flatten(t).len()).unwrap_or(0);
+    params_flat > MAX_FLAT_PARAMS || result_flat > MAX_FLAT_RESULTS
+}
+
 // ── Canonical-ABI MEMORY LAYOUT (step W4c-spill) ──────────────────────────────────────────────────────
 // When a boundary value spills to linear memory — a param tuple over MAX_FLAT_PARAMS, or a record/variant
 // RESULT (which always exceeds MAX_FLAT_RESULTS, returned by pointer) — it is laid out at the component-

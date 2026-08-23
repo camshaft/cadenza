@@ -581,9 +581,13 @@ fn add_memo(
 /// Assemble a component that exports the WIT interface `iface` as an instance (the reducer world's
 /// `export guest`). Section order: core module(1), core-instance(2), func aliases(6), type section(7:
 /// defined types then functypes), canon lifts(8), the exported instance(5: `FromExports` of the named
-/// types + the lifted funcs), the top-level instance export(11). NON-SPILLING MVP — every param/result
-/// flattens without spilling (no `list`/`string` leaf, within the 16/1 flat limits), so the lifts carry no
-/// Memory/Realloc options and the core module needs no memory/realloc. (A spilling leaf is a later slice.)
+/// types + the lifted funcs), the top-level instance export(11).
+///
+/// A func whose signature touches linear memory — a `list`/`string` leaf anywhere, or a spilling
+/// param/result (see [`wit_ctype::sig_needs_memory`]) — lifts with the Memory+Realloc canon options, and the
+/// embedded `core` module must then export `memory` + `cabi_realloc` (aliased after the func aliases). A
+/// pure fixed-scalar func lifts with no options and needs neither. Per func `j`, the core exports a function
+/// named `<func.name>` whose signature is that func's canonical-ABI flattening.
 #[allow(dead_code)]
 pub fn assemble_typed_interface(core: &[u8], iface: &TypedInterface) -> Vec<u8> {
     use crate::backend::wasm::wit_ctype::{CRef, emit_cdef, emit_functype};
@@ -614,12 +618,36 @@ pub fn assemble_typed_interface(core: &[u8], iface: &TypedInterface) -> Vec<u8> 
     }
     let functype_base = table.len() as u32;
 
-    // sec 6: alias each func's core export (core funcs 0..m).
+    // Which funcs' lift touches linear memory (a `list`/`string` leaf, or a spilling param/result) — those
+    // lift with Memory+Realloc and require the core to export `memory` + `cabi_realloc`. If ANY does, the
+    // core-func aliases (0..m) are followed by a `memory` alias (memory 0) and a `cabi_realloc` alias (core
+    // func m), and those funcs lift with the options bound.
+    let needs_mem: Vec<bool> = iface
+        .funcs
+        .iter()
+        .map(|f| {
+            let ptys: Vec<WitType> = f.params.iter().map(|(_, t)| t.clone()).collect();
+            crate::backend::wasm::wit_ctype::sig_needs_memory(&ptys, f.result.as_ref())
+        })
+        .collect();
+    let any_mem = needs_mem.iter().any(|&b| b);
+    let mem_idx: u32 = 0;
+    let realloc_func: u32 = m as u32; // core func after the m func aliases
+
+    // sec 6: alias each func's core export (core funcs 0..m); then, if any func needs memory, alias the
+    // core's `memory` and `cabi_realloc`.
     let mut alias_items = Vec::new();
     for f in &iface.funcs {
         alias_items.extend_from_slice(&core_alias_item(0, &f.name));
     }
-    let alias_sec = section(sec::ALIAS, &wasm_vec(m, &alias_items));
+    let n_aliases = if any_mem {
+        alias_items.extend_from_slice(&memory_alias_item(0, "memory"));
+        alias_items.extend_from_slice(&core_alias_item(0, "cabi_realloc"));
+        m + 2
+    } else {
+        m
+    };
+    let alias_sec = section(sec::ALIAS, &wasm_vec(n_aliases, &alias_items));
 
     // sec 7: defined types (component types 0..d), then one functype per func (types d..d+m).
     let mut type_items = Vec::new();
@@ -631,10 +659,21 @@ pub fn assemble_typed_interface(core: &[u8], iface: &TypedInterface) -> Vec<u8> 
     }
     let type_sec = section(sec::COMPONENT_TYPE, &wasm_vec(table.len() + m, &type_items));
 
-    // sec 8: canon lift func j (core func j) with its functype (component type functype_base + j).
+    // sec 8: canon lift func j (core func j) with its functype (component type functype_base + j) — a
+    // memory-touching func binds Memory + Realloc, a pure-scalar func lifts with no options.
     let mut canon_items = Vec::new();
-    for j in 0..m {
-        canon_items.extend_from_slice(&canon_lift_item(j as u32, functype_base + j as u32));
+    for (j, &nm) in needs_mem.iter().enumerate() {
+        let type_idx = functype_base + j as u32;
+        if nm {
+            canon_items.extend_from_slice(&canon_lift_list_item(
+                j as u32,
+                mem_idx,
+                realloc_func,
+                type_idx,
+            ));
+        } else {
+            canon_items.extend_from_slice(&canon_lift_item(j as u32, type_idx));
+        }
     }
     let canon_sec = section(sec::CANON, &wasm_vec(m, &canon_items));
 
