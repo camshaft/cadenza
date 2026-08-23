@@ -72,6 +72,12 @@ pub enum ReducerKind {
     /// root, not its parent, so it does not inherit the parent's permission model — the system tracks it under
     /// the reducer that requested it, but as a privileged node.
     Event,
+    /// A **pure** reducer: an empty capability set (§3). A [`run`](crate::Runner) program is spawned as this —
+    /// no host imports are wired, so it can neither read the outside world, message a peer, arm a timer, nor
+    /// write durable state; all it can do is fold its input and return its output. This is what makes a `run`
+    /// a pure function of its input (and thus soundly memoizable): the empty capability set is enforced by
+    /// what the host wires (nothing), not a runtime check the program could attempt.
+    Pure,
 }
 
 /// The supervision links a spawn establishes — one per direction, independently (`design/cadenza-platform.md`

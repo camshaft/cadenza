@@ -89,15 +89,17 @@ impl<P: ProgramStore + ?Sized> Runner<P> {
             return Ok(output);
         }
 
-        // Null birth: a canonical-null id and kind (Ordinary — its capability set is empty regardless, as
-        // no effect it emits is routed), identical on every invocation.
+        // Null birth + empty capabilities: a canonical-null id and the `Pure` kind, so a wasm store wires no
+        // host imports (§3 empty capability set) — the program cannot read the world or write durable state,
+        // which is what makes its output a pure function of the input and its memoization sound. Identical on
+        // every invocation.
         let mut reducer = self
             .programs
             .spawn(
                 program,
                 SpawnContext {
                     id: null_run_id(),
-                    kind: ReducerKind::Ordinary,
+                    kind: ReducerKind::Pure,
                 },
             )
             .await

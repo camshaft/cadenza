@@ -471,7 +471,15 @@ fn add_host_imports(
     linker: &mut Linker<HostState>,
     kind: ReducerKind,
 ) -> Result<(), wasmtime::Error> {
-    // The floor every reducer stands on.
+    // A pure `run` reducer (§3) has an EMPTY capability set — no imports at all, so it cannot read the
+    // outside world, message a peer, arm a timer, or write durable state. A component that imports anything
+    // fails to instantiate against this linker, which is exactly how the empty capability set is enforced
+    // (by what is wired, not a runtime check). This is what makes a `run`'s output a pure function of its
+    // input, so its memoization is sound.
+    if matches!(kind, ReducerKind::Pure) {
+        return Ok(());
+    }
+    // The floor every non-pure reducer stands on.
     cadenza::platform::identity::add_to_linker::<_, HostData>(linker, |s| s)?;
     cadenza::platform::blobs::add_to_linker::<_, HostData>(linker, |s| s)?;
     cadenza::platform::state::add_to_linker::<_, HostData>(linker, |s| s)?;
@@ -510,6 +518,9 @@ struct ReducerHost {
     engine: Engine,
     ordinary_linker: Linker<HostState>,
     event_linker: Linker<HostState>,
+    /// The empty linker a pure [`run`](crate::Runner) reducer instantiates against — no host imports, so an
+    /// effect or state access it attempts cannot even resolve (§3 empty capability set).
+    pure_linker: Linker<HostState>,
 }
 
 impl ReducerHost {
@@ -520,10 +531,13 @@ impl ReducerHost {
         add_host_imports(&mut ordinary_linker, ReducerKind::Ordinary)?;
         let mut event_linker = Linker::new(&engine);
         add_host_imports(&mut event_linker, ReducerKind::Event)?;
+        let mut pure_linker = Linker::new(&engine);
+        add_host_imports(&mut pure_linker, ReducerKind::Pure)?; // wires nothing — the empty capability set
         Ok(Self {
             engine,
             ordinary_linker,
             event_linker,
+            pure_linker,
         })
     }
 
@@ -532,6 +546,7 @@ impl ReducerHost {
         match kind {
             ReducerKind::Ordinary => &self.ordinary_linker,
             ReducerKind::Event => &self.event_linker,
+            ReducerKind::Pure => &self.pure_linker,
         }
     }
 
