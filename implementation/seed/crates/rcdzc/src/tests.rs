@@ -14651,14 +14651,19 @@ fn compose_nfc_into_runtime_linker(
     use wasmtime::component::types::ComponentItem;
     use wasmtime::component::{Component, Linker};
     const NFC_IFACE: &str = "cadenza:nfc/normalize";
-    // Does the runtime import the NFC interface? If not, nothing to compose.
-    let imports_nfc = runtime
+    // Does the runtime import the NFC interface, and under exactly what name? The NFC import is now
+    // SELF-DESCRIBING — its name carries the NFC component's content address as a semver build-metadata
+    // suffix (`cadenza:nfc/normalize@0.0.0+<hash>`, stamped into the heap at build time), so match on the
+    // interface PREFIX and keep the FULL name (the linker must satisfy the import under the declared name).
+    // Mirrors `cdz_run::compose_nfc_into_runtime_linker`.
+    let nfc_import_name = runtime
         .component_type()
         .imports(engine)
-        .any(|(name, _)| name == NFC_IFACE);
-    if !imports_nfc {
-        return;
-    }
+        .map(|(name, _)| name.to_string())
+        .find(|name| name == NFC_IFACE || name.starts_with(&format!("{NFC_IFACE}@")));
+    let Some(nfc_import_name) = nfc_import_name else {
+        return; // nothing to compose
+    };
     let nfc_bytes = find_nfc_wasm()
         .expect("runtime imports cadenza:nfc/normalize but the NFC component is not in the store (run `cargo xtask build`)");
     let nfc_component = Component::new(engine, &nfc_bytes).expect("nfc component");
@@ -14686,8 +14691,10 @@ fn compose_nfc_into_runtime_linker(
     let nfc_idx = nfc_instance
         .get_export_index(&mut *store, None, NFC_IFACE)
         .expect("nfc instance exports the interface");
+    // Bind under the runtime's ACTUAL (versioned) import name; the NFC component still EXPORTS the bare
+    // `NFC_IFACE` (only the heap's IMPORT is stamped), so the export lookups above stay on `NFC_IFACE`.
     let mut iface = rt_linker
-        .instance(NFC_IFACE)
+        .instance(&nfc_import_name)
         .expect("rt_linker nfc instance");
     for fname in &nfc_func_names {
         let fidx = nfc_instance
