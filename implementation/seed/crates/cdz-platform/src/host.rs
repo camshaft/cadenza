@@ -700,24 +700,17 @@ fn component_dependencies(engine: &Engine, component: &Component) -> Vec<Compone
         .collect()
 }
 
-pub struct WasmProgramStore {
+/// The per-host instantiation core: the reducer-independent machinery for turning a program's content-
+/// addressed bytes into a live reducer. It holds only host-wide state — the wasm engine and per-kind
+/// linkers ([`ReducerHost`]), the content-addressed store components load from, and the compiled-component
+/// cache — and never references a per-reducer [`HostState`]. That acyclic shape is the point: a reducer's
+/// synchronous `run` host-import instantiates the program it is handed as a pure reducer (§3), so it needs
+/// this core, and it can hold an `Arc<Instantiator>` without a reference cycle back to the store that
+/// created it. [`WasmProgramStore`] holds one and shares it.
+struct Instantiator {
     host: ReducerHost,
     /// The content-addressed store components are loaded from (read-only here — `get` by hash).
     cas: Arc<dyn BlobStore>,
-    /// Builds each reducer's `blobs` host-import backend (its view of the content store, §8).
-    make_blobs: BlobsFactory,
-    /// Builds each reducer's key-value state backend (§7).
-    make_kv: KvFactory,
-    /// The one node-wide reducer graph (§3), shared by every reducer that is wired the `graph` import.
-    graph: Arc<dyn ReducerGraph>,
-    /// The node-side provenance an event reducer's `program-of` import reads (§4) — the system, which knows
-    /// every running reducer's program. [`NoProvenance`](crate::NoProvenance) until set with
-    /// [`with_provenance`](WasmProgramStore::with_provenance), so it is never absent, only null.
-    provenance: Arc<dyn Provenance>,
-    /// The node-side delivery an event reducer's `deliver` import routes through (§4) — the system, which
-    /// injects an event into a reducer's mailbox. [`NoDelivery`](crate::NoDelivery) until set with
-    /// [`with_delivery`](WasmProgramStore::with_delivery), so it is never absent, only null.
-    delivery: Arc<dyn Delivery>,
     /// Compiled components keyed by content digest — `Component::new` (the Cranelift compile) runs once per
     /// distinct component, not once per reducer, and a program and a dependency over the same bytes share the
     /// one entry (the digest, like the store, ignores the hash kind). A `Component` is cheaply clonable
@@ -725,46 +718,15 @@ pub struct WasmProgramStore {
     compiled: Mutex<HashMap<[u8; Hash::DIGEST_LEN], Component>>,
 }
 
-impl WasmProgramStore {
-    /// A store loading components from `cas`, giving each reducer the state and content-store view its
-    /// factories build, over the shared reducer `graph`. Fails only if the wasm engine/linkers cannot be
-    /// built ([`ReducerHost::new`]). Event-reducer provenance is [`NoProvenance`](crate::NoProvenance) until
-    /// set with [`with_provenance`](WasmProgramStore::with_provenance).
-    pub fn new(
-        cas: Arc<dyn BlobStore>,
-        make_blobs: BlobsFactory,
-        make_kv: KvFactory,
-        graph: Arc<dyn ReducerGraph>,
-    ) -> Result<Self, wasmtime::Error> {
+impl Instantiator {
+    /// Build the instantiation core: the shared engine and per-kind linkers ([`ReducerHost::new`]) over the
+    /// content store `cas`. Fails only if the wasm engine/linkers cannot be built.
+    fn new(cas: Arc<dyn BlobStore>) -> Result<Self, wasmtime::Error> {
         Ok(Self {
             host: ReducerHost::new()?,
             cas,
-            make_blobs,
-            make_kv,
-            graph,
-            provenance: Arc::new(crate::NoProvenance),
-            delivery: Arc::new(crate::NoDelivery),
             compiled: Mutex::new(HashMap::new()),
         })
-    }
-
-    /// Wire the node-side provenance an event reducer's `program-of` import reads (§4) — the system, which
-    /// knows every running reducer's program. Set during node assembly, after the system exists (it holds
-    /// this store as its program store, so the reference is broken with a `Weak` or set once at wiring time).
-    #[must_use]
-    pub fn with_provenance(mut self, provenance: Arc<dyn Provenance>) -> Self {
-        self.provenance = provenance;
-        self
-    }
-
-    /// Wire the node-side delivery an event reducer's `deliver` import routes through (§4) — the system, which
-    /// injects an event into a reducer's mailbox. Set during node assembly, after the system exists (as with
-    /// [`with_provenance`](WasmProgramStore::with_provenance), the store↔system reference is broken with a
-    /// `Weak` or set once at wiring time).
-    #[must_use]
-    pub fn with_delivery(mut self, delivery: Arc<dyn Delivery>) -> Self {
-        self.delivery = delivery;
-        self
     }
 
     /// The compiled component whose bytes `hash` addresses, loaded from the store and cached by content
@@ -827,6 +789,108 @@ impl WasmProgramStore {
             Ok(())
         })
     }
+
+    /// Instantiate `program` as a live reducer of `kind`, backing its host imports with `host_state`. The
+    /// fast path reuses the cached per-kind pre-instantiated world; a component with content-addressed
+    /// dependencies takes the compose path (a fresh per-spawn linker with those dependencies bound in).
+    /// `None` if the program is not in the store or its component fails to instantiate.
+    async fn instantiate_program(
+        &self,
+        program: ProgramHash,
+        kind: ReducerKind,
+        host_state: HostState,
+    ) -> Option<Box<dyn Reducer>> {
+        let component = self.component(program.hash()).await?;
+        let reducer = if component_dependencies(&self.host.engine, &component).is_empty() {
+            // Fast path: no content-addressed component dependencies, so reuse the cached, pre-instantiated
+            // per-kind linker (the engine, linker, and pre are all shared).
+            let pre = self.host.preinstantiate(&component, kind).ok()?;
+            self.host.instantiate(&pre, host_state).await.ok()?
+        } else {
+            // Compose path: the component imports dependencies (the value-heap runtime, …) that must be
+            // resolved from the store and instantiated into THIS store, so a fresh per-spawn linker is built
+            // (a store-bound dependency instance cannot be pre-instantiated). Host imports for the kind are
+            // wired first (the capability split), then the dependencies composed in.
+            let mut store = Store::new(&self.host.engine, host_state);
+            let mut linker = Linker::new(&self.host.engine);
+            add_host_imports(&mut linker, kind).ok()?;
+            self.bind_dependencies(&mut store, &mut linker, &component)
+                .await
+                .ok()?;
+            let world = EventReducerWorld::instantiate_async(&mut store, &component, &linker)
+                .await
+                .ok()?;
+            WasmReducer { store, world }
+        };
+        Some(Box::new(reducer))
+    }
+
+    /// Whether the store holds `program`'s component bytes — a content lookup by the program hash (§8).
+    async fn contains(&self, program: ProgramHash) -> bool {
+        self.cas.has(program.hash()).await
+    }
+}
+
+pub struct WasmProgramStore {
+    /// The shared per-host instantiation core (engine, linkers, content store, compiled cache), held via
+    /// `Arc` so a reducer's synchronous `run`/`spawn` host-import can share it without a cycle back to this
+    /// store — the acyclic wiring those imports rest on.
+    inst: Arc<Instantiator>,
+    /// Builds each reducer's `blobs` host-import backend (its view of the content store, §8).
+    make_blobs: BlobsFactory,
+    /// Builds each reducer's key-value state backend (§7).
+    make_kv: KvFactory,
+    /// The one node-wide reducer graph (§3), shared by every reducer that is wired the `graph` import.
+    graph: Arc<dyn ReducerGraph>,
+    /// The node-side provenance an event reducer's `program-of` import reads (§4) — the system, which knows
+    /// every running reducer's program. [`NoProvenance`](crate::NoProvenance) until set with
+    /// [`with_provenance`](WasmProgramStore::with_provenance), so it is never absent, only null.
+    provenance: Arc<dyn Provenance>,
+    /// The node-side delivery an event reducer's `deliver` import routes through (§4) — the system, which
+    /// injects an event into a reducer's mailbox. [`NoDelivery`](crate::NoDelivery) until set with
+    /// [`with_delivery`](WasmProgramStore::with_delivery), so it is never absent, only null.
+    delivery: Arc<dyn Delivery>,
+}
+
+impl WasmProgramStore {
+    /// A store loading components from `cas`, giving each reducer the state and content-store view its
+    /// factories build, over the shared reducer `graph`. Fails only if the wasm engine/linkers cannot be
+    /// built ([`ReducerHost::new`]). Event-reducer provenance is [`NoProvenance`](crate::NoProvenance) until
+    /// set with [`with_provenance`](WasmProgramStore::with_provenance).
+    pub fn new(
+        cas: Arc<dyn BlobStore>,
+        make_blobs: BlobsFactory,
+        make_kv: KvFactory,
+        graph: Arc<dyn ReducerGraph>,
+    ) -> Result<Self, wasmtime::Error> {
+        Ok(Self {
+            inst: Arc::new(Instantiator::new(cas)?),
+            make_blobs,
+            make_kv,
+            graph,
+            provenance: Arc::new(crate::NoProvenance),
+            delivery: Arc::new(crate::NoDelivery),
+        })
+    }
+
+    /// Wire the node-side provenance an event reducer's `program-of` import reads (§4) — the system, which
+    /// knows every running reducer's program. Set during node assembly, after the system exists (it holds
+    /// this store as its program store, so the reference is broken with a `Weak` or set once at wiring time).
+    #[must_use]
+    pub fn with_provenance(mut self, provenance: Arc<dyn Provenance>) -> Self {
+        self.provenance = provenance;
+        self
+    }
+
+    /// Wire the node-side delivery an event reducer's `deliver` import routes through (§4) — the system, which
+    /// injects an event into a reducer's mailbox. Set during node assembly, after the system exists (as with
+    /// [`with_provenance`](WasmProgramStore::with_provenance), the store↔system reference is broken with a
+    /// `Weak` or set once at wiring time).
+    #[must_use]
+    pub fn with_delivery(mut self, delivery: Arc<dyn Delivery>) -> Self {
+        self.delivery = delivery;
+        self
+    }
 }
 
 /// Alias every function a dependency instance exports into `linker` under `import_name` — the parent's
@@ -878,7 +942,9 @@ fn alias_instance_exports(
 #[async_trait]
 impl ProgramStore for WasmProgramStore {
     async fn spawn(&self, program: ProgramHash, ctx: SpawnContext) -> Option<Box<dyn Reducer>> {
-        let component = self.component(program.hash()).await?;
+        // The store's job is to assemble the per-reducer HostState from its factories and node-wide handles;
+        // turning the program's bytes into a live reducer is the shared instantiation core's (which the
+        // reducer's own host-imports also reach, without a cycle back here).
         let host_state = HostState {
             id: ctx.id,
             blobs: (self.make_blobs)(ctx.id),
@@ -887,32 +953,13 @@ impl ProgramStore for WasmProgramStore {
             provenance: self.provenance.clone(),
             delivery: self.delivery.clone(),
         };
-        let reducer = if component_dependencies(&self.host.engine, &component).is_empty() {
-            // Fast path: no content-addressed component dependencies, so reuse the cached, pre-instantiated
-            // per-kind linker (the engine, linker, and pre are all shared).
-            let pre = self.host.preinstantiate(&component, ctx.kind).ok()?;
-            self.host.instantiate(&pre, host_state).await.ok()?
-        } else {
-            // Compose path: the component imports dependencies (the value-heap runtime, …) that must be
-            // resolved from the store and instantiated into THIS store, so a fresh per-spawn linker is built
-            // (a store-bound dependency instance cannot be pre-instantiated). Host imports for the kind are
-            // wired first (the capability split), then the dependencies composed in.
-            let mut store = Store::new(&self.host.engine, host_state);
-            let mut linker = Linker::new(&self.host.engine);
-            add_host_imports(&mut linker, ctx.kind).ok()?;
-            self.bind_dependencies(&mut store, &mut linker, &component)
-                .await
-                .ok()?;
-            let world = EventReducerWorld::instantiate_async(&mut store, &component, &linker)
-                .await
-                .ok()?;
-            WasmReducer { store, world }
-        };
-        Some(Box::new(reducer))
+        self.inst
+            .instantiate_program(program, ctx.kind, host_state)
+            .await
     }
 
     async fn contains(&self, program: ProgramHash) -> bool {
-        self.cas.has(program.hash()).await
+        self.inst.contains(program).await
     }
 }
 
