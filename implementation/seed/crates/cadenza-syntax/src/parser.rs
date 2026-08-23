@@ -2752,6 +2752,8 @@ impl<'a> Parser<'a> {
     /// - `result(T, E)` / `result(T)` / `result(_, E)` / `result` -> `("result" <ok> <err>)` (an absent arm,
     ///   spelled `_`, is the `("none")` marker) via `Builder::wit_type_result`.
     /// - `variant(Case, Case2(T), …)` -> `("variant" (Case <T>?)…)` via `Builder::wit_type_variant`.
+    /// - `enum(A, …)` -> `("enum" A …)` and `flags(A, …)` -> `("flags" A …)` (bare-NAME cases/bits) via
+    ///   `Builder::wit_type_enum`/`wit_type_flags`.
     ///
     /// Any other type node is left AS-IS (still round-trips). The printer's `print_wit_type` is the inverse.
     fn wit_type_desc_of(&mut self, ty: StructId) -> StructId {
@@ -2814,8 +2816,35 @@ impl<'a> Parser<'a> {
             Some((h, args)) if h == "variant" || h == "Variant" => {
                 self.wit_type_variant_desc_of(&args).unwrap_or(ty)
             }
+            // `enum(A, B, …)` / `flags(A, B, …)` — a set of bare-NAME cases/bits. Both share the shape; the
+            // head keyword selects the (distinct) WIT type. A non-name arg means it is not this spelling.
+            Some((h, args)) if h == "enum" || h == "Enum" => match self.wit_case_names_of(&args) {
+                Some(names) => {
+                    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+                    self.builder.wit_type_enum(&refs)
+                }
+                None => ty,
+            },
+            Some((h, args)) if h == "flags" || h == "Flags" => {
+                match self.wit_case_names_of(&args) {
+                    Some(names) => {
+                        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+                        self.builder.wit_type_flags(&refs)
+                    }
+                    None => ty,
+                }
+            }
             _ => ty,
         }
+    }
+
+    /// Collect the bare-NAME arguments of an `enum(…)` / `flags(…)` type application, in order. `None` if
+    /// any arg is not a bare name — then it is not a well-formed enum/flags spelling and the caller leaves
+    /// the node as-is.
+    fn wit_case_names_of(&self, args: &[StructId]) -> Option<Vec<String>> {
+        args.iter()
+            .map(|&a| self.builder.as_name(a).map(str::to_string))
+            .collect()
     }
 
     /// Lower a variant-TYPE node's case args to the WIT variant descriptor `("variant" (Case <T>?)…)` via
