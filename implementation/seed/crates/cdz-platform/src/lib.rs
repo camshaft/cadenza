@@ -35,6 +35,10 @@ mod kv;
 mod lifecycle;
 mod program;
 mod reducer;
+// The pure-function kernel primitive `run(program, contract, input) -> output` (§3): instantiate a program
+// with no capabilities and a null birth, fold one input, return the output, and memoize the result. The
+// foundation for schema validation (§4).
+mod run;
 mod runtime;
 mod spawned;
 mod str;
@@ -61,6 +65,7 @@ pub use kv::{InMemoryKvStore, KeyRange, KvKeyScan, KvScan, KvStore, prefix_range
 pub use lifecycle::{Lifecycle, lifecycle_contract};
 pub use program::{ProgramStore, SpawnContext};
 pub use reducer::{Error, Message, Notification, Origin, Outcome, Reducer, Request, Response};
+pub use run::{RunError, Runner};
 #[cfg(any(test, feature = "testing"))]
 pub use runtime::BachRuntime;
 pub use runtime::{Runtime, TokioRuntime};
