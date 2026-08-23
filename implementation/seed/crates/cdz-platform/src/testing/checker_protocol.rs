@@ -17,11 +17,23 @@
 //! log, and reads the verdict is built over these.
 
 use super::checker::CheckOutcome;
+use super::log_value;
+use super::observation::{Entry, EventOp, Record};
 use crate::contract_value::{bytes_leaf, read_bytes};
-use crate::{Bytes, Contract, ContractId, Str};
+use crate::{Bytes, Contract, ContractId, Delivered, HostId, Message, Origin, ReducerId, Str};
 use cadenza_ast::ast::{Arenas, Builder, Leaf, Struct, StructId};
 use cadenza_ast::codec;
 use std::sync::{Arc, OnceLock};
+
+/// The synthetic origin the harness stamps on the `check` message it delivers to a checker — the checker
+/// was handed the log by the driver, not by a real peer reducer. A checker routes on the check contract,
+/// not on `from`, so this is fixed and reproducible.
+fn driver_origin() -> Origin {
+    Origin {
+        reducer: ReducerId::of(b"cdz-platform.harness.checker-driver"),
+        host: HostId::of(b"cdz-platform.harness.checker-driver"),
+    }
+}
 
 /// The contract that carries the whole observation log to the checker (§9). A `Message` on it, whose payload
 /// is the serialized log, is delivered to the checker at end-of-run; the checker folds it via `on_message`.
@@ -121,6 +133,37 @@ pub fn decode_verdict(bytes: &[u8]) -> Option<CheckOutcome> {
     })
 }
 
+/// The `check` [`Message`] that delivers a whole observation log to a checker to fold and verdict on: a
+/// message on the [`check_contract`] whose payload is the serialized log
+/// ([`serialize_log`](super::serialize_log)). Deliver this to a spawned checker reducer — it folds it via
+/// `on_message` and emits a [`verdict_contract`] request. The two ends of the checker protocol: this is what
+/// goes in, [`verdict_in`] reads what comes out.
+#[must_use]
+pub fn check_message(log: &[Record]) -> Delivered {
+    Delivered::Message(Message {
+        id: check_contract(),
+        payload: encode_check(&log_value::serialize(log)),
+        from: driver_origin(),
+        continuation_token: Bytes::new(),
+    })
+}
+
+/// The verdict a checker emitted while folding, read from an observation log: the payload of the first
+/// [`Emitted`](EventOp::Emitted) request on the [`verdict_contract`], decoded into a [`CheckOutcome`].
+/// `None` if the checker emitted no verdict — it never reported, which a caller treats as a failed check.
+/// This is how the harness (a driver, not a reducer, so it cannot receive a reply) reads the checker's
+/// judgement out of the run it drove.
+#[must_use]
+pub fn verdict_in(records: &[Record]) -> Option<CheckOutcome> {
+    let verdict = verdict_contract();
+    records.iter().find_map(|r| match &r.entry {
+        Entry::Event(EventOp::Emitted {
+            contract, payload, ..
+        }) if *contract == verdict => decode_verdict(payload),
+        _ => None,
+    })
+}
+
 /// A `("list" e…)` value — the canonical list constructor (string head).
 fn string_list(b: &mut Builder, items: Vec<StructId>) -> StructId {
     let head = b.atom_leaf(Leaf::Str(Arc::from("list")));
@@ -153,11 +196,29 @@ fn read_string_list(arenas: &Arenas, id: StructId) -> Option<Vec<Str>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        check_contract, decode_check, decode_verdict, encode_check, encode_verdict,
-        verdict_contract,
+        check_contract, check_message, decode_check, decode_verdict, encode_check, encode_verdict,
+        verdict_contract, verdict_in,
     };
-    use crate::Str;
-    use crate::testing::CheckOutcome;
+    use crate::testing::{CheckOutcome, Entry, EventOp, Record, deserialize_log};
+    use crate::{Bytes, ContractId, Delivered, HostId, Origin, ReducerId, Str};
+
+    /// A one-record observation log — an emitted event, enough to prove the whole log survives wrapping.
+    fn a_log() -> Vec<Record> {
+        vec![Record {
+            seq: 0,
+            time_ns: 5,
+            source: Origin {
+                reducer: ReducerId::of(b"agent"),
+                host: HostId::of(b"node"),
+            },
+            entry: Entry::Event(EventOp::Emitted {
+                contract: ContractId::of(b"http.get"),
+                payload: Bytes::from_static(b"url"),
+                continuation_token: Bytes::from_static(b"c"),
+                has_deadline: false,
+            }),
+        }]
+    }
 
     #[test]
     fn each_contract_id_is_stable_and_distinct() {
@@ -206,5 +267,58 @@ mod tests {
     #[test]
     fn a_malformed_verdict_is_rejected() {
         assert_eq!(decode_verdict(b"not a verdict"), None);
+    }
+
+    #[test]
+    fn check_message_delivers_the_serialized_log_on_the_check_contract() {
+        // The check Message is on the check contract and carries the whole log; unwrapping its payload and
+        // deserializing recovers the exact log the checker will fold.
+        let log = a_log();
+        let Delivered::Message(m) = check_message(&log) else {
+            panic!("a check is delivered as a Message");
+        };
+        assert_eq!(m.id, check_contract());
+        let inner = decode_check(&m.payload).expect("a check envelope");
+        assert_eq!(deserialize_log(&inner), Some(log));
+    }
+
+    #[test]
+    fn verdict_in_reads_the_emitted_verdict_from_the_log() {
+        // A checker's verdict is read from the Emitted request it made on the verdict contract.
+        let emitted = |payload: Bytes| Record {
+            seq: 0,
+            time_ns: 0,
+            source: Origin {
+                reducer: ReducerId::of(b"checker"),
+                host: HostId::of(b"node"),
+            },
+            entry: Entry::Event(EventOp::Emitted {
+                contract: verdict_contract(),
+                payload,
+                continuation_token: Bytes::new(),
+                has_deadline: false,
+            }),
+        };
+        let fail = vec![emitted(encode_verdict(false, &[Str::from("nope")]))];
+        assert_eq!(
+            verdict_in(&fail),
+            Some(CheckOutcome::Fail {
+                reasons: vec!["nope".to_string()],
+            })
+        );
+        let pass = vec![emitted(encode_verdict(true, &[]))];
+        assert_eq!(verdict_in(&pass), Some(CheckOutcome::Pass));
+        // An emit on a different contract is not a verdict; a log with no verdict yields None.
+        let other = vec![Record {
+            entry: Entry::Event(EventOp::Emitted {
+                contract: ContractId::of(b"other"),
+                payload: Bytes::new(),
+                continuation_token: Bytes::new(),
+                has_deadline: false,
+            }),
+            ..emitted(Bytes::new())
+        }];
+        assert_eq!(verdict_in(&other), None);
+        assert_eq!(verdict_in(&[]), None);
     }
 }
