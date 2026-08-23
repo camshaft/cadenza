@@ -6846,6 +6846,133 @@ fn a_nullary_list_u8_world_import_lowers_to_a_synchronous_host_call() {
     }
 }
 
+/// A KIND_WIT_WORLD declaring a MULTI-ARG import member whose SECOND arg is a nested RECORD — the
+/// `deliver.deliver-message : (reducer-id, message) -> bool` shape (a privileged event-reducer import,
+/// message = `record { contract, payload }`). Exercises the multi-arg + record-param branch a generic
+/// world-import perform must lower, beyond the nullary/single-arg cases already pinned.
+fn reducer_deliver_record_import_world_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let byte_list = |b: &mut Builder| {
+        let hh = b.atom_leaf(Leaf::Str("list".into()));
+        let uh = b.name("u8");
+        let u = b.list(vec![uh]);
+        b.list(vec![hh, u])
+    };
+    // export fold { apply: func(input: list<u8>) -> list<u8> }
+    let a_in = byte_list(&mut b);
+    let a_out = byte_list(&mut b);
+    let apply = {
+        let func_h = b.name("func");
+        let param_h = b.name("param");
+        let pn = b.name("input");
+        let pnode = b.list(vec![param_h, pn, a_in]);
+        let result_h = b.name("result");
+        let rnode = b.list(vec![result_h, a_out]);
+        let func = b.list(vec![func_h, pnode, rnode]);
+        let member_h = b.name("member");
+        let mn = b.name("apply");
+        b.list(vec![member_h, mn, func])
+    };
+    let exp_h = b.name("export");
+    let ename = b.name("fold");
+    let fold = b.list(vec![exp_h, ename, apply]);
+    // import cadenza:agent-kernel/deliver { deliver-message: func(target: list<u8>,
+    //   message: record { contract: list<u8>, payload: list<u8> }) -> bool } — a 2-arg member,
+    //   the 2nd arg a nested record.
+    let msg_record = {
+        let rh = b.atom_leaf(Leaf::Str("record".into()));
+        let cn = b.name("contract");
+        let ct = byte_list(&mut b);
+        let cfield = b.list(vec![cn, ct]);
+        let pn = b.name("payload");
+        let pt = byte_list(&mut b);
+        let pfield = b.list(vec![pn, pt]);
+        b.list(vec![rh, cfield, pfield])
+    };
+    let deliver_member = {
+        let func_h = b.name("func");
+        let p1h = b.name("param");
+        let p1n = b.name("target");
+        let p1t = byte_list(&mut b);
+        let p1 = b.list(vec![p1h, p1n, p1t]);
+        let p2h = b.name("param");
+        let p2n = b.name("message");
+        let p2 = b.list(vec![p2h, p2n, msg_record]);
+        let result_h = b.name("result");
+        let bool_h = b.name("bool");
+        let bool_ty = b.list(vec![bool_h]);
+        let rnode = b.list(vec![result_h, bool_ty]);
+        let func = b.list(vec![func_h, p1, p2, rnode]);
+        let member_h = b.name("member");
+        let mn = b.name("deliver-message");
+        b.list(vec![member_h, mn, func])
+    };
+    let imp_h = b.name("import");
+    let iface_name = b.name("cadenza:agent-kernel/deliver");
+    let deliver = b.list(vec![imp_h, iface_name, deliver_member]);
+    let world_h = b.name("world");
+    let wn = b.name("reducer");
+    let world = b.list(vec![world_h, wn, fold, deliver]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+/// A MULTI-ARG world-import perform whose second argument is a RECORD (`deliver.deliver-message(target,
+/// message)`, the privileged event-reducer shape) lowers to a synchronous `Core::HostCall{args:[_, _],
+/// result:Bool}` — the front-end places BOTH operands (a Bytes and a record literal) into the HostCall
+/// generically, driven off `is_world_import_op`, ZERO per-interface arms. Pins the multi-arg + compound-arg
+/// branch beyond the nullary/single-arg cases, decoupled from the backend boundary-emit increment (v-rb).
+#[test]
+fn a_multi_arg_world_import_perform_with_a_record_arg_lowers_to_a_synchronous_host_call() {
+    use crate::core::Core;
+    use crate::db::Db;
+    use crate::lower::core_of;
+    let src = "(module m \
+                 (effect deliver \
+                   (op deliver-message (-> Bytes (Record (contract Bytes) (payload Bytes)) Bool))) \
+                 (def (apply (: e (Record (ct String) (pl Bytes)))) \
+                   (host (deliver) \
+                     ((. deliver deliver-message) (. e pl) \
+                        (record (contract (. e pl)) (payload (. e pl)))))) \
+                 (export apply))";
+    let mut db = Db::load(crate::testkit::parse(src));
+    db.wit_world = Some(reducer_deliver_record_import_world_bytes());
+    let d = db.def_by_name("apply").expect("def apply");
+    let body = db.defs[d].body.expect("apply has a body");
+    match core_of(&mut db, body) {
+        Core::HostCall {
+            effect,
+            op,
+            args,
+            result,
+        } => {
+            assert_eq!(
+                &*effect, "deliver",
+                "the host call carries the import interface short name"
+            );
+            assert_eq!(
+                &*op, "deliver-message",
+                "the host call carries the import member name verbatim"
+            );
+            assert_eq!(
+                args.len(),
+                2,
+                "a 2-arg import perform lowers to a HostCall with BOTH operands, got {}",
+                args.len()
+            );
+            assert!(
+                matches!(result, crate::ty::Ty::Bool),
+                "the deliver-message import's bool result types as Bool, got {result:?}"
+            );
+        }
+        other => panic!(
+            "a multi-arg record-arg world-import perform must lower to a synchronous Core::HostCall \
+             (generic, no per-interface arm), got {other:?}"
+        ),
+    }
+}
+
 /// §3c full-A BEHAVIORAL: the FIRST full-A slice end-to-end — a CLOSURE-free, HOST/PEER-import-free pure
 /// reducer (`apply(Event) -> List<EffectRequest>`) whose `apply` member the target WIT WORLD declares as a
 /// `list<u8>`-in / `list<u8>`-out boundary EMITS through `emit_bytes_provider_member` — the compound param
