@@ -25,6 +25,7 @@
 //!   log later); any `Fn(&Run) -> CheckOutcome` is a checker.
 
 mod checker;
+mod fixture;
 mod harness;
 mod observation;
 mod recording;
@@ -33,6 +34,10 @@ mod recording;
 /// registered Rust factories instead of the content-addressed store.
 pub use crate::program::testing as program;
 pub use checker::{CheckOutcome, Checker};
+/// Load the reducer-echo guest fixture's component bytes from the content-addressed store — the load
+/// contract the host-driver end-to-end test uses to instantiate a real reducer component without a
+/// committed `.wasm`. See [`fixture::reducer_echo_component_bytes`].
+pub use fixture::reducer_echo_component_bytes;
 pub use harness::{Harness, Parent, Run, SpawnSpec};
 pub use observation::{BlobOp, Entry, EventKind, EventOp, KvOp, ObservationLog, Record};
 pub use recording::{
