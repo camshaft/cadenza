@@ -649,6 +649,56 @@ impl Builder {
         self.list(children)
     }
 
+    /// Build an `enum{Case…}` WIT type descriptor `("enum" Case…)` — a STRING-atom head `enum`, then one
+    /// bare NAME leaf per case (an enum is the degenerate variant: every case is payload-less). Cases are
+    /// passed in DECL order (order participates in the identity).
+    pub fn wit_type_enum(&mut self, cases: &[&str]) -> StructId {
+        let mut children = Vec::with_capacity(1 + cases.len());
+        children.push(self.atom_leaf(Leaf::Str("enum".into())));
+        for &case in cases {
+            let c = self.name(case);
+            children.push(c);
+        }
+        self.list(children)
+    }
+
+    /// Build a `flags{Name…}` WIT type descriptor `("flags" Name…)` — a STRING-atom head `flags`, then one
+    /// bare NAME leaf per bit. Same NODE shape as an enum but a DISTINCT type (the str head discriminates);
+    /// names are in DECL order (order participates in the identity).
+    pub fn wit_type_flags(&mut self, names: &[&str]) -> StructId {
+        let mut children = Vec::with_capacity(1 + names.len());
+        children.push(self.atom_leaf(Leaf::Str("flags".into())));
+        for &name in names {
+            let n = self.name(name);
+            children.push(n);
+        }
+        self.list(children)
+    }
+
+    /// Build a `result<ok, err>` WIT type descriptor `("result" <ok-slot> <err-slot>)` — a STRING-atom head
+    /// `result` then EXACTLY two slots, one per arm. A present arm is its type descriptor; an arm WIT omits
+    /// (`result<T>` has no err, `result<_, E>` no ok, bare `result` neither) is the absent-marker `("none")`
+    /// — a STR-head 1-list DISTINCT from `("unit")` (a present arm whose type IS `unit`). Fixed 2-arity (no
+    /// optional slot) keeps the shape uniform so the byte-exact identity never drifts on a presence marker.
+    pub fn wit_type_result(&mut self, ok: Option<StructId>, err: Option<StructId>) -> StructId {
+        let head = self.atom_leaf(Leaf::Str("result".into()));
+        let ok_slot = match ok {
+            Some(t) => t,
+            None => {
+                let none = self.atom_leaf(Leaf::Str("none".into()));
+                self.list(vec![none])
+            }
+        };
+        let err_slot = match err {
+            Some(t) => t,
+            None => {
+                let none = self.atom_leaf(Leaf::Str("none".into()));
+                self.list(vec![none])
+            }
+        };
+        self.list(vec![head, ok_slot, err_slot])
+    }
+
     pub fn finish(self, root: StructId) -> Arenas {
         Arenas {
             leaves: self.leaves,
@@ -1998,6 +2048,162 @@ mod tests {
             var_base,
             build_var("X", false, "Y"),
             "a case's payload PRESENCE is identity-bearing ((Case ty) vs (Case))"
+        );
+    }
+
+    #[test]
+    fn wit_type_enum_flags_result_match_the_pinned_reader_form() {
+        // The tagged aggregate builders mirror rcdzc's landed `parse_wit_type` (wit_world.rs) byte-for-byte:
+        // - enum : `("enum" Case…)`  — STR head, each case a BARE NAME leaf (payload-less by construction).
+        // - flags: `("flags" Name…)` — SAME node shape as enum but a DISTINCT type (the str head separates).
+        // - result: `("result" <ok-slot> <err-slot>)` — EXACTLY two slots; a present arm is its descriptor,
+        //   an omitted arm is the absent-marker `("none")` (a STR-head 1-list, distinct from `("unit")`).
+        let mut b = Builder::new();
+        let en = b.wit_type_enum(&["Red", "Green"]);
+        let fl = b.wit_type_flags(&["Read", "Write"]);
+        // result<u8, string>, result<u8> (no err), result (no arms).
+        let (okt, errt) = (b.wit_type_prim("u8"), b.wit_type_prim("string"));
+        let res_full = b.wit_type_result(Some(okt), Some(errt));
+        let ok_only = b.wit_type_prim("u8");
+        let res_no_err = b.wit_type_result(Some(ok_only), None);
+        let res_bare = b.wit_type_result(None, None);
+        let built = b.finish(en);
+
+        // enum: STR head `enum`, then bare NAME cases (NOT wrapped in a list).
+        let Struct::List(en_kids) = built.get(en) else {
+            panic!("enum is a list")
+        };
+        assert_eq!(
+            built.as_str(en_kids[0]),
+            Some("enum"),
+            "enum head is a STRING atom"
+        );
+        assert_eq!(
+            built.as_name(en_kids[1]),
+            Some("Red"),
+            "enum case is a bare NAME leaf"
+        );
+        // flags: STR head `flags`, same bare-name shape.
+        let Struct::List(fl_kids) = built.get(fl) else {
+            panic!("flags is a list")
+        };
+        assert_eq!(
+            built.as_str(fl_kids[0]),
+            Some("flags"),
+            "flags head is a STRING atom"
+        );
+        assert_eq!(
+            built.as_name(fl_kids[1]),
+            Some("Read"),
+            "flags name is a bare NAME leaf"
+        );
+
+        // result: EXACTLY 3 children (head + 2 slots), regardless of arm presence.
+        for r in [res_full, res_no_err, res_bare] {
+            let Struct::List(r_kids) = built.get(r) else {
+                panic!("result is a list")
+            };
+            assert_eq!(
+                r_kids.len(),
+                3,
+                "result is head + exactly two slots (fixed arity)"
+            );
+            assert_eq!(
+                built.as_str(r_kids[0]),
+                Some("result"),
+                "result head is a STRING atom"
+            );
+        }
+        // A present arm is its descriptor; an omitted arm is the `("none")` marker (distinct from unit).
+        let Struct::List(full_kids) = built.get(res_full) else {
+            panic!()
+        };
+        assert_eq!(
+            built.head_name(full_kids[1]),
+            Some("u8"),
+            "present ok arm is its descriptor"
+        );
+        assert_ne!(
+            built.head_ctor(full_kids[1]),
+            Some("none"),
+            "a present arm is NOT the none-marker"
+        );
+        let Struct::List(no_err_kids) = built.get(res_no_err) else {
+            panic!()
+        };
+        assert_eq!(
+            built.head_ctor(no_err_kids[2]),
+            Some("none"),
+            "an omitted err arm is the ('none') absent-marker"
+        );
+        assert_ne!(
+            built.head_ctor(no_err_kids[2]),
+            Some("unit"),
+            "the absent-marker is distinct from ('unit') (a present unit-typed arm)"
+        );
+    }
+
+    #[test]
+    fn wit_type_enum_flags_result_identity_is_byte_stable_and_discriminating() {
+        // The tagged aggregates obey the content-address contract: same input → byte-identical encoding, and
+        // any identity-bearing perturbation (case ORDER, enum-vs-flags of the same names, a result arm's
+        // presence, or swapping its ok/err) changes the bytes.
+        let enc_enum = |cases: &[&str]| {
+            let mut b = Builder::new();
+            let e = b.wit_type_enum(cases);
+            crate::codec::encode(&b.finish(e))
+        };
+        assert_eq!(
+            enc_enum(&["A", "B"]),
+            enc_enum(&["A", "B"]),
+            "same enum encodes byte-identically"
+        );
+        assert_ne!(
+            enc_enum(&["A", "B"]),
+            enc_enum(&["B", "A"]),
+            "case ORDER is identity-bearing"
+        );
+
+        // enum { A } vs flags { A } — SAME names, DIFFERENT type: the str head must discriminate.
+        let enc_flags = |names: &[&str]| {
+            let mut b = Builder::new();
+            let f = b.wit_type_flags(names);
+            crate::codec::encode(&b.finish(f))
+        };
+        assert_ne!(
+            enc_enum(&["A"]),
+            enc_flags(&["A"]),
+            "enum and flags of the same names encode distinctly (head discriminates)"
+        );
+
+        // result: arm presence and ok/err ORDER are identity-bearing.
+        let enc_result = |ok: Option<&str>, err: Option<&str>| {
+            let mut b = Builder::new();
+            let o = ok.map(|n| b.wit_type_prim(n));
+            let e = err.map(|n| b.wit_type_prim(n));
+            let r = b.wit_type_result(o, e);
+            crate::codec::encode(&b.finish(r))
+        };
+        let full = enc_result(Some("u8"), Some("string"));
+        assert_eq!(
+            full,
+            enc_result(Some("u8"), Some("string")),
+            "same result encodes byte-identically"
+        );
+        assert_ne!(
+            full,
+            enc_result(Some("u8"), None),
+            "err-arm PRESENCE is identity-bearing"
+        );
+        assert_ne!(
+            full,
+            enc_result(Some("string"), Some("u8")),
+            "ok/err ORDER is identity-bearing (positional slots)"
+        );
+        assert_ne!(
+            enc_result(Some("u8"), None),
+            enc_result(None, Some("u8")),
+            "result<T> and result<_, E> with the same T are distinct (which arm is absent matters)"
         );
     }
 }
