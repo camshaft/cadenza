@@ -1920,6 +1920,97 @@ fn a_named_variant_result_guest_compiles_and_runs() {
     }
 }
 
+/// W4c-b soundness: the named-variant writer NAME-matches (not positional). This guest declares its sum in
+/// the OPPOSITE order to the WIT variant cases — `(type Rev (Close Int64) Continue)` (Close is decl-disc 0)
+/// against world.wit `variant { continue, close(s64) }` (continue is case 0). Name-match maps Close→close
+/// (boundary disc 1) and Continue→continue (boundary disc 0) correctly; a POSITIONAL match would map
+/// Close(payload) onto the nullary `continue` case and the payload-shape guard would reject at compile. So a
+/// green run of BOTH arms proves the writer keyed on the case NAME, immune to guest decl reordering.
+#[test]
+fn the_named_variant_writer_name_matches_not_positionally() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime) = find_runtime_wasm() else {
+        return;
+    };
+    // Guest declares Close BEFORE Continue — reversed vs the world's (continue, close) case order.
+    let src = "(module m (type Rev (Close Int64) Continue) \
+                 (def (f (: m (Record (x Int64)))) \
+                   (record (o (if (= (. m x) 0) Rev.Continue (Rev.Close (. m x)))))) \
+                 (export f))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:demo/iface"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                named_variant_result_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "reversed-decl variant guest must still emit (name-match): {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("emits a component");
+    let opts = cdz_run::RunOpts {
+        export: None,
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    let call = |x: i64| {
+        cdz_run::run_reducer_typed(
+            bytes,
+            "cadenza:demo/iface",
+            "f",
+            &[Val::Record(vec![("x".to_string(), Val::S64(x))])],
+            &opts,
+        )
+        .expect("run")
+    };
+    let field_o = |v: &Val| -> Val {
+        let Val::Record(fs) = v else {
+            panic!("record, got {v:?}");
+        };
+        fs.iter().find(|(n, _)| n == "o").expect("o").1.clone()
+    };
+    match field_o(&call(0)) {
+        Val::Variant(case, payload) => {
+            assert_eq!(
+                case, "continue",
+                "Continue→continue by NAME, not decl position"
+            );
+            assert!(payload.is_none());
+        }
+        other => panic!("variant expected, got {other:?}"),
+    }
+    match field_o(&call(9)) {
+        Val::Variant(case, payload) => {
+            assert_eq!(
+                case, "close",
+                "Close→close by NAME (decl-disc 0 → boundary disc 1)"
+            );
+            assert_eq!(payload.as_deref(), Some(&Val::S64(9)));
+        }
+        other => panic!("variant expected, got {other:?}"),
+    }
+}
+
 /// A KIND_WIT_WORLD `f(m: record{x: s64}) -> record{d: option<s64>}` — an OPTION (variant) result field, the
 /// shape of a reducer request's `deadline-nanos: option<u64>`. The writer's variant case: `sum-disc` → store
 /// the boundary disc (None=0/Some=1), and for Some write the payload at the variant's payload offset.

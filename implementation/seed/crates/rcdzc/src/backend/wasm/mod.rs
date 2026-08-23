@@ -8110,37 +8110,42 @@ fn canon_write_of(
                 elem: Box::new(canon_write_of(db, &elem_g, &elem_w)?),
             })
         }
-        // NAMED VARIANT result: a guest sum crossing as WIT `variant<case, case(T), …>`. POSITION-matched —
-        // the guest's decl-variant order is the boundary disc order (like a record's field order), so
-        // `boundary_disc == decl_disc`. SOUNDNESS guard: same arm count AND each position's payload-presence
-        // must agree (guest-nullary iff WIT-case-nullary) — catches a nullary/payload swap. (The WIT-vs-guest
-        // case-NAME correspondence is an open contract with v-platform; positional + this shape guard is the
-        // sound default. A payload arm resolves its payload type via the ctor + `payload_ty_at_instantiation`.)
+        // NAMED VARIANT result: a guest sum crossing as WIT `variant<case, case(T), …>`. NAME-MATCHED
+        // (v-platform ruling): each guest ctor is normalized to kebab-case (`kebab_extern_name`, the same
+        // rule record fields + exports cross under) and must equal a WIT case name — the guest's decl order
+        // is irrelevant, so reordering the guest's variants can't silently remap a case to the wrong payload
+        // (§1 nominal identity). `boundary_disc` = the matched WIT case index. Belt-and-suspenders: each arm's
+        // payload-presence must still agree (guest-nullary iff WIT-case-nullary). A payload arm resolves its
+        // type via the ctor + `payload_ty_at_instantiation` (concrete payloads, e.g. a `closed` record, too).
         Ty::Sum { decl, .. } if matches!(wty, WitType::Variant(_)) => {
+            use crate::backend::common::export_name::kebab_extern_name;
             let WitType::Variant(cases) = wty else {
                 unreachable!()
             };
             let sum_ty = gty.strip_nominal().clone();
-            let (nullary, ctors): (Vec<bool>, Vec<Option<crate::ast::StructId>>) = {
+            // Per guest variant (in decl-disc order): (kebab-normalized ctor name, nullary?, ctor occ).
+            let guest: Vec<(String, bool, Option<crate::ast::StructId>)> = {
                 let dr = db.type_decl_by_occ(*decl)?;
                 if dr.variants.len() != cases.len() {
                     return None;
                 }
-                (
-                    dr.variants.iter().map(|v| v.payloads.is_empty()).collect(),
-                    dr.variants.iter().map(|v| v.ctor).collect(),
-                )
+                dr.variants
+                    .iter()
+                    .map(|v| (kebab_extern_name(&v.name), v.payloads.is_empty(), v.ctor))
+                    .collect()
             };
-            let mut arms = Vec::with_capacity(cases.len());
-            for (disc, (_, wit_payload)) in cases.iter().enumerate() {
-                // Payload-shape guard: guest arm nullary-ness must match the WIT case's.
-                if nullary[disc] != wit_payload.is_none() {
-                    return None;
+            // Build arms in GUEST decl-disc order (`sum-disc` returns that); each maps to its WIT case BY NAME.
+            let mut arms = Vec::with_capacity(guest.len());
+            for (gname, gnullary, ctor) in &guest {
+                let wit_idx = cases.iter().position(|(cn, _)| cn == gname)?; // NAME-MATCH (soundness)
+                let (_, wit_payload) = &cases[wit_idx];
+                if *gnullary != wit_payload.is_none() {
+                    return None; // payload-shape belt-and-suspenders
                 }
                 let payload = match wit_payload {
                     None => None,
                     Some(pw) => {
-                        let ctor = ctors[disc]?;
+                        let ctor = (*ctor)?;
                         let payload_gty =
                             crate::infer::payload_ty_at_instantiation(db, ctor, &sum_ty)?;
                         let pw = pw.clone();
@@ -8148,7 +8153,7 @@ fn canon_write_of(
                     }
                 };
                 arms.push(VariantArm {
-                    boundary_disc: disc as u32,
+                    boundary_disc: wit_idx as u32,
                     payload,
                 });
             }
