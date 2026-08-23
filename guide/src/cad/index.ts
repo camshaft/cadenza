@@ -70,7 +70,11 @@ type Solid =
   | { t: "rotate"; v: Vec3; of: Solid }
   | { t: "mirror"; v: Vec3; of: Solid }
   | { t: "extrudeLinear"; profile: Profile; height: number }
-  | { t: "revolve"; profile: Profile; degrees: number };
+  | { t: "revolve"; profile: Profile; degrees: number }
+  // An OpenSCAD-`$fn`-style tessellation-resolution OVERRIDE for a subtree (the model's `Detail(n, child)`):
+  // `segments` overrides the inherited/ambient resolution when meshing `of`. A mesh HINT only — no geometry
+  // changes (twin of the native cdz-cad `Solid::Detail`).
+  | { t: "detail"; segments: number; of: Solid };
 
 // ── s-expr tokenizer + recursive-descent parser (twin of cdz-cad's lib.rs) ──────────────────────────
 
@@ -197,6 +201,11 @@ class Parser {
       case "Revolve":
         node = { t: "revolve", profile: this.parseProfile(), degrees: this.parseRational() };
         break;
+      case "Detail":
+        // `(Detail <count> <child>)` — a tessellation-resolution override. The count is an integer segment
+        // count (floored); the child is a Solid meshed at that resolution (see toManifold).
+        node = { t: "detail", segments: this.parseSegmentCount(), of: this.parseSolid() };
+        break;
       default:
         throw new Error(`unknown Solid constructor \`${head}\``);
     }
@@ -316,6 +325,17 @@ class Parser {
     }
     this.expectClose();
     return seg;
+  }
+
+  /// A `Detail` SEGMENT-COUNT leaf — the tessellation resolution the override node carries. The model renders
+  /// it as an integer (`Int`), so it arrives as a bare integer atom; a rational/float is accepted defensively
+  /// and FLOORED (a count has no fractional meaning). A NaN/±inf count is malformed here (a resolution is never
+  /// NaN, unlike a coordinate) → a throw the caller turns into a typed error. The value is clamped to a
+  /// closable loop at mesh time (`MIN_SEGMENTS`), not here — the tree records what the model asked for.
+  private parseSegmentCount(): number {
+    const n = this.parseRational();
+    if (!Number.isFinite(n)) throw new Error("Detail segment count must be a finite integer");
+    return Math.floor(n);
   }
 
   /// A RATIONAL number leaf `n/d` → the JS number n/d (division at the leaf; the model stays exact). A bare
@@ -467,6 +487,12 @@ function toManifold(M: ManifoldStatic, CS: CrossSectionStatic, s: Solid, seg: nu
     case "revolve":
       // sweep the profile about the y-axis by `degrees` (`seg` = sweep tessellation).
       return M.revolve(profileToCrossSection(CS, s.profile, seg), seg, s.degrees);
+    case "detail":
+      // An OpenSCAD-`$fn`-style resolution override: mesh the child with the node's LOCAL segment count
+      // instead of the inherited `seg`, clamped to a closable loop. A deeper `detail` overrides again
+      // (dynamic scoping — innermost wins); geometry outside any `detail` keeps the ambient `seg`. A mesh
+      // hint only, so the child's shape is unchanged. Twin of the native driver's `Solid::Detail`.
+      return toManifold(M, CS, s.of, Math.max(MIN_SEGMENTS, s.segments));
   }
 }
 

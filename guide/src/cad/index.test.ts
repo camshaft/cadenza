@@ -159,6 +159,60 @@ test("a fractional/NaN segment count is handled (floored / defaulted), never poi
   if (nan.ok && def.ok) assert.equal(nan.indices.length, def.indices.length, "a NaN count falls back to the default (32)");
 });
 
+// ── Detail: the OpenSCAD-`$fn`-style tessellation-resolution OVERRIDE node (twin of cdz-cad's Solid::Detail) ──
+// Increment 2 of the cascading-resolution feature: a `Detail(n, child)` node overrides the inherited/ambient
+// segment count for its subtree (a deeper Detail overrides again). A mesh hint only — geometry is unchanged.
+
+test("a Detail override sets its child's tessellation regardless of the ambient count", async () => {
+  // Detail-64 sphere is finer than Detail-8 even when BOTH are meshed at the same ambient default — the
+  // inner override wins over the meshFromSolid `segments` argument.
+  const coarse = await meshFromSolid("(: (Detail 8 (Sphere 5/1)) SolidR)", 32);
+  const fine = await meshFromSolid("(: (Detail 64 (Sphere 5/1)) SolidR)", 32);
+  assert.ok(coarse.ok && fine.ok);
+  if (coarse.ok && fine.ok) {
+    assert.ok(fine.indices.length > coarse.indices.length, "the Detail override, not the ambient count, sets the child's resolution");
+  }
+});
+
+test("Detail is dynamically scoped — the innermost override wins", async () => {
+  const nested = await meshFromSolid("(: (Detail 8 (Detail 64 (Sphere 5/1))) SolidR)");
+  const inner = await meshFromSolid("(: (Detail 64 (Sphere 5/1)) SolidR)");
+  assert.ok(nested.ok && inner.ok);
+  if (nested.ok && inner.ok) {
+    assert.equal(nested.indices.length, inner.indices.length, "Detail 8 (Detail 64 x) meshes x at 64, like a bare Detail 64");
+  }
+});
+
+test("a Detail count below the minimum is clamped (not degenerate)", async () => {
+  const zero = await meshFromSolid("(: (Detail 0 (Sphere 5/1)) SolidR)");
+  const floor = await meshFromSolid("(: (Detail 3 (Sphere 5/1)) SolidR)");
+  assert.ok(zero.ok && floor.ok);
+  if (zero.ok && floor.ok) {
+    assert.ok(zero.indices.length > 0, "a clamped-up Detail meshes real geometry");
+    assert.equal(zero.indices.length, floor.indices.length, "Detail 0 clamps to the same mesh as Detail 3 (MIN_SEGMENTS)");
+  }
+});
+
+test("a fractional Detail count floors; a NaN count is a typed error (never a throw)", async () => {
+  const frac = await meshFromSolid("(: (Detail 15/2 (Sphere 5/1)) SolidR)");
+  const int7 = await meshFromSolid("(: (Detail 7 (Sphere 5/1)) SolidR)");
+  assert.ok(frac.ok && int7.ok);
+  if (frac.ok && int7.ok) assert.equal(frac.indices.length, int7.indices.length, "15/2 = 7.5 floors to 7");
+  const nan = await meshFromSolid("(: (Detail nan (Sphere 5/1)) SolidR)");
+  assert.equal(nan.ok, false, "a NaN Detail count is a typed error");
+  if (!nan.ok) assert.match(nan.error, /finite integer/);
+});
+
+test("Detail is a mesh hint — wrapping a cube (no curved leaves) does not change the mesh", async () => {
+  const bare = await meshFromSolid("(: (Cube (: (tuple 2/1 2/1 2/1) Vec3)) SolidR)");
+  const detailed = await meshFromSolid("(: (Detail 128 (Cube (: (tuple 2/1 2/1 2/1) Vec3))) SolidR)");
+  assert.ok(bare.ok && detailed.ok);
+  if (bare.ok && detailed.ok) {
+    assert.equal(detailed.indices.length, bare.indices.length, "Detail changes tessellation, not a polyhedral child's geometry");
+    assert.equal(detailed.indices.length / 3, 12, "still a 12-triangle box");
+  }
+});
+
 // ── P-D: extrude / revolve / path profiles (the browser twin of cdz-cad's mesh.rs P-D cases) ──────────
 
 test("meshFromSolid extrudes a Rect profile into a prism (12 triangles)", async () => {
@@ -291,9 +345,10 @@ test("a 6-fold rotational array (Union of rotated bars) meshes more geometry tha
 // (or removed) without a matching parser arm fails LOUDLY instead of silently rendering nothing — the
 // RENDER-BLANK class (the empty-Solid/"snowflake blank" family). This is the browser twin over index.ts's
 // parser: parseNode declines an unknown/removed head with `unknown Solid constructor` (→ a typed error,
-// never a throw), so if any of the 13 SolidR heads / 3 Profiles / 6 PathSegs loses its arm, this all-in-one
+// never a throw), so if any of the 14 SolidR heads / 3 Profiles / 6 PathSegs loses its arm, this all-in-one
 // solid stops meshing and the test goes red. The exact model↔driver grammar lives in
-// implementation/cad/src/exact.cdz (SolidR / ProfileR / PathSegR).
+// implementation/cad/src/exact.cdz (SolidR / ProfileR / PathSegR). The Revolve is wrapped in a `Detail`
+// override so the tessellation-hint arm is covered too.
 const ALL_CONSTRUCTORS =
   "(: (Union" +
   " (Difference (Intersection (Cube (: (tuple 4/1 4/1 4/1) Vec3)) (Sphere 3/1)) (Cylinder 2/1 1/1))" +
@@ -302,7 +357,7 @@ const ALL_CONSTRUCTORS =
   "   (Rotate (: (tuple 0/1 0/1 45/1) Vec3) (Mirror (: (tuple 1/1 0/1 0/1) Vec3) (Cube (: (tuple 2/1 2/1 2/1) Vec3))))))" +
   "  (Union (ExtrudeLinear (Rect (: (tuple 4/1 2/1) Vec2R)) 6/1)" +
   "   (Union (ExtrudeLinear (Circle 3/1) 5/1)" +
-  "    (Union (Revolve (Rect (: (tuple 2/1 4/1) Vec2R)) 360/1)" +
+  "    (Union (Detail 12 (Revolve (Rect (: (tuple 2/1 4/1) Vec2R)) 360/1))" +
   "     (Union" +
   "      (ExtrudeLinear (PathProfile (: (list" +
   "       (MoveToAbs (: (tuple 0/1 0/1) Vec2R)) (LineToAbs (: (tuple 4/1 0/1) Vec2R))" +
@@ -314,9 +369,9 @@ const ALL_CONSTRUCTORS =
   " Solid)";
 
 test("the parser handles EVERY render-grammar constructor (a removed head → render-blank regression)", async () => {
-  // Every SolidR head (13: Empty, Cube, Sphere, Cylinder, Union, Difference, Intersection, Translate,
-  // Scale, Rotate, Mirror, ExtrudeLinear, Revolve), every Profile (Rect/Circle/PathProfile via Extrude+
-  // Revolve), and every PathSeg (MoveToAbs/Rel, LineToAbs/Rel, CubicToAbs/Rel) appear in this one solid.
+  // Every SolidR head (14: Empty, Cube, Sphere, Cylinder, Union, Difference, Intersection, Translate,
+  // Scale, Rotate, Mirror, ExtrudeLinear, Revolve, Detail), every Profile (Rect/Circle/PathProfile via
+  // Extrude+Revolve), and every PathSeg (MoveToAbs/Rel, LineToAbs/Rel, CubicToAbs/Rel) appear in this one solid.
   const r = await meshFromSolid(ALL_CONSTRUCTORS);
   assert.equal(
     r.ok,
