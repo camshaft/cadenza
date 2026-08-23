@@ -19,5 +19,5 @@
 mod contract;
 mod hash;
 
-pub use contract::{contract_declaration, contract_id};
+pub use contract::{contract_declaration, contract_id, contract_id_from_module};
 pub use hash::{Hash, HashTag, Hasher, base64url};
