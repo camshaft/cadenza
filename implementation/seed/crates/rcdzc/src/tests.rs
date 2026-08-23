@@ -1313,6 +1313,115 @@ fn a_record_param_guest_compiles_and_runs_via_a_wrapper() {
     );
 }
 
+/// A KIND_WIT_WORLD declaring an export interface with TWO record-param members `f(m: record{a: s64}) -> s64`
+/// and `g(m: record{b: s64}) -> s64` — the multi-export case a real reducer needs (on-message/on-response/
+/// on-notification are three members). Each member gets its own wrapper appended to the core module.
+fn two_member_record_world_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let s64 = |b: &mut Builder| {
+        let h = b.name("s64");
+        b.list(vec![h])
+    };
+    let member = |b: &mut Builder, member_name: &str, field: &str| {
+        let fty = s64(b);
+        let fname = b.name(field);
+        let f_field = b.list(vec![fname, fty]);
+        let rec_head = b.atom_leaf(Leaf::Str("record".into()));
+        let rec = b.list(vec![rec_head, f_field]);
+        let res_ty = s64(b);
+        let func_h = b.name("func");
+        let param_h = b.name("param");
+        let pn = b.name("m");
+        let param_node = b.list(vec![param_h, pn, rec]);
+        let result_h = b.name("result");
+        let result_node = b.list(vec![result_h, res_ty]);
+        let func = b.list(vec![func_h, param_node, result_node]);
+        let member_h = b.name("member");
+        let mn = b.name(member_name);
+        b.list(vec![member_h, mn, func])
+    };
+    let f = member(&mut b, "f", "a");
+    let g = member(&mut b, "g", "b");
+    let exp_h = b.name("export");
+    let iname = b.name("iface");
+    let export = b.list(vec![exp_h, iname, f, g]);
+    let world_h = b.name("world");
+    let wn = b.name("w");
+    let world = b.list(vec![world_h, wn, export]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+/// W4c-b: a MULTI-EXPORT record-interface guest (two members, each with a record param) emits + runs — a
+/// wrapper per member, the shape a real reducer needs (on-message/on-response/on-notification). `f(m) = m.a`
+/// and `g(m) = m.b`; both driven via the typed runner: f({a:7}) == 7 and g({b:9}) == 9.
+#[test]
+fn a_multi_export_record_interface_guest_compiles_and_runs() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime) = find_runtime_wasm() else {
+        return;
+    };
+    let src = "(module m \
+                 (def (f (: m (Record (a Int64)))) (. m a)) \
+                 (def (g (: m (Record (b Int64)))) (. m b)) \
+                 (export f) (export g))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:demo/iface"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                two_member_record_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "multi-export record-interface guest must emit: {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("emits a component");
+    let opts = cdz_run::RunOpts {
+        export: None,
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    let f = cdz_run::run_reducer_typed(
+        bytes,
+        "cadenza:demo/iface",
+        "f",
+        &[Val::Record(vec![("a".to_string(), Val::S64(7))])],
+        &opts,
+    )
+    .expect("run f");
+    assert_eq!(i64::from_val(&f), 7, "multi-export: f({{a: 7}}) == 7");
+    let g = cdz_run::run_reducer_typed(
+        bytes,
+        "cadenza:demo/iface",
+        "g",
+        &[Val::Record(vec![("b".to_string(), Val::S64(9))])],
+        &opts,
+    )
+    .expect("run g");
+    assert_eq!(i64::from_val(&g), 9, "multi-export: g({{b: 9}}) == 9");
+}
+
 /// Whether calling export `name` with `args` TRAPS (an `unreachable` from an overflow guard). Returns
 /// `true` if the call errored (a wasm trap), `false` if it returned normally.
 fn call_traps(component_bytes: &[u8], name: &str, args: &[wasmtime::component::Val]) -> bool {
