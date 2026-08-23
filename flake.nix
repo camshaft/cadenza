@@ -1132,16 +1132,34 @@
         # v-rust-backend's shared-ALLOCATOR slice (not yet landed). A MINIMAL echo reducer (exports
         # on-message → step, no host-import calls) is the first thing to try. This function is READY; the
         # `harnessPrograms` entry + a `packages.<name>` land the moment v-platform's probe `.cdz` compiles.
-        mkCadenzaGuest = { pname, src, entry ? null }:
+        # `componentName` (the reducer-world export interface, e.g. `cadenza:platform/guest`) is passed to
+        # `cdz compile --component-name` so rcdzc publishes the guest's exports under that fully-qualified WIT
+        # interface — the name v-platform's host `WasmReducer` binds (`run_reducer_typed(bytes,
+        # "cadenza:platform/guest", "on-message", …)`). Without it rcdzc has no `component_name` and falls
+        # through to the fixed-scalar-param export path, declining a record-of-bytes `message` param (the
+        # empirical gap v-nix hit + v-rb diagnosed 2026-08-23; #3117 also derives it from an FQ in-source
+        # export, but passing it explicitly here is encoding-agnostic to how the probe declares its export).
+        mkCadenzaGuest = { pname, src, componentName ? null, entry ? null }:
           pkgs.runCommand pname
             { nativeBuildInputs = [ seedCompiler pkgs.wasm-tools ]; } ''
             set -euo pipefail
             cdz compile ${src} --target wasm -o guest.wasm \
+              ${pkgs.lib.optionalString (componentName != null) "--component-name ${componentName}"} \
               ${pkgs.lib.optionalString (entry != null) "--entry ${entry}"}
             # Canonicalize (strip the tool-version `producers` sections) so the guest's content address is
             # reproducible cross-host, exactly like the Rust guests (mkStripComponent) + the runtime.
             wasm-tools strip -a guest.wasm -o "$out"
           '';
+
+        # The Cadenza-authored reducer-echo guest (`guests/reducer-echo-cdz/reducer.sexp`, by v-platform): a
+        # `.cdz` reducer compiled to a `cadenza:platform/guest`-exporting wasm component. Registered in
+        # `harnessPrograms` as `reducer-echo-cdz` — the Cadenza counterpart to the Rust `reducer-echo`, the
+        # operator's "Cadenza guests, not Rust" path proven end-to-end through the build.
+        cadenzaReducerEcho = mkCadenzaGuest {
+          pname = "cdz-platform-reducer-echo-cdz-component";
+          src = ./implementation/seed/crates/cdz-platform/guests/reducer-echo-cdz/reducer.sexp;
+          componentName = "cadenza:platform/guest";
+        };
 
         # ── the integration-test HARNESS framework (design/cadenza-platform.md §9) ─────────────────
         #
@@ -1157,6 +1175,8 @@
         harnessPrograms = {
           "reducer-echo" = reducerEcho;
           "reducer-echo-check" = reducerEchoCheck;
+          # The Cadenza-compiled reducer guest — same slot as the Rust `reducer-echo`, fed by `cdz compile`.
+          "reducer-echo-cdz" = cadenzaReducerEcho;
         };
 
         # `platformItest`: the `cdz-platform-itest` executable built ONCE (behind testing+host → wasmtime),
@@ -1829,6 +1849,10 @@
         # derived blake3 content address.
         packages.reducer-echo = reducerEcho;
         packages.reducer-echo-hash = hashOf reducerEcho "cdz-platform-reducer-echo-hash";
+
+        # The Cadenza-compiled reducer guest (`cdz compile reducer.sexp --target wasm`). `.#reducer-echo-cdz`.
+        packages.reducer-echo-cdz = cadenzaReducerEcho;
+        packages.reducer-echo-cdz-hash = hashOf cadenzaReducerEcho "cdz-platform-reducer-echo-cdz-hash";
 
         # The interim reducer-echo CHECKER guest (temporary; see the derivation note). `.#reducer-echo-check`.
         packages.reducer-echo-check = reducerEchoCheck;
