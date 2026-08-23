@@ -137,18 +137,23 @@ pub struct Notification {
 }
 
 /// The one interface every ordinary participant implements (§3): receive an event, update state, emit
-/// requests. `Send + Sync` so the runtime can share and schedule it. The three entry points return the same
-/// product — the requests to perform and the [`Outcome`]. Async because a reduce call may await the
-/// reducer's direct accesses (its key-value store, the content store); it never blocks the runtime.
+/// requests. The three entry points return the same product — the requests to perform and the [`Outcome`].
+/// Async because a reduce call may await the reducer's direct accesses (its key-value store, the content
+/// store); it never blocks the runtime.
 ///
 /// The methods take `&mut self`: a reducer folds an event into its own state, so it mutates. Each reducer
-/// lives in the runtime's registry with a single owner (the event loop drives one reducer at a time), so
+/// lives in the runtime's registry with a single owner — its own task drives it, one event at a time — so
 /// exclusive access is the natural fit and the trait does not force interior mutability on implementations.
 /// An implementation is still free to use interior mutability if it wants.
 ///
+/// `Send` (not `Sync`): a reducer is moved into its task and driven only through `&mut` from that one task;
+/// it is never shared across threads, so `Send` (to hand it to the task) is all the runtime needs. Requiring
+/// `Sync` would rule out a wasm-backed reducer, which owns a wasmtime `Store` — `Send` but not `Sync` — with
+/// no benefit, since nothing ever holds a reducer behind a shared reference.
+///
 /// The system reducer that shepherds an effect (§4) is a distinct, privileged interface, not this one.
 #[async_trait]
-pub trait Reducer: Send + Sync {
+pub trait Reducer: Send {
     /// React to a [`Response`] — a reply to a request this reducer performed.
     async fn on_response(&mut self, response: Response) -> (Vec<Request>, Outcome);
 
