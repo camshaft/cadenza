@@ -1675,7 +1675,8 @@ fn program_core_module(component: &[u8]) -> Option<Vec<u8>> {
     last_core
 }
 
-/// The content-address (SHA-256, hex) of the value-heap runtime this compiler emits imports against.
+/// The content-address (BLAKE3, lowercase hex) of the value-heap runtime this compiler emits imports
+/// against — the tree-unified content address (operator 2026-08-08: BLAKE3, same digest as `Hash::of`).
 ///
 /// A compound-returning program imports `cadenza:runtime/heap@0.0.0+<hash>`; the guide must compose
 /// the runtime whose hash equals this. Exposing it lets the JS side assert it bundled the right
