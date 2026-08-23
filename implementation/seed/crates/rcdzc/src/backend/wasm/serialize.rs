@@ -2096,6 +2096,12 @@ pub enum FieldRebuild {
     /// (a `buf` handle + a copy counter) and the core module owning memory 0 + a `cabi_realloc`
     /// (`wrapper_needs_memory`) so the canon lift can lower the incoming list into that memory.
     BytesLeaf,
+    /// A variant/`option`/`result` PARAM field (the response's `answer`): the canon lift flattens it to
+    /// `(disc, payload…)`; the wrapper branches on the boundary disc and rebuilds the guest sum cell
+    /// (`sum-new`), leaving its handle for the parent `arr-set`. Reuses the closure-arg [`SumArgRebuild`]
+    /// (its `base_param` is IGNORED here — the disc is read at the record cursor). Consumes
+    /// `flattened_param_count()` leaves.
+    Sum(Box<SumArgRebuild>),
 }
 
 impl FieldRebuild {
@@ -2107,6 +2113,7 @@ impl FieldRebuild {
             FieldRebuild::Nested(sub, _) => sub.iter().map(FieldRebuild::leaf_count).sum(),
             // A `list<u8>` flattens to `(ptr, len)` — two core params.
             FieldRebuild::BytesLeaf => 2,
+            FieldRebuild::Sum(r) => r.flattened_param_count(),
         }
     }
 
@@ -2125,6 +2132,11 @@ impl FieldRebuild {
                 out("bytes-alloc");
                 out("bytes-set");
             }
+            FieldRebuild::Sum(r) => {
+                r.arm_true.collect_ops(out);
+                r.arm_false.collect_ops(out);
+                out("sum-new");
+            }
         }
     }
 
@@ -2135,6 +2147,13 @@ impl FieldRebuild {
             FieldRebuild::Scalar { .. } => false,
             FieldRebuild::Nested(sub, _) => sub.iter().any(FieldRebuild::has_bytes_leaf),
             FieldRebuild::BytesLeaf => true,
+            // A sum arm's Compound payload could carry a bytes leaf; a scalar/nullary arm cannot.
+            FieldRebuild::Sum(r) => [&r.arm_true, &r.arm_false]
+                .iter()
+                .any(|a| match &a.payload {
+                    SumArmPayload::Compound(fs) => fs.iter().any(FieldRebuild::has_bytes_leaf),
+                    _ => false,
+                }),
         }
     }
 }
@@ -2329,6 +2348,33 @@ fn emit_sum_arg_rebuild(
     uleb128(sum_local as u64, out);
 }
 
+/// Emit the sum rebuild for a record-cell FIELD ([`FieldRebuild::Sum`]): like [`emit_sum_arg_rebuild`] but the
+/// disc/payload are read at the record's running cursor (NOT the closure `base_param`), and the handle is left
+/// on the stack for the parent `arr-set` (no drop-stash — the parent record owns it). Advances `*cursor` past
+/// the sum's flattened `(disc, payload…)`.
+fn emit_sum_field(
+    rebuild: &SumArgRebuild,
+    cursor: &mut u32,
+    imp: &dyn Fn(&str) -> u64,
+    out: &mut Vec<u8>,
+) {
+    use crate::backend::wasm::wasm_abi::op;
+    let disc_param = *cursor;
+    let payload_param = *cursor + 1;
+    out.push(op::LOCAL_GET);
+    uleb128(disc_param as u64, out);
+    out.push(op::I32_CONST);
+    crate::backend::wasm::encode::sleb128(rebuild.boundary_true_disc as i64, out);
+    out.push(op::I32_EQ);
+    out.push(op::IF);
+    out.push(wasm_abi::CORE_I32); // block type: → i32 (the sum handle)
+    emit_sum_arm(&rebuild.arm_true, payload_param, imp, out);
+    out.push(op::ELSE);
+    emit_sum_arm(&rebuild.arm_false, payload_param, imp, out);
+    out.push(op::END); // → [sum-handle]
+    *cursor += rebuild.flattened_param_count();
+}
+
 /// Emit the tuple-arg CELL REBUILD for a closure `call` body: reassemble the single fixed-shape tuple/record
 /// argument (which crossed the boundary FLATTENED into its N scalar fields at core params `1..1+N`) into the
 /// one i32 cell handle the lifted body expects — `arr-alloc N` + per field (index, the flattened param, box,
@@ -2405,6 +2451,9 @@ fn emit_cell_rebuild(
                 let (buf, ctr) = scratch.expect("a BytesLeaf needs the wrapper's scratch locals");
                 emit_bytes_leaf_copy_in(*cursor, buf, ctr, imp, out); // → [arr, i, buf]
                 *cursor += 2; // the list flattened to (ptr, len)
+            }
+            FieldRebuild::Sum(rebuild) => {
+                emit_sum_field(rebuild, cursor, imp, out); // → [arr, i, sum-handle]
             }
         }
         out.push(op::CALL);
