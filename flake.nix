@@ -1137,6 +1137,44 @@
           '';
         };
 
+        # ── contract name→hash mapping (design/cadenza-platform.md section 1) ──────────────────────
+        #
+        # The operator design (cdz-contract/src/main.rs): a contract's identity is its content hash, and the
+        # NAME→hash mapping is produced OUTSIDE the platform — by nix invoking `cdz-contract hash` over a
+        # directory of contract sources — then fed to a run as data. The platform itself resolves only by
+        # hash; a run may REFERENCE a contract by its stable name, which the harness transform (mkHarnessAst)
+        # resolves to the hash via this mapping, exactly as it resolves a `program` name to a store path.
+        #
+        # `contractHasher`: the `cdz-contract` binary, built ONCE like platformItest (plain cargo over the
+        # offline vendor, `-p cdz-contract` scoping the seed workspace). Reuses platformItestSrc so it shares
+        # that source snapshot's cache and, like it, excludes the guests/harness-runs (the tool needs neither).
+        contractHasher = pkgs.stdenvNoCC.mkDerivation {
+          pname = "cdz-contract";
+          version = "0.0.0";
+          src = platformItestSrc;
+          nativeBuildInputs = [ rustToolchain ];
+          buildPhase = ''
+            runHook preBuild
+            ${mkCargoVendorEnv { vendor = seedCargoVendor; }}
+            cargo build --release --locked -p cdz-contract --bin cdz-contract
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            install -Dm755 target/release/cdz-contract "$out/bin/cdz-contract"
+            runHook postInstall
+          '';
+        };
+
+        # Just the contract sources — the narrowest input so the mapping re-derives only when a contract's
+        # schema/pragmas change, not on any seed-crate edit. `cdz-contract hash` walks these `*.cdz`, parses
+        # each with the pinned `cdz` binary, and emits the deterministic (sorted) name→base64url-id JSON.
+        contractSourcesDir = ./implementation/seed/crates/cdz-platform/contracts;
+        contractHashes = pkgs.runCommand "cdz-contract-hashes"
+          { nativeBuildInputs = [ contractHasher seedCompiler ]; } ''
+          cdz-contract hash ${contractSourcesDir} --cdz ${seedCompiler}/bin/cdz --out "$out"
+        '';
+
         # The program names a run references — every `program = "<name>"` field in the ML spec. This is
         # DEPENDENCY DISCOVERY for the nix graph (which programs a run's derivation depends on, so caching is
         # per-program); the actual name→path substitution is an AST-validated `cdz rewrite` at build time
@@ -1145,6 +1183,19 @@
         harnessProgramsIn = specText:
           let
             parts = builtins.split ''program[[:space:]]*=[[:space:]]*"([^"]+)"'' specText;
+            caps = builtins.filter builtins.isList parts;
+          in
+          pkgs.lib.unique (map (c: builtins.elemAt c 0) caps);
+
+        # The contract names a run references BY NAME — every `contract = "<name>"` STRING field in the ML
+        # spec. The regex requires a `"` immediately after `=`, so it matches only the string form and never
+        # `contract = b"…"` (a raw-bytes literal a spec may still use); a run can mix both. Same discovery role
+        # as harnessProgramsIn: it tells the nix graph which contracts a run depends on so mkHarnessAst can
+        # resolve each name to its hash from `contractHashes`, while the actual substitution stays a structural
+        # `cdz rewrite` at build time. Reading from the spec text (not `cdz query`) avoids import-from-derivation.
+        harnessContractsIn = specText:
+          let
+            parts = builtins.split ''contract[[:space:]]*=[[:space:]]*"([^"]+)"'' specText;
             caps = builtins.filter builtins.isList parts;
           in
           pkgs.lib.unique (map (c: builtins.elemAt c 0) caps);
@@ -1164,7 +1215,9 @@
         # AST, and only the run step re-executes.
         mkHarnessAst = { name, specFile }:
           let
-            uses = harnessProgramsIn (builtins.readFile specFile);
+            specText = builtins.readFile specFile;
+            uses = harnessProgramsIn specText;
+            contractUses = harnessContractsIn specText;
             rewrites = pkgs.lib.concatMapStringsSep "\n"
               (n: ''
                 ${seedCompiler}/bin/cdz rewrite '(= program "${n}")' '(= path "${harnessPrograms.${n}}")' \
@@ -1172,11 +1225,30 @@
                 mv run.ml.next run.ml
               '')
               uses;
+            # Resolve each `contract = "<name>"` to its content hash from the name→id mapping, then rewrite the
+            # node to `(= contract "<base64url-id>")` (a delivery's contract may be a base64url string, §8/§9).
+            # The id is looked up at BUILD time (jq over the mapping file) rather than at eval — same no-IFD
+            # discipline as the program rewrite. An unknown name is a hard error (never a silent skip); jq
+            # yields the string "null" for a missing key, which we reject explicitly.
+            contractRewrites = pkgs.lib.concatMapStringsSep "\n"
+              (cname: ''
+                id="$(${pkgs.jq}/bin/jq -r --arg n "${cname}" '.[$n]' ${contractHashes})"
+                if [ "$id" = "null" ] || [ -z "$id" ]; then
+                  echo "harness-ast '${name}': contract name '${cname}' is not in the contract-hash mapping" >&2
+                  echo "(the mapping is ${contractHashes}; check the name matches an @!contract source)" >&2
+                  exit 1
+                fi
+                ${seedCompiler}/bin/cdz rewrite "(= contract \"${cname}\")" "(= contract \"$id\")" \
+                  run.ml --from ml --to ml > run.ml.next
+                mv run.ml.next run.ml
+              '')
+              contractUses;
           in
           pkgs.runCommand "harness-ast-${name}" { } ''
             set -euo pipefail
             cp ${specFile} run.ml
             ${rewrites}
+            ${contractRewrites}
             ${seedCompiler}/bin/cdz convert --from ml --to binary run.ml > "$out"
           '';
 
@@ -1675,6 +1747,12 @@
         # result/bin/cdz-platform-itest. Shared by every harness run so a test/program change never rebuilds it.
         packages.cdz-platform-itest = platformItest;
 
+        # The contract name→hash tooling (section 1). `.#cdz-contract` is the built CLI; `.#contract-hashes`
+        # is the reproducible name→base64url-id JSON mapping over the platform's contract sources — the data a
+        # run resolves a `contract = "<name>"` reference against (see mkHarnessAst).
+        packages.cdz-contract = contractHasher;
+        packages.contract-hashes = contractHashes;
+
         # R2: the content-addressed component store — every nix-built component as `<derived-hash>.wasm`
         # in one dir (mirrors target/cadenza-store, but built + addressed by nix). `nix build .#store`.
         packages.store = componentStore;
@@ -1889,7 +1967,8 @@
             flakeReproBackstop = pkgs.runCommand "flake-repro-backstop"
               {
                 inherit runtimeHashParity runtimeDebugHashParity nfcHashParity
-                  reducerEchoValid reducerEchoCheckValid harnessRunsAll exampleProjectTests crateClosureAssert;
+                  reducerEchoValid reducerEchoCheckValid contractHashesValid harnessRunsAll
+                  exampleProjectTests crateClosureAssert;
               } ''
               echo "ok: flake reproducibility-backstop — hash-parity + component-validity + project-@tests + closure-assert" > $out
             '';
@@ -1905,6 +1984,22 @@
             reducerEchoValid = validComponent { name = "reducer-echo"; drv = reducerEcho; };
             # Same validity guard for the interim checker guest (temporary; deleted with reducer-echo on W4c-b).
             reducerEchoCheckValid = validComponent { name = "reducer-echo-check"; drv = reducerEchoCheck; };
+            # The contract name→hash mapping is well-formed: a non-empty JSON object whose every value is a
+            # base64url contract-id (§8 text form — `[A-Za-z0-9_-]`, no padding). Catches a silently-empty
+            # mapping (e.g. a contracts dir that stopped parsing) that a run not referencing contracts by name
+            # would never surface. The harness runs that DO name a contract are the functional check on top.
+            contractHashesValid = pkgs.runCommand "contract-hashes-valid"
+              { nativeBuildInputs = [ pkgs.jq ]; } ''
+              set -euo pipefail
+              n="$(jq 'length' ${contractHashes})"
+              if [ "$n" -lt 1 ]; then echo "contract-hash mapping is empty" >&2; exit 1; fi
+              # every value is a non-empty base64url string
+              if ! jq -e 'to_entries | all(.value | type == "string" and test("^[A-Za-z0-9_-]+$"))' \
+                   ${contractHashes} > /dev/null; then
+                echo "contract-hash mapping has a non-base64url id:" >&2; cat ${contractHashes} >&2; exit 1
+              fi
+              echo "ok: contract-hash mapping well-formed ($n contract(s), all base64url ids)" > "$out"
+            '';
 
             # The HARNESS-RUN checks (§9), the shape the operator asked for on #2994: iterate every `*.ml`
             # spec in the harness-runs directory and build ONE check derivation per run via `mkHarnessRun`
@@ -2054,6 +2149,9 @@
             # from source, replacing the committed .wasm the operator vetoed.
             reducer-echo-valid = reducerEchoValid;
             reducer-echo-check-valid = reducerEchoCheckValid;
+            # `nix build .#checks.<sys>.contract-hashes-valid` — the contract name→hash mapping is well-formed
+            # (also part of flake-repro-backstop). The harness runs that name a contract exercise it in anger.
+            contract-hashes-valid = contractHashesValid;
             # The integration-test harness runs (§9): `harness-runs` is the aggregate; each individual run is
             # exposed below as `checks.<sys>.harness-<name>` (spread from harnessRunChecks) so `nix flake
             # check` runs them all AND CI can build/cache one run in isolation. `.#packages.cdz-platform-itest`
