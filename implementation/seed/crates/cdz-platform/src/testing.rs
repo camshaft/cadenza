@@ -23,12 +23,17 @@
 //! - [`HarnessSpec`] — a whole run decoded from a **Cadenza binary AST**: the executable's input is one
 //!   Cadenza value describing the blobs (inline or by path), the tasks to spawn, and the system reducer, so
 //!   the harness is driven by a serializable value rather than a command line.
+//! - [`serialize_log`] / [`deserialize_log`] — the observation log as a **Cadenza value**: the full-fidelity,
+//!   language-neutral log a checker reads (§9), where the human [`render`] is lossy. Every id, token, and
+//!   payload crosses byte-exact, so a checker can assert on values the rendered text elides; symmetric with
+//!   the harness input, which is itself a Cadenza value ([`HarnessSpec`]).
 //! - [`Checker`] / [`CheckOutcome`] — the assertion side: read a [`Run`] and decide pass/fail. The native
 //!   realization of the checker contract (a wasm checker implements the same judgement over a serialized
 //!   log later); any `Fn(&Run) -> CheckOutcome` is a checker.
 
 mod checker;
 mod harness;
+mod log_value;
 mod observation;
 mod recording;
 mod spec;
@@ -38,6 +43,7 @@ mod spec;
 pub use crate::program::testing as program;
 pub use checker::{CheckOutcome, Checker};
 pub use harness::{Harness, Parent, Run, SpawnSpec};
+pub use log_value::{deserialize as deserialize_log, serialize as serialize_log};
 pub use observation::{
     BlobOp, Entry, EventKind, EventOp, KvOp, ObservationLog, Record, SpawnInfo, render,
 };
