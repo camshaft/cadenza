@@ -2746,11 +2746,14 @@ impl<'a> Parser<'a> {
     /// - `list(T)` / `List(T)` -> `("list" <T>)`
     /// - `option(T)` / `Option(T)` -> `("option" <T>)`
     ///
+    /// - `tuple(A, …)` / `Tuple(A, …)` -> `("tuple" <A> …)`
     /// - a record TYPE `{f: T, …}` / `Record(f: T, …)` (canonical `(Record (: f T)…)`) -> `("record" (f
     ///   <T>)…)` via `Builder::wit_type_record`, matching rcdzc's `parse_wit_type` record arm.
+    /// - `result(T, E)` / `result(T)` / `result(_, E)` / `result` -> `("result" <ok> <err>)` (an absent arm,
+    ///   spelled `_`, is the `("none")` marker) via `Builder::wit_type_result`.
+    /// - `variant(Case, Case2(T), …)` -> `("variant" (Case <T>?)…)` via `Builder::wit_type_variant`.
     ///
-    /// Any other type node is left AS-IS (still round-trips; tuple/result/variant stay inline both sides
-    /// per the shared-scope agreement). The printer's `print_wit_type` is the inverse.
+    /// Any other type node is left AS-IS (still round-trips). The printer's `print_wit_type` is the inverse.
     fn wit_type_desc_of(&mut self, ty: StructId) -> StructId {
         // A bare NAME atom: `unit`/`Unit` -> the str-head `("unit")`; a WIT primitive -> `(name)`; any
         // other bare name is left as-is. (Clone the name so the read borrow releases before the mutable
@@ -2806,8 +2809,48 @@ impl<'a> Parser<'a> {
                 };
                 self.builder.wit_type_result(ok, err)
             }
+            // `variant(Case, Case2(T), …)` — an anonymous variant type. Each case is a bare NAME
+            // (payload-less) or a single-arg application `Case2(T)` (a payload case whose type is lowered).
+            Some((h, args)) if h == "variant" || h == "Variant" => {
+                self.wit_type_variant_desc_of(&args).unwrap_or(ty)
+            }
             _ => ty,
         }
+    }
+
+    /// Lower a variant-TYPE node's case args to the WIT variant descriptor `("variant" (Case <T>?)…)` via
+    /// `Builder::wit_type_variant`. A case arg is a bare NAME (payload-less → `(Case)`) or a single-arg
+    /// application `Case(T)` (payload → `(Case <T>)`, the type lowered). `None` if any arg is neither shape
+    /// (the caller then leaves the node as-is). Reads each case's (name, optional raw-payload-id) FIRST —
+    /// releasing the arena borrow — before the recursive lower, since that lower mutates the builder.
+    fn wit_type_variant_desc_of(&mut self, args: &[StructId]) -> Option<StructId> {
+        let mut raw: Vec<(String, Option<StructId>)> = Vec::with_capacity(args.len());
+        for &arg in args {
+            if let Some(n) = self.builder.as_name(arg) {
+                raw.push((n.to_string(), None));
+                continue;
+            }
+            let case = match self.builder.get(arg) {
+                crate::ast::Struct::List(k) if k.len() == 2 => {
+                    self.builder.as_name(k[0]).map(|n| (n.to_string(), k[1]))
+                }
+                _ => None,
+            };
+            match case {
+                Some((n, ty)) => raw.push((n, Some(ty))),
+                None => return None,
+            }
+        }
+        let lowered: Vec<(String, Option<StructId>)> = raw
+            .into_iter()
+            .map(|(n, ty)| {
+                let d = ty.map(|t| self.wit_type_desc_of(t));
+                (n, d)
+            })
+            .collect();
+        let cases: Vec<(&str, Option<StructId>)> =
+            lowered.iter().map(|(n, t)| (n.as_str(), *t)).collect();
+        Some(self.builder.wit_type_variant(&cases))
     }
 
     /// Lower one arm of a `result(…)` type-application: the WIT wildcard `_` spells an ABSENT arm (→ `None`,

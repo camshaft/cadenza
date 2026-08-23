@@ -2106,9 +2106,10 @@ impl<'a> Printer<'a> {
     /// `wit_type_desc_of`, so a world member round-trips. A primitive `(name)` prints bare `name`; a
     /// `("list" <elem>)` prints `list(<elem>)`; an `("option" <inner>)` prints `option(<inner>)`; a
     /// `("record" (f <ty>)…)` prints the brace record type `{f: <ty>, …}`; a `("result" <ok> <err>)` prints
-    /// `result` / `result(<ok>)` / `result(_, <err>)` / `result(<ok>, <err>)` (`_` = an absent arm). A node
-    /// that is NOT one of these descriptor shapes prints via the generic expr surface (a raw type node the
-    /// lowering left as-is — e.g. a variant type whose inline surface is not yet wired).
+    /// `result` / `result(<ok>)` / `result(_, <err>)` / `result(<ok>, <err>)` (`_` = an absent arm); a
+    /// `("variant" (Case <ty>?)…)` prints `variant(Case, Case2(<ty>), …)` (a bare case is payload-less). A
+    /// node that is NOT one of these descriptor shapes prints via the generic expr surface (a raw type node
+    /// the lowering left as-is).
     fn print_wit_type(&mut self, ty: StructId) {
         // Primitive `(name)`: a one-element list whose sole child is a NAME atom -> bare `name`.
         if let Struct::List(kids) = self.a.get(ty)
@@ -2228,6 +2229,48 @@ impl<'a> Printer<'a> {
                     self.doc.word(")");
                 }
             }
+            return;
+        }
+        // `variant` `("variant" (Case <ty>?)…)`: STR head + one entry per case — a `(Case)` 1-list is
+        // payload-less, a `(Case <ty>)` 2-list carries a payload. Prints `variant(Case, Case2(<ty>), …)`,
+        // the inverse of `wit_type_desc_of`'s variant arm. Collect the (owned name, optional payload-id)
+        // pairs FIRST so the arena borrow releases before the recursive `print_wit_type`.
+        let variant_cases: Option<Vec<(String, Option<StructId>)>> = match self.a.get(ty) {
+            Struct::List(kids)
+                if kids.first().and_then(|&h| self.a.as_str(h)) == Some("variant") =>
+            {
+                Some(
+                    kids[1..]
+                        .iter()
+                        .filter_map(|&c| match self.a.get(c) {
+                            Struct::List(case) if case.len() == 1 => {
+                                self.a.as_name(case[0]).map(|n| (n.to_string(), None))
+                            }
+                            Struct::List(case) if case.len() == 2 => self
+                                .a
+                                .as_name(case[0])
+                                .map(|n| (n.to_string(), Some(case[1]))),
+                            _ => None,
+                        })
+                        .collect(),
+                )
+            }
+            _ => None,
+        };
+        if let Some(cases) = variant_cases {
+            self.doc.word("variant(");
+            for (i, (name, payload)) in cases.iter().enumerate() {
+                if i > 0 {
+                    self.doc.word(", ");
+                }
+                self.doc.word(emit_name(name));
+                if let Some(p) = payload {
+                    self.doc.word("(");
+                    self.print_wit_type(*p);
+                    self.doc.word(")");
+                }
+            }
+            self.doc.word(")");
             return;
         }
         // Not a recognized descriptor — the raw type node the lowering left as-is.
@@ -4483,6 +4526,34 @@ mod tests {
         assert!(
             sexp.contains("(\"result\" (\"none\") (\"none\"))"),
             "bare result stored with both ('none') slots, got: {sexp}"
+        );
+    }
+
+    #[test]
+    fn inline_world_variant_member_type_round_trips() {
+        // A `variant(Case, Case2(T), …)` world-member type lowers to the canonical str-head
+        // `("variant" (Case <T>?)…)` descriptor (matching rcdzc's parse_wit_type + cadenza-ast
+        // wit_type_variant) and prints back, so a world binding a variant member round-trips ML->ML. A bare
+        // case is payload-less; a `Case(T)` application carries a payload (itself lowered — here a record,
+        // the shape v-platform's `outcome { continue, break(record) }` uses).
+        let printed = assert_roundtrip(
+            "world W = | export i = \
+             | f : (x : u8) -> variant(Continue, Break({schema: string, reason: string}))",
+            120,
+        );
+        assert!(
+            printed.contains("-> variant(Continue, Break({schema: string, reason: string}))"),
+            "variant with a payload-less case + a record-payload case round-trips: {printed}"
+        );
+        // The stored descriptor is the canonical str-head variant form: a payload-less case is a 1-list
+        // `(Continue)`, a payload case is a 2-list `(Break <lowered-ty>)`.
+        let parsed = parser::read_ml(
+            "world W = | export i = | f : (x : u8) -> variant(Continue, Break(u8))",
+        );
+        let sexp = sexpr::print(&parsed.arenas);
+        assert!(
+            sexp.contains("(\"variant\" (Continue) (Break (u8)))"),
+            "variant stored as str-head with (Case)/(Case ty) entries, got: {sexp}"
         );
     }
 
