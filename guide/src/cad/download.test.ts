@@ -6,6 +6,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { encodeMesh } from "./download.ts";
+import { meshFromSolid } from "./index.ts";
 
 // A single triangle — the minimal mesh both serializers accept (positions = 3 verts × xyz, indices = 1 tri).
 const TRI = {
@@ -43,4 +44,33 @@ test("encodeMesh: STL and 3MF are distinct encodings", () => {
   const stl = encodeMesh(TRI, "stl").bytes;
   const tmf = encodeMesh(TRI, "3mf").bytes;
   assert.notEqual(stl.length, tmf.length, "STL (raw binary) and 3MF (zip) differ in size");
+});
+
+// ── increment 3: the export honors the chosen tessellation resolution (end-to-end) ────────────────────
+// /cad exports the mesh AT the preview quality: the download serializes the current meshed result, which the
+// Quality slider re-meshes at its segment count (CadPage keeps `lastMesh` in sync with the slider). So a finer
+// resolution must produce an exported file with more triangles — "what you see is what you download". These
+// pin that end-to-end (meshFromSolid(segments) → encodeMesh) so a future refactor can't silently decouple the
+// exported resolution from the chosen one. The binary-STL triangle count lives at byte offset 80 (u32 LE);
+// 3MF is a zip, so we compare the STL count directly.
+
+/// The triangle count an encoded binary STL declares in its header (u32 LE at offset 80).
+function stlHeaderTriCount(mesh: { positions: Float32Array; indices: Uint32Array }): number {
+  const { bytes } = encodeMesh(mesh, "stl");
+  return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(80, true);
+}
+
+test("STL export honors the chosen resolution — a finer mesh exports more triangles", async () => {
+  const coarse = await meshFromSolid("(: (Sphere 5/1) Solid)", 8);
+  const fine = await meshFromSolid("(: (Sphere 5/1) Solid)", 64);
+  assert.ok(coarse.ok && fine.ok, "both resolutions mesh");
+  if (coarse.ok && fine.ok) {
+    const cTris = stlHeaderTriCount(coarse);
+    const fTris = stlHeaderTriCount(fine);
+    // the STL header count matches the meshed triangle count (the export serializes exactly what was meshed)…
+    assert.equal(cTris, coarse.indices.length / 3, "STL header triangle count matches the coarse mesh");
+    assert.equal(fTris, fine.indices.length / 3, "STL header triangle count matches the fine mesh");
+    // …and a higher resolution yields a larger exported file (the slider value flows into the download).
+    assert.ok(fTris > cTris, `a finer export has more triangles in the STL (${fTris} > ${cTris})`);
+  }
 });
