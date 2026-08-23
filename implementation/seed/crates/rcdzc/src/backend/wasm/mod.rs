@@ -537,6 +537,14 @@ pub fn emit(
                     });
                 }
             }
+            // A spilled record RESULT reads each field off the returned handle (`arr-get` + the unbox op),
+            // so those ops must be imported too.
+            if let serialize::ResultLower::SpillScalarRecord { fields, .. } = &w.result {
+                used.insert("arr-get");
+                for f in fields {
+                    used.insert(f.read);
+                }
+            }
         }
     }
     let imports: Vec<&runtime_abi::RtOp> = used
@@ -8051,6 +8059,81 @@ fn record_interface_export(
             other => Some(vec![valtype_of(other)?.byte()]),
         }
     }
+    // How to read ONE scalar field off a returned record handle and store it into the canonical return area:
+    // `(read-op, narrow-i64→i32?, store-opcode)`. `get-int` yields i64, so a ≤32-bit slot narrows + stores an
+    // i32-width store; a 64-bit slot stores i64. `None` if `f` is not an aliased-width scalar.
+    fn scalar_result_read_store(f: &Ty) -> Option<(&'static str, bool, u8)> {
+        use crate::backend::wasm::wasm_abi::op;
+        Some(match f.strip_nominal() {
+            Ty::Int(it) => {
+                let w = it.ground_width();
+                if w <= 8 {
+                    ("get-int", true, op::I32_STORE8)
+                } else if w <= 16 {
+                    ("get-int", true, op::I32_STORE16)
+                } else if w <= 32 {
+                    ("get-int", true, op::I32_STORE)
+                } else {
+                    ("get-int", false, op::I64_STORE)
+                }
+            }
+            Ty::Bool => ("get-bool", false, op::I32_STORE8),
+            Ty::Float(ft) if ft.ground_width() == 64 => ("get-float", false, op::F64_STORE),
+            Ty::Float(ft) if ft.ground_width() == 32 => ("get-float32", false, op::F32_STORE),
+            _ => return None,
+        })
+    }
+    // Build the result-lower + core result valtypes for a member's result. A scalar/unit passes straight
+    // through (the def returns it raw); an all-scalar RECORD that SPILLS (flattens to >1 canonical value) is
+    // written to a memory return area at canonical offsets, the core returning the area pointer. A flat
+    // (1-value) record, a `list<u8>`/nested/variant field, or a WIT-vs-name-lex field-order mismatch → `None`
+    // (a later slice, or a soundness decline).
+    fn record_result_lower(gr: &Ty, wr: &WitType) -> Option<(serialize::ResultLower, Vec<u8>)> {
+        use crate::backend::wasm::serialize::{ResultLower, ScalarResultField};
+        use crate::backend::wasm::wit_ctype;
+        if let Some(vts) = scalar_result_vts(gr) {
+            return Some((ResultLower::Passthrough, vts));
+        }
+        let Ty::Record(map) = gr else {
+            return None;
+        };
+        let WitType::Record(wfs) = wr else {
+            return None;
+        };
+        // Field-order soundness (as on the param side): WIT order must equal name-lex `Ty::Record` order, or a
+        // field's stored offset would not match the slot the def wrote it to.
+        let wit_order: Vec<&str> = wfs.iter().map(|(n, _)| n.as_str()).collect();
+        let lex_order: Vec<&str> = map.keys().map(|s| s.name.as_ref()).collect();
+        if wit_order != lex_order {
+            return None;
+        }
+        // Only a SPILLING record (flat count > MAX_FLAT_RESULTS) is handled; a flat 1-value record result is a
+        // later slice (the core returns the flattened scalar, not a pointer — a different lower).
+        if !wit_ctype::sig_needs_memory(&[], Some(wr)) {
+            return None;
+        }
+        let wtys: Vec<WitType> = wfs.iter().map(|(_, t)| t.clone()).collect();
+        let offsets = wit_ctype::record_field_offsets(&wtys);
+        let mut fields = Vec::new();
+        for (i, (gty, off)) in map.values().zip(offsets.iter()).enumerate() {
+            let (read, wrap_i64, store) = scalar_result_read_store(gty)?;
+            fields.push(ScalarResultField {
+                index: i as u32,
+                read,
+                wrap_i64,
+                store,
+                offset: *off,
+            });
+        }
+        Some((
+            ResultLower::SpillScalarRecord {
+                size: wit_ctype::canonical_size(wr),
+                align: wit_ctype::canonical_align(wr),
+                fields,
+            },
+            vec![crate::backend::wasm::lir::ValType::I32.byte()],
+        ))
+    }
     let arenas = crate::codec::decode(world_bytes)?;
     let world = parse_target_world(&arenas, arenas.root)?;
     let export_iface = world.exports.first()?;
@@ -8126,7 +8209,7 @@ fn record_interface_export(
         if param_vts.len() > crate::backend::wasm::wit_ctype::MAX_FLAT_PARAMS {
             return None;
         }
-        let result_vts = scalar_result_vts(&e.result)?;
+        let (result_lower, result_vts) = record_result_lower(&e.result, &member.func.result)?;
         let def_abs = layout.abs(e.def)?;
         wrappers.push(serialize::WrapperDesc {
             name: member.name.clone(),
@@ -8134,6 +8217,7 @@ fn record_interface_export(
             result_vts,
             params,
             def_abs,
+            result: result_lower,
         });
         funcs.push(envelope::TypedFunc {
             name: member.name.clone(),
