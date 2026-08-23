@@ -595,10 +595,13 @@
         crateClosureAssert =
           let
             expected = {
-              rcdzc = [ "cadenza-ast" "cadenza-syntax" "cdz-num" "cdz-rt" "cdz-run" "rcdzc" ];
+              # cdz-run gained a `cdz-contract` dep in the base62 flip (#3090: content_address delegates
+              # to cdz_contract::Hash::of), so cdz-contract enters both the rcdzc closure (via its cdz-run
+              # dev-dep) and the xtask closure (direct dep). cadenza-ast was already present via cdz-contract.
+              rcdzc = [ "cadenza-ast" "cadenza-syntax" "cdz-contract" "cdz-num" "cdz-rt" "cdz-run" "rcdzc" ];
               cadenza-syntax = [ "cadenza-ast" "cadenza-syntax" ];
               cdz-num = [ "cdz-num" ];
-              xtask = [ "cadenza-ast" "cdz-rust-render" "xtask" ];
+              xtask = [ "cadenza-ast" "cdz-contract" "cdz-rust-render" "xtask" ];
             };
             mismatches = builtins.filter (n: (crateClosure n) != expected.${n})
               (builtins.attrNames expected);
