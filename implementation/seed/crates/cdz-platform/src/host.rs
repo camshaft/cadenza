@@ -699,23 +699,14 @@ struct ComponentDep {
 
 /// The content address a dependency import name carries, as a store [`Hash`], or `None` if the name is not a
 /// content-addressed dependency. The compiler emits a component dependency as an import whose name ends in
-/// `+<hex>` — the lowercase-hex blake3 digest of the dependency's component bytes (`cadenza:runtime/heap@0.0.0
-/// +<hex>`, §8, the tree-unified address). The store keys on that digest (ignoring the tag), so this rebuilds
-/// the hash from the 32-byte digest under the `Blob` tag. A platform host interface (`cadenza:platform/state`
-/// …) carries no `+<hex>` and is served by [`add_host_imports`], not from the store — so it yields `None`.
+/// `+<addr>` — the dependency component's content hash in the canonical base62 text form ([`Hash`]'s
+/// `Display`/`FromStr`, §8, the one tree-unified encoding): the full tagged hash, `Blob`-tagged for a
+/// content-address (`cadenza:runtime/heap@0.0.0+<base62>`). Parse it back with [`Hash::from_str`]; the store
+/// keys on the digest (ignoring the tag), so the parsed hash resolves the right content whatever its tag. A
+/// platform host interface (`cadenza:platform/state` …) carries no `+…` and is served by [`add_host_imports`],
+/// not from the store — so it yields `None` (no `+`, or a suffix that is not a valid base62 hash).
 fn dependency_address(import_name: &str) -> Option<Hash> {
-    let hex = import_name.rsplit_once('+')?.1;
-    if hex.len() != Hash::DIGEST_LEN * 2 {
-        return None;
-    }
-    let mut bytes = [0u8; Hash::LEN];
-    bytes[0] = HashTag::Blob as u8; // immaterial to the content-keyed store; Blob is the content-address kind
-    for (i, pair) in hex.as_bytes().chunks(2).enumerate() {
-        let hi = (pair[0] as char).to_digit(16)?;
-        let lo = (pair[1] as char).to_digit(16)?;
-        bytes[1 + i] = (hi * 16 + lo) as u8;
-    }
-    Some(Hash::from_bytes(bytes))
+    import_name.rsplit_once('+')?.1.parse::<Hash>().ok()
 }
 
 /// The content-addressed component dependencies `component` imports — the imports the platform must resolve
@@ -1660,24 +1651,22 @@ mod tests {
     #[test]
     fn a_dependency_import_name_resolves_to_its_content_address() {
         use super::dependency_address;
-        // A dependency import carries the lowercase-hex blake3 digest of the dep component after `+`; it must
-        // resolve to the same content the store keys under (the digest), whatever the tag.
+        // A dependency import carries the dep component's content hash in canonical base62 (§8, `Hash` Display)
+        // after `+`; it must resolve to the same content the store keys under (the digest), whatever the tag.
         let dep_bytes = b"the value-heap runtime component";
         let dep = Hash::of(HashTag::Blob, dep_bytes);
-        let hex: String = dep.digest().iter().map(|b| format!("{b:02x}")).collect();
-        let import = format!("cadenza:runtime/heap@0.0.0+{hex}");
-        let parsed = dependency_address(&import).expect("a +<hex> import is a dependency");
+        let import = format!("cadenza:runtime/heap@0.0.0+{dep}"); // Hash `Display` is base62
+        let parsed = dependency_address(&import).expect("a +<base62> import is a dependency");
         assert_eq!(
             parsed.digest(),
             dep.digest(),
             "resolves to the dep's content in the store"
         );
-        // A platform host interface carries no `+<hex>` — it is served by the host, not the store.
+        // A platform host interface carries no `+…` — it is served by the host, not the store.
         assert!(dependency_address("cadenza:platform/state").is_none());
         assert!(dependency_address("cadenza:platform/identity").is_none());
-        // Malformed addresses (non-hex, or not a full 64-hex digest) name no content.
-        assert!(dependency_address("dep:x/y@1.0.0+not-hex-at-all").is_none());
-        assert!(dependency_address(&format!("dep:x+{}", "ab".repeat(31))).is_none()); // 62 hex, too short
+        // A malformed suffix (not a valid base62 hash) names no content.
+        assert!(dependency_address("dep:x/y@1.0.0+not a valid base62 hash!").is_none());
     }
 
     // The end-to-end driver test — seed the reducer-echo guest component's bytes into the store, spawn its
