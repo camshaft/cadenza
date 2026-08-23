@@ -89,7 +89,10 @@ jobs:
           cache-key: rust-gate-full
       - name: Build the runtime store
         run: cargo xtask build
-      - uses: actions/upload-artifact@v7
+      # MUST match the shards' `download-artifact` major version (both @v8) — a v7↑/v8↓ round-trip skew
+      # produced a `digest-mismatch` on the store artifact + a slow/stuck download that ate the reclaim
+      # window (v-nix 2026-08-23, first shared-store nightly). Keep upload/download versions equal.
+      - uses: actions/upload-artifact@v8
         with:
           name: cadenza-store
           path: target/cadenza-store
