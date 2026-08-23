@@ -134,10 +134,16 @@ fn build_interface(
     world_name: &str,
 ) -> Result<StructId, String> {
     let iface = &resolve.interfaces[id];
-    let name = iface
+    let short = iface
         .name
         .as_deref()
         .ok_or_else(|| format!("{world_name}: an interface in the world has no name"))?;
+    // Emit the FULLY-QUALIFIED WIT name `ns:pkg/iface` (e.g. `cadenza:platform/guest`), not the bare short
+    // name. The host composes an import and publishes an export under the FQ component-model name, and rcdzc
+    // derives a self-describing reducer's component-name from its FQ export interface (so it compiles with no
+    // `--component-name` flag). Import-effect synthesis still binds by the short (last-`/`-segment) name, so
+    // a performed `identity.id` resolves against `cadenza:platform/identity` all the same.
+    let name = fq_name(resolve, iface, short, world_name)?;
 
     // Build each member's func sig first (owning the param-name Strings), then borrow them for `wit_interface`.
     let mut funcs: Vec<(String, StructId)> = Vec::with_capacity(iface.functions.len());
@@ -157,7 +163,32 @@ fn build_interface(
     funcs.sort_by(|a, c| a.0.cmp(&c.0));
 
     let member_refs: Vec<(&str, StructId)> = funcs.iter().map(|(n, s)| (n.as_str(), *s)).collect();
-    Ok(b.wit_interface(dir, name, &member_refs))
+    Ok(b.wit_interface(dir, &name, &member_refs))
+}
+
+/// The fully-qualified WIT name `ns:pkg/iface` for an interface — its owning package name plus the short
+/// interface name (e.g. `cadenza:platform` + `guest` → `cadenza:platform/guest`). Falls back to the short
+/// name if the interface has no owning package (a standalone interface not in a package).
+fn fq_name(
+    resolve: &Resolve,
+    iface: &wit_parser::Interface,
+    short: &str,
+    world_name: &str,
+) -> Result<String, String> {
+    match iface.package {
+        Some(pkg) => {
+            let pkg_name = &resolve.packages[pkg].name;
+            // `PackageName`'s Display is `ns:name` (plus `@version` when versioned); `world.wit`'s
+            // `package cadenza:platform;` is unversioned, so this is `cadenza:platform`.
+            Ok(format!("{pkg_name}/{short}"))
+        }
+        None => {
+            // No owning package — the short name is the only name available. Not expected for the platform
+            // worlds, but degrade gracefully rather than fail the whole artifact.
+            let _ = world_name;
+            Ok(short.to_string())
+        }
+    }
 }
 
 /// Map a `wit-parser` type to its canonical `cadenza_ast` WIT type descriptor, inlining named types /
@@ -277,7 +308,15 @@ mod tests {
             "first child is the world name"
         );
         let (names, dirs) = interface_names_and_dirs(&arenas, &items[1..]);
-        for expected in ["state", "blobs", "identity", "run", "guest"] {
+        // Interface names are FULLY QUALIFIED (`cadenza:platform/<iface>`) so the export self-describes the
+        // component name and imports match the host's component-model names.
+        for expected in [
+            "cadenza:platform/state",
+            "cadenza:platform/blobs",
+            "cadenza:platform/identity",
+            "cadenza:platform/run",
+            "cadenza:platform/guest",
+        ] {
             assert!(
                 names.contains(&expected),
                 "reducer-world artifact is missing interface `{expected}` (found {names:?})"
@@ -304,7 +343,11 @@ mod tests {
             .as_form(arenas.root, "world")
             .expect("root is a `world` form");
         let (names, _dirs) = interface_names_and_dirs(&arenas, &items[1..]);
-        for expected in ["graph", "deliver", "provenance"] {
+        for expected in [
+            "cadenza:platform/graph",
+            "cadenza:platform/deliver",
+            "cadenza:platform/provenance",
+        ] {
             assert!(
                 names.contains(&expected),
                 "event-reducer-world artifact is missing privileged interface `{expected}` (found {names:?})"
