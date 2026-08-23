@@ -177,22 +177,6 @@ pub fn emit(
     // So a compound host result is representable when the world has a typed record-param export member too.
     // (A guest that has such a member but routes elsewhere is caught by the plain host-delegating path's own
     // compound-result decline, so this broadening never mis-emits.)
-    let world_has_typed_record_export = |wb: &[u8]| -> bool {
-        let Some(arenas) = crate::codec::decode(wb) else {
-            return false;
-        };
-        let Some(world) = crate::wit_world::parse_target_world(&arenas, arenas.root) else {
-            return false;
-        };
-        world.exports.iter().any(|i| {
-            i.members.iter().any(|m| {
-                m.func
-                    .params
-                    .iter()
-                    .any(|(_, t)| matches!(t, crate::wit_world::WitType::Record(_)))
-            })
-        })
-    };
     let allow_option_bytes = db.component_name.is_some()
         && db.wit_world.clone().is_some_and(|wb| {
             world_bytes_crossing_export(layout, &wb).is_some() || world_has_typed_record_export(&wb)
@@ -206,9 +190,10 @@ pub fn emit(
             let article = if pos == "argument" { "an" } else { "a" };
             return Err(Reject::decline(format!(
                 "the host operation `{op}` has {article} {pos} of type `{ty}`, which has no component \
-                 boundary form this compiler emits yet (only scalar and unit results, and \
-                 scalar/string/unit arguments, cross the host boundary; a string or compound result \
-                 is a later increment)"
+                 boundary form this compiler emits yet. Host RESULTS cross as: a scalar/unit, a `list<u8>` \
+                 (Bytes), or an `option<list<u8>>`. Host ARGUMENTS cross as: a scalar/unit/string or a \
+                 `list<u8>`. A record/compound ARGUMENT, or a `list<list<u8>>`/`list<tuple<…>>` RESULT, is a \
+                 later increment."
             )));
         }
     }
@@ -1156,6 +1141,25 @@ pub fn emit(
                 needs_bytes_result,
             )
         });
+    }
+
+    // DECLINE-DON'T-MISCOMPILE: the world declares a TYPED record-param export interface and a component
+    // name is set, yet `record_interface_export` did NOT fire above — so some member the exported interface
+    // declares has no matching guest def (a PARTIAL guest: the program defines only a subset of the
+    // interface's members), or a member's shape is unsupported. Without this, the program silently falls
+    // through to the raw heap-handle export (`u32 -> u32`), a component the boundary cannot bind. A component
+    // MUST export every member of the interface it exports, so decline clearly. Purely world/WIT-shape-driven
+    // — this is generic over ANY declared export interface, not any particular interface or member set.
+    if db.component_name.is_some()
+        && let Some(world_bytes) = db.wit_world.clone()
+        && world_has_typed_record_export(&world_bytes)
+    {
+        return Err(Reject::decline(
+            "the program does not fully implement the world's typed export interface: a component that \
+             exports an interface must define every member that interface declares, each with a matching \
+             definition of the right shape; this program defines only some of them, so it cannot cross the \
+             typed interface-instance boundary",
+        ));
     }
 
     // A HOST-delegating program takes the host-import envelope shape (E2h-2): the delegated effect is a
@@ -8239,6 +8243,29 @@ fn emit_recursive_sum_resource(
 /// compound). Returns the def of the first such member. Purely declared-signature-driven — no member name
 /// or contract shape is hard-coded, so the compiler stays generic over any WIT (the fold's `apply` is merely
 /// the first member that satisfies this, not a special case).
+/// Whether the target world declares an EXPORT interface with a `record`-param member — the domain of the
+/// typed interface-instance emit (`record_interface_export`). Used to (a) admit a compound host result in
+/// the guard, and (b) turn a `record_interface_export` miss into a clean DECLINE rather than a silent
+/// heap-handle fallback (a program whose world declares a typed export interface it does not fully
+/// implement). Purely world/WIT-shape-driven — no interface or member name is hard-coded, so the compiler
+/// stays generic over any WIT export.
+fn world_has_typed_record_export(world_bytes: &[u8]) -> bool {
+    let Some(arenas) = crate::codec::decode(world_bytes) else {
+        return false;
+    };
+    let Some(world) = crate::wit_world::parse_target_world(&arenas, arenas.root) else {
+        return false;
+    };
+    world.exports.iter().any(|i| {
+        i.members.iter().any(|m| {
+            m.func
+                .params
+                .iter()
+                .any(|(_, t)| matches!(t, crate::wit_world::WitType::Record(_)))
+        })
+    })
+}
+
 fn world_bytes_crossing_export(layout: &Layout, world_bytes: &[u8]) -> Option<usize> {
     use crate::wit_world::{BridgeAction, bridge_decision, parse_target_world};
     let arenas = crate::codec::decode(world_bytes)?;
