@@ -841,7 +841,10 @@ fn core_module_impl(
         export_items.extend_from_slice(&item);
         export_n += 1;
     }
-    let export_sec = section(wasm_abi::CORE_SEC_EXPORT, &wasm_vec(export_n, &export_items));
+    let export_sec = section(
+        wasm_abi::CORE_SEC_EXPORT,
+        &wasm_vec(export_n, &export_items),
+    );
 
     // Code section: bodies in emission order.
     let mut code_items = Vec::new();
@@ -856,7 +859,8 @@ fn core_module_impl(
         let imp = |name: &str| -> u64 {
             *import_index
                 .get(name)
-                .unwrap_or_else(|| panic!("wrapper needs runtime op `{name}` in the import set")) as u64
+                .unwrap_or_else(|| panic!("wrapper needs runtime op `{name}` in the import set"))
+                as u64
         };
         for wrap in wrappers {
             let mut body = Vec::new();

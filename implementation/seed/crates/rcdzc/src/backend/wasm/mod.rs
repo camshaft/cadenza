@@ -519,6 +519,26 @@ pub fn emit(
     // no runtime op — no import section, no shift → byte-identical to a runtime-free build.
     let mut used: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
     collect_module_used_ops(db, layout, &mut used)?;
+    // A typed interface-export member with a RECORD param emits a boundary WRAPPER that BUILDS the record
+    // from the flattened fields (`arr-alloc`/`arr-set` + per-field `box-*`). Those ops are the wrapper's,
+    // not the guest body's, so add them to the used set here (before the import set is derived) — otherwise
+    // the wrapper body cannot resolve them. No-op for any program that is not a record-param interface
+    // export (the guest's own op set is unchanged).
+    if let (Some(iface), Some(world_bytes)) = (&db.component_name, &db.wit_world)
+        && let Some((wrappers, _)) = record_interface_export(layout, world_bytes, iface)
+    {
+        used.insert("arr-alloc");
+        used.insert("arr-set");
+        for w in &wrappers {
+            for p in w.params.iter().flatten() {
+                for f in p {
+                    f.collect_box_ops(&mut |op| {
+                        used.insert(op);
+                    });
+                }
+            }
+        }
+    }
     let imports: Vec<&runtime_abi::RtOp> = used
         .iter()
         .map(|name| {
@@ -962,6 +982,21 @@ pub fn emit(
         && let Some(typed) = scalar_interface_export(layout, &world_bytes, &iface)
     {
         return Ok(envelope::assemble_typed_interface(&core, &typed));
+    }
+
+    // §3c GENERAL WIT-BINDINGS (W4c-b) — a typed interface-export world with a RECORD-param member: emit a
+    // boundary WRAPPER per member (build the record from the flattened fields, call the def) via
+    // `core_module_with_wrappers`, and export the interface instance. The wrapper's rebuild ops were added
+    // to the import set above. Still the no-spill subset (scalar-field record params, scalar/unit results);
+    // a `list<u8>`/record result declines here until the memory + result-lower wrapper slice.
+    if let Some(iface) = db.component_name.clone()
+        && let Some(world_bytes) = db.wit_world.clone()
+        && let Some((wrappers, typed)) = record_interface_export(layout, &world_bytes, &iface)
+    {
+        let wrapped_core =
+            serialize::core_module_with_wrappers(&funcs, &imports, &wrappers, layout)
+                .map_err(Reject::decline)?;
+        return Ok(envelope::assemble_typed_interface(&wrapped_core, &typed));
     }
 
     // A HOST-delegating program takes the host-import envelope shape (E2h-2): the delegated effect is a
@@ -7974,6 +8009,114 @@ fn scalar_interface_export(
         types: Vec::new(),
         funcs,
     })
+}
+
+/// Like [`scalar_interface_export`] but for a member with a RECORD param: build the boundary WRAPPER descs
+/// (the canon lift hands the record's flattened fields; the compiled def wants a value-heap handle, so a
+/// wrapper builds the handle then calls the def) plus the [`envelope::TypedInterface`] to emit. Fires only
+/// when ≥1 member has a record param (a pure-scalar interface is handled by [`scalar_interface_export`]).
+/// MVP: record params of SCALAR fields + scalar/unit results — a `list<u8>`/nested-record/variant/record
+/// RESULT still declines (needs the memory + result-lower wrapper, a later slice). `iface` = the FQ export
+/// name (`db.component_name`). Returns the wrappers (for `core_module_with_wrappers`) + the interface.
+fn record_interface_export(
+    layout: &Layout,
+    world_bytes: &[u8],
+    iface: &str,
+) -> Option<(Vec<serialize::WrapperDesc>, envelope::TypedInterface)> {
+    use crate::backend::wasm::lir::valtype_of;
+    use crate::backend::wasm::serialize::FieldRebuild;
+    use crate::ty::Ty;
+    use crate::wit_world::{WitType, parse_target_world};
+    // A boundary result type the MVP wrapper can pass straight through (a scalar the def returns raw). A
+    // record/variant/list/string result spills to memory and needs the result-lower wrapper (later).
+    fn scalar_result_vts(r: &Ty) -> Option<Vec<u8>> {
+        match r {
+            Ty::Unit => Some(Vec::new()),
+            Ty::Record(_)
+            | Ty::Tuple(_)
+            | Ty::Sum { .. }
+            | Ty::List(_)
+            | Ty::Map(_, _)
+            | Ty::Set(_)
+            | Ty::String
+            | Ty::Bytes => None,
+            other => Some(vec![valtype_of(other)?.byte()]),
+        }
+    }
+    let arenas = crate::codec::decode(world_bytes)?;
+    let world = parse_target_world(&arenas, arenas.root)?;
+    let export_iface = world.exports.first()?;
+    let mut wrappers = Vec::new();
+    let mut funcs = Vec::new();
+    let mut any_record = false;
+    for member in &export_iface.members {
+        let e = layout.exports.iter().find(|e| e.name == member.name)?;
+        if member.func.params.len() != e.params.len() {
+            return None;
+        }
+        let mut param_vts: Vec<u8> = Vec::new();
+        let mut params: Vec<Option<Vec<FieldRebuild>>> = Vec::new();
+        for (_, gty) in &e.params {
+            match gty {
+                Ty::Record(_) => {
+                    let (_c, core_vts, rebuild) = tuple_field_abi(gty)?;
+                    // MVP: only scalar-field records (no nested compound field) — a nested field needs a
+                    // deeper build the later wrapper slice adds.
+                    if rebuild
+                        .iter()
+                        .any(|f| !matches!(f, FieldRebuild::Scalar { .. }))
+                    {
+                        return None;
+                    }
+                    param_vts.extend(core_vts.iter().map(|vt| vt.byte()));
+                    params.push(Some(rebuild));
+                    any_record = true;
+                }
+                Ty::Tuple(_)
+                | Ty::Sum { .. }
+                | Ty::List(_)
+                | Ty::Map(_, _)
+                | Ty::Set(_)
+                | Ty::String
+                | Ty::Bytes => return None, // needs memory / a deeper wrapper — later
+                scalar => {
+                    // a scalar param passes straight through (no rebuild).
+                    param_vts.push(valtype_of(scalar)?.byte());
+                    params.push(None);
+                }
+            }
+        }
+        let result_vts = scalar_result_vts(&e.result)?;
+        let def_abs = layout.abs(e.def)?;
+        wrappers.push(serialize::WrapperDesc {
+            name: member.name.clone(),
+            param_vts,
+            result_vts,
+            params,
+            def_abs,
+        });
+        funcs.push(envelope::TypedFunc {
+            name: member.name.clone(),
+            params: member.func.params.clone(),
+            result: match &member.func.result {
+                WitType::Unit => None,
+                r => Some(r.clone()),
+            },
+        });
+    }
+    // A pure-scalar interface is handled (no wrapper) by scalar_interface_export; only take over when a
+    // member actually has a record param needing a wrapper.
+    if !any_record {
+        return None;
+    }
+    Some((
+        wrappers,
+        envelope::TypedInterface {
+            name: iface.to_string(),
+            types: Vec::new(),
+            funcs,
+        },
+    ))
 }
 
 /// §3c — emit ANY WIT bytes-provider export member: a member the target WIT declares `list<u8> -> list<u8>`
