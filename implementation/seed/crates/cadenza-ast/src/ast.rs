@@ -616,6 +616,39 @@ impl Builder {
         self.list(children)
     }
 
+    /// Build a `record{field: ty…}` WIT type descriptor `("record" (fname <ty>)…)` — a STRING-atom head
+    /// `record`, then one `(name-node ty-node)` 2-list per field. Fields are passed in the caller's order
+    /// (the caller iterates a name-sorted `Ty::Record` BTreeMap, so fields arrive NAME-SORTED, matching the
+    /// kernel's now-name-sorted record descriptor). Copied from `cdz-kernel/src/ast_marshal.rs`.
+    pub fn wit_type_record(&mut self, fields: &[(&str, StructId)]) -> StructId {
+        let mut children = Vec::with_capacity(1 + fields.len());
+        children.push(self.atom_leaf(Leaf::Str("record".into())));
+        for &(name, ty) in fields {
+            let name_node = self.name(name);
+            let entry = self.list(vec![name_node, ty]);
+            children.push(entry);
+        }
+        self.list(children)
+    }
+
+    /// Build a `variant{Case(T)?…}` WIT type descriptor `("variant" (Case <T>?)…)` — a STRING-atom head
+    /// `variant`, then one `(CaseName ty?)` entry per case (a payload-bearing case is a 2-list `(CaseName
+    /// ty)`, a payload-less case a 1-list `(CaseName)`). Cases are passed in the caller's DECL order (order
+    /// participates in the identity). Copied from `cdz-kernel/src/ast_marshal.rs`.
+    pub fn wit_type_variant(&mut self, cases: &[(&str, Option<StructId>)]) -> StructId {
+        let mut children = Vec::with_capacity(1 + cases.len());
+        children.push(self.atom_leaf(Leaf::Str("variant".into())));
+        for &(case, ty) in cases {
+            let case_head = self.name(case);
+            let entry = match ty {
+                Some(t) => self.list(vec![case_head, t]),
+                None => self.list(vec![case_head]),
+            };
+            children.push(entry);
+        }
+        self.list(children)
+    }
+
     pub fn finish(self, root: StructId) -> Arenas {
         Arenas {
             leaves: self.leaves,
@@ -1836,6 +1869,135 @@ mod tests {
             built.as_str(opt_kids[0]),
             Some("option"),
             "option head is a STRING atom"
+        );
+    }
+
+    #[test]
+    fn wit_type_record_and_variant_match_the_canonical_str_head_form() {
+        // The aggregate WIT type-descriptor builders emit the LANDED `ast_marshal::build_type` form the
+        // compiler's `parse_wit_type` reads: a RECORD is a STRING-head `("record" (fname <ty>)…)` whose
+        // every field is a `(name-atom ty)` 2-list; a VARIANT is a STRING-head `("variant" (Case <ty>?)…)`
+        // whose payload-bearing case is a `(CaseName ty)` 2-list and payload-less case a `(CaseName)`
+        // 1-list. The compound head is a STRING atom (distinct from a NAME-head primitive), and the
+        // field/case names ride as NAME atoms — pin the head KIND and the sub-shape, both load-bearing for
+        // the byte-exact identity these descriptors' content-hash keys on.
+        let mut b = Builder::new();
+        // record { x: u8, y: string } — fields in caller (name-sorted) order.
+        let (xt, yt) = (b.wit_type_prim("u8"), b.wit_type_prim("string"));
+        let rec = b.wit_type_record(&[("x", xt), ("y", yt)]);
+        // variant { Some(u8), None } — one payload-bearing case, one payload-less.
+        let some_ty = b.wit_type_prim("u8");
+        let var = b.wit_type_variant(&[("Some", Some(some_ty)), ("None", None)]);
+        let built = b.finish(rec);
+
+        // record: STRING head `record`, then one 2-list `(name ty)` per field.
+        let Struct::List(rec_kids) = built.get(rec) else {
+            panic!("record is a list")
+        };
+        assert_eq!(rec_kids.len(), 3, "record head + 2 field entries");
+        assert_eq!(
+            built.as_str(rec_kids[0]),
+            Some("record"),
+            "record head is a STRING atom (compound marker)"
+        );
+        assert!(
+            built.as_name(rec_kids[0]).is_none(),
+            "record head is NOT a name atom"
+        );
+        let Struct::List(field0) = built.get(rec_kids[1]) else {
+            panic!("field is a 2-list")
+        };
+        assert_eq!(field0.len(), 2, "a field is a (name ty) 2-list");
+        assert_eq!(
+            built.as_name(field0[0]),
+            Some("x"),
+            "field name rides as a NAME atom"
+        );
+
+        // variant: STRING head `variant`; payload-bearing case is a 2-list, payload-less a 1-list.
+        let Struct::List(var_kids) = built.get(var) else {
+            panic!("variant is a list")
+        };
+        assert_eq!(var_kids.len(), 3, "variant head + 2 case entries");
+        assert_eq!(
+            built.as_str(var_kids[0]),
+            Some("variant"),
+            "variant head is a STRING atom"
+        );
+        let Struct::List(some_case) = built.get(var_kids[1]) else {
+            panic!("case is a list")
+        };
+        assert_eq!(
+            some_case.len(),
+            2,
+            "a payload-bearing case is a (Case ty) 2-list"
+        );
+        assert_eq!(built.as_name(some_case[0]), Some("Some"));
+        let Struct::List(none_case) = built.get(var_kids[2]) else {
+            panic!("case is a list")
+        };
+        assert_eq!(none_case.len(), 1, "a payload-less case is a (Case) 1-list");
+        assert_eq!(built.as_name(none_case[0]), Some("None"));
+    }
+
+    #[test]
+    fn wit_type_record_variant_identity_is_byte_stable_and_discriminating() {
+        // The aggregate descriptors obey the same content-address contract as the world tree: two
+        // independent builds of the SAME descriptor encode BYTE-identically, and any identity-bearing
+        // perturbation (field/case name, field/case ORDER, a case's payload presence) changes the bytes —
+        // so a descriptor's content-hash never collides two structurally-distinct types. A prim per field
+        // slot suffices; the builder does not interpret it.
+        let prim = |b: &mut Builder, n: &str| b.wit_type_prim(n);
+        // record { a: u8, b: u8 }
+        let build_rec = |fa: &str, fb: &str| {
+            let mut b = Builder::new();
+            let (ta, tb) = (prim(&mut b, "u8"), prim(&mut b, "u8"));
+            let r = b.wit_type_record(&[(fa, ta), (fb, tb)]);
+            crate::codec::encode(&b.finish(r))
+        };
+        let rec_base = build_rec("a", "b");
+        assert_eq!(
+            rec_base,
+            build_rec("a", "b"),
+            "same record encodes byte-identically"
+        );
+        assert_ne!(
+            rec_base,
+            build_rec("a", "c"),
+            "field name is identity-bearing"
+        );
+        assert_ne!(
+            rec_base,
+            build_rec("b", "a"),
+            "field ORDER is identity-bearing (encode is positional)"
+        );
+
+        // variant { X(u8)?, Y } — vary case name and payload presence.
+        let build_var = |cx: &str, x_payload: bool, cy: &str| {
+            let mut b = Builder::new();
+            let x_ty = if x_payload {
+                Some(prim(&mut b, "u8"))
+            } else {
+                None
+            };
+            let v = b.wit_type_variant(&[(cx, x_ty), (cy, None)]);
+            crate::codec::encode(&b.finish(v))
+        };
+        let var_base = build_var("X", true, "Y");
+        assert_eq!(
+            var_base,
+            build_var("X", true, "Y"),
+            "same variant encodes byte-identically"
+        );
+        assert_ne!(
+            var_base,
+            build_var("Z", true, "Y"),
+            "case name is identity-bearing"
+        );
+        assert_ne!(
+            var_base,
+            build_var("X", false, "Y"),
+            "a case's payload PRESENCE is identity-bearing ((Case ty) vs (Case))"
         );
     }
 }
