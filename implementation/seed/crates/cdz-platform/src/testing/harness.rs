@@ -1,25 +1,29 @@
-//! The run-to-quiescence driver — run a reducer set to completion and collect the observation log
-//! (`design/cadenza-platform.md` §3/§9).
+//! The run-to-quiescence driver — run a set of programs to completion and collect the observation log
+//! (`design/cadenza-platform.md` §3/§8/§9).
 //!
-//! [`Harness`] is the harness executable's run loop: configure it with a program store, a reducer set to
-//! spawn, and the initial events to deliver, then [`run`](Harness::run) drives the whole platform under
-//! the **bach simulator** — a deterministic discrete-event scheduler with virtual time — until quiescent,
-//! and returns the [`ObservationLog`] records for a checker to assert over. Driving under bach (not
-//! wall-clock tokio) is the harness contract: event ordering, timestamps, and the recorded log are
-//! reproducible across runs, which is exactly what a checker needs.
+//! [`Harness`] is the harness executable's run loop. A run is described in **names**, never hashes: give
+//! each program **blob** a name with [`blob`](Harness::blob), spawn a **task** running a named blob with
+//! [`spawn`](Harness::spawn), and deliver events to a task by name. [`run`](Harness::run) seeds a
+//! content-addressed store with the named blobs, builds a program store over it, drives the whole platform
+//! under the **bach simulator** — a deterministic discrete-event scheduler with virtual time — until
+//! quiescent, and returns the [`Run`] (the observation log plus the name→id assignment) for a checker.
+//! Driving under bach is the harness contract: event ordering, timestamps, and the recorded log are
+//! reproducible across runs, which is what a checker needs.
 //!
-//! **A caller names its spawns; it does not know their ids.** A reducer's id is the hash of its genesis
-//! (the program, a spawn nonce, and its parent — §3), so the caller cannot write it down in advance. The
-//! harness lets a run give each spawn a **name**, derives the reducer id from its genesis, and resolves a
-//! delivery's target (and a spawn's parent) by that name to the assigned id. The name→id assignment is
-//! returned in the [`Run`] alongside the log, so a checker can correlate a recorded [`Origin`](crate::Origin)
-//! back to the name that produced it.
+//! **Names, not hashes.** A program blob is opaque bytes named by the run (`blob(name, bytes)`); its
+//! content hash is derived when a task that names it is spawned (§8). A task's reducer id is likewise the
+//! hash of its genesis (its program, a spawn nonce, its parent — §3), derived at spawn. So a run writes
+//! only names — a spawn names its blob and (for a child) its parent, a delivery names its target — and the
+//! harness resolves each to the hash/id, mirroring how the platform itself never lets a caller pick an id.
+//! The name→id assignment is returned in the [`Run`], and recorded in the log, so a checker maps a recorded
+//! [`Origin`](crate::Origin) back to the name that produced it.
 //!
-//! It wraps the program store in a [`RecordingProgramStore`](super::recording::RecordingProgramStore), so
-//! every reducer the kernel instantiates — the ones spawned here and the per-event system reducers the
-//! kernel spawns to route effects — records the events it folds into the one log (§3/§4). Recording the
-//! key-value and blob store calls a reducer makes joins the same log once the wasm host wires those
-//! backends into a reducer.
+//! **Building the store.** [`run`](Harness::run) takes a factory that builds the program store from the
+//! seeded content-addressed store: for a real run that is a wasm program store loading components from the
+//! store by hash; for a native test it is a store of Rust reducer factories (which ignores the seeded blobs
+//! and instantiates by the same hashes). Either way the harness wraps the store in a
+//! [`RecordingProgramStore`](super::recording::RecordingProgramStore), so every reducer the kernel
+//! instantiates records the events it folds into the one log (§3/§4).
 //!
 //! **Quiescence.** bach jumps virtual time to the next scheduled event, so [`run`](Harness::run) advances
 //! simulated time by [`run_for`](Harness::run_for) and lets the scheduler process every event and timer
@@ -32,9 +36,9 @@ use super::checker::{CheckOutcome, Checker};
 use super::observation::{Entry, ObservationLog, Record, SpawnInfo};
 use super::recording::RecordingProgramStore;
 use crate::{
-    BachRuntime, Bytes, Delivered, Genesis, HostId, InMemoryEventRegistry, InMemoryReducerGraph,
-    Links, Origin, ProgramHash, ProgramStore, ReducerId, ReducerKind, Runtime, Spawn, Str, System,
-    TaskSystem,
+    BachRuntime, BlobStore, Bytes, Delivered, Genesis, HostId, InMemoryBlobStore,
+    InMemoryEventRegistry, InMemoryReducerGraph, Links, Origin, ProgramHash, ProgramStore,
+    ReducerId, ReducerKind, Runtime, Spawn, Str, System, TaskSystem,
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -71,34 +75,36 @@ pub enum Parent {
     Named(String),
 }
 
-/// A reducer to spawn in a run: a **name** (the caller's handle for it), the `program` it runs, and its
-/// lineage/privilege/supervision. The reducer's id is derived from its genesis (§3), not chosen — refer
-/// to it by name in a [`deliver`](Harness::deliver) or as another spawn's [`Parent`]. The spawn nonce is
-/// the name's bytes, so sibling spawns with distinct names get distinct, reproducible ids.
+/// A task to spawn in a run: a **task name** (the caller's handle for the reducer), the **blob name** of
+/// the program it runs, and its lineage/privilege/supervision. Both are names — the reducer id is derived
+/// from its genesis and the program from the blob's content (§3/§8), so a caller never writes a hash. Refer
+/// to the task by name in a [`deliver`](Harness::deliver) or as another spawn's [`Parent`]. The spawn nonce
+/// is the task name's bytes, so sibling tasks with distinct names get distinct, reproducible ids.
 #[derive(Clone, Debug)]
 pub struct SpawnSpec {
     name: String,
-    program: ProgramHash,
+    blob: String,
     parent: Parent,
     kind: ReducerKind,
     links: Links,
 }
 
 impl SpawnSpec {
-    /// A root, ordinary reducer named `name` running `program`, with no supervision links — the shape most
-    /// runs want. Refine with [`child_of`](SpawnSpec::child_of), [`kind`](SpawnSpec::kind), and
-    /// [`links`](SpawnSpec::links).
-    pub fn new(name: impl Into<String>, program: ProgramHash) -> Self {
+    /// A root, ordinary task named `name` running the program blob named `blob` — the shape most runs want.
+    /// `blob` is a blob name registered on the harness with [`blob`](Harness::blob); the run resolves it to
+    /// the blob's content hash at spawn time. Refine with [`child_of`](SpawnSpec::child_of),
+    /// [`kind`](SpawnSpec::kind), and [`links`](SpawnSpec::links).
+    pub fn new(name: impl Into<String>, blob: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            program,
+            blob: blob.into(),
             parent: Parent::Root,
             kind: ReducerKind::Ordinary,
             links: Links::NONE,
         }
     }
 
-    /// Make this a child of the spawn named `parent` (spawned earlier in the run) rather than a root.
+    /// Make this a child of the task named `parent` (spawned earlier in the run) rather than a root.
     #[must_use]
     pub fn child_of(mut self, parent: impl Into<String>) -> Self {
         self.parent = Parent::Named(parent.into());
@@ -122,27 +128,27 @@ impl SpawnSpec {
 }
 
 /// The result of a [`Harness::run`]: the observation log, and the name→id assignment the harness made for
-/// the spawns. A checker uses `ids` to map a recorded [`Origin`](crate::Origin) back to the name that
+/// the spawns. A checker uses `ids` to map a recorded [`Origin`](crate::Origin) back to the task name that
 /// produced it. Both are deterministic, so two identical runs produce an equal `Run`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Run {
     /// Every observation the run produced, in the one global order (§9).
     pub records: Vec<Record>,
-    /// The reducer id the harness assigned each named spawn (derived from its genesis, §3).
+    /// The reducer id the harness assigned each named task (derived from its genesis, §3).
     pub ids: BTreeMap<String, ReducerId>,
 }
 
 impl Run {
-    /// The reducer id the harness assigned the spawn named `name`, if any — how a checker turns a name it
+    /// The reducer id the harness assigned the task named `name`, if any — how a checker turns a name it
     /// knows into the id the log records carry.
     #[must_use]
     pub fn id(&self, name: &str) -> Option<ReducerId> {
         self.ids.get(name).copied()
     }
 
-    /// Every record produced by the spawn named `name` (matched by the id the harness assigned it): the
+    /// Every record produced by the task named `name` (matched by the id the harness assigned it): the
     /// events it folded, emitted, or closed with, and the store calls it made, in order. Empty if `name`
-    /// names no spawn — a convenience for writing a checker by name rather than by raw id.
+    /// names no task — a convenience for writing a checker by name rather than by raw id.
     pub fn records_from<'a>(&'a self, name: &str) -> impl Iterator<Item = &'a Record> {
         let id = self.ids.get(name).copied();
         self.records
@@ -157,36 +163,50 @@ impl Run {
     }
 }
 
-/// A run of the platform: a program store, a named reducer set to spawn, and the events to deliver into
-/// it. [`run`](Harness::run) drives it to quiescence under the bach simulator and returns the [`Run`].
-/// Generic over the program store, so it drives native reducer fixtures today and a wasm program store
-/// once that lands, unchanged.
+/// A run of the platform: named program blobs, a named task set to spawn, and the events to deliver into
+/// them. [`run`](Harness::run) seeds a content-addressed store with the blobs, builds a program store over
+/// it, drives to quiescence under the bach simulator, and returns the [`Run`].
 ///
-/// Built fluently: [`new`](Harness::new), then [`spawn`](Harness::spawn) / [`deliver`](Harness::deliver)
-/// to describe the run, optionally [`host`](Harness::host) / [`run_for`](Harness::run_for), then
-/// [`run`](Harness::run).
-pub struct Harness<P> {
-    programs: P,
-    system_program: ProgramHash,
+/// Built fluently: [`new`](Harness::new), then [`blob`](Harness::blob) to register program bytes,
+/// [`spawn`](Harness::spawn) / [`deliver`](Harness::deliver) to describe the run, optionally
+/// [`host`](Harness::host) / [`run_for`](Harness::run_for), then [`run`](Harness::run).
+pub struct Harness {
+    /// The blob name of the system reducer every effect routes to by default (the event registry's default
+    /// entry, §4). Like every program it is named, not hashed — resolved to its content hash at run time,
+    /// so it must be registered with [`blob`](Harness::blob).
+    system: String,
     host: HostId,
+    /// Blob name → its opaque program bytes. A spawn names a blob; the run seeds these into the store and
+    /// resolves a blob name to the bytes' content hash at spawn time.
+    blobs: BTreeMap<String, Bytes>,
     spawns: Vec<SpawnSpec>,
     deliveries: Vec<(String, Delivered)>,
     run_for: Duration,
 }
 
-impl<P: ProgramStore + 'static> Harness<P> {
-    /// A harness over `programs`, routing every effect's system reducer to `system_program` by default (the
-    /// event registry's default entry, §4). No reducers spawned and no events delivered yet — add them with
-    /// [`spawn`](Harness::spawn) and [`deliver`](Harness::deliver).
-    pub fn new(programs: P, system_program: ProgramHash) -> Self {
+impl Harness {
+    /// A harness routing every effect to the system reducer named by the blob `system` (the event
+    /// registry's default entry, §4). `system` is a blob *name* like any other program — register its bytes
+    /// with [`blob`](Harness::blob), and the run resolves the name to its content hash. No blobs, tasks, or
+    /// deliveries yet.
+    pub fn new(system: impl Into<String>) -> Self {
         Self {
-            programs,
-            system_program,
+            system: system.into(),
             host: default_host(),
+            blobs: BTreeMap::new(),
             spawns: Vec::new(),
             deliveries: Vec::new(),
             run_for: DEFAULT_RUN_FOR,
         }
+    }
+
+    /// Register a program blob under `name` — opaque bytes a spawn can name. The run seeds it into the
+    /// content-addressed store and a spawn that names it resolves to its content hash (§8). Registering the
+    /// same name again replaces the bytes.
+    #[must_use]
+    pub fn blob(mut self, name: impl Into<String>, bytes: Bytes) -> Self {
+        self.blobs.insert(name.into(), bytes);
+        self
     }
 
     /// Set the host id this node runs as — stamped as the `from` host on every routed message (§3).
@@ -204,15 +224,15 @@ impl<P: ProgramStore + 'static> Harness<P> {
         self
     }
 
-    /// Add a named reducer to spawn when the run starts. Spawned in the order added, before any delivery;
-    /// a child's parent must be spawned before it.
+    /// Add a task to spawn when the run starts. Spawned in the order added, before any delivery; a child's
+    /// parent must be spawned before it.
     #[must_use]
     pub fn spawn(mut self, spec: SpawnSpec) -> Self {
         self.spawns.push(spec);
         self
     }
 
-    /// Add an event to deliver into the mailbox of the spawn named `target`, once the reducers are spawned.
+    /// Add an event to deliver into the mailbox of the task named `target`, once the tasks are spawned.
     /// Delivered in the order added — the run's initial stimulus, whose effects the platform then routes to
     /// quiescence.
     #[must_use]
@@ -223,32 +243,47 @@ impl<P: ProgramStore + 'static> Harness<P> {
 
     /// Drive the run to quiescence under the bach simulator and return the [`Run`] (log + name→id map).
     ///
-    /// First resolves names to ids: each spawn's reducer id is derived from its genesis (`program`, a nonce
-    /// = the name's bytes, and the parent's id — a root's against the [`root_anchor`], §3), so a delivery's
-    /// target and a spawn's parent resolve to the assigned id. Then, under `bach::sim`, it spawns each
-    /// reducer, delivers each initial event, and advances simulated time by [`run_for`](Harness::run_for)
-    /// so the scheduler processes every event and timer within it. The log is shared with the recording
-    /// program store, so once the deterministic run ends it holds every event the run produced.
+    /// `make_store` builds the program store from the content-addressed store the harness seeds with the
+    /// run's blobs: for a real run, `|cas| WasmProgramStore::new(cas, …)`; for a native test, a closure that
+    /// ignores the store and returns a store of Rust reducer factories keyed by the same content hashes.
     ///
-    /// Panics on a misconfigured run (a duplicate spawn name, a parent or delivery target that names no
-    /// spawn) — a test-authoring error, surfaced loudly rather than silently mis-delivered.
+    /// Resolves names to ids first (a blob name → its bytes' content hash; a task name → its genesis id; a
+    /// delivery/parent name → the assigned id), then under `bach::sim` seeds the store, builds the program
+    /// store, spawns each task, delivers each event, and advances simulated time by
+    /// [`run_for`](Harness::run_for). The log is shared with the recording store, so once the deterministic
+    /// run ends it holds every event the run produced.
+    ///
+    /// Panics on a misconfigured run (a duplicate task name, or a blob / parent / delivery target that names
+    /// nothing registered) — a test-authoring error, surfaced loudly rather than silently mis-run.
     #[must_use]
-    pub fn run(self) -> Run {
+    pub fn run<P, F>(self, make_store: F) -> Run
+    where
+        P: ProgramStore + 'static,
+        F: FnOnce(Arc<dyn BlobStore>) -> P + Send + 'static,
+    {
         use bach::ext::*;
 
         let Harness {
-            programs,
-            system_program,
+            system,
             host,
+            blobs,
             spawns,
             deliveries,
             run_for,
         } = self;
 
-        // Resolve names to genesis-derived ids (pure, deterministic — done before the sim). Each spawn's id
-        // is the hash of its genesis; a child's parent resolves to that parent's id, a root's to the anchor.
+        // Resolve names to hashes/ids (pure, deterministic — done before the sim). A blob name resolves to
+        // its bytes' content hash (§8); a task's reducer id is the hash of its genesis; a child's parent and
+        // a delivery target resolve to the assigned id; the system reducer blob name resolves like any other.
+        let blob_ids: BTreeMap<&str, ProgramHash> = blobs
+            .iter()
+            .map(|(name, bytes)| (name.as_str(), ProgramHash::of(bytes)))
+            .collect();
+        let system_program = *blob_ids.get(system.as_str()).unwrap_or_else(|| {
+            panic!("system reducer blob '{system}' is not registered with Harness::blob")
+        });
         let mut ids: BTreeMap<String, ReducerId> = BTreeMap::new();
-        // Each kernel spawn paired with the name the run gave it, so the run can record the name→id
+        // Each kernel spawn paired with the task name the run gave it, so the run can record the name→id
         // assignment into the log before spawning.
         let mut kernel_spawns: Vec<(Str, Spawn)> = Vec::with_capacity(spawns.len());
         for spec in spawns {
@@ -256,20 +291,28 @@ impl<P: ProgramStore + 'static> Harness<P> {
                 Parent::Root => root_anchor(),
                 Parent::Named(parent) => *ids.get(parent).unwrap_or_else(|| {
                     panic!(
-                        "spawn '{}' names parent '{parent}', which is not a spawn earlier in the run",
+                        "task '{}' names parent '{parent}', which is not a task earlier in the run",
                         spec.name
                     )
                 }),
             };
+            // Resolve the task's blob name to its content hash — the name→hash side of the same name-not-hash
+            // model the reducer id uses (§3/§8).
+            let program = *blob_ids.get(spec.blob.as_str()).unwrap_or_else(|| {
+                panic!(
+                    "task '{}' names blob '{}', which is not registered with Harness::blob",
+                    spec.name, spec.blob
+                )
+            });
             let nonce = Bytes::copy_from_slice(spec.name.as_bytes());
             let id = Genesis {
-                program: spec.program,
+                program,
                 nonce: nonce.clone(),
                 parent: parent_id,
             }
             .id();
             if ids.insert(spec.name.clone(), id).is_some() {
-                panic!("duplicate spawn name '{}'", spec.name);
+                panic!("duplicate task name '{}'", spec.name);
             }
             // The kernel's root convention is `parent == id` (no parent link); a child's parent is its
             // resolved id. The genesis above derived the id against the anchor for a root, so the id is
@@ -282,7 +325,7 @@ impl<P: ProgramStore + 'static> Harness<P> {
                 Str::from(spec.name.as_str()),
                 Spawn {
                     id,
-                    program: spec.program,
+                    program,
                     nonce,
                     parent: kernel_parent,
                     kind: spec.kind,
@@ -294,7 +337,7 @@ impl<P: ProgramStore + 'static> Harness<P> {
             .into_iter()
             .map(|(target, event)| {
                 let id = *ids.get(&target).unwrap_or_else(|| {
-                    panic!("deliver names target '{target}', which is not a spawn in the run")
+                    panic!("deliver names target '{target}', which is not a task in the run")
                 });
                 (id, event)
             })
@@ -309,8 +352,16 @@ impl<P: ProgramStore + 'static> Harness<P> {
         bach::sim(move || {
             let log = log.clone();
             async move {
+                // Seed the content-addressed store with the run's opaque blobs, then let the factory build
+                // the program store over it (a wasm store loads components from here by hash; a native store
+                // ignores it and instantiates by the same hashes).
+                let mut cas = InMemoryBlobStore::new();
+                for bytes in blobs.into_values() {
+                    cas.put(bytes).await;
+                }
+                let store = make_store(Arc::new(cas));
                 let recording = RecordingProgramStore::new(
-                    programs,
+                    store,
                     host,
                     log.clone(),
                     BachRuntime::now as fn() -> u64,
@@ -321,9 +372,9 @@ impl<P: ProgramStore + 'static> Harness<P> {
                     Arc::new(InMemoryEventRegistry::new(system_program)),
                     host,
                 );
-                // Record the name→id assignment into the log first, so the log is self-describing: a
-                // reader derefs a name to the reducer id it was given (the record's source) without any
-                // out-of-band map. These lead the log, ahead of any reducer's birth or events.
+                // Record the name→id assignment into the log first, so the log is self-describing: a reader
+                // derefs a name to the reducer id it was given (the record's source) without any out-of-band
+                // map. These lead the log, ahead of any reducer's birth or events.
                 for (name, spawn) in &kernel_spawns {
                     log.record(
                         BachRuntime::now(),

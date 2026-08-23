@@ -412,20 +412,18 @@ fn the_program_store_seam_captures_the_whole_systems_event_flow_under_bach() {
 
 // ---- the run-to-quiescence harness driver (§3/§9) ----
 
-/// Build a fresh harness for the same run — an emitter that performs one effect and closes, plus the
-/// default system reducer that shepherds it — so it can be run more than once. The caller NAMES the
-/// spawn ("emitter") and delivers by that name; the harness derives the reducer id from its genesis.
-fn emitter_run() -> Harness<crate::program::testing::Store> {
+/// Run a fresh copy of the same scenario — an emitter task that performs one effect and closes, plus the
+/// system reducer that shepherds it. The caller NAMES a program blob and a task running it and delivers by
+/// task name; the harness derives the hashes/ids. The native store factory (which ignores the seeded CAS)
+/// registers the reducers under the same content hashes the blobs resolve to (`ProgramHash::of(bytes)`).
+/// Returns the `Run` so it can be run more than once.
+fn emitter_run() -> Run {
     let http = ContractId::of(b"http.get");
-    let mut store = crate::program::testing::Store::new();
-    store.register(ProgramHash::of(b"emitter"), move || {
-        Box::new(EmitAndClose { contract: http })
-    });
-    store.register(ProgramHash::of(b"sys"), || Box::new(JustClose));
-
-    Harness::new(store, ProgramHash::of(b"sys"))
+    Harness::new("sys")
         .host(HostId::of(b"node"))
-        .spawn(SpawnSpec::new("emitter", ProgramHash::of(b"emitter")))
+        .blob("emitter", Bytes::from_static(b"emitter"))
+        .blob("sys", Bytes::from_static(b"sys"))
+        .spawn(SpawnSpec::new("emitter", "emitter"))
         .deliver(
             "emitter",
             Delivered::Message(Message {
@@ -438,12 +436,20 @@ fn emitter_run() -> Harness<crate::program::testing::Store> {
                 continuation_token: Bytes::from_static(b"t"),
             }),
         )
+        .run(move |_cas| {
+            let mut store = crate::program::testing::Store::new();
+            store.register(ProgramHash::of(b"emitter"), move || {
+                Box::new(EmitAndClose { contract: http })
+            });
+            store.register(ProgramHash::of(b"sys"), || Box::new(JustClose));
+            store
+        })
 }
 
 #[test]
 fn the_driver_runs_a_reducer_set_to_quiescence_and_returns_the_event_log() {
     let http = ContractId::of(b"http.get");
-    let run = emitter_run().run();
+    let run = emitter_run();
     // The harness assigned the named spawn a genesis-derived id, which the checker reads back by name.
     let emitter = run.ids["emitter"];
     let records = &run.records;
@@ -478,7 +484,7 @@ fn the_driver_runs_a_reducer_set_to_quiescence_and_returns_the_event_log() {
 fn the_driver_resolves_a_delivery_to_the_named_spawns_derived_id() {
     // A delivery names its target; the harness resolves that name to the genesis-derived id it assigned
     // the spawn, and the delivered event is recorded at that reducer. The caller never writes the id.
-    let run = emitter_run().run();
+    let run = emitter_run();
     let emitter = run.ids["emitter"];
     // The `go` message the run delivered by name was folded at the emitter (the assigned id).
     assert!(
@@ -496,8 +502,8 @@ fn the_driver_is_deterministic_two_identical_runs_produce_the_same_log() {
     // under the deterministic simulator, produces byte-for-byte the same observation log AND the same
     // name→id assignment every time — same events, same order (seq), same simulated timestamps. This is
     // exactly what lets a checker assert over the log without flake.
-    let first = emitter_run().run();
-    let second = emitter_run().run();
+    let first = emitter_run();
+    let second = emitter_run();
     assert_eq!(first, second, "two identical runs yield an identical Run");
 }
 
@@ -536,7 +542,7 @@ fn checkers_pass_on_a_matching_log_and_fail_with_reasons_otherwise() {
         }
     }
 
-    let run = emitter_run().run();
+    let run = emitter_run();
     assert!(
         run.check(&emitter_did_http_and_closed).is_pass(),
         "the checker holds on the matching log"
@@ -554,7 +560,7 @@ fn checkers_pass_on_a_matching_log_and_fail_with_reasons_otherwise() {
 
 #[test]
 fn the_log_records_each_spawns_name_and_id_so_it_is_self_describing() {
-    let run = emitter_run().run();
+    let run = emitter_run();
     // The log itself carries the name→id assignment: a Spawn record naming "emitter", whose source is the
     // id the harness derived — so anything reading the log (including a wasm checker over a serialized log)
     // derefs the name to its id with no out-of-band map.
@@ -618,16 +624,20 @@ impl Reducer for ArmThenCloseOnFire {
 
 #[test]
 fn a_child_spawn_resolves_its_parent_by_name_and_gets_a_distinct_lineage_bearing_id() {
-    let mut store = crate::program::testing::Store::new();
-    store.register(ProgramHash::of(b"parent"), || Box::new(JustClose));
-    store.register(ProgramHash::of(b"child"), || Box::new(JustClose));
-
-    // A run names a parent and a child of it; the harness derives each id from its genesis and resolves the
-    // child's parent by name — no reducer hash written by hand (§3).
-    let run = Harness::new(store, ProgramHash::of(b"sys"))
-        .spawn(SpawnSpec::new("parent", ProgramHash::of(b"parent")))
-        .spawn(SpawnSpec::new("child", ProgramHash::of(b"child")).child_of("parent"))
-        .run();
+    // A run names a parent task and a child of it; the harness derives each id from its genesis and resolves
+    // the child's parent by name — no reducer hash written by hand (§3).
+    let run = Harness::new("sys")
+        .blob("sys", Bytes::from_static(b"sys"))
+        .blob("parent", Bytes::from_static(b"parent"))
+        .blob("child", Bytes::from_static(b"child"))
+        .spawn(SpawnSpec::new("parent", "parent"))
+        .spawn(SpawnSpec::new("child", "child").child_of("parent"))
+        .run(|_cas| {
+            let mut store = crate::program::testing::Store::new();
+            store.register(ProgramHash::of(b"parent"), || Box::new(JustClose));
+            store.register(ProgramHash::of(b"child"), || Box::new(JustClose));
+            store
+        });
 
     let parent = run.ids["parent"];
     let child = run.ids["child"];
@@ -667,18 +677,12 @@ fn a_child_spawn_resolves_its_parent_by_name_and_gets_a_distinct_lineage_bearing
 
 #[test]
 fn a_fire_after_timer_is_driven_to_fire_and_the_round_trip_is_recorded() {
-    let mut store = crate::program::testing::Store::new();
-    store.register(ProgramHash::of(b"armer"), || {
-        Box::new(ArmThenCloseOnFire {
-            duration_ns: 10_000_000, // 10ms of simulated time
-        })
-    });
-    store.register(ProgramHash::of(b"sys"), || Box::new(JustClose));
-
     // The armer arms a 10ms timer on the go message; the run advances simulated time (run_for defaults to a
     // virtual hour) so the timer fires and the armer is woken. bach makes this deterministic.
-    let run = Harness::new(store, ProgramHash::of(b"sys"))
-        .spawn(SpawnSpec::new("armer", ProgramHash::of(b"armer")))
+    let run = Harness::new("sys")
+        .blob("sys", Bytes::from_static(b"sys"))
+        .blob("armer", Bytes::from_static(b"armer"))
+        .spawn(SpawnSpec::new("armer", "armer"))
         .deliver(
             "armer",
             Delivered::Message(Message {
@@ -691,7 +695,15 @@ fn a_fire_after_timer_is_driven_to_fire_and_the_round_trip_is_recorded() {
                 continuation_token: Bytes::from_static(b"t"),
             }),
         )
-        .run();
+        .run(|_cas| {
+            let mut store = crate::program::testing::Store::new();
+            store.register(ProgramHash::of(b"armer"), || {
+                Box::new(ArmThenCloseOnFire {
+                    duration_ns: 10_000_000, // 10ms of simulated time
+                })
+            });
+            store
+        });
 
     // The arm was emitted against the timer contract...
     assert!(
@@ -733,14 +745,12 @@ impl Reducer for Panicker {
 
 #[test]
 fn a_fold_panic_is_recorded_as_fold_failed() {
-    let mut store = crate::program::testing::Store::new();
-    store.register(ProgramHash::of(b"panicker"), || Box::new(Panicker));
-    store.register(ProgramHash::of(b"sys"), || Box::new(JustClose));
-
     // Delivering the go message makes the panicker's fold panic. The runtime catches the crash (it does
     // not take down the run), and the tap records it as fold-failed first — the reducer's terminal event.
-    let run = Harness::new(store, ProgramHash::of(b"sys"))
-        .spawn(SpawnSpec::new("panicker", ProgramHash::of(b"panicker")))
+    let run = Harness::new("sys")
+        .blob("sys", Bytes::from_static(b"sys"))
+        .blob("panicker", Bytes::from_static(b"panicker"))
+        .spawn(SpawnSpec::new("panicker", "panicker"))
         .deliver(
             "panicker",
             Delivered::Message(Message {
@@ -753,7 +763,11 @@ fn a_fold_panic_is_recorded_as_fold_failed() {
                 continuation_token: Bytes::from_static(b"t"),
             }),
         )
-        .run();
+        .run(|_cas| {
+            let mut store = crate::program::testing::Store::new();
+            store.register(ProgramHash::of(b"panicker"), || Box::new(Panicker));
+            store
+        });
 
     let panicker = run.ids["panicker"];
     assert!(
