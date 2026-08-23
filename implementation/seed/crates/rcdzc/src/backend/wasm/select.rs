@@ -12249,6 +12249,37 @@ fn emit(
                 out.push(Lir::End); // if
                 return Ok(());
             }
+            // BARE-BYTES RESULT LIFT (identity.id / blobs.put): a host op returning `list<u8>` is canon-lowered
+            // with a spilled result — core sig `(args…, retptr) -> ()`, the host writing `(list-ptr@0,
+            // list-len@4)` into a CALLER-provided 8-byte retptr. Allocate it, call, then LIFT into a value-heap
+            // `Bytes` (`bytes-alloc` + copy-loop). Exactly the option lift minus the disc / None arm.
+            if matches!(result.strip_nominal(), crate::ty::Ty::Bytes) {
+                let retptr = (*high).max(base);
+                let (lptr, llen, handle, ii) = (retptr + 1, retptr + 2, retptr + 3, retptr + 4);
+                *high = (*high).max(ii + 1);
+                for s in [retptr, lptr, llen, handle, ii] {
+                    scratch_ty.insert(s, ValType::I32);
+                }
+                // retptr = cabi_realloc(0, 0, align=4, size=8); leave it as the trailing call arg (tee-stash).
+                out.push(Lir::ConstI32(0));
+                out.push(Lir::ConstI32(0));
+                out.push(Lir::ConstI32(4));
+                out.push(Lir::ConstI32(8));
+                out.push(Lir::CallImport("cabi_realloc"));
+                out.push(Lir::LocalTee(retptr)); // [args…, retptr]
+                out.push(Lir::CallHostImport(index)); // (args…, retptr) -> () ; host wrote (list-ptr, list-len)
+                // list-ptr = mem[retptr]; list-len = mem[retptr+4].
+                out.push(Lir::LocalGet(retptr));
+                out.push(Lir::I32Load { offset: 0 });
+                out.push(Lir::LocalSet(lptr));
+                out.push(Lir::LocalGet(retptr));
+                out.push(Lir::I32Load { offset: 4 });
+                out.push(Lir::LocalSet(llen));
+                // handle = a value-heap Bytes copied from the host's `list<u8>` at (lptr, llen).
+                emit_host_bytes_to_value_heap(out, llen, lptr, handle, ii);
+                out.push(Lir::LocalGet(handle)); // leave the Bytes handle as the expression value
+                return Ok(());
+            }
             // LIST-OF-BYTE-PAIRS LIFT (kv.prefix-scan): a host op returning `list<tuple<list<u8>,list<u8>>>`
             // is canon-lowered with a spilled result — core sig `(args…, retptr) -> ()`, the host writing an
             // 8-byte list header `(list-ptr@0, count@4)` into a CALLER-provided retptr. Each of `count`

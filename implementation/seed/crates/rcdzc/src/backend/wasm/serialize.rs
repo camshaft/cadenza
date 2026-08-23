@@ -82,12 +82,12 @@ fn host_import_functype(f: &crate::backend::wasm::host::HostImport) -> Vec<u8> {
     // lowers a >1-flat result to a TRAILING i32 return-pointer param (the callee writes the flattened
     // `(disc, listptr, listlen)` there) and the core function returns NOTHING. Mirrors the runtime's nfc
     // string->string lower core sig `(ptr, len, retptr) -> ()` (store 9a5728f5 core type 2).
-    if f.result_option_bytes || f.result_list_byte_pairs {
+    if f.result_option_bytes || f.result_list_byte_pairs || f.result_bytes {
         params.push(wasm_abi::CORE_I32);
         slot_count += 1;
     }
     item.extend_from_slice(&wasm_vec(slot_count, &params));
-    if f.result_option_bytes || f.result_list_byte_pairs {
+    if f.result_option_bytes || f.result_list_byte_pairs || f.result_bytes {
         item.extend_from_slice(&wasm_vec(0, &[])); // no core result — written via the retptr param
     } else {
         match f.result {
@@ -8413,7 +8413,7 @@ pub fn bytes_roundtrip_host_core_module(
     // type index `h+k+n+1`. A set with NO option-result op (e.g. kv.put) imports no realloc → byte-identical.
     let needs_realloc = host_fns
         .iter()
-        .any(|f| f.result_option_bytes || f.result_list_byte_pairs);
+        .any(|f| f.result_option_bytes || f.result_list_byte_pairs || f.result_bytes);
     let realloc_type_idx = (h + k + n + 1) as u32;
     if needs_realloc {
         let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
