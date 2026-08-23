@@ -9113,6 +9113,10 @@ fn emit_bytes_provider_member(
     // `host_op_comp_functype` since it is a GLOBAL layout property (a single op can't compute it alone).
     let needs_option_bytes = host_imports.iter().any(|h| h.result_option_bytes);
     let needs_list_byte_pairs = host_imports.iter().any(|h| h.result_list_byte_pairs);
+    // A bare `list<u8>` (Bytes) result references the `(list u8)` type; when the op has no Bytes PARAM (a
+    // nullary `identity.id : () -> list<u8>`), only the result needs it, so the instance-type must still
+    // prepend it (else the result functype references an unbound type index — invalid component).
+    let needs_bytes_result = host_imports.iter().any(|h| h.result_bytes);
     let list_pairs_type_idx = 2 + needs_option_bytes as u32;
     let host_fns: Vec<envelope::HostFn> = host_imports
         .iter()
@@ -9146,6 +9150,7 @@ fn emit_bytes_provider_member(
         &runtime_import_name(),
         needs_option_bytes,
         needs_list_byte_pairs,
+        needs_bytes_result,
     ))
 }
 
