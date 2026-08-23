@@ -592,15 +592,20 @@ context ever crosses a trust boundary a peer cannot take on faith (section 11).
 
 ### Forward, respond, and pending obligations
 
-A handler acts on an effect by emitting one of two built-in effects:
+A handler acts on an effect by emitting one of two effects the **event reducer** defines and
+shepherds — not kernel primitives (the kernel has no dispatch vocabulary), but the two dispatch
+contracts every event reducer provides, carried out via the `deliver` primitive (above):
 
 - **`forward`** — permit and pass the (possibly rewritten, even re-contracted) request on to
   the next hop.
 - **`respond`** — answer or deny; the reply bubbles back down.
 
-These are ordinary emitted effects, not a synchronous return value, so a handler may receive
-an effect, store it in its key-value state, do other work across several folds, and emit its
-`forward` or `respond` only later. Deferral is free.
+These are ordinary emitted effects the event reducer answers, not a synchronous return value,
+so a handler may receive an effect, store it in its key-value state, do other work across
+several folds, and emit its `forward` or `respond` only later. Deferral is free. Because the
+event reducer owns these contracts (rather than the kernel), a replacement event reducer may
+define its own dispatch protocol; the reference event reducer's `forward`/`respond` are the
+standard one its handlers are built against.
 
 The event reducer needs no capability or minted token to keep this straight; the attribution
 already does it. When it delivers an effect to a handler it records a **pending obligation**
