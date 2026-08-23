@@ -2792,6 +2792,153 @@ fn fixed_shape_result_compound_arg(
     ))
 }
 
+/// A fixed-shape sum PARAM field whose arm(s) carry a `list<u8>` (Bytes) or an all-nullary WIT `enum` payload
+/// — the reducer response's `answer: result<payload, error>` = `result<list<u8>, enum>`, which
+/// [`fixed_shape_option_scalar_arg`] does not read (it covers scalar/compound arms). Builds the
+/// [`serialize::FieldRebuild::Sum`] and APPENDS the flattened `(disc: i32, payload-join…)` core valtypes to
+/// `param_vts`, mirroring `emit_sum_field`/`flattened_param_count`. Handles a two-variant Option (one nullary +
+/// one payload) or Result (two payloads), each payload Nullary / aliased-width Scalar / `list<u8>` (Bytes) /
+/// all-nullary enum. The disc conventions match [`fixed_shape_option_scalar_arg`]: Option `Some` = boundary
+/// disc 1, Result `Ok` = boundary disc 0; an enum arm assumes the guest declares the cases in WIT order (the
+/// boundary disc IS the decl disc). `None` for any other shape (a compound/general-variant payload, a
+/// >2-variant sum, a differing per-position join width) — a later slice.
+#[allow(clippy::type_complexity)]
+fn fixed_shape_sum_param_arg(
+    db: &mut Db,
+    gty: &crate::ty::Ty,
+    param_vts: &mut Vec<u8>,
+) -> Option<crate::backend::wasm::serialize::FieldRebuild> {
+    use crate::backend::wasm::lir::{ValType, valtype_of};
+    use crate::backend::wasm::serialize::{FieldRebuild, SumArgArm, SumArgRebuild, SumArmPayload};
+    use crate::ty::Ty;
+    let Ty::Sum { decl, args, .. } = gty.strip_nominal() else {
+        return None;
+    };
+    let (params, variant_payloads): (Vec<String>, Vec<Vec<crate::ast::StructId>>) = {
+        let decl_ref = db.type_decl_by_occ(*decl)?;
+        if decl_ref.variants.len() != 2 {
+            return None;
+        }
+        (
+            decl_ref.params.clone(),
+            decl_ref
+                .variants
+                .iter()
+                .map(|v| v.payloads.clone())
+                .collect(),
+        )
+    };
+    // The instantiated payload TYPE of a variant's ONE generic payload (a param `a` → `args[pi]`).
+    let payload_ty = |db: &mut Db, occ: crate::ast::StructId| -> Option<Ty> {
+        let pname = db
+            .ast
+            .head_name(occ)
+            .or_else(|| db.ast.as_name(occ))?
+            .to_string();
+        let pi = params.iter().position(|p| *p == pname)?;
+        args.get(pi).cloned()
+    };
+    // Classify one payload type into its arm payload + flattened leaf valtypes. `list<u8>` → Bytes `(ptr,len)`;
+    // an all-nullary sum (WIT `enum`) → Enum (one disc); an aliased-width scalar → Scalar; else decline.
+    let classify = |db: &mut Db, pty: &Ty| -> Option<(SumArmPayload, Vec<ValType>)> {
+        match pty.strip_nominal() {
+            Ty::Bytes => Some((SumArmPayload::Bytes, vec![ValType::I32, ValType::I32])),
+            Ty::Sum { decl: sd, .. } => {
+                let all_nullary = {
+                    let dref = db.type_decl_by_occ(*sd)?;
+                    dref.variants.iter().all(|v| v.payloads.is_empty())
+                };
+                if all_nullary {
+                    Some((SumArmPayload::Enum, vec![ValType::I32]))
+                } else {
+                    None // a payload-carrying nested variant — a later slice
+                }
+            }
+            other => {
+                let crate::backend::wasm::serialize::FieldRebuild::Scalar { box_op, extend } =
+                    scalar_field_rebuild(other)?
+                else {
+                    return None;
+                };
+                Some((
+                    SumArmPayload::Scalar {
+                        box_op,
+                        extend,
+                        wrap_join: false,
+                    },
+                    vec![valtype_of(other)?],
+                ))
+            }
+        }
+    };
+    let counts: Vec<usize> = variant_payloads.iter().map(|p| p.len()).collect();
+    let (rebuild, join_vts): (SumArgRebuild, Vec<ValType>) = match counts.as_slice() {
+        // OPTION: one nullary + one single-payload variant. `Some` = boundary disc 1.
+        [0, 1] | [1, 0] => {
+            let (payload_i, nullary_i) = if counts[0] == 1 {
+                (0usize, 1)
+            } else {
+                (1usize, 0)
+            };
+            let pty = payload_ty(db, variant_payloads[payload_i][0])?;
+            let (payload, vts) = classify(db, &pty)?;
+            (
+                SumArgRebuild {
+                    base_param: 0, // IGNORED for a field (the disc is read at the record cursor)
+                    boundary_true_disc: 1,
+                    arm_true: SumArgArm {
+                        decl_disc: payload_i as u32,
+                        payload,
+                    },
+                    arm_false: SumArgArm {
+                        decl_disc: nullary_i as u32,
+                        payload: SumArmPayload::Nullary,
+                    },
+                },
+                vts,
+            )
+        }
+        // RESULT: two single-payload variants (Ok a, Err b). `Ok` = boundary disc 0. The payload slot is the
+        // position-wise JOIN of the two arms' leaves (this slice: same core width per shared position).
+        [1, 1] => {
+            let ok_pty = payload_ty(db, variant_payloads[0][0])?;
+            let err_pty = payload_ty(db, variant_payloads[1][0])?;
+            let (ok_payload, ok_vts) = classify(db, &ok_pty)?;
+            let (err_payload, err_vts) = classify(db, &err_pty)?;
+            let join_len = ok_vts.len().max(err_vts.len());
+            let mut joined = Vec::with_capacity(join_len);
+            for i in 0..join_len {
+                match (ok_vts.get(i), err_vts.get(i)) {
+                    (Some(a), Some(b)) if a == b => joined.push(*a),
+                    (Some(a), None) => joined.push(*a),
+                    (None, Some(b)) => joined.push(*b),
+                    _ => return None, // differing per-position width — a later widening
+                }
+            }
+            (
+                SumArgRebuild {
+                    base_param: 0,
+                    boundary_true_disc: 0,
+                    arm_true: SumArgArm {
+                        decl_disc: 0,
+                        payload: ok_payload,
+                    },
+                    arm_false: SumArgArm {
+                        decl_disc: 1,
+                        payload: err_payload,
+                    },
+                },
+                joined,
+            )
+        }
+        _ => return None, // two nullary (a bare enum field), or a multi-payload variant — out of scope
+    };
+    // The canon lift flattens the sum to `(disc: i32, payload-join…)`.
+    param_vts.push(ValType::I32.byte());
+    param_vts.extend(join_vts.iter().map(|vt| vt.byte()));
+    Some(FieldRebuild::Sum(Box::new(rebuild)))
+}
+
 /// A FIXED-SHAPE SCALAR tuple/record closure ARGUMENT that crosses the DIRECT-CALL boundary as a native
 /// component `tuple<…>` (the canonical ABI flattens it into scalar core params). Returns, for such a `ty`:
 /// the per-field component boundary bytes (the envelope's `tuple<…>` type + the flattened core `call`
@@ -8458,19 +8605,22 @@ fn param_field_rebuild(
             Some(FieldRebuild::Nested(fields, slots))
         }
         // A variant/result PARAM field (the response's `answer: result<…>`): the canon lift hands the
-        // flattened `(disc, payload…)`; the wrapper reads them and rebuilds the guest sum cell. This slice
-        // reuses the closure-arg `fixed_shape_option_scalar_arg` — a two-variant Option/Result whose payload
-        // arms are scalar or a fixed-shape tuple/record. A `list<u8>`/enum payload arm (result<list<u8>,
-        // error>) is NOT yet covered there and declines (a later slice extends the reader).
+        // flattened `(disc, payload…)`; the wrapper reads them and rebuilds the guest sum cell. First reuse the
+        // closure-arg `fixed_shape_option_scalar_arg` — a two-variant Option/Result whose payload arms are
+        // scalar or a fixed-shape tuple/record; then `fixed_shape_sum_param_arg` for the `list<u8>`/enum payload
+        // arms (`result<list<u8>, error>` — the reducer response's `answer`).
         Ty::Sum { .. } => {
             // The canon lift flattens a variant to `(disc: i32, payload-join…)`. `fixed_shape_option_scalar_arg`
             // returns only the PAYLOAD valtypes (the closure convention passes the disc separately), so prepend
             // the disc's i32 — matching `flattened_param_count` (1 disc + the payload leaves) + `emit_sum_field`
             // (disc at the cursor, payload at cursor+1).
-            let (_slot, vts, rebuild) = fixed_shape_option_scalar_arg(db, gty)?;
-            param_vts.push(ValType::I32.byte());
-            param_vts.extend(vts.iter().map(|vt| vt.byte()));
-            Some(FieldRebuild::Sum(Box::new(rebuild)))
+            if let Some((_slot, vts, rebuild)) = fixed_shape_option_scalar_arg(db, gty) {
+                param_vts.push(ValType::I32.byte());
+                param_vts.extend(vts.iter().map(|vt| vt.byte()));
+                return Some(FieldRebuild::Sum(Box::new(rebuild)));
+            }
+            // `list<u8>` (Bytes) / all-nullary enum payload arms — appends the disc + join vts itself.
+            fixed_shape_sum_param_arg(db, gty, param_vts)
         }
         _ => {
             let fr = scalar_field_rebuild(gty)?;
@@ -8691,8 +8841,12 @@ fn record_interface_export(
             }
             _ => {}
         }
-        if matches!(t, WitType::Record(_) | WitType::Variant(_))
-            && !types.iter().any(|(_, u)| u == t)
+        // A named type the instance must re-export: record, variant, enum (an all-nullary variant, e.g. the
+        // response `answer`'s `error`), or flags. A structural `list`/`option`/`result`/`tuple` is not named.
+        if matches!(
+            t,
+            WitType::Record(_) | WitType::Variant(_) | WitType::Enum(_) | WitType::Flags(_)
+        ) && !types.iter().any(|(_, u)| u == t)
         {
             types.push((format!("t{}", types.len()), t.clone()));
         }

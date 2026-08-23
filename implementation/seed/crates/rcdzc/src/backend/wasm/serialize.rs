@@ -2147,10 +2147,12 @@ impl FieldRebuild {
             FieldRebuild::Scalar { .. } => false,
             FieldRebuild::Nested(sub, _) => sub.iter().any(FieldRebuild::has_bytes_leaf),
             FieldRebuild::BytesLeaf => true,
-            // A sum arm's Compound payload could carry a bytes leaf; a scalar/nullary arm cannot.
+            // A sum arm's `list<u8>` (Bytes) payload, or a Compound payload carrying a bytes leaf, needs the
+            // scratch locals + memory 0; a scalar/nullary/enum arm does not.
             FieldRebuild::Sum(r) => [&r.arm_true, &r.arm_false]
                 .iter()
                 .any(|a| match &a.payload {
+                    SumArmPayload::Bytes => true,
                     SumArmPayload::Compound(fs) => fs.iter().any(FieldRebuild::has_bytes_leaf),
                     _ => false,
                 }),
@@ -2188,6 +2190,13 @@ impl SumArgArm {
                     f.collect_box_ops(out);
                 }
             }
+            // A `list<u8>` payload copies its bytes into a guest `Bytes`.
+            SumArmPayload::Bytes => {
+                out("bytes-alloc");
+                out("bytes-set");
+            }
+            // An enum payload builds the inner all-nullary cell via `sum-new`.
+            SumArmPayload::Enum => out("sum-new"),
         }
     }
 }
@@ -2216,6 +2225,16 @@ pub enum SumArmPayload {
     /// no `variant` naming wall). Proven by the `an_option_tuple_payload_closure_arg_crosses_by_native_
     /// flattening` oracle.
     Compound(Vec<FieldRebuild>),
+    /// A `list<u8>` payload (an `Ok = list<u8>` arm — the reducer response's `answer: result<payload, error>`).
+    /// The list flattened to `(ptr, len)` — TWO consecutive leaves at the payload base; the arm allocates a
+    /// guest `Bytes` and copies the bytes out of memory 0 (exactly like a top-level [`FieldRebuild::BytesLeaf`]),
+    /// leaving the handle as this arm's payload. Needs the wrapper's scratch locals + memory 0.
+    Bytes,
+    /// An all-nullary variant / WIT `enum` payload (an `Err = error` arm). The enum flattened to ONE i32 disc
+    /// leaf at the payload base. Every case is nullary and the guest declares the same enum in the same case
+    /// order, so the boundary disc IS the guest decl disc: the arm reads the disc leaf and builds the inner
+    /// cell `sum-new(disc, IMM_UNIT)` (no per-case branch) as this arm's payload. One leaf.
+    Enum,
 }
 
 /// How a closure `call` reassembles ONE flattened fixed-shape SUM argument (an `Option`/`Result` — a
@@ -2260,6 +2279,9 @@ impl SumArgRebuild {
                 SumArmPayload::Compound(fields) => {
                     fields.iter().map(FieldRebuild::leaf_count).sum()
                 }
+                // A `list<u8>` payload flattens to `(ptr, len)` — two leaves; an enum to one disc leaf.
+                SumArmPayload::Bytes => 2,
+                SumArmPayload::Enum => 1,
             }
         };
         1 + arm_leaves(&self.arm_true)
@@ -2271,7 +2293,13 @@ impl SumArgRebuild {
 /// Emit ONE arm's cell build: `sum-new(decl_disc, payload)` where the payload is the inline unit (nullary), a
 /// boxed scalar leaf, or a rebuilt compound cell. Leaves `[sum-handle]` on stack. `payload_param` is the
 /// flattened core-param index the payload's leaf/leaves start at (the sum's `base_param + 1`).
-fn emit_sum_arm(arm: &SumArgArm, payload_param: u32, imp: &dyn Fn(&str) -> u64, out: &mut Vec<u8>) {
+fn emit_sum_arm(
+    arm: &SumArgArm,
+    payload_param: u32,
+    imp: &dyn Fn(&str) -> u64,
+    scratch: Option<(u32, u32)>,
+    out: &mut Vec<u8>,
+) {
     use crate::backend::wasm::wasm_abi::op;
     out.push(op::I32_CONST);
     crate::backend::wasm::encode::sleb128(arm.decl_disc as i64, out); // [disc]
@@ -2313,6 +2341,26 @@ fn emit_sum_arm(arm: &SumArgArm, payload_param: u32, imp: &dyn Fn(&str) -> u64, 
                 out,
             ); // [disc, unit]
         }
+        SumArmPayload::Bytes => {
+            // The `list<u8>` payload crossed as `(ptr, len)` at the payload base; copy it into a guest `Bytes`
+            // (exactly like a top-level `BytesLeaf`), leaving the handle as this arm's payload.
+            let (buf, ctr) = scratch.expect("a Bytes sum arm needs the wrapper's scratch locals");
+            emit_bytes_leaf_copy_in(payload_param, buf, ctr, imp, out); // [disc, bytes-handle]
+        }
+        SumArmPayload::Enum => {
+            // The enum payload crossed as ONE i32 disc leaf; build the inner all-nullary cell
+            // `sum-new(disc, IMM_UNIT)` (boundary disc == guest decl disc — same case order) as this arm's
+            // payload.
+            out.push(op::LOCAL_GET);
+            uleb128(payload_param as u64, out); // [disc, enum-disc]
+            out.push(op::I32_CONST);
+            crate::backend::wasm::encode::sleb128(
+                crate::backend::wasm::runtime_abi::IMM_UNIT as i64,
+                out,
+            ); // [disc, enum-disc, unit]
+            out.push(op::CALL);
+            uleb128(imp("sum-new"), out); // [disc, enum-cell]
+        }
     }
     out.push(op::CALL);
     uleb128(imp("sum-new"), out); // [sum-handle]
@@ -2339,9 +2387,10 @@ fn emit_sum_arg_rebuild(
     out.push(op::I32_EQ);
     out.push(op::IF);
     out.push(wasm_abi::CORE_I32); // block type: → i32 (the sum handle)
-    emit_sum_arm(&rebuild.arm_true, payload_param, imp, out);
+    // Closure sum args carry scalar/nullary/compound payloads only (no `list<u8>`/enum arm) — no scratch.
+    emit_sum_arm(&rebuild.arm_true, payload_param, imp, None, out);
     out.push(op::ELSE);
-    emit_sum_arm(&rebuild.arm_false, payload_param, imp, out);
+    emit_sum_arm(&rebuild.arm_false, payload_param, imp, None, out);
     out.push(op::END);
     // stash for the post-dispatch drop; leaves [sum-handle] on the stack.
     out.push(op::LOCAL_TEE);
@@ -2356,6 +2405,7 @@ fn emit_sum_field(
     rebuild: &SumArgRebuild,
     cursor: &mut u32,
     imp: &dyn Fn(&str) -> u64,
+    scratch: Option<(u32, u32)>,
     out: &mut Vec<u8>,
 ) {
     use crate::backend::wasm::wasm_abi::op;
@@ -2368,9 +2418,9 @@ fn emit_sum_field(
     out.push(op::I32_EQ);
     out.push(op::IF);
     out.push(wasm_abi::CORE_I32); // block type: → i32 (the sum handle)
-    emit_sum_arm(&rebuild.arm_true, payload_param, imp, out);
+    emit_sum_arm(&rebuild.arm_true, payload_param, imp, scratch, out);
     out.push(op::ELSE);
-    emit_sum_arm(&rebuild.arm_false, payload_param, imp, out);
+    emit_sum_arm(&rebuild.arm_false, payload_param, imp, scratch, out);
     out.push(op::END); // → [sum-handle]
     *cursor += rebuild.flattened_param_count();
 }
@@ -2453,7 +2503,7 @@ fn emit_cell_rebuild(
                 *cursor += 2; // the list flattened to (ptr, len)
             }
             FieldRebuild::Sum(rebuild) => {
-                emit_sum_field(rebuild, cursor, imp, out); // → [arr, i, sum-handle]
+                emit_sum_field(rebuild, cursor, imp, scratch, out); // → [arr, i, sum-handle]
             }
         }
         out.push(op::CALL);
