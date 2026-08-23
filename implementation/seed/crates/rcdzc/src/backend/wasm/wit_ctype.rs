@@ -156,6 +156,77 @@ pub fn add_wit_type(t: &WitType, table: &mut Vec<CDef>) -> Option<CRef> {
     Some(CRef::Idx((table.len() - 1) as u32))
 }
 
+/// Like [`add_wit_type`] but DEDUPING at every level via a `memo` of already-built types: a compound is built
+/// by recursively deduping its children first, so two structurally equal (sub)types resolve to ONE table
+/// index. Used by the interface-instance assembler, where an exported named type and a nested field of the
+/// SAME structure must reference one shared index (or the instance export references a type it never exports —
+/// "instance not valid to be used as export"). [`add_wit_type`] stays non-deduping so its per-call
+/// byte-identity with the `wasm-encoder` oracle is preserved.
+pub fn add_wit_type_deduped(
+    t: &WitType,
+    table: &mut Vec<CDef>,
+    memo: &mut Vec<(WitType, CRef)>,
+) -> Option<CRef> {
+    if let Some(b) = prim_byte(t) {
+        return Some(CRef::Prim(b));
+    }
+    if let Some((_, r)) = memo.iter().find(|(u, _)| u == t) {
+        return Some(r.clone());
+    }
+    let def = match t {
+        WitType::List(e) => CDef::List(add_wit_type_deduped(e, table, memo)?),
+        WitType::Record(fields) => {
+            let mut out = Vec::with_capacity(fields.len());
+            for (name, fty) in fields {
+                out.push((name.clone(), add_wit_type_deduped(fty, table, memo)?));
+            }
+            CDef::Record(out)
+        }
+        WitType::Tuple(elems) => {
+            let mut out = Vec::with_capacity(elems.len());
+            for e in elems {
+                out.push(add_wit_type_deduped(e, table, memo)?);
+            }
+            CDef::Tuple(out)
+        }
+        WitType::Option(e) => CDef::Option(add_wit_type_deduped(e, table, memo)?),
+        WitType::Variant(cases) => {
+            let mut out = Vec::with_capacity(cases.len());
+            for (name, payload) in cases {
+                let r = match payload {
+                    Some(p) => Some(add_wit_type_deduped(p, table, memo)?),
+                    None => None,
+                };
+                out.push((name.clone(), r));
+            }
+            CDef::Variant(out)
+        }
+        WitType::Enum(cases) => CDef::Enum(cases.clone()),
+        WitType::Flags(names) => CDef::Flags(names.clone()),
+        WitType::Result { ok, err } => {
+            let ok = match ok {
+                Some(o) => Some(add_wit_type_deduped(o, table, memo)?),
+                None => None,
+            };
+            let err = match err {
+                Some(e) => Some(add_wit_type_deduped(e, table, memo)?),
+                None => None,
+            };
+            CDef::Result { ok, err }
+        }
+        _ => return None,
+    };
+    // Reuse a structurally-equal entry (children already deduped, so equal subtrees ⇒ equal `CDef`s).
+    let r = if let Some(i) = table.iter().position(|d| *d == def) {
+        CRef::Idx(i as u32)
+    } else {
+        table.push(def);
+        CRef::Idx((table.len() - 1) as u32)
+    };
+    memo.push((t.clone(), r.clone()));
+    Some(r)
+}
+
 /// Encode one [`CRef`] as a component-model `valtype`: a primitive is its single byte; a type reference is
 /// the (non-negative) index as a signed LEB128 — the encoding `wasm-encoder` uses for
 /// `ComponentValType::Type` (`idx as i64`), disjoint from the primitives' `0x73..=0x7f` bytes.

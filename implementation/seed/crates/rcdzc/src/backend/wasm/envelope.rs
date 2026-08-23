@@ -569,13 +569,11 @@ fn add_memo(
     table: &mut Vec<crate::backend::wasm::wit_ctype::CDef>,
     memo: &mut Vec<(WitType, crate::backend::wasm::wit_ctype::CRef)>,
 ) -> crate::backend::wasm::wit_ctype::CRef {
-    if let Some((_, r)) = memo.iter().find(|(t, _)| t == ty) {
-        return r.clone();
-    }
-    let r = crate::backend::wasm::wit_ctype::add_wit_type(ty, table)
-        .expect("an interface type / param / result must be a value type");
-    memo.push((ty.clone(), r.clone()));
-    r
+    // Dedup at EVERY level (not just the top-level `ty`): a nested compound shared between a named type and a
+    // func's param — or between two params — must resolve to one table index, so the exported interface
+    // instance re-exports a self-consistent type set (a field references an exported type, never a duplicate).
+    crate::backend::wasm::wit_ctype::add_wit_type_deduped(ty, table, memo)
+        .expect("an interface type / param / result must be a value type")
 }
 
 /// Assemble a component that exports the WIT interface `iface` as an instance (the reducer world's
