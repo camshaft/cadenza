@@ -162,6 +162,7 @@ mod tests {
             ],
             spawns: vec![cdz_platform::testing::SpawnSpec::new("greeter", "greeter")],
             deliveries: vec![],
+            checker: None,
         };
         let log = run(spec).expect("inline blobs never invoke the path loader");
         assert!(
