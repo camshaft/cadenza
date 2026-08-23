@@ -266,13 +266,14 @@ async fn a_recording_reducer_logs_birth_delivered_emitted_and_close_attributed_t
         Box::new(EmitAndClose {
             contract: ContractId::of(b"eff"),
         }),
+        me,
         host,
         log.clone(),
         clock0,
     );
 
-    // Birth first — the reducer learns its own id from it (§3), so even this record is attributed to
-    // the learned id, not the program.
+    // The reducer's id is known at construction (from the spawn context, §3), so every record — including
+    // the birth notification it folds first — is attributed to it.
     r.on_notification(Spawned { id: me, parent }.into_notification())
         .await;
     // Then a message that makes it emit an effect and close.
