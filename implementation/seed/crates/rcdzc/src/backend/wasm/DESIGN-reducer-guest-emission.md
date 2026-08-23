@@ -54,40 +54,62 @@ lockstep flip from lowercase-hex), which the host / nix compose resolves from th
    export, `list<u8>`-leaf params, spilling record result) validates + runs under wasmtime with synthetic
    cores.
 
-3. **The wrapper core body — TODO (W4c-b-i, runtime-dependent).** The canon lift hands the core function
-   the *flattened* boundary values (a `list<u8>` leaf as a `(ptr, len)` into linear memory; scalars
-   direct); a spilling result is returned as a pointer to the result laid at its canonical offsets. But
-   the compiled Cadenza `on-message` def takes a **guest value-heap record** and returns one. So per
-   export the core module carries a **wrapper** function (its exported name; the compiled def is internal)
-   whose body:
-   - reads each `list<u8>` leaf's `(ptr, len)` and builds a guest `Bytes` (`bytes-alloc` + copy from
-     memory), and reads scalar leaves directly;
-   - builds the guest record cell from those fields (`serialize::emit_cell_rebuild`, the same primitive the
-     closure-arg / resource-`make` paths use, driven by a `FieldRebuild` descriptor from
-     `mod.rs::tuple_field_abi`);
+3. **The wrapper core body — DONE (W4c-b-i, merged #3039/#3047/#3048 + PR #3065).** The canon lift hands
+   the core function the *flattened* boundary values (a `list<u8>` leaf as `(ptr, len)` into linear
+   memory; scalars direct); a spilling result is returned as a pointer to the result at its canonical
+   offsets. The compiled `on-message` def takes/returns a **guest value-heap record**, so per export the
+   core carries a **wrapper** (exported name; the def is internal) that:
+   - **param side** (`record_param_rebuild` + `emit_cell_rebuild`): reads each `list<u8>` leaf's
+     `(ptr, len)` and builds a guest `Bytes` (`bytes-alloc` + copy-in), reads scalar leaves direct, builds
+     the record cell — permuting each WIT field into the guest's name-lex cell slot BY NAME (a
+     declaration-ordered WIT record → the right slots). The core DEFINES memory 0 + a real `cabi_realloc`
+     bump allocator when a leaf/spill needs memory.
    - calls the compiled def (`op::CALL` `Layout::abs(def)`);
-   - lowers the returned `step` record: reads its fields (`arr-get` / `get-int`) and **writes** them to the
-     return area at `record_field_offsets` (a `list<u8>` field copies its bytes to memory + writes
-     `(ptr, len)`; the `outcome` variant writes its discriminant + payload), then returns the return-area
-     pointer.
-   The wrapper calls the value-heap runtime ops, so the guest imports `cadenza:runtime/heap` and this is
-   validated **end to end** (not with a synthetic core).
+   - **result side** — the recursive canonical WRITER `serialize::CanonWrite` { Scalar, Record, List,
+     Bytes, Option, named-Variant } (`mod.rs::canon_write_of`, driven off WIT+`Ty`): allocates a return
+     area (`cabi_realloc`) and writes the `step` there — a record permutes fields by name to their WIT
+     canonical offsets; a `list<request>` bump-allocates an element array + writes each element at its
+     stride; a `list<u8>` leaf copies its bytes out + writes `(ptr, len)`; an `option`/named `variant`
+     writes `sum-disc`→the boundary disc + (payload arm) `sum-payload`→the payload at the variant's
+     payload offset (variant cases NAME-matched, kebab-normalized; a None-only option's dead Some-arm
+     write is derived from the WIT inner type). Returns the return-area pointer.
+   Validated **end to end** under wasmtime (not a synthetic core): a full reducer-`step`-shaped guest
+   (record permute + `list<record>` + three `list<u8>` leaves + `option` + named variant with a record
+   payload) compiles, runs, and lifts back field-for-field (`a_full_step_shaped_guest_compiles_and_runs`).
 
-4. **The cascade wiring — TODO (W4c-b-ii).** Widen the `mod.rs` boundary-export construction (the point
-   that currently declines a record-typed boundary — "a parameter type has no component valtype") so a
-   typed-record interface-export world builds a `TypedInterface` (via `tuple_field_abi` for the field
-   descriptors) + emits the wrappers into the core module + routes to `assemble_typed_interface`, instead
-   of erroring. This is additive over the current decline (those cases are errors today), so it does not
-   change scalar / `list<u8>` emit — but it touches the shared component-emit cascade, so it is
-   **full-gated** (whole corpus × backends) before landing, not just `dev-gate`. The `TargetWorld` model
-   is extended to carry the interface's named types (today it models only funcs).
+4. **The cascade wiring — DONE (W4c-b-ii, merged).** `mod.rs::record_interface_export` builds the
+   `TypedInterface` (record/variant named types synthesized + exported via `add_wit_type_deduped` so
+   nested named types share one index) + the wrapper `WrapperDesc`s, and routes to
+   `assemble_typed_interface_with_runtime` (composing the value-heap runtime import). Additive over the
+   former record-boundary decline; a scalar interface still takes the no-wrapper `scalar_interface_export`.
+
+5. **The platform host imports (`identity` / `state` / `blobs`) — TODO (W4c-b-iii).** A reducer that calls
+   a world import (reducer-echo sets `request.token = identity::id()`) needs that host-import interface
+   composed into the reducer-boundary component alongside the runtime. The envelope side is ready:
+   `envelope::assemble_host_runtime` already composes a host-effect import + the runtime + boundary
+   exports (host ops lowered to core funcs `0..h`, runtime `h..h+k`, boundary aliases after; documented
+   index spaces). The reducer path just needs the analogous assembler that composes the host import(s)
+   with the **typed interface-instance** export (combine `assemble_host_runtime`'s two-import bookkeeping
+   with `assemble_typed_interface_with_runtime`'s instance export), and `record_interface_export` must
+   collect the guest's host imports (the `Core::HostCall`s a body performs, recognized via
+   `wit_world::is_world_import_op`) and thread them through. **Open (asked v-platform):** the guest-SOURCE
+   form for calling a 0-arg `list<u8>`-returning world import (`identity.id : () -> reducer-id`) — whether
+   the perform→world-import lowering (the `state.get`/kv path) already covers it, or `identity.id()` needs
+   a prelude/reify arm (v-inference/v-syntax territory, currently stopped in the platform-only pause).
+
+6. **World supply surface — TODO (W4c-b-iv).** The in-source `(world …)` decl → binary-AST (`KIND_WIT_WORLD`)
+   lowering, coordinated with v-syntax + v-nix (the CLI reads either the decl or a `--world` artifact).
 
 ## Validation
 
-Unit + oracle tests cover the type model, the envelope, and each boundary shape under wasmtime with
-synthetic cores (steps 1–2, landed). The full pipeline (steps 3–4) is validated **end to end**: emit a
-minimal guest (`export cadenza:platform/guest`, `on-message` returning `outcome = continue` + one
-request, `import identity`), and `v-platform` seeds it into a test CAS, spawns it via its
-`WasmProgramStore`, drives `on_message`, and diffs the returned `step` against its Rust reference guest.
-When the guest imports `cadenza:runtime/heap+<addr>`, the platform's CAS-import composition resolves +
-composes the runtime from the store, closing the runtime-import loop in the same drive.
+Unit + oracle tests cover the type model + envelope with synthetic cores (steps 1–2). Steps 3–4 are
+validated **end to end** under wasmtime (`run_reducer_typed`): every boundary shape + the full
+reducer-`step`-shaped guest run field-for-field (rcdzc lib suite). Steps 5–6 close the loop with
+`v-platform` as the emission oracle: emit a reducer-echo-shaped guest (message param, `token =
+identity::id()`, `deadline = none`, `outcome = continue`), send `v-platform` the `(component bytes, input
+message, reducer-id)` triple; it seeds the guest into a test CAS, spawns it via `WasmProgramStore`, drives
+`on_message`, and diffs the returned `step` against reducer-echo's **echo relation** (requests.len == 1,
+contract/payload echoed, token == reducer-id, deadline none, outcome continue) via `step_from_wit`. The
+CAS-import composition resolves + composes `cadenza:runtime/heap+<addr>` (and `identity`) from the store
+in the same drive — closing the import loop and validating the whole reducer-world guest path (the sunset
+milestone: the interim Rust guests + checker retire once a `.cdz` guest drives green through the host).

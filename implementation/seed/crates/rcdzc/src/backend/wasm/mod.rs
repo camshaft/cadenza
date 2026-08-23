@@ -2893,9 +2893,11 @@ fn nested_fixed_shape_tuple_arg(
             nested_fixed_shape_tuple_arg(f)
         {
             // A nested fixed-shape compound field: its leaves flatten into the SAME depth-first sequence.
+            // A guest-constructed tuple/record — its slots are the construction order (identity).
             leaf_bytes.extend(sub_bytes);
             leaf_vts.extend(sub_vts);
-            rebuild_fields.push(FieldRebuild::Nested(sub_rebuild));
+            let ident: Vec<u32> = (0..sub_rebuild.len() as u32).collect();
+            rebuild_fields.push(FieldRebuild::Nested(sub_rebuild, ident));
             shape_fields.push(TupleFieldShape::Nested(sub_shape));
         } else {
             return None; // a field that is neither an aliased-width scalar nor a fixed-shape compound
@@ -7933,7 +7935,15 @@ fn world_bytes_crossing_export(layout: &Layout, world_bytes: &[u8]) -> Option<us
     let world = parse_target_world(&arenas, arenas.root)?;
     for iface in &world.exports {
         for member in &iface.members {
-            let Some(e) = layout.exports.iter().find(|e| e.name == member.name) else {
+            // Bind by kebab-normalized name: the WIT member (`on-message`, kebab) matches a guest export
+            // (`onMessage`) under the same rule fields/variants/exports cross under (a Cadenza def cannot be
+            // named `on-message`). Both sides normalized (a WIT member is already kebab — idempotent).
+            let mk = crate::backend::common::export_name::kebab_extern_name(&member.name);
+            let Some(e) = layout
+                .exports
+                .iter()
+                .find(|e| crate::backend::common::export_name::kebab_extern_name(&e.name) == mk)
+            else {
                 continue;
             };
             // The current bytes-boundary slice is a single-compound-param member (widened later); require the
@@ -7991,7 +8001,13 @@ fn scalar_interface_export(
     let export_iface = world.exports.first()?;
     let mut funcs = Vec::with_capacity(export_iface.members.len());
     for member in &export_iface.members {
-        let e = layout.exports.iter().find(|e| e.name == member.name)?;
+        // Bind the WIT member to a guest export by kebab-normalized name (a Cadenza def `onMessage` binds to
+        // the WIT `on-message` member — same rule as fields/variants/exports).
+        let mk = crate::backend::common::export_name::kebab_extern_name(&member.name);
+        let e = layout
+            .exports
+            .iter()
+            .find(|e| crate::backend::common::export_name::kebab_extern_name(&e.name) == mk)?;
         if member.func.params.len() != e.params.len() {
             return None;
         }
@@ -8053,11 +8069,120 @@ fn scalar_result_read_store(f: &crate::ty::Ty) -> Option<(&'static str, bool, u8
     })
 }
 
+/// Like [`scalar_result_read_store`] but driven by the WIT scalar type (not the guest `Ty`) — used when the
+/// guest value type is UNRESOLVED (a `None`-only option's payload var) but the boundary still fixes the
+/// representation: a `Some` value of WIT type `T` is a value-heap-boxed `T`, so the same unbox/store applies.
+/// `None` for a non-scalar WIT type.
+fn scalar_read_store_of_wit(wty: &crate::wit_world::WitType) -> Option<(&'static str, bool, u8)> {
+    use crate::backend::wasm::wasm_abi::op;
+    use crate::wit_world::WitType;
+    Some(match wty {
+        WitType::Bool => ("get-bool", false, op::I32_STORE8),
+        WitType::U8 | WitType::S8 => ("get-int", true, op::I32_STORE8),
+        WitType::U16 | WitType::S16 => ("get-int", true, op::I32_STORE16),
+        WitType::U32 | WitType::S32 | WitType::Char => ("get-int", true, op::I32_STORE),
+        WitType::U64 | WitType::S64 => ("get-int", false, op::I64_STORE),
+        WitType::F32 => ("get-float32", false, op::F32_STORE),
+        WitType::F64 => ("get-float", false, op::F64_STORE),
+        _ => return None,
+    })
+}
+
+/// A [`serialize::CanonWrite`] built from the WIT type ALONE (no guest `Ty`), for when the guest value type
+/// is UNRESOLVED — the DEAD element/payload writer of an empty polymorphic collection (`step{requests: []}`
+/// — a reducer that emits no effects) or a `None` option. The value-heap representation follows the type, so
+/// a `Some`/non-empty value of this WIT type would be laid this way; but for the empty/none case the code
+/// never executes, so a record's field SLOTS use identity (the guest's name-lex slots are unknowable without
+/// its `Ty`, but no element is ever written). Only VALIDITY matters here, not the (dead) slot mapping.
+fn canon_write_from_wit(
+    wty: &crate::wit_world::WitType,
+) -> Option<crate::backend::wasm::serialize::CanonWrite> {
+    use crate::backend::wasm::serialize::{CanonField, CanonWrite, VariantArm};
+    use crate::backend::wasm::wit_ctype;
+    use crate::wit_world::WitType;
+    Some(match wty {
+        WitType::List(e) if **e == WitType::U8 => CanonWrite::Bytes,
+        WitType::List(e) => CanonWrite::List {
+            elem_size: wit_ctype::canonical_size(e),
+            elem_align: wit_ctype::canonical_align(e),
+            elem: Box::new(canon_write_from_wit(e)?),
+        },
+        WitType::Record(fields) => {
+            let wtys: Vec<WitType> = fields.iter().map(|(_, t)| t.clone()).collect();
+            let offsets = wit_ctype::record_field_offsets(&wtys);
+            let mut fs = Vec::new();
+            for (i, ((_, ft), off)) in fields.iter().zip(offsets.iter()).enumerate() {
+                fs.push(CanonField {
+                    index: i as u32, // identity — dead code (this whole writer is only reached for empty/none)
+                    offset: *off,
+                    write: canon_write_from_wit(ft)?,
+                });
+            }
+            CanonWrite::Record { fields: fs }
+        }
+        WitType::Option(inner) => {
+            let cps = [None, Some(inner.as_ref())];
+            let (disc_size, payload_offset) = wit_ctype::variant_disc_layout(&cps);
+            CanonWrite::Variant {
+                disc_store: disc_store_of(disc_size),
+                payload_offset,
+                arms: vec![
+                    VariantArm {
+                        boundary_disc: 0,
+                        payload: None,
+                    },
+                    VariantArm {
+                        boundary_disc: 1,
+                        payload: Some(Box::new(canon_write_from_wit(inner)?)),
+                    },
+                ],
+            }
+        }
+        WitType::Variant(cases) => {
+            let cps: Vec<Option<&WitType>> = cases.iter().map(|(_, p)| p.as_ref()).collect();
+            let (disc_size, payload_offset) = wit_ctype::variant_disc_layout(&cps);
+            let mut arms = Vec::new();
+            for (i, (_, p)) in cases.iter().enumerate() {
+                arms.push(VariantArm {
+                    boundary_disc: i as u32,
+                    payload: match p {
+                        None => None,
+                        Some(pw) => Some(Box::new(canon_write_from_wit(pw)?)),
+                    },
+                });
+            }
+            CanonWrite::Variant {
+                disc_store: disc_store_of(disc_size),
+                payload_offset,
+                arms,
+            }
+        }
+        scalar => {
+            let (read, wrap_i64, store) = scalar_read_store_of_wit(scalar)?;
+            CanonWrite::Scalar {
+                read,
+                wrap_i64,
+                store,
+            }
+        }
+    })
+}
+
+/// The i32 store opcode for a variant discriminant of `disc_size` bytes.
+fn disc_store_of(disc_size: u32) -> u8 {
+    use crate::backend::wasm::wasm_abi::op;
+    match disc_size {
+        1 => op::I32_STORE8,
+        2 => op::I32_STORE16,
+        _ => op::I32_STORE,
+    }
+}
+
 /// Build the recursive [`serialize::CanonWrite`] that lowers a value-heap value of type `gty` (WIT `wty`) to
 /// its canonical-ABI memory form — the reducer result-lower. A scalar unboxes + stores; a `Bytes`/`list<u8>`
-/// copies its bytes out; a record recurses per field at canonical offsets (with the WIT-vs-name-lex field-
-/// order SOUNDNESS guard); a `list<T>` writes an element array (recursive element write). Declines a
-/// variant/option/other compound (a later slice).
+/// copies its bytes out; a record recurses per field at canonical offsets (permuted by name); a `list<T>`
+/// writes an element array; option/named-variant write disc + payload. When `gty` is UNRESOLVED (an empty
+/// collection / `None`), falls back to [`canon_write_from_wit`] (the dead element/payload writer).
 fn canon_write_of(
     db: &mut Db,
     gty: &crate::ty::Ty,
@@ -8068,32 +8193,43 @@ fn canon_write_of(
     use crate::backend::wasm::wit_ctype;
     use crate::ty::Ty;
     use crate::wit_world::WitType;
+    // An UNRESOLVED guest type — the dead element/payload writer of an empty collection / `None`. The value
+    // never materializes, so drive the (valid but dead) write off the WIT type alone.
+    if matches!(gty.strip_nominal(), Ty::Var(_) | Ty::Any) {
+        return canon_write_from_wit(wty);
+    }
     match gty.strip_nominal() {
         Ty::Bytes => Some(CanonWrite::Bytes),
         Ty::Record(map) => {
+            use crate::backend::common::export_name::kebab_extern_name;
             let WitType::Record(wfs) = wty else {
                 return None;
             };
             if wfs.len() != map.len() {
                 return None;
             }
-            let wit_order: Vec<&str> = wfs.iter().map(|(n, _)| n.as_str()).collect();
-            let lex_order: Vec<&str> = map.keys().map(|s| s.name.as_ref()).collect();
-            if wit_order != lex_order {
-                return None;
-            }
+            // PERMUTE BY NAME: the value-heap cell's slots are in the guest's name-lex (`BTreeMap`) order,
+            // but the WIT record lays its fields (and their canonical offsets) in DECLARATION order — which
+            // need not be name-lex (the real `step{requests, outcome}` / `request{contract, payload, token,
+            // deadline-nanos}` are declaration-ordered). So map each WIT field to its guest slot BY NAME
+            // (kebab-normalized, the same rule as variants/exports) — read `arr-get(handle, guest_slot)` and
+            // write at the WIT field's canonical offset. A field with no name match declines.
+            let guest_names: Vec<String> = map
+                .keys()
+                .map(|s| kebab_extern_name(s.name.as_ref()))
+                .collect();
+            let gtys: Vec<Ty> = map.values().cloned().collect();
             let wtys: Vec<WitType> = wfs.iter().map(|(_, t)| t.clone()).collect();
             let offsets = wit_ctype::record_field_offsets(&wtys);
-            // Clone the field types so `db` is free for the recursive `canon_write_of` (which needs `&mut db`).
-            let gtys: Vec<Ty> = map.values().cloned().collect();
-            let fws: Vec<WitType> = wfs.iter().map(|(_, t)| t.clone()).collect();
             let mut fields = Vec::new();
-            for (i, ((fg, fw), off)) in gtys.iter().zip(fws.iter()).zip(offsets.iter()).enumerate()
-            {
+            for ((wname, fw), off) in wfs.iter().zip(offsets.iter()) {
+                let slot = guest_names.iter().position(|g| g == wname)?;
+                let fg = gtys[slot].clone();
+                let fw = fw.clone();
                 fields.push(CanonField {
-                    index: i as u32,
+                    index: slot as u32,
                     offset: *off,
-                    write: canon_write_of(db, fg, fw)?,
+                    write: canon_write_of(db, &fg, &fw)?,
                 });
             }
             Some(CanonWrite::Record { fields })
@@ -8204,7 +8340,22 @@ fn canon_write_of(
             let pi = params.iter().position(|p| *p == pname)?;
             let payload_gty = args.get(pi)?.clone();
             let inner = (**inner).clone();
-            let payload_write = canon_write_of(db, &payload_gty, &inner)?;
+            // For a `None`-ONLY option (the guest never constructs `Some`, e.g. reducer-echo's
+            // `deadline-nanos`), the guest's option payload type is an UNRESOLVED var, so `canon_write_of`
+            // can't dispatch it — fall back to building the payload write from the WIT inner SCALAR type (the
+            // Some arm is dead at runtime, but the write must be valid: a `Some` value would be a scalar of
+            // that WIT type). Non-scalar unresolved payloads still decline.
+            let payload_write = match canon_write_of(db, &payload_gty, &inner) {
+                Some(w) => w,
+                None => {
+                    let (read, wrap_i64, store) = scalar_read_store_of_wit(&inner)?;
+                    serialize::CanonWrite::Scalar {
+                        read,
+                        wrap_i64,
+                        store,
+                    }
+                }
+            };
             // Canonical variant layout: disc is 1 byte (2 cases); payload after the disc, aligned to it.
             let payload_align = wit_ctype::canonical_align(&inner);
             let payload_offset = 1u32.div_ceil(payload_align) * payload_align;
@@ -8302,9 +8453,8 @@ fn param_field_rebuild(
             let WitType::Record(wfs) = wty else {
                 return None;
             };
-            Some(FieldRebuild::Nested(record_fields_rebuild(
-                map, wfs, param_vts,
-            )?))
+            let (fields, slots) = record_fields_rebuild(map, wfs, param_vts)?;
+            Some(FieldRebuild::Nested(fields, slots))
         }
         _ => {
             let fr = scalar_field_rebuild(gty)?;
@@ -8314,27 +8464,37 @@ fn param_field_rebuild(
     }
 }
 
-/// The per-field [`serialize::FieldRebuild`]s for a record's fields (recursively), with the WIT-vs-name-lex
-/// field-order SOUNDNESS guard (a mismatch would land a field's flattened leaf in the wrong cell slot). The
-/// entry point for both a top-level record param and a nested-record field.
+/// Build a record's per-field rebuilds + name-lex SLOTS, PERMUTED BY NAME — the entry for both a top-level
+/// record param and a nested-record field, at any WIT field order. Iterates the WIT fields IN WIT ORDER (so
+/// `param_vts` + the wrapper's flattened-leaf cursor are the actual canon-lift param order), matching each
+/// WIT field to its guest field BY NAME (kebab-normalized, the same rule as variant cases + exports).
+/// Returns the rebuild (WIT order) + `slots` (each WIT field's name-lex cell position) — the wrapper
+/// `arr-set`s each field at its slot. A WIT field with no name match declines. So a declaration-ordered
+/// record like `message{contract, sender, payload, token}` or its nested `sender{reducer, host}` (name-lex
+/// `host, reducer`) both cross correctly.
 fn record_fields_rebuild(
     map: &std::collections::BTreeMap<crate::resolved::Symbol, crate::ty::Ty>,
     wfs: &[(String, crate::wit_world::WitType)],
     param_vts: &mut Vec<u8>,
-) -> Option<Vec<crate::backend::wasm::serialize::FieldRebuild>> {
+) -> Option<(Vec<crate::backend::wasm::serialize::FieldRebuild>, Vec<u32>)> {
+    use crate::backend::common::export_name::kebab_extern_name;
     if wfs.len() != map.len() {
         return None;
     }
-    let wit_order: Vec<&str> = wfs.iter().map(|(n, _)| n.as_str()).collect();
-    let lex_order: Vec<&str> = map.keys().map(|s| s.name.as_ref()).collect();
-    if wit_order != lex_order {
-        return None;
+    let guest_kebab: Vec<String> = map
+        .keys()
+        .map(|s| kebab_extern_name(s.name.as_ref()))
+        .collect();
+    let gtys: Vec<crate::ty::Ty> = map.values().cloned().collect();
+    let mut rebuild = Vec::new();
+    let mut slots = Vec::new();
+    for (wname, fw) in wfs {
+        let slot = guest_kebab.iter().position(|g| g == wname)?; // NAME-MATCH
+        let fg = gtys[slot].clone();
+        rebuild.push(param_field_rebuild(&fg, fw, param_vts)?); // appends WIT-order vts
+        slots.push(slot as u32);
     }
-    let mut sub = Vec::new();
-    for (fg, (_, fw)) in map.values().zip(wfs.iter()) {
-        sub.push(param_field_rebuild(fg, fw, param_vts)?);
-    }
-    Some(sub)
+    Some((rebuild, slots))
 }
 
 /// Like [`scalar_interface_export`] but for a member with a RECORD param: build the boundary WRAPPER descs
@@ -8409,26 +8569,33 @@ fn record_interface_export(
     let mut funcs = Vec::new();
     let mut any_record = false;
     for member in &export_iface.members {
-        let e = layout.exports.iter().find(|e| e.name == member.name)?;
+        // Bind the WIT member to a guest export by kebab-normalized name (a Cadenza def `onMessage` binds to
+        // the WIT `on-message` member — same rule as fields/variants/exports).
+        let mk = crate::backend::common::export_name::kebab_extern_name(&member.name);
+        let e = layout
+            .exports
+            .iter()
+            .find(|e| crate::backend::common::export_name::kebab_extern_name(&e.name) == mk)?;
         if member.func.params.len() != e.params.len() {
             return None;
         }
         let mut param_vts: Vec<u8> = Vec::new();
         let mut params: Vec<Option<Vec<FieldRebuild>>> = Vec::new();
+        let mut param_slots: Vec<Option<Vec<u32>>> = Vec::new();
         for ((_, gty), (_, wty)) in e.params.iter().zip(&member.func.params) {
             match gty {
                 Ty::Record(map) => {
-                    // Build the record's per-field rebuild + flattened core params (recursively, so a NESTED
-                    // record field — the message's `sender` — builds a `Nested` rebuild over its own fields).
-                    // SOUNDNESS: `record_fields_rebuild` guards the WIT-vs-name-lex field order at EVERY level
-                    // (the wrapper reads flattened params in WIT order but builds the value-heap cell in the
-                    // def's name-lex `Ty::Record` order; a mismatch would misplace a field's leaf). A scalar,
-                    // a `list<u8>` leaf, or a nested record is handled; any other compound field declines.
+                    // Build the record's per-field rebuild in WIT ORDER + the name-lex SLOTS the wrapper
+                    // `arr-set`s each field at (`record_param_rebuild`, permuted by name) — so a declaration-
+                    // ordered WIT record (the real `message`) lands its fields in the def's name-lex cell
+                    // slots. A nested-record field is a `Nested` rebuild; its own order must be name-lex
+                    // (`record_fields_rebuild` guard), else decline.
                     let WitType::Record(wfs) = wty else {
                         return None;
                     };
-                    let rebuild = record_fields_rebuild(map, wfs, &mut param_vts)?;
+                    let (rebuild, slots) = record_fields_rebuild(map, wfs, &mut param_vts)?;
                     params.push(Some(rebuild));
+                    param_slots.push(Some(slots));
                     any_record = true;
                 }
                 Ty::Tuple(_)
@@ -8442,6 +8609,7 @@ fn record_interface_export(
                     // a scalar param passes straight through (no rebuild).
                     param_vts.push(valtype_of(scalar)?.byte());
                     params.push(None);
+                    param_slots.push(None);
                 }
             }
         }
@@ -8458,6 +8626,7 @@ fn record_interface_export(
             param_vts,
             result_vts,
             params,
+            param_slots,
             def_abs,
             result: result_lower,
         });

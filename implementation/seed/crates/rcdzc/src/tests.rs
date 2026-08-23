@@ -1544,6 +1544,123 @@ fn a_nested_record_bytes_param_guest_compiles_and_runs() {
     );
 }
 
+/// W4c-b soundness: the record PARAM reader PERMUTES fields by name. The WIT param declares its fields in
+/// NON-name-lex order — `record{payload: list<u8>, contract: list<u8>}` (payload first, but name-lex is
+/// contract < payload) — the real `message` shape (declaration-ordered). The wrapper reads the flattened
+/// params in WIT order (payload then contract) but must build the value-heap cell with each field at its
+/// name-lex slot, so the def's `m.contract` reads the contract, not the payload.
+fn non_name_lex_record_param_world_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let list_u8 = |b: &mut Builder| {
+        let u8h = b.name("u8");
+        let u8p = b.list(vec![u8h]);
+        let lh = b.atom_leaf(Leaf::Str("list".into()));
+        b.list(vec![lh, u8p])
+    };
+    // param: ("record" (payload (list u8)) (contract (list u8))) — WIT order payload,contract (NOT name-lex).
+    let p_ty = list_u8(&mut b);
+    let p_name = b.name("payload");
+    let p_field = b.list(vec![p_name, p_ty]);
+    let c_ty = list_u8(&mut b);
+    let c_name = b.name("contract");
+    let c_field = b.list(vec![c_name, c_ty]);
+    let prec_head = b.atom_leaf(Leaf::Str("record".into()));
+    let prec = b.list(vec![prec_head, p_field, c_field]);
+    let res_ty = {
+        let h = b.name("s64");
+        b.list(vec![h])
+    };
+    let func_h = b.name("func");
+    let param_h = b.name("param");
+    let pn = b.name("m");
+    let param_node = b.list(vec![param_h, pn, prec]);
+    let result_h = b.name("result");
+    let result_node = b.list(vec![result_h, res_ty]);
+    let func = b.list(vec![func_h, param_node, result_node]);
+    let member_h = b.name("member");
+    let mn = b.name("f");
+    let member = b.list(vec![member_h, mn, func]);
+    let exp_h = b.name("export");
+    let iname = b.name("iface");
+    let export = b.list(vec![exp_h, iname, member]);
+    let world_h = b.name("world");
+    let wn = b.name("w");
+    let world = b.list(vec![world_h, wn, export]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+#[test]
+fn a_non_name_lex_record_param_permutes_by_name() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime) = find_runtime_wasm() else {
+        return;
+    };
+    // Returns Bytes.len(m.contract). If the param permute misroutes, it would read `payload` instead.
+    let src = "(module m (def (f (: m (Record (contract Bytes) (payload Bytes)))) \
+                 (Bytes.len (. m contract))) (export f))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:demo/iface"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                non_name_lex_record_param_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "non-name-lex record param must emit (permute by name): {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("emits a component");
+    let opts = cdz_run::RunOpts {
+        export: None,
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    // contract has length 3, payload length 2 — distinct, so a swap is caught.
+    let result = cdz_run::run_reducer_typed(
+        bytes,
+        "cadenza:demo/iface",
+        "f",
+        &[Val::Record(vec![
+            (
+                "payload".to_string(),
+                Val::List(vec![Val::U8(9), Val::U8(9)]),
+            ),
+            (
+                "contract".to_string(),
+                Val::List(vec![Val::U8(1), Val::U8(2), Val::U8(3)]),
+            ),
+        ])],
+        &opts,
+    )
+    .expect("run");
+    assert_eq!(
+        i64::from_val(&result),
+        3,
+        "m.contract (name-lex slot 0) reads the CONTRACT (len 3), not the WIT-first payload (len 2)"
+    );
+}
+
 /// A KIND_WIT_WORLD with an export member `f(m: record{data: list<u8>, tag: s64}) -> s64` — a record param
 /// mixing a `list<u8>` LEAF with a scalar, the shape a real reducer's `on-message(message)` has (Message
 /// carries `list<u8>` leaves). Fields are declared in NAME-LEXICOGRAPHIC order (`data` < `tag`) to match the
@@ -1782,6 +1899,692 @@ fn a_record_result_guest_compiles_and_runs_via_result_spill() {
     };
     assert_eq!(get("a"), 21, "spilled record result: a == m.x == 21");
     assert_eq!(get("b"), 42, "spilled record result: b == 2*m.x == 42");
+}
+
+/// A reducer-`step`-shaped KIND_WIT_WORLD: `f(m: record{contract: list<u8>, payload: list<u8>}) -> step`
+/// where `step = record{requests: list<request>, outcome: outcome}`, `request = record{contract: list<u8>,
+/// payload: list<u8>, token: list<u8>, deadline-nanos: option<s64>}`, `outcome = variant{continue,
+/// close(closed)}`, `closed = record{schema: list<u8>, reason: list<u8>}` — DECLARATION-ordered (not
+/// name-lex), the shape v-platform's host decodes. Exercises the whole result writer at once: record permute
+/// + list<record> + list<u8> leaves + option + named variant with a record payload.
+fn full_step_world_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let list_u8 = |b: &mut Builder| {
+        let u8h = b.name("u8");
+        let u8p = b.list(vec![u8h]);
+        let lh = b.atom_leaf(Leaf::Str("list".into()));
+        b.list(vec![lh, u8p])
+    };
+    let field = |b: &mut Builder, name: &str, ty| {
+        let n = b.name(name);
+        b.list(vec![n, ty])
+    };
+    let record = |b: &mut Builder, fields: Vec<crate::ast::StructId>| {
+        let h = b.atom_leaf(Leaf::Str("record".into()));
+        let mut v = vec![h];
+        v.extend(fields);
+        b.list(v)
+    };
+    // message param: ("record" (contract (list u8)) (payload (list u8))) — name-lex order.
+    let m_contract = {
+        let t = list_u8(&mut b);
+        field(&mut b, "contract", t)
+    };
+    let m_payload = {
+        let t = list_u8(&mut b);
+        field(&mut b, "payload", t)
+    };
+    let msg = record(&mut b, vec![m_contract, m_payload]);
+    // request: ("record" (contract …) (payload …) (token …) (deadline-nanos ("option" (s64)))) — decl order.
+    let r_contract = {
+        let t = list_u8(&mut b);
+        field(&mut b, "contract", t)
+    };
+    let r_payload = {
+        let t = list_u8(&mut b);
+        field(&mut b, "payload", t)
+    };
+    let r_token = {
+        let t = list_u8(&mut b);
+        field(&mut b, "token", t)
+    };
+    let r_deadline = {
+        let s64h = b.name("s64");
+        let s64t = b.list(vec![s64h]);
+        let oh = b.atom_leaf(Leaf::Str("option".into()));
+        let ot = b.list(vec![oh, s64t]);
+        field(&mut b, "deadline-nanos", ot)
+    };
+    let request = record(&mut b, vec![r_contract, r_payload, r_token, r_deadline]);
+    let requests_list = {
+        let lh = b.atom_leaf(Leaf::Str("list".into()));
+        b.list(vec![lh, request])
+    };
+    // closed: ("record" (schema (list u8)) (reason (list u8)))
+    let c_schema = {
+        let t = list_u8(&mut b);
+        field(&mut b, "schema", t)
+    };
+    let c_reason = {
+        let t = list_u8(&mut b);
+        field(&mut b, "reason", t)
+    };
+    let closed = record(&mut b, vec![c_schema, c_reason]);
+    // outcome: ("variant" (continue) (close closed))
+    let cont_case = {
+        let n = b.name("continue");
+        b.list(vec![n])
+    };
+    let close_case = {
+        let n = b.name("close");
+        b.list(vec![n, closed])
+    };
+    let outcome = {
+        let vh = b.atom_leaf(Leaf::Str("variant".into()));
+        b.list(vec![vh, cont_case, close_case])
+    };
+    // step: ("record" (requests <list request>) (outcome <variant>)) — decl order (name-lex is outcome,requests).
+    let s_requests = field(&mut b, "requests", requests_list);
+    let s_outcome = field(&mut b, "outcome", outcome);
+    let step = record(&mut b, vec![s_requests, s_outcome]);
+    // member f(param m: msg) -> step
+    let func_h = b.name("func");
+    let param_h = b.name("param");
+    let pn = b.name("m");
+    let param_node = b.list(vec![param_h, pn, msg]);
+    let result_h = b.name("result");
+    let result_node = b.list(vec![result_h, step]);
+    let func = b.list(vec![func_h, param_node, result_node]);
+    let member_h = b.name("member");
+    let mn = b.name("f");
+    let member = b.list(vec![member_h, mn, func]);
+    let exp_h = b.name("export");
+    let iname = b.name("iface");
+    let export = b.list(vec![exp_h, iname, member]);
+    let world_h = b.name("world");
+    let wn = b.name("w");
+    let world = b.list(vec![world_h, wn, export]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+/// W4c-b CAPSTONE: a full reducer-`step`-shaped guest compiles + runs — the whole result writer end to end.
+/// `f(m) = step{requests: [request{contract: m.contract, payload: m.payload, token: m.contract,
+/// deadline-nanos: Some(5)}], outcome: Continue}`. Exercises record permute (step/request decl-ordered) +
+/// list<record> + three list<u8> leaves + option + named variant — the reducer-echo step shape. Verified by
+/// lifting the whole step back to a `Val` under wasmtime.
+/// W4c-b: a reducer that emits NO effects — `step{requests: [], outcome: continue}`, a VERY common output
+/// (a fold that only reads/updates state). The empty `(list)` has an unresolved element type, so the result
+/// writer derives the (dead) element writer of `list<request>` from the WIT type alone (`canon_write_from_wit`
+/// — the same principle as the None-only option). Without it the writer declined and emit fell through to a
+/// wrong-signature component. `f({...}) == {requests: [], outcome: continue}`.
+#[test]
+fn a_reducer_emitting_no_effects_compiles_and_runs() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime) = find_runtime_wasm() else {
+        return;
+    };
+    let src = "(module m \
+                 (type Outcome Continue (Close (Record (schema Bytes) (reason Bytes)))) \
+                 (def (f (: m (Record (contract Bytes) (payload Bytes)))) \
+                   (record (requests (list)) (outcome Outcome.Continue))) \
+                 (export f))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:demo/iface"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                full_step_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "no-effects reducer must emit: {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("component");
+    let opts = cdz_run::RunOpts {
+        export: None,
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    let bv = |bs: &[u8]| Val::List(bs.iter().map(|b| Val::U8(*b)).collect());
+    let result = cdz_run::run_reducer_typed(
+        bytes,
+        "cadenza:demo/iface",
+        "f",
+        &[Val::Record(vec![
+            ("contract".to_string(), bv(&[1])),
+            ("payload".to_string(), bv(&[2])),
+        ])],
+        &opts,
+    )
+    .expect("run the no-effects reducer");
+    let Val::Record(step) = &result else {
+        panic!("step record, got {result:?}");
+    };
+    let get = |n: &str| step.iter().find(|(k, _)| k == n).unwrap().1.clone();
+    assert_eq!(get("requests"), Val::List(vec![]), "no requests emitted");
+    match get("outcome") {
+        Val::Variant(c, p) => {
+            assert_eq!(c, "continue");
+            assert!(p.is_none());
+        }
+        o => panic!("outcome variant, got {o:?}"),
+    }
+}
+
+#[test]
+fn a_full_step_shaped_guest_compiles_and_runs() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime) = find_runtime_wasm() else {
+        return;
+    };
+    let src = "(module m \
+                 (type Outcome Continue (Close (Record (schema Bytes) (reason Bytes)))) \
+                 (def (f (: m (Record (contract Bytes) (payload Bytes)))) \
+                   (record \
+                     (requests (list (record \
+                                       (contract (. m contract)) \
+                                       (payload (. m payload)) \
+                                       (token (. m contract)) \
+                                       (deadline-nanos (Option.Some 5))))) \
+                     (outcome Outcome.Continue))) \
+                 (export f))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:demo/iface"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                full_step_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "full-step guest must emit a component: {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("emits a component");
+    let opts = cdz_run::RunOpts {
+        export: None,
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    let result = cdz_run::run_reducer_typed(
+        bytes,
+        "cadenza:demo/iface",
+        "f",
+        &[Val::Record(vec![
+            (
+                "contract".to_string(),
+                Val::List(vec![Val::U8(0xAA), Val::U8(0xBB)]),
+            ),
+            (
+                "payload".to_string(),
+                Val::List(vec![Val::U8(1), Val::U8(2), Val::U8(3)]),
+            ),
+        ])],
+        &opts,
+    )
+    .expect("run the full-step guest");
+    // Decode the step and check every field lands right.
+    let Val::Record(step) = &result else {
+        panic!("step must be a record, got {result:?}");
+    };
+    let get = |fs: &[(String, Val)], n: &str| fs.iter().find(|(k, _)| k == n).unwrap().1.clone();
+    let Val::List(requests) = get(step, "requests") else {
+        panic!("requests must be a list");
+    };
+    assert_eq!(requests.len(), 1, "one request");
+    let Val::Record(req) = &requests[0] else {
+        panic!("request must be a record");
+    };
+    let bytes_of = |v: Val| -> Vec<u8> {
+        let Val::List(items) = v else {
+            panic!("expected list<u8>, got {v:?}");
+        };
+        items
+            .iter()
+            .map(|x| match x {
+                Val::U8(b) => *b,
+                o => panic!("byte, got {o:?}"),
+            })
+            .collect()
+    };
+    assert_eq!(
+        bytes_of(get(req, "contract")),
+        vec![0xAA, 0xBB],
+        "req.contract == m.contract"
+    );
+    assert_eq!(
+        bytes_of(get(req, "payload")),
+        vec![1, 2, 3],
+        "req.payload == m.payload"
+    );
+    assert_eq!(
+        bytes_of(get(req, "token")),
+        vec![0xAA, 0xBB],
+        "req.token == m.contract"
+    );
+    assert_eq!(
+        get(req, "deadline-nanos"),
+        Val::Option(Some(Box::new(Val::S64(5)))),
+        "req.deadline-nanos == Some(5)"
+    );
+    match get(step, "outcome") {
+        Val::Variant(case, payload) => {
+            assert_eq!(case, "continue", "outcome == continue");
+            assert!(payload.is_none());
+        }
+        other => panic!("outcome must be a variant, got {other:?}"),
+    }
+}
+
+/// The reducer world with the REAL `message` param shape: `f(m: message) -> step` where
+/// `message = record{contract: list<u8>, sender: record{reducer: list<u8>, host: list<u8>}, payload:
+/// list<u8>, token: list<u8>}` (declaration-ordered, with a nested `sender` record) and `step` is the full
+/// reducer step (`full_step_world_bytes`'s step). This is `on-message`'s exact signature — the identity-less
+/// reducer-echo shape v-platform will drive.
+fn reducer_echo_world_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let list_u8 = |b: &mut Builder| {
+        let u8h = b.name("u8");
+        let u8p = b.list(vec![u8h]);
+        let lh = b.atom_leaf(Leaf::Str("list".into()));
+        b.list(vec![lh, u8p])
+    };
+    let field = |b: &mut Builder, name: &str, ty| {
+        let n = b.name(name);
+        b.list(vec![n, ty])
+    };
+    let record = |b: &mut Builder, fields: Vec<crate::ast::StructId>| {
+        let h = b.atom_leaf(Leaf::Str("record".into()));
+        let mut v = vec![h];
+        v.extend(fields);
+        b.list(v)
+    };
+    // sender: ("record" (reducer (list u8)) (host (list u8))) — name-lex reducer,host.
+    let s_reducer = {
+        let t = list_u8(&mut b);
+        field(&mut b, "reducer", t)
+    };
+    let s_host = {
+        let t = list_u8(&mut b);
+        field(&mut b, "host", t)
+    };
+    let sender = record(&mut b, vec![s_reducer, s_host]);
+    // message: ("record" (contract …) (sender <record>) (payload …) (token …)) — decl order (NOT name-lex).
+    let m_contract = {
+        let t = list_u8(&mut b);
+        field(&mut b, "contract", t)
+    };
+    let m_sender = field(&mut b, "sender", sender);
+    let m_payload = {
+        let t = list_u8(&mut b);
+        field(&mut b, "payload", t)
+    };
+    let m_token = {
+        let t = list_u8(&mut b);
+        field(&mut b, "token", t)
+    };
+    let msg = record(&mut b, vec![m_contract, m_sender, m_payload, m_token]);
+    // request + step (same as full_step_world_bytes).
+    let request = {
+        let r_contract = {
+            let t = list_u8(&mut b);
+            field(&mut b, "contract", t)
+        };
+        let r_payload = {
+            let t = list_u8(&mut b);
+            field(&mut b, "payload", t)
+        };
+        let r_token = {
+            let t = list_u8(&mut b);
+            field(&mut b, "token", t)
+        };
+        let r_deadline = {
+            // option<u64> — matches the real world.wit `deadline-nanos: option<u64>` (so v-platform's
+            // bindgen against world.wit type-matches). The guest's Option.None resolves via the WIT inner.
+            let u64h = b.name("u64");
+            let u64t = b.list(vec![u64h]);
+            let oh = b.atom_leaf(Leaf::Str("option".into()));
+            let ot = b.list(vec![oh, u64t]);
+            field(&mut b, "deadline-nanos", ot)
+        };
+        record(&mut b, vec![r_contract, r_payload, r_token, r_deadline])
+    };
+    let requests_list = {
+        let lh = b.atom_leaf(Leaf::Str("list".into()));
+        b.list(vec![lh, request])
+    };
+    let closed = {
+        let c_schema = {
+            let t = list_u8(&mut b);
+            field(&mut b, "schema", t)
+        };
+        let c_reason = {
+            let t = list_u8(&mut b);
+            field(&mut b, "reason", t)
+        };
+        record(&mut b, vec![c_schema, c_reason])
+    };
+    let outcome = {
+        let cont_case = {
+            let n = b.name("continue");
+            b.list(vec![n])
+        };
+        let close_case = {
+            let n = b.name("close");
+            b.list(vec![n, closed])
+        };
+        let vh = b.atom_leaf(Leaf::Str("variant".into()));
+        b.list(vec![vh, cont_case, close_case])
+    };
+    let s_requests = field(&mut b, "requests", requests_list);
+    let s_outcome = field(&mut b, "outcome", outcome);
+    let step = record(&mut b, vec![s_requests, s_outcome]);
+    let func_h = b.name("func");
+    let param_h = b.name("param");
+    let pn = b.name("m");
+    let param_node = b.list(vec![param_h, pn, msg]);
+    let result_h = b.name("result");
+    let result_node = b.list(vec![result_h, step]);
+    let func = b.list(vec![func_h, param_node, result_node]);
+    let member_h = b.name("member");
+    let mn = b.name("on-message"); // the REAL WIT member name (kebab) the platform host drives
+    let member = b.list(vec![member_h, mn, func]);
+    let exp_h = b.name("export");
+    let iname = b.name("iface");
+    let export = b.list(vec![exp_h, iname, member]);
+    let world_h = b.name("world");
+    let wn = b.name("w");
+    let world = b.list(vec![world_h, wn, export]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+/// W4c-b SUNSET-CORE: the identity-less reducer-echo — `on-message(message) -> step` round-trips end to
+/// end. `f(m) = step{requests:[request{contract: m.contract, payload: m.payload, token: m.token,
+/// deadline-nanos: none}], outcome: Continue}`. The message param is the REAL declaration-ordered
+/// `message{contract, sender, payload, token}` (nested `sender` record + four `list<u8>` leaves), exercising
+/// the param permute + nested-record + the whole step result writer at once. Verifies v-platform's echo
+/// relation (minus identity): requests.len==1, contract/payload/token echoed, deadline none, outcome
+/// continue. (Identity token is a follow-up once the world-import call surface lands; here token echoes
+/// m.token.)
+#[test]
+fn the_identity_less_reducer_echo_round_trips() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime) = find_runtime_wasm() else {
+        return;
+    };
+    // Guest def `onMessage` binds to the WIT `on-message` member by kebab-normalized name.
+    let src = "(module m \
+                 (type Outcome Continue (Close (Record (schema Bytes) (reason Bytes)))) \
+                 (def (onMessage (: m (Record (contract Bytes) \
+                                      (sender (Record (reducer Bytes) (host Bytes))) \
+                                      (payload Bytes) (token Bytes)))) \
+                   (record \
+                     (requests (list (record \
+                                       (contract (. m contract)) \
+                                       (payload (. m payload)) \
+                                       (token (. m token)) \
+                                       (deadline-nanos Option.None)))) \
+                     (outcome Outcome.Continue))) \
+                 (export onMessage))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:platform/guest"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                reducer_echo_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "reducer-echo guest must emit: {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("component");
+    if std::env::var("VRB_DUMP_REDUCER_ECHO").is_ok() {
+        std::fs::write("/tmp/v-rb-reducer-echo.wasm", bytes).unwrap();
+    }
+    let opts = cdz_run::RunOpts {
+        export: None,
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    let bv = |bs: &[u8]| Val::List(bs.iter().map(|b| Val::U8(*b)).collect());
+    let msg = Val::Record(vec![
+        ("contract".to_string(), bv(&[0xAA, 0xBB])),
+        (
+            "sender".to_string(),
+            Val::Record(vec![
+                ("reducer".to_string(), bv(&[1])),
+                ("host".to_string(), bv(&[2])),
+            ]),
+        ),
+        ("payload".to_string(), bv(&[3, 4, 5])),
+        ("token".to_string(), bv(&[9, 9])),
+    ]);
+    let result =
+        cdz_run::run_reducer_typed(bytes, "cadenza:platform/guest", "on-message", &[msg], &opts)
+            .expect("run on-message");
+    let Val::Record(step) = &result else {
+        panic!("step record, got {result:?}");
+    };
+    let get = |fs: &[(String, Val)], n: &str| fs.iter().find(|(k, _)| k == n).unwrap().1.clone();
+    let Val::List(requests) = get(step, "requests") else {
+        panic!("requests list");
+    };
+    assert_eq!(requests.len(), 1, "one request");
+    let Val::Record(req) = &requests[0] else {
+        panic!("request record");
+    };
+    let bytes_of = |v: Val| -> Vec<u8> {
+        let Val::List(xs) = v else { panic!("list<u8>") };
+        xs.iter()
+            .map(|x| match x {
+                Val::U8(b) => *b,
+                o => panic!("byte {o:?}"),
+            })
+            .collect()
+    };
+    assert_eq!(
+        bytes_of(get(req, "contract")),
+        vec![0xAA, 0xBB],
+        "contract echoed"
+    );
+    assert_eq!(
+        bytes_of(get(req, "payload")),
+        vec![3, 4, 5],
+        "payload echoed"
+    );
+    assert_eq!(
+        bytes_of(get(req, "token")),
+        vec![9, 9],
+        "token echoed (m.token)"
+    );
+    assert_eq!(
+        get(req, "deadline-nanos"),
+        Val::Option(None),
+        "deadline none"
+    );
+    match get(step, "outcome") {
+        Val::Variant(c, p) => {
+            assert_eq!(c, "continue");
+            assert!(p.is_none());
+        }
+        o => panic!("outcome variant, got {o:?}"),
+    }
+}
+
+/// W4c-b soundness: the record result writer PERMUTES fields by NAME, not by the guest's name-lex slot order.
+/// The WIT result declares its fields in NON-name-lex order — `record{second: s64, first: s64}` (`second`
+/// FIRST, but name-lex is `first` < `second`) — the shape of the real `step{requests, outcome}` /
+/// `request{contract, payload, token, deadline-nanos}` (declaration-ordered, not alphabetical). The writer
+/// must place `first` at the canonical offset of WIT-position 1 and `second` at WIT-position 0, reading each
+/// from its guest name-lex slot. `f(m) = {first: m.x, second: 2*m.x}`; `f({x:10}) == {second: 20, first: 10}`.
+fn non_name_lex_record_result_world_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let s64 = |b: &mut Builder| {
+        let h = b.name("s64");
+        b.list(vec![h])
+    };
+    let x_ty = s64(&mut b);
+    let x_name = b.name("x");
+    let x_field = b.list(vec![x_name, x_ty]);
+    let prec_head = b.atom_leaf(Leaf::Str("record".into()));
+    let prec = b.list(vec![prec_head, x_field]);
+    // result: ("record" (second (s64)) (first (s64))) — WIT order second,first (NOT name-lex first,second).
+    let sec_ty = s64(&mut b);
+    let sec_name = b.name("second");
+    let sec_field = b.list(vec![sec_name, sec_ty]);
+    let fst_ty = s64(&mut b);
+    let fst_name = b.name("first");
+    let fst_field = b.list(vec![fst_name, fst_ty]);
+    let rrec_head = b.atom_leaf(Leaf::Str("record".into()));
+    let rrec = b.list(vec![rrec_head, sec_field, fst_field]);
+    let func_h = b.name("func");
+    let param_h = b.name("param");
+    let pn = b.name("m");
+    let param_node = b.list(vec![param_h, pn, prec]);
+    let result_h = b.name("result");
+    let result_node = b.list(vec![result_h, rrec]);
+    let func = b.list(vec![func_h, param_node, result_node]);
+    let member_h = b.name("member");
+    let mn = b.name("f");
+    let member = b.list(vec![member_h, mn, func]);
+    let exp_h = b.name("export");
+    let iname = b.name("iface");
+    let export = b.list(vec![exp_h, iname, member]);
+    let world_h = b.name("world");
+    let wn = b.name("w");
+    let world = b.list(vec![world_h, wn, export]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+#[test]
+fn a_non_name_lex_record_result_permutes_by_name() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime) = find_runtime_wasm() else {
+        return;
+    };
+    let src = "(module m (def (f (: m (Record (x Int64)))) \
+                 (record (first (. m x)) (second (+ (. m x) (. m x))))) (export f))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:demo/iface"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                non_name_lex_record_result_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "non-name-lex record result must emit (permute by name): {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("emits a component");
+    let opts = cdz_run::RunOpts {
+        export: None,
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    let result = cdz_run::run_reducer_typed(
+        bytes,
+        "cadenza:demo/iface",
+        "f",
+        &[Val::Record(vec![("x".to_string(), Val::S64(10))])],
+        &opts,
+    )
+    .expect("run");
+    let Val::Record(fs) = &result else {
+        panic!("record, got {result:?}");
+    };
+    let g = |n: &str| {
+        fs.iter()
+            .find(|(k, _)| k == n)
+            .map(|(_, v)| i64::from_val(v))
+            .unwrap()
+    };
+    assert_eq!(
+        g("first"),
+        10,
+        "first == m.x, placed at its WIT (non-lex) offset"
+    );
+    assert_eq!(g("second"), 20, "second == 2*m.x, placed at its WIT offset");
 }
 
 /// A KIND_WIT_WORLD `f(m: record{x: s64}) -> record{o: variant{Continue, Close(s64)}}` — a NAMED variant
@@ -2058,6 +2861,72 @@ fn option_result_world_bytes() -> Vec<u8> {
 /// W4c-b: a guest returning `option<s64>` compiles + runs — the recursive writer's VARIANT case (the shape of
 /// a request's `deadline-nanos: option<u64>`). `f(m) = {d: if m.x==0 then None else Some(m.x)}`; verifies both
 /// arms: `f({x:0}) == {d: None}` (disc 0) and `f({x:42}) == {d: Some(42)}` (disc 1 + payload).
+/// W4c-b: a `None`-ONLY option result field (the guest never constructs `Some`, so its option payload type
+/// stays an unresolved var) still emits the right record{option} step — the writer derives the (dead) Some-arm
+/// payload write from the WIT inner type. This is reducer-echo's `deadline-nanos: none` shape. Without the
+/// WIT fallback the writer declined and emit fell through to a wrong-signature component (`expected u32`).
+#[test]
+fn a_none_only_option_result_resolves_via_wit() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime) = find_runtime_wasm() else {
+        return;
+    };
+    let src = "(module m (def (f (: m (Record (x Int64)))) \
+                 (record (d Option.None))) (export f))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:demo/iface"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                option_result_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "none-only option result must emit: {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("component");
+    let opts = cdz_run::RunOpts {
+        export: None,
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    let result = cdz_run::run_reducer_typed(
+        bytes,
+        "cadenza:demo/iface",
+        "f",
+        &[Val::Record(vec![("x".to_string(), Val::S64(0))])],
+        &opts,
+    )
+    .expect("run the none-only option result");
+    let Val::Record(fs) = &result else {
+        panic!("record, got {result:?}");
+    };
+    assert_eq!(
+        fs.iter().find(|(n, _)| n == "d").unwrap().1,
+        Val::Option(None),
+        "none-only option lifts to d == None"
+    );
+}
+
 #[test]
 fn an_option_result_guest_compiles_and_runs() {
     use crate::testkit::parse;
