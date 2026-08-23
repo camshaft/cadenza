@@ -139,6 +139,18 @@ impl Hash {
         <&[u8; 32]>::try_from(&self.0[1..]).expect("a 33-byte hash has a 32-byte digest")
     }
 
+    /// The same content named as a different KIND: a hash carrying `tag` over this hash's digest (§8). The
+    /// digest — the content commitment — is unchanged; only the leading tag byte (what the hash *names*)
+    /// differs. This crosses between two names for one piece of content: a [`ProgramHash`](crate::ProgramHash)
+    /// (a program) and the [`Blob`](HashTag::Blob) that holds its bytes in the content-addressed store share a
+    /// digest, so the wasm host fetches a program's component bytes by `program.hash().retag(HashTag::Blob)`.
+    /// It re-labels, never re-hashes: it cannot forge a hash of *different* content, only view the same
+    /// content under another kind.
+    #[must_use]
+    pub fn retag(self, tag: HashTag) -> Self {
+        Self::from_digest(tag, self.digest())
+    }
+
     /// The base64url text of this hash as a lazy `char` iterator — the ONE textual form (section 8),
     /// allocation-free. `Display` uses this; a caller that genuinely needs an owned `String` collects it
     /// (an explicit, opt-in allocation) rather than every render paying for one.
@@ -623,6 +635,23 @@ mod tests {
                 got: 33
             })
         );
+    }
+
+    #[test]
+    fn retag_keeps_the_digest_and_only_changes_the_kind() {
+        // A program and the blob holding its bytes share a digest; retag crosses between the two names.
+        let program = Hash::of(HashTag::Program, b"a reducer component");
+        let blob = program.retag(HashTag::Blob);
+        assert_eq!(blob.tag(), Some(HashTag::Blob));
+        assert_eq!(
+            blob.digest(),
+            program.digest(),
+            "retag preserves the content digest"
+        );
+        // It matches the store's own key for those same bytes (what `BlobStore::put` produces).
+        assert_eq!(blob, Hash::of(HashTag::Blob, b"a reducer component"));
+        // Round-trips back to the original kind.
+        assert_eq!(blob.retag(HashTag::Program), program);
     }
 
     #[test]
