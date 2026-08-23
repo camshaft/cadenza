@@ -6973,6 +6973,63 @@ fn a_multi_arg_world_import_perform_with_a_record_arg_lowers_to_a_synchronous_ho
     }
 }
 
+/// NO-REDECLARE end-to-end: a reducer performs a world import WITHOUT a hand-written `(effect …)` decl — it
+/// declares the world IN SOURCE and performs `identity.id` under `(host (identity) …)`. The load-time
+/// world-import sidecar (`wit_world::inject_world_import_effects`, run before `scan_top_level`) synthesizes
+/// the `(effect identity (op id (-> Bytes)))` decl from the world's import, so `identity` binds (no CDZ0101)
+/// and the perform lowers to a synchronous `Core::HostCall{args:[], result:Bytes}` — the tick-6 gap
+/// (`unbound name identity`) is closed. This is the drift-free surface: the guest names the world once and
+/// performs any import, zero per-interface arms, no mirrored effect decl.
+#[test]
+fn a_no_redeclare_world_import_perform_resolves_via_the_injected_effect() {
+    use crate::core::Core;
+    use crate::db::Db;
+    use crate::lower::core_of;
+    // In-source (world) importing identity.id : () -> list<u8>; the WIT type descriptor is the STRING-head
+    // canonical form `("list" (u8))` the world reader expects.
+    let src = "(module m \
+                 (world reducer (import identity (member id (func (result (\"list\" (u8))))))) \
+                 (def (apply (: e (Record (ct String) (pl Bytes)))) \
+                   (host (identity) ((. identity id)))) \
+                 (export apply))";
+    let mut db = Db::load(crate::testkit::parse(src));
+    // The injected effect binds `identity` — no CDZ0101 for the un-declared name.
+    let diags = crate::compile::diagnostics(&mut db);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.message.contains("unbound name `identity`")),
+        "the injected world-import effect must bind `identity` (no CDZ0101): {:?}",
+        diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    let d = db.def_by_name("apply").expect("def apply");
+    let body = db.defs[d].body.expect("apply has a body");
+    match core_of(&mut db, body) {
+        Core::HostCall {
+            effect,
+            op,
+            args,
+            result,
+        } => {
+            assert_eq!(&*effect, "identity");
+            assert_eq!(&*op, "id");
+            assert!(
+                args.is_empty(),
+                "nullary import → HostCall with zero args, got {}",
+                args.len()
+            );
+            assert!(
+                matches!(result, crate::ty::Ty::Bytes),
+                "identity.id's list<u8> result types as Bytes, got {result:?}"
+            );
+        }
+        other => panic!(
+            "a no-redeclare world-import perform must resolve + lower to a Core::HostCall via the injected \
+             effect, got {other:?}"
+        ),
+    }
+}
+
 /// §3c full-A BEHAVIORAL: the FIRST full-A slice end-to-end — a CLOSURE-free, HOST/PEER-import-free pure
 /// reducer (`apply(Event) -> List<EffectRequest>`) whose `apply` member the target WIT WORLD declares as a
 /// `list<u8>`-in / `list<u8>`-out boundary EMITS through `emit_bytes_provider_member` — the compound param

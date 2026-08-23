@@ -360,82 +360,93 @@ fn prelude_sum(db: &crate::db::Db, name: &str, args: Vec<Ty>) -> Option<Ty> {
 /// [`wit_type_to_ty`] does not map (`enum` / `variant` / `flags`, pending the synthesized-nominal-decl
 /// increment), or whose inner type does not map. Builds into `db`'s arena; the synthesis pass reuses it for
 /// the injected decls.
-pub fn wit_type_to_type_expr(db: &mut crate::db::Db, t: &WitType) -> Option<StructId> {
-    // `(Int W)` / `(UInt W)` — the width-carrying head form `typeval_of` reads (mirrors `encode_ty`).
-    fn int_expr(db: &mut crate::db::Db, signed: bool, w: i64) -> StructId {
-        let ctor = db.push_name(if signed { "Int" } else { "UInt" });
-        let width = db.push_atom(crate::ast::Leaf::Int {
-            value: crate::ast::IntValue::from_i64(w),
-            radix: crate::ast::Radix::Dec,
-        });
-        db.push_list(vec![ctor, width])
+pub fn wit_type_to_type_expr(ast: &mut Arenas, t: &WitType) -> Option<StructId> {
+    use crate::ast::Leaf;
+    use crate::prelude::{push_atom, push_list};
+    fn nm(ast: &mut Arenas, s: &str) -> StructId {
+        push_atom(ast, Leaf::Name(s.into()))
     }
-    fn float_expr(db: &mut crate::db::Db, w: i64) -> StructId {
-        let ctor = db.push_name("Float");
-        let width = db.push_atom(crate::ast::Leaf::Int {
-            value: crate::ast::IntValue::from_i64(w),
-            radix: crate::ast::Radix::Dec,
-        });
-        db.push_list(vec![ctor, width])
+    // `(Int W)` / `(UInt W)` — the width-carrying head form `typeval_of` reads (mirrors `encode_ty`).
+    fn int_expr(ast: &mut Arenas, signed: bool, w: i64) -> StructId {
+        let ctor = nm(ast, if signed { "Int" } else { "UInt" });
+        let width = push_atom(
+            ast,
+            Leaf::Int {
+                value: crate::ast::IntValue::from_i64(w),
+                radix: crate::ast::Radix::Dec,
+            },
+        );
+        push_list(ast, vec![ctor, width])
+    }
+    fn float_expr(ast: &mut Arenas, w: i64) -> StructId {
+        let ctor = nm(ast, "Float");
+        let width = push_atom(
+            ast,
+            Leaf::Int {
+                value: crate::ast::IntValue::from_i64(w),
+                radix: crate::ast::Radix::Dec,
+            },
+        );
+        push_list(ast, vec![ctor, width])
     }
     Some(match t {
-        WitType::Bool => db.push_name("Bool"),
-        WitType::Char => db.push_name("Char"),
-        WitType::String => db.push_name("String"),
-        WitType::Unit => db.push_name("Unit"),
-        WitType::U8 => int_expr(db, false, 8),
-        WitType::U16 => int_expr(db, false, 16),
-        WitType::U32 => int_expr(db, false, 32),
-        WitType::U64 => int_expr(db, false, 64),
-        WitType::S8 => int_expr(db, true, 8),
-        WitType::S16 => int_expr(db, true, 16),
-        WitType::S32 => int_expr(db, true, 32),
-        WitType::S64 => int_expr(db, true, 64),
-        WitType::F32 => float_expr(db, 32),
-        WitType::F64 => float_expr(db, 64),
+        WitType::Bool => nm(ast, "Bool"),
+        WitType::Char => nm(ast, "Char"),
+        WitType::String => nm(ast, "String"),
+        WitType::Unit => nm(ast, "Unit"),
+        WitType::U8 => int_expr(ast, false, 8),
+        WitType::U16 => int_expr(ast, false, 16),
+        WitType::U32 => int_expr(ast, false, 32),
+        WitType::U64 => int_expr(ast, false, 64),
+        WitType::S8 => int_expr(ast, true, 8),
+        WitType::S16 => int_expr(ast, true, 16),
+        WitType::S32 => int_expr(ast, true, 32),
+        WitType::S64 => int_expr(ast, true, 64),
+        WitType::F32 => float_expr(ast, 32),
+        WitType::F64 => float_expr(ast, 64),
         // A byte-list is `Bytes` (the inverse of `ty_natural_wit`); any other element → `(List T)`.
-        WitType::List(elem) if matches!(**elem, WitType::U8) => db.push_name("Bytes"),
+        WitType::List(elem) if matches!(**elem, WitType::U8) => nm(ast, "Bytes"),
         WitType::List(elem) => {
-            let inner = wit_type_to_type_expr(db, elem)?;
-            let head = db.push_name("List");
-            db.push_list(vec![head, inner])
+            let inner = wit_type_to_type_expr(ast, elem)?;
+            let head = nm(ast, "List");
+            push_list(ast, vec![head, inner])
         }
         WitType::Tuple(elems) => {
-            let mut items = vec![db.push_name("Tuple")];
+            let mut items = vec![nm(ast, "Tuple")];
             for e in elems {
-                items.push(wit_type_to_type_expr(db, e)?);
+                items.push(wit_type_to_type_expr(ast, e)?);
             }
-            db.push_list(items)
+            push_list(ast, items)
         }
         // `(Record (: fname T)…)` — the canonical ascription-field form (mirrors `encode_ty`).
         WitType::Record(fields) => {
-            let mut items = vec![db.push_name("Record")];
+            let mut items = vec![nm(ast, "Record")];
             for (name, fty) in fields {
-                let colon = db.push_name(":");
-                let fname = db.push_name(name);
-                let ft = wit_type_to_type_expr(db, fty)?;
-                items.push(db.push_list(vec![colon, fname, ft]));
+                let colon = nm(ast, ":");
+                let fname = nm(ast, name.as_str());
+                let ft = wit_type_to_type_expr(ast, fty)?;
+                items.push(push_list(ast, vec![colon, fname, ft]));
             }
-            db.push_list(items)
+            push_list(ast, items)
         }
         // Source ctor application `(Option T)` — NOT `encode_ty`'s nominal `(Sum …)`.
         WitType::Option(inner) => {
-            let ie = wit_type_to_type_expr(db, inner)?;
-            let head = db.push_name("Option");
-            db.push_list(vec![head, ie])
+            let ie = wit_type_to_type_expr(ast, inner)?;
+            let head = nm(ast, "Option");
+            push_list(ast, vec![head, ie])
         }
         // `(Result ok err)`; an absent arm is `Unit` (WIT `result` / `result<T>` / `result<_, E>`).
         WitType::Result { ok, err } => {
             let oe = match ok {
-                Some(t) => wit_type_to_type_expr(db, t)?,
-                None => db.push_name("Unit"),
+                Some(t) => wit_type_to_type_expr(ast, t)?,
+                None => nm(ast, "Unit"),
             };
             let ee = match err {
-                Some(t) => wit_type_to_type_expr(db, t)?,
-                None => db.push_name("Unit"),
+                Some(t) => wit_type_to_type_expr(ast, t)?,
+                None => nm(ast, "Unit"),
             };
-            let head = db.push_name("Result");
-            db.push_list(vec![head, oe, ee])
+            let head = nm(ast, "Result");
+            push_list(ast, vec![head, oe, ee])
         }
         // A nominal sum needs a SYNTHESIZED decl (Cadenza sums carry a decl identity) — a later increment.
         WitType::Variant(_) | WitType::Enum(_) | WitType::Flags(_) => return None,
@@ -458,20 +469,27 @@ pub fn wit_type_to_type_expr(db: &mut crate::db::Db, t: &WitType) -> Option<Stru
 /// a hand decl for it until that increment); an interface with no mappable member yields no decl. Returns
 /// the decl nodes in `db`'s arena, in world-declaration order; empty when the world is absent/undecodable.
 pub fn synthesize_world_import_effect_decls(
-    db: &mut crate::db::Db,
+    ast: &mut Arenas,
     world_bytes: Option<&[u8]>,
 ) -> Vec<StructId> {
+    use crate::ast::Leaf;
     use crate::backend::common::export_name::kebab_extern_name;
+    use crate::prelude::{push_atom, push_list};
+    fn nm(ast: &mut Arenas, s: &str) -> StructId {
+        push_atom(ast, Leaf::Name(s.into()))
+    }
     fn short(fq: &str) -> &str {
         fq.rsplit('/').next().unwrap_or(fq)
     }
     let Some(bytes) = world_bytes else {
         return Vec::new();
     };
-    let Some(arenas) = crate::codec::decode(bytes) else {
+    // The world decodes into its OWN arena; the synthesized decls are built into the target `ast` (the
+    // guest module's arena the pre-pass injects into) — reading the world structure, writing source forms.
+    let Some(world_arena) = crate::codec::decode(bytes) else {
         return Vec::new();
     };
-    let Some(world) = parse_target_world(&arenas, arenas.root) else {
+    let Some(world) = parse_target_world(&world_arena, world_arena.root) else {
         return Vec::new();
     };
     let mut decls = Vec::new();
@@ -480,10 +498,10 @@ pub fn synthesize_world_import_effect_decls(
         for member in &iface.members {
             // `(-> <param-expr>… <result-expr>)` — a nullary op is the single-element `(-> R)`. A member
             // with a not-yet-mappable param/result type is skipped (the guest hand-declares it meanwhile).
-            let mut arrow_kids = vec![db.push_name("->")];
+            let mut arrow_kids = vec![nm(ast, "->")];
             let mut mappable = true;
             for (_pname, pty) in &member.func.params {
-                match wit_type_to_type_expr(db, pty) {
+                match wit_type_to_type_expr(ast, pty) {
                     Some(n) => arrow_kids.push(n),
                     None => {
                         mappable = false;
@@ -494,25 +512,84 @@ pub fn synthesize_world_import_effect_decls(
             if !mappable {
                 continue;
             }
-            let Some(result_expr) = wit_type_to_type_expr(db, &member.func.result) else {
+            let Some(result_expr) = wit_type_to_type_expr(ast, &member.func.result) else {
                 continue;
             };
             arrow_kids.push(result_expr);
-            let arrow = db.push_list(arrow_kids);
-            let op_head = db.push_name("op");
-            let op_name = db.push_name(&kebab_extern_name(&member.name));
-            ops.push(db.push_list(vec![op_head, op_name, arrow]));
+            let arrow = push_list(ast, arrow_kids);
+            let op_head = nm(ast, "op");
+            let op_name = nm(ast, &kebab_extern_name(&member.name));
+            ops.push(push_list(ast, vec![op_head, op_name, arrow]));
         }
         if ops.is_empty() {
             continue;
         }
-        let effect_head = db.push_name("effect");
-        let iface_name = db.push_name(&kebab_extern_name(short(&iface.name)));
+        let effect_head = nm(ast, "effect");
+        let iface_name = nm(ast, &kebab_extern_name(short(&iface.name)));
         let mut effect_kids = vec![effect_head, iface_name];
         effect_kids.extend(ops);
-        decls.push(db.push_list(effect_kids));
+        decls.push(push_list(ast, effect_kids));
     }
     decls
+}
+
+/// The no-redeclare world-import PRE-PASS (v-syntax's b-prime plan): for an in-source top-level `(world …)`
+/// decl, synthesize an `(effect <iface> (op …)…)` decl per import interface (via
+/// [`synthesize_world_import_effect_decls`]) and APPEND each to the module's top-level members — BEFORE
+/// `scan_top_level`/resolve. So a guest that performs a NAMED world import — `(host (iface) ((. iface op)
+/// args…))` — resolves + types against the DERIVED effect with NO hand-written `(effect …)` decl: the
+/// synthesized decl is byte-shaped like a hand-written one, so resolve/infer/lower/`is_world_import_op` all
+/// see an ORDINARY effect (which re-derives as a synchronous `Core::HostCall`). Runs in `Db::load_linked`
+/// alongside `param_sidecar::generate` — the same generate-before-resolve slot, at a locus BOTH compile AND
+/// check reach, so the surface holds in `cdz check`/LSP too (no separate wit_world-population fix). A module
+/// with no in-source `(world …)` (or a world with no mappable import) is left untouched. The EXTERNAL
+/// `KIND_WIT_WORLD` artifact world (not present in the ast at load) is a follow-up (thread via the
+/// `load_linked` linkage seam); reference reducers declare the world in-source, so this ships that path.
+pub fn inject_world_import_effects(ast: &mut Arenas) {
+    let Some(world_form) = top_world_form(ast) else {
+        return;
+    };
+    // Encode the world subtree to the SAME bytes the `db.wit_world` population uses (compile.rs), then
+    // synthesize the effect decls into `ast` and splice them in as top-level members.
+    let bytes = crate::codec::encode(&crate::sidecar::extract_subtree(ast, world_form));
+    let decls = synthesize_world_import_effect_decls(ast, Some(&bytes));
+    for decl in decls {
+        append_module_member(ast, decl);
+    }
+}
+
+/// The FIRST in-source top-level `(world …)` form, if the module declares one. Scans only DIRECT top-level
+/// members (`(module NAME item…)` → `item…`; a bare root → itself), mirroring `db.top_world_forms`'
+/// root-member reckoning — a `(world …)` nested inside a def is not a module world target.
+fn top_world_form(ast: &Arenas) -> Option<StructId> {
+    let items: Vec<StructId> = match ast.get(ast.root) {
+        Struct::List(_) if ast.as_form(ast.root, "module").is_some() => ast
+            .as_form(ast.root, "module")
+            .and_then(|t| t.get(1..))
+            .unwrap_or(&[])
+            .to_vec(),
+        _ => vec![ast.root],
+    };
+    items
+        .into_iter()
+        .find(|&it| ast.head_name(it) == Some("world"))
+}
+
+/// Append `member` as a top-level member of the `(module NAME …)` root (or a bare-root wrapped as a list).
+/// The synthesized effect is then visible to the ordinary compile exactly like a hand-written declaration.
+/// (Mirrors `param_sidecar::append_module_member`.)
+fn append_module_member(ast: &mut Arenas, member: StructId) {
+    let root = ast.root;
+    if let Struct::List(items) = ast.get(root) {
+        let mut new_items = items.clone();
+        let insert_at = if ast.as_form(root, "module").is_some() && new_items.len() >= 2 {
+            2
+        } else {
+            new_items.len()
+        };
+        new_items.insert(insert_at, member);
+        ast.structure[root.0 as usize] = Struct::List(new_items);
+    }
 }
 
 /// Whether a guest [`Ty`] has a value-form document (so `value-encode`/`value-decode` can bridge it to a
@@ -1575,7 +1652,7 @@ mod tests {
         ];
         for wt in &cases {
             let want = wit_type_to_ty(&db, wt).expect("mappable");
-            let node = wit_type_to_type_expr(&mut db, wt).expect("type-expr builds");
+            let node = wit_type_to_type_expr(&mut db.ast, wt).expect("type-expr builds");
             let got = crate::eval::typeval_of(&mut db, node).unwrap_or_else(|| {
                 panic!("the injected type-expr for {wt:?} must resolve to a type")
             });
@@ -1586,7 +1663,7 @@ mod tests {
         }
         // enum/variant/flags have no type-expr yet (need a synthesized nominal decl).
         assert_eq!(
-            wit_type_to_type_expr(&mut db, &WitType::Enum(vec!["a".into(), "b".into()])),
+            wit_type_to_type_expr(&mut db.ast, &WitType::Enum(vec!["a".into(), "b".into()])),
             None
         );
     }
@@ -1634,7 +1711,7 @@ mod tests {
         let mut db = Db::load(crate::testkit::parse(
             "(module m (def (main) 0) (export main))",
         ));
-        let decls = synthesize_world_import_effect_decls(&mut db, Some(&bytes));
+        let decls = synthesize_world_import_effect_decls(&mut db.ast, Some(&bytes));
         assert_eq!(decls.len(), 2, "one (effect …) decl per import interface");
 
         // Navigate a synthesized `(effect NAME (op OP ARROW)…)` decl.
@@ -1700,6 +1777,6 @@ mod tests {
         assert_eq!(ak.len(), 4, "(-> Bytes Bytes Unit) is a 4-node arrow");
 
         // An absent world → no decls.
-        assert!(synthesize_world_import_effect_decls(&mut db, None).is_empty());
+        assert!(synthesize_world_import_effect_decls(&mut db.ast, None).is_empty());
     }
 }
