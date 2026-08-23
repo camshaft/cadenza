@@ -31,12 +31,16 @@
 //!   design is that the end-of-run checker is a reducer-shaped guest, delivered the whole log via a `check`
 //!   message and emitting a `verdict` request. These are the two contract ids that carry that protocol
 //!   (real Cadenza schemas, `contracts/{check,verdict}.cdz`).
+//! - [`run_checker`] — execute a checker over a completed log in one call: spawn the checker program,
+//!   deliver it the whole log, and read the verdict it emits (a no-verdict checker is a failed check). The
+//!   reusable primitive the integration-test binary drives its checker phase through.
 //! - [`Checker`] / [`CheckOutcome`] — the assertion side: read a [`Run`] and decide pass/fail. The native
 //!   realization of the checker contract (a wasm checker implements the same judgement over a serialized
 //!   log later); any `Fn(&Run) -> CheckOutcome` is a checker.
 
 mod checker;
 mod checker_protocol;
+mod checker_run;
 mod harness;
 mod log_value;
 mod observation;
@@ -51,6 +55,7 @@ pub use checker_protocol::{
     check_contract, check_message, decode_check, decode_verdict, encode_check, encode_verdict,
     verdict_contract, verdict_in,
 };
+pub use checker_run::run_checker;
 pub use harness::{Harness, Parent, Run, SpawnSpec};
 pub use log_value::{deserialize as deserialize_log, serialize as serialize_log};
 pub use observation::{
