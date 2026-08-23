@@ -1151,13 +1151,13 @@
             wasm-tools strip -a guest.wasm -o "$out"
           '';
 
-        # The Cadenza-authored reducer-echo guest (`guests/reducer-echo-cdz/reducer.sexp`, by v-platform): a
+        # The Cadenza-authored reducer-echo guest (`guests/reducer-echo-cdz/reducer.cdz`, by v-platform): a
         # `.cdz` reducer compiled to a `cadenza:platform/guest`-exporting wasm component. Registered in
         # `harnessPrograms` as `reducer-echo-cdz` — the Cadenza counterpart to the Rust `reducer-echo`, the
         # operator's "Cadenza guests, not Rust" path proven end-to-end through the build.
         cadenzaReducerEcho = mkCadenzaGuest {
           pname = "cdz-platform-reducer-echo-cdz-component";
-          src = ./implementation/seed/crates/cdz-platform/guests/reducer-echo-cdz/reducer.sexp;
+          src = ./implementation/seed/crates/cdz-platform/guests/reducer-echo-cdz/reducer.cdz;
           componentName = "cadenza:platform/guest";
         };
 
@@ -1850,7 +1850,7 @@
         packages.reducer-echo = reducerEcho;
         packages.reducer-echo-hash = hashOf reducerEcho "cdz-platform-reducer-echo-hash";
 
-        # The Cadenza-compiled reducer guest (`cdz compile reducer.sexp --target wasm`). `.#reducer-echo-cdz`.
+        # The Cadenza-compiled reducer guest (`cdz compile reducer.cdz --target wasm`). `.#reducer-echo-cdz`.
         packages.reducer-echo-cdz = cadenzaReducerEcho;
         packages.reducer-echo-cdz-hash = hashOf cadenzaReducerEcho "cdz-platform-reducer-echo-cdz-hash";
 
