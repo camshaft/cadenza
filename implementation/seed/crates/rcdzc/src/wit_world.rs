@@ -546,31 +546,56 @@ pub fn synthesize_world_import_effect_decls(
 /// `KIND_WIT_WORLD` artifact world (not present in the ast at load) is a follow-up (thread via the
 /// `load_linked` linkage seam); reference reducers declare the world in-source, so this ships that path.
 pub fn inject_world_import_effects(ast: &mut Arenas) {
+    use crate::backend::common::export_name::kebab_extern_name;
     let Some(world_form) = top_world_form(ast) else {
         return;
     };
+    // Effect names the guest ALREADY declares in source (kebab-normalized). A hand-written `(effect X …)`
+    // for a world-import interface — the REDECLARE path, or an interface carrying an `enum`/`variant` type
+    // the guest must declare in full (its type name is not recoverable from the world descriptor) — WINS:
+    // synthesizing a second `(effect X …)` for the same interface would be a DUPLICATE definition (CDZ0201).
+    // So the sidecar SKIPS any interface the guest already declares, and only fills in the un-declared ones.
+    let declared: std::collections::HashSet<String> = top_level_items(ast)
+        .into_iter()
+        .filter_map(|it| ast.as_form(it, "effect").and_then(|t| t.first().copied()))
+        .filter_map(|name_node| ast.as_name(name_node).map(kebab_extern_name))
+        .collect();
     // Encode the world subtree to the SAME bytes the `db.wit_world` population uses (compile.rs), then
-    // synthesize the effect decls into `ast` and splice them in as top-level members.
+    // synthesize the effect decls into `ast` and splice in only those the guest has not declared.
     let bytes = crate::codec::encode(&crate::sidecar::extract_subtree(ast, world_form));
     let decls = synthesize_world_import_effect_decls(ast, Some(&bytes));
     for decl in decls {
+        // The synthesized decl is `(effect <name> …)`; skip it if the guest already declares that effect
+        // (its nodes stay unreferenced in the arena — inert, not scanned as a top-level member).
+        let name = ast
+            .as_form(decl, "effect")
+            .and_then(|t| t.first().copied())
+            .and_then(|n| ast.as_name(n))
+            .map(kebab_extern_name);
+        if name.is_some_and(|n| declared.contains(&n)) {
+            continue;
+        }
         append_module_member(ast, decl);
     }
 }
 
-/// The FIRST in-source top-level `(world …)` form, if the module declares one. Scans only DIRECT top-level
-/// members (`(module NAME item…)` → `item…`; a bare root → itself), mirroring `db.top_world_forms`'
-/// root-member reckoning — a `(world …)` nested inside a def is not a module world target.
-fn top_world_form(ast: &Arenas) -> Option<StructId> {
-    let items: Vec<StructId> = match ast.get(ast.root) {
+/// The module's DIRECT top-level members (`(module NAME item…)` → `item…`; a bare root → itself), mirroring
+/// `db.top_world_forms`' root-member reckoning — a form nested inside a def is not a module member.
+fn top_level_items(ast: &Arenas) -> Vec<StructId> {
+    match ast.get(ast.root) {
         Struct::List(_) if ast.as_form(ast.root, "module").is_some() => ast
             .as_form(ast.root, "module")
             .and_then(|t| t.get(1..))
             .unwrap_or(&[])
             .to_vec(),
         _ => vec![ast.root],
-    };
-    items
+    }
+}
+
+/// The FIRST in-source top-level `(world …)` form, if the module declares one. A `(world …)` nested inside a
+/// def is not a module world target.
+fn top_world_form(ast: &Arenas) -> Option<StructId> {
+    top_level_items(ast)
         .into_iter()
         .find(|&it| ast.head_name(it) == Some("world"))
 }

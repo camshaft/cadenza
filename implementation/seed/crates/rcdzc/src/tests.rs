@@ -7263,6 +7263,48 @@ fn a_multi_interface_no_redeclare_world_synthesizes_an_effect_per_import() {
     }
 }
 
+/// The world-import sidecar must NOT duplicate a HAND-DECLARED effect. A guest that declares its world in
+/// source AND writes its own `(effect identity …)` — the REDECLARE path, or an interface carrying an
+/// `enum`/`variant` type it must declare in full — would otherwise get TWO `(effect identity …)` decls (the
+/// hand-written one + the synthesized one) → a duplicate-definition CDZ0201 + poisoned resolution. The
+/// sidecar skips any interface the guest already declares, so the hand-decl wins and the perform still
+/// lowers cleanly to a `Core::HostCall`. (Guards a latent regression in the #3101 pre-pass.)
+#[test]
+fn the_world_import_sidecar_does_not_duplicate_a_hand_declared_effect() {
+    use crate::core::Core;
+    use crate::db::Db;
+    use crate::lower::core_of;
+    // The guest hand-declares a RICHER `identity` effect — an extra op `probe` the world does NOT import —
+    // and performs it. A synthesized partial `(effect identity (op id …))` (only the imported member) must
+    // NOT shadow the hand-decl, else `identity.probe` would go unbound (CDZ0101).
+    let src = "(module m \
+                 (world reducer (import identity (member id (func (result (\"list\" (u8))))))) \
+                 (effect identity (op id (-> Bytes)) (op probe (-> Bytes Unit))) \
+                 (def (apply (: e (Record (ct String) (pl Bytes)))) \
+                   (host (identity) (do ((. identity id)) ((. identity probe) (. e pl))))) \
+                 (export apply))";
+    let mut db = Db::load(crate::testkit::parse(src));
+    let diags = crate::compile::diagnostics(&mut db);
+    // The hand-declared effect's ops (incl. `probe`, which the world does NOT import) all resolve — the
+    // sidecar skipped synthesizing a partial `identity` that would have shadowed the richer hand-decl.
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.message.contains("unbound name `probe`")
+                || (d.message.contains("probe") && d.message.contains("operation"))),
+        "the guest's hand-declared `identity.probe` must resolve (sidecar must not shadow it with a \
+         partial synthesized effect): {:?}",
+        diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    // And the perform still lowers to a HostCall (resolution is clean).
+    let d = db.def_by_name("apply").expect("def apply");
+    let body = db.defs[d].body.expect("apply body");
+    assert!(
+        !matches!(core_of(&mut db, body), Core::Poison(_)),
+        "the reducer body lowers cleanly (not poisoned) with the hand-declared effect"
+    );
+}
+
 /// §3c full-A BEHAVIORAL: the FIRST full-A slice end-to-end — a CLOSURE-free, HOST/PEER-import-free pure
 /// reducer (`apply(Event) -> List<EffectRequest>`) whose `apply` member the target WIT WORLD declares as a
 /// `list<u8>`-in / `list<u8>`-out boundary EMITS through `emit_bytes_provider_member` — the compound param
