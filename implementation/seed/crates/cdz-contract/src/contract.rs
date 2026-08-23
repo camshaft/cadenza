@@ -93,7 +93,20 @@ pub fn contract_id(
 /// the caller supplies the decoded [`Arenas`] (this crate does no I/O and does not shell out).
 #[must_use]
 pub fn contract_id_from_module(module: &Arenas) -> Option<Hash> {
+    contract_from_module(module).map(|(_name, id)| id)
+}
+
+/// A contract's declared **name** and its [`contract_id`], read from its module source — the pair a
+/// directory→mapping tool emits (name → hash). Reads the `contract` / `input` / `output` pragmas and the
+/// `(type …)` forms of the `(do …)` module, assembles the canonical `(contract <name> (types …) <input>
+/// <output>)` declaration [`contract_id`] builds, and hashes it. `None` if the module is not a well-formed
+/// contract (not a `(do …)`, or missing a required pragma). The name is borrowed from `module`.
+#[must_use]
+pub fn contract_from_module(module: &Arenas) -> Option<(&str, Hash)> {
     // The top-level forms — a module is a `(do <form>…)`; the forms are the children after the `do` head.
+    // Each may be wrapped in `(comment …)` nodes (a `//` doc-comment parses to `(comment <text> <form>)`,
+    // so a form preceded by comments is nested inside them), so every read peels the wrappers first — the
+    // same way `xtask codegen` extracts the type declarations, so the CLI's ids match the platform's.
     let forms = module.as_form(module.root, "do")?;
     let name = module.as_str(pragma_arg(module, forms, "contract")?)?;
     let input = module.as_name(pragma_arg(module, forms, "input")?)?;
@@ -103,25 +116,46 @@ pub fn contract_id_from_module(module: &Arenas) -> Option<Hash> {
     // equal, so they hash the same).
     let type_forms: Vec<StructId> = forms
         .iter()
-        .copied()
+        .map(|&f| unwrap_comment(module, f))
         .filter(|&f| module.head_name(f) == Some("type"))
         .collect();
-    Some(contract_id(
+    let id = contract_id(
         name,
         |b| type_forms.iter().map(|&t| graft(b, module, t)).collect(),
         input,
         output,
-    ))
+    );
+    Some((name, id))
 }
 
 /// The single argument of the `(pragma <key> <arg>)` form with the given `key` among `forms`, or `None` if
 /// no such pragma (or it is not the two-element `key arg` shape). The module attribute `@!key arg` desugars
-/// to exactly this form.
+/// to exactly this form. Each form is peeled of any `(comment …)` wrappers first, so a commented pragma is
+/// still found.
 fn pragma_arg(module: &Arenas, forms: &[StructId], key: &str) -> Option<StructId> {
     forms.iter().copied().find_map(|f| {
+        let f = unwrap_comment(module, f);
         let args = module.as_form(f, "pragma")?;
         (args.len() == 2 && module.as_name(args[0]) == Some(key)).then_some(args[1])
     })
+}
+
+/// Peel `(comment <text> <form>)` wrappers off a top-level form, returning the wrapped form — a `//`
+/// doc-comment nests the following form inside a comment node (chained for consecutive comment lines), and
+/// the wrapped form is the comment's last child. Mirrors `xtask codegen`'s comment-unwrapping so the two
+/// extract the same declarations.
+fn unwrap_comment(module: &Arenas, id: StructId) -> StructId {
+    let mut id = id;
+    while module.head_name(id) == Some("comment") {
+        match module.get(id) {
+            Struct::List(items) => match items.last() {
+                Some(&last) if last != id => id = last,
+                _ => break,
+            },
+            Struct::Atom(_) => break,
+        }
+    }
+    id
 }
 
 /// Copy the subtree rooted at `id` in `src` into `b`, returning the new id — a structural deep copy, since
@@ -313,5 +347,41 @@ mod tests {
         let ab = contract_id_from_module(&ab_module("A", "B")).expect("well-formed");
         let ba = contract_id_from_module(&ab_module("B", "A")).expect("well-formed");
         assert_ne!(ab, ba);
+    }
+
+    #[test]
+    fn comment_wrapped_pragmas_and_types_are_read_the_same() {
+        // A `//` doc-comment parses to `(comment <text> <form>)`, nesting the form it precedes. The reader
+        // must peel those wrappers, or a commented contract source (every real one has comments) computes a
+        // different id than its clean equivalent. Wrap the contract pragma and the type decl in a comment
+        // and assert the id is unchanged.
+        let clean = temp_module("temp.celsius", "Temp", "Temp");
+        let wrapped = {
+            let mut b = Builder::new();
+            let do_head = b.name("do");
+            // (comment "doc" (pragma contract "temp.celsius"))
+            let c = {
+                let inner = pragma(&mut b, "contract", "temp.celsius", false);
+                let head = b.name("comment");
+                let text = b.atom_leaf(Leaf::Str(Arc::from("doc")));
+                b.list(vec![head, text, inner])
+            };
+            let i = pragma(&mut b, "input", "Temp", true);
+            let o = pragma(&mut b, "output", "Temp", true);
+            // (comment "doc" (type Temp (Mk f64)))
+            let ty = {
+                let inner = temp_type(&mut b).remove(0);
+                let head = b.name("comment");
+                let text = b.atom_leaf(Leaf::Str(Arc::from("doc")));
+                b.list(vec![head, text, inner])
+            };
+            let root = b.list(vec![do_head, c, i, o, ty]);
+            b.finish(root)
+        };
+        assert_eq!(
+            contract_id_from_module(&wrapped),
+            contract_id_from_module(&clean),
+            "comment wrappers must not change the contract-id"
+        );
     }
 }
