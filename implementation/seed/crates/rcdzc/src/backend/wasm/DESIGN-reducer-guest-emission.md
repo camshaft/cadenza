@@ -83,19 +83,37 @@ lockstep flip from lowercase-hex), which the host / nix compose resolves from th
    `assemble_typed_interface_with_runtime` (composing the value-heap runtime import). Additive over the
    former record-boundary decline; a scalar interface still takes the no-wrapper `scalar_interface_export`.
 
-5. **The platform host imports (`identity` / `state` / `blobs`) — TODO (W4c-b-iii).** A reducer that calls
-   a world import (reducer-echo sets `request.token = identity::id()`) needs that host-import interface
-   composed into the reducer-boundary component alongside the runtime. The envelope side is ready:
-   `envelope::assemble_host_runtime` already composes a host-effect import + the runtime + boundary
-   exports (host ops lowered to core funcs `0..h`, runtime `h..h+k`, boundary aliases after; documented
-   index spaces). The reducer path just needs the analogous assembler that composes the host import(s)
-   with the **typed interface-instance** export (combine `assemble_host_runtime`'s two-import bookkeeping
-   with `assemble_typed_interface_with_runtime`'s instance export), and `record_interface_export` must
-   collect the guest's host imports (the `Core::HostCall`s a body performs, recognized via
-   `wit_world::is_world_import_op`) and thread them through. **Open (asked v-platform):** the guest-SOURCE
-   form for calling a 0-arg `list<u8>`-returning world import (`identity.id : () -> reducer-id`) — whether
-   the perform→world-import lowering (the `state.get`/kv path) already covers it, or `identity.id()` needs
-   a prelude/reify arm (v-inference/v-syntax territory, currently stopped in the platform-only pause).
+5. **The platform host imports (any world import) — TODO (W4c-b-iii), FULLY GENERIC.** A reducer that calls
+   any world import (`identity.id`, `state.get`, `graph.neighbors`, `deliver.*`, `program-of`, `run.run`, …)
+   needs that host-import interface composed into the reducer-boundary component alongside the runtime.
+   **Operator directive (2026-08-23): this MUST be generic over an arbitrary `world.wit` import member — perform
+   ANY import, zero interface-specific (kv/state.get-shaped) arms.** The generality lives in two places, both
+   already designed to be signature-driven:
+   - **Front-end / reify (v-inference, confirmed generic):** the perform→`Core::HostCall` lowering is
+     data-driven off `wit_world::is_world_import_op` reading the decoded world — no per-interface hard-coding
+     (lower.rs sync/async fork, infer.rs typing). A 0-arg `list<u8>`-returning import types + lowers today:
+     `identity.id : () -> reducer-id` → `HostCall{effect: identity, op: id, args: [], result: Bytes}`.
+   - **Collection (rcdzc, already generic):** `host::collect_host_imports_at` builds the import's WIT signature
+     VERBATIM from the op's declared arg/result types — params from the arg types, result from `result`, nothing
+     injected (per `spec/contracts/host-interface-binding.md#a-host-import-is-a-wit-typed-function`). Handles any
+     arity incl. 0-arg, and params/results across scalar/`string`/`list<u8>`/`option<list<u8>>`.
+   - **The confirmed residual (rcdzc, MY lane):** the **typed interface-instance** emit path
+     (`record_interface_export` → `assemble_typed_interface_with_runtime`, mod.rs:1000-1016) composes ONLY the
+     value-heap runtime — it never threads `host_imports`, so a reducer guest performing a world import has no
+     host interface composed and its core `CallHostImport` index is unbound. (Host imports DO compose for the
+     bytes-provider `apply` path and the pure host-delegating Path B `assemble_host_runtime` — just not the
+     typed interface path.) The fix: an assembler that composes the guest's host import interface(s) alongside
+     the typed interface-instance export + the runtime (combine `assemble_host_runtime`'s two-import bookkeeping
+     with `assemble_typed_interface_with_runtime`'s instance export), driven purely off each `HostCall`'s
+     collected signature — one generic marshalling rule, NO per-interface arm. `record_interface_export` must
+     collect the body's `Core::HostCall`s (via `is_world_import_op`) and thread them through, and
+     `core_module_with_wrappers` must compose the host-import funcs into the wrapper core's import space.
+
+   **The one generic mapping rule** (v-platform owns the contract, aligns to the existing
+   `spec/contracts/host-interface-binding.md`): a world import member `iface.op : (P…) -> R` ↔ guest effect op
+   `(effect iface (op op (-> P… R)))` ↔ `HostCall{effect: iface, op, args, result}` ↔ imported component func
+   `op : (P…) -> R` — verbatim, monomorphic, no injected param/continuation/error arm. Reify and the emit each
+   apply this single rule; neither carries a per-interface case.
 
 6. **World supply surface — TODO (W4c-b-iv).** The in-source `(world …)` decl → binary-AST (`KIND_WIT_WORLD`)
    lowering, coordinated with v-syntax + v-nix (the CLI reads either the decl or a `--world` artifact).
