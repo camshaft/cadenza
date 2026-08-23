@@ -8119,6 +8119,116 @@ fn a_host_fused_kv_get_reducer_emits_and_loads() {
     );
 }
 
+/// A KIND_WIT_WORLD declaring a NULLARY bare-`list<u8>`-result world import: export `fold`.`apply`
+/// (list<u8>->list<u8>) + import `cadenza:agent-kernel/identity`.`id` (`func() -> list<u8>` — ZERO params,
+/// the `identity.id : () -> reducer-id` shape). Unlike `blobs.put` (which has a `list<u8>` PARAM that
+/// happens to prepend the `(list u8)` type), this op has NO list param, so its Bytes RESULT is the ONLY
+/// thing that needs the `(list u8)` type — exercising the host-instance-type list-type prepend for a
+/// bare-Bytes result (the Layer-1 follow-up gap).
+fn reducer_nullary_bytes_result_world_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let byte_list = |b: &mut Builder| {
+        let hh = b.atom_leaf(Leaf::Str("list".into()));
+        let uh = b.name("u8");
+        let u = b.list(vec![uh]);
+        b.list(vec![hh, u])
+    };
+    // export fold { apply: func(input: list<u8>) -> list<u8> }
+    let a_in = byte_list(&mut b);
+    let a_out = byte_list(&mut b);
+    let apply = {
+        let func_h = b.name("func");
+        let param_h = b.name("param");
+        let pn = b.name("input");
+        let pnode = b.list(vec![param_h, pn, a_in]);
+        let result_h = b.name("result");
+        let rnode = b.list(vec![result_h, a_out]);
+        let func = b.list(vec![func_h, pnode, rnode]);
+        let member_h = b.name("member");
+        let mn = b.name("apply");
+        b.list(vec![member_h, mn, func])
+    };
+    let exp_h = b.name("export");
+    let ename = b.name("fold");
+    let fold = b.list(vec![exp_h, ename, apply]);
+    // import cadenza:agent-kernel/identity { id: func() -> list<u8> }  (no param nodes = 0-arg)
+    let p_out = byte_list(&mut b);
+    let id_member = {
+        let func_h = b.name("func");
+        let result_h = b.name("result");
+        let rnode = b.list(vec![result_h, p_out]);
+        let func = b.list(vec![func_h, rnode]);
+        let member_h = b.name("member");
+        let mn = b.name("id");
+        b.list(vec![member_h, mn, func])
+    };
+    let imp_h = b.name("import");
+    let id_name = b.name("cadenza:agent-kernel/identity");
+    let identity = b.list(vec![imp_h, id_name, id_member]);
+    let world_h = b.name("world");
+    let wn = b.name("reducer");
+    let world = b.list(vec![world_h, wn, fold, identity]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+/// W4c-b-iii Layer-1 FOLLOW-UP: a reducer performing a NULLARY `list<u8>`-result host op (`identity.id : ()
+/// -> list<u8>`, no params) EMITS + VALIDATES + LOADS. This is the shape `blobs.put` did NOT cover — no
+/// `list<u8>` param, so only the Bytes RESULT needs the `(list u8)` component type; the host instance-type
+/// must prepend it for a bytes result too (else the op's result functype references an unbound type index →
+/// invalid component). Regression-locks that fix.
+#[test]
+fn a_host_fused_nullary_bytes_result_reducer_emits_and_loads() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (effect identity (op id (-> Unit Bytes))) \
+                 (def (apply (: e (Record (ct String) (pl Bytes)))) \
+                   (host (identity) \
+                     (list (record (op (. e ct)) (arg (identity.id unit)))))) \
+                 (export apply))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:agent-kernel/fold"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                reducer_nullary_bytes_result_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "the nullary bare-list<u8>-result reducer must emit: {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("the nullary bytes-result reducer emits a component");
+    let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+    v.validate_all(bytes)
+        .expect("the nullary bytes-result provider component validates");
+    let req = cdz_run::required_runtime(bytes)
+        .expect("the nullary bytes-result provider component loads on the pinned wasmtime");
+    assert!(
+        req.is_some_and(|r| r.import_name.contains("cadenza:runtime/heap")),
+        "the reducer marshals through the value-heap runtime"
+    );
+    assert!(
+        String::from_utf8_lossy(bytes).contains("cadenza:agent-kernel/identity"),
+        "imports the identity host interface at the world's FQ name"
+    );
+}
+
 /// A KIND_WIT_WORLD declaring the blobs-PUT world: export interface `fold` member `apply`
 /// (list<u8>->list<u8>) AND import interface `cadenza:agent-kernel/blobs` member `put`
 /// (bytes: list<u8> -> list<u8>). The `put` result is a BARE `list<u8>` (a content hash), the shape a world
