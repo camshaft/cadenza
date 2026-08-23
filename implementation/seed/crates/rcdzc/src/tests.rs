@@ -1153,8 +1153,6 @@ fn scalar_iface_world_bytes() -> Vec<u8> {
 #[test]
 fn a_scalar_interface_export_guest_compiles_and_runs() {
     use crate::testkit::parse;
-    use wasmtime::component::{Component, Linker, Val};
-    use wasmtime::{Engine, Store};
 
     // A Cadenza reducer-shaped guest: def f(x: Int64) = x, exported; bound by name to the world's `f` member.
     let src = "(module m (def (f (: x Int64)) x) (export f))";
@@ -1186,27 +1184,132 @@ fn a_scalar_interface_export_guest_compiles_and_runs() {
         .artifact(crate::backend::Target::Wasm.artifact_kind())
         .expect("emits a component");
 
-    let engine = Engine::default();
-    let comp =
-        Component::from_binary(&engine, bytes).expect("scalar interface component validates");
-    let linker: Linker<()> = Linker::new(&engine);
-    let mut store = Store::new(&engine, ());
-    let instance = linker.instantiate(&mut store, &comp).expect("instantiate");
-    let iface_idx = instance
-        .get_export_index(&mut store, None, "cadenza:demo/iface")
-        .expect("interface export present");
-    let f_idx = instance
-        .get_export_index(&mut store, Some(&iface_idx), "f")
-        .expect("f export present");
-    let func = instance.get_func(&mut store, f_idx).expect("f is a func");
-    let mut results = [Val::Bool(false)];
-    func.call(&mut store, &[Val::S64(7)], &mut results)
-        .expect("call");
-    func.post_return(&mut store).expect("post_return");
+    // Drive it through the CANONICAL typed-reducer runner (`cdz_run::run_reducer_typed`) — the path a host
+    // drives a typed reducer through (compose the runtime if imported, navigate the exported interface
+    // instance, call the member with component-model Vals). This scalar guest imports nothing, so the
+    // runtime compose is a no-op; the same runner drives a record/runtime-importing guest once the wrapper
+    // lands. f(7) == 7.
+    let opts = cdz_run::RunOpts {
+        export: None,
+        args: vec![],
+        runtime: find_runtime_wasm(),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    let result = cdz_run::run_reducer_typed(
+        bytes,
+        "cadenza:demo/iface",
+        "f",
+        &[wasmtime::component::Val::S64(7)],
+        &opts,
+    )
+    .expect("run the typed reducer member");
     assert_eq!(
-        i64::from_val(&results[0]),
+        i64::from_val(&result),
         7,
-        "a real Cadenza guest exporting interface cadenza:demo/iface: f(7) == 7"
+        "a real Cadenza guest exporting interface cadenza:demo/iface, driven via the canonical typed \
+         reducer runner: f(7) == 7"
+    );
+}
+
+/// A KIND_WIT_WORLD declaring `export iface = | f: func(m: record{a: s64}) -> s64` — the record-param
+/// interface-export case the boundary WRAPPER handles (the def takes a value-heap record handle; the canon
+/// lift hands the flattened `a` field, so a wrapper builds the record then calls the def).
+fn record_iface_world_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let s64 = |b: &mut Builder| {
+        let h = b.name("s64");
+        b.list(vec![h])
+    };
+    // param: ("record" (a (s64)))
+    let a_ty = s64(&mut b);
+    let a_name = b.name("a");
+    let a_field = b.list(vec![a_name, a_ty]);
+    let rec_head = b.atom_leaf(Leaf::Str("record".into()));
+    let rec = b.list(vec![rec_head, a_field]);
+    let res_ty = s64(&mut b);
+    let func_h = b.name("func");
+    let param_h = b.name("param");
+    let pn = b.name("m");
+    let param_node = b.list(vec![param_h, pn, rec]);
+    let result_h = b.name("result");
+    let result_node = b.list(vec![result_h, res_ty]);
+    let func = b.list(vec![func_h, param_node, result_node]);
+    let member_h = b.name("member");
+    let mn = b.name("f");
+    let member = b.list(vec![member_h, mn, func]);
+    let exp_h = b.name("export");
+    let iname = b.name("iface");
+    let export = b.list(vec![exp_h, iname, member]);
+    let world_h = b.name("world");
+    let wn = b.name("w");
+    let world = b.list(vec![world_h, wn, export]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+/// W4c-b: a real Cadenza guest with a RECORD-param interface func compiles to a component via the boundary
+/// WRAPPER (build the guest record from the flattened field, call the def, return its result) and RUNS —
+/// the shape of a reducer's `on-message(message)->step` (record in). `f(m: record{a: s64}) = m.a`, driven
+/// through the runtime-composing typed runner: `f({a: 7}) == 7`.
+#[test]
+fn a_record_param_guest_compiles_and_runs_via_a_wrapper() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    // Needs the value-heap runtime (the wrapper builds the record via arr-alloc/box-int); skip if absent.
+    let Some(runtime) = find_runtime_wasm() else {
+        return;
+    };
+    let src = "(module m (def (f (: m (Record (a Int64)))) (. m a)) (export f))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:demo/iface"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                record_iface_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "record-param interface-export guest must emit a component: {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("emits a component");
+
+    let opts = cdz_run::RunOpts {
+        export: None,
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    let result = cdz_run::run_reducer_typed(
+        bytes,
+        "cadenza:demo/iface",
+        "f",
+        &[Val::Record(vec![("a".to_string(), Val::S64(7))])],
+        &opts,
+    )
+    .expect("run the record-param typed reducer member");
+    assert_eq!(
+        i64::from_val(&result),
+        7,
+        "a Cadenza guest f(m: record{{a: s64}}) = m.a, emitted via the boundary wrapper: f({{a: 7}}) == 7"
     );
 }
 
