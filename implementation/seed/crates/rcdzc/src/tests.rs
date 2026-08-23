@@ -7337,6 +7337,44 @@ fn a_multi_arg_world_import_perform_with_a_record_arg_lowers_to_a_synchronous_ho
 /// the `(effect identity (op id (-> Bytes)))` decl from the world's import, so `identity` binds (no CDZ0101)
 /// and the perform lowers to a synchronous `Core::HostCall{args:[], result:Bytes}` — the tick-6 gap
 /// (`unbound name identity`) is closed. This is the drift-free surface: the guest names the world once and
+/// A `(do …)`-ROOTED reducer (a bare source file with NO `(module …)` wrapper — the natural authoring form
+/// v-syntax's ML renders to) must get its in-source world synthesized too. The sidecar's `top_level_items`
+/// previously only recognized a `(module …)` / bare root, so an in-source `(world …)` inside a `(do …)` root
+/// was invisible → nothing synthesized → `(host (identity) …)` was CDZ0101 unbound. Now the `(do …)` root's
+/// items are scanned, so `identity` binds and the perform lowers to a `Core::HostCall`.
+#[test]
+fn a_do_rooted_reducer_synthesizes_its_in_source_world_import_effects() {
+    use crate::core::Core;
+    use crate::db::Db;
+    use crate::lower::core_of;
+    // Bare file: a top-level `(do (world …) (def …) (export …))` — no `(module …)` wrapper.
+    let src = "(do \
+                 (world reducer-world \
+                   (import identity (member id (func (result (\"list\" (u8)))))) \
+                   (export guest (member on-message (func (param msg (\"list\" (u8))) (result (\"list\" (u8))))))) \
+                 (def (on-message (: msg Bytes)) (host (identity) ((. identity id)))) \
+                 (export on-message))";
+    let mut db = Db::load(crate::testkit::parse(src));
+    let diags = crate::compile::diagnostics(&mut db);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.message.contains("unbound name `identity`")),
+        "a (do)-rooted in-source world must synthesize its identity import (no CDZ0101): {:?}",
+        diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    let d = db.def_by_name("on-message").expect("def on-message");
+    let body = db.defs[d].body.expect("on-message body");
+    match core_of(&mut db, body) {
+        Core::HostCall { effect, op, .. } => {
+            assert_eq!((&*effect, &*op), ("identity", "id"));
+        }
+        other => {
+            panic!("identity.id in a (do)-rooted reducer must lower to a HostCall, got {other:?}")
+        }
+    }
+}
+
 /// performs any import, zero per-interface arms, no mirrored effect decl.
 #[test]
 fn a_no_redeclare_world_import_perform_resolves_via_the_injected_effect() {

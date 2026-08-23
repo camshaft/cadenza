@@ -593,6 +593,14 @@ pub fn inject_world_import_effects_from_bytes(ast: &mut Arenas, world_bytes: &[u
 /// The module's DIRECT top-level members (`(module NAME item…)` → `item…`; a bare root → itself), mirroring
 /// `db.top_world_forms`' root-member reckoning — a form nested inside a def is not a module member.
 fn top_level_items(ast: &Arenas) -> Vec<StructId> {
+    // A bare source file (no explicit `(module …)` wrapper — the natural reducer authoring form) parses to a
+    // `(do item…)` root; a wrapped module to `(module NAME item…)`. Return the ITEMS in either case so the
+    // world scan sees the direct top-level members (mirrors `proptest_gen` / `param_sidecar`, which also
+    // treat a `(do …)` root as the top-level item list). Without the `do` arm an in-source `(world …)` in a
+    // bare file was invisible → the sidecar synthesized nothing → every import cascaded to CDZ0101.
+    if let Some(do_items) = ast.as_form(ast.root, "do") {
+        return do_items.to_vec();
+    }
     match ast.get(ast.root) {
         Struct::List(_) if ast.as_form(ast.root, "module").is_some() => ast
             .as_form(ast.root, "module")
