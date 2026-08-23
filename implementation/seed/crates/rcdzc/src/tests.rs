@@ -2885,15 +2885,192 @@ fn identity_token_world_bytes() -> Vec<u8> {
     crate::codec::encode(&a)
 }
 
-/// W4c-b-iii ANCHOR (current gap, decline-don't-miscompile): a typed reducer guest that PERFORMS a world
-/// import (`identity.id`, a 0-arg `list<u8>` host result) exercises the GENERIC world-import emit. Today it
-/// DECLINES cleanly at the FIRST backend layer — the host-op RESULT marshalling emits only scalar/unit host
-/// results (plus the bytes-provider `option<list<u8>>` lift), not a bare `list<u8>` (`Bytes`) result. (A
-/// SECOND layer follows once that lands: the typed interface-instance emit path composes only the runtime and
-/// must also thread `host_imports`.) This locks the honest decline (no mis-emit) and is the harness the
-/// feature flips to green. `onMessage` sets `request.token = identity.id()`.
+/// A single-member (`on-message`) reducer world that imports a MEMORYLESS host op: `cadenza:platform/clock`.`now`
+/// (`func() -> u64` — a SCALAR result, no linear memory). Drives the combined typed-interface + host-import
+/// assembler (`assemble_typed_interface_with_host_runtime`) on the path that composes today: the host op
+/// lowers memoryless while the typed wrapper still defines its own memory for the record `list<u8>` leaves.
+fn scalar_host_import_world_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let list_u8 = |b: &mut Builder| {
+        let u8h = b.name("u8");
+        let u8p = b.list(vec![u8h]);
+        let lh = b.atom_leaf(Leaf::Str("list".into()));
+        b.list(vec![lh, u8p])
+    };
+    let field = |b: &mut Builder, name: &str, ty| {
+        let n = b.name(name);
+        b.list(vec![n, ty])
+    };
+    let record = |b: &mut Builder, fields: Vec<crate::ast::StructId>| {
+        let h = b.atom_leaf(Leaf::Str("record".into()));
+        let mut v = vec![h];
+        v.extend(fields);
+        b.list(v)
+    };
+    let bytes_field = |b: &mut Builder, name: &str| {
+        let t = list_u8(b);
+        field(b, name, t)
+    };
+    let message = {
+        let m_contract = bytes_field(&mut b, "contract");
+        let m_payload = bytes_field(&mut b, "payload");
+        let m_token = bytes_field(&mut b, "token");
+        record(&mut b, vec![m_contract, m_payload, m_token])
+    };
+    let step = {
+        let request = {
+            let r_contract = bytes_field(&mut b, "contract");
+            let r_payload = bytes_field(&mut b, "payload");
+            let r_token = bytes_field(&mut b, "token");
+            let r_deadline = {
+                let u64h = b.name("u64");
+                let u64t = b.list(vec![u64h]);
+                let oh = b.atom_leaf(Leaf::Str("option".into()));
+                let ot = b.list(vec![oh, u64t]);
+                field(&mut b, "deadline-nanos", ot)
+            };
+            record(&mut b, vec![r_contract, r_payload, r_token, r_deadline])
+        };
+        let requests_list = {
+            let lh = b.atom_leaf(Leaf::Str("list".into()));
+            b.list(vec![lh, request])
+        };
+        let closed = {
+            let c_schema = bytes_field(&mut b, "schema");
+            let c_reason = bytes_field(&mut b, "reason");
+            record(&mut b, vec![c_schema, c_reason])
+        };
+        let outcome = {
+            let cont_case = {
+                let n = b.name("continue");
+                b.list(vec![n])
+            };
+            let close_case = {
+                let n = b.name("close");
+                b.list(vec![n, closed])
+            };
+            let vh = b.atom_leaf(Leaf::Str("variant".into()));
+            b.list(vec![vh, cont_case, close_case])
+        };
+        let s_requests = field(&mut b, "requests", requests_list);
+        let s_outcome = field(&mut b, "outcome", outcome);
+        record(&mut b, vec![s_requests, s_outcome])
+    };
+    let on_message = {
+        let func_h = b.name("func");
+        let param_h = b.name("param");
+        let pn = b.name("m");
+        let param_node = b.list(vec![param_h, pn, message]);
+        let result_h = b.name("result");
+        let result_node = b.list(vec![result_h, step]);
+        let func = b.list(vec![func_h, param_node, result_node]);
+        let member_h = b.name("member");
+        let mn = b.name("on-message");
+        b.list(vec![member_h, mn, func])
+    };
+    let exp_h = b.name("export");
+    let iname = b.name("guest");
+    let export = b.list(vec![exp_h, iname, on_message]);
+    // import cadenza:platform/clock { now: func() -> u64 }  (scalar result, no memory)
+    let now_member = {
+        let func_h = b.name("func");
+        let result_h = b.name("result");
+        let u64h = b.name("u64");
+        let u64t = b.list(vec![u64h]);
+        let rnode = b.list(vec![result_h, u64t]);
+        let func = b.list(vec![func_h, rnode]);
+        let member_h = b.name("member");
+        let mn = b.name("now");
+        b.list(vec![member_h, mn, func])
+    };
+    let imp_h = b.name("import");
+    let clock_name = b.name("cadenza:platform/clock");
+    let clock = b.list(vec![imp_h, clock_name, now_member]);
+    let world_h = b.name("world");
+    let wn = b.name("w");
+    let world = b.list(vec![world_h, wn, export, clock]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+/// W4c-b-iii: a typed reducer guest that PERFORMS a MEMORYLESS world import (`clock.now : () -> u64`, a
+/// scalar) EMITS + VALIDATES + LOADS via the combined `assemble_typed_interface_with_host_runtime` — the
+/// generic world-import call surface's first composing case. `onMessage` sets `deadline-nanos =
+/// Some(clock.now())`, threading the scalar host result into the typed `step` result. The emit composes the
+/// `clock` host effect interface alongside the value-heap runtime and the typed `guest` interface-instance
+/// export; loading on the pinned wasmtime type-checks the whole host + runtime + typed-export wiring (clock
+/// declared-but-unsatisfied at load, fine). (A list<u8>-result host op like `identity.id` needs the
+/// shared-memory composition — the next slice, see the sibling decline test.)
 #[test]
-fn an_identity_performing_reducer_declines_cleanly_until_generic_world_import_emit() {
+fn a_typed_reducer_with_a_scalar_host_import_emits_and_loads() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (type Outcome Continue (Close (Record (schema Bytes) (reason Bytes)))) \
+                 (effect clock (op now (-> Unit UInt64))) \
+                 (def (onMessage (: m (Record (contract Bytes) (payload Bytes) (token Bytes)))) \
+                   (host (clock) \
+                     (record \
+                       (requests (list (record \
+                                         (contract (. m contract)) \
+                                         (payload (. m payload)) \
+                                         (token (. m token)) \
+                                         (deadline-nanos (Option.Some (clock.now unit)))))) \
+                       (outcome Outcome.Continue)))) \
+                 (export onMessage))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:platform/guest"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                scalar_host_import_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "the scalar-host-import reducer must emit (combined typed+host assembler): {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("the scalar-host-import reducer emits a component");
+    if std::env::var("VRB_DUMP_SCALAR_HOST").is_ok() {
+        std::fs::write("/tmp/v-rb-scalar-host.wasm", bytes).unwrap();
+    }
+    let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+    v.validate_all(bytes)
+        .expect("the scalar-host-import reducer component validates");
+    let req = cdz_run::required_runtime(bytes)
+        .expect("the scalar-host-import reducer component loads on the pinned wasmtime");
+    assert!(
+        req.is_some_and(|r| r.import_name.contains("cadenza:runtime/heap")),
+        "the reducer composes the value-heap runtime"
+    );
+    assert!(
+        String::from_utf8_lossy(bytes).contains("cadenza:platform/clock"),
+        "the reducer imports the clock host interface at the world's FQ name"
+    );
+}
+
+/// W4c-b-iii ANCHOR (decline-don't-miscompile): a typed reducer performing `identity.id : () -> list<u8>`
+/// — a host op whose `list<u8>` RESULT needs linear memory — DECLINES cleanly. The combined
+/// typed-interface + host-import assembler now composes a MEMORYLESS host op (see
+/// `a_typed_reducer_with_a_scalar_host_import_emits_and_loads`), but a memory-needing host op requires
+/// unifying the wrapper's DEFINED memory with the host-op lower's shared memory — the next slice. Locks the
+/// clean decline (no mis-emit) until it lands.
+#[test]
+fn an_identity_performing_reducer_declines_until_shared_memory_host_composition() {
     use crate::testkit::parse;
     let src = "(module m \
                  (type Outcome Continue (Close (Record (schema Bytes) (reason Bytes)))) \
@@ -2924,11 +3101,9 @@ fn an_identity_performing_reducer_declines_cleanly_until_generic_world_import_em
         ],
         &[crate::backend::Target::Wasm],
     );
-    // No mis-emit: declines with no wasm artifact, naming the host-result boundary gap (the FIRST layer of
-    // the generic world-import emit — a `Bytes` host result). Flip to an emit+validate assertion when it lands.
     assert!(
         out.has_error(),
-        "an identity-performing reducer must decline until the generic world-import emit lands"
+        "an identity.id (list<u8>-result) reducer must decline until the shared-memory host composition lands"
     );
     assert!(
         out.artifact(crate::backend::Target::Wasm.artifact_kind())
@@ -2938,8 +3113,8 @@ fn an_identity_performing_reducer_declines_cleanly_until_generic_world_import_em
     assert!(
         out.diagnostics
             .iter()
-            .any(|d| d.message.contains("id") && d.message.contains("no component boundary form")),
-        "the decline names the host-op `id` result boundary gap: {:?}",
+            .any(|d| d.message.contains("shared-memory composition")),
+        "the decline names the shared-memory host-composition slice: {:?}",
         out.diagnostics
             .iter()
             .map(|d| &d.message)

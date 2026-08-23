@@ -931,6 +931,247 @@ pub fn assemble_typed_interface_with_runtime(
     out
 }
 
+/// [`assemble_typed_interface_with_runtime`] PLUS a HOST-effect import (W4c-b-iii) — a reducer guest that
+/// EXPORTS the typed interface AND PERFORMS a world import (`identity.id`, `state.get`, …). Fuses this
+/// module's two-import bookkeeping (`assemble_host_runtime`: host effect + runtime) with the typed
+/// interface-instance export. SINGLE host effect (one interface — every host op shares `effect_iface`); a
+/// multi-effect guest is a later increment. The wrapper `core` imports BOTH `"host"` (the h host ops) and
+/// `"heap"` (the k runtime ops); `host_fns` are the host ops (their `comp_functype`s built by the caller with
+/// the instance-local `(list u8)` index) and `effect_iface` is the host interface's FQ world name.
+///
+/// Index spaces (`h`=host ops, `k`=runtime ops, `m`=funcs, `d`=defined types): component types — defined
+/// `0..d`, host instance-type `d`, runtime instance-type `d+1`, functypes `d+2..d+2+m`; component funcs — host
+/// op aliases `0..h`, runtime op aliases `h..h+k`, lifts `h+k..h+k+m`; core funcs — lowered host `0..h`,
+/// lowered runtime `h..h+k`, boundary aliases `h+k..h+k+m`, `cabi_realloc` alias `h+k+m` (if memory);
+/// component instances — imported host `0`, imported runtime `1`, the exported bundle `2`; core instances —
+/// host ops `0`, runtime ops `1`, program `2`.
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_typed_interface_with_host_runtime(
+    core: &[u8],
+    iface: &TypedInterface,
+    effect_iface: &str,
+    host_fns: &[HostFn],
+    imports: &[&RtOp],
+    import_name: &str,
+    needs_option_bytes: bool,
+    needs_list_byte_pairs: bool,
+    needs_bytes_result: bool,
+) -> Vec<u8> {
+    use crate::backend::common::export_name::kebab_extern_name;
+    use crate::backend::wasm::wit_ctype::{CRef, emit_cdef, emit_functype};
+    type Sig = (Vec<(String, CRef)>, Option<CRef>);
+    let h = host_fns.len();
+    let k = imports.len();
+    let m = iface.funcs.len();
+
+    let mut table = Vec::new();
+    let mut memo: Vec<(WitType, CRef)> = Vec::new();
+    let mut named: Vec<(String, CRef)> = Vec::new();
+    for (n, ty) in &iface.types {
+        named.push((n.clone(), add_memo(ty, &mut table, &mut memo)));
+    }
+    let mut sigs: Vec<Sig> = Vec::new();
+    for f in &iface.funcs {
+        let prefs = f
+            .params
+            .iter()
+            .map(|(n, ty)| (n.clone(), add_memo(ty, &mut table, &mut memo)))
+            .collect();
+        let rref = f
+            .result
+            .as_ref()
+            .map(|t| add_memo(t, &mut table, &mut memo));
+        sigs.push((prefs, rref));
+    }
+    let d = table.len();
+    let functype_base = (d + 2) as u32; // defined 0..d, host-it d, runtime-it d+1, functypes d+2..
+
+    // sec 7: defined types (comp types 0..d), host instance-type (comp type d), runtime instance-type (comp
+    // type d+1), then the m per-func functypes (d+2..d+2+m).
+    let type_sec = {
+        let mut items = Vec::new();
+        for def in &table {
+            items.extend_from_slice(&emit_cdef(def));
+        }
+        items.extend_from_slice(&host_effect_instance_type(
+            host_fns,
+            needs_option_bytes,
+            needs_list_byte_pairs,
+            needs_bytes_result,
+        ));
+        items.extend_from_slice(&runtime_op_instance_type(imports));
+        for (prefs, rref) in &sigs {
+            items.extend_from_slice(&emit_functype(prefs, rref.as_ref()));
+        }
+        section(sec::COMPONENT_TYPE, &wasm_vec(d + 2 + m, &items))
+    };
+    // sec 10: import the host effect (instance of comp type d, under the kebab effect name) → comp instance 0,
+    // then the runtime (instance of comp type d+1, under import_name) → comp instance 1.
+    let import_sec = {
+        let mut items = Vec::new();
+        let mut eff = extern_name(&kebab_extern_name(effect_iface));
+        eff.push(0x05); // ComponentTypeRef::Instance
+        uleb128(d as u64, &mut eff);
+        items.extend_from_slice(&eff);
+        let mut rt = extern_name(import_name);
+        rt.push(0x05);
+        uleb128((d + 1) as u64, &mut rt);
+        items.extend_from_slice(&rt);
+        section(sec::COMPONENT_IMPORT, &wasm_vec(2, &items))
+    };
+    // sec 6 (first): alias h host ops out of comp instance 0 (→ comp funcs 0..h), then k runtime ops out of
+    // comp instance 1 (→ comp funcs h..h+k).
+    let op_alias_sec = {
+        let mut items = Vec::new();
+        for f in host_fns {
+            items.extend_from_slice(&comp_alias_item(0, &kebab_extern_name(&f.op)));
+        }
+        for op in imports {
+            items.extend_from_slice(&comp_alias_item(1, op.name));
+        }
+        section(sec::ALIAS, &wasm_vec(h + k, &items))
+    };
+    // sec 8 (first): lower each aliased op (comp funcs 0..h+k) → core funcs 0..h+k.
+    let lower_sec = {
+        let mut items = Vec::new();
+        for i in 0..(h + k) {
+            items.extend_from_slice(&canon_lower_item(i as u32));
+        }
+        section(sec::CANON, &wasm_vec(h + k, &items))
+    };
+    // sec 2: THREE core instances — (0) lowered HOST ops under their op names → `"host"`; (1) lowered RUNTIME
+    // ops under their names → `"heap"`; (2) the program bound to BOTH.
+    let core_instance_sec = {
+        let mut items = Vec::new();
+        let mut host = vec![0x01];
+        let mut host_exports = Vec::new();
+        for (i, f) in host_fns.iter().enumerate() {
+            host_exports.extend_from_slice(&uleb_bytes(f.op.len() as u64));
+            host_exports.extend_from_slice(f.op.as_bytes());
+            host_exports.push(0x00); // ExportKind::Func
+            uleb128(i as u64, &mut host_exports);
+        }
+        host.extend_from_slice(&wasm_vec(h, &host_exports));
+        items.extend_from_slice(&host);
+        let mut heap = vec![0x01];
+        let mut heap_exports = Vec::new();
+        for (j, op) in imports.iter().enumerate() {
+            heap_exports.extend_from_slice(&uleb_bytes(op.name.len() as u64));
+            heap_exports.extend_from_slice(op.name.as_bytes());
+            heap_exports.push(0x00);
+            uleb128((h + j) as u64, &mut heap_exports);
+        }
+        heap.extend_from_slice(&wasm_vec(k, &heap_exports));
+        items.extend_from_slice(&heap);
+        let mut prog = vec![0x00]; // instantiate
+        uleb128(0, &mut prog); // module 0
+        let mut args = Vec::new();
+        args.extend_from_slice(&uleb_bytes(HOST_MODULE.len() as u64));
+        args.extend_from_slice(HOST_MODULE.as_bytes());
+        args.push(0x12); // ModuleArg::Instance
+        uleb128(0, &mut args); // core instance 0
+        args.extend_from_slice(&uleb_bytes(HEAP_MODULE.len() as u64));
+        args.extend_from_slice(HEAP_MODULE.as_bytes());
+        args.push(0x12);
+        uleb128(1, &mut args); // core instance 1
+        prog.extend_from_slice(&wasm_vec(2, &args));
+        items.extend_from_slice(&prog);
+        section(sec::CORE_INSTANCE, &wasm_vec(3, &items))
+    };
+    // Does any boundary func's signature touch linear memory (a `list<u8>`/`string` leaf, or a spilling sig)?
+    let touches = |f: &TypedFunc| {
+        let ptys: Vec<WitType> = f.params.iter().map(|(_, t)| t.clone()).collect();
+        crate::backend::wasm::wit_ctype::sig_needs_memory(&ptys, f.result.as_ref())
+    };
+    let needs_memory = iface.funcs.iter().any(touches);
+    let realloc_core_func = (h + k + m) as u32;
+    // sec 6 (second): alias each boundary func off the PROGRAM instance (core instance 2) → core funcs
+    // h+k..h+k+m; when memory is needed, also its `memory` + `cabi_realloc`.
+    let boundary_alias_sec = {
+        let mut items = Vec::new();
+        for f in &iface.funcs {
+            items.extend_from_slice(&core_alias_item(2, &f.name));
+        }
+        let mut count = m;
+        if needs_memory {
+            items.extend_from_slice(&memory_alias_item(2, "memory"));
+            items.extend_from_slice(&core_alias_item(2, "cabi_realloc"));
+            count += 2;
+        }
+        section(sec::ALIAS, &wasm_vec(count, &items))
+    };
+    // sec 8 (second): lift each boundary core func (h+k+j) with its functype (functype_base+j).
+    let lift_sec = {
+        let mut items = Vec::new();
+        for (j, f) in iface.funcs.iter().enumerate() {
+            if touches(f) {
+                items.extend_from_slice(&canon_lift_list_item(
+                    (h + k + j) as u32,
+                    0,
+                    realloc_core_func,
+                    functype_base + j as u32,
+                ));
+            } else {
+                items.extend_from_slice(&canon_lift_item(
+                    (h + k + j) as u32,
+                    functype_base + j as u32,
+                ));
+            }
+        }
+        section(sec::CANON, &wasm_vec(m, &items))
+    };
+    // sec 5: the exported instance (FromExports) — named types + the m lifted funcs (comp funcs h+k+j).
+    let instance_sec = {
+        let mut inst_items = Vec::new();
+        for (n, r) in &named {
+            let idx = match r {
+                CRef::Idx(i) => *i,
+                CRef::Prim(_) => panic!("a named interface type must be a compound"),
+            };
+            inst_items.push(0x00);
+            inst_items.extend_from_slice(&uleb_bytes(n.len() as u64));
+            inst_items.extend_from_slice(n.as_bytes());
+            inst_items.push(0x03); // sort: type
+            uleb128(idx as u64, &mut inst_items);
+        }
+        for (j, f) in iface.funcs.iter().enumerate() {
+            inst_items.push(0x00);
+            inst_items.extend_from_slice(&uleb_bytes(f.name.len() as u64));
+            inst_items.extend_from_slice(f.name.as_bytes());
+            inst_items.push(0x01); // sort: func
+            uleb128((h + k + j) as u64, &mut inst_items);
+        }
+        let mut inst_def = vec![0x01];
+        uleb128((named.len() + m) as u64, &mut inst_def);
+        inst_def.extend_from_slice(&inst_items);
+        section(sec::COMPONENT_INSTANCE, &wasm_vec(1, &inst_def))
+    };
+    // sec 11: export the bundled instance (comp instance 2 — imported host 0, imported runtime 1).
+    let export_sec = {
+        let mut item = vec![0x00];
+        item.extend_from_slice(&uleb_bytes(iface.name.len() as u64));
+        item.extend_from_slice(iface.name.as_bytes());
+        item.push(0x05); // sort: instance
+        uleb128(2u64, &mut item);
+        item.push(0x00);
+        section(sec::COMPONENT_EXPORT, &wasm_vec(1, &item))
+    };
+
+    let mut out = Vec::new();
+    out.extend_from_slice(COMPONENT_MAGIC);
+    out.extend_from_slice(&type_sec); // 7: defined types + host-it + runtime-it + functypes
+    out.extend_from_slice(&import_sec); // 10: import host effect + runtime
+    out.extend_from_slice(&op_alias_sec); // 6: alias host ops then runtime ops
+    out.extend_from_slice(&lower_sec); // 8: lower both op sets → core funcs
+    out.extend_from_slice(&core_module_section(core)); // 1: the embedded program (imports "host" + "heap")
+    out.extend_from_slice(&core_instance_sec); // 2: host-instance + heap-instance + program-instance
+    out.extend_from_slice(&boundary_alias_sec); // 6: alias boundary funcs off the program
+    out.extend_from_slice(&lift_sec); // 8: lift boundary funcs
+    out.extend_from_slice(&instance_sec); // 5: the exported interface instance
+    out.extend_from_slice(&export_sec); // 11: export the instance
+    out
+}
+
 /// The IMPORT shape (the program imports `k = imports.len()` runtime ops). Follows `ComponentBuilder`'s
 /// call order so the bytes match the oracle. Index spaces (with `m = exports.len()`):
 ///   * lowered ops → core funcs `0..k`; boundary core-aliases → core funcs `k..k+m`.
