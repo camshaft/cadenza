@@ -606,7 +606,21 @@ pub fn core_module(
     imports: &[&RtOp],
     layout: &Layout,
 ) -> Result<Vec<u8>, String> {
-    core_module_impl(funcs, imports, &[], &[], layout)
+    core_module_impl(funcs, imports, &[], &[], layout, &[])
+}
+
+/// [`core_module`] plus boundary WRAPPER funcs (typed WIT interface-export emit, W4c): each [`WrapperDesc`]
+/// is appended as a `(flattened) -> result` core func that builds a def's `record` param from the flattened
+/// boundary leaves, calls the def, and returns its result — exported under the member name (shadowing the
+/// def's export). For a guest exporting an interface whose funcs carry records. `imports` must already
+/// include the rebuild ops (`arr-alloc`/`arr-set`/`box-*`) the wrappers use.
+pub fn core_module_with_wrappers(
+    funcs: &[SelectedFunc],
+    imports: &[&RtOp],
+    wrappers: &[WrapperDesc],
+    layout: &Layout,
+) -> Result<Vec<u8>, String> {
+    core_module_impl(funcs, imports, &[], &[], layout, wrappers)
 }
 
 /// [`core_module`] with a leading CROSS-COMPONENT extern-import set (X4b): `extern_fns` are peer ops
@@ -618,7 +632,7 @@ pub fn core_module_with_extern(
     extern_fns: &[crate::backend::wasm::host::ExternImport],
     layout: &Layout,
 ) -> Result<Vec<u8>, String> {
-    core_module_impl(funcs, &[], &[], extern_fns, layout)
+    core_module_impl(funcs, &[], &[], extern_fns, layout, &[])
 }
 
 /// [`core_module`] with BOTH a peer extern-import set AND the value-heap runtime (X5): peer ops from
@@ -630,7 +644,7 @@ pub fn core_module_with_extern_runtime(
     imports: &[&RtOp],
     layout: &Layout,
 ) -> Result<Vec<u8>, String> {
-    core_module_impl(funcs, imports, &[], extern_fns, layout)
+    core_module_impl(funcs, imports, &[], extern_fns, layout, &[])
 }
 
 /// [`core_module`] with a leading HOST-import set (E2h-2): `host_fns` are host-delegated ops imported
@@ -644,7 +658,30 @@ pub fn core_module_with_host(
     host_fns: &[crate::backend::wasm::host::HostImport],
     layout: &Layout,
 ) -> Result<Vec<u8>, String> {
-    core_module_impl(funcs, imports, host_fns, &[], layout)
+    core_module_impl(funcs, imports, host_fns, &[], layout, &[])
+}
+
+/// A boundary WRAPPER core function to APPEND to the emitted module — a `(flattened params) -> result` func
+/// that builds each guest value-heap value from the flattened boundary params, calls the compiled def, and
+/// returns its result. Emitted for a typed WIT interface-export member whose param is a `record` (the canon
+/// lift hands the record's flattened fields, but the compiled def wants a value-heap handle). The wrapper's
+/// export NAME shadows the def's — the interface aliases the wrapper, not the def, so the def stays internal.
+/// The wrapper appends AFTER all defined + lifted funcs, so no existing index shifts.
+pub struct WrapperDesc {
+    /// The exported member name (the interface aliases this → the wrapper).
+    pub name: String,
+    /// The wrapper's core param valtypes — the flattened boundary params (a `record` param flattens to its
+    /// fields' core valtypes, in order).
+    pub param_vts: Vec<u8>,
+    /// The wrapper's core result valtypes — the flattened boundary result (a scalar = one valtype, `unit` =
+    /// none). Passed straight through from the def's result (a scalar leaves the def raw).
+    pub result_vts: Vec<u8>,
+    /// Per DEF param, how to build it from the flattened boundary leaves: a `record` param is
+    /// `Some(fields)` (built via [`emit_cell_rebuild`]); a scalar param is `None` (a `local.get` passthrough).
+    /// In def-param order; the flattened-leaf cursor advances across all of them.
+    pub params: Vec<Option<Vec<FieldRebuild>>>,
+    /// The compiled def's absolute core func index to `call` after building its args.
+    pub def_abs: u32,
 }
 
 fn core_module_impl(
@@ -653,11 +690,13 @@ fn core_module_impl(
     host_fns: &[crate::backend::wasm::host::HostImport],
     extern_fns: &[crate::backend::wasm::host::ExternImport],
     layout: &Layout,
+    wrappers: &[WrapperDesc],
 ) -> Result<Vec<u8>, String> {
     let n = funcs.len();
     let h = host_fns.len();
     let e = extern_fns.len();
     let import_count = h + imports.len() + e;
+    let n_wrap = wrappers.len();
 
     // Type section, then the imports, in ONE fixed order: EXTERN peer functypes FIRST (type indices
     // `0..e`), then HOST (`e..e+h`), then RUNTIME (`e+h..import_count`), then one functype per defined
@@ -690,9 +729,17 @@ fn core_module_impl(
     for (param_vts, ret) in &layout.closure_call_types {
         type_items.extend_from_slice(&closure_call_functype(param_vts, ret)?);
     }
+    // Boundary WRAPPER functypes, LAST (type indices `import_count + n + extra + w`): a core functype
+    // `(param_vts) -> (result_vts)`. Empty for a program with no wrappers → byte-identical to before.
+    for w in wrappers {
+        let mut ft = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        ft.extend_from_slice(&wasm_vec(w.param_vts.len(), &w.param_vts));
+        ft.extend_from_slice(&wasm_vec(w.result_vts.len(), &w.result_vts));
+        type_items.extend_from_slice(&ft);
+    }
     let type_sec = section(
         wasm_abi::CORE_SEC_TYPE,
-        &wasm_vec(import_count + n + extra, &type_items),
+        &wasm_vec(import_count + n + extra + n_wrap, &type_items),
     );
 
     // Import section (id 2) — HOST func imports first (from module `"host"`, indices `0..h`), then one
@@ -752,12 +799,26 @@ fn core_module_impl(
     for i in 0..n {
         uleb128((import_count + i) as u64, &mut func_items);
     }
-    let func_sec = section(wasm_abi::CORE_SEC_FUNCTION, &wasm_vec(n, &func_items));
+    // WRAPPER funcs, appended AFTER the n defined+lifted funcs (function indices `import_count + n + w`),
+    // each referencing its wrapper functype (`import_count + n + extra + w`).
+    for w in 0..n_wrap {
+        uleb128((import_count + n + extra + w) as u64, &mut func_items);
+    }
+    let func_sec = section(
+        wasm_abi::CORE_SEC_FUNCTION,
+        &wasm_vec(n + n_wrap, &func_items),
+    );
 
     // Export section: export every boundary function under its verbatim name, by its absolute core
     // function index (`layout.abs`, which already includes the import shift).
     let mut export_items = Vec::new();
+    let mut export_n = 0usize;
     for e in &layout.exports {
+        // A wrapper SHADOWS the def's export under the same name (the interface aliases the wrapper); the
+        // def stays internal (still a core func the wrapper calls, just unexported).
+        if wrappers.iter().any(|w| w.name == e.name) {
+            continue;
+        }
         let abs = layout.abs(e.def).ok_or_else(|| {
             format!(
                 "exported definition `{}` is not in the emission order",
@@ -769,18 +830,57 @@ fn core_module_impl(
         item.push(wasm_abi::EXPORT_KIND_FUNC); // export kind: func
         uleb128(abs as u64, &mut item);
         export_items.extend_from_slice(&item);
+        export_n += 1;
     }
-    let export_sec = section(
-        wasm_abi::CORE_SEC_EXPORT,
-        &wasm_vec(layout.exports.len(), &export_items),
-    );
+    // WRAPPER exports — the member name → the wrapper's func index (`import_count + n + w`).
+    for (w, wrap) in wrappers.iter().enumerate() {
+        let mut item = uleb_bytes(wrap.name.len() as u64);
+        item.extend_from_slice(wrap.name.as_bytes());
+        item.push(wasm_abi::EXPORT_KIND_FUNC);
+        uleb128((import_count + n + w) as u64, &mut item);
+        export_items.extend_from_slice(&item);
+        export_n += 1;
+    }
+    let export_sec = section(wasm_abi::CORE_SEC_EXPORT, &wasm_vec(export_n, &export_items));
 
     // Code section: bodies in emission order.
     let mut code_items = Vec::new();
     for f in funcs {
         code_items.extend_from_slice(&code_entry(f, &import_index));
     }
-    let code_sec = section(wasm_abi::CORE_SEC_CODE, &wasm_vec(n, &code_items));
+    // WRAPPER bodies — one `(flattened) -> result` func per wrapper: build each def param from the flattened
+    // boundary leaves (a `record` param via `emit_cell_rebuild`, a scalar via `local.get`), `call` the def,
+    // return its result. The runtime rebuild ops (`arr-alloc`/`arr-set`/`box-*`) resolve through
+    // `import_index` (the caller must add them to the used-op set so they are imported).
+    if n_wrap > 0 {
+        let imp = |name: &str| -> u64 {
+            *import_index
+                .get(name)
+                .unwrap_or_else(|| panic!("wrapper needs runtime op `{name}` in the import set")) as u64
+        };
+        for wrap in wrappers {
+            let mut body = Vec::new();
+            body.extend_from_slice(&uleb_bytes(0)); // no locals (the cell handle stays on the stack)
+            let mut leaf = 0u32;
+            for p in &wrap.params {
+                match p {
+                    None => {
+                        body.push(op::LOCAL_GET);
+                        uleb128(leaf as u64, &mut body);
+                        leaf += 1;
+                    }
+                    Some(fields) => emit_cell_rebuild(fields, &mut leaf, &imp, &mut body),
+                }
+            }
+            body.push(op::CALL);
+            uleb128(wrap.def_abs as u64, &mut body);
+            body.push(op::END);
+            let mut entry = uleb_bytes(body.len() as u64);
+            entry.extend_from_slice(&body);
+            code_items.extend_from_slice(&entry);
+        }
+    }
+    let code_sec = section(wasm_abi::CORE_SEC_CODE, &wasm_vec(n + n_wrap, &code_items));
 
     // TABLE + ELEMENT sections — present ONLY when the program has lambda-lifted closures (a runtime
     // closure applies through `call_indirect` over the one funcref table). The table holds one funcref
