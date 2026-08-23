@@ -6,10 +6,11 @@ use super::{
     RecordingBlobStore, RecordingKvStore, RecordingProgramStore, RecordingReducer, Run, SpawnSpec,
 };
 use crate::{
-    BachRuntime, BlobStore, Bytes, ContractId, Delivered, Hash, HashTag, HostId, InMemoryBlobStore,
-    InMemoryEventRegistry, InMemoryKvStore, InMemoryReducerGraph, KeyRange, KvStore, Links,
-    Message, Notification, Origin, Outcome, ProgramHash, Reducer, ReducerId, ReducerKind, Request,
-    Response, Runtime, Spawn, Spawned, System, TaskSystem, spawned_contract,
+    BachRuntime, BlobStore, Bytes, ContractId, Delivered, FireAfter, Fired, Hash, HashTag, HostId,
+    InMemoryBlobStore, InMemoryEventRegistry, InMemoryKvStore, InMemoryReducerGraph, KeyRange,
+    KvStore, Links, Message, Notification, Origin, Outcome, ProgramHash, Reducer, ReducerId,
+    ReducerKind, Request, Response, Runtime, Spawn, Spawned, System, TaskSystem, spawned_contract,
+    timer_contract,
 };
 use std::ops::Bound;
 use std::sync::Arc;
@@ -576,4 +577,138 @@ fn the_log_records_each_spawns_name_and_id_so_it_is_self_describing() {
         .find(|r| matches!(&r.entry, Entry::Spawn(_)))
         .expect("a spawn record");
     assert_eq!(first_spawn.seq, 0, "spawn records lead the log");
+}
+
+// ---- richer harness scenarios: child lineage, timers (§3/§6) ----
+
+/// A reducer that arms a fire-after timer on its first message, then closes when it is woken (the timer's
+/// `Fired` response). Exercises the harness driving a timer to fire and the tap recording the round-trip.
+struct ArmThenCloseOnFire {
+    duration_ns: u64,
+}
+#[async_trait::async_trait]
+impl Reducer for ArmThenCloseOnFire {
+    async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
+        let arm = FireAfter {
+            duration: self.duration_ns,
+        };
+        (
+            vec![arm.into_request(Bytes::from_static(b"wake"))],
+            Outcome::Continue,
+        )
+    }
+    async fn on_response(&mut self, r: Response) -> (Vec<Request>, Outcome) {
+        if r.id == timer_contract() && matches!(&r.payload, Ok(b) if Fired::decode(b).is_some()) {
+            (
+                Vec::new(),
+                Outcome::Break {
+                    schema: ContractId::of(b"woke"),
+                    reason: Bytes::new(),
+                },
+            )
+        } else {
+            (Vec::new(), Outcome::Continue)
+        }
+    }
+    async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
+        (Vec::new(), Outcome::Continue)
+    }
+}
+
+#[test]
+fn a_child_spawn_resolves_its_parent_by_name_and_gets_a_distinct_lineage_bearing_id() {
+    let mut store = crate::program::testing::Store::new();
+    store.register(ProgramHash::of(b"parent"), || Box::new(JustClose));
+    store.register(ProgramHash::of(b"child"), || Box::new(JustClose));
+
+    // A run names a parent and a child of it; the harness derives each id from its genesis and resolves the
+    // child's parent by name — no reducer hash written by hand (§3).
+    let run = Harness::new(store, ProgramHash::of(b"sys"))
+        .spawn(SpawnSpec::new("parent", ProgramHash::of(b"parent")))
+        .spawn(SpawnSpec::new("child", ProgramHash::of(b"child")).child_of("parent"))
+        .run();
+
+    let parent = run.ids["parent"];
+    let child = run.ids["child"];
+    assert_ne!(
+        parent, child,
+        "parent and child get distinct genesis-derived ids"
+    );
+
+    // The child's spawn record names the parent's ASSIGNED id — lineage resolved from the name.
+    let child_parent = run
+        .records
+        .iter()
+        .find_map(|r| match &r.entry {
+            Entry::Spawn(info) if info.name == "child" => Some(info.parent),
+            _ => None,
+        })
+        .expect("child spawn recorded");
+    assert_eq!(
+        child_parent, parent,
+        "the child's parent is the parent's assigned id"
+    );
+
+    // A root is its own parent: the parent's spawn record's parent equals its own id (the record source).
+    let (parent_id_in_log, parent_of_parent) = run
+        .records
+        .iter()
+        .find_map(|r| match &r.entry {
+            Entry::Spawn(info) if info.name == "parent" => Some((r.source.reducer, info.parent)),
+            _ => None,
+        })
+        .expect("parent spawn recorded");
+    assert_eq!(
+        parent_of_parent, parent_id_in_log,
+        "a root is its own parent"
+    );
+}
+
+#[test]
+fn a_fire_after_timer_is_driven_to_fire_and_the_round_trip_is_recorded() {
+    let mut store = crate::program::testing::Store::new();
+    store.register(ProgramHash::of(b"armer"), || {
+        Box::new(ArmThenCloseOnFire {
+            duration_ns: 10_000_000, // 10ms of simulated time
+        })
+    });
+    store.register(ProgramHash::of(b"sys"), || Box::new(JustClose));
+
+    // The armer arms a 10ms timer on the go message; the run advances simulated time (run_for defaults to a
+    // virtual hour) so the timer fires and the armer is woken. bach makes this deterministic.
+    let run = Harness::new(store, ProgramHash::of(b"sys"))
+        .spawn(SpawnSpec::new("armer", ProgramHash::of(b"armer")))
+        .deliver(
+            "armer",
+            Delivered::Message(Message {
+                id: ContractId::of(b"go"),
+                payload: Bytes::from_static(b"x"),
+                from: Origin {
+                    reducer: ReducerId::of(b"caller"),
+                    host: HostId::of(b"ingress"),
+                },
+                continuation_token: Bytes::from_static(b"t"),
+            }),
+        )
+        .run();
+
+    // The arm was emitted against the timer contract...
+    assert!(
+        run.records_from("armer").any(|r| matches!(&r.entry,
+            Entry::Event(EventOp::Emitted { contract, .. }) if *contract == timer_contract())),
+        "the fire-after arm was recorded"
+    );
+    // ...the run drove time forward so it fired, delivered back as a response on the timer contract...
+    assert!(
+        run.records_from("armer").any(|r| matches!(&r.entry,
+            Entry::Event(EventOp::Delivered { kind: EventKind::Response, contract, .. })
+                if *contract == timer_contract())),
+        "the timer Fired response was recorded — the run drove the timer to fire"
+    );
+    // ...and the armer closed on the fire, so the run reached quiescence.
+    assert!(
+        run.records_from("armer")
+            .any(|r| matches!(&r.entry, Entry::Event(EventOp::Closed { .. }))),
+        "the armer closed after the timer fired"
+    );
 }
