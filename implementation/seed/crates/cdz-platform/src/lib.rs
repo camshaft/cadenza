@@ -49,6 +49,11 @@ pub use event_registry::{EventRegistry, InMemoryEventRegistry};
 pub use genesis::Genesis;
 pub use graph::{Dir, EdgeKind, InMemoryReducerGraph, ReducerGraph};
 pub use hash::{Hash, HashTag, Hasher, base64url};
+// The wasm program store (§3/§8): the production backend that loads a program's component from the CAS and
+// instantiates it as a reducer. Behind the `host` feature — the integration harness wraps it as any other
+// `ProgramStore` to drive real wasm reducers.
+#[cfg(feature = "host")]
+pub use host::WasmProgramStore;
 pub use ids::{ContractId, HostId, ProgramHash, ReducerId};
 pub use kv::{InMemoryKvStore, KeyRange, KvKeyScan, KvScan, KvStore, prefix_range};
 pub use lifecycle::{Lifecycle, lifecycle_contract};
