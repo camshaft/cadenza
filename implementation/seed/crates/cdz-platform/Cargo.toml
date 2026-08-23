@@ -40,6 +40,10 @@ host = ["dep:wasmtime"]
 # for all encoding and contract identification"). Depending on the language is right; only depending on the
 # compiler (rcdzc) would be the coupling to avoid.
 cadenza-ast = { path = "../cadenza-ast" }
+# The content hash (§8) + the contract-id computation (§1), split into a dep-minimal crate so they can
+# become a wasm component (operator 2026-08-23). The platform re-exports its `Hash`/`HashTag`/… and derives
+# every `Contract`'s id through it, so the hashing + declaration encoding live in one place.
+cdz-contract = { path = "../cdz-contract" }
 # arbitrary-precision integer, matching cadenza-ast's value model (its `Leaf::Int` is a `BigInt`), so a
 # contract value can carry a native Cadenza integer field (Int64/UInt64) rather than only opaque bytes.
 num-bigint = "0.4"

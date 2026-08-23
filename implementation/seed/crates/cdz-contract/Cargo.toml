@@ -1,0 +1,28 @@
+# cdz-contract — the content hash (§8) and the contract-id computation (§1).
+#
+# The low-level foundation the platform's identity rests on, split out as its own dep-minimal crate so it
+# can be turned into a wasm component: any program (a build step, the nix setup that produces a
+# name→contract-hash mapping, a Cadenza-authored tool) can transform a contract schema into its hash without
+# pulling in the platform runtime (operator directive 2026-08-23). It owns exactly the two things the design
+# says "reduce to hashing": the self-describing content [`Hash`] (§8) and the contract-id — the hash of a
+# contract's canonical declaration (§1). `cdz-platform` depends on this and re-exports `Hash`/`HashTag`/… so
+# the collapse is single-source: there is no second copy of the hashing or the declaration encoding.
+#
+# Dep-minimal on purpose (the wasm-component goal): only the value model (`cadenza-ast`, to build and
+# canonically encode the declaration) and `blake3` (the one content-address digest). No async runtime, no
+# `bytes`, no platform types — so the whole crate compiles to a small component.
+#
+# A normal member of the seed workspace (the `crates/*` glob), so it gets per-crate clippy + workspace-test
+# coverage for free.
+[package]
+name = "cdz-contract"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+# The LANGUAGE's canonical AST (not the compiler): a contract declaration is a Cadenza value built with the
+# canonical AST builder and hashed over its canonical encoding, so the contract-id is reproducible from the
+# declaration alone and matches every other producer of the same value (spec §1/§12).
+cadenza-ast = { path = "../cadenza-ast" }
+blake3 = "1" # the one content-address digest (fleet-unified on blake3, operator 2026-08-08)

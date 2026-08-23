@@ -28,9 +28,7 @@
 //! end.
 
 use crate::{Bytes, ContractId, Str};
-use cadenza_ast::ast::{Builder, Leaf, StructId};
-use cadenza_ast::{canon, codec};
-use std::sync::Arc;
+use cadenza_ast::ast::{Builder, StructId};
 
 /// A contract: a `(name, input type, output type)` declaration whose canonical encoding hashes to its
 /// [`contract-id`](Contract::id) — the sole identity used to route (§1). The id is computed once at
@@ -82,23 +80,16 @@ impl Contract {
         input: &str,
         output: &str,
     ) -> Self {
-        let mut b = Builder::new();
-        let head = b.name("contract");
-        let name_node = b.atom_leaf(Leaf::Str(Arc::from(name.as_str())));
-        // (types <type-decl>…) — the set of named cadenza type declarations the input/output refer to.
-        let type_decls = types(&mut b);
-        let types_head = b.name("types");
-        let types_node = b.list(std::iter::once(types_head).chain(type_decls).collect());
-        // input/output are references to declared types, by name — no inline anonymous types (§1, so
-        // recursive/mutually-referential types resolve within the named set).
-        let input_ref = b.name(input);
-        let output_ref = b.name(output);
-        let root = b.list(vec![head, name_node, types_node, input_ref, output_ref]);
-        let arenas = b.finish(root);
-        // Canonicalize, then encode once: the encoded bytes are both the stored declaration and what the
-        // contract-id is the hash of (so id() and declaration() are both cheap getters afterward).
-        let canonical = canon::canonicalize(&arenas).into_owned();
-        let declaration = Bytes::from(codec::encode(&canonical));
+        // The declaration build + canonical encoding lives once in `cdz-contract` (so it can also run as a
+        // wasm component that turns a schema into a hash); build it once here, store the bytes, and take the
+        // contract-id over exactly them. `ContractId::of` is `Hash::of(HashTag::Contract, …)`, the same hash
+        // `cdz_contract::contract_id` computes — so the two agree by construction.
+        let declaration = Bytes::from(cdz_contract::contract_declaration(
+            name.as_str(),
+            types,
+            input,
+            output,
+        ));
         let id = ContractId::of(&declaration);
         Self {
             id,
@@ -216,5 +207,18 @@ mod tests {
     fn name_reads_back() {
         let c = Contract::new(Str::from("temp.celsius"), temp_type, "Temp", "Temp");
         assert_eq!(c.name().as_str(), "temp.celsius");
+    }
+
+    #[test]
+    fn id_agrees_with_the_standalone_contract_id_computation() {
+        // The collapse is faithful: a `Contract`'s id is exactly what `cdz_contract::contract_id` computes
+        // from the same declaration, so the platform and the standalone tool (the nix name→hash mapping)
+        // agree by construction. `Contract` derives its id via `cdz_contract::contract_declaration`, so this
+        // pins that the two entry points cannot drift.
+        let c = Contract::new(Str::from("temp.celsius"), temp_type, "Temp", "Temp");
+        assert_eq!(
+            c.id().hash(),
+            cdz_contract::contract_id("temp.celsius", temp_type, "Temp", "Temp")
+        );
     }
 }
