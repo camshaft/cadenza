@@ -508,6 +508,51 @@ pub fn is_world_import_op(world_bytes: Option<&[u8]>, iface: &str, op: &str) -> 
     })
 }
 
+/// The DERIVED signature of a world-IMPORT member — its `(param types, result type)` in Cadenza `Ty`,
+/// mapped from the declared `world.wit` func signature via [`wit_type_to_ty`]. This is the piece that lets a
+/// guest `perform` a NAMED world import WITHOUT a mirrored `(effect …)` decl (v-platform ruling 2026-08-23):
+/// the compiler, compiling a guest FOR a world, already knows that world's import signatures, so it derives
+/// the op's arg/result types straight from the WIT contract — one generic rule, ZERO per-interface arms, no
+/// guest/WIT drift.
+///
+/// `iface`/`op` match the SAME way [`is_world_import_op`] does — the world's FQ import name's last
+/// `/`-segment, kebab-normalized on both sides (so a source effect `Kv` binds `cadenza:agent-kernel/kv`).
+/// A NULLARY op yields an EMPTY param vec (e.g. `identity.id : () -> reducer-id` → `([], Bytes)`), so the
+/// caller need not commit to any curried-arrow encoding. Returns `None` when the world is absent/undecodable,
+/// the member is not a declared import, or any param/result type is one [`wit_type_to_ty`] does not yet map
+/// (a WIT `enum`/`variant` — e.g. `graph.neighbors`'s `dir` enum or `run.run`'s `error` — until the
+/// synthesized-nominal-decl increment lands).
+pub fn world_import_member_sig(
+    db: &crate::db::Db,
+    world_bytes: Option<&[u8]>,
+    iface: &str,
+    op: &str,
+) -> Option<(Vec<Ty>, Ty)> {
+    let bytes = world_bytes?;
+    let arenas = crate::codec::decode(bytes)?;
+    let world = parse_target_world(&arenas, arenas.root)?;
+    use crate::backend::common::export_name::kebab_extern_name;
+    fn short(fq: &str) -> &str {
+        fq.rsplit('/').next().unwrap_or(fq)
+    }
+    let iface_k = kebab_extern_name(iface);
+    let op_k = kebab_extern_name(op);
+    let interface = world
+        .imports
+        .iter()
+        .find(|i| kebab_extern_name(short(&i.name)) == iface_k)?;
+    let member = interface
+        .members
+        .iter()
+        .find(|m| kebab_extern_name(&m.name) == op_k)?;
+    let mut params = Vec::with_capacity(member.func.params.len());
+    for (_pname, pty) in &member.func.params {
+        params.push(wit_type_to_ty(db, pty)?);
+    }
+    let result = wit_type_to_ty(db, &member.func.result)?;
+    Some((params, result))
+}
+
 fn parse_wit_interface(a: &Arenas, id: StructId) -> Option<WitInterface> {
     let Struct::List(items) = a.get(id) else {
         return None;
@@ -1221,5 +1266,83 @@ mod tests {
             None,
             "a variant needs a synthesized nominal sum decl (later increment)"
         );
+    }
+
+    /// `world_import_member_sig` DERIVES a world-import member's `(param types, result type)` straight from
+    /// the declared `world.wit` — the piece that lets a guest perform a NAMED import with no mirrored
+    /// `(effect …)` decl. Pins the tricky shapes: a NULLARY op → empty params (identity.id), option/unit
+    /// results (state.get/put), and the deferred enum → `None` (until the synthesized-decl increment).
+    #[test]
+    fn world_import_member_sig_derives_the_arg_and_result_types_from_world_wit() {
+        use crate::db::Db;
+        let db = Db::load(crate::testkit::parse(
+            "(module m (def (main) 0) (export main))",
+        ));
+        let mut b = Builder::new();
+        // import things { id: () -> list<u8>; get: (list<u8>) -> option<list<u8>>;
+        //                 put: (list<u8>, list<u8>) -> unit; pick: (enum{outgoing,incoming}) -> unit }
+        let id_res = byte_list(&mut b);
+        let id = member(&mut b, "id", vec![], id_res);
+        let get_k = byte_list(&mut b);
+        let get_inner = byte_list(&mut b);
+        let get_res = opt(&mut b, get_inner);
+        let get = member(&mut b, "get", vec![("key", get_k)], get_res);
+        let put_k = byte_list(&mut b);
+        let put_v = byte_list(&mut b);
+        let put_res = unit(&mut b);
+        let put = member(
+            &mut b,
+            "put",
+            vec![("key", put_k), ("value", put_v)],
+            put_res,
+        );
+        let en = {
+            let eh = str_head(&mut b, "enum");
+            let a1 = b.name("outgoing");
+            let a2 = b.name("incoming");
+            b.list(vec![eh, a1, a2])
+        };
+        let pick_res = unit(&mut b);
+        let pick = member(&mut b, "pick", vec![("dir", en)], pick_res);
+        let ih = b.name("import");
+        let inm = b.name("things");
+        let things = b.list(vec![ih, inm, id, get, put, pick]);
+        let wh = b.name("world");
+        let wn = b.name("reducer");
+        let world = b.list(vec![wh, wn, things]);
+        let a = b.finish(world);
+        let bytes = crate::codec::encode(&a);
+        let w = Some(bytes.as_slice());
+
+        // NULLARY op → empty params, Bytes result (the identity.id : () -> reducer-id shape).
+        assert_eq!(
+            world_import_member_sig(&db, w, "things", "id"),
+            Some((vec![], Ty::Bytes))
+        );
+        // (list<u8>) -> option<list<u8>> → ([Bytes], Option Bytes).
+        let opt_bytes = {
+            let occ = db
+                .type_decls
+                .iter()
+                .find(|t| t.name == "Option")
+                .unwrap()
+                .occ;
+            db.normalize_sum(occ, vec![Ty::Bytes])
+        };
+        assert_eq!(
+            world_import_member_sig(&db, w, "things", "get"),
+            Some((vec![Ty::Bytes], opt_bytes))
+        );
+        // (list<u8>, list<u8>) -> unit → ([Bytes, Bytes], Unit).
+        assert_eq!(
+            world_import_member_sig(&db, w, "things", "put"),
+            Some((vec![Ty::Bytes, Ty::Bytes], Ty::Unit))
+        );
+        // An enum param is not yet mapped → None (deferred synthesized-decl increment).
+        assert_eq!(world_import_member_sig(&db, w, "things", "pick"), None);
+        // A non-member / non-interface / absent world → None.
+        assert_eq!(world_import_member_sig(&db, w, "things", "nope"), None);
+        assert_eq!(world_import_member_sig(&db, w, "other", "id"), None);
+        assert_eq!(world_import_member_sig(&db, None, "things", "id"), None);
     }
 }
