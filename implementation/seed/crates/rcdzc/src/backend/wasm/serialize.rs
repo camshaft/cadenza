@@ -775,8 +775,20 @@ fn core_module_impl(
     let n = funcs.len();
     let h = host_fns.len();
     let e = extern_fns.len();
-    let import_count = h + imports.len() + e;
     let n_wrap = wrappers.len();
+    // A host op with a COMPOUND result (`list<u8>`/`option<list<u8>>`/`list<tuple>`) is canon-lowered with a
+    // Memory + Realloc option — the host allocates the spilled result into guest memory, which the guest lift
+    // reads. That realloc must be available at LOWER-time (before the program core), so it is the SHARED
+    // `cabi_realloc` the mem module exports and this core IMPORTS as `"mem"`.`"cabi_realloc"` (a FUNC import,
+    // right after the runtime ops), instead of DEFINING its own. One allocator over the one shared memory: the
+    // host-op lower + the guest's own retptr/leaf allocs all bump the same cursor. Absent → the wrapper DEFINES
+    // its own `cabi_realloc` (the memoryless / list-param-only paths).
+    let import_realloc = host_fns
+        .iter()
+        .any(|h| h.result_bytes || h.result_option_bytes || h.result_list_byte_pairs);
+    // The realloc IMPORT (when a compound host result is present) occupies a func-import slot after the runtime
+    // ops, so a defined func's index (and its type index, kept in lockstep) shifts by +1.
+    let import_count = h + imports.len() + e + import_realloc as usize;
     // A wrapper carrying a `list<u8>` leaf reads the list's bytes out of linear memory the canon lift lowered
     // it into, so the core module DEFINES + exports memory 0 and a `cabi_realloc` (a bump allocator over a
     // mutable global) — the canon lift's Memory+Realloc options reference them. `wrapper_needs_memory` gates
@@ -793,17 +805,13 @@ fn core_module_impl(
             .any(FieldRebuild::has_bytes_leaf)
             || matches!(w.result, ResultLower::SpillRecord { .. })
     });
-    // A host op with a COMPOUND result (`list<u8>`/`option<list<u8>>`/`list<tuple>`) is canon-lowered with a
-    // MEMORY option — its spilled result is read from linear memory the guest's `HostCall` lift copies out of.
-    // That memory must be available at LOWER-time (before the program core), so it is the SHARED `"mem"`
-    // module the component composes (like the bytes-provider path), not a memory the program defines. So when
-    // a host op needs memory, the core IMPORTS `"mem"`.`"mem"` (via `needs_memory` below) and does NOT define
-    // its own memory — the wrapper's `list<u8>`-leaf handling + the host-op lift then share the one imported
-    // memory 0. (`cabi_realloc` is still DEFINED, bumping over the imported memory.)
-    let host_result_needs_memory = host_fns
-        .iter()
-        .any(|h| h.result_bytes || h.result_option_bytes || h.result_list_byte_pairs);
-    let n_realloc = wrapper_needs_memory as usize; // 0 or 1 extra defined func (`cabi_realloc`)
+    // A host op with a COMPOUND result also needs the SHARED linear memory (imported `"mem"`.`"mem"`) — the
+    // host writes the spilled result there and the guest lift reads it. (Same `import_realloc` condition; the
+    // shared cabi_realloc bumps over this shared memory.)
+    let host_result_needs_memory = import_realloc;
+    // A DEFINED `cabi_realloc` (bump over a defined memory) — only when the wrapper needs memory AND we are NOT
+    // importing the shared allocator. In `import_realloc` mode the mem module owns the allocator.
+    let n_realloc = (wrapper_needs_memory && !import_realloc) as usize;
 
     // Type section, then the imports, in ONE fixed order: EXTERN peer functypes FIRST (type indices
     // `0..e`), then HOST (`e..e+h`), then RUNTIME (`e+h..import_count`), then one functype per defined
@@ -822,6 +830,15 @@ fn core_module_impl(
     }
     for o in imports {
         type_items.extend_from_slice(&import_functype(o));
+    }
+    // The `cabi_realloc` IMPORT functype `(i32×4)->i32`, placed WITHIN the import block (right after runtime,
+    // type index `e+h+k`) so the `import_count`↔type-index lockstep holds (defined funcs stay at
+    // `import_count + i`). Present only in `import_realloc` mode; the DEFINE-mode realloc functype is laid last.
+    if import_realloc {
+        let mut ft = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        ft.extend_from_slice(&wasm_vec(4, &[wasm_abi::CORE_I32; 4]));
+        ft.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        type_items.extend_from_slice(&ft);
     }
     for f in funcs {
         type_items.extend_from_slice(&functype(f)?);
@@ -844,9 +861,11 @@ fn core_module_impl(
         ft.extend_from_slice(&wasm_vec(w.result_vts.len(), &w.result_vts));
         type_items.extend_from_slice(&ft);
     }
-    // The `cabi_realloc` functype LAST (type index `import_count + n + extra + n_wrap`), when a wrapper needs
-    // memory: `(i32 old_ptr, i32 old_size, i32 align, i32 new_size) -> i32`. Absent otherwise.
-    if wrapper_needs_memory {
+    // The DEFINE-mode `cabi_realloc` functype LAST (type index `import_count + n + extra + n_wrap`), when a
+    // wrapper needs memory AND we are not importing the shared allocator (`n_realloc == 1`): `(i32 old_ptr,
+    // i32 old_size, i32 align, i32 new_size) -> i32`. In `import_realloc` mode the functype is the import's
+    // (laid in the import block above), so this is absent.
+    if n_realloc == 1 {
         let mut ft = vec![wasm_abi::CORE_FUNCTYPE_FORM];
         ft.extend_from_slice(&wasm_vec(4, &[wasm_abi::CORE_I32; 4]));
         ft.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
@@ -894,6 +913,22 @@ fn core_module_impl(
             import_index.insert(o.name, ti);
             import_n += 1;
         }
+        // The SHARED `cabi_realloc` FUNC import (module `"mem"`, func index `e+h+k`, its functype at the same
+        // type index — laid in the import block above), when a host op returns a compound value. The host-op
+        // canon-lower's Realloc option + the guest's `CallImport("cabi_realloc")` (select's host-result lift +
+        // the wrapper's spill) all resolve to it via `import_index`; the mem module owns the one bump cursor.
+        if import_realloc {
+            let ti = (e + h + imports.len()) as u32;
+            let mut it = uleb_bytes("mem".len() as u64);
+            it.extend_from_slice(b"mem");
+            it.extend_from_slice(&uleb_bytes("cabi_realloc".len() as u64));
+            it.extend_from_slice(b"cabi_realloc");
+            it.push(0x00); // import desc: func
+            uleb128(ti as u64, &mut it);
+            import_items.extend_from_slice(&it);
+            import_index.insert("cabi_realloc", ti);
+            import_n += 1;
+        }
         if needs_memory {
             // `mem`.`mem` — a memory import, desc kind `0x02`, limits `{ min: 1 }` (flag 0x00, min 1).
             let mut item = uleb_bytes("mem".len() as u64);
@@ -920,9 +955,10 @@ fn core_module_impl(
     for w in 0..n_wrap {
         uleb128((import_count + n + extra + w) as u64, &mut func_items);
     }
-    // `cabi_realloc` LAST (function index `import_count + n + n_wrap`), its functype at
-    // `import_count + n + extra + n_wrap`. Present only when a wrapper needs memory.
-    if wrapper_needs_memory {
+    // The DEFINED `cabi_realloc` LAST (function index `import_count + n + n_wrap`), its functype at
+    // `import_count + n + extra + n_wrap`. Present only in DEFINE mode (`n_realloc == 1`); in `import_realloc`
+    // mode the shared allocator is imported, so no defined func here.
+    if n_realloc == 1 {
         uleb128((import_count + n + extra + n_wrap) as u64, &mut func_items);
     }
     let func_sec = section(
@@ -967,19 +1003,19 @@ fn core_module_impl(
         export_items.extend_from_slice(&item);
         export_n += 1;
     }
-    // `cabi_realloc` export — the canon lift's Realloc option + the host-op-result lift alias it off this
-    // program instance. Present when a wrapper needs memory. The `memory` export is present ONLY when memory 0
-    // is DEFINED here (not imported shared): when a host op imports the shared `"mem"`, the component aliases
-    // that memory off the mem instance instead, so the program neither owns nor re-exports it.
-    if wrapper_needs_memory {
-        if !needs_memory {
-            let mut mem_item = uleb_bytes("memory".len() as u64);
-            mem_item.extend_from_slice(b"memory");
-            mem_item.push(wasm_abi::EXPORT_KIND_MEMORY);
-            uleb128(0, &mut mem_item);
-            export_items.extend_from_slice(&mem_item);
-            export_n += 1;
-        }
+    // `memory` + `cabi_realloc` exports — the canon lift's Memory/Realloc options alias them off this program
+    // instance. Both are present ONLY in DEFINE mode: when memory 0 is DEFINED here (`!needs_memory`) and the
+    // realloc is DEFINED (`n_realloc == 1`). In `import_realloc` mode the program IMPORTS both from the shared
+    // `"mem"` module and the component aliases them off the mem instance, so the program re-exports neither.
+    if wrapper_needs_memory && !needs_memory {
+        let mut mem_item = uleb_bytes("memory".len() as u64);
+        mem_item.extend_from_slice(b"memory");
+        mem_item.push(wasm_abi::EXPORT_KIND_MEMORY);
+        uleb128(0, &mut mem_item);
+        export_items.extend_from_slice(&mem_item);
+        export_n += 1;
+    }
+    if n_realloc == 1 {
         let mut ra_item = uleb_bytes("cabi_realloc".len() as u64);
         ra_item.extend_from_slice(b"cabi_realloc");
         ra_item.push(wasm_abi::EXPORT_KIND_FUNC);
@@ -1009,7 +1045,13 @@ fn core_module_impl(
                 as u64
         };
         // `cabi_realloc`'s absolute core func index — the wrapper calls it to allocate a spilled-result area.
-        let realloc_abs = (import_count + n + n_wrap) as u64;
+        // In DEFINE mode it is the last defined func (`import_count + n + n_wrap`); in `import_realloc` mode it
+        // is the shared allocator FUNC IMPORT at `e + h + imports.len()` (before the runtime memory import).
+        let realloc_abs = if import_realloc {
+            (e + h + imports.len()) as u64
+        } else {
+            (import_count + n + n_wrap) as u64
+        };
         for wrap in wrappers {
             // Scratch i32 locals live AFTER the flattened params (indices from `p`): a `list<u8>` leaf uses two
             // (a `buf` handle + a copy counter); the result-lower allocates as many as its recursive plan
@@ -1076,10 +1118,11 @@ fn core_module_impl(
             code_items.extend_from_slice(&entry);
         }
     }
-    // `cabi_realloc` body LAST — a bump allocator over global 0: `p = (g + align - 1) & -align` (align is a
-    // power of 2, so `-align == ~(align-1)`), advance `g = p + new_size`, return `p`. One extra i32 local
-    // (index 4, after the 4 params) holds `p`. Present only when a wrapper needs memory.
-    if wrapper_needs_memory {
+    // The DEFINED `cabi_realloc` body LAST — a bump allocator over global 0: `p = (g + align - 1) & -align`
+    // (align is a power of 2, so `-align == ~(align-1)`), advance `g = p + new_size`, return `p`. One extra
+    // i32 local (index 4, after the 4 params) holds `p`. Present only in DEFINE mode (`n_realloc == 1`); in
+    // `import_realloc` mode the shared allocator is imported (no defined body, no global cursor).
+    if n_realloc == 1 {
         let mut body = Vec::new();
         body.extend_from_slice(&uleb_bytes(1)); // one local-decl group
         body.extend_from_slice(&uleb_bytes(1)); // of one
@@ -1178,19 +1221,24 @@ fn core_module_impl(
     // canon lift lowers incoming lists into, and a mutable i32 bump pointer `cabi_realloc` advances (init 16,
     // leaving low memory clear so a returned pointer is never 0). Both empty otherwise → byte-identical.
     let (mem_sec, global_sec) = if wrapper_needs_memory {
-        // DEFINE memory 0 ONLY when it is not IMPORTED as the shared `"mem"` (a host op needing memory
-        // imports it instead — `needs_memory`). The `cabi_realloc` bump global is present either way (it
-        // bumps over memory 0 whether that memory is defined here or imported shared).
+        // DEFINE memory 0 ONLY when it is not IMPORTED as the shared `"mem"` (a host op needing memory imports
+        // it instead — `needs_memory`). The `cabi_realloc` bump GLOBAL (cursor) is defined ONLY in DEFINE mode
+        // (`n_realloc == 1`) — the defined bump allocator's cursor; in `import_realloc` mode the shared mem
+        // module owns the cursor, so this program defines neither the allocator nor its global.
         let mem = if needs_memory {
             Vec::new()
         } else {
             section(wasm_abi::CORE_SEC_MEMORY, &wasm_vec(1, &[0x00, 0x01]))
         };
-        let mut g = vec![wasm_abi::CORE_I32, 0x01]; // i32, mutable
-        g.push(op::I32_CONST);
-        crate::backend::wasm::encode::sleb128(16, &mut g);
-        g.push(op::END);
-        let global = section(wasm_abi::CORE_SEC_GLOBAL, &wasm_vec(1, &g));
+        let global = if n_realloc == 1 {
+            let mut g = vec![wasm_abi::CORE_I32, 0x01]; // i32, mutable
+            g.push(op::I32_CONST);
+            crate::backend::wasm::encode::sleb128(16, &mut g);
+            g.push(op::END);
+            section(wasm_abi::CORE_SEC_GLOBAL, &wasm_vec(1, &g))
+        } else {
+            Vec::new()
+        };
         (mem, global)
     } else {
         (Vec::new(), Vec::new())

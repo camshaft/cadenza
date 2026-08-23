@@ -1196,6 +1196,12 @@ pub fn assemble_typed_interface_with_host_runtime_mem(
     needs_option_bytes: bool,
     needs_list_byte_pairs: bool,
     needs_bytes_result: bool,
+    // A host op with a COMPOUND result needs the SHARED cabi_realloc (from the mem module) at lower-time: the
+    // mem module exports memory + cabi_realloc, both aliased BEFORE the host-op lowers. cabi_realloc becomes
+    // CORE FUNC 0, so every lowered op / boundary / lift core-func index shifts by +1 (`rs`). When false
+    // (a `list<u8>`/`string` PARAM + scalar/unit result), the mem module exports memory only and the program
+    // owns its own defined cabi_realloc — no shift.
+    needs_realloc: bool,
 ) -> Vec<u8> {
     use crate::backend::common::export_name::kebab_extern_name;
     use crate::backend::wasm::wit_ctype::{CRef, emit_cdef, emit_functype};
@@ -1203,6 +1209,7 @@ pub fn assemble_typed_interface_with_host_runtime_mem(
     let h = host_fns.len();
     let k = imports.len();
     let m = iface.funcs.len();
+    let rs = needs_realloc as u32; // core-func shift: +1 when cabi_realloc is aliased as core func 0
 
     let mut table = Vec::new();
     let mut memo: Vec<(WitType, CRef)> = Vec::new();
@@ -1265,19 +1272,38 @@ pub fn assemble_typed_interface_with_host_runtime_mem(
         }
         section(sec::ALIAS, &wasm_vec(h + k, &items))
     };
-    // sec 1 (first): the SHARED-MEMORY module (core module 0); sec 2 (first): instantiate it → core instance
-    // 0; sec 6 (mem alias): alias `mem`.`mem` → core memory 0 (available before the host-op lowers).
-    let mem_module_sec = core_module_section(&shared_mem_module());
+    // sec 1 (first): the SHARED-MEMORY module (core module 0) — with a bump `cabi_realloc` when a compound
+    // host result needs the shared allocator; sec 2 (first): instantiate it → core instance 0; sec 6 (mem
+    // alias): alias `mem`.`mem` → core memory 0, AND (realloc mode) `mem`.`cabi_realloc` → CORE FUNC 0 — both
+    // BEFORE the host-op lowers, so a compound-result host op's lower can reference the realloc.
+    let mem_module_sec = core_module_section(&if needs_realloc {
+        shared_mem_realloc_module()
+    } else {
+        shared_mem_module()
+    });
     let mem_instance_sec = section(
         sec::CORE_INSTANCE,
         &wasm_vec(1, &core_instantiate_item(0, &[])),
     );
-    let mem_alias_sec = section(sec::ALIAS, &wasm_vec(1, &memory_alias_item(0, "mem")));
-    // sec 8 (first): lower host ops WITH the Memory option (core memory 0), runtime ops memoryless.
+    let mem_alias_sec = if needs_realloc {
+        let mut it = memory_alias_item(0, "mem");
+        it.extend_from_slice(&core_alias_item(0, "cabi_realloc")); // → core func 0
+        section(sec::ALIAS, &wasm_vec(2, &it))
+    } else {
+        section(sec::ALIAS, &wasm_vec(1, &memory_alias_item(0, "mem")))
+    };
+    // sec 8 (first): lower host ops WITH the Memory option (core memory 0) — plus a Realloc option (the shared
+    // cabi_realloc, core func 0) in realloc mode so a compound host RESULT is allocated into the shared memory;
+    // runtime ops memoryless. The lowered ops are core funcs `rs..rs+h+k` (core func 0 is the realloc alias in
+    // realloc mode).
     let lower_sec = {
         let mut items = Vec::new();
         for i in 0..h {
-            items.extend_from_slice(&canon_lower_item_mem(i as u32, 0));
+            if needs_realloc {
+                items.extend_from_slice(&canon_lower_item_mem_realloc(i as u32, 0, 0));
+            } else {
+                items.extend_from_slice(&canon_lower_item_mem(i as u32, 0));
+            }
         }
         for i in h..(h + k) {
             items.extend_from_slice(&canon_lower_item(i as u32));
@@ -1296,7 +1322,7 @@ pub fn assemble_typed_interface_with_host_runtime_mem(
             host_exports.extend_from_slice(&uleb_bytes(f.op.len() as u64));
             host_exports.extend_from_slice(f.op.as_bytes());
             host_exports.push(0x00);
-            uleb128(i as u64, &mut host_exports);
+            uleb128((rs + i as u32) as u64, &mut host_exports); // lowered host op i = core func rs+i
         }
         host.extend_from_slice(&wasm_vec(h, &host_exports));
         items.extend_from_slice(&host);
@@ -1306,7 +1332,7 @@ pub fn assemble_typed_interface_with_host_runtime_mem(
             heap_exports.extend_from_slice(&uleb_bytes(op.name.len() as u64));
             heap_exports.extend_from_slice(op.name.as_bytes());
             heap_exports.push(0x00);
-            uleb128((h + j) as u64, &mut heap_exports);
+            uleb128((rs + (h + j) as u32) as u64, &mut heap_exports); // runtime op j = core func rs+h+j
         }
         heap.extend_from_slice(&wasm_vec(k, &heap_exports));
         items.extend_from_slice(&heap);
@@ -1334,18 +1360,21 @@ pub fn assemble_typed_interface_with_host_runtime_mem(
         crate::backend::wasm::wit_ctype::sig_needs_memory(&ptys, f.result.as_ref())
     };
     let needs_memory = iface.funcs.iter().any(touches);
-    let realloc_core_func = (h + k + m) as u32;
-    // sec 6 (boundary alias): alias boundary funcs off the PROGRAM instance (core instance 3) → core funcs
-    // h+k..h+k+m; when memory is needed, also `cabi_realloc` (the program's, over the shared memory). The
-    // MEMORY the boundary lift references is core memory 0 (the shared `"mem"`, aliased above) — the program
-    // does not re-export memory.
+    // The boundary lift's Realloc option: in realloc mode it is the SHARED cabi_realloc (core func 0, aliased
+    // off the mem instance); otherwise the PROGRAM's own cabi_realloc, aliased off the program AFTER the m
+    // boundary funcs (core func rs+h+k+m = h+k+m since rs=0 there).
+    let realloc_core_func = if needs_realloc { 0 } else { (h + k + m) as u32 };
+    // sec 6 (boundary alias): alias the m boundary funcs off the PROGRAM instance (core instance 3) → core
+    // funcs `rs+h+k .. rs+h+k+m`. In DEFINE mode, ALSO alias the program's `cabi_realloc` (for the lift's
+    // Realloc); in realloc mode the realloc is core func 0 (the shared allocator) and the program neither owns
+    // nor exports one. The boundary lift's MEMORY is core memory 0 (the shared `"mem"`, aliased above).
     let boundary_alias_sec = {
         let mut items = Vec::new();
         for f in &iface.funcs {
             items.extend_from_slice(&core_alias_item(3, &f.name));
         }
         let mut count = m;
-        if needs_memory {
+        if needs_memory && !needs_realloc {
             items.extend_from_slice(&core_alias_item(3, "cabi_realloc"));
             count += 1;
         }
@@ -1354,18 +1383,16 @@ pub fn assemble_typed_interface_with_host_runtime_mem(
     let lift_sec = {
         let mut items = Vec::new();
         for (j, f) in iface.funcs.iter().enumerate() {
+            let boundary_core = rs + (h + k + j) as u32;
             if touches(f) {
                 items.extend_from_slice(&canon_lift_list_item(
-                    (h + k + j) as u32,
+                    boundary_core,
                     0,
                     realloc_core_func,
                     functype_base + j as u32,
                 ));
             } else {
-                items.extend_from_slice(&canon_lift_item(
-                    (h + k + j) as u32,
-                    functype_base + j as u32,
-                ));
+                items.extend_from_slice(&canon_lift_item(boundary_core, functype_base + j as u32));
             }
         }
         section(sec::CANON, &wasm_vec(m, &items))
