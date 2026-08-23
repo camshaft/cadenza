@@ -21,12 +21,14 @@
 //! both as pure runs.
 
 use crate::{
-    Bytes, ContractId, Hash, HashTag, HostId, Message, Origin, Outcome, ProgramHash, ProgramStore,
-    ReducerId, ReducerKind, SpawnContext,
+    Bytes, Contract, ContractId, Hash, HashTag, HostId, Message, Origin, Outcome, ProgramHash,
+    ProgramStore, ReducerId, ReducerKind, Request, SpawnContext,
 };
+use cadenza_ast::ast::{Builder, StructId};
+use cadenza_ast::codec;
 use futures_util::FutureExt; // catch_unwind, to turn a fold trap into a RunError rather than unwinding
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 /// Why a pure [`run`](Runner::run) did not produce an output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,9 +197,130 @@ impl Cache {
     }
 }
 
+// ── The run contract (§3/§4): run as an EFFECT ──────────────────────────────────────────────────────────
+// Alongside the direct [`Runner`] (which the synchronous host-call form uses), run is also an ordinary
+// effect: a reducer emits a [`Run`] request against the [`run_contract`], and the output comes back as the
+// response (a [`RunOutput`]), correlated by the request's own continuation-token — the async, event-mediated
+// form (design §3). The value shape is the generated `crate::contracts::run` schema; the two hashes and the
+// input/output cross as `Bytes`.
+
+/// The run contract: a [`Request`](crate::Request) against it runs a program as a pure function (§3), and the
+/// output returns as the response. Its id is the hash of the declared schema — the compiler-checked
+/// [`crate::contracts::run`] module generated from `contracts/run.cdz` — built once and cached.
+#[must_use]
+pub fn run_contract() -> ContractId {
+    static RUN: OnceLock<Contract> = OnceLock::new();
+    RUN.get_or_init(crate::contracts::run::contract).id()
+}
+
+/// A run request (the run contract's input, §3): run `program` with `input`, delivered against `contract`.
+/// This is what the payload of a run [`Request`](crate::Request) carries; the output comes back as the
+/// response correlated by the request's standard continuation-token, so nothing else rides in the value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Run {
+    /// The program to run, by content hash.
+    pub program: ProgramHash,
+    /// The contract-id `input` is delivered against (the contract the program answers).
+    pub contract: ContractId,
+    /// The input value, opaque bytes (the program decodes it against `contract`).
+    pub input: Bytes,
+}
+
+/// The output of a run (the run contract's output, §3): the value the program returned, opaque bytes (the
+/// caller decodes it against `contract`'s output type). Delivered back as the response to a [`Run`] request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunOutput {
+    /// The run program's output value, opaque bytes.
+    pub output: Bytes,
+}
+
+impl Run {
+    /// Build the request value into `b` — a value of the schema type `Request` (`Run(Record …)`), so it
+    /// type-ascribes against the contract's schema. The shape is entirely the generated builder's; this only
+    /// supplies the two hash byte-leaves and the input.
+    fn build(&self, b: &mut Builder) -> StructId {
+        use crate::contract_value as v;
+        use crate::contracts::run as c;
+        let program = v::bytes_leaf(b, self.program.hash().as_bytes());
+        let contract = v::bytes_leaf(b, self.contract.hash().as_bytes());
+        let input = v::bytes_leaf(b, &self.input);
+        c::request_run(
+            b,
+            c::RequestRun {
+                program,
+                contract,
+                input,
+            },
+        )
+    }
+
+    /// Encode the request as a Cadenza value in the canonical binary form. The inverse of [`decode`](Self::decode).
+    #[must_use]
+    pub fn encode(&self) -> Bytes {
+        let mut b = Builder::new();
+        let root = self.build(&mut b);
+        Bytes::from(codec::encode(&b.finish(root)))
+    }
+
+    /// The [`Request`](crate::Request) a reducer emits to run `self` as an effect: against the
+    /// [`run_contract`], with the request as its payload; the [`RunOutput`] comes back as the response
+    /// carrying `continuation_token`. Carries no deadline (a caller adds one if it wants a bound).
+    #[must_use]
+    pub fn into_request(self, continuation_token: Bytes) -> Request {
+        Request {
+            id: run_contract(),
+            payload: self.encode(),
+            continuation_token,
+            deadline: None,
+        }
+    }
+
+    /// Decode a run request from a Cadenza value, or `None` if the bytes are not a well-formed `Run` value (a
+    /// malformed hash leaf, wrong shape). Total — a malformed request is rejected, never a panic.
+    #[must_use]
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        use crate::contract_value as v;
+        use crate::contracts::run as c;
+        let arenas = codec::decode(bytes)?;
+        let r = c::as_request_run(&arenas, arenas.root)?;
+        Some(Self {
+            program: ProgramHash::try_from(v::read_bytes(&arenas, r.program)?.as_ref()).ok()?,
+            contract: ContractId::try_from(v::read_bytes(&arenas, r.contract)?.as_ref()).ok()?,
+            input: v::read_bytes(&arenas, r.input)?,
+        })
+    }
+}
+
+impl RunOutput {
+    /// Encode the output as a Cadenza value (`Output(Bytes)`) in the canonical binary form — what the run
+    /// effect's response payload carries. The inverse of [`decode`](Self::decode).
+    #[must_use]
+    pub fn encode(&self) -> Bytes {
+        use crate::contract_value as v;
+        use crate::contracts::run as c;
+        let mut b = Builder::new();
+        let output = v::bytes_leaf(&mut b, &self.output);
+        let root = c::output_output(&mut b, output);
+        Bytes::from(codec::encode(&b.finish(root)))
+    }
+
+    /// Decode an output from a Cadenza value, or `None` if the bytes are not a well-formed `Output` value.
+    /// Total.
+    #[must_use]
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        use crate::contract_value as v;
+        use crate::contracts::run as c;
+        let arenas = codec::decode(bytes)?;
+        let inner = c::as_output_output(&arenas, arenas.root)?;
+        Some(Self {
+            output: v::read_bytes(&arenas, inner)?,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{RunError, Runner};
+    use super::{Run, RunError, RunOutput, Runner, run_contract};
     use crate::{
         Bytes, ContractId, Message, Notification, Outcome, ProgramHash, Reducer, Request, Response,
     };
@@ -270,6 +393,40 @@ mod tests {
         async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
             (Vec::new(), Outcome::Continue)
         }
+    }
+
+    #[test]
+    fn a_run_request_round_trips_through_the_codec() {
+        // The run effect's request: program/contract/input recovered exactly through encode/decode, and the
+        // request is emitted against the run contract with the caller's continuation-token.
+        let run = Run {
+            program: prog(b"the-program"),
+            contract: cid(b"the-contract"),
+            input: Bytes::from_static(b"the-input"),
+        };
+        assert_eq!(Run::decode(&run.encode()), Some(run.clone()));
+        let req = run.clone().into_request(Bytes::from_static(b"tok"));
+        assert_eq!(req.id, run_contract());
+        assert_eq!(req.continuation_token, Bytes::from_static(b"tok"));
+        assert_eq!(Run::decode(&req.payload), Some(run));
+        // A malformed hash leaf (wrong length) is a rejected request, not a panic.
+        assert_eq!(Run::decode(b"not a run value"), None);
+    }
+
+    #[test]
+    fn a_run_output_round_trips_through_the_codec() {
+        let out = RunOutput {
+            output: Bytes::from_static(b"the-result"),
+        };
+        assert_eq!(RunOutput::decode(&out.encode()), Some(out));
+        assert_eq!(RunOutput::decode(b"not an output"), None);
+    }
+
+    #[test]
+    fn the_run_contract_id_is_stable() {
+        // The contract-id is the hash of the declared schema, derived once and stable across calls.
+        assert_eq!(run_contract(), run_contract());
+        assert_ne!(run_contract(), crate::timer_contract());
     }
 
     #[tokio::test]

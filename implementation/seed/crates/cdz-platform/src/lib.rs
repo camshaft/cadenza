@@ -65,7 +65,7 @@ pub use kv::{InMemoryKvStore, KeyRange, KvKeyScan, KvScan, KvStore, prefix_range
 pub use lifecycle::{Lifecycle, lifecycle_contract};
 pub use program::{ProgramStore, SpawnContext};
 pub use reducer::{Error, Message, Notification, Origin, Outcome, Reducer, Request, Response};
-pub use run::{RunError, Runner};
+pub use run::{Run, RunError, RunOutput, Runner, run_contract};
 #[cfg(any(test, feature = "testing"))]
 pub use runtime::BachRuntime;
 pub use runtime::{Runtime, TokioRuntime};
