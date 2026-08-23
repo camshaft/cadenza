@@ -1117,6 +1117,32 @@
           vendor = reducerEchoCheckVendor;
         };
 
+        # ── a Cadenza `.cdz` reducer GUEST → wasm component (operator directive 2026-08-23) ─────────
+        #
+        # Stand up the pipeline that compiles a Cadenza reducer SOURCE (`.cdz`) to a reducer-world wasm
+        # component, so a Cadenza-authored guest can occupy the SAME `harnessPrograms` slot the hand-written
+        # Rust `reducer-echo` occupies today (the operator's "Cadenza guests, no more Rust" priority). Uses
+        # `cdz compile <src> --target wasm` — the `.cdz` declares its reducer world INLINE via `(world …)`
+        # (the external `KIND_WIT_WORLD` artifact path is a not-yet-wired follow-up, rcdzc `wit_world.rs`).
+        # Canonicalized (`strip -a`) + content-addressed like the Rust guests, so it registers identically.
+        #
+        # ⚠ GAP-ASSESSMENT STATUS (2026-08-23, coordinated with v-platform who authors the probe `.cdz`):
+        # the reducer-world compile path is UNEXERCISED end-to-end — no `.cdz` anywhere yet declares a
+        # `(world …)`, and a reducer that CALLS a compound-result host import (state.get/blobs.get) needs
+        # v-rust-backend's shared-ALLOCATOR slice (not yet landed). A MINIMAL echo reducer (exports
+        # on-message → step, no host-import calls) is the first thing to try. This function is READY; the
+        # `harnessPrograms` entry + a `packages.<name>` land the moment v-platform's probe `.cdz` compiles.
+        mkCadenzaGuest = { pname, src, entry ? null }:
+          pkgs.runCommand pname
+            { nativeBuildInputs = [ seedCompiler pkgs.wasm-tools ]; } ''
+            set -euo pipefail
+            cdz compile ${src} --target wasm -o guest.wasm \
+              ${pkgs.lib.optionalString (entry != null) "--entry ${entry}"}
+            # Canonicalize (strip the tool-version `producers` sections) so the guest's content address is
+            # reproducible cross-host, exactly like the Rust guests (mkStripComponent) + the runtime.
+            wasm-tools strip -a guest.wasm -o "$out"
+          '';
+
         # ── the integration-test HARNESS framework (design/cadenza-platform.md §9) ─────────────────
         #
         # The shape the operator asked for (PR #2994 review): a directory of PROGRAMS compiled once into a
