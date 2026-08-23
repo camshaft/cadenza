@@ -8027,6 +8027,64 @@ fn scalar_interface_export(
     })
 }
 
+/// Build the [`serialize::FieldRebuild`] for ONE record field (recursively), appending its flattened core
+/// valtypes to `param_vts` in field order. A scalar boxes one flattened leaf; a `list<u8>`/`Bytes` leaf
+/// crosses as `(ptr, len)` and copies out of memory (`BytesLeaf`, two i32); a NESTED record builds a `Nested`
+/// rebuild over its own fields (the message's `sender` shape). Declines any other compound field.
+fn param_field_rebuild(
+    gty: &crate::ty::Ty,
+    wty: &crate::wit_world::WitType,
+    param_vts: &mut Vec<u8>,
+) -> Option<crate::backend::wasm::serialize::FieldRebuild> {
+    use crate::backend::wasm::lir::{ValType, valtype_of};
+    use crate::backend::wasm::serialize::FieldRebuild;
+    use crate::ty::Ty;
+    use crate::wit_world::WitType;
+    match gty.strip_nominal() {
+        Ty::Bytes => {
+            param_vts.push(ValType::I32.byte());
+            param_vts.push(ValType::I32.byte());
+            Some(FieldRebuild::BytesLeaf)
+        }
+        Ty::Record(map) => {
+            let WitType::Record(wfs) = wty else {
+                return None;
+            };
+            Some(FieldRebuild::Nested(record_fields_rebuild(
+                map, wfs, param_vts,
+            )?))
+        }
+        _ => {
+            let fr = scalar_field_rebuild(gty)?;
+            param_vts.push(valtype_of(gty)?.byte());
+            Some(fr)
+        }
+    }
+}
+
+/// The per-field [`serialize::FieldRebuild`]s for a record's fields (recursively), with the WIT-vs-name-lex
+/// field-order SOUNDNESS guard (a mismatch would land a field's flattened leaf in the wrong cell slot). The
+/// entry point for both a top-level record param and a nested-record field.
+fn record_fields_rebuild(
+    map: &std::collections::BTreeMap<crate::resolved::Symbol, crate::ty::Ty>,
+    wfs: &[(String, crate::wit_world::WitType)],
+    param_vts: &mut Vec<u8>,
+) -> Option<Vec<crate::backend::wasm::serialize::FieldRebuild>> {
+    if wfs.len() != map.len() {
+        return None;
+    }
+    let wit_order: Vec<&str> = wfs.iter().map(|(n, _)| n.as_str()).collect();
+    let lex_order: Vec<&str> = map.keys().map(|s| s.name.as_ref()).collect();
+    if wit_order != lex_order {
+        return None;
+    }
+    let mut sub = Vec::new();
+    for (fg, (_, fw)) in map.values().zip(wfs.iter()) {
+        sub.push(param_field_rebuild(fg, fw, param_vts)?);
+    }
+    Some(sub)
+}
+
 /// Like [`scalar_interface_export`] but for a member with a RECORD param: build the boundary WRAPPER descs
 /// (the canon lift hands the record's flattened fields; the compiled def wants a value-heap handle, so a
 /// wrapper builds the handle then calls the def) plus the [`envelope::TypedInterface`] to emit. Fires only
@@ -8150,42 +8208,16 @@ fn record_interface_export(
         for ((_, gty), (_, wty)) in e.params.iter().zip(&member.func.params) {
             match gty {
                 Ty::Record(map) => {
-                    // SOUNDNESS: the wrapper reads the canon-flattened params IN THE WIT RECORD'S FIELD ORDER
-                    // and builds the value-heap cell in the def's `Ty::Record` order — which is NAME-
-                    // LEXICOGRAPHIC (a `BTreeMap<Symbol,_>`). Those two orders must coincide, or a field's
-                    // flattened leaf would land in the wrong cell slot (a silent miscompile). Decline when the
-                    // WIT declares its fields in a different order than name-lex — reordering the flattened
-                    // reads is a later slice; declining here keeps the boundary sound (never miscompiles).
-                    if let WitType::Record(wfs) = wty {
-                        let wit_order: Vec<&str> = wfs.iter().map(|(n, _)| n.as_str()).collect();
-                        let lex_order: Vec<&str> = map.keys().map(|s| s.name.as_ref()).collect();
-                        if wit_order != lex_order {
-                            return None;
-                        }
-                    } else {
+                    // Build the record's per-field rebuild + flattened core params (recursively, so a NESTED
+                    // record field — the message's `sender` — builds a `Nested` rebuild over its own fields).
+                    // SOUNDNESS: `record_fields_rebuild` guards the WIT-vs-name-lex field order at EVERY level
+                    // (the wrapper reads flattened params in WIT order but builds the value-heap cell in the
+                    // def's name-lex `Ty::Record` order; a mismatch would misplace a field's leaf). A scalar,
+                    // a `list<u8>` leaf, or a nested record is handled; any other compound field declines.
+                    let WitType::Record(wfs) = wty else {
                         return None;
-                    }
-                    // Build the record's per-field rebuild + flattened core params directly (`tuple_field_abi`
-                    // handles only scalar-field records): a scalar field boxes one flattened leaf; a
-                    // `list<u8>`/`Bytes` field crosses as `(ptr, len)` and copies out of the guest's linear
-                    // memory (`FieldRebuild::BytesLeaf`, two i32 core params). A nested compound / other field
-                    // declines (returns `None` → the later wrapper slice). Field order is `map.values()` — the
-                    // same order the boundary WIT record and the def's cell rebuild use.
-                    let mut rebuild = Vec::new();
-                    for f in map.values() {
-                        match f.strip_nominal() {
-                            Ty::Bytes => {
-                                param_vts.push(crate::backend::wasm::lir::ValType::I32.byte());
-                                param_vts.push(crate::backend::wasm::lir::ValType::I32.byte());
-                                rebuild.push(FieldRebuild::BytesLeaf);
-                            }
-                            _ => {
-                                let fr = scalar_field_rebuild(f)?;
-                                param_vts.push(valtype_of(f)?.byte());
-                                rebuild.push(fr);
-                            }
-                        }
-                    }
+                    };
+                    let rebuild = record_fields_rebuild(map, wfs, &mut param_vts)?;
                     params.push(Some(rebuild));
                     any_record = true;
                 }
@@ -8238,14 +8270,38 @@ fn record_interface_export(
     // world declares these inline (TargetWorld does not yet carry named types — the modeling gap), so
     // synthesize a name per DISTINCT one; `assemble_typed_interface`'s dedup makes each func param reference
     // the same exported type.
-    let mut types: Vec<(String, WitType)> = Vec::new();
-    let note = |t: &WitType, types: &mut Vec<(String, WitType)>| {
+    // Recurse into every nested type so a distinct name is synthesized for a NESTED record/variant too (the
+    // message's `sender` record inside `message`) — children first, so an outer type's field references an
+    // already-noted inner named type; the instance must export ALL of them or the validator rejects the
+    // export ("instance not valid to be used as export").
+    fn note(t: &WitType, types: &mut Vec<(String, WitType)>) {
+        match t {
+            WitType::Record(fs) => fs.iter().for_each(|(_, ft)| note(ft, types)),
+            WitType::Variant(cs) => cs.iter().for_each(|(_, p)| {
+                if let Some(p) = p {
+                    note(p, types)
+                }
+            }),
+            WitType::Tuple(es) => es.iter().for_each(|e| note(e, types)),
+            WitType::List(e) => note(e, types),
+            WitType::Option(i) => note(i, types),
+            WitType::Result { ok, err } => {
+                if let Some(o) = ok {
+                    note(o, types)
+                }
+                if let Some(e) = err {
+                    note(e, types)
+                }
+            }
+            _ => {}
+        }
         if matches!(t, WitType::Record(_) | WitType::Variant(_))
             && !types.iter().any(|(_, u)| u == t)
         {
             types.push((format!("t{}", types.len()), t.clone()));
         }
-    };
+    }
+    let mut types: Vec<(String, WitType)> = Vec::new();
     for f in &funcs {
         for (_, pty) in &f.params {
             note(pty, &mut types);
