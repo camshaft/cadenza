@@ -320,6 +320,11 @@
           cadenza-syntax = "implementation/seed/crates/cadenza-syntax";
           cdz = "implementation/seed/crates/cdz";
           cdz-calc = "implementation/seed/crates/cdz-calc";
+          # cdz-contract (#3026): the dep-minimal content-hash + contract-id crate cdz-platform now depends on.
+          # A ROOT workspace member (no own [workspace]), so it MUST be registered here — else the crane
+          # deps-layer src omits its Cargo.toml and the whole workspace fails to load (`cargo check` can't
+          # read a member's manifest). The other crates/* dirs absent from this map are standalone [workspace]s.
+          cdz-contract = "implementation/seed/crates/cdz-contract";
           cdz-platform = "implementation/seed/crates/cdz-platform";
           cdz-corpus = "implementation/seed/crates/cdz-corpus";
           cdz-num = "implementation/seed/crates/cdz-num";
