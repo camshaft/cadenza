@@ -169,6 +169,11 @@ fn wasm_store(cas: Arc<dyn BlobStore>, log: ObservationLog, host: HostId) -> Was
 fn run(spec: HarnessSpec) -> Result<Report, RunError> {
     let host = host();
 
+    // Check the description's cross-references (every named blob is declared, parents precede children,
+    // task names are unique, deliveries hit a spawned task) before running — so a malformed AST is a clean
+    // error, not a panic deep in name resolution.
+    spec.validate().map_err(|e| RunError(e.to_string()))?;
+
     // Resolve the checker program's bytes before `build` consumes the description's blobs. The checker must
     // be one of the run's registered blobs (it is seeded into the store like any program).
     let checker = match &spec.checker {
@@ -315,6 +320,28 @@ mod tests {
         assert!(
             run(spec).is_err(),
             "an unregistered checker blob is rejected"
+        );
+    }
+
+    #[test]
+    fn a_bad_cross_reference_is_a_clean_error_not_a_panic() {
+        // A spawn names a blob the run does not declare. `run` validates the description up front (before it
+        // builds the harness), so a malformed AST is a clean RunError (exit 2), not a panic deep in name
+        // resolution — the executable's contract for untrusted input.
+        let spec = HarnessSpec {
+            system: "$system".to_string(),
+            run_for: None,
+            blobs: vec![BlobSpec {
+                name: "$system".to_string(),
+                source: BlobSource::Inline(Bytes::from_static(b"itest:no-system-reducer")),
+            }],
+            spawns: vec![SpawnSpec::new("t", "undeclared")],
+            deliveries: vec![],
+            checker: None,
+        };
+        assert!(
+            run(spec).is_err(),
+            "an undeclared spawn blob is rejected before the run, not panicked on"
         );
     }
 }

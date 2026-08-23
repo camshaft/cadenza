@@ -207,6 +207,32 @@ pub enum SpecError {
         /// The delivery's target task name (or `"?"` if that too was missing).
         target: String,
     },
+    /// A spawn — or the `system` field — names a program blob not declared in `blobs`. A cross-reference
+    /// error found by [`validate`](HarnessSpec::validate), not a shape error.
+    UnknownBlob {
+        /// What referred to the blob: a task name, or `"system"`.
+        referrer: String,
+        /// The undeclared blob name.
+        blob: String,
+    },
+    /// A spawn's `parent` names a task not spawned earlier in the run (lineage must be ordered — a parent
+    /// appears before its child).
+    UnknownParent {
+        /// The child task.
+        task: String,
+        /// The parent name that resolves to no earlier task.
+        parent: String,
+    },
+    /// Two spawns share a task name — a task's name is its handle in the run, so it must be unique.
+    DuplicateTask {
+        /// The repeated task name.
+        task: String,
+    },
+    /// A delivery's `target` names a task the run does not spawn.
+    UnknownTarget {
+        /// The delivery target that resolves to no task.
+        target: String,
+    },
 }
 
 impl fmt::Display for SpecError {
@@ -234,6 +260,18 @@ impl fmt::Display for SpecError {
                 f,
                 "delivery to `{target}` must give exactly one of `message` or `notification`"
             ),
+            SpecError::UnknownBlob { referrer, blob } => write!(
+                f,
+                "`{referrer}` names blob `{blob}`, which is not declared in `blobs`"
+            ),
+            SpecError::UnknownParent { task, parent } => write!(
+                f,
+                "task `{task}` names parent `{parent}`, which is not a task spawned earlier in the run"
+            ),
+            SpecError::DuplicateTask { task } => write!(f, "duplicate task name `{task}`"),
+            SpecError::UnknownTarget { target } => {
+                write!(f, "delivery target `{target}` is not a task the run spawns")
+            }
         }
     }
 }
@@ -314,6 +352,54 @@ impl HarnessSpec {
             deliveries,
             checker,
         })
+    }
+
+    /// Check the description's internal name references before it is run: the `system` blob and every
+    /// spawn's blob are declared in `blobs`, each spawn's `parent` is a task spawned earlier, task names are
+    /// unique, and every delivery targets a spawned task. Where [`decode`](HarnessSpec::decode) checks the
+    /// *shape* of the value, this checks the *cross-references* a run resolves — so a caller (the executable)
+    /// can reject a malformed run with a pointed [`SpecError`] and a clean exit, rather than letting the run
+    /// fail deep in name resolution. Pure: it reads only the spec's own fields and touches no store.
+    pub fn validate(&self) -> Result<(), SpecError> {
+        use std::collections::BTreeSet;
+        let blobs: BTreeSet<&str> = self.blobs.iter().map(|b| b.name.as_str()).collect();
+        if !blobs.contains(self.system.as_str()) {
+            return Err(SpecError::UnknownBlob {
+                referrer: "system".to_string(),
+                blob: self.system.clone(),
+            });
+        }
+        // Spawns resolve in order: a parent must appear before its child, and each task name is claimed once.
+        let mut spawned: BTreeSet<&str> = BTreeSet::new();
+        for spawn in &self.spawns {
+            if !blobs.contains(spawn.blob_name()) {
+                return Err(SpecError::UnknownBlob {
+                    referrer: spawn.task_name().to_string(),
+                    blob: spawn.blob_name().to_string(),
+                });
+            }
+            if let Parent::Named(parent) = spawn.parent()
+                && !spawned.contains(parent.as_str())
+            {
+                return Err(SpecError::UnknownParent {
+                    task: spawn.task_name().to_string(),
+                    parent: parent.clone(),
+                });
+            }
+            if !spawned.insert(spawn.task_name()) {
+                return Err(SpecError::DuplicateTask {
+                    task: spawn.task_name().to_string(),
+                });
+            }
+        }
+        for (target, _event) in &self.deliveries {
+            if !spawned.contains(target.as_str()) {
+                return Err(SpecError::UnknownTarget {
+                    target: target.clone(),
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Turn the description into a runnable [`Harness`], resolving each `path`-sourced blob through
@@ -1152,6 +1238,140 @@ mod tests {
             Err(SpecError::WrongType {
                 field: "contract",
                 want: "a base64url contract-id",
+            })
+        );
+    }
+
+    /// An inline blob named `name` — the smallest well-formed blob for cross-reference tests.
+    fn blob(name: &str) -> BlobSpec {
+        BlobSpec {
+            name: name.to_string(),
+            source: BlobSource::Inline(Bytes::from_static(b"x")),
+        }
+    }
+
+    /// A delivery of an empty message to `target` — the event kind is immaterial to cross-reference checks.
+    fn deliver_to(target: &str) -> (String, DeliveryEvent) {
+        (
+            target.to_string(),
+            DeliveryEvent::Message {
+                contract: ContractId::of(b"c"),
+                payload: Bytes::new(),
+                token: Bytes::new(),
+            },
+        )
+    }
+
+    #[test]
+    fn validate_accepts_a_well_formed_run() {
+        // System blob declared, every spawn's blob declared, parent spawned earlier, delivery hits a task.
+        let spec = HarnessSpec {
+            system: "sys".to_string(),
+            run_for: None,
+            blobs: vec![blob("sys"), blob("worker")],
+            spawns: vec![
+                SpawnSpec::new("root", "worker"),
+                SpawnSpec::new("child", "worker").child_of("root"),
+            ],
+            deliveries: vec![deliver_to("root")],
+            checker: None,
+        };
+        assert_eq!(spec.validate(), Ok(()));
+    }
+
+    #[test]
+    fn validate_rejects_an_unregistered_system_blob() {
+        let spec = HarnessSpec {
+            system: "sys".to_string(),
+            run_for: None,
+            blobs: vec![blob("other")],
+            spawns: vec![],
+            deliveries: vec![],
+            checker: None,
+        };
+        assert_eq!(
+            spec.validate(),
+            Err(SpecError::UnknownBlob {
+                referrer: "system".to_string(),
+                blob: "sys".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn validate_rejects_a_spawn_of_an_undeclared_blob() {
+        let spec = HarnessSpec {
+            system: "sys".to_string(),
+            run_for: None,
+            blobs: vec![blob("sys")],
+            spawns: vec![SpawnSpec::new("t", "missing")],
+            deliveries: vec![],
+            checker: None,
+        };
+        assert_eq!(
+            spec.validate(),
+            Err(SpecError::UnknownBlob {
+                referrer: "t".to_string(),
+                blob: "missing".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn validate_rejects_a_parent_not_spawned_earlier() {
+        // The child names a parent that is spawned AFTER it (order matters), so it is unresolved.
+        let spec = HarnessSpec {
+            system: "sys".to_string(),
+            run_for: None,
+            blobs: vec![blob("sys"), blob("w")],
+            spawns: vec![
+                SpawnSpec::new("child", "w").child_of("root"),
+                SpawnSpec::new("root", "w"),
+            ],
+            deliveries: vec![],
+            checker: None,
+        };
+        assert_eq!(
+            spec.validate(),
+            Err(SpecError::UnknownParent {
+                task: "child".to_string(),
+                parent: "root".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn validate_rejects_a_duplicate_task_name() {
+        let spec = HarnessSpec {
+            system: "sys".to_string(),
+            run_for: None,
+            blobs: vec![blob("sys"), blob("w")],
+            spawns: vec![SpawnSpec::new("dup", "w"), SpawnSpec::new("dup", "w")],
+            deliveries: vec![],
+            checker: None,
+        };
+        assert_eq!(
+            spec.validate(),
+            Err(SpecError::DuplicateTask {
+                task: "dup".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn validate_rejects_a_delivery_to_an_unspawned_target() {
+        let spec = HarnessSpec {
+            system: "sys".to_string(),
+            run_for: None,
+            blobs: vec![blob("sys"), blob("w")],
+            spawns: vec![SpawnSpec::new("root", "w")],
+            deliveries: vec![deliver_to("ghost")],
+            checker: None,
+        };
+        assert_eq!(
+            spec.validate(),
+            Err(SpecError::UnknownTarget {
+                target: "ghost".to_string(),
             })
         );
     }
