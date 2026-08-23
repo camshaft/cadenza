@@ -1738,7 +1738,7 @@
             flakeReproBackstop = pkgs.runCommand "flake-repro-backstop"
               {
                 inherit runtimeHashParity runtimeDebugHashParity nfcHashParity
-                  reducerEchoValid exampleProjectTests crateClosureAssert;
+                  reducerEchoValid reducerEchoE2E exampleProjectTests crateClosureAssert;
               } ''
               echo "ok: flake reproducibility-backstop — hash-parity + component-validity + project-@tests + closure-assert" > $out
             '';
@@ -1752,6 +1752,55 @@
             # check: a future WIT/guest/toolchain change that silently produced a broken component fails the
             # flake here. This is what rebuilds-and-verifies the guest from source, replacing a committed .wasm.
             reducerEchoValid = validComponent { name = "reducer-echo"; drv = reducerEcho; };
+
+            # The reducer-echo END-TO-END check (§9): drive the NIX-BUILT reducer-echo guest through the whole
+            # platform via the integration-test executable, asserting the guest spawned AND was BORN (a `recv
+            # notification` on its contract — proof a REAL wasm component instantiated and ran under bach, not
+            # just a blob that parsed). This is the reducer-echo e2e (guest-build slice 2) AND the "build the
+            # integration-test executable in nix" deliverable in one: it builds + RUNS `cdz-platform-itest`
+            # reproducibly on the reproducibly-built guest.
+            #
+            # The itest exe takes ONE input: a Cadenza binary AST describing the whole run (§9 HarnessSpec —
+            # system reducer + program blobs + spawns). Per the operator, the run is authored as an S-EXPR job
+            # config (a `("record" …)` value) — here a `$system` reducer, the guest by PATH, and one spawn —
+            # then encoded to the binary AST by the nix-built `cdz` (`convert --from sexpr --to binary`, which
+            # is cache-shared via seedCompiler, no extra build). The guest is one opaque blob referenced by
+            # path: nothing reducer-echo-specific in the platform, no committed .wasm. `set -o pipefail` is
+            # load-bearing — without it the `itest | tee` pipeline would mask a nonzero exit. Builds wasmtime
+            # under stdenvNoCC+rustToolchain exactly as the crate-cdz check already does.
+            reducerEchoE2E = pkgs.stdenvNoCC.mkDerivation {
+              pname = "reducer-echo-e2e";
+              version = "0.0.0";
+              src = seedTestSrc;
+              nativeBuildInputs = [ rustToolchain ];
+              buildPhase = ''
+                runHook preBuild
+                set -o pipefail
+                ${mkCargoVendorEnv { vendor = seedCargoVendor; }}
+                export CDZ_STORE="${componentStore}"
+                cargo build --release --locked -p cdz-platform --bin cdz-platform-itest --features "testing host"
+                cat > harness.sexp <<'SEXP'
+                ("record"
+                  (= system "$system")
+                  (= blobs ("list"
+                    ("record" (= name "$system") (= bytes b"itest:no-system-reducer"))
+                    ("record" (= name "reducer-echo") (= path "reducer-echo.wasm"))))
+                  (= spawns ("list"
+                    ("record" (= name "reducer-echo") (= blob "reducer-echo")))))
+                SEXP
+                cp ${reducerEcho} reducer-echo.wasm
+                ${seedCompiler}/bin/cdz convert --from sexpr --to binary harness.sexp > harness.ast
+                ./target/release/cdz-platform-itest harness.ast | tee run.log
+                grep -q 'spawn "reducer-echo"' run.log
+                grep -q 'recv notification' run.log
+                runHook postBuild
+              '';
+              installPhase = ''
+                runHook preInstall
+                echo "ok: reducer-echo e2e — cdz-platform-itest drove the nix-built guest through the platform under bach (exit 0, spawn + birth observed)" > "$out"
+                runHook postInstall
+              '';
+            };
 
             # LOCAL-GATE bindings (v-nix+v-fleet-tooling 2026-08-06, GHA-outage fallback). The 3 required
             # checks that were inline `cargoWorkspaceCheck {…}` at their attr get `let`-bound here so BOTH
@@ -1871,6 +1920,9 @@
             # component (also part of flake-repro-backstop). This is what rebuilds-and-verifies the guest
             # from source, replacing the committed .wasm the operator vetoed.
             reducer-echo-valid = reducerEchoValid;
+            # `nix build .#checks.<sys>.reducer-echo-e2e` — build the itest exe + drive the nix-built guest
+            # through the platform under bach via an s-expr job config (guest-build slice 2 e2e + itest-exe-in-nix).
+            reducer-echo-e2e = reducerEchoE2E;
             # S3: the example project's @tests run through nix — a cache HIT when its sources are
             # unchanged (the "skip tests that haven't changed" win), a re-run + fail on a red test.
             example-project-tests = exampleProjectTests;
