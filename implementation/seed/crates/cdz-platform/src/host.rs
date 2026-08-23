@@ -6,6 +6,13 @@
 //! exports. Every host import is async (`async: true` below), so a disk- or network-backed backend never
 //! blocks the host thread while a reducer awaits it; the guest sees the calls as ordinary.
 //!
+//! **Executor-agnostic.** wasmtime's async here is fiber-based and needs only *some* executor to poll its
+//! futures — not tokio's reactor (a reducer component is pure compute plus host-import calls, no OS I/O). So
+//! instantiating and driving a reducer works the same under tokio (production) and under the Bach discrete-
+//! event simulator (deterministic tests) — verified end to end: a real component spawned, folded a message,
+//! called the `identity` import, and returned its step under `bach::sim`. This is what lets the integration
+//! harness drive a wasm reducer set to quiescence *deterministically* over the Bach runtime (§9).
+//!
 //! This slice generates the host-side bindings for the (privileged) event-reducer world and confirms the WIT
 //! ABI projects into valid wasmtime host bindings. Instantiating a component as a [`Reducer`](crate::Reducer)
 //! and backing the imports over the in-memory [`KvStore`](crate::KvStore) / [`BlobStore`](crate::BlobStore)
@@ -859,5 +866,7 @@ mod tests {
     // ProgramHash, drive a message, assert the echo + the identity import round-trip — is the slice that wires
     // the guest component into the reproducible nix build (operator: no committed .wasm fixture; the guest is
     // built by cargo-component in the wasm CI job and its bytes flow in as an input blob, not a fixture fn).
-    // (The driver + this store were verified locally against a `cargo component build` of guests/reducer-echo.)
+    // (The driver + this store were verified locally against a `cargo component build` of guests/reducer-echo,
+    // and — see the module docs — the whole instantiate-and-drive path was verified to run under `bach::sim`,
+    // not just tokio, so the integration harness's deterministic bach-driven run over this store is sound.)
 }
