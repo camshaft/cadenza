@@ -505,14 +505,30 @@ fn build(paths: &Paths, store: Option<PathBuf>) {
     let store = store.unwrap_or_else(|| paths.repo.join("target/cadenza-store"));
     std::fs::create_dir_all(&store).expect("create store dir");
 
-    // Build BOTH runtime components (wasm32) and content-address each into the store: the RELEASE
-    // runtime (what a shipped program pins + composes) and the DEBUG-COUNTERS runtime (the same code
-    // with the `live-objects` leak counter — the Perceus leak-check harness composes it, located by
-    // content address, never rebuilt). The debug build is read BEFORE the release build overwrites the
-    // shared output path.
-    println!("== xtask: building the value-heap runtime component (release + debug-counters) ==");
+    // Build the NFC component (`cdz-nfc`, FINDING#23) FIRST: its content address is stamped INLINE into each
+    // heap's `cadenza:nfc/normalize` import (`stamp_nfc_into_heap`), making the heap self-describing about its
+    // NFC dependency — so a runtime resolves NFC purely from the import name, with NO `runtime.toml` / mapping
+    // file read at run time (operator directive 2026-08-23: no mapping passed to executables). So we need the
+    // NFC hash BEFORE building/stamping the heaps. NFC carries the heavy `unicode-normalization` tables so the
+    // tagless core runtime does not. Canonicalize (strip `producers`) before hashing so the hash matches
+    // `REQUIRED_NFC_HASH` and is reproducible cross-host; store it in the SAME CAS (`<store>/<nfc-hash>.wasm`).
+    println!("== xtask: building the value-heap runtime + its NFC dependency ==");
     let sh = Shell::new().expect("open a shell for the component build");
 
+    let nfc_wasm = build_component(&sh, &paths.seed, "cdz-nfc", "cdz_nfc");
+    let nfc_bytes = canonicalize_runtime(&nfc_wasm);
+    let nfc_hash = content_address(&nfc_bytes);
+    let nfc_stored = store.join(format!("{nfc_hash}.wasm"));
+    std::fs::write(&nfc_stored, &nfc_bytes).expect("store nfc component");
+    println!("   nfc component content address: {nfc_hash}");
+    println!("   stored → {}", nfc_stored.display());
+
+    // Build BOTH heap runtimes (wasm32), STAMP each with the NFC address inline, then CANONICALIZE (strip the
+    // tool-version `producers` sections) + content-address + store: the RELEASE runtime (what a shipped program
+    // pins + composes) and the DEBUG-COUNTERS runtime (the same code with the `live-objects` leak counter — the
+    // Perceus leak-check harness composes it, located by content address, never rebuilt). The stored artifact
+    // IS the stamped+stripped bytes, so a composed program's imported hash matches the file on disk. The DEBUG
+    // build is fully processed BEFORE the RELEASE build overwrites the shared `cdz_runtime.wasm` output path.
     let debug_wasm = build_component_with_features(
         &sh,
         &paths.seed,
@@ -520,44 +536,30 @@ fn build(paths: &Paths, store: Option<PathBuf>) {
         "cdz_runtime",
         &["debug-counters"],
     );
-    // CANONICALIZE (strip the tool-version `producers` sections) before hashing + storing, so the hash
-    // is reproducible across machines with the same rustc — the stored artifact IS the stripped bytes,
-    // so a composed program's imported hash matches the file on disk.
-    let debug_bytes = canonicalize_runtime(&debug_wasm);
+    let debug_stamped = stamp_nfc_into_heap(&paths.repo, &debug_wasm, &nfc_hash);
+    let debug_bytes = canonicalize_runtime(&debug_stamped);
     let debug_hash = content_address(&debug_bytes);
     std::fs::write(store.join(format!("{debug_hash}.wasm")), &debug_bytes).expect("store debug rt");
     println!("   debug-counters runtime content address: {debug_hash}");
 
     let runtime_wasm = build_component(&sh, &paths.seed, "cdz-runtime", "cdz_runtime");
-    let runtime_bytes = canonicalize_runtime(&runtime_wasm);
+    let runtime_stamped = stamp_nfc_into_heap(&paths.repo, &runtime_wasm, &nfc_hash);
+    let runtime_bytes = canonicalize_runtime(&runtime_stamped);
     let runtime_hash = content_address(&runtime_bytes);
     println!("   runtime content address: {runtime_hash}");
     let runtime_stored = store.join(format!("{runtime_hash}.wasm"));
     std::fs::write(&runtime_stored, &runtime_bytes).expect("store runtime");
     println!("   stored → {}", runtime_stored.display());
 
-    // The NFC component (`cdz-nfc`, FINDING#23 — operator ruling d) — stored in the SAME CAS store by content
-    // address, exactly like the runtime, so the host resolves it by hash (`<store>/<nfc-hash>.wasm`). NFC is a
-    // DEPENDENCY OF THE RUNTIME (loaded + linked like any wasm component dep): the runtime component imports
-    // `cadenza:nfc/normalize` and the host composes this stored NFC component INTO the runtime (transitive
-    // compose). It carries the heavy `unicode-normalization` tables so the core runtime does not — keeping the
-    // runtime bytes light while `str-nfc-normalize` normalizes String values through the linked NFC dep.
-    // Canonicalize (strip `producers`) before hashing/storing so the hash matches `REQUIRED_NFC_HASH` (codegen
-    // hashes the same canonicalized bytes) and is reproducible cross-host.
-    let nfc_wasm = build_component(&sh, &paths.seed, "cdz-nfc", "cdz_nfc");
-    let nfc_bytes = canonicalize_runtime(&nfc_wasm);
-    let nfc_hash = content_address(&nfc_bytes);
-    println!("   nfc component content address: {nfc_hash}");
-    let nfc_stored = store.join(format!("{nfc_hash}.wasm"));
-    std::fs::write(&nfc_stored, &nfc_bytes).expect("store nfc component");
-    println!("   stored → {}", nfc_stored.display());
-
-    // A small manifest recording both stored runtimes + the NFC dependency, for the host / verifier to consult.
+    // A small manifest listing the stored heap runtimes — INFORMATIONAL only (a nix-build / store-listing
+    // artifact), NOT read by any executable at run time. There is no `nfc = "<hash>"` mapping line anymore:
+    // the NFC dependency is resolved from each heap's self-describing inline import, not from here (operator
+    // directive: no mapping file passed to executables).
     let manifest = format!(
-        "# Cadenza content-addressed store — the value-heap runtime + its NFC dependency.\n\
+        "# Cadenza content-addressed store — the value-heap runtime builds (informational; the NFC\n\
+         # dependency is resolved from each heap's self-describing inline import, not from this file).\n\
          runtime = \"{runtime_hash}\"\n\
-         debug_runtime = \"{debug_hash}\"\n\
-         nfc = \"{nfc_hash}\"\n"
+         debug_runtime = \"{debug_hash}\"\n"
     );
     std::fs::write(store.join("runtime.toml"), manifest).expect("write runtime.toml");
 
@@ -7403,6 +7405,65 @@ pub(crate) fn canonicalize_runtime(raw_wasm_path: &Path) -> Vec<u8> {
         .unwrap_or_else(|e| panic!("read stripped runtime {}: {e}", out.display()));
     let _ = std::fs::remove_file(&out);
     bytes
+}
+
+/// The value-heap runtime's NFC-dependency import interface — the bare WIT name the built heap imports
+/// (`cadenza:nfc/normalize`). [`stamp_nfc_into_heap`] rewrites it to the SELF-DESCRIBING content-addressed
+/// form `cadenza:nfc/normalize@0.0.0+<hash>`. Kept as one constant so `build` and `codegen` stamp the same
+/// interface (mirrors `rcdzc`'s codegen'd `NFC_IFACE`).
+pub(crate) const NFC_IFACE: &str = "cadenza:nfc/normalize";
+
+/// Stamp the NFC component's content address INLINE into a built value-heap component's `cadenza:nfc/normalize`
+/// import, turning the bare import into the self-describing `cadenza:nfc/normalize@0.0.0+<nfc_hash>` — so a
+/// runtime resolves its NFC dependency purely from the import name (zero runtime indirection; no `runtime.toml`
+/// / mapping file passed to any executable — operator directive 2026-08-23). Mirrors how a program's
+/// `cadenza:runtime/heap@0.0.0+<hash>` import carries the runtime address. Shells out to the
+/// `cdz-component-rewrite` CLI (NOT a lib dep — operator review on #3082), which re-encodes the component's
+/// import section. Applied to the RAW heap BEFORE `canonicalize_runtime` (strip -a removes any `producers`
+/// the re-encode adds, so the stamped+stripped bytes are what gets hashed + stored). Returns the stamped
+/// `.wasm` path (a sibling of the raw build output). `nfc_hash` is the NFC component's own content address.
+pub(crate) fn stamp_nfc_into_heap(repo: &Path, raw_heap: &Path, nfc_hash: &str) -> PathBuf {
+    // Build the rewriter CLI (idempotent: cargo no-ops when warm). SHELL OUT to it, never link it.
+    let status = std::process::Command::new("cargo")
+        .args([
+            "build",
+            "--release",
+            "-p",
+            "cdz-component-rewrite",
+            "--bin",
+            "cdz-component-rewrite",
+        ])
+        .current_dir(repo)
+        .status();
+    match status {
+        Ok(s) if s.success() => {}
+        other => {
+            eprintln!(
+                "failed to build cdz-component-rewrite ({other:?}) — needed to stamp the NFC import"
+            );
+            std::process::exit(1);
+        }
+    }
+    let bin = repo.join("target/release/cdz-component-rewrite");
+    let out = raw_heap.with_extension("nfc-stamped.wasm");
+    let mapping = format!("{NFC_IFACE}=0.0.0+{nfc_hash}");
+    let status = std::process::Command::new(&bin)
+        .arg(raw_heap)
+        .arg(&out)
+        .arg(&mapping)
+        .status();
+    match status {
+        Ok(s) if s.success() => {}
+        other => {
+            eprintln!(
+                "cdz-component-rewrite failed ({other:?}) stamping {NFC_IFACE} into {} — the heap's NFC \
+                 import could not be made self-describing",
+                raw_heap.display()
+            );
+            std::process::exit(1);
+        }
+    }
+    out
 }
 
 /// `cargo component build --release --target wasm32-unknown-unknown` in <seed>/crates/<crate>,
