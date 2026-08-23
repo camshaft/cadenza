@@ -278,6 +278,132 @@ pub fn emit_functype(params: &[(String, CRef)], result: Option<&CRef>) -> Vec<u8
     out
 }
 
+// ── Canonical-ABI FLATTENING (step W4a) ──────────────────────────────────────────────────────────────
+// A component value type flattens to a sequence of CORE value types — the shape a lifted core function's
+// signature takes when the value crosses the boundary in registers (before the spill-to-memory limits).
+// This is the pure type-level half of lift/lower: it fixes the core func signature the lift/lower body
+// (a later slice) reads/writes. The rules are the component-model canonical ABI's `flatten_type`.
+
+/// A core wasm value type — the flattened form a component value crosses in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CoreTy {
+    I32,
+    I64,
+    F32,
+    F64,
+}
+
+impl CoreTy {
+    /// The core valtype byte for this type.
+    pub fn core_byte(self) -> u8 {
+        match self {
+            CoreTy::I32 => wasm_abi::CORE_I32,
+            CoreTy::I64 => wasm_abi::CORE_I64,
+            CoreTy::F32 => wasm_abi::CORE_F32,
+            CoreTy::F64 => wasm_abi::CORE_F64,
+        }
+    }
+}
+
+/// Canonical-ABI flat-count limits: a function's params flatten in-place up to 16 core values, else spill to
+/// a single `i32` pointer to a tuple in linear memory; its result flattens in-place up to 1, else spills to
+/// an `i32` pointer to the result in linear memory. A record/variant result therefore always spills.
+const MAX_FLAT_PARAMS: usize = 16;
+const MAX_FLAT_RESULTS: usize = 1;
+
+/// The canonical-ABI join of two core types at one flattened position of a variant — the type both cases'
+/// values can be reinterpreted through: equal types keep; an int/float of the same width joins to the int;
+/// anything else widens to `i64` (the component-model `join`).
+fn join(a: CoreTy, b: CoreTy) -> CoreTy {
+    use CoreTy::*;
+    if a == b {
+        return a;
+    }
+    match (a, b) {
+        (I32, F32) | (F32, I32) => I32,
+        (I64, F64) | (F64, I64) => I64,
+        _ => I64,
+    }
+}
+
+/// Flatten a tagged type (`variant`/`enum`/`option`/`result`) whose cases carry the given optional payloads:
+/// an `i32` discriminant, then the position-wise `join` of every case's flattened payload (a `None` case
+/// contributes nothing). `enum` (all `None`) flattens to just the discriminant.
+fn flatten_variant(case_payloads: &[Option<&WitType>]) -> Vec<CoreTy> {
+    let mut flat: Vec<CoreTy> = Vec::new();
+    for payload in case_payloads.iter().copied().flatten() {
+        for (i, ct) in flatten(payload).into_iter().enumerate() {
+            if i < flat.len() {
+                flat[i] = join(flat[i], ct);
+            } else {
+                flat.push(ct);
+            }
+        }
+    }
+    let mut out = vec![CoreTy::I32];
+    out.extend(flat);
+    out
+}
+
+/// The core value types a component value of type `t` flattens to (canonical ABI `flatten_type`): scalars to
+/// their core type (`u64`/`s64` → `i64`, floats keep, everything else `i32`), `string`/`list` to `(ptr, len)`
+/// = `[i32, i32]`, `record`/`tuple` to the concatenation of their elements, and the tagged types via
+/// [`flatten_variant`]. `Unit` (a function's "no result") flattens to nothing.
+pub fn flatten(t: &WitType) -> Vec<CoreTy> {
+    use CoreTy::*;
+    match t {
+        WitType::Bool
+        | WitType::U8
+        | WitType::U16
+        | WitType::U32
+        | WitType::S8
+        | WitType::S16
+        | WitType::S32
+        | WitType::Char => vec![I32],
+        WitType::U64 | WitType::S64 => vec![I64],
+        WitType::F32 => vec![F32],
+        WitType::F64 => vec![F64],
+        // A string / list crosses as a `(ptr, len)` pair into linear memory.
+        WitType::String | WitType::List(_) => vec![I32, I32],
+        WitType::Record(fields) => fields.iter().flat_map(|(_, ft)| flatten(ft)).collect(),
+        WitType::Tuple(elems) => elems.iter().flat_map(flatten).collect(),
+        WitType::Enum(_) => vec![I32], // discriminant only, no payloads
+        // ceil(n/32) i32s hold n flag bits (a real flags has >= 1 label).
+        WitType::Flags(names) => vec![I32; names.len().div_ceil(32)],
+        WitType::Option(inner) => flatten_variant(&[None, Some(inner.as_ref())]),
+        WitType::Variant(cases) => {
+            let payloads: Vec<Option<&WitType>> = cases.iter().map(|(_, p)| p.as_ref()).collect();
+            flatten_variant(&payloads)
+        }
+        WitType::Result { ok, err } => flatten_variant(&[ok.as_deref(), err.as_deref()]),
+        WitType::Unit => vec![],
+    }
+}
+
+/// The CORE function signature a component function `(params) -> result` lifts to under `canon lift` (a guest
+/// export): its `(core_params, core_results)`. Params flatten in order and spill to a single `i32` pointer
+/// when over [`MAX_FLAT_PARAMS`]; the result flattens and spills to a single `i32` return pointer when over
+/// [`MAX_FLAT_RESULTS`] (so a record/variant result is returned by pointer). This is the signature the
+/// lift/lower body (a later slice) is generated against.
+pub fn flatten_func_core_sig(
+    params: &[WitType],
+    result: Option<&WitType>,
+) -> (Vec<CoreTy>, Vec<CoreTy>) {
+    let pflat: Vec<CoreTy> = params.iter().flat_map(flatten).collect();
+    let core_params = if pflat.len() > MAX_FLAT_PARAMS {
+        vec![CoreTy::I32]
+    } else {
+        pflat
+    };
+    let rflat: Vec<CoreTy> = result.map(flatten).unwrap_or_default();
+    let core_results = if rflat.len() > MAX_FLAT_RESULTS {
+        vec![CoreTy::I32]
+    } else {
+        rflat
+    };
+    (core_params, core_results)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -567,5 +693,120 @@ mod tests {
     fn functype_with_a_compound_result_references_it_by_index() {
         // () -> step-ish record result — the result is a defined type referenced by index, not inline.
         assert_functype_identical(&[], Some(rec(&[("keep-going", WitType::Bool)])));
+    }
+
+    // ── canonical-ABI flattening (W4a) ────────────────────────────────────────────────────────────────
+    use CoreTy::{F64, I32, I64};
+
+    #[test]
+    fn flatten_scalars_and_list_and_string() {
+        assert_eq!(flatten(&WitType::Bool), vec![I32]);
+        assert_eq!(flatten(&WitType::U32), vec![I32]);
+        assert_eq!(flatten(&WitType::U64), vec![I64]);
+        assert_eq!(flatten(&WitType::S64), vec![I64]);
+        assert_eq!(flatten(&WitType::F64), vec![F64]);
+        assert_eq!(flatten(&WitType::Char), vec![I32]);
+        // string and list<T> both cross as (ptr, len).
+        assert_eq!(flatten(&WitType::String), vec![I32, I32]);
+        assert_eq!(
+            flatten(&WitType::List(Box::new(WitType::U8))),
+            vec![I32, I32]
+        );
+    }
+
+    #[test]
+    fn flatten_record_is_field_concatenation_including_nested() {
+        // record{ a: u32, b: list<u8> } → [i32] ++ [i32,i32]
+        assert_eq!(
+            flatten(&rec(&[
+                ("a", WitType::U32),
+                ("b", WitType::List(Box::new(WitType::U8)))
+            ])),
+            vec![I32, I32, I32]
+        );
+        // message-ish: record{ sender: record{ reducer: list<u8> }, payload: list<u8> } → [i32,i32]++[i32,i32]
+        assert_eq!(
+            flatten(&rec(&[
+                (
+                    "sender",
+                    rec(&[("reducer", WitType::List(Box::new(WitType::U8)))]),
+                ),
+                ("payload", WitType::List(Box::new(WitType::U8))),
+            ])),
+            vec![I32, I32, I32, I32]
+        );
+    }
+
+    #[test]
+    fn flatten_tagged_types_prepend_a_discriminant_and_join_payloads() {
+        // enum → discriminant only.
+        assert_eq!(
+            flatten(&WitType::Enum(vec!["a".into(), "b".into()])),
+            vec![I32]
+        );
+        // flags (<=32) → one i32.
+        assert_eq!(
+            flatten(&WitType::Flags(vec!["r".into(), "w".into()])),
+            vec![I32]
+        );
+        // option<u64> → [disc i32] ++ [i64]
+        assert_eq!(
+            flatten(&WitType::Option(Box::new(WitType::U64))),
+            vec![I32, I64]
+        );
+        // result<list<u8>, enum> → [disc] ++ join([i32,i32],[i32]) = [i32, i32, i32]
+        assert_eq!(
+            flatten(&WitType::Result {
+                ok: Some(Box::new(WitType::List(Box::new(WitType::U8)))),
+                err: Some(Box::new(WitType::Enum(vec!["timeout".into()]))),
+            }),
+            vec![I32, I32, I32]
+        );
+        // variant{ continue, close(record{code:u32}) } → [disc] ++ join([], [i32]) = [i32, i32]
+        assert_eq!(
+            flatten(&WitType::Variant(vec![
+                ("continue".into(), None),
+                ("close".into(), Some(rec(&[("code", WitType::U32)]))),
+            ])),
+            vec![I32, I32]
+        );
+    }
+
+    #[test]
+    fn flatten_variant_joins_mismatched_widths_to_i64() {
+        // variant{ a(u32), b(u64) } → [disc] ++ [join(i32,i64)=i64]
+        assert_eq!(
+            flatten(&WitType::Variant(vec![
+                ("a".into(), Some(WitType::U32)),
+                ("b".into(), Some(WitType::U64)),
+            ])),
+            vec![I32, I64]
+        );
+    }
+
+    #[test]
+    fn func_core_sig_inlines_within_limits_and_spills_over_them() {
+        // (msg: record{c: list<u8>}) -> u32 : params flatten in place, scalar result inline.
+        let (p, r) = flatten_func_core_sig(
+            &[rec(&[("c", WitType::List(Box::new(WitType::U8)))])],
+            Some(&WitType::U32),
+        );
+        assert_eq!((p, r), (vec![I32, I32], vec![I32]));
+
+        // void result → no core results.
+        let (_p, r) = flatten_func_core_sig(&[WitType::U32], None);
+        assert_eq!(r, Vec::<CoreTy>::new());
+
+        // a record result (>1 flat) spills to a single i32 return pointer.
+        let (_p, r) =
+            flatten_func_core_sig(&[], Some(&rec(&[("a", WitType::U32), ("b", WitType::U32)])));
+        assert_eq!(r, vec![I32]);
+
+        // params over 16 flats spill to a single i32 pointer: 9 list<u8> params = 18 flats.
+        let many: Vec<WitType> = (0..9)
+            .map(|_| WitType::List(Box::new(WitType::U8)))
+            .collect();
+        let (p, _r) = flatten_func_core_sig(&many, Some(&WitType::U32));
+        assert_eq!(p, vec![I32]);
     }
 }
