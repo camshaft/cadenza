@@ -1050,6 +1050,118 @@
           vendor = reducerEchoVendor;
         };
 
+        # ── the integration-test HARNESS framework (design/cadenza-platform.md §9) ─────────────────
+        #
+        # The shape the operator asked for (PR #2994 review): a directory of PROGRAMS compiled once into a
+        # wasm store (by NAME), a directory of HARNESS RUNS (each an s-expr describing a whole run), and ONE
+        # derivation PER run so caching is fine-grained — changing a run reruns only that run, changing a
+        # program reruns only the runs that USE it, and neither ever rebuilds the integration-test binary.
+        #
+        # `harnessPrograms`: the wasm store, name → the reproducibly-built component. A run refers to a
+        # program by name; `mkHarnessRun` resolves the name to this store path. (reducer-echo is a Rust
+        # cargo-component guest today; a Cadenza `.cdz` guest compiled by rcdzc joins here once the compiler
+        # emits reducer-world components — coordinated with v-rust-backend. Add a program = one entry.)
+        harnessPrograms = {
+          "reducer-echo" = reducerEcho;
+        };
+
+        # `platformItest`: the `cdz-platform-itest` executable built ONCE (behind testing+host → wasmtime),
+        # shared by every harness run so a test/program change never rebuilds it. Its src is the seed
+        # workspace MINUS the guest sources and the harness-runs dir (editing a guest or a run must NOT bust
+        # the binary's input hash) — the fine-grained-cache boundary the operator called for. Builds wasmtime
+        # under stdenvNoCC+rustToolchain exactly as the crate-cdz check does; installs just the one binary.
+        platformItestSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.difference
+            (pkgs.lib.fileset.unions [
+              ./implementation/seed/crates
+              ./implementation/compiler-ml
+              ./xtask
+              ./Cargo.toml
+              ./Cargo.lock
+              ./.cargo
+              ./rust-toolchain.toml
+              ./spec/semantics
+            ])
+            (pkgs.lib.fileset.unions [
+              ./implementation/seed/crates/cdz-platform/guests
+              ./implementation/seed/crates/cdz-platform/harness-runs
+            ]);
+        };
+        platformItest = pkgs.stdenvNoCC.mkDerivation {
+          pname = "cdz-platform-itest";
+          version = "0.0.0";
+          src = platformItestSrc;
+          nativeBuildInputs = [ rustToolchain ];
+          buildPhase = ''
+            runHook preBuild
+            ${mkCargoVendorEnv { vendor = seedCargoVendor; }}
+            cargo build --release --locked -p cdz-platform --bin cdz-platform-itest --features "testing host"
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            install -Dm755 target/release/cdz-platform-itest "$out/bin/cdz-platform-itest"
+            runHook postInstall
+          '';
+        };
+
+        # The program names a run references — every `program = "<name>"` field in the ML spec. This is
+        # DEPENDENCY DISCOVERY for the nix graph (which programs a run's derivation depends on, so caching is
+        # per-program); the actual name→path substitution is an AST-validated `cdz rewrite` at build time
+        # (see mkHarnessRun), never a text edit. Nix can't run `cdz query` at eval time, so the dependency
+        # set is read from the spec text here; the transform stays structural.
+        harnessProgramsIn = specText:
+          let
+            parts = builtins.split ''program[[:space:]]*=[[:space:]]*"([^"]+)"'' specText;
+            caps = builtins.filter builtins.isList parts;
+          in
+          pkgs.lib.unique (map (c: builtins.elemAt c 0) caps);
+
+        # Run ONE harness spec (an ML file). For each program the run references, `cdz rewrite` replaces its
+        # `(= program "<name>")` node with `(= path "<nix wasm store path>")` — an AST-validated structural
+        # rewrite, not a text edit — resolving the name to the reproducibly-built component. The transformed
+        # ML is encoded to the Cadenza binary AST (`cdz convert --to binary`) and run by the shared
+        # `platformItest` binary; the run passes iff the binary EXITS 0. Assertions about the observation log
+        # belong to the harness/its checker (in the spec), NOT to nix. The derivation's inputs are exactly
+        # {the shared binary, the programs this run uses, this spec}, so it re-runs only when one changes.
+        # The TRANSFORM step, decoupled from the run (operator #2994: "the transforms and the runs need to be
+        # decoupled, so the run doesn't rerun if the spec hash hasn't changed"). This derivation resolves the
+        # spec's `program` (and, later, contract) names to nix paths/hashes via `cdz rewrite` and encodes the
+        # result to the Cadenza binary AST. Its inputs are {the spec, the programs it uses, `cdz`} — NOT the
+        # integration-test binary. So a binary change (frequent, from cdz-platform churn) reuses this cached
+        # AST, and only the run step re-executes.
+        mkHarnessAst = { name, specFile }:
+          let
+            uses = harnessProgramsIn (builtins.readFile specFile);
+            rewrites = pkgs.lib.concatMapStringsSep "\n"
+              (n: ''
+                ${seedCompiler}/bin/cdz rewrite '(= program "${n}")' '(= path "${harnessPrograms.${n}}")' \
+                  run.ml --from ml --to ml > run.ml.next
+                mv run.ml.next run.ml
+              '')
+              uses;
+          in
+          pkgs.runCommand "harness-ast-${name}" { } ''
+            set -euo pipefail
+            cp ${specFile} run.ml
+            ${rewrites}
+            ${seedCompiler}/bin/cdz convert --from ml --to binary run.ml > "$out"
+          '';
+
+        # The RUN step: execute the (already-transformed) binary AST with the shared `platformItest` binary;
+        # pass iff it exits 0. Its inputs are {the transformed AST, the binary} — NOT the spec/programs — so
+        # it re-runs only when the transform output OR the binary changes, and is a cache hit when the spec
+        # (and thus its AST) is unchanged. Assertions about the log belong to the harness/its checker, not nix.
+        mkHarnessRun = { name, specFile }:
+          let ast = mkHarnessAst { inherit name specFile; };
+          in
+          pkgs.runCommand "harness-run-${name}" { } ''
+            set -euo pipefail
+            ${platformItest}/bin/cdz-platform-itest ${ast}
+            echo "ok: harness run '${name}' exited 0 (ast ${ast})" > "$out"
+          '';
+
         # The content address of a built component = blake3 of its (stripped) bytes. DERIVED from the
         # artifact nix built — this is the Cadenza content-address a program pins, falling out of the
         # build rather than being asserted. Exposed as a `packages.*-hash` (a plain-text store file).
@@ -1524,6 +1636,10 @@
         packages.reducer-echo = reducerEcho;
         packages.reducer-echo-hash = hashOf reducerEcho "cdz-platform-reducer-echo-hash";
 
+        # The integration-test executable, built ONCE (§9) — `nix build .#cdz-platform-itest` →
+        # result/bin/cdz-platform-itest. Shared by every harness run so a test/program change never rebuilds it.
+        packages.cdz-platform-itest = platformItest;
+
         # R2: the content-addressed component store — every nix-built component as `<derived-hash>.wasm`
         # in one dir (mirrors target/cadenza-store, but built + addressed by nix). `nix build .#store`.
         packages.store = componentStore;
@@ -1738,7 +1854,7 @@
             flakeReproBackstop = pkgs.runCommand "flake-repro-backstop"
               {
                 inherit runtimeHashParity runtimeDebugHashParity nfcHashParity
-                  reducerEchoValid exampleProjectTests crateClosureAssert;
+                  reducerEchoValid harnessRunsAll exampleProjectTests crateClosureAssert;
               } ''
               echo "ok: flake reproducibility-backstop — hash-parity + component-validity + project-@tests + closure-assert" > $out
             '';
@@ -1752,6 +1868,35 @@
             # check: a future WIT/guest/toolchain change that silently produced a broken component fails the
             # flake here. This is what rebuilds-and-verifies the guest from source, replacing a committed .wasm.
             reducerEchoValid = validComponent { name = "reducer-echo"; drv = reducerEcho; };
+
+            # The HARNESS-RUN checks (§9), the shape the operator asked for on #2994: iterate every `*.ml`
+            # spec in the harness-runs directory and build ONE check derivation per run via `mkHarnessRun`
+            # (the shared `platformItest` binary + the per-program wasm store, resolved by name). Fine-grained
+            # caching falls out: each run's derivation inputs are exactly {the binary, the programs it uses,
+            # its own spec}, so a spec edit reruns only that run, a program edit reruns only its users, and
+            # neither rebuilds the binary. A run passes iff the executable exits 0 — the harness/its checker
+            # makes the assertions about the log, not nix.
+            harnessRunDir = ./implementation/seed/crates/cdz-platform/harness-runs;
+            harnessRunChecks = pkgs.lib.mapAttrs'
+              (fn: _:
+                let base = pkgs.lib.removeSuffix ".ml" fn; in
+                pkgs.lib.nameValuePair base (mkHarnessRun {
+                  name = base;
+                  specFile = harnessRunDir + "/${fn}";
+                }))
+              (pkgs.lib.filterAttrs (n: t: t == "regular" && pkgs.lib.hasSuffix ".ml" n)
+                (builtins.readDir harnessRunDir));
+            # An aggregate over all harness runs — folded into flake-repro-backstop so the reproducible-guest
+            # + integ-executable + deterministic-bach e2e path is gated as one node (each run still cached
+            # independently; the aggregate only depends on their pass markers).
+            harnessRunsAll = pkgs.runCommand "harness-runs-all" { } ''
+              # Depend on every run's pass-marker by reading it (interpolating the out path adds the
+              # dependency via string context, without treating the text marker as a buildInput/setup-hook).
+              ${pkgs.lib.concatMapStringsSep "\n"
+                (d: ''cat ${d} > /dev/null'')
+                (builtins.attrValues harnessRunChecks)}
+              echo "ok: all harness runs passed (${toString (builtins.attrNames harnessRunChecks)})" > "$out"
+            '';
 
             # LOCAL-GATE bindings (v-nix+v-fleet-tooling 2026-08-06, GHA-outage fallback). The 3 required
             # checks that were inline `cargoWorkspaceCheck {…}` at their attr get `let`-bound here so BOTH
@@ -1871,6 +2016,11 @@
             # component (also part of flake-repro-backstop). This is what rebuilds-and-verifies the guest
             # from source, replacing the committed .wasm the operator vetoed.
             reducer-echo-valid = reducerEchoValid;
+            # The integration-test harness runs (§9): `harness-runs` is the aggregate; each individual run is
+            # exposed below as `checks.<sys>.harness-<name>` (spread from harnessRunChecks) so `nix flake
+            # check` runs them all AND CI can build/cache one run in isolation. `.#packages.cdz-platform-itest`
+            # is the shared, built-once integration-test executable. See the mkHarnessRun framework above.
+            harness-runs = harnessRunsAll;
             # S3: the example project's @tests run through nix — a cache HIT when its sources are
             # unchanged (the "skip tests that haven't changed" win), a re-run + fail on a red test.
             example-project-tests = exampleProjectTests;
@@ -1978,7 +2128,12 @@
           # individually (checks.<sys>.cad-test-{cad,compiler-ml,choreography,iterators}) alongside the
           # `cad-tests` aggregate. A candidate touching ONE project builds just that project's check; the
           # aggregate (required context) still forces all 4. cache-warm roots these the same as the aggregate.
-          // cdzCadProjectTests;
+          // cdzCadProjectTests
+          # PER-RUN integration-test harness checks (operator #2994 review): expose each harness run
+          # individually as `checks.<sys>.harness-<name>` alongside the `harness-runs` aggregate, so a
+          # candidate touching ONE run's spec (or one program) rebuilds just the affected run(s) — the
+          # binary + untouched programs + other runs all cache-hit. Auto-discovered from the harness-runs dir.
+          // (pkgs.lib.mapAttrs' (n: v: pkgs.lib.nameValuePair "harness-${n}" v) harnessRunChecks);
 
         devShells.default = pkgs.mkShell {
           # TIGHTLY SCOPED: only what the seed workspace's build/gate actually needs —
