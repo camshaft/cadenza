@@ -1680,18 +1680,70 @@ mod tests {
         assert!(dependency_address(&format!("dep:x+{}", "ab".repeat(31))).is_none()); // 62 hex, too short
     }
 
-    // The end-to-end driver test — seed the reducer-echo guest component's bytes into the store, spawn its
-    // ProgramHash, drive a message, assert the echo + the identity import round-trip — is the slice that wires
-    // the guest component into the reproducible nix build (operator: no committed .wasm fixture; the guest is
-    // built by cargo-component in the wasm CI job and its bytes flow in as an input blob, not a fixture fn).
-    // (The driver + this store were verified locally against a `cargo component build` of guests/reducer-echo,
-    // and — see the module docs — the whole instantiate-and-drive path was verified to run under `bach::sim`,
-    // not just tokio, so the integration harness's deterministic bach-driven run over this store is sound.)
-    //
-    // The dependency-composition path (`bind_dependencies` / `alias_instance_exports`) is exercised end to end
-    // by that same slice using a component that imports the value-heap runtime: only a Cadenza-compiled guest
-    // carries the `cadenza:runtime/heap@…+<hash>` content-addressed import (cargo-component uses semver, not a
-    // content hash, so it cannot reproduce the convention), so the behavioural test lands with v-rust-backend's
-    // first runtime-importing guest. The address parsing + dependency detection are unit-tested above, and the
-    // instantiate-and-alias mirrors the value-heap composition `cdz-run` performs against real components.
+    /// The end-to-end driver over the reducer-echo guest component: seed its bytes, spawn it under a known
+    /// reducer-id, drive one `on-message`, and assert it both echoes the event (same contract + payload on one
+    /// request) AND stamps the request's token with the reducer's OWN id read from the `identity` host import —
+    /// proof the event conversion round-trips out AND the host import is wired, not stubbed. This is the whole
+    /// instantiate → fold → decode path over a real component.
+    ///
+    /// `#[ignore]` + env-gated (`REDUCER_ECHO_WASM`) because the guest is not a committed fixture (operator: no
+    /// committed `.wasm`; cargo-component builds it in the wasm CI/nix job and its bytes flow in as an input
+    /// blob). reducer-echo imports only `identity` (no runtime), so this needs no dependency composition — it
+    /// exercises `add_host_imports` wiring `identity`, the guest calling `id()`, and the event↔WIT +
+    /// `step_from_wit` round-trip. (The dependency-composition path — `bind_dependencies`/`alias_instance_exports`
+    /// over a runtime-importing guest — is covered by the reducer-world guest e2e that lands with the base62
+    /// `+hex` runtime flag-day.)
+    #[tokio::test]
+    #[ignore = "e2e: set REDUCER_ECHO_WASM to the cargo-component-built reducer-echo component (nix provides it)"]
+    async fn drives_the_reducer_echo_guest_and_round_trips_the_identity_import() {
+        use crate::{Bytes, ContractId, HostId, Message, Origin, Outcome};
+
+        let guest =
+            std::fs::read(std::env::var("REDUCER_ECHO_WASM").expect("REDUCER_ECHO_WASM path"))
+                .expect("read the reducer-echo component");
+        let mut cas = InMemoryBlobStore::new();
+        let program = ProgramHash::of(&guest);
+        cas.put(Bytes::from(guest)).await;
+
+        // Spawn under a known reducer-id; reducer-echo's token = identity::id() must return exactly this id.
+        let store = wasm_program_store(Arc::new(cas));
+        let id = ReducerId::of(b"echo-reducer");
+        let mut reducer = store
+            .spawn(
+                program,
+                SpawnContext {
+                    id,
+                    kind: ReducerKind::Ordinary,
+                },
+            )
+            .await
+            .expect("spawn the reducer-echo guest");
+
+        let contract = ContractId::of(b"echo.contract");
+        let payload = Bytes::from_static(b"a request body");
+        let (requests, outcome) = reducer
+            .on_message(Message {
+                id: contract,
+                payload: payload.clone(),
+                from: Origin {
+                    reducer: ReducerId::of(b"caller"),
+                    host: HostId::of(b"node"),
+                },
+                continuation_token: Bytes::from_static(b"caller-token"),
+            })
+            .await;
+
+        assert_eq!(requests.len(), 1, "one echoed request");
+        assert_eq!(requests[0].id, contract, "contract echoed");
+        assert_eq!(requests[0].payload, payload, "payload echoed");
+        // The token is the reducer's OWN id, read from the `identity` host import — a value the HOST supplied
+        // flowed through the guest and back, proving the import is wired (not stubbed) and its call path works.
+        assert_eq!(
+            requests[0].continuation_token,
+            Bytes::copy_from_slice(id.hash().as_bytes()),
+            "token is the reducer's own id via the identity host import"
+        );
+        assert_eq!(requests[0].deadline, None, "no deadline");
+        assert_eq!(outcome, Outcome::Continue, "continue");
+    }
 }
