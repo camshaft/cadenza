@@ -34,7 +34,9 @@ mod recording;
 pub use crate::program::testing as program;
 pub use checker::{CheckOutcome, Checker};
 pub use harness::{Harness, Parent, Run, SpawnSpec};
-pub use observation::{BlobOp, Entry, EventKind, EventOp, KvOp, ObservationLog, Record, SpawnInfo};
+pub use observation::{
+    BlobOp, Entry, EventKind, EventOp, KvOp, ObservationLog, Record, SpawnInfo, render,
+};
 pub use recording::{
     RecordingBlobStore, RecordingKvStore, RecordingProgramStore, RecordingReducer,
 };

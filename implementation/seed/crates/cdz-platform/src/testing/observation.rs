@@ -19,6 +19,7 @@
 //! [`snapshot`](ObservationLog::snapshot) of the records once the run is quiescent.
 
 use crate::{Bytes, ContractId, Error, Hash, Origin, ProgramHash, ReducerId, ReducerKind, Str};
+use std::fmt::{self, Write as _};
 use std::ops::Bound;
 use std::sync::{Arc, Mutex};
 
@@ -220,5 +221,203 @@ impl ObservationLog {
         self.records
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// Render an observation log as human-readable lines — one per [`Record`], in order — for inspection
+/// (`design/cadenza-platform.md` §9: where a log is kept, human inspection should be able to render the
+/// raw events). This is a rendering *of* the log, not a program's projection of it: every record shows
+/// its seq, time, acting reducer, and what happened. Useful in a checker's failure message or when
+/// debugging a run. For programmatic use read the [`Record`]s directly; this is for eyes.
+#[must_use]
+pub fn render(records: &[Record]) -> String {
+    let mut out = String::new();
+    for r in records {
+        // writeln! into a String is infallible.
+        let _ = writeln!(out, "{r}");
+    }
+    out
+}
+
+impl fmt::Display for Record {
+    /// One line: `#<seq> @<time>ns <reducer>  <what>`. Ids and hashes are shown short (a prefix) since a
+    /// human is scanning; the full values live in the record for programmatic use. Byte buffers show a
+    /// quoted preview when short valid UTF-8, else a byte count.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "#{:<3} @{:>13}ns  {:<10}  ",
+            self.seq,
+            self.time_ns,
+            short(self.source.reducer)
+        )?;
+        match &self.entry {
+            Entry::Kv(op) => match op {
+                KvOp::Get { key, hit } => {
+                    write!(f, "kv get {} -> {}", preview(key), hit_miss(*hit))
+                }
+                KvOp::Put { key, value } => {
+                    write!(f, "kv put {} = {}", preview(key), preview(value))
+                }
+                KvOp::Delete { key, existed } => write!(
+                    f,
+                    "kv delete {} -> {}",
+                    preview(key),
+                    if *existed { "existed" } else { "absent" }
+                ),
+                KvOp::Scan {
+                    lower,
+                    upper,
+                    keys_only,
+                } => write!(
+                    f,
+                    "kv scan{} {}..{}",
+                    if *keys_only { " (keys)" } else { "" },
+                    bound(lower),
+                    bound(upper)
+                ),
+            },
+            Entry::Blob(op) => match op {
+                BlobOp::Put { hash, len } => write!(f, "blob put {} ({len} bytes)", short(*hash)),
+                BlobOp::Get { hash, hit } => {
+                    write!(f, "blob get {} -> {}", short(*hash), hit_miss(*hit))
+                }
+                BlobOp::Has { hash, present } => write!(
+                    f,
+                    "blob has {} -> {}",
+                    short(*hash),
+                    if *present { "present" } else { "absent" }
+                ),
+            },
+            Entry::Event(op) => match op {
+                EventOp::Delivered {
+                    kind,
+                    contract,
+                    from,
+                    ..
+                } => {
+                    let verb = match kind {
+                        EventKind::Message => "recv msg",
+                        EventKind::Response => "recv response",
+                        EventKind::Notification => "recv notification",
+                    };
+                    match from {
+                        Some(o) => {
+                            write!(f, "{verb} {} from {}", short(*contract), short(o.reducer))
+                        }
+                        None => write!(f, "{verb} {}", short(*contract)),
+                    }
+                }
+                EventOp::Emitted { contract, .. } => write!(f, "emit {}", short(*contract)),
+                EventOp::Closed { schema, .. } => write!(f, "close {}", short(*schema)),
+            },
+            Entry::Spawn(info) => write!(
+                f,
+                "spawn {:?} program={} kind={:?}",
+                info.name.as_str(),
+                short(info.program),
+                info.kind
+            ),
+        }
+    }
+}
+
+/// A short prefix of a hash/id's textual (base64url, §8) form — enough to recognize it when scanning,
+/// not the full value.
+fn short(id: impl fmt::Display) -> String {
+    let s = id.to_string();
+    // base64url is ASCII, so a byte slice is a char boundary; take a prefix and mark it elided.
+    match s.get(..10) {
+        Some(prefix) if prefix.len() < s.len() => format!("{prefix}…"),
+        _ => s,
+    }
+}
+
+/// A byte buffer preview for the eye: a quoted string when it is short, valid UTF-8, else its length.
+fn preview(bytes: &Bytes) -> String {
+    if bytes.len() <= 32
+        && let Ok(s) = std::str::from_utf8(bytes)
+    {
+        return format!("{s:?}");
+    }
+    format!("<{} bytes>", bytes.len())
+}
+
+/// A scan bound for the render: the value's preview, or `*` for unbounded (inclusive/exclusive elided —
+/// this is for human scanning; the record holds the exact bound).
+fn bound(b: &Bound<Bytes>) -> String {
+    match b {
+        Bound::Unbounded => "*".to_string(),
+        Bound::Included(v) | Bound::Excluded(v) => preview(v),
+    }
+}
+
+fn hit_miss(hit: bool) -> &'static str {
+    if hit { "hit" } else { "miss" }
+}
+
+#[cfg(test)]
+mod render_tests {
+    use super::{Entry, EventOp, KvOp, Record, SpawnInfo, render};
+    use crate::{Bytes, ContractId, HostId, Origin, ProgramHash, ReducerId, ReducerKind, Str};
+
+    fn rec(seq: u64, reducer: &[u8], entry: Entry) -> Record {
+        Record {
+            seq,
+            time_ns: seq * 1000,
+            source: Origin {
+                reducer: ReducerId::of(reducer),
+                host: HostId::of(b"node"),
+            },
+            entry,
+        }
+    }
+
+    #[test]
+    fn render_shows_one_readable_line_per_record_covering_every_entry_kind() {
+        let records = vec![
+            rec(
+                0,
+                b"agent",
+                Entry::Spawn(SpawnInfo {
+                    name: Str::from("agent"),
+                    program: ProgramHash::of(b"agent-prog"),
+                    parent: ReducerId::of(b"agent"),
+                    kind: ReducerKind::Ordinary,
+                }),
+            ),
+            rec(
+                1,
+                b"agent",
+                Entry::Kv(KvOp::Put {
+                    key: Bytes::from_static(b"seen/x"),
+                    value: Bytes::from_static(b"1"),
+                }),
+            ),
+            rec(
+                2,
+                b"agent",
+                Entry::Event(EventOp::Emitted {
+                    contract: ContractId::of(b"http.get"),
+                    payload: Bytes::new(),
+                    continuation_token: Bytes::new(),
+                    has_deadline: false,
+                }),
+            ),
+        ];
+        let out = render(&records);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 3, "one line per record");
+        // Each line leads with its seq and carries a readable description of the entry.
+        assert!(lines[0].starts_with("#0"));
+        assert!(lines[0].contains("spawn \"agent\""), "line: {}", lines[0]);
+        assert!(
+            lines[1].contains("kv put \"seen/x\" = \"1\""),
+            "line: {}",
+            lines[1]
+        );
+        assert!(lines[2].contains("emit "), "line: {}", lines[2]);
+        // An empty log renders to an empty string.
+        assert!(render(&[]).is_empty());
     }
 }
