@@ -33716,6 +33716,49 @@ mod match_engine {
     }
 
     #[test]
+    fn contract_module_directives_register_and_validate_their_arg_shapes() {
+        // `modules-and-namespaces.md` §A Contract Module Declares Its Identity: contract/input/output are
+        // registered pragma keys — contract takes exactly one STRING (the name), input/output each exactly
+        // one TYPE NAME. A well-formed contract module type-checks (no CDZ0601 unknown-key, no CDZ0602
+        // shape fault); a wrong arg shape or arity is CDZ0602. (The name/input/output are read from the
+        // module's canonical form by an external tool to derive the contract identity; this pass is the
+        // structural gate that the keys are recognized and their arg shapes valid.)
+        assert_eq!(
+            reject_code(
+                "(module m (pragma contract \"cdz-platform.deliver\") (pragma input Envelope) \
+                 (pragma output Outcome) (type Envelope (Envelope (: payload Bytes))) \
+                 (type Outcome Continue Break) (def (main) 1) (export main))"
+            ),
+            None,
+            "a well-formed contract module type-checks — the keys are registered, the arg shapes valid"
+        );
+        // `contract` needs exactly one STRING argument: a bare name / wrong arity is CDZ0602.
+        assert_eq!(
+            reject_code("(module m (pragma contract Deliver) (def (main) 1) (export main))")
+                .as_deref(),
+            Some("CDZ0602"),
+            "a non-string contract name is malformed"
+        );
+        assert_eq!(
+            reject_code("(module m (pragma contract) (def (main) 1) (export main))").as_deref(),
+            Some("CDZ0602"),
+            "contract takes exactly one argument"
+        );
+        // `input`/`output` must name a TYPE (a bare name): a literal / wrong arity is CDZ0602.
+        assert_eq!(
+            reject_code("(module m (pragma input \"Envelope\") (def (main) 1) (export main))")
+                .as_deref(),
+            Some("CDZ0602"),
+            "input must name a type, not a string literal"
+        );
+        assert_eq!(
+            reject_code("(module m (pragma output) (def (main) 1) (export main))").as_deref(),
+            Some("CDZ0602"),
+            "output takes exactly one argument"
+        );
+    }
+
+    #[test]
     fn a_default_integer_pragma_makes_a_bare_literal_take_the_declared_type() {
         // `numeric-model.md` §A Module May Declare Its Default Integer Literal Type: a bare, otherwise-
         // unconstrained integer literal WRITTEN in a `(pragma default-integer <T>)` module takes `<T>`
