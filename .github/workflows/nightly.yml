@@ -78,19 +78,39 @@ jobs:
   # is caught here within a day. On a RED: note the owner + WIDEN the per-MR needle reactively (add a second
   # gate-check-rust `--case` or case-id set for the new divergence class — the widen-on-new-class pattern, same
   # as re-recording a baseline). Builds the store first (like rc-leak-full) so the rust emit resolves the runtime.
+  #
+  # SHARDED (v-nix 2026-08-23): the full gate is >1hr of rustc, and the free ubuntu-24.04-arm runner has been
+  # reclaimed at ~15 min wall for 5+ days straight (exit 143 SIGTERM ~13-14 min into the gate step), so the
+  # whole-corpus job NEVER completed — a persistent RED that was infra, not a corpus regression. Split into a
+  # matrix: `cargo xtask gate --shard I/N` round-robins the sorted corpus files into N groups, so each shard
+  # gates ~1/N of the cases (warm ~5 min, well under the ~15 min reclaim window). `--check --shard` scopes the
+  # baseline compare to the cases the shard runs (regressions only; the other shards' cases are not "vanished").
+  # The union of the shards is the whole corpus, so coverage is unchanged; the run is green iff every shard is.
+  # fail-fast:false so one shard's regression still lets the others report. Bump N if a shard ever reclaims.
   rust-gate-full:
-    name: rust-backend gate (full corpus)
+    name: rust-backend gate (shard ${{ matrix.shard }}/12)
     runs-on: ubuntu-24.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-rust
         with:
           wasm-tools: "true"
+          # Shared key across shards: they build the same tools/deps, so a warm cache (from a prior run or a
+          # sibling shard) makes each shard's setup ~2 min instead of a cold ~7 min.
           cache-key: rust-gate-full
       - name: Build the runtime store
         run: cargo xtask build
-      - name: Full rust-backend gate (all cases, no --case filter)
-        run: cargo xtask gate --check --target rust
+      - name: rust-backend gate (shard ${{ matrix.shard }}/12)
+        # `CDZ_GATE_JOBS` caps concurrent rustc within the shard so it cannot OOM the runner (the exit-143
+        # deaths are a graceful host eviction = memory pressure, not a fixed timeout). 4 is a no-op on the
+        # standard 4-vCPU arm runner but bounds a larger one; lower it if a shard still dies memory-signed.
+        env:
+          CDZ_GATE_JOBS: "4"
+        run: cargo xtask gate --check --target rust --shard ${{ matrix.shard }}/12
 
   publish:
     name: rolling nightly prerelease
