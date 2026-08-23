@@ -143,6 +143,13 @@ pub trait System: Send + Sync {
 
     /// Whether a reducer is currently running under `id`.
     async fn contains(&self, id: ReducerId) -> Result<bool, SystemError>;
+
+    /// The program (by content hash) a running reducer was spawned from, or `Ok(None)` if none is running
+    /// under `reducer`. This is the provenance a privileged (event) reducer reads to ground validation (§4):
+    /// an input whose origin runs the same program as the event reducer is self-emitted and trusted, so
+    /// validation does not recurse. The system is authoritative here — it is what spawned the reducer from
+    /// that program — so the answer cannot be spoofed.
+    async fn program_of(&self, reducer: ReducerId) -> Result<Option<ProgramHash>, SystemError>;
 }
 
 /// The in-memory [`System`], generic over its [`Runtime`](crate::Runtime): each reducer an async task on the
@@ -192,13 +199,23 @@ impl<R: Runtime> System for TaskSystem<R> {
     async fn contains(&self, id: ReducerId) -> Result<bool, SystemError> {
         Ok(self.shared.contains(id))
     }
+
+    async fn program_of(&self, reducer: ReducerId) -> Result<Option<ProgramHash>, SystemError> {
+        Ok(self.shared.program_of(reducer))
+    }
 }
 
 /// The system's shared state, held behind an `Arc` so a running reducer's own task can route the effects it
 /// emits — spawning the system reducer for a contract and delivering to it — without routing through a
 /// separate, central router.
+/// Every running reducer, keyed by id: its mailbox `Sender` (for [`deliver`](System::deliver)) and the
+/// [`ProgramHash`] it was spawned from (for [`program_of`](System::program_of) — the provenance a privileged
+/// reducer reads to ground validation, §4). One map so both facts appear and vanish together with the
+/// reducer; shared behind a lock so the system's tasks read and update it as reducers come and go.
+type RunningReducers<R> = Arc<Mutex<HashMap<ReducerId, (<R as Runtime>::Sender, ProgramHash)>>>;
+
 struct Shared<R: Runtime> {
-    reducers: Arc<Mutex<HashMap<ReducerId, R::Sender>>>,
+    reducers: RunningReducers<R>,
     programs: Arc<dyn ProgramStore>,
     graph: Arc<dyn ReducerGraph>,
     events: Arc<dyn EventRegistry>,
@@ -213,7 +230,7 @@ impl<R: Runtime> Shared<R> {
             .lock()
             .expect("reducers lock")
             .get(&target)
-            .cloned();
+            .map(|(sender, _program)| sender.clone());
         match sender {
             Some(sender) => R::send(&sender, event),
             None => false,
@@ -226,6 +243,15 @@ impl<R: Runtime> Shared<R> {
             .lock()
             .expect("reducers lock")
             .contains_key(&id)
+    }
+
+    /// The program a running reducer was spawned from, or `None` if none is running under `reducer`.
+    fn program_of(&self, reducer: ReducerId) -> Option<ProgramHash> {
+        self.reducers
+            .lock()
+            .expect("reducers lock")
+            .get(&reducer)
+            .map(|(_sender, program)| *program)
     }
 
     /// Start running the reducer a [`Spawn`] describes: record its place in the graph, give it a mailbox,
@@ -267,7 +293,7 @@ impl<R: Runtime> Shared<R> {
             self.reducers
                 .lock()
                 .expect("reducers lock")
-                .insert(id, sender);
+                .insert(id, (sender, program));
             let shared = self;
             R::spawn(async move {
                 // Reclaim the mailbox on any exit — loop end, break, a failed load, or an unwinding crash.
@@ -1416,6 +1442,48 @@ mod tests {
                 );
             }
             .group("system")
+            .primary()
+            .spawn();
+        });
+    }
+
+    #[test]
+    fn program_of_reports_a_running_reducers_program_and_none_otherwise() {
+        use bach::ext::*;
+        bach::sim(|| {
+            async {
+                let (saw, _saw_rx) = bach::sync::mpsc::unbounded_channel();
+                let me = rid(b"worker");
+                let program = prog(b"worker-program");
+                let mut store = crate::testing::program::Store::new();
+                store.register(program, move || {
+                    Box::new(Probe {
+                        saw: saw.clone(),
+                        me,
+                        deliver_to: None,
+                    })
+                });
+                let graph = Arc::new(InMemoryReducerGraph::new());
+                let system = TaskSystem::<BachRuntime>::new(
+                    Arc::new(store),
+                    Arc::clone(&graph) as _,
+                    Arc::new(InMemoryEventRegistry::new(prog(b"sys"))),
+                    HostId::of(b"node"),
+                );
+                system
+                    .spawn(root(me, program, ReducerKind::Ordinary))
+                    .await
+                    .unwrap();
+                // A running reducer reports the program it was spawned from — the provenance a privileged
+                // reducer reads to ground validation (§4), authoritative because the system spawned it.
+                assert_eq!(system.program_of(me).await.unwrap(), Some(program));
+                // A reducer that was never spawned has no program.
+                assert_eq!(
+                    system.program_of(rid(b"never-spawned")).await.unwrap(),
+                    None
+                );
+            }
+            .group("program-of")
             .primary()
             .spawn();
         });
