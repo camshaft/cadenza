@@ -14,7 +14,7 @@
 //! ([`crate::contracts::lifecycle`]). Decoding is total: [`Lifecycle::decode`] returns `None` on any input
 //! that is not a well-formed lifecycle value, so a bad payload is a rejected event, not a panic.
 
-use crate::{Bytes, Contract, ContractId, Notification, ReducerId, Str};
+use crate::{Bytes, Contract, ContractId, Notification, ReducerId};
 use cadenza_ast::ast::{Builder, StructId};
 use cadenza_ast::codec;
 use std::sync::OnceLock;
@@ -27,14 +27,7 @@ use std::sync::OnceLock;
 pub fn lifecycle_contract() -> ContractId {
     static LIFECYCLE: OnceLock<Contract> = OnceLock::new();
     LIFECYCLE
-        .get_or_init(|| {
-            Contract::new(
-                Str::from_static("cdz-platform.lifecycle"),
-                crate::contracts::lifecycle::schema,
-                "Event",
-                "Ack",
-            )
-        })
+        .get_or_init(crate::contracts::lifecycle::contract)
         .id()
 }
 

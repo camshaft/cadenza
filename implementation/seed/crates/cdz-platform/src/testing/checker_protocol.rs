@@ -41,16 +41,7 @@ fn driver_origin() -> Origin {
 #[must_use]
 pub fn check_contract() -> ContractId {
     static CHECK: OnceLock<Contract> = OnceLock::new();
-    CHECK
-        .get_or_init(|| {
-            Contract::new(
-                Str::from_static("cdz-platform.check"),
-                crate::contracts::check::schema,
-                "Envelope",
-                "Ack",
-            )
-        })
-        .id()
+    CHECK.get_or_init(crate::contracts::check::contract).id()
 }
 
 /// The contract the checker emits its verdict on (§9): a `Request` whose payload is a `Verdict` record
@@ -60,14 +51,7 @@ pub fn check_contract() -> ContractId {
 pub fn verdict_contract() -> ContractId {
     static VERDICT: OnceLock<Contract> = OnceLock::new();
     VERDICT
-        .get_or_init(|| {
-            Contract::new(
-                Str::from_static("cdz-platform.verdict"),
-                crate::contracts::verdict::schema,
-                "Verdict",
-                "Ack",
-            )
-        })
+        .get_or_init(crate::contracts::verdict::contract)
         .id()
 }
 

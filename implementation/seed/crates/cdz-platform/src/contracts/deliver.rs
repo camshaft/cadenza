@@ -105,6 +105,17 @@ pub fn schema(b: &mut Builder) -> Vec<StructId> {
     let v85 = b.list(vec![v79, v80, v81, v84]);
     vec![v5, v63, v78, v85]
 }
+/// The contract this module declares — built from its `@!contract` / `@!input` /
+/// `@!output` pragmas and its schema. The one place the contract's name and input/output
+/// type references live is the `.cdz` source; `*_contract()` calls this.
+pub fn contract() -> crate::Contract {
+    crate::Contract::new(
+        crate::Str::from_static("cdz-platform.deliver"),
+        schema,
+        "Envelope",
+        "Outcome",
+    )
+}
 /// Build a canonical `Error.Timeout` value.
 pub fn error_timeout(b: &mut Builder) -> StructId {
     v::qctor(b, "Error", "Timeout", vec![])

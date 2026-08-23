@@ -29,6 +29,17 @@ pub fn schema(b: &mut Builder) -> Vec<StructId> {
     let v9 = b.list(vec![v6, v7, v8]);
     vec![v5, v9]
 }
+/// The contract this module declares — built from its `@!contract` / `@!input` /
+/// `@!output` pragmas and its schema. The one place the contract's name and input/output
+/// type references live is the `.cdz` source; `*_contract()` calls this.
+pub fn contract() -> crate::Contract {
+    crate::Contract::new(
+        crate::Str::from_static("cdz-platform.check"),
+        schema,
+        "Envelope",
+        "Ack",
+    )
+}
 /// Build a canonical `Envelope.Check` value.
 pub fn envelope_check(b: &mut Builder, x: StructId) -> StructId {
     v::qctor(b, "Envelope", "Check", vec![x])

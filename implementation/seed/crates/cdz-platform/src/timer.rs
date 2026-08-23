@@ -23,7 +23,7 @@
 //! [`Fired::decode`] return `None` on anything that is not a well-formed value, so a bad value is rejected,
 //! never a panic.
 
-use crate::{Bytes, Contract, ContractId, Request, Str};
+use crate::{Bytes, Contract, ContractId, Request};
 use cadenza_ast::ast::{Builder, StructId};
 use cadenza_ast::codec;
 use std::sync::OnceLock;
@@ -36,16 +36,7 @@ use std::sync::OnceLock;
 #[must_use]
 pub fn timer_contract() -> ContractId {
     static TIMER: OnceLock<Contract> = OnceLock::new();
-    TIMER
-        .get_or_init(|| {
-            Contract::new(
-                Str::from_static("cdz-platform.timer"),
-                crate::contracts::timer::schema,
-                "Envelope",
-                "Event",
-            )
-        })
-        .id()
+    TIMER.get_or_init(crate::contracts::timer::contract).id()
 }
 
 /// Arm a timer that fires `duration` nanoseconds from now (§6). This is what the payload of a timer
