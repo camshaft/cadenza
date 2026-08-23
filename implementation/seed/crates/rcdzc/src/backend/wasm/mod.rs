@@ -8088,11 +8088,101 @@ fn scalar_read_store_of_wit(wty: &crate::wit_world::WitType) -> Option<(&'static
     })
 }
 
+/// A [`serialize::CanonWrite`] built from the WIT type ALONE (no guest `Ty`), for when the guest value type
+/// is UNRESOLVED — the DEAD element/payload writer of an empty polymorphic collection (`step{requests: []}`
+/// — a reducer that emits no effects) or a `None` option. The value-heap representation follows the type, so
+/// a `Some`/non-empty value of this WIT type would be laid this way; but for the empty/none case the code
+/// never executes, so a record's field SLOTS use identity (the guest's name-lex slots are unknowable without
+/// its `Ty`, but no element is ever written). Only VALIDITY matters here, not the (dead) slot mapping.
+fn canon_write_from_wit(
+    wty: &crate::wit_world::WitType,
+) -> Option<crate::backend::wasm::serialize::CanonWrite> {
+    use crate::backend::wasm::serialize::{CanonField, CanonWrite, VariantArm};
+    use crate::backend::wasm::wit_ctype;
+    use crate::wit_world::WitType;
+    Some(match wty {
+        WitType::List(e) if **e == WitType::U8 => CanonWrite::Bytes,
+        WitType::List(e) => CanonWrite::List {
+            elem_size: wit_ctype::canonical_size(e),
+            elem_align: wit_ctype::canonical_align(e),
+            elem: Box::new(canon_write_from_wit(e)?),
+        },
+        WitType::Record(fields) => {
+            let wtys: Vec<WitType> = fields.iter().map(|(_, t)| t.clone()).collect();
+            let offsets = wit_ctype::record_field_offsets(&wtys);
+            let mut fs = Vec::new();
+            for (i, ((_, ft), off)) in fields.iter().zip(offsets.iter()).enumerate() {
+                fs.push(CanonField {
+                    index: i as u32, // identity — dead code (this whole writer is only reached for empty/none)
+                    offset: *off,
+                    write: canon_write_from_wit(ft)?,
+                });
+            }
+            CanonWrite::Record { fields: fs }
+        }
+        WitType::Option(inner) => {
+            let cps = [None, Some(inner.as_ref())];
+            let (disc_size, payload_offset) = wit_ctype::variant_disc_layout(&cps);
+            CanonWrite::Variant {
+                disc_store: disc_store_of(disc_size),
+                payload_offset,
+                arms: vec![
+                    VariantArm {
+                        boundary_disc: 0,
+                        payload: None,
+                    },
+                    VariantArm {
+                        boundary_disc: 1,
+                        payload: Some(Box::new(canon_write_from_wit(inner)?)),
+                    },
+                ],
+            }
+        }
+        WitType::Variant(cases) => {
+            let cps: Vec<Option<&WitType>> = cases.iter().map(|(_, p)| p.as_ref()).collect();
+            let (disc_size, payload_offset) = wit_ctype::variant_disc_layout(&cps);
+            let mut arms = Vec::new();
+            for (i, (_, p)) in cases.iter().enumerate() {
+                arms.push(VariantArm {
+                    boundary_disc: i as u32,
+                    payload: match p {
+                        None => None,
+                        Some(pw) => Some(Box::new(canon_write_from_wit(pw)?)),
+                    },
+                });
+            }
+            CanonWrite::Variant {
+                disc_store: disc_store_of(disc_size),
+                payload_offset,
+                arms,
+            }
+        }
+        scalar => {
+            let (read, wrap_i64, store) = scalar_read_store_of_wit(scalar)?;
+            CanonWrite::Scalar {
+                read,
+                wrap_i64,
+                store,
+            }
+        }
+    })
+}
+
+/// The i32 store opcode for a variant discriminant of `disc_size` bytes.
+fn disc_store_of(disc_size: u32) -> u8 {
+    use crate::backend::wasm::wasm_abi::op;
+    match disc_size {
+        1 => op::I32_STORE8,
+        2 => op::I32_STORE16,
+        _ => op::I32_STORE,
+    }
+}
+
 /// Build the recursive [`serialize::CanonWrite`] that lowers a value-heap value of type `gty` (WIT `wty`) to
 /// its canonical-ABI memory form — the reducer result-lower. A scalar unboxes + stores; a `Bytes`/`list<u8>`
-/// copies its bytes out; a record recurses per field at canonical offsets (with the WIT-vs-name-lex field-
-/// order SOUNDNESS guard); a `list<T>` writes an element array (recursive element write). Declines a
-/// variant/option/other compound (a later slice).
+/// copies its bytes out; a record recurses per field at canonical offsets (permuted by name); a `list<T>`
+/// writes an element array; option/named-variant write disc + payload. When `gty` is UNRESOLVED (an empty
+/// collection / `None`), falls back to [`canon_write_from_wit`] (the dead element/payload writer).
 fn canon_write_of(
     db: &mut Db,
     gty: &crate::ty::Ty,
@@ -8103,6 +8193,11 @@ fn canon_write_of(
     use crate::backend::wasm::wit_ctype;
     use crate::ty::Ty;
     use crate::wit_world::WitType;
+    // An UNRESOLVED guest type — the dead element/payload writer of an empty collection / `None`. The value
+    // never materializes, so drive the (valid but dead) write off the WIT type alone.
+    if matches!(gty.strip_nominal(), Ty::Var(_) | Ty::Any) {
+        return canon_write_from_wit(wty);
+    }
     match gty.strip_nominal() {
         Ty::Bytes => Some(CanonWrite::Bytes),
         Ty::Record(map) => {

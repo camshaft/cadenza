@@ -2014,6 +2014,84 @@ fn full_step_world_bytes() -> Vec<u8> {
 /// deadline-nanos: Some(5)}], outcome: Continue}`. Exercises record permute (step/request decl-ordered) +
 /// list<record> + three list<u8> leaves + option + named variant — the reducer-echo step shape. Verified by
 /// lifting the whole step back to a `Val` under wasmtime.
+/// W4c-b: a reducer that emits NO effects — `step{requests: [], outcome: continue}`, a VERY common output
+/// (a fold that only reads/updates state). The empty `(list)` has an unresolved element type, so the result
+/// writer derives the (dead) element writer of `list<request>` from the WIT type alone (`canon_write_from_wit`
+/// — the same principle as the None-only option). Without it the writer declined and emit fell through to a
+/// wrong-signature component. `f({...}) == {requests: [], outcome: continue}`.
+#[test]
+fn a_reducer_emitting_no_effects_compiles_and_runs() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime) = find_runtime_wasm() else {
+        return;
+    };
+    let src = "(module m \
+                 (type Outcome Continue (Close (Record (schema Bytes) (reason Bytes)))) \
+                 (def (f (: m (Record (contract Bytes) (payload Bytes)))) \
+                   (record (requests (list)) (outcome Outcome.Continue))) \
+                 (export f))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:demo/iface"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                full_step_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "no-effects reducer must emit: {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("component");
+    let opts = cdz_run::RunOpts {
+        export: None,
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    let bv = |bs: &[u8]| Val::List(bs.iter().map(|b| Val::U8(*b)).collect());
+    let result = cdz_run::run_reducer_typed(
+        bytes,
+        "cadenza:demo/iface",
+        "f",
+        &[Val::Record(vec![
+            ("contract".to_string(), bv(&[1])),
+            ("payload".to_string(), bv(&[2])),
+        ])],
+        &opts,
+    )
+    .expect("run the no-effects reducer");
+    let Val::Record(step) = &result else {
+        panic!("step record, got {result:?}");
+    };
+    let get = |n: &str| step.iter().find(|(k, _)| k == n).unwrap().1.clone();
+    assert_eq!(get("requests"), Val::List(vec![]), "no requests emitted");
+    match get("outcome") {
+        Val::Variant(c, p) => {
+            assert_eq!(c, "continue");
+            assert!(p.is_none());
+        }
+        o => panic!("outcome variant, got {o:?}"),
+    }
+}
+
 #[test]
 fn a_full_step_shaped_guest_compiles_and_runs() {
     use crate::testkit::parse;
