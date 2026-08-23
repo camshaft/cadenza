@@ -2204,6 +2204,14 @@ impl Db {
         // rejected upstream by `strip_annotations` (CDZ0201 "wraps no definition"), so this pass only
         // scans + generates the well-typed sites (see `param_sidecar` module docs).
         crate::param_sidecar::generate(&mut ast);
+        // WORLD-IMPORT SIDECAR (no-redeclare surface): for an in-source top-level `(world …)` decl,
+        // synthesize an `(effect <iface> (op …)…)` decl per import interface and append it as a module
+        // member — HERE, BEFORE `scan_top_level`, so a guest that performs a NAMED world import
+        // (`(host (iface) ((. iface op) …))`) resolves + types against the DERIVED effect with no
+        // hand-written `(effect …)` decl (the generate-before-resolve ordering `param_sidecar` uses). The
+        // synthesized decl is byte-shaped like a hand-written one, so downstream sees an ordinary effect.
+        // A module with no in-source world (or no mappable import) is untouched.
+        crate::wit_world::inject_world_import_effects(&mut ast);
         // The program's node count, captured BEFORE the prelude appends — the boundary between user
         // nodes (which the front-end's span table covers) and everything appended after. Ids `0..this`
         // are the user program; ids at/above are prelude or evaluator-synthesized.
