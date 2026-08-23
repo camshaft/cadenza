@@ -28,11 +28,14 @@
 //!
 //! A `<delivery>` names a `target` task and carries exactly one event to inject into it — a `message` (an
 //! effect folded through `on_message`) or a `notification` (a control-plane event folded through
-//! `on_notification`). Both carry a `contract` (the 33-byte contract-id) and a `payload` (opaque bytes); a
-//! message also takes an optional `token` (the caller's continuation token, default empty):
+//! `on_notification`). Both carry a `contract` (a contract-id) and a `payload` (opaque bytes); a message also
+//! takes an optional `token` (the caller's continuation token, default empty). A `contract` is written either
+//! as its raw 33 tagged bytes, or as a **base64url** string (the §8 text form) — the string form is what a
+//! name→id rewrite substitutes for a contract name (contract-name resolution is done outside the platform and
+//! rewritten into the spec, so a resolved name arrives as its base64url id):
 //! ```text
-//! ("record" (= target "root") (= message ("record" (= contract b"…") (= payload b"…") (= token b"…"))))
-//! ("record" (= target "root") (= notification ("record" (= contract b"…") (= payload b"…"))))
+//! ("record" (= target "root") (= message ("record" (= contract b"…33 bytes") (= payload b"…") (= token b"…"))))
+//! ("record" (= target "root") (= notification ("record" (= contract "AbC…base64url") (= payload b"…"))))
 //! ```
 //!
 //! A `<blob>` names a program and gives its bytes **either inline or by path** — exactly one:
@@ -57,7 +60,8 @@
 use super::harness::{Harness, Parent, SpawnSpec};
 use crate::contract_value::{bytes_leaf, read_bytes, read_uint, record, record_field, uint_leaf};
 use crate::{
-    Bytes, ContractId, Delivered, HostId, Message, Notification, Origin, ReducerId, ReducerKind,
+    Bytes, ContractId, Delivered, Hash, HostId, Message, Notification, Origin, ReducerId,
+    ReducerKind,
 };
 use cadenza_ast::ast::{Arenas, Builder, Leaf, StructId};
 use cadenza_ast::codec;
@@ -560,11 +564,26 @@ fn read_delivery(arenas: &Arenas, id: StructId) -> Result<(String, DeliveryEvent
 
 /// Read the required `contract` field of an event record as a [`ContractId`] (its 33 raw hash bytes).
 fn read_contract_id(arenas: &Arenas, event: StructId) -> Result<ContractId, SpecError> {
-    let bytes = read_required_bytes(arenas, event, "contract")?;
-    ContractId::try_from(bytes.as_ref()).map_err(|_| SpecError::WrongType {
-        field: "contract",
-        want: "a 33-byte contract-id",
-    })
+    let id = record_field(arenas, event, "contract").ok_or(SpecError::MissingField("contract"))?;
+    // A contract-id crosses either as its raw 33 tagged bytes, or as a base64url string (§8) — the text form
+    // a name→id rewrite substitutes for a contract name (the platform does no name resolution; that mapping
+    // is produced outside and rewritten into the spec, so a resolved name arrives here as its base64url id).
+    if let Some(text) = arenas.as_str(id) {
+        let hash = text.parse::<Hash>().map_err(|_| SpecError::WrongType {
+            field: "contract",
+            want: "a base64url contract-id",
+        })?;
+        Ok(ContractId::from_hash(hash))
+    } else {
+        let bytes = read_bytes(arenas, id).ok_or(SpecError::WrongType {
+            field: "contract",
+            want: "a base64url string or a 33-byte contract-id",
+        })?;
+        ContractId::try_from(bytes.as_ref()).map_err(|_| SpecError::WrongType {
+            field: "contract",
+            want: "a 33-byte contract-id",
+        })
+    }
 }
 
 /// Read a required bytes-leaf field of a record, or a [`SpecError`] if absent or not a bytes literal.
@@ -1084,6 +1103,55 @@ mod tests {
             Err(SpecError::WrongType {
                 field: "contract",
                 want: "a 33-byte contract-id",
+            })
+        );
+    }
+
+    #[test]
+    fn a_delivery_contract_may_be_a_base64url_string() {
+        // A name→id rewrite (done outside the platform) substitutes a base64url contract-id string for a
+        // contract name; decode parses it to the same id the raw bytes would give — so nix can rewrite
+        // `contract = <name>` to `contract = <base64url>` with a pure string substitution.
+        let cid = ContractId::of(b"temp.celsius");
+        let text = cid.hash().to_string(); // the base64url §8 text form
+        let arenas = built(|b| {
+            let system = s(b, "sys");
+            let msg = {
+                let contract = s(b, &text);
+                let payload = bytes_leaf(b, b"21");
+                record(b, vec![("contract", contract), ("payload", payload)])
+            };
+            let target = s(b, "root");
+            let d = record(b, vec![("target", target), ("message", msg)]);
+            let deliver = list(b, vec![d]);
+            record(b, vec![("system", system), ("deliver", deliver)])
+        });
+        let spec = HarnessSpec::read(&arenas, arenas.root).expect("a base64url contract is valid");
+        match &spec.deliveries[0].1 {
+            DeliveryEvent::Message { contract, .. } => assert_eq!(*contract, cid),
+            other => panic!("expected a message delivery, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_a_contract_string_that_is_not_base64url() {
+        let arenas = built(|b| {
+            let system = s(b, "sys");
+            let msg = {
+                let contract = s(b, "not base64url!!");
+                let payload = bytes_leaf(b, b"p");
+                record(b, vec![("contract", contract), ("payload", payload)])
+            };
+            let target = s(b, "root");
+            let d = record(b, vec![("target", target), ("message", msg)]);
+            let deliver = list(b, vec![d]);
+            record(b, vec![("system", system), ("deliver", deliver)])
+        });
+        assert_eq!(
+            HarnessSpec::read(&arenas, arenas.root),
+            Err(SpecError::WrongType {
+                field: "contract",
+                want: "a base64url contract-id",
             })
         );
     }
