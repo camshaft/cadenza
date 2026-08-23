@@ -1,0 +1,26 @@
+// A reducer that PERFORMS a host import: on-message reads its own reducer id (identity.id — a compound
+// list<u8> host result, #3121) and stamps it as the echoed request's token, proving a host value flows
+// through the guest and back. Targets the shared world.wit (external artifact). Only on-message delegates
+// `identity` (the effect it performs); on-response/on-notification are inert.
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+def empty-requests() =
+  ([] : List(Record(contract: Bytes, payload: Bytes, token: Bytes, deadlineNanos: Option(UInt64))))
+def keep-alive() = { requests = empty-requests(), outcome = Outcome.Continue }
+
+def on-message(
+  msg: Record(contract: Bytes, sender: Record(reducer: Bytes, host: Bytes), payload: Bytes, token: Bytes)
+) =
+  host identity in
+    { requests = List.push(empty-requests(),
+                           { contract = msg.contract,
+                             payload = msg.payload,
+                             token = identity.id(),
+                             deadlineNanos = None }),
+      outcome = Outcome.Continue }
+
+def on-response(_resp: Record(contract: Bytes, token: Bytes, answer: Result(Bytes, Error))) = keep-alive()
+def on-notification(_note: Record(contract: Bytes, payload: Bytes)) = keep-alive()
+
+export { on-message, on-response, on-notification }
