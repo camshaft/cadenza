@@ -23,9 +23,11 @@
 //! program's component from the content-addressed store, composes its content-addressed dependencies (the
 //! value-heap runtime, …) from the store, and instantiates it as a reducer.
 //!
-//! Still open (the event-reducer surface): the `deliver` and `program-of` host imports, which need the
-//! node-shared context — the delivery mechanism and the reducer-to-program registry
-//! ([`System::program_of`](crate::System)) — threaded into [`HostState`].
+//! The privileged event-reducer imports each read a node-shared capability threaded into [`HostState`]: the
+//! routing `graph`, the `deliver` mechanism ([`Delivery`](crate::Delivery)), and the `program-of` provenance
+//! read ([`Provenance`](crate::Provenance)). Each is set during node assembly (the store's `with_*` builders)
+//! and defaults to a null object ([`NoDelivery`](crate::NoDelivery) / [`NoProvenance`](crate::NoProvenance)),
+//! so the import path never branches on absence — an ordinary reducer is never wired these imports anyway.
 #![allow(dead_code)]
 
 // Generated host bindings for the event-reducer world (the superset: the ordinary reducer imports plus the
@@ -42,8 +44,8 @@ wasmtime::component::bindgen!({
 });
 
 use crate::{
-    BlobStore, Bytes, ContractId, EdgeKind, Error, Hash, KvStore, Message, Notification, Origin,
-    Outcome, ReducerGraph, ReducerId, Request, Response,
+    BlobStore, Bytes, ContractId, Delivered, Delivery, EdgeKind, Error, Hash, HostId, KvStore,
+    Message, Notification, Origin, Outcome, ReducerGraph, ReducerId, Request, Response,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -90,6 +92,11 @@ struct HostState {
     /// runs. Always present ([`NoProvenance`](crate::NoProvenance) when the node has not wired a real one),
     /// so the import path never branches on its absence; an ordinary reducer never has the import anyway.
     provenance: Arc<dyn Provenance>,
+    /// The node-side delivery backing the privileged `deliver` import (§4) — injecting an event into a
+    /// reducer's mailbox, the routing act. Always present ([`NoDelivery`](crate::NoDelivery) when the node has
+    /// not wired a real one), so the import path never branches on its absence; an ordinary reducer never has
+    /// the import anyway.
+    delivery: Arc<dyn Delivery>,
 }
 
 impl cadenza::platform::identity::Host for HostState {
@@ -221,6 +228,44 @@ impl cadenza::platform::provenance::Host for HostState {
     }
 }
 
+impl cadenza::platform::deliver::Host for HostState {
+    async fn deliver_message(&mut self, target: Vec<u8>, event: wit_reducer::Message) -> bool {
+        // A malformed target or a malformed event (an id that is not a hash, an origin that is not) names
+        // nothing to deliver to or from, so it is a failed delivery — `false` — not a panic. The node-side
+        // delivery reports whether a reducer is running under `target` and received it.
+        let (Some(target), Some(message)) = (to_reducer(&target), message_from_wit(event)) else {
+            return false;
+        };
+        self.delivery
+            .deliver(target, Delivered::Message(message))
+            .await
+    }
+
+    async fn deliver_response(&mut self, target: Vec<u8>, event: wit_reducer::Response) -> bool {
+        let (Some(target), Some(response)) = (to_reducer(&target), response_from_wit(event)) else {
+            return false;
+        };
+        self.delivery
+            .deliver(target, Delivered::Response(response))
+            .await
+    }
+
+    async fn deliver_notification(
+        &mut self,
+        target: Vec<u8>,
+        event: wit_reducer::Notification,
+    ) -> bool {
+        let (Some(target), Some(notification)) =
+            (to_reducer(&target), notification_from_wit(event))
+        else {
+            return false;
+        };
+        self.delivery
+            .deliver(target, Delivered::Notification(notification))
+            .await
+    }
+}
+
 impl From<cadenza::platform::graph::Dir> for crate::Dir {
     fn from(dir: cadenza::platform::graph::Dir) -> Self {
         match dir {
@@ -335,6 +380,57 @@ fn step_from_wit(step: wit_reducer::Step) -> Result<(Vec<Request>, Outcome), Ste
     Ok((requests, outcome_from_wit(step.outcome)?))
 }
 
+// ── Inbound: an event a privileged reducer hands to `deliver` ──
+// The `deliver` host import (§4) takes a WIT event an event reducer built — the same three envelopes it would
+// receive — and injects it into a target's log. These convert that WIT event back to the crate event the
+// system delivers. Fallible on a malformed id (a contract-id, or an origin's reducer/host, not `Hash::LEN`
+// bytes): the event names nothing, so the delivery fails (`false`) rather than trusting a bad value. The
+// inverse of the outbound `*_to_wit` above, for the events that also flow the other way.
+
+fn origin_from_wit(origin: wit_types::Origin) -> Option<Origin> {
+    Some(Origin {
+        reducer: ReducerId::try_from(origin.reducer.as_slice()).ok()?,
+        host: HostId::try_from(origin.host.as_slice()).ok()?,
+    })
+}
+
+fn error_from_wit(error: wit_types::Error) -> Error {
+    match error {
+        wit_types::Error::Timeout => Error::Timeout,
+        wit_types::Error::MissingHandler => Error::MissingHandler,
+        wit_types::Error::SchemaViolation => Error::SchemaViolation,
+    }
+}
+
+fn message_from_wit(message: wit_reducer::Message) -> Option<Message> {
+    Some(Message {
+        id: to_contract(&message.contract)?,
+        payload: Bytes::from(message.payload),
+        from: origin_from_wit(message.sender)?,
+        continuation_token: Bytes::from(message.token),
+    })
+}
+
+fn response_from_wit(response: wit_reducer::Response) -> Option<Response> {
+    Some(Response {
+        id: to_contract(&response.contract)?,
+        continuation_token: Bytes::from(response.token),
+        // The mirror of `response_to_wit`: an `Ok` payload is the contract's output value; an `Err` is a
+        // runtime-level failure, total across the three `Error` variants.
+        payload: match response.answer {
+            Ok(payload) => Ok(Bytes::from(payload)),
+            Err(error) => Err(error_from_wit(error)),
+        },
+    })
+}
+
+fn notification_from_wit(notification: wit_reducer::Notification) -> Option<Notification> {
+    Some(Notification {
+        id: to_contract(&notification.contract)?,
+        payload: Bytes::from(notification.payload),
+    })
+}
+
 // ── The wasm reducer driver (§3) ─────────────────────────────────────────────────────────────────────────
 // Turning a reducer component into a live [`Reducer`](crate::Reducer): a wasmtime `Store` holding the
 // component's [`HostState`] and an instantiated world. Folding an event is build-the-record → call-the-guest
@@ -367,7 +463,7 @@ fn reducer_engine() -> Result<Engine, wasmtime::Error> {
 /// Wire the host imports a reducer of the given [`ReducerKind`] may hold into `linker`, each backed by the
 /// [`HostState`] in the store. The kind decides the capability set (§3 trust root): EVERY reducer gets its own
 /// state, the content-addressed store, and its own id, but only an event reducer gets the privileged imports —
-/// the routing `graph` (and `deliver`/`provenance` once their node-shared context lands). This is the
+/// the routing `graph`, the `deliver` primitive, and the `program-of` provenance read. This is the
 /// least-privilege wiring the world design rests on: an ordinary reducer's linker simply has no `graph`
 /// import, so a component that tries to import it fails to instantiate against that linker (the capability is
 /// enforced by what the kernel wires, never a runtime check an ordinary reducer could attempt).
@@ -379,11 +475,12 @@ fn add_host_imports(
     cadenza::platform::identity::add_to_linker::<_, HostData>(linker, |s| s)?;
     cadenza::platform::blobs::add_to_linker::<_, HostData>(linker, |s| s)?;
     cadenza::platform::state::add_to_linker::<_, HostData>(linker, |s| s)?;
-    // Privileged: only an event reducer may read and mutate the routing substrate and read program
-    // provenance (and, later, deliver).
+    // Privileged: only an event reducer may read and mutate the routing substrate, read program provenance,
+    // and deliver an event into a reducer's log (the routing act, §4).
     if matches!(kind, ReducerKind::Event) {
         cadenza::platform::graph::add_to_linker::<_, HostData>(linker, |s| s)?;
         cadenza::platform::provenance::add_to_linker::<_, HostData>(linker, |s| s)?;
+        cadenza::platform::deliver::add_to_linker::<_, HostData>(linker, |s| s)?;
     }
     Ok(())
 }
@@ -600,6 +697,10 @@ pub struct WasmProgramStore {
     /// every running reducer's program. [`NoProvenance`](crate::NoProvenance) until set with
     /// [`with_provenance`](WasmProgramStore::with_provenance), so it is never absent, only null.
     provenance: Arc<dyn Provenance>,
+    /// The node-side delivery an event reducer's `deliver` import routes through (§4) — the system, which
+    /// injects an event into a reducer's mailbox. [`NoDelivery`](crate::NoDelivery) until set with
+    /// [`with_delivery`](WasmProgramStore::with_delivery), so it is never absent, only null.
+    delivery: Arc<dyn Delivery>,
     /// Compiled components keyed by content digest — `Component::new` (the Cranelift compile) runs once per
     /// distinct component, not once per reducer, and a program and a dependency over the same bytes share the
     /// one entry (the digest, like the store, ignores the hash kind). A `Component` is cheaply clonable
@@ -625,6 +726,7 @@ impl WasmProgramStore {
             make_kv,
             graph,
             provenance: Arc::new(crate::NoProvenance),
+            delivery: Arc::new(crate::NoDelivery),
             compiled: Mutex::new(HashMap::new()),
         })
     }
@@ -635,6 +737,16 @@ impl WasmProgramStore {
     #[must_use]
     pub fn with_provenance(mut self, provenance: Arc<dyn Provenance>) -> Self {
         self.provenance = provenance;
+        self
+    }
+
+    /// Wire the node-side delivery an event reducer's `deliver` import routes through (§4) — the system, which
+    /// injects an event into a reducer's mailbox. Set during node assembly, after the system exists (as with
+    /// [`with_provenance`](WasmProgramStore::with_provenance), the store↔system reference is broken with a
+    /// `Weak` or set once at wiring time).
+    #[must_use]
+    pub fn with_delivery(mut self, delivery: Arc<dyn Delivery>) -> Self {
+        self.delivery = delivery;
         self
     }
 
@@ -756,6 +868,7 @@ impl ProgramStore for WasmProgramStore {
             kv: (self.make_kv)(ctx.id),
             graph: Arc::clone(&self.graph),
             provenance: self.provenance.clone(),
+            delivery: self.delivery.clone(),
         };
         let reducer = if component_dependencies(&self.host.engine, &component).is_empty() {
             // Fast path: no content-addressed component dependencies, so reuse the cached, pre-instantiated
@@ -808,6 +921,7 @@ mod tests {
             kv: Box::new(InMemoryKvStore::new()),
             graph: Arc::new(InMemoryReducerGraph::new()),
             provenance: Arc::new(crate::NoProvenance),
+            delivery: Arc::new(crate::NoDelivery),
         }
     }
 
@@ -925,6 +1039,7 @@ mod tests {
 
     // ── The event ↔ WIT conversion layer ──
     use super::{StepError, message_to_wit, notification_to_wit, response_to_wit, step_from_wit};
+    use super::{message_from_wit, notification_from_wit, response_from_wit};
     use super::{wit_reducer, wit_types};
     use crate::{
         Bytes, ContractId, Error, HostId, Message, Notification, Origin, Outcome, Response,
@@ -1060,6 +1175,226 @@ mod tests {
         assert_eq!(
             step_from_wit(bad_close),
             Err(StepError::MalformedContractId)
+        );
+    }
+
+    // ── Inbound: an event a privileged reducer hands to `deliver` ──
+
+    #[test]
+    fn a_message_from_wit_maps_every_field_and_its_origin() {
+        // The inverse of `message_to_wit`: a WIT message an event reducer built decodes to the crate message
+        // the system delivers, contract-id and origin recovered from their raw hash bytes.
+        let wit = wit_reducer::Message {
+            contract: cid(b"inbound").hash().as_bytes().to_vec(),
+            sender: super::origin_to_wit(Origin {
+                reducer: ReducerId::of(b"peer"),
+                host: HostId::of(b"host-a"),
+            }),
+            payload: b"the-input".to_vec(),
+            token: b"tok".to_vec(),
+        };
+        let message = message_from_wit(wit).expect("a well-formed message");
+        assert_eq!(message.id, cid(b"inbound"));
+        assert_eq!(message.payload, Bytes::from_static(b"the-input"));
+        assert_eq!(message.continuation_token, Bytes::from_static(b"tok"));
+        assert_eq!(message.from.reducer, ReducerId::of(b"peer"));
+        assert_eq!(message.from.host, HostId::of(b"host-a"));
+    }
+
+    #[test]
+    fn a_response_from_wit_carries_an_ok_payload_or_a_runtime_error() {
+        let ok = response_from_wit(wit_reducer::Response {
+            contract: cid(b"c").hash().as_bytes().to_vec(),
+            token: b"t".to_vec(),
+            answer: Ok(b"out".to_vec()),
+        })
+        .expect("a well-formed response");
+        assert_eq!(ok.payload, Ok(Bytes::from_static(b"out")));
+        // Each WIT error maps back to its crate counterpart — total across the three variants (so the
+        // response-delivery path never has an untranslatable error).
+        for (wit, crate_err) in [
+            (wit_types::Error::Timeout, Error::Timeout),
+            (wit_types::Error::MissingHandler, Error::MissingHandler),
+            (wit_types::Error::SchemaViolation, Error::SchemaViolation),
+        ] {
+            let r = response_from_wit(wit_reducer::Response {
+                contract: cid(b"c").hash().as_bytes().to_vec(),
+                token: b"t".to_vec(),
+                answer: Err(wit),
+            })
+            .expect("a well-formed error response");
+            assert_eq!(r.payload, Err(crate_err));
+        }
+    }
+
+    #[test]
+    fn a_notification_from_wit_maps_its_contract_and_payload() {
+        let note = notification_from_wit(wit_reducer::Notification {
+            contract: cid(b"lifecycle").hash().as_bytes().to_vec(),
+            payload: b"spawned".to_vec(),
+        })
+        .expect("a well-formed notification");
+        assert_eq!(note.id, cid(b"lifecycle"));
+        assert_eq!(note.payload, Bytes::from_static(b"spawned"));
+    }
+
+    #[test]
+    fn a_malformed_id_or_origin_makes_an_inbound_event_none() {
+        // A contract-id that is not `Hash::LEN` bytes names nothing, so the event does not decode.
+        assert!(
+            message_from_wit(wit_reducer::Message {
+                contract: b"not a hash".to_vec(),
+                sender: super::origin_to_wit(Origin {
+                    reducer: ReducerId::of(b"peer"),
+                    host: HostId::of(b"host-a"),
+                }),
+                payload: Vec::new(),
+                token: Vec::new(),
+            })
+            .is_none()
+        );
+        // So does a malformed origin — a sender whose reducer bytes are not a hash.
+        assert!(
+            message_from_wit(wit_reducer::Message {
+                contract: cid(b"ok").hash().as_bytes().to_vec(),
+                sender: wit_types::Origin {
+                    reducer: b"nope".to_vec(),
+                    host: HostId::of(b"host-a").hash().as_bytes().to_vec(),
+                },
+                payload: Vec::new(),
+                token: Vec::new(),
+            })
+            .is_none()
+        );
+        assert!(
+            response_from_wit(wit_reducer::Response {
+                contract: b"nope".to_vec(),
+                token: Vec::new(),
+                answer: Ok(Vec::new()),
+            })
+            .is_none()
+        );
+        assert!(
+            notification_from_wit(wit_reducer::Notification {
+                contract: b"nope".to_vec(),
+                payload: Vec::new(),
+            })
+            .is_none()
+        );
+    }
+
+    // ── The `deliver` host import ──
+    #[tokio::test]
+    async fn deliver_routes_each_event_kind_to_the_target_and_declines_gracefully() {
+        use super::cadenza::platform::deliver::Host as Deliver;
+        use crate::{Delivered, Delivery};
+        use std::sync::Mutex as StdMutex;
+
+        // A stand-in node delivery: record every (target, event) it is handed, and report the target received
+        // it — so the test observes both what the host converted and that it routed through the delivery.
+        #[derive(Default)]
+        struct MockDelivery {
+            delivered: StdMutex<Vec<(ReducerId, Delivered)>>,
+        }
+        #[async_trait::async_trait]
+        impl Delivery for MockDelivery {
+            async fn deliver(&self, target: ReducerId, event: Delivered) -> bool {
+                self.delivered.lock().unwrap().push((target, event));
+                true
+            }
+        }
+
+        let delivery = Arc::new(MockDelivery::default());
+        let mut state = host(ReducerId::of(b"event-reducer"));
+        state.delivery = delivery.clone();
+        let target = ReducerId::of(b"next-handler");
+
+        // A message, a response, and a notification each convert and route to the target, reporting delivered.
+        assert!(
+            Deliver::deliver_message(
+                &mut state,
+                target.hash().as_bytes().to_vec(),
+                wit_reducer::Message {
+                    contract: cid(b"http.get").hash().as_bytes().to_vec(),
+                    sender: super::origin_to_wit(Origin {
+                        reducer: ReducerId::of(b"caller"),
+                        host: HostId::of(b"node"),
+                    }),
+                    payload: b"req".to_vec(),
+                    token: b"k".to_vec(),
+                },
+            )
+            .await
+        );
+        assert!(
+            Deliver::deliver_response(
+                &mut state,
+                target.hash().as_bytes().to_vec(),
+                wit_reducer::Response {
+                    contract: cid(b"http.get").hash().as_bytes().to_vec(),
+                    token: b"k".to_vec(),
+                    answer: Ok(b"200".to_vec()),
+                },
+            )
+            .await
+        );
+        assert!(
+            Deliver::deliver_notification(
+                &mut state,
+                target.hash().as_bytes().to_vec(),
+                wit_reducer::Notification {
+                    contract: cid(b"lifecycle").hash().as_bytes().to_vec(),
+                    payload: b"exited".to_vec(),
+                },
+            )
+            .await
+        );
+
+        {
+            // Read the recorded deliveries in a scope so the guard drops before the next `.await`s.
+            let delivered = delivery.delivered.lock().unwrap();
+            assert_eq!(delivered.len(), 3, "all three kinds routed to the delivery");
+            assert!(delivered.iter().all(|(t, _)| *t == target));
+            assert!(matches!(delivered[0], (_, Delivered::Message(_))));
+            assert!(matches!(delivered[1], (_, Delivered::Response(_))));
+            assert!(matches!(delivered[2], (_, Delivered::Notification(_))));
+        }
+
+        // A malformed target names no reducer, so the delivery is not attempted (false, nothing recorded).
+        assert!(
+            !Deliver::deliver_message(
+                &mut state,
+                b"not a hash".to_vec(),
+                wit_reducer::Message {
+                    contract: cid(b"c").hash().as_bytes().to_vec(),
+                    sender: super::origin_to_wit(Origin {
+                        reducer: ReducerId::of(b"caller"),
+                        host: HostId::of(b"node"),
+                    }),
+                    payload: Vec::new(),
+                    token: Vec::new(),
+                },
+            )
+            .await
+        );
+        assert_eq!(
+            delivery.delivered.lock().unwrap().len(),
+            3,
+            "a malformed target records no new delivery"
+        );
+
+        // With no real delivery wired (the NoDelivery default), a well-formed deliver reports not-delivered.
+        let mut bare = host(ReducerId::of(b"event-reducer"));
+        assert!(
+            !Deliver::deliver_notification(
+                &mut bare,
+                target.hash().as_bytes().to_vec(),
+                wit_reducer::Notification {
+                    contract: cid(b"lifecycle").hash().as_bytes().to_vec(),
+                    payload: Vec::new(),
+                },
+            )
+            .await
         );
     }
 
