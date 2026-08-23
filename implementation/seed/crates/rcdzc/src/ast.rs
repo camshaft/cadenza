@@ -1152,6 +1152,56 @@ impl Builder {
         self.list(children)
     }
 
+    /// Build an `enum{Case…}` WIT type descriptor `("enum" Case…)` — a STRING-atom head `enum`, then one
+    /// bare NAME leaf per case (an enum is the degenerate variant: every case is payload-less). Cases are
+    /// passed in DECL order (order participates in the identity).
+    pub fn wit_type_enum(&mut self, cases: &[&str]) -> StructId {
+        let mut children = Vec::with_capacity(1 + cases.len());
+        children.push(self.atom_leaf(Leaf::Str("enum".into())));
+        for &case in cases {
+            let c = self.name(case);
+            children.push(c);
+        }
+        self.list(children)
+    }
+
+    /// Build a `flags{Name…}` WIT type descriptor `("flags" Name…)` — a STRING-atom head `flags`, then one
+    /// bare NAME leaf per bit. Same NODE shape as an enum but a DISTINCT type (the str head discriminates);
+    /// names are in DECL order (order participates in the identity).
+    pub fn wit_type_flags(&mut self, names: &[&str]) -> StructId {
+        let mut children = Vec::with_capacity(1 + names.len());
+        children.push(self.atom_leaf(Leaf::Str("flags".into())));
+        for &name in names {
+            let n = self.name(name);
+            children.push(n);
+        }
+        self.list(children)
+    }
+
+    /// Build a `result<ok, err>` WIT type descriptor `("result" <ok-slot> <err-slot>)` — a STRING-atom head
+    /// `result` then EXACTLY two slots, one per arm. A present arm is its type descriptor; an arm WIT omits
+    /// (`result<T>` has no err, `result<_, E>` no ok, bare `result` neither) is the absent-marker `("none")`
+    /// — a STR-head 1-list DISTINCT from `("unit")` (a present arm whose type IS `unit`). Fixed 2-arity (no
+    /// optional slot) keeps the shape uniform so the byte-exact identity never drifts on a presence marker.
+    pub fn wit_type_result(&mut self, ok: Option<StructId>, err: Option<StructId>) -> StructId {
+        let head = self.atom_leaf(Leaf::Str("result".into()));
+        let ok_slot = match ok {
+            Some(t) => t,
+            None => {
+                let none = self.atom_leaf(Leaf::Str("none".into()));
+                self.list(vec![none])
+            }
+        };
+        let err_slot = match err {
+            Some(t) => t,
+            None => {
+                let none = self.atom_leaf(Leaf::Str("none".into()));
+                self.list(vec![none])
+            }
+        };
+        self.list(vec![head, ok_slot, err_slot])
+    }
+
     fn push(&mut self, s: Struct) -> StructId {
         let id = StructId(self.structure.len() as u32);
         self.structure.push(s);
