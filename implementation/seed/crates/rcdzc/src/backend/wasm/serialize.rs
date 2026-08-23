@@ -617,10 +617,11 @@ pub fn core_module(
 pub fn core_module_with_wrappers(
     funcs: &[SelectedFunc],
     imports: &[&RtOp],
+    host_fns: &[crate::backend::wasm::host::HostImport],
     wrappers: &[WrapperDesc],
     layout: &Layout,
 ) -> Result<Vec<u8>, String> {
-    core_module_impl(funcs, imports, &[], &[], layout, wrappers)
+    core_module_impl(funcs, imports, host_fns, &[], layout, wrappers)
 }
 
 /// [`core_module`] with a leading CROSS-COMPONENT extern-import set (X4b): `extern_fns` are peer ops

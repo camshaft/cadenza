@@ -171,11 +171,32 @@ pub fn emit(
     // `Option<Bytes>` (the kv.get select lift, GAP C) — so that result is representable HERE. Every OTHER
     // emit path lacks the lift, so it stays a decline. Gate on being that provider (component-name + a world
     // bytes member).
+    // The typed interface-instance path (`record_interface_export` → `assemble_typed_interface_with_host_
+    // runtime`) ALSO lifts a compound host result (W4c-b-iii): a reducer guest that exports a typed record
+    // interface AND performs a world import (`identity.id`) composes the host import + runtime + typed export.
+    // So a compound host result is representable when the world has a typed record-param export member too.
+    // (A guest that has such a member but routes elsewhere is caught by the plain host-delegating path's own
+    // compound-result decline, so this broadening never mis-emits.)
+    let world_has_typed_record_export = |wb: &[u8]| -> bool {
+        let Some(arenas) = crate::codec::decode(wb) else {
+            return false;
+        };
+        let Some(world) = crate::wit_world::parse_target_world(&arenas, arenas.root) else {
+            return false;
+        };
+        world.exports.iter().any(|i| {
+            i.members.iter().any(|m| {
+                m.func
+                    .params
+                    .iter()
+                    .any(|(_, t)| matches!(t, crate::wit_world::WitType::Record(_)))
+            })
+        })
+    };
     let allow_option_bytes = db.component_name.is_some()
-        && db
-            .wit_world
-            .clone()
-            .is_some_and(|wb| world_bytes_crossing_export(layout, &wb).is_some());
+        && db.wit_world.clone().is_some_and(|wb| {
+            world_bytes_crossing_export(layout, &wb).is_some() || world_has_typed_record_export(&wb)
+        });
     for &def in &layout.order {
         let body = def_body(db, def)?;
         if let Some((op, pos, ty)) =
@@ -1001,17 +1022,105 @@ pub fn emit(
         && let Some(world_bytes) = db.wit_world.clone()
         && let Some((wrappers, typed)) = record_interface_export(db, layout, &world_bytes, &iface)
     {
-        let wrapped_core =
-            serialize::core_module_with_wrappers(&funcs, &imports, &wrappers, layout)
-                .map_err(Reject::decline)?;
-        // The wrapper builds records via the value-heap runtime, so the core imports it — compose the
-        // runtime into the component (the runtime-import interface-export shape).
         let import_name = runtime_import_name();
-        return Ok(envelope::assemble_typed_interface_with_runtime(
+        // A typed guest that ALSO performs a world import (`identity.id`, `state.get`, …) composes the host
+        // effect interface alongside the runtime + the typed export (W4c-b-iii, the generic world-import call
+        // surface). No host import → the runtime-only shape (byte-identical to before).
+        if host_imports.is_empty() {
+            let wrapped_core =
+                serialize::core_module_with_wrappers(&funcs, &imports, &[], &wrappers, layout)
+                    .map_err(Reject::decline)?;
+            return Ok(envelope::assemble_typed_interface_with_runtime(
+                &wrapped_core,
+                &typed,
+                &imports,
+                &import_name,
+            ));
+        }
+        // SINGLE host effect this increment (every host op shares one interface); multi-interface is later.
+        let effect = host_imports[0].effect.clone();
+        if host_imports.iter().any(|h| h.effect != effect) {
+            return Err(Reject::decline(
+                "a reducer performing more than one host interface is not yet emitted (single \
+                 interface per typed-interface guest; the multi-interface shape is a later increment)",
+            ));
+        }
+        // A host op that needs LINEAR MEMORY — a `list<u8>`/`string` PARAM, or a compound RESULT
+        // (`list<u8>`/`option<list<u8>>`/`list<tuple>`) whose spilled return the guest lifts — must lower with a
+        // Memory canon option, which requires the SHARED-memory module shape (the memory available at
+        // lower-time, before the program core). The typed wrapper core instead DEFINES its own memory for the
+        // record `list<u8>` leaves; unifying the two onto one shared memory is the next slice. Until then a
+        // MEMORYLESS host op (scalar/unit result, scalar/unit params — e.g. `clock.now : () -> u64`) composes
+        // via the combined assembler; a memory-needing one declines cleanly (no mis-emit).
+        let host_needs_memory = host::set_needs_memory(&host_imports)
+            || host_imports
+                .iter()
+                .any(|h| h.result_bytes || h.result_option_bytes || h.result_list_byte_pairs);
+        if host_needs_memory {
+            return Err(Reject::decline(
+                "a typed reducer that performs a host op needing linear memory (a list<u8>/string param or \
+                 a list<u8>/option<list<u8>> result — e.g. identity.id : () -> reducer-id) is not yet \
+                 emitted: the shared-memory composition unifying the wrapper's defined memory with the host \
+                 op's lower is the next slice; a memoryless host op (scalar/unit) composes today",
+            ));
+        }
+        // The host interface's FQ WIT name (the import extern name) — the world import whose last `/`-segment
+        // kebab-matches the effect (the same match `is_world_import_op` uses).
+        let host_iface = {
+            use crate::backend::common::export_name::kebab_extern_name;
+            let arenas = crate::codec::decode(&world_bytes).ok_or_else(|| {
+                Reject::decline(
+                    "the target world did not decode for the host-import interface lookup",
+                )
+            })?;
+            let world = crate::wit_world::parse_target_world(&arenas, arenas.root)
+                .ok_or_else(|| Reject::decline("the target world did not parse"))?;
+            let ek = kebab_extern_name(&effect);
+            world
+                .imports
+                .iter()
+                .find(|i| kebab_extern_name(i.name.rsplit('/').next().unwrap_or(&i.name)) == ek)
+                .map(|i| i.name.clone())
+                .ok_or_else(|| {
+                    Reject::decline(
+                        "the performed host effect has no matching import interface in the world",
+                    )
+                })?
+        };
+        let needs_option_bytes = host_imports.iter().any(|h| h.result_option_bytes);
+        let needs_list_byte_pairs = host_imports.iter().any(|h| h.result_list_byte_pairs);
+        let needs_bytes_result = host_imports.iter().any(|h| h.result_bytes);
+        let list_pairs_type_idx = 2 + needs_option_bytes as u32;
+        let host_fns: Vec<envelope::HostFn> = host_imports
+            .iter()
+            .map(|hi| envelope::HostFn {
+                op: hi.op.clone(),
+                comp_functype: host_op_comp_functype(hi, 0, list_pairs_type_idx),
+                has_list_param: hi
+                    .params
+                    .iter()
+                    .any(|p| matches!(p, host::HostParam::Bytes)),
+                core_functype: Vec::new(),
+            })
+            .collect();
+        let wrapped_core = serialize::core_module_with_wrappers(
+            &funcs,
+            &imports,
+            &host_imports,
+            &wrappers,
+            layout,
+        )
+        .map_err(Reject::decline)?;
+        return Ok(envelope::assemble_typed_interface_with_host_runtime(
             &wrapped_core,
             &typed,
+            &host_iface,
+            &host_fns,
             &imports,
             &import_name,
+            needs_option_bytes,
+            needs_list_byte_pairs,
+            needs_bytes_result,
         ));
     }
 
@@ -1025,6 +1134,20 @@ pub fn emit(
             return Err(Reject::decline(
                 "delegating more than one host effect is not yet emitted (one interface per envelope; \
                  the multi-interface host shape is a later increment)",
+            ));
+        }
+        // This pure host-delegating path (`assemble_host_runtime`/`assemble_host`) composes only a
+        // scalar/unit host RESULT — a COMPOUND host result (`option<list<u8>>`/`list<tuple<…>>`/bare
+        // `list<u8>`) is lifted only on the bytes-provider path OR the typed interface-instance host path
+        // (both handled earlier in the dispatch). If such a result reaches HERE, decline rather than
+        // mis-emit (the host instance-type would omit the `(list u8)` type its functype references).
+        if host_imports
+            .iter()
+            .any(|h| h.result_option_bytes || h.result_list_byte_pairs || h.result_bytes)
+        {
+            return Err(Reject::decline(
+                "a compound host RESULT (option<list<u8>>/list<tuple>/list<u8>) is emitted only on the \
+                 bytes-provider or typed interface-instance path, not the plain host-delegating envelope",
             ));
         }
         let host_fns: Vec<envelope::HostFn> = host_imports
