@@ -713,3 +713,54 @@ fn a_fire_after_timer_is_driven_to_fire_and_the_round_trip_is_recorded() {
         "the armer closed after the timer fired"
     );
 }
+
+// ---- uncontrolled fold failure (§3/§10 fold-failed) ----
+
+/// A reducer whose fold panics — an uncontrolled failure, distinct from a controlled `Break`.
+struct Panicker;
+#[async_trait::async_trait]
+impl Reducer for Panicker {
+    async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
+        panic!("boom");
+    }
+    async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
+        (Vec::new(), Outcome::Continue)
+    }
+    async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
+        (Vec::new(), Outcome::Continue)
+    }
+}
+
+#[test]
+fn a_fold_panic_is_recorded_as_fold_failed() {
+    let mut store = crate::program::testing::Store::new();
+    store.register(ProgramHash::of(b"panicker"), || Box::new(Panicker));
+    store.register(ProgramHash::of(b"sys"), || Box::new(JustClose));
+
+    // Delivering the go message makes the panicker's fold panic. The runtime catches the crash (it does
+    // not take down the run), and the tap records it as fold-failed first — the reducer's terminal event.
+    let run = Harness::new(store, ProgramHash::of(b"sys"))
+        .spawn(SpawnSpec::new("panicker", ProgramHash::of(b"panicker")))
+        .deliver(
+            "panicker",
+            Delivered::Message(Message {
+                id: ContractId::of(b"go"),
+                payload: Bytes::from_static(b"x"),
+                from: Origin {
+                    reducer: ReducerId::of(b"caller"),
+                    host: HostId::of(b"ingress"),
+                },
+                continuation_token: Bytes::from_static(b"t"),
+            }),
+        )
+        .run();
+
+    let panicker = run.ids["panicker"];
+    assert!(
+        run.records.iter().any(|r| matches!(&r.entry,
+            Entry::Event(EventOp::Failed { during: EventKind::Message, contract, reason })
+                if *contract == ContractId::of(b"go") && reason.as_str().contains("boom"))
+            && r.source.reducer == panicker),
+        "the uncontrolled fold panic was recorded as fold-failed, naming the event and the reason"
+    );
+}

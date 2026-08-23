@@ -15,11 +15,14 @@
 
 use super::observation::{BlobOp, Entry, EventKind, EventOp, KvOp, ObservationLog};
 use crate::{
-    BlobStore, Bytes, Hash, HostId, KeyRange, KvKeyScan, KvScan, KvStore, Message, Notification,
-    Origin, Outcome, ProgramHash, ProgramStore, Reducer, ReducerId, Request, Response,
-    SpawnContext,
+    BlobStore, Bytes, ContractId, Hash, HostId, KeyRange, KvKeyScan, KvScan, KvStore, Message,
+    Notification, Origin, Outcome, ProgramHash, ProgramStore, Reducer, ReducerId, Request,
+    Response, SpawnContext, Str,
 };
 use async_trait::async_trait;
+use futures_util::FutureExt as _; // catch_unwind — record an uncontrolled fold failure (§10) before it unwinds
+use std::any::Any;
+use std::panic::AssertUnwindSafe;
 
 /// A [`KvStore`] that records every operation to an [`ObservationLog`], then defers to the wrapped
 /// store. Generic over the inner backend, so it decorates any `KvStore` — the in-memory one for tests,
@@ -234,20 +237,61 @@ impl RecordingReducer {
             });
         }
     }
+
+    /// Resolve a fold caught with [`catch_unwind`](futures_util::FutureExt::catch_unwind): return its
+    /// result, or — if the fold panicked (an uncontrolled failure, §3/§10) — record a
+    /// [`Failed`](EventOp::Failed) event naming the event whose fold failed and the panic reason, then
+    /// resume the unwind so the runtime handles the crash as it otherwise would (a `crashed` lifecycle
+    /// event to watchers). Called after the fold future resolves, so it no longer borrows `inner`.
+    fn folded_or_record_failure(
+        &self,
+        folded: std::thread::Result<(Vec<Request>, Outcome)>,
+        during: EventKind,
+        contract: ContractId,
+    ) -> (Vec<Request>, Outcome) {
+        match folded {
+            Ok(result) => result,
+            Err(panic) => {
+                self.record(EventOp::Failed {
+                    during,
+                    contract,
+                    reason: panic_reason(&*panic),
+                });
+                std::panic::resume_unwind(panic);
+            }
+        }
+    }
+}
+
+/// The message carried by a fold panic, for the [`Failed`](EventOp::Failed) record — the `&str` or
+/// `String` a `panic!` produced, or a fixed note when the payload is neither.
+fn panic_reason(panic: &(dyn Any + Send)) -> Str {
+    if let Some(s) = panic.downcast_ref::<&str>() {
+        Str::from(*s)
+    } else if let Some(s) = panic.downcast_ref::<String>() {
+        Str::from(s.as_str())
+    } else {
+        Str::from_static("reducer fold panicked")
+    }
 }
 
 #[async_trait]
 impl Reducer for RecordingReducer {
     async fn on_message(&mut self, message: Message) -> (Vec<Request>, Outcome) {
+        let contract = message.id;
         self.record(EventOp::Delivered {
             kind: EventKind::Message,
-            contract: message.id,
+            contract,
             from: Some(message.from),
             continuation_token: message.continuation_token.clone(),
             payload: message.payload.clone(),
             error: None,
         });
-        let (requests, outcome) = self.inner.on_message(message).await;
+        let folded = AssertUnwindSafe(self.inner.on_message(message))
+            .catch_unwind()
+            .await;
+        let (requests, outcome) =
+            self.folded_or_record_failure(folded, EventKind::Message, contract);
         self.record_output(&requests, &outcome);
         (requests, outcome)
     }
@@ -259,29 +303,39 @@ impl Reducer for RecordingReducer {
             Ok(bytes) => (bytes.clone(), None),
             Err(e) => (Bytes::new(), Some(*e)),
         };
+        let contract = response.id;
         self.record(EventOp::Delivered {
             kind: EventKind::Response,
-            contract: response.id,
+            contract,
             from: None,
             continuation_token: response.continuation_token.clone(),
             payload,
             error,
         });
-        let (requests, outcome) = self.inner.on_response(response).await;
+        let folded = AssertUnwindSafe(self.inner.on_response(response))
+            .catch_unwind()
+            .await;
+        let (requests, outcome) =
+            self.folded_or_record_failure(folded, EventKind::Response, contract);
         self.record_output(&requests, &outcome);
         (requests, outcome)
     }
 
     async fn on_notification(&mut self, notification: Notification) -> (Vec<Request>, Outcome) {
+        let contract = notification.id;
         self.record(EventOp::Delivered {
             kind: EventKind::Notification,
-            contract: notification.id,
+            contract,
             from: None,
             continuation_token: Bytes::new(),
             payload: notification.payload.clone(),
             error: None,
         });
-        let (requests, outcome) = self.inner.on_notification(notification).await;
+        let folded = AssertUnwindSafe(self.inner.on_notification(notification))
+            .catch_unwind()
+            .await;
+        let (requests, outcome) =
+            self.folded_or_record_failure(folded, EventKind::Notification, contract);
         self.record_output(&requests, &outcome);
         (requests, outcome)
     }
