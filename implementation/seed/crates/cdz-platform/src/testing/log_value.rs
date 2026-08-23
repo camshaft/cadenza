@@ -183,31 +183,48 @@ fn read_kv(arenas: &Arenas, id: StructId, tag: &str) -> Option<KvOp> {
     })
 }
 
+/// A scan `Bound` as a Cadenza **sum** — `((. Bound unbounded))`, `((. Bound included) <key>)`, or
+/// `((. Bound excluded) <key>)`. A sum with a fixed per-constructor shape (not a `bound`-tagged record whose
+/// `key` field is present only for included/excluded) is what lets a Cadenza checker `Value.decode` a log
+/// containing kv-scan entries — the same reason the entry itself is a sum (§9 checker decodability).
 fn bound_value(b: &mut Builder, bound: &Bound<Bytes>) -> StructId {
     match bound {
-        Bound::Unbounded => {
-            let kind = str_leaf(b, "unbounded");
-            record(b, vec![("bound", kind)])
-        }
+        Bound::Unbounded => qctor(b, "Bound", "unbounded", vec![]),
         Bound::Included(key) => {
-            let kind = str_leaf(b, "included");
             let key = bytes_leaf(b, key);
-            record(b, vec![("bound", kind), ("key", key)])
+            qctor(b, "Bound", "included", vec![key])
         }
         Bound::Excluded(key) => {
-            let kind = str_leaf(b, "excluded");
             let key = bytes_leaf(b, key);
-            record(b, vec![("bound", kind), ("key", key)])
+            qctor(b, "Bound", "excluded", vec![key])
         }
     }
 }
 
 fn read_bound(arenas: &Arenas, id: StructId) -> Option<Bound<Bytes>> {
-    let kind = str_at(arenas, field(arenas, id, "bound")?)?;
-    Some(match kind {
-        "unbounded" => Bound::Unbounded,
-        "included" => Bound::Included(read_bytes(arenas, field(arenas, id, "key")?)?),
-        "excluded" => Bound::Excluded(read_bytes(arenas, field(arenas, id, "key")?)?),
+    let Struct::List(items) = arenas.get(id) else {
+        return None;
+    };
+    let (&head, tail) = items.split_first()?;
+    let m = arenas.as_form(head, ".")?;
+    if m.len() != 2 || arenas.as_name(m[0]) != Some("Bound") {
+        return None;
+    }
+    Some(match arenas.as_name(m[1])? {
+        "unbounded" => {
+            if !tail.is_empty() {
+                return None;
+            }
+            Bound::Unbounded
+        }
+        "included" => {
+            let [key] = <[StructId; 1]>::try_from(tail).ok()?;
+            Bound::Included(read_bytes(arenas, key)?)
+        }
+        "excluded" => {
+            let [key] = <[StructId; 1]>::try_from(tail).ok()?;
+            Bound::Excluded(read_bytes(arenas, key)?)
+        }
         _ => return None,
     })
 }
@@ -798,6 +815,37 @@ mod tests {
         assert!(
             super::field(&arenas, inner, "error").is_some(),
             "`error` is present even when None"
+        );
+    }
+
+    #[test]
+    fn a_scan_bound_is_a_cadenza_sum_not_a_tagged_record() {
+        // Bound is encoded as a sum `((. Bound <ctor>) <key>?)` — a fixed per-constructor shape a Cadenza
+        // checker `Value.decode`s — not a `bound`-tagged record whose `key` varies. Round-trip alone would
+        // pass for either encoding, so pin the sum form: the `lower` value is a Bound sum (decodes back) and
+        // carries no `bound` record field.
+        let log = vec![rec(
+            0,
+            Entry::Kv(KvOp::Scan {
+                lower: Bound::Included(Bytes::from_static(b"a")),
+                upper: Bound::Unbounded,
+                keys_only: false,
+            }),
+        )];
+        let bytes = serialize(&log);
+        let arenas = cadenza_ast::codec::decode(&bytes).expect("a decodable log");
+        let items = super::list_items(&arenas, arenas.root).expect("the log is a list");
+        let entry = super::field(&arenas, items[0], "entry").expect("the record has an entry");
+        let (ctor, inner) = super::entry_ctor(&arenas, entry).expect("the entry is an Entry sum");
+        assert_eq!(ctor, "kv-scan");
+        let lower = super::field(&arenas, inner, "lower").expect("the scan has a lower bound");
+        assert!(
+            super::field(&arenas, lower, "bound").is_none(),
+            "a Bound is a sum, not a `bound`-tagged record"
+        );
+        assert_eq!(
+            super::read_bound(&arenas, lower),
+            Some(Bound::Included(Bytes::from_static(b"a")))
         );
     }
 }
