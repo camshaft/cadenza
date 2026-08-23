@@ -86,6 +86,10 @@ struct HostState {
     /// and updates it to route and supervise. Shared (an `Arc`), since it is the node-wide routing substrate,
     /// not per-reducer; an ordinary reducer holds the handle but its linker never wires the `graph` import.
     graph: Arc<dyn ReducerGraph>,
+    /// The node-side provenance backing the privileged `program-of` import (§4) — which program a reducer
+    /// runs. Always present ([`NoProvenance`](crate::NoProvenance) when the node has not wired a real one),
+    /// so the import path never branches on its absence; an ordinary reducer never has the import anyway.
+    provenance: Arc<dyn Provenance>,
 }
 
 impl cadenza::platform::identity::Host for HostState {
@@ -199,6 +203,21 @@ impl cadenza::platform::graph::Host for HostState {
             return Vec::new();
         };
         from_reducers(self.graph.reach(node, kind, dir.into()).await)
+    }
+}
+
+impl cadenza::platform::provenance::Host for HostState {
+    async fn program_of(&mut self, reducer: Vec<u8>) -> Vec<u8> {
+        // The WIT returns a program hash unconditionally; empty bytes encode absence — a malformed id or a
+        // reducer that is not running (or, under NoProvenance, always). The guest reads empty as "no
+        // provenance" (a well-formed program hash is never empty).
+        let Ok(reducer) = ReducerId::try_from(reducer.as_slice()) else {
+            return Vec::new();
+        };
+        match self.provenance.program_of(reducer).await {
+            Some(program) => program.hash().as_bytes().to_vec(),
+            None => Vec::new(),
+        }
     }
 }
 
@@ -323,7 +342,7 @@ fn step_from_wit(step: wit_reducer::Step) -> Result<(Vec<Request>, Outcome), Ste
 // instantiation and every fold run on an async store — a disk/network-backed backend an import awaits never
 // blocks the host thread.
 
-use crate::{HashTag, ProgramHash, ProgramStore, Reducer, ReducerKind, SpawnContext};
+use crate::{HashTag, ProgramHash, ProgramStore, Provenance, Reducer, ReducerKind, SpawnContext};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::future::Future;
@@ -360,10 +379,11 @@ fn add_host_imports(
     cadenza::platform::identity::add_to_linker::<_, HostData>(linker, |s| s)?;
     cadenza::platform::blobs::add_to_linker::<_, HostData>(linker, |s| s)?;
     cadenza::platform::state::add_to_linker::<_, HostData>(linker, |s| s)?;
-    // Privileged: only an event reducer may read and mutate the routing substrate (and, later, deliver and
-    // read program provenance).
+    // Privileged: only an event reducer may read and mutate the routing substrate and read program
+    // provenance (and, later, deliver).
     if matches!(kind, ReducerKind::Event) {
         cadenza::platform::graph::add_to_linker::<_, HostData>(linker, |s| s)?;
+        cadenza::platform::provenance::add_to_linker::<_, HostData>(linker, |s| s)?;
     }
     Ok(())
 }
@@ -576,6 +596,10 @@ pub struct WasmProgramStore {
     make_kv: KvFactory,
     /// The one node-wide reducer graph (§3), shared by every reducer that is wired the `graph` import.
     graph: Arc<dyn ReducerGraph>,
+    /// The node-side provenance an event reducer's `program-of` import reads (§4) — the system, which knows
+    /// every running reducer's program. [`NoProvenance`](crate::NoProvenance) until set with
+    /// [`with_provenance`](WasmProgramStore::with_provenance), so it is never absent, only null.
+    provenance: Arc<dyn Provenance>,
     /// Compiled components keyed by content digest — `Component::new` (the Cranelift compile) runs once per
     /// distinct component, not once per reducer, and a program and a dependency over the same bytes share the
     /// one entry (the digest, like the store, ignores the hash kind). A `Component` is cheaply clonable
@@ -586,7 +610,8 @@ pub struct WasmProgramStore {
 impl WasmProgramStore {
     /// A store loading components from `cas`, giving each reducer the state and content-store view its
     /// factories build, over the shared reducer `graph`. Fails only if the wasm engine/linkers cannot be
-    /// built ([`ReducerHost::new`]).
+    /// built ([`ReducerHost::new`]). Event-reducer provenance is [`NoProvenance`](crate::NoProvenance) until
+    /// set with [`with_provenance`](WasmProgramStore::with_provenance).
     pub fn new(
         cas: Arc<dyn BlobStore>,
         make_blobs: BlobsFactory,
@@ -599,8 +624,18 @@ impl WasmProgramStore {
             make_blobs,
             make_kv,
             graph,
+            provenance: Arc::new(crate::NoProvenance),
             compiled: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Wire the node-side provenance an event reducer's `program-of` import reads (§4) — the system, which
+    /// knows every running reducer's program. Set during node assembly, after the system exists (it holds
+    /// this store as its program store, so the reference is broken with a `Weak` or set once at wiring time).
+    #[must_use]
+    pub fn with_provenance(mut self, provenance: Arc<dyn Provenance>) -> Self {
+        self.provenance = provenance;
+        self
     }
 
     /// The compiled component whose bytes `hash` addresses, loaded from the store and cached by content
@@ -720,6 +755,7 @@ impl ProgramStore for WasmProgramStore {
             blobs: (self.make_blobs)(ctx.id),
             kv: (self.make_kv)(ctx.id),
             graph: Arc::clone(&self.graph),
+            provenance: self.provenance.clone(),
         };
         let reducer = if component_dependencies(&self.host.engine, &component).is_empty() {
             // Fast path: no content-addressed component dependencies, so reuse the cached, pre-instantiated
@@ -771,6 +807,7 @@ mod tests {
             blobs: Box::new(InMemoryBlobStore::new()),
             kv: Box::new(InMemoryKvStore::new()),
             graph: Arc::new(InMemoryReducerGraph::new()),
+            provenance: Arc::new(crate::NoProvenance),
         }
     }
 
@@ -838,6 +875,52 @@ mod tests {
         );
         // A malformed (wrong-length) node names nothing.
         assert!(!Graph::contains(&mut host, b"not a hash".to_vec()).await);
+    }
+
+    #[tokio::test]
+    async fn provenance_reports_the_program_a_reducer_runs() {
+        use super::cadenza::platform::provenance::Host as WitProvenance;
+        use crate::{ProgramHash, Provenance};
+
+        // A stand-in for the node's provenance: one known reducer → its program.
+        struct MockProvenance {
+            known: ReducerId,
+            program: ProgramHash,
+        }
+        #[async_trait::async_trait]
+        impl Provenance for MockProvenance {
+            async fn program_of(&self, reducer: ReducerId) -> Option<ProgramHash> {
+                (reducer == self.known).then_some(self.program)
+            }
+        }
+
+        let known = ReducerId::of(b"peer");
+        let program = ProgramHash::of(b"peer-program");
+        let mut state = host(ReducerId::of(b"me"));
+        state.provenance = Arc::new(MockProvenance { known, program });
+
+        // A running reducer's program comes back as its raw hash bytes.
+        assert_eq!(
+            WitProvenance::program_of(&mut state, known.hash().as_bytes().to_vec()).await,
+            program.hash().as_bytes().to_vec()
+        );
+        // An unknown reducer, a malformed id, and a host with no provenance wired all report absence (empty).
+        assert!(
+            WitProvenance::program_of(&mut state, rid_bytes(b"stranger"))
+                .await
+                .is_empty()
+        );
+        assert!(
+            WitProvenance::program_of(&mut state, b"not a hash".to_vec())
+                .await
+                .is_empty()
+        );
+        let mut bare = host(ReducerId::of(b"me"));
+        assert!(
+            WitProvenance::program_of(&mut bare, known.hash().as_bytes().to_vec())
+                .await
+                .is_empty()
+        );
     }
 
     // ── The event ↔ WIT conversion layer ──

@@ -152,6 +152,38 @@ pub trait System: Send + Sync {
     async fn program_of(&self, reducer: ReducerId) -> Result<Option<ProgramHash>, SystemError>;
 }
 
+/// The node-side provenance read the privileged `program-of` host import is backed by (§4): which program a
+/// running reducer was spawned from. A narrow capability — the wasm host holds one of these rather than the
+/// whole [`System`], and it is authoritative because the system is what spawned the reducer. `Send + Sync`,
+/// shared behind an `Arc`. The in-memory [`TaskSystem`] is one (below).
+#[async_trait]
+pub trait Provenance: Send + Sync {
+    /// The program a running reducer runs, or `None` if none is running under `reducer`.
+    async fn program_of(&self, reducer: ReducerId) -> Option<ProgramHash>;
+}
+
+#[async_trait]
+impl<R: Runtime> Provenance for TaskSystem<R> {
+    async fn program_of(&self, reducer: ReducerId) -> Option<ProgramHash> {
+        // A backend failure of the underlying read is treated as "unknown"; the in-memory system never fails.
+        self.shared.program_of(reducer)
+    }
+}
+
+/// The null [`Provenance`]: every reducer reports no program. The default a reducer host holds before (or
+/// without) a real system is wired — an ordinary reducer never has the `program-of` import anyway, so it
+/// never observes the difference — so the host can hold a `Provenance` unconditionally rather than an
+/// `Option` it must branch on.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoProvenance;
+
+#[async_trait]
+impl Provenance for NoProvenance {
+    async fn program_of(&self, _reducer: ReducerId) -> Option<ProgramHash> {
+        None
+    }
+}
+
 /// The in-memory [`System`], generic over its [`Runtime`](crate::Runtime): each reducer an async task on the
 /// runtime, draining a channel mailbox. Its state lives in a [`Shared`] behind an `Arc`, so a running
 /// reducer's own task can spawn and deliver in turn — the recursion the router needs to route an emitted
