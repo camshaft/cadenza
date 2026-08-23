@@ -2527,6 +2527,72 @@ fn option_result_world_bytes() -> Vec<u8> {
 /// W4c-b: a guest returning `option<s64>` compiles + runs — the recursive writer's VARIANT case (the shape of
 /// a request's `deadline-nanos: option<u64>`). `f(m) = {d: if m.x==0 then None else Some(m.x)}`; verifies both
 /// arms: `f({x:0}) == {d: None}` (disc 0) and `f({x:42}) == {d: Some(42)}` (disc 1 + payload).
+/// W4c-b: a `None`-ONLY option result field (the guest never constructs `Some`, so its option payload type
+/// stays an unresolved var) still emits the right record{option} step — the writer derives the (dead) Some-arm
+/// payload write from the WIT inner type. This is reducer-echo's `deadline-nanos: none` shape. Without the
+/// WIT fallback the writer declined and emit fell through to a wrong-signature component (`expected u32`).
+#[test]
+fn a_none_only_option_result_resolves_via_wit() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime) = find_runtime_wasm() else {
+        return;
+    };
+    let src = "(module m (def (f (: m (Record (x Int64)))) \
+                 (record (d Option.None))) (export f))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:demo/iface"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                option_result_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "none-only option result must emit: {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("component");
+    let opts = cdz_run::RunOpts {
+        export: None,
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    let result = cdz_run::run_reducer_typed(
+        bytes,
+        "cadenza:demo/iface",
+        "f",
+        &[Val::Record(vec![("x".to_string(), Val::S64(0))])],
+        &opts,
+    )
+    .expect("run the none-only option result");
+    let Val::Record(fs) = &result else {
+        panic!("record, got {result:?}");
+    };
+    assert_eq!(
+        fs.iter().find(|(n, _)| n == "d").unwrap().1,
+        Val::Option(None),
+        "none-only option lifts to d == None"
+    );
+}
+
 #[test]
 fn an_option_result_guest_compiles_and_runs() {
     use crate::testkit::parse;

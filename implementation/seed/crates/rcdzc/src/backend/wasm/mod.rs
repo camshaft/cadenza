@@ -8053,6 +8053,25 @@ fn scalar_result_read_store(f: &crate::ty::Ty) -> Option<(&'static str, bool, u8
     })
 }
 
+/// Like [`scalar_result_read_store`] but driven by the WIT scalar type (not the guest `Ty`) — used when the
+/// guest value type is UNRESOLVED (a `None`-only option's payload var) but the boundary still fixes the
+/// representation: a `Some` value of WIT type `T` is a value-heap-boxed `T`, so the same unbox/store applies.
+/// `None` for a non-scalar WIT type.
+fn scalar_read_store_of_wit(wty: &crate::wit_world::WitType) -> Option<(&'static str, bool, u8)> {
+    use crate::backend::wasm::wasm_abi::op;
+    use crate::wit_world::WitType;
+    Some(match wty {
+        WitType::Bool => ("get-bool", false, op::I32_STORE8),
+        WitType::U8 | WitType::S8 => ("get-int", true, op::I32_STORE8),
+        WitType::U16 | WitType::S16 => ("get-int", true, op::I32_STORE16),
+        WitType::U32 | WitType::S32 | WitType::Char => ("get-int", true, op::I32_STORE),
+        WitType::U64 | WitType::S64 => ("get-int", false, op::I64_STORE),
+        WitType::F32 => ("get-float32", false, op::F32_STORE),
+        WitType::F64 => ("get-float", false, op::F64_STORE),
+        _ => return None,
+    })
+}
+
 /// Build the recursive [`serialize::CanonWrite`] that lowers a value-heap value of type `gty` (WIT `wty`) to
 /// its canonical-ABI memory form — the reducer result-lower. A scalar unboxes + stores; a `Bytes`/`list<u8>`
 /// copies its bytes out; a record recurses per field at canonical offsets (with the WIT-vs-name-lex field-
@@ -8210,7 +8229,22 @@ fn canon_write_of(
             let pi = params.iter().position(|p| *p == pname)?;
             let payload_gty = args.get(pi)?.clone();
             let inner = (**inner).clone();
-            let payload_write = canon_write_of(db, &payload_gty, &inner)?;
+            // For a `None`-ONLY option (the guest never constructs `Some`, e.g. reducer-echo's
+            // `deadline-nanos`), the guest's option payload type is an UNRESOLVED var, so `canon_write_of`
+            // can't dispatch it — fall back to building the payload write from the WIT inner SCALAR type (the
+            // Some arm is dead at runtime, but the write must be valid: a `Some` value would be a scalar of
+            // that WIT type). Non-scalar unresolved payloads still decline.
+            let payload_write = match canon_write_of(db, &payload_gty, &inner) {
+                Some(w) => w,
+                None => {
+                    let (read, wrap_i64, store) = scalar_read_store_of_wit(&inner)?;
+                    serialize::CanonWrite::Scalar {
+                        read,
+                        wrap_i64,
+                        store,
+                    }
+                }
+            };
             // Canonical variant layout: disc is 1 byte (2 cases); payload after the disc, aligned to it.
             let payload_align = wit_ctype::canonical_align(&inner);
             let payload_offset = 1u32.div_ceil(payload_align) * payload_align;
