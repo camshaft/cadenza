@@ -359,6 +359,65 @@ def main() = host Param in
   },
 };
 
+/// A PARAMETRIC POKÉBALL STAND (a printable display cradle, exercising revolve + a spherical seat): a squat
+/// truncated cone (frustum) with a spherical DIMPLE carved into its flat top, so a printed ball nestles in a
+/// matching seat. There is no cone primitive — the taper is a lathe: a trapezoid `PathProfile`
+/// (path-start → line-to·3, from the base rim out at (base/2, 0) up to the top rim (top/2, height) and back
+/// down the revolve axis) swept 360° with `Solid.Revolve`. The seat is `cut(frustum, move-z(…, ball(ball/2)))`
+/// — a sphere of the ball's own radius, raised so it bites `dimple-depth` into the top face. 🪤 The mesh
+/// driver stands a revolve up along +Z (base flat on z=0), so the seat is positioned with `move-z`, not
+/// move-y (which would shave a flank). Five live sliders: base Ø, top Ø, height, ball Ø, dimple depth — drag
+/// to dial the cradle to a real ball, exact over Rational. Defaults: Ø90 base → Ø66 top, 40 tall, for an Ø80
+/// ball, 6mm dimple (a ~Ø42 seat mouth). Uses the injected exact + helpers vocab (Solid/Profile/path-start/
+/// line-to/v2/cut/move-z/ball/lower).
+const POKEBALL_STAND: ExampleModel = {
+  slug: "pokeball-stand",
+  title: "Pokéball stand (revolved cone + dimple)",
+  description: "A squat truncated cone with a spherical seat dimpled into the top to cradle a printed ball; five live sliders.",
+  source: {
+    ml: `@!param(widget: slider, range: [60, 120], default: 90) base-dia : Rational
+@!param(widget: slider, range: [40, 100], default: 66) top-dia : Rational
+@!param(widget: slider, range: [20, 80], default: 40) height : Rational
+@!param(widget: slider, range: [50, 110], default: 80) ball-dia : Rational
+@!param(widget: slider, range: [2, 20], default: 6) dimple-depth : Rational
+def profile(br: Rational, tr: Rational, h: Rational) =
+  Profile.PathProfile(line-to(line-to(line-to(path-start(), v2(br, 0)), v2(tr, h)), v2(0, h)))
+def stand(bd: Rational, td: Rational, h: Rational, bald: Rational, dd: Rational) =
+  let br = bd / 2 in
+  let tr = td / 2 in
+  let r = bald / 2 in
+  let frustum = Solid.Revolve(profile(br, tr, h), 360) in
+  cut(frustum, move-z(h + (r - dd), ball(r)))
+def main() = host Param in
+  (let bd = Param.base-dia() in
+   let td = Param.top-dia() in
+   let h = Param.height() in
+   let bald = Param.ball-dia() in
+   let dd = Param.dimple-depth() in
+     lower(stand(bd, td, h, bald, dd)))`,
+    sexpr: `(pragma param (param (: widget slider) (: range (list 60 120)) (: default 90)) (: base-dia Rational))
+(pragma param (param (: widget slider) (: range (list 40 100)) (: default 66)) (: top-dia Rational))
+(pragma param (param (: widget slider) (: range (list 20 80)) (: default 40)) (: height Rational))
+(pragma param (param (: widget slider) (: range (list 50 110)) (: default 80)) (: ball-dia Rational))
+(pragma param (param (: widget slider) (: range (list 2 20)) (: default 6)) (: dimple-depth Rational))
+(def (profile (: br Rational) (: tr Rational) (: h Rational))
+  ((. Profile PathProfile) (line-to (line-to (line-to (path-start) (v2 br 0)) (v2 tr h)) (v2 0 h))))
+(def (stand (: bd Rational) (: td Rational) (: h Rational) (: bald Rational) (: dd Rational))
+  (let ((br (/ bd 2)))
+    (let ((tr (/ td 2)))
+      (let ((r (/ bald 2)))
+        (let ((frustum ((. Solid Revolve) (profile br tr h) 360)))
+          (cut frustum (move-z (+ h (- r dd)) (ball r))))))))
+(def (main)
+  (host (Param)
+    (let ((bd ((. Param base-dia))))
+      (let ((td ((. Param top-dia))))
+        (let ((h ((. Param height))))
+          (let ((bald ((. Param ball-dia))))
+            (let ((dd ((. Param dimple-depth)))) (lower (stand bd td h bald dd)))))))))`,
+  },
+};
+
 /// The example models the /cad example-switcher offers, in display order. Every one is verified to compile
 /// + mesh against the preloaded library. Keep the FIRST entry the canonical simple starter (the /cad route
 /// opens with `DEFAULT_EXAMPLE`). The parametric plate is one of these — in single-mode a parametric model
@@ -374,6 +433,7 @@ export const EXAMPLES: ExampleModel[] = [
   ASSEMBLY_L_BRACKET,
   ASSEMBLY_PARAMETRIC_BRACKET,
   PARAMETRIC_SNOWFLAKE,
+  POKEBALL_STAND,
 ];
 
 /// The model the /cad route opens with (the canonical cube-with-dent starter).

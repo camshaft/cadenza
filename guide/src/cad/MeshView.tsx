@@ -5,7 +5,7 @@
 
 import { useEffect, useMemo, useRef } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
-import { OrbitControls } from "@react-three/drei";
+import { OrbitControls, Bounds } from "@react-three/drei";
 import * as THREE from "three";
 
 interface Props {
@@ -70,13 +70,22 @@ export function MeshView({ spin = false, ...props }: ViewProps) {
       <ambientLight intensity={0.6} />
       <directionalLight position={[5, 8, 5]} intensity={1.1} />
       <directionalLight position={[-5, -3, -5]} intensity={0.3} />
-      <Solid spin={spin} {...props} />
+      {/* Auto-FIT the camera to the mesh's bounds so a model of ANY size frames correctly — the fixed
+          [4,3,5] camera only suited single-digit-mm models; a real-scale part (e.g. a Ø90mm stand spanning
+          x,y ∈ [-45,45]) would ENGULF that camera, showing back-face-culled interior walls (an "empty"
+          preview). `observe` re-fits when the geometry changes (a slider drag re-meshes), `clip` sets the
+          near/far planes to the model, `margin` leaves a little padding. OrbitControls `makeDefault` lets
+          Bounds drive the same camera/controls the reader then orbits. */}
+      <Bounds fit clip observe margin={1.2}>
+        <Solid spin={spin} {...props} />
+      </Bounds>
       {/* OrbitControls with OpenSCAD-style mouse mapping (operator ask): LEFT drag = rotate, RIGHT drag = PAN,
           MIDDLE/wheel = dolly (zoom). `enablePan` on + `mouseButtons` remaps the right button from its default
           (pan is normally the RIGHT button in three.js already, but the default was disabled via
           `enablePan={false}`); we enable pan and pin the mapping explicitly so it matches OpenSCAD regardless
           of three.js defaults. Touch: one-finger rotate, two-finger dolly+pan (drei defaults, left as-is). */}
       <OrbitControls
+        makeDefault
         enablePan
         mouseButtons={{
           LEFT: THREE.MOUSE.ROTATE,
