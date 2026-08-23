@@ -178,9 +178,19 @@ pub enum EventOp {
 /// runtime-agnostic: it records identically whether the platform runs on tokio or under the bach
 /// simulator. A record append is a short critical section (assign a sequence number, push), never
 /// held across an await, so it does not stall the async runtime.
+/// A live sink over the observation log: called with each [`Record`] the moment it is appended (see
+/// [`ObservationLog::on_record`]). Shared behind an `Arc` so the log stays cheaply clonable.
+type RecordSink = Arc<dyn Fn(&Record) + Send + Sync>;
+
 #[derive(Clone, Default)]
 pub struct ObservationLog {
     records: Arc<Mutex<Vec<Record>>>,
+    /// An optional live sink called with each [`Record`] as it is appended (in `seq` order), set with
+    /// [`on_record`](ObservationLog::on_record). The log always accumulates records for a later
+    /// [`snapshot`](ObservationLog::snapshot); a sink additionally *streams* them as they happen, so a run
+    /// that hangs or crashes before its log is rendered still shows its progress. `None` (the default)
+    /// streams nothing.
+    sink: Option<RecordSink>,
 }
 
 impl ObservationLog {
@@ -190,8 +200,22 @@ impl ObservationLog {
         Self::default()
     }
 
+    /// Stream each record live: `sink` is called with every [`Record`] the moment it is appended, in `seq`
+    /// order, in addition to the log accumulating it for a later [`snapshot`](ObservationLog::snapshot). The
+    /// integration-test executable uses this to emit each observation line as it happens (behind an env
+    /// toggle), so a run that gets stuck in a loop or crashes *before* its log is rendered still shows the
+    /// progress up to the hang/crash, rather than losing the whole log (which is only rendered once the run
+    /// completes). The sink must be cheap and must not call back into the log — it runs inside the append's
+    /// short critical section, which is what keeps the streamed lines in the one global order.
+    #[must_use]
+    pub fn on_record(mut self, sink: impl Fn(&Record) + Send + Sync + 'static) -> Self {
+        self.sink = Some(Arc::new(sink));
+        self
+    }
+
     /// Append an observation: stamp it with the next sequence number and store it. Returns the `seq`
-    /// assigned. Called by the recording stores; a checker never appends.
+    /// assigned. Called by the recording stores; a checker never appends. If a live sink is installed
+    /// (see [`on_record`](ObservationLog::on_record)) it is called with the just-appended record.
     pub fn record(&self, time_ns: u64, source: Origin, entry: Entry) -> u64 {
         let mut records = self.lock();
         let seq = records.len() as u64;
@@ -201,6 +225,12 @@ impl ObservationLog {
             source,
             entry,
         });
+        if let Some(sink) = &self.sink {
+            // Stream the just-appended record. Held inside the critical section on purpose: it serializes the
+            // emit with the push, so streamed lines never interleave out of `seq` order under concurrent
+            // recorders. The sink is a short, non-reentrant write.
+            sink(records.last().expect("a record was just pushed"));
+        }
         seq
     }
 
@@ -456,5 +486,49 @@ mod render_tests {
         assert!(lines[2].contains("(deadline)"), "line: {}", lines[2]);
         // An empty log renders to an empty string.
         assert!(render(&[]).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod log_tests {
+    use super::{Entry, KvOp, ObservationLog};
+    use crate::{Bytes, HostId, Origin, ReducerId};
+    use std::sync::{Arc, Mutex};
+
+    fn origin(reducer: &[u8]) -> Origin {
+        Origin {
+            reducer: ReducerId::of(reducer),
+            host: HostId::of(b"node"),
+        }
+    }
+
+    fn a_get() -> Entry {
+        Entry::Kv(KvOp::Get {
+            key: Bytes::from_static(b"k"),
+            hit: false,
+        })
+    }
+
+    #[test]
+    fn on_record_streams_each_record_live_in_seq_order() {
+        // A live sink observes every record the moment it is appended, in seq order — the streaming an
+        // executable uses to surface a run's progress before its log is rendered.
+        let seen: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink_seen = seen.clone();
+        let log = ObservationLog::new().on_record(move |r| sink_seen.lock().unwrap().push(r.seq));
+        for i in 0..3u64 {
+            log.record(i * 100, origin(b"r"), a_get());
+        }
+        // The sink saw each append live, in order, and the log still accumulated them for a snapshot.
+        assert_eq!(*seen.lock().unwrap(), vec![0, 1, 2]);
+        assert_eq!(log.snapshot().len(), 3);
+    }
+
+    #[test]
+    fn a_log_without_a_sink_records_normally() {
+        // The default (no sink) accumulates without streaming — the unchanged behavior.
+        let log = ObservationLog::new();
+        assert_eq!(log.record(0, origin(b"r"), a_get()), 0);
+        assert_eq!(log.len(), 1);
     }
 }

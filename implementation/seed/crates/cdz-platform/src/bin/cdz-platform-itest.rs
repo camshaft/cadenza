@@ -15,6 +15,10 @@
 //! Usage: `cdz-platform-itest <harness.ast>`. Exit 0 on a completed run with no checker or a passing checker;
 //! exit 1 on a failing checker (its reasons print to stderr); exit 2 on a usage/IO/decode error.
 //!
+//! Set `CDZ_ITEST_TRACE` (to any value) to STREAM every observation to stderr the moment it is recorded, so a
+//! run that gets stuck in a loop or crashes before the checker still shows its progress up to that point — the
+//! final rendered log only reaches stdout once the run completes, which is too late to debug a run that hangs.
+//!
 //! Behind the `testing` (harness + observation log + AST decoder) and `host` (the wasm program store that
 //! instantiates the blobs) features, so the routine light build pulls in neither the harness nor wasmtime.
 
@@ -112,6 +116,24 @@ fn host() -> HostId {
     HostId::of(b"cdz-platform-itest")
 }
 
+/// The environment variable that turns on live log streaming. When set (to any value), every observation is
+/// written to stderr the moment it is recorded, so a run that gets stuck in a loop or crashes *before* its
+/// log is rendered still shows its progress up to the hang/crash — the final rendered log only reaches
+/// stdout once the run completes, which is too late to debug a run that never gets there.
+const TRACE_ENV: &str = "CDZ_ITEST_TRACE";
+
+/// A fresh observation log for a run phase, streaming each record to stderr as it is appended when
+/// [`TRACE_ENV`] is set (off by default). The live stream goes to stderr so it never pollutes the final
+/// rendered log on stdout that a caller consumes.
+fn observation_log() -> ObservationLog {
+    let log = ObservationLog::new();
+    if std::env::var_os(TRACE_ENV).is_some() {
+        log.on_record(|record| eprintln!("{record}"))
+    } else {
+        log
+    }
+}
+
 /// The blob name of the placeholder system reducer the checker phase routes to. The checker's verdict is
 /// read from the emitted-request observation, not from a system reducer handling it, so a non-component
 /// placeholder is enough — a routed verdict is recorded and then declined, never crashing the run.
@@ -194,7 +216,7 @@ fn run(spec: HarnessSpec) -> Result<Report, RunError> {
 
     // The main run: drive the described scenario to quiescence, recording into one shared log.
     let main_harness = spec.build(load_blob)?;
-    let main_log = ObservationLog::new();
+    let main_log = observation_log();
     let store_log = main_log.clone();
     let main_run = main_harness
         .host(host)
@@ -205,7 +227,7 @@ fn run(spec: HarnessSpec) -> Result<Report, RunError> {
     // A named checker that emits no verdict (e.g. its bytes are not a valid component, so it never runs) is a
     // failed check — the run declared a check that did not report.
     let outcome = checker.map(|(name, bytes)| {
-        let checker_log = ObservationLog::new();
+        let checker_log = observation_log();
         let store_log = checker_log.clone();
         let checker_run = Harness::new(CHECKER_SYSTEM)
             .blob(
