@@ -496,6 +496,41 @@ pub fn run_reducer_bytes(
     val_list_u8(&results[0])
 }
 
+/// Invoke a reducer provider's TYPED interface member — the typed analog of [`run_reducer_bytes`] (which is
+/// specialized to `list<u8>`-in/out). The provider exports interface INSTANCE `iface` with a member `member`
+/// whose params/result are arbitrary WIT types (e.g. the reducer world's `on-message(message) -> step`, a
+/// record in and out); this composes the value-heap runtime the provider imports, resolves the interface
+/// member, calls it with `args`, and returns its single result `Val`. Used to drive a compiled TYPED reducer
+/// guest over component-model values (a `Val::Record`, …) — the reducer-run entry a host drives a typed
+/// reducer through, and the local validation loop for the compiler's typed lift/lower emit.
+pub fn run_reducer_typed(
+    provider_bytes: &[u8],
+    iface: &str,
+    member: &str,
+    args: &[Val],
+    opts: &RunOpts,
+) -> Result<Val> {
+    let (mut store, instance) = compose_and_instantiate(provider_bytes, opts)?;
+    let iface_idx = instance
+        .get_export_index(&mut store, None, iface)
+        .ok_or_else(|| anyhow!("reducer provider does not export interface `{iface}`"))?;
+    let member_idx = instance
+        .get_export_index(&mut store, Some(&iface_idx), member)
+        .ok_or_else(|| anyhow!("reducer interface `{iface}` has no member `{member}`"))?;
+    let func = instance
+        .get_func(&mut store, member_idx)
+        .ok_or_else(|| anyhow!("reducer member `{member}` is not a func"))?;
+    let mut results = [Val::Bool(false)];
+    func.call(&mut store, args, &mut results)
+        .map_err(|e| anyhow!("reducer `{member}` call failed: {e:#}"))?;
+    func.post_return(&mut store)
+        .map_err(|e| anyhow!("reducer `{member}` post_return failed: {e:#}"))?;
+    Ok(results
+        .into_iter()
+        .next()
+        .expect("a one-result reducer member yields one value"))
+}
+
 /// The ordered `(key, value)` byte-pairs a reducer's host `put` op performed during an invoke — the
 /// recording sink [`run_reducer_bytes_with_puts`] returns (and threads through its `Arc<Mutex<_>>` sink).
 pub type PutLog = Vec<(Vec<u8>, Vec<u8>)>;

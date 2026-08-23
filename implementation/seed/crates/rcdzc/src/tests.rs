@@ -1153,8 +1153,6 @@ fn scalar_iface_world_bytes() -> Vec<u8> {
 #[test]
 fn a_scalar_interface_export_guest_compiles_and_runs() {
     use crate::testkit::parse;
-    use wasmtime::component::{Component, Linker, Val};
-    use wasmtime::{Engine, Store};
 
     // A Cadenza reducer-shaped guest: def f(x: Int64) = x, exported; bound by name to the world's `f` member.
     let src = "(module m (def (f (: x Int64)) x) (export f))";
@@ -1186,27 +1184,31 @@ fn a_scalar_interface_export_guest_compiles_and_runs() {
         .artifact(crate::backend::Target::Wasm.artifact_kind())
         .expect("emits a component");
 
-    let engine = Engine::default();
-    let comp =
-        Component::from_binary(&engine, bytes).expect("scalar interface component validates");
-    let linker: Linker<()> = Linker::new(&engine);
-    let mut store = Store::new(&engine, ());
-    let instance = linker.instantiate(&mut store, &comp).expect("instantiate");
-    let iface_idx = instance
-        .get_export_index(&mut store, None, "cadenza:demo/iface")
-        .expect("interface export present");
-    let f_idx = instance
-        .get_export_index(&mut store, Some(&iface_idx), "f")
-        .expect("f export present");
-    let func = instance.get_func(&mut store, f_idx).expect("f is a func");
-    let mut results = [Val::Bool(false)];
-    func.call(&mut store, &[Val::S64(7)], &mut results)
-        .expect("call");
-    func.post_return(&mut store).expect("post_return");
+    // Drive it through the CANONICAL typed-reducer runner (`cdz_run::run_reducer_typed`) — the path a host
+    // drives a typed reducer through (compose the runtime if imported, navigate the exported interface
+    // instance, call the member with component-model Vals). This scalar guest imports nothing, so the
+    // runtime compose is a no-op; the same runner drives a record/runtime-importing guest once the wrapper
+    // lands. f(7) == 7.
+    let opts = cdz_run::RunOpts {
+        export: None,
+        args: vec![],
+        runtime: find_runtime_wasm(),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    let result = cdz_run::run_reducer_typed(
+        bytes,
+        "cadenza:demo/iface",
+        "f",
+        &[wasmtime::component::Val::S64(7)],
+        &opts,
+    )
+    .expect("run the typed reducer member");
     assert_eq!(
-        i64::from_val(&results[0]),
+        i64::from_val(&result),
         7,
-        "a real Cadenza guest exporting interface cadenza:demo/iface: f(7) == 7"
+        "a real Cadenza guest exporting interface cadenza:demo/iface, driven via the canonical typed \
+         reducer runner: f(7) == 7"
     );
 }
 
