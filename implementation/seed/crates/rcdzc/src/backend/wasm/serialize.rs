@@ -697,6 +697,20 @@ fn core_module_impl(
     let e = extern_fns.len();
     let import_count = h + imports.len() + e;
     let n_wrap = wrappers.len();
+    // A wrapper carrying a `list<u8>` leaf reads the list's bytes out of linear memory the canon lift lowered
+    // it into, so the core module DEFINES + exports memory 0 and a `cabi_realloc` (a bump allocator over a
+    // mutable global) — the canon lift's Memory+Realloc options reference them. `wrapper_needs_memory` gates
+    // ALL of this (extra functype/func/code/export + the memory & global sections); false → byte-identical to
+    // before. This DEFINE path is distinct from the host-string `needs_memory` IMPORT path (`mem`.`mem`); the
+    // two never coexist here (a reducer guest performs no host-string call), so memory 0 has one owner.
+    let wrapper_needs_memory = wrappers.iter().any(|w| {
+        w.params
+            .iter()
+            .flatten()
+            .flatten()
+            .any(FieldRebuild::has_bytes_leaf)
+    });
+    let n_realloc = wrapper_needs_memory as usize; // 0 or 1 extra defined func (`cabi_realloc`)
 
     // Type section, then the imports, in ONE fixed order: EXTERN peer functypes FIRST (type indices
     // `0..e`), then HOST (`e..e+h`), then RUNTIME (`e+h..import_count`), then one functype per defined
@@ -737,9 +751,17 @@ fn core_module_impl(
         ft.extend_from_slice(&wasm_vec(w.result_vts.len(), &w.result_vts));
         type_items.extend_from_slice(&ft);
     }
+    // The `cabi_realloc` functype LAST (type index `import_count + n + extra + n_wrap`), when a wrapper needs
+    // memory: `(i32 old_ptr, i32 old_size, i32 align, i32 new_size) -> i32`. Absent otherwise.
+    if wrapper_needs_memory {
+        let mut ft = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        ft.extend_from_slice(&wasm_vec(4, &[wasm_abi::CORE_I32; 4]));
+        ft.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        type_items.extend_from_slice(&ft);
+    }
     let type_sec = section(
         wasm_abi::CORE_SEC_TYPE,
-        &wasm_vec(import_count + n + extra + n_wrap, &type_items),
+        &wasm_vec(import_count + n + extra + n_wrap + n_realloc, &type_items),
     );
 
     // Import section (id 2) — HOST func imports first (from module `"host"`, indices `0..h`), then one
@@ -804,9 +826,14 @@ fn core_module_impl(
     for w in 0..n_wrap {
         uleb128((import_count + n + extra + w) as u64, &mut func_items);
     }
+    // `cabi_realloc` LAST (function index `import_count + n + n_wrap`), its functype at
+    // `import_count + n + extra + n_wrap`. Present only when a wrapper needs memory.
+    if wrapper_needs_memory {
+        uleb128((import_count + n + extra + n_wrap) as u64, &mut func_items);
+    }
     let func_sec = section(
         wasm_abi::CORE_SEC_FUNCTION,
-        &wasm_vec(n + n_wrap, &func_items),
+        &wasm_vec(n + n_wrap + n_realloc, &func_items),
     );
 
     // Export section: export every boundary function under its verbatim name, by its absolute core
@@ -841,6 +868,22 @@ fn core_module_impl(
         export_items.extend_from_slice(&item);
         export_n += 1;
     }
+    // `memory` (memory 0) + `cabi_realloc` exports — the canon lift's Memory+Realloc options alias them off
+    // this program instance. Present only when a wrapper needs memory.
+    if wrapper_needs_memory {
+        let mut mem_item = uleb_bytes("memory".len() as u64);
+        mem_item.extend_from_slice(b"memory");
+        mem_item.push(wasm_abi::EXPORT_KIND_MEMORY);
+        uleb128(0, &mut mem_item);
+        export_items.extend_from_slice(&mem_item);
+        export_n += 1;
+        let mut ra_item = uleb_bytes("cabi_realloc".len() as u64);
+        ra_item.extend_from_slice(b"cabi_realloc");
+        ra_item.push(wasm_abi::EXPORT_KIND_FUNC);
+        uleb128((import_count + n + n_wrap) as u64, &mut ra_item);
+        export_items.extend_from_slice(&ra_item);
+        export_n += 1;
+    }
     let export_sec = section(
         wasm_abi::CORE_SEC_EXPORT,
         &wasm_vec(export_n, &export_items),
@@ -864,7 +907,27 @@ fn core_module_impl(
         };
         for wrap in wrappers {
             let mut body = Vec::new();
-            body.extend_from_slice(&uleb_bytes(0)); // no locals (the cell handle stays on the stack)
+            // A wrapper carrying a `list<u8>` leaf reserves two reusable i32 scratch locals (a `buf` handle +
+            // a copy counter) AFTER the flattened params — indices `param_count` and `param_count + 1`; its
+            // copy-in loop threads them. Otherwise no locals (the cell handle stays on the stack) —
+            // byte-identical to before.
+            let has_bytes = wrap
+                .params
+                .iter()
+                .flatten()
+                .flatten()
+                .any(FieldRebuild::has_bytes_leaf);
+            let scratch = if has_bytes {
+                let base = wrap.param_vts.len() as u32;
+                // one local-decl group of 2 i32.
+                body.extend_from_slice(&uleb_bytes(1));
+                body.extend_from_slice(&uleb_bytes(2));
+                body.push(wasm_abi::CORE_I32);
+                Some((base, base + 1))
+            } else {
+                body.extend_from_slice(&uleb_bytes(0));
+                None
+            };
             let mut leaf = 0u32;
             for p in &wrap.params {
                 match p {
@@ -873,7 +936,7 @@ fn core_module_impl(
                         uleb128(leaf as u64, &mut body);
                         leaf += 1;
                     }
-                    Some(fields) => emit_cell_rebuild(fields, &mut leaf, &imp, &mut body),
+                    Some(fields) => emit_cell_rebuild(fields, &mut leaf, &imp, scratch, &mut body),
                 }
             }
             body.push(op::CALL);
@@ -884,7 +947,49 @@ fn core_module_impl(
             code_items.extend_from_slice(&entry);
         }
     }
-    let code_sec = section(wasm_abi::CORE_SEC_CODE, &wasm_vec(n + n_wrap, &code_items));
+    // `cabi_realloc` body LAST — a bump allocator over global 0: `p = (g + align - 1) & -align` (align is a
+    // power of 2, so `-align == ~(align-1)`), advance `g = p + new_size`, return `p`. One extra i32 local
+    // (index 4, after the 4 params) holds `p`. Present only when a wrapper needs memory.
+    if wrapper_needs_memory {
+        let mut body = Vec::new();
+        body.extend_from_slice(&uleb_bytes(1)); // one local-decl group
+        body.extend_from_slice(&uleb_bytes(1)); // of one
+        body.push(wasm_abi::CORE_I32); // i32 (local 4 = aligned p)
+        // p = (global0 + align - 1) & -align
+        body.push(op::GLOBAL_GET);
+        uleb128(0, &mut body);
+        body.push(op::LOCAL_GET);
+        uleb128(2, &mut body); // align
+        body.push(op::I32_ADD);
+        body.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(1, &mut body);
+        body.push(op::I32_SUB);
+        body.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(0, &mut body);
+        body.push(op::LOCAL_GET);
+        uleb128(2, &mut body); // align
+        body.push(op::I32_SUB); // -align
+        body.push(op::I32_AND);
+        body.push(op::LOCAL_TEE);
+        uleb128(4, &mut body); // p → local 4, left on stack
+        // global0 = p + new_size
+        body.push(op::LOCAL_GET);
+        uleb128(3, &mut body); // new_size
+        body.push(op::I32_ADD);
+        body.push(op::GLOBAL_SET);
+        uleb128(0, &mut body);
+        // return p
+        body.push(op::LOCAL_GET);
+        uleb128(4, &mut body);
+        body.push(op::END);
+        let mut entry = uleb_bytes(body.len() as u64);
+        entry.extend_from_slice(&body);
+        code_items.extend_from_slice(&entry);
+    }
+    let code_sec = section(
+        wasm_abi::CORE_SEC_CODE,
+        &wasm_vec(n + n_wrap + n_realloc, &code_items),
+    );
 
     // TABLE + ELEMENT sections — present ONLY when the program has lambda-lifted closures (a runtime
     // closure applies through `call_indirect` over the one funcref table). The table holds one funcref
@@ -940,12 +1045,29 @@ fn core_module_impl(
         )
     };
 
+    // MEMORY (sec 5) + GLOBAL (sec 6) — present only when a wrapper needs memory: memory 0 (min 1 page) the
+    // canon lift lowers incoming lists into, and a mutable i32 bump pointer `cabi_realloc` advances (init 16,
+    // leaving low memory clear so a returned pointer is never 0). Both empty otherwise → byte-identical.
+    let (mem_sec, global_sec) = if wrapper_needs_memory {
+        let mem = section(wasm_abi::CORE_SEC_MEMORY, &wasm_vec(1, &[0x00, 0x01]));
+        let mut g = vec![wasm_abi::CORE_I32, 0x01]; // i32, mutable
+        g.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(16, &mut g);
+        g.push(op::END);
+        let global = section(wasm_abi::CORE_SEC_GLOBAL, &wasm_vec(1, &g));
+        (mem, global)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
     let mut core = Vec::new();
     core.extend_from_slice(CORE_MAGIC);
     core.extend_from_slice(&type_sec);
     core.extend_from_slice(&import_sec);
     core.extend_from_slice(&func_sec);
     core.extend_from_slice(&table_sec);
+    core.extend_from_slice(&mem_sec);
+    core.extend_from_slice(&global_sec);
     core.extend_from_slice(&export_sec);
     core.extend_from_slice(&elem_sec);
     core.extend_from_slice(&code_sec);
@@ -1849,6 +1971,14 @@ pub enum FieldRebuild {
     /// A nested fixed-shape compound field: rebuild its own sub-cell (recursively, consuming the next
     /// contiguous run of flattened leaf params) → an i32 handle the parent `arr-set`s AS-IS (no box op).
     Nested(Vec<FieldRebuild>),
+    /// A `list<u8>` leaf: the canon lift flattens it to `(ptr: i32, len: i32)` — TWO consecutive
+    /// flattened core params. The wrapper allocates a guest `Bytes` of `len` (`bytes-alloc`), copies
+    /// `len` bytes out of linear memory 0 starting at `ptr` (`i32.load8_u` + `bytes-set` per byte), and
+    /// stores the resulting handle into the record slot AS-IS (no box op — a `Bytes` handle, like
+    /// `Nested`). Consumes TWO flattened leaf params. Needs the two scratch locals the wrapper reserves
+    /// (a `buf` handle + a copy counter) and the core module owning memory 0 + a `cabi_realloc`
+    /// (`wrapper_needs_memory`) so the canon lift can lower the incoming list into that memory.
+    BytesLeaf,
 }
 
 impl FieldRebuild {
@@ -1858,11 +1988,14 @@ impl FieldRebuild {
         match self {
             FieldRebuild::Scalar { .. } => 1,
             FieldRebuild::Nested(sub) => sub.iter().map(FieldRebuild::leaf_count).sum(),
+            // A `list<u8>` flattens to `(ptr, len)` — two core params.
+            FieldRebuild::BytesLeaf => 2,
         }
     }
 
-    /// Collect the box ops this field (recursively) references, so the `call` core imports them. A nested
-    /// field has no box op of its own (its handle is stored as-is) but its leaves do.
+    /// Collect the runtime ops this field (recursively) references, so the `call` core imports them. A
+    /// nested field has no op of its own (its handle is stored as-is) but its leaves do; a scalar leaf its
+    /// box op; a `list<u8>` leaf the `bytes-alloc`/`bytes-set` its copy-in loop calls.
     pub fn collect_box_ops(&self, out: &mut impl FnMut(&'static str)) {
         match self {
             FieldRebuild::Scalar { box_op, .. } => out(box_op),
@@ -1871,6 +2004,20 @@ impl FieldRebuild {
                     f.collect_box_ops(out);
                 }
             }
+            FieldRebuild::BytesLeaf => {
+                out("bytes-alloc");
+                out("bytes-set");
+            }
+        }
+    }
+
+    /// Whether this field (recursively) contains a `list<u8>` leaf — the wrapper carrying it must reserve
+    /// the two scratch locals its copy-in loop uses, and the core module must own memory 0.
+    pub fn has_bytes_leaf(&self) -> bool {
+        match self {
+            FieldRebuild::Scalar { .. } => false,
+            FieldRebuild::Nested(sub) => sub.iter().any(FieldRebuild::has_bytes_leaf),
+            FieldRebuild::BytesLeaf => true,
         }
     }
 }
@@ -2021,7 +2168,7 @@ fn emit_sum_arm(arm: &SumArgArm, payload_param: u32, imp: &dyn Fn(&str) -> u64, 
             // Rebuild the payload's value-heap cell from its recursively-flattened leaves, starting at the
             // payload base — exactly as a bare tuple arg rebuilds. Leaves the cell handle on the stack.
             let mut cursor = payload_param;
-            emit_cell_rebuild(fields, &mut cursor, imp, out); // [disc, payload-cell-handle]
+            emit_cell_rebuild(fields, &mut cursor, imp, None, out); // [disc, payload-cell-handle]
         }
         SumArmPayload::Nullary => {
             out.push(op::I32_CONST);
@@ -2082,19 +2229,24 @@ fn emit_tuple_rebuild(
     // handle into `tuple_local` for the post-dispatch drop (only the OUTER cell is dropped — its nested
     // sub-cells are its elements, reclaimed with it).
     let mut cursor = rebuild.base_param;
-    emit_cell_rebuild(&rebuild.fields, &mut cursor, imp, out);
+    emit_cell_rebuild(&rebuild.fields, &mut cursor, imp, None, out);
     out.push(crate::backend::wasm::wasm_abi::op::LOCAL_TEE);
     uleb128(tuple_local as u64, out); // stash for the post-dispatch drop; leaves [arr] on the stack
 }
 
 /// Emit ONE value-heap cell for a run of [`FieldRebuild`] fields, consuming flattened leaf params from
 /// `*cursor` (advanced past each leaf, depth-first). `arr-alloc N` + per field: index, then either the boxed
-/// scalar leaf OR a recursively-rebuilt nested sub-cell handle, then `arr-set` (FBIP array threaded on the
-/// stack). Leaves the cell handle on the stack. Recursion mirrors `Core::Tuple`/`Core::Record`.
+/// scalar leaf OR a recursively-rebuilt nested sub-cell handle OR a `list<u8>` copied out of memory, then
+/// `arr-set` (FBIP array threaded on the stack). Leaves the cell handle on the stack. Recursion mirrors
+/// `Core::Tuple`/`Core::Record`. `scratch` = `Some((buf_local, i_local))` when this cell (or a nested one)
+/// carries a `BytesLeaf` — the two reusable scratch locals its copy-in loop threads (`buf` handle + counter);
+/// `None` for any rebuild with no bytes leaf (every non-wrapper caller — closure/tuple/sum rebuilds — which
+/// never carry one). A `BytesLeaf` reached with `scratch == None` is a caller bug (`.expect`).
 fn emit_cell_rebuild(
     fields: &[FieldRebuild],
     cursor: &mut u32,
     imp: &dyn Fn(&str) -> u64,
+    scratch: Option<(u32, u32)>,
     out: &mut Vec<u8>,
 ) {
     use crate::backend::wasm::wasm_abi::op;
@@ -2122,12 +2274,93 @@ fn emit_cell_rebuild(
             }
             FieldRebuild::Nested(sub) => {
                 // Rebuild the nested sub-cell (consumes its own leaves) → an i32 handle stored AS-IS.
-                emit_cell_rebuild(sub, cursor, imp, out); // → [arr, i, sub-handle]
+                emit_cell_rebuild(sub, cursor, imp, scratch, out); // → [arr, i, sub-handle]
+            }
+            FieldRebuild::BytesLeaf => {
+                let (buf, ctr) = scratch.expect("a BytesLeaf needs the wrapper's scratch locals");
+                emit_bytes_leaf_copy_in(*cursor, buf, ctr, imp, out); // → [arr, i, buf]
+                *cursor += 2; // the list flattened to (ptr, len)
             }
         }
         out.push(op::CALL);
         uleb128(imp("arr-set"), out); // → [arr]
     }
+}
+
+/// Emit the copy-in for one `BytesLeaf`: the list crossed the boundary as `(ptr, len)` at flattened core
+/// params `ptr_leaf` (= `*cursor`) and `ptr_leaf + 1`. Allocate a guest `Bytes` of `len` (`bytes-alloc`),
+/// then loop `j in 0..len` copying `bytes-set(buf, j, i32.load8_u(ptr + j))` out of linear memory 0 (the
+/// core module owns it under `wrapper_needs_memory`). Leaves the final `buf` handle on the stack (the caller
+/// `arr-set`s it AS-IS). `buf`/`ctr` are the two reusable scratch locals; the surrounding stack (`[arr, i]`)
+/// is untouched — the `block`/`loop` are `[]->[]` and every statement is stack-balanced. An empty list
+/// (`len == 0`) allocates a zero-length `Bytes` and the loop exits immediately.
+fn emit_bytes_leaf_copy_in(
+    ptr_leaf: u32,
+    buf: u32,
+    ctr: u32,
+    imp: &dyn Fn(&str) -> u64,
+    out: &mut Vec<u8>,
+) {
+    use crate::backend::wasm::wasm_abi::op;
+    let len_leaf = ptr_leaf + 1;
+    // buf = bytes-alloc(len)
+    out.push(op::LOCAL_GET);
+    uleb128(len_leaf as u64, out);
+    out.push(op::CALL);
+    uleb128(imp("bytes-alloc"), out);
+    out.push(op::LOCAL_SET);
+    uleb128(buf as u64, out);
+    // ctr = 0
+    out.push(op::I32_CONST);
+    crate::backend::wasm::encode::sleb128(0, out);
+    out.push(op::LOCAL_SET);
+    uleb128(ctr as u64, out);
+    // block { loop { if ctr >= len br 1; buf = bytes-set(buf, ctr, load8(ptr + ctr)); ctr += 1; br 0 } }
+    out.push(op::BLOCK);
+    out.push(crate::backend::wasm::wasm_abi::BLOCK_EMPTY);
+    out.push(op::LOOP);
+    out.push(crate::backend::wasm::wasm_abi::BLOCK_EMPTY);
+    // if ctr >= len -> br 1 (exit block)
+    out.push(op::LOCAL_GET);
+    uleb128(ctr as u64, out);
+    out.push(op::LOCAL_GET);
+    uleb128(len_leaf as u64, out);
+    out.push(op::I32_GE_U);
+    out.push(op::BR_IF);
+    uleb128(1, out);
+    // buf = bytes-set(buf, ctr, i32.load8_u(ptr + ctr))
+    out.push(op::LOCAL_GET);
+    uleb128(buf as u64, out);
+    out.push(op::LOCAL_GET);
+    uleb128(ctr as u64, out);
+    out.push(op::LOCAL_GET);
+    uleb128(ptr_leaf as u64, out);
+    out.push(op::LOCAL_GET);
+    uleb128(ctr as u64, out);
+    out.push(op::I32_ADD);
+    out.push(op::I32_LOAD8_U);
+    out.push(0x00); // align 2^0
+    out.push(0x00); // offset 0
+    out.push(op::CALL);
+    uleb128(imp("bytes-set"), out);
+    out.push(op::LOCAL_SET);
+    uleb128(buf as u64, out);
+    // ctr += 1
+    out.push(op::LOCAL_GET);
+    uleb128(ctr as u64, out);
+    out.push(op::I32_CONST);
+    crate::backend::wasm::encode::sleb128(1, out);
+    out.push(op::I32_ADD);
+    out.push(op::LOCAL_SET);
+    uleb128(ctr as u64, out);
+    // br 0 (loop back)
+    out.push(op::BR);
+    uleb128(0, out);
+    out.push(op::END); // end loop
+    out.push(op::END); // end block
+    // leave buf on the stack for the caller's arr-set
+    out.push(op::LOCAL_GET);
+    uleb128(buf as u64, out);
 }
 
 /// Push a closure `call`'s arguments onto the stack in the lifted body's order, threading ZERO OR MORE

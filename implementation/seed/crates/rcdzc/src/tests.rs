@@ -1313,6 +1313,238 @@ fn a_record_param_guest_compiles_and_runs_via_a_wrapper() {
     );
 }
 
+/// A KIND_WIT_WORLD declaring an export interface with TWO record-param members `f(m: record{a: s64}) -> s64`
+/// and `g(m: record{b: s64}) -> s64` — the multi-export case a real reducer needs (on-message/on-response/
+/// on-notification are three members). Each member gets its own wrapper appended to the core module.
+fn two_member_record_world_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let s64 = |b: &mut Builder| {
+        let h = b.name("s64");
+        b.list(vec![h])
+    };
+    let member = |b: &mut Builder, member_name: &str, field: &str| {
+        let fty = s64(b);
+        let fname = b.name(field);
+        let f_field = b.list(vec![fname, fty]);
+        let rec_head = b.atom_leaf(Leaf::Str("record".into()));
+        let rec = b.list(vec![rec_head, f_field]);
+        let res_ty = s64(b);
+        let func_h = b.name("func");
+        let param_h = b.name("param");
+        let pn = b.name("m");
+        let param_node = b.list(vec![param_h, pn, rec]);
+        let result_h = b.name("result");
+        let result_node = b.list(vec![result_h, res_ty]);
+        let func = b.list(vec![func_h, param_node, result_node]);
+        let member_h = b.name("member");
+        let mn = b.name(member_name);
+        b.list(vec![member_h, mn, func])
+    };
+    let f = member(&mut b, "f", "a");
+    let g = member(&mut b, "g", "b");
+    let exp_h = b.name("export");
+    let iname = b.name("iface");
+    let export = b.list(vec![exp_h, iname, f, g]);
+    let world_h = b.name("world");
+    let wn = b.name("w");
+    let world = b.list(vec![world_h, wn, export]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+/// W4c-b: a MULTI-EXPORT record-interface guest (two members, each with a record param) emits + runs — a
+/// wrapper per member, the shape a real reducer needs (on-message/on-response/on-notification). `f(m) = m.a`
+/// and `g(m) = m.b`; both driven via the typed runner: f({a:7}) == 7 and g({b:9}) == 9.
+#[test]
+fn a_multi_export_record_interface_guest_compiles_and_runs() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime) = find_runtime_wasm() else {
+        return;
+    };
+    let src = "(module m \
+                 (def (f (: m (Record (a Int64)))) (. m a)) \
+                 (def (g (: m (Record (b Int64)))) (. m b)) \
+                 (export f) (export g))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:demo/iface"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                two_member_record_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "multi-export record-interface guest must emit: {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("emits a component");
+    let opts = cdz_run::RunOpts {
+        export: None,
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    let f = cdz_run::run_reducer_typed(
+        bytes,
+        "cadenza:demo/iface",
+        "f",
+        &[Val::Record(vec![("a".to_string(), Val::S64(7))])],
+        &opts,
+    )
+    .expect("run f");
+    assert_eq!(i64::from_val(&f), 7, "multi-export: f({{a: 7}}) == 7");
+    let g = cdz_run::run_reducer_typed(
+        bytes,
+        "cadenza:demo/iface",
+        "g",
+        &[Val::Record(vec![("b".to_string(), Val::S64(9))])],
+        &opts,
+    )
+    .expect("run g");
+    assert_eq!(i64::from_val(&g), 9, "multi-export: g({{b: 9}}) == 9");
+}
+
+/// A KIND_WIT_WORLD with an export member `f(m: record{data: list<u8>, tag: s64}) -> s64` — a record param
+/// mixing a `list<u8>` LEAF with a scalar, the shape a real reducer's `on-message(message)` has (Message
+/// carries `list<u8>` leaves). Fields are declared in NAME-LEXICOGRAPHIC order (`data` < `tag`) to match the
+/// def's `Ty::Record` (a `BTreeMap<Symbol,_>`) so the canon-flattened params land in the right cell slots.
+fn record_with_bytes_world_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let s64 = |b: &mut Builder| {
+        let h = b.name("s64");
+        b.list(vec![h])
+    };
+    // data field: (data ("list" (u8)))
+    let u8h = b.name("u8");
+    let u8p = b.list(vec![u8h]);
+    let list_head = b.atom_leaf(Leaf::Str("list".into()));
+    let list_ty = b.list(vec![list_head, u8p]);
+    let data_name = b.name("data");
+    let data_field = b.list(vec![data_name, list_ty]);
+    // tag field: (tag (s64))
+    let tag_ty = s64(&mut b);
+    let tag_name = b.name("tag");
+    let tag_field = b.list(vec![tag_name, tag_ty]);
+    // ("record" data_field tag_field) — name-lex order data < tag.
+    let rec_head = b.atom_leaf(Leaf::Str("record".into()));
+    let rec = b.list(vec![rec_head, data_field, tag_field]);
+    let res_ty = s64(&mut b);
+    let func_h = b.name("func");
+    let param_h = b.name("param");
+    let pn = b.name("m");
+    let param_node = b.list(vec![param_h, pn, rec]);
+    let result_h = b.name("result");
+    let result_node = b.list(vec![result_h, res_ty]);
+    let func = b.list(vec![func_h, param_node, result_node]);
+    let member_h = b.name("member");
+    let mn = b.name("f");
+    let member = b.list(vec![member_h, mn, func]);
+    let exp_h = b.name("export");
+    let iname = b.name("iface");
+    let export = b.list(vec![exp_h, iname, member]);
+    let world_h = b.name("world");
+    let wn = b.name("w");
+    let world = b.list(vec![world_h, wn, export]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+/// W4c-b: a real Cadenza guest whose record param carries a `list<u8>` LEAF compiles to a component and RUNS
+/// — the memory boundary every real reducer needs (Message/Step carry `list<u8>`). The canon lift lowers the
+/// incoming `data` list into the guest's linear memory (via the guest's emitted `cabi_realloc` bump
+/// allocator), the wrapper copies those bytes into a value-heap `Bytes` (`emit_bytes_leaf_copy_in`), builds
+/// the `{data, tag}` record, and the def returns `Bytes.len(data)`. Driven through the runtime-composing
+/// typed runner: `f({data: [1,2,3,4,5], tag: 99}) == 5` — proving the copied bytes have the right length
+/// (so `bytes-alloc`/the copy loop/the memory lift all agree end to end).
+#[test]
+fn a_record_with_a_bytes_leaf_guest_compiles_and_runs() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime) = find_runtime_wasm() else {
+        return;
+    };
+    let src = "(module m (def (f (: m (Record (data Bytes) (tag Int64)))) (Bytes.len (. m data))) (export f))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:demo/iface"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                record_with_bytes_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "record-with-bytes-leaf guest must emit a component: {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("emits a component");
+    let opts = cdz_run::RunOpts {
+        export: None,
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    let result = cdz_run::run_reducer_typed(
+        bytes,
+        "cadenza:demo/iface",
+        "f",
+        &[Val::Record(vec![
+            (
+                "data".to_string(),
+                Val::List(vec![
+                    Val::U8(1),
+                    Val::U8(2),
+                    Val::U8(3),
+                    Val::U8(4),
+                    Val::U8(5),
+                ]),
+            ),
+            ("tag".to_string(), Val::S64(99)),
+        ])],
+        &opts,
+    )
+    .expect("run the bytes-leaf record-param typed reducer member");
+    assert_eq!(
+        i64::from_val(&result),
+        5,
+        "f(m) = Bytes.len(m.data) over a list<u8> leaf lifted through memory: len([1,2,3,4,5]) == 5"
+    );
+}
+
 /// Whether calling export `name` with `args` TRAPS (an `unreachable` from an overflow guard). Returns
 /// `true` if the call errored (a wasm trap), `false` if it returned normally.
 fn call_traps(component_bytes: &[u8], name: &str, args: &[wasmtime::component::Val]) -> bool {
