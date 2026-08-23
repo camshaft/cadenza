@@ -324,8 +324,15 @@ the key-value read (section 3, section 8), not an effect: it may await the sub-e
 resolves within the call, and a pure function may call it and stay pure. A pure function can
 call `run`, and the program it runs can call further functions, with the whole computation
 deterministic — so composing pure computation needs no effect plumbing. The synchronous form is
-a blocking host import returning inline; its guest-side surface is fixed with the compiler and
-runtime that emit the call.
+a blocking host import, `run(program, contract, input) -> result<output, error>`: the output
+value on success, or the runtime `error` when there is no result to return — `missing-handler`
+if the program is not in the store, `faulted` if it trapped or never returned (the same errors
+the effect form's response carries). It sits on the **ordinary reducer world's floor**, granted
+to every reducer, not gated to the privileged tier: an empty-capability deterministic sub-run
+observes nothing and grants nothing, so it needs no privilege — the same reasoning that makes it
+a direct access rather than an effect. The host runs the sub-program through the same
+content-addressed instantiation core the reducer itself was loaded from, reached without a path
+back to the reducer's own store, so a `run` inside a fold composes freely and cannot form a cycle.
 
 A `run` program is a computation, not a routable participant — nothing can address it (it
 answers only the one request, then it is gone), so it needs no real identity and leaves no
