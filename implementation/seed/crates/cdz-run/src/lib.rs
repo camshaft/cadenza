@@ -339,10 +339,11 @@ pub struct RunOpts {
     /// and a `deserialize` failure falls back to a fresh compile — so a version/config mismatch can
     /// never load an incompatible artifact.
     pub runtime_cache_dir: Option<std::path::PathBuf>,
-    // NOTE (FINDING#23): there is deliberately NO `nfc` field. The value-heap runtime imports
-    // `cadenza:nfc/normalize` (its NFC dependency), but the host now SELF-RESOLVES that NFC component from the
-    // store at compose time (`resolve_nfc_from_store`, keyed off `runtime_cache_dir`/`CDZ_STORE`/the default
-    // store + the `runtime.toml` `nfc = "<hash>"` line) rather than the caller threading it through a field.
+    // NOTE: there is deliberately NO `nfc` field. The value-heap runtime imports
+    // `cadenza:nfc/normalize@0.0.0+<hash>` (its NFC dependency, self-describing — the hash is stamped inline
+    // into the import at build time), and the host resolves that NFC component from the store BY THAT INLINE
+    // HASH at compose time (`resolve_nfc_by_hash`, keyed off `runtime_cache_dir`/`CDZ_STORE`/the default store
+    // — a pure CAS lookup, NO `runtime.toml`/mapping) rather than the caller threading it through a field.
     // This is intentional: a required `nfc` field on this struct — constructed by ~190 test literals across
     // rcdzc/cdz/cdz-calc/cdz-smith — was a livelock magnet (every new literal that omitted it failed to
     // compile, and a merge-window couldn't stop an in-flight peer from adding one). Self-resolution removes the
@@ -2097,27 +2098,32 @@ fn compose_nfc_into_runtime_linker(
     runtime: &Component,
     opts: &RunOpts,
 ) -> Result<()> {
-    // Does the runtime actually import the NFC interface? Read its component type's imports.
-    let imports_nfc = runtime
+    // Does the runtime import the NFC interface, and under exactly what name? The NFC import is
+    // SELF-DESCRIBING (operator directive 2026-08-23): its name carries the NFC component's content address
+    // as a semver build-metadata suffix — `cadenza:nfc/normalize@0.0.0+<hash>`, stamped into the heap at
+    // build time (`cdz-component-rewrite`), exactly like a program's `cadenza:runtime/heap@0.0.0+<hash>`
+    // import. So match on the interface PREFIX (the version suffix varies) and keep the FULL import name —
+    // the linker must satisfy the import under the name the runtime actually declares.
+    let nfc_import = runtime
         .component_type()
         .imports(engine)
-        .any(|(name, _)| name == NFC_IFACE);
-    if !imports_nfc {
+        .map(|(name, _)| name.to_string())
+        .find(|name| name == NFC_IFACE || name.starts_with(&format!("{NFC_IFACE}@")));
+    let Some(nfc_import_name) = nfc_import else {
         return Ok(()); // leaf runtime — nothing to compose
-    }
-    // SELF-RESOLVE the NFC component from the store (FINDING#23 durable fix — no `RunOpts.nfc` field, so a
-    // new caller/test literal can never forget to thread it and hit E0063). The store is `opts.runtime_cache_dir`
-    // if the caller pinned one (the CLI points it at `--store`, incl. when `--runtime` is also given), else the
-    // `CDZ_STORE` env, else the compiled default (see `resolve_nfc_from_store`); we read the NFC content address
-    // off that store's `runtime.toml` (`nfc = "<hash>"`, written by `xtask build`) and load + verify
-    // `<store>/<hash>.wasm`. This mirrors how the runtime itself is resolved-by-hash — cdz-run needs NO
-    // knowledge of `REQUIRED_NFC_HASH` (it reads the hash from the store manifest), preserving the
-    // runner-has-no-compiler-dep boundary.
-    let nfc_bytes = resolve_nfc_from_store(opts).ok_or_else(|| {
+    };
+    // The content address to resolve the NFC component by = the substring after `+` in the import name
+    // (string split, encoding-agnostic — same as the heap runtime import, `find_runtime_req`). No
+    // `runtime.toml` / mapping file is consulted: the import itself says how to resolve the dependency
+    // (zero runtime indirection — operator directive). A bare import with no `+<hash>` is an unstamped heap
+    // (a build bug), reported here rather than silently falling back to a mapping.
+    let nfc_hash = nfc_import_name.rsplit_once('+').map(|(_, h)| h);
+    let nfc_bytes = nfc_hash.and_then(|h| resolve_nfc_by_hash(opts, h)).ok_or_else(|| {
         anyhow!(
-            "the value-heap runtime imports {NFC_IFACE} (its NFC dependency) but the NFC component could not \
-             be resolved from the store (need `runtime.toml`'s `nfc = \"<hash>\"` + `<store>/<hash>.wasm`; \
-             build it with `cargo xtask build`, or set CDZ_STORE to the store dir)"
+            "the value-heap runtime imports `{nfc_import_name}` (its NFC dependency) but the NFC component \
+             could not be resolved by its inline content address from the store — the import must carry a \
+             `+<hash>` suffix naming `<store>/<hash>.wasm` (built + stamped by `cargo xtask build`); set \
+             CDZ_STORE to the store dir if it is elsewhere"
         )
     })?;
     let nfc = Component::new(engine, &nfc_bytes).map_err(|e| anyhow!("load NFC component: {e}"))?;
@@ -2131,9 +2137,13 @@ fn compose_nfc_into_runtime_linker(
         .get_export_index(&mut *store, None, NFC_IFACE)
         .ok_or_else(|| anyhow!("NFC component does not export {NFC_IFACE}"))?;
     let func_names = interface_func_names(engine, &nfc, NFC_IFACE)?;
+    // Bind under the runtime's ACTUAL import name (the versioned `cadenza:nfc/normalize@0.0.0+<hash>`),
+    // not the bare interface — the linker satisfies an import by its declared name. The NFC component
+    // itself still EXPORTS the bare `NFC_IFACE` (only the heap's IMPORT is stamped), so its export lookups
+    // below stay on `NFC_IFACE`.
     let mut iface = rt_linker
-        .instance(NFC_IFACE)
-        .map_err(|e| anyhow!("runtime linker instance {NFC_IFACE}: {e}"))?;
+        .instance(&nfc_import_name)
+        .map_err(|e| anyhow!("runtime linker instance {nfc_import_name}: {e}"))?;
     for fname in &func_names {
         let fidx = nfc_instance
             .get_export_index(&mut *store, Some(&nfc_idx), fname)
@@ -2150,27 +2160,22 @@ fn compose_nfc_into_runtime_linker(
     Ok(())
 }
 
-/// Resolve the NFC component's bytes from the value-heap store (FINDING#23 durable fix). The store dir is,
-/// in precedence: `opts.runtime_cache_dir` (the CLI/`cdz` path sets this to the resolved store), else the
-/// `CDZ_STORE` env var, else the compiled default store (`<repo>/target/cadenza-store`). We read the NFC
-/// content address off that store's `runtime.toml` (`nfc = "<hash>"`, written by `xtask build`), then load
-/// `<store>/<hash>.wasm` and VERIFY its content address matches (so a corrupt/substituted entry can't compose
-/// silently — the same integrity check the runtime resolution does). Returns `None` (→ a clear compose
-/// error) if any step fails. Reading the hash from the manifest means cdz-run needs no `REQUIRED_NFC_HASH`
-/// from the compiler — it stays dependency-free of `rcdzc`.
-fn resolve_nfc_from_store(opts: &RunOpts) -> Option<Vec<u8>> {
+/// Resolve the NFC component's bytes from the value-heap store BY ITS CONTENT ADDRESS (`hash`), the address
+/// read inline from the runtime's self-describing NFC import (`cadenza:nfc/normalize@0.0.0+<hash>`). NO
+/// `runtime.toml` / mapping file is consulted — the import names the dependency, and the store is a pure CAS
+/// (`<store>/<hash>.wasm`); this is content addressing, not indirection (operator directive 2026-08-23: no
+/// mapping file passed to any executable). The store dir is, in precedence: `opts.runtime_cache_dir` (the
+/// CLI/`cdz` path sets this to the resolved store), else `CDZ_STORE`, else the compiled default
+/// (`<repo>/target/cadenza-store`). Loads `<store>/<hash>.wasm` and VERIFIES its content address matches
+/// `hash` (so a corrupt/substituted entry can't compose silently — the same integrity check the runtime
+/// resolution does). Returns `None` (→ a clear compose error) if any step fails. cdz-run needs no
+/// `REQUIRED_NFC_HASH` from the compiler — the hash rides in the import — so it stays free of `rcdzc`.
+fn resolve_nfc_by_hash(opts: &RunOpts, hash: &str) -> Option<Vec<u8>> {
     let store = opts
         .runtime_cache_dir
         .clone()
         .or_else(|| std::env::var_os("CDZ_STORE").map(std::path::PathBuf::from))
         .unwrap_or_else(nfc_default_store);
-    let manifest = std::fs::read_to_string(store.join("runtime.toml")).ok()?;
-    let hash = manifest.lines().find_map(|l| {
-        l.trim()
-            .strip_prefix("nfc")
-            .and_then(|r| r.trim_start().strip_prefix('='))
-            .map(|v| v.trim().trim_matches('"').to_string())
-    })?;
     let bytes = std::fs::read(store.join(format!("{hash}.wasm"))).ok()?;
     (crate::cli::content_address(&bytes) == hash).then_some(bytes)
 }

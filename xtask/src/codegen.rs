@@ -133,13 +133,16 @@ fn generate_runtime_abi(paths: &Paths, check: bool) {
     // recorded so a program can require the release runtime by hash AND a leak-check harness can locate
     // the debug runtime by hash, neither hard-coded. (`xtask check` already builds the runtime, so the
     // release build's cost is shared; the debug build is one extra `cargo component` invocation.)
-    let (runtime_hash, debug_runtime_hash, imm_unit) = build_runtime_hashes(paths);
     // The NFC component's content hash — built + content-addressed the SAME way the runtime is (build →
     // canonicalize → content_address), so the generated `REQUIRED_NFC_HASH` tracks an NFC-component change
-    // automatically, exactly like `REQUIRED_RUNTIME_HASH`. The emit pins this in the imported
-    // `cadenza:nfc/normalize@…+<hash>` name (FINDING#23, operator ruling d: NFC lives in a separate imported
-    // component so the core runtime stays light + hash-stable). One extra `cargo component` build.
+    // automatically, exactly like `REQUIRED_RUNTIME_HASH`. Computed FIRST because it is stamped INLINE into
+    // each heap's `cadenza:nfc/normalize` import (`stamp_nfc_into_heap`), so the RECORDED
+    // `REQUIRED_RUNTIME_HASH` must be the hash of the STAMPED heap (matching what `build` stores + what a
+    // program pins). NFC lives in a separate imported component so the core runtime stays light (FINDING#23);
+    // its address now rides inline in the heap's import (operator directive 2026-08-23: self-describing
+    // imports, no runtime.toml mapping). One extra `cargo component` build.
     let nfc_hash = build_nfc_hash(paths);
+    let (runtime_hash, debug_runtime_hash, imm_unit) = build_runtime_hashes(paths, &nfc_hash);
     // Build the body as tokens (`render`), pretty-print + rustfmt it (`format_tokens`), then prepend the
     // `//!` module banner as text (a module doc is awkward as a token attribute). prettyplease-then-
     // rustfmt makes the committed file agree with BOTH `fmt --check` and `codegen --check`.
@@ -827,24 +830,27 @@ fn runtime_hashes_from_nix() -> (String, String, u32) {
     (release_hash, debug_hash, imm_unit)
 }
 
-fn build_runtime_hashes(paths: &Paths) -> (String, String, u32) {
+fn build_runtime_hashes(paths: &Paths, nfc_hash: &str) -> (String, String, u32) {
     // R3 (opt-in): consume the nix-built runtime bytes instead of self-building (removes the duplicate
-    // 3× runtime + gate-build rebuild). Default keeps the self-build until parallel-proven + default-flipped.
+    // 3× runtime + gate-build rebuild). The nix `.#runtime` derivation stamps the NFC import in-derivation
+    // (same as `build`), so the consumed bytes are already stamped — `nfc_hash` is unused on this path.
     if std::env::var_os(CODEGEN_FROM_NIX_ENV).is_some() {
         return runtime_hashes_from_nix();
     }
     let sh = Shell::new().expect("open a shell");
-    // Release runtime — what a shipped program pins and composes. CANONICALIZE (strip the tool-version
-    // `producers` sections) before hashing, exactly as `build` does when it stores the artifact — so the
-    // committed `REQUIRED_RUNTIME_HASH` is reproducible across machines with the same rustc and matches
-    // the stored file's hash (see `crate::canonicalize_runtime`).
+    // Release runtime — what a shipped program pins and composes. STAMP the NFC address inline into the
+    // heap's import, then CANONICALIZE (strip the tool-version `producers` sections) before hashing —
+    // EXACTLY as `build` does when it stores the artifact — so the committed `REQUIRED_RUNTIME_HASH` is the
+    // hash of the STAMPED+stripped heap, matching the stored file + what a program pins. (See
+    // `crate::stamp_nfc_into_heap` / `crate::canonicalize_runtime`.)
     let release_wasm =
         build_component_with_features(&sh, &paths.seed, "cdz-runtime", "cdz_runtime", &[]);
-    // Read the ABI immediate encodings from the RAW build's `cdz-abi` custom section BEFORE canonicalize
-    // strips all custom sections — so the derived constant costs zero bytes in the shipped/hashed
-    // runtime (the stripped hash is unchanged by the section's presence). See `read_abi_imm_unit`.
+    // Read the ABI immediate encodings from the RAW build's `cdz-abi` custom section BEFORE stamp/canonicalize
+    // strip all custom sections — so the derived constant costs zero bytes in the shipped/hashed runtime
+    // (the stamped+stripped hash is unchanged by the section's presence). See `read_abi_imm_unit`.
     let imm_unit = read_abi_imm_unit(&release_wasm);
-    let release_bytes = crate::canonicalize_runtime(&release_wasm);
+    let release_stamped = crate::stamp_nfc_into_heap(&paths.repo, &release_wasm, nfc_hash);
+    let release_bytes = crate::canonicalize_runtime(&release_stamped);
     let release_hash = content_address(&release_bytes);
     // Debug-counters runtime — the same code with the `live-objects` leak counter compiled in.
     let debug_wasm = build_component_with_features(
@@ -854,7 +860,8 @@ fn build_runtime_hashes(paths: &Paths) -> (String, String, u32) {
         "cdz_runtime",
         &["debug-counters"],
     );
-    let debug_bytes = crate::canonicalize_runtime(&debug_wasm);
+    let debug_stamped = crate::stamp_nfc_into_heap(&paths.repo, &debug_wasm, nfc_hash);
+    let debug_bytes = crate::canonicalize_runtime(&debug_stamped);
     let debug_hash = content_address(&debug_bytes);
     // Leave the RELEASE runtime as the artifact at the shared path (rebuild it last), so a plain
     // `cargo component build` output on disk after codegen is the release one — the default a naive
