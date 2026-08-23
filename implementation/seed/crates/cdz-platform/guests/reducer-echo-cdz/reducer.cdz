@@ -1,0 +1,50 @@
+// The reference Cadenza reducer: a faithful, host-drivable echo. An inline (world) declares the typed guest
+// export (all three entry points over the real world.wit message/response/notification -> step shapes), so
+// the emit produces the WIT-typed boundary the platform host binds. on-message echoes the delivered payload
+// back as one request on the same contract and continues; on-response / on-notification are inert (continue,
+// no requests) — the fixture drives the message path. Inline worlds are anonymous-per-member, so the step
+// shape is repeated per member (identical inline records share one content-hash).
+world reducer-world =
+  | export guest =
+    | on-message : (msg : {contract: list(u8),
+                           sender: {reducer: list(u8), host: list(u8)},
+                           payload: list(u8),
+                           token: list(u8)})
+                 -> {requests: list({contract: list(u8), payload: list(u8), token: list(u8), deadline-nanos: option(u64)}),
+                     outcome: variant(continue, close({schema: list(u8), reason: list(u8)}))}
+    | on-response : (resp : {contract: list(u8),
+                             token: list(u8),
+                             answer: result(list(u8), variant(timeout, missing-handler, schema-violation, faulted))})
+                  -> {requests: list({contract: list(u8), payload: list(u8), token: list(u8), deadline-nanos: option(u64)}),
+                      outcome: variant(continue, close({schema: list(u8), reason: list(u8)}))}
+    | on-notification : (note : {contract: list(u8), payload: list(u8)})
+                      -> {requests: list({contract: list(u8), payload: list(u8), token: list(u8), deadline-nanos: option(u64)}),
+                          outcome: variant(continue, close({schema: list(u8), reason: list(u8)}))}
+
+type Outcome =
+  | Continue
+  | Close(Record(schema: Bytes, reason: Bytes))
+
+type Error =
+  | Timeout
+  | MissingHandler
+  | SchemaViolation
+  | Faulted
+
+def empty-requests() =
+  ([] : List(Record(contract: Bytes, payload: Bytes, token: Bytes, deadlineNanos: Option(UInt64))))
+
+def keep-alive() = { requests = empty-requests(), outcome = Outcome.Continue }
+
+def on-message(
+  msg: Record(contract: Bytes, sender: Record(reducer: Bytes, host: Bytes), payload: Bytes, token: Bytes)
+) =
+  { requests = List.push(empty-requests(),
+                         { contract = msg.contract, payload = msg.payload, token = msg.token, deadlineNanos = None }),
+    outcome = Outcome.Continue }
+
+def on-response(_resp: Record(contract: Bytes, token: Bytes, answer: Result(Bytes, Error))) = keep-alive()
+
+def on-notification(_note: Record(contract: Bytes, payload: Bytes)) = keep-alive()
+
+export { on-message, on-response, on-notification }
