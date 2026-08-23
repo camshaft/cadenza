@@ -78,9 +78,11 @@ fn blob(args: &[String]) -> Result<(), Error> {
             "blob takes exactly one <file> argument".into(),
         ));
     };
-    let bytes = std::fs::read(path)
-        .map_err(|e| Error::Failed(format!("reading {path}: {e}")))?;
-    print!("{}", cdz_contract::Hash::of(cdz_contract::HashTag::Blob, &bytes));
+    let bytes = std::fs::read(path).map_err(|e| Error::Failed(format!("reading {path}: {e}")))?;
+    print!(
+        "{}",
+        cdz_contract::Hash::of(cdz_contract::HashTag::Blob, &bytes)
+    );
     Ok(())
 }
 
