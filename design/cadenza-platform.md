@@ -883,6 +883,17 @@ The built-in lifecycle effects:
   spawned-child edge in the parent's log and the parent link in the child; the link is
   immutable on both sides.
 
+  Because the child's id is the genesis hash — a deterministic function of the program,
+  spawn-nonce, and parent the caller already holds — spawn is available not only as an effect
+  but as a **synchronous host call**, the same shape as `run` (section 3): a guest calls spawn
+  inline and gets the new reducer's id back immediately, without building a state machine just
+  to learn it. Computing the id is pure, so it is returnable in the same fold; the spawn's
+  *side effect* — a new participant now exists — proceeds asynchronously, and the caller
+  observes the child only through the later events it produces (its births, its messages, its
+  lifecycle). So a parent can spawn a child and, in the same fold, hold its id to message it or
+  subscribe to it, with no round-trip — determinism preserved, because the returned id depends
+  only on the spawn arguments and nothing the child does is observed inline.
+
   **A child's authority is what its ancestors propagate to it.** A child inherits nothing
   automatically; a handler reaches it only when the reducer that handler is registered on
   chooses to propagate it (section 3). Whatever the child does hold, the event reducer wraps
