@@ -2746,8 +2746,11 @@ impl<'a> Parser<'a> {
     /// - `list(T)` / `List(T)` -> `("list" <T>)`
     /// - `option(T)` / `Option(T)` -> `("option" <T>)`
     ///
-    /// Any other type node is left AS-IS (still round-trips; record/tuple/result/variant stay inline both
-    /// sides per the shared-scope agreement). The printer's `print_wit_type` is the inverse.
+    /// - a record TYPE `{f: T, …}` / `Record(f: T, …)` (canonical `(Record (: f T)…)`) -> `("record" (f
+    ///   <T>)…)` via `Builder::wit_type_record`, matching rcdzc's `parse_wit_type` record arm.
+    ///
+    /// Any other type node is left AS-IS (still round-trips; tuple/result/variant stay inline both sides
+    /// per the shared-scope agreement). The printer's `print_wit_type` is the inverse.
     fn wit_type_desc_of(&mut self, ty: StructId) -> StructId {
         // A bare NAME atom: `unit`/`Unit` -> the str-head `("unit")`; a WIT primitive -> `(name)`; any
         // other bare name is left as-is. (Clone the name so the read borrow releases before the mutable
@@ -2760,9 +2763,10 @@ impl<'a> Parser<'a> {
             };
         }
         // A `(head arg…)` application. Extract (head-name, args) WITHOUT holding the `get` borrow across
-        // the mutable builder calls. `list`/`option` take one arg; `tuple` is variable-arity.
+        // the mutable builder calls. `list`/`option` take one arg; `tuple` is variable-arity; a record TYPE
+        // `(Record (: f T)…)` is variable-arity down to the empty `(Record)` (`{}`).
         let app = match self.builder.get(ty) {
-            crate::ast::Struct::List(kids) if kids.len() >= 2 => {
+            crate::ast::Struct::List(kids) if !kids.is_empty() => {
                 let head = kids[0];
                 let args: Vec<StructId> = kids[1..].to_vec();
                 self.builder.as_name(head).map(|h| (h.to_string(), args))
@@ -2782,8 +2786,40 @@ impl<'a> Parser<'a> {
                 let elems: Vec<StructId> = args.iter().map(|&a| self.wit_type_desc_of(a)).collect();
                 self.builder.wit_type_tuple(&elems)
             }
+            Some((h, args)) if h == "record" || h == "Record" => {
+                self.wit_type_record_desc_of(&args).unwrap_or(ty)
+            }
             _ => ty,
         }
+    }
+
+    /// Lower a record-TYPE node's field args — each a canonical `(: fname T)` ascription — to the WIT
+    /// record descriptor `("record" (fname <T>)…)` via `Builder::wit_type_record`. `None` if any arg is not
+    /// a well-formed `(: name T)` field (the caller then leaves the node as-is). Reads each field's (name,
+    /// raw-type-id) FIRST — releasing the arena borrow — before the recursive lower, since that lower
+    /// mutates the builder.
+    fn wit_type_record_desc_of(&mut self, args: &[StructId]) -> Option<StructId> {
+        let mut raw: Vec<(String, StructId)> = Vec::with_capacity(args.len());
+        for &arg in args {
+            let field = match self.builder.get(arg) {
+                crate::ast::Struct::List(k)
+                    if k.len() == 3 && self.builder.as_name(k[0]) == Some(":") =>
+                {
+                    self.builder.as_name(k[1]).map(|n| (n.to_string(), k[2]))
+                }
+                _ => None,
+            };
+            raw.push(field?);
+        }
+        let lowered: Vec<(String, StructId)> = raw
+            .into_iter()
+            .map(|(n, tid)| {
+                let d = self.wit_type_desc_of(tid);
+                (n, d)
+            })
+            .collect();
+        let fields: Vec<(&str, StructId)> = lowered.iter().map(|(n, t)| (n.as_str(), *t)).collect();
+        Some(self.builder.wit_type_record(&fields))
     }
 
     fn world_member(&mut self) -> StructId {
