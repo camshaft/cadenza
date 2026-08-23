@@ -2201,10 +2201,12 @@ fn reducer_echo_world_bytes() -> Vec<u8> {
             field(&mut b, "token", t)
         };
         let r_deadline = {
-            let s64h = b.name("s64");
-            let s64t = b.list(vec![s64h]);
+            // option<u64> — matches the real world.wit `deadline-nanos: option<u64>` (so v-platform's
+            // bindgen against world.wit type-matches). The guest's Option.None resolves via the WIT inner.
+            let u64h = b.name("u64");
+            let u64t = b.list(vec![u64h]);
             let oh = b.atom_leaf(Leaf::Str("option".into()));
-            let ot = b.list(vec![oh, s64t]);
+            let ot = b.list(vec![oh, u64t]);
             field(&mut b, "deadline-nanos", ot)
         };
         record(&mut b, vec![r_contract, r_payload, r_token, r_deadline])
@@ -2316,6 +2318,9 @@ fn the_identity_less_reducer_echo_round_trips() {
     let bytes = out
         .artifact(crate::backend::Target::Wasm.artifact_kind())
         .expect("component");
+    if std::env::var("VRB_DUMP_REDUCER_ECHO").is_ok() {
+        std::fs::write("/tmp/v-rb-reducer-echo.wasm", bytes).unwrap();
+    }
     let opts = cdz_run::RunOpts {
         export: None,
         args: vec![],
