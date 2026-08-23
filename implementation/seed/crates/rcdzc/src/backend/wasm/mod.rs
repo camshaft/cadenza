@@ -34,6 +34,12 @@ pub mod serialize;
 // it current with the encoder.
 #[allow(dead_code)]
 pub mod wasm_abi;
+// General component-model DEFINED-TYPE emission for arbitrary WIT value types — the type-table + hand-laid
+// bytes that step W3 of general WIT-bindings emission lays for a typed world's records/variants/results.
+// Not yet wired into the assembly cascade (that is a later slice); its bytes are pinned against the
+// `wasm-encoder` oracle in-module.
+#[allow(dead_code)]
+pub mod wit_ctype;
 
 use crate::backend::wasm::envelope::BoundaryExport;
 use crate::backend::wasm::select::{SelectedFunc, select_function_of};

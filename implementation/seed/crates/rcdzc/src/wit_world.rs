@@ -19,11 +19,12 @@
 use crate::ast::{Arenas, Struct, StructId};
 use crate::ty::Ty;
 
-/// A canonical-ABI type as declared in a target WIT world, decoded from a `build_type` descriptor. The set
-/// the reducer slice needs is the scalars + `List` (byte-list = `List(U8)`); the remaining component-model
-/// types (variant / enum / option / result / flags / own+borrow handles / unit) are added as later full-A
-/// slices need them — [`parse_wit_type`] returns `None` for a not-yet-covered descriptor rather than
-/// guessing.
+/// A canonical-ABI type as declared in a target WIT world, decoded from a `build_type` descriptor. Covers
+/// the scalars, `list`, `record`, `tuple`, `option`, `unit`, and the tagged types `variant` / `enum` /
+/// `result` / `flags` — the full set a typed reducer world exercises (`cdz-platform/wit/world.wit`:
+/// `message`/`step` records, the `outcome`/`error` variants, `result<payload, error>`, `option<u64>`). The
+/// only component-model types still outside this set are resource handles (`own`/`borrow`), added when a
+/// world needs them; [`parse_wit_type`] returns `None` for a not-yet-covered descriptor rather than guessing.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum WitType {
     Bool,
@@ -47,6 +48,21 @@ pub enum WitType {
     Tuple(Vec<WitType>),
     /// `option<T>`.
     Option(Box<WitType>),
+    /// `variant { case, case(T), … }` — each case a name and an optional payload type, declaration order
+    /// (`None` payload = a payload-less case, so `outcome { continue, close(closed) }` is
+    /// `[("continue", None), ("close", Some(Record…))]`).
+    Variant(Vec<(String, Option<WitType>)>),
+    /// `enum { case, … }` — all cases payload-less (the degenerate variant), declaration order.
+    Enum(Vec<String>),
+    /// `result<ok, err>` — either arm may be absent, spelling `result` / `result<T>` / `result<_, E>` /
+    /// `result<T, E>`. `ok`/`err` are `None` when that arm is omitted (distinct from `Some(Unit)`, an arm
+    /// whose type IS `unit`).
+    Result {
+        ok: Option<Box<WitType>>,
+        err: Option<Box<WitType>>,
+    },
+    /// `flags { name, … }` — a set of named bits, declaration order.
+    Flags(Vec<String>),
     /// `unit` — the payload-less / void marker (a member's `result` is `unit` for a no-return func).
     Unit,
 }
@@ -117,11 +133,63 @@ pub fn parse_wit_type(a: &Arenas, id: StructId) -> Option<WitType> {
             a,
             *items.get(1)?,
         )?))),
+        // ("variant" <case>…) — each case a list: a 1-list (casename) is payload-less, a 2-list
+        // (casename <ty>) carries a payload. Declaration order (a variant's case order is significant).
+        "variant" => {
+            let mut cases = Vec::with_capacity(items.len().saturating_sub(1));
+            for &entry in &items[1..] {
+                let Struct::List(case) = a.get(entry) else {
+                    return None;
+                };
+                match case.len() {
+                    1 => cases.push((a.as_name(case[0])?.to_string(), None)),
+                    2 => {
+                        let name = a.as_name(case[0])?.to_string();
+                        cases.push((name, Some(parse_wit_type(a, case[1])?)));
+                    }
+                    _ => return None,
+                }
+            }
+            Some(WitType::Variant(cases))
+        }
+        // ("enum" <name>…) — each case a bare NAME leaf, always payload-less.
+        "enum" => {
+            let mut cases = Vec::with_capacity(items.len().saturating_sub(1));
+            for &c in &items[1..] {
+                cases.push(a.as_name(c)?.to_string());
+            }
+            Some(WitType::Enum(cases))
+        }
+        // ("flags" <name>…) — a set of named bits; like enum, each a bare NAME leaf.
+        "flags" => {
+            let mut names = Vec::with_capacity(items.len().saturating_sub(1));
+            for &c in &items[1..] {
+                names.push(a.as_name(c)?.to_string());
+            }
+            Some(WitType::Flags(names))
+        }
+        // ("result" <ok-slot> <err-slot>) — each slot is a type descriptor OR the absent-marker ("none")
+        // for an arm WIT omits (`result<_, E>` has an absent ok, `result<T>` an absent err).
+        "result" => {
+            let ok = parse_result_slot(a, *items.get(1)?)?;
+            let err = parse_result_slot(a, *items.get(2)?)?;
+            Some(WitType::Result { ok, err })
+        }
         // ("unit") — payload-less; a 1-element Str-head form.
         "unit" => Some(WitType::Unit),
-        // A not-yet-covered compound (variant/enum/result/flags/handle) → decline.
+        // A not-yet-covered compound (a resource handle) → decline.
         _ => None,
     }
+}
+
+/// Decode one arm of a `result` descriptor: the absent-marker `("none")` → `None` (an arm WIT omits), else a
+/// type descriptor → `Some(ty)`. The outer `Option` is the malformed-input signal (a descriptor that does
+/// not decode), kept distinct from the inner `None` (a well-formed absent arm).
+fn parse_result_slot(a: &Arenas, id: StructId) -> Option<Option<Box<WitType>>> {
+    if a.head_ctor(id) == Some("none") {
+        return Some(None);
+    }
+    Some(Some(Box::new(parse_wit_type(a, id)?)))
 }
 
 /// The natural canonical-ABI type a guest value-model [`Ty`] lowers to, when it HAS a single such type —
@@ -509,12 +577,125 @@ mod tests {
 
     #[test]
     fn declines_a_not_yet_covered_compound() {
-        // ("variant" …) is a later-slice type → None, never a misread.
+        // A resource handle ("own" …) is the one remaining uncovered component-model type → None, never a
+        // misread. (variant/enum/result/flags ARE covered now — see the tests below.)
         let mut b = Builder::new();
-        let head = str_head(&mut b, "variant");
-        let root = b.list(vec![head]);
+        let inner = prim(&mut b, "u32");
+        let head = str_head(&mut b, "own");
+        let root = b.list(vec![head, inner]);
         let a = b.finish(root);
         assert_eq!(parse_wit_type(&a, root), None, "unknown compound declines");
+    }
+
+    #[test]
+    fn parses_a_variant_with_a_payload_case_and_a_payload_less_case() {
+        // ("variant" (continue) (close ("record" (n (u8))))) — outcome-shaped: a bare case + a payload case.
+        let mut b = Builder::new();
+        let cont_name = b.name("continue");
+        let cont = b.list(vec![cont_name]); // 1-list → payload-less
+        let n_ty = prim(&mut b, "u8");
+        let n_name = b.name("n");
+        let field = b.list(vec![n_name, n_ty]);
+        let rec_head = str_head(&mut b, "record");
+        let rec = b.list(vec![rec_head, field]);
+        let close_name = b.name("close");
+        let close = b.list(vec![close_name, rec]); // 2-list → payload case
+        let head = str_head(&mut b, "variant");
+        let root = b.list(vec![head, cont, close]);
+        let a = b.finish(root);
+        assert_eq!(
+            parse_wit_type(&a, root),
+            Some(WitType::Variant(vec![
+                ("continue".to_string(), None),
+                (
+                    "close".to_string(),
+                    Some(WitType::Record(vec![("n".to_string(), WitType::U8)])),
+                ),
+            ])),
+            "variant keeps case order + optional payloads"
+        );
+    }
+
+    #[test]
+    fn parses_an_enum_of_bare_cases() {
+        // ("enum" timeout missing-handler schema-violation) — the error-shaped enum, all payload-less.
+        let mut b = Builder::new();
+        let c0 = b.name("timeout");
+        let c1 = b.name("missing-handler");
+        let c2 = b.name("schema-violation");
+        let head = str_head(&mut b, "enum");
+        let root = b.list(vec![head, c0, c1, c2]);
+        let a = b.finish(root);
+        assert_eq!(
+            parse_wit_type(&a, root),
+            Some(WitType::Enum(vec![
+                "timeout".to_string(),
+                "missing-handler".to_string(),
+                "schema-violation".to_string(),
+            ])),
+            "enum keeps case order"
+        );
+    }
+
+    #[test]
+    fn parses_flags_like_an_enum_but_distinct() {
+        // ("flags" read write) — distinct WitType from the same-shaped enum.
+        let mut b = Builder::new();
+        let f0 = b.name("read");
+        let f1 = b.name("write");
+        let head = str_head(&mut b, "flags");
+        let root = b.list(vec![head, f0, f1]);
+        let a = b.finish(root);
+        assert_eq!(
+            parse_wit_type(&a, root),
+            Some(WitType::Flags(vec![
+                "read".to_string(),
+                "write".to_string()
+            ])),
+        );
+    }
+
+    #[test]
+    fn parses_result_of_bytes_and_an_enum_err() {
+        // ("result" ("list" (u8)) ("enum" timeout)) — the response answer shape: result<payload, error>.
+        let mut b = Builder::new();
+        let u8p = prim(&mut b, "u8");
+        let lhead = str_head(&mut b, "list");
+        let ok = b.list(vec![lhead, u8p]);
+        let ecase = b.name("timeout");
+        let ehead = str_head(&mut b, "enum");
+        let err = b.list(vec![ehead, ecase]);
+        let head = str_head(&mut b, "result");
+        let root = b.list(vec![head, ok, err]);
+        let a = b.finish(root);
+        assert_eq!(
+            parse_wit_type(&a, root),
+            Some(WitType::Result {
+                ok: Some(Box::new(WitType::List(Box::new(WitType::U8)))),
+                err: Some(Box::new(WitType::Enum(vec!["timeout".to_string()]))),
+            }),
+            "result<list<u8>, enum> decodes both arms"
+        );
+    }
+
+    #[test]
+    fn parses_result_with_an_absent_ok_arm() {
+        // ("result" ("none") (u32)) — result<_, u32>: an omitted ok arm decodes to None, distinct from unit.
+        let mut b = Builder::new();
+        let none_head = str_head(&mut b, "none");
+        let ok = b.list(vec![none_head]);
+        let err = prim(&mut b, "u32");
+        let head = str_head(&mut b, "result");
+        let root = b.list(vec![head, ok, err]);
+        let a = b.finish(root);
+        assert_eq!(
+            parse_wit_type(&a, root),
+            Some(WitType::Result {
+                ok: None,
+                err: Some(Box::new(WitType::U32)),
+            }),
+            "absent ok arm is None, not Some(Unit)"
+        );
     }
 
     fn record_ty(fields: &[(&str, Ty)]) -> Ty {
