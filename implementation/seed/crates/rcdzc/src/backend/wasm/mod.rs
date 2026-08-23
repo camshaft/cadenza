@@ -996,7 +996,15 @@ pub fn emit(
         let wrapped_core =
             serialize::core_module_with_wrappers(&funcs, &imports, &wrappers, layout)
                 .map_err(Reject::decline)?;
-        return Ok(envelope::assemble_typed_interface(&wrapped_core, &typed));
+        // The wrapper builds records via the value-heap runtime, so the core imports it — compose the
+        // runtime into the component (the runtime-import interface-export shape).
+        let import_name = runtime_import_name();
+        return Ok(envelope::assemble_typed_interface_with_runtime(
+            &wrapped_core,
+            &typed,
+            &imports,
+            &import_name,
+        ));
     }
 
     // A HOST-delegating program takes the host-import envelope shape (E2h-2): the delegated effect is a
@@ -8109,11 +8117,32 @@ fn record_interface_export(
     if !any_record {
         return None;
     }
+    // The exported instance must EXPORT each named (record/variant) type its funcs reference, or the
+    // component-model validator rejects the func export ("instance not valid to be used as export"). The
+    // world declares these inline (TargetWorld does not yet carry named types — the modeling gap), so
+    // synthesize a name per DISTINCT one; `assemble_typed_interface`'s dedup makes each func param reference
+    // the same exported type.
+    let mut types: Vec<(String, WitType)> = Vec::new();
+    let note = |t: &WitType, types: &mut Vec<(String, WitType)>| {
+        if matches!(t, WitType::Record(_) | WitType::Variant(_))
+            && !types.iter().any(|(_, u)| u == t)
+        {
+            types.push((format!("t{}", types.len()), t.clone()));
+        }
+    };
+    for f in &funcs {
+        for (_, pty) in &f.params {
+            note(pty, &mut types);
+        }
+        if let Some(r) = &f.result {
+            note(r, &mut types);
+        }
+    }
     Some((
         wrappers,
         envelope::TypedInterface {
             name: iface.to_string(),
-            types: Vec::new(),
+            types,
             funcs,
         },
     ))

@@ -1253,14 +1253,7 @@ fn record_iface_world_bytes() -> Vec<u8> {
 /// WRAPPER (build the guest record from the flattened field, call the def, return its result) and RUNS —
 /// the shape of a reducer's `on-message(message)->step` (record in). `f(m: record{a: s64}) = m.a`, driven
 /// through the runtime-composing typed runner: `f({a: 7}) == 7`.
-// IGNORED pending the runtime-import composition in `assemble_typed_interface`: the wrapper CORE module is
-// proven correct (wasm-tools print shows it building the record via arr-alloc/box-int/arr-set then calling
-// the def), but the core imports `heap` (the value-heap runtime) and the typed-interface envelope currently
-// instantiates the core BARE — it must compose the runtime import (import the heap instance, alias+lower its
-// ops, thread `"heap"` into the core instance), the shape `assemble_with_imports` implements. Un-ignore once
-// that composition lands in assemble_typed_interface.
 #[test]
-#[ignore = "pending runtime-import composition in assemble_typed_interface (wrapper core proven correct)"]
 fn a_record_param_guest_compiles_and_runs_via_a_wrapper() {
     use crate::testkit::parse;
     use wasmtime::component::Val;
