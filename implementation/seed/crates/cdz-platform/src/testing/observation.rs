@@ -318,7 +318,19 @@ impl fmt::Display for Record {
                         None => write!(f, "{verb} {}", short(*contract)),
                     }
                 }
-                EventOp::Emitted { contract, .. } => write!(f, "emit {}", short(*contract)),
+                EventOp::Emitted {
+                    contract,
+                    payload,
+                    continuation_token,
+                    has_deadline,
+                } => write!(
+                    f,
+                    "emit {} {} token {}{}",
+                    short(*contract),
+                    preview(payload),
+                    preview(continuation_token),
+                    if *has_deadline { " (deadline)" } else { "" }
+                ),
                 EventOp::Closed { schema, .. } => write!(f, "close {}", short(*schema)),
                 EventOp::Failed {
                     during,
@@ -419,9 +431,9 @@ mod render_tests {
                 b"agent",
                 Entry::Event(EventOp::Emitted {
                     contract: ContractId::of(b"http.get"),
-                    payload: Bytes::new(),
-                    continuation_token: Bytes::new(),
-                    has_deadline: false,
+                    payload: Bytes::from_static(b"url=/x"),
+                    continuation_token: Bytes::from_static(b"c1"),
+                    has_deadline: true,
                 }),
             ),
         ];
@@ -436,7 +448,12 @@ mod render_tests {
             "line: {}",
             lines[1]
         );
+        // The emit line shows the contract, the payload it emitted, the correlation token, and the deadline
+        // marker — at parity with the recv/kv lines, so a reader (or a coarse grep) sees what was emitted.
         assert!(lines[2].contains("emit "), "line: {}", lines[2]);
+        assert!(lines[2].contains("\"url=/x\""), "line: {}", lines[2]);
+        assert!(lines[2].contains("token \"c1\""), "line: {}", lines[2]);
+        assert!(lines[2].contains("(deadline)"), "line: {}", lines[2]);
         // An empty log renders to an empty string.
         assert!(render(&[]).is_empty());
     }
