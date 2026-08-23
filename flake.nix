@@ -1125,7 +1125,13 @@
         # `platformItest` binary; the run passes iff the binary EXITS 0. Assertions about the observation log
         # belong to the harness/its checker (in the spec), NOT to nix. The derivation's inputs are exactly
         # {the shared binary, the programs this run uses, this spec}, so it re-runs only when one changes.
-        mkHarnessRun = { name, specFile }:
+        # The TRANSFORM step, decoupled from the run (operator #2994: "the transforms and the runs need to be
+        # decoupled, so the run doesn't rerun if the spec hash hasn't changed"). This derivation resolves the
+        # spec's `program` (and, later, contract) names to nix paths/hashes via `cdz rewrite` and encodes the
+        # result to the Cadenza binary AST. Its inputs are {the spec, the programs it uses, `cdz`} — NOT the
+        # integration-test binary. So a binary change (frequent, from cdz-platform churn) reuses this cached
+        # AST, and only the run step re-executes.
+        mkHarnessAst = { name, specFile }:
           let
             uses = harnessProgramsIn (builtins.readFile specFile);
             rewrites = pkgs.lib.concatMapStringsSep "\n"
@@ -1136,13 +1142,24 @@
               '')
               uses;
           in
-          pkgs.runCommand "harness-run-${name}" { } ''
+          pkgs.runCommand "harness-ast-${name}" { } ''
             set -euo pipefail
             cp ${specFile} run.ml
             ${rewrites}
-            ${seedCompiler}/bin/cdz convert --from ml --to binary run.ml > run.ast
-            ${platformItest}/bin/cdz-platform-itest run.ast
-            echo "ok: harness run '${name}' exited 0; programs: ${toString uses}" > "$out"
+            ${seedCompiler}/bin/cdz convert --from ml --to binary run.ml > "$out"
+          '';
+
+        # The RUN step: execute the (already-transformed) binary AST with the shared `platformItest` binary;
+        # pass iff it exits 0. Its inputs are {the transformed AST, the binary} — NOT the spec/programs — so
+        # it re-runs only when the transform output OR the binary changes, and is a cache hit when the spec
+        # (and thus its AST) is unchanged. Assertions about the log belong to the harness/its checker, not nix.
+        mkHarnessRun = { name, specFile }:
+          let ast = mkHarnessAst { inherit name specFile; };
+          in
+          pkgs.runCommand "harness-run-${name}" { } ''
+            set -euo pipefail
+            ${platformItest}/bin/cdz-platform-itest ${ast}
+            echo "ok: harness run '${name}' exited 0 (ast ${ast})" > "$out"
           '';
 
         # The content address of a built component = blake3 of its (stripped) bytes. DERIVED from the
