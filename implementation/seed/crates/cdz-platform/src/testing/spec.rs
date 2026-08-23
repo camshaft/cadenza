@@ -28,10 +28,13 @@
 //!
 //! A `<delivery>` names a `target` task and carries exactly one event to inject into it — a `message` (an
 //! effect folded through `on_message`) or a `notification` (a control-plane event folded through
-//! `on_notification`). Both carry a `contract` (the 33-byte contract-id) and a `payload` (opaque bytes); a
-//! message also takes an optional `token` (the caller's continuation token, default empty):
+//! `on_notification`). Both carry a `contract` and a `payload` (opaque bytes); a message also takes an
+//! optional `token` (the caller's continuation token, default empty). The `contract` is given either way:
+//! a **string** naming a protocol contract (`deliver`, `timer`, `spawned`, `lifecycle`, `check`, `verdict`),
+//! resolved to its id at decode time, or the raw **33-byte contract-id** for a user contract (which has no
+//! platform-known name):
 //! ```text
-//! ("record" (= target "root") (= message ("record" (= contract b"…") (= payload b"…") (= token b"…"))))
+//! ("record" (= target "root") (= message ("record" (= contract "timer") (= payload b"…") (= token b"…"))))
 //! ("record" (= target "root") (= notification ("record" (= contract b"…") (= payload b"…"))))
 //! ```
 //!
@@ -54,6 +57,7 @@
 //! construct. Every field is read by name, so order is not load-bearing. A malformed description is a
 //! [`SpecError`], never a panic.
 
+use super::checker_protocol::protocol_contract_id;
 use super::harness::{Harness, Parent, SpawnSpec};
 use crate::contract_value::{bytes_leaf, read_bytes, read_uint, record, record_field, uint_leaf};
 use crate::{
@@ -203,6 +207,12 @@ pub enum SpecError {
         /// The delivery's target task name (or `"?"` if that too was missing).
         target: String,
     },
+    /// An event's `contract` field is a string that is not a known protocol contract name (only the
+    /// protocol contracts resolve by name; a user contract must be given as its raw 33-byte id).
+    UnknownContract {
+        /// The unrecognized contract name.
+        name: String,
+    },
 }
 
 impl fmt::Display for SpecError {
@@ -229,6 +239,10 @@ impl fmt::Display for SpecError {
             SpecError::DeliveryKind { target } => write!(
                 f,
                 "delivery to `{target}` must give exactly one of `message` or `notification`"
+            ),
+            SpecError::UnknownContract { name } => write!(
+                f,
+                "`{name}` is not a known protocol contract name (name a protocol contract, or give a user contract as its 33-byte id)"
             ),
         }
     }
@@ -558,9 +572,22 @@ fn read_delivery(arenas: &Arenas, id: StructId) -> Result<(String, DeliveryEvent
     Ok((target, event))
 }
 
-/// Read the required `contract` field of an event record as a [`ContractId`] (its 33 raw hash bytes).
+/// Read the required `contract` field of an event record as a [`ContractId`], given either way: a **string**
+/// naming a protocol contract (`deliver`, `timer`, `spawned`, `lifecycle`, `check`, `verdict`), resolved
+/// through [`protocol_contract_id`], or a **33-byte bytes literal** carrying the raw id directly (a user
+/// contract, which has no platform-known name). A name that is not a protocol contract is
+/// [`SpecError::UnknownContract`]; bytes of the wrong length are a [`SpecError::WrongType`].
 fn read_contract_id(arenas: &Arenas, event: StructId) -> Result<ContractId, SpecError> {
-    let bytes = read_required_bytes(arenas, event, "contract")?;
+    let id = record_field(arenas, event, "contract").ok_or(SpecError::MissingField("contract"))?;
+    if let Some(name) = arenas.as_str(id) {
+        return protocol_contract_id(name).ok_or_else(|| SpecError::UnknownContract {
+            name: name.to_string(),
+        });
+    }
+    let bytes = read_bytes(arenas, id).ok_or(SpecError::WrongType {
+        field: "contract",
+        want: "a protocol contract name (string) or a 33-byte contract-id",
+    })?;
     ContractId::try_from(bytes.as_ref()).map_err(|_| SpecError::WrongType {
         field: "contract",
         want: "a 33-byte contract-id",
@@ -1084,6 +1111,91 @@ mod tests {
             Err(SpecError::WrongType {
                 field: "contract",
                 want: "a 33-byte contract-id",
+            })
+        );
+    }
+
+    #[test]
+    fn resolves_a_delivery_contract_by_protocol_name() {
+        // A message may name a protocol contract instead of pasting its 33-byte id; the decoder resolves
+        // the name to exactly the id the contract's constructor derives.
+        let arenas = built(|b| {
+            let system = s(b, "sys");
+            let msg = {
+                let contract = s(b, "timer");
+                let payload = bytes_leaf(b, b"p");
+                record(b, vec![("contract", contract), ("payload", payload)])
+            };
+            let target = s(b, "root");
+            let d = record(b, vec![("target", target), ("message", msg)]);
+            let deliver = list(b, vec![d]);
+            record(b, vec![("system", system), ("deliver", deliver)])
+        });
+        let spec =
+            HarnessSpec::read(&arenas, arenas.root).expect("a named protocol contract resolves");
+        assert_eq!(
+            spec.deliveries,
+            vec![(
+                "root".to_string(),
+                DeliveryEvent::Message {
+                    contract: crate::timer_contract(),
+                    payload: Bytes::from_static(b"p"),
+                    token: Bytes::new(),
+                },
+            )]
+        );
+    }
+
+    #[test]
+    fn resolves_a_checker_protocol_contract_by_name() {
+        // The two testing-only protocol contracts (check/verdict) resolve by name as well, here on a
+        // notification — the spec's full protocol vocabulary, not just the production four.
+        let arenas = built(|b| {
+            let system = s(b, "sys");
+            let note = {
+                let contract = s(b, "verdict");
+                let payload = bytes_leaf(b, b"v");
+                record(b, vec![("contract", contract), ("payload", payload)])
+            };
+            let target = s(b, "root");
+            let d = record(b, vec![("target", target), ("notification", note)]);
+            let deliver = list(b, vec![d]);
+            record(b, vec![("system", system), ("deliver", deliver)])
+        });
+        let spec =
+            HarnessSpec::read(&arenas, arenas.root).expect("a checker protocol name resolves");
+        assert_eq!(
+            spec.deliveries,
+            vec![(
+                "root".to_string(),
+                DeliveryEvent::Notification {
+                    contract: crate::testing::verdict_contract(),
+                    payload: Bytes::from_static(b"v"),
+                },
+            )]
+        );
+    }
+
+    #[test]
+    fn rejects_an_unknown_contract_name() {
+        // A name that is not a protocol contract does not resolve — a user contract has no name and must be
+        // given as its raw id.
+        let arenas = built(|b| {
+            let system = s(b, "sys");
+            let msg = {
+                let contract = s(b, "temp.celsius");
+                let payload = bytes_leaf(b, b"p");
+                record(b, vec![("contract", contract), ("payload", payload)])
+            };
+            let target = s(b, "root");
+            let d = record(b, vec![("target", target), ("message", msg)]);
+            let deliver = list(b, vec![d]);
+            record(b, vec![("system", system), ("deliver", deliver)])
+        });
+        assert_eq!(
+            HarnessSpec::read(&arenas, arenas.root),
+            Err(SpecError::UnknownContract {
+                name: "temp.celsius".to_string(),
             })
         );
     }

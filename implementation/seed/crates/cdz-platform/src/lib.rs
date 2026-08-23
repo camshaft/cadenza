@@ -14,6 +14,9 @@ mod blob_store;
 // running when the scope drops. Used by the reducer loop to cancel a reducer's pending timers on exit.
 mod cancel;
 mod contract;
+// Resolve a built-in protocol contract (deliver/timer/spawned/lifecycle) by its well-known name, so a
+// text description of a run can name one instead of pasting its raw hash. Only protocol contracts resolve.
+mod contract_registry;
 // The canonical value-model primitives every generated contract value builder/reader defers to (the
 // `(. T C)` / `("record" (= f v)…)` forms in one place).
 mod contract_value;
@@ -44,6 +47,7 @@ mod timer;
 
 pub use blob_store::{BlobStore, InMemoryBlobStore};
 pub use contract::Contract;
+pub use contract_registry::contract_id_by_name;
 pub use deliver::{Deliver, Delivered, deliver_contract};
 pub use event_registry::{EventRegistry, InMemoryEventRegistry};
 pub use genesis::Genesis;

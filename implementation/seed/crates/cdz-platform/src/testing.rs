@@ -31,6 +31,9 @@
 //!   design is that the end-of-run checker is a reducer-shaped guest, delivered the whole log via a `check`
 //!   message and emitting a `verdict` request. These are the two contract ids that carry that protocol
 //!   (real Cadenza schemas, `contracts/{check,verdict}.cdz`).
+//! - [`protocol_contract_id`] — resolve any protocol contract by name (the production four plus
+//!   `check`/`verdict`), the table the [`HarnessSpec`] uses so a run description can name a protocol
+//!   contract it delivers instead of pasting its raw hash.
 //! - [`Checker`] / [`CheckOutcome`] — the assertion side: read a [`Run`] and decide pass/fail. The native
 //!   realization of the checker contract (a wasm checker implements the same judgement over a serialized
 //!   log later); any `Fn(&Run) -> CheckOutcome` is a checker.
@@ -49,7 +52,7 @@ pub use crate::program::testing as program;
 pub use checker::{CheckOutcome, Checker};
 pub use checker_protocol::{
     check_contract, check_message, decode_check, decode_verdict, encode_check, encode_verdict,
-    verdict_contract, verdict_in,
+    protocol_contract_id, verdict_contract, verdict_in,
 };
 pub use harness::{Harness, Parent, Run, SpawnSpec};
 pub use log_value::{deserialize as deserialize_log, serialize as serialize_log};

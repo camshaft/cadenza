@@ -71,6 +71,20 @@ pub fn verdict_contract() -> ContractId {
         .id()
 }
 
+/// Resolve any of the platform's **protocol** contracts by name — the four the production runtime defines
+/// ([`crate::contract_id_by_name`]: `deliver`/`timer`/`spawned`/`lifecycle`) plus the two checker-protocol
+/// contracts that live only in the test harness (`check`/`verdict`, §9). This is the full name→id table the
+/// integration-test spec uses, so a run description can name any protocol contract it delivers; a user
+/// contract (identified by its declaration hash) has no name and does not resolve here.
+#[must_use]
+pub fn protocol_contract_id(name: &str) -> Option<ContractId> {
+    match name {
+        "check" => Some(check_contract()),
+        "verdict" => Some(verdict_contract()),
+        other => crate::contract_id_by_name(other),
+    }
+}
+
 /// Encode the payload of a `check` Message: the serialized observation log wrapped in the check envelope
 /// (`Envelope.Check(<log>)`). This is what the harness delivers to the checker; `log` is the output of
 /// [`serialize_log`](super::serialize_log).
