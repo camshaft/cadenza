@@ -424,6 +424,9 @@ fn reducer_kind_str(kind: ReducerKind) -> &'static str {
     match kind {
         ReducerKind::Ordinary => "ordinary",
         ReducerKind::Event => "event",
+        // A pure `run` reducer bypasses the System, so it is never spawned into an observation log; the arm
+        // exists for exhaustiveness and round-trips with `read_reducer_kind`.
+        ReducerKind::Pure => "pure",
     }
 }
 
@@ -431,6 +434,7 @@ fn read_reducer_kind(s: &str) -> Option<ReducerKind> {
     Some(match s {
         "ordinary" => ReducerKind::Ordinary,
         "event" => ReducerKind::Event,
+        "pure" => ReducerKind::Pure,
         _ => return None,
     })
 }
