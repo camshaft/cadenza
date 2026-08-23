@@ -44,6 +44,9 @@ mod spawned;
 mod str;
 mod system;
 mod timer;
+// Validating a payload against its contract (§4): derive a validator from the schema and check the payload,
+// both as pure `run`s. The mechanism the event reducer applies at the dispatch boundary.
+mod validation;
 
 pub use blob_store::{BlobStore, InMemoryBlobStore};
 pub use contract::Contract;
@@ -76,6 +79,7 @@ pub use system::{
     TaskSystem,
 };
 pub use timer::{FireAfter, Fired, timer_contract};
+pub use validation::{ValidateError, validate};
 
 // Re-export the byte-buffer type the platform marshals through, so downstream code depends on the
 // platform's chosen `Bytes` (spec §12: every byte buffer is `bytes::Bytes`, never `Vec<u8>`).
