@@ -22,8 +22,16 @@ export type MeshResult =
   | { ok: true; positions: Float32Array; indices: Uint32Array; normals?: Float32Array }
   | { ok: false; error: string };
 
-/// Tessellation of curved primitives (sphere/cylinder), matching the Rust driver's DEFAULT_SEGMENTS.
-const SEGMENTS = 32;
+/// Default tessellation of curved primitives (sphere/cylinder/circle) + the revolve/Bézier sweep, matching
+/// the Rust driver's `DEFAULT_SEGMENTS`. This is the fallback resolution when `meshFromSolid` is called
+/// without an explicit segment count (the /cad preview passes its quality-slider value; the STL/3MF export
+/// uses the same threaded value so what you see is what you download). A mesh hint only — the exact Rational
+/// MODEL is never touched, so the same model at any resolution is the same geometry, just tessellated finer.
+export const DEFAULT_SEGMENTS = 32;
+
+/// Floor on the segment count (matches cdz-cad's `--segments` min): fewer than 3 can't close a curved loop
+/// (manifold rejects it), so a slider/argument below this is clamped up rather than erroring.
+export const MIN_SEGMENTS = 3;
 
 /// The maximum Solid nesting depth (matches cdz-cad's MAX_DEPTH) — an adversarially deep input Errs cleanly
 /// instead of overflowing the recursive descent.
@@ -350,43 +358,43 @@ type CrossSectionObj = InstanceType<CrossSectionStatic>;
 /// Build a 2-D `CrossSection` from a [`Profile`] — the twin of cdz-cad's `profile_to_cross_section`. `rect`/
 /// `circle` map onto manifold's centred `square`/`circle`; a `path` is sampled to a polygon (`samplePath`)
 /// then built as a single-contour CrossSection.
-function profileToCrossSection(CS: CrossSectionStatic, p: Profile): CrossSectionObj {
+function profileToCrossSection(CS: CrossSectionStatic, p: Profile, seg: number): CrossSectionObj {
   switch (p.p) {
     case "rect":
       return CS.square([p.w, p.h], true);
     case "circle":
-      return CS.circle(p.r, SEGMENTS);
+      return CS.circle(p.r, seg);
     case "path":
-      return new CS([samplePath(p.segs)]);
+      return new CS([samplePath(p.segs, seg)]);
   }
 }
 
 /// Sample a path's segments to a flat polygon (`[x,y]` points), walking the cursor — the twin of cdz-cad's
 /// `sample_path`. A line/move contributes its (absolute) endpoint; a cubic Bézier is sampled at `SEGMENTS`
 /// points via the Bernstein form; relative segments offset the running cursor.
-function samplePath(segs: PathSeg[]): Vec2[] {
+function samplePath(segs: PathSeg[], seg: number): Vec2[] {
   const pts: Vec2[] = [];
   let cur: Vec2 = [0, 0];
   const add = (a: Vec2, b: Vec2): Vec2 => [a[0] + b[0], a[1] + b[1]];
-  for (const seg of segs) {
-    switch (seg.k) {
+  for (const s of segs) {
+    switch (s.k) {
       case "moveAbs":
       case "lineAbs":
-        cur = seg.p;
+        cur = s.p;
         pts.push(cur);
         break;
       case "moveRel":
       case "lineRel":
-        cur = add(cur, seg.d);
+        cur = add(cur, s.d);
         pts.push(cur);
         break;
       case "cubicAbs":
-        sampleCubic(pts, cur, seg.c0, seg.c1, seg.e);
-        cur = seg.e;
+        sampleCubic(pts, cur, s.c0, s.c1, s.e, seg);
+        cur = s.e;
         break;
       case "cubicRel": {
-        const e = add(cur, seg.e);
-        sampleCubic(pts, cur, add(cur, seg.c0), add(cur, seg.c1), e);
+        const e = add(cur, s.e);
+        sampleCubic(pts, cur, add(cur, s.c0), add(cur, s.c1), e, seg);
         cur = e;
         break;
       }
@@ -395,10 +403,10 @@ function samplePath(segs: PathSeg[]): Vec2[] {
   return pts;
 }
 
-/// Push `SEGMENTS` sample points of the cubic Bézier `p0→p3` (controls `p1`,`p2`) for `t` in (0,1] — `p0` is
+/// Push `seg` sample points of the cubic Bézier `p0→p3` (controls `p1`,`p2`) for `t` in (0,1] — `p0` is
 /// assumed already emitted by the prior segment, so we sample the interior + endpoint (Bernstein form).
-function sampleCubic(pts: Vec2[], p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2): void {
-  const n = Math.max(1, SEGMENTS);
+function sampleCubic(pts: Vec2[], p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2, seg: number): void {
+  const n = Math.max(1, seg);
   for (let i = 1; i <= n; i++) {
     const t = i / n;
     const u = 1 - t;
@@ -413,7 +421,7 @@ function sampleCubic(pts: Vec2[], p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2): void 
   }
 }
 
-function toManifold(M: ManifoldStatic, CS: CrossSectionStatic, s: Solid): ManifoldObj {
+function toManifold(M: ManifoldStatic, CS: CrossSectionStatic, s: Solid, seg: number): ManifoldObj {
   switch (s.t) {
     case "empty":
       // An empty solid → manifold's canonical EMPTY (no geometry), matching the Rust cdz-cad driver's
@@ -426,26 +434,26 @@ function toManifold(M: ManifoldStatic, CS: CrossSectionStatic, s: Solid): Manifo
     case "cube":
       return M.cube(s.s, true); // FULL size, centred (matches Cube semantics)
     case "sphere":
-      return M.sphere(s.r, SEGMENTS);
+      return M.sphere(s.r, seg);
     case "cylinder":
-      return M.cylinder(s.h, s.r, s.r, SEGMENTS, true); // constant-radius, FULL height, centred
+      return M.cylinder(s.h, s.r, s.r, seg, true); // constant-radius, FULL height, centred
     case "union":
-      return toManifold(M, CS, s.a).add(toManifold(M, CS, s.b));
+      return toManifold(M, CS, s.a, seg).add(toManifold(M, CS, s.b, seg));
     case "difference":
-      return toManifold(M, CS, s.a).subtract(toManifold(M, CS, s.b));
+      return toManifold(M, CS, s.a, seg).subtract(toManifold(M, CS, s.b, seg));
     case "intersection":
-      return toManifold(M, CS, s.a).intersect(toManifold(M, CS, s.b));
+      return toManifold(M, CS, s.a, seg).intersect(toManifold(M, CS, s.b, seg));
     case "translate":
-      return toManifold(M, CS, s.of).translate(s.v);
+      return toManifold(M, CS, s.of, seg).translate(s.v);
     case "scale":
-      return toManifold(M, CS, s.of).scale(s.v);
+      return toManifold(M, CS, s.of, seg).scale(s.v);
     case "rotate":
       // manifold's rotate takes DEGREES per axis (Vec3) — matching the Rotate(euler-degrees, …) model +
       // the native cdz-cad driver. The exact Rational degrees were evaluated to number at parse.
-      return toManifold(M, CS, s.of).rotate(s.v);
+      return toManifold(M, CS, s.of, seg).rotate(s.v);
     case "mirror":
       // reflect across the plane through the origin with normal `s.v` — matching Mirror(normal, …) + native.
-      return toManifold(M, CS, s.of).mirror(s.v);
+      return toManifold(M, CS, s.of, seg).mirror(s.v);
     case "extrudeLinear":
       // Lift the profile straight up +z by `height`, then centre it in z (extrude runs 0..height, shift down
       // height/2 — matches the origin-centred primitives + the native cdz-cad driver). 🪤 NOT the
@@ -453,12 +461,12 @@ function toManifold(M: ManifoldStatic, CS: CrossSectionStatic, s: Solid): Manifo
       // (verified: center=true → 8 outward + 4 INWARD-winding tris on a square prism, so those faces render
       // dark/one-sided — the operator's "extrudes one side, leaves others flat"). extrude(h) + translate is
       // consistently outward-wound (12 outward, 0 inward), like a cube.
-      return profileToCrossSection(CS, s.profile)
+      return profileToCrossSection(CS, s.profile, seg)
         .extrude(s.height)
         .translate(0, 0, -s.height / 2);
     case "revolve":
-      // sweep the profile about the y-axis by `degrees` (SEGMENTS = sweep tessellation).
-      return M.revolve(profileToCrossSection(CS, s.profile), SEGMENTS, s.degrees);
+      // sweep the profile about the y-axis by `degrees` (`seg` = sweep tessellation).
+      return M.revolve(profileToCrossSection(CS, s.profile, seg), seg, s.degrees);
   }
 }
 
@@ -477,7 +485,19 @@ async function manifoldStatics(): Promise<{ M: ManifoldStatic; CS: CrossSectionS
 }
 
 /// Mesh a rendered `Solid` value into triangle buffers (never throws — a typed error on parse/mesh failure).
-export async function meshFromSolid(solidText: string): Promise<MeshResult> {
+/// `segments` is the tessellation resolution for every curved leaf (sphere/cylinder/circle) + the revolve /
+/// cubic-Bézier sweep — the OpenSCAD-`$fn`-style quality knob the /cad slider drives. It CASCADES: one value
+/// threads through the whole mesh walk to every curved primitive, so raising it refines the entire model at
+/// once. It is a MESH hint only — the exact Rational model is unchanged, so the same model at 8 vs 128
+/// segments is the same geometry, only tessellated coarser/finer. Defaults to `DEFAULT_SEGMENTS` (32, the
+/// native driver's default) and is clamped up to `MIN_SEGMENTS` (a curved loop needs ≥3 sides to close).
+export async function meshFromSolid(
+  solidText: string,
+  segments: number = DEFAULT_SEGMENTS,
+): Promise<MeshResult> {
+  // Clamp to a closable loop and an integer count; a non-finite/NaN slider value falls back to the default
+  // rather than poisoning manifold's tessellation.
+  const seg = Number.isFinite(segments) ? Math.max(MIN_SEGMENTS, Math.floor(segments)) : DEFAULT_SEGMENTS;
   let tree: Solid;
   try {
     tree = parseSolid(solidText);
@@ -486,7 +506,7 @@ export async function meshFromSolid(solidText: string): Promise<MeshResult> {
   }
   try {
     const { M, CS } = await manifoldStatics();
-    const gl = toManifold(M, CS, tree).getMesh();
+    const gl = toManifold(M, CS, tree, seg).getMesh();
     // MeshGL packs vertex properties as [x, y, z, …extra] per vertex, stride = numProp. With numProp === 3
     // it IS the flat position array; otherwise strip out the first 3 (position) props per vertex.
     const numProp = gl.numProp;

@@ -33,7 +33,7 @@ import { compileWithPreloaded, paramManifest } from "../compiler/client.ts";
 import { run as runComponent } from "../runner/client.ts";
 import { useSyntax } from "../syntax/SyntaxContext.tsx";
 import { SyntaxToggle } from "../syntax/SyntaxToggle.tsx";
-import { meshFromSolid, type MeshResult } from "./index.ts";
+import { meshFromSolid, DEFAULT_SEGMENTS, MIN_SEGMENTS, type MeshResult } from "./index.ts";
 import { MeshView } from "./MeshView.tsx";
 import { wrapPrefixOf } from "../components/wrapModule.ts";
 import { injectImport, CAD_LIB_NAME, CAD_HELPERS_NAME, CAD_UNITS_NAME, CAD_LIB_FORMAT } from "./preloadModel.ts";
@@ -46,6 +46,11 @@ import { ParametricControls, fracOf, type Frac } from "./ParametricControls.tsx"
 import type { ParamSlider } from "./parametric.ts";
 import type { Surface } from "../compiler/client.ts";
 import { LazyCodeEditor } from "../editor/LazyCodeEditor.tsx";
+
+// The upper bound of the preview quality slider. The exact model has no resolution ceiling (it's a mesh
+// hint, not geometry), but a preview past ~128 sides buys no visible smoothness while slowing the live
+// re-mesh — so the slider spans MIN_SEGMENTS..MAX_SEGMENTS with DEFAULT_SEGMENTS the initial value.
+const MAX_SEGMENTS = 128;
 // The CAD library sources, staged into the guide tree by `stage-wasm.mjs` (same pattern as runtime.wasm)
 // and `?raw`-imported here as strings. PRELOADED via `compile_with_preloaded` (operator P5, ruling A) so a
 // buffer holds only the model — the CAD vocab (`Solid`/`v3`/`lower`/…) is link-merged. `exact` is the base
@@ -135,6 +140,19 @@ export default function CadPage() {
   const [spin, setSpin] = useState(false);
   const runningRef = useRef(false);
 
+  // OpenSCAD-`$fn`-style PREVIEW resolution (increment 1): the tessellation quality the mesh driver uses for
+  // every curved leaf + the revolve/Bézier sweep. Dragging the slider re-meshes the CURRENT model live at the
+  // new resolution WITHOUT recompiling (it re-meshes the last rendered Solid s-expr, kept in `lastSolidTextRef`)
+  // — a mesh hint only, so the exact Rational model is unchanged. This same value threads into the STL/3MF
+  // export (increment 3) so what the reader sees is what they download. Read through a ref so the run/remesh
+  // callbacks aren't rebuilt on every drag (which would churn the editor's onChange identity).
+  const [segments, setSegments] = useState(DEFAULT_SEGMENTS);
+  const segmentsRef = useRef(segments);
+  segmentsRef.current = segments;
+  // The most recent rendered Solid s-expr (the driver's INPUT). A slider drag re-meshes THIS text at the new
+  // resolution — no recompile/re-run of the buffer — so the quality knob is cheap and live.
+  const lastSolidTextRef = useRef<string | null>(null);
+
   // SINGLE-MODE (operator): there is ONE mode — the reader edits a model buffer, and if that buffer DECLARES
   // `@param`s, a slider auto-surfaces per param (read LIVE from the compiled model's manifest, not a hardcoded
   // list). `sliders` is the current buffer's `@param` widget metadata (empty for a non-parametric model —
@@ -213,8 +231,11 @@ export default function CadPage() {
           setStatus({ phase: "error", message: msg });
           return;
         }
-        // Hand the rendered s-expr Solid value to v-cad's mesh driver → manifold-3d CSG → triangles.
-        const mesh = await meshFromSolid(result.text);
+        // Hand the rendered s-expr Solid value to v-cad's mesh driver → manifold-3d CSG → triangles, at the
+        // reader's current preview resolution. Remember the rendered text so a segments-slider drag can
+        // re-mesh THIS value at a new resolution without recompiling the buffer (see `onSegmentsChange`).
+        lastSolidTextRef.current = result.text;
+        const mesh = await meshFromSolid(result.text, segmentsRef.current);
         if (!mesh.ok) {
           setStatus({ phase: "error", message: mesh.error });
           return;
@@ -268,6 +289,35 @@ export default function CadPage() {
     },
     [source, surface, runModel],
   );
+
+  // A preview-quality slider change (increment 1): update the resolution + re-mesh the CURRENT model live at
+  // the new segment count. This does NOT recompile/re-run the buffer — it re-meshes the last rendered Solid
+  // s-expr (`lastSolidTextRef`) at the new resolution, so raising quality is cheap and instant. If no model
+  // has meshed yet (nothing rendered), or a compile/run is in flight, just record the value (the next run
+  // picks it up via `segmentsRef`). Guarded by `runningRef` so a drag mid-run doesn't race the run's mesh.
+  const onSegmentsChange = useCallback((n: number) => {
+    setSegments(n);
+    segmentsRef.current = n;
+    const text = lastSolidTextRef.current;
+    if (text === null || runningRef.current) return;
+    runningRef.current = true;
+    setStatus({ phase: "running" });
+    void (async () => {
+      try {
+        const mesh = await meshFromSolid(text, n);
+        if (!mesh.ok) {
+          setStatus({ phase: "error", message: mesh.error });
+          return;
+        }
+        setLastMesh(mesh);
+        setStatus({ phase: "meshed", mesh });
+      } catch (e) {
+        setStatus({ phase: "error", message: e instanceof Error ? e.message : String(e) });
+      } finally {
+        runningRef.current = false;
+      }
+    })();
+  }, []);
 
   // On a surface change, re-seed the CURRENT example in the new surface (a source typed in the old surface
   // can't be blindly reinterpreted — same as /calculator), refresh its `@param` sliders from the manifest,
@@ -516,6 +566,31 @@ export default function CadPage() {
                   ↓ 3MF
                 </button>
               </div>
+              {/* PREVIEW QUALITY (increment 1) — an OpenSCAD-`$fn`-style resolution slider. Drag it and the
+                  current model re-meshes live at the new tessellation (curved leaves + revolve/Bézier sweep
+                  refine together); a mesh hint only, so the exact model is unchanged. Bottom-right so it
+                  clears the download buttons (bottom-left) + the spin/meshing chips (top). */}
+              <label
+                data-testid="cad-quality"
+                className="absolute bottom-2 right-2 flex items-center gap-2 rounded bg-slate-800/80 px-2 py-1 text-xs text-slate-300"
+                title="Preview tessellation resolution (OpenSCAD $fn-style) — higher is smoother"
+              >
+                <span className="whitespace-nowrap">Quality</span>
+                <input
+                  data-testid="cad-quality-slider"
+                  type="range"
+                  min={MIN_SEGMENTS}
+                  max={MAX_SEGMENTS}
+                  step={1}
+                  value={segments}
+                  onChange={(e) => onSegmentsChange(Number(e.target.value))}
+                  className="h-1 w-20 cursor-pointer accent-cadenza-500"
+                  aria-label="Preview resolution (segments)"
+                />
+                <span className="w-6 text-right font-mono tabular-nums" data-testid="cad-quality-value">
+                  {segments}
+                </span>
+              </label>
             </>
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-slate-600">
