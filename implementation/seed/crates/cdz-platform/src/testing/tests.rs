@@ -3,7 +3,7 @@
 
 use super::{
     BlobOp, Entry, EventKind, EventOp, Harness, KvOp, ObservationLog, RecordingBlobStore,
-    RecordingKvStore, RecordingProgramStore, RecordingReducer,
+    RecordingKvStore, RecordingProgramStore, RecordingReducer, SpawnSpec,
 };
 use crate::{
     BachRuntime, BlobStore, Bytes, ContractId, Delivered, Hash, HashTag, HostId, InMemoryBlobStore,
@@ -411,9 +411,9 @@ fn the_program_store_seam_captures_the_whole_systems_event_flow_under_bach() {
 // ---- the run-to-quiescence harness driver (§3/§9) ----
 
 /// Build a fresh harness for the same run — an emitter that performs one effect and closes, plus the
-/// default system reducer that shepherds it — so it can be run more than once.
+/// default system reducer that shepherds it — so it can be run more than once. The caller NAMES the
+/// spawn ("emitter") and delivers by that name; the harness derives the reducer id from its genesis.
 fn emitter_run() -> Harness<crate::program::testing::Store> {
-    let emitter = ReducerId::of(b"emitter");
     let http = ContractId::of(b"http.get");
     let mut store = crate::program::testing::Store::new();
     store.register(ProgramHash::of(b"emitter"), move || {
@@ -423,16 +423,9 @@ fn emitter_run() -> Harness<crate::program::testing::Store> {
 
     Harness::new(store, ProgramHash::of(b"sys"))
         .host(HostId::of(b"node"))
-        .spawn(Spawn {
-            id: emitter,
-            program: ProgramHash::of(b"emitter"),
-            nonce: Bytes::from_static(b"nonce"),
-            parent: emitter,
-            kind: ReducerKind::Ordinary,
-            links: Links::NONE,
-        })
+        .spawn(SpawnSpec::new("emitter", ProgramHash::of(b"emitter")))
         .deliver(
-            emitter,
+            "emitter",
             Delivered::Message(Message {
                 id: ContractId::of(b"go"),
                 payload: Bytes::from_static(b"x"),
@@ -448,8 +441,10 @@ fn emitter_run() -> Harness<crate::program::testing::Store> {
 #[test]
 fn the_driver_runs_a_reducer_set_to_quiescence_and_returns_the_event_log() {
     let http = ContractId::of(b"http.get");
-    let emitter = ReducerId::of(b"emitter");
-    let records = emitter_run().run();
+    let run = emitter_run().run();
+    // The harness assigned the named spawn a genesis-derived id, which the checker reads back by name.
+    let emitter = run.ids["emitter"];
+    let records = &run.records;
 
     assert!(!records.is_empty(), "the run produced observations");
     // The emitter emitted its effect and then closed.
@@ -478,12 +473,28 @@ fn the_driver_runs_a_reducer_set_to_quiescence_and_returns_the_event_log() {
 }
 
 #[test]
+fn the_driver_resolves_a_delivery_to_the_named_spawns_derived_id() {
+    // A delivery names its target; the harness resolves that name to the genesis-derived id it assigned
+    // the spawn, and the delivered event is recorded at that reducer. The caller never writes the id.
+    let run = emitter_run().run();
+    let emitter = run.ids["emitter"];
+    // The `go` message the run delivered by name was folded at the emitter (the assigned id).
+    assert!(
+        run.records.iter().any(|r| matches!(&r.entry,
+            Entry::Event(EventOp::Delivered { kind: EventKind::Message, contract, .. })
+                if *contract == ContractId::of(b"go"))
+            && r.source.reducer == emitter),
+        "the by-name delivery reached the reducer the harness assigned that name"
+    );
+}
+
+#[test]
 fn the_driver_is_deterministic_two_identical_runs_produce_the_same_log() {
     // Determinism via bach is part of the harness contract (operator directive): the same run, driven
-    // under the deterministic simulator, produces byte-for-byte the same observation log every time —
-    // same events, same order (seq), same simulated timestamps. This is exactly what lets a checker
-    // assert over the log without flake.
+    // under the deterministic simulator, produces byte-for-byte the same observation log AND the same
+    // name→id assignment every time — same events, same order (seq), same simulated timestamps. This is
+    // exactly what lets a checker assert over the log without flake.
     let first = emitter_run().run();
     let second = emitter_run().run();
-    assert_eq!(first, second, "two identical runs yield an identical log");
+    assert_eq!(first, second, "two identical runs yield an identical Run");
 }

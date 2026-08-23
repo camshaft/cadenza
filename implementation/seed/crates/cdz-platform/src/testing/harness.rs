@@ -8,27 +8,33 @@
 //! wall-clock tokio) is the harness contract: event ordering, timestamps, and the recorded log are
 //! reproducible across runs, which is exactly what a checker needs.
 //!
-//! It wraps the program store in a [`RecordingProgramStore`](crate::RecordingProgramStore), so every
-//! reducer the kernel instantiates — the ones spawned here and the per-event system reducers the kernel
-//! spawns to route effects — records the events it folds into the one log (§3/§4). Recording the
+//! **A caller names its spawns; it does not know their ids.** A reducer's id is the hash of its genesis
+//! (the program, a spawn nonce, and its parent — §3), so the caller cannot write it down in advance. The
+//! harness lets a run give each spawn a **name**, derives the reducer id from its genesis, and resolves a
+//! delivery's target (and a spawn's parent) by that name to the assigned id. The name→id assignment is
+//! returned in the [`Run`] alongside the log, so a checker can correlate a recorded [`Origin`](crate::Origin)
+//! back to the name that produced it.
+//!
+//! It wraps the program store in a [`RecordingProgramStore`](super::recording::RecordingProgramStore), so
+//! every reducer the kernel instantiates — the ones spawned here and the per-event system reducers the
+//! kernel spawns to route effects — records the events it folds into the one log (§3/§4). Recording the
 //! key-value and blob store calls a reducer makes joins the same log once the wasm host wires those
-//! backends into a reducer; a native reducer that holds a
-//! [`RecordingKvStore`](crate::RecordingKvStore) already records into a log the harness shares.
+//! backends into a reducer.
 //!
 //! **Quiescence.** bach jumps virtual time to the next scheduled event, so [`run`](Harness::run) advances
 //! simulated time by [`run_for`](Harness::run_for) and lets the scheduler process every event and timer
 //! that falls within it — for a bounded workload that is the whole causal chain, reached in near-zero
-//! wall-clock time once the system goes idle (there is nothing left to advance to). Choose `run_for` to
-//! exceed the longest chain of timers a run can produce; the default is generous because an idle system
-//! costs nothing to wait on. A workload that never settles (a periodically re-arming timer) is bounded by
-//! `run_for` rather than running forever.
+//! wall-clock time once the system goes idle. Choose `run_for` to exceed the longest chain of timers a run
+//! can produce; the default is generous because an idle system costs nothing to wait on. A workload that
+//! never settles (a periodically re-arming timer) is bounded by `run_for` rather than running forever.
 
 use super::observation::{ObservationLog, Record};
 use super::recording::RecordingProgramStore;
 use crate::{
-    BachRuntime, Delivered, HostId, InMemoryEventRegistry, InMemoryReducerGraph, ProgramHash,
-    ProgramStore, ReducerId, Runtime, Spawn, System, TaskSystem,
+    BachRuntime, Bytes, Delivered, Genesis, HostId, InMemoryEventRegistry, InMemoryReducerGraph,
+    Links, ProgramHash, ProgramStore, ReducerId, ReducerKind, Runtime, Spawn, System, TaskSystem,
 };
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -43,8 +49,89 @@ fn default_host() -> HostId {
 /// workload that keeps scheduling work pays for the extra span.
 const DEFAULT_RUN_FOR: Duration = Duration::from_secs(3600);
 
-/// A run of the platform: a program store, a reducer set to spawn, and the events to deliver into it.
-/// [`run`](Harness::run) drives it to quiescence under the bach simulator and returns the observation log.
+/// The canonical parent a **root** spawn's genesis is hashed against. A root is its own parent in the
+/// running system (§3), which is circular for hashing a genesis (the id would depend on itself), so the
+/// harness derives a root's id against this fixed anchor and then presents the reducer to the kernel as
+/// its own parent (the kernel's root convention: `parent == id`, no parent link). Deterministic, so a
+/// root's id is reproducible across runs.
+fn root_anchor() -> ReducerId {
+    ReducerId::of(b"cdz-platform.harness.genesis")
+}
+
+/// How a spawn's parent is set: a **root** (its own parent), or a **child** of an earlier spawn named in
+/// this run. A child names its parent, so lineage is expressed by name and resolved to the parent's
+/// derived id (§3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Parent {
+    /// A root reducer — its own parent, spawned at genesis.
+    Root,
+    /// A child of the spawn with this name (which must be spawned earlier in the run).
+    Named(String),
+}
+
+/// A reducer to spawn in a run: a **name** (the caller's handle for it), the `program` it runs, and its
+/// lineage/privilege/supervision. The reducer's id is derived from its genesis (§3), not chosen — refer
+/// to it by name in a [`deliver`](Harness::deliver) or as another spawn's [`Parent`]. The spawn nonce is
+/// the name's bytes, so sibling spawns with distinct names get distinct, reproducible ids.
+#[derive(Clone, Debug)]
+pub struct SpawnSpec {
+    name: String,
+    program: ProgramHash,
+    parent: Parent,
+    kind: ReducerKind,
+    links: Links,
+}
+
+impl SpawnSpec {
+    /// A root, ordinary reducer named `name` running `program`, with no supervision links — the shape most
+    /// runs want. Refine with [`child_of`](SpawnSpec::child_of), [`kind`](SpawnSpec::kind), and
+    /// [`links`](SpawnSpec::links).
+    pub fn new(name: impl Into<String>, program: ProgramHash) -> Self {
+        Self {
+            name: name.into(),
+            program,
+            parent: Parent::Root,
+            kind: ReducerKind::Ordinary,
+            links: Links::NONE,
+        }
+    }
+
+    /// Make this a child of the spawn named `parent` (spawned earlier in the run) rather than a root.
+    #[must_use]
+    pub fn child_of(mut self, parent: impl Into<String>) -> Self {
+        self.parent = Parent::Named(parent.into());
+        self
+    }
+
+    /// Set the reducer's privilege — [`Event`](ReducerKind::Event) for a privileged event/system reducer,
+    /// [`Ordinary`](ReducerKind::Ordinary) otherwise (the default).
+    #[must_use]
+    pub fn kind(mut self, kind: ReducerKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    /// Set the supervision links between this reducer and its parent.
+    #[must_use]
+    pub fn links(mut self, links: Links) -> Self {
+        self.links = links;
+        self
+    }
+}
+
+/// The result of a [`Harness::run`]: the observation log, and the name→id assignment the harness made for
+/// the spawns. A checker uses `ids` to map a recorded [`Origin`](crate::Origin) back to the name that
+/// produced it. Both are deterministic, so two identical runs produce an equal `Run`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Run {
+    /// Every observation the run produced, in the one global order (§9).
+    pub records: Vec<Record>,
+    /// The reducer id the harness assigned each named spawn (derived from its genesis, §3).
+    pub ids: BTreeMap<String, ReducerId>,
+}
+
+/// A run of the platform: a program store, a named reducer set to spawn, and the events to deliver into
+/// it. [`run`](Harness::run) drives it to quiescence under the bach simulator and returns the [`Run`].
 /// Generic over the program store, so it drives native reducer fixtures today and a wasm program store
 /// once that lands, unchanged.
 ///
@@ -55,8 +142,8 @@ pub struct Harness<P> {
     programs: P,
     system_program: ProgramHash,
     host: HostId,
-    spawns: Vec<Spawn>,
-    deliveries: Vec<(ReducerId, Delivered)>,
+    spawns: Vec<SpawnSpec>,
+    deliveries: Vec<(String, Delivered)>,
     run_for: Duration,
 }
 
@@ -90,30 +177,36 @@ impl<P: ProgramStore + 'static> Harness<P> {
         self
     }
 
-    /// Add a reducer to spawn when the run starts. Spawned in the order added, before any delivery.
+    /// Add a named reducer to spawn when the run starts. Spawned in the order added, before any delivery;
+    /// a child's parent must be spawned before it.
     #[must_use]
-    pub fn spawn(mut self, spawn: Spawn) -> Self {
-        self.spawns.push(spawn);
+    pub fn spawn(mut self, spec: SpawnSpec) -> Self {
+        self.spawns.push(spec);
         self
     }
 
-    /// Add an event to deliver into `target`'s mailbox once the reducers are spawned. Delivered in the
-    /// order added — the run's initial stimulus, whose effects the platform then routes to quiescence.
+    /// Add an event to deliver into the mailbox of the spawn named `target`, once the reducers are spawned.
+    /// Delivered in the order added — the run's initial stimulus, whose effects the platform then routes to
+    /// quiescence.
     #[must_use]
-    pub fn deliver(mut self, target: ReducerId, event: Delivered) -> Self {
-        self.deliveries.push((target, event));
+    pub fn deliver(mut self, target: impl Into<String>, event: Delivered) -> Self {
+        self.deliveries.push((target.into(), event));
         self
     }
 
-    /// Drive the run to quiescence under the bach simulator and return the observation log in order.
+    /// Drive the run to quiescence under the bach simulator and return the [`Run`] (log + name→id map).
     ///
-    /// Spawns each reducer, delivers each initial event, then advances simulated time by
-    /// [`run_for`](Harness::run_for) so the scheduler processes every event and timer within it. The log
-    /// is shared with the recording program store, so once the deterministic run ends (the primary task's
-    /// simulated wait elapses) it holds every event the run produced. Returns the records — the input to a
-    /// checker.
+    /// First resolves names to ids: each spawn's reducer id is derived from its genesis (`program`, a nonce
+    /// = the name's bytes, and the parent's id — a root's against the [`root_anchor`], §3), so a delivery's
+    /// target and a spawn's parent resolve to the assigned id. Then, under `bach::sim`, it spawns each
+    /// reducer, delivers each initial event, and advances simulated time by [`run_for`](Harness::run_for)
+    /// so the scheduler processes every event and timer within it. The log is shared with the recording
+    /// program store, so once the deterministic run ends it holds every event the run produced.
+    ///
+    /// Panics on a misconfigured run (a duplicate spawn name, a parent or delivery target that names no
+    /// spawn) — a test-authoring error, surfaced loudly rather than silently mis-delivered.
     #[must_use]
-    pub fn run(self) -> Vec<Record> {
+    pub fn run(self) -> Run {
         use bach::ext::*;
 
         let Harness {
@@ -124,10 +217,62 @@ impl<P: ProgramStore + 'static> Harness<P> {
             deliveries,
             run_for,
         } = self;
+
+        // Resolve names to genesis-derived ids (pure, deterministic — done before the sim). Each spawn's id
+        // is the hash of its genesis; a child's parent resolves to that parent's id, a root's to the anchor.
+        let mut ids: BTreeMap<String, ReducerId> = BTreeMap::new();
+        let mut kernel_spawns: Vec<Spawn> = Vec::with_capacity(spawns.len());
+        for spec in spawns {
+            let parent_id = match &spec.parent {
+                Parent::Root => root_anchor(),
+                Parent::Named(parent) => *ids.get(parent).unwrap_or_else(|| {
+                    panic!(
+                        "spawn '{}' names parent '{parent}', which is not a spawn earlier in the run",
+                        spec.name
+                    )
+                }),
+            };
+            let nonce = Bytes::copy_from_slice(spec.name.as_bytes());
+            let id = Genesis {
+                program: spec.program,
+                nonce: nonce.clone(),
+                parent: parent_id,
+            }
+            .id();
+            if ids.insert(spec.name.clone(), id).is_some() {
+                panic!("duplicate spawn name '{}'", spec.name);
+            }
+            // The kernel's root convention is `parent == id` (no parent link); a child's parent is its
+            // resolved id. The genesis above derived the id against the anchor for a root, so the id is
+            // stable regardless.
+            let kernel_parent = match &spec.parent {
+                Parent::Root => id,
+                Parent::Named(_) => parent_id,
+            };
+            kernel_spawns.push(Spawn {
+                id,
+                program: spec.program,
+                nonce,
+                parent: kernel_parent,
+                kind: spec.kind,
+                links: spec.links,
+            });
+        }
+        let resolved_deliveries: Vec<(ReducerId, Delivered)> = deliveries
+            .into_iter()
+            .map(|(target, event)| {
+                let id = *ids.get(&target).unwrap_or_else(|| {
+                    panic!("deliver names target '{target}', which is not a spawn in the run")
+                });
+                (id, event)
+            })
+            .collect();
+
         let log = ObservationLog::new();
         // The handle the checker reads: the log is Arc-shared, so after the sim ends it holds every record
         // the run appended. Snapshot it once bach::sim returns (the primary task has completed by then).
         let out = log.clone();
+        let ids_out = ids.clone();
 
         bach::sim(move || {
             let log = log.clone();
@@ -144,22 +289,20 @@ impl<P: ProgramStore + 'static> Harness<P> {
                     Arc::new(InMemoryEventRegistry::new(system_program)),
                     host,
                 );
-                for spawn in spawns {
+                for spawn in kernel_spawns {
                     system
                         .spawn(spawn)
                         .await
                         .expect("in-memory system spawn never fails");
                 }
-                for (target, event) in deliveries {
-                    // A false here means the target was not running to receive the delivery — a
-                    // misconfigured run (delivering to an unspawned reducer), which a test wants surfaced.
+                for (target, event) in resolved_deliveries {
                     let delivered = system
                         .deliver(target, event)
                         .await
                         .expect("in-memory system deliver never errors");
                     assert!(
                         delivered,
-                        "delivered an initial event to an unspawned reducer"
+                        "delivered an initial event to a reducer that is not running"
                     );
                 }
                 // Advance simulated time so the scheduler runs every event and timer to quiescence.
@@ -170,6 +313,9 @@ impl<P: ProgramStore + 'static> Harness<P> {
             .spawn();
         });
 
-        out.snapshot()
+        Run {
+            records: out.snapshot(),
+            ids: ids_out,
+        }
     }
 }
