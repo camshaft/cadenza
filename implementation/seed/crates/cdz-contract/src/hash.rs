@@ -7,9 +7,10 @@
 //! addressed by the hash of its bytes (section 8). So this is the bottom primitive everything else routes
 //! and addresses by.
 //!
-//! The leading tag makes a hash tell you what it is at runtime, the way the typed id newtypes
-//! ([`ids`](crate::ids)) do at compile time: given a bare hash off the wire or stored as a graph edge kind,
-//! you can still tell a contract-id from a reducer-id from a raw blob. The tag is a self-description, not a
+//! The leading tag makes a hash tell you what it is at runtime, the way the typed id newtypes (a
+//! contract-id, a reducer-id — `cdz-platform`'s `ids`) do at compile time: given a bare hash off the wire or
+//! stored as a graph edge kind, you can still tell a contract-id from a reducer-id from a raw blob. The tag
+//! is a self-description, not a
 //! cryptographic commitment — the digest is what commits to the content, so re-tagging a hash does not let
 //! anyone forge content for it; a use site that cares checks the tag against what it expects.
 //!

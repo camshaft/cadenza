@@ -389,6 +389,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdz-contract"
+version = "0.0.0"
+dependencies = [
+ "blake3",
+ "cadenza-ast",
+]
+
+[[package]]
 name = "cdz-corpus"
 version = "0.1.0"
 dependencies = [
@@ -414,6 +422,7 @@ dependencies = [
  "blake3",
  "bytes",
  "cadenza-ast",
+ "cdz-contract",
  "futures-core",
  "futures-util",
  "num-bigint",

@@ -26,7 +26,6 @@ mod deliver;
 mod event_registry;
 mod genesis;
 mod graph;
-mod hash;
 // The wasm-runtime host (§3) — wasmtime instantiates a reducer component and drives it through the WIT world.
 // Behind the `host` feature (off by default) so the routine build/gate never pays for the heavy runtime.
 #[cfg(feature = "host")]
@@ -48,7 +47,10 @@ pub use deliver::{Deliver, Delivered, deliver_contract};
 pub use event_registry::{EventRegistry, InMemoryEventRegistry};
 pub use genesis::Genesis;
 pub use graph::{Dir, EdgeKind, InMemoryReducerGraph, ReducerGraph};
-pub use hash::{Hash, HashTag, Hasher, base64url};
+// The content hash (§8) and the contract-id computation (§1) live in the dep-minimal `cdz-contract` crate
+// (so they can become a wasm component); re-exported here so the whole platform still reaches them as
+// `crate::Hash` / `cdz_platform::Hash` and there is one implementation of each, not a copy.
+pub use cdz_contract::{Hash, HashTag, Hasher, base64url};
 // The wasm program store (§3/§8): the production backend that loads a program's component from the CAS and
 // instantiates it as a reducer. Behind the `host` feature — the integration harness wraps it as any other
 // `ProgramStore` to drive real wasm reducers.
