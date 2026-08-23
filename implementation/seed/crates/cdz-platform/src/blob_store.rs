@@ -9,6 +9,13 @@
 //! possessing a hash both names and authorizes reading its bytes — there is nothing to gate on a read.
 //! Confidentiality lives one layer up, at name resolution (which hashes a reducer ever comes to hold).
 //!
+//! **Keyed on content, not kind.** The store addresses by the [`digest`](Hash::digest) — the content
+//! commitment — and ignores the leading [`HashTag`] byte. The tag says what a hash *names* (a program, a
+//! blob, a contract); it is a typed *view* on the same content, not part of the store's identity. So the
+//! same bytes stored once are reachable by any hash over them, whatever its kind: a wasm component put here
+//! is fetched equally by its [`Blob`](HashTag::Blob) hash or by the [`Program`](crate::ProgramHash) hash
+//! that names it as a program. The digest is the capability; the kind is the caller's interpretation.
+//!
 //! The operations are **async** so a disk/network-backed store (a local cache, S3) can fetch without
 //! blocking the runtime — but they stay deterministic: `get(hash)` is a pure function of the hash
 //! (content-addressed, the same bytes every time) and `put(bytes)` a pure function of the bytes, so
@@ -25,17 +32,20 @@ use std::collections::HashMap;
 /// concurrent tasks behind an `Arc`.
 #[async_trait]
 pub trait BlobStore: Send + Sync {
-    /// Store `bytes` and return their content hash. Idempotent by construction: the hash is derived from
-    /// the bytes, so putting the same bytes twice yields the same hash and simply re-stores identical
-    /// content. (No `Result`: a well-formed backend's put is a pure function of its input; a fallible
-    /// backend absorbs transient I/O internally, e.g. by retry — this layer stays deterministic per §8/§9.)
+    /// Store `bytes` and return their content hash (tagged [`Blob`](HashTag::Blob) — the content-address
+    /// kind). Idempotent by construction: the hash is derived from the bytes, so putting the same bytes twice
+    /// yields the same hash and simply re-stores identical content. (No `Result`: a well-formed backend's put
+    /// is a pure function of its input; a fallible backend absorbs transient I/O internally, e.g. by retry —
+    /// this layer stays deterministic per §8/§9.)
     async fn put(&mut self, bytes: Bytes) -> Hash;
 
-    /// Fetch the bytes stored under `hash`, or `None` if the store does not hold it. `None` is genuine
-    /// absence, not a transient failure.
+    /// Fetch the bytes whose content matches `hash`, or `None` if the store does not hold them. Matching is
+    /// on the [`digest`](Hash::digest) only — `hash`'s tag is ignored — so content put under one kind is
+    /// fetched by a hash of any kind over the same bytes (§8). `None` is genuine absence, not a transient
+    /// failure.
     async fn get(&self, hash: Hash) -> Option<Bytes>;
 
-    /// Whether `hash` is present in the store.
+    /// Whether content matching `hash` (by digest, ignoring the tag) is present in the store.
     async fn has(&self, hash: Hash) -> bool;
 }
 
@@ -44,7 +54,9 @@ pub trait BlobStore: Send + Sync {
 /// store exclusively in its event loop.
 #[derive(Default)]
 pub struct InMemoryBlobStore {
-    blobs: HashMap<Hash, Bytes>,
+    /// Keyed by the content digest (the tag is not part of the store's identity — see the module docs), so
+    /// the same bytes are one entry however their hash is tagged.
+    blobs: HashMap<[u8; Hash::DIGEST_LEN], Bytes>,
 }
 
 impl InMemoryBlobStore {
@@ -71,17 +83,19 @@ impl InMemoryBlobStore {
 impl BlobStore for InMemoryBlobStore {
     async fn put(&mut self, bytes: Bytes) -> Hash {
         let hash = Hash::of(HashTag::Blob, &bytes);
-        self.blobs.insert(hash, bytes); // O(1) Bytes clone into the map.
+        // Key on the content digest, not the tagged hash, so a lookup by any kind of hash over the same
+        // bytes resolves (§8). O(1) Bytes clone into the map.
+        self.blobs.insert(*hash.digest(), bytes);
         hash
     }
 
     async fn get(&self, hash: Hash) -> Option<Bytes> {
-        // `cloned()` on a Bytes is an O(1) refcount bump, not a copy.
-        self.blobs.get(&hash).cloned()
+        // Match on the digest, ignoring the tag; `cloned()` on a Bytes is an O(1) refcount bump, not a copy.
+        self.blobs.get(hash.digest()).cloned()
     }
 
     async fn has(&self, hash: Hash) -> bool {
-        self.blobs.contains_key(&hash)
+        self.blobs.contains_key(hash.digest())
     }
 }
 
@@ -100,6 +114,27 @@ mod tests {
         // get by that hash returns the same bytes.
         assert_eq!(store.get(h).await, Some(bytes));
         assert!(store.has(h).await);
+    }
+
+    #[tokio::test]
+    async fn a_hash_of_any_kind_over_the_same_bytes_resolves() {
+        // The store keys on content, not kind: bytes put here (returning a Blob hash) are fetched equally by
+        // a Program hash over the same bytes — the addressing the wasm program store relies on (§8).
+        let mut store = InMemoryBlobStore::new();
+        let bytes = Bytes::from_static(b"a reducer component");
+        let blob = store.put(bytes.clone()).await;
+        let program = Hash::of(HashTag::Program, &bytes); // same digest, different (Program) tag
+        assert_ne!(
+            blob, program,
+            "the two hashes differ (their tag bytes differ)"
+        );
+        assert_eq!(blob.digest(), program.digest());
+        assert_eq!(
+            store.get(program).await,
+            Some(bytes),
+            "fetched by the Program-tagged hash"
+        );
+        assert!(store.has(program).await);
     }
 
     #[tokio::test]

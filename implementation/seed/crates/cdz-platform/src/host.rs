@@ -306,8 +306,10 @@ fn step_from_wit(step: wit_reducer::Step) -> Result<(Vec<Request>, Outcome), Ste
 // instantiation and every fold run on an async store — a disk/network-backed backend an import awaits never
 // blocks the host thread.
 
-use crate::{Reducer, ReducerKind};
+use crate::{ProgramHash, ProgramStore, Reducer, ReducerKind, SpawnContext};
 use async_trait::async_trait;
+use std::collections::HashMap;
+use std::sync::Mutex;
 use wasmtime::component::{Component, Linker};
 use wasmtime::{Config, Engine, Store};
 
@@ -469,6 +471,112 @@ impl Reducer for WasmReducer {
             .await
             .expect("reducer on_notification trapped");
         step_from_wit(step).expect("reducer returned a malformed step")
+    }
+}
+
+// ── The wasm program store (§3/§8) ───────────────────────────────────────────────────────────────────────
+// The production [`ProgramStore`]: resolve a program's wasm component from the content-addressed store and
+// instantiate it as a [`WasmReducer`]. It carries no knowledge of any specific program — a program is data in
+// the CAS, addressed by hash — so the same store runs whatever the input blobs define (a Cadenza reducer, a
+// hand-written guest, anything targeting the reducer world).
+
+/// A per-reducer backend the store hands each instance's [`HostState`]. The store does not create these — it
+/// is given factories, so a caller (the integration harness) can inject recording-wrapped or shared backends
+/// without the store knowing: the reducer's key-value state (§7) and its view of the content-addressed store
+/// (§8, its `blobs` import) are produced per reducer id.
+type BlobsFactory = Arc<dyn Fn(ReducerId) -> Box<dyn BlobStore> + Send + Sync>;
+type KvFactory = Arc<dyn Fn(ReducerId) -> Box<dyn KvStore> + Send + Sync>;
+
+/// The production [`ProgramStore`]: instantiate a reducer by loading its wasm component from the
+/// content-addressed store and driving it with the wasm host (behind the `host` feature).
+///
+/// Addressing (§8): a program's component bytes are ordinary content in the one blob store, which keys on
+/// content and ignores the hash's kind — so `spawn` fetches by the program hash directly and the store
+/// resolves it to the same bytes a `Blob` hash over them would. Nothing here is program-specific: which
+/// programs exist is the data seeded into the store.
+///
+/// What is shared vs per-reducer: the wasm engine + host-import linkers ([`ReducerHost`]) and the compiled
+/// [`Component`] cache are shared across every reducer; the routing `graph` is the one node-wide substrate;
+/// but each reducer gets its OWN state and store view, built by the injected factories so they can be
+/// recording-wrapped or backed by a shared store as the caller decides.
+pub struct WasmProgramStore {
+    host: ReducerHost,
+    /// The content-addressed store components are loaded from (read-only here — `get` by hash).
+    cas: Arc<dyn BlobStore>,
+    /// Builds each reducer's `blobs` host-import backend (its view of the content store, §8).
+    make_blobs: BlobsFactory,
+    /// Builds each reducer's key-value state backend (§7).
+    make_kv: KvFactory,
+    /// The one node-wide reducer graph (§3), shared by every reducer that is wired the `graph` import.
+    graph: Arc<dyn ReducerGraph>,
+    /// Compiled components by program hash — `Component::new` (the Cranelift compile) runs once per program,
+    /// not once per reducer. A `Component` is cheaply clonable (internally reference-counted).
+    compiled: Mutex<HashMap<ProgramHash, Component>>,
+}
+
+impl WasmProgramStore {
+    /// A store loading components from `cas`, giving each reducer the state and content-store view its
+    /// factories build, over the shared reducer `graph`. Fails only if the wasm engine/linkers cannot be
+    /// built ([`ReducerHost::new`]).
+    pub fn new(
+        cas: Arc<dyn BlobStore>,
+        make_blobs: BlobsFactory,
+        make_kv: KvFactory,
+        graph: Arc<dyn ReducerGraph>,
+    ) -> Result<Self, wasmtime::Error> {
+        Ok(Self {
+            host: ReducerHost::new()?,
+            cas,
+            make_blobs,
+            make_kv,
+            graph,
+            compiled: Mutex::new(HashMap::new()),
+        })
+    }
+
+    /// The compiled component for `program`, loaded from the store and cached. `None` if the store does not
+    /// hold it (an unknown program) or the bytes are not a valid component.
+    async fn component(&self, program: ProgramHash) -> Option<Component> {
+        if let Some(component) = self
+            .compiled
+            .lock()
+            .expect("compiled cache lock")
+            .get(&program)
+        {
+            return Some(component.clone());
+        }
+        // Compile outside the lock (Cranelift is slow); a concurrent duplicate compile of the same program is
+        // harmless — the last insert wins and both yield an equivalent component. The store keys on content
+        // and ignores the hash kind, so the program hash fetches its bytes directly (§8).
+        let bytes = self.cas.get(program.hash()).await?;
+        let component = Component::new(&self.host.engine, &bytes).ok()?;
+        self.compiled
+            .lock()
+            .expect("compiled cache lock")
+            .insert(program, component.clone());
+        Some(component)
+    }
+}
+
+#[async_trait]
+impl ProgramStore for WasmProgramStore {
+    async fn spawn(&self, program: ProgramHash, ctx: SpawnContext) -> Option<Box<dyn Reducer>> {
+        let component = self.component(program).await?;
+        // Resolve the component's imports against the linker for this reducer's kind (the capability split),
+        // then instantiate with a HostState built from the injected per-reducer backends.
+        let pre = self.host.preinstantiate(&component, ctx.kind).ok()?;
+        let host_state = HostState {
+            id: ctx.id,
+            blobs: (self.make_blobs)(ctx.id),
+            kv: (self.make_kv)(ctx.id),
+            graph: Arc::clone(&self.graph),
+        };
+        let reducer = self.host.instantiate(&pre, host_state).await.ok()?;
+        Some(Box::new(reducer))
+    }
+
+    async fn contains(&self, program: ProgramHash) -> bool {
+        self.cas.has(program.hash()).await
     }
 }
 
@@ -702,9 +810,54 @@ mod tests {
         );
     }
 
-    // The end-to-end driver test — instantiate the reducer-echo guest component, drive a message, assert the
-    // echo + the identity import round-trip — is deferred to the slice that wires the guest component into the
-    // reproducible nix build (operator: no committed .wasm fixture; the guest is built by cargo-component in
-    // the wasm CI job). It loads the nix-built artifact rather than an `include_bytes!` of a checked-in file.
-    // (Verified locally against a `cargo component build` of guests/reducer-echo before that wiring landed.)
+    // ── The wasm program store ──
+    use super::WasmProgramStore;
+    use crate::{BlobStore, KvStore, ProgramHash, ProgramStore, ReducerKind, SpawnContext};
+
+    fn wasm_program_store(cas: Arc<dyn BlobStore>) -> WasmProgramStore {
+        // Fresh per-reducer backends; a real harness injects recording-wrapped or shared ones instead.
+        WasmProgramStore::new(
+            cas,
+            Arc::new(|_id| Box::new(InMemoryBlobStore::new()) as Box<dyn BlobStore>),
+            Arc::new(|_id| Box::new(InMemoryKvStore::new()) as Box<dyn KvStore>),
+            Arc::new(InMemoryReducerGraph::new()),
+        )
+        .expect("build the wasm program store")
+    }
+
+    fn ord(id: &[u8]) -> SpawnContext {
+        SpawnContext {
+            id: ReducerId::of(id),
+            kind: ReducerKind::Ordinary,
+        }
+    }
+
+    #[tokio::test]
+    async fn resolves_a_program_by_its_blob_addressed_bytes_and_declines_gracefully() {
+        // Seed the CAS with some bytes as an ordinary blob — the way an input program blob is seeded.
+        let mut cas = InMemoryBlobStore::new();
+        let bytes = b"not a valid wasm component".to_vec();
+        let blob = cas.put(Bytes::from(bytes.clone())).await;
+        // The program is the Program-tagged view of those same bytes; it shares the blob's digest, so the
+        // content-keyed store resolves it (the tag is ignored).
+        let program = ProgramHash::of(&bytes);
+        assert_eq!(program.hash().digest(), blob.digest());
+
+        let store = wasm_program_store(Arc::new(cas));
+        // `contains` finds it (the store keys on content, so the program hash hits the seeded bytes)...
+        assert!(store.contains(program).await);
+        // ...but the bytes are not a valid component, so `spawn` declines with `None` rather than panicking.
+        assert!(store.spawn(program, ord(b"r")).await.is_none());
+
+        // A program never seeded is absent and unspawnable.
+        let unknown = ProgramHash::of(b"never stored");
+        assert!(!store.contains(unknown).await);
+        assert!(store.spawn(unknown, ord(b"r")).await.is_none());
+    }
+
+    // The end-to-end driver test — seed the reducer-echo guest component's bytes into the store, spawn its
+    // ProgramHash, drive a message, assert the echo + the identity import round-trip — is the slice that wires
+    // the guest component into the reproducible nix build (operator: no committed .wasm fixture; the guest is
+    // built by cargo-component in the wasm CI job and its bytes flow in as an input blob, not a fixture fn).
+    // (The driver + this store were verified locally against a `cargo component build` of guests/reducer-echo.)
 }
