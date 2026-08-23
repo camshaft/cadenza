@@ -2,8 +2,8 @@
 //! exercising the public `testing` surface (`design/cadenza-platform.md` §3/§4/§7/§8/§9).
 
 use super::{
-    BlobOp, Entry, EventKind, EventOp, Harness, KvOp, ObservationLog, RecordingBlobStore,
-    RecordingKvStore, RecordingProgramStore, RecordingReducer, SpawnSpec,
+    BlobOp, CheckOutcome, Entry, EventKind, EventOp, Harness, KvOp, ObservationLog,
+    RecordingBlobStore, RecordingKvStore, RecordingProgramStore, RecordingReducer, Run, SpawnSpec,
 };
 use crate::{
     BachRuntime, BlobStore, Bytes, ContractId, Delivered, Hash, HashTag, HostId, InMemoryBlobStore,
@@ -497,4 +497,55 @@ fn the_driver_is_deterministic_two_identical_runs_produce_the_same_log() {
     let first = emitter_run().run();
     let second = emitter_run().run();
     assert_eq!(first, second, "two identical runs yield an identical Run");
+}
+
+// ---- checkers over the run (§9) ----
+
+#[test]
+fn checkers_pass_on_a_matching_log_and_fail_with_reasons_otherwise() {
+    // A checker asserting the emitter performed http.get and then closed — written by NAME, resolving the
+    // name to the recorded id through the run's id map (records_from). This is the assertion side of the
+    // harness: the run records what happened, the checker states what should have.
+    fn emitter_did_http_and_closed(run: &Run) -> CheckOutcome {
+        let http = ContractId::of(b"http.get");
+        let from_emitter: Vec<_> = run.records_from("emitter").collect();
+        let mut reasons = Vec::new();
+        if !from_emitter.iter().any(|r| {
+            matches!(&r.entry,
+            Entry::Event(EventOp::Emitted { contract, .. }) if *contract == http)
+        }) {
+            reasons.push("emitter never performed http.get".to_string());
+        }
+        if !from_emitter
+            .iter()
+            .any(|r| matches!(&r.entry, Entry::Event(EventOp::Closed { .. })))
+        {
+            reasons.push("emitter never closed".to_string());
+        }
+        CheckOutcome::from_reasons(reasons)
+    }
+
+    // A checker asserting something the run does not do — it fails, carrying its reason.
+    fn expects_a_kv_write(run: &Run) -> CheckOutcome {
+        if run.records.iter().any(|r| matches!(r.entry, Entry::Kv(_))) {
+            CheckOutcome::pass()
+        } else {
+            CheckOutcome::fail("expected a key-value write, but the run made none")
+        }
+    }
+
+    let run = emitter_run().run();
+    assert!(
+        run.check(&emitter_did_http_and_closed).is_pass(),
+        "the checker holds on the matching log"
+    );
+    let verdict = run.check(&expects_a_kv_write);
+    assert!(
+        !verdict.is_pass(),
+        "the checker fails on an unmet assertion"
+    );
+    assert_eq!(
+        verdict.reasons(),
+        ["expected a key-value write, but the run made none"]
+    );
 }

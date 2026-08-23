@@ -28,6 +28,7 @@
 //! can produce; the default is generous because an idle system costs nothing to wait on. A workload that
 //! never settles (a periodically re-arming timer) is bounded by `run_for` rather than running forever.
 
+use super::checker::{CheckOutcome, Checker};
 use super::observation::{ObservationLog, Record};
 use super::recording::RecordingProgramStore;
 use crate::{
@@ -128,6 +129,31 @@ pub struct Run {
     pub records: Vec<Record>,
     /// The reducer id the harness assigned each named spawn (derived from its genesis, §3).
     pub ids: BTreeMap<String, ReducerId>,
+}
+
+impl Run {
+    /// The reducer id the harness assigned the spawn named `name`, if any — how a checker turns a name it
+    /// knows into the id the log records carry.
+    #[must_use]
+    pub fn id(&self, name: &str) -> Option<ReducerId> {
+        self.ids.get(name).copied()
+    }
+
+    /// Every record produced by the spawn named `name` (matched by the id the harness assigned it): the
+    /// events it folded, emitted, or closed with, and the store calls it made, in order. Empty if `name`
+    /// names no spawn — a convenience for writing a checker by name rather than by raw id.
+    pub fn records_from<'a>(&'a self, name: &str) -> impl Iterator<Item = &'a Record> {
+        let id = self.ids.get(name).copied();
+        self.records
+            .iter()
+            .filter(move |r| Some(r.source.reducer) == id)
+    }
+
+    /// Run `checker` over this run and return its verdict — the assertion side of the harness (§9).
+    #[must_use]
+    pub fn check(&self, checker: &impl Checker) -> CheckOutcome {
+        checker.check(self)
+    }
 }
 
 /// A run of the platform: a program store, a named reducer set to spawn, and the events to deliver into
