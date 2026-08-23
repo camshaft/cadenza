@@ -1106,52 +1106,43 @@
           '';
         };
 
-        # The program names a run references — every `(= program "<name>")` in the s-expr. Read from the spec
-        # text at eval time so a run's derivation depends on ONLY the programs it uses (per-program caching).
+        # The program names a run references — every `program = "<name>"` field in the ML spec. This is
+        # DEPENDENCY DISCOVERY for the nix graph (which programs a run's derivation depends on, so caching is
+        # per-program); the actual name→path substitution is an AST-validated `cdz rewrite` at build time
+        # (see mkHarnessRun), never a text edit. Nix can't run `cdz query` at eval time, so the dependency
+        # set is read from the spec text here; the transform stays structural.
         harnessProgramsIn = specText:
           let
-            # Drop whole-line `;` comments (Cadenza s-expr line comments) so an example in a comment isn't
-            # read as a real program reference. A line with code + a trailing comment is kept as-is.
-            code = pkgs.lib.concatStringsSep "\n"
-              (builtins.filter (l: builtins.match "[[:space:]]*;.*" l == null)
-                (pkgs.lib.splitString "\n" specText));
-            parts = builtins.split ''\(= program "([^"]+)"\)'' code;
+            parts = builtins.split ''program[[:space:]]*=[[:space:]]*"([^"]+)"'' specText;
             caps = builtins.filter builtins.isList parts;
           in
           pkgs.lib.unique (map (c: builtins.elemAt c 0) caps);
 
-        # Run ONE harness spec: transform each `(= program "<name>")` → `(= path "<nix wasm store path>")`
-        # for the programs it uses, encode the s-expr to the Cadenza binary AST with the nix-built `cdz`, run
-        # the shared `platformItest` binary on it, and assert exit 0 (a completed run) plus any `expect` log
-        # lines (a transitional assertion until the harness spec carries its own checker; the itest exit code
-        # becomes the verdict then). The derivation's inputs are exactly {the binary, the used programs, this
-        # spec} — so it re-runs only when one of those changes. `set -o pipefail` keeps the `| tee` honest.
-        mkHarnessRun = { name, specFile, expect ? [ ] }:
+        # Run ONE harness spec (an ML file). For each program the run references, `cdz rewrite` replaces its
+        # `(= program "<name>")` node with `(= path "<nix wasm store path>")` — an AST-validated structural
+        # rewrite, not a text edit — resolving the name to the reproducibly-built component. The transformed
+        # ML is encoded to the Cadenza binary AST (`cdz convert --to binary`) and run by the shared
+        # `platformItest` binary; the run passes iff the binary EXITS 0. Assertions about the observation log
+        # belong to the harness/its checker (in the spec), NOT to nix. The derivation's inputs are exactly
+        # {the shared binary, the programs this run uses, this spec}, so it re-runs only when one changes.
+        mkHarnessRun = { name, specFile }:
           let
-            specText = builtins.readFile specFile;
-            uses = harnessProgramsIn specText;
-            subst = pkgs.lib.concatMapStringsSep "\n"
-              (n: ''${pkgs.gnused}/bin/sed -i 's|(= program "${n}")|(= path "${harnessPrograms.${n}}")|g' run.sexp'')
+            uses = harnessProgramsIn (builtins.readFile specFile);
+            rewrites = pkgs.lib.concatMapStringsSep "\n"
+              (n: ''
+                ${seedCompiler}/bin/cdz rewrite '(= program "${n}")' '(= path "${harnessPrograms.${n}}")' \
+                  run.ml --from ml --to ml > run.ml.next
+                mv run.ml.next run.ml
+              '')
               uses;
-            asserts = pkgs.lib.concatMapStringsSep "\n"
-              (pat: ''grep -qF ${pkgs.lib.escapeShellArg pat} run.log'')
-              expect;
           in
-          pkgs.runCommand "harness-run-${name}"
-            {
-              nativeBuildInputs = [ pkgs.gnugrep ];
-              inherit specFile;
-            } ''
+          pkgs.runCommand "harness-run-${name}" { } ''
             set -euo pipefail
-            # Strip whole-line `;` comments (Cadenza s-expr line comments) so the human-readable notes in a
-            # spec don't reach the encoder, then substitute each `(= program "<name>")` with the resolved
-            # nix wasm store path for the programs this run uses.
-            ${pkgs.gnused}/bin/sed '/^[[:space:]]*;/d' "$specFile" > run.sexp
-            ${subst}
-            ${seedCompiler}/bin/cdz convert --from sexpr --to binary run.sexp > run.ast
-            ${platformItest}/bin/cdz-platform-itest run.ast | tee run.log
-            ${asserts}
-            echo "ok: harness run '${name}' completed (exit 0${pkgs.lib.optionalString (expect != []) " + expected log lines"}); programs used: ${toString uses}" > "$out"
+            cp ${specFile} run.ml
+            ${rewrites}
+            ${seedCompiler}/bin/cdz convert --from ml --to binary run.ml > run.ast
+            ${platformItest}/bin/cdz-platform-itest run.ast
+            echo "ok: harness run '${name}' exited 0; programs: ${toString uses}" > "$out"
           '';
 
         # The content address of a built component = blake3 of its (stripped) bytes. DERIVED from the
@@ -1861,31 +1852,22 @@
             # flake here. This is what rebuilds-and-verifies the guest from source, replacing a committed .wasm.
             reducerEchoValid = validComponent { name = "reducer-echo"; drv = reducerEcho; };
 
-            # The HARNESS-RUN checks (§9), the shape the operator asked for on #2994: iterate every spec in
-            # the harness-runs directory and build ONE check derivation per run via `mkHarnessRun` (the
-            # shared `platformItest` binary + the per-program wasm store, resolved by name). Fine-grained
+            # The HARNESS-RUN checks (§9), the shape the operator asked for on #2994: iterate every `*.ml`
+            # spec in the harness-runs directory and build ONE check derivation per run via `mkHarnessRun`
+            # (the shared `platformItest` binary + the per-program wasm store, resolved by name). Fine-grained
             # caching falls out: each run's derivation inputs are exactly {the binary, the programs it uses,
             # its own spec}, so a spec edit reruns only that run, a program edit reruns only its users, and
-            # neither rebuilds the binary. `expect` (optional, per run) is a transitional log assertion until
-            # a harness spec carries its own checker — reducer-echo-spawn asserts the guest was BORN.
+            # neither rebuilds the binary. A run passes iff the executable exits 0 — the harness/its checker
+            # makes the assertions about the log, not nix.
             harnessRunDir = ./implementation/seed/crates/cdz-platform/harness-runs;
-            harnessRunExpect = {
-              "reducer-echo-spawn" = [ ''spawn "reducer-echo"'' "recv notification" ];
-              # The echo round-trip (render-level): a message was delivered (`recv msg`) and reducer-echo
-              # emitted the echoed payload — the payload preview renders ONLY on an emit line, so seeing
-              # `"ECHOPAYLOAD"` proves the guest re-emitted what it received. The byte-exact same-contract +
-              # token==own-id assertion arrives with the structured log (v-platform-itest #3007).
-              "reducer-echo-echo" = [ "recv msg" ''"ECHOPAYLOAD"'' ];
-            };
             harnessRunChecks = pkgs.lib.mapAttrs'
               (fn: _:
-                let base = pkgs.lib.removeSuffix ".sexp" fn; in
+                let base = pkgs.lib.removeSuffix ".ml" fn; in
                 pkgs.lib.nameValuePair base (mkHarnessRun {
                   name = base;
                   specFile = harnessRunDir + "/${fn}";
-                  expect = harnessRunExpect.${base} or [ ];
                 }))
-              (pkgs.lib.filterAttrs (n: t: t == "regular" && pkgs.lib.hasSuffix ".sexp" n)
+              (pkgs.lib.filterAttrs (n: t: t == "regular" && pkgs.lib.hasSuffix ".ml" n)
                 (builtins.readDir harnessRunDir));
             # An aggregate over all harness runs — folded into flake-repro-backstop so the reproducible-guest
             # + integ-executable + deterministic-bach e2e path is gated as one node (each run still cached
