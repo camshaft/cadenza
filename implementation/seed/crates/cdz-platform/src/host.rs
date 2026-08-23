@@ -718,10 +718,24 @@ fn dependency_address(import_name: &str) -> Option<Hash> {
     Some(Hash::from_bytes(bytes))
 }
 
-/// The content-addressed component dependencies `component` imports — the imports the platform must resolve
-/// from the store and compose in (as opposed to the platform host interfaces, wired by [`add_host_imports`]).
-/// An import is a dependency when it is a component instance whose name carries a `+<hex>` content address.
-fn component_dependencies(engine: &Engine, component: &Component) -> Vec<ComponentDep> {
+/// The component dependencies `component` imports that the platform must resolve from the store and compose
+/// in (as opposed to the platform host interfaces, wired by [`add_host_imports`]). A component-instance import
+/// is such a dependency two ways:
+/// - **Content-addressed** — the name carries a `+<hex>` digest ([`dependency_address`]). This is how the
+///   compiler emits a program's dependency (`cadenza:runtime/heap@0.0.0+<hex>`): the address is in the name.
+/// - **Manifest-mediated** — the name is bare (no `+<hex>`) and appears in `runtime_deps`, a supplied
+///   name→hash manifest. This is how the value-heap runtime's own transitive deps cross: cargo-component emits
+///   a plain interface name (`cadenza:nfc/normalize`), not a content address, so the hash comes from a
+///   manifest (the store's `runtime.toml`, resolved by the harness) rather than the name. The host stays
+///   generic — it knows no specific interface, only the map it is handed.
+///
+/// A bare name that is neither (a `cadenza:platform/*` host interface) yields nothing here — it is served by
+/// [`add_host_imports`], not composed from the store.
+fn component_dependencies(
+    engine: &Engine,
+    component: &Component,
+    runtime_deps: &HashMap<String, Hash>,
+) -> Vec<ComponentDep> {
     component
         .component_type()
         .imports(engine)
@@ -729,7 +743,8 @@ fn component_dependencies(engine: &Engine, component: &Component) -> Vec<Compone
             if !matches!(item, ComponentItem::ComponentInstance(_)) {
                 return None;
             }
-            dependency_address(name).map(|hash| ComponentDep {
+            let hash = dependency_address(name).or_else(|| runtime_deps.get(name).copied())?;
+            Some(ComponentDep {
                 import_name: name.to_string(),
                 hash,
             })
@@ -760,17 +775,28 @@ struct Instantiator {
     /// `run` on this host, so a repeated pure run — including one a fold makes and one nested inside it —
     /// skips execution. Sound because a pure run is deterministic (empty capabilities, null birth).
     memo: Mutex<crate::run::Cache>,
+    /// The manifest for bare (non-content-addressed) component dependencies: a bare interface import name
+    /// (`cadenza:nfc/normalize`) → the content [`Hash`] of the component that provides it. Empty for a store
+    /// whose guests carry all deps as `+<hex>` addresses; supplied (from the store's `runtime.toml`) when the
+    /// value-heap runtime's own transitive deps must be composed. Keeps the host generic — it composes any
+    /// bare dep the map names, knowing no specific interface.
+    runtime_deps: HashMap<String, Hash>,
 }
 
 impl Instantiator {
     /// Build the instantiation core: the shared engine and per-kind linkers ([`ReducerHost::new`]) over the
-    /// content store `cas`, with an empty pure-run memo. Fails only if the wasm engine/linkers cannot be built.
-    fn new(cas: Arc<dyn BlobStore>) -> Result<Self, wasmtime::Error> {
+    /// content store `cas`, with an empty pure-run memo and the bare-dependency `runtime_deps` manifest. Fails
+    /// only if the wasm engine/linkers cannot be built.
+    fn new(
+        cas: Arc<dyn BlobStore>,
+        runtime_deps: HashMap<String, Hash>,
+    ) -> Result<Self, wasmtime::Error> {
         Ok(Self {
             host: ReducerHost::new()?,
             cas,
             compiled: Mutex::new(HashMap::new()),
             memo: Mutex::new(crate::run::Cache::new(crate::run::Cache::DEFAULT_CAPACITY)),
+            runtime_deps,
         })
     }
 
@@ -807,7 +833,7 @@ impl Instantiator {
         component: &'a Component,
     ) -> Pin<Box<dyn Future<Output = Result<(), wasmtime::Error>> + Send + 'a>> {
         Box::pin(async move {
-            for dep in component_dependencies(&self.host.engine, component) {
+            for dep in component_dependencies(&self.host.engine, component, &self.runtime_deps) {
                 let dep_component = self.component(dep.hash).await.ok_or_else(|| {
                     wasmtime::Error::msg(format!(
                         "reducer dependency {} is not in the content-addressed store",
@@ -846,7 +872,9 @@ impl Instantiator {
         host_state: HostState,
     ) -> Option<Box<dyn Reducer>> {
         let component = self.component(program.hash()).await?;
-        let reducer = if component_dependencies(&self.host.engine, &component).is_empty() {
+        let reducer = if component_dependencies(&self.host.engine, &component, &self.runtime_deps)
+            .is_empty()
+        {
             // Fast path: no content-addressed component dependencies, so reuse the cached, pre-instantiated
             // per-kind linker (the engine, linker, and pre are all shared).
             let pre = self.host.preinstantiate(&component, kind).ok()?;
@@ -957,13 +985,26 @@ impl WasmProgramStore {
         graph: Arc<dyn ReducerGraph>,
     ) -> Result<Self, wasmtime::Error> {
         Ok(Self {
-            inst: Arc::new(Instantiator::new(cas)?),
+            inst: Arc::new(Instantiator::new(cas, HashMap::new())?),
             make_blobs,
             make_kv,
             graph,
             provenance: Arc::new(crate::NoProvenance),
             delivery: Arc::new(crate::NoDelivery),
         })
+    }
+
+    /// Supply the bare-dependency manifest: a bare component-import name (`cadenza:nfc/normalize`) → the
+    /// content [`Hash`] of the component that provides it, for the value-heap runtime's own transitive deps
+    /// that cross by name rather than a `+<hex>` address (§8). The harness reads these from the store's
+    /// `runtime.toml`. Call once when building the store (before it is cloned/shared), as with the other
+    /// builders; a guest whose only deps are `+<hex>`-addressed needs no manifest.
+    #[must_use]
+    pub fn with_runtime_deps(mut self, runtime_deps: HashMap<String, Hash>) -> Self {
+        Arc::get_mut(&mut self.inst)
+            .expect("with_runtime_deps must be called before the store is shared")
+            .runtime_deps = runtime_deps;
+        self
     }
 
     /// Wire the node-side provenance an event reducer's `program-of` import reads (§4) — the system, which
@@ -1105,7 +1146,8 @@ mod tests {
     /// output) needs a real wasm pure component and is covered by the reducer-world guest e2e, not natively.
     fn host_with_empty_run() -> HostState {
         let inst = Arc::new(
-            super::Instantiator::new(Arc::new(InMemoryBlobStore::new())).expect("wasm engine"),
+            super::Instantiator::new(Arc::new(InMemoryBlobStore::new()), Default::default())
+                .expect("wasm engine"),
         );
         let mut h = host(ReducerId::of(b"caller"));
         h.run = Some(inst);
@@ -1671,6 +1713,121 @@ mod tests {
         // Malformed addresses (non-hex, or not a full 64-hex digest) name no content.
         assert!(dependency_address("dep:x/y@1.0.0+not-hex-at-all").is_none());
         assert!(dependency_address(&format!("dep:x+{}", "ab".repeat(31))).is_none()); // 62 hex, too short
+    }
+
+    /// The bare-dependency manifest resolution (the composition fix): the value-heap runtime imports
+    /// `cadenza:nfc/normalize` BARE (no `+<hex>` — cargo-component emits a plain interface name), so it is a
+    /// store dependency only when the `runtime_deps` manifest names it. Without the manifest it is invisible to
+    /// composition (treated as a host interface); with it, it resolves to the mapped content hash. Env-gated on
+    /// `RUNTIME_WASM` (the real heap component) because there is no committed `.wasm` fixture.
+    #[tokio::test]
+    #[ignore = "needs RUNTIME_WASM (the value-heap runtime component)"]
+    async fn a_bare_runtime_dependency_resolves_only_through_the_manifest() {
+        use super::{component_dependencies, dependency_address};
+        use std::collections::HashMap;
+
+        let runtime = std::fs::read(std::env::var("RUNTIME_WASM").expect("RUNTIME_WASM path"))
+            .expect("read the runtime component");
+        let engine = super::reducer_engine().expect("engine");
+        let heap = super::Component::new(&engine, &runtime).expect("valid component");
+        const NFC: &str = "cadenza:nfc/normalize";
+
+        // The nfc import is bare — it carries no `+<hex>` content address.
+        assert!(
+            dependency_address(NFC).is_none(),
+            "the bare nfc import name carries no content address"
+        );
+        // Without a manifest, composition does not treat the heap's bare nfc import as a store dependency.
+        let none = component_dependencies(&engine, &heap, &HashMap::new());
+        assert!(
+            none.iter().all(|d| d.import_name != NFC),
+            "no manifest ⇒ the bare nfc import is not a store dependency"
+        );
+        // With a manifest mapping the bare name to a hash, it resolves to exactly that hash.
+        let nfc_hash = Hash::of(HashTag::Blob, b"the nfc component bytes");
+        let deps = component_dependencies(
+            &engine,
+            &heap,
+            &HashMap::from([(NFC.to_string(), nfc_hash)]),
+        );
+        let nfc_dep = deps
+            .iter()
+            .find(|d| d.import_name == NFC)
+            .expect("the manifest resolves the bare nfc import to a store dependency");
+        assert_eq!(nfc_dep.hash.digest(), nfc_hash.digest());
+    }
+
+    /// The end-to-end driver over a REAL reducer-world Cadenza guest (the sunset validation): seed the guest
+    /// component and the value-heap runtime it imports into the store, spawn the guest, drive one `on-message`,
+    /// and assert it echoes the event back out — the same relation `guests/reducer-echo` implements, now from a
+    /// `.cdz`-compiled component. Identity-less: the guest echoes the delivered token (the identity-import
+    /// variant, `token = identity::id()`, follows once the world-import call surface lands).
+    ///
+    /// `#[ignore]` + env-gated because the guest is not a committed fixture (operator: no committed `.wasm`; the
+    /// component is built by cargo-component in the wasm CI/nix job and its bytes flow in). Run it with
+    /// `GUEST_WASM` at the compiled reducer-world component, `RUNTIME_WASM` at the value-heap runtime the
+    /// guest's `cadenza:runtime/heap@…+<hash>` import resolves to, and `NFC_WASM` at the `cadenza:nfc/normalize`
+    /// component the runtime itself imports (bare, so it is supplied via the [`with_runtime_deps`] manifest —
+    /// the harness reads these from the store's `runtime.toml`). Exercises the full path: two-level CAS-import
+    /// composition (`bind_dependencies`/`alias_instance_exports`, guest→heap→nfc), instantiation, the event↔WIT
+    /// conversion, the guest fold, and `step_from_wit` decoding the returned step.
+    #[tokio::test]
+    #[ignore = "e2e: set GUEST_WASM + RUNTIME_WASM + NFC_WASM to the cargo-component-built components (nix provides them)"]
+    async fn drives_a_real_reducer_world_guest_and_echoes_the_message() {
+        use crate::{Bytes, ContractId, HostId, Message, Origin, Outcome};
+        use std::collections::HashMap;
+
+        let guest = std::fs::read(std::env::var("GUEST_WASM").expect("GUEST_WASM path"))
+            .expect("read the guest component");
+        let runtime = std::fs::read(std::env::var("RUNTIME_WASM").expect("RUNTIME_WASM path"))
+            .expect("read the runtime component");
+        let nfc = std::fs::read(std::env::var("NFC_WASM").expect("NFC_WASM path"))
+            .expect("read the nfc component");
+
+        // Seed all three as content blobs. The guest is addressed by its ProgramHash; the value-heap runtime by
+        // the digest the guest's `+<hash>` import names; and nfc by its digest, which the runtime.toml manifest
+        // maps its bare `cadenza:nfc/normalize` import to — all key on content in the store.
+        let mut cas = InMemoryBlobStore::new();
+        let program = ProgramHash::of(&guest);
+        let nfc_hash = Hash::of(HashTag::Blob, &nfc);
+        cas.put(Bytes::from(guest)).await;
+        cas.put(Bytes::from(runtime)).await;
+        cas.put(Bytes::from(nfc)).await;
+
+        // The bare-dependency manifest: the runtime imports `cadenza:nfc/normalize` by name, resolved to the
+        // nfc component's content hash (the harness reads this from the store's runtime.toml `nfc = "<hash>"`).
+        let runtime_deps = HashMap::from([("cadenza:nfc/normalize".to_string(), nfc_hash)]);
+        let store = wasm_program_store(Arc::new(cas)).with_runtime_deps(runtime_deps);
+        let mut reducer = store
+            .spawn(program, ord(b"echo"))
+            .await
+            .expect("spawn the reducer-world guest");
+
+        // Drive one message; the guest echoes contract+payload on a single request and echoes the token.
+        let contract = ContractId::of(b"echo.contract");
+        let payload = Bytes::from_static(b"a request body");
+        let token = Bytes::from_static(b"tok-123");
+        let (requests, outcome) = reducer
+            .on_message(Message {
+                id: contract,
+                payload: payload.clone(),
+                from: Origin {
+                    reducer: ReducerId::of(b"caller"),
+                    host: HostId::of(b"node"),
+                },
+                continuation_token: token.clone(),
+            })
+            .await;
+
+        assert_eq!(requests.len(), 1, "one echoed request");
+        assert_eq!(requests[0].id, contract, "contract echoed");
+        assert_eq!(requests[0].payload, payload, "payload echoed");
+        assert_eq!(
+            requests[0].continuation_token, token,
+            "token echoed (identity-less)"
+        );
+        assert_eq!(requests[0].deadline, None, "no deadline");
+        assert_eq!(outcome, Outcome::Continue, "continue");
     }
 
     // The end-to-end driver test — seed the reducer-echo guest component's bytes into the store, spawn its
