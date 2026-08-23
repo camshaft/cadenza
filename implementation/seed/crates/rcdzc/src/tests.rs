@@ -3305,6 +3305,55 @@ fn an_identity_performing_reducer_declines_until_shared_allocator() {
     );
 }
 
+/// W4c-b-iii DX: a reducer with an IN-SOURCE `(world … (export <FQ-iface> …))` and NO `--component-name`
+/// (NO `KIND_COMPONENT_NAME` artifact) routes to the typed interface-instance emit — `compile` DERIVES the
+/// component name from the world's FQ export interface (`cadenza:platform/guest`). Without the derive, the
+/// CLI `cdz compile <reducer>.sexp --target wasm` path hits the older "parameterized heap-return export"
+/// decline on the `list<u8>`-field record param (v-platform's probe). Proves a self-describing `.cdz`
+/// reducer compiles to a component with no redundant flag; the emitted component exports the guest instance.
+#[test]
+fn an_in_source_world_reducer_derives_its_component_name_and_emits() {
+    use crate::testkit::parse;
+    // The typed `message`-record param (list<u8> leaves) + `list<u8>` result, world declared IN SOURCE with a
+    // FQ export interface — the shape v-nix's `cdz compile --target wasm` pipeline feeds (no artifacts).
+    let src = "(module reducer \
+                 (world reducer-world \
+                   (export cadenza:platform/guest \
+                     (member on-message \
+                       (func (param msg (\"record\" (contract (\"list\" (u8))) (payload (\"list\" (u8))) (token (\"list\" (u8))))) \
+                             (result (\"list\" (u8))))))) \
+                 (def (on-message (: msg (Record (contract Bytes) (payload Bytes) (token Bytes)))) \
+                   (. msg payload)) \
+                 (export on-message))";
+    // ONLY the KIND_AST artifact — no component-name, no external world (the world is in-source).
+    let out = crate::compile::compile(
+        &[crate::abi::Artifact::new(
+            crate::abi::Artifact::KIND_AST,
+            "main",
+            crate::codec::encode(&parse(src)),
+        )],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "an in-source FQ-export-world reducer must emit via the derived component name (no --component-name): {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("the in-source-world reducer emits a component");
+    let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+    v.validate_all(bytes)
+        .expect("the in-source-world reducer component validates");
+    assert!(
+        String::from_utf8_lossy(bytes).contains("cadenza:platform/guest"),
+        "the component exports the guest instance under the world's FQ export interface name"
+    );
+}
+
 /// W4c-b soundness: the record result writer PERMUTES fields by NAME, not by the guest's name-lex slot order.
 /// The WIT result declares its fields in NON-name-lex order — `record{second: s64, first: s64}` (`second`
 /// FIRST, but name-lex is `first` < `second`) — the shape of the real `step{requests, outcome}` /
