@@ -251,6 +251,7 @@ fn error_to_wit(error: Error) -> wit_types::Error {
     match error {
         Error::Timeout => wit_types::Error::Timeout,
         Error::MissingHandler => wit_types::Error::MissingHandler,
+        Error::SchemaViolation => wit_types::Error::SchemaViolation,
     }
 }
 

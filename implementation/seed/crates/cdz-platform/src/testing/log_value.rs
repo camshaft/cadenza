@@ -379,6 +379,7 @@ fn error_str(e: Error) -> &'static str {
     match e {
         Error::Timeout => "timeout",
         Error::MissingHandler => "missing-handler",
+        Error::SchemaViolation => "schema-violation",
     }
 }
 
@@ -386,6 +387,7 @@ fn read_error(s: &str) -> Option<Error> {
     Some(match s {
         "timeout" => Error::Timeout,
         "missing-handler" => Error::MissingHandler,
+        "schema-violation" => Error::SchemaViolation,
         _ => return None,
     })
 }
