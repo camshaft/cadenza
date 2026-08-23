@@ -678,8 +678,13 @@ pub struct WrapperDesc {
     pub result_vts: Vec<u8>,
     /// Per DEF param, how to build it from the flattened boundary leaves: a `record` param is
     /// `Some(fields)` (built via [`emit_cell_rebuild`]); a scalar param is `None` (a `local.get` passthrough).
-    /// In def-param order; the flattened-leaf cursor advances across all of them.
+    /// In def-param order; the flattened-leaf cursor advances across all of them. A record param's `fields`
+    /// are in WIT/flattened-param ORDER (so the cursor consumes them sequentially).
     pub params: Vec<Option<Vec<FieldRebuild>>>,
+    /// Parallel to `params`: for a `record` param whose WIT field order ≠ the guest's name-lex slot order,
+    /// `Some(slots)` gives each WIT field's target cell SLOT (name-lex position); `None` = identity (a
+    /// name-lex-ordered record, or a scalar param). The permute for a declaration-ordered WIT record.
+    pub param_slots: Vec<Option<Vec<u32>>>,
     /// The compiled def's absolute core func index to `call` after building its args.
     pub def_abs: u32,
     /// How the wrapper turns the def's return value into the boundary result — pass a scalar straight through,
@@ -1002,14 +1007,17 @@ fn core_module_impl(
             let mut next_local = p + if has_bytes { 2 } else { 0 };
             let mut inner = Vec::new();
             let mut leaf = 0u32;
-            for pp in &wrap.params {
+            for (pi, pp) in wrap.params.iter().enumerate() {
                 match pp {
                     None => {
                         inner.push(op::LOCAL_GET);
                         uleb128(leaf as u64, &mut inner);
                         leaf += 1;
                     }
-                    Some(fields) => emit_cell_rebuild(fields, &mut leaf, &imp, scratch, &mut inner),
+                    Some(fields) => {
+                        let slots = wrap.param_slots.get(pi).and_then(|s| s.as_deref());
+                        emit_cell_rebuild(fields, &mut leaf, &imp, scratch, slots, &mut inner)
+                    }
                 }
             }
             inner.push(op::CALL);
@@ -2268,7 +2276,7 @@ fn emit_sum_arm(arm: &SumArgArm, payload_param: u32, imp: &dyn Fn(&str) -> u64, 
             // Rebuild the payload's value-heap cell from its recursively-flattened leaves, starting at the
             // payload base — exactly as a bare tuple arg rebuilds. Leaves the cell handle on the stack.
             let mut cursor = payload_param;
-            emit_cell_rebuild(fields, &mut cursor, imp, None, out); // [disc, payload-cell-handle]
+            emit_cell_rebuild(fields, &mut cursor, imp, None, None, out); // [disc, payload-cell-handle]
         }
         SumArmPayload::Nullary => {
             out.push(op::I32_CONST);
@@ -2329,7 +2337,7 @@ fn emit_tuple_rebuild(
     // handle into `tuple_local` for the post-dispatch drop (only the OUTER cell is dropped — its nested
     // sub-cells are its elements, reclaimed with it).
     let mut cursor = rebuild.base_param;
-    emit_cell_rebuild(&rebuild.fields, &mut cursor, imp, None, out);
+    emit_cell_rebuild(&rebuild.fields, &mut cursor, imp, None, None, out);
     out.push(crate::backend::wasm::wasm_abi::op::LOCAL_TEE);
     uleb128(tuple_local as u64, out); // stash for the post-dispatch drop; leaves [arr] on the stack
 }
@@ -2347,6 +2355,7 @@ fn emit_cell_rebuild(
     cursor: &mut u32,
     imp: &dyn Fn(&str) -> u64,
     scratch: Option<(u32, u32)>,
+    slots: Option<&[u32]>,
     out: &mut Vec<u8>,
 ) {
     use crate::backend::wasm::wasm_abi::op;
@@ -2354,9 +2363,15 @@ fn emit_cell_rebuild(
     crate::backend::wasm::encode::sleb128(fields.len() as i64, out);
     out.push(op::CALL);
     uleb128(imp("arr-alloc"), out); // [arr]
+    // `fields` are consumed in WIT/flattened-param order (the cursor advances sequentially); each is stored
+    // at its cell SLOT — `slots[i]` when the record permutes (a WIT field whose name-lex slot ≠ its WIT
+    // position), else the position `i` (a name-lex-ordered record / a nested rebuild, identity). This is how
+    // a declaration-ordered WIT record param (the real `message`) lands its fields in the value-heap cell's
+    // name-lex slots the def reads.
     for (i, field) in fields.iter().enumerate() {
+        let slot = slots.map(|s| s[i]).unwrap_or(i as u32);
         out.push(op::I32_CONST);
-        crate::backend::wasm::encode::sleb128(i as i64, out); // [arr, i]
+        crate::backend::wasm::encode::sleb128(slot as i64, out); // [arr, slot]
         match field {
             FieldRebuild::Scalar { box_op, extend } => {
                 out.push(op::LOCAL_GET);
@@ -2374,7 +2389,7 @@ fn emit_cell_rebuild(
             }
             FieldRebuild::Nested(sub) => {
                 // Rebuild the nested sub-cell (consumes its own leaves) → an i32 handle stored AS-IS.
-                emit_cell_rebuild(sub, cursor, imp, scratch, out); // → [arr, i, sub-handle]
+                emit_cell_rebuild(sub, cursor, imp, scratch, None, out); // → [arr, i, sub-handle]
             }
             FieldRebuild::BytesLeaf => {
                 let (buf, ctr) = scratch.expect("a BytesLeaf needs the wrapper's scratch locals");

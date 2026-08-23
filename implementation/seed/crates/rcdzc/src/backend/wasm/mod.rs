@@ -8343,6 +8343,38 @@ fn record_fields_rebuild(
     Some(sub)
 }
 
+/// The TOP-LEVEL record param builder — like [`record_fields_rebuild`] but PERMUTED BY NAME (so a
+/// declaration-ordered WIT record like the real `message{contract, sender, payload, token}` works, whose WIT
+/// order ≠ the guest's name-lex slot order). Iterates the WIT fields IN WIT ORDER (so `param_vts` + the
+/// wrapper's flattened-leaf cursor are in the actual param order the canon lift produces), matching each WIT
+/// field to its guest field BY NAME (kebab-normalized). Returns the rebuild (WIT order) + `slots` (each WIT
+/// field's name-lex cell slot) — the wrapper `arr-set`s each field at its slot. A field with no name match,
+/// or a nested record whose OWN order is non-name-lex (declined by `record_fields_rebuild`), declines.
+fn record_param_rebuild(
+    map: &std::collections::BTreeMap<crate::resolved::Symbol, crate::ty::Ty>,
+    wfs: &[(String, crate::wit_world::WitType)],
+    param_vts: &mut Vec<u8>,
+) -> Option<(Vec<crate::backend::wasm::serialize::FieldRebuild>, Vec<u32>)> {
+    use crate::backend::common::export_name::kebab_extern_name;
+    if wfs.len() != map.len() {
+        return None;
+    }
+    let guest_kebab: Vec<String> = map
+        .keys()
+        .map(|s| kebab_extern_name(s.name.as_ref()))
+        .collect();
+    let gtys: Vec<crate::ty::Ty> = map.values().cloned().collect();
+    let mut rebuild = Vec::new();
+    let mut slots = Vec::new();
+    for (wname, fw) in wfs {
+        let slot = guest_kebab.iter().position(|g| g == wname)?; // NAME-MATCH
+        let fg = gtys[slot].clone();
+        rebuild.push(param_field_rebuild(&fg, fw, param_vts)?); // appends WIT-order vts
+        slots.push(slot as u32);
+    }
+    Some((rebuild, slots))
+}
+
 /// Like [`scalar_interface_export`] but for a member with a RECORD param: build the boundary WRAPPER descs
 /// (the canon lift hands the record's flattened fields; the compiled def wants a value-heap handle, so a
 /// wrapper builds the handle then calls the def) plus the [`envelope::TypedInterface`] to emit. Fires only
@@ -8421,20 +8453,21 @@ fn record_interface_export(
         }
         let mut param_vts: Vec<u8> = Vec::new();
         let mut params: Vec<Option<Vec<FieldRebuild>>> = Vec::new();
+        let mut param_slots: Vec<Option<Vec<u32>>> = Vec::new();
         for ((_, gty), (_, wty)) in e.params.iter().zip(&member.func.params) {
             match gty {
                 Ty::Record(map) => {
-                    // Build the record's per-field rebuild + flattened core params (recursively, so a NESTED
-                    // record field — the message's `sender` — builds a `Nested` rebuild over its own fields).
-                    // SOUNDNESS: `record_fields_rebuild` guards the WIT-vs-name-lex field order at EVERY level
-                    // (the wrapper reads flattened params in WIT order but builds the value-heap cell in the
-                    // def's name-lex `Ty::Record` order; a mismatch would misplace a field's leaf). A scalar,
-                    // a `list<u8>` leaf, or a nested record is handled; any other compound field declines.
+                    // Build the record's per-field rebuild in WIT ORDER + the name-lex SLOTS the wrapper
+                    // `arr-set`s each field at (`record_param_rebuild`, permuted by name) — so a declaration-
+                    // ordered WIT record (the real `message`) lands its fields in the def's name-lex cell
+                    // slots. A nested-record field is a `Nested` rebuild; its own order must be name-lex
+                    // (`record_fields_rebuild` guard), else decline.
                     let WitType::Record(wfs) = wty else {
                         return None;
                     };
-                    let rebuild = record_fields_rebuild(map, wfs, &mut param_vts)?;
+                    let (rebuild, slots) = record_param_rebuild(map, wfs, &mut param_vts)?;
                     params.push(Some(rebuild));
+                    param_slots.push(Some(slots));
                     any_record = true;
                 }
                 Ty::Tuple(_)
@@ -8448,6 +8481,7 @@ fn record_interface_export(
                     // a scalar param passes straight through (no rebuild).
                     param_vts.push(valtype_of(scalar)?.byte());
                     params.push(None);
+                    param_slots.push(None);
                 }
             }
         }
@@ -8464,6 +8498,7 @@ fn record_interface_export(
             param_vts,
             result_vts,
             params,
+            param_slots,
             def_abs,
             result: result_lower,
         });
