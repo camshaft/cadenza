@@ -7430,6 +7430,30 @@ fn an_external_artifact_world_import_resolves_without_a_hand_declared_effect() {
     );
 }
 
+/// A MALFORMED in-source `(world …)` descriptor is REPORTED, not silently dropped. Here the `deliver.send`
+/// result is written `("bool")` (a STRING head) — but `bool` is a NAME-head primitive `(bool)`; the wrong
+/// head makes `parse_target_world` return `None`, which would silently drop the whole world and leave every
+/// import unbound (a misleading `unbound name deliver` cascade with no root cause). `collect_faults` now
+/// surfaces the malformed world instead. (A world author hand-writing descriptors WILL hit this.)
+#[test]
+fn a_malformed_in_source_world_descriptor_is_reported_not_silently_dropped() {
+    use crate::db::Db;
+    let src = "(module m \
+                 (world reducer-world \
+                   (import deliver (member send (func (param x (\"list\" (u8))) (result (\"bool\")))))) \
+                 (def (apply (: e Bytes)) (host (deliver) ((. deliver send) e))) \
+                 (export apply))";
+    let mut db = Db::load(crate::testkit::parse(src));
+    let diags = crate::compile::diagnostics(&mut db);
+    assert!(
+        diags.iter().any(|d| d
+            .message
+            .contains("did not parse as a valid world descriptor")),
+        "a malformed (world …) descriptor must be reported (not a silent drop + unbound cascade): {:?}",
+        diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
 /// MULTI-INTERFACE no-redeclare: the platform reducer-world imports SEVERAL interfaces (state / blobs /
 /// identity / run). A reducer that declares such a world in source and performs imports from MORE THAN ONE
 /// of them — with NO hand-written `(effect …)` decls — must have the load-time sidecar synthesize ONE effect
