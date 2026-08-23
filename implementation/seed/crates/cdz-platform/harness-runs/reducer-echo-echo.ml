@@ -9,7 +9,7 @@
   deliver = [
     {
       target = "reducer-echo",
-      message = { contract = b"\x01ABCDEFGHIJKLMNOPQRSTUVWXYZ012345", payload = b"ECHOPAYLOAD" }
+      message = { contract = "cdz-platform.deliver", payload = b"ECHOPAYLOAD" }
     }
   ],
   checker = "reducer-echo-check"
