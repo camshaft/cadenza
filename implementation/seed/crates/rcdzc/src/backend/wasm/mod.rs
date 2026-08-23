@@ -1018,18 +1018,39 @@ pub fn emit(
     // `core_module_with_wrappers`, and export the interface instance. The wrapper's rebuild ops were added
     // to the import set above. Still the no-spill subset (scalar-field record params, scalar/unit results);
     // a `list<u8>`/record result declines here until the memory + result-lower wrapper slice.
+    // A compound host RESULT makes the wrapper core IMPORT `"mem"`.`"cabi_realloc"` (the shared allocator, so
+    // the host-op lower has a Realloc option at lower-time), which shifts the wrapper core's func indices +1.
+    // The wrappers' `def_abs` (computed inside `record_interface_export` from `layout.abs`) AND the emitted
+    // core (`core_module_with_wrappers`) must BOTH see that shifted `import_base`, so bump it BEFORE building
+    // the wrappers. Byte-identical when there is no compound host result.
+    let typed_needs_realloc = host_imports
+        .iter()
+        .any(|h| h.result_bytes || h.result_option_bytes || h.result_list_byte_pairs);
+    let typed_realloc_layout;
+    let typed_layout = if typed_needs_realloc {
+        typed_realloc_layout = layout.with_import_base(layout.import_base + 1);
+        &typed_realloc_layout
+    } else {
+        layout
+    };
     if let Some(iface) = db.component_name.clone()
         && let Some(world_bytes) = db.wit_world.clone()
-        && let Some((wrappers, typed)) = record_interface_export(db, layout, &world_bytes, &iface)
+        && let Some((wrappers, typed)) =
+            record_interface_export(db, typed_layout, &world_bytes, &iface)
     {
         let import_name = runtime_import_name();
         // A typed guest that ALSO performs a world import (`identity.id`, `state.get`, …) composes the host
         // effect interface alongside the runtime + the typed export (W4c-b-iii, the generic world-import call
         // surface). No host import → the runtime-only shape (byte-identical to before).
         if host_imports.is_empty() {
-            let wrapped_core =
-                serialize::core_module_with_wrappers(&funcs, &imports, &[], &wrappers, layout)
-                    .map_err(Reject::decline)?;
+            let wrapped_core = serialize::core_module_with_wrappers(
+                &funcs,
+                &imports,
+                &[],
+                &wrappers,
+                typed_layout,
+            )
+            .map_err(Reject::decline)?;
             return Ok(envelope::assemble_typed_interface_with_runtime(
                 &wrapped_core,
                 &typed,
@@ -1055,24 +1076,9 @@ pub fn emit(
             || host_imports
                 .iter()
                 .any(|h| h.result_bytes || h.result_option_bytes || h.result_list_byte_pairs);
-        // A COMPOUND host RESULT (`list<u8>`/`option<list<u8>>`/`list<tuple>`) additionally needs the host op's
-        // canon LOWER to carry a REALLOC option (the host allocates the result into guest memory), and that
-        // realloc must be available at lower-time — which needs ONE shared allocator (the mem module provides
-        // memory AND realloc, the wrapper imports both), shifting the wrapper's func indices. That allocator
-        // unification is the next slice. Until then a host op whose memory need is a `list<u8>`/`string` PARAM
-        // with a scalar/unit RESULT (e.g. `state.put`, a hash/log op) composes via the shared-mem assembler
-        // (Memory-only lower); a compound-RESULT op (e.g. `identity.id`, `state.get`) declines cleanly.
-        if host_imports
-            .iter()
-            .any(|h| h.result_bytes || h.result_option_bytes || h.result_list_byte_pairs)
-        {
-            return Err(Reject::decline(
-                "a typed reducer performing a host op with a COMPOUND result (list<u8>/option<list<u8>>) is \
-                 not yet emitted: its canon lower needs a realloc option available at lower-time, which needs \
-                 the shared-allocator slice (mem module provides memory + realloc, wrapper imports both); a \
-                 host op with a list<u8>/string PARAM and a scalar/unit result composes today",
-            ));
-        }
+        // `typed_needs_realloc` (computed above) = a compound host RESULT is present → the shared-allocator
+        // shape (wrapper imports `"mem"`.`"cabi_realloc"`; `typed_layout` already carries the +1 import shift).
+        let needs_realloc = typed_needs_realloc;
         // The host interface's FQ WIT name (the import extern name) — the world import whose last `/`-segment
         // kebab-matches the effect (the same match `is_world_import_op` uses).
         let host_iface = {
@@ -1112,12 +1118,14 @@ pub fn emit(
                 core_functype: Vec::new(),
             })
             .collect();
+        // `typed_layout` already carries the +1 import shift when `typed_needs_realloc` (matching
+        // `core_module_impl`'s realloc-import mode), so the def/self-call indices line up with the emitted core.
         let wrapped_core = serialize::core_module_with_wrappers(
             &funcs,
             &imports,
             &host_imports,
             &wrappers,
-            layout,
+            typed_layout,
         )
         .map_err(Reject::decline)?;
         // A memory-needing host op takes the SHARED-`"mem"` shape (wrapper imports memory); a memoryless one
@@ -1133,6 +1141,7 @@ pub fn emit(
                 needs_option_bytes,
                 needs_list_byte_pairs,
                 needs_bytes_result,
+                needs_realloc,
             )
         } else {
             envelope::assemble_typed_interface_with_host_runtime(
