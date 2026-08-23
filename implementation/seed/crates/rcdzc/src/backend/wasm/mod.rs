@@ -190,9 +190,10 @@ pub fn emit(
             let article = if pos == "argument" { "an" } else { "a" };
             return Err(Reject::decline(format!(
                 "the host operation `{op}` has {article} {pos} of type `{ty}`, which has no component \
-                 boundary form this compiler emits yet (only scalar and unit results, and \
-                 scalar/string/unit arguments, cross the host boundary; a string or compound result \
-                 is a later increment)"
+                 boundary form this compiler emits yet. Host RESULTS cross as: a scalar/unit, a `list<u8>` \
+                 (Bytes), or an `option<list<u8>>`. Host ARGUMENTS cross as: a scalar/unit/string or a \
+                 `list<u8>`. A record/compound ARGUMENT, or a `list<list<u8>>`/`list<tuple<…>>` RESULT, is a \
+                 later increment."
             )));
         }
     }
