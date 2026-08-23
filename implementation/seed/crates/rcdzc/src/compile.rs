@@ -201,6 +201,24 @@ fn compile_with_opt_inner(
             )));
         }
     }
+    // COMPONENT NAME FROM THE IN-SOURCE WORLD (reducer-guest DX): the typed interface-instance emit
+    // (`record_interface_export`) needs `db.component_name` — the FQ name it exports the `guest` instance
+    // under. When no `--component-name` was given (the `cdz compile <reducer>.sexp --target wasm` path) but
+    // the in-source `(world …)` declares an EXPORT interface whose name is already a FULLY-QUALIFIED WIT
+    // interface name (`ns:pkg/iface`), derive the component name from it — so a self-describing reducer whose
+    // world says `(export cadenza:platform/guest …)` compiles WITHOUT a redundant `--component-name` naming
+    // the same interface. A bare (non-FQ) export name (e.g. a hand-written `guest`) does NOT qualify — the FQ
+    // name is genuine extra information the CLI still needs via `--component-name`, so this stays a no-op
+    // there (declines later at the interface-name guard rather than misusing a bare name as an extern name).
+    if db.component_name.is_none()
+        && let Some(world_bytes) = &db.wit_world
+        && let Some(arenas) = crate::codec::decode(world_bytes)
+        && let Some(world) = crate::wit_world::parse_target_world(&arenas, arenas.root)
+        && let Some(export_iface) = world.exports.first()
+        && crate::backend::common::export_name::is_valid_interface_name(&export_iface.name)
+    {
+        db.component_name = Some(export_iface.name.clone());
+    }
     // The `--component-name` a PROVIDER publishes its interface under is a component-boundary name,
     // emitted verbatim as the exported interface-instance's extern name. A non-conforming value would
     // produce a component `wasmtime` rejects at LOAD with no diagnostic (the provider twin of the
