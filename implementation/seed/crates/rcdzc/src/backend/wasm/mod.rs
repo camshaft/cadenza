@@ -1047,21 +1047,30 @@ pub fn emit(
         }
         // A host op that needs LINEAR MEMORY — a `list<u8>`/`string` PARAM, or a compound RESULT
         // (`list<u8>`/`option<list<u8>>`/`list<tuple>`) whose spilled return the guest lifts — must lower with a
-        // Memory canon option, which requires the SHARED-memory module shape (the memory available at
-        // lower-time, before the program core). The typed wrapper core instead DEFINES its own memory for the
-        // record `list<u8>` leaves; unifying the two onto one shared memory is the next slice. Until then a
-        // MEMORYLESS host op (scalar/unit result, scalar/unit params — e.g. `clock.now : () -> u64`) composes
-        // via the combined assembler; a memory-needing one declines cleanly (no mis-emit).
+        // Memory canon option, so its memory must be available at lower-time (before the program core). That is
+        // the SHARED `"mem"` module shape (`assemble_typed_interface_with_host_runtime_mem`): the wrapper core
+        // IMPORTS `"mem"` and its `list<u8>`-leaf handling + the host-op lift share the one memory. A MEMORYLESS
+        // host op (scalar/unit — `clock.now : () -> u64`) takes the simpler defined-memory shape.
         let host_needs_memory = host::set_needs_memory(&host_imports)
             || host_imports
                 .iter()
                 .any(|h| h.result_bytes || h.result_option_bytes || h.result_list_byte_pairs);
-        if host_needs_memory {
+        // A COMPOUND host RESULT (`list<u8>`/`option<list<u8>>`/`list<tuple>`) additionally needs the host op's
+        // canon LOWER to carry a REALLOC option (the host allocates the result into guest memory), and that
+        // realloc must be available at lower-time — which needs ONE shared allocator (the mem module provides
+        // memory AND realloc, the wrapper imports both), shifting the wrapper's func indices. That allocator
+        // unification is the next slice. Until then a host op whose memory need is a `list<u8>`/`string` PARAM
+        // with a scalar/unit RESULT (e.g. `state.put`, a hash/log op) composes via the shared-mem assembler
+        // (Memory-only lower); a compound-RESULT op (e.g. `identity.id`, `state.get`) declines cleanly.
+        if host_imports
+            .iter()
+            .any(|h| h.result_bytes || h.result_option_bytes || h.result_list_byte_pairs)
+        {
             return Err(Reject::decline(
-                "a typed reducer that performs a host op needing linear memory (a list<u8>/string param or \
-                 a list<u8>/option<list<u8>> result — e.g. identity.id : () -> reducer-id) is not yet \
-                 emitted: the shared-memory composition unifying the wrapper's defined memory with the host \
-                 op's lower is the next slice; a memoryless host op (scalar/unit) composes today",
+                "a typed reducer performing a host op with a COMPOUND result (list<u8>/option<list<u8>>) is \
+                 not yet emitted: its canon lower needs a realloc option available at lower-time, which needs \
+                 the shared-allocator slice (mem module provides memory + realloc, wrapper imports both); a \
+                 host op with a list<u8>/string PARAM and a scalar/unit result composes today",
             ));
         }
         // The host interface's FQ WIT name (the import extern name) — the world import whose last `/`-segment
@@ -1111,17 +1120,33 @@ pub fn emit(
             layout,
         )
         .map_err(Reject::decline)?;
-        return Ok(envelope::assemble_typed_interface_with_host_runtime(
-            &wrapped_core,
-            &typed,
-            &host_iface,
-            &host_fns,
-            &imports,
-            &import_name,
-            needs_option_bytes,
-            needs_list_byte_pairs,
-            needs_bytes_result,
-        ));
+        // A memory-needing host op takes the SHARED-`"mem"` shape (wrapper imports memory); a memoryless one
+        // takes the simpler defined-memory shape. Both compose the host effect + runtime + typed export.
+        return Ok(if host_needs_memory {
+            envelope::assemble_typed_interface_with_host_runtime_mem(
+                &wrapped_core,
+                &typed,
+                &host_iface,
+                &host_fns,
+                &imports,
+                &import_name,
+                needs_option_bytes,
+                needs_list_byte_pairs,
+                needs_bytes_result,
+            )
+        } else {
+            envelope::assemble_typed_interface_with_host_runtime(
+                &wrapped_core,
+                &typed,
+                &host_iface,
+                &host_fns,
+                &imports,
+                &import_name,
+                needs_option_bytes,
+                needs_list_byte_pairs,
+                needs_bytes_result,
+            )
+        });
     }
 
     // A HOST-delegating program takes the host-import envelope shape (E2h-2): the delegated effect is a

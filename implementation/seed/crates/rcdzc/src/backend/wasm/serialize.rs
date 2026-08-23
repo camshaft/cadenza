@@ -793,6 +793,16 @@ fn core_module_impl(
             .any(FieldRebuild::has_bytes_leaf)
             || matches!(w.result, ResultLower::SpillRecord { .. })
     });
+    // A host op with a COMPOUND result (`list<u8>`/`option<list<u8>>`/`list<tuple>`) is canon-lowered with a
+    // MEMORY option — its spilled result is read from linear memory the guest's `HostCall` lift copies out of.
+    // That memory must be available at LOWER-time (before the program core), so it is the SHARED `"mem"`
+    // module the component composes (like the bytes-provider path), not a memory the program defines. So when
+    // a host op needs memory, the core IMPORTS `"mem"`.`"mem"` (via `needs_memory` below) and does NOT define
+    // its own memory — the wrapper's `list<u8>`-leaf handling + the host-op lift then share the one imported
+    // memory 0. (`cabi_realloc` is still DEFINED, bumping over the imported memory.)
+    let host_result_needs_memory = host_fns
+        .iter()
+        .any(|h| h.result_bytes || h.result_option_bytes || h.result_list_byte_pairs);
     let n_realloc = wrapper_needs_memory as usize; // 0 or 1 extra defined func (`cabi_realloc`)
 
     // Type section, then the imports, in ONE fixed order: EXTERN peer functypes FIRST (type indices
@@ -857,7 +867,8 @@ fn core_module_impl(
     // limits `{ min: 1 }`. Placed AFTER the func imports (a memory import does not occupy a func index).
     // The core module imports `mem` when a host op passes a string — either a CONST string (laid in the
     // data segment) OR a RUNTIME string (marshaled into `mem` by the `_mem` copy loop, `host_needs_memory`).
-    let needs_memory = !layout.host_strings.is_empty() || layout.host_needs_memory;
+    let needs_memory =
+        !layout.host_strings.is_empty() || layout.host_needs_memory || host_result_needs_memory;
     let mut import_index: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
     let import_sec = if import_count == 0 && !needs_memory {
         Vec::new()
@@ -956,15 +967,19 @@ fn core_module_impl(
         export_items.extend_from_slice(&item);
         export_n += 1;
     }
-    // `memory` (memory 0) + `cabi_realloc` exports — the canon lift's Memory+Realloc options alias them off
-    // this program instance. Present only when a wrapper needs memory.
+    // `cabi_realloc` export — the canon lift's Realloc option + the host-op-result lift alias it off this
+    // program instance. Present when a wrapper needs memory. The `memory` export is present ONLY when memory 0
+    // is DEFINED here (not imported shared): when a host op imports the shared `"mem"`, the component aliases
+    // that memory off the mem instance instead, so the program neither owns nor re-exports it.
     if wrapper_needs_memory {
-        let mut mem_item = uleb_bytes("memory".len() as u64);
-        mem_item.extend_from_slice(b"memory");
-        mem_item.push(wasm_abi::EXPORT_KIND_MEMORY);
-        uleb128(0, &mut mem_item);
-        export_items.extend_from_slice(&mem_item);
-        export_n += 1;
+        if !needs_memory {
+            let mut mem_item = uleb_bytes("memory".len() as u64);
+            mem_item.extend_from_slice(b"memory");
+            mem_item.push(wasm_abi::EXPORT_KIND_MEMORY);
+            uleb128(0, &mut mem_item);
+            export_items.extend_from_slice(&mem_item);
+            export_n += 1;
+        }
         let mut ra_item = uleb_bytes("cabi_realloc".len() as u64);
         ra_item.extend_from_slice(b"cabi_realloc");
         ra_item.push(wasm_abi::EXPORT_KIND_FUNC);
@@ -1163,7 +1178,14 @@ fn core_module_impl(
     // canon lift lowers incoming lists into, and a mutable i32 bump pointer `cabi_realloc` advances (init 16,
     // leaving low memory clear so a returned pointer is never 0). Both empty otherwise → byte-identical.
     let (mem_sec, global_sec) = if wrapper_needs_memory {
-        let mem = section(wasm_abi::CORE_SEC_MEMORY, &wasm_vec(1, &[0x00, 0x01]));
+        // DEFINE memory 0 ONLY when it is not IMPORTED as the shared `"mem"` (a host op needing memory
+        // imports it instead — `needs_memory`). The `cabi_realloc` bump global is present either way (it
+        // bumps over memory 0 whether that memory is defined here or imported shared).
+        let mem = if needs_memory {
+            Vec::new()
+        } else {
+            section(wasm_abi::CORE_SEC_MEMORY, &wasm_vec(1, &[0x00, 0x01]))
+        };
         let mut g = vec![wasm_abi::CORE_I32, 0x01]; // i32, mutable
         g.push(op::I32_CONST);
         crate::backend::wasm::encode::sleb128(16, &mut g);
