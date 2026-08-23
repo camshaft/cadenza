@@ -13,7 +13,11 @@
 //! `--features host` check) enforces the check by exit code alone.
 //!
 //! Usage: `cdz-platform-itest <harness.ast>`. Exit 0 on a completed run with no checker or a passing checker;
-//! exit 1 on a failing checker (its reasons print to stderr); exit 2 on a usage/IO/decode error.
+//! exit 1 on a failing checker (its reasons print to stderr); exit 2 on a usage/IO/decode error; exit 3 if the
+//! run exceeds its wall-clock timeout (a guest hung). A run reaches quiescence in ~milliseconds (bach jumps
+//! virtual time), so the generous default (120s, override with `CDZ_ITEST_TIMEOUT_SECS`) only ever fires on a
+//! genuine hang — a guest that infinite-loops inside a single fold, which bach's virtual-time horizon cannot
+//! bound — making it fail cleanly and diagnosably rather than hanging the CI derivation until it is reclaimed.
 //!
 //! Set `CDZ_ITEST_TRACE` (to any value) to STREAM every observation to stdout the moment it is recorded
 //! (flushed per line), so a run that gets stuck in a loop or crashes before the checker still shows its
@@ -36,6 +40,8 @@ use cdz_platform::{
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::sync::mpsc;
+use std::time::Duration;
 
 // jemalloc as this executable's global allocator (operator suggestion 2026-08-23): the run drives a whole
 // platform + wasmtime + the observation log, which is allocation-heavy, so a better allocator cuts overhead
@@ -70,7 +76,13 @@ fn main() -> ExitCode {
         }
     };
 
-    match run(spec) {
+    // Bound the run by wall-clock: bach bounds virtual time, but a guest that hangs in a fold would hang the
+    // process forever. Arm the watchdog around the run and drop it the moment the run returns.
+    let watchdog = arm_watchdog(parse_timeout(std::env::var(TIMEOUT_ENV).ok().as_deref()));
+    let result = run(spec);
+    drop(watchdog);
+
+    match result {
         Ok(report) => {
             // With live tracing on, every record was already streamed to stdout as it happened, so printing
             // the rendered log would duplicate every line — emit it only when NOT tracing.
@@ -134,6 +146,47 @@ const TRACE_ENV: &str = "CDZ_ITEST_TRACE";
 /// stdout carries each line exactly once.
 fn tracing_on() -> bool {
     std::env::var_os(TRACE_ENV).is_some()
+}
+
+/// The environment variable that overrides the wall-clock timeout, in whole seconds. Unset/empty/zero/
+/// unparseable falls back to [`DEFAULT_TIMEOUT`].
+const TIMEOUT_ENV: &str = "CDZ_ITEST_TIMEOUT_SECS";
+
+/// The default wall-clock timeout — generous, because a bounded run reaches quiescence in ~milliseconds
+/// (bach jumps virtual time). It only guards against a runaway guest hanging the process indefinitely.
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Resolve the wall-clock timeout from the raw [`TIMEOUT_ENV`] value: a positive whole-seconds override, or
+/// [`DEFAULT_TIMEOUT`] when it is unset, empty, zero, or unparseable. Pure (the env read is the caller's), so
+/// the policy is unit-testable without touching the process environment.
+fn parse_timeout(raw: Option<&str>) -> Duration {
+    match raw.and_then(|s| s.trim().parse::<u64>().ok()) {
+        Some(secs) if secs > 0 => Duration::from_secs(secs),
+        _ => DEFAULT_TIMEOUT,
+    }
+}
+
+/// Arm a wall-clock watchdog: a background thread that force-exits the process (code 3) if the run has not
+/// finished within `timeout`. bach bounds *virtual* time (the `run-for` horizon), not wall-clock, so a fold
+/// that never yields — a guest stuck in an infinite loop — would otherwise hang the process (and the CI
+/// derivation) until it is reclaimed; this bounds it to a clean, diagnosable failure. Returns a guard: hold
+/// it for the duration of the run, then drop it — dropping disconnects the channel, so the watchdog thread
+/// wakes and exits quietly. If the run instead overruns, the watchdog prints why and exits 3.
+fn arm_watchdog(timeout: Duration) -> mpsc::Sender<()> {
+    let (done_tx, done_rx) = mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        if let Err(mpsc::RecvTimeoutError::Timeout) = done_rx.recv_timeout(timeout) {
+            eprintln!(
+                "cdz-platform-itest: run exceeded {}s without reaching quiescence — aborting (a guest \
+                 likely hung in a fold; raise {TIMEOUT_ENV} to change the limit, or set {TRACE_ENV} to \
+                 stream the log up to the hang)",
+                timeout.as_secs()
+            );
+            std::process::exit(3);
+        }
+        // Ok(()) or Disconnected: the run finished (the guard was dropped) — cancel quietly.
+    });
+    done_tx
 }
 
 /// A fresh observation log for a run phase, streaming each record to stdout as it is appended when tracing is
@@ -385,5 +438,19 @@ mod tests {
             run(spec).is_err(),
             "an undeclared spawn blob is rejected before the run, not panicked on"
         );
+    }
+
+    #[test]
+    fn parse_timeout_uses_the_override_or_falls_back_to_the_default() {
+        use super::{DEFAULT_TIMEOUT, parse_timeout};
+        use std::time::Duration;
+        // A positive whole-seconds override is honored (trimmed).
+        assert_eq!(parse_timeout(Some("30")), Duration::from_secs(30));
+        assert_eq!(parse_timeout(Some("  45 ")), Duration::from_secs(45));
+        // Unset, empty, zero, and unparseable all fall back to the generous default.
+        assert_eq!(parse_timeout(None), DEFAULT_TIMEOUT);
+        assert_eq!(parse_timeout(Some("")), DEFAULT_TIMEOUT);
+        assert_eq!(parse_timeout(Some("0")), DEFAULT_TIMEOUT);
+        assert_eq!(parse_timeout(Some("soon")), DEFAULT_TIMEOUT);
     }
 }
