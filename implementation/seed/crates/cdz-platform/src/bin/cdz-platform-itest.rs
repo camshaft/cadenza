@@ -15,9 +15,12 @@
 //! Usage: `cdz-platform-itest <harness.ast>`. Exit 0 on a completed run with no checker or a passing checker;
 //! exit 1 on a failing checker (its reasons print to stderr); exit 2 on a usage/IO/decode error.
 //!
-//! Set `CDZ_ITEST_TRACE` (to any value) to STREAM every observation to stderr the moment it is recorded, so a
-//! run that gets stuck in a loop or crashes before the checker still shows its progress up to that point — the
-//! final rendered log only reaches stdout once the run completes, which is too late to debug a run that hangs.
+//! Set `CDZ_ITEST_TRACE` (to any value) to STREAM every observation to stdout the moment it is recorded
+//! (flushed per line), so a run that gets stuck in a loop or crashes before the checker still shows its
+//! progress up to that point — the final rendered log otherwise only appears once the run completes, which is
+//! too late to debug a run that hangs. Streaming goes to stdout (so `cdz-platform-itest … | tee run.log`
+//! captures it) and, when on, REPLACES the final rendered log (the stream already emitted every line, in the
+//! same order and format), so stdout carries each line exactly once.
 //!
 //! Behind the `testing` (harness + observation log + AST decoder) and `host` (the wasm program store that
 //! instantiates the blobs) features, so the routine light build pulls in neither the harness nor wasmtime.
@@ -69,7 +72,11 @@ fn main() -> ExitCode {
 
     match run(spec) {
         Ok(report) => {
-            print!("{}", report.log);
+            // With live tracing on, every record was already streamed to stdout as it happened, so printing
+            // the rendered log would duplicate every line — emit it only when NOT tracing.
+            if !tracing_on() {
+                print!("{}", report.log);
+            }
             match report.outcome {
                 // No checker configured, or the checker passed: a successful run.
                 None | Some(CheckOutcome::Pass) => ExitCode::SUCCESS,
@@ -117,18 +124,31 @@ fn host() -> HostId {
 }
 
 /// The environment variable that turns on live log streaming. When set (to any value), every observation is
-/// written to stderr the moment it is recorded, so a run that gets stuck in a loop or crashes *before* its
-/// log is rendered still shows its progress up to the hang/crash — the final rendered log only reaches
-/// stdout once the run completes, which is too late to debug a run that never gets there.
+/// written to stdout the moment it is recorded, so a run that gets stuck in a loop or crashes *before* its
+/// log is rendered still shows its progress up to the hang/crash — the final rendered log only appears once
+/// the run completes, which is too late to debug a run that never gets there.
 const TRACE_ENV: &str = "CDZ_ITEST_TRACE";
 
-/// A fresh observation log for a run phase, streaming each record to stderr as it is appended when
-/// [`TRACE_ENV`] is set (off by default). The live stream goes to stderr so it never pollutes the final
-/// rendered log on stdout that a caller consumes.
+/// Whether live log streaming is on (the [`TRACE_ENV`] variable is set). When on, the run streams each record
+/// to stdout as it happens *and* the final rendered log is suppressed (the stream already emitted it), so
+/// stdout carries each line exactly once.
+fn tracing_on() -> bool {
+    std::env::var_os(TRACE_ENV).is_some()
+}
+
+/// A fresh observation log for a run phase, streaming each record to stdout as it is appended when tracing is
+/// on (off by default). Streaming goes to stdout — flushed per line — so `… | tee run.log` captures it and a
+/// hung run still shows progress (a piped stdout is block-buffered, so an unflushed line would not appear
+/// until the process exits; flushing forces each line out immediately).
 fn observation_log() -> ObservationLog {
     let log = ObservationLog::new();
-    if std::env::var_os(TRACE_ENV).is_some() {
-        log.on_record(|record| eprintln!("{record}"))
+    if tracing_on() {
+        log.on_record(|record| {
+            use std::io::Write;
+            let mut out = std::io::stdout().lock();
+            let _ = writeln!(out, "{record}");
+            let _ = out.flush();
+        })
     } else {
         log
     }
