@@ -21,10 +21,10 @@
 
 use crate::cancel::CancelScope;
 use crate::{
-    Bytes, ContractId, Deliver, Delivered, EdgeKind, EventRegistry, FireAfter, Fired, Genesis,
-    Hash, HashTag, HostId, Lifecycle, Message, Origin, Outcome, ProgramHash, ProgramStore, Reducer,
-    ReducerGraph, ReducerId, Request, Response, Runtime, SpawnContext, Spawned, deliver_contract,
-    timer_contract,
+    Bytes, ContractId, Deliver, Delivered, EdgeKind, Error, EventRegistry, FireAfter, Fired,
+    Genesis, Hash, HashTag, HostId, Lifecycle, Message, Origin, Outcome, ProgramHash, ProgramStore,
+    Reducer, ReducerGraph, ReducerId, Request, Response, Run, RunError, RunOutput, Runner, Runtime,
+    SpawnContext, Spawned, deliver_contract, run_contract, timer_contract,
 };
 use async_trait::async_trait;
 use futures_util::FutureExt; // catch_unwind, to turn a fold panic into a Crashed notification (§7)
@@ -251,6 +251,7 @@ impl<R: Runtime> TaskSystem<R> {
         Self {
             shared: Arc::new(Shared {
                 reducers: Arc::new(Mutex::new(HashMap::new())),
+                runner: Runner::new(Arc::clone(&programs)),
                 programs,
                 graph,
                 events,
@@ -292,6 +293,10 @@ type RunningReducers<R> = Arc<Mutex<HashMap<ReducerId, (<R as Runtime>::Sender, 
 struct Shared<R: Runtime> {
     reducers: RunningReducers<R>,
     programs: Arc<dyn ProgramStore>,
+    /// The pure-function runner backing the `run` effect (§3): carries out an emitted [`Run`] request over
+    /// the same `programs`, memoizing the result. Held here (not per-request) so the memo is shared across
+    /// every run. No cycle — it holds its own clone of `programs`, which the system already owns.
+    runner: Runner<dyn ProgramStore>,
     graph: Arc<dyn ReducerGraph>,
     events: Arc<dyn EventRegistry>,
     host: HostId,
@@ -442,6 +447,43 @@ impl<R: Runtime> Shared<R> {
                                         );
                                     }));
                                 }
+                            } else if request.id == run_contract() {
+                                // Run a program as a pure function (§3), the EFFECT form: carry it out via
+                                // the shared memoizing runner and fold the output back as the response,
+                                // correlated by the request's own continuation-token (like the timer wake).
+                                // Any reducer may run — a run has no capabilities, so it is harmless. Spawned
+                                // through the reducer's cancel scope, so it is dropped if the reducer exits
+                                // before it completes (a bounded pure computation, not worth finishing then).
+                                if let Some(run) = Run::decode(&request.payload) {
+                                    let shared = Arc::clone(&shared);
+                                    let emitter = id;
+                                    let token = request.continuation_token;
+                                    R::spawn(timers.wrap(async move {
+                                        let payload = match shared
+                                            .runner
+                                            .run(run.program, run.contract, run.input)
+                                            .await
+                                        {
+                                            Ok(output) => Ok(RunOutput { output }.encode()),
+                                            // No program to run is "nothing answers"; a program that faulted
+                                            // or never returned an output is the general execution fault.
+                                            Err(RunError::UnknownProgram) => {
+                                                Err(Error::MissingHandler)
+                                            }
+                                            Err(RunError::DidNotReturn | RunError::Faulted) => {
+                                                Err(Error::Faulted)
+                                            }
+                                        };
+                                        shared.send(
+                                            emitter,
+                                            Delivered::Response(Response {
+                                                id: run_contract(),
+                                                continuation_token: token,
+                                                payload,
+                                            }),
+                                        );
+                                    }));
+                                }
                             } else {
                                 // An ordinary effect: the kernel looks up the system reducer for the contract,
                                 // instantiates a fresh per-event context, and delivers the effect to it (§4).
@@ -542,8 +584,8 @@ mod tests {
     use crate::{
         BachRuntime, Bytes, ContractId, Deliver, Delivered, FireAfter, Fired, HostId,
         InMemoryEventRegistry, InMemoryReducerGraph, Lifecycle, Message, Notification, Origin,
-        Outcome, ProgramHash, Reducer, ReducerGraph, ReducerId, Request, Response, Spawned,
-        TokioRuntime, lifecycle_contract, spawned_contract, timer_contract,
+        Outcome, ProgramHash, Reducer, ReducerGraph, ReducerId, Request, Response, Run, RunOutput,
+        Spawned, TokioRuntime, lifecycle_contract, run_contract, spawned_contract, timer_contract,
     };
     use std::sync::Arc;
 
@@ -1559,6 +1601,110 @@ mod tests {
                 );
             }
             .group("program-of")
+            .primary()
+            .spawn();
+        });
+    }
+
+    /// A run-target program: on a message it `Break`s with its input doubled — a pure transform the `run`
+    /// effect carries out.
+    struct RunTarget;
+    #[async_trait::async_trait]
+    impl Reducer for RunTarget {
+        async fn on_message(&mut self, m: Message) -> (Vec<Request>, Outcome) {
+            let mut out = m.payload.to_vec();
+            out.extend_from_slice(&m.payload);
+            (
+                Vec::new(),
+                Outcome::Break {
+                    schema: cid(b"out"),
+                    reason: Bytes::from(out),
+                },
+            )
+        }
+        async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+    }
+
+    /// A reducer that, on its first message, emits a `run` effect against `run-target`, then folds the
+    /// `RunOutput` response and reports the output on a channel.
+    struct RunEmitter {
+        heard: bach::sync::mpsc::UnboundedSender<Bytes>,
+    }
+    #[async_trait::async_trait]
+    impl Reducer for RunEmitter {
+        async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
+            let run = Run {
+                program: prog(b"run-target"),
+                contract: cid(b"c"),
+                input: Bytes::from_static(b"ab"),
+            };
+            (
+                vec![run.into_request(Bytes::from_static(b"tok"))],
+                Outcome::Continue,
+            )
+        }
+        async fn on_response(&mut self, r: Response) -> (Vec<Request>, Outcome) {
+            if r.id == run_contract()
+                && let Ok(payload) = &r.payload
+                && let Some(out) = RunOutput::decode(payload)
+            {
+                let _ = self.heard.send(out.output);
+                return (
+                    Vec::new(),
+                    Outcome::Break {
+                        schema: cid(b"done"),
+                        reason: Bytes::new(),
+                    },
+                );
+            }
+            (Vec::new(), Outcome::Continue)
+        }
+        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+    }
+
+    #[test]
+    fn the_system_carries_out_a_run_effect_and_folds_the_output_back() {
+        use bach::ext::*;
+        bach::sim(|| {
+            async {
+                let emitter = rid(b"emitter");
+                let (heard, mut heard_rx) = bach::sync::mpsc::unbounded_channel();
+                let mut store = crate::testing::program::Store::new();
+                store.register(prog(b"run-target"), || Box::new(RunTarget));
+                let heard_e = heard.clone();
+                store.register(prog(b"emitter"), move || {
+                    Box::new(RunEmitter {
+                        heard: heard_e.clone(),
+                    })
+                });
+                let system = TaskSystem::<BachRuntime>::new(
+                    Arc::new(store),
+                    Arc::new(InMemoryReducerGraph::new()),
+                    Arc::new(InMemoryEventRegistry::new(prog(b"sys"))),
+                    HostId::of(b"node"),
+                );
+                system
+                    .spawn(root(emitter, prog(b"emitter"), ReducerKind::Ordinary))
+                    .await
+                    .unwrap();
+                // Deliver a message so the emitter emits its run effect; the system runs `run-target` as a
+                // pure function and folds the doubled output back as the run response.
+                assert!(
+                    system
+                        .deliver(emitter, a_message(cid(b"go")))
+                        .await
+                        .unwrap()
+                );
+                assert_eq!(heard_rx.recv().await, Some(Bytes::from_static(b"abab")));
+            }
+            .group("run-effect")
             .primary()
             .spawn();
         });

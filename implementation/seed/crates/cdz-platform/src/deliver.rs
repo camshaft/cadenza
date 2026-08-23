@@ -118,6 +118,7 @@ impl Deliver {
                             Error::Timeout => c::error_timeout(b),
                             Error::MissingHandler => c::error_missing_handler(b),
                             Error::SchemaViolation => c::error_schema_violation(b),
+                            Error::Faulted => c::error_faulted(b),
                         };
                         v::bare_ctor(b, "Err", vec![e])
                     }
@@ -211,6 +212,8 @@ fn decode_result(arenas: &cadenza_ast::ast::Arenas, id: StructId) -> Option<Resu
             Error::MissingHandler
         } else if c::is_error_schema_violation(arenas, err) {
             Error::SchemaViolation
+        } else if c::is_error_faulted(arenas, err) {
+            Error::Faulted
         } else {
             return None;
         }));
@@ -267,6 +270,7 @@ mod tests {
             Err(Error::Timeout),
             Err(Error::MissingHandler),
             Err(Error::SchemaViolation),
+            Err(Error::Faulted),
         ] {
             round_trips(&Deliver {
                 target: rid(b"caller"),

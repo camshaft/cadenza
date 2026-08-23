@@ -43,6 +43,10 @@ pub enum Error {
     /// reducer that shepherds the effect rejects it before any handler folds it, and this is the runtime
     /// failure the caller sees — distinct from a handler's own domain error (an ordinary `Ok` output value).
     SchemaViolation,
+    /// The answerer failed to produce a result — it crashed, trapped, or did not return one. A general
+    /// execution fault (not a handler's own domain error, which is an ordinary `Ok` output): here there is no
+    /// answer at all. For example a pure [`run`](crate::Runner) whose program faulted or never returned (§3).
+    Faulted,
 }
 
 /// What a reduce call decides about the reducer's own life (§3). A reducer ends *itself* only by returning

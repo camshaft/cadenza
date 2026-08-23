@@ -380,6 +380,7 @@ fn error_str(e: Error) -> &'static str {
         Error::Timeout => "timeout",
         Error::MissingHandler => "missing-handler",
         Error::SchemaViolation => "schema-violation",
+        Error::Faulted => "faulted",
     }
 }
 
@@ -388,6 +389,7 @@ fn read_error(s: &str) -> Option<Error> {
         "timeout" => Error::Timeout,
         "missing-handler" => Error::MissingHandler,
         "schema-violation" => Error::SchemaViolation,
+        "faulted" => Error::Faulted,
         _ => return None,
     })
 }

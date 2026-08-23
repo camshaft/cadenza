@@ -316,6 +316,7 @@ fn error_to_wit(error: Error) -> wit_types::Error {
         Error::Timeout => wit_types::Error::Timeout,
         Error::MissingHandler => wit_types::Error::MissingHandler,
         Error::SchemaViolation => wit_types::Error::SchemaViolation,
+        Error::Faulted => wit_types::Error::Faulted,
     }
 }
 
@@ -399,6 +400,7 @@ fn error_from_wit(error: wit_types::Error) -> Error {
         wit_types::Error::Timeout => Error::Timeout,
         wit_types::Error::MissingHandler => Error::MissingHandler,
         wit_types::Error::SchemaViolation => Error::SchemaViolation,
+        wit_types::Error::Faulted => Error::Faulted,
     }
 }
 
@@ -1231,6 +1233,7 @@ mod tests {
             (wit_types::Error::Timeout, Error::Timeout),
             (wit_types::Error::MissingHandler, Error::MissingHandler),
             (wit_types::Error::SchemaViolation, Error::SchemaViolation),
+            (wit_types::Error::Faulted, Error::Faulted),
         ] {
             let r = response_from_wit(wit_reducer::Response {
                 contract: cid(b"c").hash().as_bytes().to_vec(),
