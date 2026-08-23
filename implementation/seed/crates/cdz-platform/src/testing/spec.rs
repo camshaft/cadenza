@@ -15,8 +15,18 @@
 //! ("record"
 //!   (= system  "sys")                         ; the blob NAME of the system reducer (§4)
 //!   (= run-for 3600000000000)                 ; optional; virtual-time horizon in NANOSECONDS (default 1h)
-//!   (= blobs  ("list" <blob>…))               ; the program blobs, by name
-//!   (= spawns ("list" <spawn>…)))             ; the tasks to spawn, in order
+//!   (= blobs   ("list" <blob>…))              ; the program blobs, by name
+//!   (= spawns  ("list" <spawn>…))             ; the tasks to spawn, in order
+//!   (= deliver ("list" <delivery>…)))         ; optional; the initial events to inject, in order
+//! ```
+//!
+//! A `<delivery>` names a `target` task and carries exactly one event to inject into it — a `message` (an
+//! effect folded through `on_message`) or a `notification` (a control-plane event folded through
+//! `on_notification`). Both carry a `contract` (the 33-byte contract-id) and a `payload` (opaque bytes); a
+//! message also takes an optional `token` (the caller's continuation token, default empty):
+//! ```text
+//! ("record" (= target "root") (= message ("record" (= contract b"…") (= payload b"…") (= token b"…"))))
+//! ("record" (= target "root") (= notification ("record" (= contract b"…") (= payload b"…"))))
 //! ```
 //!
 //! A `<blob>` names a program and gives its bytes **either inline or by path** — exactly one:
@@ -40,12 +50,25 @@
 
 use super::harness::{Harness, Parent, SpawnSpec};
 use crate::contract_value::{bytes_leaf, read_bytes, read_uint, record, record_field, uint_leaf};
-use crate::{Bytes, ReducerKind};
+use crate::{
+    Bytes, ContractId, Delivered, HostId, Message, Notification, Origin, ReducerId, ReducerKind,
+};
 use cadenza_ast::ast::{Arenas, Builder, Leaf, StructId};
 use cadenza_ast::codec;
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
+
+/// The synthetic [`Origin`] stamped on a delivered [`Message`]'s `from` — an initial event injected by the
+/// harness has no real sending reducer, so the harness attributes it to a fixed, reproducible external
+/// origin. (A configurable `from` is a later slice; a delivered message's sender is rarely load-bearing for
+/// the reducer under test, which routes on the contract, not the injector.)
+fn external_origin() -> Origin {
+    Origin {
+        reducer: ReducerId::of(b"cdz-platform.harness.external"),
+        host: HostId::of(b"cdz-platform.harness.external"),
+    }
+}
 
 /// Where a program blob's bytes come from: inline in the description, or a path a loader reads. The decoder
 /// yields the source unresolved so it does no filesystem I/O; [`HarnessSpec::build`] resolves a path.
@@ -79,6 +102,60 @@ pub struct HarnessSpec {
     pub blobs: Vec<BlobSpec>,
     /// The tasks to spawn, in order (a child's parent must appear before it).
     pub spawns: Vec<SpawnSpec>,
+    /// The initial events to inject once the tasks are spawned, each paired with the task name to deliver it
+    /// into, in order. Empty for a run whose only stimulus is the reducers' births.
+    pub deliveries: Vec<(String, DeliveryEvent)>,
+}
+
+/// An event the harness injects into a task's mailbox as a run's initial stimulus (§4). The schema's
+/// delivery vocabulary — its own type rather than the platform's full [`Delivered`], so it names exactly
+/// what a harness description can express: a [`Message`] or a [`Notification`]. (A `Response` — a reply to a
+/// request the reducer itself made — is not a sensible *initial* stimulus, so it is not in the vocabulary.)
+/// [`build`](HarnessSpec::build) turns each into a [`Delivered`], stamping a delivered message with the
+/// harness's synthetic external [`Origin`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeliveryEvent {
+    /// An effect to fold through the target's `on_message`.
+    Message {
+        /// The contract-id of the effect.
+        contract: ContractId,
+        /// The effect's input value, opaque bytes.
+        payload: Bytes,
+        /// The caller's continuation token (the reducer's reply is correlated back by it); empty by default.
+        token: Bytes,
+    },
+    /// A control-plane event to fold through the target's `on_notification`.
+    Notification {
+        /// The contract-id of the notification's schema.
+        contract: ContractId,
+        /// The notification value, opaque bytes.
+        payload: Bytes,
+    },
+}
+
+impl DeliveryEvent {
+    /// Realize this as a platform [`Delivered`], stamping a message with the harness's synthetic external
+    /// origin (an injected event has no real sending reducer).
+    fn into_delivered(self) -> Delivered {
+        match self {
+            DeliveryEvent::Message {
+                contract,
+                payload,
+                token,
+            } => Delivered::Message(Message {
+                id: contract,
+                payload,
+                from: external_origin(),
+                continuation_token: token,
+            }),
+            DeliveryEvent::Notification { contract, payload } => {
+                Delivered::Notification(Notification {
+                    id: contract,
+                    payload,
+                })
+            }
+        }
+    }
 }
 
 /// Why a harness description could not be read. Each carries enough to point the author at the defect —
@@ -108,6 +185,12 @@ pub enum SpecError {
         /// The unrecognized kind string.
         kind: String,
     },
+    /// A delivery record names neither `message` nor `notification`, or names both — exactly one event kind
+    /// is required.
+    DeliveryKind {
+        /// The delivery's target task name (or `"?"` if that too was missing).
+        target: String,
+    },
 }
 
 impl fmt::Display for SpecError {
@@ -131,6 +214,10 @@ impl fmt::Display for SpecError {
                     "unknown reducer kind `{kind}` (expected `ordinary` or `event`)"
                 )
             }
+            SpecError::DeliveryKind { target } => write!(
+                f,
+                "delivery to `{target}` must give exactly one of `message` or `notification`"
+            ),
         }
     }
 }
@@ -189,11 +276,24 @@ impl HarnessSpec {
                 .collect::<Result<_, _>>()?,
         };
 
+        let deliveries = match record_field(arenas, root, "deliver") {
+            None => Vec::new(),
+            Some(id) => list_items(arenas, id)
+                .ok_or(SpecError::WrongType {
+                    field: "deliver",
+                    want: "a (list …) of delivery records",
+                })?
+                .iter()
+                .map(|&d| read_delivery(arenas, d))
+                .collect::<Result<_, _>>()?,
+        };
+
         Ok(HarnessSpec {
             system,
             run_for,
             blobs,
             spawns,
+            deliveries,
         })
     }
 
@@ -219,13 +319,18 @@ impl HarnessSpec {
         for spawn in self.spawns {
             harness = harness.spawn(spawn);
         }
+        for (target, event) in self.deliveries {
+            harness = harness.deliver(target, event.into_delivered());
+        }
         Ok(harness)
     }
 
     /// Encode this description to a Cadenza binary AST — the exact inverse of [`decode`](HarnessSpec::decode),
     /// producing the bytes the executable reads. A field at its default (an absent `run-for`, an ordinary
-    /// spawn kind, a root parent) is omitted, so `decode(spec.encode())` recovers an equal `HarnessSpec`.
-    /// This is how a test or a build step produces a `harness.ast` programmatically rather than by hand.
+    /// spawn kind, a root parent, an empty message token) is omitted, so `decode(spec.encode())` recovers an
+    /// equal `HarnessSpec` — for a spec whose delivered messages carry the harness's synthetic `from` origin
+    /// (the only `from` decode produces). This is how a test or build step produces a `harness.ast`
+    /// programmatically rather than by hand.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
         let mut b = Builder::new();
@@ -257,6 +362,15 @@ impl HarnessSpec {
                 .collect();
             let spawns = list_value(b, items);
             fields.push(("spawns", spawns));
+        }
+        if !self.deliveries.is_empty() {
+            let items = self
+                .deliveries
+                .iter()
+                .map(|(target, event)| delivery_to_ast(b, target, event))
+                .collect();
+            let deliver = list_value(b, items);
+            fields.push(("deliver", deliver));
         }
         record(b, fields)
     }
@@ -387,12 +501,103 @@ fn read_spawn(arenas: &Arenas, id: StructId) -> Result<SpawnSpec, SpecError> {
     Ok(spec)
 }
 
+/// Read one delivery record: a `target` task name and exactly one event — a `message` or a `notification`
+/// sub-record. Returns the target and the [`DeliveryEvent`].
+fn read_delivery(arenas: &Arenas, id: StructId) -> Result<(String, DeliveryEvent), SpecError> {
+    if arenas.head_ctor(id) != Some("record") {
+        return Err(SpecError::WrongType {
+            field: "deliver",
+            want: "a (record …) per delivery",
+        });
+    }
+    let target = str_field(arenas, id, "target")?
+        .ok_or(SpecError::MissingField("target"))?
+        .to_string();
+    let message = record_field(arenas, id, "message");
+    let notification = record_field(arenas, id, "notification");
+    let event = match (message, notification) {
+        (Some(m), None) => {
+            let token = match record_field(arenas, m, "token") {
+                None => Bytes::new(),
+                Some(t) => read_bytes(arenas, t).ok_or(SpecError::WrongType {
+                    field: "token",
+                    want: "a bytes literal",
+                })?,
+            };
+            DeliveryEvent::Message {
+                contract: read_contract_id(arenas, m)?,
+                payload: read_required_bytes(arenas, m, "payload")?,
+                token,
+            }
+        }
+        (None, Some(n)) => DeliveryEvent::Notification {
+            contract: read_contract_id(arenas, n)?,
+            payload: read_required_bytes(arenas, n, "payload")?,
+        },
+        _ => return Err(SpecError::DeliveryKind { target }),
+    };
+    Ok((target, event))
+}
+
+/// Read the required `contract` field of an event record as a [`ContractId`] (its 33 raw hash bytes).
+fn read_contract_id(arenas: &Arenas, event: StructId) -> Result<ContractId, SpecError> {
+    let bytes = read_required_bytes(arenas, event, "contract")?;
+    ContractId::try_from(bytes.as_ref()).map_err(|_| SpecError::WrongType {
+        field: "contract",
+        want: "a 33-byte contract-id",
+    })
+}
+
+/// Read a required bytes-leaf field of a record, or a [`SpecError`] if absent or not a bytes literal.
+fn read_required_bytes(
+    arenas: &Arenas,
+    record: StructId,
+    field: &'static str,
+) -> Result<Bytes, SpecError> {
+    let id = record_field(arenas, record, field).ok_or(SpecError::MissingField(field))?;
+    read_bytes(arenas, id).ok_or(SpecError::WrongType {
+        field,
+        want: "a bytes literal",
+    })
+}
+
+/// The `("record" (= target …) (= message …)|(= notification …))` node for one delivery — the inverse of
+/// [`read_delivery`]. An empty message token is the decode default, so it is omitted.
+fn delivery_to_ast(b: &mut Builder, target: &str, event: &DeliveryEvent) -> StructId {
+    let target_leaf = str_leaf(b, target);
+    let (kind, inner) = match event {
+        DeliveryEvent::Message {
+            contract,
+            payload,
+            token,
+        } => {
+            let contract = bytes_leaf(b, contract.hash().as_bytes());
+            let payload = bytes_leaf(b, payload);
+            let mut fields = vec![("contract", contract), ("payload", payload)];
+            if !token.is_empty() {
+                let token = bytes_leaf(b, token);
+                fields.push(("token", token));
+            }
+            ("message", record(b, fields))
+        }
+        DeliveryEvent::Notification { contract, payload } => {
+            let contract = bytes_leaf(b, contract.hash().as_bytes());
+            let payload = bytes_leaf(b, payload);
+            (
+                "notification",
+                record(b, vec![("contract", contract), ("payload", payload)]),
+            )
+        }
+    };
+    record(b, vec![("target", target_leaf), (kind, inner)])
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{BlobSource, BlobSpec, HarnessSpec, SpecError};
+    use super::{BlobSource, BlobSpec, DeliveryEvent, HarnessSpec, SpecError};
     use crate::contract_value::{bytes_leaf, record, uint_leaf};
     use crate::testing::SpawnSpec;
-    use crate::{Bytes, ReducerKind};
+    use crate::{Bytes, ContractId, ReducerKind};
     use cadenza_ast::ast::{Arenas, Builder, Leaf, StructId};
     use cadenza_ast::codec;
     use std::sync::Arc;
@@ -531,6 +736,7 @@ mod tests {
                 },
             ],
             spawns: vec![],
+            deliveries: vec![],
         };
         // The loader is invoked for the path blob only, with the exact path string.
         let mut loaded = Vec::new();
@@ -558,6 +764,7 @@ mod tests {
                 source: BlobSource::Path("missing.wasm".to_string()),
             }],
             spawns: vec![],
+            deliveries: vec![],
         };
         let result = spec.build(|_| Err("no such file"));
         assert_eq!(result.err(), Some("no such file"));
@@ -662,7 +869,8 @@ mod tests {
     fn encode_is_the_inverse_of_decode() {
         // A spec built in Rust encodes to a binary AST that decodes back to an equal spec — pinning the
         // round-trip so a future schema change cannot silently break the executable's input. The spec covers
-        // every optional: an inline and a path blob, a root/child parent, and an event-kind spawn.
+        // every optional: an inline and a path blob, a root/child parent, an event-kind spawn, and a message
+        // (with a token) and a notification delivery.
         let spec = HarnessSpec {
             system: "sys".to_string(),
             run_for: Some(Duration::from_nanos(7_500_000_000)),
@@ -681,6 +889,23 @@ mod tests {
                 SpawnSpec::new("sysred", "greeter").kind(ReducerKind::Event),
                 SpawnSpec::new("child", "worker").child_of("root"),
             ],
+            deliveries: vec![
+                (
+                    "root".to_string(),
+                    DeliveryEvent::Message {
+                        contract: ContractId::of(b"temp.celsius"),
+                        payload: Bytes::from_static(b"21"),
+                        token: Bytes::from_static(b"tok-1"),
+                    },
+                ),
+                (
+                    "child".to_string(),
+                    DeliveryEvent::Notification {
+                        contract: ContractId::of(b"lifecycle.spawned"),
+                        payload: Bytes::from_static(b"hello"),
+                    },
+                ),
+            ],
         };
         let bytes = spec.encode();
         assert_eq!(HarnessSpec::decode(&bytes), Ok(spec));
@@ -694,7 +919,136 @@ mod tests {
             run_for: None,
             blobs: vec![],
             spawns: vec![],
+            deliveries: vec![],
         };
         assert_eq!(HarnessSpec::decode(&spec.encode()), Ok(spec));
+    }
+
+    #[test]
+    fn reads_message_and_notification_deliveries() {
+        let cid = ContractId::of(b"temp.celsius");
+        let nid = ContractId::of(b"lifecycle.spawned");
+        let arenas = built(|b| {
+            let system = s(b, "sys");
+            let msg = {
+                let contract = bytes_leaf(b, cid.hash().as_bytes());
+                let payload = bytes_leaf(b, b"21");
+                let token = bytes_leaf(b, b"tok");
+                record(
+                    b,
+                    vec![
+                        ("contract", contract),
+                        ("payload", payload),
+                        ("token", token),
+                    ],
+                )
+            };
+            let d1 = {
+                let target = s(b, "root");
+                record(b, vec![("target", target), ("message", msg)])
+            };
+            let note = {
+                let contract = bytes_leaf(b, nid.hash().as_bytes());
+                let payload = bytes_leaf(b, b"hi");
+                record(b, vec![("contract", contract), ("payload", payload)])
+            };
+            let d2 = {
+                let target = s(b, "root");
+                record(b, vec![("target", target), ("notification", note)])
+            };
+            let deliver = list(b, vec![d1, d2]);
+            record(b, vec![("system", system), ("deliver", deliver)])
+        });
+        let spec = HarnessSpec::read(&arenas, arenas.root).expect("valid deliveries");
+        assert_eq!(
+            spec.deliveries,
+            vec![
+                (
+                    "root".to_string(),
+                    DeliveryEvent::Message {
+                        contract: cid,
+                        payload: Bytes::from_static(b"21"),
+                        token: Bytes::from_static(b"tok"),
+                    },
+                ),
+                (
+                    "root".to_string(),
+                    DeliveryEvent::Notification {
+                        contract: nid,
+                        payload: Bytes::from_static(b"hi"),
+                    },
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_message_token_defaults_to_empty_when_omitted() {
+        let cid = ContractId::of(b"c");
+        let arenas = built(|b| {
+            let system = s(b, "sys");
+            let msg = {
+                let contract = bytes_leaf(b, cid.hash().as_bytes());
+                let payload = bytes_leaf(b, b"p");
+                record(b, vec![("contract", contract), ("payload", payload)])
+            };
+            let target = s(b, "root");
+            let d = record(b, vec![("target", target), ("message", msg)]);
+            let deliver = list(b, vec![d]);
+            record(b, vec![("system", system), ("deliver", deliver)])
+        });
+        let spec = HarnessSpec::read(&arenas, arenas.root).expect("valid delivery");
+        assert_eq!(
+            spec.deliveries,
+            vec![(
+                "root".to_string(),
+                DeliveryEvent::Message {
+                    contract: cid,
+                    payload: Bytes::from_static(b"p"),
+                    token: Bytes::new(),
+                },
+            )]
+        );
+    }
+
+    #[test]
+    fn rejects_a_delivery_with_both_or_neither_event() {
+        // Neither message nor notification.
+        let neither = built(|b| {
+            let system = s(b, "sys");
+            let target = s(b, "root");
+            let d = record(b, vec![("target", target)]);
+            let deliver = list(b, vec![d]);
+            record(b, vec![("system", system), ("deliver", deliver)])
+        });
+        assert_eq!(
+            HarnessSpec::read(&neither, neither.root),
+            Err(SpecError::DeliveryKind {
+                target: "root".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_a_contract_id_of_the_wrong_length() {
+        let arenas = built(|b| {
+            let system = s(b, "sys");
+            let msg = {
+                let contract = bytes_leaf(b, b"too short for a hash");
+                let payload = bytes_leaf(b, b"p");
+                record(b, vec![("contract", contract), ("payload", payload)])
+            };
+            let target = s(b, "root");
+            let d = record(b, vec![("target", target), ("message", msg)]);
+            let deliver = list(b, vec![d]);
+            record(b, vec![("system", system), ("deliver", deliver)])
+        });
+        assert_eq!(
+            HarnessSpec::read(&arenas, arenas.root),
+            Err(SpecError::WrongType {
+                field: "contract",
+                want: "a 33-byte contract-id",
+            })
+        );
     }
 }
