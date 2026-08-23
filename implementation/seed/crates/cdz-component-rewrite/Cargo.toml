@@ -1,0 +1,27 @@
+# cdz-component-rewrite — content-address a component's BARE external imports.
+#
+# The ONE place the "rewrite a cargo-component component so a bare interface import carries a content
+# hash" logic lives (operator directive 2026-08-23: keep it a small ISOLATED crate, never leaking into the
+# platform host / rcdzc / cdz-run). A CLI TOOL (`src/main.rs` over the lib): `cargo xtask build` SHELLS OUT
+# to the built binary — it does NOT link this crate as a dependency (operator review of #3082) — to give
+# the value-heap runtime's bare `cadenza:nfc/normalize` import the nfc component's content hash, so every
+# content-address is uniform `@<version>+<hash>` and the runtime composes with no name->hash manifest.
+# (The lib holds the logic + unit tests; the bin is a thin arg-parsing shell.)
+#
+# Why cargo-component emits the import bare: it renders the WIT semver interface name, and the nfc content
+# hash is not known at WIT-authoring time. This crate re-addresses it after the fact.
+#
+# Deps: ONLY wasmparser + wasm-encoder (its component reencoder round-trips every section verbatim; we
+# override just the import-name emit). A ROOT workspace member (the `crates/*` glob) so it gets per-crate
+# clippy + workspace-test coverage; must be registered in the flake's rootWorkspaceCrates.
+[package]
+name = "cdz-component-rewrite"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+wasmparser = { version = "0.239", features = ["component-model"] }
+# `wasmparser` feature gates wasm-encoder's `reencode` module (the component round-trip we build on);
+# `component-model` enables the component sections.
+wasm-encoder = { version = "0.239", features = ["wasmparser", "component-model"] }

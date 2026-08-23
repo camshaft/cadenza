@@ -320,6 +320,11 @@
           cadenza-syntax = "implementation/seed/crates/cadenza-syntax";
           cdz = "implementation/seed/crates/cdz";
           cdz-calc = "implementation/seed/crates/cdz-calc";
+          # cdz-component-rewrite: the isolated wasm-component import re-addresser (bare import -> +hash),
+          # used by `cargo xtask build`. A ROOT workspace member (no own [workspace]), so — like cdz-contract
+          # below — it MUST be registered here or the crane deps-layer src omits its Cargo.toml and the whole
+          # workspace fails to load.
+          cdz-component-rewrite = "implementation/seed/crates/cdz-component-rewrite";
           # cdz-contract (#3026): the dep-minimal content-hash + contract-id crate cdz-platform now depends on.
           # A ROOT workspace member (no own [workspace]), so it MUST be registered here — else the crane
           # deps-layer src omits its Cargo.toml and the whole workspace fails to load (`cargo check` can't
