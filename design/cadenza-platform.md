@@ -313,6 +313,20 @@ execution entirely. Because the host is nulled too, the result does not depend o
 ran it: the cache is content-addressed and node-independent, so a result computed anywhere is
 valid everywhere.
 
+**`run` is invoked two ways, both yielding that same memoized output.** As an **effect** — a
+reducer emits a `run` request and receives the output as a later response (section 4), the
+async, event-mediated form, for a caller that wants the effect model (deferral, a deadline,
+gating in a chain). And as a **synchronous host call** — a guest calls `run` inline and blocks
+for the output, which returns *within the same fold*: no continuation-token, no round-trip
+through `on_response`. This is sound precisely because a `run` is deterministic — a pure
+function of `(program-hash, input)`, memoized — so it is a **direct access** like `cas-get` and
+the key-value read (section 3, section 8), not an effect: it may await the sub-execution but
+resolves within the call, and a pure function may call it and stay pure. A pure function can
+call `run`, and the program it runs can call further functions, with the whole computation
+deterministic — so composing pure computation needs no effect plumbing. The synchronous form is
+a blocking host import returning inline; its guest-side surface is fixed with the compiler and
+runtime that emit the call.
+
 A `run` program is a computation, not a routable participant — nothing can address it (it
 answers only the one request, then it is gone), so it needs no real identity and leaves no
 trace. A program that genuinely needs an identity, a parent, or the world is a stateful
