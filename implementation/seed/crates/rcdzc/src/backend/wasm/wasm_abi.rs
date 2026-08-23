@@ -115,10 +115,10 @@ pub mod op {
     pub const I64_EXTEND_I32_S: u8 = 0xac;
     pub const I64_EXTEND_I32_U: u8 = 0xad;
     pub const I32_STORE: u8 = 0x36;
+    pub const I32_STORE8: u8 = 0x3a;
     pub const I64_STORE: u8 = 0x37;
     pub const F32_STORE: u8 = 0x38;
     pub const F64_STORE: u8 = 0x39;
-    pub const I32_STORE8: u8 = 0x3a;
     pub const I32_STORE16: u8 = 0x3b;
     pub const I32_LOAD: u8 = 0x28;
     pub const I32_LOAD8_U: u8 = 0x2d;

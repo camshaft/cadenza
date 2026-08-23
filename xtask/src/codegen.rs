@@ -1461,6 +1461,40 @@ mod wasm_abi {
                     memory_index: 0,
                 }),
             ),
+            // The wider stores the reducer RESULT-lower (W4c-b canonical writer) needs: an `i64`/`f64`/`f32`
+            // scalar field, and the 2-byte `i32.store16` for a `u16`/`s16` slot. Same MemArg-irrelevant note.
+            op(
+                "I64_STORE",
+                Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }),
+            ),
+            op(
+                "F32_STORE",
+                Instruction::F32Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }),
+            ),
+            op(
+                "F64_STORE",
+                Instruction::F64Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }),
+            ),
+            op(
+                "I32_STORE16",
+                Instruction::I32Store16(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }),
+            ),
             // Memory loads — the reducer byte-ABI `apply(event: list<u8>)` wrapper (B3) reads the incoming
             // event bytes out of linear memory (the canonical ABI delivers a `list<u8>` param as a
             // `(ptr, len)` pair with the bytes at `ptr`) to copy them into a heap `Bytes` before
