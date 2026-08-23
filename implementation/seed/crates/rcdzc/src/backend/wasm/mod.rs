@@ -8110,12 +8110,68 @@ fn canon_write_of(
                 elem: Box::new(canon_write_of(db, &elem_g, &elem_w)?),
             })
         }
+        // NAMED VARIANT result: a guest sum crossing as WIT `variant<case, case(T), …>`. POSITION-matched —
+        // the guest's decl-variant order is the boundary disc order (like a record's field order), so
+        // `boundary_disc == decl_disc`. SOUNDNESS guard: same arm count AND each position's payload-presence
+        // must agree (guest-nullary iff WIT-case-nullary) — catches a nullary/payload swap. (The WIT-vs-guest
+        // case-NAME correspondence is an open contract with v-platform; positional + this shape guard is the
+        // sound default. A payload arm resolves its payload type via the ctor + `payload_ty_at_instantiation`.)
+        Ty::Sum { decl, .. } if matches!(wty, WitType::Variant(_)) => {
+            let WitType::Variant(cases) = wty else {
+                unreachable!()
+            };
+            let sum_ty = gty.strip_nominal().clone();
+            let (nullary, ctors): (Vec<bool>, Vec<Option<crate::ast::StructId>>) = {
+                let dr = db.type_decl_by_occ(*decl)?;
+                if dr.variants.len() != cases.len() {
+                    return None;
+                }
+                (
+                    dr.variants.iter().map(|v| v.payloads.is_empty()).collect(),
+                    dr.variants.iter().map(|v| v.ctor).collect(),
+                )
+            };
+            let mut arms = Vec::with_capacity(cases.len());
+            for (disc, (_, wit_payload)) in cases.iter().enumerate() {
+                // Payload-shape guard: guest arm nullary-ness must match the WIT case's.
+                if nullary[disc] != wit_payload.is_none() {
+                    return None;
+                }
+                let payload = match wit_payload {
+                    None => None,
+                    Some(pw) => {
+                        let ctor = ctors[disc]?;
+                        let payload_gty =
+                            crate::infer::payload_ty_at_instantiation(db, ctor, &sum_ty)?;
+                        let pw = pw.clone();
+                        Some(Box::new(canon_write_of(db, &payload_gty, &pw)?))
+                    }
+                };
+                arms.push(VariantArm {
+                    boundary_disc: disc as u32,
+                    payload,
+                });
+            }
+            let case_payloads: Vec<Option<&WitType>> =
+                cases.iter().map(|(_, p)| p.as_ref()).collect();
+            let (disc_size, payload_offset) = wit_ctype::variant_disc_layout(&case_payloads);
+            let disc_store = match disc_size {
+                1 => op::I32_STORE8,
+                2 => op::I32_STORE16,
+                _ => op::I32_STORE,
+            };
+            Some(CanonWrite::Variant {
+                disc_store,
+                payload_offset,
+                arms,
+            })
+        }
         // OPTION result: a two-variant guest sum (one nullary + one single-payload) crossing as WIT
         // `option<inner>` (boundary None=0, Some=1). Resolve which decl-disc is the payload arm + its payload
         // type (mirrors the param-side `fixed_shape_option_scalar_arg`), then write the payload recursively.
         Ty::Sum { decl, args, .. } => {
             let WitType::Option(inner) = wty else {
-                return None; // result<>/named-variant results are a later slice
+                return None; // result<> results are a later slice
             };
             let (params, variant_payloads): (Vec<String>, Vec<Vec<crate::ast::StructId>>) = {
                 let dr = db.type_decl_by_occ(*decl)?;

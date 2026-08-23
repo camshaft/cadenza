@@ -1784,6 +1784,142 @@ fn a_record_result_guest_compiles_and_runs_via_result_spill() {
     assert_eq!(get("b"), 42, "spilled record result: b == 2*m.x == 42");
 }
 
+/// A KIND_WIT_WORLD `f(m: record{x: s64}) -> record{o: variant{Continue, Close(s64)}}` — a NAMED variant
+/// result (the shape of a reducer Step's `outcome`: a nullary arm + a payload arm). The writer position-
+/// matches the guest sum's decl order to the WIT case order (boundary disc = decl disc).
+fn named_variant_result_world_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let s64 = |b: &mut Builder| {
+        let h = b.name("s64");
+        b.list(vec![h])
+    };
+    // param: ("record" (x (s64)))
+    let x_ty = s64(&mut b);
+    let x_name = b.name("x");
+    let x_field = b.list(vec![x_name, x_ty]);
+    let prec_head = b.atom_leaf(Leaf::Str("record".into()));
+    let prec = b.list(vec![prec_head, x_field]);
+    // variant: ("variant" (Continue) (Close (s64))) — case 0 nullary, case 1 payload.
+    let cont_name = b.name("continue");
+    let cont_case = b.list(vec![cont_name]);
+    let close_name = b.name("close");
+    let close_ty = s64(&mut b);
+    let close_case = b.list(vec![close_name, close_ty]);
+    let var_head = b.atom_leaf(Leaf::Str("variant".into()));
+    let var_ty = b.list(vec![var_head, cont_case, close_case]);
+    // result: ("record" (o <variant>))
+    let o_name = b.name("o");
+    let o_field = b.list(vec![o_name, var_ty]);
+    let rrec_head = b.atom_leaf(Leaf::Str("record".into()));
+    let rrec = b.list(vec![rrec_head, o_field]);
+    let func_h = b.name("func");
+    let param_h = b.name("param");
+    let pn = b.name("m");
+    let param_node = b.list(vec![param_h, pn, prec]);
+    let result_h = b.name("result");
+    let result_node = b.list(vec![result_h, rrec]);
+    let func = b.list(vec![func_h, param_node, result_node]);
+    let member_h = b.name("member");
+    let mn = b.name("f");
+    let member = b.list(vec![member_h, mn, func]);
+    let exp_h = b.name("export");
+    let iname = b.name("iface");
+    let export = b.list(vec![exp_h, iname, member]);
+    let world_h = b.name("world");
+    let wn = b.name("w");
+    let world = b.list(vec![world_h, wn, export]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+/// W4c-b: a guest returning a NAMED variant (a nullary arm + a payload arm) compiles + runs — the shape of a
+/// reducer Step's `outcome`. `f(m) = {o: if m.x==0 then Continue else Close(m.x)}`; verifies both arms:
+/// `f({x:0}) == {o: Continue}` (disc 0, nullary) and `f({x:7}) == {o: Close(7)}` (disc 1 + payload).
+#[test]
+fn a_named_variant_result_guest_compiles_and_runs() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime) = find_runtime_wasm() else {
+        return;
+    };
+    let src = "(module m (type Outcome Continue (Close Int64)) \
+                 (def (f (: m (Record (x Int64)))) \
+                   (record (o (if (= (. m x) 0) Outcome.Continue (Outcome.Close (. m x)))))) \
+                 (export f))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:demo/iface"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                named_variant_result_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "named-variant result guest must emit: {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("emits a component");
+    let opts = cdz_run::RunOpts {
+        export: None,
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    let call = |x: i64| {
+        cdz_run::run_reducer_typed(
+            bytes,
+            "cadenza:demo/iface",
+            "f",
+            &[Val::Record(vec![("x".to_string(), Val::S64(x))])],
+            &opts,
+        )
+        .expect("run the named-variant result member")
+    };
+    let field_o = |v: &Val| -> Val {
+        let Val::Record(fs) = v else {
+            panic!("record, got {v:?}");
+        };
+        fs.iter().find(|(n, _)| n == "o").expect("o").1.clone()
+    };
+    // Nullary arm (disc 0).
+    match field_o(&call(0)) {
+        Val::Variant(case, payload) => {
+            assert_eq!(case, "continue", "disc 0 → continue");
+            assert!(payload.is_none(), "Continue is nullary");
+        }
+        other => panic!("expected a variant, got {other:?}"),
+    }
+    // Payload arm (disc 1 + payload).
+    match field_o(&call(7)) {
+        Val::Variant(case, payload) => {
+            assert_eq!(case, "close", "disc 1 → close");
+            assert_eq!(
+                payload.as_deref(),
+                Some(&Val::S64(7)),
+                "Close carries m.x == 7"
+            );
+        }
+        other => panic!("expected a variant, got {other:?}"),
+    }
+}
+
 /// A KIND_WIT_WORLD `f(m: record{x: s64}) -> record{d: option<s64>}` — an OPTION (variant) result field, the
 /// shape of a reducer request's `deadline-nanos: option<u64>`. The writer's variant case: `sum-disc` → store
 /// the boundary disc (None=0/Some=1), and for Some write the payload at the variant's payload offset.

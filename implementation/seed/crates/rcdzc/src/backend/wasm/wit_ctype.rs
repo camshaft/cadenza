@@ -556,6 +556,21 @@ fn flags_align(n: usize) -> u32 {
     }
 }
 
+/// The disc byte-size + the canonical byte-offset of the payload area for a tagged type with these case
+/// payloads — the inputs the result-lower's variant writer needs (`disc_store` width + where each arm's
+/// payload lands after the discriminant). The payload area sits at the disc size rounded up to the max
+/// present-payload alignment (`(disc, payload_offset)`); a pure enum has `payload_offset == disc` (unused).
+pub fn variant_disc_layout(case_payloads: &[Option<&WitType>]) -> (u32, u32) {
+    let disc = disc_size(case_payloads.len());
+    let max_payload_align = case_payloads
+        .iter()
+        .flatten()
+        .map(|t| canonical_align(t))
+        .max()
+        .unwrap_or(1);
+    (disc, align_to(disc, max_payload_align))
+}
+
 /// Canonical alignment of a tagged type given its cases' payloads: the max of the discriminant's alignment
 /// and every present case payload's alignment.
 fn variant_align(case_payloads: &[Option<&WitType>]) -> u32 {
