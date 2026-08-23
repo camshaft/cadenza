@@ -256,6 +256,95 @@ pub fn ty_natural_wit(t: &Ty) -> Option<WitType> {
     })
 }
 
+/// The Cadenza value-model [`Ty`] a declared world-import [`WitType`] denotes — the FORWARD direction of
+/// [`ty_natural_wit`], the canonical WIT→Ty mapping a guest's `perform` of a world import types against
+/// (v-platform oracle ruling 2026-08-23, `world-import-call-surface-must-be-fully-general`). Generic over an
+/// ARBITRARY import member's signature, ZERO per-interface arms:
+///
+/// - `list<u8>` → `Bytes` (every hash/payload/token/bytes alias collapses to `Bytes`, the inverse of
+///   `ty_natural_wit`'s `Bytes → list<u8>`); any other `list<T>` → `List(⟦T⟧)`.
+/// - `bool`/`char`/`string` → `Bool`/`Char`/`String`; `uN`/`sN` → an `Int` of that signedness+width;
+///   `f32`/`f64` → a `Float` of that width; `unit` → `Unit`.
+/// - `tuple<T…>` → `Tuple(⟦T⟧…)`; `record { f: T… }` → `Record(f: ⟦T⟧…)` (canonically SORTED, as every
+///   `Ty::Record` is — the WIT-declared field order is a boundary/emit concern, not the type's identity).
+/// - `option<T>` → the prelude `Option(⟦T⟧)`; `result<ok, err>` → the prelude `Result(⟦ok⟧, ⟦err⟧)`, an
+///   absent arm filled with `Unit` (WIT `result` / `result<T>` / `result<_, E>`).
+///
+/// `⟦·⟧` = apply recursively. Returns `None` for a shape not yet mapped: `enum` / `variant` / `flags` (each
+/// needs a SYNTHESIZED nominal sum decl — a Cadenza sum is nominal, carrying a decl identity, unlike a
+/// structural WIT variant; a later increment covers `Dir`/`Error`), or any compound whose inner type does
+/// not map. `db` is needed only to instantiate the prelude `Option`/`Result` sums (`normalize_sum` over the
+/// declared occurrence), so a prelude-less compile yields `None` there too.
+pub fn wit_type_to_ty(db: &crate::db::Db, t: &WitType) -> Option<Ty> {
+    use crate::ty::{FloatTy, IntTy};
+    Some(match t {
+        WitType::Bool => Ty::Bool,
+        WitType::Char => Ty::Char,
+        WitType::String => Ty::String,
+        WitType::U8 => Ty::Int(IntTy::fixed(false, 8)),
+        WitType::U16 => Ty::Int(IntTy::fixed(false, 16)),
+        WitType::U32 => Ty::Int(IntTy::fixed(false, 32)),
+        WitType::U64 => Ty::Int(IntTy::fixed(false, 64)),
+        WitType::S8 => Ty::Int(IntTy::fixed(true, 8)),
+        WitType::S16 => Ty::Int(IntTy::fixed(true, 16)),
+        WitType::S32 => Ty::Int(IntTy::fixed(true, 32)),
+        WitType::S64 => Ty::Int(IntTy::fixed(true, 64)),
+        WitType::F32 => Ty::Float(FloatTy::fixed(32)),
+        WitType::F64 => Ty::Float(FloatTy::fixed(64)),
+        WitType::Unit => Ty::Unit,
+        // A byte-list collapses to `Bytes` (the inverse of `ty_natural_wit`); any other element → `List(⟦T⟧)`.
+        WitType::List(elem) => {
+            if matches!(**elem, WitType::U8) {
+                Ty::Bytes
+            } else {
+                Ty::List(Box::new(wit_type_to_ty(db, elem)?))
+            }
+        }
+        WitType::Tuple(elems) => {
+            let mut out = Vec::with_capacity(elems.len());
+            for e in elems {
+                out.push(wit_type_to_ty(db, e)?);
+            }
+            Ty::Tuple(out.into())
+        }
+        WitType::Record(fields) => {
+            let mut map = std::collections::BTreeMap::new();
+            for (name, fty) in fields {
+                map.insert(
+                    crate::resolved::Symbol::plain(name.as_str()),
+                    wit_type_to_ty(db, fty)?,
+                );
+            }
+            Ty::Record(std::rc::Rc::new(map))
+        }
+        WitType::Option(inner) => {
+            let elem = wit_type_to_ty(db, inner)?;
+            prelude_sum(db, "Option", vec![elem])?
+        }
+        WitType::Result { ok, err } => {
+            let ok_ty = match ok {
+                Some(t) => wit_type_to_ty(db, t)?,
+                None => Ty::Unit,
+            };
+            let err_ty = match err {
+                Some(t) => wit_type_to_ty(db, t)?,
+                None => Ty::Unit,
+            };
+            prelude_sum(db, "Result", vec![ok_ty, err_ty])?
+        }
+        // A nominal sum needs a SYNTHESIZED decl (Cadenza sums carry a decl identity) — a later increment.
+        WitType::Variant(_) | WitType::Enum(_) | WitType::Flags(_) => return None,
+    })
+}
+
+/// Instantiate a prelude sum type (`Option`/`Result`) at the given type args, or `None` if the declaration
+/// is absent (a prelude-less compile). Mirrors `infer::option_ty`, the shared way the world-effect request
+/// record spells its `Option Bytes` fields.
+fn prelude_sum(db: &crate::db::Db, name: &str, args: Vec<Ty>) -> Option<Ty> {
+    let occ = db.type_decls.iter().find(|t| t.name == name)?.occ;
+    Some(db.normalize_sum(occ, args))
+}
+
 /// Whether a guest [`Ty`] has a value-form document (so `value-encode`/`value-decode` can bridge it to a
 /// declared `list<u8>`). Everything with a runtime value form qualifies; the non-value types (a function, a
 /// type-value, an unresolved var, `Any`, a continuation, `unit`) do not.
@@ -1006,6 +1095,131 @@ mod tests {
         assert!(
             !is_world_import_op(Some(&bytes), "Model", "request"),
             "`Model` is not a world import → async reify (not mis-matched by the kebab normalization)"
+        );
+    }
+
+    /// The FORWARD canonical mapping `wit_type_to_ty` (v-platform oracle rule 2026-08-23) covers the whole
+    /// structural + Option/Result span the platform `world.wit` uses — generic over any import member, zero
+    /// per-interface arms. Pins each shape against the oracle target, and the deferred nominal shapes
+    /// (enum/variant/flags → None, need a synthesized decl).
+    #[test]
+    fn wit_type_to_ty_maps_the_canonical_world_import_shapes() {
+        use crate::db::Db;
+        use crate::ty::FloatTy;
+        // A Db carrying the prelude (so Option/Result decls resolve for normalize_sum).
+        let db = Db::load(crate::testkit::parse(
+            "(module m (def (main) 0) (export main))",
+        ));
+        let byte_list = || WitType::List(Box::new(WitType::U8));
+
+        // Scalars + widths + the byte-list→Bytes collapse.
+        assert_eq!(wit_type_to_ty(&db, &WitType::Bool), Some(Ty::Bool));
+        assert_eq!(wit_type_to_ty(&db, &WitType::String), Some(Ty::String));
+        assert_eq!(wit_type_to_ty(&db, &WitType::Unit), Some(Ty::Unit));
+        assert_eq!(
+            wit_type_to_ty(&db, &WitType::U64),
+            Some(Ty::Int(IntTy::fixed(false, 64)))
+        );
+        assert_eq!(
+            wit_type_to_ty(&db, &WitType::S32),
+            Some(Ty::Int(IntTy::fixed(true, 32)))
+        );
+        assert_eq!(
+            wit_type_to_ty(&db, &WitType::F64),
+            Some(Ty::Float(FloatTy::fixed(64)))
+        );
+        // list<u8> → Bytes (identity.id / blobs / hashes / tokens all collapse here).
+        assert_eq!(wit_type_to_ty(&db, &byte_list()), Some(Ty::Bytes));
+        // A non-byte list stays a List of the mapped element.
+        assert_eq!(
+            wit_type_to_ty(&db, &WitType::List(Box::new(WitType::U32))),
+            Some(Ty::List(Box::new(Ty::Int(IntTy::fixed(false, 32)))))
+        );
+
+        // record → Record (canonically sorted; the deliver `message` shape, all Bytes, maps fully and
+        // recursively — nested sender record included).
+        let message = WitType::Record(vec![
+            ("contract".into(), byte_list()),
+            (
+                "sender".into(),
+                WitType::Record(vec![
+                    ("reducer".into(), byte_list()),
+                    ("host".into(), byte_list()),
+                ]),
+            ),
+            ("payload".into(), byte_list()),
+            ("token".into(), byte_list()),
+        ]);
+        match wit_type_to_ty(&db, &message).expect("the deliver message record maps") {
+            Ty::Record(fields) => {
+                assert_eq!(fields.len(), 4, "four top-level fields");
+                assert_eq!(
+                    fields.get(&crate::resolved::Symbol::plain("payload")),
+                    Some(&Ty::Bytes)
+                );
+                match fields.get(&crate::resolved::Symbol::plain("sender")) {
+                    Some(Ty::Record(inner)) => assert_eq!(
+                        inner.get(&crate::resolved::Symbol::plain("reducer")),
+                        Some(&Ty::Bytes),
+                        "the nested sender record maps recursively"
+                    ),
+                    other => panic!("sender must be a nested Record, got {other:?}"),
+                }
+            }
+            other => panic!("a WIT record maps to Ty::Record, got {other:?}"),
+        }
+
+        // option<bytes> (state.get / blobs.get) → the prelude Option instantiated at Bytes.
+        let want_opt = {
+            let occ = db
+                .type_decls
+                .iter()
+                .find(|t| t.name == "Option")
+                .unwrap()
+                .occ;
+            db.normalize_sum(occ, vec![Ty::Bytes])
+        };
+        assert_eq!(
+            wit_type_to_ty(&db, &WitType::Option(Box::new(byte_list()))),
+            Some(want_opt)
+        );
+        // result<list<u8>, _> with an absent err → the prelude Result(Bytes, Unit).
+        let want_res = {
+            let occ = db
+                .type_decls
+                .iter()
+                .find(|t| t.name == "Result")
+                .unwrap()
+                .occ;
+            db.normalize_sum(occ, vec![Ty::Bytes, Ty::Unit])
+        };
+        assert_eq!(
+            wit_type_to_ty(
+                &db,
+                &WitType::Result {
+                    ok: Some(Box::new(byte_list())),
+                    err: None,
+                }
+            ),
+            Some(want_res)
+        );
+
+        // Deferred nominal shapes need a synthesized decl → None (the `Dir` enum, the `Error` variant).
+        assert_eq!(
+            wit_type_to_ty(
+                &db,
+                &WitType::Enum(vec!["outgoing".into(), "incoming".into()])
+            ),
+            None,
+            "an enum needs a synthesized nominal sum decl (later increment)"
+        );
+        assert_eq!(
+            wit_type_to_ty(
+                &db,
+                &WitType::Variant(vec![("timeout".into(), None), ("faulted".into(), None)])
+            ),
+            None,
+            "a variant needs a synthesized nominal sum decl (later increment)"
         );
     }
 }
