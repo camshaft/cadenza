@@ -873,6 +873,247 @@ fn a_typed_interface_export_validates_and_runs() {
     );
 }
 
+/// A synthetic core module for a `f(m: record{tag:u32, data:list<u8>}) -> u32` guest: exports `memory` +
+/// a bump `cabi_realloc` (so the host can lower the `list<u8>` leaf into guest memory) + `f`, whose
+/// canonical-ABI-flattened signature is `(tag:i32, data_ptr:i32, data_len:i32) -> i32` and which returns
+/// `tag` (local 0). Isolates the Memory+Realloc lift path from any runtime — the list is lowered into
+/// memory by wasmtime via `cabi_realloc`, and `f` just reads the scalar field.
+fn core_record_with_list_param() -> Vec<u8> {
+    use wasm_encoder::*;
+    let mut m = Module::new();
+    let mut types = TypeSection::new();
+    types
+        .ty()
+        .function(vec![ValType::I32; 4], vec![ValType::I32]); // type 0: cabi_realloc
+    types.ty().function(
+        vec![ValType::I32, ValType::I32, ValType::I32],
+        vec![ValType::I32],
+    ); // type 1: f
+    m.section(&types);
+    let mut funcs = FunctionSection::new();
+    funcs.function(0); // func 0: cabi_realloc
+    funcs.function(1); // func 1: f
+    m.section(&funcs);
+    let mut mems = MemorySection::new();
+    mems.memory(MemoryType {
+        minimum: 1,
+        maximum: None,
+        memory64: false,
+        shared: false,
+        page_size_log2: None,
+    });
+    m.section(&mems);
+    let mut globals = GlobalSection::new();
+    globals.global(
+        GlobalType {
+            val_type: ValType::I32,
+            mutable: true,
+            shared: false,
+        },
+        &ConstExpr::i32_const(16),
+    ); // global 0: bump cursor
+    m.section(&globals);
+    let mut exports = ExportSection::new();
+    exports.export("cabi_realloc", ExportKind::Func, 0);
+    exports.export("f", ExportKind::Func, 1);
+    exports.export("memory", ExportKind::Memory, 0);
+    m.section(&exports);
+    let mut code = CodeSection::new();
+    // cabi_realloc(orig, orig_size, align, new_size): ret = cursor; cursor += new_size; return ret.
+    let mut realloc = Function::new(vec![]);
+    realloc.instruction(&Instruction::GlobalGet(0));
+    realloc.instruction(&Instruction::GlobalGet(0));
+    realloc.instruction(&Instruction::LocalGet(3));
+    realloc.instruction(&Instruction::I32Add);
+    realloc.instruction(&Instruction::GlobalSet(0));
+    realloc.instruction(&Instruction::End);
+    code.function(&realloc);
+    // f(tag, data_ptr, data_len): return tag.
+    let mut f = Function::new(vec![]);
+    f.instruction(&Instruction::LocalGet(0));
+    f.instruction(&Instruction::End);
+    code.function(&f);
+    m.section(&code);
+    m.finish()
+}
+
+/// W4c: a guest interface func with a `list<u8>` LEAF in its record param lifts via Memory+Realloc and
+/// RUNS under wasmtime — the shape every real reducer func has (message/step carry `list<u8>` leaves). The
+/// host lowers the record's `data` list into guest memory (calling the guest's `cabi_realloc`), passes the
+/// flattened `(tag, ptr, len)`, and `f` returns `tag`. Proves the memory-binding lift end to end without
+/// the value-heap runtime.
+#[test]
+fn a_list_leaf_param_lifts_via_memory_and_runs() {
+    use crate::backend::wasm::envelope::{TypedFunc, TypedInterface, assemble_typed_interface};
+    use crate::wit_world::WitType;
+    use wasmtime::component::{Component, Linker, Val};
+    use wasmtime::{Engine, Store};
+
+    let core = core_record_with_list_param();
+    let msg = WitType::Record(vec![
+        ("tag".to_string(), WitType::U32),
+        ("data".to_string(), WitType::List(Box::new(WitType::U8))),
+    ]);
+    let iface = TypedInterface {
+        name: "cadenza:demo/guest".to_string(),
+        types: vec![("msg".to_string(), msg.clone())],
+        funcs: vec![TypedFunc {
+            name: "f".to_string(),
+            params: vec![("m".to_string(), msg)],
+            result: Some(WitType::U32),
+        }],
+    };
+    let component = assemble_typed_interface(&core, &iface);
+
+    let engine = Engine::default();
+    let comp = Component::from_binary(&engine, &component).expect("list-leaf interface validates");
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store = Store::new(&engine, ());
+    let instance = linker.instantiate(&mut store, &comp).expect("instantiate");
+    let iface_idx = instance
+        .get_export_index(&mut store, None, "cadenza:demo/guest")
+        .expect("interface export present");
+    let f_idx = instance
+        .get_export_index(&mut store, Some(&iface_idx), "f")
+        .expect("f export present");
+    let func = instance.get_func(&mut store, f_idx).expect("f is a func");
+    let mut results = [Val::Bool(false)];
+    func.call(
+        &mut store,
+        &[Val::Record(vec![
+            ("tag".to_string(), Val::U32(42)),
+            (
+                "data".to_string(),
+                Val::List(vec![Val::U8(1), Val::U8(2), Val::U8(3)]),
+            ),
+        ])],
+        &mut results,
+    )
+    .expect("call");
+    func.post_return(&mut store).expect("post_return");
+    assert_eq!(
+        u32::from_val(&results[0]),
+        42,
+        "record param with a list<u8> leaf lifts via memory; f returns tag == 42"
+    );
+}
+
+/// A synthetic core for a `g() -> record{a:u32, b:u32}` guest: a record RESULT flattens to two values,
+/// which exceeds MAX_FLAT_RESULTS, so it SPILLS — the core returns an i32 pointer to the record laid out in
+/// linear memory at its canonical field offsets ([0, 4]). This core lays {a:11, b:22} at offset 8 (a data
+/// segment) and `g` returns 8; the canon lift reads the record back from memory. Exports `memory` + a stub
+/// `cabi_realloc` (the lift binds it; a read-only result lift never calls it).
+fn core_returns_record_by_pointer() -> Vec<u8> {
+    use wasm_encoder::*;
+    let mut m = Module::new();
+    let mut types = TypeSection::new();
+    types.ty().function(vec![], vec![ValType::I32]); // type 0: g () -> i32 (the return pointer)
+    types
+        .ty()
+        .function(vec![ValType::I32; 4], vec![ValType::I32]); // type 1: cabi_realloc stub
+    m.section(&types);
+    let mut funcs = FunctionSection::new();
+    funcs.function(0); // func 0: g
+    funcs.function(1); // func 1: cabi_realloc
+    m.section(&funcs);
+    let mut mems = MemorySection::new();
+    mems.memory(MemoryType {
+        minimum: 1,
+        maximum: None,
+        memory64: false,
+        shared: false,
+        page_size_log2: None,
+    });
+    m.section(&mems);
+    let mut exports = ExportSection::new();
+    exports.export("g", ExportKind::Func, 0);
+    exports.export("cabi_realloc", ExportKind::Func, 1);
+    exports.export("memory", ExportKind::Memory, 0);
+    m.section(&exports);
+    let mut code = CodeSection::new();
+    let mut g = Function::new(vec![]);
+    g.instruction(&Instruction::I32Const(8)); // the record lives at offset 8
+    g.instruction(&Instruction::End);
+    code.function(&g);
+    let mut realloc = Function::new(vec![]);
+    realloc.instruction(&Instruction::I32Const(0)); // stub — never called for a read-only result lift
+    realloc.instruction(&Instruction::End);
+    code.function(&realloc);
+    m.section(&code);
+    // record{ a: u32 = 11, b: u32 = 22 } at canonical offsets [0, 4] from base 8 (little-endian i32s).
+    let mut data = DataSection::new();
+    data.active(0, &ConstExpr::i32_const(8), vec![11, 0, 0, 0, 22, 0, 0, 0]);
+    m.section(&data);
+    m.finish()
+}
+
+/// W4c: a guest interface func returning a RECORD spills the result to linear memory (returned by pointer)
+/// and the canon lift reads it back — the shape of a reducer's `step` result. `g() -> record{a,b}` where
+/// the core lays {a:11, b:22} in memory and returns the pointer; wasmtime lifts the record from the
+/// canonical offsets. Proves the result-spill lift end to end with a synthetic core, no value-heap runtime.
+#[test]
+fn a_record_result_spills_to_memory_and_lifts() {
+    use crate::backend::wasm::envelope::{TypedFunc, TypedInterface, assemble_typed_interface};
+    use crate::wit_world::WitType;
+    use wasmtime::component::{Component, Linker, Val};
+    use wasmtime::{Engine, Store};
+
+    let core = core_returns_record_by_pointer();
+    let r = WitType::Record(vec![
+        ("a".to_string(), WitType::U32),
+        ("b".to_string(), WitType::U32),
+    ]);
+    let iface = TypedInterface {
+        name: "cadenza:demo/guest".to_string(),
+        types: vec![("r".to_string(), r.clone())],
+        funcs: vec![TypedFunc {
+            name: "g".to_string(),
+            params: vec![],
+            result: Some(r),
+        }],
+    };
+    let component = assemble_typed_interface(&core, &iface);
+
+    let engine = Engine::default();
+    let comp =
+        Component::from_binary(&engine, &component).expect("record-result interface validates");
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store = Store::new(&engine, ());
+    let instance = linker.instantiate(&mut store, &comp).expect("instantiate");
+    let iface_idx = instance
+        .get_export_index(&mut store, None, "cadenza:demo/guest")
+        .expect("interface export present");
+    let g_idx = instance
+        .get_export_index(&mut store, Some(&iface_idx), "g")
+        .expect("g export present");
+    let func = instance.get_func(&mut store, g_idx).expect("g is a func");
+    let mut results = [Val::Bool(false)];
+    func.call(&mut store, &[], &mut results).expect("call");
+    func.post_return(&mut store).expect("post_return");
+    match &results[0] {
+        Val::Record(fields) => {
+            let field = |name: &str| {
+                fields
+                    .iter()
+                    .find(|(k, _)| k == name)
+                    .map(|(_, v)| v)
+                    .expect("field present")
+            };
+            assert_eq!(
+                u32::from_val(field("a")),
+                11,
+                "spilled record result field a"
+            );
+            assert_eq!(
+                u32::from_val(field("b")),
+                22,
+                "spilled record result field b"
+            );
+        }
+        other => panic!("expected a record result, got {other:?}"),
+    }
+}
+
 /// Whether calling export `name` with `args` TRAPS (an `unreachable` from an overflow guard). Returns
 /// `true` if the call errored (a wasm trap), `false` if it returned normally.
 fn call_traps(component_bytes: &[u8], name: &str, args: &[wasmtime::component::Val]) -> bool {
