@@ -30,6 +30,15 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
+// jemalloc as this executable's global allocator (operator suggestion 2026-08-23): the run drives a whole
+// platform + wasmtime + the observation log, which is allocation-heavy, so a better allocator cuts overhead
+// and fragmentation. The choice is invisible to the recorded log (seq/time/id are logical, not addresses),
+// so it does not affect the run's Bach determinism. Not on msvc (jemalloc does not build there); the binary
+// only ships for the host targets (Linux/macOS) the nix `--features host` check builds anyway.
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 fn main() -> ExitCode {
     let mut args = std::env::args_os().skip(1);
     let Some(spec_path) = args.next().map(PathBuf::from) else {
