@@ -1304,9 +1304,27 @@ mod tests {
         };
         let pick_res = unit(&mut b);
         let pick = member(&mut b, "pick", vec![("dir", en)], pick_res);
+        // set-edges: (list<u8>, list<u8>, list<list<u8>>) -> list<list<u8>> — the privileged
+        // graph.set-edges shape: 3 args, a NESTED list<list<u8>> (list of reducer-ids) param + result. The
+        // inner list<u8> collapses to Bytes, so list<list<u8>> derives to List(Bytes).
+        let list_of_bytes = |b: &mut Builder| {
+            let lh = str_head(b, "list");
+            let inner = byte_list(b);
+            b.list(vec![lh, inner])
+        };
+        let se_src = byte_list(&mut b);
+        let se_kind = byte_list(&mut b);
+        let se_edges = list_of_bytes(&mut b);
+        let se_res = list_of_bytes(&mut b);
+        let set_edges = member(
+            &mut b,
+            "set-edges",
+            vec![("src", se_src), ("kind", se_kind), ("edges", se_edges)],
+            se_res,
+        );
         let ih = b.name("import");
         let inm = b.name("things");
-        let things = b.list(vec![ih, inm, id, get, put, pick]);
+        let things = b.list(vec![ih, inm, id, get, put, pick, set_edges]);
         let wh = b.name("world");
         let wn = b.name("reducer");
         let world = b.list(vec![wh, wn, things]);
@@ -1337,6 +1355,15 @@ mod tests {
         assert_eq!(
             world_import_member_sig(&db, w, "things", "put"),
             Some((vec![Ty::Bytes, Ty::Bytes], Ty::Unit))
+        );
+        // 3-arg + nested list<list<u8>> param/result (graph.set-edges shape) →
+        // ([Bytes, Bytes, List Bytes], List Bytes) — the inner list<u8> collapses to Bytes.
+        assert_eq!(
+            world_import_member_sig(&db, w, "things", "set-edges"),
+            Some((
+                vec![Ty::Bytes, Ty::Bytes, Ty::List(Box::new(Ty::Bytes))],
+                Ty::List(Box::new(Ty::Bytes))
+            ))
         );
         // An enum param is not yet mapped → None (deferred synthesized-decl increment).
         assert_eq!(world_import_member_sig(&db, w, "things", "pick"), None);
