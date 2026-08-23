@@ -8064,19 +8064,45 @@ fn record_interface_export(
         }
         let mut param_vts: Vec<u8> = Vec::new();
         let mut params: Vec<Option<Vec<FieldRebuild>>> = Vec::new();
-        for (_, gty) in &e.params {
+        for ((_, gty), (_, wty)) in e.params.iter().zip(&member.func.params) {
             match gty {
-                Ty::Record(_) => {
-                    let (_c, core_vts, rebuild) = tuple_field_abi(gty)?;
-                    // MVP: only scalar-field records (no nested compound field) — a nested field needs a
-                    // deeper build the later wrapper slice adds.
-                    if rebuild
-                        .iter()
-                        .any(|f| !matches!(f, FieldRebuild::Scalar { .. }))
-                    {
+                Ty::Record(map) => {
+                    // SOUNDNESS: the wrapper reads the canon-flattened params IN THE WIT RECORD'S FIELD ORDER
+                    // and builds the value-heap cell in the def's `Ty::Record` order — which is NAME-
+                    // LEXICOGRAPHIC (a `BTreeMap<Symbol,_>`). Those two orders must coincide, or a field's
+                    // flattened leaf would land in the wrong cell slot (a silent miscompile). Decline when the
+                    // WIT declares its fields in a different order than name-lex — reordering the flattened
+                    // reads is a later slice; declining here keeps the boundary sound (never miscompiles).
+                    if let WitType::Record(wfs) = wty {
+                        let wit_order: Vec<&str> = wfs.iter().map(|(n, _)| n.as_str()).collect();
+                        let lex_order: Vec<&str> = map.keys().map(|s| s.name.as_ref()).collect();
+                        if wit_order != lex_order {
+                            return None;
+                        }
+                    } else {
                         return None;
                     }
-                    param_vts.extend(core_vts.iter().map(|vt| vt.byte()));
+                    // Build the record's per-field rebuild + flattened core params directly (`tuple_field_abi`
+                    // handles only scalar-field records): a scalar field boxes one flattened leaf; a
+                    // `list<u8>`/`Bytes` field crosses as `(ptr, len)` and copies out of the guest's linear
+                    // memory (`FieldRebuild::BytesLeaf`, two i32 core params). A nested compound / other field
+                    // declines (returns `None` → the later wrapper slice). Field order is `map.values()` — the
+                    // same order the boundary WIT record and the def's cell rebuild use.
+                    let mut rebuild = Vec::new();
+                    for f in map.values() {
+                        match f.strip_nominal() {
+                            Ty::Bytes => {
+                                param_vts.push(crate::backend::wasm::lir::ValType::I32.byte());
+                                param_vts.push(crate::backend::wasm::lir::ValType::I32.byte());
+                                rebuild.push(FieldRebuild::BytesLeaf);
+                            }
+                            _ => {
+                                let fr = scalar_field_rebuild(f)?;
+                                param_vts.push(valtype_of(f)?.byte());
+                                rebuild.push(fr);
+                            }
+                        }
+                    }
                     params.push(Some(rebuild));
                     any_record = true;
                 }
@@ -8093,6 +8119,12 @@ fn record_interface_export(
                     params.push(None);
                 }
             }
+        }
+        // A signature whose flattened params EXCEED the canonical limit spills the whole param tuple to a
+        // single pointer — the register-passing wrapper (which reads each field from its own flattened param)
+        // does not handle that; decline (later slice). Within the limit, fields cross individually flattened.
+        if param_vts.len() > crate::backend::wasm::wit_ctype::MAX_FLAT_PARAMS {
+            return None;
         }
         let result_vts = scalar_result_vts(&e.result)?;
         let def_abs = layout.abs(e.def)?;

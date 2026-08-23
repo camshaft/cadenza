@@ -835,20 +835,49 @@ pub fn assemble_typed_interface_with_runtime(
         items.extend_from_slice(&prog);
         section(sec::CORE_INSTANCE, &wasm_vec(2, &items))
     };
-    // sec 6 (second): alias each func's core export off the PROGRAM instance (core instance 1) → k..k+m.
+    // A boundary func whose signature TOUCHES LINEAR MEMORY (a `list<u8>` leaf in a record param, a spilling
+    // sig) lifts with Memory+Realloc options: the canon lift lowers the incoming list into the program's
+    // memory, and the wrapper reads it out (`emit_bytes_leaf_copy_in`). `sig_needs_memory` here mirrors the
+    // core's `wrapper_needs_memory` (both keyed off the SAME WIT signatures), so the two agree on which funcs
+    // and whether the program exports `memory` + `cabi_realloc` at all.
+    let touches = |f: &TypedFunc| {
+        let ptys: Vec<WitType> = f.params.iter().map(|(_, t)| t.clone()).collect();
+        crate::backend::wasm::wit_ctype::sig_needs_memory(&ptys, f.result.as_ref())
+    };
+    let needs_memory = iface.funcs.iter().any(touches);
+    // `cabi_realloc`'s CORE func index — aliased right after the m boundary funcs (present iff needs_memory).
+    let realloc_core_func = (k + m) as u32;
+    // sec 6 (second): alias each func's core export off the PROGRAM instance (core instance 1) → k..k+m;
+    // when memory is needed, also alias its `memory` (core memory 0, no func index) + `cabi_realloc` (core
+    // func k+m) so the lift's Memory+Realloc options can reference them.
     let boundary_alias_sec = {
         let mut items = Vec::new();
         for f in &iface.funcs {
             items.extend_from_slice(&core_alias_item(1, &f.name));
         }
-        section(sec::ALIAS, &wasm_vec(m, &items))
+        let mut count = m;
+        if needs_memory {
+            items.extend_from_slice(&memory_alias_item(1, "memory"));
+            items.extend_from_slice(&core_alias_item(1, "cabi_realloc"));
+            count += 2;
+        }
+        section(sec::ALIAS, &wasm_vec(count, &items))
     };
-    // sec 8 (second): lift each boundary core func (`k+j`) with its functype (`functype_base + j`), no
-    // options (MVP: no memory-touching leaf).
+    // sec 8 (second): lift each boundary core func (`k+j`) with its functype (`functype_base + j`) — no
+    // options for a pure-scalar sig, Memory(0)+Realloc(k+m) for a memory-touching one.
     let lift_sec = {
         let mut items = Vec::new();
-        for j in 0..m {
-            items.extend_from_slice(&canon_lift_item((k + j) as u32, functype_base + j as u32));
+        for (j, f) in iface.funcs.iter().enumerate() {
+            if touches(f) {
+                items.extend_from_slice(&canon_lift_list_item(
+                    (k + j) as u32,
+                    0,
+                    realloc_core_func,
+                    functype_base + j as u32,
+                ));
+            } else {
+                items.extend_from_slice(&canon_lift_item((k + j) as u32, functype_base + j as u32));
+            }
         }
         section(sec::CANON, &wasm_vec(m, &items))
     };

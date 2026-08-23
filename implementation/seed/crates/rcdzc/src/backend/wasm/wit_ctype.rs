@@ -308,7 +308,7 @@ impl CoreTy {
 /// Canonical-ABI flat-count limits: a function's params flatten in-place up to 16 core values, else spill to
 /// a single `i32` pointer to a tuple in linear memory; its result flattens in-place up to 1, else spills to
 /// an `i32` pointer to the result in linear memory. A record/variant result therefore always spills.
-const MAX_FLAT_PARAMS: usize = 16;
+pub const MAX_FLAT_PARAMS: usize = 16;
 const MAX_FLAT_RESULTS: usize = 1;
 
 /// The canonical-ABI join of two core types at one flattened position of a variant — the type both cases'
