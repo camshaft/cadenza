@@ -1,0 +1,49 @@
+# cdz-platform-reducer-echo-check — the INTERIM hand-written Rust checker guest for the reducer-echo e2e.
+#
+# A reducer GUEST component (same reducer-world as reducer-echo) that the integration-test harness names as a
+# run's `checker`: after the main run, the harness spawns this reducer and delivers the whole observation log
+# as a `check` message; on_message decodes the log, asserts reducer-echo echoed the delivered message (an
+# Emitted request on the same contract + payload as a Delivered message) with the emit token == the echoer's
+# own id, and emits a `verdict` request carrying Verdict.Verdict({pass, messages}); the itest binary exits 0
+# on pass / nonzero on fail.
+#
+# TEMPORARY (operator decision, 2026-08-23): this hand-written Rust checker exists ONLY to prove the whole
+# wasm-checker plumbing green end-to-end before the compiler can emit a reducer component. The MOMENT
+# v-rust-backend's .cdz->reducer-component emit lands (the record-path W4c-b), this crate AND reducer-echo
+# are DELETED and replaced by the equivalent Cadenza `.cdz` programs. Do not build on it.
+#
+# Standalone (its own `[workspace]`) so the native seed build/gate ignores it — exactly like reducer-echo;
+# built for wasm32-unknown-unknown by `cargo component build`, materialized reproducibly by the flake.
+[workspace]
+
+[package]
+name = "cdz-platform-reducer-echo-check"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# The wit-bindgen runtime the generated component bindings need (same version reducer-echo / cdz-nfc pin).
+wit-bindgen-rt = { version = "0.44", features = ["bitflags"] }
+
+# A no_std wasm component ships its own allocator so it imports no wasi (same as reducer-echo).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+talc = "5"
+
+[package.metadata.component]
+package = "cadenza:platform"
+
+# Target the SHARED platform ABI (no WIT duplication) — the ordinary `reducer-world`: state/blobs/identity
+# imports + the `guest` export. The checker reads the log via the `check` message and emits a `verdict`.
+[package.metadata.component.target]
+path = "../../wit"
+world = "reducer-world"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = true
+codegen-units = 1
