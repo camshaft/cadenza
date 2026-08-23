@@ -8071,29 +8071,35 @@ fn canon_write_of(
     match gty.strip_nominal() {
         Ty::Bytes => Some(CanonWrite::Bytes),
         Ty::Record(map) => {
+            use crate::backend::common::export_name::kebab_extern_name;
             let WitType::Record(wfs) = wty else {
                 return None;
             };
             if wfs.len() != map.len() {
                 return None;
             }
-            let wit_order: Vec<&str> = wfs.iter().map(|(n, _)| n.as_str()).collect();
-            let lex_order: Vec<&str> = map.keys().map(|s| s.name.as_ref()).collect();
-            if wit_order != lex_order {
-                return None;
-            }
+            // PERMUTE BY NAME: the value-heap cell's slots are in the guest's name-lex (`BTreeMap`) order,
+            // but the WIT record lays its fields (and their canonical offsets) in DECLARATION order — which
+            // need not be name-lex (the real `step{requests, outcome}` / `request{contract, payload, token,
+            // deadline-nanos}` are declaration-ordered). So map each WIT field to its guest slot BY NAME
+            // (kebab-normalized, the same rule as variants/exports) — read `arr-get(handle, guest_slot)` and
+            // write at the WIT field's canonical offset. A field with no name match declines.
+            let guest_names: Vec<String> = map
+                .keys()
+                .map(|s| kebab_extern_name(s.name.as_ref()))
+                .collect();
+            let gtys: Vec<Ty> = map.values().cloned().collect();
             let wtys: Vec<WitType> = wfs.iter().map(|(_, t)| t.clone()).collect();
             let offsets = wit_ctype::record_field_offsets(&wtys);
-            // Clone the field types so `db` is free for the recursive `canon_write_of` (which needs `&mut db`).
-            let gtys: Vec<Ty> = map.values().cloned().collect();
-            let fws: Vec<WitType> = wfs.iter().map(|(_, t)| t.clone()).collect();
             let mut fields = Vec::new();
-            for (i, ((fg, fw), off)) in gtys.iter().zip(fws.iter()).zip(offsets.iter()).enumerate()
-            {
+            for ((wname, fw), off) in wfs.iter().zip(offsets.iter()) {
+                let slot = guest_names.iter().position(|g| g == wname)?;
+                let fg = gtys[slot].clone();
+                let fw = fw.clone();
                 fields.push(CanonField {
-                    index: i as u32,
+                    index: slot as u32,
                     offset: *off,
-                    write: canon_write_of(db, fg, fw)?,
+                    write: canon_write_of(db, &fg, &fw)?,
                 });
             }
             Some(CanonWrite::Record { fields })

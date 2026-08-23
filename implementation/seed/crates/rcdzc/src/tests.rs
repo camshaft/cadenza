@@ -1784,6 +1784,122 @@ fn a_record_result_guest_compiles_and_runs_via_result_spill() {
     assert_eq!(get("b"), 42, "spilled record result: b == 2*m.x == 42");
 }
 
+/// W4c-b soundness: the record result writer PERMUTES fields by NAME, not by the guest's name-lex slot order.
+/// The WIT result declares its fields in NON-name-lex order — `record{second: s64, first: s64}` (`second`
+/// FIRST, but name-lex is `first` < `second`) — the shape of the real `step{requests, outcome}` /
+/// `request{contract, payload, token, deadline-nanos}` (declaration-ordered, not alphabetical). The writer
+/// must place `first` at the canonical offset of WIT-position 1 and `second` at WIT-position 0, reading each
+/// from its guest name-lex slot. `f(m) = {first: m.x, second: 2*m.x}`; `f({x:10}) == {second: 20, first: 10}`.
+fn non_name_lex_record_result_world_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let s64 = |b: &mut Builder| {
+        let h = b.name("s64");
+        b.list(vec![h])
+    };
+    let x_ty = s64(&mut b);
+    let x_name = b.name("x");
+    let x_field = b.list(vec![x_name, x_ty]);
+    let prec_head = b.atom_leaf(Leaf::Str("record".into()));
+    let prec = b.list(vec![prec_head, x_field]);
+    // result: ("record" (second (s64)) (first (s64))) — WIT order second,first (NOT name-lex first,second).
+    let sec_ty = s64(&mut b);
+    let sec_name = b.name("second");
+    let sec_field = b.list(vec![sec_name, sec_ty]);
+    let fst_ty = s64(&mut b);
+    let fst_name = b.name("first");
+    let fst_field = b.list(vec![fst_name, fst_ty]);
+    let rrec_head = b.atom_leaf(Leaf::Str("record".into()));
+    let rrec = b.list(vec![rrec_head, sec_field, fst_field]);
+    let func_h = b.name("func");
+    let param_h = b.name("param");
+    let pn = b.name("m");
+    let param_node = b.list(vec![param_h, pn, prec]);
+    let result_h = b.name("result");
+    let result_node = b.list(vec![result_h, rrec]);
+    let func = b.list(vec![func_h, param_node, result_node]);
+    let member_h = b.name("member");
+    let mn = b.name("f");
+    let member = b.list(vec![member_h, mn, func]);
+    let exp_h = b.name("export");
+    let iname = b.name("iface");
+    let export = b.list(vec![exp_h, iname, member]);
+    let world_h = b.name("world");
+    let wn = b.name("w");
+    let world = b.list(vec![world_h, wn, export]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+#[test]
+fn a_non_name_lex_record_result_permutes_by_name() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime) = find_runtime_wasm() else {
+        return;
+    };
+    let src = "(module m (def (f (: m (Record (x Int64)))) \
+                 (record (first (. m x)) (second (+ (. m x) (. m x))))) (export f))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:demo/iface"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                non_name_lex_record_result_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "non-name-lex record result must emit (permute by name): {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("emits a component");
+    let opts = cdz_run::RunOpts {
+        export: None,
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    let result = cdz_run::run_reducer_typed(
+        bytes,
+        "cadenza:demo/iface",
+        "f",
+        &[Val::Record(vec![("x".to_string(), Val::S64(10))])],
+        &opts,
+    )
+    .expect("run");
+    let Val::Record(fs) = &result else {
+        panic!("record, got {result:?}");
+    };
+    let g = |n: &str| {
+        fs.iter()
+            .find(|(k, _)| k == n)
+            .map(|(_, v)| i64::from_val(v))
+            .unwrap()
+    };
+    assert_eq!(
+        g("first"),
+        10,
+        "first == m.x, placed at its WIT (non-lex) offset"
+    );
+    assert_eq!(g("second"), 20, "second == 2*m.x, placed at its WIT offset");
+}
+
 /// A KIND_WIT_WORLD `f(m: record{x: s64}) -> record{o: variant{Continue, Close(s64)}}` — a NAMED variant
 /// result (the shape of a reducer Step's `outcome`: a nullary arm + a payload arm). The writer position-
 /// matches the guest sum's decl order to the WIT case order (boundary disc = decl disc).
