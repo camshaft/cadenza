@@ -1848,6 +1848,8 @@
               clippy-cadenza-ast = mkCrateClippyCrane { crate = "cadenza-ast"; };
               clippy-cadenza-syntax = mkCrateClippyCrane { crate = "cadenza-syntax"; extraSrc = [ ./spec/semantics ]; };
               clippy-cdz-calc = mkCrateClippyCrane { crate = "cdz-calc"; extraSrc = [ ./implementation/seed/crates/cdz-runtime/src/bigint.rs ]; };
+              clippy-cdz-component-rewrite = mkCrateClippyCrane { crate = "cdz-component-rewrite"; };
+              clippy-cdz-contract = mkCrateClippyCrane { crate = "cdz-contract"; };
               clippy-cdz-corpus = mkCrateClippyCrane { crate = "cdz-corpus"; extraSrc = [ ./spec/semantics ]; };
               clippy-cdz-num = mkCrateClippyCrane { crate = "cdz-num"; extraSrc = [ ./implementation/seed/crates/cdz-runtime/src/bigint.rs ]; };
               clippy-cdz-platform = mkCrateClippyCrane { crate = "cdz-platform"; };
@@ -1876,6 +1878,8 @@
               test-cadenza-ast = mkCrateTestCrane { crate = "cadenza-ast"; };
               test-cadenza-syntax = mkCrateTestCrane { crate = "cadenza-syntax"; extraSrc = [ ./spec/semantics ]; };
               test-cdz-calc = mkCrateTestCrane { crate = "cdz-calc"; extraSrc = [ ./implementation/seed/crates/cdz-runtime/src/bigint.rs ]; };
+              test-cdz-component-rewrite = mkCrateTestCrane { crate = "cdz-component-rewrite"; };
+              test-cdz-contract = mkCrateTestCrane { crate = "cdz-contract"; };
               test-cdz-corpus = mkCrateTestCrane { crate = "cdz-corpus"; extraSrc = [ ./spec/semantics ]; };
               test-cdz-num = mkCrateTestCrane { crate = "cdz-num"; extraSrc = [ ./implementation/seed/crates/cdz-runtime/src/bigint.rs ]; };
               test-cdz-platform = mkCrateTestCrane { crate = "cdz-platform"; };
@@ -1940,9 +1944,10 @@
             # contexts → NO ruleset change (v-ft: a 2-way rebalance keeps the contexts). Target: both ~4-5m.
             clippyShardA = pkgs.runCommand "cargo-clippy-shard-a"
               {
-                inherit (perCrateClippyCrane) clippy-rcdzc clippy-cdz-num clippy-cdz-calc clippy-cadenza-syntax clippy-cdz-platform;
+                inherit (perCrateClippyCrane) clippy-rcdzc clippy-cdz-num clippy-cdz-calc clippy-cadenza-syntax clippy-cdz-platform
+                  clippy-cdz-component-rewrite clippy-cdz-contract;
               } ''
-              echo "ok: clippy shard A — rcdzc + cdz-num + cdz-calc + cadenza-syntax + cdz-platform" > $out
+              echo "ok: clippy shard A — rcdzc + cdz-num + cdz-calc + cadenza-syntax + cdz-platform + cdz-component-rewrite + cdz-contract" > $out
             '';
             clippyShardB = pkgs.runCommand "cargo-clippy-shard-b"
               {
