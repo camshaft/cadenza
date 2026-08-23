@@ -184,6 +184,43 @@ impl Provenance for NoProvenance {
     }
 }
 
+/// The node-side delivery the privileged `deliver` host import is backed by (§4): injecting an event into a
+/// reducer's mailbox — the routing act itself. Having read the graph for a contract's chain, an event reducer
+/// hands a message to the next handler or folds a response back to a caller by delivering here. A narrow
+/// capability — the wasm host holds one of these rather than the whole [`System`] — mirroring
+/// [`Provenance`], so the privileged imports depend on small purpose-shaped traits, not the concrete system.
+/// `Send + Sync`, shared behind an `Arc`. The in-memory [`TaskSystem`] is one (below).
+#[async_trait]
+pub trait Delivery: Send + Sync {
+    /// Inject `event` into the mailbox of the reducer named by `target`. `true` if a reducer is running under
+    /// `target` and received it; `false` if none is (an unknown or gone target). Total — a backend failure is
+    /// reported as not-delivered rather than surfaced, since the guest's `deliver` returns only a `bool`.
+    async fn deliver(&self, target: ReducerId, event: Delivered) -> bool;
+}
+
+#[async_trait]
+impl<R: Runtime> Delivery for TaskSystem<R> {
+    async fn deliver(&self, target: ReducerId, event: Delivered) -> bool {
+        // The one mechanism the system already delivers through; the in-memory system never fails, so this is
+        // simply whether a reducer is running under `target`.
+        self.shared.send(target, event)
+    }
+}
+
+/// The null [`Delivery`]: every delivery is dropped, so nothing is received. The default a reducer host holds
+/// before (or without) a real system is wired — an ordinary reducer never has the `deliver` import anyway, so
+/// it never observes the difference — so the host can hold a `Delivery` unconditionally rather than an
+/// `Option` it must branch on. Pairs with [`NoProvenance`] for the two privileged host imports.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoDelivery;
+
+#[async_trait]
+impl Delivery for NoDelivery {
+    async fn deliver(&self, _target: ReducerId, _event: Delivered) -> bool {
+        false
+    }
+}
+
 /// The in-memory [`System`], generic over its [`Runtime`](crate::Runtime): each reducer an async task on the
 /// runtime, draining a channel mailbox. Its state lives in a [`Shared`] behind an `Arc`, so a running
 /// reducer's own task can spawn and deliver in turn — the recursion the router needs to route an emitted
