@@ -345,6 +345,103 @@ fn prelude_sum(db: &crate::db::Db, name: &str, args: Vec<Ty>) -> Option<Ty> {
     Some(db.normalize_sum(occ, args))
 }
 
+/// The resolvable SOURCE TYPE-EXPR AST node a world-import [`WitType`] denotes — the form a hand-written
+/// type annotation takes (`Bytes` / `(List T)` / `(Record (: f T)…)` / `(Option T)` / `(Result T E)` /
+/// `(Int W)` / `(-> …)`), which `eval::typeval_of` reduces to the SAME [`Ty`] that [`wit_type_to_ty`]
+/// produces. This is the node the derive-from-`world.wit` synthesis injects into a synthesized `(effect
+/// <iface> (op <op> (-> <param-expr>… <result-expr>)))` decl (v-syntax's b-prime plan: inject synthesized
+/// effect decls BEFORE resolve, so all downstream sees ORDINARY effects with zero resolve special-casing —
+/// the no-redeclare surface).
+///
+/// It builds SOURCE forms, NOT `eval::encode_ty`'s internal `(typeval …)` payload: the two DIVERGE for a
+/// sum, where `encode_ty` emits the nominal `(Sum <name> <decl> …)` (a `decode_ty`-only shape `typeval_of`
+/// does not read) while the injectable source form is the ctor application `(Option T)` / `(Result T E)`.
+/// The scalar / list / tuple / record forms coincide with `encode_ty`'s. `None` for a WIT type
+/// [`wit_type_to_ty`] does not map (`enum` / `variant` / `flags`, pending the synthesized-nominal-decl
+/// increment), or whose inner type does not map. Builds into `db`'s arena; the synthesis pass reuses it for
+/// the injected decls.
+pub fn wit_type_to_type_expr(db: &mut crate::db::Db, t: &WitType) -> Option<StructId> {
+    // `(Int W)` / `(UInt W)` — the width-carrying head form `typeval_of` reads (mirrors `encode_ty`).
+    fn int_expr(db: &mut crate::db::Db, signed: bool, w: i64) -> StructId {
+        let ctor = db.push_name(if signed { "Int" } else { "UInt" });
+        let width = db.push_atom(crate::ast::Leaf::Int {
+            value: crate::ast::IntValue::from_i64(w),
+            radix: crate::ast::Radix::Dec,
+        });
+        db.push_list(vec![ctor, width])
+    }
+    fn float_expr(db: &mut crate::db::Db, w: i64) -> StructId {
+        let ctor = db.push_name("Float");
+        let width = db.push_atom(crate::ast::Leaf::Int {
+            value: crate::ast::IntValue::from_i64(w),
+            radix: crate::ast::Radix::Dec,
+        });
+        db.push_list(vec![ctor, width])
+    }
+    Some(match t {
+        WitType::Bool => db.push_name("Bool"),
+        WitType::Char => db.push_name("Char"),
+        WitType::String => db.push_name("String"),
+        WitType::Unit => db.push_name("Unit"),
+        WitType::U8 => int_expr(db, false, 8),
+        WitType::U16 => int_expr(db, false, 16),
+        WitType::U32 => int_expr(db, false, 32),
+        WitType::U64 => int_expr(db, false, 64),
+        WitType::S8 => int_expr(db, true, 8),
+        WitType::S16 => int_expr(db, true, 16),
+        WitType::S32 => int_expr(db, true, 32),
+        WitType::S64 => int_expr(db, true, 64),
+        WitType::F32 => float_expr(db, 32),
+        WitType::F64 => float_expr(db, 64),
+        // A byte-list is `Bytes` (the inverse of `ty_natural_wit`); any other element → `(List T)`.
+        WitType::List(elem) if matches!(**elem, WitType::U8) => db.push_name("Bytes"),
+        WitType::List(elem) => {
+            let inner = wit_type_to_type_expr(db, elem)?;
+            let head = db.push_name("List");
+            db.push_list(vec![head, inner])
+        }
+        WitType::Tuple(elems) => {
+            let mut items = vec![db.push_name("Tuple")];
+            for e in elems {
+                items.push(wit_type_to_type_expr(db, e)?);
+            }
+            db.push_list(items)
+        }
+        // `(Record (: fname T)…)` — the canonical ascription-field form (mirrors `encode_ty`).
+        WitType::Record(fields) => {
+            let mut items = vec![db.push_name("Record")];
+            for (name, fty) in fields {
+                let colon = db.push_name(":");
+                let fname = db.push_name(name);
+                let ft = wit_type_to_type_expr(db, fty)?;
+                items.push(db.push_list(vec![colon, fname, ft]));
+            }
+            db.push_list(items)
+        }
+        // Source ctor application `(Option T)` — NOT `encode_ty`'s nominal `(Sum …)`.
+        WitType::Option(inner) => {
+            let ie = wit_type_to_type_expr(db, inner)?;
+            let head = db.push_name("Option");
+            db.push_list(vec![head, ie])
+        }
+        // `(Result ok err)`; an absent arm is `Unit` (WIT `result` / `result<T>` / `result<_, E>`).
+        WitType::Result { ok, err } => {
+            let oe = match ok {
+                Some(t) => wit_type_to_type_expr(db, t)?,
+                None => db.push_name("Unit"),
+            };
+            let ee = match err {
+                Some(t) => wit_type_to_type_expr(db, t)?,
+                None => db.push_name("Unit"),
+            };
+            let head = db.push_name("Result");
+            db.push_list(vec![head, oe, ee])
+        }
+        // A nominal sum needs a SYNTHESIZED decl (Cadenza sums carry a decl identity) — a later increment.
+        WitType::Variant(_) | WitType::Enum(_) | WitType::Flags(_) => return None,
+    })
+}
+
 /// Whether a guest [`Ty`] has a value-form document (so `value-encode`/`value-decode` can bridge it to a
 /// declared `list<u8>`). Everything with a runtime value form qualifies; the non-value types (a function, a
 /// type-value, an unresolved var, `Any`, a continuation, `unit`) do not.
@@ -1371,5 +1468,53 @@ mod tests {
         assert_eq!(world_import_member_sig(&db, w, "things", "nope"), None);
         assert_eq!(world_import_member_sig(&db, w, "other", "id"), None);
         assert_eq!(world_import_member_sig(&db, None, "things", "id"), None);
+    }
+
+    /// `wit_type_to_type_expr` produces a canonical type-AST node that `typeval_of` reads back to EXACTLY the
+    /// `Ty` `wit_type_to_ty` derives — the round-trip that guarantees a synthesized `(effect …)` decl's
+    /// injected arrow types resolve to the intended world-import signature (the b-prime no-redeclare
+    /// foundation). Covers the full mappable span; enum/variant/flags → None (no type-expr yet).
+    #[test]
+    fn wit_type_to_type_expr_round_trips_to_the_derived_ty() {
+        use crate::db::Db;
+        let mut db = Db::load(crate::testkit::parse(
+            "(module m (def (main) 0) (export main))",
+        ));
+        let byte = || WitType::List(Box::new(WitType::U8));
+        let cases = vec![
+            WitType::Bool,
+            WitType::String,
+            WitType::Unit,
+            WitType::U64,
+            WitType::S32,
+            byte(),                                // list<u8> → Bytes
+            WitType::List(Box::new(WitType::U32)), // list<u32> → List(Int)
+            WitType::Option(Box::new(byte())),     // option<list<u8>> → Option Bytes
+            WitType::Tuple(vec![WitType::Bool, byte()]),
+            WitType::Record(vec![
+                ("contract".into(), byte()),
+                ("payload".into(), byte()),
+            ]),
+            WitType::Result {
+                ok: Some(Box::new(byte())),
+                err: None,
+            },
+        ];
+        for wt in &cases {
+            let want = wit_type_to_ty(&db, wt).expect("mappable");
+            let node = wit_type_to_type_expr(&mut db, wt).expect("type-expr builds");
+            let got = crate::eval::typeval_of(&mut db, node).unwrap_or_else(|| {
+                panic!("the injected type-expr for {wt:?} must resolve to a type")
+            });
+            assert_eq!(
+                got, want,
+                "type-expr round-trips to the derived Ty for {wt:?}"
+            );
+        }
+        // enum/variant/flags have no type-expr yet (need a synthesized nominal decl).
+        assert_eq!(
+            wit_type_to_type_expr(&mut db, &WitType::Enum(vec!["a".into(), "b".into()])),
+            None
+        );
     }
 }
