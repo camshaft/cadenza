@@ -104,6 +104,61 @@ test("a negative-dimension cube meshes to zero triangles (cross-surface: matches
   if (r.ok) assert.equal(r.indices.length, 0, "a negative-dimension cube has no triangles");
 });
 
+// ── tessellation resolution (OpenSCAD-`$fn`-style): the preview-quality segment count ────────────────
+// Increment 1 of the cascading-resolution feature: meshFromSolid takes an optional `segments` count that
+// threads through the whole mesh walk to every curved leaf (sphere/cylinder/circle) + the revolve/Bézier
+// sweep. It's a MESH hint (the exact model is unchanged), so raising it refines the tessellation only. These
+// pin: (a) more segments → more triangles on a curved primitive; (b) it CASCADES through transforms/booleans
+// to nested curved leaves; (c) the count is clamped to a closable loop (≥3) and defaults to 32.
+
+test("more segments → a finer sphere mesh (the $fn quality knob refines tessellation)", async () => {
+  const coarse = await meshFromSolid("(: (Sphere 5/1) Solid)", 8);
+  const fine = await meshFromSolid("(: (Sphere 5/1) Solid)", 64);
+  assert.ok(coarse.ok && fine.ok);
+  if (coarse.ok && fine.ok) {
+    assert.ok(
+      fine.indices.length > coarse.indices.length,
+      `a 64-segment sphere (${fine.indices.length / 3} tris) must be finer than an 8-segment one (${coarse.indices.length / 3} tris)`,
+    );
+  }
+});
+
+test("resolution CASCADES through transforms + booleans to a nested curved leaf", async () => {
+  // A sphere buried under a translate inside a union with a cube: the segment count must reach it (the hint
+  // threads through every mesh-walk arm), so the whole model gets finer with a higher count.
+  const model = "(: (Union (Cube (: (tuple 2/1 2/1 2/1) Vec3)) (Translate (: (tuple 10/1 0/1 0/1) Vec3) (Sphere 5/1))) Solid)";
+  const coarse = await meshFromSolid(model, 8);
+  const fine = await meshFromSolid(model, 64);
+  assert.ok(coarse.ok && fine.ok);
+  if (coarse.ok && fine.ok) {
+    assert.ok(fine.indices.length > coarse.indices.length, "the nested sphere refines → the cascade reaches it");
+  }
+});
+
+test("segment count below the minimum is clamped (does not throw or empty the mesh)", async () => {
+  // A slider/argument below 3 can't close a curved loop; the driver clamps up to MIN_SEGMENTS rather than
+  // erroring. 0 and 1 must both mesh to the SAME thing as the clamp floor (3), never a crash or empty.
+  const zero = await meshFromSolid("(: (Sphere 5/1) Solid)", 0);
+  const floor = await meshFromSolid("(: (Sphere 5/1) Solid)", 3);
+  assert.ok(zero.ok && floor.ok, "a below-minimum count must still mesh");
+  if (zero.ok && floor.ok) {
+    assert.ok(zero.indices.length > 0, "a clamped-up count meshes real geometry, not empty");
+    assert.equal(zero.indices.length, floor.indices.length, "0 segments clamps to the same mesh as the floor (3)");
+  }
+});
+
+test("a fractional/NaN segment count is handled (floored / defaulted), never poisons the mesh", async () => {
+  // A slider could hand a fractional value; a bad computation could hand NaN. The floor'd fractional count
+  // meshes like its integer part; a NaN count falls back to the default (32) rather than producing NaN geometry.
+  const frac = await meshFromSolid("(: (Sphere 5/1) Solid)", 16.9);
+  const int16 = await meshFromSolid("(: (Sphere 5/1) Solid)", 16);
+  const nan = await meshFromSolid("(: (Sphere 5/1) Solid)", NaN);
+  const def = await meshFromSolid("(: (Sphere 5/1) Solid)");
+  assert.ok(frac.ok && int16.ok && nan.ok && def.ok);
+  if (frac.ok && int16.ok) assert.equal(frac.indices.length, int16.indices.length, "16.9 floors to 16");
+  if (nan.ok && def.ok) assert.equal(nan.indices.length, def.indices.length, "a NaN count falls back to the default (32)");
+});
+
 // ── P-D: extrude / revolve / path profiles (the browser twin of cdz-cad's mesh.rs P-D cases) ──────────
 
 test("meshFromSolid extrudes a Rect profile into a prism (12 triangles)", async () => {
