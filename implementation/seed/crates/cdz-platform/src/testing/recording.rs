@@ -16,8 +16,8 @@
 use super::observation::{BlobOp, Entry, EventKind, EventOp, KvOp, ObservationLog};
 use crate::{
     BlobStore, Bytes, Hash, HostId, KeyRange, KvKeyScan, KvScan, KvStore, Message, Notification,
-    Origin, Outcome, ProgramHash, ProgramStore, Reducer, ReducerId, Request, Response, Spawned,
-    spawned_contract,
+    Origin, Outcome, ProgramHash, ProgramStore, Reducer, ReducerId, Request, Response,
+    SpawnContext, Spawned, spawned_contract,
 };
 use async_trait::async_trait;
 
@@ -323,8 +323,8 @@ impl<P> RecordingProgramStore<P> {
 
 #[async_trait]
 impl<P: ProgramStore> ProgramStore for RecordingProgramStore<P> {
-    async fn spawn(&self, program: ProgramHash) -> Option<Box<dyn Reducer>> {
-        let inner = self.inner.spawn(program).await?;
+    async fn spawn(&self, program: ProgramHash, ctx: SpawnContext) -> Option<Box<dyn Reducer>> {
+        let inner = self.inner.spawn(program, ctx).await?;
         Some(Box::new(RecordingReducer::new(
             inner,
             self.host,

@@ -23,7 +23,8 @@ use crate::cancel::CancelScope;
 use crate::{
     Bytes, ContractId, Deliver, Delivered, EdgeKind, EventRegistry, FireAfter, Fired, Genesis,
     Hash, HashTag, HostId, Lifecycle, Message, Origin, Outcome, ProgramHash, ProgramStore, Reducer,
-    ReducerGraph, ReducerId, Request, Response, Runtime, Spawned, deliver_contract, timer_contract,
+    ReducerGraph, ReducerId, Request, Response, Runtime, SpawnContext, Spawned, deliver_contract,
+    timer_contract,
 };
 use async_trait::async_trait;
 use futures_util::FutureExt; // catch_unwind, to turn a fold panic into a Crashed notification (§7)
@@ -284,7 +285,11 @@ impl<R: Runtime> Shared<R> {
                 // (§4).
                 let mut rolling = Hash::of(HashTag::SystemProperty, &nonce);
                 // Load the program inside the reducer's own task, so a slow load blocks no one.
-                if let Some(mut reducer) = shared.programs.spawn(program).await {
+                if let Some(mut reducer) = shared
+                    .programs
+                    .spawn(program, SpawnContext { id, kind })
+                    .await
+                {
                     while let Some(event) = R::recv(&mut inbox).await {
                         let (requests, outcome) =
                             match std::panic::AssertUnwindSafe(fold(&mut reducer, event))
