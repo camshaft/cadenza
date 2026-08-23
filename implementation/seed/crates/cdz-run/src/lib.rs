@@ -284,7 +284,7 @@ const RUNTIME_IFACE: &str = "cadenza:runtime/heap";
 pub struct RuntimeReq {
     /// The verbatim import name the component declares — the linker MUST bind under exactly this.
     pub import_name: String,
-    /// The content address (lowercase hex SHA-256) the component requires, extracted from the name.
+    /// The content address (lowercase hex BLAKE3) the component requires, extracted from the name.
     pub hash: String,
 }
 

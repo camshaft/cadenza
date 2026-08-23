@@ -313,7 +313,7 @@ fn resolve_runtime(cli: &RunArgs, req: &crate::RuntimeReq) -> anyhow::Result<Vec
     Ok(bytes)
 }
 
-/// SHA-256 of `bytes`, lowercase hex — the CANONICAL content-address of a Cadenza component store.
+/// BLAKE3 of `bytes`, lowercase hex — the CANONICAL content-address of a Cadenza component store.
 ///
 /// # Store-address contract (the shared seam every store reader/writer must honor)
 ///
