@@ -158,6 +158,16 @@ pub enum EventOp {
     /// The reducer terminated itself, returning `Break(schema, reason)` — the typed reason for its
     /// closure (§3). A clean completion and a failure are both closes, distinguished only by the reason.
     Closed { schema: ContractId, reason: Bytes },
+    /// The reducer's fold **failed uncontrolled** — it panicked (or exhausted fuel) rather than
+    /// returning — so it could not describe its own exit (`design/cadenza-platform.md` §3/§10:
+    /// fold-failed). `during` and `contract` name the event whose fold failed; `reason` is the panic
+    /// message. This is the reducer's terminal event, distinct from the [`Closed`](EventOp::Closed) of a
+    /// controlled exit; the runtime separately delivers a `crashed` lifecycle event to any watcher.
+    Failed {
+        during: EventKind,
+        contract: ContractId,
+        reason: Str,
+    },
 }
 
 /// The observation log: a cheaply-clonable handle over shared, append-only records. Clone it to hand
@@ -310,6 +320,16 @@ impl fmt::Display for Record {
                 }
                 EventOp::Emitted { contract, .. } => write!(f, "emit {}", short(*contract)),
                 EventOp::Closed { schema, .. } => write!(f, "close {}", short(*schema)),
+                EventOp::Failed {
+                    during,
+                    contract,
+                    reason,
+                } => write!(
+                    f,
+                    "fold-failed ({during:?} {}): {:?}",
+                    short(*contract),
+                    reason.as_str()
+                ),
             },
             Entry::Spawn(info) => write!(
                 f,
