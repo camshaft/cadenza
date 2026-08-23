@@ -4,13 +4,15 @@
 use super::{
     BlobOp, CheckOutcome, Entry, EventKind, EventOp, Harness, KvOp, ObservationLog,
     RecordingBlobStore, RecordingKvStore, RecordingProgramStore, RecordingReducer, Run, SpawnSpec,
+    check_contract, check_message, decode_check, deserialize_log, encode_verdict, render,
+    verdict_contract, verdict_in,
 };
 use crate::{
     BachRuntime, BlobStore, Bytes, ContractId, Delivered, FireAfter, Fired, Hash, HashTag, HostId,
     InMemoryBlobStore, InMemoryEventRegistry, InMemoryKvStore, InMemoryReducerGraph, KeyRange,
     KvStore, Links, Message, Notification, Origin, Outcome, ProgramHash, Reducer, ReducerId,
-    ReducerKind, Request, Response, Runtime, Spawn, Spawned, System, TaskSystem, spawned_contract,
-    timer_contract,
+    ReducerKind, Request, Response, Runtime, Spawn, Spawned, Str, System, TaskSystem,
+    spawned_contract, timer_contract,
 };
 use std::ops::Bound;
 use std::sync::Arc;
@@ -950,5 +952,104 @@ fn a_real_runs_log_round_trips_through_the_structured_serializer() {
         crate::testing::deserialize_log(&bytes),
         Some(run.records.clone()),
         "a real run's observation log must survive serialize_log → deserialize_log intact"
+    );
+}
+
+/// A checker reducer: on the delivered `check` message it decodes the observation log and passes iff the log
+/// contains a spawn record, emitting its judgement on the verdict contract and closing. A stand-in for the
+/// reducer-shaped wasm checker the operator's design calls for (§9) — exercised natively here.
+struct SpawnPresenceChecker;
+#[async_trait::async_trait]
+impl Reducer for SpawnPresenceChecker {
+    async fn on_message(&mut self, m: Message) -> (Vec<Request>, Outcome) {
+        let verdict = if m.id == check_contract() {
+            match decode_check(&m.payload).and_then(|log| deserialize_log(&log)) {
+                Some(records) if records.iter().any(|r| matches!(r.entry, Entry::Spawn(_))) => {
+                    encode_verdict(true, &[])
+                }
+                Some(_) => encode_verdict(false, &[Str::from("log has no spawn record")]),
+                None => encode_verdict(false, &[Str::from("log did not decode")]),
+            }
+        } else {
+            encode_verdict(false, &[Str::from("unexpected contract")])
+        };
+        (
+            vec![Request {
+                id: verdict_contract(),
+                payload: verdict,
+                continuation_token: Bytes::new(),
+                deadline: None,
+            }],
+            Outcome::Break {
+                schema: ContractId::of(b"checked"),
+                reason: Bytes::new(),
+            },
+        )
+    }
+    async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
+        (Vec::new(), Outcome::Continue)
+    }
+    async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
+        (Vec::new(), Outcome::Continue)
+    }
+}
+
+#[test]
+fn a_checker_reducer_folds_the_delivered_log_and_emits_a_verdict_the_harness_reads() {
+    // The end-to-end checker path (§9), natively: a first run produces an observation log; a checker reducer
+    // is spawned, delivered that whole log as a `check` message, folds it, and emits a `verdict` request the
+    // harness reads back with `verdict_in`. This proves the operator's design — a reducer-shaped checker over
+    // the reducer interface — end to end, minus the wasm instantiation.
+    fn checker_run(log_to_check: &[super::Record]) -> Run {
+        Harness::new("sys")
+            .blob("sys", Bytes::from_static(b"sys"))
+            .blob("checker", Bytes::from_static(b"checker"))
+            .spawn(SpawnSpec::new("checker", "checker"))
+            .deliver("checker", check_message(log_to_check))
+            .run(|_cas| {
+                let mut store = crate::program::testing::Store::new();
+                // The checker under test, plus a stand-in system reducer to absorb the routed verdict effect.
+                store.register(ProgramHash::of(b"checker"), || {
+                    Box::new(SpawnPresenceChecker)
+                });
+                store.register(ProgramHash::of(b"sys"), || Box::new(JustClose));
+                store
+            })
+    }
+
+    // A real run's log contains spawn records, so the checker passes.
+    let main_run = Harness::new("sys")
+        .blob("sys", Bytes::from_static(b"sys"))
+        .blob("worker", Bytes::from_static(b"worker"))
+        .spawn(SpawnSpec::new("worker", "worker"))
+        .run(|_cas| {
+            let mut store = crate::program::testing::Store::new();
+            store.register(ProgramHash::of(b"worker"), || Box::new(JustClose));
+            store
+        });
+    assert!(
+        main_run
+            .records
+            .iter()
+            .any(|r| matches!(r.entry, Entry::Spawn(_))),
+        "the main run records a spawn"
+    );
+    let pass = checker_run(&main_run.records);
+    assert_eq!(
+        verdict_in(&pass.records),
+        Some(CheckOutcome::Pass),
+        "the checker passes on a log that contains a spawn:\n{}",
+        render(&pass.records)
+    );
+
+    // An empty log has no spawn, so the same checker fails, carrying its reason back to the harness.
+    let fail = checker_run(&[]);
+    assert_eq!(
+        verdict_in(&fail.records),
+        Some(CheckOutcome::Fail {
+            reasons: vec!["log has no spawn record".to_string()],
+        }),
+        "the checker fails on an empty log:\n{}",
+        render(&fail.records)
     );
 }
