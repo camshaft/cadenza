@@ -132,6 +132,31 @@ const ARCH_FIN: ExampleModel = {
   },
 };
 
+/// A TESSELLATION-RESOLUTION demo (v-cad's OpenSCAD-`$fn` showcase): two identical radius-3 spheres side by
+/// side, where the RIGHT one is wrapped in `Solid.Detail(6, …)` — a per-object resolution OVERRIDE pinning it
+/// to a coarse 6-segment facet. The LEFT sphere carries no Detail, so it follows the /cad preview Quality
+/// slider (the ambient resolution). Drag the slider: the left sphere smooths out while the right stays a
+/// faceted gem — the whole point of `$fn`, that resolution CASCADES from a default but a subtree can locally
+/// override it (a high-detail seat on a coarse base, etc.). A pure MESH hint — both spheres are the same exact
+/// radius-3 geometry, only tessellated differently. `Detail`'s first arg is a segment COUNT (an `Int64`, so
+/// `(6 : Int64)`, not a Rational dimension); everything else is the usual exact `Solid` vocabulary.
+const DETAIL_OVERRIDE: ExampleModel = {
+  slug: "detail-override",
+  title: "Tessellation detail ($fn override)",
+  description: "Two identical spheres, where the right one is pinned coarse with Solid.Detail(6, ...) while the left follows the Quality slider, so dragging it shows the per-object resolution override.",
+  source: {
+    ml: `def main() =
+  lower(
+    Solid.Union(
+      Solid.Translate(v3(0 - 5, 0, 0), Solid.Sphere(3)),
+      Solid.Translate(v3(5, 0, 0), Solid.Detail((6 : Int64), Solid.Sphere(3)))))`,
+    sexpr: `(def (main)
+  (lower ((. Solid Union)
+           ((. Solid Translate) (v3 (- 0 5) 0 0) ((. Solid Sphere) 3))
+           ((. Solid Translate) (v3 5 0 0) ((. Solid Detail) (: 6 Int64) ((. Solid Sphere) 3))))))`,
+  },
+};
+
 /// A PARAMETRIC mounting plate — a `width × depth × thickness` block with a central bolt hole of radius
 /// `bore`, every dimension a `@!param`. In SINGLE-MODE this is just another example: the buffer DECLARES its
 /// own `@!param`s, and /cad auto-surfaces a slider per param (read live from the compiled model's manifest —
@@ -428,6 +453,7 @@ export const EXAMPLES: ExampleModel[] = [
   ROUNDED_CUBE,
   STEPPED_PEDESTAL,
   ARCH_FIN,
+  DETAIL_OVERRIDE,
   PARAMETRIC_PLATE,
   UNITS_BRACKET,
   ASSEMBLY_L_BRACKET,
