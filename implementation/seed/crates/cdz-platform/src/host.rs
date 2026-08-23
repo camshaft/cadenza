@@ -313,10 +313,13 @@ fn step_from_wit(step: wit_reducer::Step) -> Result<(Vec<Request>, Outcome), Ste
 // instantiation and every fold run on an async store — a disk/network-backed backend an import awaits never
 // blocks the host thread.
 
-use crate::{ProgramHash, ProgramStore, Reducer, ReducerKind, SpawnContext};
+use crate::{HashTag, ProgramHash, ProgramStore, Reducer, ReducerKind, SpawnContext};
 use async_trait::async_trait;
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Mutex;
+use wasmtime::component::types::ComponentItem;
 use wasmtime::component::{Component, Linker};
 use wasmtime::{Config, Engine, Store};
 
@@ -506,6 +509,53 @@ type KvFactory = Arc<dyn Fn(ReducerId) -> Box<dyn KvStore> + Send + Sync>;
 /// [`Component`] cache are shared across every reducer; the routing `graph` is the one node-wide substrate;
 /// but each reducer gets its OWN state and store view, built by the injected factories so they can be
 /// recording-wrapped or backed by a shared store as the caller decides.
+/// A content-addressed component dependency a guest imports: the exact import name (which the linker matches
+/// verbatim) and the [`Hash`] to fetch the dependency component from the content-addressed store by.
+struct ComponentDep {
+    import_name: String,
+    hash: Hash,
+}
+
+/// The content address a dependency import name carries, as a store [`Hash`], or `None` if the name is not a
+/// content-addressed dependency. The compiler emits a component dependency as an import whose name ends in
+/// `+<hex>` — the lowercase-hex blake3 digest of the dependency's component bytes (`cadenza:runtime/heap@0.0.0
+/// +<hex>`, §8, the tree-unified address). The store keys on that digest (ignoring the tag), so this rebuilds
+/// the hash from the 32-byte digest under the `Blob` tag. A platform host interface (`cadenza:platform/state`
+/// …) carries no `+<hex>` and is served by [`add_host_imports`], not from the store — so it yields `None`.
+fn dependency_address(import_name: &str) -> Option<Hash> {
+    let hex = import_name.rsplit_once('+')?.1;
+    if hex.len() != Hash::DIGEST_LEN * 2 {
+        return None;
+    }
+    let mut bytes = [0u8; Hash::LEN];
+    bytes[0] = HashTag::Blob as u8; // immaterial to the content-keyed store; Blob is the content-address kind
+    for (i, pair) in hex.as_bytes().chunks(2).enumerate() {
+        let hi = (pair[0] as char).to_digit(16)?;
+        let lo = (pair[1] as char).to_digit(16)?;
+        bytes[1 + i] = (hi * 16 + lo) as u8;
+    }
+    Some(Hash::from_bytes(bytes))
+}
+
+/// The content-addressed component dependencies `component` imports — the imports the platform must resolve
+/// from the store and compose in (as opposed to the platform host interfaces, wired by [`add_host_imports`]).
+/// An import is a dependency when it is a component instance whose name carries a `+<hex>` content address.
+fn component_dependencies(engine: &Engine, component: &Component) -> Vec<ComponentDep> {
+    component
+        .component_type()
+        .imports(engine)
+        .filter_map(|(name, item)| {
+            if !matches!(item, ComponentItem::ComponentInstance(_)) {
+                return None;
+            }
+            dependency_address(name).map(|hash| ComponentDep {
+                import_name: name.to_string(),
+                hash,
+            })
+        })
+        .collect()
+}
+
 pub struct WasmProgramStore {
     host: ReducerHost,
     /// The content-addressed store components are loaded from (read-only here — `get` by hash).
@@ -516,9 +566,11 @@ pub struct WasmProgramStore {
     make_kv: KvFactory,
     /// The one node-wide reducer graph (§3), shared by every reducer that is wired the `graph` import.
     graph: Arc<dyn ReducerGraph>,
-    /// Compiled components by program hash — `Component::new` (the Cranelift compile) runs once per program,
-    /// not once per reducer. A `Component` is cheaply clonable (internally reference-counted).
-    compiled: Mutex<HashMap<ProgramHash, Component>>,
+    /// Compiled components keyed by content digest — `Component::new` (the Cranelift compile) runs once per
+    /// distinct component, not once per reducer, and a program and a dependency over the same bytes share the
+    /// one entry (the digest, like the store, ignores the hash kind). A `Component` is cheaply clonable
+    /// (internally reference-counted).
+    compiled: Mutex<HashMap<[u8; Hash::DIGEST_LEN], Component>>,
 }
 
 impl WasmProgramStore {
@@ -541,44 +593,145 @@ impl WasmProgramStore {
         })
     }
 
-    /// The compiled component for `program`, loaded from the store and cached. `None` if the store does not
-    /// hold it (an unknown program) or the bytes are not a valid component.
-    async fn component(&self, program: ProgramHash) -> Option<Component> {
-        if let Some(component) = self
-            .compiled
-            .lock()
-            .expect("compiled cache lock")
-            .get(&program)
-        {
+    /// The compiled component whose bytes `hash` addresses, loaded from the store and cached by content
+    /// digest. `None` if the store does not hold it (an unknown program/dependency) or the bytes are not a
+    /// valid component. Used for both a program (by its [`ProgramHash`]) and a dependency (by its `Blob`
+    /// hash) — the store and this cache key on the digest, so either resolves the same bytes (§8).
+    async fn component(&self, hash: Hash) -> Option<Component> {
+        let key = *hash.digest();
+        if let Some(component) = self.compiled.lock().expect("compiled cache lock").get(&key) {
             return Some(component.clone());
         }
-        // Compile outside the lock (Cranelift is slow); a concurrent duplicate compile of the same program is
-        // harmless — the last insert wins and both yield an equivalent component. The store keys on content
-        // and ignores the hash kind, so the program hash fetches its bytes directly (§8).
-        let bytes = self.cas.get(program.hash()).await?;
+        // Compile outside the lock (Cranelift is slow); a concurrent duplicate compile of the same component
+        // is harmless — the last insert wins and both yield an equivalent component.
+        let bytes = self.cas.get(hash).await?;
         let component = Component::new(&self.host.engine, &bytes).ok()?;
         self.compiled
             .lock()
             .expect("compiled cache lock")
-            .insert(program, component.clone());
+            .insert(key, component.clone());
         Some(component)
     }
+
+    /// Resolve and compose `component`'s content-addressed dependencies into `linker`, instantiating each
+    /// into `store`: fetch the dependency component from the store, recursively compose ITS dependencies,
+    /// instantiate it, and alias its exported functions into `linker` under the exact import name the parent
+    /// declared. This is what makes a Cadenza guest's `cadenza:runtime/heap@…+<hash>` import (and any other
+    /// content-addressed component dependency) resolvable — the runtime and its peers come from the store,
+    /// not a native host. `Box::pin` because it recurses across an `await` (a dependency of a dependency).
+    fn bind_dependencies<'a>(
+        &'a self,
+        store: &'a mut Store<HostState>,
+        linker: &'a mut Linker<HostState>,
+        component: &'a Component,
+    ) -> Pin<Box<dyn Future<Output = Result<(), wasmtime::Error>> + Send + 'a>> {
+        Box::pin(async move {
+            for dep in component_dependencies(&self.host.engine, component) {
+                let dep_component = self.component(dep.hash).await.ok_or_else(|| {
+                    wasmtime::Error::msg(format!(
+                        "reducer dependency {} is not in the content-addressed store",
+                        dep.import_name
+                    ))
+                })?;
+                // The dependency is instantiated against a linker holding only ITS OWN dependencies — a pure
+                // content-addressed component (the value-heap runtime, NFC, …) takes no platform host
+                // imports, only sub-dependencies from the store.
+                let mut dep_linker = Linker::new(&self.host.engine);
+                self.bind_dependencies(store, &mut dep_linker, &dep_component)
+                    .await?;
+                let dep_instance = dep_linker
+                    .instantiate_async(&mut *store, &dep_component)
+                    .await?;
+                alias_instance_exports(
+                    store,
+                    linker,
+                    &dep.import_name,
+                    &dep_component,
+                    &dep_instance,
+                )?;
+            }
+            Ok(())
+        })
+    }
+}
+
+/// Alias every function a dependency instance exports into `linker` under `import_name` — the parent's
+/// import is that instance, and the linker matches the name verbatim (so the `+<hash>` suffix is kept). The
+/// dependency exports a single interface (the runtime's heap ops, NFC's transform, …); each of its functions
+/// is forwarded to the live dependency instance via `func_new`, mirroring the value-heap composition
+/// `cdz-run` performs. The function names come from the dependency's own type, so the wiring always matches
+/// the composed component.
+fn alias_instance_exports(
+    store: &mut Store<HostState>,
+    linker: &mut Linker<HostState>,
+    import_name: &str,
+    dep_component: &Component,
+    dep_instance: &wasmtime::component::Instance,
+) -> Result<(), wasmtime::Error> {
+    let engine = linker.engine().clone();
+    let mut iface = linker.instance(import_name)?;
+    for (export_name, item) in dep_component.component_type().exports(&engine) {
+        let ComponentItem::ComponentInstance(inst) = item else {
+            continue; // only interface (instance) exports carry the imported functions
+        };
+        let iface_idx = dep_instance
+            .get_export_index(&mut *store, None, export_name)
+            .ok_or_else(|| {
+                wasmtime::Error::msg(format!("dependency missing export `{export_name}`"))
+            })?;
+        for (func_name, func_item) in inst.exports(&engine) {
+            if !matches!(func_item, ComponentItem::ComponentFunc(_)) {
+                continue;
+            }
+            let func_idx = dep_instance
+                .get_export_index(&mut *store, Some(&iface_idx), func_name)
+                .ok_or_else(|| wasmtime::Error::msg(format!("dependency missing `{func_name}`")))?;
+            let func = dep_instance
+                .get_func(&mut *store, func_idx)
+                .ok_or_else(|| {
+                    wasmtime::Error::msg(format!("dependency export `{func_name}` is not a func"))
+                })?;
+            iface.func_new(func_name, move |mut ctx, params, results| {
+                func.call(&mut ctx, params, results)?;
+                func.post_return(&mut ctx)?;
+                Ok(())
+            })?;
+        }
+    }
+    Ok(())
 }
 
 #[async_trait]
 impl ProgramStore for WasmProgramStore {
     async fn spawn(&self, program: ProgramHash, ctx: SpawnContext) -> Option<Box<dyn Reducer>> {
-        let component = self.component(program).await?;
-        // Resolve the component's imports against the linker for this reducer's kind (the capability split),
-        // then instantiate with a HostState built from the injected per-reducer backends.
-        let pre = self.host.preinstantiate(&component, ctx.kind).ok()?;
+        let component = self.component(program.hash()).await?;
         let host_state = HostState {
             id: ctx.id,
             blobs: (self.make_blobs)(ctx.id),
             kv: (self.make_kv)(ctx.id),
             graph: Arc::clone(&self.graph),
         };
-        let reducer = self.host.instantiate(&pre, host_state).await.ok()?;
+        let reducer = if component_dependencies(&self.host.engine, &component).is_empty() {
+            // Fast path: no content-addressed component dependencies, so reuse the cached, pre-instantiated
+            // per-kind linker (the engine, linker, and pre are all shared).
+            let pre = self.host.preinstantiate(&component, ctx.kind).ok()?;
+            self.host.instantiate(&pre, host_state).await.ok()?
+        } else {
+            // Compose path: the component imports dependencies (the value-heap runtime, …) that must be
+            // resolved from the store and instantiated into THIS store, so a fresh per-spawn linker is built
+            // (a store-bound dependency instance cannot be pre-instantiated). Host imports for the kind are
+            // wired first (the capability split), then the dependencies composed in.
+            let mut store = Store::new(&self.host.engine, host_state);
+            let mut linker = Linker::new(&self.host.engine);
+            add_host_imports(&mut linker, ctx.kind).ok()?;
+            self.bind_dependencies(&mut store, &mut linker, &component)
+                .await
+                .ok()?;
+            let world = EventReducerWorld::instantiate_async(&mut store, &component, &linker)
+                .await
+                .ok()?;
+            WasmReducer { store, world }
+        };
         Some(Box::new(reducer))
     }
 
@@ -862,6 +1015,29 @@ mod tests {
         assert!(store.spawn(unknown, ord(b"r")).await.is_none());
     }
 
+    #[test]
+    fn a_dependency_import_name_resolves_to_its_content_address() {
+        use super::dependency_address;
+        // A dependency import carries the lowercase-hex blake3 digest of the dep component after `+`; it must
+        // resolve to the same content the store keys under (the digest), whatever the tag.
+        let dep_bytes = b"the value-heap runtime component";
+        let dep = Hash::of(HashTag::Blob, dep_bytes);
+        let hex: String = dep.digest().iter().map(|b| format!("{b:02x}")).collect();
+        let import = format!("cadenza:runtime/heap@0.0.0+{hex}");
+        let parsed = dependency_address(&import).expect("a +<hex> import is a dependency");
+        assert_eq!(
+            parsed.digest(),
+            dep.digest(),
+            "resolves to the dep's content in the store"
+        );
+        // A platform host interface carries no `+<hex>` — it is served by the host, not the store.
+        assert!(dependency_address("cadenza:platform/state").is_none());
+        assert!(dependency_address("cadenza:platform/identity").is_none());
+        // Malformed addresses (non-hex, or not a full 64-hex digest) name no content.
+        assert!(dependency_address("dep:x/y@1.0.0+not-hex-at-all").is_none());
+        assert!(dependency_address(&format!("dep:x+{}", "ab".repeat(31))).is_none()); // 62 hex, too short
+    }
+
     // The end-to-end driver test — seed the reducer-echo guest component's bytes into the store, spawn its
     // ProgramHash, drive a message, assert the echo + the identity import round-trip — is the slice that wires
     // the guest component into the reproducible nix build (operator: no committed .wasm fixture; the guest is
@@ -869,4 +1045,11 @@ mod tests {
     // (The driver + this store were verified locally against a `cargo component build` of guests/reducer-echo,
     // and — see the module docs — the whole instantiate-and-drive path was verified to run under `bach::sim`,
     // not just tokio, so the integration harness's deterministic bach-driven run over this store is sound.)
+    //
+    // The dependency-composition path (`bind_dependencies` / `alias_instance_exports`) is exercised end to end
+    // by that same slice using a component that imports the value-heap runtime: only a Cadenza-compiled guest
+    // carries the `cadenza:runtime/heap@…+<hash>` content-addressed import (cargo-component uses semver, not a
+    // content hash, so it cannot reproduce the convention), so the behavioural test lands with v-rust-backend's
+    // first runtime-importing guest. The address parsing + dependency detection are unit-tested above, and the
+    // instantiate-and-alias mirrors the value-heap composition `cdz-run` performs against real components.
 }
