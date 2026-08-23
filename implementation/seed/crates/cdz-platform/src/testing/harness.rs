@@ -125,6 +125,36 @@ impl SpawnSpec {
         self.links = links;
         self
     }
+
+    /// The task's name — the caller's handle for the reducer.
+    #[must_use]
+    pub fn task_name(&self) -> &str {
+        &self.name
+    }
+
+    /// The name of the blob this task runs.
+    #[must_use]
+    pub fn blob_name(&self) -> &str {
+        &self.blob
+    }
+
+    /// How this task's parent is set — a [`Root`](Parent::Root) or a [`Named`](Parent::Named) parent.
+    #[must_use]
+    pub fn parent(&self) -> &Parent {
+        &self.parent
+    }
+
+    /// The reducer's privilege.
+    #[must_use]
+    pub fn reducer_kind(&self) -> ReducerKind {
+        self.kind
+    }
+
+    /// The supervision links this spawn establishes.
+    #[must_use]
+    pub fn supervision(&self) -> Links {
+        self.links
+    }
 }
 
 /// The result of a [`Harness::run`]: the observation log, and the name→id assignment the harness made for

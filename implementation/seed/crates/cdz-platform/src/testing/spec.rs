@@ -38,12 +38,13 @@
 //! construct. Every field is read by name, so order is not load-bearing. A malformed description is a
 //! [`SpecError`], never a panic.
 
-use super::harness::{Harness, SpawnSpec};
-use crate::contract_value::{read_bytes, read_uint, record_field};
+use super::harness::{Harness, Parent, SpawnSpec};
+use crate::contract_value::{bytes_leaf, read_bytes, read_uint, record, record_field, uint_leaf};
 use crate::{Bytes, ReducerKind};
-use cadenza_ast::ast::{Arenas, StructId};
+use cadenza_ast::ast::{Arenas, Builder, Leaf, StructId};
 use cadenza_ast::codec;
 use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Where a program blob's bytes come from: inline in the description, or a path a loader reads. The decoder
@@ -220,6 +221,83 @@ impl HarnessSpec {
         }
         Ok(harness)
     }
+
+    /// Encode this description to a Cadenza binary AST — the exact inverse of [`decode`](HarnessSpec::decode),
+    /// producing the bytes the executable reads. A field at its default (an absent `run-for`, an ordinary
+    /// spawn kind, a root parent) is omitted, so `decode(spec.encode())` recovers an equal `HarnessSpec`.
+    /// This is how a test or a build step produces a `harness.ast` programmatically rather than by hand.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut b = Builder::new();
+        let root = self.to_ast(&mut b);
+        codec::encode(&b.finish(root))
+    }
+
+    /// Build the `("record" …)` node for this description in `b`, returning its id. Split from
+    /// [`encode`](HarnessSpec::encode) so a value can also be nested in a larger AST if ever needed.
+    fn to_ast(&self, b: &mut Builder) -> StructId {
+        let mut fields: Vec<(&str, StructId)> = Vec::with_capacity(4);
+        let system = str_leaf(b, &self.system);
+        fields.push(("system", system));
+        if let Some(run_for) = self.run_for {
+            let ns = u64::try_from(run_for.as_nanos()).unwrap_or(u64::MAX);
+            let run_for = uint_leaf(b, ns);
+            fields.push(("run-for", run_for));
+        }
+        if !self.blobs.is_empty() {
+            let items = self.blobs.iter().map(|blob| blob_to_ast(b, blob)).collect();
+            let blobs = list_value(b, items);
+            fields.push(("blobs", blobs));
+        }
+        if !self.spawns.is_empty() {
+            let items = self
+                .spawns
+                .iter()
+                .map(|spawn| spawn_to_ast(b, spawn))
+                .collect();
+            let spawns = list_value(b, items);
+            fields.push(("spawns", spawns));
+        }
+        record(b, fields)
+    }
+}
+
+/// A string leaf `"text"`.
+fn str_leaf(b: &mut Builder, text: &str) -> StructId {
+    b.atom_leaf(Leaf::Str(Arc::from(text)))
+}
+
+/// A `("list" e…)` value (string head, the canonical list constructor).
+fn list_value(b: &mut Builder, items: Vec<StructId>) -> StructId {
+    let head = b.atom_leaf(Leaf::Str(Arc::from("list")));
+    b.list(std::iter::once(head).chain(items).collect())
+}
+
+/// The `("record" (= name …) (= bytes …)|(= path …))` node for one blob — the inverse of [`read_blob`].
+fn blob_to_ast(b: &mut Builder, blob: &BlobSpec) -> StructId {
+    let name = str_leaf(b, &blob.name);
+    let source = match &blob.source {
+        BlobSource::Inline(bytes) => ("bytes", bytes_leaf(b, bytes)),
+        BlobSource::Path(path) => ("path", str_leaf(b, path)),
+    };
+    record(b, vec![("name", name), source])
+}
+
+/// The `("record" (= name …) (= blob …) (= parent …)? (= kind …)?)` node for one spawn — the inverse of
+/// [`read_spawn`]. A root parent and an ordinary kind are the decode defaults, so they are omitted.
+fn spawn_to_ast(b: &mut Builder, spawn: &SpawnSpec) -> StructId {
+    let name = str_leaf(b, spawn.task_name());
+    let blob = str_leaf(b, spawn.blob_name());
+    let mut fields = vec![("name", name), ("blob", blob)];
+    if let Parent::Named(parent) = spawn.parent() {
+        let parent = str_leaf(b, parent);
+        fields.push(("parent", parent));
+    }
+    if spawn.reducer_kind() == ReducerKind::Event {
+        let kind = str_leaf(b, "event");
+        fields.push(("kind", kind));
+    }
+    record(b, fields)
 }
 
 /// The items of a `("list" e…)` value — accepting both the string head `"list"` and the bare name head
@@ -578,5 +656,45 @@ mod tests {
                 kind: "supervisor".to_string()
             })
         );
+    }
+
+    #[test]
+    fn encode_is_the_inverse_of_decode() {
+        // A spec built in Rust encodes to a binary AST that decodes back to an equal spec — pinning the
+        // round-trip so a future schema change cannot silently break the executable's input. The spec covers
+        // every optional: an inline and a path blob, a root/child parent, and an event-kind spawn.
+        let spec = HarnessSpec {
+            system: "sys".to_string(),
+            run_for: Some(Duration::from_nanos(7_500_000_000)),
+            blobs: vec![
+                BlobSpec {
+                    name: "greeter".to_string(),
+                    source: BlobSource::Inline(Bytes::from_static(&[0x00, 0x61, 0x73, 0x6d])),
+                },
+                BlobSpec {
+                    name: "worker".to_string(),
+                    source: BlobSource::Path("worker.wasm".to_string()),
+                },
+            ],
+            spawns: vec![
+                SpawnSpec::new("root", "greeter"),
+                SpawnSpec::new("sysred", "greeter").kind(ReducerKind::Event),
+                SpawnSpec::new("child", "worker").child_of("root"),
+            ],
+        };
+        let bytes = spec.encode();
+        assert_eq!(HarnessSpec::decode(&bytes), Ok(spec));
+    }
+
+    #[test]
+    fn encode_omits_defaults_so_a_minimal_spec_round_trips() {
+        // The defaults (no run-for, no blobs, no spawns) are omitted on encode and restored on decode.
+        let spec = HarnessSpec {
+            system: "only-system".to_string(),
+            run_for: None,
+            blobs: vec![],
+            spawns: vec![],
+        };
+        assert_eq!(HarnessSpec::decode(&spec.encode()), Ok(spec));
     }
 }
