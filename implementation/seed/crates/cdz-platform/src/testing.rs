@@ -27,7 +27,7 @@ mod recording;
 /// The [`program`](crate::program) module's test helpers — `program::Store`, a program store backed by
 /// registered Rust factories instead of the content-addressed store.
 pub use crate::program::testing as program;
-pub use harness::Harness;
+pub use harness::{Harness, Parent, Run, SpawnSpec};
 pub use observation::{BlobOp, Entry, EventKind, EventOp, KvOp, ObservationLog, Record};
 pub use recording::{
     RecordingBlobStore, RecordingKvStore, RecordingProgramStore, RecordingReducer,
