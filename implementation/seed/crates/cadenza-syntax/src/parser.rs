@@ -5188,40 +5188,58 @@ mod tests {
 
     #[test]
     fn inline_world_aggregate_members_encode_identically_to_the_builders() {
-        // The cross-source identity guarantee EXTENDED to the aggregate member types (record + result — the
-        // shapes v-platform's reducer world uses at the boundary: a record message/request, a
-        // result-of-payload-or-error answer). The inline surface `{f: T, …}` / `result(A, B)` must lower to
-        // the EXACT SAME canonical tree the shared `wit_type_record`/`wit_type_result` builders produce, so
-        // a typed-member world is one content-hash whether it comes from the inline decl, an external
-        // artifact, or v-cml's emit. If `wit_type_desc_of` ever drifts from a builder shape (a field
-        // reorder, a head-kind flip, a wrong result slot), this fails. (Variant is covered once its surface
-        // — PR #2989 — lands; its builder identity is already gated in cadenza-ast.)
+        // The cross-source identity guarantee EXTENDED to the aggregate member types record + result +
+        // variant — the shapes v-platform's reducer world uses at the boundary: a record message/request, a
+        // result-of-payload-or-error answer, and an outcome variant (a payload-less case + a record-payload
+        // case). The inline surface `{f: T, …}` / `result(A, B)` / `variant(C, D(T))` must lower to the EXACT
+        // SAME canonical tree the shared `wit_type_record`/`wit_type_result`/`wit_type_variant` builders
+        // produce, so a typed-member world is one content-hash whether it comes from the inline decl, an
+        // external artifact, or v-cml's emit. If `wit_type_desc_of` ever drifts from a builder shape (a field
+        // or case reorder, a head-kind flip, a wrong result slot, a lost variant payload), this fails.
         let parsed = parse_ok(
             "world W = | export r = \
-             | step : (msg : {id: string, payload: list(u8)}) -> result(bool, string)",
+             | step : (msg : {id: string, payload: list(u8)}) -> result(bool, string) \
+             | fold : (ev : list(u8)) -> variant(Continue, Break({schema: string, reason: string}))",
         );
 
         let mut b = crate::Builder::new();
-        // msg: record { id: string, payload: list(u8) } — fields in declaration order, matching the surface.
+        // step: (msg: record {id: string, payload: list(u8)}) -> result(bool, string). Fields/arms in the
+        // same declaration order as the surface.
         let id_ty = b.wit_type_prim("string");
         let payload_ty = {
             let u8 = b.wit_type_prim("u8");
             b.wit_type_list(u8)
         };
         let msg = b.wit_type_record(&[("id", id_ty), ("payload", payload_ty)]);
-        // result(bool, string) — both arms present.
         let ok = b.wit_type_prim("bool");
         let err = b.wit_type_prim("string");
         let res = b.wit_type_result(Some(ok), Some(err));
-        let sig = b.wit_func_sig(&[("msg", msg)], res);
-        let iface = b.wit_interface(crate::ast::WitDir::Export, "r", &[("step", sig)]);
+        let step_sig = b.wit_func_sig(&[("msg", msg)], res);
+        // fold: (ev: list(u8)) -> variant(Continue, Break({schema: string, reason: string})). A payload-less
+        // case then a record-payload case.
+        let ev = {
+            let u8 = b.wit_type_prim("u8");
+            b.wit_type_list(u8)
+        };
+        let break_payload = {
+            let schema = b.wit_type_prim("string");
+            let reason = b.wit_type_prim("string");
+            b.wit_type_record(&[("schema", schema), ("reason", reason)])
+        };
+        let outcome = b.wit_type_variant(&[("Continue", None), ("Break", Some(break_payload))]);
+        let fold_sig = b.wit_func_sig(&[("ev", ev)], outcome);
+        let iface = b.wit_interface(
+            crate::ast::WitDir::Export,
+            "r",
+            &[("step", step_sig), ("fold", fold_sig)],
+        );
         let root = b.world_schema_tree("W", &[iface]);
         let built = b.finish(root);
 
         assert_eq!(
             crate::codec::encode(&parsed),
             crate::codec::encode(&built),
-            "inline record+result member world must encode identically to the shared builders"
+            "inline record+result+variant member world must encode identically to the shared builders"
         );
     }
 
