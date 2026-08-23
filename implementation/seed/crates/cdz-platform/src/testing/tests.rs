@@ -778,3 +778,109 @@ fn a_fold_panic_is_recorded_as_fold_failed() {
         "the uncontrolled fold panic was recorded as fold-failed, naming the event and the reason"
     );
 }
+
+/// A reducer that, on any message, writes one key-value pair and stores one blob through the recording
+/// stores it was given, then continues — a stand-in for a reducer whose fold touches its direct-access
+/// stores (§7/§8). It holds the recording decorators so its KV and blob calls are observed.
+struct Storer {
+    kv: RecordingKvStore<InMemoryKvStore>,
+    blobs: RecordingBlobStore<InMemoryBlobStore>,
+}
+
+#[async_trait::async_trait]
+impl Reducer for Storer {
+    async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
+        self.kv
+            .put(Bytes::from_static(b"k"), Bytes::from_static(b"v"))
+            .await;
+        self.blobs.put(Bytes::from_static(b"blob-payload")).await;
+        (Vec::new(), Outcome::Continue)
+    }
+
+    async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
+        (Vec::new(), Outcome::Continue)
+    }
+
+    async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
+        (Vec::new(), Outcome::Continue)
+    }
+}
+
+#[test]
+fn a_shared_log_records_a_reducers_kv_and_blob_calls_alongside_its_events() {
+    // A caller shares one observation log with the harness (via `.log`) AND with the recording stores it
+    // wires into the reducer through `make_store`. So when the reducer folds the delivered message and makes
+    // KV and blob calls, those calls land in the SAME ordered log as the event it folded — the harness's
+    // core promise (§9), the KV/blob half of it that the event tap alone does not cover. Without `.log`, the
+    // stores would record into a log the run never returns.
+    let log = ObservationLog::new();
+    let store_log = log.clone();
+    let owner = Origin {
+        reducer: ReducerId::of(b"storer-backend"),
+        host: HostId::of(b"h"),
+    };
+
+    let run = Harness::new("sys")
+        .blob("sys", Bytes::from_static(b"sys"))
+        .blob("storer", Bytes::from_static(b"storer"))
+        .spawn(SpawnSpec::new("storer", "storer"))
+        .deliver(
+            "storer",
+            Delivered::Message(Message {
+                id: ContractId::of(b"go"),
+                payload: Bytes::from_static(b"x"),
+                from: Origin {
+                    reducer: ReducerId::of(b"caller"),
+                    host: HostId::of(b"ingress"),
+                },
+                continuation_token: Bytes::from_static(b"t"),
+            }),
+        )
+        .log(log)
+        .run(move |_cas| {
+            let mut store = crate::program::testing::Store::new();
+            store.register(ProgramHash::of(b"storer"), move || {
+                Box::new(Storer {
+                    kv: RecordingKvStore::new(
+                        InMemoryKvStore::new(),
+                        owner,
+                        store_log.clone(),
+                        tick_clock as fn() -> u64,
+                    ),
+                    blobs: RecordingBlobStore::new(
+                        InMemoryBlobStore::new(),
+                        owner,
+                        store_log.clone(),
+                        tick_clock as fn() -> u64,
+                    ),
+                })
+            });
+            store
+        });
+
+    // The one returned log carries the reducer's KV put, its blob put, and the message it folded.
+    assert!(
+        run.records
+            .iter()
+            .any(|r| matches!(&r.entry, Entry::Kv(KvOp::Put { .. }))),
+        "the reducer's KV put is in the shared log:\n{}",
+        crate::testing::render(&run.records)
+    );
+    assert!(
+        run.records
+            .iter()
+            .any(|r| matches!(&r.entry, Entry::Blob(BlobOp::Put { .. }))),
+        "the reducer's blob put is in the shared log:\n{}",
+        crate::testing::render(&run.records)
+    );
+    assert!(
+        run.records.iter().any(|r| matches!(
+            &r.entry,
+            Entry::Event(EventOp::Delivered {
+                kind: EventKind::Message,
+                ..
+            })
+        )),
+        "the delivered message is in the same log — events and store calls interleaved"
+    );
+}

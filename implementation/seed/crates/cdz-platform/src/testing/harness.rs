@@ -212,6 +212,12 @@ pub struct Harness {
     spawns: Vec<SpawnSpec>,
     deliveries: Vec<(String, Delivered)>,
     run_for: Duration,
+    /// The observation log to record into, if the caller supplied one with [`log`](Harness::log). `None`
+    /// means the run creates its own fresh log. A caller supplies a log to *share* it with the store
+    /// backends it wires into the program store — a [`RecordingKvStore`](super::RecordingKvStore) /
+    /// [`RecordingBlobStore`](super::RecordingBlobStore) built over the same log — so a reducer's KV and blob
+    /// calls land in the one ordered log alongside the events it folds (§7/§8/§9), not just the events.
+    log: Option<ObservationLog>,
 }
 
 impl Harness {
@@ -227,7 +233,21 @@ impl Harness {
             spawns: Vec::new(),
             deliveries: Vec::new(),
             run_for: DEFAULT_RUN_FOR,
+            log: None,
         }
+    }
+
+    /// Record the run into `log` rather than a fresh internal one — so a caller can *share* one observation
+    /// log across the run's events and the store backends it wires into the program store. Build a
+    /// [`RecordingKvStore`](super::RecordingKvStore) / [`RecordingBlobStore`](super::RecordingBlobStore) over
+    /// the same `log`, hand those to the store the run's `make_store` builds (e.g. a wasm program store's
+    /// per-reducer KV/blob factories), and every KV and blob call a reducer makes lands in the returned
+    /// [`Run`]'s log interleaved with the events it folds — the one ordered log a checker reads (§9). Without
+    /// this, the run's log holds only events, since the store backends have no handle to it.
+    #[must_use]
+    pub fn log(mut self, log: ObservationLog) -> Self {
+        self.log = Some(log);
+        self
     }
 
     /// Register a program blob under `name` — opaque bytes a spawn can name. The run seeds it into the
@@ -300,6 +320,7 @@ impl Harness {
             spawns,
             deliveries,
             run_for,
+            log: external_log,
         } = self;
 
         // Resolve names to hashes/ids (pure, deterministic — done before the sim). A blob name resolves to
@@ -373,7 +394,9 @@ impl Harness {
             })
             .collect();
 
-        let log = ObservationLog::new();
+        // Record into the caller's log if one was supplied (so a caller's recording store backends share it),
+        // else a fresh one for this run.
+        let log = external_log.unwrap_or_else(ObservationLog::new);
         // The handle the checker reads: the log is Arc-shared, so after the sim ends it holds every record
         // the run appended. Snapshot it once bach::sim returns (the primary task has completed by then).
         let out = log.clone();
