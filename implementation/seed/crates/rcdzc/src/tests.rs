@@ -2605,6 +2605,61 @@ fn reducer_full_world_bytes() -> Vec<u8> {
     crate::codec::encode(&a)
 }
 
+/// W4c-b-iii DECLINE-DON'T-MISCOMPILE: a PARTIAL guest — defines only `onMessage` but the world's `guest`
+/// export interface declares all three members (on-message/on-response/on-notification) — must DECLINE
+/// cleanly, not silently fall through to a raw heap-handle export (`on-message: u32 -> u32`) the platform
+/// host cannot bind. (v-platform's reducer-echo-step probe hit exactly this silent heap fallback.) A
+/// component must export every func of the interface it exports.
+#[test]
+fn a_partial_guest_missing_world_export_members_declines_cleanly() {
+    use crate::testkit::parse;
+    // Only `onMessage` — no `onResponse`/`onNotification`. The world (reducer_full_world_bytes) declares all 3.
+    let src = "(module m \
+                 (type Outcome Continue (Close (Record (schema Bytes) (reason Bytes)))) \
+                 (def (onMessage (: m (Record (contract Bytes) \
+                                      (sender (Record (reducer Bytes) (host Bytes))) \
+                                      (payload Bytes) (token Bytes)))) \
+                   (record \
+                     (requests (list)) \
+                     (outcome Outcome.Continue))) \
+                 (export onMessage))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:platform/guest"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                reducer_full_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        out.has_error(),
+        "a partial guest (1 of 3 world export members) must decline, not silently heap-fall"
+    );
+    assert!(
+        out.artifact(crate::backend::Target::Wasm.artifact_kind())
+            .is_none(),
+        "no wasm artifact — no silent heap-handle mis-emit"
+    );
+    assert!(
+        out.diagnostics.iter().any(|d| d
+            .message
+            .contains("does not fully implement the world's typed export interface")),
+        "the decline names the missing-export-member cause: {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
 /// W4c-b SUNSET-CORE capstone: the FULL 3-member conforming reducer-echo. One guest defines `onMessage`
 /// (echo → step), `onResponse` (inert: reads the `response` incl. `answer: result<list<u8>, error>`, returns
 /// an empty step), and `onNotification` (inert: reads `notification`, empty step), all bound by kebab name to
