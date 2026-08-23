@@ -1871,6 +1871,11 @@
             harnessRunDir = ./implementation/seed/crates/cdz-platform/harness-runs;
             harnessRunExpect = {
               "reducer-echo-spawn" = [ ''spawn "reducer-echo"'' "recv notification" ];
+              # The echo round-trip (render-level): a message was delivered (`recv msg`) and reducer-echo
+              # emitted the echoed payload — the payload preview renders ONLY on an emit line, so seeing
+              # `"ECHOPAYLOAD"` proves the guest re-emitted what it received. The byte-exact same-contract +
+              # token==own-id assertion arrives with the structured log (v-platform-itest #3007).
+              "reducer-echo-echo" = [ "recv msg" ''"ECHOPAYLOAD"'' ];
             };
             harnessRunChecks = pkgs.lib.mapAttrs'
               (fn: _:
