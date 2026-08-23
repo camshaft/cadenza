@@ -1013,6 +1013,43 @@
           vendor = nfcVendor;
         };
 
+        # ── the reducer-echo GUEST component (a §3 reducer fixture for the WasmReducer host driver) ──
+        #
+        # A minimal event-reducer guest (echoes one request on the same contract, reads its own id from the
+        # `identity` host import) that proves the WasmReducer driver end-to-end against a REAL component, not
+        # a mock. Operator ruling: NO committed .wasm — the guest is built REPRODUCIBLY by cargo-component
+        # here and exposed as `packages.reducer-echo` (+ a validity check). The platform stays GUEST-AGNOSTIC:
+        # nothing guest-specific is baked into cdz-platform or the shared runtime store, and the CAS is not
+        # seeded by an env-read manifest entry. Instead a TEST passes these nix-built bytes IN as an opaque
+        # program blob through the harness's language-neutral seed-from-blobs surface (owned by
+        # v-platform-itest; the exact CAS-seeding API awaits v-platform's WasmProgramStore addressing). This
+        # derivation's sole job is to PRODUCE the guest bytes reproducibly. Unlike the runtime/nfc it is a
+        # LIGHT fixture (its src/allocator.rs ships talc, so NO build-std and NO panic=immediate-abort —
+        # byte-determinism isn't required of a fixture), so its vendor is just its OWN Cargo.lock (crates-io
+        # only, no rust-src build-std lock, no git deps). Its WIT world (`reducer-world`) lives in the SHARED
+        # cdz-platform/wit (`[package.metadata.component.target] path = "../../wit"`), so the fileset carries
+        # that wit dir alongside the guest crate. The WIT target is a LOCAL PATH (not a component-dep-by-hash
+        # like nfc's FINDING#23), so it resolves under CARGO_NET_OFFLINE with no `--offline`-flag surprise.
+        # Reuses mkStripComponent unchanged: its strip -a canonicalize gives a machine-stable content hash.
+        reducerEchoVendor = pkgs.rustPlatform.importCargoLock {
+          lockFile = ./implementation/seed/crates/cdz-platform/guests/reducer-echo/Cargo.lock;
+        };
+        reducerEchoSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [
+            ./implementation/seed/crates/cdz-platform/guests/reducer-echo
+            ./implementation/seed/crates/cdz-platform/wit
+            ./rust-toolchain.toml
+          ];
+        };
+        reducerEcho = mkStripComponent {
+          pname = "cdz-platform-reducer-echo-component";
+          crateDir = "cdz-platform/guests/reducer-echo";
+          artifact = "cdz_platform_reducer_echo";
+          src = reducerEchoSrc;
+          vendor = reducerEchoVendor;
+        };
+
         # The content address of a built component = blake3 of its (stripped) bytes. DERIVED from the
         # artifact nix built — this is the Cadenza content-address a program pins, falling out of the
         # build rather than being asserted. Exposed as a `packages.*-hash` (a plain-text store file).
@@ -1481,6 +1518,12 @@
         packages.nfc = nfc;
         packages.nfc-hash = hashOf nfc "cdz-nfc-hash";
 
+        # The reducer-echo guest fixture (§3) the platform host driver instantiates. `.#reducer-echo` is the
+        # stripped component bytes (what a test seeds as an opaque program blob); `.#reducer-echo-hash` its
+        # derived blake3 content address.
+        packages.reducer-echo = reducerEcho;
+        packages.reducer-echo-hash = hashOf reducerEcho "cdz-platform-reducer-echo-hash";
+
         # R2: the content-addressed component store — every nix-built component as `<derived-hash>.wasm`
         # in one dir (mirrors target/cadenza-store, but built + addressed by nix). `nix build .#store`.
         packages.store = componentStore;
@@ -1695,7 +1738,7 @@
             flakeReproBackstop = pkgs.runCommand "flake-repro-backstop"
               {
                 inherit runtimeHashParity runtimeDebugHashParity nfcHashParity
-                  exampleProjectTests crateClosureAssert;
+                  reducerEchoValid exampleProjectTests crateClosureAssert;
               } ''
               echo "ok: flake reproducibility-backstop — hash-parity + component-validity + project-@tests + closure-assert" > $out
             '';
@@ -1704,6 +1747,11 @@
             runtimeHashParity = parity { name = "runtime"; drv = runtime; constName = "REQUIRED_RUNTIME_HASH"; };
             runtimeDebugHashParity = parity { name = "runtime-debug"; drv = runtimeDebug; constName = "DEBUG_RUNTIME_HASH"; };
             nfcHashParity = parity { name = "nfc"; drv = nfc; constName = "REQUIRED_NFC_HASH"; };
+            # The reducer-echo guest fixture has no frozen compiler constant (a fixture, not a runtime
+            # dependency the compiler pins), so it gets a wasm-tools VALIDITY guard rather than a hash-parity
+            # check: a future WIT/guest/toolchain change that silently produced a broken component fails the
+            # flake here. This is what rebuilds-and-verifies the guest from source, replacing a committed .wasm.
+            reducerEchoValid = validComponent { name = "reducer-echo"; drv = reducerEcho; };
 
             # LOCAL-GATE bindings (v-nix+v-fleet-tooling 2026-08-06, GHA-outage fallback). The 3 required
             # checks that were inline `cargoWorkspaceCheck {…}` at their attr get `let`-bound here so BOTH
@@ -1819,6 +1867,10 @@
             runtime-hash-parity = runtimeHashParity;
             runtime-debug-hash-parity = runtimeDebugHashParity;
             nfc-hash-parity = nfcHashParity;
+            # `nix build .#checks.<sys>.reducer-echo-valid` — the guest fixture builds + validates as a
+            # component (also part of flake-repro-backstop). This is what rebuilds-and-verifies the guest
+            # from source, replacing the committed .wasm the operator vetoed.
+            reducer-echo-valid = reducerEchoValid;
             # S3: the example project's @tests run through nix — a cache HIT when its sources are
             # unchanged (the "skip tests that haven't changed" win), a re-run + fail on a red test.
             example-project-tests = exampleProjectTests;
