@@ -1114,6 +1114,102 @@ fn a_record_result_spills_to_memory_and_lifts() {
     }
 }
 
+/// A KIND_WIT_WORLD declaring an export interface `iface` with one SCALAR member `f: func(x: s64) -> s64`
+/// — the no-wrapper typed interface-export case. Hand-built via the cadenza-ast `Builder` (the shape
+/// `parse_target_world` reads): a scalar type is a NAME-head marker `(s64)`.
+fn scalar_iface_world_bytes() -> Vec<u8> {
+    use crate::ast::Builder;
+    let mut b = Builder::new();
+    let s64 = |b: &mut Builder| {
+        let h = b.name("s64");
+        b.list(vec![h])
+    };
+    let param_ty = s64(&mut b);
+    let result_ty = s64(&mut b);
+    let func_h = b.name("func");
+    let param_h = b.name("param");
+    let pn = b.name("x");
+    let param_node = b.list(vec![param_h, pn, param_ty]);
+    let result_h = b.name("result");
+    let result_node = b.list(vec![result_h, result_ty]);
+    let func = b.list(vec![func_h, param_node, result_node]);
+    let member_h = b.name("member");
+    let mn = b.name("f");
+    let member = b.list(vec![member_h, mn, func]);
+    let exp_h = b.name("export");
+    let iname = b.name("iface");
+    let export = b.list(vec![exp_h, iname, member]);
+    let world_h = b.name("world");
+    let wn = b.name("w");
+    let world = b.list(vec![world_h, wn, export]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+/// W4c(b): the FIRST real Cadenza guest emitting a typed INTERFACE export — a `.cdz` def compiled to a
+/// component that exports interface `cadenza:demo/iface` with a scalar func `f(x: s64) -> s64`, driven by a
+/// target WIT world. Scalar funcs need no wrapper (the def's core func lifts directly), so this exercises
+/// the mod.rs cascade routing to `assemble_typed_interface`. The component VALIDATES and RUNS: `f(7) == 7`.
+#[test]
+fn a_scalar_interface_export_guest_compiles_and_runs() {
+    use crate::testkit::parse;
+    use wasmtime::component::{Component, Linker, Val};
+    use wasmtime::{Engine, Store};
+
+    // A Cadenza reducer-shaped guest: def f(x: Int64) = x, exported; bound by name to the world's `f` member.
+    let src = "(module m (def (f (: x Int64)) x) (export f))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:demo/iface"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                scalar_iface_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "scalar interface-export guest must emit a component: {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("emits a component");
+
+    let engine = Engine::default();
+    let comp =
+        Component::from_binary(&engine, bytes).expect("scalar interface component validates");
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store = Store::new(&engine, ());
+    let instance = linker.instantiate(&mut store, &comp).expect("instantiate");
+    let iface_idx = instance
+        .get_export_index(&mut store, None, "cadenza:demo/iface")
+        .expect("interface export present");
+    let f_idx = instance
+        .get_export_index(&mut store, Some(&iface_idx), "f")
+        .expect("f export present");
+    let func = instance.get_func(&mut store, f_idx).expect("f is a func");
+    let mut results = [Val::Bool(false)];
+    func.call(&mut store, &[Val::S64(7)], &mut results)
+        .expect("call");
+    func.post_return(&mut store).expect("post_return");
+    assert_eq!(
+        i64::from_val(&results[0]),
+        7,
+        "a real Cadenza guest exporting interface cadenza:demo/iface: f(7) == 7"
+    );
+}
+
 /// Whether calling export `name` with `args` TRAPS (an `unreachable` from an overflow guard). Returns
 /// `true` if the call errored (a wasm trap), `false` if it returned normally.
 fn call_traps(component_bytes: &[u8], name: &str, args: &[wasmtime::component::Val]) -> bool {

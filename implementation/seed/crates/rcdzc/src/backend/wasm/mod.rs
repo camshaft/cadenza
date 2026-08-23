@@ -949,6 +949,21 @@ pub fn emit(
         return emit_bytes_provider_member(db, layout, def, &iface, spans);
     }
 
+    // §3c GENERAL WIT-BINDINGS — a TARGET WIT WORLD declaring an export INTERFACE whose funcs are all
+    // SCALAR (no `record`/`variant`/`list<u8>` boundary yet) emits the guest as a component INSTANCE that
+    // exports the interface (`assemble_typed_interface`). This is the no-wrapper subset of general
+    // WIT-bindings emission: a scalar def's compiled core func lifts DIRECTLY (its `(i32)->i32` core sig is
+    // the flattened boundary sig), so the interface funcs alias the existing core exports with no marshalling
+    // body. A member carrying a record/variant/`list<u8>` still declines here (returns `None`) until the
+    // lift/lower wrapper-body slice. Additive: every world that is not a scalar interface-export is `None`,
+    // so it falls through to the shapes below exactly as before.
+    if let Some(iface) = db.component_name.clone()
+        && let Some(world_bytes) = db.wit_world.clone()
+        && let Some(typed) = scalar_interface_export(layout, &world_bytes, &iface)
+    {
+        return Ok(envelope::assemble_typed_interface(&core, &typed));
+    }
+
     // A HOST-delegating program takes the host-import envelope shape (E2h-2): the delegated effect is a
     // component INTERFACE, its operations imported funcs the boundary resolves. This increment delegates a
     // SINGLE effect (every host import shares one effect name); a program delegating two distinct effects
@@ -7885,6 +7900,80 @@ fn world_bytes_crossing_export(layout: &Layout, world_bytes: &[u8]) -> Option<us
         }
     }
     None
+}
+
+/// If the target world (`world_bytes`, binary-AST) declares an export INTERFACE whose members all bind (by
+/// name) to guest exports and are all SCALAR funcs — every param/result a scalar WIT type the guest's
+/// solved `Ty` lowers to DIRECTLY (no value-form bridge, no memory) — build the [`envelope::TypedInterface`]
+/// to emit it as a component instance. `None` when there is no such world, a member does not bind, or any
+/// member carries a `record`/`variant`/`list<u8>`/`string` (which needs the lift/lower wrapper — a later
+/// slice, still declined here). `iface` is the component's fully-qualified export name (`db.component_name`);
+/// the instance is exported under it. Scalar funcs need no wrapper: the compiled def's core func already has
+/// the flattened boundary signature, so the interface aliases it directly.
+fn scalar_interface_export(
+    layout: &Layout,
+    world_bytes: &[u8],
+    iface: &str,
+) -> Option<envelope::TypedInterface> {
+    use crate::wit_world::{BridgeAction, WitType, bridge_decision, parse_target_world};
+    fn is_scalar(t: &WitType) -> bool {
+        matches!(
+            t,
+            WitType::Bool
+                | WitType::U8
+                | WitType::U16
+                | WitType::U32
+                | WitType::U64
+                | WitType::S8
+                | WitType::S16
+                | WitType::S32
+                | WitType::S64
+                | WitType::F32
+                | WitType::F64
+                | WitType::Char
+        )
+    }
+    let arenas = crate::codec::decode(world_bytes)?;
+    let world = parse_target_world(&arenas, arenas.root)?;
+    // A reducer guest declares one export interface; bind every member to a guest export and require it be a
+    // fully-scalar, directly-liftable signature.
+    let export_iface = world.exports.first()?;
+    let mut funcs = Vec::with_capacity(export_iface.members.len());
+    for member in &export_iface.members {
+        let e = layout.exports.iter().find(|e| e.name == member.name)?;
+        if member.func.params.len() != e.params.len() {
+            return None;
+        }
+        for ((_, declared), (_, guest)) in member.func.params.iter().zip(e.params.iter()) {
+            if !is_scalar(declared) || bridge_decision(declared, guest) != BridgeAction::Direct {
+                return None;
+            }
+        }
+        let result = match &member.func.result {
+            WitType::Unit => None,
+            declared => {
+                if !is_scalar(declared)
+                    || bridge_decision(declared, &e.result) != BridgeAction::Direct
+                {
+                    return None;
+                }
+                Some(declared.clone())
+            }
+        };
+        funcs.push(envelope::TypedFunc {
+            name: member.name.clone(),
+            params: member.func.params.clone(),
+            result,
+        });
+    }
+    if funcs.is_empty() {
+        return None;
+    }
+    Some(envelope::TypedInterface {
+        name: iface.to_string(),
+        types: Vec::new(),
+        funcs,
+    })
 }
 
 /// §3c — emit ANY WIT bytes-provider export member: a member the target WIT declares `list<u8> -> list<u8>`
