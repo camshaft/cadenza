@@ -384,11 +384,11 @@ impl fmt::Display for Record {
     }
 }
 
-/// A short prefix of a hash/id's textual (base64url, §8) form — enough to recognize it when scanning,
+/// A short prefix of a hash/id's textual (base62, §8) form — enough to recognize it when scanning,
 /// not the full value.
 fn short(id: impl fmt::Display) -> String {
     let s = id.to_string();
-    // base64url is ASCII, so a byte slice is a char boundary; take a prefix and mark it elided.
+    // base62 is ASCII, so a byte slice is a char boundary; take a prefix and mark it elided.
     match s.get(..10) {
         Some(prefix) if prefix.len() < s.len() => format!("{prefix}…"),
         _ => s,

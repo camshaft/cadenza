@@ -13,7 +13,7 @@
 //!
 //! `hash` reads every `*.cdz` under `<dir>`, and for each contract module (one carrying the `@!contract` /
 //! `@!input` / `@!output` pragmas) computes its contract-id, emitting a JSON object `{ "<name>": "<id>" }`
-//! sorted by name, where the id is the base64url of the contract-id (§8, the one text form). A `.cdz` that is
+//! sorted by name, where the id is the base62 of the contract-id (§8, the one text form). A `.cdz` that is
 //! a valid module but declares no contract is skipped; a source the `cdz` binary cannot parse is a hard
 //! error. `--cdz` sets the parser binary (else `$CDZ`, else `cdz` on `PATH`); `--out` writes the mapping to a
 //! file instead of stdout.
@@ -106,7 +106,7 @@ fn hash(args: HashArgs) -> Result<(), Error> {
     collect_cdz(&args.dir, &mut sources)?;
     sources.sort();
 
-    // name → base64url id. A BTreeMap keeps the emission sorted by name and rejects a duplicate name
+    // name → base62 id. A BTreeMap keeps the emission sorted by name and rejects a duplicate name
     // (two contracts declaring the same name is an authoring error, not a silent last-wins).
     let mut mapping: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
     for src in &sources {
@@ -185,7 +185,7 @@ fn convert(cdz: &str, src: &Path) -> Result<Vec<u8>, Error> {
 }
 
 /// Render the name→id mapping as a JSON object, one entry per line, sorted by name (the `BTreeMap`'s order).
-/// Hand-rolled to keep the crate dep-minimal: an id is base64url (`[A-Za-z0-9-_]`, no escaping), and a name
+/// Hand-rolled to keep the crate dep-minimal: an id is base62 (`[0-9A-Za-z]`, no escaping), and a name
 /// only needs `"` and `\` escaped.
 fn render_json(mapping: &std::collections::BTreeMap<String, String>) -> String {
     if mapping.is_empty() {

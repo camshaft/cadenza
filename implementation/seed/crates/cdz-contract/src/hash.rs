@@ -19,13 +19,16 @@
 //! no allocation) — the "`Bytes`, not `Vec<u8>`" convention is for *variable-length* buffers, not a fixed
 //! digest.
 //!
-//! Text form: **base64url** — the URL-safe alphabet, unpadded — never hex, wherever a hash is rendered
-//! as text (a name, a log line, an error, a wire field); section 8. [`Hash`]'s `Display` and `FromStr`
-//! are that rendering and its inverse over all 33 bytes, and neither allocates: `Display` streams chars to
-//! the formatter, and `FromStr` decodes into the fixed 33-byte array in place.
+//! Text form: **base62** — the digits and letters `0-9 A-Z a-z`, no separators — the single textual form of
+//! a hash wherever one is rendered (a name, a log line, an error, a wire field); section 8. base62 is the
+//! compact encoding whose alphabet is legal on *every* surface a hash text reaches: the runtime
+//! content-address rides in a WebAssembly component-import semver build-metadata suffix, whose grammar
+//! admits only `[0-9A-Za-z-]`, so base64url's `_` was invalid there — base62 drops `-`/`_` entirely and so
+//! is the one encoding used uniformly, with no per-surface exception and never hex. [`Hash`]'s `Display`
+//! and `FromStr` are that rendering and its inverse over all 33 bytes, both computed in a fixed 45-byte
+//! stack buffer, so neither allocates.
 
 use std::fmt;
-use std::fmt::Write as _; // brings `Formatter::write_char` into scope for the allocation-free Display
 use std::str::FromStr;
 
 /// What a [`Hash`] names — the leading byte of every hash, so a hash is self-describing at runtime. Each
@@ -71,7 +74,7 @@ impl HashTag {
 ///
 /// `Copy` + cheaply comparable: a hash threads through routing, dispatch, and the store constantly, so
 /// it must be trivially clonable. Ordering is by raw bytes (tag first, then digest — a total order for use
-/// as a map/set key).
+/// as a map/set key); the base62 alphabet is digit-ordered, so the text form sorts the same way.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Hash([u8; 33]);
 
@@ -82,9 +85,9 @@ impl Hash {
     /// The number of digest bytes (blake3's 256-bit output), after the tag byte.
     pub const DIGEST_LEN: usize = 32;
 
-    /// The number of base64url characters in a hash's text form (`33 * 4 / 3`, unpadded — 33 is a multiple
-    /// of 3, so there is no padding remainder).
-    pub const TEXT_LEN: usize = 44;
+    /// The number of base62 characters in a hash's text form. 45 base62 digits carry `62^45 > 2^264`, and
+    /// 44 carry `62^44 < 2^264`, so 45 is the fixed, minimal width for the 33-byte (264-bit) tagged hash.
+    pub const TEXT_LEN: usize = base62::CHARS;
 
     /// The content hash of `bytes`, tagged as `tag`. Deterministic: the same tag and bytes always hash
     /// equal (that is what makes content addressing work), so this is a pure function of its inputs.
@@ -140,11 +143,13 @@ impl Hash {
         <&[u8; 32]>::try_from(&self.0[1..]).expect("a 33-byte hash has a 32-byte digest")
     }
 
-    /// The base64url text of this hash as a lazy `char` iterator — the ONE textual form (section 8),
-    /// allocation-free. `Display` uses this; a caller that genuinely needs an owned `String` collects it
-    /// (an explicit, opt-in allocation) rather than every render paying for one.
-    pub fn text(&self) -> base64url::Encode<'_> {
-        base64url::encode(&self.0)
+    /// The base62 text of this hash as a fixed 45-byte ASCII array — the ONE textual form (section 8),
+    /// computed in place with no heap allocation. `Display` writes this straight out; a caller that
+    /// genuinely needs an owned `String` builds one from it (an explicit, opt-in allocation) rather than
+    /// every render paying for one.
+    #[must_use]
+    pub fn text(&self) -> [u8; Self::TEXT_LEN] {
+        base62::encode(&self.0)
     }
 }
 
@@ -186,17 +191,16 @@ impl Hasher {
     }
 }
 
-/// base64url renders every textual hash (section 8) — streamed to the formatter, no intermediate `String`.
+/// base62 renders every textual hash (section 8) — written from a fixed stack buffer, no allocation.
 impl fmt::Display for Hash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for c in self.text() {
-            f.write_char(c)?;
-        }
-        Ok(())
+        let text = self.text();
+        // The base62 alphabet is ASCII, so the buffer is always valid UTF-8.
+        f.write_str(std::str::from_utf8(&text).expect("base62 alphabet is ASCII"))
     }
 }
 
-/// A hash is opaque bytes; Debug shows the base64url text (not a 32-element byte array) so log/panic
+/// A hash is opaque bytes; Debug shows the base62 text (not a 33-element byte array) so log/panic
 /// output is the same identity a human reads everywhere else.
 impl fmt::Debug for Hash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -206,226 +210,142 @@ impl fmt::Debug for Hash {
     }
 }
 
-/// Parse a hash from its base64url text form (the inverse of `Display`). Decodes straight into the fixed
-/// 33-byte array (tag + digest) — no allocation. The error is a [`base64url::DecodeError`]: a text that
-/// decodes to some other length surfaces as [`base64url::DecodeError::OutputLenMismatch`] against the
-/// 33-byte target, so "not a valid hash" needs no separate error type on top of the decoder's. (The leading
-/// byte need not be a known tag; [`Hash::tag`] reports `None` for an unrecognized one.)
+/// Parse a hash from its base62 text form (the inverse of `Display`). Decodes straight into the fixed
+/// 33-byte array (tag + digest) — no allocation. The error is a [`base62::DecodeError`]: text of the wrong
+/// length, a non-alphabet character, or a value that does not fit 33 bytes all surface there, so "not a
+/// valid hash" needs no separate error type on top of the decoder's. (The leading byte need not be a known
+/// tag; [`Hash::tag`] reports `None` for an unrecognized one.)
 impl FromStr for Hash {
-    type Err = base64url::DecodeError;
+    type Err = base62::DecodeError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut buf = [0u8; 33];
-        base64url::decode_into(s, &mut buf)?;
-        Ok(Self(buf))
+        Ok(Self(base62::decode(s)?))
     }
 }
 
-/// base64url — the URL-safe base64 alphabet (`A-Z a-z 0-9 - _`), unpadded — the one textual byte
-/// encoding for the platform (section 8: "base64url … never hex"). Hand-rolled to keep the crate
-/// depending on just blake3, and **allocation-free**: [`encode`] is a lazy `char` iterator and
-/// [`decode_into`] writes into a caller-sized buffer (a hash's length is always known, so the caller
-/// owns the buffer). Decoding is strict/canonical so a byte string has exactly one text form.
-pub mod base64url {
+/// base62 — the alphabet `0-9 A-Z a-z`, no padding or separators — the ONE textual byte encoding for the
+/// platform (section 8). Specialized to a hash's fixed 33-byte value (tag + digest): [`encode`] takes 33
+/// bytes and yields exactly [`CHARS`] characters, [`decode`] does the inverse, both in place with no
+/// allocation.
+///
+/// Unlike a power-of-two encoding, base62 is a change of base of the whole 264-bit number, not an
+/// independent regrouping of bits, so it is computed by long division / multiply-accumulate over the hash
+/// treated as one big-endian integer. The output is fixed-width (leading zero digits are the `0`
+/// character), and decoding is strict — exactly [`CHARS`] characters, alphabet only, and a value that fits
+/// 33 bytes — so a byte string has exactly one text form, which content addressing relies on.
+///
+/// The alphabet is **digit-ordered** (`0..9`, then `A..Z`, then `a..z`), which is also ASCII order, so a
+/// fixed-width base62 text sorts lexicographically the same way the raw bytes sort (tag first, then digest).
+pub mod base62 {
     use std::fmt;
 
-    /// index (0..64) -> character. `-` is 62, `_` is 63 (the URL-safe pair, vs standard base64's `+`/`/`).
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    /// The number of raw bytes a hash occupies — the tag byte plus blake3's 256-bit digest.
+    const BYTES: usize = 33;
 
-    /// character -> 6-bit value, or 0xFF for "not an alphabet character". Built once at const time so
+    /// The fixed number of base62 characters a 33-byte hash encodes to. `62^45 > 2^264 > 62^44`, so 45
+    /// digits are exactly enough and no fewer suffice.
+    pub const CHARS: usize = 45;
+
+    /// index (0..62) -> character, digit-ordered so the text sorts like the raw bytes.
+    const ALPHABET: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
+    /// character -> value (0..62), or 0xFF for "not an alphabet character". Built once at const time so
     /// decode is a table lookup, not a scan of `ALPHABET`.
     const REVERSE: [u8; 256] = {
         let mut t = [0xFFu8; 256];
         let mut i = 0;
-        while i < 64 {
+        while i < 62 {
             t[ALPHABET[i] as usize] = i as u8;
             i += 1;
         }
         t
     };
 
-    /// The number of unpadded base64url characters that `n` bytes encode to.
+    /// Encode a 33-byte hash to its fixed 45-character base62 text. Treats `bytes` as one big-endian
+    /// 264-bit integer and repeatedly divides by 62, taking the remainder as the least-significant digit;
+    /// after 45 divisions the quotient is zero (because `62^45 > 2^264`), so every digit is captured and
+    /// the result is left-padded with the `0` character to the fixed width. No allocation.
     #[must_use]
-    pub const fn encoded_len(n: usize) -> usize {
-        // each full 3-byte group -> 4 chars; a 1- or 2-byte tail -> 2 or 3 chars.
-        (n / 3) * 4
-            + match n % 3 {
-                0 => 0,
-                1 => 2,
-                _ => 3,
+    pub fn encode(bytes: &[u8; BYTES]) -> [u8; CHARS] {
+        let mut n = *bytes; // big-endian working copy, mutated down to zero by the divisions
+        let mut out = [0u8; CHARS];
+        for slot in out.iter_mut().rev() {
+            // one long-division pass: n, rem = divmod(n, 62), big-endian.
+            let mut rem = 0u32;
+            for b in &mut n {
+                let acc = (rem << 8) | u32::from(*b);
+                *b = (acc / 62) as u8;
+                rem = acc % 62;
             }
-    }
-
-    /// The number of bytes that a `chars`-long canonical base64url string decodes to. `chars % 4 == 1`
-    /// is impossible (no byte string encodes to it) and is reported as an error by [`decode_into`], not
-    /// here; this returns the length for the reachable cases.
-    #[must_use]
-    pub const fn decoded_len(chars: usize) -> usize {
-        (chars / 4) * 3
-            + match chars % 4 {
-                2 => 1,
-                3 => 2,
-                _ => 0,
-            }
-    }
-
-    /// A lazy iterator over the base64url characters of `bytes` — allocation-free. Collect it into a
-    /// `String` only where an owned string is genuinely needed; otherwise write it straight out.
-    #[must_use]
-    pub fn encode(bytes: &[u8]) -> Encode<'_> {
-        Encode {
-            bytes,
-            byte_pos: 0,
-            // pending 6-bit indices produced from the current group, and how many are still to yield.
-            pending: [0u8; 4],
-            pending_len: 0,
-            pending_pos: 0,
+            *slot = ALPHABET[rem as usize];
         }
+        debug_assert!(
+            n.iter().all(|&b| b == 0),
+            "45 base62 digits fully consume a 264-bit value"
+        );
+        out
     }
 
-    /// The iterator returned by [`encode`]. Yields one `char` at a time; refills from the next up-to-3
-    /// input bytes when its 4-char group is drained. [`ExactSizeIterator`], so `.size_hint()` is exact.
-    pub struct Encode<'a> {
-        bytes: &'a [u8],
-        byte_pos: usize,
-        pending: [u8; 4],
-        pending_len: u8,
-        pending_pos: u8,
-    }
-
-    impl Iterator for Encode<'_> {
-        type Item = char;
-
-        fn next(&mut self) -> Option<char> {
-            if self.pending_pos == self.pending_len {
-                let rem = &self.bytes[self.byte_pos..];
-                let take = rem.len().min(3);
-                if take == 0 {
-                    return None;
-                }
-                let a = u32::from(rem[0]);
-                let (n, chars) = match take {
-                    1 => (a << 16, 2),
-                    2 => ((a << 16) | (u32::from(rem[1]) << 8), 3),
-                    _ => ((a << 16) | (u32::from(rem[1]) << 8) | u32::from(rem[2]), 4),
-                };
-                self.pending[0] = ((n >> 18) & 0x3F) as u8;
-                self.pending[1] = ((n >> 12) & 0x3F) as u8;
-                self.pending[2] = ((n >> 6) & 0x3F) as u8;
-                self.pending[3] = (n & 0x3F) as u8;
-                self.pending_len = chars;
-                self.pending_pos = 0;
-                self.byte_pos += take;
-            }
-            let idx = self.pending[self.pending_pos as usize];
-            self.pending_pos += 1;
-            Some(ALPHABET[idx as usize] as char)
-        }
-
-        fn size_hint(&self) -> (usize, Option<usize>) {
-            let buffered = usize::from(self.pending_len - self.pending_pos);
-            let rest = encoded_len(self.bytes.len() - self.byte_pos);
-            let n = buffered + rest;
-            (n, Some(n))
-        }
-    }
-
-    impl ExactSizeIterator for Encode<'_> {}
-
-    /// Decode canonical unpadded base64url into `out`, which the caller sizes to the known decoded
-    /// length ([`decoded_len`]). No allocation. Strict: rejects a non-alphabet character, an impossible
-    /// length (`chars % 4 == 1`), non-canonical trailing bits (the unused low bits of the last character
-    /// must be zero), and an `out` whose length is not exactly the decoded length — so a given byte
-    /// string has exactly ONE valid text form, which content addressing relies on.
+    /// Decode a base62 hash text back to its 33 raw bytes (the inverse of [`encode`]). Strict: the text must
+    /// be exactly [`CHARS`] characters, every one in the alphabet, and the decoded value must fit 33 bytes —
+    /// so a given hash has exactly one valid text form.
     ///
     /// # Errors
-    /// Returns the first [`DecodeError`] encountered (length/output-size checks before per-char decode).
-    pub fn decode_into(s: &str, out: &mut [u8]) -> Result<(), DecodeError> {
+    /// Returns the first [`DecodeError`]: [`DecodeError::InvalidLength`] if not [`CHARS`] characters,
+    /// [`DecodeError::InvalidChar`] for a non-alphabet character, or [`DecodeError::Overflow`] if the 45
+    /// characters name a value `>= 2^264` (a canonical base62 string that does not fit a 33-byte hash).
+    pub fn decode(s: &str) -> Result<[u8; BYTES], DecodeError> {
         let s = s.as_bytes();
-        if s.len() % 4 == 1 {
+        // The alphabet is ASCII, so a valid text is exactly CHARS bytes; any multibyte character makes the
+        // byte length differ from CHARS (caught here) or is rejected as a non-alphabet byte below.
+        if s.len() != CHARS {
             return Err(DecodeError::InvalidLength(s.len()));
         }
-        let expected = decoded_len(s.len());
-        if out.len() != expected {
-            return Err(DecodeError::OutputLenMismatch {
-                expected,
-                got: out.len(),
-            });
-        }
-        let mut oi = 0;
-        let mut chunks = s.chunks_exact(4);
-        for c in &mut chunks {
-            let n = (sextet(c[0])? << 18)
-                | (sextet(c[1])? << 12)
-                | (sextet(c[2])? << 6)
-                | sextet(c[3])?;
-            out[oi] = (n >> 16) as u8;
-            out[oi + 1] = (n >> 8) as u8;
-            out[oi + 2] = n as u8;
-            oi += 3;
-        }
-        match chunks.remainder() {
-            [] => {}
-            [a, b] => {
-                // 2 chars -> 1 byte: the 2nd char's low 4 bits are unused and must be zero (canonical).
-                let (a, b) = (sextet(*a)?, sextet(*b)?);
-                if b & 0x0F != 0 {
-                    return Err(DecodeError::NonCanonicalTrailingBits);
-                }
-                out[oi] = ((a << 2) | (b >> 4)) as u8;
+        let mut n = [0u8; BYTES]; // big-endian accumulator: n = n*62 + digit, per character
+        for &c in s {
+            let digit = REVERSE[c as usize];
+            if digit == 0xFF {
+                return Err(DecodeError::InvalidChar(c as char));
             }
-            [a, b, c] => {
-                // 3 chars -> 2 bytes: the 3rd char's low 2 bits are unused and must be zero.
-                let (a, b, c) = (sextet(*a)?, sextet(*b)?, sextet(*c)?);
-                if c & 0x03 != 0 {
-                    return Err(DecodeError::NonCanonicalTrailingBits);
-                }
-                out[oi] = ((a << 2) | (b >> 4)) as u8;
-                out[oi + 1] = ((b << 4) | (c >> 2)) as u8;
+            let mut carry = u32::from(digit);
+            for b in n.iter_mut().rev() {
+                let acc = u32::from(*b) * 62 + carry;
+                *b = acc as u8;
+                carry = acc >> 8;
             }
-            // chars % 4 == 1 was rejected above; no other remainder is possible.
-            _ => unreachable!("chunks_exact(4) remainder is 0, 2, or 3 after the len%4==1 guard"),
+            // A carry out of the top byte means the running value exceeded what 33 bytes hold — the text
+            // names a number too large for a tagged hash, so it is not a canonical hash text.
+            if carry != 0 {
+                return Err(DecodeError::Overflow);
+            }
         }
-        Ok(())
+        Ok(n)
     }
 
-    /// Map one character to its 6-bit value, or error if it is not in the alphabet.
-    fn sextet(c: u8) -> Result<u32, DecodeError> {
-        let v = REVERSE[c as usize];
-        if v == 0xFF {
-            Err(DecodeError::InvalidChar(c as char))
-        } else {
-            Ok(u32::from(v))
-        }
-    }
-
-    /// Why a string is not canonical base64url decodable into the given buffer.
+    /// Why a string is not a canonical base62 hash text.
     #[derive(Clone, Copy, PartialEq, Eq)]
     pub enum DecodeError {
-        /// A character outside the URL-safe alphabet (`A-Z a-z 0-9 - _`) — e.g. base64's `+`/`/`, a `=`
-        /// pad, or whitespace.
+        /// A character outside the base62 alphabet (`0-9 A-Z a-z`) — e.g. `-`, `_`, `+`, `/`, a `=` pad, or
+        /// whitespace.
         InvalidChar(char),
-        /// A length no byte string encodes to (`len % 4 == 1`).
+        /// The text is not exactly [`CHARS`] characters (a hash text is fixed-width).
         InvalidLength(usize),
-        /// The unused low bits of the final character are nonzero, so the text is a non-canonical
-        /// encoding of its bytes.
-        NonCanonicalTrailingBits,
-        /// The output buffer's length is not the number of bytes this text decodes to.
-        OutputLenMismatch { expected: usize, got: usize },
+        /// The 45 characters are all valid but name a value `>= 2^264`, which does not fit a 33-byte hash —
+        /// so it is not a canonical encoding of any hash.
+        Overflow,
     }
 
     impl fmt::Display for DecodeError {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             match self {
-                Self::InvalidChar(c) => write!(f, "invalid base64url character {c:?}"),
-                Self::InvalidLength(n) => write!(f, "invalid base64url length {n} (len % 4 == 1)"),
-                Self::NonCanonicalTrailingBits => {
-                    write!(f, "non-canonical base64url (nonzero unused trailing bits)")
+                Self::InvalidChar(c) => write!(f, "invalid base62 character {c:?}"),
+                Self::InvalidLength(n) => {
+                    write!(f, "invalid base62 hash text length {n} (expected {CHARS})")
                 }
-                Self::OutputLenMismatch { expected, got } => {
+                Self::Overflow => {
                     write!(
                         f,
-                        "output buffer is {got} bytes, text decodes to {expected}"
+                        "base62 hash text names a value that does not fit 33 bytes"
                     )
                 }
             }
@@ -443,100 +363,130 @@ pub mod base64url {
 
 #[cfg(test)]
 mod tests {
-    use super::base64url::{self, DecodeError};
+    use super::base62::{self, DecodeError};
     use super::{Hash, HashTag};
 
-    /// Test helper: collect the encode iterator into a `String` (the tests want to compare text).
-    fn enc(bytes: &[u8]) -> String {
-        base64url::encode(bytes).collect()
+    /// Test helper: encode a 33-byte hash value to an owned `String` (the tests want to compare text).
+    fn enc(bytes: &[u8; 33]) -> String {
+        String::from_utf8(base62::encode(bytes).to_vec()).unwrap()
     }
 
-    /// Test helper: decode into a right-sized buffer (the caller always knows the length).
-    fn dec(s: &str) -> Result<Vec<u8>, DecodeError> {
-        let mut out = vec![0u8; base64url::decoded_len(s.len())];
-        base64url::decode_into(s, &mut out).map(|()| out)
+    /// A 33-byte value: `tag` in the leading byte, then `fill` repeated across the digest.
+    fn raw(tag: u8, fill: u8) -> [u8; 33] {
+        let mut b = [fill; 33];
+        b[0] = tag;
+        b
     }
 
-    // ── base64url: pin the encoder against hand-verifiable RFC 4648 vectors ─────────────────────
+    // ── base62: pin the codec against hand-verifiable vectors ───────────────────────────────────
     #[test]
-    fn base64url_encodes_the_rfc4648_ascii_vectors_unpadded() {
-        assert_eq!(enc(b""), "");
-        assert_eq!(enc(b"f"), "Zg");
-        assert_eq!(enc(b"fo"), "Zm8");
-        assert_eq!(enc(b"foo"), "Zm9v");
-        assert_eq!(enc(b"foob"), "Zm9vYg");
-        assert_eq!(enc(b"fooba"), "Zm9vYmE");
-        assert_eq!(enc(b"foobar"), "Zm9vYmFy");
+    fn base62_encodes_the_boundary_values() {
+        // The all-zero value -> all `0` characters (the zero-digit), fixed width.
+        assert_eq!(enc(&[0u8; 33]), "0".repeat(45));
+        // The value 1 (big-endian) -> ...0001.
+        let mut one = [0u8; 33];
+        one[32] = 1;
+        assert_eq!(enc(&one), format!("{}1", "0".repeat(44)));
+        // 61 -> the last alphabet character 'z' with a full zero pad.
+        let mut sixtyone = [0u8; 33];
+        sixtyone[32] = 61;
+        assert_eq!(enc(&sixtyone), format!("{}z", "0".repeat(44)));
+        // 62 -> "10" (one carry) with a zero pad.
+        let mut sixtytwo = [0u8; 33];
+        sixtytwo[32] = 62;
+        assert_eq!(enc(&sixtytwo), format!("{}10", "0".repeat(43)));
     }
 
     #[test]
-    fn base64url_uses_the_url_safe_pair_dash_and_underscore() {
-        let e = enc(&[0xFB, 0xFF, 0xBF]);
-        assert!(e.contains('-') || e.contains('_'), "got {e}");
+    fn base62_uses_only_digits_and_letters_no_separators() {
+        // The all-ones value is the largest 264-bit value; its text uses the alphabet only.
+        let text = enc(&[0xFFu8; 33]);
+        assert_eq!(text.len(), 45);
         assert!(
-            !e.contains('+') && !e.contains('/'),
-            "url-safe alphabet only, got {e}"
+            text.bytes().all(|b| b.is_ascii_alphanumeric()),
+            "base62 is 0-9 A-Z a-z only, got {text}"
         );
-        assert_eq!(enc(&[0xFF, 0xFF, 0xFF]), "____");
+        assert!(
+            !text.contains('-')
+                && !text.contains('_')
+                && !text.contains('+')
+                && !text.contains('/'),
+            "no base64/base64url separators, got {text}"
+        );
     }
 
     #[test]
-    fn encode_iterator_size_hint_is_exact() {
-        for len in 0..=9usize {
-            let buf: Vec<u8> = (0..len).map(|i| i as u8).collect();
-            let it = base64url::encode(&buf);
-            let expected = base64url::encoded_len(len);
-            assert_eq!(it.size_hint(), (expected, Some(expected)));
-            assert_eq!(it.count(), expected);
+    fn base62_round_trips_every_value_pattern() {
+        // deterministic, byte-varying values (no rng in tests).
+        for seed in 0u8..=255 {
+            let mut bytes = [0u8; 33];
+            for (i, b) in bytes.iter_mut().enumerate() {
+                *b = seed.wrapping_mul(31).wrapping_add(i as u8).wrapping_mul(7);
+            }
+            let text = enc(&bytes);
+            assert_eq!(text.len(), 45);
+            assert_eq!(
+                base62::decode(&text).unwrap(),
+                bytes,
+                "round-trip failed for seed {seed}"
+            );
+        }
+        // The two extremes explicitly.
+        for bytes in [[0u8; 33], [0xFFu8; 33]] {
+            assert_eq!(base62::decode(&enc(&bytes)).unwrap(), bytes);
         }
     }
 
     #[test]
-    fn base64url_round_trips_every_small_length() {
-        for len in 0..=64usize {
-            // a deterministic, byte-varying buffer (no rng in tests).
-            let buf: Vec<u8> = (0..len)
-                .map(|i| (i as u8).wrapping_mul(31).wrapping_add(7))
-                .collect();
-            let text = enc(&buf);
-            assert_eq!(dec(&text).unwrap(), buf, "round-trip failed at len {len}");
-        }
+    fn base62_decode_rejects_bad_input() {
+        let good = enc(&raw(5, 0x11));
+        assert_eq!(good.len(), 45);
+        // Wrong length (short, long, empty).
+        assert_eq!(base62::decode(""), Err(DecodeError::InvalidLength(0)));
+        assert_eq!(
+            base62::decode(&good[..44]),
+            Err(DecodeError::InvalidLength(44))
+        );
+        assert_eq!(
+            base62::decode(&format!("{good}0")),
+            Err(DecodeError::InvalidLength(46))
+        );
+        // Non-alphabet characters at the fixed width: url-safe/base64 separators, pad, space.
+        let with = |ch: char| format!("{}{ch}", &good[..44]);
+        assert_eq!(
+            base62::decode(&with('-')),
+            Err(DecodeError::InvalidChar('-'))
+        );
+        assert_eq!(
+            base62::decode(&with('_')),
+            Err(DecodeError::InvalidChar('_'))
+        );
+        assert_eq!(
+            base62::decode(&with('+')),
+            Err(DecodeError::InvalidChar('+'))
+        );
+        assert_eq!(
+            base62::decode(&with('/')),
+            Err(DecodeError::InvalidChar('/'))
+        );
+        assert_eq!(
+            base62::decode(&with('=')),
+            Err(DecodeError::InvalidChar('='))
+        );
+        assert_eq!(
+            base62::decode(&with(' ')),
+            Err(DecodeError::InvalidChar(' '))
+        );
     }
 
     #[test]
-    fn base64url_decode_rejects_bad_input() {
-        assert_eq!(dec("Zg=="), Err(DecodeError::InvalidChar('='))); // padding banned
-        assert_eq!(dec("Zm9+"), Err(DecodeError::InvalidChar('+'))); // std-base64 chars
-        assert_eq!(dec("Zm9/"), Err(DecodeError::InvalidChar('/')));
-        assert_eq!(dec("Z m"), Err(DecodeError::InvalidChar(' ')));
-        assert_eq!(dec("A"), Err(DecodeError::InvalidLength(1))); // len % 4 == 1
-        assert_eq!(dec("ABCDE"), Err(DecodeError::InvalidLength(5)));
-        // non-canonical: "Zh" decodes 'f' but 'h'(=33) has nonzero low-4 bits (33 & 0x0F = 1).
-        assert_eq!(dec("Zh"), Err(DecodeError::NonCanonicalTrailingBits));
-    }
-
-    #[test]
-    fn decode_into_rejects_a_wrong_sized_buffer() {
-        // "Zm9v" decodes to 3 bytes; a 2- or 4-byte buffer is a mismatch.
-        let mut two = [0u8; 2];
-        assert_eq!(
-            base64url::decode_into("Zm9v", &mut two),
-            Err(DecodeError::OutputLenMismatch {
-                expected: 3,
-                got: 2
-            })
-        );
-        let mut four = [0u8; 4];
-        assert_eq!(
-            base64url::decode_into("Zm9v", &mut four),
-            Err(DecodeError::OutputLenMismatch {
-                expected: 3,
-                got: 4
-            })
-        );
-        let mut three = [0u8; 3];
-        assert!(base64url::decode_into("Zm9v", &mut three).is_ok());
-        assert_eq!(&three, b"foo");
+    fn base62_decode_rejects_values_over_264_bits() {
+        // "zz..z" (45 'z's) is the largest 45-char base62 string and is far above 2^264, so it is rejected
+        // as a non-canonical hash text rather than truncating.
+        assert_eq!(base62::decode(&"z".repeat(45)), Err(DecodeError::Overflow));
+        // The all-ones 33-byte value (the largest that fits) encodes and decodes fine.
+        let max = enc(&[0xFFu8; 33]);
+        assert!(base62::decode(&max).is_ok());
     }
 
     // ── Hash ────────────────────────────────────────────────────────────────────────────────────
@@ -580,15 +530,14 @@ mod tests {
     }
 
     #[test]
-    fn hash_text_is_base64url_and_round_trips() {
+    fn hash_text_is_base62_and_round_trips() {
         let h = Hash::of(HashTag::Contract, b"the hash is the capability");
         let text = h.to_string();
-        assert_eq!(text, h.text().collect::<String>());
-        assert_eq!(text, base64url::encode(h.as_bytes()).collect::<String>());
-        // 33 bytes -> 44 unpadded base64url chars.
+        assert_eq!(text.as_bytes(), &h.text());
+        // 33 bytes -> 45 fixed base62 chars, alphabet only.
         assert_eq!(text.len(), Hash::TEXT_LEN);
-        assert_eq!(text.len(), 44);
-        assert!(!text.contains('='), "unpadded");
+        assert_eq!(text.len(), 45);
+        assert!(text.bytes().all(|b| b.is_ascii_alphanumeric()));
         // Display -> FromStr is the identity, tag included.
         let parsed = text.parse::<Hash>().unwrap();
         assert_eq!(parsed, h);
@@ -596,34 +545,31 @@ mod tests {
     }
 
     #[test]
+    fn hash_text_order_matches_byte_order() {
+        // The digit-ordered alphabet means the fixed-width text sorts the same as the raw bytes (tag first).
+        let lo = Hash::from_bytes(raw(1, 0)); // tag byte 1
+        let hi = Hash::from_bytes(raw(2, 0)); // tag byte 2
+        assert!(lo < hi);
+        assert!(lo.to_string() < hi.to_string());
+    }
+
+    #[test]
     fn hash_from_str_rejects_wrong_length_and_bad_text() {
-        // Valid base64url but not 33 bytes -> OutputLenMismatch against the 33-byte target (3 bytes here).
-        // from_str decodes into a fixed [u8;33], so a non-44-char text mismatches regardless of its chars.
-        assert_eq!(
-            "Zm9v".parse::<Hash>(),
-            Err(DecodeError::OutputLenMismatch {
-                expected: 3,
-                got: 33
-            })
-        );
-        // A 44-char text (decodes to exactly 33 bytes) with a bad char reaches char-validation ->
-        // InvalidChar. Take a real hash's text and corrupt one char to a non-alphabet '!'.
+        // Too short.
+        assert_eq!("abc".parse::<Hash>(), Err(DecodeError::InvalidLength(3)));
+        // A 45-char text with a bad char reaches char-validation -> InvalidChar. Corrupt one char.
         let good = Hash::of(HashTag::Blob, b"corrupt me").to_string();
-        assert_eq!(good.len(), 44);
-        let bad = format!("{}!", &good[..43]); // still 44 chars, but char 44 is invalid
+        assert_eq!(good.len(), 45);
+        let bad = format!("{}!", &good[..44]); // still 45 chars, but char 45 is invalid
         assert_eq!(bad.parse::<Hash>(), Err(DecodeError::InvalidChar('!')));
-        // A truncated hash text is rejected (either wrong decoded length or a non-canonical group).
+        // A truncated hash text is the wrong length.
         let h = Hash::of(HashTag::Blob, b"x").to_string();
-        assert!(h[..h.len() - 1].parse::<Hash>().is_err());
-        // A canonical base64url that decodes to a valid-but-wrong length mismatches the 33-byte target:
-        // 43 chars ("A" * 43) is canonical and decodes to 32 bytes.
         assert_eq!(
-            "A".repeat(43).parse::<Hash>(),
-            Err(DecodeError::OutputLenMismatch {
-                expected: 32,
-                got: 33
-            })
+            h[..h.len() - 1].parse::<Hash>(),
+            Err(DecodeError::InvalidLength(44))
         );
+        // The largest 45-char string names a value too large for 33 bytes.
+        assert_eq!("z".repeat(45).parse::<Hash>(), Err(DecodeError::Overflow));
     }
 
     #[test]
@@ -643,7 +589,7 @@ mod tests {
     }
 
     #[test]
-    fn hash_debug_shows_base64url() {
+    fn hash_debug_shows_base62() {
         let h = Hash::of(HashTag::Blob, b"debug");
         assert_eq!(format!("{h:?}"), format!("Hash({h})"));
     }
@@ -682,7 +628,7 @@ mod tests {
     }
 
     /// lowercase hex of raw bytes — TEST-ONLY, to pin the digest against the well-known hex vector.
-    /// (Production text is base64url per section 8; hex lives only here.)
+    /// (Production text is base62 per section 8; hex lives only here.)
     fn hex(bytes: &[u8]) -> String {
         use std::fmt::Write;
         bytes.iter().fold(String::new(), |mut s, b| {
