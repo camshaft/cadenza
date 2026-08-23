@@ -1784,6 +1784,127 @@ fn a_record_result_guest_compiles_and_runs_via_result_spill() {
     assert_eq!(get("b"), 42, "spilled record result: b == 2*m.x == 42");
 }
 
+/// A KIND_WIT_WORLD `f(m: record{x: s64}) -> record{d: option<s64>}` — an OPTION (variant) result field, the
+/// shape of a reducer request's `deadline-nanos: option<u64>`. The writer's variant case: `sum-disc` → store
+/// the boundary disc (None=0/Some=1), and for Some write the payload at the variant's payload offset.
+fn option_result_world_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let s64 = |b: &mut Builder| {
+        let h = b.name("s64");
+        b.list(vec![h])
+    };
+    // param: ("record" (x (s64)))
+    let x_ty = s64(&mut b);
+    let x_name = b.name("x");
+    let x_field = b.list(vec![x_name, x_ty]);
+    let prec_head = b.atom_leaf(Leaf::Str("record".into()));
+    let prec = b.list(vec![prec_head, x_field]);
+    // result: ("record" (d ("option" (s64))))
+    let opt_inner = s64(&mut b);
+    let opt_head = b.atom_leaf(Leaf::Str("option".into()));
+    let opt_ty = b.list(vec![opt_head, opt_inner]);
+    let d_name = b.name("d");
+    let d_field = b.list(vec![d_name, opt_ty]);
+    let rrec_head = b.atom_leaf(Leaf::Str("record".into()));
+    let rrec = b.list(vec![rrec_head, d_field]);
+    let func_h = b.name("func");
+    let param_h = b.name("param");
+    let pn = b.name("m");
+    let param_node = b.list(vec![param_h, pn, prec]);
+    let result_h = b.name("result");
+    let result_node = b.list(vec![result_h, rrec]);
+    let func = b.list(vec![func_h, param_node, result_node]);
+    let member_h = b.name("member");
+    let mn = b.name("f");
+    let member = b.list(vec![member_h, mn, func]);
+    let exp_h = b.name("export");
+    let iname = b.name("iface");
+    let export = b.list(vec![exp_h, iname, member]);
+    let world_h = b.name("world");
+    let wn = b.name("w");
+    let world = b.list(vec![world_h, wn, export]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+/// W4c-b: a guest returning `option<s64>` compiles + runs — the recursive writer's VARIANT case (the shape of
+/// a request's `deadline-nanos: option<u64>`). `f(m) = {d: if m.x==0 then None else Some(m.x)}`; verifies both
+/// arms: `f({x:0}) == {d: None}` (disc 0) and `f({x:42}) == {d: Some(42)}` (disc 1 + payload).
+#[test]
+fn an_option_result_guest_compiles_and_runs() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime) = find_runtime_wasm() else {
+        return;
+    };
+    let src = "(module m (def (f (: m (Record (x Int64)))) \
+                 (record (d (if (= (. m x) 0) Option.None (Option.Some (. m x)))))) (export f))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:demo/iface"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                option_result_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "option-result guest must emit: {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("emits a component");
+    let opts = cdz_run::RunOpts {
+        export: None,
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    let call = |x: i64| {
+        cdz_run::run_reducer_typed(
+            bytes,
+            "cadenza:demo/iface",
+            "f",
+            &[Val::Record(vec![("x".to_string(), Val::S64(x))])],
+            &opts,
+        )
+        .expect("run the option-result member")
+    };
+    // Some arm (disc 1 + payload).
+    let some = call(42);
+    let Val::Record(sf) = &some else {
+        panic!("record, got {some:?}");
+    };
+    let (_, d_some) = sf.iter().find(|(n, _)| n == "d").expect("d");
+    assert_eq!(
+        d_some,
+        &Val::Option(Some(Box::new(Val::S64(42)))),
+        "Some arm: d == Some(42)"
+    );
+    // None arm (disc 0).
+    let none = call(0);
+    let Val::Record(nf) = &none else {
+        panic!("record, got {none:?}");
+    };
+    let (_, d_none) = nf.iter().find(|(n, _)| n == "d").expect("d");
+    assert_eq!(d_none, &Val::Option(None), "None arm: d == None");
+}
+
 /// A KIND_WIT_WORLD `f(m: record{tok: list<u8>}) -> record{items: list<record{echo: list<u8>}>}` — a LIST of
 /// RECORDS each carrying a `list<u8>` LEAF: the exact structural shape of a reducer Step's `requests:
 /// list<request>` (minus `option<u64>`). Mirrors reducer-echo (a request whose field echoes an input).

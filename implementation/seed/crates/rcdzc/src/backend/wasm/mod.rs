@@ -524,8 +524,8 @@ pub fn emit(
     // not the guest body's, so add them to the used set here (before the import set is derived) — otherwise
     // the wrapper body cannot resolve them. No-op for any program that is not a record-param interface
     // export (the guest's own op set is unchanged).
-    if let (Some(iface), Some(world_bytes)) = (&db.component_name, &db.wit_world)
-        && let Some((wrappers, _)) = record_interface_export(layout, world_bytes, iface)
+    if let (Some(iface), Some(world_bytes)) = (db.component_name.clone(), db.wit_world.clone())
+        && let Some((wrappers, _)) = record_interface_export(db, layout, &world_bytes, &iface)
     {
         used.insert("arr-alloc");
         used.insert("arr-set");
@@ -999,7 +999,7 @@ pub fn emit(
     // a `list<u8>`/record result declines here until the memory + result-lower wrapper slice.
     if let Some(iface) = db.component_name.clone()
         && let Some(world_bytes) = db.wit_world.clone()
-        && let Some((wrappers, typed)) = record_interface_export(layout, &world_bytes, &iface)
+        && let Some((wrappers, typed)) = record_interface_export(db, layout, &world_bytes, &iface)
     {
         let wrapped_core =
             serialize::core_module_with_wrappers(&funcs, &imports, &wrappers, layout)
@@ -8059,10 +8059,12 @@ fn scalar_result_read_store(f: &crate::ty::Ty) -> Option<(&'static str, bool, u8
 /// order SOUNDNESS guard); a `list<T>` writes an element array (recursive element write). Declines a
 /// variant/option/other compound (a later slice).
 fn canon_write_of(
+    db: &mut Db,
     gty: &crate::ty::Ty,
     wty: &crate::wit_world::WitType,
 ) -> Option<serialize::CanonWrite> {
-    use crate::backend::wasm::serialize::{CanonField, CanonWrite};
+    use crate::backend::wasm::serialize::{CanonField, CanonWrite, VariantArm};
+    use crate::backend::wasm::wasm_abi::op;
     use crate::backend::wasm::wit_ctype;
     use crate::ty::Ty;
     use crate::wit_world::WitType;
@@ -8082,14 +8084,16 @@ fn canon_write_of(
             }
             let wtys: Vec<WitType> = wfs.iter().map(|(_, t)| t.clone()).collect();
             let offsets = wit_ctype::record_field_offsets(&wtys);
+            // Clone the field types so `db` is free for the recursive `canon_write_of` (which needs `&mut db`).
+            let gtys: Vec<Ty> = map.values().cloned().collect();
+            let fws: Vec<WitType> = wfs.iter().map(|(_, t)| t.clone()).collect();
             let mut fields = Vec::new();
-            for (i, ((fg, (_, fw)), off)) in
-                map.values().zip(wfs.iter()).zip(offsets.iter()).enumerate()
+            for (i, ((fg, fw), off)) in gtys.iter().zip(fws.iter()).zip(offsets.iter()).enumerate()
             {
                 fields.push(CanonField {
                     index: i as u32,
                     offset: *off,
-                    write: canon_write_of(fg, fw)?,
+                    write: canon_write_of(db, fg, fw)?,
                 });
             }
             Some(CanonWrite::Record { fields })
@@ -8098,10 +8102,70 @@ fn canon_write_of(
             let WitType::List(elem_w) = wty else {
                 return None;
             };
+            let elem_g = (**elem_g).clone();
+            let elem_w = (**elem_w).clone();
             Some(CanonWrite::List {
-                elem_size: wit_ctype::canonical_size(elem_w),
-                elem_align: wit_ctype::canonical_align(elem_w),
-                elem: Box::new(canon_write_of(elem_g, elem_w)?),
+                elem_size: wit_ctype::canonical_size(&elem_w),
+                elem_align: wit_ctype::canonical_align(&elem_w),
+                elem: Box::new(canon_write_of(db, &elem_g, &elem_w)?),
+            })
+        }
+        // OPTION result: a two-variant guest sum (one nullary + one single-payload) crossing as WIT
+        // `option<inner>` (boundary None=0, Some=1). Resolve which decl-disc is the payload arm + its payload
+        // type (mirrors the param-side `fixed_shape_option_scalar_arg`), then write the payload recursively.
+        Ty::Sum { decl, args, .. } => {
+            let WitType::Option(inner) = wty else {
+                return None; // result<>/named-variant results are a later slice
+            };
+            let (params, variant_payloads): (Vec<String>, Vec<Vec<crate::ast::StructId>>) = {
+                let dr = db.type_decl_by_occ(*decl)?;
+                if dr.variants.len() != 2 {
+                    return None;
+                }
+                (
+                    dr.params.clone(),
+                    dr.variants.iter().map(|v| v.payloads.clone()).collect(),
+                )
+            };
+            let counts: Vec<usize> = variant_payloads.iter().map(|p| p.len()).collect();
+            let (payload_i, nullary_i) = match counts.as_slice() {
+                [0, 1] => (1usize, 0usize),
+                [1, 0] => (0usize, 1usize),
+                _ => return None, // not a nullary + single-payload option shape
+            };
+            // The payload variant's single generic payload type, instantiated against `args`.
+            let occ = variant_payloads[payload_i][0];
+            let pname = db
+                .ast
+                .head_name(occ)
+                .or_else(|| db.ast.as_name(occ))?
+                .to_string();
+            let pi = params.iter().position(|p| *p == pname)?;
+            let payload_gty = args.get(pi)?.clone();
+            let inner = (**inner).clone();
+            let payload_write = canon_write_of(db, &payload_gty, &inner)?;
+            // Canonical variant layout: disc is 1 byte (2 cases); payload after the disc, aligned to it.
+            let payload_align = wit_ctype::canonical_align(&inner);
+            let payload_offset = 1u32.div_ceil(payload_align) * payload_align;
+            let mut arms = Vec::with_capacity(2);
+            for _ in 0..2 {
+                arms.push(VariantArm {
+                    boundary_disc: 0,
+                    payload: None,
+                });
+            }
+            arms[nullary_i] = VariantArm {
+                boundary_disc: 0,
+                payload: None,
+            };
+            arms[payload_i] = VariantArm {
+                boundary_disc: 1,
+                payload: Some(Box::new(payload_write)),
+            };
+            Some(CanonWrite::Variant {
+                disc_store: op::I32_STORE8,
+                payload_offset,
+                arms,
             })
         }
         _ => {
@@ -8139,6 +8203,17 @@ fn canon_write_ops(
             out("vec-len");
             out("vec-get");
             canon_write_ops(elem, out);
+        }
+        CanonWrite::Variant { arms, .. } => {
+            out("sum-disc");
+            if arms.iter().any(|a| a.payload.is_some()) {
+                out("sum-payload");
+            }
+            for a in arms {
+                if let Some(p) = &a.payload {
+                    canon_write_ops(p, out);
+                }
+            }
         }
     }
 }
@@ -8209,6 +8284,7 @@ fn record_fields_rebuild(
 /// RESULT still declines (needs the memory + result-lower wrapper, a later slice). `iface` = the FQ export
 /// name (`db.component_name`). Returns the wrappers (for `core_module_with_wrappers`) + the interface.
 fn record_interface_export(
+    db: &mut Db,
     layout: &Layout,
     world_bytes: &[u8],
     iface: &str,
@@ -8238,7 +8314,11 @@ fn record_interface_export(
     // written to a memory return area at canonical offsets, the core returning the area pointer. A flat
     // (1-value) record, a `list<u8>`/nested/variant field, or a WIT-vs-name-lex field-order mismatch → `None`
     // (a later slice, or a soundness decline).
-    fn record_result_lower(gr: &Ty, wr: &WitType) -> Option<(serialize::ResultLower, Vec<u8>)> {
+    fn record_result_lower(
+        db: &mut Db,
+        gr: &Ty,
+        wr: &WitType,
+    ) -> Option<(serialize::ResultLower, Vec<u8>)> {
         use crate::backend::wasm::serialize::ResultLower;
         use crate::backend::wasm::wit_ctype;
         // A scalar/unit result the def returns raw.
@@ -8251,7 +8331,7 @@ fn record_interface_export(
         if !wit_ctype::sig_needs_memory(&[], Some(wr)) {
             return None;
         }
-        let write = canon_write_of(gr, wr)?;
+        let write = canon_write_of(db, gr, wr)?;
         Some((
             ResultLower::SpillRecord {
                 size: wit_ctype::canonical_size(wr),
@@ -8310,7 +8390,7 @@ fn record_interface_export(
         if param_vts.len() > crate::backend::wasm::wit_ctype::MAX_FLAT_PARAMS {
             return None;
         }
-        let (result_lower, result_vts) = record_result_lower(&e.result, &member.func.result)?;
+        let (result_lower, result_vts) = record_result_lower(db, &e.result, &member.func.result)?;
         let def_abs = layout.abs(e.def)?;
         wrappers.push(serialize::WrapperDesc {
             name: member.name.clone(),

@@ -731,6 +731,23 @@ pub enum CanonWrite {
     },
     /// A `list<u8>` (`Bytes`): `bytes-len` → count; allocate `count` bytes; copy them out; store `(ptr, count)`.
     Bytes,
+    /// A variant/sum (a value-heap sum cell): `sum-disc` → the guest's DECL disc `d`; branch per arm `k`
+    /// (`if d == k`) to store that arm's canonical BOUNDARY disc at the variant base, and, if the arm carries a
+    /// payload, `sum-payload` → write it recursively at `payload_offset`. `arms` is indexed by guest decl disc
+    /// (the value `sum-disc` returns); `disc_store` is the disc's canonical store width.
+    Variant {
+        disc_store: u8,
+        payload_offset: u32,
+        arms: Vec<VariantArm>,
+    },
+}
+
+/// One arm of a [`CanonWrite::Variant`], indexed by the guest's decl disc. `boundary_disc` is the canonical
+/// WIT case index this arm maps to (option: Some→1/None→0; result: Ok→0/Err→1; an aligned user variant maps
+/// identity). `payload` is `Some` for a payload-carrying arm, `None` for a nullary one.
+pub struct VariantArm {
+    pub boundary_disc: u32,
+    pub payload: Option<Box<CanonWrite>>,
 }
 
 /// One field of a [`CanonWrite::Record`]: read record slot `index` off the handle (`arr-get`) and write it at
@@ -2678,6 +2695,50 @@ fn emit_canon_write(
             uleb128(0, out);
             out.push(op::END); // loop
             out.push(op::END); // block
+        }
+        CanonWrite::Variant {
+            disc_store,
+            payload_offset,
+            arms,
+        } => {
+            // d = sum-disc(handle) — the guest's DECL disc.
+            let d = *next_local;
+            *next_local += 1;
+            get(handle, out);
+            call("sum-disc", out);
+            set(d, out);
+            // Per arm k: if d == k, store its boundary disc at dst_base+offset, then (if payload) write it.
+            for (k, arm) in arms.iter().enumerate() {
+                get(d, out);
+                const_i32(k as i64, out);
+                out.push(op::I32_EQ);
+                out.push(op::IF);
+                out.push(wasm_abi::BLOCK_EMPTY);
+                // store boundary disc
+                get(dst_base, out);
+                const_i32(arm.boundary_disc as i64, out);
+                out.push(*disc_store);
+                out.push(0x00); // align hint
+                uleb128(offset as u64, out);
+                if let Some(pw) = &arm.payload {
+                    let ph = *next_local;
+                    *next_local += 1;
+                    get(handle, out);
+                    call("sum-payload", out);
+                    set(ph, out);
+                    emit_canon_write(
+                        pw,
+                        ph,
+                        dst_base,
+                        offset + payload_offset,
+                        next_local,
+                        realloc_abs,
+                        imp,
+                        out,
+                    );
+                }
+                out.push(op::END); // if
+            }
         }
     }
 }
