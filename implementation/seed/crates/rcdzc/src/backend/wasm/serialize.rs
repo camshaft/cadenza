@@ -692,35 +692,53 @@ pub enum ResultLower {
     /// Return the def's result unchanged — a scalar the def returns raw (matching the flattened boundary
     /// scalar) or `unit` (no result). `WrapperDesc::result_vts` is that flattened scalar (or empty).
     Passthrough,
-    /// The def returns a value-heap RECORD HANDLE whose fields are scalars; the boundary result is that
-    /// record, which (flattening to >1 core value, or laid canonically) SPILLS to linear memory — the wrapper
-    /// allocates a return area (`cabi_realloc`), writes each field at its canonical offset, and returns the
-    /// area pointer (`result_vts = [i32]`). Needs memory + `cabi_realloc` (`wrapper_needs_memory` covers it).
-    SpillScalarRecord {
-        /// The record's canonical byte size (the `cabi_realloc` request).
+    /// The def returns a value-heap compound HANDLE; the boundary result is that compound, which SPILLS to
+    /// linear memory — the wrapper allocates a return area (`cabi_realloc`), writes the canonical form via
+    /// `write`, and returns the area pointer (`result_vts = [i32]`). Needs memory + `cabi_realloc`
+    /// (`wrapper_needs_memory` covers it).
+    SpillRecord {
+        /// The result's canonical byte size (the `cabi_realloc` request).
         size: u32,
-        /// The record's canonical alignment (the `cabi_realloc` align arg).
+        /// The result's canonical alignment (the `cabi_realloc` align arg).
         align: u32,
-        /// Per field, how to read it off the handle and store it into the area.
-        fields: Vec<ScalarResultField>,
+        /// The recursive plan for writing the value-heap value's canonical form.
+        write: CanonWrite,
     },
 }
 
-/// One field of a [`ResultLower::SpillScalarRecord`]: read record slot `index` off the returned handle
-/// (`arr-get` + `read` unbox), optionally narrow the unboxed i64 to i32 (a ≤32-bit int field), and store at
-/// `offset` with `store`.
-pub struct ScalarResultField {
-    /// The record slot to read (`arr-get(handle, index)`), in name-lex (`Ty::Record`) order = the WIT order.
+/// A recursive plan for writing ONE value-heap value's canonical-ABI form into linear memory — the reducer
+/// result-lower (the inverse of the param-side [`FieldRebuild`]). The emitter holds the value's runtime
+/// HANDLE and a base address; each node writes at `base + offset`.
+pub enum CanonWrite {
+    /// A boxed scalar: unbox (`read` = `get-int`/`get-bool`/`get-float`/`get-float32`), optionally narrow the
+    /// unboxed i64 to i32 (a ≤32-bit int slot), and `store` (`i64.store`/`i32.store`/`i32.store8`/`…16`/
+    /// `f64.store`/`f32.store`).
+    Scalar {
+        read: &'static str,
+        wrap_i64: bool,
+        store: u8,
+    },
+    /// A fixed record (an `arr` cell): per field, `arr-get(handle, index)` → write recursively at the field's
+    /// canonical offset.
+    Record { fields: Vec<CanonField> },
+    /// A `list<T>` (a value-heap `vec`): `vec-len` → count; allocate `count * elem_size` bytes
+    /// (`cabi_realloc`); per element `vec-get(handle, i)` → write recursively at element stride `elem_size`;
+    /// store `(elem_ptr, count)` as the canonical `(ptr, len)`. An empty list stores `(base, 0)`.
+    List {
+        elem_size: u32,
+        elem_align: u32,
+        elem: Box<CanonWrite>,
+    },
+    /// A `list<u8>` (`Bytes`): `bytes-len` → count; allocate `count` bytes; copy them out; store `(ptr, count)`.
+    Bytes,
+}
+
+/// One field of a [`CanonWrite::Record`]: read record slot `index` off the handle (`arr-get`) and write it at
+/// canonical byte `offset` within the record.
+pub struct CanonField {
     pub index: u32,
-    /// The unbox op: `get-int` (→i64), `get-bool` (→i32), `get-float` (→f64), or `get-float32` (→f32).
-    pub read: &'static str,
-    /// Narrow the unboxed i64 to i32 before the store — a ≤32-bit int field (`get-int` yields i64, but the
-    /// canonical slot is 4/2/1 bytes so the store is an i32 store).
-    pub wrap_i64: bool,
-    /// The store opcode (`i64.store`/`i32.store`/`i32.store8`/`i32.store16`/`f64.store`/`f32.store`).
-    pub store: u8,
-    /// The store's canonical byte offset from the return-area pointer.
     pub offset: u32,
+    pub write: CanonWrite,
 }
 
 fn core_module_impl(
@@ -750,7 +768,7 @@ fn core_module_impl(
             .flatten()
             .flatten()
             .any(FieldRebuild::has_bytes_leaf)
-            || matches!(w.result, ResultLower::SpillScalarRecord { .. })
+            || matches!(w.result, ResultLower::SpillRecord { .. })
     });
     let n_realloc = wrapper_needs_memory as usize; // 0 or 1 extra defined func (`cabi_realloc`)
 
@@ -950,11 +968,12 @@ fn core_module_impl(
         // `cabi_realloc`'s absolute core func index — the wrapper calls it to allocate a spilled-result area.
         let realloc_abs = (import_count + n + n_wrap) as u64;
         for wrap in wrappers {
-            let mut body = Vec::new();
-            // Scratch i32 locals, reserved AFTER the flattened params (indices from `param_count`): a wrapper
-            // with a `list<u8>` leaf uses two (a `buf` handle + a copy counter); one whose result spills to
-            // memory uses two more (the returned record handle + the return-area pointer). The bytes locals
-            // come first, then the result locals. No bytes + no spill → zero locals, byte-identical to before.
+            // Scratch i32 locals live AFTER the flattened params (indices from `p`): a `list<u8>` leaf uses two
+            // (a `buf` handle + a copy counter); the result-lower allocates as many as its recursive plan
+            // needs (a returned-value handle, the return pointer, plus per-level handles + list count/base/
+            // index for the canonical writer). The body is emitted into `inner` with `next_local` tracking the
+            // high-water local index, then the local-decl group prepends the final count — so an arbitrarily
+            // deep result writer declares exactly the locals it used. No scratch → zero locals, byte-identical.
             let p = wrap.param_vts.len() as u32;
             let has_bytes = wrap
                 .params
@@ -962,49 +981,50 @@ fn core_module_impl(
                 .flatten()
                 .flatten()
                 .any(FieldRebuild::has_bytes_leaf);
-            let is_spill = matches!(wrap.result, ResultLower::SpillScalarRecord { .. });
-            let n_scratch = if has_bytes { 2 } else { 0 } + if is_spill { 2 } else { 0 };
-            if n_scratch > 0 {
-                body.extend_from_slice(&uleb_bytes(1));
-                body.extend_from_slice(&uleb_bytes(n_scratch as u64));
-                body.push(wasm_abi::CORE_I32);
-            } else {
-                body.extend_from_slice(&uleb_bytes(0));
-            }
             let scratch = if has_bytes { Some((p, p + 1)) } else { None };
-            let result_base = p + if has_bytes { 2 } else { 0 }; // rec = result_base, retptr = result_base+1
+            let mut next_local = p + if has_bytes { 2 } else { 0 };
+            let mut inner = Vec::new();
             let mut leaf = 0u32;
             for pp in &wrap.params {
                 match pp {
                     None => {
-                        body.push(op::LOCAL_GET);
-                        uleb128(leaf as u64, &mut body);
+                        inner.push(op::LOCAL_GET);
+                        uleb128(leaf as u64, &mut inner);
                         leaf += 1;
                     }
-                    Some(fields) => emit_cell_rebuild(fields, &mut leaf, &imp, scratch, &mut body),
+                    Some(fields) => emit_cell_rebuild(fields, &mut leaf, &imp, scratch, &mut inner),
                 }
             }
-            body.push(op::CALL);
-            uleb128(wrap.def_abs as u64, &mut body); // → [def result]
-            // Result: a scalar/unit passes straight through; a record spills to a memory return area.
-            if let ResultLower::SpillScalarRecord {
-                size,
-                align,
-                fields,
-            } = &wrap.result
-            {
-                emit_record_result_spill(
-                    result_base,
-                    result_base + 1,
+            inner.push(op::CALL);
+            uleb128(wrap.def_abs as u64, &mut inner); // → [def result]
+            // Result: a scalar/unit passes straight through; a compound spills to a memory return area.
+            if let ResultLower::SpillRecord { size, align, write } = &wrap.result {
+                let rec = next_local;
+                let retptr = next_local + 1;
+                next_local += 2;
+                emit_result_spill(
+                    rec,
+                    retptr,
+                    &mut next_local,
                     realloc_abs,
                     *size,
                     *align,
-                    fields,
+                    write,
                     &imp,
-                    &mut body,
+                    &mut inner,
                 );
             }
-            body.push(op::END);
+            inner.push(op::END);
+            let n_locals = next_local - p;
+            let mut body = Vec::new();
+            if n_locals > 0 {
+                body.extend_from_slice(&uleb_bytes(1)); // one local-decl group
+                body.extend_from_slice(&uleb_bytes(n_locals as u64));
+                body.push(wasm_abi::CORE_I32);
+            } else {
+                body.extend_from_slice(&uleb_bytes(0));
+            }
+            body.extend_from_slice(&inner);
             let mut entry = uleb_bytes(body.len() as u64);
             entry.extend_from_slice(&body);
             code_items.extend_from_slice(&entry);
@@ -2426,19 +2446,20 @@ fn emit_bytes_leaf_copy_in(
     uleb128(buf as u64, out);
 }
 
-/// Emit the RESULT-SPILL for a wrapper whose def returns a value-heap RECORD HANDLE: store the handle
+/// Emit the RESULT-SPILL for a wrapper whose def returns a value-heap compound HANDLE: store the handle
 /// (on the stack from the def `call`) to `rec`, allocate a `size`-byte return area (`cabi_realloc(0, 0,
-/// align, size)`) into `retptr`, write each scalar field at its canonical offset (`arr-get(rec, index)` →
-/// unbox `read` → optional i64→i32 narrow → `store` at `retptr + offset`), and leave `retptr` on the stack as
-/// the boundary result. The canon lift reads the record back out of memory from that pointer.
+/// align, size)`) into `retptr`, write the value's canonical form there via [`emit_canon_write`], and leave
+/// `retptr` on the stack as the boundary result. `next_local` hands the writer fresh scratch locals. The canon
+/// lift reads the value back out of memory from that pointer.
 #[allow(clippy::too_many_arguments)]
-fn emit_record_result_spill(
+fn emit_result_spill(
     rec: u32,
     retptr: u32,
+    next_local: &mut u32,
     realloc_abs: u64,
     size: u32,
     align: u32,
-    fields: &[ScalarResultField],
+    write: &CanonWrite,
     imp: &dyn Fn(&str) -> u64,
     out: &mut Vec<u8>,
 ) {
@@ -2459,27 +2480,206 @@ fn emit_record_result_spill(
     uleb128(realloc_abs, out);
     out.push(op::LOCAL_SET);
     uleb128(retptr as u64, out);
-    // Per field: store(retptr + offset) = [maybe wrap](read(arr-get(rec, index))).
-    for f in fields {
-        out.push(op::LOCAL_GET); // store address base
-        uleb128(retptr as u64, out);
-        out.push(op::LOCAL_GET); // the record handle
-        uleb128(rec as u64, out);
-        const_i32(f.index as i64, out);
-        out.push(op::CALL);
-        uleb128(imp("arr-get"), out); // → element handle
-        out.push(op::CALL);
-        uleb128(imp(f.read), out); // → unboxed scalar
-        if f.wrap_i64 {
-            out.push(op::I32_WRAP_I64);
-        }
-        out.push(f.store);
-        out.push(0x00); // align hint (natural / conservative)
-        uleb128(f.offset as u64, out); // canonical offset immediate
-    }
+    // Write the value's canonical form at retptr + 0.
+    emit_canon_write(write, rec, retptr, 0, next_local, realloc_abs, imp, out);
     // Return the area pointer.
     out.push(op::LOCAL_GET);
     uleb128(retptr as u64, out);
+}
+
+/// Recursively write ONE value-heap value's canonical-ABI form into linear memory at `dst_base + offset`.
+/// `handle` is the local holding the value's runtime handle; `dst_base` a local holding the base address;
+/// `offset` a static byte offset. `next_local` hands out fresh i32 scratch locals (per-level handles, list
+/// loop counters). See [`CanonWrite`] for the per-kind plan.
+#[allow(clippy::too_many_arguments)]
+fn emit_canon_write(
+    cw: &CanonWrite,
+    handle: u32,
+    dst_base: u32,
+    offset: u32,
+    next_local: &mut u32,
+    realloc_abs: u64,
+    imp: &dyn Fn(&str) -> u64,
+    out: &mut Vec<u8>,
+) {
+    use crate::backend::wasm::wasm_abi::op;
+    let const_i32 = |v: i64, out: &mut Vec<u8>| {
+        out.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(v, out);
+    };
+    let get = |l: u32, out: &mut Vec<u8>| {
+        out.push(op::LOCAL_GET);
+        uleb128(l as u64, out);
+    };
+    let set = |l: u32, out: &mut Vec<u8>| {
+        out.push(op::LOCAL_SET);
+        uleb128(l as u64, out);
+    };
+    let call = |name: &str, out: &mut Vec<u8>| {
+        out.push(op::CALL);
+        uleb128(imp(name), out);
+    };
+    // Emit an `i32.store` (align hint 4, offset `off`) — the caller pushed [addr, value] first.
+    let store_i32_at = |off: u32, out: &mut Vec<u8>| {
+        out.push(op::I32_STORE);
+        out.push(0x02);
+        uleb128(off as u64, out);
+    };
+    match cw {
+        CanonWrite::Scalar {
+            read,
+            wrap_i64,
+            store,
+        } => {
+            // store(dst_base + offset) = [wrap] read(handle)
+            get(dst_base, out);
+            get(handle, out);
+            call(read, out);
+            if *wrap_i64 {
+                out.push(op::I32_WRAP_I64);
+            }
+            out.push(*store);
+            out.push(0x00); // align hint (conservative)
+            uleb128(offset as u64, out);
+        }
+        CanonWrite::Record { fields } => {
+            for f in fields {
+                let fh = *next_local;
+                *next_local += 1;
+                get(handle, out);
+                const_i32(f.index as i64, out);
+                call("arr-get", out);
+                set(fh, out);
+                emit_canon_write(
+                    &f.write,
+                    fh,
+                    dst_base,
+                    offset + f.offset,
+                    next_local,
+                    realloc_abs,
+                    imp,
+                    out,
+                );
+            }
+        }
+        CanonWrite::Bytes => {
+            // count = bytes-len(handle); ptr = cabi_realloc(0,0,1,count); copy loop; store (ptr, count).
+            let count = *next_local;
+            let ptr = *next_local + 1;
+            let i = *next_local + 2;
+            *next_local += 3;
+            get(handle, out);
+            call("bytes-len", out);
+            set(count, out);
+            const_i32(0, out);
+            const_i32(0, out);
+            const_i32(1, out); // align 1 for bytes
+            get(count, out);
+            out.push(op::CALL);
+            uleb128(realloc_abs, out);
+            set(ptr, out);
+            // store (ptr, count) at (dst_base+offset, dst_base+offset+4)
+            get(dst_base, out);
+            get(ptr, out);
+            store_i32_at(offset, out);
+            get(dst_base, out);
+            get(count, out);
+            store_i32_at(offset + 4, out);
+            // copy loop: i=0; while i<count: store8(ptr+i, bytes-get(handle,i)); i++
+            const_i32(0, out);
+            set(i, out);
+            out.push(op::BLOCK);
+            out.push(wasm_abi::BLOCK_EMPTY);
+            out.push(op::LOOP);
+            out.push(wasm_abi::BLOCK_EMPTY);
+            get(i, out);
+            get(count, out);
+            out.push(op::I32_GE_U);
+            out.push(op::BR_IF);
+            uleb128(1, out);
+            // store8(ptr + i, bytes-get(handle, i))
+            get(ptr, out);
+            get(i, out);
+            out.push(op::I32_ADD);
+            get(handle, out);
+            get(i, out);
+            call("bytes-get", out);
+            out.push(op::I32_STORE8);
+            out.push(0x00);
+            uleb128(0, out);
+            get(i, out);
+            const_i32(1, out);
+            out.push(op::I32_ADD);
+            set(i, out);
+            out.push(op::BR);
+            uleb128(0, out);
+            out.push(op::END); // loop
+            out.push(op::END); // block
+        }
+        CanonWrite::List {
+            elem_size,
+            elem_align,
+            elem,
+        } => {
+            // count = vec-len(handle); base = cabi_realloc(0,0,elem_align, count*elem_size);
+            let count = *next_local;
+            let base = *next_local + 1;
+            let i = *next_local + 2;
+            let eh = *next_local + 3;
+            let edst = *next_local + 4;
+            *next_local += 5;
+            get(handle, out);
+            call("vec-len", out);
+            set(count, out);
+            const_i32(0, out);
+            const_i32(0, out);
+            const_i32(*elem_align as i64, out);
+            get(count, out);
+            const_i32(*elem_size as i64, out);
+            out.push(op::I32_MUL);
+            out.push(op::CALL);
+            uleb128(realloc_abs, out);
+            set(base, out);
+            // store (base, count) at (dst_base+offset, +4)
+            get(dst_base, out);
+            get(base, out);
+            store_i32_at(offset, out);
+            get(dst_base, out);
+            get(count, out);
+            store_i32_at(offset + 4, out);
+            // loop i in 0..count: eh = vec-get(handle,i); edst = base + i*elem_size; write elem at (edst,0)
+            const_i32(0, out);
+            set(i, out);
+            out.push(op::BLOCK);
+            out.push(wasm_abi::BLOCK_EMPTY);
+            out.push(op::LOOP);
+            out.push(wasm_abi::BLOCK_EMPTY);
+            get(i, out);
+            get(count, out);
+            out.push(op::I32_GE_U);
+            out.push(op::BR_IF);
+            uleb128(1, out);
+            get(handle, out);
+            get(i, out);
+            call("vec-get", out);
+            set(eh, out);
+            get(base, out);
+            get(i, out);
+            const_i32(*elem_size as i64, out);
+            out.push(op::I32_MUL);
+            out.push(op::I32_ADD);
+            set(edst, out);
+            emit_canon_write(elem, eh, edst, 0, next_local, realloc_abs, imp, out);
+            get(i, out);
+            const_i32(1, out);
+            out.push(op::I32_ADD);
+            set(i, out);
+            out.push(op::BR);
+            uleb128(0, out);
+            out.push(op::END); // loop
+            out.push(op::END); // block
+        }
+    }
 }
 
 /// Push a closure `call`'s arguments onto the stack in the lifted body's order, threading ZERO OR MORE
