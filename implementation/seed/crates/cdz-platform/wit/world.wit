@@ -67,6 +67,10 @@ interface types {
     missing-handler,
     // The payload did not adhere to the contract's declared type (§4 validation).
     schema-violation,
+    // The answerer failed to produce a result — it crashed, trapped, or did not return one. A general
+    // execution fault, distinct from a handler's own domain error (an ordinary `Ok` output): here there is
+    // no answer at all. (E.g. a pure `run` whose program faulted or never returned an output, §3.)
+    faulted,
   }
 }
 

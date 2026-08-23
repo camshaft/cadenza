@@ -22,6 +22,7 @@ type Error =
   | Timeout
   | MissingHandler
   | SchemaViolation
+  | Faulted
 
 // The three kinds of event that may be injected into a reducer's log — one per entry point the target
 // folds it through (on_message / on_response / on_notification). Every hash and opaque payload is Bytes.
