@@ -87,11 +87,17 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
-    // jco/jco-transpile do their own dynamic wasm loading the dep-optimizer would break.
+    // jco/jco-transpile do their own dynamic wasm loading the dep-optimizer would break. manifold-3d is
+    // the same shape: its emscripten glue fetches `manifold.wasm` relative to its own module URL, and the
+    // dep-optimizer bundles the JS into `.vite/deps/` WITHOUT copying that wasm beside it (esbuild can't
+    // follow the runtime `locateFile` path) — so `/node_modules/.vite/deps/manifold.wasm` 404s to the SPA
+    // shell and /cad meshing dies in dev. Excluding it serves manifold from `node_modules/manifold-3d/`
+    // where `manifold.wasm` sits next to `manifold.js`, so the relative fetch resolves.
     exclude: [
       "@bytecodealliance/jco",
       "@bytecodealliance/jco-transpile",
       "@bytecodealliance/preview2-shim",
+      "manifold-3d",
     ],
   },
   worker: {
