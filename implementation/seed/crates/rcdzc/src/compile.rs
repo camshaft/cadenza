@@ -1428,6 +1428,30 @@ fn unbound_in(db: &mut Db, cur: StructId, bound: &mut Vec<String>) -> Option<Rej
 
 fn collect_faults(db: &mut Db) -> Vec<Reject> {
     let mut faults = Vec::new();
+    // A top-level `(world …)` whose descriptor does NOT parse is silently dropped by the world reader
+    // (`parse_target_world` → None): the no-redeclare sidecar then synthesizes NO import effects, so every
+    // world import cascades to a misleading `unbound name <iface>` CDZ0101 with no hint at the real cause.
+    // Surface the ROOT cause — a malformed world descriptor (most often a wrong type-descriptor HEAD: a
+    // PRIMITIVE is NAME-head `(bool)`/`(u8)`/…, a COMPOUND is STRING-head `("list" …)`/`("record" …)`).
+    // Uses the SAME encode→decode→parse the sidecar/emit path uses, so it fires exactly when a world drops.
+    for wf in db.top_world_forms() {
+        let bytes = crate::codec::encode(&crate::sidecar::extract_subtree(&db.ast, wf));
+        let parses = crate::codec::decode(&bytes)
+            .and_then(|a| crate::wit_world::parse_target_world(&a, a.root).map(|_| ()))
+            .is_some();
+        if !parses {
+            faults.push(
+                Reject::coded(
+                    crate::diag::Code::Malformed,
+                    "this `(world …)` declaration did not parse as a valid world descriptor — check each \
+                     type descriptor's head: a PRIMITIVE is a NAME-head `(bool)`/`(u8)`/`(string)`/… and a \
+                     COMPOUND is a STRING-head `(\"list\" …)`/`(\"record\" …)`/`(\"option\" …)`/`(\"unit\")` \
+                     (a malformed descriptor drops the whole world, leaving its imports unbound)",
+                )
+                .at(wf),
+            );
+        }
+    }
     // A BAKEABLE type-valued export (a nullary export whose type-value reduces to a concrete type) crosses
     // via the constant value-form escape — NOT a fault. But its body's lowering still declines the bare
     // type-value as a runtime value (`TYPE_VALUE_NO_RUNTIME_DECLINE` + friends); this flag lets
