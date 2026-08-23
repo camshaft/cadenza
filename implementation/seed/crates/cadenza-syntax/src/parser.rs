@@ -2798,7 +2798,17 @@ impl<'a> Parser<'a> {
             }
             // `result(T, E)` / `result(T)` / `result(_, E)` — a WIT result with 0-2 arms. Each arm is a type
             // descriptor, or the WIT wildcard `_` spelling an ABSENT arm (`result<_, E>` / `result<T>`).
-            Some((h, args)) if (h == "result" || h == "Result") && args.len() <= 2 => {
+            Some((h, args)) if h == "result" || h == "Result" => {
+                // A WIT result has at most two arms; more args is a malformed spelling — steer with a
+                // message rather than silently leaving a broken member type (the reject-with-guidance
+                // policy the record-field form already uses).
+                if args.len() > 2 {
+                    self.error(
+                        "a `result` type takes at most two arguments — `result(Ok, Err)`, `result(Ok)`, \
+                         `result(_, Err)`, or bare `result`",
+                    );
+                    return ty;
+                }
                 let ok = if args.is_empty() {
                     None
                 } else {
@@ -2814,7 +2824,16 @@ impl<'a> Parser<'a> {
             // `variant(Case, Case2(T), …)` — an anonymous variant type. Each case is a bare NAME
             // (payload-less) or a single-arg application `Case2(T)` (a payload case whose type is lowered).
             Some((h, args)) if h == "variant" || h == "Variant" => {
-                self.wit_type_variant_desc_of(&args).unwrap_or(ty)
+                match self.wit_type_variant_desc_of(&args) {
+                    Some(v) => v,
+                    None => {
+                        self.error(
+                            "a `variant` case is a bare name (payload-less) or `Case(T)` with a single \
+                             payload type — for several fields use `Case(tuple(A, B))` or a record",
+                        );
+                        ty
+                    }
+                }
             }
             // `enum(A, B, …)` / `flags(A, B, …)` — a set of bare-NAME cases/bits. Both share the shape; the
             // head keyword selects the (distinct) WIT type. A non-name arg means it is not this spelling.
@@ -2823,7 +2842,10 @@ impl<'a> Parser<'a> {
                     let refs: Vec<&str> = names.iter().map(String::as_str).collect();
                     self.builder.wit_type_enum(&refs)
                 }
-                None => ty,
+                None => {
+                    self.error("an `enum` case is a bare name, e.g. `enum(Red, Green, Blue)`");
+                    ty
+                }
             },
             Some((h, args)) if h == "flags" || h == "Flags" => {
                 match self.wit_case_names_of(&args) {
@@ -2831,7 +2853,10 @@ impl<'a> Parser<'a> {
                         let refs: Vec<&str> = names.iter().map(String::as_str).collect();
                         self.builder.wit_type_flags(&refs)
                     }
-                    None => ty,
+                    None => {
+                        self.error("a `flags` bit is a bare name, e.g. `flags(Read, Write)`");
+                        ty
+                    }
                 }
             }
             _ => ty,
@@ -7139,5 +7164,53 @@ mod tests {
         assert!(read_ml("def f(xs: List(a)) = xs").ok());
         assert!(read_ml("def f(p: Tuple(Int64, Bool)) = p").ok());
         assert!(read_ml("def f(o: Option(Int64)) = o").ok());
+    }
+
+    #[test]
+    fn malformed_wit_member_type_spellings_are_rejected_with_guidance() {
+        // A malformed WIT aggregate member type (wrong result arity, a variant case with 2+ payloads, a
+        // non-name enum/flags case) is REJECTED with an actionable, steering message — not silently left as
+        // a broken member descriptor. Same reject-with-guidance policy as the record-field form. Each is in
+        // world-member type position, where the head IS the WIT type keyword.
+        let cases: [(&str, &str); 4] = [
+            (
+                "world W = | export i = | m : (x : u8) -> result(bool, string, u8)",
+                "at most two arguments",
+            ),
+            (
+                "world W = | export i = | m : (x : u8) -> variant(Ok, Bad(u8, string))",
+                "single payload type",
+            ),
+            (
+                "world W = | export i = | m : (x : u8) -> enum(Red, Green(u8))",
+                "an `enum` case is a bare name",
+            ),
+            (
+                "world W = | export i = | m : (x : u8) -> flags(Read(u8), Write)",
+                "a `flags` bit is a bare name",
+            ),
+        ];
+        for (src, needle) in cases {
+            let p = read_ml(src);
+            assert!(!p.ok(), "malformed WIT member type must reject: {src}");
+            assert!(
+                p.errors.iter().any(|e| e.message.contains(needle)),
+                "reject steers with `{needle}`: {src} -> {:?}",
+                p.errors
+            );
+        }
+        // The WELL-FORMED spellings still parse clean — no false reject.
+        for src in [
+            "world W = | export i = | m : (x : u8) -> result(bool, string)",
+            "world W = | export i = | m : (x : u8) -> result(bool)",
+            "world W = | export i = | m : (x : u8) -> variant(Ok, Bad(string))",
+            "world W = | export i = | m : (x : u8) -> enum(Red, Green, Blue)",
+            "world W = | export i = | m : (x : u8) -> flags(Read, Write)",
+        ] {
+            assert!(
+                read_ml(src).ok(),
+                "well-formed WIT member type must parse: {src}"
+            );
+        }
     }
 }
