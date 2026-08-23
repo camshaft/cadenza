@@ -13,10 +13,19 @@
 //! called the `identity` import, and returned its step under `bach::sim`. This is what lets the integration
 //! harness drive a wasm reducer set to quiescence *deterministically* over the Bach runtime (§9).
 //!
-//! This slice generates the host-side bindings for the (privileged) event-reducer world and confirms the WIT
-//! ABI projects into valid wasmtime host bindings. Instantiating a component as a [`Reducer`](crate::Reducer)
-//! and backing the imports over the in-memory [`KvStore`](crate::KvStore) / [`BlobStore`](crate::BlobStore)
-//! is the following slice.
+//! The module holds, bottom to top: the generated host bindings for the event-reducer world (`bindgen!`);
+//! the [`HostState`] the imports read and write, with a `Host` impl per interface (`identity`, `blobs`,
+//! `state`, and the privileged `graph`) backing them on the swappable [`KvStore`](crate::KvStore) /
+//! [`BlobStore`](crate::BlobStore) / [`ReducerGraph`](crate::ReducerGraph); the event ↔ WIT conversion layer
+//! that translates the crate's [`Message`](crate::Message)/[`Response`](crate::Response)/[`Outcome`] to and
+//! from the WIT records; the [`WasmReducer`] driver that composes those around a wasmtime call to fold an
+//! event; and [`WasmProgramStore`], the production [`ProgramStore`](crate::ProgramStore) that loads a
+//! program's component from the content-addressed store, composes its content-addressed dependencies (the
+//! value-heap runtime, …) from the store, and instantiates it as a reducer.
+//!
+//! Still open (the event-reducer surface): the `deliver` and `program-of` host imports, which need the
+//! node-shared context — the delivery mechanism and the reducer-to-program registry
+//! ([`System::program_of`](crate::System)) — threaded into [`HostState`].
 #![allow(dead_code)]
 
 // Generated host bindings for the event-reducer world (the superset: the ordinary reducer imports plus the
