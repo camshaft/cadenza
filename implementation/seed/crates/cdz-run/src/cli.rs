@@ -347,6 +347,53 @@ pub fn content_address(bytes: &[u8]) -> String {
     cdz_contract::Hash::of(cdz_contract::HashTag::Blob, bytes).to_string()
 }
 
+#[cfg(test)]
+mod content_address_tests {
+    use super::content_address;
+
+    /// The load-bearing invariant of the base62 flip: a content address MUST be legal as a WebAssembly
+    /// component-import semver build-metadata suffix (`cadenza:runtime/heap@0.0.0+<addr>`), whose grammar
+    /// admits only `[0-9A-Za-z-]`. base62 (`0-9A-Za-z`) satisfies it; base64url (`_`) or any `+`/`/`/`=`
+    /// encoding would NOT — that is why the fleet is on base62 and never hex-or-base64url here. This pins
+    /// the property AT the `content_address` boundary, so a future re-encoding that reintroduces a
+    /// suffix-illegal character fails here, not silently at wasm-tools compose time.
+    #[test]
+    fn content_address_is_a_legal_component_import_suffix() {
+        for input in [
+            b"".as_slice(),
+            b"cadenza",
+            b"the value-heap runtime bytes",
+            &[0xFFu8; 64],
+        ] {
+            let addr = content_address(input);
+            // 45 fixed base62 chars (the tagged 33-byte Hash's text width).
+            assert_eq!(
+                addr.len(),
+                45,
+                "content address is a fixed 45-char base62 string"
+            );
+            // Every character legal in a semver build-metadata suffix, and specifically NONE of the
+            // separators a non-base62 encoding would introduce.
+            assert!(
+                addr.bytes().all(|b| b.is_ascii_alphanumeric()),
+                "content address {addr} must be base62 (0-9A-Za-z) to ride a component-import +suffix"
+            );
+            assert!(
+                !addr.contains(['_', '+', '/', '=', '-']),
+                "content address {addr} must carry no base64url/base64/hyphen separator"
+            );
+        }
+    }
+
+    /// Content addressing is a deterministic, collision-distinguishing function of the bytes — the whole
+    /// premise of a content-addressed store (same bytes ⇒ same name; different bytes ⇒ different name).
+    #[test]
+    fn content_address_is_deterministic_and_distinguishing() {
+        assert_eq!(content_address(b"cadenza"), content_address(b"cadenza"));
+        assert_ne!(content_address(b"cadenza"), content_address(b"cadenzb"));
+    }
+}
+
 /// The default content-addressed store: the `CDZ_STORE` env var if set, else `<repo>/target/cadenza-store`
 /// resolved from this crate's manifest location (crate lives at `<repo>/implementation/seed/crates/cdz-run`).
 /// The `--store` flag still wins over this (callers `unwrap_or_else(default_store)`), so precedence is
