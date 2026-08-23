@@ -404,6 +404,162 @@ pub fn flatten_func_core_sig(
     (core_params, core_results)
 }
 
+// ── Canonical-ABI MEMORY LAYOUT (step W4c-spill) ──────────────────────────────────────────────────────
+// When a boundary value spills to linear memory — a param tuple over MAX_FLAT_PARAMS, or a record/variant
+// RESULT (which always exceeds MAX_FLAT_RESULTS, returned by pointer) — it is laid out at the component-
+// model canonical offsets. These compute the size / alignment / field offsets per the canonical ABI; they
+// are the input to the result-layout writer and the spilled-value reader (a later slice generates the core
+// stores/loads against them). Nothing else in the backend computes canonical memory layout (compounds
+// otherwise cross as the value-form `list<u8>`), so this is new.
+
+/// Round `x` up to a multiple of the power-of-two alignment `a`.
+fn align_to(x: u32, a: u32) -> u32 {
+    (x + a - 1) & !(a - 1)
+}
+
+/// The byte size of a variant discriminant holding `n_cases` cases — the smallest unsigned int that fits.
+fn disc_size(n_cases: usize) -> u32 {
+    if n_cases <= (1 << 8) {
+        1
+    } else if n_cases <= (1 << 16) {
+        2
+    } else {
+        4
+    }
+}
+
+/// Canonical size (bytes) of a `flags` of `n` labels: packed to the smallest uint, then `ceil(n/32)` i32s.
+fn flags_size(n: usize) -> u32 {
+    if n == 0 {
+        0
+    } else if n <= 8 {
+        1
+    } else if n <= 16 {
+        2
+    } else {
+        4 * (n as u32).div_ceil(32)
+    }
+}
+
+/// Canonical alignment of a `flags` of `n` labels.
+fn flags_align(n: usize) -> u32 {
+    if n <= 8 {
+        1
+    } else if n <= 16 {
+        2
+    } else {
+        4
+    }
+}
+
+/// Canonical alignment of a tagged type given its cases' payloads: the max of the discriminant's alignment
+/// and every present case payload's alignment.
+fn variant_align(case_payloads: &[Option<&WitType>]) -> u32 {
+    let disc = disc_size(case_payloads.len());
+    let max_case = case_payloads
+        .iter()
+        .flatten()
+        .map(|t| canonical_align(t))
+        .max()
+        .unwrap_or(1);
+    disc.max(max_case)
+}
+
+/// Canonical size of a tagged type: the discriminant, padded to the cases' max alignment, plus the max case
+/// payload size, padded to the whole variant's alignment.
+fn variant_size(case_payloads: &[Option<&WitType>]) -> u32 {
+    let max_case_align = case_payloads
+        .iter()
+        .flatten()
+        .map(|t| canonical_align(t))
+        .max()
+        .unwrap_or(1);
+    let max_case_size = case_payloads
+        .iter()
+        .flatten()
+        .map(|t| canonical_size(t))
+        .max()
+        .unwrap_or(0);
+    let mut s = align_to(disc_size(case_payloads.len()), max_case_align);
+    s += max_case_size;
+    align_to(s, variant_align(case_payloads))
+}
+
+/// The canonical-ABI alignment (bytes) of a WIT value type. `Unit` (not a value type) is 1.
+pub fn canonical_align(t: &WitType) -> u32 {
+    match t {
+        WitType::Bool | WitType::U8 | WitType::S8 => 1,
+        WitType::U16 | WitType::S16 => 2,
+        WitType::U32 | WitType::S32 | WitType::F32 | WitType::Char => 4,
+        WitType::U64 | WitType::S64 | WitType::F64 => 8,
+        // A list/string crosses as (ptr: i32, len: i32) → align 4.
+        WitType::String | WitType::List(_) => 4,
+        WitType::Record(fields) => fields
+            .iter()
+            .map(|(_, t)| canonical_align(t))
+            .max()
+            .unwrap_or(1),
+        WitType::Tuple(elems) => elems.iter().map(canonical_align).max().unwrap_or(1),
+        WitType::Enum(cases) => disc_size(cases.len()),
+        WitType::Flags(names) => flags_align(names.len()),
+        WitType::Variant(cases) => {
+            variant_align(&cases.iter().map(|(_, p)| p.as_ref()).collect::<Vec<_>>())
+        }
+        WitType::Option(inner) => variant_align(&[None, Some(inner.as_ref())]),
+        WitType::Result { ok, err } => variant_align(&[ok.as_deref(), err.as_deref()]),
+        WitType::Unit => 1,
+    }
+}
+
+/// The canonical-ABI size (bytes) of a WIT value type. `Unit` is 0.
+pub fn canonical_size(t: &WitType) -> u32 {
+    match t {
+        WitType::Bool | WitType::U8 | WitType::S8 => 1,
+        WitType::U16 | WitType::S16 => 2,
+        WitType::U32 | WitType::S32 | WitType::F32 | WitType::Char => 4,
+        WitType::U64 | WitType::S64 | WitType::F64 => 8,
+        WitType::String | WitType::List(_) => 8, // (ptr, len)
+        WitType::Record(fields) => {
+            let mut s = 0;
+            for (_, ft) in fields {
+                s = align_to(s, canonical_align(ft));
+                s += canonical_size(ft);
+            }
+            align_to(s, canonical_align(t))
+        }
+        WitType::Tuple(elems) => {
+            let mut s = 0;
+            for et in elems {
+                s = align_to(s, canonical_align(et));
+                s += canonical_size(et);
+            }
+            align_to(s, canonical_align(t))
+        }
+        WitType::Enum(cases) => disc_size(cases.len()),
+        WitType::Flags(names) => flags_size(names.len()),
+        WitType::Variant(cases) => {
+            variant_size(&cases.iter().map(|(_, p)| p.as_ref()).collect::<Vec<_>>())
+        }
+        WitType::Option(inner) => variant_size(&[None, Some(inner.as_ref())]),
+        WitType::Result { ok, err } => variant_size(&[ok.as_deref(), err.as_deref()]),
+        WitType::Unit => 0,
+    }
+}
+
+/// The canonical byte offset of each field of a `record`/`tuple`, in declaration order — each field placed
+/// at the running size rounded up to its alignment. The paired input to [`canonical_size`] for laying a
+/// record result into (or reading a spilled record out of) linear memory.
+pub fn record_field_offsets(field_types: &[WitType]) -> Vec<u32> {
+    let mut offsets = Vec::with_capacity(field_types.len());
+    let mut running = 0;
+    for ft in field_types {
+        running = align_to(running, canonical_align(ft));
+        offsets.push(running);
+        running += canonical_size(ft);
+    }
+    offsets
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -808,5 +964,87 @@ mod tests {
             .collect();
         let (p, _r) = flatten_func_core_sig(&many, Some(&WitType::U32));
         assert_eq!(p, vec![I32]);
+    }
+
+    // ── canonical-ABI memory layout (W4c-spill) ───────────────────────────────────────────────────────
+
+    #[test]
+    fn canonical_size_and_align_of_scalars_and_list() {
+        assert_eq!(
+            (
+                canonical_size(&WitType::Bool),
+                canonical_align(&WitType::Bool)
+            ),
+            (1, 1)
+        );
+        assert_eq!(
+            (
+                canonical_size(&WitType::U16),
+                canonical_align(&WitType::U16)
+            ),
+            (2, 2)
+        );
+        assert_eq!(
+            (
+                canonical_size(&WitType::U32),
+                canonical_align(&WitType::U32)
+            ),
+            (4, 4)
+        );
+        assert_eq!(
+            (
+                canonical_size(&WitType::U64),
+                canonical_align(&WitType::U64)
+            ),
+            (8, 8)
+        );
+        // list/string cross as (ptr, len): size 8, align 4.
+        let lst = WitType::List(Box::new(WitType::U8));
+        assert_eq!((canonical_size(&lst), canonical_align(&lst)), (8, 4));
+        assert_eq!(
+            (
+                canonical_size(&WitType::String),
+                canonical_align(&WitType::String)
+            ),
+            (8, 4)
+        );
+    }
+
+    #[test]
+    fn canonical_record_layout_pads_to_field_alignment() {
+        // record{ a: u8, b: u64 }: a@0 (size 1), b padded to align 8 → @8; size align_to(16,8)=16, align 8.
+        let r = rec(&[("a", WitType::U8), ("b", WitType::U64)]);
+        assert_eq!((canonical_size(&r), canonical_align(&r)), (16, 8));
+        assert_eq!(
+            record_field_offsets(&[WitType::U8, WitType::U64]),
+            vec![0, 8]
+        );
+
+        // message-ish: record{ a: u32, b: list<u8> }: a@0, b@4 (list align 4 size 8); size 12, align 4.
+        let m = rec(&[
+            ("a", WitType::U32),
+            ("b", WitType::List(Box::new(WitType::U8))),
+        ]);
+        assert_eq!((canonical_size(&m), canonical_align(&m)), (12, 4));
+        assert_eq!(
+            record_field_offsets(&[WitType::U32, WitType::List(Box::new(WitType::U8))]),
+            vec![0, 4]
+        );
+    }
+
+    #[test]
+    fn canonical_variant_option_enum_layout() {
+        // option<u64> = variant{none, some(u64)}: disc 1 byte, padded to case align 8 → 8, + size 8 → 16.
+        let o = WitType::Option(Box::new(WitType::U64));
+        assert_eq!((canonical_size(&o), canonical_align(&o)), (16, 8));
+        // outcome-ish variant{continue, close(record{code:u32})}: disc 1 → pad to 4 → 4, + size 4 → 8, align 4.
+        let v = WitType::Variant(vec![
+            ("continue".into(), None),
+            ("close".into(), Some(rec(&[("code", WitType::U32)]))),
+        ]);
+        assert_eq!((canonical_size(&v), canonical_align(&v)), (8, 4));
+        // enum of 3 cases = a 1-byte discriminant.
+        let e = WitType::Enum(vec!["a".into(), "b".into(), "c".into()]);
+        assert_eq!((canonical_size(&e), canonical_align(&e)), (1, 1));
     }
 }
