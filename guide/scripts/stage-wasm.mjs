@@ -2,7 +2,8 @@
 //
 // Run after `wasm-pack build --target web` in ../implementation/seed/crates/cdz-wasm. Copies:
 //   - the wasm-pack `pkg/` (JS glue + cdz_wasm_bg.wasm) -> src/wasm/pkg/
-//   - the value-heap runtime component whose SHA-256 == cdz_wasm's `required_runtime_hash()`, found
+//   - the value-heap runtime component whose content address == cdz_wasm's `required_runtime_hash()`
+//     (a base62 `Hash::of(Blob, bytes)`, 45 chars — design §8), found
 //     in the cadenza store, -> src/wasm/runtime.wasm  (the guide bundles exactly the runtime the
 //     compiler pins, so a compound program's `cadenza:runtime/heap@0.0.0+<hash>` import resolves).
 //
@@ -50,7 +51,9 @@ try {
   console.error(`[stage-wasm] could not read required_runtime_hash() from the staged compiler wasm: ${e}`);
   process.exit(1);
 }
-if (!/^[0-9a-f]{64}$/.test(hash)) {
+// The content address is a 45-char base62 `Hash` text (`0-9A-Za-z`, tag + blake3 digest — design §8),
+// NOT the pre-flip 64-hex digest; validate that shape so a genuinely malformed value still fails loud.
+if (!/^[0-9A-Za-z]{45}$/.test(hash)) {
   console.error(`[stage-wasm] required_runtime_hash() returned a non-hash value: ${JSON.stringify(hash)}`);
   process.exit(1);
 }
