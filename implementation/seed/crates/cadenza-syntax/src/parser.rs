@@ -5242,18 +5242,20 @@ mod tests {
 
     #[test]
     fn inline_world_aggregate_members_encode_identically_to_the_builders() {
-        // The cross-source identity guarantee EXTENDED to the aggregate member types record + result +
-        // variant — the shapes v-platform's reducer world uses at the boundary: a record message/request, a
-        // result-of-payload-or-error answer, and an outcome variant (a payload-less case + a record-payload
-        // case). The inline surface `{f: T, …}` / `result(A, B)` / `variant(C, D(T))` must lower to the EXACT
-        // SAME canonical tree the shared `wit_type_record`/`wit_type_result`/`wit_type_variant` builders
-        // produce, so a typed-member world is one content-hash whether it comes from the inline decl, an
-        // external artifact, or v-cml's emit. If `wit_type_desc_of` ever drifts from a builder shape (a field
-        // or case reorder, a head-kind flip, a wrong result slot, a lost variant payload), this fails.
+        // The cross-source identity guarantee across ALL aggregate member types — record, result, variant,
+        // enum, and flags (the full set a typed reducer world binds at the boundary: a record
+        // message/request, a result-of-payload-or-error answer, an outcome variant, plus enum/flags scalars).
+        // The inline surface `{f: T, …}` / `result(A, B)` / `variant(C, D(T))` / `enum(A, …)` / `flags(A, …)`
+        // must lower to the EXACT SAME canonical tree the shared `wit_type_*` builders produce, so a
+        // typed-member world is one content-hash whether it comes from the inline decl, an external artifact,
+        // or v-cml's emit. If `wit_type_desc_of` ever drifts from a builder shape (a field/case reorder, a
+        // head-kind flip, a wrong result slot, a lost variant payload, enum-vs-flags confusion), this fails.
         let parsed = parse_ok(
             "world W = | export r = \
              | step : (msg : {id: string, payload: list(u8)}) -> result(bool, string) \
-             | fold : (ev : list(u8)) -> variant(Continue, Break({schema: string, reason: string}))",
+             | fold : (ev : list(u8)) -> variant(Continue, Break({schema: string, reason: string})) \
+             | tag : (x : u8) -> enum(Red, Green) \
+             | perms : (x : u8) -> flags(Read, Write)",
         );
 
         let mut b = crate::Builder::new();
@@ -5282,10 +5284,22 @@ mod tests {
         };
         let outcome = b.wit_type_variant(&[("Continue", None), ("Break", Some(break_payload))]);
         let fold_sig = b.wit_func_sig(&[("ev", ev)], outcome);
+        // tag: (x: u8) -> enum(Red, Green); perms: (x: u8) -> flags(Read, Write). Same names, distinct types.
+        let tag_x = b.wit_type_prim("u8");
+        let color = b.wit_type_enum(&["Red", "Green"]);
+        let tag_sig = b.wit_func_sig(&[("x", tag_x)], color);
+        let perms_x = b.wit_type_prim("u8");
+        let perms_ty = b.wit_type_flags(&["Read", "Write"]);
+        let perms_sig = b.wit_func_sig(&[("x", perms_x)], perms_ty);
         let iface = b.wit_interface(
             crate::ast::WitDir::Export,
             "r",
-            &[("step", step_sig), ("fold", fold_sig)],
+            &[
+                ("step", step_sig),
+                ("fold", fold_sig),
+                ("tag", tag_sig),
+                ("perms", perms_sig),
+            ],
         );
         let root = b.world_schema_tree("W", &[iface]);
         let built = b.finish(root);
@@ -5293,7 +5307,7 @@ mod tests {
         assert_eq!(
             crate::codec::encode(&parsed),
             crate::codec::encode(&built),
-            "inline record+result+variant member world must encode identically to the shared builders"
+            "inline record+result+variant+enum+flags member world must encode identically to the builders"
         );
     }
 
