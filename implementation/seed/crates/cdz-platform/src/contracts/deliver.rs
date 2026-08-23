@@ -21,88 +21,89 @@ pub fn schema(b: &mut Builder) -> Vec<StructId> {
     let v1 = b.name("Error");
     let v2 = b.name("Timeout");
     let v3 = b.name("MissingHandler");
-    let v4 = b.list(vec![v0, v1, v2, v3]);
-    let v5 = b.name("type");
-    let v6 = b.name("Event");
-    let v7 = b.name("Message");
-    let v8 = b.name("Record");
-    let v9 = b.name(":");
-    let v10 = b.name("id");
-    let v11 = b.name("Bytes");
-    let v12 = b.list(vec![v9, v10, v11]);
-    let v13 = b.name(":");
-    let v14 = b.name("reducer");
-    let v15 = b.name("Bytes");
-    let v16 = b.list(vec![v13, v14, v15]);
-    let v17 = b.name(":");
-    let v18 = b.name("host");
-    let v19 = b.name("Bytes");
-    let v20 = b.list(vec![v17, v18, v19]);
-    let v21 = b.name(":");
-    let v22 = b.name("payload");
-    let v23 = b.name("Bytes");
-    let v24 = b.list(vec![v21, v22, v23]);
-    let v25 = b.name(":");
-    let v26 = b.name("token");
-    let v27 = b.name("Bytes");
-    let v28 = b.list(vec![v25, v26, v27]);
-    let v29 = b.list(vec![v8, v12, v16, v20, v24, v28]);
-    let v30 = b.list(vec![v7, v29]);
-    let v31 = b.name("Response");
-    let v32 = b.name("Record");
-    let v33 = b.name(":");
-    let v34 = b.name("id");
-    let v35 = b.name("Bytes");
-    let v36 = b.list(vec![v33, v34, v35]);
-    let v37 = b.name(":");
-    let v38 = b.name("token");
-    let v39 = b.name("Bytes");
-    let v40 = b.list(vec![v37, v38, v39]);
-    let v41 = b.name(":");
-    let v42 = b.name("result");
-    let v43 = b.name("Result");
-    let v44 = b.name("Bytes");
-    let v45 = b.name("Error");
-    let v46 = b.list(vec![v43, v44, v45]);
-    let v47 = b.list(vec![v41, v42, v46]);
-    let v48 = b.list(vec![v32, v36, v40, v47]);
-    let v49 = b.list(vec![v31, v48]);
-    let v50 = b.name("Notification");
-    let v51 = b.name("Record");
-    let v52 = b.name(":");
-    let v53 = b.name("id");
-    let v54 = b.name("Bytes");
-    let v55 = b.list(vec![v52, v53, v54]);
-    let v56 = b.name(":");
-    let v57 = b.name("payload");
-    let v58 = b.name("Bytes");
-    let v59 = b.list(vec![v56, v57, v58]);
-    let v60 = b.list(vec![v51, v55, v59]);
-    let v61 = b.list(vec![v50, v60]);
-    let v62 = b.list(vec![v5, v6, v30, v49, v61]);
-    let v63 = b.name("type");
-    let v64 = b.name("Envelope");
-    let v65 = b.name("Deliver");
-    let v66 = b.name("Record");
-    let v67 = b.name(":");
-    let v68 = b.name("target");
-    let v69 = b.name("Bytes");
-    let v70 = b.list(vec![v67, v68, v69]);
-    let v71 = b.name(":");
-    let v72 = b.name("event");
-    let v73 = b.name("Event");
-    let v74 = b.list(vec![v71, v72, v73]);
-    let v75 = b.list(vec![v66, v70, v74]);
-    let v76 = b.list(vec![v65, v75]);
-    let v77 = b.list(vec![v63, v64, v76]);
-    let v78 = b.name("type");
-    let v79 = b.name("Outcome");
-    let v80 = b.name("Delivered");
-    let v81 = b.name("Failed");
-    let v82 = b.name("Bytes");
-    let v83 = b.list(vec![v81, v82]);
-    let v84 = b.list(vec![v78, v79, v80, v83]);
-    vec![v4, v62, v77, v84]
+    let v4 = b.name("SchemaViolation");
+    let v5 = b.list(vec![v0, v1, v2, v3, v4]);
+    let v6 = b.name("type");
+    let v7 = b.name("Event");
+    let v8 = b.name("Message");
+    let v9 = b.name("Record");
+    let v10 = b.name(":");
+    let v11 = b.name("id");
+    let v12 = b.name("Bytes");
+    let v13 = b.list(vec![v10, v11, v12]);
+    let v14 = b.name(":");
+    let v15 = b.name("reducer");
+    let v16 = b.name("Bytes");
+    let v17 = b.list(vec![v14, v15, v16]);
+    let v18 = b.name(":");
+    let v19 = b.name("host");
+    let v20 = b.name("Bytes");
+    let v21 = b.list(vec![v18, v19, v20]);
+    let v22 = b.name(":");
+    let v23 = b.name("payload");
+    let v24 = b.name("Bytes");
+    let v25 = b.list(vec![v22, v23, v24]);
+    let v26 = b.name(":");
+    let v27 = b.name("token");
+    let v28 = b.name("Bytes");
+    let v29 = b.list(vec![v26, v27, v28]);
+    let v30 = b.list(vec![v9, v13, v17, v21, v25, v29]);
+    let v31 = b.list(vec![v8, v30]);
+    let v32 = b.name("Response");
+    let v33 = b.name("Record");
+    let v34 = b.name(":");
+    let v35 = b.name("id");
+    let v36 = b.name("Bytes");
+    let v37 = b.list(vec![v34, v35, v36]);
+    let v38 = b.name(":");
+    let v39 = b.name("token");
+    let v40 = b.name("Bytes");
+    let v41 = b.list(vec![v38, v39, v40]);
+    let v42 = b.name(":");
+    let v43 = b.name("result");
+    let v44 = b.name("Result");
+    let v45 = b.name("Bytes");
+    let v46 = b.name("Error");
+    let v47 = b.list(vec![v44, v45, v46]);
+    let v48 = b.list(vec![v42, v43, v47]);
+    let v49 = b.list(vec![v33, v37, v41, v48]);
+    let v50 = b.list(vec![v32, v49]);
+    let v51 = b.name("Notification");
+    let v52 = b.name("Record");
+    let v53 = b.name(":");
+    let v54 = b.name("id");
+    let v55 = b.name("Bytes");
+    let v56 = b.list(vec![v53, v54, v55]);
+    let v57 = b.name(":");
+    let v58 = b.name("payload");
+    let v59 = b.name("Bytes");
+    let v60 = b.list(vec![v57, v58, v59]);
+    let v61 = b.list(vec![v52, v56, v60]);
+    let v62 = b.list(vec![v51, v61]);
+    let v63 = b.list(vec![v6, v7, v31, v50, v62]);
+    let v64 = b.name("type");
+    let v65 = b.name("Envelope");
+    let v66 = b.name("Deliver");
+    let v67 = b.name("Record");
+    let v68 = b.name(":");
+    let v69 = b.name("target");
+    let v70 = b.name("Bytes");
+    let v71 = b.list(vec![v68, v69, v70]);
+    let v72 = b.name(":");
+    let v73 = b.name("event");
+    let v74 = b.name("Event");
+    let v75 = b.list(vec![v72, v73, v74]);
+    let v76 = b.list(vec![v67, v71, v75]);
+    let v77 = b.list(vec![v66, v76]);
+    let v78 = b.list(vec![v64, v65, v77]);
+    let v79 = b.name("type");
+    let v80 = b.name("Outcome");
+    let v81 = b.name("Delivered");
+    let v82 = b.name("Failed");
+    let v83 = b.name("Bytes");
+    let v84 = b.list(vec![v82, v83]);
+    let v85 = b.list(vec![v79, v80, v81, v84]);
+    vec![v5, v63, v78, v85]
 }
 /// Build a canonical `Error.Timeout` value.
 pub fn error_timeout(b: &mut Builder) -> StructId {
@@ -119,6 +120,14 @@ pub fn error_missing_handler(b: &mut Builder) -> StructId {
 /// Whether `id` is a `Error.MissingHandler` value.
 pub fn is_error_missing_handler(arenas: &Arenas, id: StructId) -> bool {
     v::as_qctor(arenas, id, "Error", "MissingHandler").is_some_and(|t| t.is_empty())
+}
+/// Build a canonical `Error.SchemaViolation` value.
+pub fn error_schema_violation(b: &mut Builder) -> StructId {
+    v::qctor(b, "Error", "SchemaViolation", vec![])
+}
+/// Whether `id` is a `Error.SchemaViolation` value.
+pub fn is_error_schema_violation(arenas: &Arenas, id: StructId) -> bool {
+    v::as_qctor(arenas, id, "Error", "SchemaViolation").is_some_and(|t| t.is_empty())
 }
 /// The fields of a `Event.Message` value — each a built value occurrence.
 pub struct EventMessage {

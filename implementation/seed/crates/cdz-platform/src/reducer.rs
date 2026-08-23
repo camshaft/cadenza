@@ -39,6 +39,10 @@ pub enum Error {
     Timeout,
     /// No handler is registered for the contract; nothing could answer it.
     MissingHandler,
+    /// The request's payload did not adhere to the contract's declared type (§4 validation). The event
+    /// reducer that shepherds the effect rejects it before any handler folds it, and this is the runtime
+    /// failure the caller sees — distinct from a handler's own domain error (an ordinary `Ok` output value).
+    SchemaViolation,
 }
 
 /// What a reduce call decides about the reducer's own life (§3). A reducer ends *itself* only by returning

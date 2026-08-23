@@ -122,6 +122,7 @@ impl Deliver {
                         let e = match error {
                             Error::Timeout => c::error_timeout(b),
                             Error::MissingHandler => c::error_missing_handler(b),
+                            Error::SchemaViolation => c::error_schema_violation(b),
                         };
                         v::bare_ctor(b, "Err", vec![e])
                     }
@@ -213,6 +214,8 @@ fn decode_result(arenas: &cadenza_ast::ast::Arenas, id: StructId) -> Option<Resu
             Error::Timeout
         } else if c::is_error_missing_handler(arenas, err) {
             Error::MissingHandler
+        } else if c::is_error_schema_violation(arenas, err) {
+            Error::SchemaViolation
         } else {
             return None;
         }));
@@ -263,11 +266,12 @@ mod tests {
     }
 
     #[test]
-    fn a_response_deliver_round_trips_for_ok_and_both_errors() {
+    fn a_response_deliver_round_trips_for_ok_and_every_error() {
         for payload in [
             Ok(Bytes::from_static(b"answer")),
             Err(Error::Timeout),
             Err(Error::MissingHandler),
+            Err(Error::SchemaViolation),
         ] {
             round_trips(&Deliver {
                 target: rid(b"caller"),
