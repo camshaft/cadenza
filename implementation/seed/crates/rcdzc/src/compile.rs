@@ -127,10 +127,20 @@ fn compile_with_opt_inner(
         .iter()
         .find(|a| a.kind == link::KIND_ENTRY)
         .map(|a| String::from_utf8_lossy(&a.bytes).into_owned());
-    let (arenas, linkage) = match link_inputs(&ast_arts, entry_name.as_deref()) {
+    let (mut arenas, linkage) = match link_inputs(&ast_arts, entry_name.as_deref()) {
         Ok(a) => a,
         Err(r) => return fail(vec![r]),
     };
+    // NO-REDECLARE for an EXTERNAL artifact world: a reducer delivered with a `KIND_WIT_WORLD` artifact (vs
+    // an in-source `(world …)`) gets its world-import effects synthesized too. Inject them into the arena
+    // BEFORE `Db::load` so the synthesized `(effect …)` decls are scanned + resolved like hand-written ones
+    // — the same generate-before-resolve ordering `wit_world::inject_world_import_effects` uses for the
+    // in-source case (which runs INSIDE `Db::load_linked`). The skip-already-declared guard makes the two
+    // paths composable: an interface a guest hand-declares (or one the in-source pre-pass would also inject)
+    // is never synthesized twice.
+    if let Some(world_art) = inputs.iter().find(|a| a.kind == link::KIND_WIT_WORLD) {
+        crate::wit_world::inject_world_import_effects_from_bytes(&mut arenas, &world_art.bytes);
+    }
     // For a linked PACKAGE, emit the `link-map` demux artifact (`DESIGN-package-linking.md` §6): it
     // lets a consumer map a cross-file diagnostic's GLOBAL node id → `(file, local id)` for source
     // mapping. It rides alongside every output that carries node-anchored diagnostics — seeded into the

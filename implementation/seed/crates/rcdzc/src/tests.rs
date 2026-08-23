@@ -7205,6 +7205,48 @@ fn a_no_redeclare_world_import_perform_resolves_via_the_injected_effect() {
     }
 }
 
+/// EXTERNAL-ARTIFACT world, no-redeclare: a reducer delivered with a `KIND_WIT_WORLD` artifact (NOT an
+/// in-source `(world …)`) and NO hand-written `(effect …)` decl must still resolve its world-import perform
+/// — `compile` injects the synthesized effects from the artifact BEFORE `Db::load`, so `(host (identity)
+/// …)` binds. (The `identity.id` `list<u8>` RESULT still declines at the backend boundary — v-rb's slice —
+/// so this asserts the FRONT-END resolution, i.e. NO `unbound name identity`, independent of emit.)
+#[test]
+fn an_external_artifact_world_import_resolves_without_a_hand_declared_effect() {
+    let src = "(module m \
+                 (def (apply (: e (Record (ct String) (pl Bytes)))) \
+                   (host (identity) \
+                     (list (record (op (. e ct)) (arg ((. identity id))))))) \
+                 (export apply))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&crate::testkit::parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:agent-kernel/fold"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                reducer_nullary_identity_import_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    // The artifact-world effects were injected → `identity` binds (no CDZ0101), even though the guest wrote
+    // no `(effect identity …)`. (A backend decline for the list<u8> host result is expected + orthogonal.)
+    assert!(
+        !out.diagnostics
+            .iter()
+            .any(|d| d.message.contains("unbound name `identity`")),
+        "the external-artifact world's `identity` import must resolve via the injected effect (no CDZ0101): {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
 /// MULTI-INTERFACE no-redeclare: the platform reducer-world imports SEVERAL interfaces (state / blobs /
 /// identity / run). A reducer that declares such a world in source and performs imports from MORE THAN ONE
 /// of them — with NO hand-written `(effect …)` decls — must have the load-time sidecar synthesize ONE effect
