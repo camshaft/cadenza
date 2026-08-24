@@ -334,6 +334,7 @@ impl fmt::Display for Record {
                     kind,
                     contract,
                     from,
+                    payload,
                     ..
                 } => {
                     let verb = match kind {
@@ -341,11 +342,17 @@ impl fmt::Display for Record {
                         EventKind::Response => "recv response",
                         EventKind::Notification => "recv notification",
                     };
+                    // Show the delivered payload (preview) at parity with the emit line, so a scan of the log
+                    // shows *what* was delivered — the counterpart to what was emitted.
                     match from {
-                        Some(o) => {
-                            write!(f, "{verb} {} from {}", short(*contract), short(o.reducer))
-                        }
-                        None => write!(f, "{verb} {}", short(*contract)),
+                        Some(o) => write!(
+                            f,
+                            "{verb} {} {} from {}",
+                            short(*contract),
+                            preview(payload),
+                            short(o.reducer)
+                        ),
+                        None => write!(f, "{verb} {} {}", short(*contract), preview(payload)),
                     }
                 }
                 EventOp::Emitted {
@@ -361,7 +368,12 @@ impl fmt::Display for Record {
                     preview(continuation_token),
                     if *has_deadline { " (deadline)" } else { "" }
                 ),
-                EventOp::Closed { schema, .. } => write!(f, "close {}", short(*schema)),
+                // Show the close REASON (preview), not just the schema — the reason is why the reducer
+                // closed, the first thing a reader needs when a run ends in a close (e.g. a checker that
+                // closed without emitting a verdict).
+                EventOp::Closed { schema, reason } => {
+                    write!(f, "close {} {}", short(*schema), preview(reason))
+                }
                 EventOp::Failed {
                     during,
                     contract,
@@ -420,7 +432,7 @@ fn hit_miss(hit: bool) -> &'static str {
 
 #[cfg(test)]
 mod render_tests {
-    use super::{Entry, EventOp, KvOp, Record, SpawnInfo, render};
+    use super::{Entry, EventKind, EventOp, KvOp, Record, SpawnInfo, render};
     use crate::{Bytes, ContractId, HostId, Origin, ProgramHash, ReducerId, ReducerKind, Str};
 
     fn rec(seq: u64, reducer: &[u8], entry: Entry) -> Record {
@@ -466,10 +478,30 @@ mod render_tests {
                     has_deadline: true,
                 }),
             ),
+            rec(
+                3,
+                b"agent",
+                Entry::Event(EventOp::Delivered {
+                    kind: EventKind::Notification,
+                    contract: ContractId::of(b"http.get"),
+                    from: None,
+                    continuation_token: Bytes::new(),
+                    payload: Bytes::from_static(b"body=hi"),
+                    error: None,
+                }),
+            ),
+            rec(
+                4,
+                b"agent",
+                Entry::Event(EventOp::Closed {
+                    schema: ContractId::of(b"done"),
+                    reason: Bytes::from_static(b"quiescent"),
+                }),
+            ),
         ];
         let out = render(&records);
         let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines.len(), 3, "one line per record");
+        assert_eq!(lines.len(), 5, "one line per record");
         // Each line leads with its seq and carries a readable description of the entry.
         assert!(lines[0].starts_with("#0"));
         assert!(lines[0].contains("spawn \"agent\""), "line: {}", lines[0]);
@@ -484,6 +516,12 @@ mod render_tests {
         assert!(lines[2].contains("\"url=/x\""), "line: {}", lines[2]);
         assert!(lines[2].contains("token \"c1\""), "line: {}", lines[2]);
         assert!(lines[2].contains("(deadline)"), "line: {}", lines[2]);
+        // The delivered line shows what was delivered (the payload), at parity with the emit line.
+        assert!(lines[3].contains("recv notification"), "line: {}", lines[3]);
+        assert!(lines[3].contains("\"body=hi\""), "line: {}", lines[3]);
+        // The close line shows WHY it closed (the reason), not just the schema.
+        assert!(lines[4].contains("close "), "line: {}", lines[4]);
+        assert!(lines[4].contains("\"quiescent\""), "line: {}", lines[4]);
         // An empty log renders to an empty string.
         assert!(render(&[]).is_empty());
     }
