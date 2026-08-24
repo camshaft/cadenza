@@ -47,10 +47,24 @@ pub enum HostParam {
     /// NAME-LEX field order (`Ty::Record` is a `BTreeMap`, so field order is the record's canonical order —
     /// the same order the component `record` type declares its fields). The guest decomposes the value-heap
     /// record field-by-field into those slots before the call (`arr-get` + `get-int`/`get-bool` per field).
-    /// Carries `(field-name, scalar-ABI)` per field so BOTH the core flatten (`core_byte`) and the component
-    /// record type (`comp_byte`) derive from it. A field that is itself a `Bytes`/`String`/nested record is a
-    /// LATER slice (d2/d3) — the classifier only produces this for an all-scalar record.
-    Record(Vec<(String, AbiValType)>),
+    /// Carries `(field-name, field-ABI)` per field so BOTH the core flatten and the component record type
+    /// derive from it. A SCALAR field is one core slot + an inline primitive valtype; a BYTES field crosses
+    /// as `list<u8>` — 2 core slots `(ptr,len)` + a reference to the shared `(list u8)` type. A field that is
+    /// a `String`/nested record is a LATER slice (d3) — the classifier declines a record with one.
+    Record(Vec<(String, RecordFieldAbi)>),
+}
+
+/// The boundary ABI of one shape-d record FIELD.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum RecordFieldAbi {
+    /// A NO-WRAP scalar field (Int64/UInt64/Bool/Float64/Float32) — one core slot (`core_byte`), an inline
+    /// primitive component valtype (`comp_byte`). Its guest read is wrap-free (`get-int`/`get-bool`/`get-float`).
+    Scalar(AbiValType),
+    /// A `Bytes` (`list<u8>`) field — 2 core slots `(ptr,len)` (like a `Bytes` PARAM), and the component
+    /// record field references the shared `(list u8)` DEFINED type. The guest copies the field's rope into
+    /// shared `mem` and writes `(ptr,len)` (needs memory). The common reducer-envelope field shape
+    /// (`contract`/`payload`/`token` are all `list<u8>`).
+    Bytes,
 }
 
 /// One host-delegated operation the program performs — its declaring effect's NAME (the WIT interface),
@@ -101,30 +115,44 @@ pub struct HostImport {
 /// (get-float → f64/f32). A NARROW int / `Char` (get-int → i64 into an i32 slot needs a wrap), a `Qty`, a
 /// nominal wrapper, a `Bytes`/`String`, or a nested record is a LATER slice → `None`. Keeps the guest field
 /// marshal trivially correct (no per-field narrowing) and the classifier's admit set aligned with it.
-fn field_flat_abi(ty: &Ty) -> Option<AbiValType> {
+fn field_boundary_abi(ty: &Ty) -> Option<RecordFieldAbi> {
     match ty {
-        Ty::Bool => Some(AbiValType::Bool),
-        Ty::Int(it) if it.ground_width() == 64 => Some(if it.ground_signed() {
-            AbiValType::S64
-        } else {
-            AbiValType::U64
-        }),
-        Ty::Float(ft) if ft.ground_width() == 64 => Some(AbiValType::F64),
-        Ty::Float(ft) if ft.ground_width() == 32 => Some(AbiValType::F32),
+        Ty::Bool => Some(RecordFieldAbi::Scalar(AbiValType::Bool)),
+        Ty::Int(it) if it.ground_width() == 64 => {
+            Some(RecordFieldAbi::Scalar(if it.ground_signed() {
+                AbiValType::S64
+            } else {
+                AbiValType::U64
+            }))
+        }
+        Ty::Float(ft) if ft.ground_width() == 64 => Some(RecordFieldAbi::Scalar(AbiValType::F64)),
+        Ty::Float(ft) if ft.ground_width() == 32 => Some(RecordFieldAbi::Scalar(AbiValType::F32)),
+        // A `Bytes` field crosses as `list<u8>` — 2 core slots, a `(list u8)`-type field ref (d2).
+        Ty::Bytes => Some(RecordFieldAbi::Bytes),
         _ => None,
     }
 }
 
-/// Whether `ty` is a `record` whose EVERY field crosses as a NO-WRAP SCALAR ([`field_flat_abi`]) — the
-/// shape-d record host-ARGUMENT the guest flattens field-by-field into core slots (one per field). Matches
-/// the BARE `Ty::Record` the classifier keys on (a nominal-wrapped record, or a record with a narrow-int/
-/// Char/Bytes/String/nested field, yields false — a later slice), so the guard's admit set and the
+/// Whether `ty` is a `record` whose EVERY field crosses at the boundary ([`field_boundary_abi`] — a NO-WRAP
+/// scalar or a `Bytes`/`list<u8>` field) — the shape-d record host-ARGUMENT the guest marshals field-by-field.
+/// Matches the BARE `Ty::Record` the classifier keys on (a nominal-wrapped record, or a record with a
+/// narrow-int/Char/String/NESTED field, yields false — a later slice), so the guard's admit set and the
 /// classifier's `HostParam::Record` production stay in lockstep (no arity skew between the sig and the args).
-pub fn is_all_scalar_record(ty: &Ty) -> bool {
+pub fn is_boundary_record(ty: &Ty) -> bool {
     match ty {
         Ty::Record(fields) => {
-            !fields.is_empty() && fields.values().all(|f| field_flat_abi(f).is_some())
+            !fields.is_empty() && fields.values().all(|f| field_boundary_abi(f).is_some())
         }
+        _ => false,
+    }
+}
+
+/// Whether a shape-d record parameter type has ANY `Bytes` field — such a record needs shared linear memory
+/// (the guest copies each byte field's rope into `mem`) AND the `(list u8)` defined type. Reads the bare
+/// `Ty::Record` the classifier keys on.
+pub fn record_has_bytes_field(ty: &Ty) -> bool {
+    match ty {
+        Ty::Record(fields) => fields.values().any(|f| matches!(f, Ty::Bytes)),
         _ => false,
     }
 }
@@ -476,17 +504,17 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                     // still crosses as a `u32` handle (the `_` arm below), not this native record.
                     Ty::Record(fields) if !peer_bound => {
                         let mut field_abis = Vec::with_capacity(fields.len());
-                        let mut all_flat = !fields.is_empty();
+                        let mut all_ok = !fields.is_empty();
                         for (sym, fty) in fields.iter() {
-                            match field_flat_abi(fty) {
+                            match field_boundary_abi(fty) {
                                 Some(v) => field_abis.push((sym.name.to_string(), v)),
                                 None => {
-                                    all_flat = false;
+                                    all_ok = false;
                                     break;
                                 }
                             }
                         }
-                        if all_flat {
+                        if all_ok {
                             params.push(HostParam::Record(field_abis));
                         }
                     }
@@ -933,12 +961,12 @@ pub fn first_unrepresentable_host_op(
             // typed/host-fused path — gated on `allow_option_bytes` (which marks that path) and `!peer_bound`
             // (a peer record crosses as a `u32` handle, not this flatten), matching where the guest marshal +
             // the record instance-type are wired. Every OTHER path keeps declining a record arg.
-            let arg_is_scalar_record =
-                allow_option_bytes && !peer_bound && is_all_scalar_record(&at);
+            let arg_is_boundary_record =
+                allow_option_bytes && !peer_bound && is_boundary_record(&at);
             if !matches!(at, Ty::Unit | Ty::String | Ty::Bytes)
                 && !ty_undetermined(&at)
                 && !abi_ok(&at)
-                && !arg_is_scalar_record
+                && !arg_is_boundary_record
             {
                 return Some((op.to_string(), "argument", at.render_name(&db.name_ctx())));
             }

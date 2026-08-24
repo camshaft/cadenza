@@ -69,14 +69,22 @@ fn host_import_functype(f: &crate::backend::wasm::host::HostImport) -> Vec<u8> {
             // component boundary type is a `record` DEFINED type (see mod.rs `host_op_comp_functype`); the
             // CORE marshalling is just the scalar slots the guest decomposes the record into.
             HostParam::Record(field_abis) => {
-                for (_, v) in field_abis {
-                    params.push(v.core_byte());
+                for (_, f) in field_abis {
+                    match f {
+                        crate::backend::wasm::host::RecordFieldAbi::Scalar(v) => {
+                            params.push(v.core_byte())
+                        }
+                        // A `Bytes` (list<u8>) field flattens to `(ptr: i32, len: i32)` — 2 core slots.
+                        crate::backend::wasm::host::RecordFieldAbi::Bytes => {
+                            params.extend_from_slice(&[wasm_abi::CORE_I32, wasm_abi::CORE_I32])
+                        }
+                    }
                 }
             }
         }
     }
     // `params` now holds exactly the FLATTENED core-slot bytes (a scalar = 1, a string/bytes = 2, a record
-    // = one per field), so its length IS the core param-slot count.
+    // = one per SCALAR field / two per BYTES field), so its length IS the core param-slot count.
     let mut slot_count = params.len();
     // A compound `option<list<u8>>` RESULT (S0) is returned via a caller-provided RETPTR: the canonical ABI
     // lowers a >1-flat result to a TRAILING i32 return-pointer param (the callee writes the flattened
@@ -8889,7 +8897,7 @@ fn rle(valtypes: &[ValType]) -> Vec<(u32, ValType)> {
 #[cfg(test)]
 mod host_import_functype_tests {
     use super::*;
-    use crate::backend::wasm::host::{HostImport, HostParam};
+    use crate::backend::wasm::host::{HostImport, HostParam, RecordFieldAbi};
     use crate::backend::wasm::runtime_abi::AbiValType;
 
     fn imp(params: Vec<HostParam>, result: Option<AbiValType>) -> HostImport {
@@ -8912,8 +8920,8 @@ mod host_import_functype_tests {
     fn a_record_param_flattens_to_one_core_slot_per_field() {
         let f = imp(
             vec![HostParam::Record(vec![
-                ("a".into(), AbiValType::S64),
-                ("b".into(), AbiValType::Bool),
+                ("a".into(), RecordFieldAbi::Scalar(AbiValType::S64)),
+                ("b".into(), RecordFieldAbi::Scalar(AbiValType::Bool)),
             ])],
             None,
         );
@@ -8930,8 +8938,8 @@ mod host_import_functype_tests {
             vec![
                 HostParam::Scalar(AbiValType::S64),
                 HostParam::Record(vec![
-                    ("a".into(), AbiValType::S64),
-                    ("b".into(), AbiValType::Bool),
+                    ("a".into(), RecordFieldAbi::Scalar(AbiValType::S64)),
+                    ("b".into(), RecordFieldAbi::Scalar(AbiValType::Bool)),
                 ]),
             ],
             None,
