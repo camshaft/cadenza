@@ -35,7 +35,7 @@ use cdz_platform::testing::{
 };
 use cdz_platform::{
     BachRuntime, BlobStore, Bytes, HostId, InMemoryBlobStore, InMemoryKvStore,
-    InMemoryReducerGraph, KvStore, Origin, ProgramHash, ReducerId, Runner, Runtime,
+    InMemoryReducerGraph, KvStore, Origin, ProgramHash, ReducerGraph, ReducerId, Runner, Runtime,
     WasmProgramStore,
 };
 use std::path::PathBuf;
@@ -278,13 +278,11 @@ fn wasm_store(cas: Arc<dyn BlobStore>, log: ObservationLog, host: HostId) -> Was
                 BachRuntime::now as fn() -> u64,
             ))
         });
-    WasmProgramStore::new(
-        cas,
-        make_blobs,
-        make_kv,
-        Arc::new(InMemoryReducerGraph::new()),
-    )
-    .expect("build the wasm program store (the wasm engine must initialize)")
+    // The graph factory hands out the one shared node-wide graph (a plain `move |_id| graph.clone()`),
+    // mirroring make_blobs/make_kv. A future graph-recording run wraps this in a RecordingGraph decorator.
+    let graph: Arc<dyn ReducerGraph> = Arc::new(InMemoryReducerGraph::new());
+    WasmProgramStore::new(cas, make_blobs, make_kv, Arc::new(move |_id| graph.clone()))
+        .expect("build the wasm program store (the wasm engine must initialize)")
 }
 
 /// Drive the run to quiescence under bach over a [`WasmProgramStore`], then — if the description named a

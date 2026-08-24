@@ -914,47 +914,26 @@ fn null_host_state(id: ReducerId, run: Option<Arc<Instantiator>>) -> HostState {
     }
 }
 
-/// A per-reducer wrapper for a node-wide host capability: given the calling reducer's id and the shared
-/// capability, it returns the capability that reducer's host-import calls actually hit — the shared one
-/// unchanged, or a decorator around it. The `(ReducerId, shared)` form (rather than `Fn(ReducerId) -> _`) is
-/// what lets [`RecordingHooks`]'s [`Default`] be a stateless identity, so a non-recording caller pays nothing.
-type GraphHook =
-    Arc<dyn Fn(ReducerId, Arc<dyn ReducerGraph>) -> Arc<dyn ReducerGraph> + Send + Sync>;
-type ProvenanceHook =
-    Arc<dyn Fn(ReducerId, Arc<dyn Provenance>) -> Arc<dyn Provenance> + Send + Sync>;
-type DeliveryHook = Arc<dyn Fn(ReducerId, Arc<dyn Delivery>) -> Arc<dyn Delivery> + Send + Sync>;
-
-/// Per-reducer wrappers for the node-wide `graph` / `program-of` / `deliver` host capabilities, so the
-/// integration harness can OVERRIDE each with a recording decorator that emits every direct host call into
-/// its observation log (`design/cadenza-platform.md` §9), attributed to the calling reducer — uniform with
-/// the `blobs`/`state` recording the [`BlobsFactory`]/[`KvFactory`] already allow. Each hook is applied
-/// per-reducer in [`spawn`](WasmProgramStore::spawn) to the shared capability. [`Default`] is the identity
-/// wrapper on every field (returns the shared capability unchanged), so the platform and any non-recording
-/// caller pay nothing. A recording caller supplies a hook that captures its log and returns a decorator, e.g.
-/// `graph: Arc::new(|id, shared| Arc::new(RecordingGraph::new(id, shared, log.clone())))`.
+/// Per-reducer factories for the node-wide `graph` / `program-of` / `deliver` host capabilities, uniform with
+/// the [`BlobsFactory`]/[`KvFactory`] that already build a reducer's `blobs`/`state` backends: given the
+/// calling reducer's id, each produces the capability that reducer's host-import calls hit. A caller (the
+/// integration harness) supplies factories that build recording decorators over a shared base, so every
+/// direct host call is emitted into the observation log (`design/cadenza-platform.md` §9) attributed to the
+/// calling reducer — the same way [`BlobsFactory`]/[`KvFactory`] already build `RecordingBlobStore`/
+/// `RecordingKvStore`. The default factory hands out the shared node-wide capability directly (an `Arc`
+/// clone), so a non-recording caller pays nothing.
 ///
-/// `identity` (`identity.id`, a pure who-am-I read) is deliberately NOT hookable (operator: identity queries
+/// These return `Arc<dyn _>` rather than the `Box<dyn _>` of [`BlobsFactory`]/[`KvFactory`] because they are
+/// node-wide *shared* — every reducer sees the one reducer graph and the one node-side provenance/delivery,
+/// so the factory hands out clones of a shared handle — whereas `blobs`/`state` are per-reducer *independent*
+/// backends the factory news up fresh. Same factory shape; the return type reflects shared-vs-independent.
+///
+/// `identity` (`identity.id`, a pure who-am-I read) is deliberately NOT injectable (operator: identity queries
 /// are not logged). `run` is not here yet: the run capability is the concrete [`Instantiator`], not a trait
-/// object — trait-ifying it to be hookable is a follow-up.
-pub struct RecordingHooks {
-    /// Wrap a reducer's `graph` capability (the §3 reducer graph).
-    pub graph: GraphHook,
-    /// Wrap a reducer's `program-of` provenance capability (§4).
-    pub provenance: ProvenanceHook,
-    /// Wrap a reducer's `deliver` capability (§4) — the one that makes the deliver ACT observable.
-    pub delivery: DeliveryHook,
-}
-
-impl Default for RecordingHooks {
-    fn default() -> Self {
-        // Identity on every field: the reducer hits the shared capability unchanged, zero wrapping cost.
-        Self {
-            graph: Arc::new(|_id, cap| cap),
-            provenance: Arc::new(|_id, cap| cap),
-            delivery: Arc::new(|_id, cap| cap),
-        }
-    }
-}
+/// object — trait-ifying it so a factory can wrap it is a follow-up.
+type GraphFactory = Arc<dyn Fn(ReducerId) -> Arc<dyn ReducerGraph> + Send + Sync>;
+type ProvenanceFactory = Arc<dyn Fn(ReducerId) -> Arc<dyn Provenance> + Send + Sync>;
+type DeliveryFactory = Arc<dyn Fn(ReducerId) -> Arc<dyn Delivery> + Send + Sync>;
 
 pub struct WasmProgramStore {
     /// The shared per-host instantiation core (engine, linkers, content store, compiled cache, pure-run memo),
@@ -966,69 +945,65 @@ pub struct WasmProgramStore {
     make_blobs: BlobsFactory,
     /// Builds each reducer's key-value state backend (§7).
     make_kv: KvFactory,
-    /// The one node-wide reducer graph (§3), shared by every reducer that is wired the `graph` import.
-    graph: Arc<dyn ReducerGraph>,
-    /// The node-side provenance an event reducer's `program-of` import reads (§4) — the system, which knows
-    /// every running reducer's program. [`NoProvenance`](crate::NoProvenance) until set with
-    /// [`with_provenance`](WasmProgramStore::with_provenance), so it is never absent, only null.
-    provenance: Arc<dyn Provenance>,
-    /// The node-side delivery an event reducer's `deliver` import routes through (§4) — the system, which
-    /// injects an event into a reducer's mailbox. [`NoDelivery`](crate::NoDelivery) until set with
-    /// [`with_delivery`](WasmProgramStore::with_delivery), so it is never absent, only null.
-    delivery: Arc<dyn Delivery>,
-    /// Per-reducer recording wrappers for the `graph`/`program-of`/`deliver` capabilities (§9 observability).
-    /// [`Default`] (identity) until set with [`with_recording_hooks`](WasmProgramStore::with_recording_hooks),
-    /// so a non-recording store pays nothing.
-    hooks: RecordingHooks,
+    /// Builds each reducer's view of the one node-wide reducer graph (§3) — the default hands out the shared
+    /// graph directly; a recording harness hands out a decorator over it. Shared, not per-reducer independent.
+    make_graph: GraphFactory,
+    /// Builds each reducer's view of the node-side provenance its `program-of` import reads (§4) — the system,
+    /// which knows every running reducer's program. Defaults to a factory over [`NoProvenance`](crate::NoProvenance)
+    /// until set with [`with_provenance`](WasmProgramStore::with_provenance), so it is never absent, only null.
+    make_provenance: ProvenanceFactory,
+    /// Builds each reducer's view of the node-side delivery its `deliver` import routes through (§4) — the
+    /// system, which injects an event into a reducer's mailbox. Defaults to a factory over
+    /// [`NoDelivery`](crate::NoDelivery) until set with [`with_delivery`](WasmProgramStore::with_delivery), so
+    /// it is never absent, only null. Wrapping this factory in a recording decorator makes the deliver ACT
+    /// observable (§9).
+    make_delivery: DeliveryFactory,
 }
 
 impl WasmProgramStore {
-    /// A store loading components from `cas`, giving each reducer the state and content-store view its
-    /// factories build, over the shared reducer `graph`. Fails only if the wasm engine/linkers cannot be
-    /// built ([`ReducerHost::new`]). Event-reducer provenance is [`NoProvenance`](crate::NoProvenance) until
-    /// set with [`with_provenance`](WasmProgramStore::with_provenance).
+    /// A store loading components from `cas`, giving each reducer the state, content-store view, and reducer-
+    /// graph view its factories build. Fails only if the wasm engine/linkers cannot be built
+    /// ([`ReducerHost::new`]). Provenance and delivery default to factories over
+    /// [`NoProvenance`](crate::NoProvenance)/[`NoDelivery`](crate::NoDelivery) until set with
+    /// [`with_provenance`](WasmProgramStore::with_provenance)/[`with_delivery`](WasmProgramStore::with_delivery).
+    /// `make_graph` mirrors `make_blobs`/`make_kv`: a recording harness passes one that decorates the shared
+    /// graph; a plain caller passes `move |_id| graph.clone()` over its one shared graph.
     pub fn new(
         cas: Arc<dyn BlobStore>,
         make_blobs: BlobsFactory,
         make_kv: KvFactory,
-        graph: Arc<dyn ReducerGraph>,
+        make_graph: GraphFactory,
     ) -> Result<Self, wasmtime::Error> {
         Ok(Self {
             inst: Arc::new(Instantiator::new(cas)?),
             make_blobs,
             make_kv,
-            graph,
-            provenance: Arc::new(crate::NoProvenance),
-            delivery: Arc::new(crate::NoDelivery),
-            hooks: RecordingHooks::default(),
+            make_graph,
+            make_provenance: Arc::new(|_id| Arc::new(crate::NoProvenance) as Arc<dyn Provenance>),
+            make_delivery: Arc::new(|_id| Arc::new(crate::NoDelivery) as Arc<dyn Delivery>),
         })
     }
 
-    /// Wire the node-side provenance an event reducer's `program-of` import reads (§4) — the system, which
-    /// knows every running reducer's program. Set during node assembly, after the system exists (it holds
-    /// this store as its program store, so the reference is broken with a `Weak` or set once at wiring time).
+    /// Wire each reducer's view of the node-side provenance its `program-of` import reads (§4) — the system,
+    /// which knows every running reducer's program. Set during node assembly, after the system exists (it
+    /// holds this store as its program store, so the reference is broken with a `Weak` or set once at wiring
+    /// time). Pass `move |_id| prov.clone()` for the plain shared provenance, or a factory that builds a
+    /// recording decorator per reducer to make `program-of` calls observable (§9) — uniform with `make_blobs`.
     #[must_use]
-    pub fn with_provenance(mut self, provenance: Arc<dyn Provenance>) -> Self {
-        self.provenance = provenance;
+    pub fn with_provenance(mut self, make_provenance: ProvenanceFactory) -> Self {
+        self.make_provenance = make_provenance;
         self
     }
 
-    /// Wire the node-side delivery an event reducer's `deliver` import routes through (§4) — the system, which
-    /// injects an event into a reducer's mailbox. Set during node assembly, after the system exists (as with
-    /// [`with_provenance`](WasmProgramStore::with_provenance), the store↔system reference is broken with a
-    /// `Weak` or set once at wiring time).
+    /// Wire each reducer's view of the node-side delivery its `deliver` import routes through (§4) — the
+    /// system, which injects an event into a reducer's mailbox. Set during node assembly, after the system
+    /// exists (as with [`with_provenance`](WasmProgramStore::with_provenance), the store↔system reference is
+    /// broken with a `Weak` or set once at wiring time). Pass `move |_id| delivery.clone()` for the plain
+    /// shared delivery, or a factory that builds a recording decorator per reducer to make the deliver ACT
+    /// observable (§9) — uniform with `make_blobs`.
     #[must_use]
-    pub fn with_delivery(mut self, delivery: Arc<dyn Delivery>) -> Self {
-        self.delivery = delivery;
-        self
-    }
-
-    /// Install per-reducer recording wrappers for the `graph`/`program-of`/`deliver` capabilities (§9): the
-    /// integration harness passes [`RecordingHooks`] whose fields decorate each capability to emit its calls
-    /// into the observation log, attributed to the calling reducer. Default (identity) records nothing.
-    #[must_use]
-    pub fn with_recording_hooks(mut self, hooks: RecordingHooks) -> Self {
-        self.hooks = hooks;
+    pub fn with_delivery(mut self, make_delivery: DeliveryFactory) -> Self {
+        self.make_delivery = make_delivery;
         self
     }
 }
@@ -1089,18 +1064,17 @@ fn alias_instance_exports(
 #[async_trait]
 impl ProgramStore for WasmProgramStore {
     async fn spawn(&self, program: ProgramHash, ctx: SpawnContext) -> Option<Box<dyn Reducer>> {
-        // The store's job is to assemble the per-reducer HostState from its factories and node-wide handles;
-        // turning the program's bytes into a live reducer is the shared instantiation core's (which the
-        // reducer's own host-imports also reach, without a cycle back here).
-        // Apply the per-reducer recording hooks (default identity → the shared capability unchanged) so the
-        // harness can observe this reducer's graph/program-of/deliver calls, attributed to its id (§9).
+        // The store's job is to assemble the per-reducer HostState from its factories; turning the program's
+        // bytes into a live reducer is the shared instantiation core's (which the reducer's own host-imports
+        // also reach, without a cycle back here). Each factory builds this reducer's view of its capability
+        // (default: the shared one; recording harness: a decorator that logs the call attributed to its id, §9).
         let host_state = HostState {
             id: ctx.id,
             blobs: (self.make_blobs)(ctx.id),
             kv: (self.make_kv)(ctx.id),
-            graph: (self.hooks.graph)(ctx.id, Arc::clone(&self.graph)),
-            provenance: (self.hooks.provenance)(ctx.id, self.provenance.clone()),
-            delivery: (self.hooks.delivery)(ctx.id, self.delivery.clone()),
+            graph: (self.make_graph)(ctx.id),
+            provenance: (self.make_provenance)(ctx.id),
+            delivery: (self.make_delivery)(ctx.id),
             run: Some(Arc::clone(&self.inst)),
         };
         self.inst
@@ -1666,12 +1640,14 @@ mod tests {
     use crate::{BlobStore, KvStore, ProgramHash, ProgramStore, ReducerKind, SpawnContext};
 
     fn wasm_program_store(cas: Arc<dyn BlobStore>) -> WasmProgramStore {
-        // Fresh per-reducer backends; a real harness injects recording-wrapped or shared ones instead.
+        // Fresh per-reducer backends; a real harness injects recording-wrapped ones instead. The graph factory
+        // hands out the one shared graph (a plain `move |_id| graph.clone()`), mirroring make_blobs/make_kv.
+        let graph: Arc<dyn super::ReducerGraph> = Arc::new(InMemoryReducerGraph::new());
         WasmProgramStore::new(
             cas,
             Arc::new(|_id| Box::new(InMemoryBlobStore::new()) as Box<dyn BlobStore>),
             Arc::new(|_id| Box::new(InMemoryKvStore::new()) as Box<dyn KvStore>),
-            Arc::new(InMemoryReducerGraph::new()),
+            Arc::new(move |_id| graph.clone()),
         )
         .expect("build the wasm program store")
     }
