@@ -308,6 +308,57 @@ mod tests {
     }
 
     #[test]
+    fn a_record_emits_its_fields_in_name_sorted_physical_order() {
+        // FIX B invariant: the compiler's `Value.decode` reads a record's fields in the canonical
+        // (ascending name) order that `Value.encode` produces, so a Rust-built value must present them
+        // sorted — declaration order does NOT decode. This pins the PHYSICAL order of the emitted tree, which
+        // `a_record_reads_its_fields_by_name_regardless_of_order` cannot: that test reads by name, so it
+        // stays green even if the sort is removed — but a guest `Value.decode` would then fail. Build the
+        // fields in DELIBERATELY unsorted input order and assert the encoded children come out sorted.
+        let arenas = built(|b| {
+            let zebra = bytes_leaf(b, b"z");
+            let alpha = bytes_leaf(b, b"a");
+            let mango = bytes_leaf(b, b"m");
+            record(
+                b,
+                vec![("zebra", zebra), ("alpha", alpha), ("mango", mango)],
+            )
+        });
+        // The raw record fields, in the physical order they were emitted (after the `record` head).
+        let fields = arenas
+            .as_form(arenas.root, "record")
+            .expect("a record value");
+        let names: Vec<&str> = fields
+            .iter()
+            .map(|&f| {
+                let kv = arenas.as_form(f, "=").expect("a `(= name value)` field");
+                arenas.as_name(kv[0]).expect("a field name")
+            })
+            .collect();
+        assert_eq!(
+            names,
+            ["alpha", "mango", "zebra"],
+            "record fields must be emitted in ascending NAME order (canonical form), not declaration order"
+        );
+    }
+
+    #[test]
+    fn a_root_ascription_wraps_the_value_as_the_outermost_colon_form() {
+        // FIX B invariant: the encode boundary wraps the payload in `(: <value> <ty>)` as the OUTERMOST node
+        // — the top-level form the compiler's `Value.decode` requires. Pin the physical shape: the root is a
+        // `:`-headed list of exactly `(value ty)`, with the value first and the type token second.
+        let arenas = built(|b| {
+            let v = record(b, vec![]);
+            ascribe(b, v, "Envelope")
+        });
+        let inner = arenas.as_form(arenas.root, ":").expect("a `:`-headed root");
+        assert_eq!(inner.len(), 2, "an ascription is exactly `(: value ty)`");
+        // The type token is the SECOND child (the value is first); `as_ascribed` returns the first.
+        assert_eq!(arenas.as_name(inner[1]), Some("Envelope"));
+        assert_eq!(as_ascribed(&arenas, arenas.root), Some(inner[0]));
+    }
+
+    #[test]
     fn readers_reject_a_mismatched_shape() {
         // A constructor `(C)` has no record fields, so `record_field` is `None` (its head is `C`, not
         // `record`). Each reader is total and rejects the wrong shape rather than panicking.
