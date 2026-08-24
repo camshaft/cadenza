@@ -106177,6 +106177,102 @@ fn a_reducer_performing_graph_neighbors_emits_and_loads() {
     );
 }
 
+/// GRAPH.NEIGHBORS INVOKE (W4e, the deep runtime proof v-platform's default-event-handler guest needs): a
+/// reducer performing `graph.neighbors` (result `list<list<u8>>`) is INVOKED on the pinned wasmtime with the
+/// host op bound to return TWO known reducer-ids, and the guest lift must reconstruct a value-heap
+/// `List<Bytes>` so `List.len` is 2 > 0 and the non-empty branch fires. The sibling of the kv.prefix-scan
+/// invoke, but for the GENERAL list-of-bytes shape — non-vacuous coverage (the emit+load test above is
+/// LOAD-only): it exercises the retptr `(list-ptr, count)` read, the 8-byte per-element stride, and the
+/// per-element `bytes-alloc`+copy of `emit_result_lift`'s `List(Bytes)` path end-to-end.
+#[test]
+fn a_reducer_performing_graph_neighbors_lifts_the_list_when_invoked() {
+    use crate::testkit::parse;
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("[graph] runtime wasm not found; skipping graph.neighbors invoke");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: None,
+        args: vec![],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    // Build an Event doc `record { ct: String, pl: Bytes }` to feed `apply`.
+    let builder = "(module m \
+                 (def (mk (: n Int64)) \
+                   (if (= n 0) (record (ct \"wasm\") (pl (Bytes.of (list 1 2 3)))) (mk (- n 1)))) \
+                 (def (main) (mk 2)) (export main))";
+    let bb =
+        compile_component(&crate::codec::encode(&parse(builder))).expect("the builder compiles");
+    let event = bare_value_doc(
+        &cdz_run::capture_escaped_value_doc(&bb, &[], &opts).expect("capture the Event doc"),
+    );
+    let src = "(module m \
+                 (effect graph (op neighbors (-> Bytes (List Bytes)))) \
+                 (def (apply (: e (Record (ct String) (pl Bytes)))) \
+                   (host (graph) \
+                     (if (> (List.len (graph.neighbors (. e pl))) 0) \
+                         (list (record (op (. e ct)) (arg (. e pl)))) \
+                         (list)))) \
+                 (export apply))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:agent-kernel/fold"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                reducer_graph_neighbors_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    let reducer = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("the graph.neighbors reducer emits");
+    // Bind neighbors → TWO reducer-ids; a working lift sees len=2>0 and emits a NON-EMPTY effect list.
+    let result = cdz_run::run_reducer_bytes_with_neighbors(
+        reducer,
+        "cadenza:agent-kernel/fold",
+        "apply",
+        &event,
+        "cadenza:agent-kernel/graph",
+        "neighbors",
+        vec![b"reducer-a".to_vec(), b"reducer-b".to_vec()],
+        &opts,
+    )
+    .expect("the graph.neighbors reducer applies with a 2-neighbor reply on the real runtime");
+    assert!(
+        !result.is_empty(),
+        "the 2 neighbors must round-trip through the guest lift so List.len is 2 > 0 and the non-empty \
+         branch fires (proving the retptr count read + 8-byte element stride + per-element bytes lift): \
+         {result:02x?}"
+    );
+    // Control: an EMPTY neighbors reply → len=0 → the empty branch. A broken lift reads BOTH as empty →
+    // equal documents, which this assert catches.
+    let result_empty = cdz_run::run_reducer_bytes_with_neighbors(
+        reducer,
+        "cadenza:agent-kernel/fold",
+        "apply",
+        &event,
+        "cadenza:agent-kernel/graph",
+        "neighbors",
+        vec![],
+        &opts,
+    )
+    .expect("the graph.neighbors reducer applies with an empty reply on the real runtime");
+    assert_ne!(
+        result, result_empty,
+        "a 2-neighbor list (len>0, non-empty effect list) must differ from an empty list (len=0, empty \
+         list) — equal means the lift read BOTH as empty"
+    );
+}
+
 /// §3c kv DELETE is FREE: a host-fused reducer calling `kv.delete` (result BOOL — present-or-removed)
 /// EMITS with no host-result lift, because a `bool` is a FLAT SCALAR at the host boundary
 /// (`abi_val_type(Ty::Bool)=Some`), unlike the spilled `option<list<u8>>`/`list<tuple>` compounds. Pins

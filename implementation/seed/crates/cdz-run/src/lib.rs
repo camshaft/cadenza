@@ -688,6 +688,73 @@ pub fn run_reducer_bytes_with_scan(
     val_list_u8(&results[0])
 }
 
+/// Invoke a host-fused reducer's bytes member while binding a `graph.neighbors`-style op (one `list<u8>`
+/// param → `list<list<u8>>` result) to a closure that returns a FIXED `neighbors` list — the deep behavioral
+/// proof of the GENERAL `list<list<u8>>` host-result LIFT (graph.neighbors). The reducer's `apply` decodes
+/// the Event, calls `neighbors`, and the guest lift reconstructs a value-heap `List<Bytes>` from the host's
+/// spilled `(list-ptr, count)` + per-element `(ptr, len)`; this drives it on the real runtime and returns the
+/// effect-list document, so a test can assert the neighbor list actually round-trips through the lift.
+/// Generic — the interface/op names come from the compiled world (the graph.neighbors sibling of
+/// [`run_reducer_bytes_with_scan`]).
+#[allow(clippy::too_many_arguments)]
+pub fn run_reducer_bytes_with_neighbors(
+    provider_bytes: &[u8],
+    iface: &str,
+    member: &str,
+    input: &[u8],
+    host_iface: &str,
+    host_op: &str,
+    neighbors: Vec<Vec<u8>>,
+    opts: &RunOpts,
+) -> Result<Vec<u8>> {
+    let engine = engine();
+    let component =
+        Component::new(&engine, provider_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
+    let mut store = new_store(&engine);
+    let mut linker: Linker<()> = Linker::new(&engine);
+    if let Some(req) = find_runtime_req(&engine, &component) {
+        let (rt_instance, heap_names) = instantiate_runtime(&engine, &mut store, &req, opts)?;
+        bind_runtime_into(
+            &engine,
+            &mut store,
+            &mut linker,
+            &req.import_name,
+            &rt_instance,
+            &heap_names,
+        )?;
+    }
+    {
+        let mut iface_linker = linker
+            .instance(host_iface)
+            .map_err(|e| anyhow!("linker instance {host_iface}: {e}"))?;
+        // `neighbors(node: list<u8>) -> list<list<u8>>`: the closure ignores the argument and returns the
+        // fixed `neighbors` as a `Val::List` of `list<u8>` elements.
+        iface_linker.func_new(host_op, move |_ctx, _params, results| {
+            let items = neighbors.iter().map(|n| list_u8_val(n)).collect();
+            results[0] = Val::List(items);
+            Ok(())
+        })?;
+    }
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .map_err(|e| anyhow!("instantiate component: {e}"))?;
+    let iface_idx = instance
+        .get_export_index(&mut store, None, iface)
+        .ok_or_else(|| anyhow!("reducer provider does not export interface `{iface}`"))?;
+    let member_idx = instance
+        .get_export_index(&mut store, Some(&iface_idx), member)
+        .ok_or_else(|| anyhow!("reducer interface `{iface}` has no member `{member}`"))?;
+    let func = instance
+        .get_func(&mut store, member_idx)
+        .ok_or_else(|| anyhow!("reducer member `{member}` is not a func"))?;
+    let mut results = [Val::Bool(false)];
+    func.call(&mut store, &[list_u8_val(input)], &mut results)
+        .map_err(|e| anyhow!("reducer `{member}` call failed: {e:#}"))?;
+    func.post_return(&mut store)
+        .map_err(|e| anyhow!("reducer `{member}` post_return failed: {e:#}"))?;
+    val_list_u8(&results[0])
+}
+
 /// Invoke a host-fused reducer's bytes member while binding its host `get`-style op (one `list<u8>` param,
 /// `option<list<u8>>` result) to a closure that returns a FIXED `reply` (`Some(bytes)` or `None`) — the
 /// deep behavioral proof of the kv.get OPTION-RESULT LIFT (§3c GAP C). The reducer's `apply` decodes the
