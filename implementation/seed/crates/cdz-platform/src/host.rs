@@ -914,14 +914,16 @@ fn null_host_state(id: ReducerId, run: Option<Arc<Instantiator>>) -> HostState {
     }
 }
 
-/// Per-reducer factories for the node-wide `graph` / `program-of` / `deliver` host capabilities, uniform with
-/// the [`BlobsFactory`]/[`KvFactory`] that already build a reducer's `blobs`/`state` backends: given the
-/// calling reducer's id, each produces the capability that reducer's host-import calls hit. A caller (the
-/// integration harness) supplies factories that build recording decorators over a shared base, so every
-/// direct host call is emitted into the observation log (`design/cadenza-platform.md` §9) attributed to the
-/// calling reducer — the same way [`BlobsFactory`]/[`KvFactory`] already build `RecordingBlobStore`/
-/// `RecordingKvStore`. The default factory hands out the shared node-wide capability directly (an `Arc`
-/// clone), so a non-recording caller pays nothing.
+/// Per-reducer injection points for the node-wide `graph` / `program-of` / `deliver` host capabilities,
+/// uniform with the [`BlobsFactory`]/[`KvFactory`] that already build a reducer's `blobs`/`state` backends:
+/// given the calling reducer's id, each produces the capability that reducer's host-import calls hit. This is
+/// a general seam — the store does not know or care what a factory returns, so a caller can supply the shared
+/// capability directly, a per-reducer variant, a fault-injecting stand-in, or a decorator, without the store
+/// changing. Recording is one such use (and the one this seam was first needed for): the integration harness
+/// supplies a factory that builds a decorator over a shared base, emitting each direct host call into the
+/// observation log (`design/cadenza-platform.md` §9) attributed to the calling reducer — the same way
+/// [`BlobsFactory`]/[`KvFactory`] build `RecordingBlobStore`/`RecordingKvStore`. The default factory hands out
+/// the shared node-wide capability directly (an `Arc` clone), so a caller that injects nothing pays nothing.
 ///
 /// These return `Arc<dyn _>` rather than the `Box<dyn _>` of [`BlobsFactory`]/[`KvFactory`] because they are
 /// node-wide *shared* — every reducer sees the one reducer graph and the one node-side provenance/delivery,
@@ -946,7 +948,8 @@ pub struct WasmProgramStore {
     /// Builds each reducer's key-value state backend (§7).
     make_kv: KvFactory,
     /// Builds each reducer's view of the one node-wide reducer graph (§3) — the default hands out the shared
-    /// graph directly; a recording harness hands out a decorator over it. Shared, not per-reducer independent.
+    /// graph directly; an injected factory may hand out a decorator over it (e.g. a recording one). Shared,
+    /// not per-reducer independent.
     make_graph: GraphFactory,
     /// Builds each reducer's view of the node-side provenance its `program-of` import reads (§4) — the system,
     /// which knows every running reducer's program. Defaults to a factory over [`NoProvenance`](crate::NoProvenance)
@@ -955,7 +958,7 @@ pub struct WasmProgramStore {
     /// Builds each reducer's view of the node-side delivery its `deliver` import routes through (§4) — the
     /// system, which injects an event into a reducer's mailbox. Defaults to a factory over
     /// [`NoDelivery`](crate::NoDelivery) until set with [`with_delivery`](WasmProgramStore::with_delivery), so
-    /// it is never absent, only null. Wrapping this factory in a recording decorator makes the deliver ACT
+    /// it is never absent, only null. Injecting a decorating factory here can, for one, make the deliver ACT
     /// observable (§9).
     make_delivery: DeliveryFactory,
 }
@@ -966,8 +969,8 @@ impl WasmProgramStore {
     /// ([`ReducerHost::new`]). Provenance and delivery default to factories over
     /// [`NoProvenance`](crate::NoProvenance)/[`NoDelivery`](crate::NoDelivery) until set with
     /// [`with_provenance`](WasmProgramStore::with_provenance)/[`with_delivery`](WasmProgramStore::with_delivery).
-    /// `make_graph` mirrors `make_blobs`/`make_kv`: a recording harness passes one that decorates the shared
-    /// graph; a plain caller passes `move |_id| graph.clone()` over its one shared graph.
+    /// `make_graph` mirrors `make_blobs`/`make_kv`: a plain caller passes `move |_id| graph.clone()` over its
+    /// one shared graph; an injecting caller passes a factory that decorates it (recording is one such use).
     pub fn new(
         cas: Arc<dyn BlobStore>,
         make_blobs: BlobsFactory,
@@ -988,7 +991,8 @@ impl WasmProgramStore {
     /// which knows every running reducer's program. Set during node assembly, after the system exists (it
     /// holds this store as its program store, so the reference is broken with a `Weak` or set once at wiring
     /// time). Pass `move |_id| prov.clone()` for the plain shared provenance, or a factory that builds a
-    /// recording decorator per reducer to make `program-of` calls observable (§9) — uniform with `make_blobs`.
+    /// per-reducer decorator — e.g. a recording one to make `program-of` calls observable (§9). Uniform with
+    /// `make_blobs`.
     #[must_use]
     pub fn with_provenance(mut self, make_provenance: ProvenanceFactory) -> Self {
         self.make_provenance = make_provenance;
@@ -999,8 +1003,8 @@ impl WasmProgramStore {
     /// system, which injects an event into a reducer's mailbox. Set during node assembly, after the system
     /// exists (as with [`with_provenance`](WasmProgramStore::with_provenance), the store↔system reference is
     /// broken with a `Weak` or set once at wiring time). Pass `move |_id| delivery.clone()` for the plain
-    /// shared delivery, or a factory that builds a recording decorator per reducer to make the deliver ACT
-    /// observable (§9) — uniform with `make_blobs`.
+    /// shared delivery, or a factory that builds a per-reducer decorator — e.g. a recording one to make the
+    /// deliver ACT observable (§9). Uniform with `make_blobs`.
     #[must_use]
     pub fn with_delivery(mut self, make_delivery: DeliveryFactory) -> Self {
         self.make_delivery = make_delivery;
@@ -1067,7 +1071,8 @@ impl ProgramStore for WasmProgramStore {
         // The store's job is to assemble the per-reducer HostState from its factories; turning the program's
         // bytes into a live reducer is the shared instantiation core's (which the reducer's own host-imports
         // also reach, without a cycle back here). Each factory builds this reducer's view of its capability
-        // (default: the shared one; recording harness: a decorator that logs the call attributed to its id, §9).
+        // (default: the shared one; an injected factory: a per-reducer variant, e.g. a decorator that logs the
+        // call attributed to its id, §9).
         let host_state = HostState {
             id: ctx.id,
             blobs: (self.make_blobs)(ctx.id),
