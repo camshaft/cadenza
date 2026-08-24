@@ -129,6 +129,24 @@ observed via the target's `Delivered`), or add a record for the deliver act at t
 this rework rather than changed piecemeal — it belongs with the default-event-handler model, since that guest's
 routing is exactly what we'd want observable.
 
+**Resolved (record the deliver act — via the harness recording boundary).** #3197's `RecordingHooks` gives the
+harness a per-reducer `delivery` wrapper (`Fn(ReducerId, Arc<dyn DeliverySubstrate>) -> Arc<dyn …>`); the itest
+binary's `RecordingDelivery` decorator records the deliver act at the host boundary — which primitive
+(`deliver-{notification,message,response}`), which contract/token/payload — the moment the event reducer calls
+it, independent of whether any target is spawned. So routing is observable in isolation. Two consequences agreed
+with v-platform-itest:
+
+- The §4 dispatch conformance runs assert on the recorded `deliver-{notification,message,response}` `Entry`, so
+  they **retire the `from = { task = <listener> }` idiom**: spawn the event reducer, deliver to it, assert the
+  recorded deliver act. `from-by-task-name` is built later only if a sender-sensitive-reducer test needs a
+  realistic spawned sender (it tests full-route landing + sender sensitivity, which §4 dispatch does not need).
+- Non-vacuity bar: a run asserts the **specific** recorded `Entry` (primitive + contract + token + payload) the
+  guest produced, not merely "a deliver entry exists" — a guest that silently fails to instantiate must not
+  pass. This keeps the deliver-recorder run as non-vacuous as the old listener idiom.
+
+The recording lives in the harness (v-platform-itest), not the kernel: the platform stays free of an
+observation-log dependency, and the recording surface is the injectable capability wrapper, per #3197.
+
 ## Operator decisions (resolved)
 
 - **Build the harness-settable registry (increment 1): YES.** Operator: "we should build the change to be able
@@ -143,8 +161,8 @@ routing is exactly what we'd want observable.
 
 ## Open questions
 
-1. Should the platform record the deliver **act** at the host boundary (making routing observable without a
-   spawned target), or keep observing routing only via the target's `Delivered`? (See the observation-model
-   consideration above.)
+1. ~~Should the platform record the deliver **act** at the host boundary?~~ **Resolved** — yes, via #3197's
+   `RecordingHooks` `delivery` wrapper in the harness (see the observation-model consideration above);
+   `from-by-task-name` is retired for §4 dispatch.
 2. (`cas-pin` capability — direct gated host call vs. routed effect — is deferred to the operator's CAS-GC
    review; CAS-GC increment 4 is paused on it.)
