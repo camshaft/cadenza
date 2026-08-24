@@ -1184,40 +1184,48 @@
           '';
         };
 
-        # The Cadenza-authored reducer-echo guest (`guests/reducer-echo-cdz/reducer.cdz`, by v-platform): a
-        # `.cdz` reducer compiled to a `cadenza:platform/guest`-exporting wasm component. Registered in
-        # `harnessPrograms` as `reducer-echo-cdz` — the Cadenza counterpart to the Rust `reducer-echo`, the
-        # operator's "Cadenza guests, not Rust" path proven end-to-end through the build.
-        cadenzaReducerEcho = mkCadenzaGuest {
-          pname = "cdz-platform-reducer-echo-cdz-component";
-          src = ./implementation/seed/crates/cdz-platform/guests/reducer-echo-cdz/reducer.cdz;
-          componentName = "cadenza:platform/guest";
-        };
-
-        # A Cadenza reducer that PERFORMS a host import: `on-message` reads its own reducer id
-        # (`identity.id` — a compound `list<u8>` host result, exercising the shared-allocator slice #3121)
-        # and stamps it as the echoed request's token, proving a host value flows through the guest and back.
-        # Consumes the external `reducer-world.bin` (`witWorld`) for the `cadenza:platform/identity` IMPORT
-        # declaration (its inline export alone can't declare imports). Registered as `reducer-identity-cdz`.
-        cadenzaReducerIdentity = mkCadenzaGuest {
-          pname = "cdz-platform-reducer-identity-cdz-component";
-          src = ./implementation/seed/crates/cdz-platform/guests/reducer-identity-cdz/reducer.cdz;
-          componentName = "cadenza:platform/guest";
-          witWorld = "${worldArtifacts}/reducer-world.bin";
-        };
-
-        # A Cadenza reducer on the PRIVILEGED event-reducer-world: `on-message` reads which program the
-        # SENDER runs (`provenance.program-of(msg.sender.reducer)` — a bare list<u8> host result, #3121) and
-        # stamps it as the echoed request's token. Consumes `event-reducer-world.bin` (the privileged world —
-        # adds graph/deliver/provenance imports over the ordinary reducer world). Validates that the host
-        # composes a PRIVILEGED import, not only the ordinary `state`/`identity` ones.
-        cadenzaReducerProvenance = mkCadenzaGuest {
-          pname = "cdz-platform-reducer-provenance-cdz-component";
-          src = ./implementation/seed/crates/cdz-platform/guests/reducer-provenance-cdz/reducer.cdz;
-          componentName = "cadenza:platform/guest";
-          witWorld = "${worldArtifacts}/event-reducer-world.bin";
-          witWorldName = "event-reducer-world";
-        };
+        # AUTO-ENUMERATED Cadenza reducer guests (operator 2026-08-24 — zero hardcoded reducer/world names):
+        # the guests are a two-level tree `guests/<world>/<reducer>/reducer.cdz`, where the PARENT directory
+        # NAMES THE WORLD the reducer targets. `readDir` derives BOTH the worlds AND the reducer names from
+        # the tree — adding a guest is dropping a directory, nothing here changes.
+        #   - `guests/inline/<reducer>/`            → the reducer declares its world INLINE in `reducer.cdz`
+        #                                             (echoes; no host imports, so no external artifact needed).
+        #   - `guests/reducer-world/<reducer>/`     → compile against `worldArtifacts`'s `reducer-world.bin`
+        #                                             (ordinary world) — for a guest that CALLS a host import
+        #                                             (its inline export can't declare imports).
+        #   - `guests/event-reducer-world/<reducer>/` → against `event-reducer-world.bin` (privileged world).
+        # A top-level dir whose subdirs hold no `reducer.cdz` (the Rust guest crates `reducer-echo/` etc.) is
+        # naturally skipped. Each guest is keyed in `harnessPrograms` + `packages` by its `<reducer>` dir name.
+        cadenzaGuestsDir = ./implementation/seed/crates/cdz-platform/guests;
+        # world → the mkCadenzaGuest witWorld args ("inline" ⇒ none; else the KIND_WIT_WORLD artifact).
+        cadenzaWorldArgs = world:
+          pkgs.lib.optionalAttrs (world != "inline") {
+            witWorld = "${worldArtifacts}/${world}.bin";
+            witWorldName = world;
+          };
+        # { <reducer-dir-name> = <compiled guest>; } over every guests/<world>/<reducer>/reducer.cdz.
+        cadenzaGuests = builtins.foldl'
+          (acc: world:
+            let
+              worldDir = cadenzaGuestsDir + "/${world}";
+              reducers = builtins.filter
+                (r: builtins.pathExists (worldDir + "/${r}/reducer.cdz"))
+                (builtins.attrNames (builtins.readDir worldDir));
+            in
+            acc // builtins.listToAttrs (map
+              (r: {
+                name = r;
+                value = mkCadenzaGuest ({
+                  pname = "cdz-platform-${r}-component";
+                  src = worldDir + "/${r}/reducer.cdz";
+                  componentName = "cadenza:platform/guest";
+                } // cadenzaWorldArgs world);
+              })
+              reducers))
+          { }
+          # top-level entries that are directories (candidate world dirs; non-world dirs contribute nothing).
+          (builtins.filter (w: (builtins.readDir cadenzaGuestsDir).${w} == "directory")
+            (builtins.attrNames (builtins.readDir cadenzaGuestsDir)));
 
         # ── the integration-test HARNESS framework (design/cadenza-platform.md §9) ─────────────────
         #
@@ -1230,16 +1238,13 @@
         # program by name; `mkHarnessRun` resolves the name to this store path. (reducer-echo is a Rust
         # cargo-component guest today; a Cadenza `.cdz` guest compiled by rcdzc joins here once the compiler
         # emits reducer-world components — coordinated with v-rust-backend. Add a program = one entry.)
+        # The Rust fixtures, plus EVERY auto-enumerated Cadenza guest (keyed by its `guests/` dir name,
+        # e.g. `reducer-echo-cdz`, `reducer-identity-cdz`, `reducer-provenance-cdz`) merged in — so a new
+        # Cadenza guest needs no edit here (see `cadenzaGuests`).
         harnessPrograms = {
           "reducer-echo" = reducerEcho;
           "reducer-echo-check" = reducerEchoCheck;
-          # The Cadenza-compiled reducer guest — same slot as the Rust `reducer-echo`, fed by `cdz compile`.
-          "reducer-echo-cdz" = cadenzaReducerEcho;
-          # A Cadenza reducer that CALLS a host import (identity.id) — the host-import-driving fixture.
-          "reducer-identity-cdz" = cadenzaReducerIdentity;
-          # A Cadenza reducer on the PRIVILEGED event-reducer-world (performs provenance.program-of).
-          "reducer-provenance-cdz" = cadenzaReducerProvenance;
-        };
+        } // cadenzaGuests;
 
         # `platformItest`: the `cdz-platform-itest` executable built ONCE (behind testing+host → wasmtime),
         # shared by every harness run so a test/program change never rebuilds it. Its src is the seed
@@ -1912,14 +1917,11 @@
         packages.reducer-echo = reducerEcho;
         packages.reducer-echo-hash = hashOf reducerEcho "cdz-platform-reducer-echo-hash";
 
-        # The Cadenza-compiled reducer guest (`cdz compile reducer.cdz --target wasm`). `.#reducer-echo-cdz`.
-        packages.reducer-echo-cdz = cadenzaReducerEcho;
-        packages.reducer-echo-cdz-hash = hashOf cadenzaReducerEcho "cdz-platform-reducer-echo-cdz-hash";
-
-        # The host-import-calling Cadenza reducer (performs identity.id). `.#reducer-identity-cdz`;
-        # `.#world-artifacts` exposes the KIND_WIT_WORLD binaries it consumes.
-        packages.reducer-identity-cdz = cadenzaReducerIdentity;
-        packages.reducer-provenance-cdz = cadenzaReducerProvenance;
+        # No per-reducer `packages.*` aliases (operator 2026-08-24 — no hardcoded reducer names): every
+        # Cadenza guest is auto-enumerated in `harnessPrograms` + built by its `harness-<reducer>-echo` check
+        # (`.#checks.<sys>.harness-reducer-…-cdz-echo`), so a hardcoded `.#reducer-…-cdz` alias would just
+        # re-introduce the names the tree already derives. `.#world-artifacts` stays (the KIND_WIT_WORLD
+        # binaries the host-import guests consume — not a reducer name).
         packages.world-artifacts = worldArtifacts;
 
         # The interim reducer-echo CHECKER guest (temporary; see the derivation note). `.#reducer-echo-check`.
