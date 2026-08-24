@@ -72,7 +72,11 @@ impl Deliver {
     #[must_use]
     pub fn encode(&self) -> Bytes {
         let mut b = Builder::new();
-        let root = self.build(&mut b);
+        let value = self.build(&mut b);
+        // Wrap the value in the canonical root ascription `(: <value> Envelope)` — the top-level form the
+        // compiler's `Value.decode` requires (the type token is name-agnostic; it is the contract's input
+        // type by convention). `decode` strips it.
+        let root = crate::contract_value::ascribe(&mut b, value, "Envelope");
         let arenas = b.finish(root);
         Bytes::from(codec::encode(&arenas))
     }
@@ -156,7 +160,8 @@ impl Deliver {
         use crate::contracts::deliver as c;
 
         let arenas = codec::decode(bytes)?;
-        let env = c::as_envelope_deliver(&arenas, arenas.root)?;
+        let root = v::as_ascribed(&arenas, arenas.root)?;
+        let env = c::as_envelope_deliver(&arenas, root)?;
         let target = ReducerId::from_hash(v::read_hash(&arenas, env.target)?);
         let event = decode_event(&arenas, env.event)?;
         Some(Self { target, event })
@@ -324,7 +329,9 @@ mod tests {
             }),
         };
         let arenas = cadenza_ast::codec::decode(&d.encode()).expect("well-formed value");
-        let env = c::as_envelope_deliver(&arenas, arenas.root).expect("an Envelope.Deliver value");
+        let root =
+            crate::contract_value::as_ascribed(&arenas, arenas.root).expect("root ascription");
+        let env = c::as_envelope_deliver(&arenas, root).expect("an Envelope.Deliver value");
         // `event` is an `Event.Message` whose fields read back by name, the payload being the request body.
         let m = c::as_event_message(&arenas, env.event).expect("an Event.Message value");
         assert_eq!(

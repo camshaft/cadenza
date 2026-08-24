@@ -278,9 +278,15 @@ fn generate_contracts(paths: &Paths, check: bool) {
         let out = out_dir.join(format!("{name}.rs"));
         names.push(name.clone());
 
-        // MTIME short-circuit: when the generated file is newer than its source, neither revalidate (which
-        // builds + runs `cdz`) nor regenerate — the committed file is current.
-        if up_to_date(&out, src) {
+        // MTIME short-circuit (inner loop ONLY): when the generated file is newer than its source, neither
+        // revalidate (which builds + runs `cdz`) nor regenerate — the committed file is current. This is a
+        // SPEED optimization keyed on the `.cdz` SOURCE, so it is blind to a change in the RENDERING LOGIC
+        // (this function): a codegen change leaves the committed `.rs` stale but mtime-fresh. That is a
+        // footgun, so `--check` (the shared `xtask check` gate) does NOT take the short-circuit — it always
+        // re-renders and content-compares, exactly like the ABI checks, so codegen-logic drift is a hard
+        // failure rather than a silent skip. (Regression: the FIX B single-ctor elision left the kernel
+        // contracts stale-but-mtime-fresh, and this gate reported them "up to date" until forced.)
+        if !check && up_to_date(&out, src) {
             println!("xtask codegen: {} is up to date (mtime).", out.display());
             continue;
         }
@@ -484,6 +490,11 @@ fn render_schema(
         // unused-code lint is allowed for the whole generated module rather than per item.
         #![allow(dead_code)]
 
+        // A contract every one of whose constructors is a single-constructor sum ELIDED to its bare scalar
+        // payload (e.g. `timer`, whose `Envelope`/`Event` are both `| C(UInt64)`) never names `v` — the
+        // builders return the payload directly — so this import is genuinely unused there. Allow it rather
+        // than emit the import conditionally.
+        #[allow(unused_imports)]
         use crate::contract_value as v;
         use cadenza_ast::ast::{Arenas, Builder, StructId};
 
@@ -543,16 +554,20 @@ fn emit_value_bindings(arenas: &Arenas, decl: StructId) -> Vec<TokenStream> {
     let Some(ty) = items.get(1).and_then(|&n| arenas.as_name(n)) else {
         return Vec::new();
     };
-    items
+    // A SINGLE-constructor sum elides its constructor in the canonical Value form (the payload directly,
+    // framed only by the root ascription), matching the compiler's `Value.encode`; a multi-constructor sum
+    // keeps its bare-name constructor `(Ctor …)`. Count the variants so `emit_ctor` picks the right shape.
+    let variants: Vec<StructId> = items.iter().skip(2).copied().collect();
+    let single = variants.len() == 1;
+    variants
         .iter()
-        .skip(2)
-        .filter_map(|&var| emit_ctor(arenas, ty, var))
+        .filter_map(|&var| emit_ctor(arenas, ty, var, single))
         .collect()
 }
 
 /// Emit the builder + reader for one variant occurrence `var` of type `ty`. `None` if the variant is not a
 /// name or `(Ctor …)` form (a parse invariant changed).
-fn emit_ctor(arenas: &Arenas, ty: &str, var: StructId) -> Option<TokenStream> {
+fn emit_ctor(arenas: &Arenas, ty: &str, var: StructId, single: bool) -> Option<TokenStream> {
     // A nullary variant is a bare name; a payload-carrying one is `(Ctor <payload>)`.
     let (ctor, shape) = if let Some(ctor) = arenas.as_name(var) {
         (ctor.to_string(), Ctor::Nullary)
@@ -593,16 +608,31 @@ fn emit_ctor(arenas: &Arenas, ty: &str, var: StructId) -> Option<TokenStream> {
         Ctor::Single => {
             let as_ = syn::Ident::new(&format!("as_{build}"), Span::call_site());
             let doc_read = format!(" Read the payload of a `{ty}.{ctor}` value, or `None`.");
-            quote! {
-                #[doc = #doc_build]
-                pub fn #build(b: &mut Builder, x: StructId) -> StructId {
-                    v::qctor(b, #ty, #ctor, vec![x])
+            if single {
+                // Single-constructor sum: the constructor is ELIDED — the value IS the payload directly (the
+                // canonical Value form frames it by the root ascription, not a `(Ctor …)` wrapper).
+                quote! {
+                    #[doc = #doc_build]
+                    pub fn #build(_b: &mut Builder, x: StructId) -> StructId {
+                        x
+                    }
+                    #[doc = #doc_read]
+                    pub fn #as_(_arenas: &Arenas, id: StructId) -> Option<StructId> {
+                        Some(id)
+                    }
                 }
-                #[doc = #doc_read]
-                pub fn #as_(arenas: &Arenas, id: StructId) -> Option<StructId> {
-                    let t = v::as_qctor(arenas, id, #ty, #ctor)?;
-                    let [x] = <[StructId; 1]>::try_from(t).ok()?;
-                    Some(x)
+            } else {
+                quote! {
+                    #[doc = #doc_build]
+                    pub fn #build(b: &mut Builder, x: StructId) -> StructId {
+                        v::qctor(b, #ty, #ctor, vec![x])
+                    }
+                    #[doc = #doc_read]
+                    pub fn #as_(arenas: &Arenas, id: StructId) -> Option<StructId> {
+                        let t = v::as_qctor(arenas, id, #ty, #ctor)?;
+                        let [x] = <[StructId; 1]>::try_from(t).ok()?;
+                        Some(x)
+                    }
                 }
             }
         }
@@ -622,6 +652,25 @@ fn emit_ctor(arenas: &Arenas, ty: &str, var: StructId) -> Option<TokenStream> {
             let struct_doc =
                 format!(" The fields of a `{ty}.{ctor}` value — each a built value occurrence.");
             let doc_read = format!(" Read a `{ty}.{ctor}` value's fields by name, or `None`.");
+            // Single-constructor sum: the constructor is ELIDED — the value IS the record directly (framed by
+            // the root ascription). Multi-constructor: the record is wrapped in the bare-name `(Ctor <record>)`.
+            let (build_body, read_bind) = if single {
+                (
+                    quote! { v::record(b, vec![#((#field_names, fields.#field_idents)),*]) },
+                    quote! { let rec = id; },
+                )
+            } else {
+                (
+                    quote! {
+                        let rec = v::record(b, vec![#((#field_names, fields.#field_idents)),*]);
+                        v::qctor(b, #ty, #ctor, vec![rec])
+                    },
+                    quote! {
+                        let t = v::as_qctor(arenas, id, #ty, #ctor)?;
+                        let [rec] = <[StructId; 1]>::try_from(t).ok()?;
+                    },
+                )
+            };
             quote! {
                 #[doc = #struct_doc]
                 pub struct #rec_struct {
@@ -629,13 +678,11 @@ fn emit_ctor(arenas: &Arenas, ty: &str, var: StructId) -> Option<TokenStream> {
                 }
                 #[doc = #doc_build]
                 pub fn #build(b: &mut Builder, fields: #rec_struct) -> StructId {
-                    let rec = v::record(b, vec![#((#field_names, fields.#field_idents)),*]);
-                    v::qctor(b, #ty, #ctor, vec![rec])
+                    #build_body
                 }
                 #[doc = #doc_read]
                 pub fn #as_(arenas: &Arenas, id: StructId) -> Option<#rec_struct> {
-                    let t = v::as_qctor(arenas, id, #ty, #ctor)?;
-                    let [rec] = <[StructId; 1]>::try_from(t).ok()?;
+                    #read_bind
                     Some(#rec_struct {
                         #(#field_idents: v::record_field(arenas, rec, #field_names)?,)*
                     })

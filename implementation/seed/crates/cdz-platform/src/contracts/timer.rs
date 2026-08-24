@@ -10,6 +10,7 @@
 //! `cdz-platform`.
 
 #![allow(dead_code)]
+#[allow(unused_imports)]
 use crate::contract_value as v;
 use cadenza_ast::ast::{Arenas, Builder, StructId};
 /// The `timer` contract's schema: its named Cadenza type declarations, in source order, ready
@@ -43,22 +44,18 @@ pub fn contract() -> crate::Contract {
     )
 }
 /// Build a canonical `Envelope.FireAfter` value.
-pub fn envelope_fire_after(b: &mut Builder, x: StructId) -> StructId {
-    v::qctor(b, "Envelope", "FireAfter", vec![x])
+pub fn envelope_fire_after(_b: &mut Builder, x: StructId) -> StructId {
+    x
 }
 /// Read the payload of a `Envelope.FireAfter` value, or `None`.
-pub fn as_envelope_fire_after(arenas: &Arenas, id: StructId) -> Option<StructId> {
-    let t = v::as_qctor(arenas, id, "Envelope", "FireAfter")?;
-    let [x] = <[StructId; 1]>::try_from(t).ok()?;
-    Some(x)
+pub fn as_envelope_fire_after(_arenas: &Arenas, id: StructId) -> Option<StructId> {
+    Some(id)
 }
 /// Build a canonical `Event.Fired` value.
-pub fn event_fired(b: &mut Builder, x: StructId) -> StructId {
-    v::qctor(b, "Event", "Fired", vec![x])
+pub fn event_fired(_b: &mut Builder, x: StructId) -> StructId {
+    x
 }
 /// Read the payload of a `Event.Fired` value, or `None`.
-pub fn as_event_fired(arenas: &Arenas, id: StructId) -> Option<StructId> {
-    let t = v::as_qctor(arenas, id, "Event", "Fired")?;
-    let [x] = <[StructId; 1]>::try_from(t).ok()?;
-    Some(x)
+pub fn as_event_fired(_arenas: &Arenas, id: StructId) -> Option<StructId> {
+    Some(id)
 }

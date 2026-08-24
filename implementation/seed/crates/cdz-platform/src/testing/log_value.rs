@@ -11,25 +11,31 @@
 //! Cadenza values, so the whole harness is language-neutral end to end.
 //!
 //! ## The value shape
-//! The log is a list of record values; each record is a record with the three questions it answers plus its
-//! entry, and an entry is an `Entry` **sum** whose constructor names the kind (the former tag) and whose
-//! payload is a record of that kind's fields:
+//! The log is a canonical Cadenza value (the form `Value.encode`/`Value.decode` uses) so a guest checker
+//! decodes the whole log into a `List(LogRecord)` from `guests/log-schema.cdz`: a **name-headed** list wrapped
+//! at the root in the ascription `Value.decode` requires; each element is a single-constructor `LogRecord`, so
+//! its value is the bare **name-headed** record carrying its own `(: … LogRecord)` ascription; and its `entry`
+//! is an `Entry` **sum** in the bare-constructor form `(<Ctor> <record>)`. `Value.decode` matches constructor
+//! and field names EXACTLY (no kebab/camel normalization) and reads a record's fields **canonically ordered**,
+//! so the constructors are the exact schema spellings (`Emitted`, `KvGet`, …), the field names the exact schema
+//! spellings (`eventKind`, `keysOnly`, …), and fields are emitted name-sorted (by `contract_value::record`):
 //! ```text
-//! ("list" <record>…)
-//! <record>  = ("record" (= seq <u>) (= time <u>) (= source <origin>) (= entry <entry>))
-//! <origin>  = ("record" (= reducer b"…") (= host b"…"))
-//! <entry>   = ((. Entry kv-put) ("record" (= key b"…") (= value b"…")))          ; one constructor per kind
+//! (: (list (: <record> LogRecord)…) List)
+//! <record>  = (record (= entry <entry>) (= seq <u>) (= source <origin>) (= time <u>))   ; fields name-sorted
+//! <origin>  = (record (= host b"…") (= reducer b"…"))
+//! <entry>   = (KvPut (record (= key b"…") (= value b"…")))                               ; one schema ctor per kind
 //! ```
 //! Encoding the entry as a sum (not a `tag`-discriminated record) is what lets a Cadenza **checker**
 //! `Value.decode` the whole heterogeneous log into a `List(Entry)`: a value-form sum decodes into a Cadenza
-//! sum by constructor name, whereas a record with a `tag` field plus per-kind fields has no single fixed
-//! record type. Every id/hash crosses as its raw bytes, every payload/key as opaque bytes, every flag as
+//! sum by its exact constructor name, whereas a record with a `tag` field plus per-kind fields has no single
+//! fixed record type. Every id/hash crosses as its raw bytes, every payload/key as opaque bytes, every flag as
 //! `0`/`1`, so no fidelity is lost. Decoding is total: any malformation is a rejected log ([`deserialize`]
 //! returns `None`), never a panic.
 
 use super::observation::{BlobOp, Entry, EventKind, EventOp, KvOp, Record, SpawnInfo};
 use crate::contract_value::{
-    bare_ctor, bytes_leaf, qctor, read_bytes, read_uint, record, record_field, uint_leaf,
+    as_ascribed, ascribe, bare_ctor, bytes_leaf, qctor, read_bytes, read_uint, record,
+    record_field, uint_leaf,
 };
 use crate::{
     Bytes, ContractId, Error, Hash, HostId, Origin, ProgramHash, ReducerId, ReducerKind, Str,
@@ -47,7 +53,11 @@ use std::sync::Arc;
 pub fn serialize(records: &[Record]) -> Vec<u8> {
     let mut b = Builder::new();
     let items: Vec<StructId> = records.iter().map(|r| record_value(&mut b, r)).collect();
-    let root = list_value(&mut b, items);
+    let list = list_value(&mut b, items);
+    // The whole log crosses as one canonical Cadenza value a guest `Value.decode`s into a `List(LogRecord)`,
+    // so the root carries the ascription `Value.decode` requires (`(: <list> List)`); the type token is
+    // name-agnostic (the decoder is target-directed), so the bare `List` suffices.
+    let root = ascribe(&mut b, list, "List");
     codec::encode(&b.finish(root))
 }
 
@@ -56,7 +66,10 @@ pub fn serialize(records: &[Record]) -> Vec<u8> {
 #[must_use]
 pub fn deserialize(bytes: &[u8]) -> Option<Vec<Record>> {
     let arenas = codec::decode(bytes)?;
-    let items = list_items(&arenas, arenas.root)?;
+    // Strip the root ascription `(: <list> List)` if present (`serialize` writes it so a guest can
+    // `Value.decode` the log); tolerate a bare list too, so the reader is liberal about the wrapper.
+    let root = as_ascribed(&arenas, arenas.root).unwrap_or(arenas.root);
+    let items = list_items(&arenas, root)?;
     items.iter().map(|&r| read_record(&arenas, r)).collect()
 }
 
@@ -67,7 +80,7 @@ fn record_value(b: &mut Builder, r: &Record) -> StructId {
     let time = uint_leaf(b, r.time_ns);
     let source = origin_value(b, &r.source);
     let entry = entry_value(b, &r.entry);
-    record(
+    let rec = record(
         b,
         vec![
             ("seq", seq),
@@ -75,10 +88,18 @@ fn record_value(b: &mut Builder, r: &Record) -> StructId {
             ("source", source),
             ("entry", entry),
         ],
-    )
+    );
+    // `LogRecord` is a SINGLE-constructor sum, so its value is the bare record with the constructor elided —
+    // but a bare record is ambiguous, so each single-constructor sum value carries its own `(: … LogRecord)`
+    // ascription (this is what `Value.encode` emits for each element of a `List(LogRecord)`). Without it the
+    // list elements do not decode as `LogRecord`s.
+    ascribe(b, rec, "LogRecord")
 }
 
 fn read_record(arenas: &Arenas, id: StructId) -> Option<Record> {
+    // Strip the per-element `(: <record> LogRecord)` ascription `serialize` writes (liberal — a bare record
+    // is tolerated too).
+    let id = as_ascribed(arenas, id).unwrap_or(id);
     Some(Record {
         seq: read_uint(arenas, field(arenas, id, "seq")?)?,
         time_ns: read_uint(arenas, field(arenas, id, "time")?)?,
@@ -114,12 +135,12 @@ fn entry_value(b: &mut Builder, e: &Entry) -> StructId {
 fn read_entry(arenas: &Arenas, id: StructId) -> Option<Entry> {
     let (tag, inner) = entry_ctor(arenas, id)?;
     Some(match tag {
-        "kv-get" | "kv-put" | "kv-delete" | "kv-scan" => Entry::Kv(read_kv(arenas, inner, tag)?),
-        "blob-put" | "blob-get" | "blob-has" => Entry::Blob(read_blob(arenas, inner, tag)?),
-        "delivered" | "emitted" | "closed" | "failed" => {
+        "KvGet" | "KvPut" | "KvDelete" | "KvScan" => Entry::Kv(read_kv(arenas, inner, tag)?),
+        "BlobPut" | "BlobGet" | "BlobHas" => Entry::Blob(read_blob(arenas, inner, tag)?),
+        "Delivered" | "Emitted" | "Closed" | "Failed" => {
             Entry::Event(read_event(arenas, inner, tag)?)
         }
-        "spawn" => Entry::Spawn(read_spawn(arenas, inner)?),
+        "Spawn" => Entry::Spawn(read_spawn(arenas, inner)?),
         _ => return None,
     })
 }
@@ -131,17 +152,17 @@ fn kv_value(b: &mut Builder, op: &KvOp) -> StructId {
         KvOp::Get { key, hit } => {
             let key = bytes_leaf(b, key);
             let hit = bool_value(b, *hit);
-            tagged(b, "kv-get", vec![("key", key), ("hit", hit)])
+            tagged(b, "KvGet", vec![("key", key), ("hit", hit)])
         }
         KvOp::Put { key, value } => {
             let key = bytes_leaf(b, key);
             let value = bytes_leaf(b, value);
-            tagged(b, "kv-put", vec![("key", key), ("value", value)])
+            tagged(b, "KvPut", vec![("key", key), ("value", value)])
         }
         KvOp::Delete { key, existed } => {
             let key = bytes_leaf(b, key);
             let existed = bool_value(b, *existed);
-            tagged(b, "kv-delete", vec![("key", key), ("existed", existed)])
+            tagged(b, "KvDelete", vec![("key", key), ("existed", existed)])
         }
         KvOp::Scan {
             lower,
@@ -153,8 +174,8 @@ fn kv_value(b: &mut Builder, op: &KvOp) -> StructId {
             let keys_only = bool_value(b, *keys_only);
             tagged(
                 b,
-                "kv-scan",
-                vec![("lower", lower), ("upper", upper), ("keys-only", keys_only)],
+                "KvScan",
+                vec![("lower", lower), ("upper", upper), ("keysOnly", keys_only)],
             )
         }
     }
@@ -162,41 +183,41 @@ fn kv_value(b: &mut Builder, op: &KvOp) -> StructId {
 
 fn read_kv(arenas: &Arenas, id: StructId, tag: &str) -> Option<KvOp> {
     Some(match tag {
-        "kv-get" => KvOp::Get {
+        "KvGet" => KvOp::Get {
             key: read_bytes(arenas, field(arenas, id, "key")?)?,
             hit: read_bool(arenas, field(arenas, id, "hit")?)?,
         },
-        "kv-put" => KvOp::Put {
+        "KvPut" => KvOp::Put {
             key: read_bytes(arenas, field(arenas, id, "key")?)?,
             value: read_bytes(arenas, field(arenas, id, "value")?)?,
         },
-        "kv-delete" => KvOp::Delete {
+        "KvDelete" => KvOp::Delete {
             key: read_bytes(arenas, field(arenas, id, "key")?)?,
             existed: read_bool(arenas, field(arenas, id, "existed")?)?,
         },
-        "kv-scan" => KvOp::Scan {
+        "KvScan" => KvOp::Scan {
             lower: read_bound(arenas, field(arenas, id, "lower")?)?,
             upper: read_bound(arenas, field(arenas, id, "upper")?)?,
-            keys_only: read_bool(arenas, field(arenas, id, "keys-only")?)?,
+            keys_only: read_bool(arenas, field(arenas, id, "keysOnly")?)?,
         },
         _ => return None,
     })
 }
 
-/// A scan `Bound` as a Cadenza **sum** — `((. Bound unbounded))`, `((. Bound included) <key>)`, or
-/// `((. Bound excluded) <key>)`. A sum with a fixed per-constructor shape (not a `bound`-tagged record whose
+/// A scan `Bound` as a Cadenza **sum** — the canonical bare-constructor form `(unbounded)`,
+/// `(included <key>)`, or `(excluded <key>)`. A sum with a fixed per-constructor shape (not a `bound`-tagged record whose
 /// `key` field is present only for included/excluded) is what lets a Cadenza checker `Value.decode` a log
 /// containing kv-scan entries — the same reason the entry itself is a sum (§9 checker decodability).
 fn bound_value(b: &mut Builder, bound: &Bound<Bytes>) -> StructId {
     match bound {
-        Bound::Unbounded => qctor(b, "Bound", "unbounded", vec![]),
+        Bound::Unbounded => qctor(b, "Bound", "Unbounded", vec![]),
         Bound::Included(key) => {
             let key = bytes_leaf(b, key);
-            qctor(b, "Bound", "included", vec![key])
+            qctor(b, "Bound", "Included", vec![key])
         }
         Bound::Excluded(key) => {
             let key = bytes_leaf(b, key);
-            qctor(b, "Bound", "excluded", vec![key])
+            qctor(b, "Bound", "Excluded", vec![key])
         }
     }
 }
@@ -206,22 +227,18 @@ fn read_bound(arenas: &Arenas, id: StructId) -> Option<Bound<Bytes>> {
         return None;
     };
     let (&head, tail) = items.split_first()?;
-    let m = arenas.as_form(head, ".")?;
-    if m.len() != 2 || arenas.as_name(m[0]) != Some("Bound") {
-        return None;
-    }
-    Some(match arenas.as_name(m[1])? {
-        "unbounded" => {
+    Some(match arenas.as_name(head)? {
+        "Unbounded" => {
             if !tail.is_empty() {
                 return None;
             }
             Bound::Unbounded
         }
-        "included" => {
+        "Included" => {
             let [key] = <[StructId; 1]>::try_from(tail).ok()?;
             Bound::Included(read_bytes(arenas, key)?)
         }
-        "excluded" => {
+        "Excluded" => {
             let [key] = <[StructId; 1]>::try_from(tail).ok()?;
             Bound::Excluded(read_bytes(arenas, key)?)
         }
@@ -236,17 +253,17 @@ fn blob_value(b: &mut Builder, op: &BlobOp) -> StructId {
         BlobOp::Put { hash, len } => {
             let hash = bytes_leaf(b, hash.as_bytes());
             let len = uint_leaf(b, *len as u64);
-            tagged(b, "blob-put", vec![("hash", hash), ("len", len)])
+            tagged(b, "BlobPut", vec![("hash", hash), ("len", len)])
         }
         BlobOp::Get { hash, hit } => {
             let hash = bytes_leaf(b, hash.as_bytes());
             let hit = bool_value(b, *hit);
-            tagged(b, "blob-get", vec![("hash", hash), ("hit", hit)])
+            tagged(b, "BlobGet", vec![("hash", hash), ("hit", hit)])
         }
         BlobOp::Has { hash, present } => {
             let hash = bytes_leaf(b, hash.as_bytes());
             let present = bool_value(b, *present);
-            tagged(b, "blob-has", vec![("hash", hash), ("present", present)])
+            tagged(b, "BlobHas", vec![("hash", hash), ("present", present)])
         }
     }
 }
@@ -254,15 +271,15 @@ fn blob_value(b: &mut Builder, op: &BlobOp) -> StructId {
 fn read_blob(arenas: &Arenas, id: StructId, tag: &str) -> Option<BlobOp> {
     let hash = read_hash(arenas, field(arenas, id, "hash")?)?;
     Some(match tag {
-        "blob-put" => BlobOp::Put {
+        "BlobPut" => BlobOp::Put {
             hash,
             len: usize::try_from(read_uint(arenas, field(arenas, id, "len")?)?).ok()?,
         },
-        "blob-get" => BlobOp::Get {
+        "BlobGet" => BlobOp::Get {
             hash,
             hit: read_bool(arenas, field(arenas, id, "hit")?)?,
         },
-        "blob-has" => BlobOp::Has {
+        "BlobHas" => BlobOp::Has {
             hash,
             present: read_bool(arenas, field(arenas, id, "present")?)?,
         },
@@ -295,9 +312,9 @@ fn event_value(b: &mut Builder, op: &EventOp) -> StructId {
             let error = option_value(b, error_inner);
             tagged(
                 b,
-                "delivered",
+                "Delivered",
                 vec![
-                    ("event-kind", event_kind),
+                    ("eventKind", event_kind),
                     ("contract", contract),
                     ("from", from),
                     ("token", token),
@@ -318,7 +335,7 @@ fn event_value(b: &mut Builder, op: &EventOp) -> StructId {
             let deadline = bool_value(b, *has_deadline);
             tagged(
                 b,
-                "emitted",
+                "Emitted",
                 vec![
                     ("contract", contract),
                     ("payload", payload),
@@ -330,7 +347,7 @@ fn event_value(b: &mut Builder, op: &EventOp) -> StructId {
         EventOp::Closed { schema, reason } => {
             let schema = bytes_leaf(b, schema.hash().as_bytes());
             let reason = bytes_leaf(b, reason);
-            tagged(b, "closed", vec![("schema", schema), ("reason", reason)])
+            tagged(b, "Closed", vec![("schema", schema), ("reason", reason)])
         }
         EventOp::Failed {
             during,
@@ -342,7 +359,7 @@ fn event_value(b: &mut Builder, op: &EventOp) -> StructId {
             let reason = str_leaf(b, reason.as_str());
             tagged(
                 b,
-                "failed",
+                "Failed",
                 vec![
                     ("during", during),
                     ("contract", contract),
@@ -355,8 +372,8 @@ fn event_value(b: &mut Builder, op: &EventOp) -> StructId {
 
 fn read_event(arenas: &Arenas, id: StructId, tag: &str) -> Option<EventOp> {
     Some(match tag {
-        "delivered" => EventOp::Delivered {
-            kind: read_event_kind(str_at(arenas, field(arenas, id, "event-kind")?)?)?,
+        "Delivered" => EventOp::Delivered {
+            kind: read_event_kind(str_at(arenas, field(arenas, id, "eventKind")?)?)?,
             contract: read_contract(arenas, field(arenas, id, "contract")?)?,
             from: read_option(arenas, field(arenas, id, "from")?, read_origin)?,
             continuation_token: read_bytes(arenas, field(arenas, id, "token")?)?,
@@ -365,17 +382,17 @@ fn read_event(arenas: &Arenas, id: StructId, tag: &str) -> Option<EventOp> {
                 read_error(str_at(a, i)?)
             })?,
         },
-        "emitted" => EventOp::Emitted {
+        "Emitted" => EventOp::Emitted {
             contract: read_contract(arenas, field(arenas, id, "contract")?)?,
             payload: read_bytes(arenas, field(arenas, id, "payload")?)?,
             continuation_token: read_bytes(arenas, field(arenas, id, "token")?)?,
             has_deadline: read_bool(arenas, field(arenas, id, "deadline")?)?,
         },
-        "closed" => EventOp::Closed {
+        "Closed" => EventOp::Closed {
             schema: read_contract(arenas, field(arenas, id, "schema")?)?,
             reason: read_bytes(arenas, field(arenas, id, "reason")?)?,
         },
-        "failed" => EventOp::Failed {
+        "Failed" => EventOp::Failed {
             during: read_event_kind(str_at(arenas, field(arenas, id, "during")?)?)?,
             contract: read_contract(arenas, field(arenas, id, "contract")?)?,
             reason: Str::from(str_at(arenas, field(arenas, id, "reason")?)?),
@@ -429,12 +446,12 @@ fn spawn_value(b: &mut Builder, info: &SpawnInfo) -> StructId {
     let kind = str_leaf(b, reducer_kind_str(info.kind));
     tagged(
         b,
-        "spawn",
+        "Spawn",
         vec![
             ("name", name),
             ("program", program),
             ("parent", parent),
-            ("reducer-kind", kind),
+            ("reducerKind", kind),
         ],
     )
 }
@@ -444,7 +461,7 @@ fn read_spawn(arenas: &Arenas, id: StructId) -> Option<SpawnInfo> {
         name: Str::from(str_at(arenas, field(arenas, id, "name")?)?),
         program: read_program(arenas, field(arenas, id, "program")?)?,
         parent: read_reducer(arenas, field(arenas, id, "parent")?)?,
-        kind: read_reducer_kind(str_at(arenas, field(arenas, id, "reducer-kind")?)?)?,
+        kind: read_reducer_kind(str_at(arenas, field(arenas, id, "reducerKind")?)?)?,
     })
 }
 
@@ -469,7 +486,7 @@ fn read_reducer_kind(s: &str) -> Option<ReducerKind> {
 
 // --- primitive helpers ---
 
-/// An `Entry` sum value `((. Entry <tag>) ("record" (= <field> <value>)…))` — the constructor named by `tag`
+/// An `Entry` sum value `(<tag> (record (= <field> <value>)…))` — the bare constructor named by `tag`
 /// wrapping a record of the tag-specific fields. Encoding the entry as a CADENZA SUM (not a tag-discriminated
 /// record) is what lets a Cadenza checker `Value.decode` the whole heterogeneous log into a `List(Entry)`: a
 /// value-form sum decodes into a Cadenza sum by constructor name (kebab-matched), whereas a record with a
@@ -481,17 +498,15 @@ fn tagged(b: &mut Builder, tag: &str, fields: Vec<(&'static str, StructId)>) -> 
 }
 
 /// Read an `Entry` sum value back: its constructor name (the former tag) and the payload record the
-/// tag-specific readers pull their fields from. `None` if `id` is not an `((. Entry <ctor>) <record>)` value.
+/// tag-specific readers pull their fields from. `None` if `id` is not a `(<ctor> <record>)` value. The
+/// constructor is the canonical BARE-name head (the sum's type is fixed by the enclosing record's `entry`
+/// field, so the value carries no `(. Entry ctor)` member node).
 fn entry_ctor(arenas: &Arenas, id: StructId) -> Option<(&str, StructId)> {
     let Struct::List(items) = arenas.get(id) else {
         return None;
     };
     let (&head, tail) = items.split_first()?;
-    let m = arenas.as_form(head, ".")?;
-    if m.len() != 2 || arenas.as_name(m[0]) != Some("Entry") {
-        return None;
-    }
-    let ctor = arenas.as_name(m[1])?;
+    let ctor = arenas.as_name(head)?;
     let [inner] = <[StructId; 1]>::try_from(tail).ok()?;
     Some((ctor, inner))
 }
@@ -537,7 +552,9 @@ fn str_leaf(b: &mut Builder, text: &str) -> StructId {
 }
 
 fn list_value(b: &mut Builder, items: Vec<StructId>) -> StructId {
-    let head = b.atom_leaf(Leaf::Str(Arc::from("list")));
+    // The NAME-headed `(list …)` — the canonical Cadenza list form a guest `Value.decode`s (a string-headed
+    // `("list" …)` is a surface literal the value decoder rejects).
+    let head = b.name("list");
     b.list(std::iter::once(head).chain(items).collect())
 }
 
@@ -804,10 +821,13 @@ mod tests {
         )];
         let bytes = serialize(&log);
         let arenas = cadenza_ast::codec::decode(&bytes).expect("a decodable log");
-        let items = super::list_items(&arenas, arenas.root).expect("the log is a list");
-        let entry = super::field(&arenas, items[0], "entry").expect("the record has an entry");
+        let root = super::as_ascribed(&arenas, arenas.root).expect("the log root is ascribed");
+        let items = super::list_items(&arenas, root).expect("the log is a list");
+        let record =
+            super::as_ascribed(&arenas, items[0]).expect("each LogRecord element is ascribed");
+        let entry = super::field(&arenas, record, "entry").expect("the record has an entry");
         let (ctor, inner) = super::entry_ctor(&arenas, entry).expect("the entry is an Entry sum");
-        assert_eq!(ctor, "delivered");
+        assert_eq!(ctor, "Delivered");
         assert!(
             super::field(&arenas, inner, "from").is_some(),
             "`from` is present even when None"
@@ -820,8 +840,8 @@ mod tests {
 
     #[test]
     fn a_scan_bound_is_a_cadenza_sum_not_a_tagged_record() {
-        // Bound is encoded as a sum `((. Bound <ctor>) <key>?)` — a fixed per-constructor shape a Cadenza
-        // checker `Value.decode`s — not a `bound`-tagged record whose `key` varies. Round-trip alone would
+        // Bound is encoded as a sum `(<ctor> <key>?)` — a fixed per-constructor shape a Cadenza checker
+        // `Value.decode`s — not a `bound`-tagged record whose `key` varies. Round-trip alone would
         // pass for either encoding, so pin the sum form: the `lower` value is a Bound sum (decodes back) and
         // carries no `bound` record field.
         let log = vec![rec(
@@ -834,10 +854,13 @@ mod tests {
         )];
         let bytes = serialize(&log);
         let arenas = cadenza_ast::codec::decode(&bytes).expect("a decodable log");
-        let items = super::list_items(&arenas, arenas.root).expect("the log is a list");
-        let entry = super::field(&arenas, items[0], "entry").expect("the record has an entry");
+        let root = super::as_ascribed(&arenas, arenas.root).expect("the log root is ascribed");
+        let items = super::list_items(&arenas, root).expect("the log is a list");
+        let record =
+            super::as_ascribed(&arenas, items[0]).expect("each LogRecord element is ascribed");
+        let entry = super::field(&arenas, record, "entry").expect("the record has an entry");
         let (ctor, inner) = super::entry_ctor(&arenas, entry).expect("the entry is an Entry sum");
-        assert_eq!(ctor, "kv-scan");
+        assert_eq!(ctor, "KvScan");
         let lower = super::field(&arenas, inner, "lower").expect("the scan has a lower bound");
         assert!(
             super::field(&arenas, lower, "bound").is_none(),

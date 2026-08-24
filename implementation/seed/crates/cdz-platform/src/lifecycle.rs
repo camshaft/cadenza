@@ -60,7 +60,8 @@ impl Lifecycle {
     #[must_use]
     pub fn encode(&self) -> Bytes {
         let mut b = Builder::new();
-        let root = self.build(&mut b);
+        let value = self.build(&mut b);
+        let root = crate::contract_value::ascribe(&mut b, value, "Event");
         let arenas = b.finish(root);
         Bytes::from(codec::encode(&arenas))
     }
@@ -114,14 +115,15 @@ impl Lifecycle {
         use crate::contract_value as v;
         use crate::contracts::lifecycle as c;
         let arenas = codec::decode(bytes)?;
-        if let Some(e) = c::as_event_exited(&arenas, arenas.root) {
+        let root = v::as_ascribed(&arenas, arenas.root)?;
+        if let Some(e) = c::as_event_exited(&arenas, root) {
             return Some(Lifecycle::Exited {
                 reducer: ReducerId::from_hash(v::read_hash(&arenas, e.reducer)?),
                 schema: ContractId::from_hash(v::read_hash(&arenas, e.schema)?),
                 reason: v::read_bytes(&arenas, e.reason)?,
             });
         }
-        if let Some(e) = c::as_event_crashed(&arenas, arenas.root) {
+        if let Some(e) = c::as_event_crashed(&arenas, root) {
             return Some(Lifecycle::Crashed {
                 reducer: ReducerId::from_hash(v::read_hash(&arenas, e.reducer)?),
             });

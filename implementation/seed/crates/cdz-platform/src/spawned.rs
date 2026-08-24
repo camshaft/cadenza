@@ -42,7 +42,8 @@ impl Spawned {
     #[must_use]
     pub fn encode(&self) -> Bytes {
         let mut b = Builder::new();
-        let root = self.build(&mut b);
+        let value = self.build(&mut b);
+        let root = crate::contract_value::ascribe(&mut b, value, "Event");
         let arenas = b.finish(root);
         Bytes::from(codec::encode(&arenas))
     }
@@ -76,7 +77,8 @@ impl Spawned {
         use crate::contract_value as v;
         use crate::contracts::spawned as c;
         let arenas = codec::decode(bytes)?;
-        let e = c::as_event_spawned(&arenas, arenas.root)?;
+        let root = v::as_ascribed(&arenas, arenas.root)?;
+        let e = c::as_event_spawned(&arenas, root)?;
         Some(Self {
             id: ReducerId::from_hash(v::read_hash(&arenas, e.id)?),
             parent: ReducerId::from_hash(v::read_hash(&arenas, e.parent)?),
@@ -100,6 +102,30 @@ mod tests {
             parent: rid(b"parent"),
         };
         assert_eq!(Spawned::decode(&event.encode()), Some(event));
+    }
+
+    #[test]
+    fn a_single_constructor_record_arm_elides_its_constructor() {
+        // FIX B invariant, record elision arm: `Event` is a SINGLE-constructor sum (`| Spawned(Record …)`),
+        // so the canonical form the compiler's `Value.decode` reads ELIDES the constructor — the payload
+        // record rides directly under the root ascription, with NO `(Spawned …)` wrapper. Builder and reader
+        // elide symmetrically, so the round-trip test cannot catch a regression that re-introduces the
+        // wrapper; a guest `Value.decode` would then fail. Pin the PHYSICAL shape: under the ascription is the
+        // `record` itself (its `id` field reads directly), not a `Spawned` constructor list.
+        use crate::contract_value as v;
+        let event = Spawned {
+            id: rid(b"child"),
+            parent: rid(b"parent"),
+        };
+        let arenas = cadenza_ast::codec::decode(&event.encode()).expect("well-formed value");
+        let inner = v::as_ascribed(&arenas, arenas.root).expect("root ascription");
+        // The elided value IS the record: its fields read directly by name.
+        assert!(
+            v::record_field(&arenas, inner, "id").is_some(),
+            "the elided single-ctor value is the record itself"
+        );
+        // And it is NOT wrapped in the `Spawned` constructor (elided).
+        assert!(v::as_qctor(&arenas, inner, "Event", "Spawned").is_none());
     }
 
     #[test]

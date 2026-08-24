@@ -316,7 +316,7 @@ impl HarnessSpec {
     /// Interpret an already-decoded AST node as a harness description — the shape-reading core, split out so
     /// it is testable against an in-memory `Arenas` without a full encode/decode round-trip.
     pub fn read(arenas: &Arenas, root: StructId) -> Result<Self, SpecError> {
-        if arenas.head_ctor(root) != Some("record") {
+        if !is_record(arenas, root) {
             return Err(SpecError::NotARecord);
         }
 
@@ -559,6 +559,13 @@ fn list_items(arenas: &Arenas, id: StructId) -> Option<&[StructId]> {
         .or_else(|| arenas.as_form(id, "list"))
 }
 
+/// Whether `id` is a record value — the NAME-headed `(record …)` (the canonical Cadenza value form) or the
+/// STRING-headed `("record" …)` (the `cdz convert --to binary` surface form a HarnessSpec arrives as). Liberal
+/// about the head so a description reads either way, matching [`record_field`]/[`list_items`].
+fn is_record(arenas: &Arenas, id: StructId) -> bool {
+    arenas.as_form(id, "record").is_some() || arenas.as_ctor_form(id, "record").is_some()
+}
+
 /// A record's field read as a string, if present. `Ok(None)` when the field is absent; a present-but-not-a-
 /// string field is a [`SpecError::WrongType`].
 fn str_field<'a>(
@@ -577,7 +584,7 @@ fn str_field<'a>(
 
 /// Read one blob record: a `name` and exactly one of `bytes` (inline) or `path`.
 fn read_blob(arenas: &Arenas, id: StructId) -> Result<BlobSpec, SpecError> {
-    if arenas.head_ctor(id) != Some("record") {
+    if !is_record(arenas, id) {
         return Err(SpecError::WrongType {
             field: "blobs",
             want: "a (record …) per blob",
@@ -612,7 +619,7 @@ fn read_blob(arenas: &Arenas, id: StructId) -> Result<BlobSpec, SpecError> {
 /// Read one spawn record into a [`SpawnSpec`]: a `name` and a `blob` (required), an optional `parent`
 /// (absent ⇒ a root), and an optional `kind` (`"ordinary"` default, or `"event"`).
 fn read_spawn(arenas: &Arenas, id: StructId) -> Result<SpawnSpec, SpecError> {
-    if arenas.head_ctor(id) != Some("record") {
+    if !is_record(arenas, id) {
         return Err(SpecError::WrongType {
             field: "spawns",
             want: "a (record …) per spawn",
@@ -641,7 +648,7 @@ fn read_spawn(arenas: &Arenas, id: StructId) -> Result<SpawnSpec, SpecError> {
 /// Read one delivery record: a `target` task name and exactly one event — a `message` or a `notification`
 /// sub-record. Returns the target and the [`DeliveryEvent`].
 fn read_delivery(arenas: &Arenas, id: StructId) -> Result<(String, DeliveryEvent), SpecError> {
-    if arenas.head_ctor(id) != Some("record") {
+    if !is_record(arenas, id) {
         return Err(SpecError::WrongType {
             field: "deliver",
             want: "a (record …) per delivery",
