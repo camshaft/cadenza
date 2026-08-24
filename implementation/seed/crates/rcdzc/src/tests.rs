@@ -106000,6 +106000,66 @@ fn reducer_kv_prefix_scan_world_bytes() -> Vec<u8> {
     crate::codec::encode(&a)
 }
 
+/// A world importing `cadenza:agent-kernel/graph { neighbors: func(list<u8>) -> list<list<u8>> }` (+ the
+/// `fold` export), for the graph.neighbors spilled-result test. `list<list<u8>>` is the FIRST result the
+/// general WIT-type-driven comp-type emission handles that is NOT one of the three original hardcoded shapes
+/// — it rides the same `add_wit_type_deduped` defined-type emission + the same `emit_result_lift` List(Bytes)
+/// lift, with no per-shape code.
+fn reducer_graph_neighbors_world_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let byte_list = |b: &mut Builder| {
+        let h = b.atom_leaf(Leaf::Str("list".into()));
+        let uh = b.name("u8");
+        let u = b.list(vec![uh]);
+        b.list(vec![h, u])
+    };
+    let a_in = byte_list(&mut b);
+    let a_out = byte_list(&mut b);
+    let apply = {
+        let fh = b.name("func");
+        let ph = b.name("param");
+        let pn = b.name("input");
+        let pnode = b.list(vec![ph, pn, a_in]);
+        let rh = b.name("result");
+        let rn = b.list(vec![rh, a_out]);
+        let func = b.list(vec![fh, pnode, rn]);
+        let mh = b.name("member");
+        let mn = b.name("apply");
+        b.list(vec![mh, mn, func])
+    };
+    let eh = b.name("export");
+    let en = b.name("fold");
+    let fold = b.list(vec![eh, en, apply]);
+    // neighbors: func(key: list<u8>) -> list<list<u8>> — result ("list" ("list" (u8))).
+    let key = byte_list(&mut b);
+    let result_ty = {
+        let listh = b.atom_leaf(Leaf::Str("list".into()));
+        let inner = byte_list(&mut b);
+        b.list(vec![listh, inner])
+    };
+    let nb = {
+        let fh = b.name("func");
+        let ph = b.name("param");
+        let pn = b.name("key");
+        let pnode = b.list(vec![ph, pn, key]);
+        let rh = b.name("result");
+        let rn = b.list(vec![rh, result_ty]);
+        let func = b.list(vec![fh, pnode, rn]);
+        let mh = b.name("member");
+        let mn = b.name("neighbors");
+        b.list(vec![mh, mn, func])
+    };
+    let ih = b.name("import");
+    let gn = b.name("cadenza:agent-kernel/graph");
+    let graph = b.list(vec![ih, gn, nb]);
+    let wh = b.name("world");
+    let wn = b.name("reducer");
+    let world = b.list(vec![wh, wn, fold, graph]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
 /// §3c kv PREFIX-SCAN emit: a host-fused reducer calling `kv.prefix-scan` (result
 /// `list<tuple<list<u8>,list<u8>>>`) EMITS through the bytes-provider path — the guest lifts the spilled
 /// list-of-byte-pairs into a value-heap `List<Tuple<Bytes,Bytes>>` — and the assembled component VALIDATES
@@ -106052,6 +106112,68 @@ fn a_host_fused_kv_prefix_scan_reducer_emits_and_loads() {
     assert!(
         String::from_utf8_lossy(bytes).contains("cadenza:agent-kernel/kv"),
         "the prefix-scan reducer imports the kv host interface"
+    );
+}
+
+/// GRAPH.NEIGHBORS (W4e): a host-fused reducer calling `graph.neighbors` (result `list<list<u8>>`) EMITS
+/// through the GENERAL WIT-type-driven result path — the FIRST spilled-result shape that is NOT one of the
+/// three original hardcoded shapes (option<list<u8>> / list<tuple<…>> / bare list<u8>). It rides the same
+/// machinery with no per-shape code: `host::result_is_liftable` admits `list<list<u8>>`,
+/// `build_host_result_types` emits its `list<list<u8>>` component defined type (a `0x70` list former over the
+/// shared `(list u8)`) via `wit_ctype::add_wit_type_deduped`, and `select::emit_result_lift` lifts it (the
+/// `List(Bytes)` case: outer vec + per-element `bytes-alloc`+copy). The assembled component VALIDATES + LOADS
+/// on the pinned wasmtime, proving the generalization end-to-end (the flags were retired, not extended).
+#[test]
+fn a_reducer_performing_graph_neighbors_emits_and_loads() {
+    use crate::testkit::parse;
+    let src = "(module m \
+      (effect graph (op neighbors (-> Bytes (List Bytes)))) \
+      (def (apply (: e (Record (ct String) (pl Bytes)))) \
+        (host (graph) \
+          (if (> (List.len (graph.neighbors (. e pl))) 0) \
+              (list (record (op (. e ct)) (arg (. e pl)))) \
+              (list)))) \
+      (export apply))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:agent-kernel/fold"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                reducer_graph_neighbors_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "the graph.neighbors reducer must emit through the general result path (list<list<u8>>): {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("the graph.neighbors reducer emits a component");
+    let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+    v.validate_all(bytes).expect(
+        "the graph.neighbors provider component validates (list<list<u8>> defined type + functype)",
+    );
+    let req = cdz_run::required_runtime(bytes)
+        .expect("the graph.neighbors provider component loads on the pinned wasmtime");
+    assert!(
+        req.is_some_and(|r| r.import_name.contains("cadenza:runtime/heap")),
+        "a graph.neighbors reducer marshals its lifted list through the value-heap runtime"
+    );
+    assert!(
+        String::from_utf8_lossy(bytes).contains("cadenza:agent-kernel/graph"),
+        "the graph.neighbors reducer imports the graph host interface"
     );
 }
 

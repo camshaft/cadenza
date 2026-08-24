@@ -230,7 +230,7 @@ pub fn add_wit_type_deduped(
 /// Encode one [`CRef`] as a component-model `valtype`: a primitive is its single byte; a type reference is
 /// the (non-negative) index as a signed LEB128 — the encoding `wasm-encoder` uses for
 /// `ComponentValType::Type` (`idx as i64`), disjoint from the primitives' `0x73..=0x7f` bytes.
-fn encode_cref(r: &CRef, out: &mut Vec<u8>) {
+pub fn encode_cref(r: &CRef, out: &mut Vec<u8>) {
     match r {
         CRef::Prim(b) => out.push(*b),
         CRef::Idx(i) => sleb128(*i as i64, out),

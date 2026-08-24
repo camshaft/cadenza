@@ -248,6 +248,46 @@ pub fn is_list_byte_pairs(ty: &Ty) -> bool {
     elems.len() == 2 && matches!(elems[0], Ty::Bytes) && matches!(elems[1], Ty::Bytes)
 }
 
+/// Whether a SPILLED-COMPOUND host result of type `ty` is one the general result path handles end-to-end —
+/// the guest lift (`select::emit_result_lift`) AND the component defined-type emission (a Ty→WitType→CDef
+/// tree of STRUCTURAL, anonymous-allowed component types). The recursion mirrors `emit_result_lift`'s wired
+/// arms: a `list<u8>` (Bytes) leaf; a `List<T>` of a liftable element (so `list<list<u8>>` = graph.neighbors,
+/// and `list<tuple<list<u8>,list<u8>>>` = kv.prefix-scan); a `Tuple` of liftable fields; and an option-shaped
+/// sum over `Bytes` (`option<list<u8>>` = kv.get). A `Record`/general-`Sum`/`String`/scalar leaf is NOT yet
+/// admitted here — a record/variant/enum component type must be NAMED+exported (not anonymous), a later slice;
+/// a scalar is not spilled. This is the GENERAL admit predicate that supersedes the three per-shape checks: a
+/// new structural shape composes without a new branch.
+pub fn result_is_liftable(db: &mut Db, ty: &Ty) -> bool {
+    match ty.strip_nominal() {
+        Ty::Bytes => true,
+        Ty::List(e) => {
+            let e = (**e).clone();
+            result_is_liftable(db, &e)
+        }
+        Ty::Tuple(elems) => {
+            let elems = elems.clone();
+            !elems.is_empty() && elems.iter().all(|e| result_is_liftable(db, e))
+        }
+        // An option-shaped sum over `Bytes` (`option<list<u8>>`) — the only sum shape the lift wires today.
+        _ => is_option_bytes(db, ty),
+    }
+}
+
+/// The WIT type of a SPILLED-COMPOUND host result — the type that drives its component defined-type emission
+/// (`wit_ctype::add_wit_type_deduped`). Structural results (`List`/`Tuple`/`Bytes`) map via
+/// [`crate::wit_world::ty_natural_wit`]; the option-shaped sum (`option<list<u8>>`, which `ty_natural_wit`
+/// declines as a `Ty::Sum`) maps to `option<list<u8>>`. `None` for a result with no such WIT type. Kept in
+/// lockstep with [`result_is_liftable`]: every liftable result has a WIT type here.
+pub fn spilled_result_wit_type(db: &mut Db, ty: &Ty) -> Option<crate::wit_world::WitType> {
+    use crate::wit_world::WitType;
+    if is_option_bytes(db, ty) {
+        return Some(WitType::Option(Box::new(WitType::List(Box::new(
+            WitType::U8,
+        )))));
+    }
+    crate::wit_world::ty_natural_wit(ty)
+}
+
 /// The component/boundary scalar ABI type a value of solved type `ty` crosses as, or `None` if it has no
 /// SCALAR boundary form (unit, or a compound/string — the latter declines this increment). Mirrors
 /// `comp_valtype_of`'s aliased-width mapping, but yields the backend's `AbiValType` (which carries both
@@ -592,18 +632,15 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
             }
             // A SPILLED COMPOUND host result — one whose flattened core form is >1 value, so the canonical
             // ABI returns it via a caller-provided retptr and the guest LIFTS it into a value-heap handle
-            // (`select::emit_result_lift`). The three shapes wired today: `option<list<u8>>` (kv.get, guest
-            // `Option<Bytes>`), `list<tuple<list<u8>,list<u8>>>` (kv.prefix-scan, `List<Tuple<Bytes,Bytes>>`),
-            // and bare `list<u8>` (identity.id/blobs.put, `Bytes`). Host-boundary only (a peer-bound op's
-            // compound crosses as a `u32` handle over the shared runtime, never this canonical spilled marshal),
-            // so a peer op leaves it `None`. Carrying the WIT type (not per-shape bool flags) is what lets the
-            // retptr size / guest lift / component defined-type all derive from ONE source and a new shape ride
-            // the same machinery.
-            let spilled_result = if !peer_bound
-                && (is_option_bytes(db, &result)
-                    || is_list_byte_pairs(&result)
-                    || matches!(result, Ty::Bytes))
-            {
+            // (`select::emit_result_lift`). Admitted GENERALLY by `result_is_liftable` (any structural
+            // list/tuple nesting of `list<u8>` + the `option<list<u8>>` shape) — e.g. `option<list<u8>>`
+            // (kv.get), `list<tuple<list<u8>,list<u8>>>` (kv.prefix-scan), bare `list<u8>` (identity.id), and
+            // `list<list<u8>>` (graph.neighbors) all ride the ONE recursion, no per-shape branch. Host-boundary
+            // only (a peer-bound op's compound crosses as a `u32` handle over the shared runtime, never this
+            // canonical spilled marshal), so a peer op leaves it `None`. Carrying the WIT type (not per-shape
+            // bool flags) is what lets the retptr size / guest lift / component defined-type all derive from
+            // ONE source and a new shape ride the same machinery.
+            let spilled_result = if !peer_bound && result_is_liftable(db, &result) {
                 Some(result.clone())
             } else {
                 None
@@ -989,27 +1026,18 @@ pub fn first_unrepresentable_host_op(
         // free var) is NOT flagged: a fold-SYNTHESIZED `Core::HostCall` (a forwarded/interposed perform)
         // types its result `Ty::Any` (infer.rs), and its real emittability is decided when selection
         // resolves it — flagging `Any` here would falsely reject the working interpose-forward case.
-        // The host-fused bytes-provider path lifts an `option<list<u8>>` result into a value-heap
-        // `Option<Bytes>` (S0), so it is REPRESENTABLE when `allow_option_bytes` (a peer-bound op still
-        // crosses its compound as a handle, never this canonical option marshal — so gate on `!peer_bound`).
-        let result_is_liftable_option_bytes =
-            allow_option_bytes && !peer_bound && is_option_bytes(db, &result);
-        // The SAME host-fused bytes-provider path also lifts a `list<tuple<list<u8>,list<u8>>>` result (kv
-        // prefix-scan) into a value-heap `List<Tuple<Bytes,Bytes>>` (the select lift) — representable under
-        // the same `allow_option_bytes` gate (the flag = "this is the bytes provider", not option-specific).
-        let result_is_liftable_list_byte_pairs =
-            allow_option_bytes && !peer_bound && is_list_byte_pairs(&result);
-        // A bare `list<u8>` (Bytes) result lifts into a value-heap `Bytes` on the SAME host-fused path (the
-        // select `(ptr,len)`→`bytes-alloc`+copy-in lift, minus the option disc) — representable under the same
-        // gate. A world import returning a hash/id (`identity.id`, `blobs.put`) is this shape.
-        let result_is_liftable_bytes =
-            allow_option_bytes && !peer_bound && matches!(result, Ty::Bytes);
+        // The host-fused bytes-provider path lifts a SPILLED COMPOUND result into a value-heap value via the
+        // general `select::emit_result_lift` (mirror of `result_is_liftable`): `option<list<u8>>` (kv.get),
+        // `list<tuple<list<u8>,list<u8>>>` (kv.prefix-scan), bare `list<u8>` (identity.id), `list<list<u8>>`
+        // (graph.neighbors), and any list/tuple nesting of those. REPRESENTABLE when `allow_option_bytes` (the
+        // flag = "this is the bytes-provider / typed-interface host path", not option-specific) and `!peer_bound`
+        // (a peer op crosses its compound as a handle, never this canonical spilled marshal).
+        let result_is_liftable_spilled =
+            allow_option_bytes && !peer_bound && result_is_liftable(db, &result);
         if !matches!(result, Ty::Unit)
             && !ty_undetermined(&result)
             && !abi_ok(&result)
-            && !result_is_liftable_option_bytes
-            && !result_is_liftable_list_byte_pairs
-            && !result_is_liftable_bytes
+            && !result_is_liftable_spilled
         {
             return Some((op.to_string(), "result", result.render_name(&db.name_ctx())));
         }

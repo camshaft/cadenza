@@ -1086,22 +1086,11 @@ pub fn emit(
         // The spilled-result SHAPE is read off each op's carried WIT result type (no per-shape bool flags):
         // `option<list<u8>>`, `list<tuple<list<u8>,list<u8>>>`, or bare `list<u8>` — each selects which
         // component defined-type the import instance-type prepends + the functype result index.
-        let needs_option_bytes = host_imports.iter().any(|h| {
-            h.spilled_result
-                .as_ref()
-                .is_some_and(|t| host::is_option_bytes(db, t))
-        });
-        let needs_list_byte_pairs = host_imports.iter().any(|h| {
-            h.spilled_result
-                .as_ref()
-                .is_some_and(host::is_list_byte_pairs)
-        });
-        let needs_bytes_result = host_imports.iter().any(|h| {
-            h.spilled_result
-                .as_ref()
-                .is_some_and(|t| matches!(t.strip_nominal(), crate::ty::Ty::Bytes))
-        });
-        let list_pairs_type_idx = 2 + needs_option_bytes as u32;
+        // The spilled-RESULT component defined types, built GENERALLY from each op's WIT result type (one
+        // recursion, no per-shape blocks) — `result_defs` laid after the shared `(list u8)`, `result_crefs`
+        // the per-op functype result reference. `list<list<u8>>` (graph.neighbors) rides this like any shape.
+        let (needs_list, result_defs, result_crefs) = build_host_result_types(db, &host_imports);
+        let has_spilled_result = host_imports.iter().any(|h| h.spilled_result.is_some());
         // RECORD-param host arg (shape d): build a component `record` DEFINED type per record param (reused
         // wit_ctype emitter, tag 0x72; all-scalar fields → each an inline primitive valtype). CONSTRAINED
         // shape this slice (d1b): a record param composes ONLY when the host set declares NO other
@@ -1144,9 +1133,7 @@ pub fn emit(
                 // byte-field record with no `list<u8>` param (the needs_list-forcing case is a later slice).
                 if record_params.len() > 1
                     || has_str_param
-                    || needs_option_bytes
-                    || needs_list_byte_pairs
-                    || needs_bytes_result
+                    || has_spilled_result
                     || (any_record_has_bytes && !has_bytes_param)
                 {
                     return Err(Reject::decline(
@@ -1165,9 +1152,15 @@ pub fn emit(
         };
         let host_fns: Vec<envelope::HostFn> = host_imports
             .iter()
-            .map(|hi| envelope::HostFn {
+            .enumerate()
+            .map(|(i, hi)| envelope::HostFn {
                 op: hi.op.clone(),
-                comp_functype: host_op_comp_functype(hi, 0, list_pairs_type_idx, record_export_idx),
+                comp_functype: host_op_comp_functype(
+                    hi,
+                    0,
+                    record_export_idx,
+                    result_crefs[i].clone(),
+                ),
                 has_list_param: hi
                     .params
                     .iter()
@@ -1195,9 +1188,8 @@ pub fn emit(
                 &host_fns,
                 &imports,
                 &import_name,
-                needs_option_bytes,
-                needs_list_byte_pairs,
-                needs_bytes_result,
+                needs_list,
+                &result_defs,
                 needs_realloc,
                 &record_defs,
             )
@@ -1209,9 +1201,8 @@ pub fn emit(
                 &host_fns,
                 &imports,
                 &import_name,
-                needs_option_bytes,
-                needs_list_byte_pairs,
-                needs_bytes_result,
+                needs_list,
+                &result_defs,
                 &record_defs,
             )
         });
@@ -1263,7 +1254,7 @@ pub fn emit(
             .iter()
             .map(|h| envelope::HostFn {
                 op: h.op.clone(),
-                comp_functype: host_op_comp_functype(h, 0, 0, 0),
+                comp_functype: host_op_comp_functype(h, 0, 0, None),
                 has_list_param: h.params.iter().any(|p| matches!(p, host::HostParam::Bytes)),
                 core_functype: Vec::new(), // unused by the envelope (the core module builds its own)
             })
@@ -1785,8 +1776,8 @@ fn build_record_import_types(
 fn host_op_comp_functype(
     h: &host::HostImport,
     list_type_idx: u32,
-    list_pairs_type_idx: u32,
     record_type_idx: u32,
+    result_cref: Option<crate::backend::wasm::wit_ctype::CRef>,
 ) -> Vec<u8> {
     use host::HostParam;
     let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM];
@@ -1817,25 +1808,14 @@ fn host_op_comp_functype(
         }
     }
     item.extend_from_slice(&encode::wasm_vec(h.params.len(), &param_items));
-    // The result valtype: a SPILLED compound references its component DEFINED type by index; the shape is
-    // read off the carried WIT result type (no per-shape bool flags). The admit set is {option<list<u8>>,
-    // list<tuple<list<u8>,list<u8>>>, bare list<u8>}, so `is_list_byte_pairs` / `Ty::Bytes` distinguish the
-    // list-pairs and bare-bytes shapes structurally (db-free), and the remaining spilled `Ty::Sum` is the
-    // option shape — matching the instance-type's prepend order (idx0 `(list u8)`, idx1 `option`, then pairs).
-    if let Some(t) = &h.spilled_result {
-        item.push(0x00);
-        if crate::backend::wasm::host::is_list_byte_pairs(t) {
-            // `list<tuple<list<u8>,list<u8>>>` (kv prefix-scan) — the `list<tuple<…>>` DEFINED type the
-            // instance-type appends after (list u8) + optional (option); its GLOBAL index is threaded in.
-            encode::uleb128(list_pairs_type_idx as u64, &mut item);
-        } else if matches!(t.strip_nominal(), crate::ty::Ty::Bytes) {
-            // A bare `list<u8>` (identity.id/blobs.put) — the shared `(list u8)` type at `list_type_idx`.
-            encode::uleb128(list_type_idx as u64, &mut item);
-        } else {
-            // `option<list<u8>>` (kv.get) — the `option<list<u8>>` DEFINED type the instance-type prepends
-            // right after the shared `(list u8)`, index `list_type_idx + 1`.
-            encode::uleb128((list_type_idx + 1) as u64, &mut item);
-        }
+    // The result valtype: a SPILLED compound references its component DEFINED type by the `result_cref` the
+    // caller computed via the GENERAL `wit_ctype::add_wit_type_deduped` over the op's WIT result type — a
+    // single `CRef` (an inline primitive OR a type-section index), so option<list<u8>> / list<tuple<…>> /
+    // bare list<u8> / list<list<u8>> (graph.neighbors) all encode uniformly with no per-shape branch. A
+    // non-spilled op has `result_cref == None`: a scalar result inline, a Unit result void.
+    if let Some(cref) = &result_cref {
+        item.push(0x00); // one result, unnamed
+        crate::backend::wasm::wit_ctype::encode_cref(cref, &mut item);
     } else {
         match h.result {
             Some(r) => item.extend_from_slice(&[0x00, r.comp_byte()]),
@@ -1843,6 +1823,108 @@ fn host_op_comp_functype(
         }
     }
     item
+}
+
+/// Build the SPILLED-RESULT component defined types for a host-import set, GENERALLY, from each op's carried
+/// WIT result type — the single mechanism that replaces the former per-shape (`option`/`pairs`/`bytes`)
+/// blocks. Returns `(needs_list, result_defs, result_crefs)`:
+///  • `needs_list` — whether the import instance-type must prepend the shared `(list u8)` defined type at
+///    index 0 (a `list<u8>` PARAM, or any spilled result — every admitted result bottoms out at `list<u8>`).
+///  • `result_defs` — the component defined-type item bytes for the RESULT types, laid RIGHT AFTER `(list u8)`
+///    (instance-type indices `1..`), children-first and DEDUPED (`wit_ctype::add_wit_type_deduped` interns
+///    every `list<u8>` leaf to the shared index 0, and shares structurally-equal subtypes).
+///  • `result_crefs` — per host op (index-aligned with `host_imports`), the `CRef` its functype result
+///    references (an inline primitive OR a defined-type index), or `None` for a scalar/unit result.
+/// The indices in `result_crefs`/`result_defs` are ABSOLUTE instance-type type indices (index 0 = the shared
+/// `(list u8)`), so `host_op_comp_functype` and `host_effect_instance_type` agree without threading ad-hoc
+/// per-shape offsets. Reproduces the former fixed indices for the three original shapes (bare list<u8> → 0,
+/// option → 1, list<tuple> → 2+has_option) and generalizes to any structural list/tuple nesting (e.g.
+/// graph.neighbors' `list<list<u8>>`).
+fn build_host_result_types(
+    db: &mut Db,
+    host_imports: &[host::HostImport],
+) -> (
+    bool,
+    Vec<Vec<u8>>,
+    Vec<Option<crate::backend::wasm::wit_ctype::CRef>>,
+) {
+    use crate::backend::wasm::wit_ctype::{CDef, CRef, add_wit_type_deduped, emit_cdef};
+    use crate::wit_world::WitType;
+    let has_list_param = host_imports
+        .iter()
+        .any(|h| h.params.iter().any(|p| matches!(p, host::HostParam::Bytes)));
+    let has_spilled = host_imports.iter().any(|h| h.spilled_result.is_some());
+    let needs_list = has_list_param || has_spilled;
+    let mut table: Vec<CDef> = Vec::new();
+    let mut memo: Vec<(WitType, CRef)> = Vec::new();
+    if needs_list {
+        // `(list u8)` is instance-type index 0 — shared by every `list<u8>` PARAM and every `list<u8>` leaf
+        // of a result. Seed the dedup memo so a result's `list<u8>` sub-type interns to it rather than
+        // re-defining it.
+        table.push(CDef::List(CRef::Prim(wasm_abi::COMP_U8)));
+        memo.push((WitType::List(Box::new(WitType::U8)), CRef::Idx(0)));
+    }
+    let mut result_crefs = Vec::with_capacity(host_imports.len());
+    for h in host_imports {
+        let cref = h.spilled_result.as_ref().and_then(|ty| {
+            let wt = host::spilled_result_wit_type(db, ty)?;
+            add_wit_type_deduped(&wt, &mut table, &mut memo)
+        });
+        result_crefs.push(cref);
+    }
+    // The RESULT defined types are `table[1..]` (index 0 is the shared `(list u8)` the instance-type lays as
+    // its own prepend); emit each as its component defined-type item bytes.
+    let start = if needs_list { 1 } else { 0 };
+    let result_defs: Vec<Vec<u8>> = table[start..].iter().map(emit_cdef).collect();
+    (needs_list, result_defs, result_crefs)
+}
+
+/// Declare into `used` the value-heap runtime ops that `select::emit_result_lift` emits when lifting a
+/// SPILLED-COMPOUND host result of type `ty` — in lockstep with that recursion, so the import section
+/// carries exactly what the lift calls (a missing op resolves to an out-of-range func index → invalid
+/// module). A `Bytes`/`String` leaf copies via `bytes-alloc`/`bytes-set`; a `List` allocs + `vec-of-arr`s;
+/// a `Tuple`/`Record` allocs an aggregate; an option-shaped sum builds via `sum-new`. Recurses into element/
+/// field/payload types. Replaces the former per-shape (`option`/`list-pairs`) op declarations.
+fn declare_result_lift_ops(
+    db: &mut Db,
+    ty: &crate::ty::Ty,
+    used: &mut std::collections::BTreeSet<&'static str>,
+) {
+    use crate::ty::Ty;
+    match ty.strip_nominal().clone() {
+        Ty::Bytes | Ty::String => {
+            used.insert("bytes-alloc");
+            used.insert("bytes-set");
+        }
+        Ty::List(e) => {
+            used.insert("arr-alloc");
+            used.insert("arr-set");
+            used.insert("vec-of-arr");
+            declare_result_lift_ops(db, &e, used);
+        }
+        Ty::Tuple(elems) => {
+            used.insert("arr-alloc");
+            used.insert("arr-set");
+            for e in elems.iter() {
+                declare_result_lift_ops(db, e, used);
+            }
+        }
+        Ty::Record(fields) => {
+            used.insert("arr-alloc");
+            used.insert("arr-set");
+            for f in fields.values() {
+                declare_result_lift_ops(db, f, used);
+            }
+        }
+        // An option-shaped sum (`option<list<u8>>`): `sum-new` for the Some/None construction + the Some
+        // arm's payload (`Bytes`) lift ops.
+        _ if host::is_option_bytes(db, ty) => {
+            used.insert("sum-new");
+            used.insert("bytes-alloc");
+            used.insert("bytes-set");
+        }
+        _ => {}
+    }
 }
 
 /// Convert a host-op boundary parameter to the peer-boundary `AbiValType` (U2) — a scalar crosses by its
@@ -2604,7 +2686,7 @@ fn emit_runtime_resource(
             .iter()
             .map(|hi| envelope::HostFn {
                 op: hi.op.clone(),
-                comp_functype: host_op_comp_functype(hi, 0, 0, 0),
+                comp_functype: host_op_comp_functype(hi, 0, 0, None),
                 has_list_param: hi
                     .params
                     .iter()
@@ -4544,7 +4626,7 @@ fn emit_closure_host_resource(
         .iter()
         .map(|hi| envelope::HostFn {
             op: hi.op.clone(),
-            comp_functype: host_op_comp_functype(hi, 0, 0, 0),
+            comp_functype: host_op_comp_functype(hi, 0, 0, None),
             has_list_param: hi
                 .params
                 .iter()
@@ -7724,7 +7806,7 @@ fn emit_runtime_bytes_resource(
             .iter()
             .map(|hi| envelope::HostFn {
                 op: hi.op.clone(),
-                comp_functype: host_op_comp_functype(hi, 0, 0, 0),
+                comp_functype: host_op_comp_functype(hi, 0, 0, None),
                 has_list_param: hi
                     .params
                     .iter()
@@ -8026,7 +8108,7 @@ fn emit_runtime_sum_resource(
             .iter()
             .map(|hi| envelope::HostFn {
                 op: hi.op.clone(),
-                comp_functype: host_op_comp_functype(hi, 0, 0, 0),
+                comp_functype: host_op_comp_functype(hi, 0, 0, None),
                 has_list_param: hi
                     .params
                     .iter()
@@ -8283,7 +8365,7 @@ fn emit_recursive_sum_resource(
             .iter()
             .map(|hi| envelope::HostFn {
                 op: hi.op.clone(),
-                comp_functype: host_op_comp_functype(hi, 0, 0, 0),
+                comp_functype: host_op_comp_functype(hi, 0, 0, None),
                 has_list_param: hi
                     .params
                     .iter()
@@ -9289,37 +9371,23 @@ fn emit_bytes_provider_member(
     ] {
         used.insert(op);
     }
-    // The kv.get option-result LIFT (select.rs) CONSTRUCTS the value-heap `Option<Bytes>` via `sum-new`
-    // (Some/None) — an op the reducer's own Core may never use (it only destructures via sum-disc/payload),
-    // so `collect_module_used_ops` misses it. Add it when a host op returns `option<list<u8>>`.
+    // A SPILLED-COMPOUND host result's LIFT (`select::emit_result_lift`) CONSTRUCTS a value-heap value with
+    // runtime ops the reducer's own Core may never use (it only destructures the lifted value) — so
+    // `collect_module_used_ops` misses them. Declare EXACTLY the ops the lift emits, walking each op's WIT
+    // result type in lockstep with `emit_result_lift` (Bytes → bytes-alloc/bytes-set; List → arr-alloc/
+    // arr-set/vec-of-arr; Tuple/Record → arr-alloc/arr-set; option → sum-new). This GENERAL walk covers
+    // `option<list<u8>>`, `list<tuple<…>>`, bare `list<u8>`, AND `list<list<u8>>` (graph.neighbors) with no
+    // per-shape branch.
     {
         let mut host_probe: Vec<host::HostImport> = Vec::new();
         for &def in &layout.order {
             let body = def_body(db, def)?;
             host::collect_host_imports(db, body, &mut host_probe);
         }
-        if host_probe.iter().any(|hi| {
-            hi.spilled_result
-                .as_ref()
-                .is_some_and(|t| host::is_option_bytes(db, t))
-        }) {
-            used.insert("sum-new");
-        }
-        // The prefix-scan lift CONSTRUCTS a value-heap `List<Tuple<Bytes,Bytes>>` via `arr-alloc`/`arr-set`
-        // (outer list + each 2-tuple) then `vec-of-arr` (turn the outer array into the persistent VEC a
-        // Cadenza `List` is — without it `List.len`/`vec-*` misread the raw arr as empty), and
-        // `bytes-alloc`/`bytes-set` (each key/value) — ops the reducer's own Core may never use, so
-        // `collect_module_used_ops` misses them. Add them when a host op returns `list<tuple<list<u8>,list<u8>>>`.
-        if host_probe.iter().any(|hi| {
-            hi.spilled_result
-                .as_ref()
-                .is_some_and(host::is_list_byte_pairs)
-        }) {
-            used.insert("arr-alloc");
-            used.insert("arr-set");
-            used.insert("vec-of-arr");
-            used.insert("bytes-alloc");
-            used.insert("bytes-set");
+        for hi in &host_probe {
+            if let Some(ty) = hi.spilled_result.clone() {
+                declare_result_lift_ops(db, &ty, &mut used);
+            }
         }
     }
     let imports: Vec<&runtime_abi::RtOp> = used
@@ -9438,35 +9506,16 @@ fn emit_bytes_provider_member(
         };
         iface_import.name.clone()
     };
-    // The instance-type prepends defined types in order: idx0 `(list u8)`, idx1 `option<list<u8>>` (if any
-    // option-bytes result), then `tuple<list,list>` + `list<tuple>` (if any prefix-scan result). So the
-    // `list<tuple<list<u8>,list<u8>>>` result type lands at index `2 + needs_option_bytes` — threaded into
-    // `host_op_comp_functype` since it is a GLOBAL layout property (a single op can't compute it alone).
-    // The spilled-result shape is read off each op's carried WIT result type (no per-shape bool flags).
-    let needs_option_bytes = host_imports.iter().any(|h| {
-        h.spilled_result
-            .as_ref()
-            .is_some_and(|t| host::is_option_bytes(db, t))
-    });
-    let needs_list_byte_pairs = host_imports.iter().any(|h| {
-        h.spilled_result
-            .as_ref()
-            .is_some_and(host::is_list_byte_pairs)
-    });
-    // A bare `list<u8>` (Bytes) result references the `(list u8)` type; when the op has no Bytes PARAM (a
-    // nullary `identity.id : () -> list<u8>`), only the result needs it, so the instance-type must still
-    // prepend it (else the result functype references an unbound type index — invalid component).
-    let needs_bytes_result = host_imports.iter().any(|h| {
-        h.spilled_result
-            .as_ref()
-            .is_some_and(|t| matches!(t.strip_nominal(), crate::ty::Ty::Bytes))
-    });
-    let list_pairs_type_idx = 2 + needs_option_bytes as u32;
+    // The spilled-RESULT component defined types, built GENERALLY from each op's WIT result type (one
+    // recursion, no per-shape blocks). `result_defs` laid after the shared `(list u8)`; `result_crefs` the
+    // per-op functype result reference. A bare `list<u8>` result interns to the `(list u8)` at index 0.
+    let (needs_list, result_defs, result_crefs) = build_host_result_types(db, &host_imports);
     let host_fns: Vec<envelope::HostFn> = host_imports
         .iter()
-        .map(|hf| envelope::HostFn {
+        .enumerate()
+        .map(|(i, hf)| envelope::HostFn {
             op: hf.op.clone(),
-            comp_functype: host_op_comp_functype(hf, 0, list_pairs_type_idx, 0),
+            comp_functype: host_op_comp_functype(hf, 0, 0, result_crefs[i].clone()),
             has_list_param: hf
                 .params
                 .iter()
@@ -9492,9 +9541,8 @@ fn emit_bytes_provider_member(
         &kv_iface,
         &imports,
         &runtime_import_name(),
-        needs_option_bytes,
-        needs_list_byte_pairs,
-        needs_bytes_result,
+        needs_list,
+        &result_defs,
     ))
 }
 
