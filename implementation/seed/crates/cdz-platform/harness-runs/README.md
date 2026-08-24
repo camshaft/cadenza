@@ -79,26 +79,31 @@ read by name, so order does not matter):
 
 A whole class of run exercises the **privileged deliver** an *event reducer* performs (§4): the reducer under
 test spawns with `kind = "event"`, and on an incoming event it *routes* a new event (a message, notification, or
-response) to another reducer. The harness records that routed event as a `Delivered` entry in the observation
-log, so the checker asserts on **what the reducer dispatched**, not just what it emitted.
+response) to another reducer. The harness records that routing **act** — the `deliver` call itself — as a
+`Routed` entry in the observation log (recorded at the `deliver` host boundary, so it is captured *whether or
+not* a target is running to receive it), so the checker asserts on **what the reducer dispatched**, not just
+what it emitted.
 
-The idiom that keeps such a run self-contained — one spawn, one delivery, no live peer — is to have the event
-reducer **re-deliver back to its own sender**: `on_message` reads `msg.sender.reducer` and dispatches the routed
-event to it. So the run is:
+Because the act is recorded at the boundary, such a run is self-contained with **no live listener** — one
+spawn, one delivery. The reducer routes to whatever target it computes (the reference guests route back to
+`msg.sender.reducer`, the harness's synthetic external origin), and the routed target need not be a spawned
+task: the `Routed` entry is recorded regardless. So the run is:
 
 1. `spawns` — one task with `kind = "event"` (the reducer under test).
-2. `deliver` — one `message` to that task (the harness's synthetic external origin is the `sender`, so the
-   reducer routes back to a well-known reducer id).
-3. `checker` — asserts the routed event is in the log: a `Delivered` entry whose `eventKind` is the routed kind
-   (`message` / `notification` / `response`), whose `contract`/`payload`/`token` carry the expected values, and
-   whose target is the sender's reducer. The full-fidelity serialized log (not the lossy human render) is what
-   the checker `Value.decode`s, so it can assert on the exact routed bytes (§9).
+2. `deliver` — one `message` to that task.
+3. `checker` — asserts the routed event is in the log: a `Routed` entry whose `eventKind` is the routed kind
+   (`message` / `notification` / `response`), whose `target`/`contract`/`token`/`payload` carry the expected
+   values. The full-fidelity serialized log (not the lossy human render) is what the checker `Value.decode`s,
+   so it can assert on the exact routed bytes (§9). Asserting the *specific* recorded entry (not merely that a
+   `Routed` exists) is the non-vacuity bar — a guest that fails to instantiate performs no deliver, so no
+   `Routed` is recorded and the check fails.
 
-The three delivery shapes a dispatch run asserts over map to the three `Delivered` `eventKind`s: routing a
-`deliver-message` records a `Delivered { eventKind = "message", … }` carrying the full origin sub-record and
-token; a `deliver-notification` records `eventKind = "notification"` (no sender, no token); a `deliver-response`
-records `eventKind = "response"` correlated by `token`, its `payload` the `Ok` bytes (or `error` set for an
-`Err`). A checker that scans the log for the expected `Delivered` is the same shape as the core-echo checker,
-pointed at the routed event instead of an emitted request.
+The three delivery shapes a dispatch run asserts over map to the three `Routed` `eventKind`s: routing a
+`deliver-message` records a `Routed { eventKind = "message", … }` carrying the token; a `deliver-notification`
+records `eventKind = "notification"` (empty token); a `deliver-response` records `eventKind = "response"`
+correlated by `token`, its `payload` the `Ok` bytes (or `error` set for an `Err`). Every `Routed` carries the
+`target` reducer-id it routed to. A checker that scans the log for the expected `Routed` is the same shape as
+the core-echo checker (`reducer-dispatch-check-cdz` matches a `Routed(C,P)` against the `Delivered(C,P)` the
+reducer received), pointed at the routed event instead of an emitted request.
 
 Adding a run = drop another `*.ml` file here (auto-discovered as `checks.<sys>.harness-<name>`).

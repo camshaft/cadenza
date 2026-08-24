@@ -1,0 +1,88 @@
+// The §4 DISPATCH checker, as a Cadenza reducer guest (design/cadenza-platform.md §4/§9) — asserts an event
+// reducer performed the privileged routing act (`deliver`), observed at the host boundary as a `Routed` entry
+// (the deliver-recorder, #3204). The paired dispatch guest (reducer-dispatch-cdz) re-routes the event it is
+// delivered; this checker judges that the route happened, LOG-ONLY and guest-agnostic.
+//
+// It imports the same three schemas as reducer-check-cdz, from their single source of truth: the check
+// Envelope (log-in), the verdict Verdict (pass/fail-out), and the log-schema LogRecord/Entry (the decoded log,
+// which now carries `Routed` alongside `Delivered`/`Emitted`). The `libs` manifest beside this file lists
+// their repo-relative paths for the multi-file build.
+//
+// JUDGEMENT (semantics agreed with v-platform): pass iff some `Routed(contract=C, payload=P)` in the log is
+// matched by some `Delivered(contract=C, payload=P)` — i.e. the event reducer routed (via the privileged
+// `deliver`) an event carrying the same contract+payload it was delivered. This is the §4 dispatch ACT, and
+// it is NON-VACUOUS: a guest that fails to instantiate performs no deliver, so no `Routed` is recorded and the
+// check fails. It is a RELATIONAL match on the run-controlled (C,P) — no hardcoded contract-id — mirroring the
+// core-echo checker, so it reuses the same Bytes-equality + explicit INDEX RECURSION idiom (the guest List
+// module is at/len/push-only: List.at returns Option, List.len is the bound, i + 1 advances). `Entry` and
+// `LogRecord` are IMPORTED sums (variant count invisible to the matcher), so each match has a catch-all `_ =>`
+// arm; inner matches are paren-wrapped.
+import { Envelope } from "check"
+import { Verdict } from "verdict"
+import { LogRecord, Entry } from "log-schema"
+
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+// Does some record at index >= i carry a Delivered(contract == c, payload == p)? (the event the reducer
+// received and re-routed.)
+def has-delivered(records: List(LogRecord), i: Int64, c: Bytes, p: Bytes) =
+  if (i == List.len(records)) then false
+  else (match List.at(records, i) with
+    | Option.None(_) => false
+    | Option.Some(r) =>
+        (match r with
+          | LogRecord.LogRecord(rec) =>
+              (match rec.entry with
+                | Entry.Delivered(d) =>
+                    if (d.contract == c) then
+                      (if (d.payload == p) then true else has-delivered(records, i + 1, c, p))
+                    else has-delivered(records, i + 1, c, p)
+                | _ => has-delivered(records, i + 1, c, p))))
+
+// Is some Routed(C, P) matched by a Delivered(C, P)? Scans routed records; for each, checks the whole log for
+// a matching delivered — proving the reducer routed the event it received via the privileged deliver.
+def dispatch-holds(records: List(LogRecord), i: Int64) =
+  if (i == List.len(records)) then false
+  else (match List.at(records, i) with
+    | Option.None(_) => false
+    | Option.Some(r) =>
+        (match r with
+          | LogRecord.LogRecord(rec) =>
+              (match rec.entry with
+                | Entry.Routed(rt) =>
+                    if has-delivered(records, 0, rt.contract, rt.payload) then true
+                    else dispatch-holds(records, i + 1)
+                | _ => dispatch-holds(records, i + 1))))
+
+// The verdict payload for a decoded log: pass with no messages, else fail with one diagnostic message.
+def verdict-payload(records: List(LogRecord)) =
+  if dispatch-holds(records, 0)
+  then Value.encode(Verdict.Verdict({ pass = true, messages = ([] : List(String)) }))
+  else Value.encode(Verdict.Verdict({ pass = false,
+                                      messages = List.push(([] : List(String)),
+                                                           "no Routed(C,P) matched a Delivered(C,P): the event reducer did not route the delivered event") }))
+
+// A verdict request on the contract-id the harness passed in the envelope (no hardcoded hash). The verdict
+// token is irrelevant (the harness reads the verdict by scanning Emitted on the verdict contract), so b"".
+def verdict-req(verdict-contract: Bytes, payload: Bytes) =
+  { contract = verdict-contract, payload = payload, token = b"", deadlineNanos = None }
+
+def on-message(msg) =
+  match (Value.decode(msg.payload) : Option(Envelope)) with
+  | Some(Envelope.Check(c)) =>
+      (match (Value.decode(c.log) : Option(List(LogRecord))) with
+       | Some(records) =>
+           { requests = [verdict-req(c.verdict, verdict-payload(records))], outcome = Outcome.Continue }
+       | None =>
+           { requests = [verdict-req(c.verdict,
+                                     Value.encode(Verdict.Verdict({ pass = false,
+                                                                    messages = List.push(([] : List(String)),
+                                                                                         "observation log did not decode") })))],
+             outcome = Outcome.Continue })
+  | None =>
+      { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = msg.payload }) }
+
+def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
+def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
+export { on-message, on-response, on-notification }
