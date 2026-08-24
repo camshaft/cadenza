@@ -3,16 +3,16 @@
 
 use super::{
     BlobOp, CheckOutcome, Entry, EventKind, EventOp, Harness, KvOp, ObservationLog,
-    RecordingBlobStore, RecordingKvStore, RecordingProgramStore, RecordingReducer, Run, SpawnSpec,
-    check_contract, check_message, decode_check, deserialize_log, encode_verdict, render,
-    verdict_contract, verdict_in,
+    RecordingBlobStore, RecordingDelivery, RecordingKvStore, RecordingProgramStore,
+    RecordingReducer, Run, SpawnSpec, check_contract, check_message, decode_check, deserialize_log,
+    encode_verdict, render, verdict_contract, verdict_in,
 };
 use crate::{
-    BachRuntime, BlobStore, Bytes, ContractId, Delivered, FireAfter, Fired, Hash, HashTag, HostId,
-    InMemoryBlobStore, InMemoryEventRegistry, InMemoryKvStore, InMemoryReducerGraph, KeyRange,
-    KvStore, Links, Message, Notification, Origin, Outcome, ProgramHash, Reducer, ReducerId,
-    ReducerKind, Request, Response, Runtime, Spawn, Spawned, Str, System, TaskSystem,
-    spawned_contract, timer_contract,
+    BachRuntime, BlobStore, Bytes, ContractId, Delivered, Delivery, Error, FireAfter, Fired, Hash,
+    HashTag, HostId, InMemoryBlobStore, InMemoryEventRegistry, InMemoryKvStore,
+    InMemoryReducerGraph, KeyRange, KvStore, Links, Message, NoDelivery, Notification, Origin,
+    Outcome, ProgramHash, Reducer, ReducerId, ReducerKind, Request, Response, Runtime, Spawn,
+    Spawned, Str, System, TaskSystem, spawned_contract, timer_contract,
 };
 use std::ops::Bound;
 use std::sync::Arc;
@@ -153,6 +153,120 @@ async fn kv_calls_are_recorded_with_who_what_and_order_and_pass_through_unchange
             lower: Bound::Unbounded,
             upper: Bound::Unbounded,
             keys_only: false,
+        })
+    );
+}
+
+#[tokio::test]
+async fn deliver_calls_are_recorded_as_routed_entries_and_pass_through_unchanged() {
+    // Wrapping the `deliver` host boundary records each routing ACT as an EventOp::Routed attributed to the
+    // routing reducer, whether or not a target is running (§4). The base is NoDelivery, so every deliver lands
+    // `false` — recording observes the act, not the landing (§9).
+    let who = origin(b"event-reducer");
+    let handler = ReducerId::of(b"handler");
+    let caller = ReducerId::of(b"caller");
+    let watcher = ReducerId::of(b"watcher");
+    let log = ObservationLog::new();
+    let delivery = RecordingDelivery::new(Arc::new(NoDelivery), who, log.clone(), tick_clock);
+
+    // A message, a notification, an Ok response, and an Err response — the four routed shapes.
+    let landed = delivery
+        .deliver(
+            handler,
+            Delivered::Message(Message {
+                id: ContractId::of(b"http.get"),
+                payload: Bytes::from_static(b"url"),
+                from: who,
+                continuation_token: Bytes::from_static(b"t1"),
+            }),
+        )
+        .await;
+    assert!(
+        !landed,
+        "the NoDelivery base never lands; the ACT is still recorded"
+    );
+    delivery
+        .deliver(
+            watcher,
+            Delivered::Notification(Notification {
+                id: ContractId::of(b"lifecycle.spawned"),
+                payload: Bytes::from_static(b"n"),
+            }),
+        )
+        .await;
+    delivery
+        .deliver(
+            caller,
+            Delivered::Response(Response {
+                id: ContractId::of(b"http.get"),
+                continuation_token: Bytes::from_static(b"t1"),
+                payload: Ok(Bytes::from_static(b"200")),
+            }),
+        )
+        .await;
+    delivery
+        .deliver(
+            caller,
+            Delivered::Response(Response {
+                id: ContractId::of(b"http.get"),
+                continuation_token: Bytes::from_static(b"t1"),
+                payload: Err(Error::Timeout),
+            }),
+        )
+        .await;
+
+    let records = log.snapshot();
+    assert_eq!(
+        records.len(),
+        4,
+        "one Routed record per deliver, in call order"
+    );
+    for (i, r) in records.iter().enumerate() {
+        assert_eq!(r.seq, i as u64);
+        assert_eq!(r.source, who, "attributed to the routing reducer");
+    }
+    assert_eq!(
+        records[0].entry,
+        Entry::Event(EventOp::Routed {
+            kind: EventKind::Message,
+            target: handler,
+            contract: ContractId::of(b"http.get"),
+            continuation_token: Bytes::from_static(b"t1"),
+            payload: Bytes::from_static(b"url"),
+            error: None,
+        })
+    );
+    assert_eq!(
+        records[1].entry,
+        Entry::Event(EventOp::Routed {
+            kind: EventKind::Notification,
+            target: watcher,
+            contract: ContractId::of(b"lifecycle.spawned"),
+            continuation_token: Bytes::new(),
+            payload: Bytes::from_static(b"n"),
+            error: None,
+        })
+    );
+    assert_eq!(
+        records[2].entry,
+        Entry::Event(EventOp::Routed {
+            kind: EventKind::Response,
+            target: caller,
+            contract: ContractId::of(b"http.get"),
+            continuation_token: Bytes::from_static(b"t1"),
+            payload: Bytes::from_static(b"200"),
+            error: None,
+        })
+    );
+    assert_eq!(
+        records[3].entry,
+        Entry::Event(EventOp::Routed {
+            kind: EventKind::Response,
+            target: caller,
+            contract: ContractId::of(b"http.get"),
+            continuation_token: Bytes::from_static(b"t1"),
+            payload: Bytes::new(),
+            error: Some(Error::Timeout),
         })
     );
 }
@@ -362,21 +476,23 @@ fn the_program_store_seam_captures_the_whole_systems_event_flow_under_bach() {
                 })
                 .await
                 .unwrap();
-            system
-                .deliver(
-                    emitter,
-                    Delivered::Message(Message {
-                        id: ContractId::of(b"go"),
-                        payload: Bytes::from_static(b"x"),
-                        from: Origin {
-                            reducer: ReducerId::of(b"caller"),
-                            host,
-                        },
-                        continuation_token: Bytes::from_static(b"t"),
-                    }),
-                )
-                .await
-                .unwrap();
+            // Disambiguate `deliver`: `TaskSystem` implements both `System` (Result-returning) and the
+            // narrower `Delivery` (bool) trait, both in scope here, so name the one this test drives with.
+            System::deliver(
+                &system,
+                emitter,
+                Delivered::Message(Message {
+                    id: ContractId::of(b"go"),
+                    payload: Bytes::from_static(b"x"),
+                    from: Origin {
+                        reducer: ReducerId::of(b"caller"),
+                        host,
+                    },
+                    continuation_token: Bytes::from_static(b"t"),
+                }),
+            )
+            .await
+            .unwrap();
             // Let the simulator route everything to quiescence (deterministic; no timers here).
             bach::time::sleep(core::time::Duration::from_millis(1)).await;
 
