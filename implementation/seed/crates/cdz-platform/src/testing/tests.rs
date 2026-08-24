@@ -483,6 +483,52 @@ fn the_driver_runs_a_reducer_set_to_quiescence_and_returns_the_event_log() {
 }
 
 #[test]
+fn a_registry_override_routes_a_contracts_effect_to_the_override_handler() {
+    // The run installs a registry: default = the system reducer, plus an override routing `http.get` to a
+    // distinct handler program. The emitter emits `http.get`; the platform resolves the contract through the
+    // registry to the OVERRIDE handler, which emits a distinctive `marker` effect. The default (JustClose)
+    // emits nothing, so the marker's presence proves the override — not the default — received the effect.
+    let http = ContractId::of(b"http.get");
+    let marker = ContractId::of(b"override-ran");
+    let run = Harness::new("sys")
+        .host(HostId::of(b"node"))
+        .blob("emitter", Bytes::from_static(b"emitter"))
+        .blob("sys", Bytes::from_static(b"sys"))
+        .blob("special", Bytes::from_static(b"special"))
+        .spawn(SpawnSpec::new("emitter", "emitter"))
+        .registry("sys", vec![(http, "special".to_string())])
+        .deliver(
+            "emitter",
+            Delivered::Message(Message {
+                id: ContractId::of(b"go"),
+                payload: Bytes::from_static(b"x"),
+                from: Origin {
+                    reducer: ReducerId::of(b"caller"),
+                    host: HostId::of(b"node"),
+                },
+                continuation_token: Bytes::from_static(b"t"),
+            }),
+        )
+        .run(move |_cas| {
+            let mut store = crate::program::testing::Store::new();
+            store.register(ProgramHash::of(b"emitter"), move || {
+                Box::new(EmitAndClose { contract: http })
+            });
+            store.register(ProgramHash::of(b"sys"), || Box::new(JustClose));
+            store.register(ProgramHash::of(b"special"), move || {
+                Box::new(EmitAndClose { contract: marker })
+            });
+            store
+        });
+    assert!(
+        run.records.iter().any(|r| matches!(&r.entry,
+            Entry::Event(EventOp::Emitted { contract, .. }) if *contract == marker)),
+        "http.get routed to the override handler (which emitted the marker), not the default: {:?}",
+        run.records
+    );
+}
+
+#[test]
 fn the_driver_resolves_a_delivery_to_the_named_spawns_derived_id() {
     // A delivery names its target; the harness resolves that name to the genesis-derived id it assigned
     // the spawn, and the delivered event is recorded at that reducer. The caller never writes the id.

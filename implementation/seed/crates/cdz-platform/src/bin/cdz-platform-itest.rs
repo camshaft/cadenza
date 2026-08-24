@@ -480,6 +480,7 @@ mod tests {
             checker: None,
             pure_run: None,
             deps: Vec::new(),
+            registry: None,
         };
         let report = run(spec).expect("inline blobs never invoke the path loader");
         assert!(
@@ -518,6 +519,7 @@ mod tests {
             checker: Some("check".to_string()),
             pure_run: None,
             deps: Vec::new(),
+            registry: None,
         };
         let report = run(spec).expect("inline blobs never invoke the path loader");
         assert!(
@@ -553,6 +555,7 @@ mod tests {
             checker: Some("absent".to_string()),
             pure_run: None,
             deps: Vec::new(),
+            registry: None,
         };
         assert!(
             run(spec).is_err(),
@@ -577,6 +580,7 @@ mod tests {
             checker: None,
             pure_run: None,
             deps: Vec::new(),
+            registry: None,
         };
         assert!(
             run(spec).is_err(),
@@ -627,6 +631,7 @@ mod tests {
                 expect_output: Bytes::from_static(b"X"),
             }),
             deps: Vec::new(),
+            registry: None,
         };
         let report = run(spec).expect("inline blobs never invoke the path loader");
         assert!(

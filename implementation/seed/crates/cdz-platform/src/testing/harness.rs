@@ -36,7 +36,7 @@ use super::checker::{CheckOutcome, Checker};
 use super::observation::{Entry, ObservationLog, Record, SpawnInfo};
 use super::recording::RecordingProgramStore;
 use crate::{
-    BachRuntime, BlobStore, Bytes, Delivered, Genesis, HostId, InMemoryBlobStore,
+    BachRuntime, BlobStore, Bytes, ContractId, Delivered, Genesis, HostId, InMemoryBlobStore,
     InMemoryEventRegistry, InMemoryReducerGraph, Links, Origin, ProgramHash, ProgramStore,
     ReducerId, ReducerKind, Runtime, Spawn, Str, System, TaskSystem,
 };
@@ -218,6 +218,11 @@ pub struct Harness {
     /// [`RecordingBlobStore`](super::RecordingBlobStore) built over the same log — so a reducer's KV and blob
     /// calls land in the one ordered log alongside the events it folds (§7/§8/§9), not just the events.
     log: Option<ObservationLog>,
+    /// The event registry to install, if the caller set one with [`registry`](Harness::registry): the default
+    /// handler's blob name plus per-contract `(contract, handler blob name)` overrides (§4). `None` keeps the
+    /// harness default — every contract routes to the `system` reducer. Names resolve to content hashes at
+    /// run time, alongside the blob/spawn names.
+    event_registry: Option<(String, Vec<(ContractId, String)>)>,
 }
 
 impl Harness {
@@ -234,7 +239,23 @@ impl Harness {
             deliveries: Vec::new(),
             run_for: DEFAULT_RUN_FOR,
             log: None,
+            event_registry: None,
         }
+    }
+
+    /// Install a custom event registry (§4): `default` is the blob name of the default event handler (the
+    /// program governing any contract without an override), and `overrides` maps contract-ids to handler
+    /// blob names. Both resolve to content hashes at run time. Without this the run routes every contract to
+    /// the `system` reducer (the harness default). All named programs must be registered with
+    /// [`blob`](Harness::blob).
+    #[must_use]
+    pub fn registry(
+        mut self,
+        default: impl Into<String>,
+        overrides: Vec<(ContractId, String)>,
+    ) -> Self {
+        self.event_registry = Some((default.into(), overrides));
+        self
     }
 
     /// Record the run into `log` rather than a fresh internal one — so a caller can *share* one observation
@@ -321,6 +342,7 @@ impl Harness {
             deliveries,
             run_for,
             log: external_log,
+            event_registry,
         } = self;
 
         // Resolve names to hashes/ids (pure, deterministic — done before the sim). A blob name resolves to
@@ -333,6 +355,27 @@ impl Harness {
         let system_program = *blob_ids.get(system.as_str()).unwrap_or_else(|| {
             panic!("system reducer blob '{system}' is not registered with Harness::blob")
         });
+        // Build the event registry (§4): a custom one if the run installed it (default + per-contract
+        // overrides, resolved by blob name to content hash), else the harness default of every contract →
+        // the system reducer. Resolved here (borrowing `blob_ids`) into an owned registry moved into the sim.
+        let registry = match event_registry {
+            None => InMemoryEventRegistry::new(system_program),
+            Some((default_name, overrides)) => {
+                let default = *blob_ids.get(default_name.as_str()).unwrap_or_else(|| {
+                    panic!("registry default handler blob '{default_name}' is not registered with Harness::blob")
+                });
+                let mut registry = InMemoryEventRegistry::new(default);
+                for (contract, program_name) in &overrides {
+                    let program = *blob_ids.get(program_name.as_str()).unwrap_or_else(|| {
+                        panic!(
+                            "registry handler blob '{program_name}' is not registered with Harness::blob"
+                        )
+                    });
+                    registry.set_override(*contract, program);
+                }
+                registry
+            }
+        };
         let mut ids: BTreeMap<String, ReducerId> = BTreeMap::new();
         // Each kernel spawn paired with the task name the run gave it, so the run can record the name→id
         // assignment into the log before spawning.
@@ -422,7 +465,7 @@ impl Harness {
                 let system = TaskSystem::<BachRuntime>::new(
                     Arc::new(recording),
                     Arc::new(InMemoryReducerGraph::new()),
-                    Arc::new(InMemoryEventRegistry::new(system_program)),
+                    Arc::new(registry),
                     host,
                 );
                 // Record the name→id assignment into the log first, so the log is self-describing: a reader
