@@ -123,6 +123,30 @@ pub struct HarnessSpec {
     /// set of checks compiled to a Cadenza reducer program, or hand-written). `None` for a run with no
     /// end-of-run check.
     pub checker: Option<String>,
+    /// A **pure run** to perform instead of the spawn/deliver/checker flow, if present (§3): run one program
+    /// as a pure function of a single input — empty capabilities, every effect denied — and assert its output.
+    /// The executable runs the program through the `run` primitive and passes iff the output equals
+    /// [`PureRun::expect_output`]; the spawn/deliver/checker fields are unused for such a run. `None` for an
+    /// ordinary run.
+    pub pure_run: Option<PureRun>,
+}
+
+/// A pure run to perform and assert over (`design/cadenza-platform.md` §3): run [`program`](PureRun::program)
+/// as a pure function of [`input`](PureRun::input) on [`contract`](PureRun::contract) — the `run` primitive
+/// instantiates it with an empty capability set, so every effect it emits is denied (dropped, never routed)
+/// and its only output is the fold's result — and assert the output equals [`expect_output`](PureRun::expect_output).
+/// This is how a conformance run exercises run-as-effect and effect-denial (§3) without a system reducer: no
+/// spawn, no delivery, just `run(program, contract, input) == Ok(expect_output)`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PureRun {
+    /// The blob name of the program to run (declared in [`HarnessSpec::blobs`]).
+    pub program: String,
+    /// The contract-id the input is delivered against (the `run` message's `id`).
+    pub contract: ContractId,
+    /// The input value, as opaque bytes.
+    pub input: Bytes,
+    /// The output the run must produce for the conformance run to pass.
+    pub expect_output: Bytes,
 }
 
 /// An event the harness injects into a task's mailbox as a run's initial stimulus (§4). The schema's
@@ -372,6 +396,11 @@ impl HarnessSpec {
 
         let checker = str_field(arenas, root, "checker")?.map(str::to_string);
 
+        let pure_run = match record_field(arenas, root, "pure-run") {
+            None => None,
+            Some(id) => Some(read_pure_run(arenas, id)?),
+        };
+
         Ok(HarnessSpec {
             system,
             run_for,
@@ -379,6 +408,7 @@ impl HarnessSpec {
             spawns,
             deliveries,
             checker,
+            pure_run,
         })
     }
 
@@ -426,6 +456,16 @@ impl HarnessSpec {
                     target: target.clone(),
                 });
             }
+        }
+        // A pure run names a program to run; it must be a declared blob (like the system reducer). The run
+        // is standalone (no spawn/delivery), so nothing else about it cross-references the spawn set.
+        if let Some(pure_run) = &self.pure_run
+            && !blobs.contains(pure_run.program.as_str())
+        {
+            return Err(SpecError::UnknownBlob {
+                referrer: "pure-run".to_string(),
+                blob: pure_run.program.clone(),
+            });
         }
         Ok(())
     }
@@ -509,8 +549,31 @@ impl HarnessSpec {
             let checker = str_leaf(b, checker);
             fields.push(("checker", checker));
         }
+        if let Some(pure_run) = &self.pure_run {
+            let pure_run = pure_run_to_ast(b, pure_run);
+            fields.push(("pure-run", pure_run));
+        }
         record(b, fields)
     }
+}
+
+/// The `("record" (= program …) (= contract …) (= input …) (= expect-output …))` node for a pure run — the
+/// inverse of [`read_pure_run`]. The contract crosses as its raw bytes (the byte form `read_contract_id` also
+/// accepts, alongside the base62-string form a name→id rewrite produces).
+fn pure_run_to_ast(b: &mut Builder, pure_run: &PureRun) -> StructId {
+    let program = str_leaf(b, &pure_run.program);
+    let contract = bytes_leaf(b, pure_run.contract.hash().as_bytes());
+    let input = bytes_leaf(b, &pure_run.input);
+    let expect_output = bytes_leaf(b, &pure_run.expect_output);
+    record(
+        b,
+        vec![
+            ("program", program),
+            ("contract", contract),
+            ("input", input),
+            ("expect-output", expect_output),
+        ],
+    )
 }
 
 /// A string leaf `"text"`.
@@ -791,6 +854,30 @@ fn error_tag(e: Error) -> &'static str {
 }
 
 /// Read the required `contract` field of an event record as a [`ContractId`] (its 33 raw hash bytes).
+/// Read a `pure-run` sub-record into a [`PureRun`]: a `program` blob name, the `contract` the input is run
+/// against, the `input` bytes, and the `expect-output` bytes. Liberal about the record head (name- or
+/// string-headed), so it reads both the canonical value form and the `cdz convert` surface form.
+fn read_pure_run(arenas: &Arenas, id: StructId) -> Result<PureRun, SpecError> {
+    if arenas.as_form(id, "record").is_none() && arenas.as_ctor_form(id, "record").is_none() {
+        return Err(SpecError::WrongType {
+            field: "pure-run",
+            want: "a (record …) with program, contract, input, expect-output",
+        });
+    }
+    let program = str_field(arenas, id, "program")?
+        .ok_or(SpecError::MissingField("program"))?
+        .to_string();
+    let contract = read_contract_id(arenas, id)?;
+    let input = read_required_bytes(arenas, id, "input")?;
+    let expect_output = read_required_bytes(arenas, id, "expect-output")?;
+    Ok(PureRun {
+        program,
+        contract,
+        input,
+        expect_output,
+    })
+}
+
 fn read_contract_id(arenas: &Arenas, event: StructId) -> Result<ContractId, SpecError> {
     let id = record_field(arenas, event, "contract").ok_or(SpecError::MissingField("contract"))?;
     // A contract-id crosses either as its raw 33 tagged bytes, or as a base62 string (§8) — the text form
@@ -894,7 +981,7 @@ fn answer_to_ast(b: &mut Builder, answer: &Result<Bytes, Error>) -> StructId {
 
 #[cfg(test)]
 mod tests {
-    use super::{BlobSource, BlobSpec, DeliveryEvent, HarnessSpec, SpecError};
+    use super::{BlobSource, BlobSpec, DeliveryEvent, HarnessSpec, PureRun, SpecError};
     use crate::contract_value::bare_ctor;
     use crate::contract_value::{bytes_leaf, record, uint_leaf};
     use crate::testing::SpawnSpec;
@@ -1052,6 +1139,7 @@ mod tests {
             spawns: vec![],
             deliveries: vec![],
             checker: None,
+            pure_run: None,
         };
         // The loader is invoked for the path blob only, with the exact path string.
         let mut loaded = Vec::new();
@@ -1081,6 +1169,7 @@ mod tests {
             spawns: vec![],
             deliveries: vec![],
             checker: None,
+            pure_run: None,
         };
         let result = spec.build(|_| Err("no such file"));
         assert_eq!(result.err(), Some("no such file"));
@@ -1224,6 +1313,7 @@ mod tests {
                 ),
             ],
             checker: Some("check".to_string()),
+            pure_run: None,
         };
         let bytes = spec.encode();
         assert_eq!(HarnessSpec::decode(&bytes), Ok(spec));
@@ -1239,6 +1329,7 @@ mod tests {
             spawns: vec![],
             deliveries: vec![],
             checker: None,
+            pure_run: None,
         };
         assert_eq!(HarnessSpec::decode(&spec.encode()), Ok(spec));
     }
@@ -1456,6 +1547,7 @@ mod tests {
             ],
             deliveries: vec![deliver_to("root")],
             checker: None,
+            pure_run: None,
         };
         assert_eq!(spec.validate(), Ok(()));
     }
@@ -1469,6 +1561,7 @@ mod tests {
             spawns: vec![],
             deliveries: vec![],
             checker: None,
+            pure_run: None,
         };
         assert_eq!(
             spec.validate(),
@@ -1488,6 +1581,7 @@ mod tests {
             spawns: vec![SpawnSpec::new("t", "missing")],
             deliveries: vec![],
             checker: None,
+            pure_run: None,
         };
         assert_eq!(
             spec.validate(),
@@ -1511,6 +1605,7 @@ mod tests {
             ],
             deliveries: vec![],
             checker: None,
+            pure_run: None,
         };
         assert_eq!(
             spec.validate(),
@@ -1530,6 +1625,7 @@ mod tests {
             spawns: vec![SpawnSpec::new("dup", "w"), SpawnSpec::new("dup", "w")],
             deliveries: vec![],
             checker: None,
+            pure_run: None,
         };
         assert_eq!(
             spec.validate(),
@@ -1548,6 +1644,7 @@ mod tests {
             spawns: vec![SpawnSpec::new("root", "w")],
             deliveries: vec![deliver_to("ghost")],
             checker: None,
+            pure_run: None,
         };
         assert_eq!(
             spec.validate(),
@@ -1585,6 +1682,7 @@ mod tests {
                 ),
             ],
             checker: None,
+            pure_run: None,
         };
         assert_eq!(HarnessSpec::decode(&spec.encode()), Ok(spec));
     }
@@ -1673,7 +1771,62 @@ mod tests {
                 },
             )],
             checker: None,
+            pure_run: None,
         };
         assert_eq!(HarnessSpec::decode(&spec.encode()), Ok(spec));
+    }
+
+    /// A spec carrying a `pure-run` directive round-trips: program name, contract-id, input, and expected
+    /// output all read back exactly.
+    #[test]
+    fn a_pure_run_round_trips() {
+        let spec = HarnessSpec {
+            system: "$system".to_string(),
+            run_for: None,
+            blobs: vec![BlobSpec {
+                name: "prog".to_string(),
+                source: BlobSource::Inline(Bytes::from_static(b"the-program")),
+            }],
+            spawns: vec![],
+            deliveries: vec![],
+            checker: None,
+            pure_run: Some(PureRun {
+                program: "prog".to_string(),
+                contract: ContractId::of(b"cdz-platform.deliver"),
+                input: Bytes::from_static(b"X"),
+                expect_output: Bytes::from_static(b"X"),
+            }),
+        };
+        assert_eq!(HarnessSpec::decode(&spec.encode()), Ok(spec));
+    }
+
+    /// `validate` rejects a pure run whose program is not a declared blob — the same cross-reference check
+    /// as the system reducer, so a typo'd program name is a clean [`SpecError`], not a run-time failure.
+    #[test]
+    fn validate_rejects_a_pure_run_naming_an_unknown_program() {
+        let spec = HarnessSpec {
+            system: "$system".to_string(),
+            run_for: None,
+            blobs: vec![BlobSpec {
+                name: "$system".to_string(),
+                source: BlobSource::Inline(Bytes::from_static(b"placeholder")),
+            }],
+            spawns: vec![],
+            deliveries: vec![],
+            checker: None,
+            pure_run: Some(PureRun {
+                program: "missing".to_string(),
+                contract: ContractId::of(b"c"),
+                input: Bytes::new(),
+                expect_output: Bytes::new(),
+            }),
+        };
+        assert_eq!(
+            spec.validate(),
+            Err(SpecError::UnknownBlob {
+                referrer: "pure-run".to_string(),
+                blob: "missing".to_string(),
+            })
+        );
     }
 }
