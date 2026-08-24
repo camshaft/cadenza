@@ -1008,9 +1008,7 @@ pub fn emit(
     // The wrappers' `def_abs` (computed inside `record_interface_export` from `layout.abs`) AND the emitted
     // core (`core_module_with_wrappers`) must BOTH see that shifted `import_base`, so bump it BEFORE building
     // the wrappers. Byte-identical when there is no compound host result.
-    let typed_needs_realloc = host_imports
-        .iter()
-        .any(|h| h.result_bytes || h.result_option_bytes || h.result_list_byte_pairs);
+    let typed_needs_realloc = host_imports.iter().any(|h| h.spilled_result.is_some());
     let typed_realloc_layout;
     let typed_layout = if typed_needs_realloc {
         typed_realloc_layout = layout.with_import_base(layout.import_base + 1);
@@ -1058,9 +1056,7 @@ pub fn emit(
         // IMPORTS `"mem"` and its `list<u8>`-leaf handling + the host-op lift share the one memory. A MEMORYLESS
         // host op (scalar/unit — `clock.now : () -> u64`) takes the simpler defined-memory shape.
         let host_needs_memory = host::set_needs_memory(&host_imports)
-            || host_imports
-                .iter()
-                .any(|h| h.result_bytes || h.result_option_bytes || h.result_list_byte_pairs);
+            || host_imports.iter().any(|h| h.spilled_result.is_some());
         // `typed_needs_realloc` (computed above) = a compound host RESULT is present → the shared-allocator
         // shape (wrapper imports `"mem"`.`"cabi_realloc"`; `typed_layout` already carries the +1 import shift).
         let needs_realloc = typed_needs_realloc;
@@ -1087,9 +1083,24 @@ pub fn emit(
                     )
                 })?
         };
-        let needs_option_bytes = host_imports.iter().any(|h| h.result_option_bytes);
-        let needs_list_byte_pairs = host_imports.iter().any(|h| h.result_list_byte_pairs);
-        let needs_bytes_result = host_imports.iter().any(|h| h.result_bytes);
+        // The spilled-result SHAPE is read off each op's carried WIT result type (no per-shape bool flags):
+        // `option<list<u8>>`, `list<tuple<list<u8>,list<u8>>>`, or bare `list<u8>` — each selects which
+        // component defined-type the import instance-type prepends + the functype result index.
+        let needs_option_bytes = host_imports.iter().any(|h| {
+            h.spilled_result
+                .as_ref()
+                .is_some_and(|t| host::is_option_bytes(db, t))
+        });
+        let needs_list_byte_pairs = host_imports.iter().any(|h| {
+            h.spilled_result
+                .as_ref()
+                .is_some_and(host::is_list_byte_pairs)
+        });
+        let needs_bytes_result = host_imports.iter().any(|h| {
+            h.spilled_result
+                .as_ref()
+                .is_some_and(|t| matches!(t.strip_nominal(), crate::ty::Ty::Bytes))
+        });
         let list_pairs_type_idx = 2 + needs_option_bytes as u32;
         // RECORD-param host arg (shape d): build a component `record` DEFINED type per record param (reused
         // wit_ctype emitter, tag 0x72; all-scalar fields → each an inline primitive valtype). CONSTRAINED
@@ -1242,10 +1253,7 @@ pub fn emit(
         // `list<u8>`) is lifted only on the bytes-provider path OR the typed interface-instance host path
         // (both handled earlier in the dispatch). If such a result reaches HERE, decline rather than
         // mis-emit (the host instance-type would omit the `(list u8)` type its functype references).
-        if host_imports
-            .iter()
-            .any(|h| h.result_option_bytes || h.result_list_byte_pairs || h.result_bytes)
-        {
+        if host_imports.iter().any(|h| h.spilled_result.is_some()) {
             return Err(Reject::decline(
                 "a compound host RESULT (option<list<u8>>/list<tuple>/list<u8>) is emitted only on the \
                  bytes-provider or typed interface-instance path, not the plain host-delegating envelope",
@@ -1809,25 +1817,25 @@ fn host_op_comp_functype(
         }
     }
     item.extend_from_slice(&encode::wasm_vec(h.params.len(), &param_items));
-    if h.result_option_bytes {
-        // The compound `option<list<u8>>` result (S0): a single unnamed result referencing the
-        // `option<list<u8>>` DEFINED type the host instance-type prepends right AFTER the shared `(list u8)`
-        // type — index `list_type_idx + 1` (a type-index valtype, uleb128, like the Bytes param above).
+    // The result valtype: a SPILLED compound references its component DEFINED type by index; the shape is
+    // read off the carried WIT result type (no per-shape bool flags). The admit set is {option<list<u8>>,
+    // list<tuple<list<u8>,list<u8>>>, bare list<u8>}, so `is_list_byte_pairs` / `Ty::Bytes` distinguish the
+    // list-pairs and bare-bytes shapes structurally (db-free), and the remaining spilled `Ty::Sum` is the
+    // option shape — matching the instance-type's prepend order (idx0 `(list u8)`, idx1 `option`, then pairs).
+    if let Some(t) = &h.spilled_result {
         item.push(0x00);
-        encode::uleb128((list_type_idx + 1) as u64, &mut item);
-    } else if h.result_list_byte_pairs {
-        // The compound `list<tuple<list<u8>,list<u8>>>` result (kv prefix-scan): a single unnamed result
-        // referencing the `list<tuple<…>>` DEFINED type the host instance-type appends after the (list u8)
-        // + optional (option) types. Its index is GLOBAL (depends on whether an option type is also present),
-        // so it is COMPUTED by the caller (`host_effect_instance_type`'s prepend order) and threaded in.
-        item.push(0x00);
-        encode::uleb128(list_pairs_type_idx as u64, &mut item);
-    } else if h.result_bytes {
-        // A bare `list<u8>` (Bytes) result (`identity.id`/`blobs.put`): a single unnamed result referencing
-        // the shared `(list u8)` DEFINED type by its instance-type-local index `list_type_idx` — the same
-        // type a Bytes PARAM references (line above), just in result position.
-        item.push(0x00);
-        encode::uleb128(list_type_idx as u64, &mut item);
+        if crate::backend::wasm::host::is_list_byte_pairs(t) {
+            // `list<tuple<list<u8>,list<u8>>>` (kv prefix-scan) — the `list<tuple<…>>` DEFINED type the
+            // instance-type appends after (list u8) + optional (option); its GLOBAL index is threaded in.
+            encode::uleb128(list_pairs_type_idx as u64, &mut item);
+        } else if matches!(t.strip_nominal(), crate::ty::Ty::Bytes) {
+            // A bare `list<u8>` (identity.id/blobs.put) — the shared `(list u8)` type at `list_type_idx`.
+            encode::uleb128(list_type_idx as u64, &mut item);
+        } else {
+            // `option<list<u8>>` (kv.get) — the `option<list<u8>>` DEFINED type the instance-type prepends
+            // right after the shared `(list u8)`, index `list_type_idx + 1`.
+            encode::uleb128((list_type_idx + 1) as u64, &mut item);
+        }
     } else {
         match h.result {
             Some(r) => item.extend_from_slice(&[0x00, r.comp_byte()]),
@@ -9290,7 +9298,11 @@ fn emit_bytes_provider_member(
             let body = def_body(db, def)?;
             host::collect_host_imports(db, body, &mut host_probe);
         }
-        if host_probe.iter().any(|hi| hi.result_option_bytes) {
+        if host_probe.iter().any(|hi| {
+            hi.spilled_result
+                .as_ref()
+                .is_some_and(|t| host::is_option_bytes(db, t))
+        }) {
             used.insert("sum-new");
         }
         // The prefix-scan lift CONSTRUCTS a value-heap `List<Tuple<Bytes,Bytes>>` via `arr-alloc`/`arr-set`
@@ -9298,7 +9310,11 @@ fn emit_bytes_provider_member(
         // Cadenza `List` is — without it `List.len`/`vec-*` misread the raw arr as empty), and
         // `bytes-alloc`/`bytes-set` (each key/value) — ops the reducer's own Core may never use, so
         // `collect_module_used_ops` misses them. Add them when a host op returns `list<tuple<list<u8>,list<u8>>>`.
-        if host_probe.iter().any(|hi| hi.result_list_byte_pairs) {
+        if host_probe.iter().any(|hi| {
+            hi.spilled_result
+                .as_ref()
+                .is_some_and(host::is_list_byte_pairs)
+        }) {
             used.insert("arr-alloc");
             used.insert("arr-set");
             used.insert("vec-of-arr");
@@ -9351,10 +9367,7 @@ fn emit_bytes_provider_member(
     // (func index h+k) for the select lift's retptr alloc — shifting the DEFINED funcs by +1, so the import
     // base (which `member_body_abs`/self-calls resolve against) must account for it. No option-result op
     // (kv.put) → base h+k, byte-identical.
-    let needs_realloc = host_imports
-        .iter()
-        .any(|hi| hi.result_option_bytes || hi.result_list_byte_pairs || hi.result_bytes)
-        as u32;
+    let needs_realloc = host_imports.iter().any(|hi| hi.spilled_result.is_some()) as u32;
     let layout = layout
         .with_import_base(h + k + needs_realloc)
         .with_host_needs_memory(host::set_needs_memory(&host_imports));
@@ -9429,12 +9442,25 @@ fn emit_bytes_provider_member(
     // option-bytes result), then `tuple<list,list>` + `list<tuple>` (if any prefix-scan result). So the
     // `list<tuple<list<u8>,list<u8>>>` result type lands at index `2 + needs_option_bytes` — threaded into
     // `host_op_comp_functype` since it is a GLOBAL layout property (a single op can't compute it alone).
-    let needs_option_bytes = host_imports.iter().any(|h| h.result_option_bytes);
-    let needs_list_byte_pairs = host_imports.iter().any(|h| h.result_list_byte_pairs);
+    // The spilled-result shape is read off each op's carried WIT result type (no per-shape bool flags).
+    let needs_option_bytes = host_imports.iter().any(|h| {
+        h.spilled_result
+            .as_ref()
+            .is_some_and(|t| host::is_option_bytes(db, t))
+    });
+    let needs_list_byte_pairs = host_imports.iter().any(|h| {
+        h.spilled_result
+            .as_ref()
+            .is_some_and(host::is_list_byte_pairs)
+    });
     // A bare `list<u8>` (Bytes) result references the `(list u8)` type; when the op has no Bytes PARAM (a
     // nullary `identity.id : () -> list<u8>`), only the result needs it, so the instance-type must still
     // prepend it (else the result functype references an unbound type index — invalid component).
-    let needs_bytes_result = host_imports.iter().any(|h| h.result_bytes);
+    let needs_bytes_result = host_imports.iter().any(|h| {
+        h.spilled_result
+            .as_ref()
+            .is_some_and(|t| matches!(t.strip_nominal(), crate::ty::Ty::Bytes))
+    });
     let list_pairs_type_idx = 2 + needs_option_bytes as u32;
     let host_fns: Vec<envelope::HostFn> = host_imports
         .iter()

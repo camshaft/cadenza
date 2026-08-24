@@ -95,30 +95,22 @@ pub struct HostImport {
     /// The operation's boundary parameters (scalar or string). A `Unit` domain is ELIDED (a nullary op
     /// `(-> Unit R)` performed as `(E.op)` takes no boundary parameter).
     pub params: Vec<HostParam>,
-    /// The operation's SCALAR boundary result — `None` for a `Unit` result OR for the compound
-    /// `option<list<u8>>` result (distinguished by [`result_option_bytes`]).
+    /// The operation's SCALAR boundary result — `None` for a `Unit` result OR for a SPILLED compound result
+    /// (the latter carried by [`spilled_result`](HostImport::spilled_result)).
     pub result: Option<AbiValType>,
-    /// The result is the compound `option<list<u8>>` (guest `Option<Bytes>`) — the host writes
-    /// `(disc, ptr, len)` into a caller-provided return area, which the guest lifts into a value-heap
-    /// `Option<Bytes>` handle (S0). Mutually exclusive with a scalar `result` (both `None`/false for a
-    /// plain scalar/unit op). A host-boundary-only shape (a peer-bound op never sets it — a peer compound
-    /// crosses as an opaque `u32` handle, not this canonical option marshal).
-    pub result_option_bytes: bool,
-    /// The result is the compound `list<tuple<list<u8>,list<u8>>>` (guest `List<Tuple<Bytes,Bytes>>`) — the
-    /// kv `prefix-scan` result, a list of (key, value) byte pairs ([`is_list_byte_pairs`]). Like
-    /// `result_option_bytes` it is a SPILLED compound (a list flattens to `(ptr, len)`, >1 flat, so it
-    /// returns via a caller-provided retptr, NOT an i32); the host writes the flattened list there and the
-    /// guest lifts it into a value-heap `List<Tuple<Bytes,Bytes>>`. Host-boundary only; mutually exclusive
-    /// with a scalar `result` and with `result_option_bytes`. (The lift + component type are the ACTIVATION
-    /// slice; this flag rides the same spilled-retptr core ABI as `result_option_bytes`.)
-    pub result_list_byte_pairs: bool,
-    /// The result is a bare `list<u8>` (guest `Bytes`) — a world import like `identity.id : () ->
-    /// reducer-id` (`reducer-id = list<u8>`) or `blobs.put : (list<u8>) -> hash`. A `list<u8>` flattens to
-    /// `(ptr, len)` (2 flat > 1), so it SPILLS to a caller-provided 8-byte return area the host writes
-    /// `(ptr, len)` into; the guest lifts it into a value-heap `Bytes` handle (`bytes-alloc` + copy-in),
-    /// like the `option<list<u8>>` lift minus the disc/None arm. Host-boundary only; mutually exclusive with
-    /// a scalar `result`, `result_option_bytes`, and `result_list_byte_pairs`.
-    pub result_bytes: bool,
+    /// The operation's result when it is a SPILLED COMPOUND — a result whose flattened core form is more than
+    /// one value, so the canonical ABI returns it through a caller-provided retptr (NOT an i32) and the guest
+    /// LIFTS the host-written bytes into a value-heap handle (`select::emit_result_lift`, the general
+    /// WIT-type-driven lift). `Some(wit_ty)` carries the WIT result type — which drives the retptr size
+    /// (`canonical_layout`), the guest lift, AND the component defined-type the import instance-type declares;
+    /// `None` for a scalar/unit result. This single type-carrying field REPLACES the former three per-shape
+    /// bool flags (`option<list<u8>>` / `list<tuple<list<u8>,list<u8>>>` / bare `list<u8>`): the shape is now
+    /// read off the WIT type rather than a hardcoded flag, so a new spilled shape rides the same machinery
+    /// rather than growing a fourth flag. Mutually exclusive with a scalar `result` (both `None`/`None` for a
+    /// plain scalar or unit op). A host-boundary-only concept — a peer-bound op's compound crosses as an
+    /// opaque `u32` handle over the shared runtime, never this canonical spilled marshal, so a peer op leaves
+    /// this `None`.
+    pub spilled_result: Option<Ty>,
 }
 
 /// Whether `ty` is the built-in `Option<Bytes>` (guest `option<list<u8>>` at the host boundary) — a `Sum`
@@ -598,21 +590,25 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                     }
                 }
             }
-            // The compound `option<list<u8>>` HOST result (S0) — the guest lifts it into a value-heap
-            // `Option<Bytes>`. Host-boundary only (a peer-bound op's compound crosses as a `u32` handle,
-            // never this canonical option marshal), so it never coexists with a scalar `result`.
-            let result_option_bytes = !peer_bound && is_option_bytes(db, &result);
-            // The kv prefix-scan compound result `list<tuple<list<u8>,list<u8>>>` — a spilled compound like
-            // `option<list<u8>>` (host-boundary only). Never coexists with a scalar `result` or the option.
-            let result_list_byte_pairs = !peer_bound && is_list_byte_pairs(&result);
-            // A bare `list<u8>` (Bytes) result — a world import returning a hash/id (`identity.id`,
-            // `blobs.put`). Spilled + lifted like `option<list<u8>>`, minus the disc. Host-boundary only.
-            let result_bytes = !peer_bound && matches!(result, Ty::Bytes);
-            let result_abi = if matches!(result, Ty::Unit)
-                || result_option_bytes
-                || result_list_byte_pairs
-                || result_bytes
+            // A SPILLED COMPOUND host result — one whose flattened core form is >1 value, so the canonical
+            // ABI returns it via a caller-provided retptr and the guest LIFTS it into a value-heap handle
+            // (`select::emit_result_lift`). The three shapes wired today: `option<list<u8>>` (kv.get, guest
+            // `Option<Bytes>`), `list<tuple<list<u8>,list<u8>>>` (kv.prefix-scan, `List<Tuple<Bytes,Bytes>>`),
+            // and bare `list<u8>` (identity.id/blobs.put, `Bytes`). Host-boundary only (a peer-bound op's
+            // compound crosses as a `u32` handle over the shared runtime, never this canonical spilled marshal),
+            // so a peer op leaves it `None`. Carrying the WIT type (not per-shape bool flags) is what lets the
+            // retptr size / guest lift / component defined-type all derive from ONE source and a new shape ride
+            // the same machinery.
+            let spilled_result = if !peer_bound
+                && (is_option_bytes(db, &result)
+                    || is_list_byte_pairs(&result)
+                    || matches!(result, Ty::Bytes))
             {
+                Some(result.clone())
+            } else {
+                None
+            };
+            let result_abi = if matches!(result, Ty::Unit) || spilled_result.is_some() {
                 None
             } else if peer_bound {
                 extern_abi_val_type(&result)
@@ -624,9 +620,7 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                 op: op.to_string(),
                 params,
                 result: result_abi,
-                result_option_bytes,
-                result_list_byte_pairs,
-                result_bytes,
+                spilled_result,
             };
             if !out.iter().any(|h| h.effect == imp.effect && h.op == imp.op) {
                 out.push(imp);
