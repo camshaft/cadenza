@@ -106,10 +106,25 @@ msg.token, answer = Err(missing-handler) }` and `deliver-response`s it to `msg.s
 kernel installs only structural edges (spawn tree, `watch-exit`), and **live dispatch does not read the graph
 at all** — it resolves a contract through the Rust `EventRegistry` (`events.resolve(contract) -> ProgramHash`,
 `system.rs`), which is the sole routing mechanism today and maps a contract to *which program* is the event
-reducer. There is **no bridge** between EventRegistry entries and graph chain edges. So the two mechanisms are
-distinct: the EventRegistry picks the program (this guest, for a contract with no override); this guest, once
-built, reads the *graph* for finer per-owner delegation. Whether they coexist that way or dispatch should
-migrate to a graph read is an open question (below) the operator should settle before increment 3 wires it.
+reducer. There is **no bridge** between EventRegistry entries and graph chain edges.
+
+**Settled model (operator A/B).** The two mechanisms are **complementary layers, and dispatch does NOT migrate
+to a graph read**:
+
+- **Node (A):** the default handler reads the chain from **the emitting reducer** — `graph.neighbors(
+  msg.sender.reducer, contract, outgoing)` (operator: "the node for the handler chain would be the actual
+  reducer that spawned the event"). Not a well-known root.
+- **Registry vs graph (B):** the **EventRegistry** maps a contract to the **privileged event program** that
+  carries out its events (this default handler, or a per-contract override) — few, stable, tightly-controlled.
+  The **graph** holds, per emitting reducer, the ordered chain of **non-privileged transform reducers**
+  configured to transform that reducer's requests. The default handler (a privileged program) walks that chain
+  via `neighbors` and routes through it. So the registry picks the *program*; the graph supplies the *per-owner
+  transform chain* — they coexist, not compete.
+- **Privilege consequence:** the graph transform reducers are **non-privileged** (they compile against the
+  ordinary `reducer-world`, effects only); the event programs are privileged (the one coarse privileged world —
+  `spawn` + `deliver` + `graph` + `provenance`, per [[DESIGN-per-spawn-limits-and-spawn-capability]] Q3). This
+  lines up with the spawn priv model: privileged = spawn + deliver + event programs; non-priv = effects + graph
+  transforms. Carry this to the world/privilege wiring with v-inference.
 
 ## Capability model
 
@@ -123,13 +138,49 @@ migrate to a graph read is an open question (below) the operator should settle b
 
 1. **Harness-settable registry (Gap A).** The `registry` `HarnessSpec` directive + itest-binary wiring. Not
    gated on anything; coordinate with v-platform-itest. Unblocks expressing the run in increment 3.
-2. **Default-event-handler guest (Gap B, skeleton).** A Cadenza event-reducer guest that, on a message, reads
-   its contract's handlers via `graph.neighbors(node, msg.contract, outgoing)` and forwards (`deliver-message`)
-   / handles-by-default (empty chain → `deliver-response` with `Err(missing-handler)`). `graph.neighbors`
-   emit+load landed (#3200), **but a Cadenza-guest INVOKE of it is not yet proven** (v-rb did emit+load; the
-   lift path is proven by the kv.get / prefix-scan invokes, not a `neighbors` invoke) — so the first build step
-   is to prove a real guest can call `neighbors` and fold its `list<reducer-id>` result. Also blocked on the
-   `node` convention (open question 3). *Gated on: that invoke proof + the node decision.*
+2. **Default-event-handler guest (Gap B).** WRITTEN and verified through the front-end; blocked only on one
+   rcdzc emit increment. The guest, on a message, reads the emitting reducer's transform chain via
+   `graph.neighbors(msg.sender.reducer, msg.contract, Dir.Outgoing)` (node = the emitting reducer, Q1-A) and
+   **forwards** to the first transform (`deliver-message`, full envelope) / **handles by default** on an empty
+   chain (`deliver-response` with `answer = Err(missing-handler)`). The node/registry/graph model is settled
+   (operator A/B — see below). Verified against the real `event-reducer-world` with a current-main `cdz`:
+   **parse ✓, world-import resolution ✓** (the 3-arg `graph.neighbors` with the enum `dir` arg — a guest-
+   declared `type Dir = | Outgoing | Incoming` bound to the world enum, #3207 — and the `list<reducer-id>`
+   result fold, #3200; plus `deliver-message` + `deliver-response` with `Err(...)`), **type-check ✓**. The one
+   remaining gap is **EMIT**: rcdzc declines *"a reducer performing more than one host interface"* — and this
+   guest inherently needs two (`graph` to read the chain, `deliver` to route/respond). *Gated on: v-rb's
+   multi-interface host emission (flagged; the guest is the concrete driver). The verified source is recorded
+   below; it lands in `guests/event-reducer-world/reducer-default-handler-cdz/` the moment multi-interface
+   emits.*
+
+   The verified guest source (blocked only on multi-interface emit):
+
+   ```
+   type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+   type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+   type Dir = | Outgoing | Incoming
+
+   def on-message(msg) =
+     host graph in
+     host deliver in
+       ( (match graph.neighbors(msg.sender.reducer, msg.contract, Dir.Outgoing) with
+           | [] =>
+               deliver.deliver-response(
+                 msg.sender.reducer,
+                 { contract = msg.contract, token = msg.token,
+                   answer = (Err(Error.MissingHandler) : Result(Bytes, Error)) })
+           | [handler, .. _] =>
+               deliver.deliver-message(
+                 handler,
+                 { contract = msg.contract,
+                   sender = { reducer = msg.sender.reducer, host = msg.sender.host },
+                   payload = msg.payload, token = msg.token })) ;
+         { requests = [], outcome = Outcome.Continue } )
+
+   def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
+   def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
+   export { on-message, on-response, on-notification }
+   ```
 3. **Wire it as the registry default + a non-vacuous conformance run.** The registry default becomes this
    guest's program; a run installs it via the Gap-A directive, spawns it, emits an ordinary effect, and
    asserts it is routed + answered — **confirmed non-vacuous** (the CAS must seed the runtime, #3184; a guest
@@ -139,8 +190,10 @@ migrate to a graph read is an open question (below) the operator should settle b
 
 ## Coordination
 
-- **v-rb:** `graph.neighbors` emit+load landed (#3200); the next need is a proven Cadenza-guest **invoke** of
-  it (fold a real `list<reducer-id>` result), then `set-edges` (shape-f, write).
+- **v-rb:** `graph.neighbors` (#3200) + enum-arg (#3207) + `list<list<u8>>` result all RESOLVE and TYPECHECK in
+  the real guest. The remaining need is **multi-interface host emission** — a guest performing ops from two
+  host interfaces (`graph` + `deliver`), which rcdzc currently declines (*"more than one host interface is not
+  yet emitted"*). This is the guest's sole blocker (flagged; guest is the driver). Then `set-edges` (shape-f).
 - **v-platform-itest:** the Gap-A `registry` directive + non-vacuous conformance runs (#3184's CDZ_STORE seed);
   and, depending on open question 4, whether the `registry` directive also seeds graph chain edges.
 
@@ -203,16 +256,10 @@ the factory it was given (#3197/#3199).
    consideration above); `from-by-task-name` is retired for §4 dispatch.
 2. (`cas-pin` capability — direct gated host call vs. routed effect — is deferred to the operator's CAS-GC
    review; CAS-GC increment 4 is paused on it.)
-3. **What `node` does the default handler read the chain from?** The graph keys a chain on `(owner_reducer,
-   contract)`. For a *global* default handler two readings are possible: (a) the **emitting reducer** —
-   `neighbors(msg.sender.reducer, msg.contract, outgoing)` — which is the §5 owner-middleware model (a
-   reducer's own installed chain, walked up its ancestors); or (b) a **well-known root node** the registry
-   installs global handlers under, so the default handler looks up a single global chain per contract. These
-   are different semantics; (a) matches the graph's existing `resolve(reducer, contract)` convenience, (b)
-   matches a registry-like "one handler per contract" model. *Needs the operator.*
-4. **Do the EventRegistry and the graph chain coexist, or does dispatch migrate to a graph read?** Today
-   dispatch reads only the EventRegistry (contract → program); graph chains are unused at runtime. Increment 3
-   ("wire it as the registry default") implies coexistence — registry picks the program, this guest reads the
-   graph for delegation — but the operator may instead want dispatch itself to route via the graph. This
-   decides who installs chain edges (increment 4 `set-edges`, and whether the Gap-A harness `registry`
-   directive also seeds graph edges). *Needs the operator.*
+3. ~~What `node` does the default handler read the chain from?~~ **Resolved (A)** — the **emitting reducer**:
+   `neighbors(msg.sender.reducer, msg.contract, outgoing)` (operator: "the node for the handler chain would be
+   the actual reducer that spawned the event"). Not a well-known root. See **Settled model** above.
+4. ~~Do the EventRegistry and the graph chain coexist, or does dispatch migrate to a graph read?~~ **Resolved
+   (B)** — they **coexist**; dispatch does NOT migrate. EventRegistry maps a contract to the privileged event
+   *program*; the graph holds the per-emitting-reducer chain of *non-privileged transform reducers*; the
+   default handler (a privileged program) walks that chain. See **Settled model** above.
