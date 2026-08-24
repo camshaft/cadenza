@@ -103,6 +103,10 @@ struct HostState {
     /// and a pure program may call `run` to compose other pure programs. `None` only where no run capability is
     /// wired at all (a bare [`HostState`] built for a non-run test).
     run: Option<Arc<Instantiator>>,
+    /// The per-reducer resource limits the wasm store enforces (see `arm_store_safety`): a ceiling on linear
+    /// memory so one guest cannot exhaust host RAM and take down the process. Lives here because a wasm
+    /// [`Store`]'s limiter projects from its data (`Store::limiter`); the store enforces the limits it holds.
+    limits: wasmtime::StoreLimits,
 }
 
 impl cadenza::platform::identity::Host for HostState {
@@ -515,12 +519,39 @@ const EPOCH_TICK: Duration = Duration::from_millis(1);
 const YIELD_EVERY: u64 = 1;
 const MAX_YIELDS: u64 = 5_000;
 
-/// Arm `store` with the epoch-preemption policy: yield to the executor every `YIELD_EVERY` epoch ticks of guest
-/// compute, and trap once a fold has yielded `MAX_YIELDS` times (its cumulative compute budget). Applied to
-/// every reducer store (ordinary, event, and pure-run). Inert until the engine's epoch is actually ticked (the
-/// production runtime drives the ticker; under the deterministic simulator the epoch never advances, so a
-/// guest runs un-preempted with the harness's own wall-clock timeout as the backstop).
-fn arm_epoch_deadline(store: &mut Store<HostState>) {
+// Memory-exhaustion bound (the other way one program takes down the host, alongside the CPU/epoch bound
+// above): a ceiling on how large each of a reducer's linear memories may grow. A guest that tries to grow past
+// it traps (`trap_on_grow_failure`) rather than the host OOMing — the same clean per-reducer failure the epoch
+// trap yields (a `Crashed`, §7). Generous: a reducer folds a value and emits effects, so it needs far less;
+// this only ever bites a guest allocating without bound. Wasmtime already caps instance/table/memory *counts*
+// at a finite default (10k each), so linear-memory size is the one unbounded vector this closes. Tunable.
+const MAX_LINEAR_MEMORY_BYTES: usize = 256 * 1024 * 1024;
+
+/// Build the per-reducer wasm resource limits (see `arm_store_safety`): bound each linear memory to
+/// [`MAX_LINEAR_MEMORY_BYTES`] and trap on a growth that would exceed it. Instance/table/memory counts keep
+/// wasmtime's finite defaults.
+fn reducer_store_limits() -> wasmtime::StoreLimits {
+    wasmtime::StoreLimitsBuilder::new()
+        .memory_size(MAX_LINEAR_MEMORY_BYTES)
+        .trap_on_grow_failure(true)
+        .build()
+}
+
+/// Arm `store` with the per-reducer safety limits so no single guest can take down the host — the two ways one
+/// program could: monopolizing compute, and exhausting memory. Applied to every reducer store (ordinary,
+/// event, and pure-run).
+///
+/// - **Compute (epoch preemption):** yield to the async executor every `YIELD_EVERY` epoch ticks of guest
+///   compute (so a long fold can never monopolize a thread), and trap once a fold has yielded `MAX_YIELDS`
+///   times (its cumulative compute budget). Inert until the engine's epoch is actually ticked — the production
+///   runtime drives the ticker; under the deterministic simulator the epoch never advances, so a guest runs
+///   un-preempted with the harness's own wall-clock timeout as the backstop.
+/// - **Memory:** enforce the store's [`reducer_store_limits`] (the linear-memory ceiling), projecting from the
+///   `HostState`'s own `limits` (a wasm store's limiter must live in its data).
+///
+/// A breach of either bound traps, which the fold path turns into a per-reducer `Crashed` (§7), never a
+/// process-wide failure.
+fn arm_store_safety(store: &mut Store<HostState>) {
     store.set_epoch_deadline(YIELD_EVERY);
     let mut yields_left = MAX_YIELDS;
     store.epoch_deadline_callback(move |_ctx| {
@@ -535,6 +566,7 @@ fn arm_epoch_deadline(store: &mut Store<HostState>) {
             Ok(wasmtime::UpdateDeadline::Yield(YIELD_EVERY))
         }
     });
+    store.limiter(|host_state| &mut host_state.limits);
 }
 
 /// Wire the host imports a reducer of the given [`ReducerKind`] may hold into `linker`, each backed by the
@@ -653,7 +685,7 @@ impl ReducerHost {
         host: HostState,
     ) -> Result<WasmReducer, wasmtime::Error> {
         let mut store = Store::new(&self.engine, host);
-        arm_epoch_deadline(&mut store);
+        arm_store_safety(&mut store);
         let world = pre.instantiate_async(&mut store).await?;
         Ok(WasmReducer { store, world })
     }
@@ -891,7 +923,7 @@ impl Instantiator {
             // (a store-bound dependency instance cannot be pre-instantiated). Host imports for the kind are
             // wired first (the capability split), then the dependencies composed in.
             let mut store = Store::new(&self.host.engine, host_state);
-            arm_epoch_deadline(&mut store);
+            arm_store_safety(&mut store);
             let mut linker = Linker::new(&self.host.engine);
             add_host_imports(&mut linker, kind).ok()?;
             self.bind_dependencies(&mut store, &mut linker, &component)
@@ -955,6 +987,7 @@ fn null_host_state(id: ReducerId, run: Option<Arc<Instantiator>>) -> HostState {
         provenance: Arc::new(crate::NoProvenance),
         delivery: Arc::new(crate::NoDelivery),
         run,
+        limits: reducer_store_limits(),
     }
 }
 
@@ -1125,6 +1158,7 @@ impl ProgramStore for WasmProgramStore {
             provenance: (self.make_provenance)(ctx.id),
             delivery: (self.make_delivery)(ctx.id),
             run: Some(Arc::clone(&self.inst)),
+            limits: reducer_store_limits(),
         };
         self.inst
             .instantiate_program(program, ctx.kind, host_state)
@@ -1167,6 +1201,7 @@ mod tests {
             provenance: Arc::new(crate::NoProvenance),
             delivery: Arc::new(crate::NoDelivery),
             run: None,
+            limits: super::reducer_store_limits(),
         }
     }
 
@@ -1878,6 +1913,41 @@ mod tests {
         assert!(
             result.is_err(),
             "a runaway guest must trap once its epoch budget is exhausted, not run forever"
+        );
+    }
+
+    #[test]
+    fn a_guest_that_exhausts_memory_traps_rather_than_ooming_the_host() {
+        // The memory half of `arm_store_safety` (`reducer_store_limits`): a guest that grows its linear memory
+        // past the ceiling must trap — a clean per-reducer failure — rather than exhaust host RAM and take the
+        // process down. Proven with the same policy shape (memory_size + trap_on_grow_failure) applied to a
+        // module that tries to grow far past a tiny test ceiling.
+        use wasmtime::{Config, Engine, Instance, Module, Store, StoreLimitsBuilder};
+
+        let engine = Engine::new(&Config::new()).expect("engine");
+        // Starts at 1 page; the exported function tries to grow by 1000 pages (~64 MiB), far past the ceiling.
+        let wasm = wat::parse_str(
+            r#"(module (memory 1) (func (export "grow") (drop (memory.grow (i32.const 1000)))))"#,
+        )
+        .expect("wat");
+        let module = Module::from_binary(&engine, &wasm).expect("module");
+
+        // A tiny 2-page ceiling with trap-on-grow — the same policy shape as `reducer_store_limits`, sized down
+        // so the test needs no real memory.
+        let limits = StoreLimitsBuilder::new()
+            .memory_size(2 * 64 * 1024)
+            .trap_on_grow_failure(true)
+            .build();
+        let mut store = Store::new(&engine, limits);
+        store.limiter(|l| l);
+
+        let instance = Instance::new(&mut store, &module, &[]).expect("instantiate");
+        let grow = instance
+            .get_typed_func::<(), ()>(&mut store, "grow")
+            .expect("export");
+        assert!(
+            grow.call(&mut store, ()).is_err(),
+            "a guest growing memory past its ceiling must trap, not exhaust host RAM"
         );
     }
 
