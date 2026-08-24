@@ -123,17 +123,51 @@ jobs:
   # ~8-min cold `cargo xtask build` (runtime store), which dominated its wall-clock and kept pushing it past
   # the reclaim window (deaths mid-build, even after the CARGO_BUILD_JOBS cap). The store is now built ONCE by
   # the `build-store` job and DOWNLOADED here (the gate consumes a pre-built store — main.rs:715 — never
-  # rebuilds it), so a shard does only setup + the gate cases, well under the window. If a shard still
-  # reclaims after this, THEN bump N (the gate cases are now the only variable cost).
+  # rebuilds it), so a shard does only setup + the gate cases.
+  #
+  # N=24 (v-nix 2026-08-24): the first post-shared-store nightly (run 32678228361) confirmed the store fix —
+  # build-store SUCCEEDED and 11/12 shards COMPLETED (the whole-corpus job never had before). But ONE shard
+  # (4/12) still reclaimed exit-143. The signal was clear from the shard durations: the same ~599 cases/shard
+  # took 3.5 min on a WARM-cache runner but 10-13 min COLD (the first wave, before the shared cargo cache is
+  # restored) — and the cold ~11-13 min shards sit right on the ~15 min reclaim window, so an early shard that
+  # draws a short-lived runner dies. This is the documented "bump N" case (the gate cases are the only variable
+  # cost now): halving each shard's case load (12→24, ~599→~300 cases) drops even a COLD shard to ~6-7 min,
+  # well under the window. Retry can't help — exit-143 SIGTERMs the whole job, not just the step. If a shard
+  # STILL reclaims at N=24, the residual is random free-runner PREEMPTION (not duration) → a runner-CLASS call
+  # (paid runner vs accept the flake), which is escalated, not tuned here.
   rust-gate-full:
-    name: rust-backend gate (shard ${{ matrix.shard }}/12)
+    name: rust-backend gate (shard ${{ matrix.shard }}/24)
     runs-on: ubuntu-24.04-arm
     # The store is built ONCE by `build-store` and downloaded below — no per-shard `cargo xtask build`.
     needs: build-store
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        shard:
+          - 1
+          - 2
+          - 3
+          - 4
+          - 5
+          - 6
+          - 7
+          - 8
+          - 9
+          - 10
+          - 11
+          - 12
+          - 13
+          - 14
+          - 15
+          - 16
+          - 17
+          - 18
+          - 19
+          - 20
+          - 21
+          - 22
+          - 23
+          - 24
     # CARGO_BUILD_JOBS still caps concurrent rustc within the shard's remaining builds (the gate tools + the
     # per-case rustc) as a belt-and-suspenders memory bound; the heavy runtime-store build that dominated the
     # shard and drove the exit-143 evictions is gone (pre-built + downloaded), so this is now a minor guard.
@@ -152,7 +186,7 @@ jobs:
         with:
           name: cadenza-store
           path: target/cadenza-store
-      - name: rust-backend gate (shard ${{ matrix.shard }}/12)
+      - name: rust-backend gate (shard ${{ matrix.shard }}/24)
         # `CDZ_GATE_JOBS` caps concurrent gate CASES (each a rustc invocation) within the shard; the
         # job-level `CARGO_BUILD_JOBS` above caps rustc WITHIN each such build. Both bound peak memory so the
         # host doesn't reclaim the runner (exit-143 = graceful eviction = memory pressure, not a timeout). 4
@@ -160,7 +194,7 @@ jobs:
         # dies memory-signed.
         env:
           CDZ_GATE_JOBS: "4"
-        run: cargo xtask gate --check --target rust --shard ${{ matrix.shard }}/12
+        run: cargo xtask gate --check --target rust --shard ${{ matrix.shard }}/24
 
   publish:
     name: rolling nightly prerelease
