@@ -45,6 +45,7 @@ mod harness;
 mod log_value;
 mod observation;
 mod recording;
+mod run_pure;
 mod spec;
 
 /// The [`program`](crate::program) module's test helpers — `program::Store`, a program store backed by
@@ -64,6 +65,7 @@ pub use observation::{
 pub use recording::{
     RecordingBlobStore, RecordingKvStore, RecordingProgramStore, RecordingReducer,
 };
+pub use run_pure::run_pure;
 pub use spec::{BlobSource, BlobSpec, DeliveryEvent, HarnessSpec, SpecError};
 
 #[cfg(test)]
