@@ -7891,6 +7891,12 @@ fn emit_record_arg_marshal(
                 out.push(Lir::ConstI32(i as i32));
                 out.push(Lir::CallImport(OP_ARR_GET)); // [field] (borrows rec)
                 out.push(Lir::CallImport(read)); // [scalar]
+                // A NARROW int / char / enum-disc field boxes into the i64 int cell, so `get-int` returns an
+                // i64 — but its core slot is i32 (its aliased width), so narrow it. A 64-bit int (`get-int`
+                // i64 → i64 slot), a bool (`get-bool` i32), or a float (`get-float`) needs no narrow.
+                if read == OP_GET_INT && matches!(valtype_of(fty), Some(ValType::I32)) {
+                    out.push(Lir::I32WrapI64);
+                }
             }
             // A `Bytes` field: arr-get its list<u8> handle → copy rope→mem at the cursor → push (ptr,len).
             None if matches!(fty, Ty::Bytes) => {
@@ -18424,6 +18430,36 @@ mod tests {
         assert!(
             host::result_is_liftable(&mut db2, &p2[0].1),
             "option<list<u8>> is still liftable"
+        );
+    }
+
+    // WIT-ABI completion (arg side): a record host-arg FIELD is now any aliased SCALAR width, not just
+    // 64-bit ints — narrow ints (s8..s32/u8..u32), char, and narrow floats cross via `field_boundary_abi` →
+    // `abi_val_type` (general over width), read back with `get-int` + an i64→i32 narrow. Pure-fn unit test
+    // (per the Rust-is-unit-tests-only directive) pinning the classification; the emit proof lives in the
+    // corpus WIT-integration harness.
+    #[test]
+    fn a_record_host_arg_admits_narrow_scalar_fields() {
+        use crate::backend::wasm::host;
+        // A record with a narrow int (Int32), a char, a bool, and a narrow float — all now boundary-crossable.
+        let mut db = Db::load(crate::testkit::parse(
+            "(module m (def (f (: r (Record (a Int32) (b Char) (c Bool) (d Float32)))) 0) \
+             (def (main) 0) (export main))",
+        ));
+        let (params, _) = function_of(&mut db, "f");
+        assert!(
+            host::is_boundary_record(&mut db, &params[0].1),
+            "a record with narrow-int / char / bool / narrow-float fields crosses as a boundary record \
+             (was declined when only 64-bit int/bool/float fields were admitted)"
+        );
+        // Regression: an all-64-bit record still crosses.
+        let mut db2 = Db::load(crate::testkit::parse(
+            "(module m (def (g (: r (Record (a Int64) (b Bool)))) 0) (def (main) 0) (export main))",
+        ));
+        let (p2, _) = function_of(&mut db2, "g");
+        assert!(
+            host::is_boundary_record(&mut db2, &p2[0].1),
+            "64-bit-field record still crosses"
         );
     }
 
