@@ -173,17 +173,14 @@ pub fn result_bytes_enum(db: &mut Db, ty: &Ty) -> Option<Vec<String>> {
 /// compound, is a LATER slice → `None`. The guard's admit set + the classifier's `HostParam::Record`
 /// production stay in lockstep (no arity skew between the boundary sig and the args).
 fn field_boundary_abi(db: &mut Db, ty: &Ty) -> Option<RecordFieldAbi> {
+    // A SCALAR field of ANY aliased width crosses NATIVELY as one core slot + its inline component primitive
+    // — bool, s8..s64 / u8..u64 (every int width, not just 64), char, f32/f64, and a `Qty` over any of those.
+    // Read via `abi_val_type` (general over width), so a record host-arg field is no longer pinned to 64-bit
+    // ints. A narrow int / char reads back with `get-int` + an i64→i32 narrow (`emit_record_arg_marshal`).
+    if let Some(v) = abi_val_type(ty) {
+        return Some(RecordFieldAbi::Scalar(v));
+    }
     match ty {
-        Ty::Bool => Some(RecordFieldAbi::Scalar(AbiValType::Bool)),
-        Ty::Int(it) if it.ground_width() == 64 => {
-            Some(RecordFieldAbi::Scalar(if it.ground_signed() {
-                AbiValType::S64
-            } else {
-                AbiValType::U64
-            }))
-        }
-        Ty::Float(ft) if ft.ground_width() == 64 => Some(RecordFieldAbi::Scalar(AbiValType::F64)),
-        Ty::Float(ft) if ft.ground_width() == 32 => Some(RecordFieldAbi::Scalar(AbiValType::F32)),
         // A `Bytes` field crosses as `list<u8>` — 2 core slots, a `(list u8)`-type field ref (d2).
         Ty::Bytes => Some(RecordFieldAbi::Bytes),
         // A NESTED record field (d3) crosses if EVERY sub-field itself crosses — recurse (name-lex order).
