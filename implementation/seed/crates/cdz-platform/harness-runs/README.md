@@ -38,10 +38,16 @@ read by name, so order does not matter):
   `kind = "event"` (a privileged event/system reducer; the default is `"ordinary"`).
 - `deliver` — optional; the initial events to inject once the tasks are spawned, in order. Each names a
   `target` task and carries **exactly one** event:
-  - `message = { contract = …, payload = b"…", token = b"…"? }` — an effect folded through the target's
-    `on_message` (the `token` is the caller's continuation token, empty by default);
+  - `message = { contract = …, payload = b"…", token = b"…"?, from = { reducer = b"…", host = b"…" }? }`
+    — an effect folded through the target's `on_message`. `token` is the caller's continuation token (empty
+    by default); `from` is the sender the kernel stamps on `msg.from` (default: the harness's synthetic
+    external origin) — set it to exercise a reducer that routes or validates on *who* sent the effect;
   - `notification = { contract = …, payload = b"…" }` — a control-plane event folded through
-    `on_notification`.
+    `on_notification`;
+  - `response = { contract = …, answer = (Ok b"…") | (Err <tag>), token = b"…"? }` — a reply folded through
+    the target's `on_response`, so a run can exercise the reply path without a live responder. `answer` is
+    the contract's output value (`Ok`) or a runtime failure (`Err` — one of `timeout`, `missing-handler`,
+    `schema-violation`, `faulted`); `token` correlates the reply to a request (empty by default).
 
   A `contract` is either a contract **name** (`contract = "cdz-platform.deliver"`, resolved to a base62
   id as above) or raw bytes (`contract = b"…33 bytes"`).
