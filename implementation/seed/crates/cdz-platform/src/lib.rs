@@ -24,6 +24,7 @@ mod contract_value;
 mod contracts;
 mod deliver;
 mod event_registry;
+mod gc_ledger;
 mod genesis;
 mod graph;
 // The wasm-runtime host (§3) — wasmtime instantiates a reducer component and drives it through the WIT world.
@@ -49,6 +50,7 @@ pub use blob_store::{BlobStore, InMemoryBlobStore};
 pub use contract::Contract;
 pub use deliver::{Deliver, Delivered, deliver_contract};
 pub use event_registry::{EventRegistry, InMemoryEventRegistry};
+pub use gc_ledger::GcLedger;
 pub use genesis::Genesis;
 pub use graph::{Dir, EdgeKind, InMemoryReducerGraph, ReducerGraph};
 // The content hash (§8) and the contract-id computation (§1) live in the dep-minimal `cdz-contract` crate
