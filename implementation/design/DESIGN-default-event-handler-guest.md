@@ -71,18 +71,45 @@ directive #3179). It also makes the default-event-handler conformance run below 
 Build **the default event handler as a Cadenza event-reducer guest**, fitting the every-guest-in-Cadenza
 directive. On each effect (a `Message` the kernel routes to it):
 
-1. Read the routing substrate — the handler chain for the effect's contract — from the reducer graph via
-   `graph.neighbors(contract/target) -> list<list<u8>>` (v-rb's shape-e, in flight).
-2. If a handler is registered, **forward** the effect to it (deliver it into the handler's log); otherwise
-   **forward to the default handler** — an unregistered contract is NOT auto-rejected with `MissingHandler`;
-   the default handler receives it and decides (operator decision below). Both are the event reducer executing
-   `deliver` on the emitter's behalf — the emitter only ever emitted an effect.
-3. On a handler's reply, **respond** back to the caller (a `response` deliver correlated by token). The default
-   handler, if it declines an effect, sends a **rejection response** back to the caller the same way.
+1. Read the handler chain for the effect's contract from the reducer graph via `graph.neighbors(node, kind,
+   dir)`. The exact call is now pinned to the code's convention (see **the graph convention** below): the edge
+   kind IS the contract-id, and the source node is a reducer that owns a chain for that contract.
+2. If a handler is registered, **forward** the effect to it (`deliver-message` into the handler's log);
+   otherwise **handle by default** — an unregistered contract is NOT auto-rejected by the routing layer; this
+   guest (the default handler) receives it and decides (operator decision below). Both are the event reducer
+   executing `deliver` on the emitter's behalf — the emitter only ever emitted an effect.
+3. On a handler's reply, **respond** back to the caller (`deliver-response` correlated by `token`). The default
+   handler, if it declines an effect, sends a **rejection response** (`answer = Err(missing-handler)`) back to
+   the caller the same way.
 
 The §4 dispatch guests (notification/message/response, merged #3164/#3180/#3181) are the primitives it
 composes: it IS an event reducer performing `deliver`, driven by a graph read rather than echoing to the
 sender.
+
+### The graph convention (what the code actually holds — corrected)
+
+An earlier draft said "`graph.neighbors(contract/target)`", which was imprecise. The reducer graph
+(`graph.rs`) models a handler chain as **`owner_reducer -> handler` edges keyed by the contract-id as the edge
+kind**: `EdgeKind::for_contract(contract) == contract.hash()` (`graph.rs`), and the Rust convenience
+`ReducerGraph::resolve(reducer, contract)` reads exactly `neighbors(reducer, for_contract(contract),
+Dir::Out)` in weight (chain) order. So a chain is keyed on a **(reducer, contract) pair** — the *node* is a
+reducer-id, the *kind* is the contract-id.
+
+This is friendly to a guest: in the message envelope (`reducer.wit`), `contract-id`, `reducer-id`, and the
+graph's `edge-kind` are all `list<u8>`, and `EdgeKind::for_contract` is the contract-id's bytes verbatim — so
+the guest passes `msg.contract` **directly** as the `kind` argument (no derivation), and a `reducer-id` (e.g.
+`msg.sender.reducer`) as the `node`. The reject path builds a `response { contract = msg.contract, token =
+msg.token, answer = Err(missing-handler) }` and `deliver-response`s it to `msg.sender.reducer`.
+
+**Current runtime reality (important).** Handler chains in the graph are **API + unit-test surface only**:
+`for_contract` / `set_chain` / `ReducerGraph::resolve` are referenced nowhere but `graph.rs` and its tests. The
+kernel installs only structural edges (spawn tree, `watch-exit`), and **live dispatch does not read the graph
+at all** — it resolves a contract through the Rust `EventRegistry` (`events.resolve(contract) -> ProgramHash`,
+`system.rs`), which is the sole routing mechanism today and maps a contract to *which program* is the event
+reducer. There is **no bridge** between EventRegistry entries and graph chain edges. So the two mechanisms are
+distinct: the EventRegistry picks the program (this guest, for a contract with no override); this guest, once
+built, reads the *graph* for finer per-owner delegation. Whether they coexist that way or dispatch should
+migrate to a graph read is an open question (below) the operator should settle before increment 3 wires it.
 
 ## Capability model
 
@@ -97,8 +124,12 @@ sender.
 1. **Harness-settable registry (Gap A).** The `registry` `HarnessSpec` directive + itest-binary wiring. Not
    gated on anything; coordinate with v-platform-itest. Unblocks expressing the run in increment 3.
 2. **Default-event-handler guest (Gap B, skeleton).** A Cadenza event-reducer guest that, on a message, reads
-   its contract's handlers via `graph.neighbors` and forwards / handles-by-default. *Gated on v-rb's
-   `graph.neighbors` (shape-e).*
+   its contract's handlers via `graph.neighbors(node, msg.contract, outgoing)` and forwards (`deliver-message`)
+   / handles-by-default (empty chain → `deliver-response` with `Err(missing-handler)`). `graph.neighbors`
+   emit+load landed (#3200), **but a Cadenza-guest INVOKE of it is not yet proven** (v-rb did emit+load; the
+   lift path is proven by the kv.get / prefix-scan invokes, not a `neighbors` invoke) — so the first build step
+   is to prove a real guest can call `neighbors` and fold its `list<reducer-id>` result. Also blocked on the
+   `node` convention (open question 3). *Gated on: that invoke proof + the node decision.*
 3. **Wire it as the registry default + a non-vacuous conformance run.** The registry default becomes this
    guest's program; a run installs it via the Gap-A directive, spawns it, emits an ordinary effect, and
    asserts it is routed + answered — **confirmed non-vacuous** (the CAS must seed the runtime, #3184; a guest
@@ -108,8 +139,10 @@ sender.
 
 ## Coordination
 
-- **v-rb:** `graph.neighbors` (shape-e, read — confirmed my next need) then `set-edges` (shape-f, write).
-- **v-platform-itest:** the Gap-A `registry` directive + non-vacuous conformance runs (#3184's CDZ_STORE seed).
+- **v-rb:** `graph.neighbors` emit+load landed (#3200); the next need is a proven Cadenza-guest **invoke** of
+  it (fold a real `list<reducer-id>` result), then `set-edges` (shape-f, write).
+- **v-platform-itest:** the Gap-A `registry` directive + non-vacuous conformance runs (#3184's CDZ_STORE seed);
+  and, depending on open question 4, whether the `registry` directive also seeds graph chain edges.
 
 ## Observation-model consideration — is the deliver act recorded?
 
@@ -170,3 +203,16 @@ the factory it was given (#3197/#3199).
    consideration above); `from-by-task-name` is retired for §4 dispatch.
 2. (`cas-pin` capability — direct gated host call vs. routed effect — is deferred to the operator's CAS-GC
    review; CAS-GC increment 4 is paused on it.)
+3. **What `node` does the default handler read the chain from?** The graph keys a chain on `(owner_reducer,
+   contract)`. For a *global* default handler two readings are possible: (a) the **emitting reducer** —
+   `neighbors(msg.sender.reducer, msg.contract, outgoing)` — which is the §5 owner-middleware model (a
+   reducer's own installed chain, walked up its ancestors); or (b) a **well-known root node** the registry
+   installs global handlers under, so the default handler looks up a single global chain per contract. These
+   are different semantics; (a) matches the graph's existing `resolve(reducer, contract)` convenience, (b)
+   matches a registry-like "one handler per contract" model. *Needs the operator.*
+4. **Do the EventRegistry and the graph chain coexist, or does dispatch migrate to a graph read?** Today
+   dispatch reads only the EventRegistry (contract → program); graph chains are unused at runtime. Increment 3
+   ("wire it as the registry default") implies coexistence — registry picks the program, this guest reads the
+   graph for delegation — but the operator may instead want dispatch itself to route via the graph. This
+   decides who installs chain edges (increment 4 `set-edges`, and whether the Gap-A harness `registry`
+   directive also seeds graph edges). *Needs the operator.*
