@@ -2,19 +2,19 @@
   system = "$system",
   blobs = [
     { name = "$system", bytes = b"itest:no-system-reducer" },
-    { name = "reducer-echo", program = "reducer-echo" },
-    { name = "reducer-echo-check", program = "reducer-echo-check" }
+    { name = "reducer-echo-cdz", program = "reducer-echo-cdz" },
+    { name = "reducer-check-cdz", program = "reducer-check-cdz" }
   ],
-  spawns = [{ name = "reducer-echo", blob = "reducer-echo" }],
+  spawns = [{ name = "reducer-echo-cdz", blob = "reducer-echo-cdz" }],
   deliver = [
     {
-      target = "reducer-echo",
+      target = "reducer-echo-cdz",
       notification = { contract = "cdz-platform.lifecycle", payload = b"NOTIFYPAYLOAD" }
     },
     {
-      target = "reducer-echo",
+      target = "reducer-echo-cdz",
       message = { contract = "cdz-platform.deliver", payload = b"ECHOPAYLOAD" }
     }
   ],
-  checker = "reducer-echo-check"
+  checker = "reducer-check-cdz"
 }
