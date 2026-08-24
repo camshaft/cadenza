@@ -27,41 +27,29 @@ type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
 // Does some record at index >= i carry a Delivered(contract == c, payload == p)? (the event the reducer
 // received and re-routed.)
 def has-delivered(records: List(LogRecord), i: Int64, c: Bytes, p: Bytes) =
-  if (i == List.len(records)) then false
-  else (match List.at(records, i) with
-    | Option.None(_) => false
-    | Option.Some(r) =>
-        (match r with
-          | LogRecord.LogRecord(rec) =>
-              (match rec.entry with
-                | Entry.Delivered(d) =>
-                    if (d.contract == c) then
-                      (if (d.payload == p) then true else has-delivered(records, i + 1, c, p))
-                    else has-delivered(records, i + 1, c, p)
-                | _ => has-delivered(records, i + 1, c, p))))
+  match List.at(records, i) with
+  | Option.None(_) => false
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      (match rec.entry with
+        | Entry.Delivered(d) if (d.contract == c and d.payload == p) => true
+        | _ => has-delivered(records, i + 1, c, p))
 
 // Is some Routed(C, P) matched by a Delivered(C, P)? Scans routed records; for each, checks the whole log for
 // a matching delivered — proving the reducer routed the event it received via the privileged deliver.
 def dispatch-holds(records: List(LogRecord), i: Int64) =
-  if (i == List.len(records)) then false
-  else (match List.at(records, i) with
-    | Option.None(_) => false
-    | Option.Some(r) =>
-        (match r with
-          | LogRecord.LogRecord(rec) =>
-              (match rec.entry with
-                | Entry.Routed(rt) =>
-                    if has-delivered(records, 0, rt.contract, rt.payload) then true
-                    else dispatch-holds(records, i + 1)
-                | _ => dispatch-holds(records, i + 1))))
+  match List.at(records, i) with
+  | Option.None(_) => false
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      (match rec.entry with
+        | Entry.Routed(rt) if has-delivered(records, 0, rt.contract, rt.payload) => true
+        | _ => dispatch-holds(records, i + 1))
 
 // The verdict payload for a decoded log: pass with no messages, else fail with one diagnostic message.
 def verdict-payload(records: List(LogRecord)) =
   if dispatch-holds(records, 0)
-  then Value.encode(Verdict.Verdict({ pass = true, messages = ([] : List(String)) }))
+  then Value.encode(Verdict.Verdict({ pass = true, messages = [] }))
   else Value.encode(Verdict.Verdict({ pass = false,
-                                      messages = List.push(([] : List(String)),
-                                                           "no Routed(C,P) matched a Delivered(C,P): the event reducer did not route the delivered event") }))
+                                      messages = ["no Routed(C,P) matched a Delivered(C,P): the event reducer did not route the delivered event"] }))
 
 // A verdict request on the contract-id the harness passed in the envelope (no hardcoded hash). The verdict
 // token is irrelevant (the harness reads the verdict by scanning Emitted on the verdict contract), so b"".
@@ -77,8 +65,7 @@ def on-message(msg) =
        | None =>
            { requests = [verdict-req(c.verdict,
                                      Value.encode(Verdict.Verdict({ pass = false,
-                                                                    messages = List.push(([] : List(String)),
-                                                                                         "observation log did not decode") })))],
+                                                                    messages = ["observation log did not decode"] })))],
              outcome = Outcome.Continue })
   | None =>
       { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = msg.payload }) }
