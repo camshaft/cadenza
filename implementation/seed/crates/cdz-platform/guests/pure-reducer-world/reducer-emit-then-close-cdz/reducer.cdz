@@ -1,0 +1,24 @@
+// A Cadenza reducer for the pure-run effect-denial conformance case (§3): on-message it BOTH emits an effect
+// (a request on the delivered contract) AND closes with the payload as its output. Run as a pure function
+// (the `run` primitive), a reducer has an empty capability set — every effect it emits is denied (dropped,
+// never routed) — so the run must still return the output (the Close reason). The harness runs this pure and
+// asserts run -> Ok(payload): the emitted effect neither blocked nor faulted the run.
+//
+// Targets the shared `pure-reducer-world` (KIND_WIT_WORLD artifact), whose only import is `run` — exactly the
+// capability set the kernel wires for a pure run. It does not re-declare an inline world (operator review on
+// #3153): a guest that touches nothing but its input/output shares this one world instead of repeating an
+// anonymous inline world block.
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+def on-message(msg) =
+  { requests = [{ contract = msg.contract, payload = msg.payload, token = msg.token, deadlineNanos = None }],
+    outcome = Outcome.Close({ schema = msg.contract, reason = msg.payload }) }
+
+def on-response(_resp) =
+  { requests = [], outcome = Outcome.Continue }
+
+def on-notification(_note) =
+  { requests = [], outcome = Outcome.Continue }
+
+export { on-message, on-response, on-notification }
