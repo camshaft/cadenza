@@ -1098,32 +1098,55 @@ pub fn emit(
         // SINGLE record param — so the record lands at the host instance-type's LOCAL index 0, the index
         // `host_op_comp_functype`'s Record arm references. A mixed/multi-record set needs the general
         // record-type-index threading (a later slice) → decline cleanly rather than mis-index the boundary.
+        let record_params: Vec<&Vec<(String, host::RecordFieldAbi)>> = host_imports
+            .iter()
+            .flat_map(|h| &h.params)
+            .filter_map(|p| match p {
+                host::HostParam::Record(fields) => Some(fields),
+                _ => None,
+            })
+            .collect();
+        let has_bytes_param = host_imports
+            .iter()
+            .flat_map(|h| &h.params)
+            .any(|p| matches!(p, host::HostParam::Bytes));
+        // The exported record type's instance-type index (threaded into `host_op_comp_functype`'s Record
+        // arm). A NOMINAL record used by an import func is DEFINED then EXPORTED; the func references the
+        // EXPORTED index. In the supported shape the ONLY shared defined type before the record is the `(list
+        // u8)` (laid at index 0 iff a `list<u8>` param OR a record `list<u8>` FIELD is present); so the record
+        // is DEFINED at `shared` and EXPORTED at `shared + 1`. (d1b: an all-scalar record with no list → the
+        // record is at index 0/1; d2: a `list<u8>` target/field forces the `(list u8)` at 0 → record 1/2.)
+        let record_export_idx = has_bytes_param as u32 + 1;
         let record_defs: Vec<Vec<u8>> = {
-            let record_params: Vec<&Vec<(String, runtime_abi::AbiValType)>> = host_imports
-                .iter()
-                .flat_map(|h| &h.params)
-                .filter_map(|p| match p {
-                    host::HostParam::Record(fields) => Some(fields),
-                    _ => None,
-                })
-                .collect();
             if record_params.is_empty() {
                 Vec::new()
             } else {
-                let has_str_or_bytes_param = host_imports
+                let has_str_param = host_imports
                     .iter()
                     .flat_map(|h| &h.params)
-                    .any(|p| matches!(p, host::HostParam::Str | host::HostParam::Bytes));
+                    .any(|p| matches!(p, host::HostParam::Str));
+                let any_record_has_bytes = record_params.iter().any(|f| {
+                    f.iter()
+                        .any(|(_, a)| matches!(a, host::RecordFieldAbi::Bytes))
+                });
+                // Constrained shape (d2, deliver-notification): a SINGLE record param, no String param, no
+                // option/list/bytes compound RESULT (those add defined types that shift the record index — a
+                // later slice). A `list<u8>` (Bytes) PARAM is allowed (deliver's `target`) and shares the
+                // `(list u8)` type with the record's Bytes fields. A record with Bytes fields REQUIRES the
+                // `(list u8)` at index 0 (laid only when a `list<u8>` param is present here), so decline a
+                // bytes-field record with no `list<u8>` param (the needs_list-forcing case is a later slice).
                 if record_params.len() > 1
-                    || has_str_or_bytes_param
+                    || has_str_param
                     || needs_option_bytes
                     || needs_list_byte_pairs
                     || needs_bytes_result
+                    || (any_record_has_bytes && !has_bytes_param)
                 {
                     return Err(Reject::decline(
-                        "a record host-argument composes only in a host set with no other boundary-compound \
-                         (no list<u8>/string parameter, no option/list/bytes compound result) and a single \
-                         record parameter; the general record-type-indexed host shape is a later increment",
+                        "a record host-argument composes only in a host set with a single record parameter, \
+                         no string parameter, and no option/list/bytes compound result; a record with \
+                         `list<u8>` fields additionally requires a sibling `list<u8>` parameter (the general \
+                         record-type-indexed host shape is a later increment)",
                     ));
                 }
                 use crate::backend::wasm::wit_ctype::{CDef, CRef, emit_cdef};
@@ -1132,7 +1155,15 @@ pub fn emit(
                     .map(|fields| {
                         let cfields: Vec<(String, CRef)> = fields
                             .iter()
-                            .map(|(n, abi)| (n.clone(), CRef::Prim(abi.comp_byte())))
+                            .map(|(n, abi)| {
+                                let cref = match abi {
+                                    host::RecordFieldAbi::Scalar(v) => CRef::Prim(v.comp_byte()),
+                                    // A `Bytes` field references the shared `(list u8)` DEFINED type at
+                                    // instance-type index 0 (laid first when `needs_list`).
+                                    host::RecordFieldAbi::Bytes => CRef::Idx(0),
+                                };
+                                (n.clone(), cref)
+                            })
                             .collect();
                         emit_cdef(&CDef::Record(cfields))
                     })
@@ -1143,7 +1174,7 @@ pub fn emit(
             .iter()
             .map(|hi| envelope::HostFn {
                 op: hi.op.clone(),
-                comp_functype: host_op_comp_functype(hi, 0, list_pairs_type_idx),
+                comp_functype: host_op_comp_functype(hi, 0, list_pairs_type_idx, record_export_idx),
                 has_list_param: hi
                     .params
                     .iter()
@@ -1242,7 +1273,7 @@ pub fn emit(
             .iter()
             .map(|h| envelope::HostFn {
                 op: h.op.clone(),
-                comp_functype: host_op_comp_functype(h, 0, 0),
+                comp_functype: host_op_comp_functype(h, 0, 0, 0),
                 has_list_param: h.params.iter().any(|p| matches!(p, host::HostParam::Bytes)),
                 core_functype: Vec::new(), // unused by the envelope (the core module builds its own)
             })
@@ -1706,6 +1737,7 @@ fn host_op_comp_functype(
     h: &host::HostImport,
     list_type_idx: u32,
     list_pairs_type_idx: u32,
+    record_type_idx: u32,
 ) -> Vec<u8> {
     use host::HostParam;
     let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM];
@@ -1727,12 +1759,12 @@ fn host_op_comp_functype(
             HostParam::Bytes => encode::uleb128(list_type_idx as u64, &mut param_items),
             // A RECORD param (shape d) references the record's EXPORTED type in the import instance-type. A
             // NOMINAL type used by an import func must be exported (component-model rule), so
-            // `host_effect_instance_type` lays the record as DEFINE (index 0) + EXPORT (index 1) in the
-            // supported shape (a single record param + no shared list<u8>/option/pairs type — the caller
-            // declines otherwise). The func references the EXPORTED index — 1 in that shape. This arm is only
-            // reached on that reducer path (the boundary guard declines a record arg elsewhere), so the
-            // exported record type is always at index 1 here.
-            HostParam::Record(_) => encode::uleb128(1u64, &mut param_items),
+            // `host_effect_instance_type` lays the record as DEFINE + EXPORT and the func references the
+            // EXPORTED index — `record_type_idx`, computed by the caller from the instance-type layout
+            // (`(list u8)?` prepend count + 1: index 1 for an all-scalar record with no list, 2 when a
+            // `list<u8>` param/field forces the `(list u8)` type at index 0). This arm is only reached on the
+            // reducer path (the boundary guard declines a record arg elsewhere).
+            HostParam::Record(_) => encode::uleb128(record_type_idx as u64, &mut param_items),
         }
     }
     item.extend_from_slice(&encode::wasm_vec(h.params.len(), &param_items));
@@ -2523,7 +2555,7 @@ fn emit_runtime_resource(
             .iter()
             .map(|hi| envelope::HostFn {
                 op: hi.op.clone(),
-                comp_functype: host_op_comp_functype(hi, 0, 0),
+                comp_functype: host_op_comp_functype(hi, 0, 0, 0),
                 has_list_param: hi
                     .params
                     .iter()
@@ -4463,7 +4495,7 @@ fn emit_closure_host_resource(
         .iter()
         .map(|hi| envelope::HostFn {
             op: hi.op.clone(),
-            comp_functype: host_op_comp_functype(hi, 0, 0),
+            comp_functype: host_op_comp_functype(hi, 0, 0, 0),
             has_list_param: hi
                 .params
                 .iter()
@@ -7643,7 +7675,7 @@ fn emit_runtime_bytes_resource(
             .iter()
             .map(|hi| envelope::HostFn {
                 op: hi.op.clone(),
-                comp_functype: host_op_comp_functype(hi, 0, 0),
+                comp_functype: host_op_comp_functype(hi, 0, 0, 0),
                 has_list_param: hi
                     .params
                     .iter()
@@ -7945,7 +7977,7 @@ fn emit_runtime_sum_resource(
             .iter()
             .map(|hi| envelope::HostFn {
                 op: hi.op.clone(),
-                comp_functype: host_op_comp_functype(hi, 0, 0),
+                comp_functype: host_op_comp_functype(hi, 0, 0, 0),
                 has_list_param: hi
                     .params
                     .iter()
@@ -8202,7 +8234,7 @@ fn emit_recursive_sum_resource(
             .iter()
             .map(|hi| envelope::HostFn {
                 op: hi.op.clone(),
-                comp_functype: host_op_comp_functype(hi, 0, 0),
+                comp_functype: host_op_comp_functype(hi, 0, 0, 0),
                 has_list_param: hi
                     .params
                     .iter()
@@ -9367,7 +9399,7 @@ fn emit_bytes_provider_member(
         .iter()
         .map(|hf| envelope::HostFn {
             op: hf.op.clone(),
-            comp_functype: host_op_comp_functype(hf, 0, list_pairs_type_idx),
+            comp_functype: host_op_comp_functype(hf, 0, list_pairs_type_idx, 0),
             has_list_param: hf
                 .params
                 .iter()

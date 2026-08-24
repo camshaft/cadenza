@@ -3718,6 +3718,192 @@ fn a_typed_reducer_with_a_record_arg_host_import_emits_and_loads() {
     );
 }
 
+/// A reducer world importing `cadenza:platform/deliver`.`deliver-notification` — the §4 shape MIXING a
+/// `list<u8>` param (`target`) WITH a record param (`event`) whose fields are `list<u8>` (Bytes):
+/// `deliver-notification(target: list<u8>, event: record { contract: list<u8>, payload: list<u8> })`. Drives
+/// shape d2 (Bytes record fields) + the MIXED list<u8>+record param shape: the `(list u8)` type at index 0,
+/// the record DEFINED at 1 / EXPORTED at 2, the func referencing the list type for `target` + the exported
+/// record type for `event`; the guest flattens `target` to `(ptr,len)` and the record's two Bytes fields each
+/// to `(ptr,len)` (a rope→mem copy per field).
+fn deliver_notification_world_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let list_u8 = |b: &mut Builder| {
+        let u8h = b.name("u8");
+        let u8p = b.list(vec![u8h]);
+        let lh = b.atom_leaf(Leaf::Str("list".into()));
+        b.list(vec![lh, u8p])
+    };
+    let field = |b: &mut Builder, name: &str, ty| {
+        let n = b.name(name);
+        b.list(vec![n, ty])
+    };
+    let record = |b: &mut Builder, fields: Vec<crate::ast::StructId>| {
+        let h = b.atom_leaf(Leaf::Str("record".into()));
+        let mut v = vec![h];
+        v.extend(fields);
+        b.list(v)
+    };
+    let bytes_field = |b: &mut Builder, name: &str| {
+        let t = list_u8(b);
+        field(b, name, t)
+    };
+    // export guest { on-message: (m: record{contract,payload,token: list<u8>}) -> step }
+    let message = {
+        let mc = bytes_field(&mut b, "contract");
+        let mp = bytes_field(&mut b, "payload");
+        let mt = bytes_field(&mut b, "token");
+        record(&mut b, vec![mc, mp, mt])
+    };
+    let step = {
+        let requests_list = {
+            let request = {
+                let rc = bytes_field(&mut b, "contract");
+                let rp = bytes_field(&mut b, "payload");
+                let rt = bytes_field(&mut b, "token");
+                let rd = {
+                    let u64h = b.name("u64");
+                    let u64t = b.list(vec![u64h]);
+                    let oh = b.atom_leaf(Leaf::Str("option".into()));
+                    let ot = b.list(vec![oh, u64t]);
+                    field(&mut b, "deadline-nanos", ot)
+                };
+                record(&mut b, vec![rc, rp, rt, rd])
+            };
+            let lh = b.atom_leaf(Leaf::Str("list".into()));
+            b.list(vec![lh, request])
+        };
+        let outcome = {
+            let cont = {
+                let n = b.name("continue");
+                b.list(vec![n])
+            };
+            let close = {
+                let cs = bytes_field(&mut b, "schema");
+                let cr = bytes_field(&mut b, "reason");
+                let rec = record(&mut b, vec![cs, cr]);
+                let n = b.name("close");
+                b.list(vec![n, rec])
+            };
+            let vh = b.atom_leaf(Leaf::Str("variant".into()));
+            b.list(vec![vh, cont, close])
+        };
+        let sr = field(&mut b, "requests", requests_list);
+        let so = field(&mut b, "outcome", outcome);
+        record(&mut b, vec![sr, so])
+    };
+    let on_message = {
+        let func_h = b.name("func");
+        let param_h = b.name("param");
+        let pn = b.name("m");
+        let param_node = b.list(vec![param_h, pn, message]);
+        let result_h = b.name("result");
+        let result_node = b.list(vec![result_h, step]);
+        let func = b.list(vec![func_h, param_node, result_node]);
+        let member_h = b.name("member");
+        let mn = b.name("on-message");
+        b.list(vec![member_h, mn, func])
+    };
+    let exp_h = b.name("export");
+    let iname = b.name("guest");
+    let export = b.list(vec![exp_h, iname, on_message]);
+    // import cadenza:platform/deliver { deliver-notification: func(target: list<u8>, event: record{contract,payload: list<u8>}) }
+    let dn_member = {
+        let event_rec = {
+            let ec = bytes_field(&mut b, "contract");
+            let ep = bytes_field(&mut b, "payload");
+            record(&mut b, vec![ec, ep])
+        };
+        let func_h = b.name("func");
+        let p1 = {
+            let ph = b.name("param");
+            let pn = b.name("target");
+            let ty = list_u8(&mut b);
+            b.list(vec![ph, pn, ty])
+        };
+        let p2 = {
+            let ph = b.name("param");
+            let pn = b.name("event");
+            b.list(vec![ph, pn, event_rec])
+        };
+        let result_h = b.name("result");
+        let unit_h = b.atom_leaf(Leaf::Str("unit".into()));
+        let unit_ty = b.list(vec![unit_h]);
+        let rnode = b.list(vec![result_h, unit_ty]);
+        let func = b.list(vec![func_h, p1, p2, rnode]);
+        let member_h = b.name("member");
+        let mn = b.name("deliver-notification");
+        b.list(vec![member_h, mn, func])
+    };
+    let imp_h = b.name("import");
+    let deliver_name = b.name("cadenza:platform/deliver");
+    let deliver = b.list(vec![imp_h, deliver_name, dn_member]);
+    let world_h = b.name("world");
+    let wn = b.name("w");
+    let world = b.list(vec![world_h, wn, export, deliver]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+/// W4d2 (shape d2 + MIXED params, the §4 `deliver-notification` shape): a typed reducer performing
+/// `deliver-notification(target: list<u8>, event: record { contract: list<u8>, payload: list<u8> })` — a host
+/// op MIXING a `list<u8>` param with a record param whose fields are `list<u8>` — EMITS + VALIDATES + LOADS.
+/// The `(list u8)` type is at instance index 0, the record DEFINED at 1 / EXPORTED at 2; the guest flattens
+/// `target` to `(ptr,len)` and copies each of the record's two Bytes fields rope→mem, pushing `(ptr,len)`.
+/// wasmparser validation is the strong check (the flattened core sig must match the canonical lowering of
+/// `func(list<u8>, record{list<u8>,list<u8>})`). This is the minimal §4 event-delivery unblock.
+#[test]
+fn a_reducer_performing_deliver_notification_emits_and_loads() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (type Outcome Continue (Close (Record (schema Bytes) (reason Bytes)))) \
+                 (effect deliver (op deliver-notification \
+                    (-> Bytes (Record (contract Bytes) (payload Bytes)) Unit))) \
+                 (def (onMessage (: m (Record (contract Bytes) (payload Bytes) (token Bytes)))) \
+                   (host (deliver) \
+                     (do (deliver.deliver-notification (. m token) \
+                            (record (contract (. m contract)) (payload (. m payload)))) \
+                         (record (requests (list)) (outcome Outcome.Continue))))) \
+                 (export onMessage))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:platform/guest"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                deliver_notification_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "the deliver-notification reducer must emit (d2 mixed list<u8>+record, bytes fields): {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("the deliver-notification reducer emits a component");
+    let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+    v.validate_all(bytes).expect(
+        "the deliver-notification component validates (flattened core sig matches the mixed list<u8>+record param)",
+    );
+    cdz_run::required_runtime(bytes)
+        .expect("the deliver-notification reducer component loads on the pinned wasmtime");
+    assert!(
+        String::from_utf8_lossy(bytes).contains("cadenza:platform/deliver"),
+        "the reducer imports the deliver host interface at the world's FQ name"
+    );
+}
+
 /// Like [`state_get_host_import_world_bytes`] but the imported `cadenza:platform/state` interface declares
 /// BOTH `put: func(key: list<u8>, value: list<u8>)` (a UNIT / bare result) AND `get: func(key: list<u8>) ->
 /// option<list<u8>>` (a COMPOUND result). Drives the SEQUENCED-perform invariant — a full typed reducer whose

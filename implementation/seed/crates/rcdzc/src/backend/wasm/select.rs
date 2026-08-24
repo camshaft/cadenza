@@ -3852,15 +3852,22 @@ fn collect_used_ops_into_seen(
                             collect_used_ops_into_seen(db, arg, out, visited);
                         }
                     }
-                    // A RECORD host arg (shape d) is marshaled field-by-field by the guest: `arr-get`
-                    // (borrow each field) + the field's scalar get-op. Declare them to MATCH the emit
-                    // (else the `CallImport` resolves to u32::MAX → an invalid module), then descend to
-                    // collect the ops that BUILD the record value.
+                    // A RECORD host arg (shape d) is marshaled field-by-field by the guest: `arr-get` (borrow
+                    // each field) + a SCALAR field's get-op, OR a BYTES field's rope→mem copy (`bytes-len` +
+                    // `bytes-get`). Declare them to MATCH the emit (else the `CallImport` resolves to u32::MAX
+                    // → an invalid module), then descend to collect the ops that BUILD the record value.
                     Ty::Record(fields) if !peer_bound => {
                         out.insert(OP_ARR_GET);
                         for fty in fields.values() {
-                            if let Ok(Some(op)) = get_op_ty(db, fty) {
-                                out.insert(op);
+                            match get_op_ty(db, fty) {
+                                Ok(Some(op)) => {
+                                    out.insert(op);
+                                }
+                                _ if matches!(fty, Ty::Bytes) => {
+                                    out.insert(OP_BYTES_LEN);
+                                    out.insert(OP_BYTES_GET);
+                                }
+                                _ => {}
                             }
                         }
                         collect_used_ops_into_seen(db, arg, out, visited);
@@ -12070,8 +12077,11 @@ fn emit(
             // cursor is reserved (and the per-arg `emit` floor raised past it) ONLY when a runtime compound arg
             // is actually present, so an all-scalar / const-string host call stays byte-identical to before.
             let has_runtime_compound = args.iter().any(|&a| {
-                matches!(crate::infer::type_of(db, a), Ty::String | Ty::Bytes)
-                    && !matches!(core_of(db, a), Core::ConstStr(_))
+                let at = crate::infer::type_of(db, a);
+                (matches!(at, Ty::String | Ty::Bytes) && !matches!(core_of(db, a), Core::ConstStr(_)))
+                    // A record arg with a `Bytes` FIELD (shape d2) also copies rope bytes into `mem`, so it
+                    // needs the running scratch cursor reserved just like a Bytes arg.
+                    || crate::backend::wasm::host::record_has_bytes_field(&at)
             });
             let scratch_cursor_slot = if has_runtime_compound {
                 let slot = base.max(*high);
@@ -12180,30 +12190,84 @@ fn emit(
                             out.push(Lir::LocalSet(cursor)); // cursor += len
                         }
                     },
-                    // A RECORD argument (shape d, all NO-WRAP-scalar fields) crosses NATIVELY: the guest
-                    // DECOMPOSES the value-heap record field-by-field into the flattened core slots the
-                    // component `record` param lowers to. Stash the record handle in a scratch slot, then per
-                    // field (NAME-LEX order = the value-heap cell layout = the component record's field order
-                    // = the core flatten order) read it back with `arr-get` (borrows the aggregate) + the
-                    // field's scalar get-op (`get-int`/`get-bool`/`get-float`; `host::field_flat_abi`
-                    // restricts fields to widths that need NO i64→i32 narrow, so the read is wrap-free). The
-                    // reads BORROW the record (no consume), so — like the String/Bytes arg marshal above —
-                    // the handle is not dropped here (its owner reclaims it; a narrow-field / owned-record
-                    // drop is a later slice).
+                    // A RECORD argument (shape d) crosses NATIVELY: the guest DECOMPOSES the value-heap record
+                    // field-by-field into the flattened core slots the component `record` param lowers to.
+                    // Stash the record handle in a scratch slot, then per field (NAME-LEX order = the
+                    // value-heap cell layout = the component record's field order = the core flatten order):
+                    //  • a SCALAR field (`get_op_ty` Some) reads back with `arr-get` (borrows the aggregate) +
+                    //    the field's wrap-free scalar get-op → one core slot.
+                    //  • a BYTES field (`arr-get` yields the field's `list<u8>` handle) is copied rope→`mem` at
+                    //    the running cursor and pushed as `(ptr,len)` — the SAME copy a Bytes ARG does, 2 core
+                    //    slots (`host::field_boundary_abi` admits only scalar + Bytes fields).
+                    // The reads BORROW the record (no consume), so — like the String/Bytes arg marshal above —
+                    // the handle is not dropped here (its owner reclaims it).
                     Ty::Record(fields) => {
                         let rec_slot = arg_base.max(*high);
-                        *high = (*high).max(rec_slot + 1);
-                        scratch_ty.insert(rec_slot, ValType::I32);
-                        emit(db, arg, slots, rec_slot + 1, high, scratch_ty, layout, out)?; // [rec]
+                        let rope_slot = rec_slot + 1;
+                        let len_slot = rec_slot + 2;
+                        let pos_slot = rec_slot + 3;
+                        *high = (*high).max(rec_slot + 4);
+                        for s in [rec_slot, rope_slot, len_slot, pos_slot] {
+                            scratch_ty.insert(s, ValType::I32);
+                        }
+                        emit(db, arg, slots, rec_slot + 4, high, scratch_ty, layout, out)?; // [rec]
                         out.push(Lir::LocalSet(rec_slot));
                         for (i, (_, fty)) in fields.iter().enumerate() {
-                            let read = get_op_ty(db, fty)?.ok_or_else(|| {
-                                Reject::decline("a record host-arg field has no scalar read op")
-                            })?;
-                            out.push(Lir::LocalGet(rec_slot)); // [rec]
-                            out.push(Lir::ConstI32(i as i32)); // [rec, i]
-                            out.push(Lir::CallImport(OP_ARR_GET)); // [field-handle] (borrows rec)
-                            out.push(Lir::CallImport(read)); // [scalar]
+                            match get_op_ty(db, fty)? {
+                                Some(read) => {
+                                    out.push(Lir::LocalGet(rec_slot)); // [rec]
+                                    out.push(Lir::ConstI32(i as i32)); // [rec, i]
+                                    out.push(Lir::CallImport(OP_ARR_GET)); // [field] (borrows rec)
+                                    out.push(Lir::CallImport(read)); // [scalar]
+                                }
+                                None if matches!(fty, Ty::Bytes) => {
+                                    let cursor = scratch_cursor_slot.expect(
+                                        "a bytes-field record reserves the scratch cursor (pre-scan)",
+                                    );
+                                    out.push(Lir::LocalGet(rec_slot));
+                                    out.push(Lir::ConstI32(i as i32));
+                                    out.push(Lir::CallImport(OP_ARR_GET)); // [field list<u8> handle]
+                                    out.push(Lir::LocalSet(rope_slot));
+                                    out.push(Lir::LocalGet(rope_slot));
+                                    out.push(Lir::CallImport(OP_BYTES_LEN)); // [len]
+                                    out.push(Lir::LocalSet(len_slot));
+                                    out.push(Lir::ConstI32(0));
+                                    out.push(Lir::LocalSet(pos_slot));
+                                    // block { loop { br_out if pos>=len; mem[cursor+pos]=bytes-get(rope,pos); pos++ } }
+                                    out.push(Lir::Block(BlockType::Empty));
+                                    out.push(Lir::Loop(BlockType::Empty));
+                                    out.push(Lir::LocalGet(pos_slot));
+                                    out.push(Lir::LocalGet(len_slot));
+                                    out.push(Lir::I32GeS);
+                                    out.push(Lir::BrIf(1));
+                                    out.push(Lir::LocalGet(cursor));
+                                    out.push(Lir::LocalGet(pos_slot));
+                                    out.push(Lir::I32Add);
+                                    out.push(Lir::LocalGet(rope_slot));
+                                    out.push(Lir::LocalGet(pos_slot));
+                                    out.push(Lir::CallImport(OP_BYTES_GET));
+                                    out.push(Lir::I32Store8 { offset: 0 });
+                                    out.push(Lir::LocalGet(pos_slot));
+                                    out.push(Lir::ConstI32(1));
+                                    out.push(Lir::I32Add);
+                                    out.push(Lir::LocalSet(pos_slot));
+                                    out.push(Lir::Br(0));
+                                    out.push(Lir::End);
+                                    out.push(Lir::End);
+                                    out.push(Lir::LocalGet(cursor));
+                                    out.push(Lir::LocalGet(len_slot)); // push (ptr, len)
+                                    out.push(Lir::LocalGet(cursor));
+                                    out.push(Lir::LocalGet(len_slot));
+                                    out.push(Lir::I32Add);
+                                    out.push(Lir::LocalSet(cursor)); // cursor += len
+                                }
+                                None => {
+                                    return Err(Reject::decline(
+                                        "a record host-arg field has no boundary read (only scalar + \
+                                         list<u8> fields cross this increment)",
+                                    ));
+                                }
+                            }
                         }
                     }
                     // A scalar argument emits its value directly.
