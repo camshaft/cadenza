@@ -31,16 +31,14 @@ type Error =
   | SchemaViolation
   | Faulted
 
-def on-message(
-  msg: Record(contract: Bytes, sender: Record(reducer: Bytes, host: Bytes), payload: Bytes, token: Bytes)
-) =
+def on-message(msg) =
   { requests = [{ contract = msg.contract, payload = msg.payload, token = msg.token, deadlineNanos = None }],
     outcome = Outcome.Continue }
 
-def on-response(_resp: Record(contract: Bytes, token: Bytes, answer: Result(Bytes, Error))) =
+def on-response(_resp) =
   { requests = [], outcome = Outcome.Continue }
 
-def on-notification(_note: Record(contract: Bytes, payload: Bytes)) =
+def on-notification(_note) =
   { requests = [], outcome = Outcome.Continue }
 
 export { on-message, on-response, on-notification }
