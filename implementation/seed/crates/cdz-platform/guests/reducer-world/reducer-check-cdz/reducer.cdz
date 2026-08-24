@@ -1,0 +1,45 @@
+// The end-of-run CHECKER, as a Cadenza reducer guest (design/cadenza-platform.md §9) — replaces the interim
+// Rust reducer-echo-check. The harness delivers the whole observation log on the `check` contract; the
+// checker Value.decodes it, judges the run, and emits a `verdict` request the harness reads.
+//
+// SCAFFOLD (v-platform owns the frame; v-platform-itest fills the assert). This file wires the whole path:
+//   - imports the three schemas as LIBRARIES (their single source of truth): the check Envelope (log-in),
+//     the verdict Verdict (pass/fail-out), and the log-schema LogRecord (the decoded log). The `libs` manifest
+//     beside this file lists their repo-relative paths for the multi-file build.
+//   - reads the delivered Envelope.Check({ log, verdict }): `log` is the serialized observation log, `verdict`
+//     the contract-id to emit the verdict on (the harness passes it — no hardcoded hash, no compile-time const).
+//   - performs identity.id() (the reducer's own id) so the assert can compare a delivered token against it.
+//   - Value.encodes a Verdict and emits it as a request on the `verdict` contract-id.
+//
+// THE ASSERT IS A STUB: it currently passes iff the log DECODES (proving the decode+emit plumbing). v-platform-
+// itest replaces the `Some(_records) => pass=true` body with the real §9 judgement — scan `records` for a
+// Delivered(C,P) that matches an Emitted(C,P) with token == identity.id(), collecting fail messages.
+// TWO Cadenza gotchas when filling it: (1) an inner `match` inside a `Some(...) =>` arm MUST be paren-wrapped
+// (else the outer `| None =>` is absorbed → CDZ0210); (2) `Entry` is an IMPORTED sum (variant count invisible
+// to the matcher), so matching Entry.Delivered/Emitted is refutable → add a catch-all `_ =>` arm.
+import { Envelope } from "check"
+import { Verdict } from "verdict"
+import { LogRecord } from "log-schema"
+
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+def verdict-req(c, pass, id) =
+  { contract = c.verdict,
+    payload = Value.encode(Verdict.Verdict({ pass = pass, messages = ([] : List(String)) })),
+    token = id,
+    deadlineNanos = None }
+
+def on-message(msg) =
+  host identity in
+    match (Value.decode(msg.payload) : Option(Envelope)) with
+    | Some(Envelope.Check(c)) =>
+        (match (Value.decode(c.log) : Option(List(LogRecord))) with
+         | Some(_records) => { requests = [verdict-req(c, true, identity.id())], outcome = Outcome.Continue }
+         | None => { requests = [verdict-req(c, false, identity.id())], outcome = Outcome.Continue })
+    | None =>
+        { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = msg.payload }) }
+
+def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
+def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
+export { on-message, on-response, on-notification }
