@@ -953,9 +953,8 @@ pub fn assemble_typed_interface_with_host_runtime(
     host_fns: &[HostFn],
     imports: &[&RtOp],
     import_name: &str,
-    needs_option_bytes: bool,
-    needs_list_byte_pairs: bool,
-    needs_bytes_result: bool,
+    needs_list: bool,
+    result_defs: &[Vec<u8>],
     record_defs: &[Vec<u8>],
 ) -> Vec<u8> {
     use crate::backend::common::export_name::kebab_extern_name;
@@ -996,9 +995,8 @@ pub fn assemble_typed_interface_with_host_runtime(
         }
         items.extend_from_slice(&host_effect_instance_type(
             host_fns,
-            needs_option_bytes,
-            needs_list_byte_pairs,
-            needs_bytes_result,
+            needs_list,
+            result_defs,
             record_defs,
         ));
         items.extend_from_slice(&runtime_op_instance_type(imports));
@@ -1195,9 +1193,8 @@ pub fn assemble_typed_interface_with_host_runtime_mem(
     host_fns: &[HostFn],
     imports: &[&RtOp],
     import_name: &str,
-    needs_option_bytes: bool,
-    needs_list_byte_pairs: bool,
-    needs_bytes_result: bool,
+    needs_list: bool,
+    result_defs: &[Vec<u8>],
     // A host op with a COMPOUND result needs the SHARED cabi_realloc (from the mem module) at lower-time: the
     // mem module exports memory + cabi_realloc, both aliased BEFORE the host-op lowers. cabi_realloc becomes
     // CORE FUNC 0, so every lowered op / boundary / lift core-func index shifts by +1 (`rs`). When false
@@ -1243,9 +1240,8 @@ pub fn assemble_typed_interface_with_host_runtime_mem(
         }
         items.extend_from_slice(&host_effect_instance_type(
             host_fns,
-            needs_option_bytes,
-            needs_list_byte_pairs,
-            needs_bytes_result,
+            needs_list,
+            result_defs,
             record_defs,
         ));
         items.extend_from_slice(&runtime_op_instance_type(imports));
@@ -2454,7 +2450,12 @@ pub fn assemble_host_runtime(
     // sec 7: TWO instance-types — component type 0 (the effect) then component type 1 (the runtime). Each
     // is `0x42` + a vec of 2*count interleaved (ty, export) decls, exactly as the single-import shapes.
     let type_sec = {
-        let host_it = host_effect_instance_type(host_fns, false, false, false, &[]);
+        let host_it = host_effect_instance_type(
+            host_fns,
+            host_fns.iter().any(|f| f.has_list_param),
+            &[],
+            &[],
+        );
         let rt_it = runtime_op_instance_type(imports);
         let mut items = host_it;
         items.extend_from_slice(&rt_it);
@@ -2639,7 +2640,12 @@ pub fn assemble_host_runtime_mem(
     // sec 7: TWO instance-types — host effect (comp type 0) then runtime (comp type 1) — identical to the
     // memoryless host+runtime shape (the shared memory is a CORE detail, invisible to the component types).
     let type_sec = {
-        let host_it = host_effect_instance_type(host_fns, false, false, false, &[]);
+        let host_it = host_effect_instance_type(
+            host_fns,
+            host_fns.iter().any(|f| f.has_list_param),
+            &[],
+            &[],
+        );
         let rt_it = runtime_op_instance_type(imports);
         let mut items = host_it;
         items.extend_from_slice(&rt_it);
@@ -2833,9 +2839,8 @@ pub fn assemble_bytes_roundtrip_host_provider(
     host_iface: &str,
     imports: &[&RtOp],
     import_name: &str,
-    needs_option_bytes: bool,
-    needs_list_byte_pairs: bool,
-    needs_bytes_result: bool,
+    needs_list: bool,
+    result_defs: &[Vec<u8>],
 ) -> Vec<u8> {
     let h = host_fns.len();
     let k = imports.len();
@@ -2844,13 +2849,7 @@ pub fn assemble_bytes_roundtrip_host_provider(
 
     // sec 7 (first): host effect instance-type (comp type 0) + runtime instance-type (comp type 1).
     let type_sec = {
-        let host_it = host_effect_instance_type(
-            host_fns,
-            needs_option_bytes,
-            needs_list_byte_pairs,
-            needs_bytes_result,
-            &[],
-        );
+        let host_it = host_effect_instance_type(host_fns, needs_list, result_defs, &[]);
         let mut items = host_it;
         items.extend_from_slice(&runtime_op_instance_type(imports));
         section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
@@ -3920,7 +3919,12 @@ pub fn assemble_host_runtime_resource(
     // sec 7: TWO instance-types — the host effect (comp type 0, its h ops) then the runtime (comp type 1,
     // its k ops).
     let type_sec = {
-        let host_it = host_effect_instance_type(host_fns, false, false, false, &[]);
+        let host_it = host_effect_instance_type(
+            host_fns,
+            host_fns.iter().any(|f| f.has_list_param),
+            &[],
+            &[],
+        );
         let rt_it = runtime_op_instance_type(imports);
         let mut items = host_it;
         items.extend_from_slice(&rt_it);
@@ -4659,7 +4663,12 @@ pub fn assemble_host_runtime_resource_with_scalar_methods(
 
     // sec 7: TWO instance-types — the host effect (comp type 0, its h ops) then the runtime (comp type 1).
     let type_sec = {
-        let host_it = host_effect_instance_type(host_fns, false, false, false, &[]);
+        let host_it = host_effect_instance_type(
+            host_fns,
+            host_fns.iter().any(|f| f.has_list_param),
+            &[],
+            &[],
+        );
         let rt_it = runtime_op_instance_type(imports);
         let mut items = host_it;
         items.extend_from_slice(&rt_it);
@@ -10234,51 +10243,29 @@ fn list_u8_defined_type() -> Vec<u8> {
 /// pre-Bytes shape. Shared by every host-import assembly variant so the prepend/shift is defined once.
 fn host_effect_instance_type(
     host_fns: &[HostFn],
-    needs_option_bytes: bool,
-    needs_list_byte_pairs: bool,
-    needs_bytes_result: bool,
+    needs_list: bool,
+    result_defs: &[Vec<u8>],
     record_defs: &[Vec<u8>],
 ) -> Vec<u8> {
     let h = host_fns.len();
-    // An `option<list<u8>>` RESULT (S0) OR a `list<tuple<list<u8>,list<u8>>>` RESULT (prefix-scan) OR a bare
-    // `list<u8>` (Bytes) RESULT references the `(list u8)` type, so the list type is needed whenever a Bytes
-    // param OR any of those results is present. (A bare Bytes result with NO Bytes param — `identity.id : ()
-    // -> list<u8>` — needs the list type ONLY for its result, so `needs_bytes_result` must be checked or the
-    // result functype references an unbound type index.) Prepended defined types (in order): idx 0 `(list
-    // u8)`; idx 1 `option<list<u8>>` (if needed); then `tuple<list,list>` + `list<tuple>` (prefix-scan).
-    let needs_list = host_fns.iter().any(|f| f.has_list_param)
-        || needs_option_bytes
-        || needs_list_byte_pairs
-        || needs_bytes_result;
     let mut decls = Vec::new();
     let mut prepended: u64 = 0;
+    // idx 0: the shared `(list u8)` defined type — referenced by every `list<u8>` PARAM and every `list<u8>`
+    // leaf of a spilled result. `needs_list` is computed by the caller (`build_host_result_types`) over both
+    // params and results (every admitted spilled result bottoms out at `list<u8>`, so it forces this type).
     if needs_list {
         decls.push(0x01);
         decls.extend_from_slice(&list_u8_defined_type()); // type index 0
         prepended += 1;
     }
-    if needs_option_bytes {
-        // `option<list<u8>>` = the option former `0x6b` over the `(list u8)` type (type index 0), as a
-        // type-INDEX valtype (uleb128 0). Placed at instance-type type index 1 — the index each
-        // option-result op's `comp_functype` references (`list_type_idx + 1`, list_type_idx = 0).
+    // The spilled-RESULT defined types, built GENERALLY (Ty → WitType → CDef via `wit_ctype`) by the caller
+    // and emitted here at instance-type indices 1.. (right after `(list u8)`), children-first + deduped. Each
+    // op's `comp_functype` references its own result type by the `CRef` index the caller computed. This ONE
+    // list REPLACES the former per-shape option / tuple / list<tuple> blocks; `list<list<u8>>`
+    // (graph.neighbors) is just another entry here, no new branch.
+    for rd in result_defs {
         decls.push(0x01);
-        decls.extend_from_slice(&[0x6b, 0x00]); // type index 1
-        prepended += 1;
-    }
-    if needs_list_byte_pairs {
-        // `list<tuple<list<u8>,list<u8>>>` (kv prefix-scan) as two defined types:
-        //   - `tuple<list<u8>,list<u8>>` = `0x6f 02 00 00` (tuple former, 2 fields, each a type-INDEX valtype
-        //     referencing the `(list u8)` at type index 0) — placed at index `1 + needs_option_bytes`.
-        //   - `list<tuple>` = the list former `0x70` over that tuple type's index — placed right after.
-        // The list-of-tuple index (`2 + needs_option_bytes`) is what `host_op_comp_functype` was threaded.
-        let tuple_idx = prepended; // next free index
-        decls.push(0x01);
-        decls.extend_from_slice(&tuple_defined_type(&[0x00, 0x00]));
-        prepended += 1;
-        decls.push(0x01);
-        let mut lot = vec![0x70];
-        uleb128(tuple_idx, &mut lot);
-        decls.extend_from_slice(&lot);
+        decls.extend_from_slice(rd);
         prepended += 1;
     }
     // RECORD-param types (shape d): a NOMINAL type (record) that a func in an IMPORT instance-type uses

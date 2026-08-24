@@ -12782,12 +12782,10 @@ fn emit(
             // into a Cadenza value-heap handle by recursing over the WIT result type (`emit_result_lift`).
             // This ONE recursion REPLACES the former per-shape lift blocks (`option<list<u8>>`, bare
             // `list<u8>`, `list<tuple<list<u8>,list<u8>>>`) — the general shape mechanism, not a 4th shortcut.
-            // The admit set stays exactly those three shapes THIS increment (the ones the host-import
-            // core-sig/component-type plumbing already emits); a new shape (`list<list<u8>>`) rides the same
-            // recursion once its plumbing lands, rather than growing another bespoke block here.
-            let spilled_result = crate::backend::wasm::host::is_option_bytes(db, &result)
-                || matches!(result.strip_nominal(), crate::ty::Ty::Bytes)
-                || crate::backend::wasm::host::is_list_byte_pairs(&result);
+            // The admit predicate is the SAME `host::result_is_liftable` the host-import collection + the
+            // component defined-type emission use, so a new structural shape (`list<list<u8>>` for
+            // graph.neighbors) rides this recursion in lockstep with its core-sig/comp-type plumbing.
+            let spilled_result = crate::backend::wasm::host::result_is_liftable(db, &result);
             if spilled_result {
                 let (size, align) = canonical_layout(db, &result);
                 let retptr = (*high).max(base);
