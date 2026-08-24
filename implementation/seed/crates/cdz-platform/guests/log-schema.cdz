@@ -1,0 +1,32 @@
+// The shared observation-log Cadenza schema (design/cadenza-platform.md §9) — the type a checker
+// `Value.decode`s the serialized log into. Derived from and kept in lockstep with the log's Rust encoder
+// `cdz-platform/src/testing/log_value.rs` (the source of truth for the exact per-field types and the wire
+// field names): every id/hash/payload is `Bytes`; every flag/count is `UInt64` (the encoder writes a flag
+// as `0`/`1`); `event-kind`/`error`/`during`/`reducer-kind` are `String`. Entry and Bound are sums (the
+// constructor kebab-matches the wire tag); the source/from origin is a plain record. Kebab wire field names
+// (`event-kind`, `keys-only`, `reducer-kind`) normalize to these camelCase fields.
+type Bound =
+  | Unbounded
+  | Included(Bytes)
+  | Excluded(Bytes)
+
+type Entry =
+  | KvGet(Record(key: Bytes, hit: UInt64))
+  | KvPut(Record(key: Bytes, value: Bytes))
+  | KvDelete(Record(key: Bytes, existed: UInt64))
+  | KvScan(Record(lower: Bound, upper: Bound, keysOnly: UInt64))
+  | BlobPut(Record(hash: Bytes, len: UInt64))
+  | BlobGet(Record(hash: Bytes, hit: UInt64))
+  | BlobHas(Record(hash: Bytes, present: UInt64))
+  | Delivered(Record(eventKind: String, contract: Bytes, from: Option(Record(reducer: Bytes, host: Bytes)), token: Bytes, payload: Bytes, error: Option(String)))
+  | Emitted(Record(contract: Bytes, payload: Bytes, token: Bytes, deadline: UInt64))
+  | Closed(Record(schema: Bytes, reason: Bytes))
+  | Failed(Record(during: String, contract: Bytes, reason: String))
+  | Spawn(Record(name: String, program: Bytes, parent: Bytes, reducerKind: String))
+
+type LogRecord =
+  | LogRecord(Record(seq: UInt64, time: UInt64, source: Record(reducer: Bytes, host: Bytes), entry: Entry))
+
+// Export the sum-type constructors (not just the opaque type handles) so a checker guest can `import`
+// these types and both CONSTRUCT and MATCH their variants (a bare `export { T }` exposes only the handle).
+export { Bound.*, Entry.*, LogRecord.* }
