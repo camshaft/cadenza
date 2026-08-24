@@ -137,6 +137,27 @@ pub struct HarnessSpec {
     /// component it needs travels in the spec — rather than pulling the runtime from an ambient store at run
     /// time. Empty for a run of only self-contained (Rust) guests.
     pub deps: Vec<BlobSource>,
+    /// The **event registry** the run installs, if set (§4): the default event handler plus per-contract
+    /// overrides. When present it replaces the harness default (which routes every contract to the `system`
+    /// reducer) — so a conformance run can stand up a specific default handler and route named contracts to
+    /// named handlers, then assert how an effect is routed/answered. `None` keeps the default (all contracts →
+    /// `system`).
+    pub registry: Option<RegistrySpec>,
+}
+
+/// The event registry a run installs (`design/cadenza-platform.md` §4): a **default** event handler that
+/// governs any contract without an override, plus zero or more per-contract **handler** overrides. An effect
+/// on a contract resolves to its override if one is installed, else the default handler (which may itself
+/// decline and reply with a rejection — an unregistered contract is *forwarded* to the default, never
+/// auto-faulted). All programs are blob **names** (resolved to content hashes at run time).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegistrySpec {
+    /// The blob name of the default event handler — the program whose event reducer governs any contract
+    /// without an override.
+    pub default: String,
+    /// Per-contract overrides: `(contract-id, handler blob name)`, in declaration order. A contract with an
+    /// override routes to that handler instead of the default.
+    pub handlers: Vec<(ContractId, String)>,
 }
 
 /// A pure run to perform and assert over (`design/cadenza-platform.md` §3): run [`program`](PureRun::program)
@@ -421,6 +442,11 @@ impl HarnessSpec {
                 .collect::<Result<_, _>>()?,
         };
 
+        let registry = match record_field(arenas, root, "registry") {
+            None => None,
+            Some(id) => Some(read_registry(arenas, id)?),
+        };
+
         Ok(HarnessSpec {
             system,
             run_for,
@@ -430,6 +456,7 @@ impl HarnessSpec {
             checker,
             pure_run,
             deps,
+            registry,
         })
     }
 
@@ -488,6 +515,24 @@ impl HarnessSpec {
                 blob: pure_run.program.clone(),
             });
         }
+        // A registry names its default handler and each per-contract override handler by blob name; every one
+        // must be declared, like the system reducer.
+        if let Some(registry) = &self.registry {
+            if !blobs.contains(registry.default.as_str()) {
+                return Err(SpecError::UnknownBlob {
+                    referrer: "registry default".to_string(),
+                    blob: registry.default.clone(),
+                });
+            }
+            for (_contract, program) in &registry.handlers {
+                if !blobs.contains(program.as_str()) {
+                    return Err(SpecError::UnknownBlob {
+                        referrer: "registry handler".to_string(),
+                        blob: program.clone(),
+                    });
+                }
+            }
+        }
         Ok(())
     }
 
@@ -515,6 +560,9 @@ impl HarnessSpec {
         }
         for (target, event) in self.deliveries {
             harness = harness.deliver(target, event.into_delivered());
+        }
+        if let Some(registry) = self.registry {
+            harness = harness.registry(registry.default, registry.handlers);
         }
         Ok(harness)
     }
@@ -583,8 +631,33 @@ impl HarnessSpec {
             let deps = list_value(b, items);
             fields.push(("deps", deps));
         }
+        if let Some(registry) = &self.registry {
+            let registry = registry_to_ast(b, registry);
+            fields.push(("registry", registry));
+        }
         record(b, fields)
     }
+}
+
+/// The `("record" (= default …) (= handlers ("list" …)?))` node for a registry — the inverse of
+/// [`read_registry`]. Empty `handlers` is omitted (the decode default).
+fn registry_to_ast(b: &mut Builder, registry: &RegistrySpec) -> StructId {
+    let default = str_leaf(b, &registry.default);
+    let mut fields = vec![("default", default)];
+    if !registry.handlers.is_empty() {
+        let items = registry
+            .handlers
+            .iter()
+            .map(|(contract, program)| {
+                let contract = bytes_leaf(b, contract.hash().as_bytes());
+                let program = str_leaf(b, program);
+                record(b, vec![("contract", contract), ("program", program)])
+            })
+            .collect();
+        let handlers = list_value(b, items);
+        fields.push(("handlers", handlers));
+    }
+    record(b, fields)
 }
 
 /// The `("record" (= bytes …)|(= path …))` node for one unnamed dependency — the inverse of [`read_dep`]
@@ -894,6 +967,49 @@ fn error_tag(e: Error) -> &'static str {
 }
 
 /// Read the required `contract` field of an event record as a [`ContractId`] (its 33 raw hash bytes).
+/// Read a `registry` sub-record into a [`RegistrySpec`]: a required `default` handler blob name, and an
+/// optional `handlers` list of per-contract overrides — each a record `{ contract = <id>, program = <name> }`.
+/// Liberal about the record head.
+fn read_registry(arenas: &Arenas, id: StructId) -> Result<RegistrySpec, SpecError> {
+    if !is_record(arenas, id) {
+        return Err(SpecError::WrongType {
+            field: "registry",
+            want: "a (record …) with default and optional handlers",
+        });
+    }
+    let default = str_field(arenas, id, "default")?
+        .ok_or(SpecError::MissingField("default"))?
+        .to_string();
+    let handlers = match record_field(arenas, id, "handlers") {
+        None => Vec::new(),
+        Some(list) => list_items(arenas, list)
+            .ok_or(SpecError::WrongType {
+                field: "handlers",
+                want: "a (list …) of handler records",
+            })?
+            .iter()
+            .map(|&h| read_handler(arenas, h))
+            .collect::<Result<_, _>>()?,
+    };
+    Ok(RegistrySpec { default, handlers })
+}
+
+/// Read one `handlers` record into a `(contract-id, program name)` override — a record with a `contract`
+/// (contract-id, by base62 string or raw bytes) and a `program` (handler blob name). Liberal about the head.
+fn read_handler(arenas: &Arenas, id: StructId) -> Result<(ContractId, String), SpecError> {
+    if !is_record(arenas, id) {
+        return Err(SpecError::WrongType {
+            field: "handlers",
+            want: "a (record …) with contract and program",
+        });
+    }
+    let contract = read_contract_id(arenas, id)?;
+    let program = str_field(arenas, id, "program")?
+        .ok_or(SpecError::MissingField("program"))?
+        .to_string();
+    Ok((contract, program))
+}
+
 /// Read one `deps` record into a [`BlobSource`] — an UNNAMED content-addressed component: a record with
 /// exactly one of `bytes` (inline) or `path` (a file the executable reads), like a blob but with no `name`
 /// (nothing refers to a dep by name; it is resolved by content hash). Liberal about the record head.
@@ -1055,7 +1171,9 @@ fn answer_to_ast(b: &mut Builder, answer: &Result<Bytes, Error>) -> StructId {
 
 #[cfg(test)]
 mod tests {
-    use super::{BlobSource, BlobSpec, DeliveryEvent, HarnessSpec, PureRun, SpecError};
+    use super::{
+        BlobSource, BlobSpec, DeliveryEvent, HarnessSpec, PureRun, RegistrySpec, SpecError,
+    };
     use crate::contract_value::bare_ctor;
     use crate::contract_value::{bytes_leaf, record, uint_leaf};
     use crate::testing::SpawnSpec;
@@ -1215,6 +1333,7 @@ mod tests {
             checker: None,
             pure_run: None,
             deps: Vec::new(),
+            registry: None,
         };
         // The loader is invoked for the path blob only, with the exact path string.
         let mut loaded = Vec::new();
@@ -1246,6 +1365,7 @@ mod tests {
             checker: None,
             pure_run: None,
             deps: Vec::new(),
+            registry: None,
         };
         let result = spec.build(|_| Err("no such file"));
         assert_eq!(result.err(), Some("no such file"));
@@ -1391,6 +1511,7 @@ mod tests {
             checker: Some("check".to_string()),
             pure_run: None,
             deps: Vec::new(),
+            registry: None,
         };
         let bytes = spec.encode();
         assert_eq!(HarnessSpec::decode(&bytes), Ok(spec));
@@ -1408,6 +1529,7 @@ mod tests {
             checker: None,
             pure_run: None,
             deps: Vec::new(),
+            registry: None,
         };
         assert_eq!(HarnessSpec::decode(&spec.encode()), Ok(spec));
     }
@@ -1627,6 +1749,7 @@ mod tests {
             checker: None,
             pure_run: None,
             deps: Vec::new(),
+            registry: None,
         };
         assert_eq!(spec.validate(), Ok(()));
     }
@@ -1642,6 +1765,7 @@ mod tests {
             checker: None,
             pure_run: None,
             deps: Vec::new(),
+            registry: None,
         };
         assert_eq!(
             spec.validate(),
@@ -1663,6 +1787,7 @@ mod tests {
             checker: None,
             pure_run: None,
             deps: Vec::new(),
+            registry: None,
         };
         assert_eq!(
             spec.validate(),
@@ -1688,6 +1813,7 @@ mod tests {
             checker: None,
             pure_run: None,
             deps: Vec::new(),
+            registry: None,
         };
         assert_eq!(
             spec.validate(),
@@ -1709,6 +1835,7 @@ mod tests {
             checker: None,
             pure_run: None,
             deps: Vec::new(),
+            registry: None,
         };
         assert_eq!(
             spec.validate(),
@@ -1729,6 +1856,7 @@ mod tests {
             checker: None,
             pure_run: None,
             deps: Vec::new(),
+            registry: None,
         };
         assert_eq!(
             spec.validate(),
@@ -1768,6 +1896,7 @@ mod tests {
             checker: None,
             pure_run: None,
             deps: Vec::new(),
+            registry: None,
         };
         assert_eq!(HarnessSpec::decode(&spec.encode()), Ok(spec));
     }
@@ -1858,6 +1987,7 @@ mod tests {
             checker: None,
             pure_run: None,
             deps: Vec::new(),
+            registry: None,
         };
         assert_eq!(HarnessSpec::decode(&spec.encode()), Ok(spec));
     }
@@ -1883,6 +2013,7 @@ mod tests {
                 expect_output: Bytes::from_static(b"X"),
             }),
             deps: Vec::new(),
+            registry: None,
         };
         assert_eq!(HarnessSpec::decode(&spec.encode()), Ok(spec));
     }
@@ -1906,8 +2037,60 @@ mod tests {
                 BlobSource::Inline(Bytes::from_static(b"\x00\x61\x73\x6d")),
                 BlobSource::Path("cdz-store/runtime.wasm".to_string()),
             ],
+            registry: None,
         };
         assert_eq!(HarnessSpec::decode(&spec.encode()), Ok(spec));
+    }
+
+    /// A run's `registry` (default handler + per-contract overrides) round-trips, and `validate` rejects a
+    /// registry naming an undeclared handler blob.
+    #[test]
+    fn a_registry_round_trips_and_validates_handler_blobs() {
+        let base = |registry| HarnessSpec {
+            system: "$system".to_string(),
+            run_for: None,
+            blobs: vec![
+                BlobSpec {
+                    name: "$system".to_string(),
+                    source: BlobSource::Inline(Bytes::from_static(b"sys")),
+                },
+                BlobSpec {
+                    name: "default-handler".to_string(),
+                    source: BlobSource::Inline(Bytes::from_static(b"dh")),
+                },
+                BlobSpec {
+                    name: "special-handler".to_string(),
+                    source: BlobSource::Inline(Bytes::from_static(b"sh")),
+                },
+            ],
+            spawns: vec![],
+            deliveries: vec![],
+            checker: None,
+            pure_run: None,
+            deps: vec![],
+            registry,
+        };
+        let spec = base(Some(RegistrySpec {
+            default: "default-handler".to_string(),
+            handlers: vec![(
+                ContractId::of(b"special.contract"),
+                "special-handler".to_string(),
+            )],
+        }));
+        assert_eq!(HarnessSpec::decode(&spec.encode()), Ok(spec.clone()));
+        assert_eq!(spec.validate(), Ok(()));
+        // An override naming an undeclared handler is a clean UnknownBlob.
+        let bad = base(Some(RegistrySpec {
+            default: "default-handler".to_string(),
+            handlers: vec![(ContractId::of(b"c"), "missing-handler".to_string())],
+        }));
+        assert_eq!(
+            bad.validate(),
+            Err(SpecError::UnknownBlob {
+                referrer: "registry handler".to_string(),
+                blob: "missing-handler".to_string(),
+            })
+        );
     }
 
     /// `validate` rejects a pure run whose program is not a declared blob — the same cross-reference check
@@ -1931,6 +2114,7 @@ mod tests {
                 expect_output: Bytes::new(),
             }),
             deps: Vec::new(),
+            registry: None,
         };
         assert_eq!(
             spec.validate(),
