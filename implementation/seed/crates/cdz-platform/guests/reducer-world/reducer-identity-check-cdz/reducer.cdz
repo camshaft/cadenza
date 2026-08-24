@@ -33,10 +33,9 @@ def stamped-own-id(records: List(LogRecord), i: Int64) =
 // The verdict payload for a decoded log: pass with no messages, else fail with one diagnostic message.
 def verdict-payload(records: List(LogRecord)) =
   if stamped-own-id(records, 0)
-  then Value.encode(Verdict.Verdict({ pass = true, messages = ([] : List(String)) }))
+  then Value.encode(Verdict.Verdict({ pass = true, messages = [] }))
   else Value.encode(Verdict.Verdict({ pass = false,
-                                      messages = List.push(([] : List(String)),
-                                                           "no Emitted stamped its own reducer id as its token: identity.id did not flow through") }))
+                                      messages = ["no Emitted stamped its own reducer id as its token: identity.id did not flow through"] }))
 
 // A verdict request on the contract-id the harness passed in the incoming `check` Envelope (`c.verdict`) — the
 // §9 checker protocol has the harness own + pass the verdict contract-id, so no hardcoded hash. The verdict
@@ -53,8 +52,7 @@ def on-message(msg) =
        | None =>
            { requests = [verdict-req(c.verdict,
                                      Value.encode(Verdict.Verdict({ pass = false,
-                                                                    messages = List.push(([] : List(String)),
-                                                                                         "observation log did not decode") })))],
+                                                                    messages = ["observation log did not decode"] })))],
              outcome = Outcome.Continue })
   | None =>
       { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = msg.payload }) }
