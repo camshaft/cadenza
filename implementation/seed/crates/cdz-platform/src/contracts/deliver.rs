@@ -10,6 +10,7 @@
 //! `cdz-platform`.
 
 #![allow(dead_code)]
+#[allow(unused_imports)]
 use crate::contract_value as v;
 use cadenza_ast::ast::{Arenas, Builder, StructId};
 /// The `deliver` contract's schema: its named Cadenza type declarations, in source order, ready
@@ -237,13 +238,11 @@ pub struct EnvelopeDeliver {
 }
 /// Build a canonical `Envelope.Deliver` value.
 pub fn envelope_deliver(b: &mut Builder, fields: EnvelopeDeliver) -> StructId {
-    let rec = v::record(b, vec![("target", fields.target), ("event", fields.event)]);
-    v::qctor(b, "Envelope", "Deliver", vec![rec])
+    v::record(b, vec![("target", fields.target), ("event", fields.event)])
 }
 /// Read a `Envelope.Deliver` value's fields by name, or `None`.
 pub fn as_envelope_deliver(arenas: &Arenas, id: StructId) -> Option<EnvelopeDeliver> {
-    let t = v::as_qctor(arenas, id, "Envelope", "Deliver")?;
-    let [rec] = <[StructId; 1]>::try_from(t).ok()?;
+    let rec = id;
     Some(EnvelopeDeliver {
         target: v::record_field(arenas, rec, "target")?,
         event: v::record_field(arenas, rec, "event")?,

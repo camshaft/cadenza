@@ -10,6 +10,7 @@
 //! `cdz-platform`.
 
 #![allow(dead_code)]
+#[allow(unused_imports)]
 use crate::contract_value as v;
 use cadenza_ast::ast::{Arenas, Builder, StructId};
 /// The `spawned` contract's schema: its named Cadenza type declarations, in source order, ready
@@ -56,13 +57,11 @@ pub struct EventSpawned {
 }
 /// Build a canonical `Event.Spawned` value.
 pub fn event_spawned(b: &mut Builder, fields: EventSpawned) -> StructId {
-    let rec = v::record(b, vec![("id", fields.id), ("parent", fields.parent)]);
-    v::qctor(b, "Event", "Spawned", vec![rec])
+    v::record(b, vec![("id", fields.id), ("parent", fields.parent)])
 }
 /// Read a `Event.Spawned` value's fields by name, or `None`.
 pub fn as_event_spawned(arenas: &Arenas, id: StructId) -> Option<EventSpawned> {
-    let t = v::as_qctor(arenas, id, "Event", "Spawned")?;
-    let [rec] = <[StructId; 1]>::try_from(t).ok()?;
+    let rec = id;
     Some(EventSpawned {
         id: v::record_field(arenas, rec, "id")?,
         parent: v::record_field(arenas, rec, "parent")?,

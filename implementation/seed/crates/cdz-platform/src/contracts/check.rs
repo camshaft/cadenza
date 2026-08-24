@@ -10,6 +10,7 @@
 //! `cdz-platform`.
 
 #![allow(dead_code)]
+#[allow(unused_imports)]
 use crate::contract_value as v;
 use cadenza_ast::ast::{Arenas, Builder, StructId};
 /// The `check` contract's schema: its named Cadenza type declarations, in source order, ready

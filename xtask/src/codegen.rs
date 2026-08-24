@@ -484,6 +484,11 @@ fn render_schema(
         // unused-code lint is allowed for the whole generated module rather than per item.
         #![allow(dead_code)]
 
+        // A contract every one of whose constructors is a single-constructor sum ELIDED to its bare scalar
+        // payload (e.g. `timer`, whose `Envelope`/`Event` are both `| C(UInt64)`) never names `v` — the
+        // builders return the payload directly — so this import is genuinely unused there. Allow it rather
+        // than emit the import conditionally.
+        #[allow(unused_imports)]
         use crate::contract_value as v;
         use cadenza_ast::ast::{Arenas, Builder, StructId};
 

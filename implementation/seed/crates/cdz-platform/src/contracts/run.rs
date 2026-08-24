@@ -10,6 +10,7 @@
 //! `cdz-platform`.
 
 #![allow(dead_code)]
+#[allow(unused_imports)]
 use crate::contract_value as v;
 use cadenza_ast::ast::{Arenas, Builder, StructId};
 /// The `run` contract's schema: its named Cadenza type declarations, in source order, ready
@@ -63,20 +64,18 @@ pub struct RequestRun {
 }
 /// Build a canonical `Request.Run` value.
 pub fn request_run(b: &mut Builder, fields: RequestRun) -> StructId {
-    let rec = v::record(
+    v::record(
         b,
         vec![
             ("program", fields.program),
             ("contract", fields.contract),
             ("input", fields.input),
         ],
-    );
-    v::qctor(b, "Request", "Run", vec![rec])
+    )
 }
 /// Read a `Request.Run` value's fields by name, or `None`.
 pub fn as_request_run(arenas: &Arenas, id: StructId) -> Option<RequestRun> {
-    let t = v::as_qctor(arenas, id, "Request", "Run")?;
-    let [rec] = <[StructId; 1]>::try_from(t).ok()?;
+    let rec = id;
     Some(RequestRun {
         program: v::record_field(arenas, rec, "program")?,
         contract: v::record_field(arenas, rec, "contract")?,
@@ -84,12 +83,10 @@ pub fn as_request_run(arenas: &Arenas, id: StructId) -> Option<RequestRun> {
     })
 }
 /// Build a canonical `Output.Output` value.
-pub fn output_output(b: &mut Builder, x: StructId) -> StructId {
-    v::qctor(b, "Output", "Output", vec![x])
+pub fn output_output(_b: &mut Builder, x: StructId) -> StructId {
+    x
 }
 /// Read the payload of a `Output.Output` value, or `None`.
-pub fn as_output_output(arenas: &Arenas, id: StructId) -> Option<StructId> {
-    let t = v::as_qctor(arenas, id, "Output", "Output")?;
-    let [x] = <[StructId; 1]>::try_from(t).ok()?;
-    Some(x)
+pub fn as_output_output(_arenas: &Arenas, id: StructId) -> Option<StructId> {
+    Some(id)
 }
