@@ -1455,6 +1455,139 @@ mod tests {
         });
     }
 
+    /// A reducer that emits one ordinary effect per contract in `contracts` on its first message, then closes
+    /// — so the system routes each to whichever event reducer the registry resolves for that contract.
+    struct EmitEach {
+        contracts: Vec<ContractId>,
+    }
+    #[async_trait::async_trait]
+    impl Reducer for EmitEach {
+        async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
+            let requests = self
+                .contracts
+                .iter()
+                .map(|&id| Request {
+                    id,
+                    payload: Bytes::from_static(b"effect"),
+                    continuation_token: Bytes::from_static(b"k"),
+                    deadline: None,
+                })
+                .collect();
+            (
+                requests,
+                Outcome::Break {
+                    schema: cid(b"done"),
+                    reason: Bytes::from_static(b"emitted"),
+                },
+            )
+        }
+        async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+    }
+
+    /// A stand-in event reducer that reports a fixed tag naming the PROGRAM that instantiated it, so a test can
+    /// see which event-reducer program the system routed an effect to. It closes after reporting.
+    struct TaggedStub {
+        tag: &'static str,
+        saw: bach::sync::mpsc::UnboundedSender<&'static str>,
+    }
+    #[async_trait::async_trait]
+    impl Reducer for TaggedStub {
+        async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
+            let _ = self.saw.send(self.tag);
+            (
+                Vec::new(),
+                Outcome::Break {
+                    schema: cid(b"shepherded"),
+                    reason: Bytes::new(),
+                },
+            )
+        }
+        async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+    }
+
+    /// A per-contract override in the registry (the trust root, §3/§4) governs which event reducer the system
+    /// routes an effect to: an overridden contract reaches the OVERRIDE's program, while a contract with no
+    /// entry falls back to the default — the routing act honors the registry, not only its default.
+    #[test]
+    fn a_registry_override_governs_which_event_reducer_the_system_routes_to() {
+        use bach::ext::*;
+        bach::sim(|| {
+            async {
+                let emitter = rid(b"emitter");
+                let overridden = cid(b"custom.contract");
+                let plain = cid(b"plain.contract");
+                let (saw, mut saw_rx) = bach::sync::mpsc::unbounded_channel();
+
+                let mut store = crate::testing::program::Store::new();
+                store.register(prog(b"emitter"), move || {
+                    Box::new(EmitEach {
+                        contracts: vec![overridden, plain],
+                    })
+                });
+                let saw_default = saw.clone();
+                store.register(prog(b"default-sys"), move || {
+                    Box::new(TaggedStub {
+                        tag: "default",
+                        saw: saw_default.clone(),
+                    })
+                });
+                let saw_override = saw.clone();
+                store.register(prog(b"override-sys"), move || {
+                    Box::new(TaggedStub {
+                        tag: "override",
+                        saw: saw_override.clone(),
+                    })
+                });
+
+                // The registry defaults to `default-sys`, with `custom.contract` overridden to `override-sys`
+                // (the highest-privilege install, done before the system is assembled).
+                let mut registry = InMemoryEventRegistry::new(prog(b"default-sys"));
+                registry.set_override(overridden, prog(b"override-sys"));
+                let system = TaskSystem::<BachRuntime>::new(
+                    Arc::new(store),
+                    Arc::new(InMemoryReducerGraph::new()),
+                    Arc::new(registry),
+                    HostId::of(b"node"),
+                );
+                system
+                    .spawn(root(emitter, prog(b"emitter"), ReducerKind::Ordinary))
+                    .await
+                    .unwrap();
+
+                assert!(
+                    system
+                        .deliver(emitter, a_message(cid(b"go")))
+                        .await
+                        .unwrap()
+                );
+
+                // Two effects route to two event reducers; the two contexts run concurrently, so collect both
+                // tags without assuming an order. The overridden contract must reach `override-sys`, the plain
+                // one `default-sys`.
+                let mut tags = [saw_rx.recv().await.unwrap(), saw_rx.recv().await.unwrap()];
+                tags.sort_unstable();
+                assert_eq!(
+                    tags,
+                    ["default", "override"],
+                    "the override governs its contract; the other falls back to the default"
+                );
+            }
+            .group("system")
+            .primary()
+            .spawn();
+        });
+    }
+
     /// A reducer that arms a fire-after timer on its first message, then waits; when the timer fires (as the
     /// response to that arm), it records the recorded fire time and the echoed continuation-token, then closes.
     struct Armer {
