@@ -65,6 +65,13 @@ pub enum RecordFieldAbi {
     /// shared `mem` and writes `(ptr,len)` (needs memory). The common reducer-envelope field shape
     /// (`contract`/`payload`/`token` are all `list<u8>`).
     Bytes,
+    /// A NESTED `record` field (shape d3, the message envelope's `sender: origin`) — its own boundary fields,
+    /// recursively. Its component type is another `record` DEFINED type (nominal → also EXPORTED from the
+    /// instance-type), which the enclosing record's field references by the child's EXPORTED index. Its core
+    /// form is the FLATTENING of its fields (a nested record does not spill — its fields flatten inline into
+    /// the parent's flattened run). The guest marshals it by projecting the sub-record handle (`arr-get`) then
+    /// RECURSING field-by-field.
+    Record(Vec<(String, RecordFieldAbi)>),
 }
 
 /// One host-delegated operation the program performs — its declaring effect's NAME (the WIT interface),
@@ -129,6 +136,14 @@ fn field_boundary_abi(ty: &Ty) -> Option<RecordFieldAbi> {
         Ty::Float(ft) if ft.ground_width() == 32 => Some(RecordFieldAbi::Scalar(AbiValType::F32)),
         // A `Bytes` field crosses as `list<u8>` — 2 core slots, a `(list u8)`-type field ref (d2).
         Ty::Bytes => Some(RecordFieldAbi::Bytes),
+        // A NESTED record field (d3) crosses if EVERY sub-field itself crosses — recurse (name-lex order).
+        Ty::Record(sub) => {
+            let mut fields = Vec::with_capacity(sub.len());
+            for (sym, fty) in sub.iter() {
+                fields.push((sym.name.to_string(), field_boundary_abi(fty)?));
+            }
+            (!fields.is_empty()).then_some(RecordFieldAbi::Record(fields))
+        }
         _ => None,
     }
 }
@@ -152,7 +167,10 @@ pub fn is_boundary_record(ty: &Ty) -> bool {
 /// `Ty::Record` the classifier keys on.
 pub fn record_has_bytes_field(ty: &Ty) -> bool {
     match ty {
-        Ty::Record(fields) => fields.values().any(|f| matches!(f, Ty::Bytes)),
+        // Recurse into a NESTED record field (d3): a byte field ANYWHERE in the tree needs shared memory.
+        Ty::Record(fields) => fields
+            .values()
+            .any(|f| matches!(f, Ty::Bytes) || record_has_bytes_field(f)),
         _ => false,
     }
 }

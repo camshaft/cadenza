@@ -1110,31 +1110,27 @@ pub fn emit(
             .iter()
             .flat_map(|h| &h.params)
             .any(|p| matches!(p, host::HostParam::Bytes));
-        // The exported record type's instance-type index (threaded into `host_op_comp_functype`'s Record
-        // arm). A NOMINAL record used by an import func is DEFINED then EXPORTED; the func references the
-        // EXPORTED index. In the supported shape the ONLY shared defined type before the record is the `(list
-        // u8)` (laid at index 0 iff a `list<u8>` param OR a record `list<u8>` FIELD is present); so the record
-        // is DEFINED at `shared` and EXPORTED at `shared + 1`. (d1b: an all-scalar record with no list → the
-        // record is at index 0/1; d2: a `list<u8>` target/field forces the `(list u8)` at 0 → record 1/2.)
-        let record_export_idx = has_bytes_param as u32 + 1;
-        let record_defs: Vec<Vec<u8>> = {
+        // The (single) record host-arg's component `record` DEFINED types + the EXPORTED index of the TOP
+        // record (threaded into `host_op_comp_functype`'s Record arm). A NOMINAL record used by an import func
+        // is DEFINED then EXPORTED; the func + any enclosing field reference the EXPORTED index. Nested records
+        // (d3, the message envelope's `sender: origin`) are laid children-first by `build_record_import_types`.
+        // The `(list u8)` type is at index 0 when present (a `list<u8>` param OR a record byte field), so the
+        // record table starts at `base` = that count; entry `i` is define `base+2i` / export `base+2i+1`.
+        let (record_defs, record_export_idx): (Vec<Vec<u8>>, u32) = {
             if record_params.is_empty() {
-                Vec::new()
+                (Vec::new(), 0)
             } else {
                 let has_str_param = host_imports
                     .iter()
                     .flat_map(|h| &h.params)
                     .any(|p| matches!(p, host::HostParam::Str));
-                let any_record_has_bytes = record_params.iter().any(|f| {
-                    f.iter()
-                        .any(|(_, a)| matches!(a, host::RecordFieldAbi::Bytes))
-                });
-                // Constrained shape (d2, deliver-notification): a SINGLE record param, no String param, no
-                // option/list/bytes compound RESULT (those add defined types that shift the record index — a
-                // later slice). A `list<u8>` (Bytes) PARAM is allowed (deliver's `target`) and shares the
-                // `(list u8)` type with the record's Bytes fields. A record with Bytes fields REQUIRES the
+                let any_record_has_bytes = record_params.iter().any(|f| record_abi_has_bytes(f));
+                // Supported shape: a SINGLE record param, no String param, no option/list/bytes compound
+                // RESULT (those add defined types that shift the record index — a later slice). A `list<u8>`
+                // PARAM is allowed (deliver's `target`) and shares the `(list u8)` type (index 0) with the
+                // record's `list<u8>` fields at ANY nesting depth. A record with byte fields REQUIRES the
                 // `(list u8)` at index 0 (laid only when a `list<u8>` param is present here), so decline a
-                // bytes-field record with no `list<u8>` param (the needs_list-forcing case is a later slice).
+                // byte-field record with no `list<u8>` param (the needs_list-forcing case is a later slice).
                 if record_params.len() > 1
                     || has_str_param
                     || needs_option_bytes
@@ -1149,25 +1145,11 @@ pub fn emit(
                          record-type-indexed host shape is a later increment)",
                     ));
                 }
-                use crate::backend::wasm::wit_ctype::{CDef, CRef, emit_cdef};
-                record_params
-                    .iter()
-                    .map(|fields| {
-                        let cfields: Vec<(String, CRef)> = fields
-                            .iter()
-                            .map(|(n, abi)| {
-                                let cref = match abi {
-                                    host::RecordFieldAbi::Scalar(v) => CRef::Prim(v.comp_byte()),
-                                    // A `Bytes` field references the shared `(list u8)` DEFINED type at
-                                    // instance-type index 0 (laid first when `needs_list`).
-                                    host::RecordFieldAbi::Bytes => CRef::Idx(0),
-                                };
-                                (n.clone(), cref)
-                            })
-                            .collect();
-                        emit_cdef(&CDef::Record(cfields))
-                    })
-                    .collect()
+                // `(list u8)` at instance index 0 iff present; the record table follows at `base`.
+                let base = has_bytes_param as u32;
+                let mut table = Vec::new();
+                let export_idx = build_record_import_types(record_params[0], 0, base, &mut table);
+                (table, export_idx)
             }
         };
         let host_fns: Vec<envelope::HostFn> = host_imports
@@ -1731,6 +1713,48 @@ fn collect_cont_host_arg_strings(db: &mut Db, cont: &crate::core::SumCont, out: 
             }
         }
     }
+}
+
+/// Whether a record's field-ABI tree contains ANY `Bytes` field (recursing into nested records) — a record
+/// with a byte field anywhere needs the `(list u8)` defined type + shared memory.
+fn record_abi_has_bytes(fields: &[(String, host::RecordFieldAbi)]) -> bool {
+    fields.iter().any(|(_, a)| match a {
+        host::RecordFieldAbi::Bytes => true,
+        host::RecordFieldAbi::Record(sub) => record_abi_has_bytes(sub),
+        host::RecordFieldAbi::Scalar(_) => false,
+    })
+}
+
+/// Recursively lay a record host-arg's component `record` DEFINED types into `table` (in the order
+/// `host_effect_instance_type` lays them — each entry becomes a DEFINE + EXPORT pair), CHILDREN BEFORE
+/// PARENTS: a NESTED-record field is emitted first so the enclosing record's field can reference the child's
+/// EXPORTED index. Returns THIS record's EXPORTED instance-type index. `list_idx` is the `(list u8)` index (a
+/// `Bytes` field references it); `base` is the first record's DEFINE index (the count of shared prepends,
+/// e.g. 1 when `(list u8)` is present). Entry `i` occupies define `base + 2i` / export `base + 2i + 1`, so a
+/// child (appended earlier) has a lower index than its parent — the dependency order the component model
+/// requires. Matches `wasm-tools component wit`'s own encoding of a nested-record import (verified by oracle).
+fn build_record_import_types(
+    fields: &[(String, host::RecordFieldAbi)],
+    list_idx: u32,
+    base: u32,
+    table: &mut Vec<Vec<u8>>,
+) -> u32 {
+    use crate::backend::wasm::wit_ctype::{CDef, CRef, emit_cdef};
+    let mut cfields: Vec<(String, CRef)> = Vec::with_capacity(fields.len());
+    for (name, abi) in fields {
+        let cref = match abi {
+            host::RecordFieldAbi::Scalar(v) => CRef::Prim(v.comp_byte()),
+            host::RecordFieldAbi::Bytes => CRef::Idx(list_idx),
+            host::RecordFieldAbi::Record(sub) => {
+                // Emit the CHILD record first (children-first); its field references the child's EXPORT index.
+                CRef::Idx(build_record_import_types(sub, list_idx, base, table))
+            }
+        };
+        cfields.push((name.clone(), cref));
+    }
+    let define_idx = base + 2 * table.len() as u32;
+    table.push(emit_cdef(&CDef::Record(cfields)));
+    define_idx + 1 // the EXPORT index (host_effect_instance_type exports right after the define)
 }
 
 fn host_op_comp_functype(
