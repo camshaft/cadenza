@@ -1614,6 +1614,56 @@ mod wasm_abi {
                     memory_index: 0,
                 }),
             ),
+            // Width-specific loads for reading a scalar leaf a spilled compound result stored at its natural
+            // width (the general result-lift's scalar-leaf boxing). MemArg is opcode-byte-irrelevant here too.
+            op(
+                "I64_LOAD",
+                Instruction::I64Load(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }),
+            ),
+            op(
+                "F32_LOAD",
+                Instruction::F32Load(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }),
+            ),
+            op(
+                "F64_LOAD",
+                Instruction::F64Load(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }),
+            ),
+            op(
+                "I32_LOAD8_S",
+                Instruction::I32Load8S(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }),
+            ),
+            op(
+                "I32_LOAD16_S",
+                Instruction::I32Load16S(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }),
+            ),
+            op(
+                "I32_LOAD16_U",
+                Instruction::I32Load16U(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }),
+            ),
         ];
 
         // The named single bytes: core valtypes, the empty block type, the component primitive

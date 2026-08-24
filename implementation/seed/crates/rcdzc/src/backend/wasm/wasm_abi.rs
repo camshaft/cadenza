@@ -122,8 +122,6 @@ pub mod op {
     pub const I32_STORE16: u8 = 0x3b;
     pub const I32_LOAD: u8 = 0x28;
     pub const I32_LOAD8_U: u8 = 0x2d;
-    // Width-specific memory loads for reading a scalar leaf a spilled compound result stored at its natural
-    // width (the general result-lift's scalar-leaf boxing). The natural-alignment log2 accompanies each.
     pub const I64_LOAD: u8 = 0x29;
     pub const F32_LOAD: u8 = 0x2a;
     pub const F64_LOAD: u8 = 0x2b;
