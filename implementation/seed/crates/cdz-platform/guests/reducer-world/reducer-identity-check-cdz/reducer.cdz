@@ -1,0 +1,62 @@
+// The IDENTITY checker, as a Cadenza reducer guest (design/cadenza-platform.md §3/§9) — the identity-clause
+// follow-up flagged in reducer-check-cdz. The paired guest (reducer-identity-cdz) reads its OWN reducer id
+// (identity.id) and stamps it as the emitted request's token; this checker asserts that host value flowed
+// through the guest and back correctly: LOG-ONLY, no identity import needed on the checker side.
+//
+// Same three schema imports as the other checkers, from their single source of truth: the check Envelope
+// (log-in), the verdict Verdict (pass/fail-out), and the log-schema LogRecord/Entry (the decoded log). The
+// `libs` manifest beside this file lists their repo-relative paths.
+//
+// JUDGEMENT: pass iff some Emitted whose `token` equals its record's own `source.reducer` — i.e. the reducer
+// stamped its OWN id (from identity.id) as the emitted token. Purely relational within the log (the acting
+// reducer's id is the record's `source.reducer`, which the harness assigns; the guest cannot forge it), so no
+// hardcoded id and no identity import. NON-VACUOUS: a guest that fails to instantiate emits nothing, so no
+// such Emitted exists and the check fails; a guest that stamps the wrong token also fails. Same idiomatic
+// index-recursion + match-guard form as the other checkers (List.at None ends the walk; single-constructor
+// LogRecord destructured in the Some arm; the guard folds the equality test into the pattern).
+import { Envelope } from "check"
+import { Verdict } from "verdict"
+import { LogRecord, Entry } from "log-schema"
+
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+// Does some Emitted record carry a token equal to its own source reducer id? (the guest stamped identity.id.)
+def stamped-own-id(records: List(LogRecord), i: Int64) =
+  match List.at(records, i) with
+  | Option.None(_) => false
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      (match rec.entry with
+        | Entry.Emitted(e) if (e.token == rec.source.reducer) => true
+        | _ => stamped-own-id(records, i + 1))
+
+// The verdict payload for a decoded log: pass with no messages, else fail with one diagnostic message.
+def verdict-payload(records: List(LogRecord)) =
+  if stamped-own-id(records, 0)
+  then Value.encode(Verdict.Verdict({ pass = true, messages = [] }))
+  else Value.encode(Verdict.Verdict({ pass = false,
+                                      messages = ["no Emitted stamped its own reducer id as its token: identity.id did not flow through"] }))
+
+// A verdict request on the contract-id the harness passed in the incoming `check` Envelope (`c.verdict`) — the
+// §9 checker protocol has the harness own + pass the verdict contract-id, so no hardcoded hash. The verdict
+// token is irrelevant (the harness reads the verdict by scanning Emitted on the verdict contract), so b"".
+def verdict-req(verdict-contract: Bytes, payload: Bytes) =
+  { contract = verdict-contract, payload = payload, token = b"", deadlineNanos = None }
+
+def on-message(msg) =
+  match (Value.decode(msg.payload) : Option(Envelope)) with
+  | Some(Envelope.Check(c)) =>
+      (match (Value.decode(c.log) : Option(List(LogRecord))) with
+       | Some(records) =>
+           { requests = [verdict-req(c.verdict, verdict-payload(records))], outcome = Outcome.Continue }
+       | None =>
+           { requests = [verdict-req(c.verdict,
+                                     Value.encode(Verdict.Verdict({ pass = false,
+                                                                    messages = ["observation log did not decode"] })))],
+             outcome = Outcome.Continue })
+  | None =>
+      { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = msg.payload }) }
+
+def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
+def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
+export { on-message, on-response, on-notification }
