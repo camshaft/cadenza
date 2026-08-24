@@ -1,0 +1,22 @@
+// A reducer that reacts on the on-response path: on-response reads the delivered response's correlation
+// (its contract-id and continuation token) and emits one request echoing them back, proving the response
+// envelope reaches the guest and its fields flow through. It does NOT touch `answer` (the result payload),
+// so it needs no result match — the minimal observable of the on-response path. on-message / on-notification
+// are inert (continue, no requests): the fixture drives the response path by injecting a response.
+//
+// Targets the shared world.wit (external artifact reducer-world.bin), like the identity reducer, so the
+// derived on-response param resolves against the real `response` record ({contract, token, answer}).
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+def on-message(_msg) =
+  { requests = [], outcome = Outcome.Continue }
+
+def on-response(resp) =
+  { requests = [{ contract = resp.contract, payload = resp.token, token = resp.token, deadlineNanos = None }],
+    outcome = Outcome.Continue }
+
+def on-notification(_note) =
+  { requests = [], outcome = Outcome.Continue }
+
+export { on-message, on-response, on-notification }
