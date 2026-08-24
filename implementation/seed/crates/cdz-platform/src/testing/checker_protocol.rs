@@ -19,7 +19,7 @@
 use super::checker::CheckOutcome;
 use super::log_value;
 use super::observation::{Entry, EventOp, Record};
-use crate::contract_value::{bytes_leaf, read_bytes};
+use crate::contract_value::{bytes_leaf, read_bytes, read_hash};
 use crate::{Bytes, Contract, ContractId, Delivered, HostId, Message, Origin, ReducerId, Str};
 use cadenza_ast::ast::{Arenas, Builder, Leaf, Struct, StructId};
 use cadenza_ast::codec;
@@ -55,24 +55,43 @@ pub fn verdict_contract() -> ContractId {
         .id()
 }
 
-/// Encode the payload of a `check` Message: the serialized observation log wrapped in the check envelope
-/// (`Envelope.Check(<log>)`). This is what the harness delivers to the checker; `log` is the output of
+/// Encode the payload of a `check` Message: the serialized observation log plus the contract-id the checker
+/// emits its verdict on, wrapped in the check envelope (`Envelope.Check({ log, verdict })`). The harness
+/// passes `verdict` so the checker reads *where to report* from the same message that hands it the log —
+/// neither hardcoding a hash nor computing it from a compiled-in schema. `log` is the output of
 /// [`serialize_log`](super::serialize_log).
 #[must_use]
-pub fn encode_check(log: &[u8]) -> Bytes {
+pub fn encode_check(log: &[u8], verdict: ContractId) -> Bytes {
     let mut b = Builder::new();
-    let inner = bytes_leaf(&mut b, log);
-    let root = crate::contracts::check::envelope_check(&mut b, inner);
+    let log_leaf = bytes_leaf(&mut b, log);
+    let verdict_leaf = bytes_leaf(&mut b, verdict.hash().as_bytes());
+    let root = crate::contracts::check::envelope_check(
+        &mut b,
+        crate::contracts::check::EnvelopeCheck {
+            log: log_leaf,
+            verdict: verdict_leaf,
+        },
+    );
     Bytes::from(codec::encode(&b.finish(root)))
 }
 
 /// Decode a `check` Message payload back to the serialized observation log it carries, or `None` if the
-/// bytes are not a well-formed check envelope. Total — the inverse of [`encode_check`].
+/// bytes are not a well-formed check envelope. Total — reads the `log` field of [`encode_check`]'s envelope.
 #[must_use]
 pub fn decode_check(bytes: &[u8]) -> Option<Bytes> {
     let arenas = codec::decode(bytes)?;
-    let inner = crate::contracts::check::as_envelope_check(&arenas, arenas.root)?;
-    read_bytes(&arenas, inner)
+    let env = crate::contracts::check::as_envelope_check(&arenas, arenas.root)?;
+    read_bytes(&arenas, env.log)
+}
+
+/// The verdict contract-id a check envelope carries — where the checker is told to emit its verdict. `None`
+/// if the bytes are not a well-formed check envelope or its verdict field is not a hash. The wasm checker
+/// guest reads this the same way (via the generated envelope reader), so it need not hardcode the id.
+#[must_use]
+pub fn decode_check_verdict(bytes: &[u8]) -> Option<ContractId> {
+    let arenas = codec::decode(bytes)?;
+    let env = crate::contracts::check::as_envelope_check(&arenas, arenas.root)?;
+    Some(ContractId::from_hash(read_hash(&arenas, env.verdict)?))
 }
 
 /// Encode the payload of a `verdict` Request: the checker's pass/fail plus its messages
@@ -126,7 +145,7 @@ pub fn decode_verdict(bytes: &[u8]) -> Option<CheckOutcome> {
 pub fn check_message(log: &[Record]) -> Delivered {
     Delivered::Message(Message {
         id: check_contract(),
-        payload: encode_check(&log_value::serialize(log)),
+        payload: encode_check(&log_value::serialize(log), verdict_contract()),
         from: driver_origin(),
         continuation_token: Bytes::new(),
     })
@@ -180,8 +199,8 @@ fn read_string_list(arenas: &Arenas, id: StructId) -> Option<Vec<Str>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        check_contract, check_message, decode_check, decode_verdict, encode_check, encode_verdict,
-        verdict_contract, verdict_in,
+        check_contract, check_message, decode_check, decode_check_verdict, decode_verdict,
+        encode_check, encode_verdict, verdict_contract, verdict_in,
     };
     use crate::testing::{CheckOutcome, Entry, EventOp, Record, deserialize_log};
     use crate::{Bytes, ContractId, Delivered, HostId, Origin, ReducerId, Str};
@@ -216,15 +235,17 @@ mod tests {
     }
 
     #[test]
-    fn a_check_payload_round_trips_the_serialized_log() {
-        // The check Message carries the whole serialized log as opaque bytes; it reads back byte-exact.
+    fn a_check_payload_round_trips_the_serialized_log_and_the_verdict_contract() {
+        // The check Message carries the whole serialized log as opaque bytes plus the verdict contract-id;
+        // both read back exactly. The verdict-id is how the checker learns where to emit its verdict.
         let log = b"\x00serialized-observation-log\xff";
-        assert_eq!(
-            decode_check(&encode_check(log)).as_deref(),
-            Some(log.as_slice())
-        );
+        let verdict = ContractId::of(b"where-to-report");
+        let payload = encode_check(log, verdict);
+        assert_eq!(decode_check(&payload).as_deref(), Some(log.as_slice()));
+        assert_eq!(decode_check_verdict(&payload), Some(verdict));
         // Not a check envelope → rejected, not a panic.
         assert_eq!(decode_check(b"junk"), None);
+        assert_eq!(decode_check_verdict(b"junk"), None);
     }
 
     #[test]

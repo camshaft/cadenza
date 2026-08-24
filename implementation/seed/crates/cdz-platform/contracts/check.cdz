@@ -18,9 +18,13 @@
 // editing; `cargo xtask codegen --check` fails if the committed generated file is stale. The compiler is a
 // codegen-time tool only — it never ships.
 
-// The envelope (the contract's input): here is the whole observation log to check, as its serialized bytes.
+// The envelope (the contract's input): the whole observation log to check (as its serialized bytes), plus
+// the contract-id the checker emits its `verdict` on. The harness passes the verdict contract-id here so the
+// checker need neither hardcode a hash literal nor compute it from a compiled-in schema — it reads where to
+// report from the same message that hands it the log. Both are Bytes: the log is opaque serialized bytes,
+// and a contract-id is a content hash carried as its bytes (the one carried-as-bytes convention, deliver.cdz).
 type Envelope =
-  | Check(Bytes)
+  | Check(Record(log: Bytes, verdict: Bytes))
 
 // The output type. A checker never replies to the check message — it emits a separate `verdict` request the
 // harness reads — so the output is the unit Ack, present only because a contract declares an output type and
@@ -29,9 +33,13 @@ type Ack =
   | Ack
 
 // --- conformance proof: a fully-literal envelope, ascribed against the schema type ---
-def a-check() -> Envelope = Envelope.Check(b"observation-log-bytes")
+def a-check() -> Envelope =
+  Envelope.Check({ log = b"observation-log-bytes", verdict = b"verdict-contract-id" })
 
 @test
 def check-conforms() =
   match a-check() with
-  | Envelope.Check(log) => if log == b"observation-log-bytes" then unit else trap("check log mismatch")
+  | Envelope.Check(c) =>
+      if c.log == b"observation-log-bytes"
+      then (if c.verdict == b"verdict-contract-id" then unit else trap("check verdict mismatch"))
+      else trap("check log mismatch")
