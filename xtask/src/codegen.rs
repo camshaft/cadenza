@@ -291,8 +291,14 @@ fn generate_contracts(paths: &Paths, check: bool) {
             continue;
         }
 
-        // Validate + run the source's `@test` conformance proofs, then read its canonical AST — both via
-        // the `cdz` binary, so xtask carries no compiler dependency.
+        // Validate + run the source's `@test` conformance proofs (`cdz test`), then read its canonical AST
+        // (`cdz convert`) — both via the `cdz` binary, so xtask carries no compiler dependency. `cdz test`
+        // runs in BOTH regen and `--check` mode: the operator's intent is that the contracts execute their
+        // own `@test`s in the gate ("the contracts could actually execute tests on themselves"), and this is
+        // the only place they run. `cdz test`'s heap-value proofs need the value-heap RUNTIME + NFC in the
+        // CAS store; `generate_runtime_abi` (which runs first, and already builds those components to hash
+        // them) seeds them into the store (`seed_store_component`) — so `--check` in a bare CI job (which does
+        // not run `cargo xtask build`) still resolves the runtime for the contract self-tests.
         let src_str = src.to_str().expect("a UTF-8 contract path");
         run_cdz(
             paths,
@@ -857,13 +863,40 @@ fn nix_build_out_path(attr: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(path)
 }
 
+/// The content-addressed store a contract's `cdz test` resolves the value-heap runtime from: `CDZ_STORE` if
+/// set (the CI/harness override), else the repo default `target/cadenza-store` (matching `cdz-run`'s default
+/// and what `cargo xtask build` seeds).
+fn codegen_store_dir(paths: &Paths) -> std::path::PathBuf {
+    std::env::var_os("CDZ_STORE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| paths.repo.join("target/cadenza-store"))
+}
+
+/// Seed one canonicalized component (the value-heap runtime, its debug build, or NFC) into the store at
+/// `<store>/<content-address>.wasm`, so a subsequent `cdz test`/`cdz run` resolves it by content address.
+/// codegen already builds + canonicalizes these to hash them (`build_runtime_hashes` / `build_nfc_hash`);
+/// writing them here makes `codegen` self-sufficient for the contract `@test`s in a bare CI job that never
+/// ran `cargo xtask build`. Idempotent (content-addressed): a re-write is the same bytes at the same path.
+fn seed_store_component(paths: &Paths, bytes: &[u8]) {
+    let store = codegen_store_dir(paths);
+    if let Err(e) = std::fs::create_dir_all(&store) {
+        eprintln!("xtask codegen: create store dir {}: {e}", store.display());
+        std::process::exit(1);
+    }
+    let path = store.join(format!("{}.wasm", content_address(bytes)));
+    if let Err(e) = std::fs::write(&path, bytes) {
+        eprintln!("xtask codegen: seed runtime store {}: {e}", path.display());
+        std::process::exit(1);
+    }
+}
+
 /// R3 consumer: derive the runtime hashes by CONSUMING the nix-built outputs instead of self-building.
 /// `.#runtime-raw` (pre-strip, carries `cdz-abi`) → `read_abi_imm_unit`; `.#runtime` (stripped/canonicalized
 /// in-derivation, the shipped artifact) → `content_address` = REQUIRED_RUNTIME_HASH; `.#runtime-debug`
 /// (stripped) → DEBUG_RUNTIME_HASH. The nix `runtime` output is ALREADY canonicalized (the derivation runs
 /// `canonicalize_runtime`), so it is content-addressed DIRECTLY — no re-strip. Byte-equivalent to the
 /// self-build path by construction (verified: `nix .#runtime` b3sum == the self-built canonicalized hash).
-fn runtime_hashes_from_nix() -> (String, String, u32) {
+fn runtime_hashes_from_nix(paths: &Paths) -> (String, String, u32) {
     let raw_path = nix_build_out_path("runtime-raw");
     let imm_unit = read_abi_imm_unit(&raw_path);
     let release_path = nix_build_out_path("runtime");
@@ -874,6 +907,9 @@ fn runtime_hashes_from_nix() -> (String, String, u32) {
     let debug_bytes = std::fs::read(&debug_path)
         .unwrap_or_else(|e| panic!("xtask codegen: read nix runtime-debug {debug_path:?}: {e}"));
     let debug_hash = content_address(&debug_bytes);
+    // Seed the store so a contract `cdz test` resolves the runtime by content address.
+    seed_store_component(paths, &release_bytes);
+    seed_store_component(paths, &debug_bytes);
     (release_hash, debug_hash, imm_unit)
 }
 
@@ -882,7 +918,7 @@ fn build_runtime_hashes(paths: &Paths, nfc_hash: &str) -> (String, String, u32) 
     // 3× runtime + gate-build rebuild). The nix `.#runtime` derivation stamps the NFC import in-derivation
     // (same as `build`), so the consumed bytes are already stamped — `nfc_hash` is unused on this path.
     if std::env::var_os(CODEGEN_FROM_NIX_ENV).is_some() {
-        return runtime_hashes_from_nix();
+        return runtime_hashes_from_nix(paths);
     }
     let sh = Shell::new().expect("open a shell");
     // Release runtime — what a shipped program pins and composes. STAMP the NFC address inline into the
@@ -899,6 +935,9 @@ fn build_runtime_hashes(paths: &Paths, nfc_hash: &str) -> (String, String, u32) 
     let release_stamped = crate::stamp_nfc_into_heap(&paths.repo, &release_wasm, nfc_hash);
     let release_bytes = crate::canonicalize_runtime(&release_stamped);
     let release_hash = content_address(&release_bytes);
+    // Seed the store so a contract `cdz test` resolves the runtime by content address (this build path is
+    // the one the bare CI codegen job takes; it never ran `cargo xtask build`).
+    seed_store_component(paths, &release_bytes);
     // Debug-counters runtime — the same code with the `live-objects` leak counter compiled in.
     let debug_wasm = build_component_with_features(
         &sh,
@@ -910,6 +949,7 @@ fn build_runtime_hashes(paths: &Paths, nfc_hash: &str) -> (String, String, u32) 
     let debug_stamped = crate::stamp_nfc_into_heap(&paths.repo, &debug_wasm, nfc_hash);
     let debug_bytes = crate::canonicalize_runtime(&debug_stamped);
     let debug_hash = content_address(&debug_bytes);
+    seed_store_component(paths, &debug_bytes);
     // Leave the RELEASE runtime as the artifact at the shared path (rebuild it last), so a plain
     // `cargo component build` output on disk after codegen is the release one — the default a naive
     // reader expects and the composed tests hash-match against.
@@ -931,11 +971,15 @@ fn build_nfc_hash(paths: &Paths) -> String {
         let nfc_path = nix_build_out_path("nfc");
         let nfc_bytes = std::fs::read(&nfc_path)
             .unwrap_or_else(|e| panic!("xtask codegen: read nix nfc {nfc_path:?}: {e}"));
+        // A heap-value `cdz test` composes the heap's NFC import by hash, so NFC must be in the store too.
+        seed_store_component(paths, &nfc_bytes);
         return content_address(&nfc_bytes);
     }
     let sh = Shell::new().expect("open a shell");
     let nfc_wasm = build_component_with_features(&sh, &paths.seed, "cdz-nfc", "cdz_nfc", &[]);
     let nfc_bytes = crate::canonicalize_runtime(&nfc_wasm);
+    // Seed NFC into the store: a heap-value `cdz test` composes the heap's NFC import by hash.
+    seed_store_component(paths, &nfc_bytes);
     content_address(&nfc_bytes)
 }
 
