@@ -78,6 +78,14 @@ fn host_import_functype(f: &crate::backend::wasm::host::HostImport) -> Vec<u8> {
                         crate::backend::wasm::host::RecordFieldAbi::Bytes => {
                             params.extend_from_slice(&[wasm_abi::CORE_I32, wasm_abi::CORE_I32])
                         }
+                        // A `result<list<u8>, enum>` field flattens (canonical variant flatten) to
+                        // `(disc:i32, join(ok=(ptr,len), err=(enum-disc)))` = `(disc, i32, i32)` — 3 slots.
+                        crate::backend::wasm::host::RecordFieldAbi::Result => params
+                            .extend_from_slice(&[
+                                wasm_abi::CORE_I32,
+                                wasm_abi::CORE_I32,
+                                wasm_abi::CORE_I32,
+                            ]),
                     }
                 }
             }
@@ -8947,6 +8955,44 @@ mod host_import_functype_tests {
         assert_eq!(
             host_import_functype(&f),
             vec![0x60, 0x03, 0x7E, 0x7E, 0x7F, 0x00]
+        );
+    }
+
+    // A `result<list<u8>, enum>` record field flattens (canonical variant flatten) to 3 core slots
+    // `(disc:i32, i32, i32)` — Ok(list<u8>)=(ptr,len), Err(enum-disc)=(i32), joined/padded to the longer arm.
+    // A record `{ answer: result<…> }` alone → core params `(i32, i32, i32)`; pins the flatten so the
+    // deliver-response codegen (which reads this) can't drift the slot count.
+    #[test]
+    fn a_result_record_field_flattens_to_three_core_slots() {
+        let f = imp(
+            vec![HostParam::Record(vec![(
+                "answer".into(),
+                RecordFieldAbi::Result,
+            )])],
+            None,
+        );
+        // 0x60 form; params = vec(3, [i32,i32,i32]); results = vec(0, []).
+        assert_eq!(
+            host_import_functype(&f),
+            vec![0x60, 0x03, 0x7F, 0x7F, 0x7F, 0x00]
+        );
+    }
+
+    // A response-envelope-shaped record `{ contract: list<u8>, token: list<u8>, answer: result<…> }`
+    // flattens to `(ptr,len)` + `(ptr,len)` + `(disc,i32,i32)` = 7 core slots, in field order.
+    #[test]
+    fn a_response_shaped_record_flattens_bytes_then_result() {
+        let f = imp(
+            vec![HostParam::Record(vec![
+                ("contract".into(), RecordFieldAbi::Bytes),
+                ("token".into(), RecordFieldAbi::Bytes),
+                ("answer".into(), RecordFieldAbi::Result),
+            ])],
+            None,
+        );
+        assert_eq!(
+            host_import_functype(&f),
+            vec![0x60, 0x07, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x00]
         );
     }
 }

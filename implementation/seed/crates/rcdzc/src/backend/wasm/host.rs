@@ -65,6 +65,15 @@ pub enum RecordFieldAbi {
     /// shared `mem` and writes `(ptr,len)` (needs memory). The common reducer-envelope field shape
     /// (`contract`/`payload`/`token` are all `list<u8>`).
     Bytes,
+    /// A `result<list<u8>, enum>` field (the response envelope's `answer`) — a compound-in-record. The
+    /// canonical ABI flattens a `result<T, E>` like a 2-case variant: `(disc: i32, join(flatten(ok),
+    /// flatten(err)))`. With `ok = list<u8>` (flattens `(ptr,len)`) and `err = enum` (flattens the disc,
+    /// one `i32`), the join pads to the longer arm → `(disc:i32, i32, i32)` = 3 core slots. The guest lowers
+    /// it by branching on the value-heap sum's disc: Ok → rope→mem copy `(ptr,len)`, Err → `(enum-disc, 0)`.
+    /// The component record field references a `result<list<u8>, err-enum>` DEFINED type (whose err arm
+    /// references the exported enum type). This is the shape-d3 answer-back field; the component-type + the
+    /// branch-lower marshal are the NEXT slice — this variant currently carries only the core flatten.
+    Result,
 }
 
 /// One host-delegated operation the program performs — its declaring effect's NAME (the WIT interface),

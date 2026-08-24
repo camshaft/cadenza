@@ -1129,6 +1129,15 @@ pub fn emit(
                     f.iter()
                         .any(|(_, a)| matches!(a, host::RecordFieldAbi::Bytes))
                 });
+                // A `result<list<u8>, enum>` FIELD (the response envelope's `answer`) needs the err-enum +
+                // result DEFINED types laid + the branch-lower marshal — the NEXT slice (deliver-response).
+                // Its CORE flatten is already modelled (`RecordFieldAbi::Result` → 3 slots), but the
+                // component-type emission + guest marshal are not wired yet, so decline a result-field record
+                // cleanly here rather than mis-emit.
+                let any_record_has_result = record_params.iter().any(|f| {
+                    f.iter()
+                        .any(|(_, a)| matches!(a, host::RecordFieldAbi::Result))
+                });
                 // Constrained shape (d2, deliver-notification): a SINGLE record param, no String param, no
                 // option/list/bytes compound RESULT (those add defined types that shift the record index — a
                 // later slice). A `list<u8>` (Bytes) PARAM is allowed (deliver's `target`) and shares the
@@ -1141,12 +1150,14 @@ pub fn emit(
                     || needs_list_byte_pairs
                     || needs_bytes_result
                     || (any_record_has_bytes && !has_bytes_param)
+                    || any_record_has_result
                 {
                     return Err(Reject::decline(
                         "a record host-argument composes only in a host set with a single record parameter, \
                          no string parameter, and no option/list/bytes compound result; a record with \
-                         `list<u8>` fields additionally requires a sibling `list<u8>` parameter (the general \
-                         record-type-indexed host shape is a later increment)",
+                         `list<u8>` fields additionally requires a sibling `list<u8>` parameter, and a \
+                         `result`-typed field is a later increment (the general record-type-indexed host \
+                         shape)",
                     ));
                 }
                 use crate::backend::wasm::wit_ctype::{CDef, CRef, emit_cdef};
@@ -1161,6 +1172,10 @@ pub fn emit(
                                     // A `Bytes` field references the shared `(list u8)` DEFINED type at
                                     // instance-type index 0 (laid first when `needs_list`).
                                     host::RecordFieldAbi::Bytes => CRef::Idx(0),
+                                    // Unreachable: a `result`-field record is declined above
+                                    // (`any_record_has_result`) until the deliver-response slice wires its
+                                    // component type + marshal. The arm exists only for exhaustiveness.
+                                    host::RecordFieldAbi::Result => CRef::Idx(0),
                                 };
                                 (n.clone(), cref)
                             })
