@@ -189,11 +189,19 @@ jobs:
       - name: rust-backend gate (shard ${{ matrix.shard }}/24)
         # `CDZ_GATE_JOBS` caps concurrent gate CASES (each a rustc invocation) within the shard; the
         # job-level `CARGO_BUILD_JOBS` above caps rustc WITHIN each such build. Both bound peak memory so the
-        # host doesn't reclaim the runner (exit-143 = graceful eviction = memory pressure, not a timeout). 4
-        # is a no-op on the standard 4-vCPU arm runner but bounds a larger one; lower either if a shard still
-        # dies memory-signed.
+        # host doesn't reclaim the runner (exit-143 = graceful eviction = MEMORY PRESSURE, not a timeout).
+        #
+        # 2 (was 4) — v-nix 2026-08-24: two independent N=24 nightlies (32682966881, 32701625126) both
+        # reclaimed exit-143 on the SAME two shards (4 and 9), both SHORT (~4-6 min, far under the reclaim
+        # window). Same-shards-twice rules out random spot-preemption (that would hit different shards each
+        # run) — it is DETERMINISTIC memory pressure: shards 4/9 hold the memory-heaviest rust-backend cases,
+        # and 4 concurrent rustc compiles of them OOM the host. Halving the concurrent-case cap (4→2, so ~2
+        # concurrent rustc × CARGO_BUILD_JOBS=2 threads) roughly halves peak memory — the documented
+        # "lower either if a shard dies memory-signed" remedy, tried BEFORE any runner-class change (this is a
+        # compute/config lever, not a cost decision). If 4/9 still die at 2, drop to 1 (serial) next; if they
+        # die even serial, the OOM is a single pathological case to isolate, not concurrency.
         env:
-          CDZ_GATE_JOBS: "4"
+          CDZ_GATE_JOBS: "2"
         run: cargo xtask gate --check --target rust --shard ${{ matrix.shard }}/24
 
   publish:
