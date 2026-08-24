@@ -278,9 +278,15 @@ fn generate_contracts(paths: &Paths, check: bool) {
         let out = out_dir.join(format!("{name}.rs"));
         names.push(name.clone());
 
-        // MTIME short-circuit: when the generated file is newer than its source, neither revalidate (which
-        // builds + runs `cdz`) nor regenerate — the committed file is current.
-        if up_to_date(&out, src) {
+        // MTIME short-circuit (inner loop ONLY): when the generated file is newer than its source, neither
+        // revalidate (which builds + runs `cdz`) nor regenerate — the committed file is current. This is a
+        // SPEED optimization keyed on the `.cdz` SOURCE, so it is blind to a change in the RENDERING LOGIC
+        // (this function): a codegen change leaves the committed `.rs` stale but mtime-fresh. That is a
+        // footgun, so `--check` (the shared `xtask check` gate) does NOT take the short-circuit — it always
+        // re-renders and content-compares, exactly like the ABI checks, so codegen-logic drift is a hard
+        // failure rather than a silent skip. (Regression: the FIX B single-ctor elision left the kernel
+        // contracts stale-but-mtime-fresh, and this gate reported them "up to date" until forced.)
+        if !check && up_to_date(&out, src) {
             println!("xtask codegen: {} is up to date (mtime).", out.display());
             continue;
         }
