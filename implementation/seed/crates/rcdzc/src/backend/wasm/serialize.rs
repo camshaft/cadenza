@@ -104,12 +104,12 @@ fn host_import_functype(f: &crate::backend::wasm::host::HostImport) -> Vec<u8> {
     // lowers a >1-flat result to a TRAILING i32 return-pointer param (the callee writes the flattened
     // `(disc, listptr, listlen)` there) and the core function returns NOTHING. Mirrors the runtime's nfc
     // string->string lower core sig `(ptr, len, retptr) -> ()` (store 9a5728f5 core type 2).
-    if f.result_option_bytes || f.result_list_byte_pairs || f.result_bytes {
+    if f.spilled_result.is_some() {
         params.push(wasm_abi::CORE_I32);
         slot_count += 1;
     }
     item.extend_from_slice(&wasm_vec(slot_count, &params));
-    if f.result_option_bytes || f.result_list_byte_pairs || f.result_bytes {
+    if f.spilled_result.is_some() {
         item.extend_from_slice(&wasm_vec(0, &[])); // no core result — written via the retptr param
     } else {
         match f.result {
@@ -805,9 +805,7 @@ fn core_module_impl(
     // right after the runtime ops), instead of DEFINING its own. One allocator over the one shared memory: the
     // host-op lower + the guest's own retptr/leaf allocs all bump the same cursor. Absent → the wrapper DEFINES
     // its own `cabi_realloc` (the memoryless / list-param-only paths).
-    let import_realloc = host_fns
-        .iter()
-        .any(|h| h.result_bytes || h.result_option_bytes || h.result_list_byte_pairs);
+    let import_realloc = host_fns.iter().any(|h| h.spilled_result.is_some());
     // The realloc IMPORT (when a compound host result is present) occupies a func-import slot after the runtime
     // ops, so a defined func's index (and its type index, kept in lockstep) shifts by +1.
     let import_count = h + imports.len() + e + import_realloc as usize;
@@ -8504,9 +8502,7 @@ pub fn bytes_roundtrip_host_core_module(
     // — the select lift allocates the spilled-result retptr area with it (the apply body itself allocates
     // nothing; it writes its result at the fixed OUT=8 retarea). Import its `(i32×4)->i32` functype here at
     // type index `h+k+n+1`. A set with NO option-result op (e.g. kv.put) imports no realloc → byte-identical.
-    let needs_realloc = host_fns
-        .iter()
-        .any(|f| f.result_option_bytes || f.result_list_byte_pairs || f.result_bytes);
+    let needs_realloc = host_fns.iter().any(|f| f.spilled_result.is_some());
     let realloc_type_idx = (h + k + n + 1) as u32;
     if needs_realloc {
         let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
@@ -8920,9 +8916,7 @@ mod host_import_functype_tests {
             op: "op".into(),
             params,
             result,
-            result_option_bytes: false,
-            result_list_byte_pairs: false,
-            result_bytes: false,
+            spilled_result: None,
         }
     }
 

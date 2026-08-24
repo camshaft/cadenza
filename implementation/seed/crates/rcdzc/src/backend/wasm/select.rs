@@ -18343,6 +18343,50 @@ mod tests {
         crate::layout::compute(db).expect("layout")
     }
 
+    // The general result-lift's canonical-ABI layout helper: pins the component-model `(size, align)` the
+    // guest reallocs the spilled-result return area to and reads it back at — including `list<list<u8>>`
+    // (graph.neighbors), whose element STRIDE is `canonical_layout(list<u8>) = 8`. A regression here would
+    // silently mis-size the retptr or mis-stride a list element → a garbage lift. The Sum/option case is
+    // proven end-to-end by the wasmtime kv.get invoke test; these are the db-free structural cases.
+    #[test]
+    fn canonical_layout_pins_the_spilled_result_shapes() {
+        use crate::ty::{IntTy, Ty};
+        let mut db = Db::load(crate::testkit::parse(
+            "(module m (def (main) 0) (export main))",
+        ));
+        let l = |db: &mut Db, t: &Ty| canonical_layout(db, t);
+        // Scalars at their component width.
+        assert_eq!(l(&mut db, &Ty::Bool), (1, 1));
+        assert_eq!(l(&mut db, &Ty::Int(IntTy::fixed(true, 32))), (4, 4));
+        assert_eq!(l(&mut db, &Ty::Int(IntTy::fixed(false, 64))), (8, 8));
+        // list<u8> (Bytes), string, and any list<T> cross as an 8-byte (ptr, len/count) header, align 4.
+        assert_eq!(l(&mut db, &Ty::Bytes), (8, 4));
+        assert_eq!(l(&mut db, &Ty::List(Box::new(Ty::Bytes))), (8, 4)); // list<list<u8>> (graph.neighbors)
+        // The graph.neighbors element stride is the layout of `list<u8>` = 8.
+        assert_eq!(l(&mut db, &Ty::Bytes).0, 8);
+        // A tuple<list<u8>, list<u8>> (the kv.prefix-scan element) = two 8-byte headers = 16, align 4.
+        assert_eq!(
+            l(&mut db, &Ty::Tuple(vec![Ty::Bytes, Ty::Bytes].into())),
+            (16, 4)
+        );
+        // Alignment padding: tuple<bool, u64> = bool@0 (1), pad to 8, u64@8 (8) → size 16, align 8.
+        assert_eq!(
+            l(
+                &mut db,
+                &Ty::Tuple(vec![Ty::Bool, Ty::Int(IntTy::fixed(false, 64))].into())
+            ),
+            (16, 8)
+        );
+        // A nested list<tuple<list<u8>,list<u8>>> (prefix-scan result) is still an 8-byte header.
+        assert_eq!(
+            l(
+                &mut db,
+                &Ty::List(Box::new(Ty::Tuple(vec![Ty::Bytes, Ty::Bytes].into())))
+            ),
+            (8, 4)
+        );
+    }
+
     #[test]
     fn selects_a_literal_to_i64_const() {
         let (ast, body) = scalar_program();
