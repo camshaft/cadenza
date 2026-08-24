@@ -140,7 +140,16 @@ slice is co-owned with v-inference, and the kind/links surface waits on Q4.
    of #3209.
 2. **The `spawn` WIT** *(with v-inference)* — add the `spawn` interface to the one privileged world (Q3),
    alongside `deliver`. Co-settle the record/variant shapes. `kind`/`links` in the request are **omitted until
-   Q4** — the first cut carries only `program` + `nonce` + `limits`.
+   Q4** — the first cut carries only `program` + `nonce` + `limits`. **v-inference confirmed this needs zero
+   new front-end synthesis** — it is structurally the deliver-response shape already handled (#3133/#3137/#3171):
+   `spawn(request: record) -> result<reducer-id, spawn-error>` maps like `deliver-response`, and a new `spawn`
+   interface in the privileged world synthesizes with no per-interface arm. `program-hash`/`reducer-id` are
+   `hash` = `list<u8>` → `Bytes`. **The one requirement:** the anonymous `spawn-error` world variant needs a
+   Cadenza decl identity, so a guest performing `spawn` must declare a named `type SpawnError = | … |` whose
+   case-set matches the variant (kebab-normalized) — exactly like `deliver`'s `Error`; absent it, the op is
+   skipped (graceful, hand-declare). When the custom prelude lands, `SpawnError` can live there ambiently
+   (v-inference will extend `guest_sum_names` to scan it). Co-settle the `spawn-error` case-set with
+   v-inference when the shape finalizes.
 3. **Admission via event-dispatch** (Q1) — route a spawn request to the event reducer governing the spawn
    contract; admit → kernel spawns with resolved limits, reject → rejection response. Rides the event registry
    + default-event-handler routing.
