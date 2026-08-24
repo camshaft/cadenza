@@ -1,13 +1,13 @@
-//! The GC ledger's bookkeeping — pins, reference edges, and the liveness computation over them
-//! (`design/DESIGN-cas-pinning-gc.md` §5/§6, increment 2).
+//! The GC ledger's bookkeeping — pins, reference edges, the liveness computation over them, and the
+//! `collect` sweep (`design/DESIGN-cas-pinning-gc.md` §5/§6/§7, increments 2–3).
 //!
 //! The content-addressed store (§8) holds opaque bytes and must not parse them, so it cannot know the DAG's
 //! shape. That knowledge lives HERE, in a ledger backed by an ordinary key-value store ([`KvStore`], §7) —
 //! "storage is a reducer", so the GC's own state is just KV like any reducer's. This module is the ledger's
-//! STATE and its liveness LOGIC; wiring it as a reducer that folds `cas-pin`/`cas-unpin` host calls and
-//! lifecycle events, and the `collect` sweep that deletes `count == 0` blobs from the store, are later
-//! increments (§10 increments 3–5). Here there is no collection and no host surface — only the sets and the
-//! predicate a collector will consult.
+//! STATE, its liveness LOGIC, and the pure `collect` sweep ([`GcLedger::collect`]) that deletes the dead
+//! blobs from a store. What is NOT here yet: wiring it as a reducer that folds `cas-pin`/`cas-unpin` host
+//! calls and lifecycle events, and gathering the live root set / choosing WHEN to collect — those drive
+//! behavior through the platform (§10 increments 4–6) and their coverage belongs in the conformance suite.
 //!
 //! **Two sets, keyed for the scans the liveness walk needs.**
 //!  - **edges** — `edge:<parent><child>` keys. A put declares a blob's outbound refs ([`BlobStore::put`]);
@@ -181,6 +181,75 @@ impl<K: KvStore> GcLedger<K> {
         }
         n
     }
+
+    // --- collection (increment 3) ---
+
+    /// Every hash the ledger knows about — the union of both endpoints of every edge and every pinned hash.
+    /// This is the candidate universe a `collect` evaluates: a blob is either pinned, reachable from a root
+    /// via an edge, or a root, and §9's `cas-put`-self-pins rule keeps a freshly-put blob pinned until it is
+    /// rooted, so every live blob is edge- or pin-known here. Read from the `edge:` and `pin:` prefixes.
+    pub async fn known_hashes(&self) -> HashSet<Hash> {
+        let mut out: HashSet<Hash> = self.pinned_hashes().await;
+        let mut keys = self
+            .kv
+            .scan_keys(prefix_range(Bytes::from_static(EDGE_PREFIX)));
+        while let Some(key) = keys.next().await {
+            // An edge key carries BOTH endpoints: the parent, then the child.
+            if let Some(parent) = hash_at(&key, EDGE_PREFIX.len()) {
+                out.insert(parent);
+            }
+            if let Some(child) = hash_at(&key, EDGE_PREFIX.len() + Hash::LEN) {
+                out.insert(child);
+            }
+        }
+        out
+    }
+
+    /// Remove `parent`'s outbound reference edges (the `edge:<parent>` prefix) — the ledger-side of collecting
+    /// a blob, so the DAG shrinks with the store. (Its incoming edges come from other collected blobs, whose
+    /// own outbound edges this removes when they are processed — a retained blob never points at a collected
+    /// one, §5.)
+    async fn remove_blob_edges(&mut self, parent: Hash) {
+        let prefix = prefix_of(EDGE_PREFIX, parent);
+        let keys: Vec<Bytes> = self
+            .kv
+            .scan_keys(prefix_range(prefix))
+            .collect::<Vec<_>>()
+            .await;
+        for key in keys {
+            self.kv.delete(&key).await;
+        }
+    }
+
+    /// Collect the dead blobs: delete every known-but-not-`retained` hash from `store` and drop its edges,
+    /// under the supplied `roots` (§6/§7/§8). A single global `retained` computation over the DAG already
+    /// accounts for the cascade — a blob reachable ONLY through a collected parent is itself not retained, so
+    /// it is collected in the same pass; a blob also reachable through a retained parent survives — so no
+    /// iterative re-evaluation is needed and the DAG guarantees termination. Returns the set collected.
+    /// Content-safe: a delete is re-`put`-able (same bytes → same hash), so premature collection would be a
+    /// liveness bug, not a correctness one — but §9 keeps a fold from ever referencing a collectable hash.
+    /// This is the pure sweep; WHEN it runs (a quiescent point between folds, batched, deliberately
+    /// triggered — never an eager background sweep, §8) and how `roots` are gathered are later increments.
+    pub async fn collect<S: crate::BlobStore>(
+        &mut self,
+        store: &mut S,
+        roots: &[Hash],
+    ) -> HashSet<Hash> {
+        let retained = self.retained(roots).await;
+        let collectable: Vec<Hash> = self
+            .known_hashes()
+            .await
+            .into_iter()
+            .filter(|h| !retained.contains(h))
+            .collect();
+        let mut collected = HashSet::new();
+        for h in collectable {
+            store.delete(h).await;
+            self.remove_blob_edges(h).await;
+            collected.insert(h);
+        }
+        collected
+    }
 }
 
 // --- key layout (fixed-width fields, no delimiter needed — see the module docs) ---
@@ -224,7 +293,7 @@ fn hash_at(key: &[u8], offset: usize) -> Option<Hash> {
 #[cfg(test)]
 mod tests {
     use super::GcLedger;
-    use crate::{Hash, HashTag, InMemoryKvStore, ReducerId};
+    use crate::{BlobStore, Bytes, Hash, HashTag, InMemoryBlobStore, InMemoryKvStore, ReducerId};
     use std::collections::HashSet;
 
     fn h(tag: &[u8]) -> Hash {
@@ -309,6 +378,57 @@ mod tests {
     /// §10 increment 2). A deterministic PRNG builds many random acyclic graphs (edges only i -> j with
     /// i < j, so no cycles), random pins, and random roots; the ledger's `retained` must equal a plain
     /// in-memory BFS from `roots ∪ pinned` over the same edges.
+    #[tokio::test]
+    async fn collect_sweeps_unretained_blobs_cascades_and_survives_the_retained() {
+        // Store holds a chain a -> b -> c (rooted at a) and an unreferenced subtree d -> e. Ledger mirrors
+        // the edges the puts declared (what cas-put will wire in a later increment).
+        let mut store = InMemoryBlobStore::new();
+        let mut g = ledger();
+        let a = store.put(Bytes::from_static(b"a"), &[]).await;
+        let b = store.put(Bytes::from_static(b"b"), &[]).await;
+        let c = store.put(Bytes::from_static(b"c"), &[]).await;
+        let d = store.put(Bytes::from_static(b"d"), &[]).await;
+        let e = store.put(Bytes::from_static(b"e"), &[]).await;
+        g.record_edges(a, &[b]).await;
+        g.record_edges(b, &[c]).await;
+        g.record_edges(d, &[e]).await;
+
+        // Rooted at `a`: a,b,c retained; the whole d->e subtree is dead → collected (cascade in one pass).
+        let collected = g.collect(&mut store, &[a]).await;
+        assert_eq!(collected, HashSet::from([d, e]));
+        for h in [a, b, c] {
+            assert!(store.has(h).await, "retained blob survives");
+        }
+        for h in [d, e] {
+            assert!(!store.has(h).await, "unreferenced blob collected");
+        }
+        // The collected blobs' edges are gone from the ledger too (the DAG shrank with the store).
+        assert!(g.children(d).await.is_empty());
+        // Content-safe: re-putting a collected blob restores it under the same hash.
+        let d2 = store.put(Bytes::from_static(b"d"), &[]).await;
+        assert_eq!(d2, d);
+        assert!(store.has(d).await);
+    }
+
+    #[tokio::test]
+    async fn collect_keeps_a_pinned_blob_and_its_subtree_but_not_an_unrooted_parent() {
+        // p -> q, with nothing rooting p. Pinning q retains q (and anything q reaches), but NOT p (unrooted,
+        // unpinned, unreferenced) — a retained child does not retain its parent.
+        let mut store = InMemoryBlobStore::new();
+        let mut g = ledger();
+        let p = store.put(Bytes::from_static(b"p"), &[]).await;
+        let q = store.put(Bytes::from_static(b"q"), &[]).await;
+        g.record_edges(p, &[q]).await;
+        g.pin(q, sess(b"s")).await;
+        let collected = g.collect(&mut store, &[]).await;
+        assert_eq!(collected, HashSet::from([p]));
+        assert!(store.has(q).await, "pinned blob survives");
+        assert!(
+            !store.has(p).await,
+            "unrooted parent of a pinned child is still collected"
+        );
+    }
+
     // The random-DAG construction is index-keyed: the node index is the natural key for the oracle's
     // adjacency lists and the pinned/root index sets, so range-over-index is the clearest form here.
     #[allow(clippy::needless_range_loop)]
