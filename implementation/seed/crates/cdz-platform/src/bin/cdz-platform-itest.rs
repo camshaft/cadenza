@@ -220,6 +220,35 @@ struct Report {
     outcome: Option<CheckOutcome>,
 }
 
+/// Resolve a spec's **unnamed dependency components** ([`HarnessSpec::deps`]) to `(label, bytes)` — the
+/// value-heap runtime a Cadenza guest imports and that runtime's NFC dependency, injected into the spec (by
+/// nix, for a reproducible run) so the run is self-contained. Each is seeded into the run's content-addressed
+/// store so a guest's content-addressed imports resolve (`host::…::bind_dependencies` composes them by hash);
+/// without them a Cadenza guest cannot instantiate and silently never folds. The label is inert — the CAS
+/// keys by the bytes' content hash, which is the import's `+<hash>` — and no spawn refers to a dep.
+fn resolve_deps(deps: &[BlobSource]) -> Result<Vec<(String, Bytes)>, RunError> {
+    deps.iter()
+        .enumerate()
+        .map(|(i, source)| {
+            let bytes = match source {
+                BlobSource::Inline(bytes) => bytes.clone(),
+                BlobSource::Path(path) => load_blob(path)?,
+            };
+            Ok((format!("cdz-dep:{i}"), bytes))
+        })
+        .collect()
+}
+
+/// Add resolved dependency `components` to a harness as blobs, so a Cadenza guest's runtime (and its
+/// dependencies) resolve in the run's CAS. The blob names are inert labels — a component is looked up by its
+/// content hash, not by name — and no spawn refers to them.
+fn with_deps(mut harness: Harness, components: &[(String, Bytes)]) -> Harness {
+    for (label, bytes) in components {
+        harness = harness.blob(label.clone(), bytes.clone());
+    }
+    harness
+}
+
 /// Read a program blob from a filesystem path, as the harness's blob loader does.
 fn load_blob(path: &str) -> Result<Bytes, RunError> {
     std::fs::read(path)
@@ -295,8 +324,13 @@ fn run(spec: HarnessSpec) -> Result<Report, RunError> {
         }
     };
 
+    // The spec's unnamed dependency components (the value-heap runtime + its NFC dep) every Cadenza guest's
+    // imports resolve against — resolved once and seeded into each run's CAS below so a Cadenza guest can
+    // instantiate. Resolved before `build` consumes the spec, so the checker/pure-run phases can seed them too.
+    let deps = resolve_deps(&spec.deps)?;
+
     // The main run: drive the described scenario to quiescence, recording into one shared log.
-    let main_harness = spec.build(load_blob)?;
+    let main_harness = with_deps(spec.build(load_blob)?, &deps);
     let main_log = observation_log();
     let store_log = main_log.clone();
     let main_run = main_harness
@@ -311,12 +345,13 @@ fn run(spec: HarnessSpec) -> Result<Report, RunError> {
     let outcome = checker.map(|(name, bytes)| {
         let checker_log = observation_log();
         let store_log = checker_log.clone();
-        let checker_run = Harness::new(CHECKER_SYSTEM)
+        let checker_base = Harness::new(CHECKER_SYSTEM)
             .blob(
                 CHECKER_SYSTEM,
                 Bytes::from_static(b"cdz-platform-itest:checker-no-system"),
             )
-            .blob(name.clone(), bytes)
+            .blob(name.clone(), bytes);
+        let checker_run = with_deps(checker_base, &deps)
             .spawn(SpawnSpec::new("checker", name))
             .deliver("checker", check_message(&main_run.records))
             .host(host)
@@ -368,11 +403,17 @@ fn pure_run_phase(
     let cell: Arc<Mutex<Option<Result<Bytes, RunError>>>> = Arc::new(Mutex::new(None));
     let cell_in = cell.clone();
     let log = observation_log();
+    // The spec's dependency components (value-heap runtime + NFC) the pure program's own imports resolve
+    // against — a pure Cadenza guest imports the runtime just like any reducer, so they must be in its CAS too.
+    let deps = resolve_deps(&spec.deps)?;
     bach::sim(move || {
         use bach::ext::*;
         let cell = cell_in;
         async move {
             let mut cas = InMemoryBlobStore::new();
+            for (_label, component) in &deps {
+                cas.put(component.clone()).await;
+            }
             cas.put(bytes).await;
             let store = wasm_store(Arc::new(cas), log, host);
             let runner = Runner::new(Arc::new(store));
@@ -438,6 +479,7 @@ mod tests {
             deliveries: vec![],
             checker: None,
             pure_run: None,
+            deps: Vec::new(),
         };
         let report = run(spec).expect("inline blobs never invoke the path loader");
         assert!(
@@ -475,6 +517,7 @@ mod tests {
             deliveries: vec![],
             checker: Some("check".to_string()),
             pure_run: None,
+            deps: Vec::new(),
         };
         let report = run(spec).expect("inline blobs never invoke the path loader");
         assert!(
@@ -509,6 +552,7 @@ mod tests {
             deliveries: vec![],
             checker: Some("absent".to_string()),
             pure_run: None,
+            deps: Vec::new(),
         };
         assert!(
             run(spec).is_err(),
@@ -532,6 +576,7 @@ mod tests {
             deliveries: vec![],
             checker: None,
             pure_run: None,
+            deps: Vec::new(),
         };
         assert!(
             run(spec).is_err(),
@@ -581,6 +626,7 @@ mod tests {
                 input: Bytes::from_static(b"X"),
                 expect_output: Bytes::from_static(b"X"),
             }),
+            deps: Vec::new(),
         };
         let report = run(spec).expect("inline blobs never invoke the path loader");
         assert!(
