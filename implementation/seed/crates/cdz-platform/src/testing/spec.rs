@@ -58,12 +58,14 @@
 //! [`SpecError`], never a panic.
 
 use super::harness::{Harness, Parent, SpawnSpec};
-use crate::contract_value::{bytes_leaf, read_bytes, read_uint, record, record_field, uint_leaf};
-use crate::{
-    Bytes, ContractId, Delivered, Hash, HostId, Message, Notification, Origin, ReducerId,
-    ReducerKind,
+use crate::contract_value::{
+    bare_ctor, bytes_leaf, read_bytes, read_uint, record, record_field, uint_leaf,
 };
-use cadenza_ast::ast::{Arenas, Builder, Leaf, StructId};
+use crate::{
+    Bytes, ContractId, Delivered, Error, Hash, HostId, Message, Notification, Origin, ReducerId,
+    ReducerKind, Response,
+};
+use cadenza_ast::ast::{Arenas, Builder, Leaf, Struct, StructId};
 use cadenza_ast::codec;
 use std::fmt;
 use std::sync::Arc;
@@ -125,10 +127,12 @@ pub struct HarnessSpec {
 
 /// An event the harness injects into a task's mailbox as a run's initial stimulus (§4). The schema's
 /// delivery vocabulary — its own type rather than the platform's full [`Delivered`], so it names exactly
-/// what a harness description can express: a [`Message`] or a [`Notification`]. (A `Response` — a reply to a
-/// request the reducer itself made — is not a sensible *initial* stimulus, so it is not in the vocabulary.)
-/// [`build`](HarnessSpec::build) turns each into a [`Delivered`], stamping a delivered message with the
-/// harness's synthetic external [`Origin`].
+/// what a harness description can express: a [`Message`] (folded through `on_message`), a [`Notification`]
+/// (`on_notification`), or a [`Response`] (`on_response`). A `Response` is normally a reply to a request the
+/// reducer itself made; the harness injects one so a conformance run can exercise the `on_response` path —
+/// including a runtime-failure (`Err`) answer — without a live responder, correlating it to the request by
+/// `token`. [`build`](HarnessSpec::build) turns each into a [`Delivered`], stamping a delivered message with
+/// the harness's synthetic external [`Origin`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeliveryEvent {
     /// An effect to fold through the target's `on_message`.
@@ -146,6 +150,16 @@ pub enum DeliveryEvent {
         contract: ContractId,
         /// The notification value, opaque bytes.
         payload: Bytes,
+    },
+    /// A reply to fold through the target's `on_response` — a response to a request the reducer performed.
+    /// Injected so a run can exercise `on_response` without a live responder, correlated by `token`.
+    Response {
+        /// The contract-id the reply answers.
+        contract: ContractId,
+        /// The continuation token correlating the reply to its request; empty by default.
+        token: Bytes,
+        /// The reply: `Ok` the contract's output value (opaque bytes), or `Err` a runtime-level failure.
+        answer: Result<Bytes, Error>,
     },
 }
 
@@ -170,6 +184,15 @@ impl DeliveryEvent {
                     payload,
                 })
             }
+            DeliveryEvent::Response {
+                contract,
+                token,
+                answer,
+            } => Delivered::Response(Response {
+                id: contract,
+                continuation_token: token,
+                payload: answer,
+            }),
         }
     }
 }
@@ -624,28 +647,105 @@ fn read_delivery(arenas: &Arenas, id: StructId) -> Result<(String, DeliveryEvent
         .to_string();
     let message = record_field(arenas, id, "message");
     let notification = record_field(arenas, id, "notification");
-    let event = match (message, notification) {
-        (Some(m), None) => {
-            let token = match record_field(arenas, m, "token") {
-                None => Bytes::new(),
-                Some(t) => read_bytes(arenas, t).ok_or(SpecError::WrongType {
-                    field: "token",
-                    want: "a bytes literal",
-                })?,
-            };
-            DeliveryEvent::Message {
-                contract: read_contract_id(arenas, m)?,
-                payload: read_required_bytes(arenas, m, "payload")?,
-                token,
-            }
-        }
-        (None, Some(n)) => DeliveryEvent::Notification {
+    let response = record_field(arenas, id, "response");
+    let event = match (message, notification, response) {
+        (Some(m), None, None) => DeliveryEvent::Message {
+            contract: read_contract_id(arenas, m)?,
+            payload: read_required_bytes(arenas, m, "payload")?,
+            token: read_optional_token(arenas, m)?,
+        },
+        (None, Some(n), None) => DeliveryEvent::Notification {
             contract: read_contract_id(arenas, n)?,
             payload: read_required_bytes(arenas, n, "payload")?,
+        },
+        (None, None, Some(r)) => DeliveryEvent::Response {
+            contract: read_contract_id(arenas, r)?,
+            token: read_optional_token(arenas, r)?,
+            answer: read_answer(arenas, r)?,
         },
         _ => return Err(SpecError::DeliveryKind { target }),
     };
     Ok((target, event))
+}
+
+/// Read an event record's optional `token` field — a bytes literal, or empty when absent (the decode
+/// default a message/response shares). A present-but-not-bytes token is a [`SpecError`].
+fn read_optional_token(arenas: &Arenas, event: StructId) -> Result<Bytes, SpecError> {
+    match record_field(arenas, event, "token") {
+        None => Ok(Bytes::new()),
+        Some(t) => read_bytes(arenas, t).ok_or(SpecError::WrongType {
+            field: "token",
+            want: "a bytes literal",
+        }),
+    }
+}
+
+/// Read a response record's `answer` — the platform result form `(Ok <bytes>)` (the output value) or
+/// `(Err <error>)` (a runtime failure, an error-tag string). Absent/malformed is a [`SpecError`].
+fn read_answer(arenas: &Arenas, response: StructId) -> Result<Result<Bytes, Error>, SpecError> {
+    let want = "(Ok <bytes>) or (Err <error>)";
+    let id = record_field(arenas, response, "answer").ok_or(SpecError::MissingField("answer"))?;
+    let Struct::List(items) = arenas.get(id) else {
+        return Err(SpecError::WrongType {
+            field: "answer",
+            want,
+        });
+    };
+    let (&head, tail) = items.split_first().ok_or(SpecError::WrongType {
+        field: "answer",
+        want,
+    })?;
+    match arenas.as_name(head) {
+        Some("Ok") => {
+            let [v] = <[StructId; 1]>::try_from(tail).map_err(|_| SpecError::WrongType {
+                field: "answer",
+                want: "a single bytes payload in (Ok …)",
+            })?;
+            Ok(Ok(read_bytes(arenas, v).ok_or(SpecError::WrongType {
+                field: "answer",
+                want: "a bytes literal in (Ok …)",
+            })?))
+        }
+        Some("Err") => {
+            let [e] = <[StructId; 1]>::try_from(tail).map_err(|_| SpecError::WrongType {
+                field: "answer",
+                want: "a single error tag in (Err …)",
+            })?;
+            let tag = arenas.as_str(e).ok_or(SpecError::WrongType {
+                field: "answer",
+                want: "an error-tag string in (Err …)",
+            })?;
+            Ok(Err(read_error_tag(tag)?))
+        }
+        _ => Err(SpecError::WrongType {
+            field: "answer",
+            want,
+        }),
+    }
+}
+
+/// Map a runtime-failure error tag to its [`Error`] — the inverse of [`error_tag`].
+fn read_error_tag(tag: &str) -> Result<Error, SpecError> {
+    match tag {
+        "timeout" => Ok(Error::Timeout),
+        "missing-handler" => Ok(Error::MissingHandler),
+        "schema-violation" => Ok(Error::SchemaViolation),
+        "faulted" => Ok(Error::Faulted),
+        _ => Err(SpecError::WrongType {
+            field: "answer",
+            want: "a known error tag: timeout | missing-handler | schema-violation | faulted",
+        }),
+    }
+}
+
+/// The error tag for a runtime-failure [`Error`] — the wire string in `(Err <tag>)`.
+fn error_tag(e: Error) -> &'static str {
+    match e {
+        Error::Timeout => "timeout",
+        Error::MissingHandler => "missing-handler",
+        Error::SchemaViolation => "schema-violation",
+        Error::Faulted => "faulted",
+    }
 }
 
 /// Read the required `contract` field of an event record as a [`ContractId`] (its 33 raw hash bytes).
@@ -712,16 +812,45 @@ fn delivery_to_ast(b: &mut Builder, target: &str, event: &DeliveryEvent) -> Stru
                 record(b, vec![("contract", contract), ("payload", payload)]),
             )
         }
+        DeliveryEvent::Response {
+            contract,
+            token,
+            answer,
+        } => {
+            let contract = bytes_leaf(b, contract.hash().as_bytes());
+            let answer = answer_to_ast(b, answer);
+            let mut fields = vec![("contract", contract), ("answer", answer)];
+            if !token.is_empty() {
+                let token = bytes_leaf(b, token);
+                fields.push(("token", token));
+            }
+            ("response", record(b, fields))
+        }
     };
     record(b, vec![("target", target_leaf), (kind, inner)])
+}
+
+/// The `(Ok <bytes>)` / `(Err <error-tag>)` node for a response's `answer` — the inverse of [`read_answer`].
+fn answer_to_ast(b: &mut Builder, answer: &Result<Bytes, Error>) -> StructId {
+    match answer {
+        Ok(bytes) => {
+            let v = bytes_leaf(b, bytes);
+            bare_ctor(b, "Ok", vec![v])
+        }
+        Err(e) => {
+            let tag = str_leaf(b, error_tag(*e));
+            bare_ctor(b, "Err", vec![tag])
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{BlobSource, BlobSpec, DeliveryEvent, HarnessSpec, SpecError};
+    use crate::contract_value::bare_ctor;
     use crate::contract_value::{bytes_leaf, record, uint_leaf};
     use crate::testing::SpawnSpec;
-    use crate::{Bytes, ContractId, ReducerKind};
+    use crate::{Bytes, ContractId, Error, ReducerKind};
     use cadenza_ast::ast::{Arenas, Builder, Leaf, StructId};
     use cadenza_ast::codec;
     use std::sync::Arc;
@@ -1372,6 +1501,99 @@ mod tests {
             spec.validate(),
             Err(SpecError::UnknownTarget {
                 target: "ghost".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn response_deliveries_round_trip_ok_and_err() {
+        // A run can inject a Response to exercise on_response — with an Ok output value or an Err runtime
+        // failure. Both survive encode→decode, so the framework can express either reply path.
+        let spec = HarnessSpec {
+            system: "sys".to_string(),
+            run_for: None,
+            blobs: vec![],
+            spawns: vec![],
+            deliveries: vec![
+                (
+                    "root".to_string(),
+                    DeliveryEvent::Response {
+                        contract: ContractId::of(b"http.get"),
+                        token: Bytes::from_static(b"tok-1"),
+                        answer: Ok(Bytes::from_static(b"200")),
+                    },
+                ),
+                (
+                    "root".to_string(),
+                    DeliveryEvent::Response {
+                        contract: ContractId::of(b"http.get"),
+                        token: Bytes::new(),
+                        answer: Err(Error::Timeout),
+                    },
+                ),
+            ],
+            checker: None,
+        };
+        assert_eq!(HarnessSpec::decode(&spec.encode()), Ok(spec));
+    }
+
+    #[test]
+    fn reads_a_response_delivery_from_the_authoring_shape() {
+        // Pin the wire shape a run author writes: (= response (record (= contract …) (= answer (Ok b"…"))
+        // (= token b"…"))). Decodes to a Response with the Ok output.
+        let cid = ContractId::of(b"temp.celsius");
+        let arenas = built(|b| {
+            let system = s(b, "sys");
+            let resp = {
+                let contract = bytes_leaf(b, cid.hash().as_bytes());
+                let ok_bytes = bytes_leaf(b, b"21");
+                let answer = bare_ctor(b, "Ok", vec![ok_bytes]);
+                let token = bytes_leaf(b, b"t");
+                record(
+                    b,
+                    vec![("contract", contract), ("answer", answer), ("token", token)],
+                )
+            };
+            let target = s(b, "root");
+            let d = record(b, vec![("target", target), ("response", resp)]);
+            let deliver = list(b, vec![d]);
+            record(b, vec![("system", system), ("deliver", deliver)])
+        });
+        let spec = HarnessSpec::read(&arenas, arenas.root).expect("a valid response delivery");
+        assert_eq!(
+            spec.deliveries,
+            vec![(
+                "root".to_string(),
+                DeliveryEvent::Response {
+                    contract: cid,
+                    token: Bytes::from_static(b"t"),
+                    answer: Ok(Bytes::from_static(b"21")),
+                },
+            )]
+        );
+    }
+
+    #[test]
+    fn rejects_a_response_with_an_unknown_error_tag() {
+        let cid = ContractId::of(b"c");
+        let arenas = built(|b| {
+            let system = s(b, "sys");
+            let resp = {
+                let contract = bytes_leaf(b, cid.hash().as_bytes());
+                let bad = s(b, "kaboom");
+                let answer = bare_ctor(b, "Err", vec![bad]);
+                record(b, vec![("contract", contract), ("answer", answer)])
+            };
+            let target = s(b, "root");
+            let d = record(b, vec![("target", target), ("response", resp)]);
+            let deliver = list(b, vec![d]);
+            record(b, vec![("system", system), ("deliver", deliver)])
+        });
+        assert_eq!(
+            HarnessSpec::read(&arenas, arenas.root),
+            Err(SpecError::WrongType {
+                field: "answer",
+                want: "a known error tag: timeout | missing-handler | schema-violation | faulted",
             })
         );
     }
