@@ -1451,9 +1451,16 @@
             specText = builtins.readFile specFile;
             uses = harnessProgramsIn specText;
             contractUses = harnessContractsIn specText;
+            # Resolve each BLOB entry's `program = "<name>"` to `path = "<store-path>"` so the itest loads the
+            # component bytes. SCOPED to a blob record `{ name = …, program = … }` (matched via the sibling
+            # `name` field), NOT a bare `(= program …)`: a `pure-run = { program = "<name>", … }` field
+            # references a seeded blob BY NAME and must stay `program` (the itest's pure-run decoder requires
+            # it) — a bare rewrite also flipped THAT to `path`, so pure-run-emit-then-close failed spec-decode
+            # "missing required field program". The blob record has a `name` sibling; pure-run does not, so the
+            # record-scoped pattern hits only the blobs.
             rewrites = pkgs.lib.concatMapStringsSep "\n"
               (n: ''
-                ${seedCompiler}/bin/cdz rewrite '(= program "${n}")' '(= path "${harnessPrograms.${n}}")' \
+                ${seedCompiler}/bin/cdz rewrite '("record" (= name ,nm) (= program "${n}"))' '("record" (= name ,nm) (= path "${harnessPrograms.${n}}"))' \
                   run.ml --from ml --to ml > run.ml.next
                 mv run.ml.next run.ml
               '')
