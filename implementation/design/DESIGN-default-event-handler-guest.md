@@ -241,7 +241,8 @@ the factory it was given (#3197/#3199).
 
 - **Build the harness-settable registry (increment 1): YES.** Operator: "we should build the change to be able
   to specify the registry." It is non-gated (v-platform-itest's lane); the default-event-handler guest
-  (increment 2) remains gated on `graph.neighbors`.
+  (increment 2) is written + front-end-verified and now gated only on rcdzc **multi-interface host emission**
+  (see increment 2 above).
 - **Default no-handler semantics: FORWARD, don't auto-reject.** Operator: "If a handler isn't registered in the
   registry then it's forwarded to the default handler, which then decides what to do with it. If it doesn't
   like it then it rejects and sends a rejection response back to the caller." So the registry does not produce
