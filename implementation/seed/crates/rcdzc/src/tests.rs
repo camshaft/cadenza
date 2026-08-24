@@ -7770,6 +7770,75 @@ fn a_no_redeclare_world_import_perform_resolves_via_the_injected_effect() {
     }
 }
 
+/// NO-ANNOTATION EXPORT BOUNDARY (`derive_world_export_param_annotations`): a reducer writes its guest-export
+/// entry point with a BARE param — `(def (on-message msg) …)` — and the export-param pre-pass DERIVES `msg`'s
+/// type from the matching world guest-export member (`on-message`'s declared `msg` param, a record), injecting
+/// the annotation BEFORE resolve. So the body's field access `(. msg payload)` type-checks and the boundary
+/// param is NOT the CDZ0201 "parameter type is ambiguous" it would be without a world (verified below). This
+/// removes the last boundary annotation a reducer needs; its own nominal sums stay.
+#[test]
+fn a_bare_export_param_is_typed_from_the_world_guest_export_member() {
+    use crate::db::Db;
+    // Bare param `msg` (NO annotation); the world's guest export `on-message` declares `msg` as a record
+    // `{contract: list<u8>, payload: list<u8>}` (STRING-head WIT descriptors). The body reads `msg.payload`,
+    // which only resolves if `msg` is typed as that record.
+    let src = "(do \
+                 (world reducer-world \
+                   (export guest (member on-message \
+                     (func (param msg (\"record\" (contract (\"list\" (u8))) (payload (\"list\" (u8))))) \
+                           (result (\"list\" (u8))))))) \
+                 (def (on-message msg) (. msg payload)) \
+                 (export on-message))";
+    let mut db = Db::load(crate::testkit::parse(src));
+    let diags = crate::compile::diagnostics(&mut db);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.message.contains("parameter type is ambiguous")),
+        "a bare export param must be typed from the world member (no CDZ0201 ambiguity): {:?}",
+        diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    // The derived param types as the world's record — `contract` + `payload` fields, both Bytes (list<u8>).
+    let d = db.def_by_name("on-message").expect("def on-message");
+    let param = db.defs[d].params[0];
+    let ty = crate::infer::type_of(&mut db, param);
+    match &ty {
+        crate::ty::Ty::Record(fields) => {
+            let names: Vec<&str> = fields.keys().map(|k| k.name.as_ref()).collect();
+            assert!(
+                names.contains(&"contract") && names.contains(&"payload"),
+                "derived record must carry the world member's fields, got {names:?}"
+            );
+            assert!(
+                fields
+                    .iter()
+                    .all(|(_, t)| matches!(t, crate::ty::Ty::Bytes)),
+                "each list<u8> field types as Bytes, got {ty:?}"
+            );
+        }
+        other => panic!("bare `msg` must derive the world member's record type, got {other:?}"),
+    }
+}
+
+/// MEANINGFULNESS GUARD for [`a_bare_export_param_is_typed_from_the_world_guest_export_member`]: the SAME bare
+/// `(def (on-message msg) (. msg payload))` WITHOUT an in-source `(world …)` has nothing to derive `msg` from,
+/// so it IS the CDZ0201 "parameter type is ambiguous" boundary fault. This proves the world-driven derivation
+/// (not some unrelated inference) is what types the param in the test above.
+#[test]
+fn a_bare_export_param_without_a_world_is_still_ambiguous() {
+    use crate::db::Db;
+    let src = "(do (def (on-message msg) (. msg payload)) (export on-message))";
+    let mut db = Db::load(crate::testkit::parse(src));
+    let diags = crate::compile::diagnostics(&mut db);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("parameter type is ambiguous")),
+        "without a world, a bare export param has no derivation source → CDZ0201: {:?}",
+        diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
 /// EXTERNAL-ARTIFACT world, no-redeclare: a reducer delivered with a `KIND_WIT_WORLD` artifact (NOT an
 /// in-source `(world …)`) and NO hand-written `(effect …)` decl must still resolve its world-import perform
 /// — `compile` injects the synthesized effects from the artifact BEFORE `Db::load`, so `(host (identity)
@@ -7805,6 +7874,92 @@ fn an_external_artifact_world_import_resolves_without_a_hand_declared_effect() {
             .iter()
             .any(|d| d.message.contains("unbound name `identity`")),
         "the external-artifact world's `identity` import must resolve via the injected effect (no CDZ0101): {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// NO-ANNOTATION EXPORT BOUNDARY, EXTERNAL ARTIFACT world: the real flagship path — identity / provenance /
+/// the §4 dispatch reducer target an external `KIND_WIT_WORLD` artifact (NOT an in-source `(world …)`), so the
+/// artifact-side derivation must type a bare guest-export param too. A reducer with `(def (on-message msg) (.
+/// msg payload))` and NO param annotation, compiled against an artifact world whose guest export `on-message`
+/// declares `msg : record { contract: list<u8>, payload: list<u8> }`, must NOT report CDZ0201 "parameter type
+/// is ambiguous": `derive_world_export_param_annotations_from_bytes` (run in `compile` before `Db::load`)
+/// derives `msg`'s record type from the artifact member, so the body's `msg.payload` resolves. (A backend
+/// boundary decline for the record export is orthogonal — the assertion is only that the param is no longer
+/// ambiguous.)
+#[test]
+fn a_bare_export_param_is_typed_from_an_external_artifact_world_member() {
+    use crate::ast::{Builder, Leaf};
+    // KIND_WIT_WORLD artifact: export guest { on-message: func(msg: record{contract: list<u8>, payload:
+    // list<u8>}) -> list<u8> }. STRING-head compound descriptors, NAME-head primitives — the exact shape
+    // `parse_target_world` reads (same as an in-source world / v-platform's `world-artifact` output).
+    let world_bytes = {
+        let mut b = Builder::new();
+        let byte_list = |b: &mut Builder| {
+            let h = b.atom_leaf(Leaf::Str("list".into()));
+            let uh = b.name("u8");
+            let u = b.list(vec![uh]);
+            b.list(vec![h, u])
+        };
+        let cfield = {
+            let n = b.name("contract");
+            let t = byte_list(&mut b);
+            b.list(vec![n, t])
+        };
+        let pfield = {
+            let n = b.name("payload");
+            let t = byte_list(&mut b);
+            b.list(vec![n, t])
+        };
+        let rec_h = b.atom_leaf(Leaf::Str("record".into()));
+        let msg_rec = b.list(vec![rec_h, cfield, pfield]);
+        let func = {
+            let func_h = b.name("func");
+            let param_h = b.name("param");
+            let pn = b.name("msg");
+            let pnode = b.list(vec![param_h, pn, msg_rec]);
+            let result_h = b.name("result");
+            let rout = byte_list(&mut b);
+            let rnode = b.list(vec![result_h, rout]);
+            b.list(vec![func_h, pnode, rnode])
+        };
+        let member = {
+            let member_h = b.name("member");
+            let mn = b.name("on-message");
+            b.list(vec![member_h, mn, func])
+        };
+        let guest = {
+            let exp_h = b.name("export");
+            let en = b.name("guest");
+            b.list(vec![exp_h, en, member])
+        };
+        let world_h = b.name("world");
+        let wn = b.name("reducer-world");
+        let world = b.list(vec![world_h, wn, guest]);
+        let a = b.finish(world);
+        crate::codec::encode(&a)
+    };
+    // Guest: bare param `msg` (NO annotation), body reads `msg.payload` (resolves only if `msg` is typed).
+    let src = "(module m (def (on-message msg) (. msg payload)) (export on-message))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&crate::testkit::parse(src)),
+            ),
+            crate::abi::Artifact::new(crate::link::KIND_WIT_WORLD, "wit-world", world_bytes),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.diagnostics
+            .iter()
+            .any(|d| d.message.contains("parameter type is ambiguous")),
+        "an external-artifact world's guest-export member must type the bare `msg` param (no CDZ0201): {:?}",
         out.diagnostics
             .iter()
             .map(|d| &d.message)

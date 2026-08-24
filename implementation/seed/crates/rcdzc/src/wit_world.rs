@@ -590,6 +590,149 @@ pub fn inject_world_import_effects_from_bytes(ast: &mut Arenas, world_bytes: &[u
     }
 }
 
+/// The no-annotation EXPORT-BOUNDARY pre-pass — the export-side mirror of [`inject_world_import_effects`].
+/// For an in-source top-level `(world …)` decl, DERIVE each guest-export def's boundary PARAMETER types from
+/// the matching world guest-export member and inject them as `(: <param> <type>)` annotations BEFORE
+/// `scan_top_level`/resolve. So a reducer writes `(def (on-message msg) <step>)` with NO param annotation and
+/// still type-checks: `msg` is typed from `world.exports…on-message`'s DECLARED param type
+/// ([`wit_type_to_type_expr`]), exactly the annotation the author would otherwise hand-write. This removes the
+/// one remaining boundary annotation a reducer needs (the entry-point param types); its own nominal `(type …)`
+/// sums are inherent and stay.
+///
+/// A guest def binds to a world export member BY NAME (`kebab_extern_name` — the SAME binding the emit uses),
+/// then params align POSITIONALLY. Only a BARE param binder is annotated — an author-written `(: p T)` WINS
+/// (left untouched), a position past the member's params is left alone, and a param whose declared type
+/// [`wit_type_to_type_expr`] cannot map (`enum`/`variant`/`flags`) is left bare (it falls back to the ordinary
+/// CDZ0201 "annotate it" — no regression). Runs in `Db::load_linked` in the same generate-before-resolve slot
+/// as the import pre-pass, at the locus BOTH compile AND check reach, so the surface holds in `cdz check`/LSP
+/// too. A module with no in-source `(world …)`, or no def matching an export member, is left untouched. The
+/// EXTERNAL `KIND_WIT_WORLD` artifact world is served by the sibling
+/// [`derive_world_export_param_annotations_from_bytes`] (called from `compile` before `Db::load`).
+pub fn derive_world_export_param_annotations(ast: &mut Arenas) {
+    use crate::backend::common::export_name::kebab_extern_name;
+    let Some(world_form) = top_world_form(ast) else {
+        return;
+    };
+    // Build the (export-member kebab name → ordered param WitTypes) map OWNED, dropping the
+    // `parse_target_world` borrow of `ast` before the mutating rewrite (WitType is Clone). The in-source
+    // `(world …)` node is already the exact `world_schema_tree` shape `parse_target_world` reads, so no bytes
+    // round-trip is needed (unlike the artifact path, which decodes its own arena).
+    let member_params = {
+        let Some(world) = parse_target_world(ast, world_form) else {
+            return;
+        };
+        export_member_params(&world, kebab_extern_name)
+    };
+    apply_export_param_annotations(ast, &member_params);
+}
+
+/// Derive export-boundary param annotations from an EXTERNAL `KIND_WIT_WORLD` artifact's ENCODED bytes — the
+/// artifact-side entry point of the no-annotation export boundary, called from `compile` BEFORE `Db::load`
+/// (the same seam the import `inject_world_import_effects_from_bytes` uses). The flagship + identity +
+/// provenance reducers target an external artifact world (`cdz compile <src> wit-world:reducer-world=…`), so
+/// this is the real reducer path; the in-source [`derive_world_export_param_annotations`] covers a reducer
+/// that declares its world inline. Both reuse the SAME rewrite ([`apply_export_param_annotations`]) — an
+/// artifact world decodes to the same `TargetWorld`/`WitInterface` exports as an in-source one. If both a
+/// compile-time artifact and an in-source world are present, the artifact runs first and the in-source pass
+/// then no-ops on the already-annotated params (the `(: …)`-skip makes them composable, mirroring the import
+/// side).
+pub fn derive_world_export_param_annotations_from_bytes(ast: &mut Arenas, world_bytes: &[u8]) {
+    use crate::backend::common::export_name::kebab_extern_name;
+    // The world decodes into its OWN arena; the def-sig rewrite writes into the guest `ast`.
+    let Some(world_arena) = crate::codec::decode(world_bytes) else {
+        return;
+    };
+    let Some(world) = parse_target_world(&world_arena, world_arena.root) else {
+        return;
+    };
+    let member_params = export_member_params(&world, kebab_extern_name);
+    apply_export_param_annotations(ast, &member_params);
+}
+
+/// The (export-member kebab name → ordered param [`WitType`]s) map a guest def's boundary params are derived
+/// against — the world's guest-EXPORT interface members, keyed by the SAME `kebab_extern_name` the emit binds
+/// a def to an export member with, so front-end derivation and backend emit agree on which member types a def.
+fn export_member_params(
+    world: &TargetWorld,
+    kebab_extern_name: impl Fn(&str) -> String,
+) -> std::collections::HashMap<String, Vec<WitType>> {
+    let mut m = std::collections::HashMap::new();
+    for iface in &world.exports {
+        for member in &iface.members {
+            m.insert(
+                kebab_extern_name(&member.name),
+                member.func.params.iter().map(|(_n, t)| t.clone()).collect(),
+            );
+        }
+    }
+    m
+}
+
+/// Rewrite each top-level guest-export def's BARE boundary params to `(: <param> <derived-type>)` in place,
+/// deriving the type from `member_params` (keyed by the def's `kebab_extern_name`). The shared core of both
+/// the in-source and artifact export-param derivation. An author-written `(: p T)` WINS (skipped); a position
+/// past the member's params, or a type [`wit_type_to_type_expr`] cannot map (`enum`/`variant`/`flags`), is
+/// left bare (falls back to the ordinary CDZ0201). A def whose name matches no export member is untouched.
+fn apply_export_param_annotations(
+    ast: &mut Arenas,
+    member_params: &std::collections::HashMap<String, Vec<WitType>>,
+) {
+    use crate::ast::Leaf;
+    use crate::backend::common::export_name::kebab_extern_name;
+    use crate::prelude::{push_atom, push_list};
+    if member_params.is_empty() {
+        return;
+    }
+    for it in top_level_items(ast) {
+        // `(def (<name> param…) body)` — the signature is the def's first child, a list whose head is the
+        // def name and whose tail is the params.
+        let Some(&sig) = ast.as_form(it, "def").and_then(|t| t.first()) else {
+            continue;
+        };
+        let Struct::List(sig_items) = ast.get(sig) else {
+            continue;
+        };
+        let sig_items = sig_items.clone();
+        let Some(def_name) = sig_items
+            .first()
+            .and_then(|&n| ast.as_name(n))
+            .map(kebab_extern_name)
+        else {
+            continue;
+        };
+        let Some(ptys) = member_params.get(&def_name).cloned() else {
+            continue;
+        };
+        let mut new_sig = sig_items.clone();
+        let mut changed = false;
+        for (i, ptype) in ptys.iter().enumerate() {
+            // `sig_items[0]` is the def name; param i sits at position i+1.
+            let Some(&param_node) = sig_items.get(i + 1) else {
+                break;
+            };
+            // Skip an already-annotated binder `(: p T)` — the author's annotation wins.
+            if ast.as_form(param_node, ":").is_some() {
+                continue;
+            }
+            let Some(pname) = ast.as_name(param_node).map(str::to_string) else {
+                continue;
+            };
+            let Some(type_expr) = wit_type_to_type_expr(ast, ptype) else {
+                continue;
+            };
+            // Build `(: <param-name> <derived-type-expr>)` and replace the bare binder in place.
+            let colon = push_atom(ast, Leaf::Name(":".into()));
+            let name = push_atom(ast, Leaf::Name(pname.into()));
+            let annotated = push_list(ast, vec![colon, name, type_expr]);
+            new_sig[i + 1] = annotated;
+            changed = true;
+        }
+        if changed {
+            ast.structure[sig.0 as usize] = Struct::List(new_sig);
+        }
+    }
+}
+
 /// The module's DIRECT top-level members (`(module NAME item…)` → `item…`; a bare root → itself), mirroring
 /// `db.top_world_forms`' root-member reckoning — a form nested inside a def is not a module member.
 fn top_level_items(ast: &Arenas) -> Vec<StructId> {

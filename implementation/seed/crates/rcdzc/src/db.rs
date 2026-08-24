@@ -2212,6 +2212,14 @@ impl Db {
         // synthesized decl is byte-shaped like a hand-written one, so downstream sees an ordinary effect.
         // A module with no in-source world (or no mappable import) is untouched.
         crate::wit_world::inject_world_import_effects(&mut ast);
+        // WORLD-EXPORT PARAM DERIVATION (no-annotation boundary): the export-side mirror — for an in-source
+        // `(world …)`, DERIVE each guest-export def's boundary param types from the matching world
+        // guest-export member and inject them as `(: <param> <type>)` annotations, HERE (before
+        // `scan_top_level`), so a reducer writes `(def (on-message msg) <step>)` with NO param annotation and
+        // `msg` still types from the world's declared param (the one remaining boundary annotation removed;
+        // nominal sums stay). An author-written annotation wins; a module with no in-source world (or no def
+        // matching an export member) is untouched.
+        crate::wit_world::derive_world_export_param_annotations(&mut ast);
         // The program's node count, captured BEFORE the prelude appends — the boundary between user
         // nodes (which the front-end's span table covers) and everything appended after. Ids `0..this`
         // are the user program; ids at/above are prelude or evaluator-synthesized.
