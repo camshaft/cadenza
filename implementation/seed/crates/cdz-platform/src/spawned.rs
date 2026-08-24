@@ -42,7 +42,8 @@ impl Spawned {
     #[must_use]
     pub fn encode(&self) -> Bytes {
         let mut b = Builder::new();
-        let root = self.build(&mut b);
+        let value = self.build(&mut b);
+        let root = crate::contract_value::ascribe(&mut b, value, "Event");
         let arenas = b.finish(root);
         Bytes::from(codec::encode(&arenas))
     }
@@ -76,7 +77,8 @@ impl Spawned {
         use crate::contract_value as v;
         use crate::contracts::spawned as c;
         let arenas = codec::decode(bytes)?;
-        let e = c::as_event_spawned(&arenas, arenas.root)?;
+        let root = v::as_ascribed(&arenas, arenas.root)?;
+        let e = c::as_event_spawned(&arenas, root)?;
         Some(Self {
             id: ReducerId::from_hash(v::read_hash(&arenas, e.id)?),
             parent: ReducerId::from_hash(v::read_hash(&arenas, e.parent)?),

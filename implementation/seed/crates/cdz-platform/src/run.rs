@@ -277,7 +277,8 @@ impl Run {
     #[must_use]
     pub fn encode(&self) -> Bytes {
         let mut b = Builder::new();
-        let root = self.build(&mut b);
+        let value = self.build(&mut b);
+        let root = crate::contract_value::ascribe(&mut b, value, "Request");
         Bytes::from(codec::encode(&b.finish(root)))
     }
 
@@ -301,7 +302,8 @@ impl Run {
         use crate::contract_value as v;
         use crate::contracts::run as c;
         let arenas = codec::decode(bytes)?;
-        let r = c::as_request_run(&arenas, arenas.root)?;
+        let root = v::as_ascribed(&arenas, arenas.root)?;
+        let r = c::as_request_run(&arenas, root)?;
         Some(Self {
             program: ProgramHash::try_from(v::read_bytes(&arenas, r.program)?.as_ref()).ok()?,
             contract: ContractId::try_from(v::read_bytes(&arenas, r.contract)?.as_ref()).ok()?,
@@ -319,7 +321,8 @@ impl RunOutput {
         use crate::contracts::run as c;
         let mut b = Builder::new();
         let output = v::bytes_leaf(&mut b, &self.output);
-        let root = c::output_output(&mut b, output);
+        let value = c::output_output(&mut b, output);
+        let root = v::ascribe(&mut b, value, "Output");
         Bytes::from(codec::encode(&b.finish(root)))
     }
 
@@ -330,7 +333,8 @@ impl RunOutput {
         use crate::contract_value as v;
         use crate::contracts::run as c;
         let arenas = codec::decode(bytes)?;
-        let inner = c::as_output_output(&arenas, arenas.root)?;
+        let root = v::as_ascribed(&arenas, arenas.root)?;
+        let inner = c::as_output_output(&arenas, root)?;
         Some(Self {
             output: v::read_bytes(&arenas, inner)?,
         })

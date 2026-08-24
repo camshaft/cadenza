@@ -73,7 +73,8 @@ impl FireAfter {
     #[must_use]
     pub fn encode(&self) -> Bytes {
         let mut b = Builder::new();
-        let root = self.build(&mut b);
+        let value = self.build(&mut b);
+        let root = crate::contract_value::ascribe(&mut b, value, "Envelope");
         let arenas = b.finish(root);
         Bytes::from(codec::encode(&arenas))
     }
@@ -99,7 +100,8 @@ impl FireAfter {
         use crate::contract_value as v;
         use crate::contracts::timer as c;
         let arenas = codec::decode(bytes)?;
-        let duration = c::as_envelope_fire_after(&arenas, arenas.root)?;
+        let root = v::as_ascribed(&arenas, arenas.root)?;
+        let duration = c::as_envelope_fire_after(&arenas, root)?;
         Some(Self {
             duration: v::read_uint(&arenas, duration)?,
         })
@@ -120,7 +122,8 @@ impl Fired {
     #[must_use]
     pub fn encode(&self) -> Bytes {
         let mut b = Builder::new();
-        let root = self.build(&mut b);
+        let value = self.build(&mut b);
+        let root = crate::contract_value::ascribe(&mut b, value, "Event");
         let arenas = b.finish(root);
         Bytes::from(codec::encode(&arenas))
     }
@@ -131,7 +134,8 @@ impl Fired {
         use crate::contract_value as v;
         use crate::contracts::timer as c;
         let arenas = codec::decode(bytes)?;
-        let fired_time = c::as_event_fired(&arenas, arenas.root)?;
+        let root = v::as_ascribed(&arenas, arenas.root)?;
+        let fired_time = c::as_event_fired(&arenas, root)?;
         Some(Self {
             fired_time: v::read_uint(&arenas, fired_time)?,
         })
@@ -199,8 +203,9 @@ mod tests {
         use crate::contracts::timer as c;
         let arm = FireAfter { duration: 5000 };
         let arenas = cadenza_ast::codec::decode(&arm.encode()).expect("well-formed value");
+        let root = v::as_ascribed(&arenas, arenas.root).expect("root ascription");
         let payload =
-            c::as_envelope_fire_after(&arenas, arenas.root).expect("an Envelope.FireAfter value");
+            c::as_envelope_fire_after(&arenas, root).expect("an Envelope.FireAfter value");
         assert_eq!(v::read_uint(&arenas, payload), Some(5000));
     }
 
