@@ -18,7 +18,9 @@
 //! [`Record::seq`] is that order, assigned as each record is appended. A checker takes a
 //! [`snapshot`](ObservationLog::snapshot) of the records once the run is quiescent.
 
-use crate::{Bytes, ContractId, Error, Hash, Origin, ProgramHash, ReducerId, ReducerKind, Str};
+use crate::{
+    Bytes, ContractId, Dir, EdgeKind, Error, Hash, Origin, ProgramHash, ReducerId, ReducerKind, Str,
+};
 use std::fmt::{self, Write as _};
 use std::ops::Bound;
 use std::sync::{Arc, Mutex};
@@ -57,6 +59,8 @@ pub enum Entry {
     Event(EventOp),
     /// A call to the reducer's node-side **provenance** capability — the privileged `program-of` read (§4).
     Provenance(ProvOp),
+    /// A call to the reducer's node-side **graph** capability — a read or write of the reducer graph (§7).
+    Graph(GraphOp),
     /// The harness spawned a reducer and assigned it a name — recorded at the start of a run so the log
     /// is self-describing: a reader derefs a name to the reducer id ([`Record::source`]) it was assigned,
     /// with no out-of-band metadata (§3).
@@ -127,6 +131,59 @@ pub enum ProvOp {
     ProgramOf {
         reducer: ReducerId,
         program: Option<ProgramHash>,
+    },
+}
+
+/// A call to the node-side **reducer-graph** capability (`design/cadenza-platform.md` §7) — the routing
+/// substrate a reducer reads and writes: the active set, the spawn tree, supervision edges, and the
+/// per-contract handler chains. One variant per host-wired method (the `ReducerGraph` conveniences decompose
+/// to these). Each records the call's arguments **and its result**, so a checker asserts what the reducer
+/// asked of the graph and what it got back — e.g. an event reducer's `neighbors(kind = for_contract(C))`
+/// read is exactly how it routes `C`. An [`EdgeKind`] is recorded as its raw hash [`Bytes`] (like a
+/// contract-id: `for_contract(C)` is `C`'s hash, matchable relationally); a [`Dir`] as a string; every
+/// reducer-id list preserves its returned order (neighbours come back in **weight-then-id** = chain order,
+/// which is routing order).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GraphOp {
+    /// `insert(node)` — `added` is whether the node was newly added (`false` if already present).
+    Insert { node: ReducerId, added: bool },
+    /// `contains(node)` — `present` is whether the node is in the active set.
+    Contains { node: ReducerId, present: bool },
+    /// `remove(node)` — `existed` is whether the node was present and is now gone.
+    Remove { node: ReducerId, existed: bool },
+    /// `link(from, to, kind)` — `added` is whether the edge was newly added.
+    Link {
+        from: ReducerId,
+        to: ReducerId,
+        kind: EdgeKind,
+        added: bool,
+    },
+    /// `set_edges(from, kind, targets)` — the whole-chain replace; `prior` is the ordered targets it
+    /// replaced (empty if none). Both `targets` and `prior` keep their order (weight order).
+    SetEdges {
+        from: ReducerId,
+        kind: EdgeKind,
+        targets: Vec<ReducerId>,
+        prior: Vec<ReducerId>,
+    },
+    /// `neighbors(node, kind, dir)` — the direct neighbours, in weight-then-id (chain) order.
+    Neighbors {
+        node: ReducerId,
+        kind: EdgeKind,
+        dir: Dir,
+        result: Vec<ReducerId>,
+    },
+    /// `in_kinds(node)` — the distinct kinds of the node's in-edges, ascending.
+    InKinds {
+        node: ReducerId,
+        result: Vec<EdgeKind>,
+    },
+    /// `reach(node, kind, dir)` — the nodes transitively reachable along `kind` edges, nearest first.
+    Reach {
+        node: ReducerId,
+        kind: EdgeKind,
+        dir: Dir,
+        result: Vec<ReducerId>,
     },
 }
 
@@ -447,6 +504,84 @@ impl fmt::Display for Record {
                     None => write!(f, "program-of {} -> none", short(*reducer)),
                 },
             },
+            Entry::Graph(op) => match op {
+                GraphOp::Insert { node, added } => write!(
+                    f,
+                    "graph insert {} -> {}",
+                    short(*node),
+                    if *added { "added" } else { "present" }
+                ),
+                GraphOp::Contains { node, present } => write!(
+                    f,
+                    "graph contains {} -> {}",
+                    short(*node),
+                    if *present { "yes" } else { "no" }
+                ),
+                GraphOp::Remove { node, existed } => write!(
+                    f,
+                    "graph remove {} -> {}",
+                    short(*node),
+                    if *existed { "existed" } else { "absent" }
+                ),
+                GraphOp::Link {
+                    from,
+                    to,
+                    kind,
+                    added,
+                } => write!(
+                    f,
+                    "graph link {} -> {} kind {} -> {}",
+                    short(*from),
+                    short(*to),
+                    short(kind.hash()),
+                    if *added { "added" } else { "exists" }
+                ),
+                GraphOp::SetEdges {
+                    from,
+                    kind,
+                    targets,
+                    prior,
+                } => write!(
+                    f,
+                    "graph set-edges {} kind {} = [{}] (was [{}])",
+                    short(*from),
+                    short(kind.hash()),
+                    short_ids(targets),
+                    short_ids(prior)
+                ),
+                GraphOp::Neighbors {
+                    node,
+                    kind,
+                    dir,
+                    result,
+                } => write!(
+                    f,
+                    "graph neighbors {} kind {} {} -> [{}]",
+                    short(*node),
+                    short(kind.hash()),
+                    dir_str(*dir),
+                    short_ids(result)
+                ),
+                GraphOp::InKinds { node, result } => write!(
+                    f,
+                    "graph in-kinds {} -> [{}]",
+                    short(*node),
+                    short_kinds(result)
+                ),
+                GraphOp::Reach {
+                    node,
+                    kind,
+                    dir,
+                    result,
+                } => write!(
+                    f,
+                    "graph reach {} kind {} {} -> [{}]",
+                    short(*node),
+                    short(kind.hash()),
+                    dir_str(*dir),
+                    short_ids(result)
+                ),
+            },
             Entry::Spawn(info) => write!(
                 f,
                 "spawn {:?} program={} kind={:?}",
@@ -466,6 +601,31 @@ fn short(id: impl fmt::Display) -> String {
     match s.get(..10) {
         Some(prefix) if prefix.len() < s.len() => format!("{prefix}…"),
         _ => s,
+    }
+}
+
+/// A comma-joined preview of a reducer-id list, in order — for a graph op's neighbour/chain result.
+fn short_ids(ids: &[ReducerId]) -> String {
+    ids.iter()
+        .map(|id| short(*id))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// A comma-joined preview of an edge-kind list, in order — for a graph `in-kinds` result.
+fn short_kinds(kinds: &[EdgeKind]) -> String {
+    kinds
+        .iter()
+        .map(|k| short(k.hash()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// A [`Dir`] as its wire string — matches [`log_value`](super::log_value)'s encoding.
+fn dir_str(dir: Dir) -> &'static str {
+    match dir {
+        Dir::Out => "out",
+        Dir::In => "in",
     }
 }
 
@@ -494,8 +654,10 @@ fn hit_miss(hit: bool) -> &'static str {
 
 #[cfg(test)]
 mod render_tests {
-    use super::{Entry, EventKind, EventOp, KvOp, ProvOp, Record, SpawnInfo, render};
-    use crate::{Bytes, ContractId, HostId, Origin, ProgramHash, ReducerId, ReducerKind, Str};
+    use super::{Entry, EventKind, EventOp, GraphOp, KvOp, ProvOp, Record, SpawnInfo, render};
+    use crate::{
+        Bytes, ContractId, Dir, EdgeKind, HostId, Origin, ProgramHash, ReducerId, ReducerKind, Str,
+    };
 
     fn rec(seq: u64, reducer: &[u8], entry: Entry) -> Record {
         Record {
@@ -580,10 +742,20 @@ mod render_tests {
                     program: Some(ProgramHash::of(b"peer-prog")),
                 }),
             ),
+            rec(
+                7,
+                b"agent",
+                Entry::Graph(GraphOp::Neighbors {
+                    node: ReducerId::of(b"owner"),
+                    kind: EdgeKind::for_contract(ContractId::of(b"http.get")),
+                    dir: Dir::Out,
+                    result: vec![ReducerId::of(b"h1"), ReducerId::of(b"h2")],
+                }),
+            ),
         ];
         let out = render(&records);
         let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines.len(), 7, "one line per record");
+        assert_eq!(lines.len(), 8, "one line per record");
         // Each line leads with its seq and carries a readable description of the entry.
         assert!(lines[0].starts_with("#0"));
         assert!(lines[0].contains("spawn \"agent\""), "line: {}", lines[0]);
@@ -612,6 +784,9 @@ mod render_tests {
         // The provenance line shows the queried reducer and the program it resolved to.
         assert!(lines[6].contains("program-of "), "line: {}", lines[6]);
         assert!(lines[6].contains(" -> "), "line: {}", lines[6]);
+        // The graph line shows the op, the node, the direction, and the ordered neighbour result.
+        assert!(lines[7].contains("graph neighbors "), "line: {}", lines[7]);
+        assert!(lines[7].contains(" out -> ["), "line: {}", lines[7]);
         // An empty log renders to an empty string.
         assert!(render(&[]).is_empty());
     }
