@@ -32,7 +32,7 @@
 //! `0`/`1`, so no fidelity is lost. Decoding is total: any malformation is a rejected log ([`deserialize`]
 //! returns `None`), never a panic.
 
-use super::observation::{BlobOp, Entry, EventKind, EventOp, KvOp, Record, SpawnInfo};
+use super::observation::{BlobOp, Entry, EventKind, EventOp, KvOp, ProvOp, Record, SpawnInfo};
 use crate::contract_value::{
     as_ascribed, ascribe, bare_ctor, bytes_leaf, qctor, read_bytes, read_uint, record,
     record_field, uint_leaf,
@@ -128,6 +128,7 @@ fn entry_value(b: &mut Builder, e: &Entry) -> StructId {
         Entry::Kv(op) => kv_value(b, op),
         Entry::Blob(op) => blob_value(b, op),
         Entry::Event(op) => event_value(b, op),
+        Entry::Provenance(op) => prov_value(b, op),
         Entry::Spawn(info) => spawn_value(b, info),
     }
 }
@@ -140,6 +141,7 @@ fn read_entry(arenas: &Arenas, id: StructId) -> Option<Entry> {
         "Delivered" | "Emitted" | "Closed" | "Failed" | "Routed" => {
             Entry::Event(read_event(arenas, inner, tag)?)
         }
+        "ProgramOf" => Entry::Provenance(read_prov(arenas, inner, tag)?),
         "Spawn" => Entry::Spawn(read_spawn(arenas, inner)?),
         _ => return None,
     })
@@ -441,6 +443,35 @@ fn read_event(arenas: &Arenas, id: StructId, tag: &str) -> Option<EventOp> {
     })
 }
 
+// --- provenance ---
+
+fn prov_value(b: &mut Builder, op: &ProvOp) -> StructId {
+    match op {
+        ProvOp::ProgramOf { reducer, program } => {
+            let reducer = bytes_leaf(b, reducer.hash().as_bytes());
+            // `program` is an always-present Option (`(Some …)` / `(None unit)`), a fixed shape a checker
+            // `Value.decode`s — the same discipline as a delivered event's `from`/`error`.
+            let program_inner = program.as_ref().map(|p| bytes_leaf(b, p.hash().as_bytes()));
+            let program = option_value(b, program_inner);
+            tagged(
+                b,
+                "ProgramOf",
+                vec![("reducer", reducer), ("program", program)],
+            )
+        }
+    }
+}
+
+fn read_prov(arenas: &Arenas, id: StructId, tag: &str) -> Option<ProvOp> {
+    Some(match tag {
+        "ProgramOf" => ProvOp::ProgramOf {
+            reducer: read_reducer(arenas, field(arenas, id, "reducer")?)?,
+            program: read_option(arenas, field(arenas, id, "program")?, read_program)?,
+        },
+        _ => return None,
+    })
+}
+
 fn event_kind_str(kind: EventKind) -> &'static str {
     match kind {
         EventKind::Message => "message",
@@ -648,7 +679,9 @@ fn read_hash(arenas: &Arenas, id: StructId) -> Option<Hash> {
 #[cfg(test)]
 mod tests {
     use super::{deserialize, serialize};
-    use crate::testing::observation::{BlobOp, Entry, EventKind, EventOp, KvOp, Record, SpawnInfo};
+    use crate::testing::observation::{
+        BlobOp, Entry, EventKind, EventOp, KvOp, ProvOp, Record, SpawnInfo,
+    };
     use crate::{
         Bytes, ContractId, Error, Hash, HashTag, HostId, Origin, ProgramHash, ReducerId,
         ReducerKind, Str,
@@ -842,6 +875,20 @@ mod tests {
                     continuation_token: Bytes::new(),
                     payload: Bytes::from_static(b"n"),
                     error: None,
+                }),
+            ),
+            rec(
+                19,
+                Entry::Provenance(ProvOp::ProgramOf {
+                    reducer: ReducerId::of(b"peer"),
+                    program: Some(ProgramHash::of(b"peer-prog")),
+                }),
+            ),
+            rec(
+                20,
+                Entry::Provenance(ProvOp::ProgramOf {
+                    reducer: ReducerId::of(b"gone"),
+                    program: None,
                 }),
             ),
         ];

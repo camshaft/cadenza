@@ -13,11 +13,11 @@
 //! decorator idea applied to a reducer rather than a store — record every event a reducer folds,
 //! emits, or closes with, then defer to the wrapped reducer unchanged.
 
-use super::observation::{BlobOp, Entry, EventKind, EventOp, KvOp, ObservationLog};
+use super::observation::{BlobOp, Entry, EventKind, EventOp, KvOp, ObservationLog, ProvOp};
 use crate::{
     BlobStore, Bytes, ContractId, Delivered, Delivery, Hash, HostId, KeyRange, KvKeyScan, KvScan,
-    KvStore, Message, Notification, Origin, Outcome, ProgramHash, ProgramStore, Reducer, ReducerId,
-    Request, Response, SpawnContext, Str,
+    KvStore, Message, Notification, Origin, Outcome, ProgramHash, ProgramStore, Provenance,
+    Reducer, ReducerId, Request, Response, SpawnContext, Str,
 };
 use async_trait::async_trait;
 use futures_util::FutureExt as _; // catch_unwind — record an uncontrolled fold failure (§10) before it unwinds
@@ -250,6 +250,52 @@ impl Delivery for RecordingDelivery {
             Entry::Event(Self::routed(target, &event)),
         );
         self.inner.deliver(target, event).await
+    }
+}
+
+/// A [`Provenance`] that records every privileged `program-of` read to an [`ObservationLog`], then defers to
+/// the wrapped provenance (`design/cadenza-platform.md` §4/§9). Wrapping the `program-of` host boundary makes
+/// the read observable — which reducer was queried, and what program the platform answered — so a conformance
+/// run can assert a reducer's provenance query and the answer it got. Attributes each record to the querying
+/// reducer (`owner`), and records the *answer* (like [`RecordingKvStore`]'s `get`), so it defers after the
+/// call. Behind an `Arc` like every [`Provenance`], so the injected factory clones a shared base.
+pub struct RecordingProvenance {
+    inner: Arc<dyn Provenance>,
+    owner: Origin,
+    log: ObservationLog,
+    now: fn() -> u64,
+}
+
+impl RecordingProvenance {
+    /// Wrap `inner`, attributing every recorded `program-of` to `owner` (the reducer whose `program-of` import
+    /// this backs), appending to `log`, and stamping each record with `now` (the runtime's clock).
+    pub fn new(
+        inner: Arc<dyn Provenance>,
+        owner: Origin,
+        log: ObservationLog,
+        now: fn() -> u64,
+    ) -> Self {
+        Self {
+            inner,
+            owner,
+            log,
+            now,
+        }
+    }
+}
+
+#[async_trait]
+impl Provenance for RecordingProvenance {
+    async fn program_of(&self, reducer: ReducerId) -> Option<ProgramHash> {
+        // Record the answer, not just the question — the query and what the platform returned (defer after the
+        // call, like a kv `get`). The wrapped read is unchanged (§9).
+        let program = self.inner.program_of(reducer).await;
+        self.log.record(
+            (self.now)(),
+            self.owner,
+            Entry::Provenance(ProvOp::ProgramOf { reducer, program }),
+        );
+        program
     }
 }
 
