@@ -524,6 +524,14 @@ pub fn synthesize_world_import_effect_decls(
     let Some(world) = parse_target_world(&world_arena, world_arena.root) else {
         return Vec::new();
     };
+    // The guest's NAMED sums keyed by (kebab) case-name set → type name (from its top-level `(type …)`
+    // decls, visible in `ast` at this pre-resolve pass). Threading it into the arrow derivation resolves a
+    // WIT `variant`/`enum` in an import op's type to the guest's mirroring named sum (e.g. the world's
+    // anonymous `error` variant → the guest's `type Error`), so an import op whose param/result CONTAINS a
+    // variant (deliver-response's `answer: result<payload, error>`) maps + RESOLVES — the same
+    // `_with_sums` machinery the EXPORT-param derivation already uses (#3137). Without it (an empty map) a
+    // variant → `None` → the op is skipped (deliver-response silently dropped from the synthesized effect).
+    let sums = guest_sum_names(ast);
     let mut decls = Vec::new();
     for iface in &world.imports {
         let mut ops = Vec::new();
@@ -533,7 +541,7 @@ pub fn synthesize_world_import_effect_decls(
             let mut arrow_kids = vec![nm(ast, "->")];
             let mut mappable = true;
             for (_pname, pty) in &member.func.params {
-                match wit_type_to_type_expr(ast, pty) {
+                match wit_type_to_type_expr_with_sums(ast, pty, &sums) {
                     Some(n) => arrow_kids.push(n),
                     None => {
                         mappable = false;
@@ -544,7 +552,9 @@ pub fn synthesize_world_import_effect_decls(
             if !mappable {
                 continue;
             }
-            let Some(result_expr) = wit_type_to_type_expr(ast, &member.func.result) else {
+            let Some(result_expr) =
+                wit_type_to_type_expr_with_sums(ast, &member.func.result, &sums)
+            else {
                 continue;
             };
             arrow_kids.push(result_expr);
@@ -2051,5 +2061,73 @@ mod tests {
 
         // An absent world → no decls.
         assert!(synthesize_world_import_effect_decls(&mut db.ast, None).is_empty());
+    }
+
+    /// A world-import op whose type CONTAINS a WIT `variant` (the `deliver-response` shape: `answer:
+    /// result<payload, error>` where `error` is an anonymous variant) is now SYNTHESIZED — the arrow
+    /// derivation threads the guest's NAMED sums, so the anonymous error variant resolves to the guest's
+    /// mirroring `type Error` and the op MAPS. Previously the import synthesis used an EMPTY sums map →
+    /// variant → `None` → the op was silently SKIPPED (deliver-response never resolved). Contrast: with no
+    /// mirroring guest type the op stays skipped.
+    #[test]
+    fn a_variant_typed_import_op_is_synthesized_when_a_guest_named_sum_mirrors_it() {
+        use crate::db::Db;
+        let mut b = Builder::new();
+        let byte_list = |b: &mut Builder| {
+            let hh = b.atom_leaf(Leaf::Str("list".into()));
+            let uh = b.name("u8");
+            let u = b.list(vec![uh]);
+            b.list(vec![hh, u])
+        };
+        // respond: (r: result<list<u8>, variant(timeout, faulted)>) -> unit
+        let err_variant = {
+            let vh = str_head(&mut b, "variant");
+            let c1 = {
+                let n = b.name("timeout");
+                b.list(vec![n])
+            };
+            let c2 = {
+                let n = b.name("faulted");
+                b.list(vec![n])
+            };
+            b.list(vec![vh, c1, c2])
+        };
+        let result_ty = {
+            let rh = str_head(&mut b, "result");
+            let ok = byte_list(&mut b);
+            b.list(vec![rh, ok, err_variant])
+        };
+        let rr = unit(&mut b);
+        let respond = member(&mut b, "respond", vec![("r", result_ty)], rr);
+        let ih = b.name("import");
+        let inm = b.name("cadenza:agent-kernel/deliver");
+        let deliver = b.list(vec![ih, inm, respond]);
+        let wh = b.name("world");
+        let wn = b.name("reducer");
+        let world = b.list(vec![wh, wn, deliver]);
+        let a = b.finish(world);
+        let bytes = crate::codec::encode(&a);
+
+        // Guest declares `type Error = | Timeout | Faulted` — case-set {timeout, faulted} mirrors the world's
+        // anonymous error variant, so the variant-typed op maps + is synthesized.
+        let mut db = Db::load(crate::testkit::parse(
+            "(module m (type Error Timeout Faulted) (def (main) 0) (export main))",
+        ));
+        let decls = synthesize_world_import_effect_decls(&mut db.ast, Some(&bytes));
+        assert_eq!(
+            decls.len(),
+            1,
+            "the variant-typed op maps via the guest's named Error → the effect is synthesized"
+        );
+
+        // Contrast: a guest with NO mirroring sum → the variant → None → the op is skipped → empty effect dropped.
+        let mut db2 = Db::load(crate::testkit::parse(
+            "(module m (def (main) 0) (export main))",
+        ));
+        let decls2 = synthesize_world_import_effect_decls(&mut db2.ast, Some(&bytes));
+        assert!(
+            decls2.is_empty(),
+            "with no mirroring guest sum the variant-typed op is skipped (hand-declared meanwhile)"
+        );
     }
 }
