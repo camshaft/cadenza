@@ -41,6 +41,16 @@ pub enum HostParam {
     /// no realloc for an argument). Only the COMPONENT boundary type differs (list<u8> vs string). adv-62b's
     /// sibling: closes the wasm-vs-rust reverse-parity gap where a runtime Bytes host-arg declined.
     Bytes,
+    /// A `record` parameter with all-SCALAR fields (shape d, first slice) — its component valtype is a
+    /// `record` DEFINED type (tag `0x72`) the import instance-type declares, referenced by index (like
+    /// [`Bytes`](HostParam::Bytes)'s `(list u8)` ref). Its core form FLATTENS to one core slot per field, in
+    /// NAME-LEX field order (`Ty::Record` is a `BTreeMap`, so field order is the record's canonical order —
+    /// the same order the component `record` type declares its fields). The guest decomposes the value-heap
+    /// record field-by-field into those slots before the call (`arr-get` + `get-int`/`get-bool` per field).
+    /// Carries `(field-name, scalar-ABI)` per field so BOTH the core flatten (`core_byte`) and the component
+    /// record type (`comp_byte`) derive from it. A field that is itself a `Bytes`/`String`/nested record is a
+    /// LATER slice (d2/d3) — the classifier only produces this for an all-scalar record.
+    Record(Vec<(String, AbiValType)>),
 }
 
 /// One host-delegated operation the program performs — its declaring effect's NAME (the WIT interface),
@@ -422,6 +432,30 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                     // gap where a Bytes host-arg declined on wasm. A PEER-bound Bytes crosses as a heap
                     // handle (`extern_abi_val_type` in the `_` arm below), not this host-boundary list<u8>.
                     Ty::Bytes if !peer_bound => params.push(HostParam::Bytes),
+                    // A RECORD arg with all-SCALAR fields (shape d, first slice) crosses NATIVELY: it
+                    // FLATTENS to one core slot per field in NAME-LEX order (the `BTreeMap`'s canonical
+                    // order, which is exactly the order the component `record` type declares its fields), and
+                    // declares a component `record` DEFINED type. A field that is NOT a scalar (a
+                    // `Bytes`/`String`/nested record) makes the whole record undelegable THIS increment —
+                    // push nothing, leaving `params` short so the boundary guard (`first_unrepresentable_
+                    // host_op`) declines the op (a Bytes/nested field is the d2/d3 slice). A PEER-bound record
+                    // still crosses as a `u32` handle (the `_` arm below), not this native record.
+                    Ty::Record(fields) if !peer_bound => {
+                        let mut field_abis = Vec::with_capacity(fields.len());
+                        let mut all_scalar = true;
+                        for (sym, fty) in fields.iter() {
+                            match abi_val_type(fty) {
+                                Some(v) => field_abis.push((sym.name.to_string(), v)),
+                                None => {
+                                    all_scalar = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if all_scalar {
+                            params.push(HostParam::Record(field_abis));
+                        }
+                    }
                     _ => {
                         let v = if peer_bound {
                             extern_abi_val_type(&at)
