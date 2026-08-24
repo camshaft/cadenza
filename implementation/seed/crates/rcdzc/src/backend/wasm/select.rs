@@ -484,6 +484,347 @@ fn emit_host_bytes_to_value_heap(out: &mut Vec<Lir>, len: u32, ptr: u32, handle:
     out.push(Lir::End); // block
 }
 
+/// Round `x` up to the next multiple of the power-of-two alignment `a`.
+fn align_up_u32(x: u32, a: u32) -> u32 {
+    debug_assert!(a.is_power_of_two());
+    (x + a - 1) & !(a - 1)
+}
+
+/// The component-model discriminant SIZE (bytes) for a variant/enum of `nvar` cases: 1 for ≤256, 2 for
+/// ≤65536, else 4 — the canonical ABI's `discriminant_type` widths.
+fn disc_size_for(nvar: usize) -> u32 {
+    if nvar <= 256 {
+        1
+    } else if nvar <= 65536 {
+        2
+    } else {
+        4
+    }
+}
+
+/// The component-model canonical-ABI linear-memory `(size, align)` of a value of type `ty` as the host's
+/// canon `Lower` STORES it into a caller-provided return area for a SPILLED result — a compound whose
+/// flattened core form is more than one value, so the canonical ABI returns it by pointer. This is the
+/// WIT-type-driven layout [`emit_result_lift`] reads back and the size the guest reallocs the return area
+/// to, so the two MUST agree. Recurses over the type exactly as the canonical ABI lays it out: a
+/// `Bytes`/`String`/`List` crosses as an 8-byte `(ptr, len/count)` header (align 4); a scalar as its own
+/// component width; a `Record`/`Tuple` as its fields laid out with C-style alignment padding; a `Sum` as a
+/// discriminant (1/2/4 bytes by variant count) followed by the payload area (max over the arms), the whole
+/// rounded up to its alignment. Mirrors the canonical ABI's `alignment`/`elem_size`/`store`.
+fn canonical_layout(db: &mut Db, ty: &Ty) -> (u32, u32) {
+    match ty.strip_nominal().clone() {
+        Ty::Bool => (1, 1),
+        // A `char` is a Unicode scalar — 4 bytes.
+        Ty::Char => (4, 4),
+        Ty::Int(it) => match it.ground_width() {
+            8 => (1, 1),
+            16 => (2, 2),
+            32 => (4, 4),
+            _ => (8, 8), // 64 (and any wider aliased width the boundary admits)
+        },
+        Ty::Float(ft) => match ft.ground_width() {
+            32 => (4, 4),
+            _ => (8, 8),
+        },
+        // `list<u8>` (`Bytes`), `string`, and any `list<T>` all cross as an 8-byte `(ptr, len/count)` pair.
+        Ty::Bytes | Ty::String | Ty::List(_) => (8, 4),
+        Ty::Tuple(elems) => product_layout(db, elems.iter().cloned()),
+        Ty::Record(fields) => product_layout(db, fields.values().cloned()),
+        Ty::Sum { decl, .. } => {
+            let nvar = db
+                .type_decl_by_occ(decl)
+                .map(|d| d.variants.len())
+                .unwrap_or(1);
+            let ds = disc_size_for(nvar);
+            let mut case_size = 0u32;
+            let mut case_align = 1u32;
+            for disc in 0..nvar {
+                if let Some(pty) = variant_payload_ty_at(db, ty, disc as u32) {
+                    let (s, a) = canonical_layout(db, &pty);
+                    case_size = case_size.max(s);
+                    case_align = case_align.max(a);
+                }
+            }
+            let align = ds.max(case_align);
+            let payload_off = align_up_u32(ds, case_align);
+            (align_up_u32(payload_off + case_size, align), align)
+        }
+        // Any type with no spilled boundary form: a defensive 8-byte slot. Unreached for an admitted result
+        // shape (the HostCall lift gate restricts entry to a spilled compound).
+        _ => (8, 4),
+    }
+}
+
+/// The `(size, align)` of a PRODUCT (tuple / record) whose fields (in layout order) are `tys` — each field
+/// aligned up to its own alignment, the total rounded to the max field alignment.
+fn product_layout(db: &mut Db, tys: impl Iterator<Item = Ty>) -> (u32, u32) {
+    let mut size = 0u32;
+    let mut align = 1u32;
+    for t in tys {
+        let (s, a) = canonical_layout(db, &t);
+        size = align_up_u32(size, a) + s;
+        align = align.max(a);
+    }
+    (align_up_u32(size, align), align)
+}
+
+/// The GENERAL, WIT-type-driven result LIFT. Given a host op's SPILLED compound result of type `ty` that the
+/// host wrote (canonical-ABI `store`) into linear memory at `mem[ptr_slot] + offset`, emit the value-heap
+/// construction that lifts it into a Cadenza value, leaving the resulting handle on the operand stack. This
+/// ONE recursion REPLACES the former per-shape lift blocks (`option<list<u8>>`, bare `list<u8>`,
+/// `list<tuple<list<u8>,list<u8>>>`) — the general shape mechanism, not a per-shape shortcut. It recurses
+/// over the type exactly as [`canonical_layout`] sizes it:
+///  • `Bytes`/`String` → `bytes-alloc` + copy the `(ptr,len)` bytes out of the host's memory,
+///  • `List<T>` → `arr-alloc(count)` + per element at `list-ptr + i*stride(T)` recurse, then `vec-of-arr`,
+///  • `Tuple`/`Record` → `arr-alloc(n)` + lift each field at its canonical offset (a Tuple/Record is a raw arr),
+///  • an option-shaped `Sum` → read the discriminant and lift the present arm's payload / build the nullary arm.
+/// A leaf this increment does not yet wire (a bare scalar, a wider variant/enum/`result`, a multi-payload arm)
+/// DECLINES honestly rather than miscompiling — the same incremental-leaf discipline the ARG-side marshal holds.
+///
+/// `ptr_slot` is an i32 local holding the base address; `offset` the static byte offset of this value within
+/// it. Scratch slots are allocated ABOVE `*high` (which is bumped past them), so a nested recursion never
+/// reuses a live slot.
+fn emit_result_lift(
+    db: &mut Db,
+    ty: &Ty,
+    ptr_slot: u32,
+    offset: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    match ty.strip_nominal().clone() {
+        // A `list<u8>` (Bytes) / `string`: `(data-ptr@offset, len@offset+4)`. Copy the bytes out of the
+        // host's linear memory into a value-heap `Bytes`; leave the handle.
+        Ty::Bytes | Ty::String => {
+            let lptr = *high;
+            let (llen, handle, ii) = (lptr + 1, lptr + 2, lptr + 3);
+            *high = (*high).max(ii + 1);
+            for s in [lptr, llen, handle, ii] {
+                scratch_ty.insert(s, ValType::I32);
+            }
+            out.push(Lir::LocalGet(ptr_slot));
+            out.push(Lir::I32Load { offset });
+            out.push(Lir::LocalSet(lptr));
+            out.push(Lir::LocalGet(ptr_slot));
+            out.push(Lir::I32Load { offset: offset + 4 });
+            out.push(Lir::LocalSet(llen));
+            emit_host_bytes_to_value_heap(out, llen, lptr, handle, ii);
+            out.push(Lir::LocalGet(handle));
+            Ok(())
+        }
+        // A `list<T>`: `(list-ptr@offset, count@offset+4)`. arr-alloc(count), then per element at
+        // `list-ptr + i*stride(T)` recurse; `arr-set` into the aggregate; finally `vec-of-arr` → a persistent
+        // `List` (WITHOUT this the lift returns a raw arr, which `List.len`/`vec-*` misread as empty).
+        Ty::List(elem) => {
+            let (stride, _) = canonical_layout(db, &elem);
+            let list_ptr = *high;
+            let (count, i, elem_ptr, elem_h, outer) = (
+                list_ptr + 1,
+                list_ptr + 2,
+                list_ptr + 3,
+                list_ptr + 4,
+                list_ptr + 5,
+            );
+            *high = (*high).max(outer + 1);
+            for s in [list_ptr, count, i, elem_ptr, elem_h, outer] {
+                scratch_ty.insert(s, ValType::I32);
+            }
+            out.push(Lir::LocalGet(ptr_slot));
+            out.push(Lir::I32Load { offset });
+            out.push(Lir::LocalSet(list_ptr));
+            out.push(Lir::LocalGet(ptr_slot));
+            out.push(Lir::I32Load { offset: offset + 4 });
+            out.push(Lir::LocalSet(count));
+            out.push(Lir::LocalGet(count));
+            out.push(Lir::CallImport(OP_ARR_ALLOC));
+            out.push(Lir::LocalSet(outer));
+            out.push(Lir::ConstI32(0));
+            out.push(Lir::LocalSet(i));
+            out.push(Lir::Block(BlockType::Empty));
+            out.push(Lir::Loop(BlockType::Empty));
+            out.push(Lir::LocalGet(i));
+            out.push(Lir::LocalGet(count));
+            out.push(Lir::I32GeU);
+            out.push(Lir::BrIf(1)); // i >= count → exit the outer block
+            // elem_ptr = list-ptr + i*stride
+            out.push(Lir::LocalGet(list_ptr));
+            out.push(Lir::LocalGet(i));
+            out.push(Lir::ConstI32(stride as i32));
+            out.push(Lir::I32Mul);
+            out.push(Lir::I32Add);
+            out.push(Lir::LocalSet(elem_ptr));
+            // Lift the element (leaves its handle) on a clean stack, stash it, then arr-set(outer, i, elem).
+            emit_result_lift(db, &elem, elem_ptr, 0, high, scratch_ty, out)?;
+            out.push(Lir::LocalSet(elem_h));
+            out.push(Lir::LocalGet(outer));
+            out.push(Lir::LocalGet(i));
+            out.push(Lir::LocalGet(elem_h));
+            out.push(Lir::CallImport(OP_ARR_SET));
+            out.push(Lir::LocalSet(outer));
+            out.push(Lir::LocalGet(i));
+            out.push(Lir::ConstI32(1));
+            out.push(Lir::I32Add);
+            out.push(Lir::LocalSet(i));
+            out.push(Lir::Br(0));
+            out.push(Lir::End); // loop
+            out.push(Lir::End); // block
+            out.push(Lir::LocalGet(outer));
+            out.push(Lir::CallImport(OP_VEC_OF_ARR));
+            Ok(())
+        }
+        // A `tuple<…>` / `record{…}`: a value-heap aggregate (a raw arr — a Tuple/Record IS an arr, no
+        // vec conversion). Lift each field at its canonical offset in layout order (a record's name-lex
+        // order = its value-heap cell layout = the canonical field order).
+        Ty::Tuple(elems) => {
+            let field_tys: Vec<Ty> = elems.iter().cloned().collect();
+            emit_product_lift(db, &field_tys, ptr_slot, offset, high, scratch_ty, out)
+        }
+        Ty::Record(fields) => {
+            let field_tys: Vec<Ty> = fields.values().cloned().collect();
+            emit_product_lift(db, &field_tys, ptr_slot, offset, high, scratch_ty, out)
+        }
+        // An option-shaped `Sum` (exactly 2 variants: one single-payload + one nullary, e.g. `option<T>`).
+        Ty::Sum { decl, .. } => {
+            emit_option_sum_lift(db, ty, decl, ptr_slot, offset, high, scratch_ty, out)
+        }
+        other => Err(Reject::decline(format!(
+            "the general result-lift does not yet wire a `{}` spilled-result leaf",
+            other.render_name(&db.name_ctx())
+        ))),
+    }
+}
+
+/// The product (tuple / record) arm of [`emit_result_lift`]: `arr-alloc(n)`, then lift each field at its
+/// canonical byte offset (from `offset`) and `arr-set` it in layout order; leave the raw arr handle.
+fn emit_product_lift(
+    db: &mut Db,
+    field_tys: &[Ty],
+    ptr_slot: u32,
+    offset: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    let arr = *high;
+    let fh = arr + 1;
+    *high = (*high).max(fh + 1);
+    scratch_ty.insert(arr, ValType::I32);
+    scratch_ty.insert(fh, ValType::I32);
+    out.push(Lir::ConstI32(field_tys.len() as i32));
+    out.push(Lir::CallImport(OP_ARR_ALLOC));
+    out.push(Lir::LocalSet(arr));
+    let mut foff = offset;
+    for (j, fty) in field_tys.iter().enumerate() {
+        let (fs, fa) = canonical_layout(db, fty);
+        foff = align_up_u32(foff, fa);
+        // Lift the field (leaves its handle) on a clean stack, stash, then arr-set(arr, j, field).
+        emit_result_lift(db, fty, ptr_slot, foff, high, scratch_ty, out)?;
+        out.push(Lir::LocalSet(fh));
+        out.push(Lir::LocalGet(arr));
+        out.push(Lir::ConstI32(j as i32));
+        out.push(Lir::LocalGet(fh));
+        out.push(Lir::CallImport(OP_ARR_SET));
+        out.push(Lir::LocalSet(arr));
+        foff += fs;
+    }
+    out.push(Lir::LocalGet(arr));
+    Ok(())
+}
+
+/// The option-shaped-`Sum` arm of [`emit_result_lift`]: a 2-variant sum with one single-payload arm and one
+/// nullary arm (`option<T>`). The canonical WIT `option` discriminant is fixed (none = 0, some = 1)
+/// regardless of the Cadenza `Option` decl's variant order, so the PRESENT arm is selected by disc == 1 —
+/// NOT the Cadenza payload-variant index. On it, lift the payload at its canonical offset and build the
+/// value-heap sum at the Cadenza payload variant's own discriminant (`some_disc`); the absent arm builds the
+/// Cadenza nullary variant (`none_disc`). A wider sum (an N-ary variant, a multi-payload arm, `result<_,_>`
+/// with two payloads) DECLINES this increment.
+#[allow(clippy::too_many_arguments)]
+fn emit_option_sum_lift(
+    db: &mut Db,
+    ty: &Ty,
+    decl: StructId,
+    ptr_slot: u32,
+    offset: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    let variants: Vec<(u32, usize)> = {
+        let d = db
+            .type_decl_by_occ(decl)
+            .ok_or_else(|| Reject::decline("the option-shaped result sum decl was not found"))?;
+        d.variants
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (i as u32, v.payloads.len()))
+            .collect()
+    };
+    let nvar = variants.len();
+    let payload_arms: Vec<u32> = variants
+        .iter()
+        .filter(|(_, n)| *n == 1)
+        .map(|(d, _)| *d)
+        .collect();
+    let nullary_arms: Vec<u32> = variants
+        .iter()
+        .filter(|(_, n)| *n == 0)
+        .map(|(d, _)| *d)
+        .collect();
+    if !(nvar == 2 && payload_arms.len() == 1 && nullary_arms.len() == 1) {
+        return Err(Reject::decline(
+            "the general result-lift wires an option-shaped sum result (2 variants: one single-payload, \
+             one nullary); a wider variant/enum/result is a later increment",
+        ));
+    }
+    let some_disc = payload_arms[0];
+    let none_disc = nullary_arms[0];
+    let payload_ty = variant_payload_ty_at(db, ty, some_disc)
+        .ok_or_else(|| Reject::decline("the option-result payload type could not be resolved"))?;
+    let (_, payload_align) = canonical_layout(db, &payload_ty);
+    let ds = disc_size_for(nvar); // 1 for a 2-variant option
+    let payload_off = offset + align_up_u32(ds, payload_align);
+    // disc = mem[ptr_slot + offset] (a `ds`-byte discriminant; ds == 1 for an option, read zero-extended).
+    let disc = *high;
+    *high = (*high).max(disc + 1);
+    scratch_ty.insert(disc, ValType::I32);
+    out.push(Lir::LocalGet(ptr_slot));
+    out.push(Lir::I32Load8U { offset });
+    out.push(Lir::LocalSet(disc));
+    // if disc == 1 (WIT `option` "some") { Some(lift payload) } else { None } — leaves the sum handle.
+    out.push(Lir::LocalGet(disc));
+    out.push(Lir::ConstI32(1));
+    out.push(Lir::I32Eq);
+    out.push(Lir::If(BlockType::Val(ValType::I32)));
+    {
+        emit_result_lift(
+            db,
+            &payload_ty,
+            ptr_slot,
+            payload_off,
+            high,
+            scratch_ty,
+            out,
+        )?;
+        let ph = *high;
+        *high = (*high).max(ph + 1);
+        scratch_ty.insert(ph, ValType::I32);
+        out.push(Lir::LocalSet(ph));
+        out.push(Lir::ConstI32(some_disc as i32));
+        out.push(Lir::LocalGet(ph));
+        out.push(Lir::CallImport(OP_SUM_NEW));
+    }
+    out.push(Lir::Else);
+    {
+        // The nullary arm: sum-new(none_disc, IMM_UNIT) — the 2-child nullary (payload = inline unit).
+        out.push(Lir::ConstI32(none_disc as i32));
+        out.push(Lir::ConstI32(super::runtime_abi::IMM_UNIT as i32));
+        out.push(Lir::CallImport(OP_SUM_NEW));
+    }
+    out.push(Lir::End);
+    Ok(())
+}
+
 fn is_heap_type_for_retain(ty: &Ty) -> bool {
     is_heap_type(ty) || ty.has_free_var()
 }
@@ -12434,217 +12775,33 @@ fn emit(
                 // (never reusing — and thus never re-typing — a slot a prior marshal/checked-op still owns).
                 arg_base = (*high).max(arg_base);
             }
-            // OPTION-RESULT LIFT (kv.get, S0): a host op returning `option<list<u8>>` is canon-lowered with a
-            // spilled result — its core sig is `(args…, retptr) -> ()`, the host writing `(disc, list-ptr,
-            // list-len)` into a CALLER-provided 12-byte retptr. Allocate the retptr via the shared
-            // `cabi_realloc`, pass it as the trailing arg, call, then LIFT the result into a value-heap
-            // `Option<Bytes>`: disc==1 → `Some(bytes-alloc + copy-loop from list-ptr)`, else the nullary `None`.
-            if crate::backend::wasm::host::is_option_bytes(db, &result) {
-                let (disc_some, disc_none) = {
-                    let crate::ty::Ty::Sum { decl, .. } = result.strip_nominal() else {
-                        return Err(Reject::decline(
-                            "a kv.get-style host result is not a sum type",
-                        ));
-                    };
-                    let d = db.type_decl_by_occ(*decl).ok_or_else(|| {
-                        Reject::decline("the option-result sum decl was not found")
-                    })?;
-                    let mut s = None;
-                    let mut n = None;
-                    for (i, v) in d.variants.iter().enumerate() {
-                        match v.name.as_str() {
-                            "Some" => s = Some(i as u32),
-                            "None" => n = Some(i as u32),
-                            _ => {}
-                        }
-                    }
-                    (
-                        s.ok_or_else(|| Reject::decline("option result has no Some variant"))?,
-                        n.ok_or_else(|| Reject::decline("option result has no None variant"))?,
-                    )
-                };
-                // Scratch (i32) above the arg high-water: retptr, list-ptr, list-len, the Bytes handle, a loop i.
+            // GENERAL RESULT LIFT: a host op whose result is a SPILLED compound (its flattened core form
+            // exceeds one value, so the canonical ABI returns it through a caller-provided pointer) is
+            // canon-lowered `(args…, retptr) -> ()`. Allocate the return area sized+aligned by the result
+            // type's canonical layout, pass it as the trailing arg, call, then lift the host-written value
+            // into a Cadenza value-heap handle by recursing over the WIT result type (`emit_result_lift`).
+            // This ONE recursion REPLACES the former per-shape lift blocks (`option<list<u8>>`, bare
+            // `list<u8>`, `list<tuple<list<u8>,list<u8>>>`) — the general shape mechanism, not a 4th shortcut.
+            // The admit set stays exactly those three shapes THIS increment (the ones the host-import
+            // core-sig/component-type plumbing already emits); a new shape (`list<list<u8>>`) rides the same
+            // recursion once its plumbing lands, rather than growing another bespoke block here.
+            let spilled_result = crate::backend::wasm::host::is_option_bytes(db, &result)
+                || matches!(result.strip_nominal(), crate::ty::Ty::Bytes)
+                || crate::backend::wasm::host::is_list_byte_pairs(&result);
+            if spilled_result {
+                let (size, align) = canonical_layout(db, &result);
                 let retptr = (*high).max(base);
-                let (lptr, llen, handle, ii) = (retptr + 1, retptr + 2, retptr + 3, retptr + 4);
-                *high = (*high).max(ii + 1);
-                for s in [retptr, lptr, llen, handle, ii] {
-                    scratch_ty.insert(s, ValType::I32);
-                }
-                // retptr = cabi_realloc(0, 0, align=4, size=12); leave it as the trailing call arg (tee-stash).
+                *high = (*high).max(retptr + 1);
+                scratch_ty.insert(retptr, ValType::I32);
+                // retptr = cabi_realloc(0, 0, align, size); leave it as the trailing call arg (tee-stash).
                 out.push(Lir::ConstI32(0));
                 out.push(Lir::ConstI32(0));
-                out.push(Lir::ConstI32(4));
-                out.push(Lir::ConstI32(12));
+                out.push(Lir::ConstI32(align as i32));
+                out.push(Lir::ConstI32(size as i32));
                 out.push(Lir::CallImport("cabi_realloc"));
                 out.push(Lir::LocalTee(retptr)); // [args…, retptr]
-                out.push(Lir::CallHostImport(index)); // (args…, retptr) -> () ; host wrote the struct
-                // list-ptr = mem[retptr+4]; list-len = mem[retptr+8].
-                out.push(Lir::LocalGet(retptr));
-                out.push(Lir::I32Load { offset: 4 });
-                out.push(Lir::LocalSet(lptr));
-                out.push(Lir::LocalGet(retptr));
-                out.push(Lir::I32Load { offset: 8 });
-                out.push(Lir::LocalSet(llen));
-                // if disc(mem[retptr]) == 1 { Some(bytes) } else { None } — leaves the Option<Bytes> handle.
-                out.push(Lir::LocalGet(retptr));
-                out.push(Lir::I32Load { offset: 0 });
-                out.push(Lir::ConstI32(1));
-                out.push(Lir::I32Eq);
-                out.push(Lir::If(BlockType::Val(ValType::I32)));
-                {
-                    // handle = a value-heap Bytes copied from the host's `list<u8>` at (lptr, llen).
-                    emit_host_bytes_to_value_heap(out, llen, lptr, handle, ii);
-                    // sum-new(disc_some, handle)
-                    out.push(Lir::ConstI32(disc_some as i32));
-                    out.push(Lir::LocalGet(handle));
-                    out.push(Lir::CallImport(OP_SUM_NEW));
-                }
-                out.push(Lir::Else);
-                {
-                    // None: sum-new(disc_none, IMM_UNIT) — the proper 2-child nullary (payload = inline unit).
-                    out.push(Lir::ConstI32(disc_none as i32));
-                    out.push(Lir::ConstI32(super::runtime_abi::IMM_UNIT as i32));
-                    out.push(Lir::CallImport(OP_SUM_NEW));
-                }
-                out.push(Lir::End); // if
-                return Ok(());
-            }
-            // BARE-BYTES RESULT LIFT (identity.id / blobs.put): a host op returning `list<u8>` is canon-lowered
-            // with a spilled result — core sig `(args…, retptr) -> ()`, the host writing `(list-ptr@0,
-            // list-len@4)` into a CALLER-provided 8-byte retptr. Allocate it, call, then LIFT into a value-heap
-            // `Bytes` (`bytes-alloc` + copy-loop). Exactly the option lift minus the disc / None arm.
-            if matches!(result.strip_nominal(), crate::ty::Ty::Bytes) {
-                let retptr = (*high).max(base);
-                let (lptr, llen, handle, ii) = (retptr + 1, retptr + 2, retptr + 3, retptr + 4);
-                *high = (*high).max(ii + 1);
-                for s in [retptr, lptr, llen, handle, ii] {
-                    scratch_ty.insert(s, ValType::I32);
-                }
-                // retptr = cabi_realloc(0, 0, align=4, size=8); leave it as the trailing call arg (tee-stash).
-                out.push(Lir::ConstI32(0));
-                out.push(Lir::ConstI32(0));
-                out.push(Lir::ConstI32(4));
-                out.push(Lir::ConstI32(8));
-                out.push(Lir::CallImport("cabi_realloc"));
-                out.push(Lir::LocalTee(retptr)); // [args…, retptr]
-                out.push(Lir::CallHostImport(index)); // (args…, retptr) -> () ; host wrote (list-ptr, list-len)
-                // list-ptr = mem[retptr]; list-len = mem[retptr+4].
-                out.push(Lir::LocalGet(retptr));
-                out.push(Lir::I32Load { offset: 0 });
-                out.push(Lir::LocalSet(lptr));
-                out.push(Lir::LocalGet(retptr));
-                out.push(Lir::I32Load { offset: 4 });
-                out.push(Lir::LocalSet(llen));
-                // handle = a value-heap Bytes copied from the host's `list<u8>` at (lptr, llen).
-                emit_host_bytes_to_value_heap(out, llen, lptr, handle, ii);
-                out.push(Lir::LocalGet(handle)); // leave the Bytes handle as the expression value
-                return Ok(());
-            }
-            // LIST-OF-BYTE-PAIRS LIFT (kv.prefix-scan): a host op returning `list<tuple<list<u8>,list<u8>>>`
-            // is canon-lowered with a spilled result — core sig `(args…, retptr) -> ()`, the host writing an
-            // 8-byte list header `(list-ptr@0, count@4)` into a CALLER-provided retptr. Each of `count`
-            // elements is a 16-byte `tuple<list<u8>,list<u8>>` at `list-ptr + i*16`:
-            // `(key-ptr@0, key-len@4, val-ptr@8, val-len@12)`. LIFT into a value-heap `List<Tuple<Bytes,Bytes>>`:
-            // `arr-alloc(count)`, then per element `bytes-alloc`+copy the key and value, build a 2-tuple
-            // (`arr-alloc(2)` + two `arr-set`s, kept on the stack), and `arr-set` it into the outer list.
-            // Mirrors the option lift's retptr read + `bytes-alloc`/`bytes-set` copy-loop; the outer list +
-            // each Bytes handle live in i32 scratch across the runtime loop (arr-set/bytes-set RETURN the
-            // handle, re-stashed via `LocalSet`).
-            if crate::backend::wasm::host::is_list_byte_pairs(&result) {
-                let retptr = (*high).max(base);
-                let (list_ptr, count, i, elem_base, kptr, klen, vptr, vlen, kh, vh, outer, j) = (
-                    retptr + 1,
-                    retptr + 2,
-                    retptr + 3,
-                    retptr + 4,
-                    retptr + 5,
-                    retptr + 6,
-                    retptr + 7,
-                    retptr + 8,
-                    retptr + 9,
-                    retptr + 10,
-                    retptr + 11,
-                    retptr + 12,
-                );
-                *high = (*high).max(j + 1);
-                for s in [
-                    retptr, list_ptr, count, i, elem_base, kptr, klen, vptr, vlen, kh, vh, outer, j,
-                ] {
-                    scratch_ty.insert(s, ValType::I32);
-                }
-                // retptr = cabi_realloc(0, 0, align=4, size=8); leave it as the trailing call arg (tee-stash).
-                out.push(Lir::ConstI32(0));
-                out.push(Lir::ConstI32(0));
-                out.push(Lir::ConstI32(4));
-                out.push(Lir::ConstI32(8));
-                out.push(Lir::CallImport("cabi_realloc"));
-                out.push(Lir::LocalTee(retptr)); // [args…, retptr]
-                out.push(Lir::CallHostImport(index)); // (args…, retptr) -> () ; host wrote (list-ptr, count)
-                // list-ptr = mem[retptr]; count = mem[retptr+4].
-                out.push(Lir::LocalGet(retptr));
-                out.push(Lir::I32Load { offset: 0 });
-                out.push(Lir::LocalSet(list_ptr));
-                out.push(Lir::LocalGet(retptr));
-                out.push(Lir::I32Load { offset: 4 });
-                out.push(Lir::LocalSet(count));
-                // outer = arr-alloc(count)
-                out.push(Lir::LocalGet(count));
-                out.push(Lir::CallImport(OP_ARR_ALLOC));
-                out.push(Lir::LocalSet(outer));
-                // for i in 0..count { … }
-                out.push(Lir::ConstI32(0));
-                out.push(Lir::LocalSet(i));
-                out.push(Lir::Block(BlockType::Empty));
-                out.push(Lir::Loop(BlockType::Empty));
-                out.push(Lir::LocalGet(i));
-                out.push(Lir::LocalGet(count));
-                out.push(Lir::I32GeU);
-                out.push(Lir::BrIf(1)); // i >= count → exit the outer block
-                // elem_base = list-ptr + i*16 ; read the 4 header words.
-                out.push(Lir::LocalGet(list_ptr));
-                out.push(Lir::LocalGet(i));
-                out.push(Lir::ConstI32(16));
-                out.push(Lir::I32Mul);
-                out.push(Lir::I32Add);
-                out.push(Lir::LocalSet(elem_base));
-                for (off, slot) in [(0u32, kptr), (4, klen), (8, vptr), (12, vlen)] {
-                    out.push(Lir::LocalGet(elem_base));
-                    out.push(Lir::I32Load { offset: off });
-                    out.push(Lir::LocalSet(slot));
-                }
-                // kh = bytes-alloc(klen)+copy ; vh = bytes-alloc(vlen)+copy (j = shared inner byte counter).
-                for (len_slot, ptr_slot, handle_slot) in [(klen, kptr, kh), (vlen, vptr, vh)] {
-                    emit_host_bytes_to_value_heap(out, len_slot, ptr_slot, handle_slot, j);
-                }
-                // arr-set(outer, i, tuple) where tuple = arr-alloc(2)+arr-set(0,kh)+arr-set(1,vh), built on
-                // the stack between [outer, i] and the outer arr-set (arr-set returns the array handle).
-                out.push(Lir::LocalGet(outer)); // [outer]
-                out.push(Lir::LocalGet(i)); // [outer, i]
-                out.push(Lir::ConstI32(2));
-                out.push(Lir::CallImport(OP_ARR_ALLOC)); // [outer, i, tup]
-                out.push(Lir::ConstI32(0));
-                out.push(Lir::LocalGet(kh));
-                out.push(Lir::CallImport(OP_ARR_SET)); // [outer, i, tup]
-                out.push(Lir::ConstI32(1));
-                out.push(Lir::LocalGet(vh));
-                out.push(Lir::CallImport(OP_ARR_SET)); // [outer, i, tup]
-                out.push(Lir::CallImport(OP_ARR_SET)); // [outer]
-                out.push(Lir::LocalSet(outer));
-                // i += 1
-                out.push(Lir::LocalGet(i));
-                out.push(Lir::ConstI32(1));
-                out.push(Lir::I32Add);
-                out.push(Lir::LocalSet(i));
-                out.push(Lir::Br(0));
-                out.push(Lir::End); // outer loop
-                out.push(Lir::End); // outer block
-                // The `outer` handle is a raw `arr` — but a Cadenza `List` is a persistent VEC, so convert the
-                // built array into the vector rep (exactly as a `(list …)` literal: `arr-alloc`+`arr-set` then
-                // ONE `vec-of-arr`). WITHOUT this the lift returned a raw arr, which `List.len`/`vec-*` misread
-                // as EMPTY regardless of count — the prefix-scan-returns-empty miscompile. The inner 2-tuples
-                // stay raw arrs (a Tuple IS an arr, no conversion).
-                out.push(Lir::LocalGet(outer)); // [arr]
-                out.push(Lir::CallImport(OP_VEC_OF_ARR)); // [arr] → [list]  (the List<Tuple<Bytes,Bytes>> handle)
+                out.push(Lir::CallHostImport(index)); // (args…, retptr) -> () ; host stored the result
+                emit_result_lift(db, &result, retptr, 0, high, scratch_ty, out)?;
                 return Ok(());
             }
             out.push(Lir::CallHostImport(index));
