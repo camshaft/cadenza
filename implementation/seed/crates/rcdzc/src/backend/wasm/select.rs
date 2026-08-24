@@ -3048,6 +3048,14 @@ fn collect_record_field_ops(
             out.insert(OP_BYTES_LEN);
             out.insert(OP_BYTES_GET);
         }
+        _ if crate::backend::wasm::host::result_bytes_enum(db, fty).is_some() => {
+            // A `result<list<u8>, enum>` field's branch-lower marshal: `sum-disc`/`sum-payload` (both arms)
+            // + the Ok arm's `bytes-len`/`bytes-get` rope copy.
+            out.insert(OP_SUM_DISC);
+            out.insert(OP_SUM_PAYLOAD);
+            out.insert(OP_BYTES_LEN);
+            out.insert(OP_BYTES_GET);
+        }
         _ => {
             if let Ty::Record(sub) = fty {
                 out.insert(OP_ARR_GET);
@@ -7601,10 +7609,85 @@ fn emit_record_arg_marshal(
                     out,
                 )?;
             }
+            // A `result<list<u8>, enum>` field flattens to `(disc, i32, i32)`. Branch on the value-heap
+            // Result sum's disc (Ok=0 / Err=1, decl order = the component result disc): Ok → the Bytes
+            // payload copied rope→mem at the cursor gives `(ptr,len)`; Err → the enum payload's disc + a
+            // 0-pad. BlockType is SINGLE-value (no multi-value block), so the `if` arms SIDE-EFFECT into
+            // scratch slots and we push the 3 flattened values (disc, p0, p1) AFTER the `if`.
+            None if crate::backend::wasm::host::result_bytes_enum(db, fty).is_some() => {
+                let cursor =
+                    cursor.expect("a result-field record reserves the scratch cursor (pre-scan)");
+                let ans = work_base + 4;
+                let disc = work_base + 5;
+                let p0 = work_base + 6;
+                let p1 = work_base + 7;
+                for s in [ans, disc, p0, p1] {
+                    scratch_ty.insert(s, ValType::I32);
+                }
+                *high = (*high).max(work_base + 8);
+                out.push(Lir::LocalGet(rec_slot));
+                out.push(Lir::ConstI32(i as i32));
+                out.push(Lir::CallImport(OP_ARR_GET)); // [result handle] (borrows rec)
+                out.push(Lir::LocalSet(ans));
+                out.push(Lir::LocalGet(ans));
+                out.push(Lir::CallImport(OP_SUM_DISC)); // [disc]
+                out.push(Lir::LocalSet(disc));
+                out.push(Lir::LocalGet(disc));
+                out.push(Lir::If(BlockType::Empty)); // disc != 0 → Err
+                // Err arm: p0 = the err enum's disc, p1 = 0.
+                out.push(Lir::LocalGet(ans));
+                out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [err enum handle]
+                out.push(Lir::CallImport(OP_SUM_DISC)); // [enum disc]
+                out.push(Lir::LocalSet(p0));
+                out.push(Lir::ConstI32(0));
+                out.push(Lir::LocalSet(p1));
+                out.push(Lir::Else); // disc == 0 → Ok
+                // Ok arm: the Bytes payload copied rope→mem at the cursor → p0=ptr, p1=len.
+                out.push(Lir::LocalGet(ans));
+                out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [Bytes handle]
+                out.push(Lir::LocalSet(rope_slot));
+                out.push(Lir::LocalGet(rope_slot));
+                out.push(Lir::CallImport(OP_BYTES_LEN));
+                out.push(Lir::LocalSet(len_slot));
+                out.push(Lir::ConstI32(0));
+                out.push(Lir::LocalSet(pos_slot));
+                out.push(Lir::Block(BlockType::Empty));
+                out.push(Lir::Loop(BlockType::Empty));
+                out.push(Lir::LocalGet(pos_slot));
+                out.push(Lir::LocalGet(len_slot));
+                out.push(Lir::I32GeS);
+                out.push(Lir::BrIf(1));
+                out.push(Lir::LocalGet(cursor));
+                out.push(Lir::LocalGet(pos_slot));
+                out.push(Lir::I32Add);
+                out.push(Lir::LocalGet(rope_slot));
+                out.push(Lir::LocalGet(pos_slot));
+                out.push(Lir::CallImport(OP_BYTES_GET));
+                out.push(Lir::I32Store8 { offset: 0 });
+                out.push(Lir::LocalGet(pos_slot));
+                out.push(Lir::ConstI32(1));
+                out.push(Lir::I32Add);
+                out.push(Lir::LocalSet(pos_slot));
+                out.push(Lir::Br(0));
+                out.push(Lir::End); // loop
+                out.push(Lir::End); // block
+                out.push(Lir::LocalGet(cursor));
+                out.push(Lir::LocalSet(p0)); // ptr = cursor (before advance)
+                out.push(Lir::LocalGet(len_slot));
+                out.push(Lir::LocalSet(p1)); // len
+                out.push(Lir::LocalGet(cursor));
+                out.push(Lir::LocalGet(len_slot));
+                out.push(Lir::I32Add);
+                out.push(Lir::LocalSet(cursor)); // cursor += len
+                out.push(Lir::End); // if
+                out.push(Lir::LocalGet(disc)); // push the 3 flattened core values
+                out.push(Lir::LocalGet(p0));
+                out.push(Lir::LocalGet(p1));
+            }
             None => {
                 return Err(Reject::decline(
-                    "a record host-arg field has no boundary read (only scalar, list<u8>, and \
-                     nested-record fields cross this increment)",
+                    "a record host-arg field has no boundary read (only scalar, list<u8>, nested-record, \
+                     and result<list<u8>, enum> fields cross this increment)",
                 ));
             }
         }

@@ -4101,6 +4101,211 @@ fn a_reducer_performing_deliver_message_emits_and_loads() {
     );
 }
 
+/// A reducer world importing `cadenza:platform/deliver`.`deliver-response` — the §4 shape with a
+/// `result<list<u8>, error>` FIELD: `deliver-response(target: list<u8>, event: response)` where `response =
+/// record{ contract: list<u8>, token: list<u8>, answer: result<list<u8>, variant(timeout, faulted)> }`.
+/// Drives shape d3's result-field codegen: the err variant + the `result` are defined types the `answer`
+/// field references; the guest branch-lowers the value-heap Result (Ok→bytes (ptr,len), Err→enum disc).
+fn deliver_response_world_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let list_u8 = |b: &mut Builder| {
+        let u8h = b.name("u8");
+        let u8p = b.list(vec![u8h]);
+        let lh = b.atom_leaf(Leaf::Str("list".into()));
+        b.list(vec![lh, u8p])
+    };
+    let field = |b: &mut Builder, name: &str, ty| {
+        let n = b.name(name);
+        b.list(vec![n, ty])
+    };
+    let record = |b: &mut Builder, fields: Vec<crate::ast::StructId>| {
+        let h = b.atom_leaf(Leaf::Str("record".into()));
+        let mut v = vec![h];
+        v.extend(fields);
+        b.list(v)
+    };
+    let bytes_field = |b: &mut Builder, name: &str| {
+        let t = list_u8(b);
+        field(b, name, t)
+    };
+    // export guest { on-message: (m: record{contract,payload,token: list<u8>}) -> step }
+    let message_param = {
+        let mc = bytes_field(&mut b, "contract");
+        let mp = bytes_field(&mut b, "payload");
+        let mt = bytes_field(&mut b, "token");
+        record(&mut b, vec![mc, mp, mt])
+    };
+    let step = {
+        let requests_list = {
+            let request = {
+                let rc = bytes_field(&mut b, "contract");
+                let rp = bytes_field(&mut b, "payload");
+                let rt = bytes_field(&mut b, "token");
+                let rd = {
+                    let u64h = b.name("u64");
+                    let u64t = b.list(vec![u64h]);
+                    let oh = b.atom_leaf(Leaf::Str("option".into()));
+                    let ot = b.list(vec![oh, u64t]);
+                    field(&mut b, "deadline-nanos", ot)
+                };
+                record(&mut b, vec![rc, rp, rt, rd])
+            };
+            let lh = b.atom_leaf(Leaf::Str("list".into()));
+            b.list(vec![lh, request])
+        };
+        let outcome = {
+            let cont = {
+                let n = b.name("continue");
+                b.list(vec![n])
+            };
+            let close = {
+                let cs = bytes_field(&mut b, "schema");
+                let cr = bytes_field(&mut b, "reason");
+                let rec = record(&mut b, vec![cs, cr]);
+                let n = b.name("close");
+                b.list(vec![n, rec])
+            };
+            let vh = b.atom_leaf(Leaf::Str("variant".into()));
+            b.list(vec![vh, cont, close])
+        };
+        let sr = field(&mut b, "requests", requests_list);
+        let so = field(&mut b, "outcome", outcome);
+        record(&mut b, vec![sr, so])
+    };
+    let on_message = {
+        let func_h = b.name("func");
+        let param_h = b.name("param");
+        let pn = b.name("m");
+        let param_node = b.list(vec![param_h, pn, message_param]);
+        let result_h = b.name("result");
+        let result_node = b.list(vec![result_h, step]);
+        let func = b.list(vec![func_h, param_node, result_node]);
+        let member_h = b.name("member");
+        let mn = b.name("on-message");
+        b.list(vec![member_h, mn, func])
+    };
+    let exp_h = b.name("export");
+    let iname = b.name("guest");
+    let export = b.list(vec![exp_h, iname, on_message]);
+    // import cadenza:platform/deliver { deliver-response: func(target: list<u8>, event: response) }
+    let dr_member = {
+        // response = record{ contract, token: list<u8>, answer: result<list<u8>, variant(timeout, faulted)> }
+        let event_rec = {
+            let ec = bytes_field(&mut b, "contract");
+            let et = bytes_field(&mut b, "token");
+            let answer = {
+                let err_variant = {
+                    let vh = b.atom_leaf(Leaf::Str("variant".into()));
+                    let c1 = {
+                        let n = b.name("timeout");
+                        b.list(vec![n])
+                    };
+                    let c2 = {
+                        let n = b.name("faulted");
+                        b.list(vec![n])
+                    };
+                    b.list(vec![vh, c1, c2])
+                };
+                let rh = b.atom_leaf(Leaf::Str("result".into()));
+                let ok = list_u8(&mut b);
+                let res = b.list(vec![rh, ok, err_variant]);
+                field(&mut b, "answer", res)
+            };
+            record(&mut b, vec![ec, et, answer])
+        };
+        let func_h = b.name("func");
+        let p1 = {
+            let ph = b.name("param");
+            let pn = b.name("target");
+            let ty = list_u8(&mut b);
+            b.list(vec![ph, pn, ty])
+        };
+        let p2 = {
+            let ph = b.name("param");
+            let pn = b.name("event");
+            b.list(vec![ph, pn, event_rec])
+        };
+        let result_h = b.name("result");
+        let unit_h = b.atom_leaf(Leaf::Str("unit".into()));
+        let unit_ty = b.list(vec![unit_h]);
+        let rnode = b.list(vec![result_h, unit_ty]);
+        let func = b.list(vec![func_h, p1, p2, rnode]);
+        let member_h = b.name("member");
+        let mn = b.name("deliver-response");
+        b.list(vec![member_h, mn, func])
+    };
+    let imp_h = b.name("import");
+    let deliver_name = b.name("cadenza:platform/deliver");
+    let deliver = b.list(vec![imp_h, deliver_name, dr_member]);
+    let world_h = b.name("world");
+    let wn = b.name("w");
+    let world = b.list(vec![world_h, wn, export, deliver]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+/// W4d3 (shape d3, the §4 `deliver-response` shape): a typed reducer performing `deliver-response(target:
+/// list<u8>, event: response{ contract, token: list<u8>, answer: result<list<u8>, Error> })` — a host op
+/// with a `result<list<u8>, enum>` FIELD — EMITS + VALIDATES + LOADS. The err enum + the `result` are
+/// defined types the `answer` field references; the guest branch-lowers the value-heap Result (Ok → the
+/// Bytes payload copied to shared mem as `(ptr,len)`, Err → the enum's disc + a 0-pad) into the flattened
+/// `(disc, i32, i32)` slots. wasmparser validation is the strong check. This is the answer-back dispatch.
+#[test]
+fn a_reducer_performing_deliver_response_emits_and_loads() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (type Outcome Continue (Close (Record (schema Bytes) (reason Bytes)))) \
+                 (type Error Timeout Faulted) \
+                 (effect deliver (op deliver-response \
+                    (-> Bytes (Record (contract Bytes) (token Bytes) \
+                                      (answer (Result Bytes Error))) Unit))) \
+                 (def (onMessage (: m (Record (contract Bytes) (payload Bytes) (token Bytes)))) \
+                   (host (deliver) \
+                     (do (deliver.deliver-response (. m token) \
+                            (record (contract (. m contract)) (token (. m token)) \
+                                    (answer (if true (Ok (. m payload)) (Err Error.Timeout))))) \
+                         (record (requests (list)) (outcome Outcome.Continue))))) \
+                 (export onMessage))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:platform/guest"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                deliver_response_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "the deliver-response reducer must emit (d3 result<list<u8>,enum> field): {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("the deliver-response reducer emits a component");
+    let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+    v.validate_all(bytes).expect(
+        "the deliver-response component validates (flattened core sig matches the result-field record param)",
+    );
+    cdz_run::required_runtime(bytes)
+        .expect("the deliver-response reducer component loads on the pinned wasmtime");
+    assert!(
+        String::from_utf8_lossy(bytes).contains("cadenza:platform/deliver"),
+        "the reducer imports the deliver host interface at the world's FQ name"
+    );
+}
+
 /// Like [`state_get_host_import_world_bytes`] but the imported `cadenza:platform/state` interface declares
 /// BOTH `put: func(key: list<u8>, value: list<u8>)` (a UNIT / bare result) AND `get: func(key: list<u8>) ->
 /// option<list<u8>>` (a COMPOUND result). Drives the SEQUENCED-perform invariant — a full typed reducer whose

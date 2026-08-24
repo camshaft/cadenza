@@ -72,6 +72,15 @@ pub enum RecordFieldAbi {
     /// the parent's flattened run). The guest marshals it by projecting the sub-record handle (`arr-get`) then
     /// RECURSING field-by-field.
     Record(Vec<(String, RecordFieldAbi)>),
+    /// A `result<list<u8>, enum>` field (the response envelope's `answer`) — a compound-in-record. The
+    /// canonical ABI flattens a `result<T, E>` like a 2-case variant: `(disc:i32, join(flatten(ok),
+    /// flatten(err)))`; with `ok = list<u8>` (`(ptr,len)`) and `err = enum` (one `i32` disc) the join pads to
+    /// `(disc:i32, i32, i32)` = 3 core slots. Its component type references a `result<list<u8>, err-enum>`
+    /// DEFINED type (whose err arm references the EXPORTED err-enum type). `err_cases` are the err enum's
+    /// case names (kebab, declaration = discriminant order) — for the component `enum` defined type. The
+    /// guest lowers it by branching on the value-heap sum's disc: Ok → rope→mem copy `(ptr,len)`,
+    /// Err → `(enum-disc, 0)`.
+    Result { err_cases: Vec<String> },
 }
 
 /// One host-delegated operation the program performs — its declaring effect's NAME (the WIT interface),
@@ -116,13 +125,52 @@ pub struct HostImport {
 /// whose declaration has exactly the `Some`/`None` variants instantiated at a single `Bytes` payload. The
 /// one compound host RESULT the host-fused bytes path lifts (S0); every other compound result still
 /// declines. Reads through an erased nominal wrapper.
-/// The boundary scalar ABI of a shape-d record FIELD, or `None` if the field is not a NO-WRAP scalar. This
-/// slice supports only fields whose value-heap read (`get-int`/`get-bool`/`get-float`) needs NO i64→i32
-/// narrowing: `Int64`/`UInt64` (get-int → i64 slot), `Bool` (get-bool → i32), `Float64`/`Float32`
-/// (get-float → f64/f32). A NARROW int / `Char` (get-int → i64 into an i32 slot needs a wrap), a `Qty`, a
-/// nominal wrapper, a `Bytes`/`String`, or a nested record is a LATER slice → `None`. Keeps the guest field
-/// marshal trivially correct (no per-field narrowing) and the classifier's admit set aligned with it.
-fn field_boundary_abi(ty: &Ty) -> Option<RecordFieldAbi> {
+/// Whether `ty` is `result<list<u8>, enum>` — the response envelope's `answer` shape. Returns the err
+/// enum's case names (kebab, declaration = discriminant order) if so, else `None`. A `Sum` whose decl has
+/// exactly `Ok`/`Err` variants, instantiated at `[Bytes, err]` where `err` is a PAYLOAD-LESS enum (a `Sum`
+/// all of whose variants are nullary). Reads through erased nominal wrappers.
+pub fn result_bytes_enum(db: &mut Db, ty: &Ty) -> Option<Vec<String>> {
+    use crate::backend::common::export_name::kebab_extern_name;
+    let stripped = ty.strip_nominal();
+    let Ty::Sum { decl, args } = stripped else {
+        return None;
+    };
+    if args.len() != 2 || !matches!(args[0], Ty::Bytes) {
+        return None;
+    }
+    // The decl must be the two-variant `Ok`/`Err` result type (scope the immutable Db borrow).
+    {
+        let d = db.type_decl_by_occ(*decl)?;
+        if !(d.variants.len() == 2
+            && d.variants.iter().any(|v| v.name == "Ok")
+            && d.variants.iter().any(|v| v.name == "Err"))
+        {
+            return None;
+        }
+    }
+    // The err arm (args[1]) must be a payload-less enum — a `Sum` whose every variant is nullary.
+    let Ty::Sum { decl: err_decl, .. } = args[1].strip_nominal() else {
+        return None;
+    };
+    let ed = db.type_decl_by_occ(*err_decl)?;
+    if ed.variants.is_empty() || ed.variants.iter().any(|v| !v.payloads.is_empty()) {
+        return None;
+    }
+    Some(
+        ed.variants
+            .iter()
+            .map(|v| kebab_extern_name(&v.name))
+            .collect(),
+    )
+}
+
+/// The boundary ABI of a shape-d record FIELD, or `None` if the field has no boundary form yet. Supports a
+/// NO-WRAP scalar (`Int64`/`UInt64`/`Bool`/`Float64`/`Float32` — the read needs no i64→i32 narrow), a
+/// `Bytes` (`list<u8>`) field, a NESTED record (recurse), and a `result<list<u8>, enum>` field
+/// ([`result_bytes_enum`], the answer-back envelope). A narrow-int/`Char`/`Qty`/`String`, or a not-yet-mapped
+/// compound, is a LATER slice → `None`. The guard's admit set + the classifier's `HostParam::Record`
+/// production stay in lockstep (no arity skew between the boundary sig and the args).
+fn field_boundary_abi(db: &mut Db, ty: &Ty) -> Option<RecordFieldAbi> {
     match ty {
         Ty::Bool => Some(RecordFieldAbi::Scalar(AbiValType::Bool)),
         Ty::Int(it) if it.ground_width() == 64 => {
@@ -138,25 +186,27 @@ fn field_boundary_abi(ty: &Ty) -> Option<RecordFieldAbi> {
         Ty::Bytes => Some(RecordFieldAbi::Bytes),
         // A NESTED record field (d3) crosses if EVERY sub-field itself crosses — recurse (name-lex order).
         Ty::Record(sub) => {
+            let sub = sub.clone(); // release the borrow of `ty` before the recursive `&mut db` calls
             let mut fields = Vec::with_capacity(sub.len());
             for (sym, fty) in sub.iter() {
-                fields.push((sym.name.to_string(), field_boundary_abi(fty)?));
+                fields.push((sym.name.to_string(), field_boundary_abi(db, fty)?));
             }
             (!fields.is_empty()).then_some(RecordFieldAbi::Record(fields))
         }
-        _ => None,
+        // A `result<list<u8>, enum>` field (the answer-back envelope) — carries the err enum's case names.
+        _ => result_bytes_enum(db, ty).map(|err_cases| RecordFieldAbi::Result { err_cases }),
     }
 }
 
-/// Whether `ty` is a `record` whose EVERY field crosses at the boundary ([`field_boundary_abi`] — a NO-WRAP
-/// scalar or a `Bytes`/`list<u8>` field) — the shape-d record host-ARGUMENT the guest marshals field-by-field.
-/// Matches the BARE `Ty::Record` the classifier keys on (a nominal-wrapped record, or a record with a
-/// narrow-int/Char/String/NESTED field, yields false — a later slice), so the guard's admit set and the
-/// classifier's `HostParam::Record` production stay in lockstep (no arity skew between the sig and the args).
-pub fn is_boundary_record(ty: &Ty) -> bool {
+/// Whether `ty` is a `record` whose EVERY field crosses at the boundary ([`field_boundary_abi`]) — the
+/// shape-d record host-ARGUMENT the guest marshals field-by-field. Matches the BARE `Ty::Record` the
+/// classifier keys on (a nominal-wrapped record, or a record with a not-yet-mapped field, yields false), so
+/// the guard's admit set and the classifier's `HostParam::Record` production stay in lockstep.
+pub fn is_boundary_record(db: &mut Db, ty: &Ty) -> bool {
     match ty {
         Ty::Record(fields) => {
-            !fields.is_empty() && fields.values().all(|f| field_boundary_abi(f).is_some())
+            let fields = fields.clone(); // release the borrow of `ty` before the `&mut db` calls
+            !fields.is_empty() && fields.values().all(|f| field_boundary_abi(db, f).is_some())
         }
         _ => false,
     }
@@ -524,7 +574,7 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                         let mut field_abis = Vec::with_capacity(fields.len());
                         let mut all_ok = !fields.is_empty();
                         for (sym, fty) in fields.iter() {
-                            match field_boundary_abi(fty) {
+                            match field_boundary_abi(db, fty) {
                                 Some(v) => field_abis.push((sym.name.to_string(), v)),
                                 None => {
                                     all_ok = false;
@@ -980,7 +1030,7 @@ pub fn first_unrepresentable_host_op(
             // (a peer record crosses as a `u32` handle, not this flatten), matching where the guest marshal +
             // the record instance-type are wired. Every OTHER path keeps declining a record arg.
             let arg_is_boundary_record =
-                allow_option_bytes && !peer_bound && is_boundary_record(&at);
+                allow_option_bytes && !peer_bound && is_boundary_record(db, &at);
             if !matches!(at, Ty::Unit | Ty::String | Ty::Bytes)
                 && !ty_undetermined(&at)
                 && !abi_ok(&at)
