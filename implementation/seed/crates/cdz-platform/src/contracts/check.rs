@@ -20,14 +20,23 @@ pub fn schema(b: &mut Builder) -> Vec<StructId> {
     let v0 = b.name("type");
     let v1 = b.name("Envelope");
     let v2 = b.name("Check");
-    let v3 = b.name("Bytes");
-    let v4 = b.list(vec![v2, v3]);
-    let v5 = b.list(vec![v0, v1, v4]);
-    let v6 = b.name("type");
-    let v7 = b.name("Ack");
-    let v8 = b.name("Ack");
-    let v9 = b.list(vec![v6, v7, v8]);
-    vec![v5, v9]
+    let v3 = b.name("Record");
+    let v4 = b.name(":");
+    let v5 = b.name("log");
+    let v6 = b.name("Bytes");
+    let v7 = b.list(vec![v4, v5, v6]);
+    let v8 = b.name(":");
+    let v9 = b.name("verdict");
+    let v10 = b.name("Bytes");
+    let v11 = b.list(vec![v8, v9, v10]);
+    let v12 = b.list(vec![v3, v7, v11]);
+    let v13 = b.list(vec![v2, v12]);
+    let v14 = b.list(vec![v0, v1, v13]);
+    let v15 = b.name("type");
+    let v16 = b.name("Ack");
+    let v17 = b.name("Ack");
+    let v18 = b.list(vec![v15, v16, v17]);
+    vec![v14, v18]
 }
 /// The contract this module declares — built from its `@!contract` / `@!input` /
 /// `@!output` pragmas and its schema. The one place the contract's name and input/output
@@ -40,15 +49,24 @@ pub fn contract() -> crate::Contract {
         "Ack",
     )
 }
-/// Build a canonical `Envelope.Check` value.
-pub fn envelope_check(b: &mut Builder, x: StructId) -> StructId {
-    v::qctor(b, "Envelope", "Check", vec![x])
+/// The fields of a `Envelope.Check` value — each a built value occurrence.
+pub struct EnvelopeCheck {
+    pub log: StructId,
+    pub verdict: StructId,
 }
-/// Read the payload of a `Envelope.Check` value, or `None`.
-pub fn as_envelope_check(arenas: &Arenas, id: StructId) -> Option<StructId> {
+/// Build a canonical `Envelope.Check` value.
+pub fn envelope_check(b: &mut Builder, fields: EnvelopeCheck) -> StructId {
+    let rec = v::record(b, vec![("log", fields.log), ("verdict", fields.verdict)]);
+    v::qctor(b, "Envelope", "Check", vec![rec])
+}
+/// Read a `Envelope.Check` value's fields by name, or `None`.
+pub fn as_envelope_check(arenas: &Arenas, id: StructId) -> Option<EnvelopeCheck> {
     let t = v::as_qctor(arenas, id, "Envelope", "Check")?;
-    let [x] = <[StructId; 1]>::try_from(t).ok()?;
-    Some(x)
+    let [rec] = <[StructId; 1]>::try_from(t).ok()?;
+    Some(EnvelopeCheck {
+        log: v::record_field(arenas, rec, "log")?,
+        verdict: v::record_field(arenas, rec, "verdict")?,
+    })
 }
 /// Build a canonical `Ack.Ack` value.
 pub fn ack_ack(b: &mut Builder) -> StructId {
