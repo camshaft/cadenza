@@ -143,6 +143,10 @@ pub enum DeliveryEvent {
         payload: Bytes,
         /// The caller's continuation token (the reducer's reply is correlated back by it); empty by default.
         token: Bytes,
+        /// The sender the kernel stamps on the delivered message (`msg.from`), so a run can exercise a
+        /// reducer that routes or validates on *who* sent the effect. `None` uses the harness's synthetic
+        /// external origin — the default, since a reducer usually routes on the contract, not the injector.
+        from: Option<Origin>,
     },
     /// A control-plane event to fold through the target's `on_notification`.
     Notification {
@@ -172,10 +176,11 @@ impl DeliveryEvent {
                 contract,
                 payload,
                 token,
+                from,
             } => Delivered::Message(Message {
                 id: contract,
                 payload,
-                from: external_origin(),
+                from: from.unwrap_or_else(external_origin),
                 continuation_token: token,
             }),
             DeliveryEvent::Notification { contract, payload } => {
@@ -653,6 +658,7 @@ fn read_delivery(arenas: &Arenas, id: StructId) -> Result<(String, DeliveryEvent
             contract: read_contract_id(arenas, m)?,
             payload: read_required_bytes(arenas, m, "payload")?,
             token: read_optional_token(arenas, m)?,
+            from: read_optional_from(arenas, m)?,
         },
         (None, Some(n), None) => DeliveryEvent::Notification {
             contract: read_contract_id(arenas, n)?,
@@ -666,6 +672,35 @@ fn read_delivery(arenas: &Arenas, id: StructId) -> Result<(String, DeliveryEvent
         _ => return Err(SpecError::DeliveryKind { target }),
     };
     Ok((target, event))
+}
+
+/// Read a message record's optional `from` sender — a `("record" (= reducer b"…") (= host b"…"))` of two
+/// hash-byte fields, or `None` when absent (the harness then stamps its synthetic external origin). A
+/// present-but-malformed `from` is a [`SpecError`].
+fn read_optional_from(arenas: &Arenas, event: StructId) -> Result<Option<Origin>, SpecError> {
+    let Some(from) = record_field(arenas, event, "from") else {
+        return Ok(None);
+    };
+    let reducer = read_required_bytes(arenas, from, "reducer")?;
+    let host = read_required_bytes(arenas, from, "host")?;
+    Ok(Some(Origin {
+        reducer: ReducerId::try_from(reducer.as_ref()).map_err(|_| SpecError::WrongType {
+            field: "from",
+            want: "a 33-byte reducer id",
+        })?,
+        host: HostId::try_from(host.as_ref()).map_err(|_| SpecError::WrongType {
+            field: "from",
+            want: "a 33-byte host id",
+        })?,
+    }))
+}
+
+/// The `("record" (= reducer b"…") (= host b"…"))` node for a message's `from` sender — the inverse of the
+/// `from` read in [`read_optional_from`].
+fn origin_to_ast(b: &mut Builder, origin: &Origin) -> StructId {
+    let reducer = bytes_leaf(b, origin.reducer.hash().as_bytes());
+    let host = bytes_leaf(b, origin.host.hash().as_bytes());
+    record(b, vec![("reducer", reducer), ("host", host)])
 }
 
 /// Read an event record's optional `token` field — a bytes literal, or empty when absent (the decode
@@ -794,6 +829,7 @@ fn delivery_to_ast(b: &mut Builder, target: &str, event: &DeliveryEvent) -> Stru
             contract,
             payload,
             token,
+            from,
         } => {
             let contract = bytes_leaf(b, contract.hash().as_bytes());
             let payload = bytes_leaf(b, payload);
@@ -801,6 +837,11 @@ fn delivery_to_ast(b: &mut Builder, target: &str, event: &DeliveryEvent) -> Stru
             if !token.is_empty() {
                 let token = bytes_leaf(b, token);
                 fields.push(("token", token));
+            }
+            // A default (absent) `from` is the synthetic external origin, so it is omitted on encode.
+            if let Some(origin) = from {
+                let from = origin_to_ast(b, origin);
+                fields.push(("from", from));
             }
             ("message", record(b, fields))
         }
@@ -850,7 +891,7 @@ mod tests {
     use crate::contract_value::bare_ctor;
     use crate::contract_value::{bytes_leaf, record, uint_leaf};
     use crate::testing::SpawnSpec;
-    use crate::{Bytes, ContractId, Error, ReducerKind};
+    use crate::{Bytes, ContractId, Error, HostId, Origin, ReducerId, ReducerKind};
     use cadenza_ast::ast::{Arenas, Builder, Leaf, StructId};
     use cadenza_ast::codec;
     use std::sync::Arc;
@@ -1164,6 +1205,7 @@ mod tests {
                         contract: ContractId::of(b"temp.celsius"),
                         payload: Bytes::from_static(b"21"),
                         token: Bytes::from_static(b"tok-1"),
+                        from: None,
                     },
                 ),
                 (
@@ -1239,6 +1281,7 @@ mod tests {
                         contract: cid,
                         payload: Bytes::from_static(b"21"),
                         token: Bytes::from_static(b"tok"),
+                        from: None,
                     },
                 ),
                 (
@@ -1276,6 +1319,7 @@ mod tests {
                     contract: cid,
                     payload: Bytes::from_static(b"p"),
                     token: Bytes::new(),
+                    from: None,
                 },
             )]
         );
@@ -1387,6 +1431,7 @@ mod tests {
                 contract: ContractId::of(b"c"),
                 payload: Bytes::new(),
                 token: Bytes::new(),
+                from: None,
             },
         )
     }
@@ -1596,5 +1641,32 @@ mod tests {
                 want: "a known error tag: timeout | missing-handler | schema-violation | faulted",
             })
         );
+    }
+
+    #[test]
+    fn a_message_delivery_round_trips_an_explicit_from_sender() {
+        // A run can stamp the delivered message's `from` (its sender Origin), so a case can exercise a
+        // reducer that routes or validates on who sent the effect. Absent `from` defaults to the synthetic
+        // external origin (covered elsewhere); here the explicit sender survives encode→decode.
+        let spec = HarnessSpec {
+            system: "sys".to_string(),
+            run_for: None,
+            blobs: vec![],
+            spawns: vec![],
+            deliveries: vec![(
+                "root".to_string(),
+                DeliveryEvent::Message {
+                    contract: ContractId::of(b"c"),
+                    payload: Bytes::from_static(b"p"),
+                    token: Bytes::new(),
+                    from: Some(Origin {
+                        reducer: ReducerId::of(b"peer"),
+                        host: HostId::of(b"node"),
+                    }),
+                },
+            )],
+            checker: None,
+        };
+        assert_eq!(HarnessSpec::decode(&spec.encode()), Ok(spec));
     }
 }
