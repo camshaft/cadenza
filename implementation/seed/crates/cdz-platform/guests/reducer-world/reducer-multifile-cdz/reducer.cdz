@@ -1,0 +1,16 @@
+// GATE FIXTURE for mkCadenzaGuest MULTI-FILE support (flake.nix `libs` + per-guest `libs` manifest,
+// PR #3158). A minimal reducer that IMPORTS a helper from a sibling library module and uses it — so a
+// broken multi-file compile (unresolved import) fails the build. This pins the multi-file path with a
+// focused, permanent witness independent of the (complex, separately-gated) §9 checker guest. See README.
+import { stamp } from "helper"
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+def on-message(msg) =
+  host identity in
+    { requests = [{ contract = msg.contract, payload = msg.payload, token = stamp(identity.id()), deadlineNanos = None }],
+      outcome = Outcome.Continue }
+def on-response(_resp) =
+  { requests = [], outcome = Outcome.Continue }
+def on-notification(_note) =
+  { requests = [], outcome = Outcome.Continue }
+export { on-message, on-response, on-notification }
