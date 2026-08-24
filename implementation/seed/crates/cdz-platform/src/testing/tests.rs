@@ -2,17 +2,17 @@
 //! exercising the public `testing` surface (`design/cadenza-platform.md` §3/§4/§7/§8/§9).
 
 use super::{
-    BlobOp, CheckOutcome, Entry, EventKind, EventOp, Harness, KvOp, ObservationLog,
+    BlobOp, CheckOutcome, Entry, EventKind, EventOp, Harness, KvOp, ObservationLog, ProvOp,
     RecordingBlobStore, RecordingDelivery, RecordingKvStore, RecordingProgramStore,
-    RecordingReducer, Run, SpawnSpec, check_contract, check_message, decode_check, deserialize_log,
-    encode_verdict, render, verdict_contract, verdict_in,
+    RecordingProvenance, RecordingReducer, Run, SpawnSpec, check_contract, check_message,
+    decode_check, deserialize_log, encode_verdict, render, verdict_contract, verdict_in,
 };
 use crate::{
     BachRuntime, BlobStore, Bytes, ContractId, Delivered, Delivery, Error, FireAfter, Fired, Hash,
     HashTag, HostId, InMemoryBlobStore, InMemoryEventRegistry, InMemoryKvStore,
     InMemoryReducerGraph, KeyRange, KvStore, Links, Message, NoDelivery, Notification, Origin,
-    Outcome, ProgramHash, Reducer, ReducerId, ReducerKind, Request, Response, Runtime, Spawn,
-    Spawned, Str, System, TaskSystem, spawned_contract, timer_contract,
+    Outcome, ProgramHash, Provenance, Reducer, ReducerId, ReducerKind, Request, Response, Runtime,
+    Spawn, Spawned, Str, System, TaskSystem, spawned_contract, timer_contract,
 };
 use std::ops::Bound;
 use std::sync::Arc;
@@ -267,6 +267,73 @@ async fn deliver_calls_are_recorded_as_routed_entries_and_pass_through_unchanged
             continuation_token: Bytes::from_static(b"t1"),
             payload: Bytes::new(),
             error: Some(Error::Timeout),
+        })
+    );
+}
+
+#[tokio::test]
+async fn program_of_calls_are_recorded_with_the_query_and_the_answer() {
+    // Wrapping the `program-of` host boundary records each provenance read as a ProgramOf entry — the queried
+    // reducer AND the program the platform answered — attributed to the querying reducer (§4). A stub answers
+    // a fixed program for one reducer and None otherwise, so the test covers both answers.
+    struct StubProvenance {
+        known: ReducerId,
+        program: ProgramHash,
+    }
+    #[async_trait::async_trait]
+    impl Provenance for StubProvenance {
+        async fn program_of(&self, reducer: ReducerId) -> Option<ProgramHash> {
+            if reducer == self.known {
+                Some(self.program)
+            } else {
+                None
+            }
+        }
+    }
+
+    let who = origin(b"querier");
+    let known = ReducerId::of(b"peer");
+    let prog = ProgramHash::of(b"peer-prog");
+    let log = ObservationLog::new();
+    let prov = RecordingProvenance::new(
+        Arc::new(StubProvenance {
+            known,
+            program: prog,
+        }),
+        who,
+        log.clone(),
+        tick_clock,
+    );
+
+    assert_eq!(
+        prov.program_of(known).await,
+        Some(prog),
+        "the wrapped answer passes through unchanged"
+    );
+    assert_eq!(prov.program_of(ReducerId::of(b"gone")).await, None);
+
+    let records = log.snapshot();
+    assert_eq!(
+        records.len(),
+        2,
+        "one ProgramOf record per query, in call order"
+    );
+    for (i, r) in records.iter().enumerate() {
+        assert_eq!(r.seq, i as u64);
+        assert_eq!(r.source, who, "attributed to the querying reducer");
+    }
+    assert_eq!(
+        records[0].entry,
+        Entry::Provenance(ProvOp::ProgramOf {
+            reducer: known,
+            program: Some(prog),
+        })
+    );
+    assert_eq!(
+        records[1].entry,
+        Entry::Provenance(ProvOp::ProgramOf {
+            reducer: ReducerId::of(b"gone"),
+            program: None,
         })
     );
 }

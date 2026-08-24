@@ -55,6 +55,8 @@ pub enum Entry {
     Blob(BlobOp),
     /// An event the reducer folded, emitted, or closed with (§3/§4/§10).
     Event(EventOp),
+    /// A call to the reducer's node-side **provenance** capability — the privileged `program-of` read (§4).
+    Provenance(ProvOp),
     /// The harness spawned a reducer and assigned it a name — recorded at the start of a run so the log
     /// is self-describing: a reader derefs a name to the reducer id ([`Record::source`]) it was assigned,
     /// with no out-of-band metadata (§3).
@@ -111,6 +113,21 @@ pub enum BlobOp {
     Get { hash: Hash, hit: bool },
     /// `has(hash)` — `present` is the answer.
     Has { hash: Hash, present: bool },
+}
+
+/// A call to the node-side **provenance** capability (`design/cadenza-platform.md` §4): the privileged
+/// `program-of` read, which resolves the program a running reducer was spawned from. A narrow capability —
+/// one op today — so a checker can assert *who asked which provenance question, and what the platform
+/// answered*, observed at the host boundary like a store call.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProvOp {
+    /// `program-of(reducer)` — the queried reducer, and the program it resolved to (`None` if no reducer is
+    /// running under that id). The answer is recorded so a checker sees what the platform returned, not just
+    /// that the reducer asked.
+    ProgramOf {
+        reducer: ReducerId,
+        program: Option<ProgramHash>,
+    },
 }
 
 /// Which entry point folded a delivered event (`design/cadenza-platform.md` §3) — the observable
@@ -424,6 +441,12 @@ impl fmt::Display for Record {
                     )
                 }
             },
+            Entry::Provenance(op) => match op {
+                ProvOp::ProgramOf { reducer, program } => match program {
+                    Some(p) => write!(f, "program-of {} -> {}", short(*reducer), short(*p)),
+                    None => write!(f, "program-of {} -> none", short(*reducer)),
+                },
+            },
             Entry::Spawn(info) => write!(
                 f,
                 "spawn {:?} program={} kind={:?}",
@@ -471,7 +494,7 @@ fn hit_miss(hit: bool) -> &'static str {
 
 #[cfg(test)]
 mod render_tests {
-    use super::{Entry, EventKind, EventOp, KvOp, Record, SpawnInfo, render};
+    use super::{Entry, EventKind, EventOp, KvOp, ProvOp, Record, SpawnInfo, render};
     use crate::{Bytes, ContractId, HostId, Origin, ProgramHash, ReducerId, ReducerKind, Str};
 
     fn rec(seq: u64, reducer: &[u8], entry: Entry) -> Record {
@@ -549,10 +572,18 @@ mod render_tests {
                     error: None,
                 }),
             ),
+            rec(
+                6,
+                b"agent",
+                Entry::Provenance(ProvOp::ProgramOf {
+                    reducer: ReducerId::of(b"peer"),
+                    program: Some(ProgramHash::of(b"peer-prog")),
+                }),
+            ),
         ];
         let out = render(&records);
         let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines.len(), 6, "one line per record");
+        assert_eq!(lines.len(), 7, "one line per record");
         // Each line leads with its seq and carries a readable description of the entry.
         assert!(lines[0].starts_with("#0"));
         assert!(lines[0].contains("spawn \"agent\""), "line: {}", lines[0]);
@@ -578,6 +609,9 @@ mod render_tests {
         assert!(lines[5].contains("deliver msg"), "line: {}", lines[5]);
         assert!(lines[5].contains("\"routed=on\""), "line: {}", lines[5]);
         assert!(lines[5].contains(" to "), "line: {}", lines[5]);
+        // The provenance line shows the queried reducer and the program it resolved to.
+        assert!(lines[6].contains("program-of "), "line: {}", lines[6]);
+        assert!(lines[6].contains(" -> "), "line: {}", lines[6]);
         // An empty log renders to an empty string.
         assert!(render(&[]).is_empty());
     }
