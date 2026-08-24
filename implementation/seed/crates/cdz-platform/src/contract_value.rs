@@ -113,8 +113,18 @@ pub fn as_qctor<'a>(
     ty: &str,
     ctor: &str,
 ) -> Option<&'a [StructId]> {
-    let _ = ty;
-    as_bare_ctor(arenas, id, ctor)
+    // LIBERAL: the canonical Value form is the bare-name `(ctor tail…)`, but a value crossing from the ML
+    // SURFACE (`cdz convert`) or an older member form may be `((. ty ctor) tail…)`. Accept both; the builders
+    // emit only the bare form.
+    as_bare_ctor(arenas, id, ctor).or_else(|| {
+        let Struct::List(items) = arenas.get(id) else {
+            return None;
+        };
+        let (&head, tail) = items.split_first()?;
+        let m = arenas.as_form(head, ".")?;
+        (m.len() == 2 && arenas.as_name(m[0]) == Some(ty) && arenas.as_name(m[1]) == Some(ctor))
+            .then_some(tail)
+    })
 }
 
 /// The value inside a root ascription `(: <value> <ty>)`, ignoring the type token (the decoder is
@@ -144,9 +154,13 @@ pub fn record_field(
     id: StructId,
     name: &str,
 ) -> Option<StructId> {
-    // The NAME-headed record form `(record (= <field> <value>)…)`; `as_form` returns the fields after the
-    // `record` head.
-    let fields = arenas.as_form(id, "record")?;
+    // LIBERAL on the head: the canonical Value form (a platform-built payload, what a guest `Value.decode`s)
+    // is NAME-headed `(record …)`, while the ML SURFACE form (a HarnessSpec input from `cdz convert`) is
+    // string-headed `("record" …)`. Accept both (like `list_items`/`read_string_list`); the builders emit
+    // only the canonical name-head. `as_form` returns the fields after the head either way.
+    let fields = arenas
+        .as_form(id, "record")
+        .or_else(|| arenas.as_ctor_form(id, "record"))?;
     fields.iter().find_map(|&f| {
         let kv = arenas.as_form(f, "=")?;
         (kv.len() == 2 && arenas.as_name(kv[0]) == Some(name)).then_some(kv[1])
