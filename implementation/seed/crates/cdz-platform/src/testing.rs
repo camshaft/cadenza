@@ -64,7 +64,9 @@ pub use observation::{
 pub use recording::{
     RecordingBlobStore, RecordingKvStore, RecordingProgramStore, RecordingReducer,
 };
-pub use spec::{BlobSource, BlobSpec, DeliveryEvent, HarnessSpec, PureRun, SpecError};
+pub use spec::{
+    BlobSource, BlobSpec, DeliveryEvent, HarnessSpec, PureRun, RegistrySpec, SpecError,
+};
 
 #[cfg(test)]
 mod tests;

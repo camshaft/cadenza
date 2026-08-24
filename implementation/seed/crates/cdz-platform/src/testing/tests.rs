@@ -496,7 +496,7 @@ fn a_registry_override_routes_a_contracts_effect_to_the_override_handler() {
         .blob("sys", Bytes::from_static(b"sys"))
         .blob("special", Bytes::from_static(b"special"))
         .spawn(SpawnSpec::new("emitter", "emitter"))
-        .registry("sys", vec![(http, "special".to_string())])
+        .registry(vec![(http, "special".to_string())])
         .deliver(
             "emitter",
             Delivered::Message(Message {
