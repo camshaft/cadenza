@@ -1,9 +1,10 @@
 # DESIGN — per-spawn resource limits, a spawn WIT capability, and the privileged-spawn / non-privileged-effects split
 
 **Owner:** v-platform (capability + dispatch model, `design/cadenza-platform.md` §3/§4/§5).
-**Status:** partially settled — operator answered Q1 (spawn handler = an ordinary event reducer) and Q3 (one
-coarse privileged world); Q2/Q5 proceed on the recommended leans unless overridden; Q4 held for an explicit
-call. Sequencing greenlit. Builds on the per-node `ResourceLimits` of #3209.
+**Status:** settled + approved — the operator answered all five questions (Q1 spawn handler = an ordinary
+event reducer; Q2 host-side clamp = yes; Q3 one coarse privileged world; Q4 a request may set `links` but NOT
+`kind`; Q5 per-node = default + ceiling). Cleared to merge. Sequencing greenlit; builds on the per-node
+`ResourceLimits` of #3209.
 
 ## The operator's direction
 
@@ -52,11 +53,14 @@ Spawn { …, limits: SpawnLimits }
 `epoch_tick` and `yield_every` stay node-wide (the ticker cadence is a property of the node's runtime, not of
 one reducer). Only the two *budgets* the operator named are per-spawn.
 
-**Resolution against the node.** The per-node `ResourceLimits` (#3209) becomes the **default and the ceiling**.
-The effective limits a store is armed with = the spawn's requested limits, **clamped to the node ceiling** (a
-spawn can never request *more* than the node permits) — but admission (below) can reject a spawn before it even
-reaches clamping, so the two compose: the handler is policy, the clamp is a hard backstop. The resolved
-`SpawnLimits` ride on `SpawnContext` into `arm_store_safety`, so a store is armed with *this reducer's* budget
+**Resolution against the node (Q2/Q5, operator-settled).** The per-node `ResourceLimits` (#3209) is the
+**default and the ceiling** (Q5). The effective limits a store is armed with = the spawn's requested limits,
+**clamped to the node ceiling** (a spawn can never request *more* than the node permits) — but admission
+(below) can reject a spawn before it even reaches clamping, so the two compose: the admission reducer is the
+policy, and the host-side clamp is a hard backstop *underneath* it (Q2, operator: "it's fine to have an
+additional clamp from the host" — defense in depth, so a buggy or absent admission reducer still cannot grant
+more than the node permits). The resolved `SpawnLimits` ride on `SpawnContext` into `arm_store_safety`, so a
+store is armed with *this reducer's* budget
 instead of the uniform node value.
 
 ### 2. Admission control — an ordinary event reducer (Q1, operator-settled)
@@ -82,9 +86,12 @@ interface spawn {
   use types.{program-hash, reducer-id};
   use reducer.{...};
   record spawn-limits { max-linear-memory-bytes: u64, max-yields: u64 }
-  record spawn-request { program: program-hash, nonce: list<u8>, limits: spawn-limits, /* kind, links … */ }
-  spawn: func(request: spawn-request) -> result<reducer-id, spawn-error>;   // reject = the handler declined
+  record spawn-links { parent-watches-child: bool, child-watches-parent: bool }   // Q4: links, yes
+  record spawn-request { program: program-hash, nonce: list<u8>, limits: spawn-limits, links: spawn-links }
+  spawn: func(request: spawn-request) -> result<reducer-id, spawn-error>;   // reject = the admission reducer declined
 }
+// Q4 (operator): a request MAY set `links` but NOT `kind` — the child's kind is platform-assigned /
+// privilege-controlled, never caller-chosen (choosing kind would be a privilege-granting act).
 ```
 
 A privileged reducer that holds the `spawn` import can request a spawn (with limits); the call routes through
@@ -132,15 +139,16 @@ and tightly controlled.
 ## Build sequence (greenlit on Q1 + Q3)
 
 Ordered; the first slice is gated on #3209 merging (it extends `arm_store_safety`'s config threading), the WIT
-slice is co-owned with v-inference, and the kind/links surface waits on Q4.
+slice is co-owned with v-inference.
 
 1. **`SpawnLimits` threading** *(after #3209 merges)* — add `SpawnLimits { max_linear_memory_bytes, max_yields }`
-   to `Spawn`; carry the resolved (clamped-to-node-ceiling, Q2/Q5 leans) limits on `SpawnContext`; have
-   `arm_store_safety` use the per-spawn budget instead of the uniform node value. Pure kernel plumbing on top
-   of #3209.
+   to `Spawn`; carry the resolved (clamped-to-node-ceiling, Q2/Q5) limits on `SpawnContext`; have
+   `arm_store_safety` use the per-spawn budget instead of the uniform node value. The host-side clamp (Q2) lives
+   here — a hard backstop under the admission reducer. Pure kernel plumbing on top of #3209.
 2. **The `spawn` WIT** *(with v-inference)* — add the `spawn` interface to the one privileged world (Q3),
-   alongside `deliver`. Co-settle the record/variant shapes. `kind`/`links` in the request are **omitted until
-   Q4** — the first cut carries only `program` + `nonce` + `limits`. **v-inference confirmed this needs zero
+   alongside `deliver`. Co-settle the record/variant shapes. The request carries `program` + `nonce` + `limits`
+   + **`links`** (Q4); the child's **`kind` is NOT caller-settable** (Q4 — platform-assigned, privilege-
+   controlled). **v-inference confirmed this needs zero
    new front-end synthesis** — it is structurally the deliver-response shape already handled (#3133/#3137/#3171):
    `spawn(request: record) -> result<reducer-id, spawn-error>` maps like `deliver-response`, and a new `spawn`
    interface in the privileged world synthesizes with no per-interface arm. `program-hash`/`reducer-id` are
@@ -161,14 +169,15 @@ slice is co-owned with v-inference, and the kind/links surface waits on Q4.
 
 1. ~~Spawn handler = event handler, or its own handler?~~ **Resolved (Q1)** — it is an *ordinary event
    reducer* reached via the normal event-dispatch/registry path; no new handler concept.
-2. **Clamp *and* handler, or handler only?** *(proceeding on the lean unless overridden)* The node-ceiling
-   clamp is a hard kernel backstop *under* the handler's policy — defense in depth: a buggy/absent handler
-   cannot grant more than the node permits.
+2. ~~Clamp *and* handler, or handler only?~~ **Resolved (Q2)** — a host-side clamp is a hard backstop
+   *underneath* the admission reducer (operator: "it's fine to have an additional clamp from the host"):
+   defense in depth, so a buggy/absent admission reducer cannot grant more than the node permits.
 3. ~~One privileged world, or finer capabilities?~~ **Resolved (Q3)** — one coarse privileged world carrying
    `spawn` + `deliver` together; no spawn-but-not-deliver split (privileged event reducers are stable +
    tightly controlled).
-4. **What may a spawn request set beyond limits?** *(HELD for an explicit operator call)* Just `program` +
-   `nonce` + `limits`, or also `kind` / `links`? Choosing the child's `kind` is itself privilege-granting, so
-   the first build cut omits it (limits only) until the operator rules.
-5. **Per-node / per-spawn relationship** *(proceeding on the lean unless overridden)* — per-node
-   `ResourceLimits` is the default + ceiling; a per-spawn request is honored within that ceiling.
+4. ~~What may a spawn request set beyond limits?~~ **Resolved (Q4)** — a request MAY set the child's `links`
+   but NOT its `kind` (operator: "we definitely need links. I don't think it should be able to specify the
+   kind though"). So the request is `program` + `nonce` + `limits` + `links`; `kind` is platform-assigned
+   (privilege-controlled), never caller-chosen.
+5. ~~Per-node / per-spawn relationship~~ **Resolved (Q5)** — per-node `ResourceLimits` is the default +
+   ceiling; a per-spawn request is honored within that ceiling.
