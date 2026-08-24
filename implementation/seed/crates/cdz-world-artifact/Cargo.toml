@@ -1,0 +1,28 @@
+# cdz-world-artifact — turn a WIT world declaration into its `KIND_WIT_WORLD` binary-AST artifact.
+#
+# The ONE place the "parse a `.wit` and rebuild each world as the canonical `cadenza_ast` `world_schema_tree`
+# node" logic lives. A small ISOLATED utility CLI (`src/main.rs` over the `lib`): the nix reducer-guest
+# derivation (and `cargo xtask world-artifact`) SHELL OUT to the built binary — they do NOT link this crate
+# as a dependency (operator directive 2026-08-24: decompose xtask into small single-purpose utility programs,
+# same pattern as `cdz-component-rewrite` #3082). A Cadenza reducer guest consumes the emitted artifact via
+# `cdz compile guest.cdz wit-world:<world>=<world>.bin`, so it targets a shared world without re-declaring it
+# inline; the compiler never parses WIT text (`wit_world.rs`) — the structured world reaches it only as this
+# binary tree.
+#
+# A standalone crate gives a CLEAN crate boundary: its tests build from a self-contained inline WIT fixture
+# (no read of a sibling crate's file), so the Nix per-crate clippy/build sandbox is a non-issue — unlike the
+# earlier in-xtask `include_str!` of `cdz-platform/wit/world.wit`, which escaped the xtask crate and broke the
+# per-crate clippy build.
+#
+# Deps: `wit-parser` (parse the `.wit` text — the same crate `cargo component` uses) + `cadenza-ast` (the
+# LANGUAGE's binary-AST builders + codec; NOT the compiler). A ROOT workspace member (the `crates/*` glob) so
+# it gets per-crate clippy + workspace-test coverage; MUST be registered in the flake's `rootWorkspaceCrates`.
+[package]
+name = "cdz-world-artifact"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+cadenza-ast = { path = "../cadenza-ast" }
+wit-parser = "0.239"

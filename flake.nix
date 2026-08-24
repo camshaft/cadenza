@@ -336,6 +336,11 @@
           cdz-rt = "implementation/seed/crates/cdz-rt";
           cdz-run = "implementation/seed/crates/cdz-run";
           cdz-rust-render = "implementation/seed/crates/cdz-rust-render";
+          # cdz-world-artifact: the isolated WIT-world → KIND_WIT_WORLD binary-AST utility, shelled out to by
+          # the `worldArtifacts` derivation (and `cargo xtask world-artifact`). A ROOT workspace member (no own
+          # [workspace]), so — like cdz-component-rewrite / cdz-contract — it MUST be registered here or the
+          # crane deps-layer src omits its Cargo.toml and the whole workspace fails to load.
+          cdz-world-artifact = "implementation/seed/crates/cdz-world-artifact";
           rcdzc = "implementation/seed/crates/rcdzc";
           xtask = "xtask";
         };
@@ -601,6 +606,9 @@
               rcdzc = [ "cadenza-ast" "cadenza-syntax" "cdz-contract" "cdz-num" "cdz-rt" "cdz-run" "rcdzc" ];
               cadenza-syntax = [ "cadenza-ast" "cadenza-syntax" ];
               cdz-num = [ "cdz-num" ];
+              # cdz-world-artifact deps only cadenza-ast (the language's binary-AST builders/codec) + the
+              # external wit-parser; xtask still deps cadenza-ast via codegen.rs, so its closure is unchanged.
+              cdz-world-artifact = [ "cadenza-ast" "cdz-world-artifact" ];
               xtask = [ "cadenza-ast" "cdz-contract" "cdz-rust-render" "xtask" ];
             };
             mismatches = builtins.filter (n: (crateClosure n) != expected.${n})
@@ -1161,10 +1169,13 @@
           '';
 
         # `worldArtifacts`: the platform reducer worlds as `KIND_WIT_WORLD` binary artifacts, generated ONCE
-        # from `cdz-platform/wit/world.wit` by `cargo xtask world-artifact` (single source of truth), for a
-        # host-import-calling Cadenza guest to consume via `mkCadenzaGuest`'s `witWorld`. Built like
-        # `contractHasher` (plain cargo over the offline root vendor, `-p xtask`); reuses `platformItestSrc`
-        # (has xtask + the wit). Writes `reducer-world.bin` + `event-reducer-world.bin` to `$out`.
+        # from `cdz-platform/wit/world.wit` (single source of truth) by the isolated `cdz-world-artifact`
+        # utility CLI, for a host-import-calling Cadenza guest to consume via `mkCadenzaGuest`'s `witWorld`.
+        # Built like `contractHasher` (plain cargo over the offline root vendor, `-p cdz-world-artifact`);
+        # reuses `platformItestSrc` (has the crate src + the wit). The utility emits one `<world>.bin` per
+        # world the document declares (no world name is baked into the tool), so `$out` gets `reducer-world.bin`
+        # + `event-reducer-world.bin`. This shells out to the small utility directly — no xtask in the path
+        # (operator directive 2026-08-24: decompose xtask into small single-purpose utility programs).
         worldArtifacts = pkgs.stdenvNoCC.mkDerivation {
           pname = "cdz-platform-world-artifacts";
           version = "0.0.0";
@@ -1173,13 +1184,14 @@
           buildPhase = ''
             runHook preBuild
             ${mkCargoVendorEnv { vendor = seedCargoVendor; }}
-            cargo build --release --locked -p xtask --bin xtask
+            cargo build --release --locked -p cdz-world-artifact --bin cdz-world-artifact
             runHook postBuild
           '';
           installPhase = ''
             runHook preInstall
             mkdir -p "$out"
-            ./target/release/xtask world-artifact --out "$out"
+            ./target/release/cdz-world-artifact \
+              implementation/seed/crates/cdz-platform/wit/world.wit "$out"
             runHook postInstall
           '';
         };

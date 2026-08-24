@@ -460,6 +460,14 @@ name = "cdz-rust-render"
 version = "0.0.0"
 
 [[package]]
+name = "cdz-world-artifact"
+version = "0.0.0"
+dependencies = [
+ "cadenza-ast",
+ "wit-parser",
+]
+
+[[package]]
 name = "cedar-policy"
 version = "4.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
