@@ -1,0 +1,31 @@
+// A Cadenza EVENT reducer performing the FULL handler-chain routing act (design/cadenza-platform.md §4):
+// on-message it performs `deliver` with the whole message envelope — deliver-message(target, message{
+// contract, sender{reducer, host}, payload, token}) — the NESTED-record shape (v-rust-backend's shape-d3,
+// #3170). This is what routing actually does: hand a message to the next handler with its full provenance
+// intact (its originating contract, its sender's reducer AND host, its payload, its continuation token).
+//
+// The minimal self-consistent form re-delivers the incoming message back to its sender's reducer, rebuilding
+// the envelope field-for-field — so a conformance run can assert the delivered message carries every field
+// through unchanged. deliver-notification (#3159) proved the flat record; this proves the nested `sender`
+// sub-record composes. Targets the privileged event-reducer-world (the only world importing `deliver`).
+// on-response / on-notification are inert.
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+def on-message(msg) =
+  host deliver in
+    ( deliver.deliver-message(
+        msg.sender.reducer,
+        { contract = msg.contract,
+          sender = { reducer = msg.sender.reducer, host = msg.sender.host },
+          payload = msg.payload,
+          token = msg.token }) ;
+      { requests = [], outcome = Outcome.Continue } )
+
+def on-response(_resp) =
+  { requests = [], outcome = Outcome.Continue }
+
+def on-notification(_note) =
+  { requests = [], outcome = Outcome.Continue }
+
+export { on-message, on-response, on-notification }
