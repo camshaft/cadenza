@@ -914,6 +914,48 @@ fn null_host_state(id: ReducerId, run: Option<Arc<Instantiator>>) -> HostState {
     }
 }
 
+/// A per-reducer wrapper for a node-wide host capability: given the calling reducer's id and the shared
+/// capability, it returns the capability that reducer's host-import calls actually hit — the shared one
+/// unchanged, or a decorator around it. The `(ReducerId, shared)` form (rather than `Fn(ReducerId) -> _`) is
+/// what lets [`RecordingHooks`]'s [`Default`] be a stateless identity, so a non-recording caller pays nothing.
+type GraphHook =
+    Arc<dyn Fn(ReducerId, Arc<dyn ReducerGraph>) -> Arc<dyn ReducerGraph> + Send + Sync>;
+type ProvenanceHook =
+    Arc<dyn Fn(ReducerId, Arc<dyn Provenance>) -> Arc<dyn Provenance> + Send + Sync>;
+type DeliveryHook = Arc<dyn Fn(ReducerId, Arc<dyn Delivery>) -> Arc<dyn Delivery> + Send + Sync>;
+
+/// Per-reducer wrappers for the node-wide `graph` / `program-of` / `deliver` host capabilities, so the
+/// integration harness can OVERRIDE each with a recording decorator that emits every direct host call into
+/// its observation log (`design/cadenza-platform.md` §9), attributed to the calling reducer — uniform with
+/// the `blobs`/`state` recording the [`BlobsFactory`]/[`KvFactory`] already allow. Each hook is applied
+/// per-reducer in [`spawn`](WasmProgramStore::spawn) to the shared capability. [`Default`] is the identity
+/// wrapper on every field (returns the shared capability unchanged), so the platform and any non-recording
+/// caller pay nothing. A recording caller supplies a hook that captures its log and returns a decorator, e.g.
+/// `graph: Arc::new(|id, shared| Arc::new(RecordingGraph::new(id, shared, log.clone())))`.
+///
+/// `identity` (`identity.id`, a pure who-am-I read) is deliberately NOT hookable (operator: identity queries
+/// are not logged). `run` is not here yet: the run capability is the concrete [`Instantiator`], not a trait
+/// object — trait-ifying it to be hookable is a follow-up.
+pub struct RecordingHooks {
+    /// Wrap a reducer's `graph` capability (the §3 reducer graph).
+    pub graph: GraphHook,
+    /// Wrap a reducer's `program-of` provenance capability (§4).
+    pub provenance: ProvenanceHook,
+    /// Wrap a reducer's `deliver` capability (§4) — the one that makes the deliver ACT observable.
+    pub delivery: DeliveryHook,
+}
+
+impl Default for RecordingHooks {
+    fn default() -> Self {
+        // Identity on every field: the reducer hits the shared capability unchanged, zero wrapping cost.
+        Self {
+            graph: Arc::new(|_id, cap| cap),
+            provenance: Arc::new(|_id, cap| cap),
+            delivery: Arc::new(|_id, cap| cap),
+        }
+    }
+}
+
 pub struct WasmProgramStore {
     /// The shared per-host instantiation core (engine, linkers, content store, compiled cache, pure-run memo),
     /// held via `Arc` so a reducer's synchronous `run` host import can share it — both to instantiate the
@@ -934,6 +976,10 @@ pub struct WasmProgramStore {
     /// injects an event into a reducer's mailbox. [`NoDelivery`](crate::NoDelivery) until set with
     /// [`with_delivery`](WasmProgramStore::with_delivery), so it is never absent, only null.
     delivery: Arc<dyn Delivery>,
+    /// Per-reducer recording wrappers for the `graph`/`program-of`/`deliver` capabilities (§9 observability).
+    /// [`Default`] (identity) until set with [`with_recording_hooks`](WasmProgramStore::with_recording_hooks),
+    /// so a non-recording store pays nothing.
+    hooks: RecordingHooks,
 }
 
 impl WasmProgramStore {
@@ -954,6 +1000,7 @@ impl WasmProgramStore {
             graph,
             provenance: Arc::new(crate::NoProvenance),
             delivery: Arc::new(crate::NoDelivery),
+            hooks: RecordingHooks::default(),
         })
     }
 
@@ -973,6 +1020,15 @@ impl WasmProgramStore {
     #[must_use]
     pub fn with_delivery(mut self, delivery: Arc<dyn Delivery>) -> Self {
         self.delivery = delivery;
+        self
+    }
+
+    /// Install per-reducer recording wrappers for the `graph`/`program-of`/`deliver` capabilities (§9): the
+    /// integration harness passes [`RecordingHooks`] whose fields decorate each capability to emit its calls
+    /// into the observation log, attributed to the calling reducer. Default (identity) records nothing.
+    #[must_use]
+    pub fn with_recording_hooks(mut self, hooks: RecordingHooks) -> Self {
+        self.hooks = hooks;
         self
     }
 }
@@ -1036,13 +1092,15 @@ impl ProgramStore for WasmProgramStore {
         // The store's job is to assemble the per-reducer HostState from its factories and node-wide handles;
         // turning the program's bytes into a live reducer is the shared instantiation core's (which the
         // reducer's own host-imports also reach, without a cycle back here).
+        // Apply the per-reducer recording hooks (default identity → the shared capability unchanged) so the
+        // harness can observe this reducer's graph/program-of/deliver calls, attributed to its id (§9).
         let host_state = HostState {
             id: ctx.id,
             blobs: (self.make_blobs)(ctx.id),
             kv: (self.make_kv)(ctx.id),
-            graph: Arc::clone(&self.graph),
-            provenance: self.provenance.clone(),
-            delivery: self.delivery.clone(),
+            graph: (self.hooks.graph)(ctx.id, Arc::clone(&self.graph)),
+            provenance: (self.hooks.provenance)(ctx.id, self.provenance.clone()),
+            delivery: (self.hooks.delivery)(ctx.id, self.delivery.clone()),
             run: Some(Arc::clone(&self.inst)),
         };
         self.inst
