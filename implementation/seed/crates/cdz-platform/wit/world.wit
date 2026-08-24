@@ -210,6 +210,17 @@ world reducer-world {
   export guest;
 }
 
+// The pure/deterministic reducer surface (§3): a reducer with the empty capability set — no state, no store,
+// no id, no peer, no timer — whose only import is `run`, the pure-function primitive (deterministic and
+// effect-free, so it grants nothing observable; a pure component may still compose *other* pure programs
+// through it). This is exactly what the kernel wires for a program instantiated as a pure `run`, so a guest
+// that touches nothing but its input and output targets THIS shared world instead of re-declaring an
+// anonymous inline world in every such reducer.
+world pure-reducer-world {
+  import run;
+  export guest;
+}
+
 // ── The privileged event-reducer surface (§3/§4) ────────────────────────────────────────────────────
 // An event reducer is an ordinary reducer plus the privileged access the kernel grants only to it, because
 // the whole security model rests on the chosen event reducer being correct (§3 trust root). That access is
