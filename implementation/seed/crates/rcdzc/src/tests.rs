@@ -3532,6 +3532,215 @@ fn a_typed_reducer_with_a_state_get_host_import_emits_and_loads() {
     );
 }
 
+/// Like [`state_get_host_import_world_bytes`] but the imported `cadenza:platform/state` interface declares
+/// BOTH `put: func(key: list<u8>, value: list<u8>)` (a UNIT / bare result) AND `get: func(key: list<u8>) ->
+/// option<list<u8>>` (a COMPOUND result). Drives the SEQUENCED-perform invariant — a full typed reducer whose
+/// body performs a bare-result op then a compound-result op.
+fn state_put_get_host_import_world_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let list_u8 = |b: &mut Builder| {
+        let u8h = b.name("u8");
+        let u8p = b.list(vec![u8h]);
+        let lh = b.atom_leaf(Leaf::Str("list".into()));
+        b.list(vec![lh, u8p])
+    };
+    let field = |b: &mut Builder, name: &str, ty| {
+        let n = b.name(name);
+        b.list(vec![n, ty])
+    };
+    let record = |b: &mut Builder, fields: Vec<crate::ast::StructId>| {
+        let h = b.atom_leaf(Leaf::Str("record".into()));
+        let mut v = vec![h];
+        v.extend(fields);
+        b.list(v)
+    };
+    let bytes_field = |b: &mut Builder, name: &str| {
+        let t = list_u8(b);
+        field(b, name, t)
+    };
+    let message = {
+        let m_contract = bytes_field(&mut b, "contract");
+        let m_payload = bytes_field(&mut b, "payload");
+        let m_token = bytes_field(&mut b, "token");
+        record(&mut b, vec![m_contract, m_payload, m_token])
+    };
+    let step = {
+        let request = {
+            let r_contract = bytes_field(&mut b, "contract");
+            let r_payload = bytes_field(&mut b, "payload");
+            let r_token = bytes_field(&mut b, "token");
+            let r_deadline = {
+                let u64h = b.name("u64");
+                let u64t = b.list(vec![u64h]);
+                let oh = b.atom_leaf(Leaf::Str("option".into()));
+                let ot = b.list(vec![oh, u64t]);
+                field(&mut b, "deadline-nanos", ot)
+            };
+            record(&mut b, vec![r_contract, r_payload, r_token, r_deadline])
+        };
+        let requests_list = {
+            let lh = b.atom_leaf(Leaf::Str("list".into()));
+            b.list(vec![lh, request])
+        };
+        let closed = {
+            let c_schema = bytes_field(&mut b, "schema");
+            let c_reason = bytes_field(&mut b, "reason");
+            record(&mut b, vec![c_schema, c_reason])
+        };
+        let outcome = {
+            let cont_case = {
+                let n = b.name("continue");
+                b.list(vec![n])
+            };
+            let close_case = {
+                let n = b.name("close");
+                b.list(vec![n, closed])
+            };
+            let vh = b.atom_leaf(Leaf::Str("variant".into()));
+            b.list(vec![vh, cont_case, close_case])
+        };
+        let s_requests = field(&mut b, "requests", requests_list);
+        let s_outcome = field(&mut b, "outcome", outcome);
+        record(&mut b, vec![s_requests, s_outcome])
+    };
+    let on_message = {
+        let func_h = b.name("func");
+        let param_h = b.name("param");
+        let pn = b.name("m");
+        let param_node = b.list(vec![param_h, pn, message]);
+        let result_h = b.name("result");
+        let result_node = b.list(vec![result_h, step]);
+        let func = b.list(vec![func_h, param_node, result_node]);
+        let member_h = b.name("member");
+        let mn = b.name("on-message");
+        b.list(vec![member_h, mn, func])
+    };
+    let exp_h = b.name("export");
+    let iname = b.name("guest");
+    let export = b.list(vec![exp_h, iname, on_message]);
+    // import cadenza:platform/state { put: func(key, value: list<u8>); get: func(key: list<u8>) -> option<list<u8>> }
+    let put_member = {
+        let func_h = b.name("func");
+        let p1 = {
+            let ph = b.name("param");
+            let pn = b.name("key");
+            let pty = list_u8(&mut b);
+            b.list(vec![ph, pn, pty])
+        };
+        let p2 = {
+            let ph = b.name("param");
+            let pn = b.name("value");
+            let pty = list_u8(&mut b);
+            b.list(vec![ph, pn, pty])
+        };
+        let result_h = b.name("result");
+        let unit_h = b.atom_leaf(Leaf::Str("unit".into()));
+        let unit_ty = b.list(vec![unit_h]);
+        let rnode = b.list(vec![result_h, unit_ty]);
+        let func = b.list(vec![func_h, p1, p2, rnode]);
+        let member_h = b.name("member");
+        let mn = b.name("put");
+        b.list(vec![member_h, mn, func])
+    };
+    let get_member = {
+        let func_h = b.name("func");
+        let p1h = b.name("param");
+        let p1n = b.name("key");
+        let p1ty = list_u8(&mut b);
+        let p1 = b.list(vec![p1h, p1n, p1ty]);
+        let result_h = b.name("result");
+        let opt_bytes = {
+            let oh = b.atom_leaf(Leaf::Str("option".into()));
+            let inner = list_u8(&mut b);
+            b.list(vec![oh, inner])
+        };
+        let rnode = b.list(vec![result_h, opt_bytes]);
+        let func = b.list(vec![func_h, p1, rnode]);
+        let member_h = b.name("member");
+        let mn = b.name("get");
+        b.list(vec![member_h, mn, func])
+    };
+    let imp_h = b.name("import");
+    let state_name = b.name("cadenza:platform/state");
+    let state = b.list(vec![imp_h, state_name, put_member, get_member]);
+    let world_h = b.name("world");
+    let wn = b.name("w");
+    let world = b.list(vec![world_h, wn, export, state]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+/// GATE for the SEQUENCED-perform invariant (v-rb-91, answering v-platform's §4 ask): a FULL typed reducer
+/// whose `on-message` body SEQUENCES a bare-result perform (`state.put`, unit) THEN a compound-result perform
+/// (`state.get`, `option<list<u8>>`) via `(do …)` COMPOSES on the typed-interface-instance path. A leading
+/// bare effect does NOT route the body to the plain host-delegating envelope (which declines a compound host
+/// result) — the whole reducer body stays on the typed path (#3121), so the sequenced compound result lifts
+/// into a value-heap `Option<Bytes>`. This pins that a future emit-path change can't regress a sequenced
+/// reducer (§4's dispatch reducer sequences many performs, several with compound results). Emits + wasmparser-
+/// validates + loads on the pinned wasmtime + imports BOTH the state host interface and the value-heap runtime.
+#[test]
+fn a_typed_reducer_sequencing_put_then_a_compound_get_emits_and_loads() {
+    use crate::testkit::parse;
+    // on-message: state.put(token, payload); then request.payload = state.get(token) ?? payload.
+    let src = "(module m \
+                 (type Outcome Continue (Close (Record (schema Bytes) (reason Bytes)))) \
+                 (effect state (op put (-> Bytes Bytes Unit)) (op get (-> Bytes (Option Bytes)))) \
+                 (def (onMessage (: m (Record (contract Bytes) (payload Bytes) (token Bytes)))) \
+                   (host (state) \
+                     (do (state.put (. m token) (. m payload)) \
+                         (record \
+                           (requests (list (record \
+                                             (contract (. m contract)) \
+                                             (payload (match (state.get (. m token)) \
+                                                        ((Some v) v) \
+                                                        ((None) (. m payload)))) \
+                                             (token (. m token)) \
+                                             (deadline-nanos Option.None)))) \
+                           (outcome Outcome.Continue))))) \
+                 (export onMessage))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:platform/guest"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                state_put_get_host_import_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "a full typed reducer sequencing put(bare) then get(compound) must emit on the typed path: {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("the sequenced put;get reducer emits a component");
+    let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+    v.validate_all(bytes)
+        .expect("the sequenced put;get reducer component validates");
+    let req = cdz_run::required_runtime(bytes)
+        .expect("the sequenced put;get reducer component loads on the pinned wasmtime");
+    assert!(
+        req.is_some_and(|r| r.import_name.contains("cadenza:runtime/heap")),
+        "the sequenced reducer composes the value-heap runtime"
+    );
+    assert!(
+        String::from_utf8_lossy(bytes).contains("cadenza:platform/state"),
+        "the sequenced reducer imports the state host interface at the world's FQ name"
+    );
+}
+
 /// W4c-b-iii: a typed reducer performing `identity.id : () -> list<u8>` — a host op with a COMPOUND
 /// (`list<u8>`) RESULT — EMITS + VALIDATES + LOADS via the SHARED-ALLOCATOR combined assembler. The mem
 /// module exports memory + `cabi_realloc`; the wrapper core IMPORTS `"mem"`.`"cabi_realloc"` (one bump cursor
