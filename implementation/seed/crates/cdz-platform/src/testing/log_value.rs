@@ -32,13 +32,16 @@
 //! `0`/`1`, so no fidelity is lost. Decoding is total: any malformation is a rejected log ([`deserialize`]
 //! returns `None`), never a panic.
 
-use super::observation::{BlobOp, Entry, EventKind, EventOp, KvOp, ProvOp, Record, SpawnInfo};
+use super::observation::{
+    BlobOp, Entry, EventKind, EventOp, GraphOp, KvOp, ProvOp, Record, SpawnInfo,
+};
 use crate::contract_value::{
     as_ascribed, ascribe, bare_ctor, bytes_leaf, qctor, read_bytes, read_uint, record,
     record_field, uint_leaf,
 };
 use crate::{
-    Bytes, ContractId, Error, Hash, HostId, Origin, ProgramHash, ReducerId, ReducerKind, Str,
+    Bytes, ContractId, Dir, EdgeKind, Error, Hash, HostId, Origin, ProgramHash, ReducerId,
+    ReducerKind, Str,
 };
 use cadenza_ast::ast::Struct;
 use cadenza_ast::ast::{Arenas, Builder, Leaf, StructId};
@@ -129,6 +132,7 @@ fn entry_value(b: &mut Builder, e: &Entry) -> StructId {
         Entry::Blob(op) => blob_value(b, op),
         Entry::Event(op) => event_value(b, op),
         Entry::Provenance(op) => prov_value(b, op),
+        Entry::Graph(op) => graph_value(b, op),
         Entry::Spawn(info) => spawn_value(b, info),
     }
 }
@@ -142,6 +146,10 @@ fn read_entry(arenas: &Arenas, id: StructId) -> Option<Entry> {
             Entry::Event(read_event(arenas, inner, tag)?)
         }
         "ProgramOf" => Entry::Provenance(read_prov(arenas, inner, tag)?),
+        "GraphInsert" | "GraphContains" | "GraphRemove" | "GraphLink" | "GraphSetEdges"
+        | "GraphNeighbors" | "GraphInKinds" | "GraphReach" => {
+            Entry::Graph(read_graph(arenas, inner, tag)?)
+        }
         "Spawn" => Entry::Spawn(read_spawn(arenas, inner)?),
         _ => return None,
     })
@@ -472,6 +480,214 @@ fn read_prov(arenas: &Arenas, id: StructId, tag: &str) -> Option<ProvOp> {
     })
 }
 
+// --- graph ---
+
+/// A reducer-id list as a name-headed list of raw-hash byte leaves, preserving order.
+fn reducer_list(b: &mut Builder, ids: &[ReducerId]) -> StructId {
+    let items = ids
+        .iter()
+        .map(|r| bytes_leaf(b, r.hash().as_bytes()))
+        .collect();
+    list_value(b, items)
+}
+
+fn read_reducer_list(arenas: &Arenas, id: StructId) -> Option<Vec<ReducerId>> {
+    list_items(arenas, id)?
+        .iter()
+        .map(|&r| read_reducer(arenas, r))
+        .collect()
+}
+
+/// An edge-kind as its raw hash bytes (a `for_contract(C)` kind is `C`'s hash, matchable relationally).
+fn edge_kind_leaf(b: &mut Builder, kind: &EdgeKind) -> StructId {
+    bytes_leaf(b, kind.hash().as_bytes())
+}
+
+fn read_edge_kind(arenas: &Arenas, id: StructId) -> Option<EdgeKind> {
+    Some(EdgeKind::from_hash(read_hash(arenas, id)?))
+}
+
+fn edge_kind_list(b: &mut Builder, kinds: &[EdgeKind]) -> StructId {
+    let items = kinds.iter().map(|k| edge_kind_leaf(b, k)).collect();
+    list_value(b, items)
+}
+
+fn read_edge_kind_list(arenas: &Arenas, id: StructId) -> Option<Vec<EdgeKind>> {
+    list_items(arenas, id)?
+        .iter()
+        .map(|&k| read_edge_kind(arenas, k))
+        .collect()
+}
+
+fn dir_str(dir: Dir) -> &'static str {
+    match dir {
+        Dir::Out => "out",
+        Dir::In => "in",
+    }
+}
+
+fn read_dir(s: &str) -> Option<Dir> {
+    match s {
+        "out" => Some(Dir::Out),
+        "in" => Some(Dir::In),
+        _ => None,
+    }
+}
+
+fn graph_value(b: &mut Builder, op: &GraphOp) -> StructId {
+    match op {
+        GraphOp::Insert { node, added } => {
+            let node = bytes_leaf(b, node.hash().as_bytes());
+            let added = bool_value(b, *added);
+            tagged(b, "GraphInsert", vec![("node", node), ("added", added)])
+        }
+        GraphOp::Contains { node, present } => {
+            let node = bytes_leaf(b, node.hash().as_bytes());
+            let present = bool_value(b, *present);
+            tagged(
+                b,
+                "GraphContains",
+                vec![("node", node), ("present", present)],
+            )
+        }
+        GraphOp::Remove { node, existed } => {
+            let node = bytes_leaf(b, node.hash().as_bytes());
+            let existed = bool_value(b, *existed);
+            tagged(b, "GraphRemove", vec![("node", node), ("existed", existed)])
+        }
+        GraphOp::Link {
+            from,
+            to,
+            kind,
+            added,
+        } => {
+            let from = bytes_leaf(b, from.hash().as_bytes());
+            let to = bytes_leaf(b, to.hash().as_bytes());
+            let kind = edge_kind_leaf(b, kind);
+            let added = bool_value(b, *added);
+            tagged(
+                b,
+                "GraphLink",
+                vec![("from", from), ("to", to), ("kind", kind), ("added", added)],
+            )
+        }
+        GraphOp::SetEdges {
+            from,
+            kind,
+            targets,
+            prior,
+        } => {
+            let from = bytes_leaf(b, from.hash().as_bytes());
+            let kind = edge_kind_leaf(b, kind);
+            let targets = reducer_list(b, targets);
+            let prior = reducer_list(b, prior);
+            tagged(
+                b,
+                "GraphSetEdges",
+                vec![
+                    ("from", from),
+                    ("kind", kind),
+                    ("targets", targets),
+                    ("prior", prior),
+                ],
+            )
+        }
+        GraphOp::Neighbors {
+            node,
+            kind,
+            dir,
+            result,
+        } => {
+            let node = bytes_leaf(b, node.hash().as_bytes());
+            let kind = edge_kind_leaf(b, kind);
+            let dir = str_leaf(b, dir_str(*dir));
+            let result = reducer_list(b, result);
+            tagged(
+                b,
+                "GraphNeighbors",
+                vec![
+                    ("node", node),
+                    ("kind", kind),
+                    ("dir", dir),
+                    ("result", result),
+                ],
+            )
+        }
+        GraphOp::InKinds { node, result } => {
+            let node = bytes_leaf(b, node.hash().as_bytes());
+            let result = edge_kind_list(b, result);
+            tagged(b, "GraphInKinds", vec![("node", node), ("result", result)])
+        }
+        GraphOp::Reach {
+            node,
+            kind,
+            dir,
+            result,
+        } => {
+            let node = bytes_leaf(b, node.hash().as_bytes());
+            let kind = edge_kind_leaf(b, kind);
+            let dir = str_leaf(b, dir_str(*dir));
+            let result = reducer_list(b, result);
+            tagged(
+                b,
+                "GraphReach",
+                vec![
+                    ("node", node),
+                    ("kind", kind),
+                    ("dir", dir),
+                    ("result", result),
+                ],
+            )
+        }
+    }
+}
+
+fn read_graph(arenas: &Arenas, id: StructId, tag: &str) -> Option<GraphOp> {
+    Some(match tag {
+        "GraphInsert" => GraphOp::Insert {
+            node: read_reducer(arenas, field(arenas, id, "node")?)?,
+            added: read_bool(arenas, field(arenas, id, "added")?)?,
+        },
+        "GraphContains" => GraphOp::Contains {
+            node: read_reducer(arenas, field(arenas, id, "node")?)?,
+            present: read_bool(arenas, field(arenas, id, "present")?)?,
+        },
+        "GraphRemove" => GraphOp::Remove {
+            node: read_reducer(arenas, field(arenas, id, "node")?)?,
+            existed: read_bool(arenas, field(arenas, id, "existed")?)?,
+        },
+        "GraphLink" => GraphOp::Link {
+            from: read_reducer(arenas, field(arenas, id, "from")?)?,
+            to: read_reducer(arenas, field(arenas, id, "to")?)?,
+            kind: read_edge_kind(arenas, field(arenas, id, "kind")?)?,
+            added: read_bool(arenas, field(arenas, id, "added")?)?,
+        },
+        "GraphSetEdges" => GraphOp::SetEdges {
+            from: read_reducer(arenas, field(arenas, id, "from")?)?,
+            kind: read_edge_kind(arenas, field(arenas, id, "kind")?)?,
+            targets: read_reducer_list(arenas, field(arenas, id, "targets")?)?,
+            prior: read_reducer_list(arenas, field(arenas, id, "prior")?)?,
+        },
+        "GraphNeighbors" => GraphOp::Neighbors {
+            node: read_reducer(arenas, field(arenas, id, "node")?)?,
+            kind: read_edge_kind(arenas, field(arenas, id, "kind")?)?,
+            dir: read_dir(str_at(arenas, field(arenas, id, "dir")?)?)?,
+            result: read_reducer_list(arenas, field(arenas, id, "result")?)?,
+        },
+        "GraphInKinds" => GraphOp::InKinds {
+            node: read_reducer(arenas, field(arenas, id, "node")?)?,
+            result: read_edge_kind_list(arenas, field(arenas, id, "result")?)?,
+        },
+        "GraphReach" => GraphOp::Reach {
+            node: read_reducer(arenas, field(arenas, id, "node")?)?,
+            kind: read_edge_kind(arenas, field(arenas, id, "kind")?)?,
+            dir: read_dir(str_at(arenas, field(arenas, id, "dir")?)?)?,
+            result: read_reducer_list(arenas, field(arenas, id, "result")?)?,
+        },
+        _ => return None,
+    })
+}
+
 fn event_kind_str(kind: EventKind) -> &'static str {
     match kind {
         EventKind::Message => "message",
@@ -680,11 +896,11 @@ fn read_hash(arenas: &Arenas, id: StructId) -> Option<Hash> {
 mod tests {
     use super::{deserialize, serialize};
     use crate::testing::observation::{
-        BlobOp, Entry, EventKind, EventOp, KvOp, ProvOp, Record, SpawnInfo,
+        BlobOp, Entry, EventKind, EventOp, GraphOp, KvOp, ProvOp, Record, SpawnInfo,
     };
     use crate::{
-        Bytes, ContractId, Error, Hash, HashTag, HostId, Origin, ProgramHash, ReducerId,
-        ReducerKind, Str,
+        Bytes, ContractId, Dir, EdgeKind, Error, Hash, HashTag, HostId, Origin, ProgramHash,
+        ReducerId, ReducerKind, Str,
     };
     use std::ops::Bound;
 
@@ -889,6 +1105,70 @@ mod tests {
                 Entry::Provenance(ProvOp::ProgramOf {
                     reducer: ReducerId::of(b"gone"),
                     program: None,
+                }),
+            ),
+            rec(
+                21,
+                Entry::Graph(GraphOp::Insert {
+                    node: ReducerId::of(b"n"),
+                    added: true,
+                }),
+            ),
+            rec(
+                22,
+                Entry::Graph(GraphOp::Contains {
+                    node: ReducerId::of(b"n"),
+                    present: false,
+                }),
+            ),
+            rec(
+                23,
+                Entry::Graph(GraphOp::Remove {
+                    node: ReducerId::of(b"n"),
+                    existed: true,
+                }),
+            ),
+            rec(
+                24,
+                Entry::Graph(GraphOp::Link {
+                    from: ReducerId::of(b"a"),
+                    to: ReducerId::of(b"b"),
+                    kind: EdgeKind::spawn(),
+                    added: true,
+                }),
+            ),
+            rec(
+                25,
+                Entry::Graph(GraphOp::SetEdges {
+                    from: ReducerId::of(b"owner"),
+                    kind: EdgeKind::for_contract(ContractId::of(b"http.get")),
+                    targets: vec![ReducerId::of(b"h1"), ReducerId::of(b"h2")],
+                    prior: vec![],
+                }),
+            ),
+            rec(
+                26,
+                Entry::Graph(GraphOp::Neighbors {
+                    node: ReducerId::of(b"owner"),
+                    kind: EdgeKind::for_contract(ContractId::of(b"http.get")),
+                    dir: Dir::Out,
+                    result: vec![ReducerId::of(b"h1"), ReducerId::of(b"h2")],
+                }),
+            ),
+            rec(
+                27,
+                Entry::Graph(GraphOp::InKinds {
+                    node: ReducerId::of(b"n"),
+                    result: vec![EdgeKind::spawn(), EdgeKind::watch_exit()],
+                }),
+            ),
+            rec(
+                28,
+                Entry::Graph(GraphOp::Reach {
+                    node: ReducerId::of(b"leaf"),
+                    kind: EdgeKind::spawn(),
+                    dir: Dir::Out,
+                    result: vec![ReducerId::of(b"parent"), ReducerId::of(b"root")],
                 }),
             ),
         ];

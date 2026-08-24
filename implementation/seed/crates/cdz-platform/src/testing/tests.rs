@@ -2,17 +2,19 @@
 //! exercising the public `testing` surface (`design/cadenza-platform.md` §3/§4/§7/§8/§9).
 
 use super::{
-    BlobOp, CheckOutcome, Entry, EventKind, EventOp, Harness, KvOp, ObservationLog, ProvOp,
-    RecordingBlobStore, RecordingDelivery, RecordingKvStore, RecordingProgramStore,
-    RecordingProvenance, RecordingReducer, Run, SpawnSpec, check_contract, check_message,
-    decode_check, deserialize_log, encode_verdict, render, verdict_contract, verdict_in,
+    BlobOp, CheckOutcome, Entry, EventKind, EventOp, GraphOp, Harness, KvOp, ObservationLog,
+    ProvOp, RecordingBlobStore, RecordingDelivery, RecordingGraph, RecordingKvStore,
+    RecordingProgramStore, RecordingProvenance, RecordingReducer, Run, SpawnSpec, check_contract,
+    check_message, decode_check, deserialize_log, encode_verdict, render, verdict_contract,
+    verdict_in,
 };
 use crate::{
-    BachRuntime, BlobStore, Bytes, ContractId, Delivered, Delivery, Error, FireAfter, Fired, Hash,
-    HashTag, HostId, InMemoryBlobStore, InMemoryEventRegistry, InMemoryKvStore,
-    InMemoryReducerGraph, KeyRange, KvStore, Links, Message, NoDelivery, Notification, Origin,
-    Outcome, ProgramHash, Provenance, Reducer, ReducerId, ReducerKind, Request, Response, Runtime,
-    Spawn, Spawned, Str, System, TaskSystem, spawned_contract, timer_contract,
+    BachRuntime, BlobStore, Bytes, ContractId, Delivered, Delivery, Dir, EdgeKind, Error,
+    FireAfter, Fired, Hash, HashTag, HostId, InMemoryBlobStore, InMemoryEventRegistry,
+    InMemoryKvStore, InMemoryReducerGraph, KeyRange, KvStore, Links, Message, NoDelivery,
+    Notification, Origin, Outcome, ProgramHash, Provenance, Reducer, ReducerGraph, ReducerId,
+    ReducerKind, Request, Response, Runtime, Spawn, Spawned, Str, System, TaskSystem,
+    spawned_contract, timer_contract,
 };
 use std::ops::Bound;
 use std::sync::Arc;
@@ -335,6 +337,73 @@ async fn program_of_calls_are_recorded_with_the_query_and_the_answer() {
             reducer: ReducerId::of(b"gone"),
             program: None,
         })
+    );
+}
+
+#[tokio::test]
+async fn graph_calls_are_recorded_with_args_result_and_order_and_pass_through() {
+    // Wrapping the graph host boundary records each read/write with its result (§7), attributed to the
+    // acting reducer, preserving list order — and the wrapped graph behaves exactly as the inner one (§9).
+    let who = origin(b"router");
+    let owner = ReducerId::of(b"owner");
+    let h1 = ReducerId::of(b"h1");
+    let h2 = ReducerId::of(b"h2");
+    let kind = EdgeKind::for_contract(ContractId::of(b"http.get"));
+    let log = ObservationLog::new();
+    let g = RecordingGraph::new(
+        Arc::new(InMemoryReducerGraph::new()),
+        who,
+        log.clone(),
+        tick_clock,
+    );
+
+    // Insert the owner, install a handler chain for a contract, then read it back — the routing pattern the
+    // event reducer performs. The wrapped answers pass through unchanged.
+    assert!(g.insert(owner).await, "owner newly added");
+    let prior = g.set_edges(owner, kind, vec![h1, h2]).await;
+    assert!(prior.is_empty(), "no prior chain");
+    let chain = g.neighbors(owner, kind, Dir::Out).await;
+    assert_eq!(
+        chain,
+        vec![h1, h2],
+        "reads the chain back in order — pass-through"
+    );
+
+    let records = log.snapshot();
+    assert_eq!(
+        records.len(),
+        3,
+        "insert + set_edges + neighbors, in call order"
+    );
+    for (i, r) in records.iter().enumerate() {
+        assert_eq!(r.seq, i as u64);
+        assert_eq!(r.source, who, "attributed to the acting reducer");
+    }
+    assert_eq!(
+        records[0].entry,
+        Entry::Graph(GraphOp::Insert {
+            node: owner,
+            added: true,
+        })
+    );
+    assert_eq!(
+        records[1].entry,
+        Entry::Graph(GraphOp::SetEdges {
+            from: owner,
+            kind,
+            targets: vec![h1, h2],
+            prior: vec![],
+        })
+    );
+    assert_eq!(
+        records[2].entry,
+        Entry::Graph(GraphOp::Neighbors {
+            node: owner,
+            kind,
+            dir: Dir::Out,
+            result: vec![h1, h2],
+        }),
+        "the recorded neighbours preserve the chain order"
     );
 }
 

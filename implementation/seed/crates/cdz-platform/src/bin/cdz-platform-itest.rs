@@ -31,8 +31,8 @@
 
 use cdz_platform::testing::{
     BlobSource, CheckOutcome, Harness, HarnessSpec, ObservationLog, PureRun, RecordingBlobStore,
-    RecordingDelivery, RecordingKvStore, RecordingProvenance, SpawnSpec, check_message,
-    no_verdict_reason, render, verdict_in,
+    RecordingDelivery, RecordingGraph, RecordingKvStore, RecordingProvenance, SpawnSpec,
+    check_message, no_verdict_reason, render, verdict_in,
 };
 use cdz_platform::{
     BachRuntime, BlobStore, Bytes, Delivery, HostId, InMemoryBlobStore, InMemoryKvStore,
@@ -280,9 +280,22 @@ fn wasm_store(cas: Arc<dyn BlobStore>, log: ObservationLog, host: HostId) -> Was
                 BachRuntime::now as fn() -> u64,
             ))
         });
-    // The graph factory hands out the one shared node-wide graph (a plain `move |_id| graph.clone()`),
-    // mirroring make_blobs/make_kv. A future graph-recording run wraps this in a RecordingGraph decorator.
+    // The graph factory records each reducer's node-side graph calls (reads + writes of the routing
+    // substrate, §7) via a RecordingGraph decorator over the one shared node-wide graph — so a conformance
+    // run asserts how a reducer inspected/changed the graph (e.g. an event reducer's neighbors read for a
+    // contract is how it routes). The base graph is genuinely shared (all reducers see one graph); the
+    // decorator only observes, attributed per reducer.
     let graph: Arc<dyn ReducerGraph> = Arc::new(InMemoryReducerGraph::new());
+    let graph_log = log.clone();
+    let make_graph: Arc<dyn Fn(ReducerId) -> Arc<dyn ReducerGraph> + Send + Sync> =
+        Arc::new(move |id| {
+            Arc::new(RecordingGraph::new(
+                graph.clone(),
+                Origin { reducer: id, host },
+                graph_log.clone(),
+                BachRuntime::now as fn() -> u64,
+            )) as Arc<dyn ReducerGraph>
+        });
     // The delivery factory records each reducer's privileged `deliver` (the §4 routing ACT) into the log via a
     // RecordingDelivery decorator, over a NoDelivery base — the base never lands (the itest has no live
     // routing target), but the ACT itself is what a §4 dispatch run asserts, and it is recorded regardless.
@@ -309,7 +322,7 @@ fn wasm_store(cas: Arc<dyn BlobStore>, log: ObservationLog, host: HostId) -> Was
                 BachRuntime::now as fn() -> u64,
             )) as Arc<dyn Provenance>
         });
-    WasmProgramStore::new(cas, make_blobs, make_kv, Arc::new(move |_id| graph.clone()))
+    WasmProgramStore::new(cas, make_blobs, make_kv, make_graph)
         .expect("build the wasm program store (the wasm engine must initialize)")
         .with_delivery(make_delivery)
         .with_provenance(make_provenance)

@@ -13,11 +13,13 @@
 //! decorator idea applied to a reducer rather than a store — record every event a reducer folds,
 //! emits, or closes with, then defer to the wrapped reducer unchanged.
 
-use super::observation::{BlobOp, Entry, EventKind, EventOp, KvOp, ObservationLog, ProvOp};
+use super::observation::{
+    BlobOp, Entry, EventKind, EventOp, GraphOp, KvOp, ObservationLog, ProvOp,
+};
 use crate::{
-    BlobStore, Bytes, ContractId, Delivered, Delivery, Hash, HostId, KeyRange, KvKeyScan, KvScan,
-    KvStore, Message, Notification, Origin, Outcome, ProgramHash, ProgramStore, Provenance,
-    Reducer, ReducerId, Request, Response, SpawnContext, Str,
+    BlobStore, Bytes, ContractId, Delivered, Delivery, Dir, EdgeKind, Hash, HostId, KeyRange,
+    KvKeyScan, KvScan, KvStore, Message, Notification, Origin, Outcome, ProgramHash, ProgramStore,
+    Provenance, Reducer, ReducerGraph, ReducerId, Request, Response, SpawnContext, Str,
 };
 use async_trait::async_trait;
 use futures_util::FutureExt as _; // catch_unwind — record an uncontrolled fold failure (§10) before it unwinds
@@ -296,6 +298,124 @@ impl Provenance for RecordingProvenance {
             Entry::Provenance(ProvOp::ProgramOf { reducer, program }),
         );
         program
+    }
+}
+
+/// A [`ReducerGraph`] that records every node-side graph call — read or write — to an [`ObservationLog`],
+/// then defers to the wrapped graph (`design/cadenza-platform.md` §7/§9). Wrapping the graph host boundary
+/// makes the routing substrate observable: which nodes/edges a reducer inspected or changed, and the result
+/// — e.g. an event reducer's `neighbors(kind = for_contract(C))` read is exactly how it routes `C`, so a
+/// conformance run asserts "read the chain for C, got handler H". Records the eight host-wired methods
+/// (`insert`/`contains`/`remove`/`link`/`set_edges`/`neighbors`/`in_kinds`/`reach`); the trait's other
+/// methods are Rust conveniences that decompose to these on the wrapped graph, so they are not double-counted.
+/// Records the result (deferred after the call, like [`RecordingKvStore`]'s `get`), then returns it unchanged.
+/// Behind an `Arc` like the shared graph, so the injected factory clones the one node-wide graph.
+pub struct RecordingGraph {
+    inner: Arc<dyn ReducerGraph>,
+    owner: Origin,
+    log: ObservationLog,
+    now: fn() -> u64,
+}
+
+impl RecordingGraph {
+    /// Wrap `inner`, attributing every recorded graph call to `owner`, appending to `log`, and stamping each
+    /// record with `now` (the runtime's clock).
+    pub fn new(
+        inner: Arc<dyn ReducerGraph>,
+        owner: Origin,
+        log: ObservationLog,
+        now: fn() -> u64,
+    ) -> Self {
+        Self {
+            inner,
+            owner,
+            log,
+            now,
+        }
+    }
+
+    fn record(&self, op: GraphOp) {
+        self.log.record((self.now)(), self.owner, Entry::Graph(op));
+    }
+}
+
+#[async_trait]
+impl ReducerGraph for RecordingGraph {
+    async fn insert(&self, node: ReducerId) -> bool {
+        let added = self.inner.insert(node).await;
+        self.record(GraphOp::Insert { node, added });
+        added
+    }
+
+    async fn contains(&self, node: ReducerId) -> bool {
+        let present = self.inner.contains(node).await;
+        self.record(GraphOp::Contains { node, present });
+        present
+    }
+
+    async fn remove(&self, node: ReducerId) -> bool {
+        let existed = self.inner.remove(node).await;
+        self.record(GraphOp::Remove { node, existed });
+        existed
+    }
+
+    async fn link(&self, from: ReducerId, to: ReducerId, kind: EdgeKind) -> bool {
+        let added = self.inner.link(from, to, kind).await;
+        self.record(GraphOp::Link {
+            from,
+            to,
+            kind,
+            added,
+        });
+        added
+    }
+
+    async fn set_edges(
+        &self,
+        from: ReducerId,
+        kind: EdgeKind,
+        targets: Vec<ReducerId>,
+    ) -> Vec<ReducerId> {
+        let recorded_targets = targets.clone();
+        let prior = self.inner.set_edges(from, kind, targets).await;
+        self.record(GraphOp::SetEdges {
+            from,
+            kind,
+            targets: recorded_targets,
+            prior: prior.clone(),
+        });
+        prior
+    }
+
+    async fn neighbors(&self, node: ReducerId, kind: EdgeKind, dir: Dir) -> Vec<ReducerId> {
+        let result = self.inner.neighbors(node, kind, dir).await;
+        self.record(GraphOp::Neighbors {
+            node,
+            kind,
+            dir,
+            result: result.clone(),
+        });
+        result
+    }
+
+    async fn in_kinds(&self, node: ReducerId) -> Vec<EdgeKind> {
+        let result = self.inner.in_kinds(node).await;
+        self.record(GraphOp::InKinds {
+            node,
+            result: result.clone(),
+        });
+        result
+    }
+
+    async fn reach(&self, node: ReducerId, kind: EdgeKind, dir: Dir) -> Vec<ReducerId> {
+        let result = self.inner.reach(node, kind, dir).await;
+        self.record(GraphOp::Reach {
+            node,
+            kind,
+            dir,
+            result: result.clone(),
+        });
+        result
     }
 }
 
