@@ -74,9 +74,11 @@ directive. On each effect (a `Message` the kernel routes to it):
 1. Read the routing substrate — the handler chain for the effect's contract — from the reducer graph via
    `graph.neighbors(contract/target) -> list<list<u8>>` (v-rb's shape-e, in flight).
 2. If a handler is registered, **forward** the effect to it (deliver it into the handler's log); otherwise
-   apply the default behavior. Both are the event reducer executing `deliver` on the emitter's behalf — the
-   emitter only ever emitted an effect.
-3. On a handler's reply, **respond** back to the caller (a `response` deliver correlated by token).
+   **forward to the default handler** — an unregistered contract is NOT auto-rejected with `MissingHandler`;
+   the default handler receives it and decides (operator decision below). Both are the event reducer executing
+   `deliver` on the emitter's behalf — the emitter only ever emitted an effect.
+3. On a handler's reply, **respond** back to the caller (a `response` deliver correlated by token). The default
+   handler, if it declines an effect, sends a **rejection response** back to the caller the same way.
 
 The §4 dispatch guests (notification/message/response, merged #3164/#3180/#3181) are the primitives it
 composes: it IS an event reducer performing `deliver`, driven by a graph read rather than echoing to the
@@ -109,10 +111,40 @@ sender.
 - **v-rb:** `graph.neighbors` (shape-e, read — confirmed my next need) then `set-edges` (shape-f, write).
 - **v-platform-itest:** the Gap-A `registry` directive + non-vacuous conformance runs (#3184's CDZ_STORE seed).
 
-## Open questions for the operator
+## Observation-model consideration — is the deliver act recorded?
 
-1. Build increment 1 (harness-settable registry) now? (It is non-gated; increment 2 is gated on
-   `graph.neighbors`.)
-2. Default no-handler semantics: does the default event handler **reject** an unregistered contract
-   (`MissingHandler`) or permissively forward? (Affects §4 validation error semantics.)
-3. (`cas-pin` capability is deferred to the CAS-GC review, not asked here.)
+Surfaced building the §4 dispatch conformance runs (v-platform-itest): an event reducer's `deliver` is a host
+call (`host.rs` `deliver_notification` → `System::deliver` → the target's mailbox) — it writes **nothing** to
+the observation log, and it is not a `step.requests` entry so it is not recorded as `Emitted`. A `Delivered`
+appears **only when a spawned target folds it** (its recording wrapper). So a routed event to an unspawned
+sender records nothing, and "spawn an event reducer, deliver a message, assert what it routed" is not
+assertable without a spawned listener to receive it.
+
+For the §4 runs today the fix is a harness one (v-platform-itest): deliver with `from = { task = <spawned
+listener> }` so the routed event lands on a spawned reducer that records the `Delivered` (the run tests the
+full route). But it raises a real question for this rework: **should the platform record the deliver act
+directly** — the event handler's whole purpose is to route, and that act being invisible unless the target is
+spawned means the conformance suite can't observe routing behavior in isolation. Options: leave it (routing is
+observed via the target's `Delivered`), or add a record for the deliver act at the host boundary. Deferred to
+this rework rather than changed piecemeal — it belongs with the default-event-handler model, since that guest's
+routing is exactly what we'd want observable.
+
+## Operator decisions (resolved)
+
+- **Build the harness-settable registry (increment 1): YES.** Operator: "we should build the change to be able
+  to specify the registry." It is non-gated (v-platform-itest's lane); the default-event-handler guest
+  (increment 2) remains gated on `graph.neighbors`.
+- **Default no-handler semantics: FORWARD, don't auto-reject.** Operator: "If a handler isn't registered in the
+  registry then it's forwarded to the default handler, which then decides what to do with it. If it doesn't
+  like it then it rejects and sends a rejection response back to the caller." So the registry does not produce
+  `MissingHandler` for an unregistered contract — it forwards to the default handler, whose own logic may reject
+  (a rejection response to the caller). `MissingHandler` becomes the default handler's decision, not a routing
+  auto-fault.
+
+## Open questions
+
+1. Should the platform record the deliver **act** at the host boundary (making routing observable without a
+   spawned target), or keep observing routing only via the target's `Delivered`? (See the observation-model
+   consideration above.)
+2. (`cas-pin` capability — direct gated host call vs. routed effect — is deferred to the operator's CAS-GC
+   review; CAS-GC increment 4 is paused on it.)
