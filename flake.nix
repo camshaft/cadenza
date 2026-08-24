@@ -200,6 +200,21 @@
           # first: fileset.toSource copies are read-only. Same stub machinery as the per-crate crane checks.
           # preBuild (crane's hook — runs after crane restores cargoArtifacts' target/, before the build).
           preBuild = ''
+            # INJECT the nix-built runtime/nfc content hashes into the compiler's `option_env!` reads
+            # (rcdzc `runtime_abi.rs`), so this `cdz` STAMPS the exact runtime/nfc it will run against in
+            # THIS closure — not the platform-specific literal `codegen` last committed. The value-heap
+            # runtime's wasm is not byte-reproducible across host platforms (build-std + wasm codegen), so
+            # a committed hash drifts on any host but the one that recorded it; deriving the hash HERE, from
+            # the component nix built beside this compiler, makes the pair self-consistent on EVERY host and
+            # retires the cross-host reproducibility requirement. Read at build time via `cdz-contract blob`
+            # (no IFD — the runtime crosses as a build-time file dependency, not an eval-time string), the
+            # same content-address the store keys by and a guest's `cadenza:runtime/heap@…+<hash>` import
+            # names, so the guest resolves its heap dependency from the seeded CAS. The hashes come from the
+            # shared `hashOf` derivations (`runtimeHash`/`runtimeDebugHash`/`nfcHash`) — computed ONCE and
+            # `cat` here — not a fresh `cdz-contract blob` per consumer.
+            export CDZ_RUNTIME_HASH="$(cat ${runtimeHash})"
+            export CDZ_DEBUG_RUNTIME_HASH="$(cat ${runtimeDebugHash})"
+            export CDZ_NFC_HASH="$(cat ${nfcHash})"
             chmod -R u+w .
             ${stubNonClosure seedCompilerClosure}
             [ -f xtask/src/main.rs ] || { mkdir -p xtask/src; echo "fn main(){}" > xtask/src/main.rs; }
@@ -928,21 +943,23 @@
         #              derivation — that would rebuild + defeat the dedup). `out` stays byte-identical, so
         #              adding `raw` is a true no-op on REQUIRED_RUNTIME_HASH. Only the runtime sets emitRaw
         #              (nfc's hash is content_address of the stripped nfc; it reads no custom section).
-        # `stampNfc` (default null): a component derivation whose content address is stamped INLINE into
-        # this component's `cadenza:nfc/normalize` import before the strip — turning the bare import into the
-        # self-describing `cadenza:nfc/normalize@0.0.0+<hash>` so a runtime resolves NFC purely from the
-        # import (no runtime.toml/mapping; operator directive 2026-08-23). Only the value-heap runtimes set it
-        # (`mkRuntime`); the NFC component + guests leave it null. Hash computed at build time via
-        # `cdz-contract blob` (no IFD); stamp applied by the `cdz-component-rewrite` CLI, mirroring
-        # `xtask build`'s `stamp_nfc_into_heap` so nix and the self-build agree byte-for-byte.
-        mkStripComponent = { pname, crateDir, artifact, src, vendor, features ? [ ], emitRaw ? false, stampNfc ? null }:
+        # `stampNfcHash` (default null): the hash-file of the NFC component (a `hashOf` derivation, e.g.
+        # `nfcHash`) whose content address is stamped INLINE into this component's `cadenza:nfc/normalize`
+        # import before the strip — turning the bare import into the self-describing
+        # `cadenza:nfc/normalize@0.0.0+<hash>` so a runtime resolves NFC purely from the import (no
+        # runtime.toml/mapping; operator directive 2026-08-23). Only the value-heap runtimes set it
+        # (`mkRuntime` passes `nfcHash`); the NFC component + guests leave it null. The hash is `cat` from the
+        # SHARED `hashOf` derivation (no IFD; computed once, not re-run here) and stamped by the
+        # `cdz-component-rewrite` CLI, mirroring `xtask build`'s `stamp_nfc_into_heap` so nix and the
+        # self-build agree byte-for-byte.
+        mkStripComponent = { pname, crateDir, artifact, src, vendor, features ? [ ], emitRaw ? false, stampNfcHash ? null }:
           pkgs.stdenvNoCC.mkDerivation {
             inherit pname src;
             version = "0.0.0";
             outputs = if emitRaw then [ "out" "raw" ] else [ "out" ];
 
             nativeBuildInputs = [ rustToolchain pkgs.wasm-tools pkgs.cargo-component ]
-              ++ pkgs.lib.optionals (stampNfc != null) [ contractHasher cdzComponentRewrite ];
+              ++ pkgs.lib.optionals (stampNfcHash != null) [ cdzComponentRewrite ];
 
             featuresArg = pkgs.lib.optionalString (features != [ ])
               ("--features " + pkgs.lib.concatStringsSep "," features);
@@ -974,14 +991,14 @@
               ${pkgs.lib.optionalString emitRaw ''
                 cp target/wasm32-unknown-unknown/release/${artifact}.wasm "$raw"
               ''}
-              ${if stampNfc != null then ''
+              ${if stampNfcHash != null then ''
                 # STAMP the NFC address inline into the heap's `cadenza:nfc/normalize` import BEFORE strip
                 # (strip -a removes any `producers` the re-encode adds; the stamped+stripped bytes are the
-                # content-addressed artifact). The address is the NFC component's own content address, read
-                # here with the same `cdz-contract blob` the store keys by — so the stamped `+hash` matches
-                # `<store>/<hash>.wasm`. `$out` = stamped+stripped; `$raw` (above) stays the pre-stamp build
-                # (cdz-abi intact for codegen). Mirrors `xtask build`'s `stamp_nfc_into_heap`.
-                nfc_hash=$(cdz-contract blob ${stampNfc})
+                # content-addressed artifact). The address is the NFC component's content address, `cat` from
+                # the SHARED `hashOf` derivation (`nfcHash`) — the same value the store keys by — so the
+                # stamped `+hash` matches `<store>/<hash>.wasm`. `$out` = stamped+stripped; `$raw` (above)
+                # stays the pre-stamp build (cdz-abi intact for codegen). Mirrors `xtask build`'s `stamp_nfc_into_heap`.
+                nfc_hash=$(cat ${stampNfcHash})
                 cdz-component-rewrite \
                   target/wasm32-unknown-unknown/release/${artifact}.wasm \
                   target/wasm32-unknown-unknown/release/${artifact}.nfc-stamped.wasm \
@@ -998,10 +1015,10 @@
             '';
           };
 
-        # The value-heap runtime derivations bind mkStripComponent to the cdz-runtime crate. `stampNfc = nfc`
-        # stamps the NFC component's content address inline into the heap's `cadenza:nfc/normalize` import
-        # (self-describing dep — no runtime.toml/mapping; operator directive 2026-08-23). `nfc` is itself a
-        # plain (unstamped) mkStripComponent, so there is no cycle.
+        # The value-heap runtime derivations bind mkStripComponent to the cdz-runtime crate. `stampNfcHash =
+        # nfcHash` stamps the NFC component's content address inline into the heap's `cadenza:nfc/normalize`
+        # import (self-describing dep — no runtime.toml/mapping; operator directive 2026-08-23). `nfcHash` is
+        # `hashOf nfc` and `nfc` is itself a plain (unstamped) mkStripComponent, so there is no cycle.
         mkRuntime = { pname, features, emitRaw ? false }:
           mkStripComponent {
             inherit pname features emitRaw;
@@ -1009,7 +1026,7 @@
             artifact = "cdz_runtime";
             src = runtimeSrc;
             vendor = runtimeVendor;
-            stampNfc = nfc;
+            stampNfcHash = nfcHash;
           };
 
         # The RELEASE runtime — what a shipped program pins (REQUIRED_RUNTIME_HASH). emitRaw = true adds the
@@ -1476,6 +1493,17 @@
             cdz-contract blob ${drv} > $out
           '';
 
+        # The content address of each shipped component, derived ONCE (a single `hashOf` derivation apiece)
+        # and shared by every consumer — the `packages.*-hash` outputs, the `componentStore` filenames +
+        # runtime.toml, the compiler-hash injection (`seedCompiler`), the NFC-stamp (`mkRuntime`). Each is a
+        # tiny store file holding the base62 hash; a consumer reads it with `cat ${…Hash}` at build time (no
+        # IFD) instead of re-running `cdz-contract blob` in its own buildPhase. So the hash is computed once
+        # per component (cached, shared) rather than once per use-site — one source of truth for "the hash of
+        # this blob."
+        runtimeHash = hashOf runtime "cdz-runtime-hash";
+        runtimeDebugHash = hashOf runtimeDebug "cdz-runtime-debug-hash";
+        nfcHash = hashOf nfc "cdz-nfc-hash";
+
         # ── R2: the content-addressed component STORE ─────────────────────────────────────────────
         #
         # Assemble every nix-built component into ONE store directory, each file named by its DERIVED
@@ -1487,22 +1515,24 @@
         # change coordinated with v-runtime + the harness — this increment only PRODUCES the store.)
         # Filenames + runtime.toml use the platform content address (`cdz-contract blob` = base62 Blob hash),
         # matching `content_address` / the store's `put()` so a program resolves the runtime identically here.
-        componentStore = pkgs.runCommand "cdz-component-store" { nativeBuildInputs = [ contractHasher ]; } ''
+        componentStore = pkgs.runCommand "cdz-component-store" { } ''
           set -euo pipefail
           mkdir -p "$out"
           # Store every component (both heaps + the NFC dependency) by its content address — a pure CAS.
           # The heaps import `cadenza:nfc/normalize@0.0.0+<nfc-hash>` inline (stamped by `mkRuntime`), so a
           # runtime resolves its NFC dependency to `<store>/<nfc-hash>.wasm` DIRECTLY from the import — the
-          # NFC file must be present here (this loop stores it), but no manifest maps to it.
-          for c in ${runtime} ${runtimeDebug} ${nfc}; do
-            h=$(cdz-contract blob "$c")
-            ${pkgs.coreutils}/bin/cp "$c" "$out/$h.wasm"
-          done
+          # NFC file must be present here, but no manifest maps to it. Filenames use the SHARED `hashOf`
+          # derivations (`cat` here, not re-hashed), so the store keys agree by construction with the
+          # compiler-injected + guest-imported + parity-checked hashes — one source of truth per blob.
+          rt=$(cat ${runtimeHash})
+          dbg=$(cat ${runtimeDebugHash})
+          nfch=$(cat ${nfcHash})
+          ${pkgs.coreutils}/bin/cp ${runtime} "$out/$rt.wasm"
+          ${pkgs.coreutils}/bin/cp ${runtimeDebug} "$out/$dbg.wasm"
+          ${pkgs.coreutils}/bin/cp ${nfc} "$out/$nfch.wasm"
           # An INFORMATIONAL manifest of the heap builds — NOT read by any executable to resolve anything
           # (the NFC dep is self-describing inline in each heap; operator directive 2026-08-23: no mapping
           # file passed to executables). Mirrors `xtask build`'s runtime.toml (no `nfc =` line).
-          rt=$(cdz-contract blob ${runtime})
-          dbg=$(cdz-contract blob ${runtimeDebug})
           cat > "$out/runtime.toml" <<EOF
           # Cadenza content-addressed store — the value-heap runtime builds (informational; the NFC
           # dependency is resolved from each heap's self-describing inline import, not from this file).
@@ -1924,13 +1954,16 @@
         # packages.runtime (stripped) is byte-unchanged, so exposing this does not move REQUIRED_RUNTIME_HASH.
         packages.runtime-raw = runtime.raw;
         packages.runtime-debug = runtimeDebug;
-        packages.runtime-hash = hashOf runtime "cdz-runtime-hash";
-        packages.runtime-debug-hash = hashOf runtimeDebug "cdz-runtime-debug-hash";
+        # The `*-hash` outputs are the SHARED `hashOf` derivations (also consumed by componentStore + the
+        # compiler-hash injection + the NFC-stamp), so `nix build .#runtime-hash` yields the exact file those
+        # consumers `cat` — one hash derivation per component, not one per use-site.
+        packages.runtime-hash = runtimeHash;
+        packages.runtime-debug-hash = runtimeDebugHash;
 
         # N1: the NFC component (`cdz-nfc`) the runtime imports by hash (REQUIRED_NFC_HASH). `.#nfc` is
         # the stripped component; `.#nfc-hash` its derived content address.
         packages.nfc = nfc;
-        packages.nfc-hash = hashOf nfc "cdz-nfc-hash";
+        packages.nfc-hash = nfcHash;
 
         # No per-reducer `packages.*` aliases (operator 2026-08-24 — no hardcoded reducer names): every
         # Cadenza guest is auto-enumerated in `harnessPrograms` + built by its `harness-<reducer>-echo` check
@@ -1984,10 +2017,12 @@
         # `xtask codegen` already recorded in runtime_abi.rs. This reads the committed value only to
         # COMPARE — the flake never uses it as the build's asserted output. It catches a divergence
         # between the nix build and the xtask build (e.g. a toolchain/vendor drift) at `nix flake
-        # check` time. `runtime_abi.rs` is `@generated by cargo xtask codegen`; we extract the base62 hash
-        # literal following the named `pub const … : &str =` declaration (guarded: the split MUST match,
-        # else we THROW rather than compare against a stray literal). The recorded hash is now the platform
-        # content address — a 45-char base62 string (`0-9A-Za-z`, §8), not the old 64-hex.
+        # check` time. `runtime_abi.rs` is `@generated by cargo xtask codegen`; each hash const is now
+        # `= match option_env!("CDZ_…") { Some(h) => h, None => "<hash>" }` (the compile-time override, so a
+        # nix build can inject the runtime it built — see `seedCompiler`), so the COMMITTED value is the
+        # 45-char base62 literal in the `None =>` DEFAULT arm. We split on that arm marker and take the
+        # leading 45 base62 chars (guarded: the marker MUST be present and the chars MUST be base62, else we
+        # THROW rather than compare against a stray literal). Platform content address, §8 — not the old 64-hex.
         checks =
           let
             abi = builtins.readFile
@@ -1997,17 +2032,26 @@
                 decl = "pub const " + constName + ": &str =";
                 parts = builtins.split decl abi;
                 afterDecl = if builtins.length parts >= 3 then pkgs.lib.last parts else null;
-                m = if afterDecl == null then null
-                    else builtins.match "[^\"]*\"([0-9A-Za-z]{45})\".*" afterDecl;
+                # The const's default arm: `None => "<45-char base62>"`. Split on the marker; the segment
+                # after the FIRST occurrence (this const's own arm, since `afterDecl` begins at this decl)
+                # starts with the hash, so its leading 45 chars are it.
+                marker = "None => \"";
+                afterMarker =
+                  if afterDecl == null then null
+                  else let seg = builtins.split marker afterDecl;
+                       in if builtins.length seg >= 3 then pkgs.lib.elemAt seg 2 else null;
+                hash = if afterMarker == null then null
+                       else builtins.substring 0 45 afterMarker;
+                valid = hash != null && builtins.match "[0-9A-Za-z]{45}" hash != null;
               in
               if afterDecl == null then
                 throw "flake.nix: `${decl}` not found in runtime_abi.rs (codegen shape changed?)"
-              else if m == null then
-                throw "flake.nix: `${decl}` found but no 45-char base62 literal followed it"
-              else builtins.head m;
-            parity = { name, drv, constName }:
-              pkgs.runCommand "${name}-hash-parity" { nativeBuildInputs = [ contractHasher ]; } ''
-                got=$(cdz-contract blob ${drv})
+              else if !valid then
+                throw "flake.nix: `${decl}` found but its `None =>` arm holds no 45-char base62 default literal"
+              else hash;
+            parity = { name, hashFile, constName }:
+              pkgs.runCommand "${name}-hash-parity" { } ''
+                got=$(cat ${hashFile})
                 want=${recordedHash constName}
                 if [ "$got" != "$want" ]; then
                   echo "PARITY FAIL: nix-built ${name} hash $got != runtime_abi.rs ${constName} $want" >&2
@@ -2176,9 +2220,9 @@
             '';
             # bindings the backstop aggregate references (kept as `let` so both the aggregate + the individual
             # `checks.*` attrs below share ONE derivation each — no rebuild).
-            runtimeHashParity = parity { name = "runtime"; drv = runtime; constName = "REQUIRED_RUNTIME_HASH"; };
-            runtimeDebugHashParity = parity { name = "runtime-debug"; drv = runtimeDebug; constName = "DEBUG_RUNTIME_HASH"; };
-            nfcHashParity = parity { name = "nfc"; drv = nfc; constName = "REQUIRED_NFC_HASH"; };
+            runtimeHashParity = parity { name = "runtime"; hashFile = runtimeHash; constName = "REQUIRED_RUNTIME_HASH"; };
+            runtimeDebugHashParity = parity { name = "runtime-debug"; hashFile = runtimeDebugHash; constName = "DEBUG_RUNTIME_HASH"; };
+            nfcHashParity = parity { name = "nfc"; hashFile = nfcHash; constName = "REQUIRED_NFC_HASH"; };
             # The contract name→hash mapping is well-formed: a non-empty JSON object whose every value is a
             # base64url contract-id (§8 text form — `[A-Za-z0-9_-]`, no padding). Catches a silently-empty
             # mapping (e.g. a contracts dir that stopped parsing) that a run not referencing contracts by name

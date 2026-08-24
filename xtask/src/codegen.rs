@@ -1106,6 +1106,20 @@ fn resolve_ops(
 /// reads like the emitted Rust and needs no manual escaping; `format_tokens` pretty-prints it. Doc
 /// comments are `#[doc = …]` attributes (which render as `///`). A leading `//!`-style module banner
 /// can't be a token attribute cleanly, so it is prepended as text by the caller.
+/// A `&str` const initializer that prefers a COMPILE-TIME `CDZ_*_HASH` env override, falling back to the
+/// committed `default`. `option_env!` is evaluated when the compiler crate is compiled, so a nix build that
+/// exports the env bakes the content hash of the component it built in the same closure; a plain build (no
+/// env) uses `default`. Written as a `match` rather than `option_env!(var).unwrap_or(default)` because
+/// `Option::unwrap_or` is not a const fn — a `match` is the const-context-legal form.
+fn env_or_default_hash(var: &str, default: &str) -> TokenStream {
+    quote! {
+        match option_env!(#var) {
+            Some(h) => h,
+            None => #default,
+        }
+    }
+}
+
 fn render(
     ops: &[Op],
     iface: &str,
@@ -1138,6 +1152,14 @@ fn render(
         let idx = proc_macro2::Literal::usize_unsuffixed(i);
         quote!(#f: &RUNTIME_OPS[#idx],)
     });
+
+    // Each committed hash is the DEFAULT for a compile-time `CDZ_*_HASH` env override (see the consts'
+    // docs below): a nix build exports the env with the hash of the runtime/nfc component it built in the
+    // SAME closure, so the compiler stamps exactly that runtime (self-consistent per host, no cross-host
+    // byte-reproducibility requirement); a plain cargo build gets no env and uses the committed literal.
+    let runtime_hash_expr = env_or_default_hash("CDZ_RUNTIME_HASH", runtime_hash);
+    let debug_runtime_hash_expr = env_or_default_hash("CDZ_DEBUG_RUNTIME_HASH", debug_runtime_hash);
+    let nfc_hash_expr = env_or_default_hash("CDZ_NFC_HASH", nfc_hash);
 
     quote! {
         #[doc = " The LOGICAL value type of a runtime op's param/result, as the WIT declares it (the"]
@@ -1214,15 +1236,19 @@ fn render(
 
         #[doc = " The BLAKE3 content address of the value-heap runtime component this ABI was generated"]
         #[doc = " against — the runtime a program built with this compiler requires. Regenerated from the"]
-        #[doc = " built runtime bytes, so it tracks a runtime-code change automatically."]
-        pub const REQUIRED_RUNTIME_HASH: &str = #runtime_hash;
+        #[doc = " built runtime bytes, so it tracks a runtime-code change automatically. Overridable at"]
+        #[doc = " COMPILE TIME via the `CDZ_RUNTIME_HASH` env: a nix build bakes the hash of the runtime it"]
+        #[doc = " built in the SAME closure (so the compiler and its runtime stay self-consistent per host,"]
+        #[doc = " with no cross-host byte-reproducibility requirement); absent, the committed default is used."]
+        pub const REQUIRED_RUNTIME_HASH: &str = #runtime_hash_expr;
 
         #[doc = " The BLAKE3 content address of the DEBUG-COUNTERS runtime build — the same runtime code"]
         #[doc = " with the `live-objects` leak counter compiled in (`--features debug-counters`). A shipped"]
         #[doc = " program pins `REQUIRED_RUNTIME_HASH` (the release build); a Perceus leak-check harness"]
         #[doc = " composes THIS build to assert `live-objects == 0` after a run. Recorded here so the harness"]
         #[doc = " locates the debug runtime by content address (from the store), never by rebuilding it."]
-        pub const DEBUG_RUNTIME_HASH: &str = #debug_runtime_hash;
+        #[doc = " Overridable at compile time via the `CDZ_DEBUG_RUNTIME_HASH` env (see `REQUIRED_RUNTIME_HASH`)."]
+        pub const DEBUG_RUNTIME_HASH: &str = #debug_runtime_hash_expr;
 
         #[doc = " The NFC-normalization interface — the plain WIT name the value-heap RUNTIME imports for"]
         #[doc = " Unicode Normalization Form C. FINDING#23 (operator ruling d): NFC lives in a SEPARATE"]
@@ -1239,7 +1265,8 @@ fn render(
         #[doc = " (the store records `nfc = \"<hash>\"`; cdz-run/main.rs verify the loaded bytes against it). The"]
         #[doc = " NFC dep lives on the RUNTIME's world, so the NFC-code hash feeds `REQUIRED_RUNTIME_HASH`"]
         #[doc = " (the runtime that imports NFC hashes differently); it is not a separate program-import hash."]
-        pub const REQUIRED_NFC_HASH: &str = #nfc_hash;
+        #[doc = " Overridable at compile time via the `CDZ_NFC_HASH` env (see `REQUIRED_RUNTIME_HASH`)."]
+        pub const REQUIRED_NFC_HASH: &str = #nfc_hash_expr;
 
         #[doc = " The runtime's INLINE-UNIT handle — the value `arr-alloc(0)` returns (a compile-time-known"]
         #[doc = " handle carrying the empty tuple/unit, no heap node). DERIVED from the runtime's `cdz-abi`"]
