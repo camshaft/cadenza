@@ -49,10 +49,9 @@ def prov-holds(records: List(LogRecord), i: Int64) =
 // The verdict payload for a decoded log: pass with no messages, else fail with one diagnostic message.
 def verdict-payload(records: List(LogRecord)) =
   if prov-holds(records, 0)
-  then Value.encode(Verdict.Verdict({ pass = true, messages = ([] : List(String)) }))
+  then Value.encode(Verdict.Verdict({ pass = true, messages = [] }))
   else Value.encode(Verdict.Verdict({ pass = false,
-                                      messages = List.push(([] : List(String)),
-                                                           "no ProgramOf named a delivered message's sender: the reducer did not read the sender's provenance") }))
+                                      messages = ["no ProgramOf named a delivered message's sender: the reducer did not read the sender's provenance"] }))
 
 // A verdict request. `verdict-contract` is NOT a hardcoded hash — it is the `verdict` field of the incoming
 // `check` Envelope (`c.verdict` in on-message below), the contract-id the harness told the checker to emit
@@ -71,8 +70,7 @@ def on-message(msg) =
        | None =>
            { requests = [verdict-req(c.verdict,
                                      Value.encode(Verdict.Verdict({ pass = false,
-                                                                    messages = List.push(([] : List(String)),
-                                                                                         "observation log did not decode") })))],
+                                                                    messages = ["observation log did not decode"] })))],
              outcome = Outcome.Continue })
   | None =>
       { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = msg.payload }) }
