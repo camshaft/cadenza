@@ -1,0 +1,24 @@
+// The first Cadenza EVENT reducer performing the privileged routing act (design/cadenza-platform.md §4):
+// on-message it performs `deliver` — injecting an event into another reducer's log. This minimal §4 form
+// delivers a NOTIFICATION of the effect back to the sender (deliver-notification: a list<u8> target + a
+// record{contract, payload} event — v-rust-backend's shape-d2, #3159). It proves a Cadenza event reducer
+// composes the privileged `deliver` import; deliver-response (answer-back) and deliver-message (the full
+// handler-chain routing) follow as v-rb lands the result-field + nested-record shapes.
+//
+// Targets the privileged event-reducer-world (KIND_WIT_WORLD artifact) — the only world that imports
+// `deliver`. on-response / on-notification are inert.
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+def on-message(msg) =
+  host deliver in
+    ( deliver.deliver-notification(msg.sender.reducer, { contract = msg.contract, payload = msg.payload }) ;
+      { requests = [], outcome = Outcome.Continue } )
+
+def on-response(_resp) =
+  { requests = [], outcome = Outcome.Continue }
+
+def on-notification(_note) =
+  { requests = [], outcome = Outcome.Continue }
+
+export { on-message, on-response, on-notification }

@@ -53,7 +53,7 @@ pub use crate::program::testing as program;
 pub use checker::{CheckOutcome, Checker};
 pub use checker_protocol::{
     check_contract, check_message, decode_check, decode_check_verdict, decode_verdict,
-    encode_check, encode_verdict, verdict_contract, verdict_in,
+    encode_check, encode_verdict, no_verdict_reason, verdict_contract, verdict_in,
 };
 pub use checker_run::run_checker;
 pub use harness::{Harness, Parent, Run, SpawnSpec};

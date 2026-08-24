@@ -1,0 +1,5 @@
+// A trivial library module the multi-file gate fixture imports. Its only job is to be a SEPARATE
+// source file the entry reducer reaches via `import { … } from "helper"`, so the build exercises
+// mkCadenzaGuest's multi-file path (cp-to-clean-basename + import-by-stem resolution).
+export { stamp }
+def stamp(x) = x

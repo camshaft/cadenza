@@ -31,7 +31,7 @@
 
 use cdz_platform::testing::{
     BlobSource, CheckOutcome, Harness, HarnessSpec, ObservationLog, RecordingBlobStore,
-    RecordingKvStore, SpawnSpec, check_message, render, verdict_in,
+    RecordingKvStore, SpawnSpec, check_message, no_verdict_reason, render, verdict_in,
 };
 use cdz_platform::{
     BachRuntime, BlobStore, Bytes, HostId, InMemoryBlobStore, InMemoryKvStore,
@@ -297,8 +297,9 @@ fn run(spec: HarnessSpec) -> Result<Report, RunError> {
         .run(move |cas| wasm_store(cas, store_log, host));
 
     // The checker run: if a checker was named, spawn it, deliver it the whole main log, and read its verdict.
-    // A named checker that emits no verdict (e.g. its bytes are not a valid component, so it never runs) is a
-    // failed check — the run declared a check that did not report.
+    // A named checker that emits no verdict is a failed check — the run declared a check that did not report —
+    // and [`no_verdict_reason`] diagnoses *why* from the checker's own observations (it closed without
+    // reporting, faulted, emitted on the wrong contract, or never ran), so a CI failure is actionable.
     let outcome = checker.map(|(name, bytes)| {
         let checker_log = observation_log();
         let store_log = checker_log.clone();
@@ -314,7 +315,7 @@ fn run(spec: HarnessSpec) -> Result<Report, RunError> {
             .log(checker_log)
             .run(move |cas| wasm_store(cas, store_log, host));
         verdict_in(&checker_run.records)
-            .unwrap_or_else(|| CheckOutcome::fail("the checker emitted no verdict"))
+            .unwrap_or_else(|| CheckOutcome::fail(no_verdict_reason(&checker_run.records)))
     });
 
     Ok(Report {
@@ -395,6 +396,17 @@ mod tests {
             matches!(report.outcome, Some(CheckOutcome::Fail { .. })),
             "a named checker that emits no verdict fails the run: {:?}",
             report.outcome
+        );
+        // …and the failure DIAGNOSES the cause (it never ran — its bytes are not a component), not the bare
+        // "the checker emitted no verdict" — the signal a CI run (nix `--features host`) surfaces.
+        let reasons = report
+            .outcome
+            .as_ref()
+            .map(CheckOutcome::reasons)
+            .unwrap_or_default();
+        assert!(
+            reasons.iter().any(|r| r.contains("never ran")),
+            "the failure says why the checker produced no verdict: {reasons:?}"
         );
     }
 
