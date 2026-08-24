@@ -1981,6 +1981,50 @@ mod tests {
     }
 
     #[test]
+    fn a_configured_resource_limit_actually_reaches_the_store_not_a_hard_coded_default() {
+        // The operator's requirement (no hard-coded caps): a node's configured `ResourceLimits` must actually
+        // flow through, not be shadowed by a baked-in constant. Build the store with a non-default epoch tick
+        // and assert the `epoch_incrementer` the kernel's ticker drives reports THAT cadence — proof the config
+        // seam is live end to end (`with_resource_limits` → `Instantiator` → `ReducerHost.limits` →
+        // `epoch_incrementer`), and that it differs from the default (so the value is genuinely varied, not
+        // ignored). The compute/memory budgets ride the same `limits`, armed per store by `arm_store_safety`.
+        use crate::ResourceLimits;
+        use std::time::Duration;
+
+        let configured = ResourceLimits {
+            epoch_tick: Duration::from_millis(7),
+            ..ResourceLimits::default()
+        };
+        let graph: Arc<dyn super::ReducerGraph> = Arc::new(InMemoryReducerGraph::new());
+        let store = WasmProgramStore::with_resource_limits(
+            Arc::new(InMemoryBlobStore::new()),
+            Arc::new(|_id| Box::new(InMemoryBlobStore::new()) as Box<dyn BlobStore>),
+            Arc::new(|_id| Box::new(InMemoryKvStore::new()) as Box<dyn KvStore>),
+            Arc::new(move |_id| graph.clone()),
+            configured,
+        )
+        .expect("build the wasm program store");
+
+        let (tick, _increment) = store
+            .epoch_incrementer()
+            .expect("the wasm store has an epoch incrementer");
+        assert_eq!(
+            tick,
+            Duration::from_millis(7),
+            "the ticker uses the CONFIGURED epoch tick, not a hard-coded default"
+        );
+        // The default constructor uses the default tick — so a configured value genuinely changes behavior.
+        let (default_tick, _) = wasm_program_store(Arc::new(InMemoryBlobStore::new()))
+            .epoch_incrementer()
+            .expect("incrementer");
+        assert_eq!(default_tick, ResourceLimits::default().epoch_tick);
+        assert_ne!(
+            tick, default_tick,
+            "a configured tick differs from the default — the config is not ignored"
+        );
+    }
+
+    #[test]
     fn a_dependency_import_name_resolves_to_its_content_address() {
         use super::dependency_address;
         // A dependency import carries the dep component's content hash in canonical base62 (§8, `Hash` Display)
