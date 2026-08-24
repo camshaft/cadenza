@@ -1206,6 +1206,19 @@
           witWorld = "${worldArtifacts}/reducer-world.bin";
         };
 
+        # A Cadenza reducer on the PRIVILEGED event-reducer-world: `on-message` reads which program the
+        # SENDER runs (`provenance.program-of(msg.sender.reducer)` — a bare list<u8> host result, #3121) and
+        # stamps it as the echoed request's token. Consumes `event-reducer-world.bin` (the privileged world —
+        # adds graph/deliver/provenance imports over the ordinary reducer world). Validates that the host
+        # composes a PRIVILEGED import, not only the ordinary `state`/`identity` ones.
+        cadenzaReducerProvenance = mkCadenzaGuest {
+          pname = "cdz-platform-reducer-provenance-cdz-component";
+          src = ./implementation/seed/crates/cdz-platform/guests/reducer-provenance-cdz/reducer.cdz;
+          componentName = "cadenza:platform/guest";
+          witWorld = "${worldArtifacts}/event-reducer-world.bin";
+          witWorldName = "event-reducer-world";
+        };
+
         # ── the integration-test HARNESS framework (design/cadenza-platform.md §9) ─────────────────
         #
         # The shape the operator asked for (PR #2994 review): a directory of PROGRAMS compiled once into a
@@ -1224,6 +1237,8 @@
           "reducer-echo-cdz" = cadenzaReducerEcho;
           # A Cadenza reducer that CALLS a host import (identity.id) — the host-import-driving fixture.
           "reducer-identity-cdz" = cadenzaReducerIdentity;
+          # A Cadenza reducer on the PRIVILEGED event-reducer-world (performs provenance.program-of).
+          "reducer-provenance-cdz" = cadenzaReducerProvenance;
         };
 
         # `platformItest`: the `cdz-platform-itest` executable built ONCE (behind testing+host → wasmtime),
@@ -1904,6 +1919,7 @@
         # The host-import-calling Cadenza reducer (performs identity.id). `.#reducer-identity-cdz`;
         # `.#world-artifacts` exposes the KIND_WIT_WORLD binaries it consumes.
         packages.reducer-identity-cdz = cadenzaReducerIdentity;
+        packages.reducer-provenance-cdz = cadenzaReducerProvenance;
         packages.world-artifacts = worldArtifacts;
 
         # The interim reducer-echo CHECKER guest (temporary; see the derivation note). `.#reducer-echo-check`.

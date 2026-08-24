@@ -1,0 +1,24 @@
+// A Cadenza reducer on the PRIVILEGED event-reducer-world: on-message reads which program the SENDER runs
+// (provenance.program-of, a bare list<u8> host result, #3121 shared-allocator) and stamps it as the echoed
+// request's token — a host value flows through the guest and back. Delegates only `provenance`;
+// on-response/on-notification are inert. Uses the natural [{…}]/[] list literal (no List.push helpers).
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+def on-message(
+  msg: Record(contract: Bytes, sender: Record(reducer: Bytes, host: Bytes), payload: Bytes, token: Bytes)
+) =
+  host provenance in
+    { requests = [{ contract = msg.contract,
+                    payload = msg.payload,
+                    token = provenance.program-of(msg.sender.reducer),
+                    deadlineNanos = None }],
+      outcome = Outcome.Continue }
+
+def on-response(_resp: Record(contract: Bytes, token: Bytes, answer: Result(Bytes, Error))) =
+  { requests = [], outcome = Outcome.Continue }
+
+def on-notification(_note: Record(contract: Bytes, payload: Bytes)) =
+  { requests = [], outcome = Outcome.Continue }
+
+export { on-message, on-response, on-notification }
