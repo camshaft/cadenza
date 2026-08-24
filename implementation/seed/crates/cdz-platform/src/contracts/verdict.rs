@@ -58,16 +58,14 @@ pub struct VerdictVerdict {
 }
 /// Build a canonical `Verdict.Verdict` value.
 pub fn verdict_verdict(b: &mut Builder, fields: VerdictVerdict) -> StructId {
-    let rec = v::record(
+    v::record(
         b,
         vec![("pass", fields.pass), ("messages", fields.messages)],
-    );
-    v::qctor(b, "Verdict", "Verdict", vec![rec])
+    )
 }
 /// Read a `Verdict.Verdict` value's fields by name, or `None`.
 pub fn as_verdict_verdict(arenas: &Arenas, id: StructId) -> Option<VerdictVerdict> {
-    let t = v::as_qctor(arenas, id, "Verdict", "Verdict")?;
-    let [rec] = <[StructId; 1]>::try_from(t).ok()?;
+    let rec = id;
     Some(VerdictVerdict {
         pass: v::record_field(arenas, rec, "pass")?,
         messages: v::record_field(arenas, rec, "messages")?,

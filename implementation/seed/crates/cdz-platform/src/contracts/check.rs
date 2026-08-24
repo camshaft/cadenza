@@ -56,13 +56,11 @@ pub struct EnvelopeCheck {
 }
 /// Build a canonical `Envelope.Check` value.
 pub fn envelope_check(b: &mut Builder, fields: EnvelopeCheck) -> StructId {
-    let rec = v::record(b, vec![("log", fields.log), ("verdict", fields.verdict)]);
-    v::qctor(b, "Envelope", "Check", vec![rec])
+    v::record(b, vec![("log", fields.log), ("verdict", fields.verdict)])
 }
 /// Read a `Envelope.Check` value's fields by name, or `None`.
 pub fn as_envelope_check(arenas: &Arenas, id: StructId) -> Option<EnvelopeCheck> {
-    let t = v::as_qctor(arenas, id, "Envelope", "Check")?;
-    let [rec] = <[StructId; 1]>::try_from(t).ok()?;
+    let rec = id;
     Some(EnvelopeCheck {
         log: v::record_field(arenas, rec, "log")?,
         verdict: v::record_field(arenas, rec, "verdict")?,
