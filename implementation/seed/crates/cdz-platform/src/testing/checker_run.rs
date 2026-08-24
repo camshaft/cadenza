@@ -8,7 +8,7 @@
 //! authored (a compiled Cadenza reducer, or hand-written); it just runs a reducer.
 
 use super::checker::CheckOutcome;
-use super::checker_protocol::{check_message, verdict_in};
+use super::checker_protocol::{check_message, no_verdict_reason, verdict_in};
 use super::harness::{Harness, SpawnSpec};
 use super::observation::Record;
 use crate::{Bytes, ProgramStore};
@@ -28,9 +28,12 @@ const CHECKER_SYSTEM: &str = "$checker-system";
 /// `make_store` builds the program store from the seeded content-addressed store, exactly as
 /// [`Harness::run`] takes it — a wasm program store for a real run, a store of Rust factories for a test.
 ///
-/// Returns the checker's [`CheckOutcome`]. A checker that emits **no** verdict — e.g. its bytes are not a
-/// valid component, so it never runs — is a [`Fail`](CheckOutcome::Fail): a declared check that did not
-/// report is a failed check, never silently a pass.
+/// Returns the checker's [`CheckOutcome`]. A checker that emits **no** verdict is a
+/// [`Fail`](CheckOutcome::Fail) — a declared check that did not report is a failed check, never silently a
+/// pass — carrying a diagnosed reason
+/// ([`no_verdict_reason`](super::checker_protocol::no_verdict_reason)): whether it closed without reporting
+/// (its `on_message` hit a decode-failure/close arm), faulted, emitted on the wrong contract, emitted a
+/// malformed verdict, or never ran at all.
 #[must_use]
 pub fn run_checker<P, F>(log: &[Record], checker: (&str, Bytes), make_store: F) -> CheckOutcome
 where
@@ -47,7 +50,7 @@ where
         .spawn(SpawnSpec::new("checker", name))
         .deliver("checker", check_message(log))
         .run(make_store);
-    verdict_in(&run.records).unwrap_or_else(|| CheckOutcome::fail("the checker emitted no verdict"))
+    verdict_in(&run.records).unwrap_or_else(|| CheckOutcome::fail(no_verdict_reason(&run.records)))
 }
 
 #[cfg(test)]
@@ -187,6 +190,11 @@ mod tests {
         assert!(
             matches!(outcome, CheckOutcome::Fail { .. }),
             "a checker that never runs fails: {outcome:?}"
+        );
+        // …and says *why* — it never ran — not the bare "emitted no verdict".
+        assert!(
+            outcome.reasons().iter().any(|r| r.contains("never ran")),
+            "the failure diagnoses a checker that never ran: {outcome:?}"
         );
     }
 }
