@@ -36,3 +36,10 @@ def pass-conforms() =
 def fail-conforms() =
   match a-fail() with
   | Verdict.Verdict(v) => if v.pass then trap("expected a failing verdict") else unit
+
+// Make the schema types importable as a LIBRARY (`import { Verdict, Ack } from "verdict"`): the Cadenza
+// checker guest builds a `Verdict` value to emit, so it needs the type AND its constructors in scope. The
+// `.*` exports every constructor (a bare `Verdict` would expose only the opaque type handle). This is how a
+// guest shares this contract's shape from its single source of truth rather than re-declaring it. Inert for
+// the Rust codegen (which reads the schema, not the export clause) and for a single-file compile.
+export { Verdict.*, Ack.* }
