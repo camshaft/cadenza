@@ -2841,6 +2841,7 @@ pub fn assemble_bytes_roundtrip_host_provider(
     import_name: &str,
     needs_list: bool,
     result_defs: &[Vec<u8>],
+    nominal_defs: &[Vec<u8>],
 ) -> Vec<u8> {
     let h = host_fns.len();
     let k = imports.len();
@@ -2849,7 +2850,7 @@ pub fn assemble_bytes_roundtrip_host_provider(
 
     // sec 7 (first): host effect instance-type (comp type 0) + runtime instance-type (comp type 1).
     let type_sec = {
-        let host_it = host_effect_instance_type(host_fns, needs_list, result_defs, &[]);
+        let host_it = host_effect_instance_type(host_fns, needs_list, result_defs, nominal_defs);
         let mut items = host_it;
         items.extend_from_slice(&runtime_op_instance_type(imports));
         section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))

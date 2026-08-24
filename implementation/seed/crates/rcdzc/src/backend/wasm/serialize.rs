@@ -95,6 +95,9 @@ fn host_import_functype(f: &crate::backend::wasm::host::HostImport) -> Vec<u8> {
                     flatten_record_field_abi(f, &mut params);
                 }
             }
+            // An ENUM param crosses as ONE `i32` core slot — the discriminant (a payloadless enum's in-guest
+            // rep). The component boundary type is an `enum` DEFINED type (see mod.rs `host_op_comp_functype`).
+            HostParam::Enum(_) => params.push(wasm_abi::CORE_I32),
         }
     }
     // `params` now holds exactly the FLATTENED core-slot bytes (a scalar = 1, a string/bytes = 2, a record

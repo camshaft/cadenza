@@ -1106,6 +1106,16 @@ pub fn emit(
                 _ => None,
             })
             .collect();
+        // ENUM params (graph.neighbors' `dir`) — a nominal type like a record, but coexists with a spilled
+        // result (base accounts for the result defined types). Distinct enum types across the set.
+        let enum_params: Vec<&Vec<String>> = host_imports
+            .iter()
+            .flat_map(|h| &h.params)
+            .filter_map(|p| match p {
+                host::HostParam::Enum(cases) => Some(cases),
+                _ => None,
+            })
+            .collect();
         let has_bytes_param = host_imports
             .iter()
             .flat_map(|h| &h.params)
@@ -1116,21 +1126,30 @@ pub fn emit(
         // (d3, the message envelope's `sender: origin`) are laid children-first by `build_record_import_types`.
         // The `(list u8)` type is at index 0 when present (a `list<u8>` param OR a record byte field), so the
         // record table starts at `base` = that count; entry `i` is define `base+2i` / export `base+2i+1`.
-        let (record_defs, record_export_idx): (Vec<Vec<u8>>, u32) = {
-            if record_params.is_empty() {
-                (Vec::new(), 0)
-            } else {
+        // The NOMINAL param types (record OR enum) are laid as DEFINE+EXPORT pairs AFTER the `(list u8)` type
+        // and the spilled-result defined types — so `base` (the first nominal define index) = the count of
+        // those prepends. A record and an enum currently don't co-occur, and a record still can't co-occur with
+        // a spilled result (its byte-index math predates the general result defs); an ENUM param, by contrast,
+        // composes WITH a spilled result (graph.neighbors: enum `dir` + `list<list<u8>>` result), since `base`
+        // accounts for `result_defs`. The op's `comp_functype` references the single nominal EXPORTED index.
+        let base = needs_list as u32 + result_defs.len() as u32;
+        let (record_defs, nominal_export_idx): (Vec<Vec<u8>>, u32) = {
+            if !record_params.is_empty() && !enum_params.is_empty() {
+                return Err(Reject::decline(
+                    "a host set mixing a record parameter and an enum parameter is not yet emitted (a single \
+                     nominal param type per set — record OR enum — this slice)",
+                ));
+            } else if !record_params.is_empty() {
                 let has_str_param = host_imports
                     .iter()
                     .flat_map(|h| &h.params)
                     .any(|p| matches!(p, host::HostParam::Str));
                 let any_record_has_bytes = record_params.iter().any(|f| record_abi_has_bytes(f));
-                // Supported shape: a SINGLE record param, no String param, no option/list/bytes compound
-                // RESULT (those add defined types that shift the record index — a later slice). A `list<u8>`
-                // PARAM is allowed (deliver's `target`) and shares the `(list u8)` type (index 0) with the
-                // record's `list<u8>` fields at ANY nesting depth. A record with byte fields REQUIRES the
-                // `(list u8)` at index 0 (laid only when a `list<u8>` param is present here), so decline a
-                // byte-field record with no `list<u8>` param (the needs_list-forcing case is a later slice).
+                // Supported RECORD shape: a SINGLE record param, no String param, no spilled compound RESULT
+                // (a record's index math predates the general result defs — a later slice). A `list<u8>` PARAM
+                // is allowed (deliver's `target`) and shares the `(list u8)` type (index 0). A record with byte
+                // fields REQUIRES the `(list u8)` at index 0, so decline a byte-field record with no `list<u8>`
+                // param.
                 if record_params.len() > 1
                     || has_str_param
                     || has_spilled_result
@@ -1143,11 +1162,25 @@ pub fn emit(
                          record-type-indexed host shape is a later increment)",
                     ));
                 }
-                // `(list u8)` at instance index 0 iff present; the record table follows at `base`.
-                let base = has_bytes_param as u32;
                 let mut table = Vec::new();
                 let export_idx = build_record_import_types(record_params[0], 0, base, &mut table);
                 (table, export_idx)
+            } else if !enum_params.is_empty() {
+                // A SINGLE distinct enum param type this slice (like the single-record constraint). Lay it as
+                // ONE `enum` DEFINE (at `base`) + EXPORT (at `base+1`, the index the func references).
+                let distinct = enum_params.iter().all(|c| *c == enum_params[0]);
+                if !distinct {
+                    return Err(Reject::decline(
+                        "a host set with more than one DISTINCT enum parameter type is not yet emitted (a \
+                         single enum type per set this slice)",
+                    ));
+                }
+                let bytes = crate::backend::wasm::wit_ctype::emit_cdef(
+                    &crate::backend::wasm::wit_ctype::CDef::Enum(enum_params[0].clone()),
+                );
+                (vec![bytes], base + 1)
+            } else {
+                (Vec::new(), 0)
             }
         };
         let host_fns: Vec<envelope::HostFn> = host_imports
@@ -1158,7 +1191,7 @@ pub fn emit(
                 comp_functype: host_op_comp_functype(
                     hi,
                     0,
-                    record_export_idx,
+                    nominal_export_idx,
                     result_crefs[i].clone(),
                 ),
                 has_list_param: hi
@@ -1776,7 +1809,7 @@ fn build_record_import_types(
 fn host_op_comp_functype(
     h: &host::HostImport,
     list_type_idx: u32,
-    record_type_idx: u32,
+    nominal_type_idx: u32,
     result_cref: Option<crate::backend::wasm::wit_ctype::CRef>,
 ) -> Vec<u8> {
     use host::HostParam;
@@ -1804,7 +1837,12 @@ fn host_op_comp_functype(
             // (`(list u8)?` prepend count + 1: index 1 for an all-scalar record with no list, 2 when a
             // `list<u8>` param/field forces the `(list u8)` type at index 0). This arm is only reached on the
             // reducer path (the boundary guard declines a record arg elsewhere).
-            HostParam::Record(_) => encode::uleb128(record_type_idx as u64, &mut param_items),
+            HostParam::Record(_) => encode::uleb128(nominal_type_idx as u64, &mut param_items),
+            // An ENUM param references its EXPORTED `enum` DEFINED type (a nominal type an import func uses
+            // must be exported, like a record) by the SAME `nominal_type_idx` — an op carries at most one
+            // nominal param type this slice (single record OR single enum). Its discriminant crosses as one
+            // i32 core slot (serialize.rs).
+            HostParam::Enum(_) => encode::uleb128(nominal_type_idx as u64, &mut param_items),
         }
     }
     item.extend_from_slice(&encode::wasm_vec(h.params.len(), &param_items));
@@ -1940,7 +1978,12 @@ fn host_param_abi(p: &host::HostParam) -> Option<runtime_abi::AbiValType> {
         // param (shape d) likewise has no scalar peer-ABI form — a record crosses a PEER boundary as its
         // `u32` heap handle, not this native host flatten (and the classifier only produces `Record` for a
         // non-peer-bound op), so it declines here too.
-        host::HostParam::Str | host::HostParam::Bytes | host::HostParam::Record(_) => None,
+        // An ENUM param likewise has no scalar peer-ABI form (a peer-bound enum crosses as its `u32` handle,
+        // and the classifier only produces `Enum` for a non-peer-bound host op) → declines here.
+        host::HostParam::Str
+        | host::HostParam::Bytes
+        | host::HostParam::Record(_)
+        | host::HostParam::Enum(_) => None,
     }
 }
 
@@ -9510,12 +9553,43 @@ fn emit_bytes_provider_member(
     // recursion, no per-shape blocks). `result_defs` laid after the shared `(list u8)`; `result_crefs` the
     // per-op functype result reference. A bare `list<u8>` result interns to the `(list u8)` at index 0.
     let (needs_list, result_defs, result_crefs) = build_host_result_types(db, &host_imports);
+    // ENUM host-call args (graph.neighbors' `dir`): a nominal `enum` DEFINED type laid (DEFINE+EXPORT) after
+    // `(list u8)` + the spilled-result defined types — `base` = that prepend count. A SINGLE distinct enum
+    // type this slice; the op's `comp_functype` references its EXPORTED index. Composes WITH a spilled result
+    // (base accounts for `result_defs`). (Record host-args take the typed-interface path, not this one.)
+    let enum_param_cases: Vec<&Vec<String>> = host_imports
+        .iter()
+        .flat_map(|h| &h.params)
+        .filter_map(|p| match p {
+            host::HostParam::Enum(cases) => Some(cases),
+            _ => None,
+        })
+        .collect();
+    let base = needs_list as u32 + result_defs.len() as u32;
+    let (nominal_defs, nominal_export_idx): (Vec<Vec<u8>>, u32) = if enum_param_cases.is_empty() {
+        (Vec::new(), 0)
+    } else if enum_param_cases.iter().all(|c| *c == enum_param_cases[0]) {
+        let bytes = crate::backend::wasm::wit_ctype::emit_cdef(
+            &crate::backend::wasm::wit_ctype::CDef::Enum(enum_param_cases[0].clone()),
+        );
+        (vec![bytes], base + 1)
+    } else {
+        return Err(Reject::decline(
+            "a bytes-provider host set with more than one DISTINCT enum parameter type is not yet emitted \
+             (a single enum type per set this slice)",
+        ));
+    };
     let host_fns: Vec<envelope::HostFn> = host_imports
         .iter()
         .enumerate()
         .map(|(i, hf)| envelope::HostFn {
             op: hf.op.clone(),
-            comp_functype: host_op_comp_functype(hf, 0, 0, result_crefs[i].clone()),
+            comp_functype: host_op_comp_functype(
+                hf,
+                0,
+                nominal_export_idx,
+                result_crefs[i].clone(),
+            ),
             has_list_param: hf
                 .params
                 .iter()
@@ -9543,6 +9617,7 @@ fn emit_bytes_provider_member(
         &runtime_import_name(),
         needs_list,
         &result_defs,
+        &nominal_defs,
     ))
 }
 
