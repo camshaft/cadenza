@@ -1476,12 +1476,32 @@
                 mv run.ml.next run.ml
               '')
               contractUses;
+            # INJECT the run's self-contained deps (operator directive 2026-08-24): the harness run CARRIES
+            # the runtime + nfc it needs — resolved by CONTENT HASH — instead of the host pulling them from an
+            # env-pointed store, mirroring the self-describing nfc-stamp. Every `componentStore/*.wasm` (the
+            # value-heap runtime + debug-counters runtime + nfc + guests) is added to a new top-level `deps`
+            # field as an UNNAMED `{ path = … }` record; the itest (#3184) seeds `spec.deps` into EACH run's
+            # CAS by hash, so a Cadenza guest's `cadenza:runtime/heap@…+<hash>` import composes and the guest
+            # actually FOLDS (without it a guest silently fails to instantiate — no fold, a vacuous "exit 0").
+            # The pattern targets the TOP-LEVEL record uniquely via its `system` field (every run's first
+            # field; nested blob/spawn records have none), so `deps` is added once, not to every subrecord.
+            depsInject = ''
+              deps=""
+              for f in ${componentStore}/*.wasm; do
+                deps="$deps (\"record\" (= path \"$f\"))"
+              done
+              ${seedCompiler}/bin/cdz rewrite '("record" (= system ,sys) ,@rest)' \
+                "(\"record\" (= system ,sys) (= deps (\"list\" $deps)) ,@rest)" \
+                run.ml --from ml --to ml > run.ml.next
+              mv run.ml.next run.ml
+            '';
           in
           pkgs.runCommand "harness-ast-${name}" { } ''
             set -euo pipefail
             cp ${specFile} run.ml
             ${rewrites}
             ${contractRewrites}
+            ${depsInject}
             ${seedCompiler}/bin/cdz convert --from ml --to binary run.ml > "$out"
           '';
 
