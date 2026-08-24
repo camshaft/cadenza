@@ -13,6 +13,18 @@
 //! These are generic over the constructor/field names, so they carry no schema-specific knowledge — the
 //! generated code supplies the names. Readers are the exact inverses and are total (`Option`), so decoding
 //! a malformed value is a rejected value, never a panic.
+//!
+//! The forms match the compiler's own canonical `Value.encode`/`Value.decode` (empirically pinned), so a
+//! contract value a Rust builder emits is decodable by a Cadenza guest and vice versa — the "one canonical
+//! codec" (§12) actually holding across the Rust↔Cadenza boundary. A guest [`Value.decode`]s type-directed,
+//! so the shape is:
+//!  - a constructor `T.C` applied to a payload → the BARE-name form `(C <payload>…)` (the type `T` is not in
+//!    the value — it comes from the root ascription / the target type); a SINGLE-constructor sum ELIDES the
+//!    constructor entirely (the payload directly) — that elision is the generated code's call, not here;
+//!  - a record value → the NAME-headed `(record (= <field> <value>)…)`;
+//!  - the whole payload, at the encode boundary, is wrapped in a root ascription `(: <value> <Type>)` via
+//!    [`ascribe`] (the decoder reads the type token but does not match it against the target — [`as_ascribed`]
+//!    strips it on the way in).
 
 use crate::{Bytes, Hash};
 use cadenza_ast::ast::{Builder, Leaf, Radix, Struct, StructId};
@@ -21,36 +33,43 @@ use std::sync::Arc;
 
 // --- builders ---
 
-/// A qualified constructor application `((. <ty> <ctor>) <payload>…)` — the member node `(. ty ctor)`
-/// applied to its payload occurrences. An empty `payload` builds the nullary form `((. ty ctor))`.
+/// A constructor application in the canonical BARE-name form `(<ctor> <payload>…)` — the constructor name is
+/// the head, then its payload occurrences; nullary → `(<ctor>)`. `ty` is accepted for the generated caller's
+/// convenience (it names the sum the constructor belongs to) but is NOT part of the value: the compiler's
+/// value form carries no `(. ty ctor)` member node — the type is fixed by the root ascription / the decode
+/// target. A single-constructor sum elides the constructor (the generated code emits the payload directly),
+/// so this builds only the multi-constructor case.
 #[must_use]
 pub fn qctor(b: &mut Builder, ty: &str, ctor: &str, payload: Vec<StructId>) -> StructId {
-    let head = member(b, ty, ctor);
-    b.list(std::iter::once(head).chain(payload).collect())
+    let _ = ty;
+    bare_ctor(b, ctor, payload)
 }
 
-/// The member node `(. <ty> <ctor>)` naming a qualified constructor — the head of a [`qctor`] application.
-fn member(b: &mut Builder, ty: &str, ctor: &str) -> StructId {
-    let dot = b.name(".");
-    let ty = b.name(ty);
-    let ctor = b.name(ctor);
-    b.list(vec![dot, ty, ctor])
-}
-
-/// A prelude (unqualified) constructor application `(<name> <payload>…)` — e.g. `(Ok v)` / `(Err e)`, the
-/// bare `Result` constructors. Distinct from [`qctor`]: a prelude constructor is a bare name, not a member.
+/// A constructor application `(<name> <payload>…)` — the constructor name as the head, then its payload. The
+/// canonical sum form for both a schema constructor and a prelude one (`Ok`/`Err`/`Some`/`None`).
 #[must_use]
 pub fn bare_ctor(b: &mut Builder, name: &str, payload: Vec<StructId>) -> StructId {
     let head = b.name(name);
     b.list(std::iter::once(head).chain(payload).collect())
 }
 
-/// A record value `("record" (= <field> <value>)…)` — the string-headed record constructor, then one
+/// A root ascription `(: <value> <ty>)` — the top-level wrapper the compiler's `Value.decode` requires at the
+/// payload-encode boundary. The type token is recorded but not matched against the decode target (the decoder
+/// is type-directed by the caller's annotation), so any name — conventionally the contract's declared input
+/// type — is accepted; [`as_ascribed`] strips it on read.
+#[must_use]
+pub fn ascribe(b: &mut Builder, value: StructId, ty: &str) -> StructId {
+    let colon = b.name(":");
+    let ty = b.name(ty);
+    b.list(vec![colon, value, ty])
+}
+
+/// A record value `(record (= <field> <value>)…)` — the NAME-headed record constructor, then one
 /// `(= <name> <value>)` field per entry, in the given order (fields are read back by name, so the order is
 /// not load-bearing).
 #[must_use]
 pub fn record(b: &mut Builder, fields: Vec<(&str, StructId)>) -> StructId {
-    let head = b.atom_leaf(Leaf::Str(Arc::from("record")));
+    let head = b.name("record");
     let mut children = Vec::with_capacity(1 + fields.len());
     children.push(head);
     for (name, value) in fields {
@@ -82,8 +101,11 @@ pub fn uint_leaf(b: &mut Builder, value: u64) -> StructId {
 
 // --- readers (the exact inverses; total) ---
 
-/// If `id` is a qualified-constructor application `((. ty ctor) tail…)`, its `tail` (the payload
-/// occurrences). `None` if the shape or the constructor name does not match.
+/// If `id` is a constructor application `(ctor tail…)` in the canonical bare-name form, its `tail` (the
+/// payload occurrences). `None` if the shape or the constructor name does not match. `ty` is accepted for the
+/// generated caller's symmetry with [`qctor`] but is not part of the value (the compiler form has no member
+/// node), so it is not checked — the constructor name alone identifies the case within its type, which the
+/// decode target / root ascription fixes.
 #[must_use]
 pub fn as_qctor<'a>(
     arenas: &'a cadenza_ast::ast::Arenas,
@@ -91,16 +113,17 @@ pub fn as_qctor<'a>(
     ty: &str,
     ctor: &str,
 ) -> Option<&'a [StructId]> {
-    let Struct::List(items) = arenas.get(id) else {
-        return None;
-    };
-    let (&head, tail) = items.split_first()?;
-    let m = arenas.as_form(head, ".")?;
-    if m.len() == 2 && arenas.as_name(m[0]) == Some(ty) && arenas.as_name(m[1]) == Some(ctor) {
-        Some(tail)
-    } else {
-        None
-    }
+    let _ = ty;
+    as_bare_ctor(arenas, id, ctor)
+}
+
+/// The value inside a root ascription `(: <value> <ty>)`, ignoring the type token (the decoder is
+/// type-directed). `None` if `id` is not a `(:  …)` ascription of exactly `(value ty)`. The inverse of
+/// [`ascribe`].
+#[must_use]
+pub fn as_ascribed(arenas: &cadenza_ast::ast::Arenas, id: StructId) -> Option<StructId> {
+    let inner = arenas.as_form(id, ":")?;
+    (inner.len() == 2).then_some(inner[0])
 }
 
 /// If `id` is a prelude-constructor application `(name tail…)`, its `tail`. `None` otherwise.
@@ -121,13 +144,10 @@ pub fn record_field(
     id: StructId,
     name: &str,
 ) -> Option<StructId> {
-    let Struct::List(items) = arenas.get(id) else {
-        return None;
-    };
-    if arenas.head_ctor(id) != Some("record") {
-        return None;
-    }
-    items.iter().skip(1).find_map(|&f| {
+    // The NAME-headed record form `(record (= <field> <value>)…)`; `as_form` returns the fields after the
+    // `record` head.
+    let fields = arenas.as_form(id, "record")?;
+    fields.iter().find_map(|&f| {
         let kv = arenas.as_form(f, "=")?;
         (kv.len() == 2 && arenas.as_name(kv[0]) == Some(name)).then_some(kv[1])
     })
@@ -170,8 +190,8 @@ pub fn read_hash(arenas: &cadenza_ast::ast::Arenas, id: StructId) -> Option<Hash
 #[cfg(test)]
 mod tests {
     use super::{
-        as_bare_ctor, as_qctor, bare_ctor, bytes_leaf, qctor, read_bytes, read_hash, read_uint,
-        record, record_field, uint_leaf,
+        as_ascribed, as_bare_ctor, as_qctor, ascribe, bare_ctor, bytes_leaf, qctor, read_bytes,
+        read_hash, read_uint, record, record_field, uint_leaf,
     };
     use crate::{Hash, HashTag};
     use cadenza_ast::ast::{Builder, Leaf, Radix};
@@ -184,35 +204,38 @@ mod tests {
     }
 
     #[test]
-    fn a_qualified_constructor_round_trips_and_rejects_the_wrong_name() {
-        // An applied `T.C` payload reads back as its tail; the payload leaf reads back byte-for-byte.
+    fn a_constructor_round_trips_in_the_bare_name_form_and_rejects_the_wrong_ctor() {
+        // An applied constructor is the canonical BARE-name form `(Message payload)`; its payload reads back
+        // as the tail, byte-for-byte. The `ty` argument is not part of the value (no `(. ty ctor)` member) —
+        // the constructor name alone identifies the case — so `as_qctor` reads it regardless of `ty`, and it
+        // is the SAME form a prelude `as_bare_ctor` reads.
         let arenas = built(|b| {
             let x = bytes_leaf(b, b"payload");
             qctor(b, "Event", "Message", vec![x])
         });
-        let tail = as_qctor(&arenas, arenas.root, "Event", "Message").expect("an Event.Message");
+        let tail = as_qctor(&arenas, arenas.root, "Event", "Message").expect("a Message(..)");
         assert_eq!(tail.len(), 1);
         assert_eq!(
             read_bytes(&arenas, tail[0]).as_deref(),
             Some(b"payload".as_slice())
         );
-        // Neither the type nor the constructor name may differ.
+        // The constructor NAME must match; `ty` is not checked (it is not in the value).
         assert!(as_qctor(&arenas, arenas.root, "Event", "Response").is_none());
-        assert!(as_qctor(&arenas, arenas.root, "Other", "Message").is_none());
-        // A qualified constructor is not a prelude (bare) constructor.
+        assert!(as_qctor(&arenas, arenas.root, "AnyType", "Message").is_some());
+        // Bare-name form: a schema constructor and a prelude constructor are one form.
+        assert!(as_bare_ctor(&arenas, arenas.root, "Message").is_some());
         assert!(as_bare_ctor(&arenas, arenas.root, "Event").is_none());
     }
 
     #[test]
-    fn a_nullary_qualified_constructor_has_an_empty_tail() {
+    fn a_nullary_constructor_has_an_empty_tail() {
         let arenas = built(|b| qctor(b, "Outcome", "Delivered", vec![]));
-        let tail =
-            as_qctor(&arenas, arenas.root, "Outcome", "Delivered").expect("an Outcome.Delivered");
+        let tail = as_qctor(&arenas, arenas.root, "Outcome", "Delivered").expect("a Delivered");
         assert!(tail.is_empty());
     }
 
     #[test]
-    fn a_prelude_constructor_round_trips_and_does_not_cross_with_qualified() {
+    fn a_prelude_constructor_round_trips() {
         let arenas = built(|b| {
             let v = bytes_leaf(b, b"answer");
             bare_ctor(b, "Ok", vec![v])
@@ -224,8 +247,24 @@ mod tests {
             Some(b"answer".as_slice())
         );
         assert!(as_bare_ctor(&arenas, arenas.root, "Err").is_none());
-        // A prelude constructor is not a qualified one.
-        assert!(as_qctor(&arenas, arenas.root, "Ok", "Ok").is_none());
+    }
+
+    #[test]
+    fn a_root_ascription_round_trips_and_ignores_its_type_token() {
+        // The encode-boundary wrapper `(: value Ty)`: `as_ascribed` returns the inner value; the type token
+        // is not matched (the decoder is type-directed), so any name wraps and strips the same.
+        let arenas = built(|b| {
+            let v = bytes_leaf(b, b"inner");
+            ascribe(b, v, "Envelope")
+        });
+        let inner = as_ascribed(&arenas, arenas.root).expect("an ascription");
+        assert_eq!(
+            read_bytes(&arenas, inner).as_deref(),
+            Some(b"inner".as_slice())
+        );
+        // A non-ascription (a bare bytes leaf) is not an ascription.
+        let bare = built(|b| bytes_leaf(b, b"x"));
+        assert!(as_ascribed(&bare, bare.root).is_none());
     }
 
     #[test]
@@ -252,12 +291,13 @@ mod tests {
 
     #[test]
     fn readers_reject_a_mismatched_shape() {
-        // A qualified constructor is not a record, and its `record_field` is `None`; a record is not a
-        // qualified constructor. Each reader is total and rejects the wrong shape rather than panicking.
+        // A constructor `(C)` has no record fields, so `record_field` is `None` (its head is `C`, not
+        // `record`). Each reader is total and rejects the wrong shape rather than panicking.
         let qc = built(|b| qctor(b, "T", "C", vec![]));
         assert!(record_field(&qc, qc.root, "id").is_none());
+        // A record is `(record …)`; reading it as the constructor `C` is `None` (head is `record`, not `C`).
         let rec = built(|b| record(b, vec![]));
-        assert!(as_qctor(&rec, rec.root, "record", "record").is_none());
+        assert!(as_qctor(&rec, rec.root, "T", "C").is_none());
         // `read_bytes` on a list (not an atom) is `None`.
         assert!(read_bytes(&rec, rec.root).is_none());
     }
