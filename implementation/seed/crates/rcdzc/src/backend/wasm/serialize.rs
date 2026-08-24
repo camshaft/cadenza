@@ -52,6 +52,23 @@ fn import_item(op_name: &str, type_idx: u32) -> Vec<u8> {
 /// CORE valtype bytes. A `Unit` domain/result contributes no core slot (elided at the boundary). A SCALAR
 /// param is one core slot (`AbiValType::core_byte`); a STRING param is TWO core slots `(i32 ptr, i32 len)`
 /// — the canonical ABI lowering of `string` into linear memory.
+/// Flatten ONE record-field ABI into its CORE valtype byte(s), appending to `out`: a scalar → 1 slot
+/// (`core_byte`); a `Bytes` → 2 slots `(ptr,len)`; a NESTED record → its fields' flattening inline
+/// (recursively — a nested record does NOT spill, its fields join the parent's flattened run). The count +
+/// order MUST match the canonical ABI flattening of the component `record` param, or the module is invalid.
+fn flatten_record_field_abi(f: &crate::backend::wasm::host::RecordFieldAbi, out: &mut Vec<u8>) {
+    use crate::backend::wasm::host::RecordFieldAbi;
+    match f {
+        RecordFieldAbi::Scalar(v) => out.push(v.core_byte()),
+        RecordFieldAbi::Bytes => out.extend_from_slice(&[wasm_abi::CORE_I32, wasm_abi::CORE_I32]),
+        RecordFieldAbi::Record(sub) => {
+            for (_, sf) in sub {
+                flatten_record_field_abi(sf, out);
+            }
+        }
+    }
+}
+
 fn host_import_functype(f: &crate::backend::wasm::host::HostImport) -> Vec<u8> {
     use crate::backend::wasm::host::HostParam;
     let mut item = vec![0x60];
@@ -70,15 +87,7 @@ fn host_import_functype(f: &crate::backend::wasm::host::HostImport) -> Vec<u8> {
             // CORE marshalling is just the scalar slots the guest decomposes the record into.
             HostParam::Record(field_abis) => {
                 for (_, f) in field_abis {
-                    match f {
-                        crate::backend::wasm::host::RecordFieldAbi::Scalar(v) => {
-                            params.push(v.core_byte())
-                        }
-                        // A `Bytes` (list<u8>) field flattens to `(ptr: i32, len: i32)` — 2 core slots.
-                        crate::backend::wasm::host::RecordFieldAbi::Bytes => {
-                            params.extend_from_slice(&[wasm_abi::CORE_I32, wasm_abi::CORE_I32])
-                        }
-                    }
+                    flatten_record_field_abi(f, &mut params);
                 }
             }
         }

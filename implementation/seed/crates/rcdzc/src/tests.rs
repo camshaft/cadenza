@@ -3904,6 +3904,203 @@ fn a_reducer_performing_deliver_notification_emits_and_loads() {
     );
 }
 
+/// A reducer world importing `cadenza:platform/deliver`.`deliver-message` — the §4 shape with a NESTED
+/// record field: `deliver-message(target: list<u8>, event: message)` where `message = record{ contract:
+/// list<u8>, sender: origin, payload: list<u8>, token: list<u8> }` and `origin = record{ reducer: list<u8>,
+/// host: list<u8> }`. Drives shape d3 (nested record): the `origin` sub-record is a defined+exported type the
+/// `message` record's `sender` field references by its exported index; the guest marshals `sender` by
+/// projecting the sub-record handle and recursing its two Bytes fields.
+fn deliver_message_world_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let list_u8 = |b: &mut Builder| {
+        let u8h = b.name("u8");
+        let u8p = b.list(vec![u8h]);
+        let lh = b.atom_leaf(Leaf::Str("list".into()));
+        b.list(vec![lh, u8p])
+    };
+    let field = |b: &mut Builder, name: &str, ty| {
+        let n = b.name(name);
+        b.list(vec![n, ty])
+    };
+    let record = |b: &mut Builder, fields: Vec<crate::ast::StructId>| {
+        let h = b.atom_leaf(Leaf::Str("record".into()));
+        let mut v = vec![h];
+        v.extend(fields);
+        b.list(v)
+    };
+    let bytes_field = |b: &mut Builder, name: &str| {
+        let t = list_u8(b);
+        field(b, name, t)
+    };
+    // export guest { on-message: (m: record{contract,payload,token: list<u8>}) -> step }
+    let message_param = {
+        let mc = bytes_field(&mut b, "contract");
+        let mp = bytes_field(&mut b, "payload");
+        let mt = bytes_field(&mut b, "token");
+        record(&mut b, vec![mc, mp, mt])
+    };
+    let step = {
+        let requests_list = {
+            let request = {
+                let rc = bytes_field(&mut b, "contract");
+                let rp = bytes_field(&mut b, "payload");
+                let rt = bytes_field(&mut b, "token");
+                let rd = {
+                    let u64h = b.name("u64");
+                    let u64t = b.list(vec![u64h]);
+                    let oh = b.atom_leaf(Leaf::Str("option".into()));
+                    let ot = b.list(vec![oh, u64t]);
+                    field(&mut b, "deadline-nanos", ot)
+                };
+                record(&mut b, vec![rc, rp, rt, rd])
+            };
+            let lh = b.atom_leaf(Leaf::Str("list".into()));
+            b.list(vec![lh, request])
+        };
+        let outcome = {
+            let cont = {
+                let n = b.name("continue");
+                b.list(vec![n])
+            };
+            let close = {
+                let cs = bytes_field(&mut b, "schema");
+                let cr = bytes_field(&mut b, "reason");
+                let rec = record(&mut b, vec![cs, cr]);
+                let n = b.name("close");
+                b.list(vec![n, rec])
+            };
+            let vh = b.atom_leaf(Leaf::Str("variant".into()));
+            b.list(vec![vh, cont, close])
+        };
+        let sr = field(&mut b, "requests", requests_list);
+        let so = field(&mut b, "outcome", outcome);
+        record(&mut b, vec![sr, so])
+    };
+    let on_message = {
+        let func_h = b.name("func");
+        let param_h = b.name("param");
+        let pn = b.name("m");
+        let param_node = b.list(vec![param_h, pn, message_param]);
+        let result_h = b.name("result");
+        let result_node = b.list(vec![result_h, step]);
+        let func = b.list(vec![func_h, param_node, result_node]);
+        let member_h = b.name("member");
+        let mn = b.name("on-message");
+        b.list(vec![member_h, mn, func])
+    };
+    let exp_h = b.name("export");
+    let iname = b.name("guest");
+    let export = b.list(vec![exp_h, iname, on_message]);
+    // import cadenza:platform/deliver { deliver-message: func(target: list<u8>, event: message) }
+    let dm_member = {
+        // event = message{ contract: list<u8>, sender: origin{reducer,host: list<u8>}, payload, token }
+        let event_rec = {
+            let ec = bytes_field(&mut b, "contract");
+            let sender = {
+                let sr = bytes_field(&mut b, "reducer");
+                let sh = bytes_field(&mut b, "host");
+                let origin = record(&mut b, vec![sr, sh]);
+                field(&mut b, "sender", origin)
+            };
+            let ep = bytes_field(&mut b, "payload");
+            let et = bytes_field(&mut b, "token");
+            record(&mut b, vec![ec, sender, ep, et])
+        };
+        let func_h = b.name("func");
+        let p1 = {
+            let ph = b.name("param");
+            let pn = b.name("target");
+            let ty = list_u8(&mut b);
+            b.list(vec![ph, pn, ty])
+        };
+        let p2 = {
+            let ph = b.name("param");
+            let pn = b.name("event");
+            b.list(vec![ph, pn, event_rec])
+        };
+        let result_h = b.name("result");
+        let unit_h = b.atom_leaf(Leaf::Str("unit".into()));
+        let unit_ty = b.list(vec![unit_h]);
+        let rnode = b.list(vec![result_h, unit_ty]);
+        let func = b.list(vec![func_h, p1, p2, rnode]);
+        let member_h = b.name("member");
+        let mn = b.name("deliver-message");
+        b.list(vec![member_h, mn, func])
+    };
+    let imp_h = b.name("import");
+    let deliver_name = b.name("cadenza:platform/deliver");
+    let deliver = b.list(vec![imp_h, deliver_name, dm_member]);
+    let world_h = b.name("world");
+    let wn = b.name("w");
+    let world = b.list(vec![world_h, wn, export, deliver]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+/// W4d3 (shape d3, the §4 `deliver-message` shape): a typed reducer performing `deliver-message(target:
+/// list<u8>, event: message{ contract: list<u8>, sender: origin{reducer,host: list<u8>}, payload, token })`
+/// — a host op with a NESTED-record field — EMITS + VALIDATES + LOADS. The `origin` sub-record is a
+/// defined+exported component type the `message` record's `sender` field references by its exported index;
+/// the guest flattens `sender` by projecting the sub-record and recursing its two Bytes fields. wasmparser
+/// validation is the strong check (the flattened core sig must match the canonical lowering of the nested
+/// record). This is the full handler-chain routing shape.
+#[test]
+fn a_reducer_performing_deliver_message_emits_and_loads() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (type Outcome Continue (Close (Record (schema Bytes) (reason Bytes)))) \
+                 (effect deliver (op deliver-message \
+                    (-> Bytes (Record (contract Bytes) \
+                                      (sender (Record (reducer Bytes) (host Bytes))) \
+                                      (payload Bytes) (token Bytes)) Unit))) \
+                 (def (onMessage (: m (Record (contract Bytes) (payload Bytes) (token Bytes)))) \
+                   (host (deliver) \
+                     (do (deliver.deliver-message (. m token) \
+                            (record (contract (. m contract)) \
+                                    (sender (record (reducer (. m token)) (host (. m contract)))) \
+                                    (payload (. m payload)) (token (. m token)))) \
+                         (record (requests (list)) (outcome Outcome.Continue))))) \
+                 (export onMessage))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:platform/guest"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                deliver_message_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "the deliver-message reducer must emit (d3 nested-record field): {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("the deliver-message reducer emits a component");
+    let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+    v.validate_all(bytes).expect(
+        "the deliver-message component validates (flattened core sig matches the nested-record param)",
+    );
+    cdz_run::required_runtime(bytes)
+        .expect("the deliver-message reducer component loads on the pinned wasmtime");
+    assert!(
+        String::from_utf8_lossy(bytes).contains("cadenza:platform/deliver"),
+        "the reducer imports the deliver host interface at the world's FQ name"
+    );
+}
+
 /// Like [`state_get_host_import_world_bytes`] but the imported `cadenza:platform/state` interface declares
 /// BOTH `put: func(key: list<u8>, value: list<u8>)` (a UNIT / bare result) AND `get: func(key: list<u8>) ->
 /// option<list<u8>>` (a COMPOUND result). Drives the SEQUENCED-perform invariant — a full typed reducer whose

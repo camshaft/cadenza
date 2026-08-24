@@ -3031,6 +3031,34 @@ fn collect_used_ops_into(
     collect_used_ops_into_seen(db, id, out, &mut visited);
 }
 
+/// The runtime ops the guest's record-host-arg field marshal calls for ONE field, recursing into a nested
+/// record — mirrors [`emit_record_arg_marshal`] so `collect_used_ops` imports exactly what the emit calls
+/// (a scalar field's get-op, a `Bytes` field's `bytes-len`/`bytes-get`, a nested record's `arr-get` + its
+/// fields' ops). `arr-get` is inserted by the caller once for the whole record.
+fn collect_record_field_ops(
+    db: &mut Db,
+    fty: &Ty,
+    out: &mut std::collections::BTreeSet<&'static str>,
+) {
+    match get_op_ty(db, fty) {
+        Ok(Some(op)) => {
+            out.insert(op);
+        }
+        _ if matches!(fty, Ty::Bytes) => {
+            out.insert(OP_BYTES_LEN);
+            out.insert(OP_BYTES_GET);
+        }
+        _ => {
+            if let Ty::Record(sub) = fty {
+                out.insert(OP_ARR_GET);
+                for sfty in sub.values() {
+                    collect_record_field_ops(db, sfty, out);
+                }
+            }
+        }
+    }
+}
+
 fn collect_used_ops_into_seen(
     db: &mut Db,
     id: StructId,
@@ -3859,16 +3887,7 @@ fn collect_used_ops_into_seen(
                     Ty::Record(fields) if !peer_bound => {
                         out.insert(OP_ARR_GET);
                         for fty in fields.values() {
-                            match get_op_ty(db, fty) {
-                                Ok(Some(op)) => {
-                                    out.insert(op);
-                                }
-                                _ if matches!(fty, Ty::Bytes) => {
-                                    out.insert(OP_BYTES_LEN);
-                                    out.insert(OP_BYTES_GET);
-                                }
-                                _ => {}
-                            }
+                            collect_record_field_ops(db, fty, out);
                         }
                         collect_used_ops_into_seen(db, arg, out, visited);
                     }
@@ -7485,6 +7504,112 @@ fn emit_binder_ref(id: StructId, slot: u32, out: &mut Emit) {
         out.push(Lir::CallImport(OP_DUP)); // rc++ — pops this copy, returns nothing
     }
     out.push(Lir::LocalGet(slot));
+}
+
+/// Marshal a value-heap RECORD host argument whose handle is in `rec_slot` into the FLATTENED core slots the
+/// component `record` param lowers to, pushing them onto the operand stack in NAME-LEX field order (= the
+/// component record's field declaration order = the core flatten order). Per field: a SCALAR reads back
+/// `arr-get` (borrows the aggregate) + its wrap-free get-op (1 slot); a `Bytes` field's rope is copied into
+/// `mem` at the running `cursor` and pushed as `(ptr,len)` (2 slots, the same copy a Bytes ARG does); a
+/// NESTED record (d3, the message envelope's `sender: origin`) is projected (`arr-get` its sub-handle) and
+/// marshalled RECURSIVELY — its fields flatten inline. All reads BORROW `rec_slot` (no consume/drop; the
+/// owner reclaims it). `work_base` is the first free scratch slot for THIS level (rope/len/pos + a sub-record
+/// handle at `work_base..work_base+4`); each nesting level takes a disjoint region above its parent's.
+#[allow(clippy::too_many_arguments)]
+fn emit_record_arg_marshal(
+    db: &mut Db,
+    rec_slot: u32,
+    fields: &std::collections::BTreeMap<crate::resolved::Symbol, Ty>,
+    cursor: Option<u32>,
+    work_base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    let rope_slot = work_base;
+    let len_slot = work_base + 1;
+    let pos_slot = work_base + 2;
+    let sub_rec_slot = work_base + 3;
+    for s in [rope_slot, len_slot, pos_slot, sub_rec_slot] {
+        scratch_ty.insert(s, ValType::I32);
+    }
+    *high = (*high).max(work_base + 4);
+    for (i, (_, fty)) in fields.iter().enumerate() {
+        match get_op_ty(db, fty)? {
+            // A SCALAR field: arr-get + unbox → one core slot.
+            Some(read) => {
+                out.push(Lir::LocalGet(rec_slot));
+                out.push(Lir::ConstI32(i as i32));
+                out.push(Lir::CallImport(OP_ARR_GET)); // [field] (borrows rec)
+                out.push(Lir::CallImport(read)); // [scalar]
+            }
+            // A `Bytes` field: arr-get its list<u8> handle → copy rope→mem at the cursor → push (ptr,len).
+            None if matches!(fty, Ty::Bytes) => {
+                let cursor =
+                    cursor.expect("a bytes-field record reserves the scratch cursor (pre-scan)");
+                out.push(Lir::LocalGet(rec_slot));
+                out.push(Lir::ConstI32(i as i32));
+                out.push(Lir::CallImport(OP_ARR_GET)); // [field list<u8> handle]
+                out.push(Lir::LocalSet(rope_slot));
+                out.push(Lir::LocalGet(rope_slot));
+                out.push(Lir::CallImport(OP_BYTES_LEN)); // [len]
+                out.push(Lir::LocalSet(len_slot));
+                out.push(Lir::ConstI32(0));
+                out.push(Lir::LocalSet(pos_slot));
+                out.push(Lir::Block(BlockType::Empty));
+                out.push(Lir::Loop(BlockType::Empty));
+                out.push(Lir::LocalGet(pos_slot));
+                out.push(Lir::LocalGet(len_slot));
+                out.push(Lir::I32GeS);
+                out.push(Lir::BrIf(1));
+                out.push(Lir::LocalGet(cursor));
+                out.push(Lir::LocalGet(pos_slot));
+                out.push(Lir::I32Add);
+                out.push(Lir::LocalGet(rope_slot));
+                out.push(Lir::LocalGet(pos_slot));
+                out.push(Lir::CallImport(OP_BYTES_GET));
+                out.push(Lir::I32Store8 { offset: 0 });
+                out.push(Lir::LocalGet(pos_slot));
+                out.push(Lir::ConstI32(1));
+                out.push(Lir::I32Add);
+                out.push(Lir::LocalSet(pos_slot));
+                out.push(Lir::Br(0));
+                out.push(Lir::End);
+                out.push(Lir::End);
+                out.push(Lir::LocalGet(cursor));
+                out.push(Lir::LocalGet(len_slot)); // push (ptr, len)
+                out.push(Lir::LocalGet(cursor));
+                out.push(Lir::LocalGet(len_slot));
+                out.push(Lir::I32Add);
+                out.push(Lir::LocalSet(cursor)); // cursor += len
+            }
+            // A NESTED record field (d3): arr-get its sub-record handle → recurse (fields flatten inline).
+            None if matches!(fty, Ty::Record(_)) => {
+                let Ty::Record(sub) = fty else { unreachable!() };
+                out.push(Lir::LocalGet(rec_slot));
+                out.push(Lir::ConstI32(i as i32));
+                out.push(Lir::CallImport(OP_ARR_GET)); // [sub-record handle] (borrows rec)
+                out.push(Lir::LocalSet(sub_rec_slot));
+                emit_record_arg_marshal(
+                    db,
+                    sub_rec_slot,
+                    sub,
+                    cursor,
+                    work_base + 4,
+                    high,
+                    scratch_ty,
+                    out,
+                )?;
+            }
+            None => {
+                return Err(Reject::decline(
+                    "a record host-arg field has no boundary read (only scalar, list<u8>, and \
+                     nested-record fields cross this increment)",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Emit the flat instructions for the node at `id`, appending to `out`. `slots` maps a parameter's
@@ -12203,72 +12328,21 @@ fn emit(
                     // the handle is not dropped here (its owner reclaims it).
                     Ty::Record(fields) => {
                         let rec_slot = arg_base.max(*high);
-                        let rope_slot = rec_slot + 1;
-                        let len_slot = rec_slot + 2;
-                        let pos_slot = rec_slot + 3;
-                        *high = (*high).max(rec_slot + 4);
-                        for s in [rec_slot, rope_slot, len_slot, pos_slot] {
-                            scratch_ty.insert(s, ValType::I32);
-                        }
-                        emit(db, arg, slots, rec_slot + 4, high, scratch_ty, layout, out)?; // [rec]
+                        scratch_ty.insert(rec_slot, ValType::I32);
+                        *high = (*high).max(rec_slot + 1);
+                        emit(db, arg, slots, rec_slot + 1, high, scratch_ty, layout, out)?; // [rec]
                         out.push(Lir::LocalSet(rec_slot));
-                        for (i, (_, fty)) in fields.iter().enumerate() {
-                            match get_op_ty(db, fty)? {
-                                Some(read) => {
-                                    out.push(Lir::LocalGet(rec_slot)); // [rec]
-                                    out.push(Lir::ConstI32(i as i32)); // [rec, i]
-                                    out.push(Lir::CallImport(OP_ARR_GET)); // [field] (borrows rec)
-                                    out.push(Lir::CallImport(read)); // [scalar]
-                                }
-                                None if matches!(fty, Ty::Bytes) => {
-                                    let cursor = scratch_cursor_slot.expect(
-                                        "a bytes-field record reserves the scratch cursor (pre-scan)",
-                                    );
-                                    out.push(Lir::LocalGet(rec_slot));
-                                    out.push(Lir::ConstI32(i as i32));
-                                    out.push(Lir::CallImport(OP_ARR_GET)); // [field list<u8> handle]
-                                    out.push(Lir::LocalSet(rope_slot));
-                                    out.push(Lir::LocalGet(rope_slot));
-                                    out.push(Lir::CallImport(OP_BYTES_LEN)); // [len]
-                                    out.push(Lir::LocalSet(len_slot));
-                                    out.push(Lir::ConstI32(0));
-                                    out.push(Lir::LocalSet(pos_slot));
-                                    // block { loop { br_out if pos>=len; mem[cursor+pos]=bytes-get(rope,pos); pos++ } }
-                                    out.push(Lir::Block(BlockType::Empty));
-                                    out.push(Lir::Loop(BlockType::Empty));
-                                    out.push(Lir::LocalGet(pos_slot));
-                                    out.push(Lir::LocalGet(len_slot));
-                                    out.push(Lir::I32GeS);
-                                    out.push(Lir::BrIf(1));
-                                    out.push(Lir::LocalGet(cursor));
-                                    out.push(Lir::LocalGet(pos_slot));
-                                    out.push(Lir::I32Add);
-                                    out.push(Lir::LocalGet(rope_slot));
-                                    out.push(Lir::LocalGet(pos_slot));
-                                    out.push(Lir::CallImport(OP_BYTES_GET));
-                                    out.push(Lir::I32Store8 { offset: 0 });
-                                    out.push(Lir::LocalGet(pos_slot));
-                                    out.push(Lir::ConstI32(1));
-                                    out.push(Lir::I32Add);
-                                    out.push(Lir::LocalSet(pos_slot));
-                                    out.push(Lir::Br(0));
-                                    out.push(Lir::End);
-                                    out.push(Lir::End);
-                                    out.push(Lir::LocalGet(cursor));
-                                    out.push(Lir::LocalGet(len_slot)); // push (ptr, len)
-                                    out.push(Lir::LocalGet(cursor));
-                                    out.push(Lir::LocalGet(len_slot));
-                                    out.push(Lir::I32Add);
-                                    out.push(Lir::LocalSet(cursor)); // cursor += len
-                                }
-                                None => {
-                                    return Err(Reject::decline(
-                                        "a record host-arg field has no boundary read (only scalar + \
-                                         list<u8> fields cross this increment)",
-                                    ));
-                                }
-                            }
-                        }
+                        let work_base = *high;
+                        emit_record_arg_marshal(
+                            db,
+                            rec_slot,
+                            &fields,
+                            scratch_cursor_slot,
+                            work_base,
+                            high,
+                            scratch_ty,
+                            out,
+                        )?;
                     }
                     // A scalar argument emits its value directly.
                     _ => emit(db, arg, slots, arg_base, high, scratch_ty, layout, out)?,
