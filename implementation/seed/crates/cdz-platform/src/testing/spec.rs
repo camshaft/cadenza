@@ -858,7 +858,7 @@ fn error_tag(e: Error) -> &'static str {
 /// against, the `input` bytes, and the `expect-output` bytes. Liberal about the record head (name- or
 /// string-headed), so it reads both the canonical value form and the `cdz convert` surface form.
 fn read_pure_run(arenas: &Arenas, id: StructId) -> Result<PureRun, SpecError> {
-    if arenas.as_form(id, "record").is_none() && arenas.as_ctor_form(id, "record").is_none() {
+    if !is_record(arenas, id) {
         return Err(SpecError::WrongType {
             field: "pure-run",
             want: "a (record …) with program, contract, input, expect-output",
