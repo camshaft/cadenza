@@ -65,11 +65,15 @@ pub fn ascribe(b: &mut Builder, value: StructId, ty: &str) -> StructId {
 }
 
 /// A record value `(record (= <field> <value>)…)` — the NAME-headed record constructor, then one
-/// `(= <name> <value>)` field per entry, in the given order (fields are read back by name, so the order is
-/// not load-bearing).
+/// `(= <name> <value>)` field per entry, emitted in **name-sorted** order. The compiler's `Value.decode`
+/// reads a record's fields **canonically ordered** (that is what `Value.encode` produces), so a value a
+/// Cadenza guest decodes must present its fields sorted — declaration order does not decode. Our own readers
+/// ([`record_field`]) read by name and are order-independent, so the sort is transparent to them.
 #[must_use]
 pub fn record(b: &mut Builder, fields: Vec<(&str, StructId)>) -> StructId {
     let head = b.name("record");
+    let mut fields = fields;
+    fields.sort_by_key(|&(name, _)| name);
     let mut children = Vec::with_capacity(1 + fields.len());
     children.push(head);
     for (name, value) in fields {

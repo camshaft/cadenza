@@ -11,19 +11,24 @@
 //! Cadenza values, so the whole harness is language-neutral end to end.
 //!
 //! ## The value shape
-//! The log is a list of record values; each record is a record with the three questions it answers plus its
-//! entry, and an entry is an `Entry` **sum** whose constructor names the kind (the former tag) and whose
-//! payload is a record of that kind's fields:
+//! The log is a canonical Cadenza value (the form `Value.encode`/`Value.decode` uses) so a guest checker
+//! decodes the whole log into a `List(LogRecord)` from `guests/log-schema.cdz`: a **name-headed** list wrapped
+//! at the root in the ascription `Value.decode` requires; each element is a single-constructor `LogRecord`, so
+//! its value is the bare **name-headed** record carrying its own `(: … LogRecord)` ascription; and its `entry`
+//! is an `Entry` **sum** in the bare-constructor form `(<Ctor> <record>)`. `Value.decode` matches constructor
+//! and field names EXACTLY (no kebab/camel normalization) and reads a record's fields **canonically ordered**,
+//! so the constructors are the exact schema spellings (`Emitted`, `KvGet`, …), the field names the exact schema
+//! spellings (`eventKind`, `keysOnly`, …), and fields are emitted name-sorted (by `contract_value::record`):
 //! ```text
-//! ("list" <record>…)
-//! <record>  = ("record" (= seq <u>) (= time <u>) (= source <origin>) (= entry <entry>))
-//! <origin>  = ("record" (= reducer b"…") (= host b"…"))
-//! <entry>   = ((. Entry kv-put) ("record" (= key b"…") (= value b"…")))          ; one constructor per kind
+//! (: (list (: <record> LogRecord)…) List)
+//! <record>  = (record (= entry <entry>) (= seq <u>) (= source <origin>) (= time <u>))   ; fields name-sorted
+//! <origin>  = (record (= host b"…") (= reducer b"…"))
+//! <entry>   = (KvPut (record (= key b"…") (= value b"…")))                               ; one schema ctor per kind
 //! ```
 //! Encoding the entry as a sum (not a `tag`-discriminated record) is what lets a Cadenza **checker**
 //! `Value.decode` the whole heterogeneous log into a `List(Entry)`: a value-form sum decodes into a Cadenza
-//! sum by constructor name, whereas a record with a `tag` field plus per-kind fields has no single fixed
-//! record type. Every id/hash crosses as its raw bytes, every payload/key as opaque bytes, every flag as
+//! sum by its exact constructor name, whereas a record with a `tag` field plus per-kind fields has no single
+//! fixed record type. Every id/hash crosses as its raw bytes, every payload/key as opaque bytes, every flag as
 //! `0`/`1`, so no fidelity is lost. Decoding is total: any malformation is a rejected log ([`deserialize`]
 //! returns `None`), never a panic.
 
@@ -75,7 +80,7 @@ fn record_value(b: &mut Builder, r: &Record) -> StructId {
     let time = uint_leaf(b, r.time_ns);
     let source = origin_value(b, &r.source);
     let entry = entry_value(b, &r.entry);
-    record(
+    let rec = record(
         b,
         vec![
             ("seq", seq),
@@ -83,10 +88,18 @@ fn record_value(b: &mut Builder, r: &Record) -> StructId {
             ("source", source),
             ("entry", entry),
         ],
-    )
+    );
+    // `LogRecord` is a SINGLE-constructor sum, so its value is the bare record with the constructor elided —
+    // but a bare record is ambiguous, so each single-constructor sum value carries its own `(: … LogRecord)`
+    // ascription (this is what `Value.encode` emits for each element of a `List(LogRecord)`). Without it the
+    // list elements do not decode as `LogRecord`s.
+    ascribe(b, rec, "LogRecord")
 }
 
 fn read_record(arenas: &Arenas, id: StructId) -> Option<Record> {
+    // Strip the per-element `(: <record> LogRecord)` ascription `serialize` writes (liberal — a bare record
+    // is tolerated too).
+    let id = as_ascribed(arenas, id).unwrap_or(id);
     Some(Record {
         seq: read_uint(arenas, field(arenas, id, "seq")?)?,
         time_ns: read_uint(arenas, field(arenas, id, "time")?)?,
@@ -162,7 +175,7 @@ fn kv_value(b: &mut Builder, op: &KvOp) -> StructId {
             tagged(
                 b,
                 "KvScan",
-                vec![("lower", lower), ("upper", upper), ("keys-only", keys_only)],
+                vec![("lower", lower), ("upper", upper), ("keysOnly", keys_only)],
             )
         }
     }
@@ -185,7 +198,7 @@ fn read_kv(arenas: &Arenas, id: StructId, tag: &str) -> Option<KvOp> {
         "KvScan" => KvOp::Scan {
             lower: read_bound(arenas, field(arenas, id, "lower")?)?,
             upper: read_bound(arenas, field(arenas, id, "upper")?)?,
-            keys_only: read_bool(arenas, field(arenas, id, "keys-only")?)?,
+            keys_only: read_bool(arenas, field(arenas, id, "keysOnly")?)?,
         },
         _ => return None,
     })
@@ -301,7 +314,7 @@ fn event_value(b: &mut Builder, op: &EventOp) -> StructId {
                 b,
                 "Delivered",
                 vec![
-                    ("event-kind", event_kind),
+                    ("eventKind", event_kind),
                     ("contract", contract),
                     ("from", from),
                     ("token", token),
@@ -360,7 +373,7 @@ fn event_value(b: &mut Builder, op: &EventOp) -> StructId {
 fn read_event(arenas: &Arenas, id: StructId, tag: &str) -> Option<EventOp> {
     Some(match tag {
         "Delivered" => EventOp::Delivered {
-            kind: read_event_kind(str_at(arenas, field(arenas, id, "event-kind")?)?)?,
+            kind: read_event_kind(str_at(arenas, field(arenas, id, "eventKind")?)?)?,
             contract: read_contract(arenas, field(arenas, id, "contract")?)?,
             from: read_option(arenas, field(arenas, id, "from")?, read_origin)?,
             continuation_token: read_bytes(arenas, field(arenas, id, "token")?)?,
@@ -438,7 +451,7 @@ fn spawn_value(b: &mut Builder, info: &SpawnInfo) -> StructId {
             ("name", name),
             ("program", program),
             ("parent", parent),
-            ("reducer-kind", kind),
+            ("reducerKind", kind),
         ],
     )
 }
@@ -448,7 +461,7 @@ fn read_spawn(arenas: &Arenas, id: StructId) -> Option<SpawnInfo> {
         name: Str::from(str_at(arenas, field(arenas, id, "name")?)?),
         program: read_program(arenas, field(arenas, id, "program")?)?,
         parent: read_reducer(arenas, field(arenas, id, "parent")?)?,
-        kind: read_reducer_kind(str_at(arenas, field(arenas, id, "reducer-kind")?)?)?,
+        kind: read_reducer_kind(str_at(arenas, field(arenas, id, "reducerKind")?)?)?,
     })
 }
 
@@ -810,7 +823,9 @@ mod tests {
         let arenas = cadenza_ast::codec::decode(&bytes).expect("a decodable log");
         let root = super::as_ascribed(&arenas, arenas.root).expect("the log root is ascribed");
         let items = super::list_items(&arenas, root).expect("the log is a list");
-        let entry = super::field(&arenas, items[0], "entry").expect("the record has an entry");
+        let record =
+            super::as_ascribed(&arenas, items[0]).expect("each LogRecord element is ascribed");
+        let entry = super::field(&arenas, record, "entry").expect("the record has an entry");
         let (ctor, inner) = super::entry_ctor(&arenas, entry).expect("the entry is an Entry sum");
         assert_eq!(ctor, "Delivered");
         assert!(
@@ -841,7 +856,9 @@ mod tests {
         let arenas = cadenza_ast::codec::decode(&bytes).expect("a decodable log");
         let root = super::as_ascribed(&arenas, arenas.root).expect("the log root is ascribed");
         let items = super::list_items(&arenas, root).expect("the log is a list");
-        let entry = super::field(&arenas, items[0], "entry").expect("the record has an entry");
+        let record =
+            super::as_ascribed(&arenas, items[0]).expect("each LogRecord element is ascribed");
+        let entry = super::field(&arenas, record, "entry").expect("the record has an entry");
         let (ctor, inner) = super::entry_ctor(&arenas, entry).expect("the entry is an Entry sum");
         assert_eq!(ctor, "KvScan");
         let lower = super::field(&arenas, inner, "lower").expect("the scan has a lower bound");
