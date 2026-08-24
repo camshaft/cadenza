@@ -52,6 +52,16 @@ pub enum HostParam {
     /// as `list<u8>` — 2 core slots `(ptr,len)` + a reference to the shared `(list u8)` type. A field that is
     /// a `String`/nested record is a LATER slice (d3) — the classifier declines a record with one.
     Record(Vec<(String, RecordFieldAbi)>),
+    /// An `enum` parameter — a payloadless Cadenza sum (every variant nullary, `db.is_enum_disc`). Its
+    /// component valtype is an `enum` DEFINED type (tag `0x6d`) the import instance-type declares + EXPORTS
+    /// (a nominal type an import func uses must be exported, like a [`Record`](HostParam::Record)), referenced
+    /// by index. Its core form is ONE `i32` slot — the discriminant, which is EXACTLY a payloadless enum's
+    /// in-guest representation (`ty_is_enum_disc` → a bare `i32.const disc`, no heap handle), so the guest
+    /// passes the value directly (no marshal, unlike a Bytes/Record param). Carries the case names (kebab,
+    /// DECLARATION = discriminant order — the same order the component `enum` type declares its cases, so the
+    /// guest's raw disc IS the component enum's canonical discriminant). The edge-direction shape a
+    /// `graph.neighbors(node, kind, dir)` op takes (`dir: enum`).
+    Enum(Vec<String>),
 }
 
 /// The boundary ABI of one shape-d record FIELD.
@@ -246,6 +256,29 @@ pub fn is_list_byte_pairs(ty: &Ty) -> bool {
         return false;
     };
     elems.len() == 2 && matches!(elems[0], Ty::Bytes) && matches!(elems[1], Ty::Bytes)
+}
+
+/// The case names of an `enum` host-boundary type — a PAYLOADLESS Cadenza sum (every variant nullary, so
+/// `db.is_enum_disc`), returned as kebab-cased names in DECLARATION (= discriminant) order, else `None`. The
+/// component `enum` type declares its cases in this order, so the guest's raw discriminant (a payloadless
+/// enum is a bare `i32.const disc` at run time) IS the component enum's canonical discriminant — no
+/// remapping. Reads through an erased nominal wrapper. The parameter analogue of the err-enum in
+/// [`result_bytes_enum`].
+pub fn enum_cases(db: &mut Db, ty: &Ty) -> Option<Vec<String>> {
+    use crate::backend::common::export_name::kebab_extern_name;
+    let Ty::Sum { decl, .. } = ty.strip_nominal() else {
+        return None;
+    };
+    if !db.is_enum_disc(*decl) {
+        return None;
+    }
+    let d = db.type_decl_by_occ(*decl)?;
+    Some(
+        d.variants
+            .iter()
+            .map(|v| kebab_extern_name(&v.name))
+            .collect(),
+    )
 }
 
 /// Whether a SPILLED-COMPOUND host result of type `ty` is one the general result path handles end-to-end —
@@ -617,6 +650,15 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                         if all_ok {
                             params.push(HostParam::Record(field_abis));
                         }
+                    }
+                    // An ENUM arg (a payloadless Cadenza sum, `graph.neighbors`'s `dir`) crosses NATIVELY as a
+                    // component `enum` DEFINED type: ONE `i32` core slot (the discriminant, which is a
+                    // payloadless enum's in-guest rep — a bare `i32.const disc`), so the guest passes it with no
+                    // marshal. A PEER-bound enum crosses as a `u32` handle (the `_` arm below), not this native
+                    // enum. Checked BEFORE the scalar arm (a `Sum` has no `abi_val_type`, so the `_` arm would
+                    // leave `params` short and decline).
+                    _ if !peer_bound && enum_cases(db, &at).is_some() => {
+                        params.push(HostParam::Enum(enum_cases(db, &at).unwrap()));
                     }
                     _ => {
                         let v = if peer_bound {
@@ -1053,10 +1095,16 @@ pub fn first_unrepresentable_host_op(
             // the record instance-type are wired. Every OTHER path keeps declining a record arg.
             let arg_is_boundary_record =
                 allow_option_bytes && !peer_bound && is_boundary_record(db, &at);
+            // An ENUM arg (a payloadless sum, e.g. graph.neighbors' `dir`) crosses NATIVELY as a component
+            // `enum` type + one i32 disc — representable on the same reducer/host-fused path (gated on
+            // `allow_option_bytes` + `!peer_bound`, matching where the enum instance-type is wired).
+            let arg_is_boundary_enum =
+                allow_option_bytes && !peer_bound && enum_cases(db, &at).is_some();
             if !matches!(at, Ty::Unit | Ty::String | Ty::Bytes)
                 && !ty_undetermined(&at)
                 && !abi_ok(&at)
                 && !arg_is_boundary_record
+                && !arg_is_boundary_enum
             {
                 return Some((op.to_string(), "argument", at.render_name(&db.name_ctx())));
             }

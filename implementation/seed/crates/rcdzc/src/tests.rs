@@ -106177,6 +106177,69 @@ fn a_reducer_performing_graph_neighbors_emits_and_loads() {
     );
 }
 
+/// ENUM HOST-CALL ARG: a reducer performing `graph.neighbors(node: list<u8>, kind: list<u8>, dir: <enum>)`
+/// — an ENUM argument (`dir`, a payloadless sum) alongside two `list<u8>` args and a `list<list<u8>>` result
+/// — EMITS + VALIDATES + LOADS. The enum arg crosses as a component `enum` DEFINED type (tag `0x6d`,
+/// DEFINE+EXPORT — a nominal an import func uses must be exported) + one `i32` core slot (its discriminant, a
+/// payloadless enum's in-guest rep, so no guest marshal), laid AFTER the `(list u8)` type + the spilled
+/// `list<list<u8>>` result defined type. This is the arg-side generalization v-platform's default-handler
+/// guest needs (their `neighbors(node, kind, dir)` 3-arg call). Pins that an enum arg co-composes with the
+/// general result lift.
+#[test]
+fn a_reducer_with_an_enum_host_arg_emits_and_loads() {
+    use crate::testkit::parse;
+    let src = "(module m \
+      (type Dir (Out) (In) (Both)) \
+      (effect graph (op neighbors (-> Bytes Bytes Dir (List Bytes)))) \
+      (def (apply (: e (Record (ct String) (pl Bytes)))) \
+        (host (graph) \
+          (if (> (List.len (graph.neighbors (. e pl) (. e pl) Dir.Out)) 0) \
+              (list (record (op (. e ct)) (arg (. e pl)))) \
+              (list)))) \
+      (export apply))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:agent-kernel/fold"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                reducer_graph_neighbors_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "the enum-host-arg reducer must emit (enum arg + list<list<u8>> result): {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("the enum-host-arg reducer emits a component");
+    let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+    v.validate_all(bytes).expect(
+        "the enum-host-arg provider component validates (enum defined-type + export + functype)",
+    );
+    let req = cdz_run::required_runtime(bytes)
+        .expect("the enum-host-arg provider component loads on the pinned wasmtime");
+    assert!(
+        req.is_some_and(|r| r.import_name.contains("cadenza:runtime/heap")),
+        "an enum-host-arg reducer marshals through the value-heap runtime"
+    );
+    assert!(
+        String::from_utf8_lossy(bytes).contains("cadenza:agent-kernel/graph"),
+        "the enum-host-arg reducer imports the graph host interface"
+    );
+}
+
 /// §3c kv DELETE is FREE: a host-fused reducer calling `kv.delete` (result BOOL — present-or-removed)
 /// EMITS with no host-result lift, because a `bool` is a FLAT SCALAR at the host boundary
 /// (`abi_val_type(Ty::Bool)=Some`), unlike the spilled `option<list<u8>>`/`list<tuple>` compounds. Pins
