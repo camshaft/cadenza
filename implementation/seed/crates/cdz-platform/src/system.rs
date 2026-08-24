@@ -264,7 +264,7 @@ impl<R: Runtime> TaskSystem<R> {
 
     /// Drive the program store's wasm engine epoch on a periodic tick, so a long-running guest fold is
     /// preempted — it yields to the executor and, past a bound, traps — and one runaway program cannot
-    /// monopolize a thread or stall the runtime (`host::arm_epoch_deadline` sets the per-fold policy this
+    /// monopolize a thread or stall the runtime (`host::arm_store_safety` sets the per-fold policy this
     /// ticker enforces). Only on a runtime that opts in ([`Runtime::drives_epoch_ticker`] — production `tokio`,
     /// not the deterministic simulator, whose forever-pending timer would defeat quiescence and which has the
     /// harness wall-clock timeout as its backstop), and only if the store has a wasm engine
@@ -280,24 +280,18 @@ impl<R: Runtime> TaskSystem<R> {
         if !R::drives_epoch_ticker() {
             return;
         }
-        let Some(increment) = self.shared.programs.epoch_incrementer() else {
+        let Some((tick, increment)) = self.shared.programs.epoch_incrementer() else {
             return;
         };
         let alive = Arc::downgrade(&self.shared);
         std::thread::spawn(move || {
             while alive.upgrade().is_some() {
-                std::thread::sleep(EPOCH_TICK);
+                std::thread::sleep(tick);
                 increment();
             }
         });
     }
 }
-
-/// The cadence at which the kernel advances the wasm engine's epoch (production only, see
-/// [`TaskSystem::start_epoch_ticker`]). A guest fold's compute budget is denominated in these ticks by
-/// `host::arm_epoch_deadline`; a real fold finishes in well under one, so the preemption only bites a stuck
-/// guest.
-const EPOCH_TICK: Duration = Duration::from_millis(1);
 
 #[async_trait]
 impl<R: Runtime> System for TaskSystem<R> {
