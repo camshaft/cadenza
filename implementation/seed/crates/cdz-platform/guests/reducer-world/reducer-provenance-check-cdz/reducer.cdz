@@ -21,37 +21,30 @@ import { LogRecord, Entry } from "log-schema"
 type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
 type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
 
-// Does some record at index >= i carry a ProgramOf(reducer == r)? (the reducer read r's provenance.)
+// Does some record at index >= i carry a ProgramOf(reducer == r)? (the reducer read r's provenance.) The
+// index walk terminates on `List.at` returning None past the end — no separate length check needed — and a
+// match GUARD folds the "is it the ProgramOf we want" test into the pattern, so there is one recursive call.
 def has-program-of(records: List(LogRecord), i: Int64, r: Bytes) =
-  if (i == List.len(records)) then false
-  else (match List.at(records, i) with
-    | Option.None(_) => false
-    | Option.Some(rec0) =>
-        (match rec0 with
-          | LogRecord.LogRecord(rec) =>
-              (match rec.entry with
-                | Entry.ProgramOf(pf) =>
-                    if (pf.reducer == r) then true else has-program-of(records, i + 1, r)
-                | _ => has-program-of(records, i + 1, r))))
+  match List.at(records, i) with
+  | Option.None(_) => false
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      (match rec.entry with
+        | Entry.ProgramOf(pf) if (pf.reducer == r) => true
+        | _ => has-program-of(records, i + 1, r))
 
 // Is some delivered message's sender S matched by a ProgramOf(reducer = S)? Scans delivered records with a
 // present `from` (a message carries its sender Origin); for each, checks the whole log for a program-of of
-// that sender.
+// that sender. Same index walk (None past the end ends it) with a guard on the sender's `from`.
 def prov-holds(records: List(LogRecord), i: Int64) =
-  if (i == List.len(records)) then false
-  else (match List.at(records, i) with
-    | Option.None(_) => false
-    | Option.Some(rec0) =>
-        (match rec0 with
-          | LogRecord.LogRecord(rec) =>
-              (match rec.entry with
-                | Entry.Delivered(d) =>
-                    (match d.from with
-                      | Option.Some(o) =>
-                          if has-program-of(records, 0, o.reducer) then true
-                          else prov-holds(records, i + 1)
-                      | Option.None(_) => prov-holds(records, i + 1))
-                | _ => prov-holds(records, i + 1))))
+  match List.at(records, i) with
+  | Option.None(_) => false
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      (match rec.entry with
+        | Entry.Delivered(d) =>
+            (match d.from with
+              | Option.Some(o) if has-program-of(records, 0, o.reducer) => true
+              | _ => prov-holds(records, i + 1))
+        | _ => prov-holds(records, i + 1))
 
 // The verdict payload for a decoded log: pass with no messages, else fail with one diagnostic message.
 def verdict-payload(records: List(LogRecord)) =
@@ -61,8 +54,11 @@ def verdict-payload(records: List(LogRecord)) =
                                       messages = List.push(([] : List(String)),
                                                            "no ProgramOf named a delivered message's sender: the reducer did not read the sender's provenance") }))
 
-// A verdict request on the contract-id the harness passed in the envelope (no hardcoded hash). The verdict
-// token is irrelevant (the harness reads the verdict by scanning Emitted on the verdict contract), so b"".
+// A verdict request. `verdict-contract` is NOT a hardcoded hash — it is the `verdict` field of the incoming
+// `check` Envelope (`c.verdict` in on-message below), the contract-id the harness told the checker to emit
+// its verdict on (the §9 checker protocol: the harness owns the verdict contract and passes it in). The
+// verdict token is irrelevant (the harness reads the verdict by scanning Emitted on the verdict contract),
+// so b"".
 def verdict-req(verdict-contract: Bytes, payload: Bytes) =
   { contract = verdict-contract, payload = payload, token = b"", deadlineNanos = None }
 
