@@ -399,6 +399,35 @@ mod tests {
         }
     }
 
+    /// A reducer that emits an ordinary effect AND returns an output in the same fold — a pure program that
+    /// tries to reach the world but still produces a result. The pure run must deny (drop) the effect and
+    /// return the output regardless: no capabilities are wired, so the request goes nowhere.
+    struct EmitThenReturn;
+    #[async_trait::async_trait]
+    impl Reducer for EmitThenReturn {
+        async fn on_message(&mut self, m: Message) -> (Vec<Request>, Outcome) {
+            let effect = Request {
+                id: cid(b"http.get"),
+                payload: Bytes::from_static(b"reach the world"),
+                continuation_token: Bytes::from_static(b"k"),
+                deadline: None,
+            };
+            (
+                vec![effect],
+                Outcome::Break {
+                    schema: cid(b"out"),
+                    reason: m.payload,
+                },
+            )
+        }
+        async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+    }
+
     /// A reducer that traps on a message — an uncontrolled fold-failure.
     struct Trapper;
     #[async_trait::async_trait]
@@ -492,6 +521,39 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(built.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn a_pure_runs_emitted_effects_are_denied_and_its_output_still_returns() {
+        // A pure run has no capabilities (§3): a program that emits an effect and returns still produces its
+        // output — the effect is dropped, never routed (there is no world to reach), so it neither blocks the
+        // run (contrast `Waiter`, which Continues → DidNotReturn) nor faults it. Emitting an effect must also
+        // not taint purity: a repeat run still hits the memo.
+        let built = Arc::new(AtomicUsize::new(0));
+        let built_f = built.clone();
+        let mut store = crate::testing::program::Store::new();
+        store.register(prog(b"reacher"), move || {
+            built_f.fetch_add(1, Ordering::SeqCst);
+            Box::new(EmitThenReturn)
+        });
+        let runner = Runner::new(Arc::new(store));
+
+        let out = runner
+            .run(prog(b"reacher"), cid(b"c"), Bytes::from_static(b"out"))
+            .await
+            .expect("the effect is denied, but the output still returns");
+        assert_eq!(out, Bytes::from_static(b"out"));
+        // Second run: the emitted effect did not make the run impure, so it memoizes like any pure run.
+        let again = runner
+            .run(prog(b"reacher"), cid(b"c"), Bytes::from_static(b"out"))
+            .await
+            .unwrap();
+        assert_eq!(again, out);
+        assert_eq!(
+            built.load(Ordering::SeqCst),
+            1,
+            "the second run hit the memo — emitting an effect did not taint purity"
+        );
     }
 
     #[tokio::test]
