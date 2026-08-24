@@ -140,6 +140,17 @@ fn compile_with_opt_inner(
     // is never synthesized twice.
     if let Some(world_art) = inputs.iter().find(|a| a.kind == link::KIND_WIT_WORLD) {
         crate::wit_world::inject_world_import_effects_from_bytes(&mut arenas, &world_art.bytes);
+        // NO-ANNOTATION EXPORT BOUNDARY for an EXTERNAL artifact world: derive each guest-export def's
+        // boundary param types from the artifact's guest-export members (the artifact analogue of the
+        // in-source `derive_world_export_param_annotations`, which runs in `Db::load_linked`). The flagship +
+        // identity + provenance reducers target an artifact world, so this is the real reducer path — without
+        // it those reducers still need the entry-point param annotation the operator flagged. Runs here,
+        // BEFORE `Db::load`, so the injected `(: <param> <type>)` is scanned + resolved like a hand-written
+        // one; the `(: …)`-skip keeps it composable with the in-source pass (an author annotation wins).
+        crate::wit_world::derive_world_export_param_annotations_from_bytes(
+            &mut arenas,
+            &world_art.bytes,
+        );
     }
     // For a linked PACKAGE, emit the `link-map` demux artifact (`DESIGN-package-linking.md` §6): it
     // lets a consumer map a cross-file diagnostic's GLOBAL node id → `(file, local id)` for source

@@ -606,34 +606,80 @@ pub fn inject_world_import_effects_from_bytes(ast: &mut Arenas, world_bytes: &[u
 /// CDZ0201 "annotate it" — no regression). Runs in `Db::load_linked` in the same generate-before-resolve slot
 /// as the import pre-pass, at the locus BOTH compile AND check reach, so the surface holds in `cdz check`/LSP
 /// too. A module with no in-source `(world …)`, or no def matching an export member, is left untouched. The
-/// EXTERNAL `KIND_WIT_WORLD` artifact world is a follow-up (thread via the `load_linked` linkage), mirroring
-/// the import side.
+/// EXTERNAL `KIND_WIT_WORLD` artifact world is served by the sibling
+/// [`derive_world_export_param_annotations_from_bytes`] (called from `compile` before `Db::load`).
 pub fn derive_world_export_param_annotations(ast: &mut Arenas) {
-    use crate::ast::Leaf;
     use crate::backend::common::export_name::kebab_extern_name;
-    use crate::prelude::{push_atom, push_list};
     let Some(world_form) = top_world_form(ast) else {
         return;
     };
-    // Collect (export-member kebab name → ordered param WitTypes) OWNED, then drop the `parse_target_world`
-    // borrow of `ast` before the mutating rewrite below (WitType is Clone). The in-source `(world …)` node is
-    // already the exact `world_schema_tree` shape `parse_target_world` reads, so no bytes round-trip is needed
-    // (unlike the import `from_bytes` path, which also serves the external artifact).
-    let member_params: std::collections::HashMap<String, Vec<WitType>> = {
+    // Build the (export-member kebab name → ordered param WitTypes) map OWNED, dropping the
+    // `parse_target_world` borrow of `ast` before the mutating rewrite (WitType is Clone). The in-source
+    // `(world …)` node is already the exact `world_schema_tree` shape `parse_target_world` reads, so no bytes
+    // round-trip is needed (unlike the artifact path, which decodes its own arena).
+    let member_params = {
         let Some(world) = parse_target_world(ast, world_form) else {
             return;
         };
-        let mut m = std::collections::HashMap::new();
-        for iface in &world.exports {
-            for member in &iface.members {
-                m.insert(
-                    kebab_extern_name(&member.name),
-                    member.func.params.iter().map(|(_n, t)| t.clone()).collect(),
-                );
-            }
-        }
-        m
+        export_member_params(&world, kebab_extern_name)
     };
+    apply_export_param_annotations(ast, &member_params);
+}
+
+/// Derive export-boundary param annotations from an EXTERNAL `KIND_WIT_WORLD` artifact's ENCODED bytes — the
+/// artifact-side entry point of the no-annotation export boundary, called from `compile` BEFORE `Db::load`
+/// (the same seam the import `inject_world_import_effects_from_bytes` uses). The flagship + identity +
+/// provenance reducers target an external artifact world (`cdz compile <src> wit-world:reducer-world=…`), so
+/// this is the real reducer path; the in-source [`derive_world_export_param_annotations`] covers a reducer
+/// that declares its world inline. Both reuse the SAME rewrite ([`apply_export_param_annotations`]) — an
+/// artifact world decodes to the same `TargetWorld`/`WitInterface` exports as an in-source one. If both a
+/// compile-time artifact and an in-source world are present, the artifact runs first and the in-source pass
+/// then no-ops on the already-annotated params (the `(: …)`-skip makes them composable, mirroring the import
+/// side).
+pub fn derive_world_export_param_annotations_from_bytes(ast: &mut Arenas, world_bytes: &[u8]) {
+    use crate::backend::common::export_name::kebab_extern_name;
+    // The world decodes into its OWN arena; the def-sig rewrite writes into the guest `ast`.
+    let Some(world_arena) = crate::codec::decode(world_bytes) else {
+        return;
+    };
+    let Some(world) = parse_target_world(&world_arena, world_arena.root) else {
+        return;
+    };
+    let member_params = export_member_params(&world, kebab_extern_name);
+    apply_export_param_annotations(ast, &member_params);
+}
+
+/// The (export-member kebab name → ordered param [`WitType`]s) map a guest def's boundary params are derived
+/// against — the world's guest-EXPORT interface members, keyed by the SAME `kebab_extern_name` the emit binds
+/// a def to an export member with, so front-end derivation and backend emit agree on which member types a def.
+fn export_member_params(
+    world: &TargetWorld,
+    kebab_extern_name: impl Fn(&str) -> String,
+) -> std::collections::HashMap<String, Vec<WitType>> {
+    let mut m = std::collections::HashMap::new();
+    for iface in &world.exports {
+        for member in &iface.members {
+            m.insert(
+                kebab_extern_name(&member.name),
+                member.func.params.iter().map(|(_n, t)| t.clone()).collect(),
+            );
+        }
+    }
+    m
+}
+
+/// Rewrite each top-level guest-export def's BARE boundary params to `(: <param> <derived-type>)` in place,
+/// deriving the type from `member_params` (keyed by the def's `kebab_extern_name`). The shared core of both
+/// the in-source and artifact export-param derivation. An author-written `(: p T)` WINS (skipped); a position
+/// past the member's params, or a type [`wit_type_to_type_expr`] cannot map (`enum`/`variant`/`flags`), is
+/// left bare (falls back to the ordinary CDZ0201). A def whose name matches no export member is untouched.
+fn apply_export_param_annotations(
+    ast: &mut Arenas,
+    member_params: &std::collections::HashMap<String, Vec<WitType>>,
+) {
+    use crate::ast::Leaf;
+    use crate::backend::common::export_name::kebab_extern_name;
+    use crate::prelude::{push_atom, push_list};
     if member_params.is_empty() {
         return;
     }

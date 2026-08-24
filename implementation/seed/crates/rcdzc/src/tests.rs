@@ -7881,6 +7881,92 @@ fn an_external_artifact_world_import_resolves_without_a_hand_declared_effect() {
     );
 }
 
+/// NO-ANNOTATION EXPORT BOUNDARY, EXTERNAL ARTIFACT world: the real flagship path — identity / provenance /
+/// the §4 dispatch reducer target an external `KIND_WIT_WORLD` artifact (NOT an in-source `(world …)`), so the
+/// artifact-side derivation must type a bare guest-export param too. A reducer with `(def (on-message msg) (.
+/// msg payload))` and NO param annotation, compiled against an artifact world whose guest export `on-message`
+/// declares `msg : record { contract: list<u8>, payload: list<u8> }`, must NOT report CDZ0201 "parameter type
+/// is ambiguous": `derive_world_export_param_annotations_from_bytes` (run in `compile` before `Db::load`)
+/// derives `msg`'s record type from the artifact member, so the body's `msg.payload` resolves. (A backend
+/// boundary decline for the record export is orthogonal — the assertion is only that the param is no longer
+/// ambiguous.)
+#[test]
+fn a_bare_export_param_is_typed_from_an_external_artifact_world_member() {
+    use crate::ast::{Builder, Leaf};
+    // KIND_WIT_WORLD artifact: export guest { on-message: func(msg: record{contract: list<u8>, payload:
+    // list<u8>}) -> list<u8> }. STRING-head compound descriptors, NAME-head primitives — the exact shape
+    // `parse_target_world` reads (same as an in-source world / v-platform's `world-artifact` output).
+    let world_bytes = {
+        let mut b = Builder::new();
+        let byte_list = |b: &mut Builder| {
+            let h = b.atom_leaf(Leaf::Str("list".into()));
+            let uh = b.name("u8");
+            let u = b.list(vec![uh]);
+            b.list(vec![h, u])
+        };
+        let cfield = {
+            let n = b.name("contract");
+            let t = byte_list(&mut b);
+            b.list(vec![n, t])
+        };
+        let pfield = {
+            let n = b.name("payload");
+            let t = byte_list(&mut b);
+            b.list(vec![n, t])
+        };
+        let rec_h = b.atom_leaf(Leaf::Str("record".into()));
+        let msg_rec = b.list(vec![rec_h, cfield, pfield]);
+        let func = {
+            let func_h = b.name("func");
+            let param_h = b.name("param");
+            let pn = b.name("msg");
+            let pnode = b.list(vec![param_h, pn, msg_rec]);
+            let result_h = b.name("result");
+            let rout = byte_list(&mut b);
+            let rnode = b.list(vec![result_h, rout]);
+            b.list(vec![func_h, pnode, rnode])
+        };
+        let member = {
+            let member_h = b.name("member");
+            let mn = b.name("on-message");
+            b.list(vec![member_h, mn, func])
+        };
+        let guest = {
+            let exp_h = b.name("export");
+            let en = b.name("guest");
+            b.list(vec![exp_h, en, member])
+        };
+        let world_h = b.name("world");
+        let wn = b.name("reducer-world");
+        let world = b.list(vec![world_h, wn, guest]);
+        let a = b.finish(world);
+        crate::codec::encode(&a)
+    };
+    // Guest: bare param `msg` (NO annotation), body reads `msg.payload` (resolves only if `msg` is typed).
+    let src = "(module m (def (on-message msg) (. msg payload)) (export on-message))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&crate::testkit::parse(src)),
+            ),
+            crate::abi::Artifact::new(crate::link::KIND_WIT_WORLD, "wit-world", world_bytes),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.diagnostics
+            .iter()
+            .any(|d| d.message.contains("parameter type is ambiguous")),
+        "an external-artifact world's guest-export member must type the bare `msg` param (no CDZ0201): {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
 /// A MALFORMED in-source `(world …)` descriptor is REPORTED, not silently dropped. Here the `deliver.send`
 /// result is written `("bool")` (a STRING head) — but `bool` is a NAME-head primitive `(bool)`; the wrong
 /// head makes `parse_target_world` return `None`, which would silently drop the whole world and leave every
