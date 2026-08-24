@@ -43,3 +43,10 @@ def check-conforms() =
       if c.log == b"observation-log-bytes"
       then (if c.verdict == b"verdict-contract-id" then unit else trap("check verdict mismatch"))
       else trap("check log mismatch")
+
+// Make the schema types importable as a LIBRARY (`import { Envelope, Ack } from "check"`): the Cadenza
+// checker guest reads the delivered `Envelope.Check({ log, verdict })`, so it needs the type AND its
+// constructor in scope. The `.*` exports every constructor (a bare `Envelope` would expose only the opaque
+// type handle, and the value could not be matched). Inert for the Rust codegen (which reads the schema, not
+// the export clause) and for a single-file compile.
+export { Envelope.*, Ack.* }
