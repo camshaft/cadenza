@@ -8479,6 +8479,54 @@ fn a_variant_param_without_a_matching_guest_sum_stays_ambiguous() {
     );
 }
 
+/// MULTI-FILE guest (linked package, #3158): the guest's shared nominal sum lives in a LIBRARY file and is
+/// IMPORTED — the derived export-param type must still resolve the world's anonymous variant to that
+/// imported named sum. `lib` exports `type Err` concretely (`(. Err *)`); the entry imports it and its
+/// `on-response` param carries `result<list<u8>, variant(a,b)>` with a BARE binder. `guest_sum_names` scans
+/// the MERGED (spliced) arena's top-level items, so it finds the library's `(type Err (A)(B))` and derives
+/// `(: resp (Record … (Result Bytes Err)))`; because the entry imported `Err`, the injected reference
+/// resolves (no `unbound name Err`) and the param is not ambiguous (no CDZ0201). Pins that the export-param
+/// derivation composes with cross-file linkage — the shared-types-in-a-library shape the checker guests use.
+#[test]
+fn a_bare_export_param_resolves_a_variant_via_an_imported_library_sum() {
+    use crate::abi::Artifact;
+    use crate::backend::Target;
+    let lib = crate::codec::encode(&crate::testkit::parse(
+        "(do (type Err (A) (B)) (def (dummy) 0) (export (. Err *) dummy))",
+    ));
+    // Entry: imports `Err`, in-source world declares on-response with a variant-carrying param, BARE binder.
+    let app = crate::codec::encode(&crate::testkit::parse(
+        "(do (import \"lib\" (Err)) \
+           (world reducer-world \
+             (export guest (member on-response \
+               (func (param resp (\"record\" \
+                                   (contract (\"list\" (u8))) \
+                                   (answer (\"result\" (\"list\" (u8)) (\"variant\" (a) (b)))))) \
+                     (result (\"list\" (u8))))))) \
+           (def (on-response resp) (. resp contract)) \
+           (export on-response))",
+    ));
+    let out = crate::compile::compile(
+        &[
+            Artifact::new(Artifact::KIND_AST, "lib", lib),
+            Artifact::new(Artifact::KIND_AST, "app", app),
+            Artifact::new(crate::link::KIND_ENTRY, "entry", b"app".to_vec()),
+        ],
+        &[Target::Wasm],
+    );
+    let msgs: Vec<&String> = out.diagnostics.iter().map(|d| &d.message).collect();
+    assert!(
+        !msgs
+            .iter()
+            .any(|m| m.contains("parameter type is ambiguous")),
+        "a cross-file imported sum must let the variant param derive (no CDZ0201): {msgs:?}"
+    );
+    assert!(
+        !msgs.iter().any(|m| m.contains("unbound name `Err`")),
+        "the derived reference to the imported `Err` must resolve (no unbound): {msgs:?}"
+    );
+}
+
 /// EXTERNAL-ARTIFACT world, no-redeclare: a reducer delivered with a `KIND_WIT_WORLD` artifact (NOT an
 /// in-source `(world …)`) and NO hand-written `(effect …)` decl must still resolve its world-import perform
 /// — `compile` injects the synthesized effects from the artifact BEFORE `Db::load`, so `(host (identity)
