@@ -492,7 +492,49 @@ fn reducer_engine() -> Result<Engine, wasmtime::Error> {
     // thread (§3/§9).
     config.async_support(true);
     config.wasm_component_model(true);
+    // Epoch-based interruption so a long-running guest fold cannot monopolize an executor thread or stall the
+    // runtime: with a periodic epoch ticker (driven per-runtime, see `ProgramStore::epoch_incrementer` +
+    // `Runtime::drives_epoch_ticker`), each store's epoch deadline (see `arm_epoch_deadline`) makes the guest
+    // yield to the executor, and past a bound trap — a single runaway program then fails cleanly (a per-reducer
+    // Crashed, §7) rather than taking down tokio. Cheap when un-ticked (an atomic the compiled code checks at
+    // loop backedges/calls), so it is always enabled; only the ticker is runtime-gated.
+    config.epoch_interruption(true);
     Engine::new(&config)
+}
+
+// Epoch-preemption policy for a guest fold (see `reducer_engine`). The engine's epoch is incremented once per
+// `EPOCH_TICK` by the runtime's ticker; a store's deadline is denominated in those ticks.
+//
+// `YIELD_EVERY` ticks of guest compute between yields: on reaching the deadline the fold yields to the async
+// executor (so it never monopolizes a thread) and the deadline extends by another `YIELD_EVERY`. After
+// `MAX_YIELDS` such yields — a cumulative single-fold compute budget of about `MAX_YIELDS * YIELD_EVERY *
+// EPOCH_TICK` — the fold traps instead, bounding a runaway. A real fold completes in well under one tick, so
+// these bounds only ever fire on a genuinely stuck guest. Distinct from a request's `deadline-nanos` (§4/§6),
+// which bounds how long a caller awaits an answer, not how long a fold may compute.
+const EPOCH_TICK: Duration = Duration::from_millis(1);
+const YIELD_EVERY: u64 = 1;
+const MAX_YIELDS: u64 = 5_000;
+
+/// Arm `store` with the epoch-preemption policy: yield to the executor every `YIELD_EVERY` epoch ticks of guest
+/// compute, and trap once a fold has yielded `MAX_YIELDS` times (its cumulative compute budget). Applied to
+/// every reducer store (ordinary, event, and pure-run). Inert until the engine's epoch is actually ticked (the
+/// production runtime drives the ticker; under the deterministic simulator the epoch never advances, so a
+/// guest runs un-preempted with the harness's own wall-clock timeout as the backstop).
+fn arm_epoch_deadline(store: &mut Store<HostState>) {
+    store.set_epoch_deadline(YIELD_EVERY);
+    let mut yields_left = MAX_YIELDS;
+    store.epoch_deadline_callback(move |_ctx| {
+        if yields_left == 0 {
+            // Budget exhausted — a runaway fold. Trap: the fold's `call_async` returns an error, which the
+            // fold path turns into a per-reducer Crashed (§7), never a process-wide failure.
+            Ok(wasmtime::UpdateDeadline::Interrupt)
+        } else {
+            yields_left -= 1;
+            // Yield control to the async executor (so other tasks — and other reducers — make progress) and
+            // extend the deadline for the next slice of this fold's compute.
+            Ok(wasmtime::UpdateDeadline::Yield(YIELD_EVERY))
+        }
+    });
 }
 
 /// Wire the host imports a reducer of the given [`ReducerKind`] may hold into `linker`, each backed by the
@@ -611,6 +653,7 @@ impl ReducerHost {
         host: HostState,
     ) -> Result<WasmReducer, wasmtime::Error> {
         let mut store = Store::new(&self.engine, host);
+        arm_epoch_deadline(&mut store);
         let world = pre.instantiate_async(&mut store).await?;
         Ok(WasmReducer { store, world })
     }
@@ -848,6 +891,7 @@ impl Instantiator {
             // (a store-bound dependency instance cannot be pre-instantiated). Host imports for the kind are
             // wired first (the capability split), then the dependencies composed in.
             let mut store = Store::new(&self.host.engine, host_state);
+            arm_epoch_deadline(&mut store);
             let mut linker = Linker::new(&self.host.engine);
             add_host_imports(&mut linker, kind).ok()?;
             self.bind_dependencies(&mut store, &mut linker, &component)
@@ -1089,6 +1133,13 @@ impl ProgramStore for WasmProgramStore {
 
     async fn contains(&self, program: ProgramHash) -> bool {
         self.inst.contains(program).await
+    }
+
+    fn epoch_incrementer(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
+        // The kernel's epoch ticker drives this to preempt long-running guest folds (see `arm_epoch_deadline`).
+        // The engine is cheaply clonable (ref-counted) and shared by every reducer on this host.
+        let engine = self.inst.host.engine.clone();
+        Some(Arc::new(move || engine.increment_epoch()))
     }
 }
 
@@ -1764,6 +1815,69 @@ mod tests {
             *deliv_ids.lock().unwrap(),
             want,
             "make_delivery called per reducer id"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_runaway_guest_is_preempted_it_yields_then_traps_rather_than_hanging() {
+        // The preemption mechanism (`reducer_engine` epoch_interruption + `arm_epoch_deadline`): a guest that
+        // never returns must not monopolize the executor thread — it yields — and must eventually trap once its
+        // compute budget is spent, so a runaway fold fails cleanly instead of hanging the runtime. This proves
+        // both halves against real wasmtime with a minimal forever-looping core module, the same
+        // yield-then-trap callback shape `arm_epoch_deadline` installs, and an epoch ticker like the kernel's:
+        //   - if the yield did NOT return control to the executor, the ticker task (below) would never run on
+        //     this current-thread runtime, the epoch would never advance, and the call would hang forever —
+        //     so the test completing at all proves the anti-monopolization yield;
+        //   - the assertion proves the budget-exhaustion trap.
+        use wasmtime::{Config, Engine, Instance, Module, Store, UpdateDeadline};
+
+        let mut config = Config::new();
+        config.async_support(true);
+        config.epoch_interruption(true);
+        let engine = Engine::new(&config).expect("engine");
+        // A function that never returns.
+        let wasm = wat::parse_str(r#"(module (func (export "spin") (loop br 0)))"#).expect("wat");
+        let module = Module::from_binary(&engine, &wasm).expect("module");
+
+        let mut store = Store::new(&engine, ());
+        // The same policy shape as `arm_epoch_deadline`, with a tiny budget so the test is fast.
+        store.set_epoch_deadline(1);
+        let mut yields_left = 3u64;
+        store.epoch_deadline_callback(move |_ctx| {
+            if yields_left == 0 {
+                Ok(UpdateDeadline::Interrupt)
+            } else {
+                yields_left -= 1;
+                Ok(UpdateDeadline::Yield(1))
+            }
+        });
+
+        // The epoch ticker on a DEDICATED OS thread, exactly as the kernel drives it (see
+        // `TaskSystem::start_epoch_ticker`): it advances the epoch even while the spinning guest holds the
+        // async worker thread — a ticker on the runtime's own pool would be starved by that very spin (the
+        // current-thread deadlock this replaces). `stop` ends the thread when the test is done.
+        let ticker_engine = engine.clone();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ticker_stop = Arc::clone(&stop);
+        let ticker = std::thread::spawn(move || {
+            while !ticker_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(1));
+                ticker_engine.increment_epoch();
+            }
+        });
+
+        let instance = Instance::new_async(&mut store, &module, &[])
+            .await
+            .expect("instantiate");
+        let spin = instance
+            .get_typed_func::<(), ()>(&mut store, "spin")
+            .expect("export");
+        let result = spin.call_async(&mut store, ()).await;
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        ticker.join().ok();
+        assert!(
+            result.is_err(),
+            "a runaway guest must trap once its epoch budget is exhausted, not run forever"
         );
     }
 

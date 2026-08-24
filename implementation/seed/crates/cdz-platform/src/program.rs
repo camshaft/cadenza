@@ -45,6 +45,16 @@ pub trait ProgramStore: Send + Sync {
 
     /// Whether `program` can be instantiated by this store — an inspection that does not build a reducer.
     async fn contains(&self, program: ProgramHash) -> bool;
+
+    /// A closure that advances this store's wasm engine one epoch, if it has one. The kernel drives it
+    /// periodically (through its [`Runtime`](crate::Runtime), production-only) as the engine's epoch ticker, so
+    /// a long-running guest fold yields to the executor and — past a bound — traps, preventing one runaway
+    /// program from monopolizing a thread or stalling the runtime. Default `None`: a store with no wasm engine
+    /// (the native test store) needs no ticker. The production wasm store returns an incrementer over its
+    /// shared engine.
+    fn epoch_incrementer(&self) -> Option<std::sync::Arc<dyn Fn() + Send + Sync>> {
+        None
+    }
 }
 
 /// A [`ProgramStore`] for tests: program hash to a Rust factory, so a test can make native reducers

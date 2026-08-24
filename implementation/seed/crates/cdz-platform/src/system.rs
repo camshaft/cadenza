@@ -248,7 +248,7 @@ impl<R: Runtime> TaskSystem<R> {
         events: Arc<dyn EventRegistry>,
         host: HostId,
     ) -> Self {
-        Self {
+        let system = Self {
             shared: Arc::new(Shared {
                 reducers: Arc::new(Mutex::new(HashMap::new())),
                 runner: Runner::new(Arc::clone(&programs)),
@@ -257,9 +257,47 @@ impl<R: Runtime> TaskSystem<R> {
                 events,
                 host,
             }),
+        };
+        system.start_epoch_ticker();
+        system
+    }
+
+    /// Drive the program store's wasm engine epoch on a periodic tick, so a long-running guest fold is
+    /// preempted — it yields to the executor and, past a bound, traps — and one runaway program cannot
+    /// monopolize a thread or stall the runtime (`host::arm_epoch_deadline` sets the per-fold policy this
+    /// ticker enforces). Only on a runtime that opts in ([`Runtime::drives_epoch_ticker`] — production `tokio`,
+    /// not the deterministic simulator, whose forever-pending timer would defeat quiescence and which has the
+    /// harness wall-clock timeout as its backstop), and only if the store has a wasm engine
+    /// ([`ProgramStore::epoch_incrementer`]; the native test store has none).
+    ///
+    /// The ticker runs on a **dedicated OS thread**, not a runtime task: it must advance the epoch even while
+    /// every async worker thread is busy inside a guest fold — a task on the worker pool could be starved by
+    /// the very runaway it exists to preempt (indeed a spinning fiber blocks its worker until the epoch it is
+    /// waiting on advances, a deadlock if the advancer shares that pool). It holds a [`Weak`] to the shared
+    /// state, so it exits the moment the system and its reducers are gone — it never outlives the node it
+    /// preempts for. The tick is real time (`std::thread::sleep`), which is why this is production-only.
+    fn start_epoch_ticker(&self) {
+        if !R::drives_epoch_ticker() {
+            return;
         }
+        let Some(increment) = self.shared.programs.epoch_incrementer() else {
+            return;
+        };
+        let alive = Arc::downgrade(&self.shared);
+        std::thread::spawn(move || {
+            while alive.upgrade().is_some() {
+                std::thread::sleep(EPOCH_TICK);
+                increment();
+            }
+        });
     }
 }
+
+/// The cadence at which the kernel advances the wasm engine's epoch (production only, see
+/// [`TaskSystem::start_epoch_ticker`]). A guest fold's compute budget is denominated in these ticks by
+/// `host::arm_epoch_deadline`; a real fold finishes in well under one, so the preemption only bites a stuck
+/// guest.
+const EPOCH_TICK: Duration = Duration::from_millis(1);
 
 #[async_trait]
 impl<R: Runtime> System for TaskSystem<R> {

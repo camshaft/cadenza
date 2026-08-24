@@ -35,6 +35,18 @@ pub trait Runtime: Send + Sync + 'static {
     /// the same recorded time every run. This is the runtime's own clock, distinct from the capability-gated
     /// `now` effect a program requests to learn the time.
     fn now() -> u64;
+
+    /// Whether this runtime should drive the wasm engine's epoch ticker — the periodic
+    /// [`increment_epoch`](wasmtime::Engine::increment_epoch) that makes a long-running guest fold yield to the
+    /// executor and, past a bound, trap (so one runaway program cannot monopolize a thread or stall the
+    /// runtime). True on the PRODUCTION runtime (`tokio`). False on `bach`: a periodic ticker is a
+    /// forever-pending timer that would prevent the simulator ever reaching quiescence, so the deterministic
+    /// path leaves the epoch un-advanced (guests run un-preempted under sim) and relies on the integration
+    /// harness's own wall-clock timeout as the runaway backstop. Default false — only a real-time runtime opts
+    /// in.
+    fn drives_epoch_ticker() -> bool {
+        false
+    }
 }
 
 /// The production runtime: tokio tasks and channels.
@@ -68,6 +80,11 @@ impl Runtime for TokioRuntime {
             .duration_since(UNIX_EPOCH)
             .map(|d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
             .unwrap_or(0)
+    }
+    fn drives_epoch_ticker() -> bool {
+        // Production: drive the epoch ticker so a runaway guest fold is preempted (yields, then traps past a
+        // bound) rather than monopolizing a tokio worker thread.
+        true
     }
 }
 
