@@ -1155,14 +1155,45 @@
         # CALLS a host import (`state`/`identity`/`blobs`) needs the world's IMPORT declarations, which the
         # external artifact provides (the inline form declares only the export). `witWorldName` names which
         # world in the artifact to bind (the platform reducer world).
-        mkCadenzaGuest = { pname, src, componentName ? null, entry ? null, witWorld ? null, witWorldName ? "reducer-world" }:
+        # Compile a Cadenza guest to a canonicalized wasm component. Single-file by default; a MULTI-FILE
+        # package (the §9 checker guest imports library modules — contracts/check.cdz, verdict.cdz,
+        # guests/log-schema.cdz — via `import { … } from "<stem>"`) passes its extra sources in `libs`.
+        #
+        # WHY `libs` are COPIED to clean basenames (not passed as store paths): `cdz` resolves an
+        # `import "<name>"` against the input's ARTIFACT NAME, which for a bare source path is the file STEM.
+        # A nix store path is hash-prefixed (`/nix/store/<hash>-check.cdz`), so its stem is `<hash>-check` —
+        # `import { … } from "check"` would fail `CDZ0201: names unknown package file`. A source input cannot
+        # be given an explicit name either (`name=path` is AST-only — decodes source as binary AST and fails;
+        # there is no `source:`/`cdz:` kind prefix). So the ONLY way is to `cp` each source to its clean
+        # basename in the build dir and compile the bare clean paths, whose stems then match the imports.
+        # (v-nix verified this empirically 2026-08-24: hash-prefixed → CDZ0201; cp-to-clean-name → compiles.)
+        # `--entry` names the boundary file by its clean stem; required once >1 source is given.
+        mkCadenzaGuest = { pname, src, componentName ? null, entry ? null, libs ? [ ], witWorld ? null, witWorldName ? "reducer-world" }:
+          let
+            flags = pkgs.lib.concatStringsSep " " (builtins.filter (s: s != "") [
+              (pkgs.lib.optionalString (witWorld != null) "wit-world:${witWorldName}=${witWorld}")
+              (pkgs.lib.optionalString (componentName != null) "--component-name ${componentName}")
+              (pkgs.lib.optionalString (entry != null) "--entry ${entry}")
+            ]);
+            # Single-file: compile the store path directly (its mangled stem is irrelevant with no imports).
+            # Multi-file: stage every source under its clean basename, then compile the bare clean paths.
+            compile =
+              if libs == [ ] then
+                "cdz compile ${src} --target wasm -o guest.wasm ${flags}"
+              else
+                pkgs.lib.concatStringsSep "\n" (
+                  [ "cp ${src} ${baseNameOf src}" ]
+                  ++ map (l: "cp ${l} ${baseNameOf l}") libs
+                  ++ [
+                    ("cdz compile ${baseNameOf src} ${pkgs.lib.concatMapStringsSep " " baseNameOf libs} "
+                      + "--target wasm -o guest.wasm ${flags}")
+                  ]
+                );
+          in
           pkgs.runCommand pname
             { nativeBuildInputs = [ seedCompiler pkgs.wasm-tools ]; } ''
             set -euo pipefail
-            cdz compile ${src} --target wasm -o guest.wasm \
-              ${pkgs.lib.optionalString (witWorld != null) "wit-world:${witWorldName}=${witWorld}"} \
-              ${pkgs.lib.optionalString (componentName != null) "--component-name ${componentName}"} \
-              ${pkgs.lib.optionalString (entry != null) "--entry ${entry}"}
+            ${compile}
             # Canonicalize (strip the tool-version `producers` sections) so the guest's content address is
             # reproducible cross-host, exactly like the Rust guests (mkStripComponent) + the runtime.
             wasm-tools strip -a guest.wasm -o "$out"
@@ -1225,14 +1256,30 @@
                 (builtins.attrNames (builtins.readDir worldDir));
             in
             acc // builtins.listToAttrs (map
-              (r: {
-                name = r;
-                value = mkCadenzaGuest ({
-                  pname = "cdz-platform-${r}-component";
-                  src = worldDir + "/${r}/reducer.cdz";
-                  componentName = "cadenza:platform/guest";
-                } // cadenzaWorldArgs world);
-              })
+              (r:
+                let
+                  guestDir = worldDir + "/${r}";
+                  # A MULTI-FILE guest carries a `libs` manifest beside its reducer.cdz: one repo-relative
+                  # source path per line (the library modules it imports). Absent ⇒ single-file (unchanged).
+                  # The manifest lives WITH the guest, so no reducer/lib names are hardcoded in the flake.
+                  libsFile = guestDir + "/libs";
+                  libLines = pkgs.lib.optionals (builtins.pathExists libsFile)
+                    (builtins.filter (s: s != "")
+                      (pkgs.lib.splitString "\n" (builtins.readFile libsFile)));
+                  # entry names the boundary file by its clean stem; required once libs add >1 source.
+                  multiFileArgs = pkgs.lib.optionalAttrs (libLines != [ ]) {
+                    libs = map (p: ./. + "/${p}") libLines;
+                    entry = pkgs.lib.removeSuffix ".cdz" (baseNameOf (guestDir + "/reducer.cdz"));
+                  };
+                in
+                {
+                  name = r;
+                  value = mkCadenzaGuest ({
+                    pname = "cdz-platform-${r}-component";
+                    src = guestDir + "/reducer.cdz";
+                    componentName = "cadenza:platform/guest";
+                  } // cadenzaWorldArgs world // multiFileArgs);
+                })
               reducers))
           { }
           # top-level entries that are directories (candidate world dirs; non-world dirs contribute nothing).
