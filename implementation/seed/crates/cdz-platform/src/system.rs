@@ -1331,6 +1331,130 @@ mod tests {
         });
     }
 
+    /// A reducer that emits the SAME ordinary contract twice on its first message, then closes — so the
+    /// system routes two effects and (per §4) each gets its OWN per-event context, never a shared one.
+    struct EmitTwice {
+        contract: ContractId,
+    }
+    #[async_trait::async_trait]
+    impl Reducer for EmitTwice {
+        async fn on_message(&mut self, _m: Message) -> (Vec<Request>, Outcome) {
+            let effect = |token: &'static [u8]| Request {
+                id: self.contract,
+                payload: Bytes::from_static(b"effect"),
+                continuation_token: Bytes::from_static(token),
+                deadline: None,
+            };
+            (
+                vec![effect(b"k1"), effect(b"k2")],
+                Outcome::Break {
+                    schema: cid(b"done"),
+                    reason: Bytes::from_static(b"emitted-twice"),
+                },
+            )
+        }
+        async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+        async fn on_notification(&mut self, _n: Notification) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+    }
+
+    /// A stand-in system reducer that learns its own context id from its birth `Spawned` notification (§7),
+    /// then reports (own context id, the emitter it received the effect from) on the routed message, so a
+    /// test can observe which per-event context handled each effect.
+    struct ContextProbe {
+        saw: bach::sync::mpsc::UnboundedSender<(ReducerId, ReducerId)>,
+        me: Option<ReducerId>,
+    }
+    #[async_trait::async_trait]
+    impl Reducer for ContextProbe {
+        async fn on_message(&mut self, m: Message) -> (Vec<Request>, Outcome) {
+            // The birth notification always arrives first (§7), so `me` is known by the time the routed
+            // effect lands.
+            let me = self
+                .me
+                .expect("birth notification precedes the routed message");
+            let _ = self.saw.send((me, m.from.reducer));
+            (
+                Vec::new(),
+                Outcome::Break {
+                    schema: cid(b"shepherded"),
+                    reason: Bytes::new(),
+                },
+            )
+        }
+        async fn on_response(&mut self, _r: Response) -> (Vec<Request>, Outcome) {
+            (Vec::new(), Outcome::Continue)
+        }
+        async fn on_notification(&mut self, n: Notification) -> (Vec<Request>, Outcome) {
+            if n.id == spawned_contract()
+                && let Some(spawned) = Spawned::decode(&n.payload)
+            {
+                self.me = Some(spawned.id);
+            }
+            (Vec::new(), Outcome::Continue)
+        }
+    }
+
+    /// Two ordinary effects on the SAME contract from ONE reducer are each shepherded by a DISTINCT per-event
+    /// context (§4): the rolling hash advances once per routed effect, so the two context ids differ — the
+    /// dispatches never share router state. Both contexts see the same emitter as the effect's origin.
+    #[test]
+    fn two_effects_on_the_same_contract_get_distinct_per_event_contexts() {
+        use bach::ext::*;
+        bach::sim(|| {
+            async {
+                let emitter = rid(b"emitter");
+                let http = cid(b"http.get");
+                let (saw, mut saw_rx) = bach::sync::mpsc::unbounded_channel();
+
+                let mut store = crate::testing::program::Store::new();
+                store.register(prog(b"emitter"), move || {
+                    Box::new(EmitTwice { contract: http })
+                });
+                store.register(prog(b"sys"), move || {
+                    Box::new(ContextProbe {
+                        saw: saw.clone(),
+                        me: None,
+                    })
+                });
+
+                let system = TaskSystem::<BachRuntime>::new(
+                    Arc::new(store),
+                    Arc::new(InMemoryReducerGraph::new()),
+                    Arc::new(InMemoryEventRegistry::new(prog(b"sys"))),
+                    HostId::of(b"node"),
+                );
+                system
+                    .spawn(root(emitter, prog(b"emitter"), ReducerKind::Ordinary))
+                    .await
+                    .unwrap();
+
+                assert!(
+                    system
+                        .deliver(emitter, a_message(cid(b"go")))
+                        .await
+                        .unwrap()
+                );
+
+                // Two effects → two contexts. Each reports (its own context id, the emitter) once.
+                let (ctx_a, from_a) = saw_rx.recv().await.unwrap();
+                let (ctx_b, from_b) = saw_rx.recv().await.unwrap();
+                assert_eq!(from_a, emitter, "the routed effect's origin is the emitter");
+                assert_eq!(from_b, emitter, "the routed effect's origin is the emitter");
+                assert_ne!(
+                    ctx_a, ctx_b,
+                    "each effect is shepherded by its own per-event context — not one shared router"
+                );
+            }
+            .group("system")
+            .primary()
+            .spawn();
+        });
+    }
+
     /// A reducer that arms a fire-after timer on its first message, then waits; when the timer fires (as the
     /// response to that arm), it records the recorded fire time and the echoed continuation-token, then closes.
     struct Armer {
