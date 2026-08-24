@@ -18,7 +18,7 @@
 
 use super::checker::CheckOutcome;
 use super::log_value;
-use super::observation::{Entry, EventOp, Record};
+use super::observation::{Entry, EventKind, EventOp, Record};
 use crate::contract_value::{bytes_leaf, read_bytes, read_hash};
 use crate::{Bytes, Contract, ContractId, Delivered, HostId, Message, Origin, ReducerId, Str};
 use cadenza_ast::ast::{Arenas, Builder, Leaf, Struct, StructId};
@@ -167,6 +167,100 @@ pub fn verdict_in(records: &[Record]) -> Option<CheckOutcome> {
     })
 }
 
+/// Diagnose *why* a checker produced no verdict, from its run's observation log — turning the bare "the
+/// checker emitted no verdict" into an actionable reason. Called by [`run_checker`](super::run_checker) when
+/// [`verdict_in`] is `None`; it reads what the checker actually *did* and reports the most specific cause:
+/// it emitted a malformed verdict, its fold faulted, it emitted on the wrong contract, it closed without
+/// reporting (the common path when `on_message` decodes neither the envelope nor the log and hits a close
+/// arm), or it produced nothing at all (it never ran). Without this, a decode-failure and a never-ran
+/// checker are indistinguishable — the difference this incident's triage turned on (§9).
+#[must_use]
+pub fn no_verdict_reason(records: &[Record]) -> String {
+    let verdict = verdict_contract();
+
+    // A verdict WAS emitted on the verdict contract, but its payload did not decode as a `Verdict`
+    // (`verdict_in` skipped it) — the checker reported, but the verdict value itself is malformed.
+    if records.iter().any(|r| {
+        matches!(&r.entry, Entry::Event(EventOp::Emitted { contract, payload, .. })
+            if *contract == verdict && decode_verdict(payload).is_none())
+    }) {
+        return "the checker emitted on the verdict contract, but its payload did not decode as a \
+                Verdict(pass, messages) — the verdict value is malformed"
+            .to_string();
+    }
+
+    // The checker's fold failed uncontrolled (panic / fuel) — it could not emit anything.
+    if let Some((during, contract, reason)) = records.iter().find_map(|r| match &r.entry {
+        Entry::Event(EventOp::Failed {
+            during,
+            contract,
+            reason,
+        }) => Some((*during, *contract, reason.clone())),
+        _ => None,
+    }) {
+        return format!(
+            "the checker faulted while folding the {} on {} (so it never emitted a verdict): {reason}",
+            event_kind_name(during),
+            short_id(&contract),
+        );
+    }
+
+    // The checker emitted requests, but none on the verdict contract — it reported on the wrong contract.
+    let other: Vec<String> = records
+        .iter()
+        .filter_map(|r| match &r.entry {
+            Entry::Event(EventOp::Emitted { contract, .. }) if *contract != verdict => {
+                Some(short_id(contract))
+            }
+            _ => None,
+        })
+        .collect();
+    if !other.is_empty() {
+        return format!(
+            "the checker emitted no verdict; it emitted on {} instead of the verdict contract {}",
+            other.join(", "),
+            short_id(&verdict),
+        );
+    }
+
+    // The checker closed (`Break`) without emitting a verdict — commonly its `on_message` decoded neither
+    // the check envelope nor the log and hit a close arm (the delivered value did not decode).
+    if let Some(schema) = records.iter().find_map(|r| match &r.entry {
+        Entry::Event(EventOp::Closed { schema, .. }) => Some(*schema),
+        _ => None,
+    }) {
+        return format!(
+            "the checker closed (schema {}) without emitting a verdict — commonly its on_message decoded \
+             neither the check envelope nor the log and hit a close arm",
+            short_id(&schema),
+        );
+    }
+
+    // No emit, close, or fault at all — the checker produced nothing, so it most likely never ran.
+    "the checker emitted no verdict and produced no observations — it likely never ran (its bytes may not \
+     be a valid reducer component)"
+        .to_string()
+}
+
+/// The name of an [`EventKind`] for a diagnostic message.
+fn event_kind_name(kind: EventKind) -> &'static str {
+    match kind {
+        EventKind::Message => "message",
+        EventKind::Response => "response",
+        EventKind::Notification => "notification",
+    }
+}
+
+/// A contract-id rendered short for a diagnostic: its base62 hash, elided after a prefix (base62 is ASCII,
+/// so a byte prefix is a char boundary).
+fn short_id(id: &ContractId) -> String {
+    let s = id.to_string();
+    match s.get(..10) {
+        Some(prefix) if prefix.len() < s.len() => format!("{prefix}…"),
+        _ => s,
+    }
+}
+
 /// A `("list" e…)` value — the canonical list constructor (string head).
 fn string_list(b: &mut Builder, items: Vec<StructId>) -> StructId {
     let head = b.atom_leaf(Leaf::Str(Arc::from("list")));
@@ -200,9 +294,9 @@ fn read_string_list(arenas: &Arenas, id: StructId) -> Option<Vec<Str>> {
 mod tests {
     use super::{
         check_contract, check_message, decode_check, decode_check_verdict, decode_verdict,
-        encode_check, encode_verdict, verdict_contract, verdict_in,
+        encode_check, encode_verdict, no_verdict_reason, verdict_contract, verdict_in,
     };
-    use crate::testing::{CheckOutcome, Entry, EventOp, Record, deserialize_log};
+    use crate::testing::{CheckOutcome, Entry, EventKind, EventOp, Record, deserialize_log};
     use crate::{Bytes, ContractId, Delivered, HostId, Origin, ReducerId, Str};
 
     /// A one-record observation log — an emitted event, enough to prove the whole log survives wrapping.
@@ -325,5 +419,95 @@ mod tests {
         }];
         assert_eq!(verdict_in(&other), None);
         assert_eq!(verdict_in(&[]), None);
+    }
+
+    /// A record whose entry is `entry`, at seq 0 from a fixed source — enough for the no-verdict diagnosis.
+    fn rec(entry: Entry) -> Record {
+        Record {
+            seq: 0,
+            time_ns: 0,
+            source: Origin {
+                reducer: ReducerId::of(b"checker"),
+                host: HostId::of(b"node"),
+            },
+            entry,
+        }
+    }
+
+    #[test]
+    fn no_verdict_reason_reports_a_close_without_a_verdict() {
+        // The common path: the checker's on_message hit a close arm (e.g. the delivered value did not
+        // decode) and emitted nothing — the ambiguity this incident's triage turned on.
+        let reason = no_verdict_reason(&[rec(Entry::Event(EventOp::Closed {
+            schema: check_contract(),
+            reason: Bytes::from_static(b"undecodable"),
+        }))]);
+        assert!(reason.contains("closed"), "{reason}");
+        assert!(reason.contains("close arm"), "{reason}");
+    }
+
+    #[test]
+    fn no_verdict_reason_reports_a_fault() {
+        let reason = no_verdict_reason(&[rec(Entry::Event(EventOp::Failed {
+            during: EventKind::Message,
+            contract: check_contract(),
+            reason: Str::from("index out of bounds"),
+        }))]);
+        assert!(reason.contains("faulted"), "{reason}");
+        assert!(reason.contains("index out of bounds"), "{reason}");
+    }
+
+    #[test]
+    fn no_verdict_reason_reports_an_emit_on_the_wrong_contract() {
+        // The checker emitted, but on some other contract — not the verdict contract.
+        let reason = no_verdict_reason(&[rec(Entry::Event(EventOp::Emitted {
+            contract: ContractId::of(b"some.other.contract"),
+            payload: Bytes::from_static(b"x"),
+            continuation_token: Bytes::new(),
+            has_deadline: false,
+        }))]);
+        assert!(
+            reason.contains("wrong") || reason.contains("instead of"),
+            "{reason}"
+        );
+    }
+
+    #[test]
+    fn no_verdict_reason_reports_a_malformed_verdict() {
+        // An emit ON the verdict contract, but the payload is not a decodable Verdict.
+        let reason = no_verdict_reason(&[rec(Entry::Event(EventOp::Emitted {
+            contract: verdict_contract(),
+            payload: Bytes::from_static(b"not a verdict value"),
+            continuation_token: Bytes::new(),
+            has_deadline: false,
+        }))]);
+        assert!(reason.contains("malformed"), "{reason}");
+    }
+
+    #[test]
+    fn no_verdict_reason_reports_a_checker_that_never_ran() {
+        // No emit, close, or fault — the checker produced nothing.
+        let reason = no_verdict_reason(&[]);
+        assert!(reason.contains("never ran"), "{reason}");
+    }
+
+    #[test]
+    fn no_verdict_reason_prefers_a_real_emit_over_a_close() {
+        // A checker that emitted on the wrong contract AND closed: the wrong-contract emit is the more
+        // actionable signal, so it wins over the generic close.
+        let records = vec![
+            rec(Entry::Event(EventOp::Emitted {
+                contract: ContractId::of(b"wrong"),
+                payload: Bytes::new(),
+                continuation_token: Bytes::new(),
+                has_deadline: false,
+            })),
+            rec(Entry::Event(EventOp::Closed {
+                schema: check_contract(),
+                reason: Bytes::new(),
+            })),
+        ];
+        let reason = no_verdict_reason(&records);
+        assert!(reason.contains("instead of"), "{reason}");
     }
 }
