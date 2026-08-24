@@ -66,6 +66,11 @@ fn flatten_record_field_abi(f: &crate::backend::wasm::host::RecordFieldAbi, out:
                 flatten_record_field_abi(sf, out);
             }
         }
+        // A `result<list<u8>, enum>` field flattens (canonical variant flatten) to `(disc:i32, join(ok=
+        // (ptr,len), err=(enum-disc)))` = `(disc, i32, i32)` — 3 slots.
+        RecordFieldAbi::Result { .. } => {
+            out.extend_from_slice(&[wasm_abi::CORE_I32, wasm_abi::CORE_I32, wasm_abi::CORE_I32])
+        }
     }
 }
 

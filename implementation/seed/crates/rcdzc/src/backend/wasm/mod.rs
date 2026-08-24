@@ -1721,6 +1721,8 @@ fn record_abi_has_bytes(fields: &[(String, host::RecordFieldAbi)]) -> bool {
     fields.iter().any(|(_, a)| match a {
         host::RecordFieldAbi::Bytes => true,
         host::RecordFieldAbi::Record(sub) => record_abi_has_bytes(sub),
+        // A `result<list<u8>, enum>` field's Ok arm is `list<u8>` → the record needs the `(list u8)` type.
+        host::RecordFieldAbi::Result { .. } => true,
         host::RecordFieldAbi::Scalar(_) => false,
     })
 }
@@ -1748,6 +1750,21 @@ fn build_record_import_types(
             host::RecordFieldAbi::Record(sub) => {
                 // Emit the CHILD record first (children-first); its field references the child's EXPORT index.
                 CRef::Idx(build_record_import_types(sub, list_idx, base, table))
+            }
+            // A `result<list<u8>, enum>` field: lay the err ENUM (nominal → define+export) then the `result`
+            // defined type (its ok arm refs `(list u8)`; its err arm refs the err enum's EXPORT index),
+            // children-first, then reference the `result`'s EXPORT index. (Both are laid as uniform
+            // define+export table entries like a record; exporting the structural `result` is harmless.)
+            host::RecordFieldAbi::Result { err_cases } => {
+                let err_def = base + 2 * table.len() as u32;
+                table.push(emit_cdef(&CDef::Enum(err_cases.clone())));
+                let err_export = err_def + 1;
+                let res_def = base + 2 * table.len() as u32;
+                table.push(emit_cdef(&CDef::Result {
+                    ok: Some(CRef::Idx(list_idx)),
+                    err: Some(CRef::Idx(err_export)),
+                }));
+                CRef::Idx(res_def + 1)
             }
         };
         cfields.push((name.clone(), cref));
