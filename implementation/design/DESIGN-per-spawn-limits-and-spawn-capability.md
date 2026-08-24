@@ -1,7 +1,9 @@
 # DESIGN — per-spawn resource limits, a spawn WIT capability, and the privileged-spawn / non-privileged-effects split
 
 **Owner:** v-platform (capability + dispatch model, `design/cadenza-platform.md` §3/§4/§5).
-**Status:** sketch — operator-directed, pending steer. Builds on the per-node `ResourceLimits` of #3209.
+**Status:** partially settled — operator answered Q1 (spawn handler = an ordinary event reducer) and Q3 (one
+coarse privileged world); Q2/Q5 proceed on the recommended leans unless overridden; Q4 held for an explicit
+call. Sequencing greenlit. Builds on the per-node `ResourceLimits` of #3209.
 
 ## The operator's direction
 
@@ -57,18 +59,19 @@ reaches clamping, so the two compose: the handler is policy, the clamp is a hard
 `SpawnLimits` ride on `SpawnContext` into `arm_store_safety`, so a store is armed with *this reducer's* budget
 instead of the uniform node value.
 
-### 2. Admission control — the spawn handler
+### 2. Admission control — an ordinary event reducer (Q1, operator-settled)
 
-A **spawn handler** inspects a spawn's requested `SpawnLimits` and decides accept/reject — the operator's "the
-event handler for that would be able to decide if those limits are ok." This mirrors the effect→event-handler
-route (§4): a spawn request is routed to the handler that governs spawns (a registry default, like the
-default event handler), which returns admit / reject-with-reason. On reject, the spawn does not happen and the
-requester gets a rejection response (the same shape as the default event handler declining an effect —
-`Err(...)`). On admit, the kernel spawns with the resolved (clamped) limits.
+**A spawn request is an event, routed to an ordinary event reducer that does admission — NOT a new "spawn
+handler" concept.** Operator (Q1): "the spawn handler is just like any other event reducer." So a spawn goes
+through the *normal event-dispatch/registry path* (§4): the kernel routes it to the event reducer that governs
+the spawn contract, which inspects the requested `SpawnLimits` and returns admit / reject-with-reason. On
+reject the spawn does not happen and the requester gets a rejection response (`Err(...)`, the same shape as an
+event reducer declining any effect). On admit the kernel spawns with the resolved (clamped) limits.
 
-This makes admission a *policy* the platform hosts as a (Cadenza) handler, not hard-coded kernel logic — the
-same "policy is a guest, mechanism is the kernel" split as the default-event-handler design
-([[DESIGN-default-event-handler-guest]]).
+This is the same event-dispatch mechanism as everything else — admission is a *policy* the platform hosts as a
+(Cadenza) event reducer, over the kernel's spawn mechanism — so it ties directly into the default-event-handler
+routing ([[DESIGN-default-event-handler-guest]]) rather than introducing a parallel handler type. The spawn
+contract is just one more contract the event registry maps to a handler.
 
 ### 3. A spawn WIT capability
 
@@ -85,9 +88,10 @@ interface spawn {
 ```
 
 A privileged reducer that holds the `spawn` import can request a spawn (with limits); the call routes through
-the spawn handler for admission and returns the new reducer-id or a rejection. **v-inference owns the WIT
-synthesis** (`wit_world`), so the exact record/variant shape is co-settled with them, as with the other host
-imports.
+the normal event-dispatch path to the event reducer governing the spawn contract for admission (§2), and
+returns the new reducer-id or a rejection. **v-inference owns the WIT synthesis** (`wit_world`), so the exact
+record/variant shape is co-settled with them, as with the other host imports. `spawn` joins `deliver` in the
+one privileged world (Q3).
 
 ### 4. The privilege split — privileged spawn, non-privileged effects
 
@@ -97,14 +101,19 @@ imports.
   Request); it cannot spawn or deliver. This sharpens the existing model: `deliver` (route) and now `spawn`
   (create + set limits) are the privileged acts; emitting an effect is what everyone can do.
 
-This likely refines `ReducerKind` / the world set: the privileged (event) world gains `spawn` alongside
-`deliver`; the ordinary world stays effects-only. Whether spawn and deliver are the *same* privileged world or
-a finer split (a reducer that may spawn but not deliver, or vice versa) is an open question below.
+**One coarse privileged world (Q3, operator-settled).** `spawn` and `deliver` travel together in the *single*
+privileged (event) world — no fine-grained split (no spawn-but-not-deliver). Operator (Q3): "we don't need
+fine granularity on worlds. once the event reducers get implemented they aren't going to change all that often
+and they're going to be tightly controlled." So the world set stays two-way — ordinary (effects only) and
+privileged (spawn + deliver + graph + provenance) — and the privileged world simply gains `spawn` alongside
+its existing privileged imports. Coarse is acceptable precisely because privileged event reducers are stable
+and tightly controlled.
 
 ## How a spawn flows (end to end)
 
 1. A privileged reducer calls `spawn(request)` (the WIT import), naming a program + requested `SpawnLimits`.
-2. The kernel routes the request to the **spawn handler** for admission (policy): admit / reject-with-reason.
+2. The kernel routes the request through event-dispatch to the **event reducer governing the spawn contract**
+   for admission (policy): admit / reject-with-reason (Q1).
 3. On admit, the kernel resolves effective limits = requested **clamped to** the node ceiling, and launches
    the reducer, threading the resolved `SpawnLimits` on `SpawnContext` → `arm_store_safety` arms *that* store
    with *its* budget.
@@ -117,22 +126,40 @@ a finer split (a reducer that may spawn but not deliver, or vice versa) is an op
 - **v-platform-itest**: a conformance run once built — a privileged guest spawns with limits; a spawn handler
   admits/rejects; assert the routed spawn + the armed budget (observable as a runaway that traps at the
   per-spawn ceiling, not the node one).
-- This composes with the **default-event-handler** rework ([[DESIGN-default-event-handler-guest]]): the spawn
-  handler is the sibling of the event handler; both are policy-as-a-guest over a kernel mechanism.
+- This composes with the **default-event-handler** rework ([[DESIGN-default-event-handler-guest]]): admission
+  IS event-dispatch to an ordinary event reducer (Q1), so it rides the same routing, not a parallel handler.
 
-## Open questions (for the operator)
+## Build sequence (greenlit on Q1 + Q3)
 
-1. **Spawn handler = event handler, or its own handler?** Is admission a distinct "spawn handler" in the
-   registry, or a facet of the same default event handler? (Recommend: its own handler kind — spawn admission
-   is a different decision than effect routing.)
-2. **Clamp *and* handler, or handler only?** Is the node-ceiling clamp a hard kernel backstop *under* the
-   handler's policy (recommended — defense in depth: a buggy/absent handler can't grant more than the node
-   permits), or is the handler the sole authority?
-3. **One privileged world, or finer capabilities?** Do `spawn` and `deliver` travel together in one privileged
-   world, or should a reducer be able to hold one without the other (spawn-but-not-deliver)? This decides
-   whether the world set stays two-way (ordinary / privileged) or grows.
-4. **What may a spawn request set beyond limits?** Just `program` + `nonce` + `limits`, or also `kind` /
-   `links` (does a privileged reducer choose the child's privilege)? Choosing the child's `kind` is itself a
-   privilege-granting act and may need its own admission rule.
-5. **Interaction with #3209's per-node config:** confirmed direction is per-node = default+ceiling, per-spawn =
-   request-within-ceiling. (Recorded here as the working assumption.)
+Ordered; the first slice is gated on #3209 merging (it extends `arm_store_safety`'s config threading), the WIT
+slice is co-owned with v-inference, and the kind/links surface waits on Q4.
+
+1. **`SpawnLimits` threading** *(after #3209 merges)* — add `SpawnLimits { max_linear_memory_bytes, max_yields }`
+   to `Spawn`; carry the resolved (clamped-to-node-ceiling, Q2/Q5 leans) limits on `SpawnContext`; have
+   `arm_store_safety` use the per-spawn budget instead of the uniform node value. Pure kernel plumbing on top
+   of #3209.
+2. **The `spawn` WIT** *(with v-inference)* — add the `spawn` interface to the one privileged world (Q3),
+   alongside `deliver`. Co-settle the record/variant shapes. `kind`/`links` in the request are **omitted until
+   Q4** — the first cut carries only `program` + `nonce` + `limits`.
+3. **Admission via event-dispatch** (Q1) — route a spawn request to the event reducer governing the spawn
+   contract; admit → kernel spawns with resolved limits, reject → rejection response. Rides the event registry
+   + default-event-handler routing.
+4. **Conformance run** (v-platform-itest) — a privileged guest spawns with limits; the governing event reducer
+   admits/rejects; assert the routed spawn + that the child is armed with its per-spawn budget (a child that
+   exceeds its own ceiling traps, distinct from the node ceiling).
+
+## Open questions
+
+1. ~~Spawn handler = event handler, or its own handler?~~ **Resolved (Q1)** — it is an *ordinary event
+   reducer* reached via the normal event-dispatch/registry path; no new handler concept.
+2. **Clamp *and* handler, or handler only?** *(proceeding on the lean unless overridden)* The node-ceiling
+   clamp is a hard kernel backstop *under* the handler's policy — defense in depth: a buggy/absent handler
+   cannot grant more than the node permits.
+3. ~~One privileged world, or finer capabilities?~~ **Resolved (Q3)** — one coarse privileged world carrying
+   `spawn` + `deliver` together; no spawn-but-not-deliver split (privileged event reducers are stable +
+   tightly controlled).
+4. **What may a spawn request set beyond limits?** *(HELD for an explicit operator call)* Just `program` +
+   `nonce` + `limits`, or also `kind` / `links`? Choosing the child's `kind` is itself privilege-granting, so
+   the first build cut omits it (limits only) until the operator rules.
+5. **Per-node / per-spawn relationship** *(proceeding on the lean unless overridden)* — per-node
+   `ResourceLimits` is the default + ceiling; a per-spawn request is honored within that ceiling.
