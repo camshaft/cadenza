@@ -4,27 +4,27 @@
 //! constructor value builders and readers in `contracts/<name>.rs`. Those generated functions are thin —
 //! they name a constructor and its fields and defer the actual value SHAPE to the primitives here, so the
 //! canonical forms live in exactly one place and cannot drift between contracts or from the compiler's own
-//! encoding. The forms, as the compiler canonicalizes them:
-//!
-//!  - a qualified constructor `T.C` applied to a payload → `((. T C) <payload>…)`; nullary → `((. T C))`;
-//!  - a record value → the string-headed `("record" (= <field> <value>)…)`;
-//!  - a prelude (unqualified) constructor `C` → `(C <payload>…)` (e.g. `Ok`/`Err`).
-//!
-//! These are generic over the constructor/field names, so they carry no schema-specific knowledge — the
-//! generated code supplies the names. Readers are the exact inverses and are total (`Option`), so decoding
-//! a malformed value is a rejected value, never a panic.
+//! encoding.
 //!
 //! The forms match the compiler's own canonical `Value.encode`/`Value.decode` (empirically pinned), so a
 //! contract value a Rust builder emits is decodable by a Cadenza guest and vice versa — the "one canonical
-//! codec" (§12) actually holding across the Rust↔Cadenza boundary. A guest [`Value.decode`]s type-directed,
+//! codec" (§12) actually holding across the Rust↔Cadenza boundary. A guest `Value.decode`s type-directed,
 //! so the shape is:
 //!  - a constructor `T.C` applied to a payload → the BARE-name form `(C <payload>…)` (the type `T` is not in
 //!    the value — it comes from the root ascription / the target type); a SINGLE-constructor sum ELIDES the
 //!    constructor entirely (the payload directly) — that elision is the generated code's call, not here;
-//!  - a record value → the NAME-headed `(record (= <field> <value>)…)`;
+//!  - a record value → the NAME-headed `(record (= <field> <value>)…)`, with fields in ascending NAME order
+//!    (the decoder reads records in the compiler's canonical order — [`record`] sorts them);
+//!  - a prelude (unqualified) constructor `C` → the same bare-name `(C <payload>…)` (e.g. `Ok`/`Err`);
 //!  - the whole payload, at the encode boundary, is wrapped in a root ascription `(: <value> <Type>)` via
 //!    [`ascribe`] (the decoder reads the type token but does not match it against the target — [`as_ascribed`]
 //!    strips it on the way in).
+//!
+//! These are generic over the constructor/field names, so they carry no schema-specific knowledge — the
+//! generated code supplies the names. Readers are the exact inverses and are total (`Option`), so decoding
+//! a malformed value is a rejected value, never a panic; they are LIBERAL on the head (accept the canonical
+//! name-headed form AND the string-headed ML-surface form) so the same reader serves a platform-built value
+//! and a `cdz convert` surface value.
 
 use crate::{Bytes, Hash};
 use cadenza_ast::ast::{Builder, Leaf, Radix, Struct, StructId};
