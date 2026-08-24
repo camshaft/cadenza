@@ -61,6 +61,19 @@ read by name, so order does not matter):
 - `run-for` — optional; the virtual-time horizon in **nanoseconds** to drive the run for before declaring
   quiescence (default: one simulated hour). Bach jumps virtual time to the next event, so a bounded workload
   settles in ~0 wall-clock; this only bounds a never-settling run.
+- `pure-run` — optional; run one program as a **pure function** of a single input instead of the
+  spawn/deliver/checker flow (§3), to exercise run-as-effect and effect-denial without any event routing:
+  `{ program = "<blob name>", contract = "<contract>", input = b"…", expect-output = b"…" }`. The executable
+  runs `program` through the `run` primitive with an empty capability set (so every effect it emits is
+  denied, never routed) and passes iff the output equals `expect-output`. `program` must be a declared blob;
+  the `spawns`/`deliver`/`checker` fields are unused for such a run (see `pure-run-emit-then-close.ml`).
+- `deps` — **not hand-written**; the nix harness-run framework (`mkHarnessAst`) injects it. A list of
+  **unnamed**, content-addressed component dependencies (the value-heap runtime a Cadenza guest imports as
+  `cadenza:runtime/heap@…+<hash>`, and its own nfc dependency), each `{ path = "…" }`. The executable seeds
+  them into each run's content-addressed store by content hash, so a guest's content-addressed imports
+  resolve and it actually folds — the run is thereby **self-contained** (every component it needs travels in
+  the value) rather than pulling the runtime from an ambient store. A run of only inline (placeholder or
+  Rust) blobs needs none.
 
 ## Event-reducer dispatch runs (§4)
 
