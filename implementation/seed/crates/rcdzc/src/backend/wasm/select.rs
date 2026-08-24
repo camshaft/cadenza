@@ -18385,6 +18385,48 @@ mod tests {
         );
     }
 
+    // WIT-ABI completion (result side): the option result LIFT is GENERAL over its payload — `option<T>`,
+    // not pinned to `option<list<u8>>`. Pins the pure boundary-classification helpers (no reducer run): the
+    // payload is read as `T`, the type admits, and it maps to the WIT type `option<wit(T)>`. A pure-fn unit
+    // test (per the operator's Rust-is-unit-tests-only directive); the emit/invoke proof lives in the corpus
+    // WIT-integration harness (a dedicated owner is building it).
+    #[test]
+    fn option_result_lift_is_general_over_the_payload() {
+        use crate::backend::wasm::host;
+        use crate::wit_world::WitType;
+        // option<list<list<u8>>> — an option payload BEYOND Bytes (`(List Bytes)` = list<list<u8>>).
+        let mut db = Db::load(crate::testkit::parse(
+            "(module m (def (f (: x (Option (List Bytes)))) x) (def (main) 0) (export main))",
+        ));
+        let (params, _) = function_of(&mut db, "f");
+        let opt_ty = params[0].1.clone();
+        assert_eq!(
+            host::option_payload_ty(&mut db, &opt_ty),
+            Some(Ty::List(Box::new(Ty::Bytes))),
+            "the payload of option<list<list<u8>>> is list<list<u8>>"
+        );
+        assert!(
+            host::result_is_liftable(&mut db, &opt_ty),
+            "option<list<list<u8>>> is a liftable spilled result (general over the payload, not just Bytes)"
+        );
+        assert_eq!(
+            host::spilled_result_wit_type(&mut db, &opt_ty),
+            Some(WitType::Option(Box::new(WitType::List(Box::new(
+                WitType::List(Box::new(WitType::U8))
+            ))))),
+            "option<list<list<u8>>> maps to the WIT type option<list<list<u8>>>"
+        );
+        // Regression: option<list<u8>> (the kv.get shape) still classifies as liftable.
+        let mut db2 = Db::load(crate::testkit::parse(
+            "(module m (def (g (: y (Option Bytes))) y) (def (main) 0) (export main))",
+        ));
+        let (p2, _) = function_of(&mut db2, "g");
+        assert!(
+            host::result_is_liftable(&mut db2, &p2[0].1),
+            "option<list<u8>> is still liftable"
+        );
+    }
+
     #[test]
     fn selects_a_literal_to_i64_const() {
         let (ast, body) = scalar_program();

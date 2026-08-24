@@ -217,24 +217,28 @@ pub fn record_has_bytes_field(ty: &Ty) -> bool {
     }
 }
 
-pub fn is_option_bytes(db: &mut Db, ty: &Ty) -> bool {
+/// The payload type of an OPTION-SHAPED sum (`option<T>`) — a sum with exactly two variants, one nullary
+/// and one single-payload, instantiated at a single type argument — else `None`. Returns `T` (the instantiated
+/// payload = the sum's sole type argument). The general option classifier (superseding the former Bytes-only
+/// `is_option_bytes`): an option result of ANY payload lifts through the same `emit_option_sum_lift` recursion + the same WIT
+/// `option<T>` component type, so the boundary need not special-case the payload. Reads through erased nominals.
+pub fn option_payload_ty(db: &mut Db, ty: &Ty) -> Option<Ty> {
     let Ty::Sum { decl, args } = ty.strip_nominal() else {
-        return false;
+        return None;
     };
-    if args.len() != 1 || !matches!(args[0], Ty::Bytes) {
-        return false;
+    if args.len() != 1 {
+        return None;
     }
-    let Some(d) = db.type_decl_by_occ(*decl) else {
-        return false;
-    };
-    d.variants.len() == 2
-        && d.variants.iter().any(|v| v.name == "Some")
-        && d.variants.iter().any(|v| v.name == "None")
+    let payload = args[0].clone();
+    let d = db.type_decl_by_occ(*decl)?;
+    let single = d.variants.iter().filter(|v| v.payloads.len() == 1).count();
+    let nullary = d.variants.iter().filter(|v| v.payloads.is_empty()).count();
+    (d.variants.len() == 2 && single == 1 && nullary == 1).then_some(payload)
 }
 
 /// Whether `ty` is `List<Tuple<Bytes, Bytes>>` (guest `list<tuple<list<u8>,list<u8>>>` at the host
 /// boundary) — the kv `prefix-scan` result shape: a list of (key, value) byte-pair tuples. The SECOND
-/// compound host RESULT the host-fused bytes path will lift (after `Option<Bytes>`, [`is_option_bytes`]):
+/// compound host RESULT the host-fused bytes path will lift (after `option<T>`, [`option_payload_ty`]):
 /// the host writes a spilled list of pairs into a caller-provided return area, which the guest lifts into
 /// a value-heap `List<Tuple<Bytes,Bytes>>`. Purely structural (List/Tuple/Bytes — no decl lookup, unlike a
 /// `Sum`), so it takes `&Ty` not `&mut Db`. Reads through erased nominal wrappers at each level.
@@ -268,8 +272,10 @@ pub fn result_is_liftable(db: &mut Db, ty: &Ty) -> bool {
             let elems = elems.clone();
             !elems.is_empty() && elems.iter().all(|e| result_is_liftable(db, e))
         }
-        // An option-shaped sum over `Bytes` (`option<list<u8>>`) — the only sum shape the lift wires today.
-        _ => is_option_bytes(db, ty),
+        // An option-shaped sum (`option<T>`) whose payload `T` is itself liftable — general over the payload
+        // (not pinned to `Bytes`); the lift (`emit_option_sum_lift`) recurses the payload, the WIT type is
+        // `option<wit(T)>`. So `option<list<u8>>`, `option<list<list<u8>>>`, `option<tuple<…>>` all lift.
+        _ => option_payload_ty(db, ty).is_some_and(|p| result_is_liftable(db, &p)),
     }
 }
 
@@ -280,10 +286,10 @@ pub fn result_is_liftable(db: &mut Db, ty: &Ty) -> bool {
 /// lockstep with [`result_is_liftable`]: every liftable result has a WIT type here.
 pub fn spilled_result_wit_type(db: &mut Db, ty: &Ty) -> Option<crate::wit_world::WitType> {
     use crate::wit_world::WitType;
-    if is_option_bytes(db, ty) {
-        return Some(WitType::Option(Box::new(WitType::List(Box::new(
-            WitType::U8,
-        )))));
+    if let Some(payload) = option_payload_ty(db, ty) {
+        return Some(WitType::Option(Box::new(spilled_result_wit_type(
+            db, &payload,
+        )?)));
     }
     crate::wit_world::ty_natural_wit(ty)
 }

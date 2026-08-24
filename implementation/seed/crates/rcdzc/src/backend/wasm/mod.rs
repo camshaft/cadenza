@@ -1916,14 +1916,14 @@ fn declare_result_lift_ops(
                 declare_result_lift_ops(db, f, used);
             }
         }
-        // An option-shaped sum (`option<list<u8>>`): `sum-new` for the Some/None construction + the Some
-        // arm's payload (`Bytes`) lift ops.
-        _ if host::is_option_bytes(db, ty) => {
-            used.insert("sum-new");
-            used.insert("bytes-alloc");
-            used.insert("bytes-set");
+        // An option-shaped sum (`option<T>`): `sum-new` for the Some/None construction + the Some arm's
+        // payload lift ops, recursively (general over the payload, not pinned to `Bytes`).
+        _ => {
+            if let Some(payload) = host::option_payload_ty(db, ty) {
+                used.insert("sum-new");
+                declare_result_lift_ops(db, &payload, used);
+            }
         }
-        _ => {}
     }
 }
 
