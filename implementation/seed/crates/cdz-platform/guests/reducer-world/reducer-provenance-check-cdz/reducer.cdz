@@ -1,0 +1,82 @@
+// The PROVENANCE checker, as a Cadenza reducer guest (design/cadenza-platform.md §4/§9) — asserts an event
+// reducer performed the privileged `program-of` read, observed at the host boundary as a `ProgramOf` entry
+// (the provenance recorder, #3212). The paired guest (reducer-provenance-cdz) reads which program its SENDER
+// runs; this checker judges that the read happened, LOG-ONLY and guest-agnostic.
+//
+// Same three schema imports as the other checkers, from their single source of truth: the check Envelope
+// (log-in), the verdict Verdict (pass/fail-out), and the log-schema LogRecord/Entry (the decoded log, which
+// now carries `ProgramOf`). The `libs` manifest beside this file lists their repo-relative paths.
+//
+// JUDGEMENT: pass iff some `ProgramOf(reducer = S)` in the log names the SENDER `S` of some delivered message
+// — i.e. the reducer read the provenance of whoever sent it the effect (reducer-provenance-cdz reads
+// `program-of(msg.sender.reducer)`). RELATIONAL on the run-observed sender (`Delivered.from.reducer`), no
+// hardcoded id, NON-VACUOUS: a guest that fails to instantiate performs no `program-of`, so no `ProgramOf` is
+// recorded and the check fails. The recorded `program` answer is `None` here (the itest wires no real system),
+// but the QUERY — that the reducer asked, and about the sender — is the observable fact. Same explicit INDEX
+// RECURSION + imported-sum catch-all idiom as reducer-dispatch-check-cdz.
+import { Envelope } from "check"
+import { Verdict } from "verdict"
+import { LogRecord, Entry } from "log-schema"
+
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+// Does some record at index >= i carry a ProgramOf(reducer == r)? (the reducer read r's provenance.) The
+// index walk terminates on `List.at` returning None past the end — no separate length check needed — and a
+// match GUARD folds the "is it the ProgramOf we want" test into the pattern, so there is one recursive call.
+def has-program-of(records: List(LogRecord), i: Int64, r: Bytes) =
+  match List.at(records, i) with
+  | Option.None(_) => false
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      (match rec.entry with
+        | Entry.ProgramOf(pf) if (pf.reducer == r) => true
+        | _ => has-program-of(records, i + 1, r))
+
+// Is some delivered message's sender S matched by a ProgramOf(reducer = S)? Scans delivered records with a
+// present `from` (a message carries its sender Origin); for each, checks the whole log for a program-of of
+// that sender. Same index walk (None past the end ends it) with a guard on the sender's `from`.
+def prov-holds(records: List(LogRecord), i: Int64) =
+  match List.at(records, i) with
+  | Option.None(_) => false
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      (match rec.entry with
+        | Entry.Delivered(d) =>
+            (match d.from with
+              | Option.Some(o) if has-program-of(records, 0, o.reducer) => true
+              | _ => prov-holds(records, i + 1))
+        | _ => prov-holds(records, i + 1))
+
+// The verdict payload for a decoded log: pass with no messages, else fail with one diagnostic message.
+def verdict-payload(records: List(LogRecord)) =
+  if prov-holds(records, 0)
+  then Value.encode(Verdict.Verdict({ pass = true, messages = ([] : List(String)) }))
+  else Value.encode(Verdict.Verdict({ pass = false,
+                                      messages = List.push(([] : List(String)),
+                                                           "no ProgramOf named a delivered message's sender: the reducer did not read the sender's provenance") }))
+
+// A verdict request. `verdict-contract` is NOT a hardcoded hash — it is the `verdict` field of the incoming
+// `check` Envelope (`c.verdict` in on-message below), the contract-id the harness told the checker to emit
+// its verdict on (the §9 checker protocol: the harness owns the verdict contract and passes it in). The
+// verdict token is irrelevant (the harness reads the verdict by scanning Emitted on the verdict contract),
+// so b"".
+def verdict-req(verdict-contract: Bytes, payload: Bytes) =
+  { contract = verdict-contract, payload = payload, token = b"", deadlineNanos = None }
+
+def on-message(msg) =
+  match (Value.decode(msg.payload) : Option(Envelope)) with
+  | Some(Envelope.Check(c)) =>
+      (match (Value.decode(c.log) : Option(List(LogRecord))) with
+       | Some(records) =>
+           { requests = [verdict-req(c.verdict, verdict-payload(records))], outcome = Outcome.Continue }
+       | None =>
+           { requests = [verdict-req(c.verdict,
+                                     Value.encode(Verdict.Verdict({ pass = false,
+                                                                    messages = List.push(([] : List(String)),
+                                                                                         "observation log did not decode") })))],
+             outcome = Outcome.Continue })
+  | None =>
+      { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = msg.payload }) }
+
+def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
+def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
+export { on-message, on-response, on-notification }
