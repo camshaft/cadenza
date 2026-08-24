@@ -1063,76 +1063,14 @@
           vendor = nfcVendor;
         };
 
-        # ── the reducer-echo GUEST component (a §3 reducer fixture for the WasmReducer host driver) ──
-        #
-        # A minimal event-reducer guest (echoes one request on the same contract, reads its own id from the
-        # `identity` host import) that proves the WasmReducer driver end-to-end against a REAL component, not
-        # a mock. Operator ruling: NO committed .wasm — the guest is built REPRODUCIBLY by cargo-component
-        # here and exposed as `packages.reducer-echo` (+ a validity check). The platform stays GUEST-AGNOSTIC:
-        # nothing guest-specific is baked into cdz-platform or the shared runtime store, and the CAS is not
-        # seeded by an env-read manifest entry. Instead a TEST passes these nix-built bytes IN as an opaque
-        # program blob through the harness's language-neutral seed-from-blobs surface (owned by
-        # v-platform-itest; the exact CAS-seeding API awaits v-platform's WasmProgramStore addressing). This
-        # derivation's sole job is to PRODUCE the guest bytes reproducibly. Unlike the runtime/nfc it is a
-        # LIGHT fixture (its src/allocator.rs ships talc, so NO build-std and NO panic=immediate-abort —
-        # byte-determinism isn't required of a fixture), so its vendor is just its OWN Cargo.lock (crates-io
-        # only, no rust-src build-std lock, no git deps). Its WIT world (`reducer-world`) lives in the SHARED
-        # cdz-platform/wit (`[package.metadata.component.target] path = "../../wit"`), so the fileset carries
-        # that wit dir alongside the guest crate. The WIT target is a LOCAL PATH (not a component-dep-by-hash
-        # like nfc's FINDING#23), so it resolves under CARGO_NET_OFFLINE with no `--offline`-flag surprise.
-        # Reuses mkStripComponent unchanged: its strip -a canonicalize gives a machine-stable content hash.
-        reducerEchoVendor = pkgs.rustPlatform.importCargoLock {
-          lockFile = ./implementation/seed/crates/cdz-platform/guests/reducer-echo/Cargo.lock;
-        };
-        reducerEchoSrc = pkgs.lib.fileset.toSource {
-          root = ./.;
-          fileset = pkgs.lib.fileset.unions [
-            ./implementation/seed/crates/cdz-platform/guests/reducer-echo
-            ./implementation/seed/crates/cdz-platform/wit
-            ./rust-toolchain.toml
-          ];
-        };
-        reducerEcho = mkStripComponent {
-          pname = "cdz-platform-reducer-echo-component";
-          crateDir = "cdz-platform/guests/reducer-echo";
-          artifact = "cdz_platform_reducer_echo";
-          src = reducerEchoSrc;
-          vendor = reducerEchoVendor;
-        };
-
-        # The INTERIM reducer-echo CHECKER guest — same build shape as reducer-echo (a standalone
-        # cargo-component reducer targeting the shared reducer-world). A run names it as its `checker`; it
-        # verifies (by a byte-substring check, no log decode) that reducer-echo echoed and emits a `verdict`.
-        # TEMPORARY (operator, 2026-08-23): to be DELETED with reducer-echo the moment rcdzc can emit a
-        # reducer-world component from a `.cdz` (v-rust-backend record-path W4c-b), replaced by a Cadenza
-        # checker. Built + materialized reproducibly exactly like reducer-echo meanwhile.
-        reducerEchoCheckVendor = pkgs.rustPlatform.importCargoLock {
-          lockFile = ./implementation/seed/crates/cdz-platform/guests/reducer-echo-check/Cargo.lock;
-        };
-        reducerEchoCheckSrc = pkgs.lib.fileset.toSource {
-          root = ./.;
-          fileset = pkgs.lib.fileset.unions [
-            ./implementation/seed/crates/cdz-platform/guests/reducer-echo-check
-            ./implementation/seed/crates/cdz-platform/wit
-            ./rust-toolchain.toml
-          ];
-        };
-        reducerEchoCheck = mkStripComponent {
-          pname = "cdz-platform-reducer-echo-check-component";
-          crateDir = "cdz-platform/guests/reducer-echo-check";
-          artifact = "cdz_platform_reducer_echo_check";
-          src = reducerEchoCheckSrc;
-          vendor = reducerEchoCheckVendor;
-        };
-
         # ── a Cadenza `.cdz` reducer GUEST → wasm component (operator directive 2026-08-23) ─────────
         #
-        # Stand up the pipeline that compiles a Cadenza reducer SOURCE (`.cdz`) to a reducer-world wasm
-        # component, so a Cadenza-authored guest can occupy the SAME `harnessPrograms` slot the hand-written
-        # Rust `reducer-echo` occupies today (the operator's "Cadenza guests, no more Rust" priority). Uses
+        # Compile a Cadenza reducer SOURCE (`.cdz`) to a reducer-world wasm component. A Cadenza-authored guest
+        # fills every `harnessPrograms` slot now — the interim hand-written Rust `reducer-echo` fixtures it
+        # replaced have been retired (the operator's "Cadenza guests, no more Rust" priority, §9). Uses
         # `cdz compile <src> --target wasm` — the `.cdz` declares its reducer world INLINE via `(world …)`
         # (the external `KIND_WIT_WORLD` artifact path is a not-yet-wired follow-up, rcdzc `wit_world.rs`).
-        # Canonicalized (`strip -a`) + content-addressed like the Rust guests, so it registers identically.
+        # Canonicalized (`strip -a`) + content-addressed, so it registers identically to any component.
         #
         # ⚠ GAP-ASSESSMENT STATUS (2026-08-23, coordinated with v-platform who authors the probe `.cdz`):
         # the reducer-world compile path is UNEXERCISED end-to-end — no `.cdz` anywhere yet declares a
@@ -1237,8 +1175,8 @@
         #                                             (ordinary world) — for a guest that CALLS a host import
         #                                             (its inline export can't declare imports).
         #   - `guests/event-reducer-world/<reducer>/` → against `event-reducer-world.bin` (privileged world).
-        # A top-level dir whose subdirs hold no `reducer.cdz` (the Rust guest crates `reducer-echo/` etc.) is
-        # naturally skipped. Each guest is keyed in `harnessPrograms` + `packages` by its `<reducer>` dir name.
+        # A top-level dir whose subdirs hold no `reducer.cdz` is naturally skipped. Each guest is keyed in
+        # `harnessPrograms` by its `<reducer>` dir name.
         cadenzaGuestsDir = ./implementation/seed/crates/cdz-platform/guests;
         # world → the mkCadenzaGuest witWorld args ("inline" ⇒ none; else the KIND_WIT_WORLD artifact).
         cadenzaWorldArgs = world:
@@ -1294,16 +1232,12 @@
         # program reruns only the runs that USE it, and neither ever rebuilds the integration-test binary.
         #
         # `harnessPrograms`: the wasm store, name → the reproducibly-built component. A run refers to a
-        # program by name; `mkHarnessRun` resolves the name to this store path. (reducer-echo is a Rust
-        # cargo-component guest today; a Cadenza `.cdz` guest compiled by rcdzc joins here once the compiler
-        # emits reducer-world components — coordinated with v-rust-backend. Add a program = one entry.)
-        # The Rust fixtures, plus EVERY auto-enumerated Cadenza guest (keyed by its `guests/` dir name,
-        # e.g. `reducer-echo-cdz`, `reducer-identity-cdz`, `reducer-provenance-cdz`) merged in — so a new
-        # Cadenza guest needs no edit here (see `cadenzaGuests`).
-        harnessPrograms = {
-          "reducer-echo" = reducerEcho;
-          "reducer-echo-check" = reducerEchoCheck;
-        } // cadenzaGuests;
+        # program by name; `mkHarnessRun` resolves the name to this store path. EVERY program is an
+        # auto-enumerated Cadenza guest (keyed by its `guests/` dir name, e.g. `reducer-echo-cdz`,
+        # `reducer-identity-cdz`, `reducer-provenance-cdz`), so a new guest needs no edit here (see
+        # `cadenzaGuests`). The interim Rust `reducer-echo` / `reducer-echo-check` fixtures were retired once
+        # the Cadenza pipeline (guest + checker) drove the runs end-to-end (every-guest-in-Cadenza, §9).
+        harnessPrograms = cadenzaGuests;
 
         # `platformItest`: the `cdz-platform-itest` executable built ONCE (behind testing+host → wasmtime),
         # shared by every harness run so a test/program change never rebuilds it. Its src is the seed
@@ -1997,22 +1931,12 @@
         packages.nfc = nfc;
         packages.nfc-hash = hashOf nfc "cdz-nfc-hash";
 
-        # The reducer-echo guest fixture (§3) the platform host driver instantiates. `.#reducer-echo` is the
-        # stripped component bytes (what a test seeds as an opaque program blob); `.#reducer-echo-hash` its
-        # derived blake3 content address.
-        packages.reducer-echo = reducerEcho;
-        packages.reducer-echo-hash = hashOf reducerEcho "cdz-platform-reducer-echo-hash";
-
         # No per-reducer `packages.*` aliases (operator 2026-08-24 — no hardcoded reducer names): every
         # Cadenza guest is auto-enumerated in `harnessPrograms` + built by its `harness-<reducer>-echo` check
         # (`.#checks.<sys>.harness-reducer-…-cdz-echo`), so a hardcoded `.#reducer-…-cdz` alias would just
         # re-introduce the names the tree already derives. `.#world-artifacts` stays (the KIND_WIT_WORLD
         # binaries the host-import guests consume — not a reducer name).
         packages.world-artifacts = worldArtifacts;
-
-        # The interim reducer-echo CHECKER guest (temporary; see the derivation note). `.#reducer-echo-check`.
-        packages.reducer-echo-check = reducerEchoCheck;
-        packages.reducer-echo-check-hash = hashOf reducerEchoCheck "cdz-platform-reducer-echo-check-hash";
 
         # The integration-test executable, built ONCE (§9) — `nix build .#cdz-platform-itest` →
         # result/bin/cdz-platform-itest. Shared by every harness run so a test/program change never rebuilds it.
@@ -2244,7 +2168,7 @@
             flakeReproBackstop = pkgs.runCommand "flake-repro-backstop"
               {
                 inherit runtimeHashParity runtimeDebugHashParity nfcHashParity
-                  reducerEchoValid reducerEchoCheckValid contractHashesValid harnessRunsAll
+                  contractHashesValid harnessRunsAll
                   exampleProjectTests crateClosureAssert;
               } ''
               echo "ok: flake reproducibility-backstop — hash-parity + component-validity + project-@tests + closure-assert" > $out
@@ -2254,13 +2178,6 @@
             runtimeHashParity = parity { name = "runtime"; drv = runtime; constName = "REQUIRED_RUNTIME_HASH"; };
             runtimeDebugHashParity = parity { name = "runtime-debug"; drv = runtimeDebug; constName = "DEBUG_RUNTIME_HASH"; };
             nfcHashParity = parity { name = "nfc"; drv = nfc; constName = "REQUIRED_NFC_HASH"; };
-            # The reducer-echo guest fixture has no frozen compiler constant (a fixture, not a runtime
-            # dependency the compiler pins), so it gets a wasm-tools VALIDITY guard rather than a hash-parity
-            # check: a future WIT/guest/toolchain change that silently produced a broken component fails the
-            # flake here. This is what rebuilds-and-verifies the guest from source, replacing a committed .wasm.
-            reducerEchoValid = validComponent { name = "reducer-echo"; drv = reducerEcho; };
-            # Same validity guard for the interim checker guest (temporary; deleted with reducer-echo on W4c-b).
-            reducerEchoCheckValid = validComponent { name = "reducer-echo-check"; drv = reducerEchoCheck; };
             # The contract name→hash mapping is well-formed: a non-empty JSON object whose every value is a
             # base64url contract-id (§8 text form — `[A-Za-z0-9_-]`, no padding). Catches a silently-empty
             # mapping (e.g. a contracts dir that stopped parsing) that a run not referencing contracts by name
@@ -2421,11 +2338,6 @@
             runtime-hash-parity = runtimeHashParity;
             runtime-debug-hash-parity = runtimeDebugHashParity;
             nfc-hash-parity = nfcHashParity;
-            # `nix build .#checks.<sys>.reducer-echo-valid` — the guest fixture builds + validates as a
-            # component (also part of flake-repro-backstop). This is what rebuilds-and-verifies the guest
-            # from source, replacing the committed .wasm the operator vetoed.
-            reducer-echo-valid = reducerEchoValid;
-            reducer-echo-check-valid = reducerEchoCheckValid;
             # `nix build .#checks.<sys>.contract-hashes-valid` — the contract name→hash mapping is well-formed
             # (also part of flake-repro-backstop). The harness runs that name a contract exercise it in anger.
             contract-hashes-valid = contractHashesValid;
