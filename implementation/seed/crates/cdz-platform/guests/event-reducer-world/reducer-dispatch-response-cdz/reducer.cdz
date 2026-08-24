@@ -1,0 +1,35 @@
+// A Cadenza EVENT reducer performing the ANSWER-BACK routing act (design/cadenza-platform.md §4): on
+// `on-message` it performs `deliver-response` — folding a reply back to a caller by injecting a `response`
+// event into its log. The `answer` is `result<payload, error>` (the prelude `Result`): a successful reply
+// carries the output value in `Ok`, a runtime failure an `Error` variant in `Err`.
+//
+// This completes the §4 dispatch trilogy on the guest side (notification → message → response). The minimal
+// self-consistent form answers the sender's reducer, echoing the incoming message's contract + correlation
+// token, with `answer = Ok(msg.payload)` — a successful reply that hands the payload straight back — so a
+// conformance run can assert the delivered response correlates by token and carries the value.
+//
+// Targets the privileged event-reducer-world (the only world importing `deliver`). on-response /
+// on-notification are inert. The `answer` field carries `result<payload, error>`: v-rust-backend's
+// deliver-response frontend (#3171) resolves it against the guest's named `Error` sum, and #3176 emits it.
+// The answer must have a CONCRETE `Result(Bytes, Error)` type — a bare `Ok(msg.payload)` leaves the `Err`
+// type variable unresolved and the compiler correctly declines an unresolved-type field (v-rb) — so it is
+// ascribed, fixing both type parameters to this guest's `Error`.
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+def on-message(msg) =
+  host deliver in
+    ( deliver.deliver-response(
+        msg.sender.reducer,
+        { contract = msg.contract,
+          token = msg.token,
+          answer = (Ok(msg.payload) : Result(Bytes, Error)) }) ;
+      { requests = [], outcome = Outcome.Continue } )
+
+def on-response(_resp) =
+  { requests = [], outcome = Outcome.Continue }
+
+def on-notification(_note) =
+  { requests = [], outcome = Outcome.Continue }
+
+export { on-message, on-response, on-notification }
