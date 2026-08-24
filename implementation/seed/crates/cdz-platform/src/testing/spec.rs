@@ -129,6 +129,14 @@ pub struct HarnessSpec {
     /// [`PureRun::expect_output`]; the spawn/deliver/checker fields are unused for such a run. `None` for an
     /// ordinary run.
     pub pure_run: Option<PureRun>,
+    /// **Unnamed** content-addressed component dependencies to seed into the run's content-addressed store,
+    /// each by its content hash — the value-heap runtime a Cadenza guest imports
+    /// (`cadenza:runtime/heap@…+<hash>`) and that runtime's own NFC dependency. Unlike [`blobs`](Self::blobs)
+    /// these carry no name (no spawn refers to them); they exist only so a guest's content-addressed imports
+    /// resolve in the store (`host::…::bind_dependencies`). The run is thereby **self-contained** — every
+    /// component it needs travels in the spec — rather than pulling the runtime from an ambient store at run
+    /// time. Empty for a run of only self-contained (Rust) guests.
+    pub deps: Vec<BlobSource>,
 }
 
 /// A pure run to perform and assert over (`design/cadenza-platform.md` §3): run [`program`](PureRun::program)
@@ -401,6 +409,18 @@ impl HarnessSpec {
             Some(id) => Some(read_pure_run(arenas, id)?),
         };
 
+        let deps = match record_field(arenas, root, "deps") {
+            None => Vec::new(),
+            Some(id) => list_items(arenas, id)
+                .ok_or(SpecError::WrongType {
+                    field: "deps",
+                    want: "a (list …) of dependency records",
+                })?
+                .iter()
+                .map(|&d| read_dep(arenas, d))
+                .collect::<Result<_, _>>()?,
+        };
+
         Ok(HarnessSpec {
             system,
             run_for,
@@ -409,6 +429,7 @@ impl HarnessSpec {
             deliveries,
             checker,
             pure_run,
+            deps,
         })
     }
 
@@ -553,8 +574,27 @@ impl HarnessSpec {
             let pure_run = pure_run_to_ast(b, pure_run);
             fields.push(("pure-run", pure_run));
         }
+        if !self.deps.is_empty() {
+            let items = self
+                .deps
+                .iter()
+                .map(|source| dep_to_ast(b, source))
+                .collect();
+            let deps = list_value(b, items);
+            fields.push(("deps", deps));
+        }
         record(b, fields)
     }
+}
+
+/// The `("record" (= bytes …)|(= path …))` node for one unnamed dependency — the inverse of [`read_dep`]
+/// (a blob source with no `name`).
+fn dep_to_ast(b: &mut Builder, source: &BlobSource) -> StructId {
+    let field = match source {
+        BlobSource::Inline(bytes) => ("bytes", bytes_leaf(b, bytes)),
+        BlobSource::Path(path) => ("path", str_leaf(b, path)),
+    };
+    record(b, vec![field])
 }
 
 /// The `("record" (= program …) (= contract …) (= input …) (= expect-output …))` node for a pure run — the
@@ -854,6 +894,40 @@ fn error_tag(e: Error) -> &'static str {
 }
 
 /// Read the required `contract` field of an event record as a [`ContractId`] (its 33 raw hash bytes).
+/// Read one `deps` record into a [`BlobSource`] — an UNNAMED content-addressed component: a record with
+/// exactly one of `bytes` (inline) or `path` (a file the executable reads), like a blob but with no `name`
+/// (nothing refers to a dep by name; it is resolved by content hash). Liberal about the record head.
+fn read_dep(arenas: &Arenas, id: StructId) -> Result<BlobSource, SpecError> {
+    if !is_record(arenas, id) {
+        return Err(SpecError::WrongType {
+            field: "deps",
+            want: "a (record …) with exactly one of bytes / path",
+        });
+    }
+    let inline = record_field(arenas, id, "bytes");
+    let path = record_field(arenas, id, "path");
+    match (inline, path) {
+        (Some(b), None) => Ok(BlobSource::Inline(read_bytes(arenas, b).ok_or(
+            SpecError::WrongType {
+                field: "bytes",
+                want: "a bytes literal",
+            },
+        )?)),
+        (None, Some(p)) => Ok(BlobSource::Path(
+            arenas
+                .as_str(p)
+                .ok_or(SpecError::WrongType {
+                    field: "path",
+                    want: "a string",
+                })?
+                .to_string(),
+        )),
+        _ => Err(SpecError::BlobSource {
+            blob: "deps".to_string(),
+        }),
+    }
+}
+
 /// Read a `pure-run` sub-record into a [`PureRun`]: a `program` blob name, the `contract` the input is run
 /// against, the `input` bytes, and the `expect-output` bytes. Liberal about the record head (name- or
 /// string-headed), so it reads both the canonical value form and the `cdz convert` surface form.
@@ -1140,6 +1214,7 @@ mod tests {
             deliveries: vec![],
             checker: None,
             pure_run: None,
+            deps: Vec::new(),
         };
         // The loader is invoked for the path blob only, with the exact path string.
         let mut loaded = Vec::new();
@@ -1170,6 +1245,7 @@ mod tests {
             deliveries: vec![],
             checker: None,
             pure_run: None,
+            deps: Vec::new(),
         };
         let result = spec.build(|_| Err("no such file"));
         assert_eq!(result.err(), Some("no such file"));
@@ -1314,6 +1390,7 @@ mod tests {
             ],
             checker: Some("check".to_string()),
             pure_run: None,
+            deps: Vec::new(),
         };
         let bytes = spec.encode();
         assert_eq!(HarnessSpec::decode(&bytes), Ok(spec));
@@ -1330,6 +1407,7 @@ mod tests {
             deliveries: vec![],
             checker: None,
             pure_run: None,
+            deps: Vec::new(),
         };
         assert_eq!(HarnessSpec::decode(&spec.encode()), Ok(spec));
     }
@@ -1548,6 +1626,7 @@ mod tests {
             deliveries: vec![deliver_to("root")],
             checker: None,
             pure_run: None,
+            deps: Vec::new(),
         };
         assert_eq!(spec.validate(), Ok(()));
     }
@@ -1562,6 +1641,7 @@ mod tests {
             deliveries: vec![],
             checker: None,
             pure_run: None,
+            deps: Vec::new(),
         };
         assert_eq!(
             spec.validate(),
@@ -1582,6 +1662,7 @@ mod tests {
             deliveries: vec![],
             checker: None,
             pure_run: None,
+            deps: Vec::new(),
         };
         assert_eq!(
             spec.validate(),
@@ -1606,6 +1687,7 @@ mod tests {
             deliveries: vec![],
             checker: None,
             pure_run: None,
+            deps: Vec::new(),
         };
         assert_eq!(
             spec.validate(),
@@ -1626,6 +1708,7 @@ mod tests {
             deliveries: vec![],
             checker: None,
             pure_run: None,
+            deps: Vec::new(),
         };
         assert_eq!(
             spec.validate(),
@@ -1645,6 +1728,7 @@ mod tests {
             deliveries: vec![deliver_to("ghost")],
             checker: None,
             pure_run: None,
+            deps: Vec::new(),
         };
         assert_eq!(
             spec.validate(),
@@ -1683,6 +1767,7 @@ mod tests {
             ],
             checker: None,
             pure_run: None,
+            deps: Vec::new(),
         };
         assert_eq!(HarnessSpec::decode(&spec.encode()), Ok(spec));
     }
@@ -1772,6 +1857,7 @@ mod tests {
             )],
             checker: None,
             pure_run: None,
+            deps: Vec::new(),
         };
         assert_eq!(HarnessSpec::decode(&spec.encode()), Ok(spec));
     }
@@ -1796,6 +1882,30 @@ mod tests {
                 input: Bytes::from_static(b"X"),
                 expect_output: Bytes::from_static(b"X"),
             }),
+            deps: Vec::new(),
+        };
+        assert_eq!(HarnessSpec::decode(&spec.encode()), Ok(spec));
+    }
+
+    /// A run's unnamed dependency components (`deps`) round-trip: both an inline and a path source read back
+    /// exactly, with no name (the CAS keys them by content hash).
+    #[test]
+    fn a_run_with_deps_round_trips() {
+        let spec = HarnessSpec {
+            system: "$system".to_string(),
+            run_for: None,
+            blobs: vec![BlobSpec {
+                name: "$system".to_string(),
+                source: BlobSource::Inline(Bytes::from_static(b"placeholder")),
+            }],
+            spawns: vec![],
+            deliveries: vec![],
+            checker: None,
+            pure_run: None,
+            deps: vec![
+                BlobSource::Inline(Bytes::from_static(b"\x00\x61\x73\x6d")),
+                BlobSource::Path("cdz-store/runtime.wasm".to_string()),
+            ],
         };
         assert_eq!(HarnessSpec::decode(&spec.encode()), Ok(spec));
     }
@@ -1820,6 +1930,7 @@ mod tests {
                 input: Bytes::new(),
                 expect_output: Bytes::new(),
             }),
+            deps: Vec::new(),
         };
         assert_eq!(
             spec.validate(),
