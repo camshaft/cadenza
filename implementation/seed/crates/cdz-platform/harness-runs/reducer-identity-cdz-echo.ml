@@ -1,5 +1,5 @@
 {
-  system = "$system",
+  registry = { default = "$system" },
   blobs = [
     { name = "$system", bytes = b"itest:no-system-reducer" },
     { name = "reducer-identity-cdz", program = "reducer-identity-cdz" }

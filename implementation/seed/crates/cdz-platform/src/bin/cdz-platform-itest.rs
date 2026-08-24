@@ -1,7 +1,7 @@
 //! The platform integration-test executable (`design/cadenza-platform.md` §9).
 //!
 //! Takes a single **Cadenza binary AST** that describes the entire run — the program blobs, the tasks to
-//! spawn, and the system reducer — decodes it (`cdz_platform::testing::HarnessSpec`), drives it through the
+//! spawn, and the event registry — decodes it (`cdz_platform::testing::HarnessSpec`), drives it through the
 //! platform under the bach simulator over a real [`WasmProgramStore`], and prints the observation log. The
 //! description is a language-neutral Cadenza value, not an argv convention: a program blob is opaque bytes,
 //! given inline in the AST or by a path this executable reads, so a run is a self-contained value.
@@ -115,7 +115,7 @@ fn usage() -> ExitCode {
     eprintln!(
         "usage: cdz-platform-itest <harness.ast>\n  \
          the argument is a Cadenza binary AST describing the whole run — its program blobs (inline or by \
-         path), the tasks to spawn, and the system reducer. The run's observation log is printed to stdout."
+         path), the tasks to spawn, and the event registry. The run's observation log is printed to stdout."
     );
     ExitCode::from(2)
 }
@@ -450,7 +450,7 @@ fn pure_run_phase(
 mod tests {
     use super::run;
     use cdz_platform::testing::{
-        BlobSource, BlobSpec, CheckOutcome, HarnessSpec, PureRun, SpawnSpec,
+        BlobSource, BlobSpec, CheckOutcome, HarnessSpec, PureRun, RegistrySpec, SpawnSpec,
     };
     use cdz_platform::{Bytes, ContractId};
 
@@ -463,7 +463,6 @@ mod tests {
         // program store end-to-end. (A real component's birth is exercised by the nix `--features host`
         // check against a built guest.)
         let spec = HarnessSpec {
-            system: "$system".to_string(),
             run_for: None,
             blobs: vec![
                 BlobSpec {
@@ -480,7 +479,10 @@ mod tests {
             checker: None,
             pure_run: None,
             deps: Vec::new(),
-            registry: None,
+            registry: RegistrySpec {
+                default: "$system".to_string(),
+                handlers: vec![],
+            },
         };
         let report = run(spec).expect("inline blobs never invoke the path loader");
         assert!(
@@ -498,7 +500,6 @@ mod tests {
         // flow runs the checker phase and enforces "a named check must report". (A real passing checker is
         // exercised by the nix `--features host` check against a compiled checker guest.)
         let spec = HarnessSpec {
-            system: "$system".to_string(),
             run_for: None,
             blobs: vec![
                 BlobSpec {
@@ -519,7 +520,10 @@ mod tests {
             checker: Some("check".to_string()),
             pure_run: None,
             deps: Vec::new(),
-            registry: None,
+            registry: RegistrySpec {
+                default: "$system".to_string(),
+                handlers: vec![],
+            },
         };
         let report = run(spec).expect("inline blobs never invoke the path loader");
         assert!(
@@ -544,7 +548,6 @@ mod tests {
     fn an_unregistered_checker_blob_is_an_error() {
         // Naming a checker blob that the run does not register is a usage error, not a silent no-op.
         let spec = HarnessSpec {
-            system: "$system".to_string(),
             run_for: None,
             blobs: vec![BlobSpec {
                 name: "$system".to_string(),
@@ -555,7 +558,10 @@ mod tests {
             checker: Some("absent".to_string()),
             pure_run: None,
             deps: Vec::new(),
-            registry: None,
+            registry: RegistrySpec {
+                default: "$system".to_string(),
+                handlers: vec![],
+            },
         };
         assert!(
             run(spec).is_err(),
@@ -569,7 +575,6 @@ mod tests {
         // builds the harness), so a malformed AST is a clean RunError (exit 2), not a panic deep in name
         // resolution — the executable's contract for untrusted input.
         let spec = HarnessSpec {
-            system: "$system".to_string(),
             run_for: None,
             blobs: vec![BlobSpec {
                 name: "$system".to_string(),
@@ -580,7 +585,10 @@ mod tests {
             checker: None,
             pure_run: None,
             deps: Vec::new(),
-            registry: None,
+            registry: RegistrySpec {
+                default: "$system".to_string(),
+                handlers: vec![],
+            },
         };
         assert!(
             run(spec).is_err(),
@@ -609,7 +617,6 @@ mod tests {
         // reason, not a panic. (The SUCCESS path, run -> Ok(expect_output), is exercised e2e by the nix
         // `--features host` conformance run against the compiled reducer-emit-then-close-cdz guest.)
         let spec = HarnessSpec {
-            system: "$system".to_string(),
             run_for: None,
             blobs: vec![
                 BlobSpec {
@@ -631,7 +638,10 @@ mod tests {
                 expect_output: Bytes::from_static(b"X"),
             }),
             deps: Vec::new(),
-            registry: None,
+            registry: RegistrySpec {
+                default: "$system".to_string(),
+                handlers: vec![],
+            },
         };
         let report = run(spec).expect("inline blobs never invoke the path loader");
         assert!(

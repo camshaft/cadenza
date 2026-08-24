@@ -1,7 +1,7 @@
 # Harness runs (integration tests, `design/cadenza-platform.md` §9)
 
 Each `*.ml` file here describes one whole integration-test run as a Cadenza value (ML surface — the
-`HarnessSpec` in `../src/testing/spec.rs`): the `system` reducer, the program `blobs`, the tasks to
+`HarnessSpec` in `../src/testing/spec.rs`): the event `registry`, the program `blobs`, the tasks to
 `spawns`, and optional `deliver`ies (initial messages/notifications). The nix harness-run framework
 (`flake.nix` `mkHarnessRun`) turns each file into one CI derivation:
 
@@ -27,15 +27,18 @@ only it, and editing a program reruns only the runs that use it.
 A run is a record with these fields (decoded by `HarnessSpec` in `../src/testing/spec.rs`; every field is
 read by name, so order does not matter):
 
-- `system` — **required**, the blob name of the system reducer every effect routes to by default (§4). A
-  run with no real system reducer names a placeholder blob (see the examples).
+- `registry` — **required**, the event registry (§4): `{ default = "<blob name>", handlers = [ … ]? }`.
+  `default` is the blob name of the default event handler every effect routes to unless a per-contract
+  override applies; it is the sole source of the default handler. `handlers` is an optional list of
+  overrides, each `{ contract = …, program = "<blob name>" }`, routing that contract to its own handler. A
+  run with no real handler names a placeholder blob for `default` (see the examples).
 - `blobs` — the program blobs, each `{ name = "…", … }` with its bytes given exactly one way:
   - `program = "…"` — a compiled program looked up by name in the wasm store (nix rewrites it to a `path`);
   - `bytes = b"…"` — opaque bytes inline (a placeholder that is never instantiated, or a raw component);
   - `path = "…"` — a file the executable reads at run time (what a `program` rewrite produces).
 - `spawns` — the tasks to spawn, in order; each `{ name = "…", blob = "…", … }` refers to a blob by name.
   A spawn also takes, optionally, `parent = "<a task spawned earlier>"` (absent ⇒ a root) and
-  `kind = "event"` (a privileged event/system reducer; the default is `"ordinary"`).
+  `kind = "event"` (a privileged event reducer; the default is `"ordinary"`).
 - `deliver` — optional; the initial events to inject once the tasks are spawned, in order. Each names a
   `target` task and carries **exactly one** event:
   - `message = { contract = …, payload = b"…", token = b"…"?, from = { reducer = b"…", host = b"…" }? }`

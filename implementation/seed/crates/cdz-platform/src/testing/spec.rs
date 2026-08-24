@@ -1,7 +1,8 @@
 //! Decode a whole harness run from a **Cadenza binary AST** (`design/cadenza-platform.md` §9).
 //!
 //! The integration-test executable's input is not an argv convention — it is a single Cadenza value that
-//! *describes the entire run*: the program blobs, the tasks to spawn, and the system reducer. A value, not a
+//! *describes the entire run*: the program blobs, the tasks to spawn, and the event registry (its default
+//! handler and any per-contract overrides). A value, not a
 //! command line, keeps the harness language-neutral (the description is itself a serializable Cadenza value)
 //! and self-contained. [`HarnessSpec::decode`] reads the binary AST (`cadenza_ast::codec::decode`) and
 //! interprets it as a run; [`HarnessSpec::build`] turns it into a ready-to-run [`Harness`], resolving any
@@ -13,7 +14,7 @@
 //!
 //! ```text
 //! ("record"
-//!   (= system  "sys")                         ; the blob NAME of the system reducer (§4)
+//!   (= registry ("record" (= default "sys")))  ; the event registry: its default handler blob NAME (§4)
 //!   (= run-for 3600000000000)                 ; optional; virtual-time horizon in NANOSECONDS (default 1h)
 //!   (= blobs   ("list" <blob>…))              ; the program blobs, by name
 //!   (= spawns  ("list" <spawn>…))             ; the tasks to spawn, in order
@@ -50,7 +51,7 @@
 //!   (= name   "root")        ; the task's handle in the log
 //!   (= blob   "greeter")     ; a blob name declared above
 //!   (= parent "root")        ; optional — a task spawned earlier; absent ⇒ a root
-//!   (= kind   "event"))      ; optional — "ordinary" (default) or "event" (a privileged system reducer)
+//!   (= kind   "event"))      ; optional — "ordinary" (default) or "event" (a privileged event reducer)
 //! ```
 //!
 //! Both the list head `("list" …)` and the bare name head `(list …)` are accepted, as they denote the same
@@ -101,13 +102,11 @@ pub struct BlobSpec {
     pub source: BlobSource,
 }
 
-/// A whole harness run decoded from a Cadenza binary AST: the system reducer's blob name, the optional
-/// virtual-time horizon, the program blobs, and the tasks to spawn. [`build`](HarnessSpec::build) turns it
-/// into a runnable [`Harness`].
+/// A whole harness run decoded from a Cadenza binary AST: the event registry (its default handler and any
+/// per-contract overrides), the optional virtual-time horizon, the program blobs, and the tasks to spawn.
+/// [`build`](HarnessSpec::build) turns it into a runnable [`Harness`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HarnessSpec {
-    /// The blob name of the system reducer every effect routes to by default (§4).
-    pub system: String,
     /// How much virtual time to drive the run for; `None` uses the harness default (one simulated hour).
     pub run_for: Option<Duration>,
     /// The program blobs, in declaration order.
@@ -137,12 +136,11 @@ pub struct HarnessSpec {
     /// component it needs travels in the spec — rather than pulling the runtime from an ambient store at run
     /// time. Empty for a run of only self-contained (Rust) guests.
     pub deps: Vec<BlobSource>,
-    /// The **event registry** the run installs, if set (§4): the default event handler plus per-contract
-    /// overrides. When present it replaces the harness default (which routes every contract to the `system`
-    /// reducer) — so a conformance run can stand up a specific default handler and route named contracts to
-    /// named handlers, then assert how an effect is routed/answered. `None` keeps the default (all contracts →
-    /// `system`).
-    pub registry: Option<RegistrySpec>,
+    /// The **event registry** the run installs (§4): its [`default`](RegistrySpec::default) event handler —
+    /// the program every contract routes to unless overridden — plus zero or more per-contract overrides. This
+    /// is the sole source of the default handler; a run stands up a specific default handler here and routes
+    /// named contracts to named handlers, then asserts how an effect is routed/answered.
+    pub registry: RegistrySpec,
 }
 
 /// The event registry a run installs (`design/cadenza-platform.md` §4): a **default** event handler that
@@ -164,7 +162,7 @@ pub struct RegistrySpec {
 /// as a pure function of [`input`](PureRun::input) on [`contract`](PureRun::contract) — the `run` primitive
 /// instantiates it with an empty capability set, so every effect it emits is denied (dropped, never routed)
 /// and its only output is the fold's result — and assert the output equals [`expect_output`](PureRun::expect_output).
-/// This is how a conformance run exercises run-as-effect and effect-denial (§3) without a system reducer: no
+/// This is how a conformance run exercises run-as-effect and effect-denial (§3) without any event routing: no
 /// spawn, no delivery, just `run(program, contract, input) == Ok(expect_output)`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PureRun {
@@ -288,10 +286,10 @@ pub enum SpecError {
         /// The delivery's target task name (or `"?"` if that too was missing).
         target: String,
     },
-    /// A spawn — or the `system` field — names a program blob not declared in `blobs`. A cross-reference
-    /// error found by [`validate`](HarnessSpec::validate), not a shape error.
+    /// A spawn — or the registry's default handler or an override — names a program blob not declared in
+    /// `blobs`. A cross-reference error found by [`validate`](HarnessSpec::validate), not a shape error.
     UnknownBlob {
-        /// What referred to the blob: a task name, or `"system"`.
+        /// What referred to the blob: a task name, `"registry default"`, or `"registry handler"`.
         referrer: String,
         /// The undeclared blob name.
         blob: String,
@@ -373,10 +371,6 @@ impl HarnessSpec {
             return Err(SpecError::NotARecord);
         }
 
-        let system = str_field(arenas, root, "system")?
-            .ok_or(SpecError::MissingField("system"))?
-            .to_string();
-
         let run_for = match record_field(arenas, root, "run-for") {
             None => None,
             Some(id) => Some(Duration::from_nanos(read_uint(arenas, id).ok_or(
@@ -443,12 +437,11 @@ impl HarnessSpec {
         };
 
         let registry = match record_field(arenas, root, "registry") {
-            None => None,
-            Some(id) => Some(read_registry(arenas, id)?),
+            None => return Err(SpecError::MissingField("registry")),
+            Some(id) => read_registry(arenas, id)?,
         };
 
         Ok(HarnessSpec {
-            system,
             run_for,
             blobs,
             spawns,
@@ -460,21 +453,15 @@ impl HarnessSpec {
         })
     }
 
-    /// Check the description's internal name references before it is run: the `system` blob and every
-    /// spawn's blob are declared in `blobs`, each spawn's `parent` is a task spawned earlier, task names are
-    /// unique, and every delivery targets a spawned task. Where [`decode`](HarnessSpec::decode) checks the
+    /// Check the description's internal name references before it is run: the registry's default handler and
+    /// every spawn's blob are declared in `blobs`, each spawn's `parent` is a task spawned earlier, task names
+    /// are unique, and every delivery targets a spawned task. Where [`decode`](HarnessSpec::decode) checks the
     /// *shape* of the value, this checks the *cross-references* a run resolves — so a caller (the executable)
     /// can reject a malformed run with a pointed [`SpecError`] and a clean exit, rather than letting the run
     /// fail deep in name resolution. Pure: it reads only the spec's own fields and touches no store.
     pub fn validate(&self) -> Result<(), SpecError> {
         use std::collections::BTreeSet;
         let blobs: BTreeSet<&str> = self.blobs.iter().map(|b| b.name.as_str()).collect();
-        if !blobs.contains(self.system.as_str()) {
-            return Err(SpecError::UnknownBlob {
-                referrer: "system".to_string(),
-                blob: self.system.clone(),
-            });
-        }
         // Spawns resolve in order: a parent must appear before its child, and each task name is claimed once.
         let mut spawned: BTreeSet<&str> = BTreeSet::new();
         for spawn in &self.spawns {
@@ -505,8 +492,8 @@ impl HarnessSpec {
                 });
             }
         }
-        // A pure run names a program to run; it must be a declared blob (like the system reducer). The run
-        // is standalone (no spawn/delivery), so nothing else about it cross-references the spawn set.
+        // A pure run names a program to run; it must be a declared blob (like any spawn). The run is
+        // standalone (no spawn/delivery), so nothing else about it cross-references the spawn set.
         if let Some(pure_run) = &self.pure_run
             && !blobs.contains(pure_run.program.as_str())
         {
@@ -515,22 +502,20 @@ impl HarnessSpec {
                 blob: pure_run.program.clone(),
             });
         }
-        // A registry names its default handler and each per-contract override handler by blob name; every one
-        // must be declared, like the system reducer.
-        if let Some(registry) = &self.registry {
-            if !blobs.contains(registry.default.as_str()) {
+        // The registry names its default handler and each per-contract override handler by blob name; every
+        // one must be declared, like any spawn.
+        if !blobs.contains(self.registry.default.as_str()) {
+            return Err(SpecError::UnknownBlob {
+                referrer: "registry default".to_string(),
+                blob: self.registry.default.clone(),
+            });
+        }
+        for (_contract, program) in &self.registry.handlers {
+            if !blobs.contains(program.as_str()) {
                 return Err(SpecError::UnknownBlob {
-                    referrer: "registry default".to_string(),
-                    blob: registry.default.clone(),
+                    referrer: "registry handler".to_string(),
+                    blob: program.clone(),
                 });
-            }
-            for (_contract, program) in &registry.handlers {
-                if !blobs.contains(program.as_str()) {
-                    return Err(SpecError::UnknownBlob {
-                        referrer: "registry handler".to_string(),
-                        blob: program.clone(),
-                    });
-                }
             }
         }
         Ok(())
@@ -544,7 +529,7 @@ impl HarnessSpec {
         self,
         mut load_path: impl FnMut(&str) -> Result<Bytes, E>,
     ) -> Result<Harness, E> {
-        let mut harness = Harness::new(self.system);
+        let mut harness = Harness::new(self.registry.default);
         if let Some(run_for) = self.run_for {
             harness = harness.run_for(run_for);
         }
@@ -561,8 +546,10 @@ impl HarnessSpec {
         for (target, event) in self.deliveries {
             harness = harness.deliver(target, event.into_delivered());
         }
-        if let Some(registry) = self.registry {
-            harness = harness.registry(registry.default, registry.handlers);
+        // The default handler is already set via `Harness::new` above; layer per-contract overrides only when
+        // there are any.
+        if !self.registry.handlers.is_empty() {
+            harness = harness.registry(self.registry.handlers);
         }
         Ok(harness)
     }
@@ -584,8 +571,6 @@ impl HarnessSpec {
     /// [`encode`](HarnessSpec::encode) so a value can also be nested in a larger AST if ever needed.
     fn to_ast(&self, b: &mut Builder) -> StructId {
         let mut fields: Vec<(&str, StructId)> = Vec::with_capacity(4);
-        let system = str_leaf(b, &self.system);
-        fields.push(("system", system));
         if let Some(run_for) = self.run_for {
             let ns = u64::try_from(run_for.as_nanos()).unwrap_or(u64::MAX);
             let run_for = uint_leaf(b, ns);
@@ -631,10 +616,8 @@ impl HarnessSpec {
             let deps = list_value(b, items);
             fields.push(("deps", deps));
         }
-        if let Some(registry) = &self.registry {
-            let registry = registry_to_ast(b, registry);
-            fields.push(("registry", registry));
-        }
+        let registry = registry_to_ast(b, &self.registry);
+        fields.push(("registry", registry));
         record(b, fields)
     }
 }
@@ -1201,10 +1184,17 @@ mod tests {
         b.atom_leaf(Leaf::Str(Arc::from(text)))
     }
 
-    /// A full description: a system reducer, a run horizon, two blobs (one inline, one by path), and three
-    /// spawns (a root, an event-kind reducer, and a child).
+    /// A minimal `("record" (= default <name>))` registry sub-record — just a default handler, no overrides.
+    /// Every well-formed run carries a `registry`, so this is the smallest one a shape test needs.
+    fn reg(b: &mut Builder, default: &str) -> StructId {
+        let default = s(b, default);
+        record(b, vec![("default", default)])
+    }
+
+    /// A full description: a registry (default handler `sys`), a run horizon, two blobs (one inline, one by
+    /// path), and three spawns (a root, an event-kind reducer, and a child).
     fn full(b: &mut Builder) -> StructId {
-        let system = s(b, "sys");
+        let registry = reg(b, "sys");
         let run_for = uint_leaf(b, 5_000_000_000);
         let inline = {
             let name = s(b, "greeter");
@@ -1238,7 +1228,7 @@ mod tests {
         record(
             b,
             vec![
-                ("system", system),
+                ("registry", registry),
                 ("run-for", run_for),
                 ("blobs", blobs),
                 ("spawns", spawns),
@@ -1250,7 +1240,7 @@ mod tests {
     fn reads_a_full_run_from_the_ast() {
         let arenas = built(full);
         let spec = HarnessSpec::read(&arenas, arenas.root).expect("a well-formed description");
-        assert_eq!(spec.system, "sys");
+        assert_eq!(spec.registry.default, "sys");
         assert_eq!(spec.run_for, Some(Duration::from_nanos(5_000_000_000)));
         assert_eq!(
             spec.blobs,
@@ -1281,20 +1271,20 @@ mod tests {
         let arenas = built(full);
         let bytes = codec::encode(&arenas);
         let spec = HarnessSpec::decode(&bytes).expect("decode the encoded description");
-        assert_eq!(spec.system, "sys");
+        assert_eq!(spec.registry.default, "sys");
         assert_eq!(spec.run_for, Some(Duration::from_nanos(5_000_000_000)));
         assert_eq!(spec.blobs.len(), 2);
         assert_eq!(spec.spawns.len(), 3);
     }
 
     #[test]
-    fn optional_fields_default_and_a_bare_system_is_enough() {
+    fn optional_fields_default_and_a_bare_registry_is_enough() {
         let arenas = built(|b| {
-            let system = s(b, "sys");
-            record(b, vec![("system", system)])
+            let registry = reg(b, "sys");
+            record(b, vec![("registry", registry)])
         });
-        let spec = HarnessSpec::read(&arenas, arenas.root).expect("just a system is valid");
-        assert_eq!(spec.system, "sys");
+        let spec = HarnessSpec::read(&arenas, arenas.root).expect("just a registry is valid");
+        assert_eq!(spec.registry.default, "sys");
         assert_eq!(spec.run_for, None);
         assert!(spec.blobs.is_empty());
         assert!(spec.spawns.is_empty());
@@ -1305,18 +1295,17 @@ mod tests {
     fn reads_the_checker_blob_name() {
         // A run may name a checker program — a reducer the harness runs over the completed log (§9).
         let arenas = built(|b| {
-            let system = s(b, "sys");
+            let registry = reg(b, "sys");
             let checker = s(b, "assert-echo");
-            record(b, vec![("system", system), ("checker", checker)])
+            record(b, vec![("registry", registry), ("checker", checker)])
         });
-        let spec = HarnessSpec::read(&arenas, arenas.root).expect("a system + checker is valid");
+        let spec = HarnessSpec::read(&arenas, arenas.root).expect("a registry + checker is valid");
         assert_eq!(spec.checker.as_deref(), Some("assert-echo"));
     }
 
     #[test]
     fn build_resolves_inline_and_path_blobs() {
         let spec = HarnessSpec {
-            system: "sys".to_string(),
             run_for: None,
             blobs: vec![
                 BlobSpec {
@@ -1333,7 +1322,10 @@ mod tests {
             checker: None,
             pure_run: None,
             deps: Vec::new(),
-            registry: None,
+            registry: RegistrySpec {
+                default: "sys".to_string(),
+                handlers: vec![],
+            },
         };
         // The loader is invoked for the path blob only, with the exact path string.
         let mut loaded = Vec::new();
@@ -1354,7 +1346,6 @@ mod tests {
     #[test]
     fn build_propagates_a_loader_error() {
         let spec = HarnessSpec {
-            system: "sys".to_string(),
             run_for: None,
             blobs: vec![BlobSpec {
                 name: "external".to_string(),
@@ -1365,7 +1356,10 @@ mod tests {
             checker: None,
             pure_run: None,
             deps: Vec::new(),
-            registry: None,
+            registry: RegistrySpec {
+                default: "sys".to_string(),
+                handlers: vec![],
+            },
         };
         let result = spec.build(|_| Err("no such file"));
         assert_eq!(result.err(), Some("no such file"));
@@ -1389,20 +1383,20 @@ mod tests {
     }
 
     #[test]
-    fn rejects_a_missing_system() {
+    fn rejects_a_missing_registry() {
         let arenas = built(|b| record(b, vec![]));
         assert_eq!(
             HarnessSpec::read(&arenas, arenas.root),
-            Err(SpecError::MissingField("system"))
+            Err(SpecError::MissingField("registry"))
         );
     }
 
     #[test]
     fn rejects_a_run_for_that_is_not_an_integer() {
         let arenas = built(|b| {
-            let system = s(b, "sys");
+            let registry = reg(b, "sys");
             let bad = s(b, "soon");
-            record(b, vec![("system", system), ("run-for", bad)])
+            record(b, vec![("registry", registry), ("run-for", bad)])
         });
         assert_eq!(
             HarnessSpec::read(&arenas, arenas.root),
@@ -1417,13 +1411,13 @@ mod tests {
     fn rejects_a_blob_with_both_or_neither_source() {
         // Both sources at once.
         let both = built(|b| {
-            let system = s(b, "sys");
+            let registry = reg(b, "sys");
             let name = s(b, "b");
             let bytes = bytes_leaf(b, b"x");
             let path = s(b, "p");
             let blob = record(b, vec![("name", name), ("bytes", bytes), ("path", path)]);
             let blobs = list(b, vec![blob]);
-            record(b, vec![("system", system), ("blobs", blobs)])
+            record(b, vec![("registry", registry), ("blobs", blobs)])
         });
         assert_eq!(
             HarnessSpec::read(&both, both.root),
@@ -1433,11 +1427,11 @@ mod tests {
         );
         // Neither source.
         let neither = built(|b| {
-            let system = s(b, "sys");
+            let registry = reg(b, "sys");
             let name = s(b, "b");
             let blob = record(b, vec![("name", name)]);
             let blobs = list(b, vec![blob]);
-            record(b, vec![("system", system), ("blobs", blobs)])
+            record(b, vec![("registry", registry), ("blobs", blobs)])
         });
         assert_eq!(
             HarnessSpec::read(&neither, neither.root),
@@ -1450,13 +1444,13 @@ mod tests {
     #[test]
     fn rejects_an_unknown_reducer_kind() {
         let arenas = built(|b| {
-            let system = s(b, "sys");
+            let registry = reg(b, "sys");
             let name = s(b, "t");
             let blob = s(b, "greeter");
             let kind = s(b, "supervisor");
             let spawn = record(b, vec![("name", name), ("blob", blob), ("kind", kind)]);
             let spawns = list(b, vec![spawn]);
-            record(b, vec![("system", system), ("spawns", spawns)])
+            record(b, vec![("registry", registry), ("spawns", spawns)])
         });
         assert_eq!(
             HarnessSpec::read(&arenas, arenas.root),
@@ -1473,7 +1467,6 @@ mod tests {
         // every optional: an inline and a path blob, a root/child parent, an event-kind spawn, and a message
         // (with a token) and a notification delivery.
         let spec = HarnessSpec {
-            system: "sys".to_string(),
             run_for: Some(Duration::from_nanos(7_500_000_000)),
             blobs: vec![
                 BlobSpec {
@@ -1511,7 +1504,10 @@ mod tests {
             checker: Some("check".to_string()),
             pure_run: None,
             deps: Vec::new(),
-            registry: None,
+            registry: RegistrySpec {
+                default: "sys".to_string(),
+                handlers: vec![],
+            },
         };
         let bytes = spec.encode();
         assert_eq!(HarnessSpec::decode(&bytes), Ok(spec));
@@ -1521,7 +1517,6 @@ mod tests {
     fn encode_omits_defaults_so_a_minimal_spec_round_trips() {
         // The defaults (no run-for, no blobs, no spawns) are omitted on encode and restored on decode.
         let spec = HarnessSpec {
-            system: "only-system".to_string(),
             run_for: None,
             blobs: vec![],
             spawns: vec![],
@@ -1529,7 +1524,10 @@ mod tests {
             checker: None,
             pure_run: None,
             deps: Vec::new(),
-            registry: None,
+            registry: RegistrySpec {
+                default: "sys".to_string(),
+                handlers: vec![],
+            },
         };
         assert_eq!(HarnessSpec::decode(&spec.encode()), Ok(spec));
     }
@@ -1539,7 +1537,7 @@ mod tests {
         let cid = ContractId::of(b"temp.celsius");
         let nid = ContractId::of(b"lifecycle.spawned");
         let arenas = built(|b| {
-            let system = s(b, "sys");
+            let registry = reg(b, "sys");
             let msg = {
                 let contract = bytes_leaf(b, cid.hash().as_bytes());
                 let payload = bytes_leaf(b, b"21");
@@ -1567,7 +1565,7 @@ mod tests {
                 record(b, vec![("target", target), ("notification", note)])
             };
             let deliver = list(b, vec![d1, d2]);
-            record(b, vec![("system", system), ("deliver", deliver)])
+            record(b, vec![("registry", registry), ("deliver", deliver)])
         });
         let spec = HarnessSpec::read(&arenas, arenas.root).expect("valid deliveries");
         assert_eq!(
@@ -1597,7 +1595,7 @@ mod tests {
     fn a_message_token_defaults_to_empty_when_omitted() {
         let cid = ContractId::of(b"c");
         let arenas = built(|b| {
-            let system = s(b, "sys");
+            let registry = reg(b, "sys");
             let msg = {
                 let contract = bytes_leaf(b, cid.hash().as_bytes());
                 let payload = bytes_leaf(b, b"p");
@@ -1606,7 +1604,7 @@ mod tests {
             let target = s(b, "root");
             let d = record(b, vec![("target", target), ("message", msg)]);
             let deliver = list(b, vec![d]);
-            record(b, vec![("system", system), ("deliver", deliver)])
+            record(b, vec![("registry", registry), ("deliver", deliver)])
         });
         let spec = HarnessSpec::read(&arenas, arenas.root).expect("valid delivery");
         assert_eq!(
@@ -1627,11 +1625,11 @@ mod tests {
     fn rejects_a_delivery_with_both_or_neither_event() {
         // Neither message nor notification.
         let neither = built(|b| {
-            let system = s(b, "sys");
+            let registry = reg(b, "sys");
             let target = s(b, "root");
             let d = record(b, vec![("target", target)]);
             let deliver = list(b, vec![d]);
-            record(b, vec![("system", system), ("deliver", deliver)])
+            record(b, vec![("registry", registry), ("deliver", deliver)])
         });
         assert_eq!(
             HarnessSpec::read(&neither, neither.root),
@@ -1644,7 +1642,7 @@ mod tests {
     #[test]
     fn rejects_a_contract_id_of_the_wrong_length() {
         let arenas = built(|b| {
-            let system = s(b, "sys");
+            let registry = reg(b, "sys");
             let msg = {
                 let contract = bytes_leaf(b, b"too short for a hash");
                 let payload = bytes_leaf(b, b"p");
@@ -1653,7 +1651,7 @@ mod tests {
             let target = s(b, "root");
             let d = record(b, vec![("target", target), ("message", msg)]);
             let deliver = list(b, vec![d]);
-            record(b, vec![("system", system), ("deliver", deliver)])
+            record(b, vec![("registry", registry), ("deliver", deliver)])
         });
         assert_eq!(
             HarnessSpec::read(&arenas, arenas.root),
@@ -1672,7 +1670,7 @@ mod tests {
         let cid = ContractId::of(b"temp.celsius");
         let text = cid.hash().to_string(); // the base62 §8 text form
         let arenas = built(|b| {
-            let system = s(b, "sys");
+            let registry = reg(b, "sys");
             let msg = {
                 let contract = s(b, &text);
                 let payload = bytes_leaf(b, b"21");
@@ -1681,7 +1679,7 @@ mod tests {
             let target = s(b, "root");
             let d = record(b, vec![("target", target), ("message", msg)]);
             let deliver = list(b, vec![d]);
-            record(b, vec![("system", system), ("deliver", deliver)])
+            record(b, vec![("registry", registry), ("deliver", deliver)])
         });
         let spec = HarnessSpec::read(&arenas, arenas.root).expect("a base62 contract is valid");
         match &spec.deliveries[0].1 {
@@ -1693,7 +1691,7 @@ mod tests {
     #[test]
     fn rejects_a_contract_string_that_is_not_base62() {
         let arenas = built(|b| {
-            let system = s(b, "sys");
+            let registry = reg(b, "sys");
             let msg = {
                 let contract = s(b, "not base62!!");
                 let payload = bytes_leaf(b, b"p");
@@ -1702,7 +1700,7 @@ mod tests {
             let target = s(b, "root");
             let d = record(b, vec![("target", target), ("message", msg)]);
             let deliver = list(b, vec![d]);
-            record(b, vec![("system", system), ("deliver", deliver)])
+            record(b, vec![("registry", registry), ("deliver", deliver)])
         });
         assert_eq!(
             HarnessSpec::read(&arenas, arenas.root),
@@ -1736,9 +1734,8 @@ mod tests {
 
     #[test]
     fn validate_accepts_a_well_formed_run() {
-        // System blob declared, every spawn's blob declared, parent spawned earlier, delivery hits a task.
+        // Registry default declared, every spawn's blob declared, parent spawned earlier, delivery hits a task.
         let spec = HarnessSpec {
-            system: "sys".to_string(),
             run_for: None,
             blobs: vec![blob("sys"), blob("worker")],
             spawns: vec![
@@ -1749,15 +1746,17 @@ mod tests {
             checker: None,
             pure_run: None,
             deps: Vec::new(),
-            registry: None,
+            registry: RegistrySpec {
+                default: "sys".to_string(),
+                handlers: vec![],
+            },
         };
         assert_eq!(spec.validate(), Ok(()));
     }
 
     #[test]
-    fn validate_rejects_an_unregistered_system_blob() {
+    fn validate_rejects_an_unregistered_registry_default() {
         let spec = HarnessSpec {
-            system: "sys".to_string(),
             run_for: None,
             blobs: vec![blob("other")],
             spawns: vec![],
@@ -1765,12 +1764,15 @@ mod tests {
             checker: None,
             pure_run: None,
             deps: Vec::new(),
-            registry: None,
+            registry: RegistrySpec {
+                default: "sys".to_string(),
+                handlers: vec![],
+            },
         };
         assert_eq!(
             spec.validate(),
             Err(SpecError::UnknownBlob {
-                referrer: "system".to_string(),
+                referrer: "registry default".to_string(),
                 blob: "sys".to_string(),
             })
         );
@@ -1779,7 +1781,6 @@ mod tests {
     #[test]
     fn validate_rejects_a_spawn_of_an_undeclared_blob() {
         let spec = HarnessSpec {
-            system: "sys".to_string(),
             run_for: None,
             blobs: vec![blob("sys")],
             spawns: vec![SpawnSpec::new("t", "missing")],
@@ -1787,7 +1788,10 @@ mod tests {
             checker: None,
             pure_run: None,
             deps: Vec::new(),
-            registry: None,
+            registry: RegistrySpec {
+                default: "sys".to_string(),
+                handlers: vec![],
+            },
         };
         assert_eq!(
             spec.validate(),
@@ -1802,7 +1806,6 @@ mod tests {
     fn validate_rejects_a_parent_not_spawned_earlier() {
         // The child names a parent that is spawned AFTER it (order matters), so it is unresolved.
         let spec = HarnessSpec {
-            system: "sys".to_string(),
             run_for: None,
             blobs: vec![blob("sys"), blob("w")],
             spawns: vec![
@@ -1813,7 +1816,10 @@ mod tests {
             checker: None,
             pure_run: None,
             deps: Vec::new(),
-            registry: None,
+            registry: RegistrySpec {
+                default: "sys".to_string(),
+                handlers: vec![],
+            },
         };
         assert_eq!(
             spec.validate(),
@@ -1827,7 +1833,6 @@ mod tests {
     #[test]
     fn validate_rejects_a_duplicate_task_name() {
         let spec = HarnessSpec {
-            system: "sys".to_string(),
             run_for: None,
             blobs: vec![blob("sys"), blob("w")],
             spawns: vec![SpawnSpec::new("dup", "w"), SpawnSpec::new("dup", "w")],
@@ -1835,7 +1840,10 @@ mod tests {
             checker: None,
             pure_run: None,
             deps: Vec::new(),
-            registry: None,
+            registry: RegistrySpec {
+                default: "sys".to_string(),
+                handlers: vec![],
+            },
         };
         assert_eq!(
             spec.validate(),
@@ -1848,7 +1856,6 @@ mod tests {
     #[test]
     fn validate_rejects_a_delivery_to_an_unspawned_target() {
         let spec = HarnessSpec {
-            system: "sys".to_string(),
             run_for: None,
             blobs: vec![blob("sys"), blob("w")],
             spawns: vec![SpawnSpec::new("root", "w")],
@@ -1856,7 +1863,10 @@ mod tests {
             checker: None,
             pure_run: None,
             deps: Vec::new(),
-            registry: None,
+            registry: RegistrySpec {
+                default: "sys".to_string(),
+                handlers: vec![],
+            },
         };
         assert_eq!(
             spec.validate(),
@@ -1871,7 +1881,6 @@ mod tests {
         // A run can inject a Response to exercise on_response — with an Ok output value or an Err runtime
         // failure. Both survive encode→decode, so the framework can express either reply path.
         let spec = HarnessSpec {
-            system: "sys".to_string(),
             run_for: None,
             blobs: vec![],
             spawns: vec![],
@@ -1896,7 +1905,10 @@ mod tests {
             checker: None,
             pure_run: None,
             deps: Vec::new(),
-            registry: None,
+            registry: RegistrySpec {
+                default: "sys".to_string(),
+                handlers: vec![],
+            },
         };
         assert_eq!(HarnessSpec::decode(&spec.encode()), Ok(spec));
     }
@@ -1907,7 +1919,7 @@ mod tests {
         // (= token b"…"))). Decodes to a Response with the Ok output.
         let cid = ContractId::of(b"temp.celsius");
         let arenas = built(|b| {
-            let system = s(b, "sys");
+            let registry = reg(b, "sys");
             let resp = {
                 let contract = bytes_leaf(b, cid.hash().as_bytes());
                 let ok_bytes = bytes_leaf(b, b"21");
@@ -1921,7 +1933,7 @@ mod tests {
             let target = s(b, "root");
             let d = record(b, vec![("target", target), ("response", resp)]);
             let deliver = list(b, vec![d]);
-            record(b, vec![("system", system), ("deliver", deliver)])
+            record(b, vec![("registry", registry), ("deliver", deliver)])
         });
         let spec = HarnessSpec::read(&arenas, arenas.root).expect("a valid response delivery");
         assert_eq!(
@@ -1941,7 +1953,7 @@ mod tests {
     fn rejects_a_response_with_an_unknown_error_tag() {
         let cid = ContractId::of(b"c");
         let arenas = built(|b| {
-            let system = s(b, "sys");
+            let registry = reg(b, "sys");
             let resp = {
                 let contract = bytes_leaf(b, cid.hash().as_bytes());
                 let bad = s(b, "kaboom");
@@ -1951,7 +1963,7 @@ mod tests {
             let target = s(b, "root");
             let d = record(b, vec![("target", target), ("response", resp)]);
             let deliver = list(b, vec![d]);
-            record(b, vec![("system", system), ("deliver", deliver)])
+            record(b, vec![("registry", registry), ("deliver", deliver)])
         });
         assert_eq!(
             HarnessSpec::read(&arenas, arenas.root),
@@ -1968,7 +1980,6 @@ mod tests {
         // reducer that routes or validates on who sent the effect. Absent `from` defaults to the synthetic
         // external origin (covered elsewhere); here the explicit sender survives encode→decode.
         let spec = HarnessSpec {
-            system: "sys".to_string(),
             run_for: None,
             blobs: vec![],
             spawns: vec![],
@@ -1987,7 +1998,10 @@ mod tests {
             checker: None,
             pure_run: None,
             deps: Vec::new(),
-            registry: None,
+            registry: RegistrySpec {
+                default: "sys".to_string(),
+                handlers: vec![],
+            },
         };
         assert_eq!(HarnessSpec::decode(&spec.encode()), Ok(spec));
     }
@@ -1997,7 +2011,6 @@ mod tests {
     #[test]
     fn a_pure_run_round_trips() {
         let spec = HarnessSpec {
-            system: "$system".to_string(),
             run_for: None,
             blobs: vec![BlobSpec {
                 name: "prog".to_string(),
@@ -2013,7 +2026,10 @@ mod tests {
                 expect_output: Bytes::from_static(b"X"),
             }),
             deps: Vec::new(),
-            registry: None,
+            registry: RegistrySpec {
+                default: "sys".to_string(),
+                handlers: vec![],
+            },
         };
         assert_eq!(HarnessSpec::decode(&spec.encode()), Ok(spec));
     }
@@ -2023,7 +2039,6 @@ mod tests {
     #[test]
     fn a_run_with_deps_round_trips() {
         let spec = HarnessSpec {
-            system: "$system".to_string(),
             run_for: None,
             blobs: vec![BlobSpec {
                 name: "$system".to_string(),
@@ -2037,7 +2052,10 @@ mod tests {
                 BlobSource::Inline(Bytes::from_static(b"\x00\x61\x73\x6d")),
                 BlobSource::Path("cdz-store/runtime.wasm".to_string()),
             ],
-            registry: None,
+            registry: RegistrySpec {
+                default: "sys".to_string(),
+                handlers: vec![],
+            },
         };
         assert_eq!(HarnessSpec::decode(&spec.encode()), Ok(spec));
     }
@@ -2047,13 +2065,8 @@ mod tests {
     #[test]
     fn a_registry_round_trips_and_validates_handler_blobs() {
         let base = |registry| HarnessSpec {
-            system: "$system".to_string(),
             run_for: None,
             blobs: vec![
-                BlobSpec {
-                    name: "$system".to_string(),
-                    source: BlobSource::Inline(Bytes::from_static(b"sys")),
-                },
                 BlobSpec {
                     name: "default-handler".to_string(),
                     source: BlobSource::Inline(Bytes::from_static(b"dh")),
@@ -2070,20 +2083,20 @@ mod tests {
             deps: vec![],
             registry,
         };
-        let spec = base(Some(RegistrySpec {
+        let spec = base(RegistrySpec {
             default: "default-handler".to_string(),
             handlers: vec![(
                 ContractId::of(b"special.contract"),
                 "special-handler".to_string(),
             )],
-        }));
+        });
         assert_eq!(HarnessSpec::decode(&spec.encode()), Ok(spec.clone()));
         assert_eq!(spec.validate(), Ok(()));
         // An override naming an undeclared handler is a clean UnknownBlob.
-        let bad = base(Some(RegistrySpec {
+        let bad = base(RegistrySpec {
             default: "default-handler".to_string(),
             handlers: vec![(ContractId::of(b"c"), "missing-handler".to_string())],
-        }));
+        });
         assert_eq!(
             bad.validate(),
             Err(SpecError::UnknownBlob {
@@ -2094,11 +2107,11 @@ mod tests {
     }
 
     /// `validate` rejects a pure run whose program is not a declared blob — the same cross-reference check
-    /// as the system reducer, so a typo'd program name is a clean [`SpecError`], not a run-time failure.
+    /// as the registry's default handler, so a typo'd program name is a clean [`SpecError`], not a run-time
+    /// failure.
     #[test]
     fn validate_rejects_a_pure_run_naming_an_unknown_program() {
         let spec = HarnessSpec {
-            system: "$system".to_string(),
             run_for: None,
             blobs: vec![BlobSpec {
                 name: "$system".to_string(),
@@ -2114,7 +2127,10 @@ mod tests {
                 expect_output: Bytes::new(),
             }),
             deps: Vec::new(),
-            registry: None,
+            registry: RegistrySpec {
+                default: "sys".to_string(),
+                handlers: vec![],
+            },
         };
         assert_eq!(
             spec.validate(),

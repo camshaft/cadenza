@@ -1424,15 +1424,16 @@
             # field as an UNNAMED `{ path = … }` record; the itest (#3184) seeds `spec.deps` into EACH run's
             # CAS by hash, so a Cadenza guest's `cadenza:runtime/heap@…+<hash>` import composes and the guest
             # actually FOLDS (without it a guest silently fails to instantiate — no fold, a vacuous "exit 0").
-            # The pattern targets the TOP-LEVEL record uniquely via its `system` field (every run's first
-            # field; nested blob/spawn records have none), so `deps` is added once, not to every subrecord.
+            # The pattern targets the TOP-LEVEL record uniquely via its `registry` field (every run's required
+            # event-registry field; nested blob/spawn records have none), so `deps` is added once, not to every
+            # subrecord.
             depsInject = ''
               deps=""
               for f in ${componentStore}/*.wasm; do
                 deps="$deps (\"record\" (= path \"$f\"))"
               done
-              ${seedCompiler}/bin/cdz rewrite '("record" (= system ,sys) ,@rest)' \
-                "(\"record\" (= system ,sys) (= deps (\"list\" $deps)) ,@rest)" \
+              ${seedCompiler}/bin/cdz rewrite '("record" (= registry ,reg) ,@rest)' \
+                "(\"record\" (= registry ,reg) (= deps (\"list\" $deps)) ,@rest)" \
                 run.ml --from ml --to ml > run.ml.next
               mv run.ml.next run.ml
             '';
