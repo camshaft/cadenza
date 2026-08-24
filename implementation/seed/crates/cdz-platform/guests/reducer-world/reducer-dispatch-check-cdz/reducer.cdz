@@ -31,8 +31,7 @@ def has-delivered(records: List(LogRecord), i: Int64, c: Bytes, p: Bytes) =
   | Option.None(_) => false
   | Option.Some(LogRecord.LogRecord(rec)) =>
       (match rec.entry with
-        | Entry.Delivered(d) if (d.contract == c) =>
-            (if (d.payload == p) then true else has-delivered(records, i + 1, c, p))
+        | Entry.Delivered(d) if (if (d.contract == c) then (d.payload == p) else false) => true
         | _ => has-delivered(records, i + 1, c, p))
 
 // Is some Routed(C, P) matched by a Delivered(C, P)? Scans routed records; for each, checks the whole log for
