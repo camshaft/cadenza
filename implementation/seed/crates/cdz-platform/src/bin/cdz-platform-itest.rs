@@ -30,17 +30,18 @@
 //! instantiates the blobs) features, so the routine light build pulls in neither the harness nor wasmtime.
 
 use cdz_platform::testing::{
-    BlobSource, CheckOutcome, Harness, HarnessSpec, ObservationLog, RecordingBlobStore,
+    BlobSource, CheckOutcome, Harness, HarnessSpec, ObservationLog, PureRun, RecordingBlobStore,
     RecordingKvStore, SpawnSpec, check_message, no_verdict_reason, render, verdict_in,
 };
 use cdz_platform::{
     BachRuntime, BlobStore, Bytes, HostId, InMemoryBlobStore, InMemoryKvStore,
-    InMemoryReducerGraph, KvStore, Origin, ReducerId, Runtime, WasmProgramStore,
+    InMemoryReducerGraph, KvStore, Origin, ProgramHash, ReducerId, Runner, Runtime,
+    WasmProgramStore,
 };
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::sync::Arc;
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 // jemalloc as this executable's global allocator (operator suggestion 2026-08-23): the run drives a whole
@@ -269,6 +270,13 @@ fn run(spec: HarnessSpec) -> Result<Report, RunError> {
     // error, not a panic deep in name resolution.
     spec.validate().map_err(|e| RunError(e.to_string()))?;
 
+    // A pure run is a distinct, standalone phase (§3): run one program as a pure function of its input, with
+    // no system reducer, no spawns, no checker. Return before the spawn/deliver/checker flow, which it does
+    // not use.
+    if let Some(pure_run) = &spec.pure_run {
+        return pure_run_phase(&spec, pure_run, host);
+    }
+
     // Resolve the checker program's bytes before `build` consumes the description's blobs. The checker must
     // be one of the run's registered blobs (it is seeded into the store like any program).
     let checker = match &spec.checker {
@@ -324,11 +332,86 @@ fn run(spec: HarnessSpec) -> Result<Report, RunError> {
     })
 }
 
+/// Perform a [`PureRun`] (§3): run its program as a pure function of the input — the `run` primitive
+/// instantiates it with an empty capability set, so every effect it emits is denied (dropped, never routed)
+/// and its only output is the fold's result. The run passes iff that output equals the expected bytes. This
+/// is standalone: no system reducer, no spawns, no checker; the observation log stays empty (a pure reducer
+/// touches no store), so the report's log is empty and the exit code carries the assertion.
+fn pure_run_phase(
+    spec: &HarnessSpec,
+    pure_run: &PureRun,
+    host: HostId,
+) -> Result<Report, RunError> {
+    // Resolve the program's bytes from the run's blobs (`validate` already checked it is declared).
+    let blob = spec
+        .blobs
+        .iter()
+        .find(|b| b.name == pure_run.program)
+        .ok_or_else(|| {
+            RunError(format!(
+                "pure-run program '{}' is not registered with the run",
+                pure_run.program
+            ))
+        })?;
+    let bytes = match &blob.source {
+        BlobSource::Inline(b) => b.clone(),
+        BlobSource::Path(p) => load_blob(p)?,
+    };
+    let program = ProgramHash::of(&bytes);
+    let contract = pure_run.contract;
+    let input = pure_run.input.clone();
+    let expect = pure_run.expect_output.clone();
+
+    // Drive the async `run` under bach (deterministic), writing the result into a shared cell — the same
+    // pattern the harness uses to read a run's output after the sim completes. bach jumps virtual time, so a
+    // bounded pure fold settles immediately.
+    let cell: Arc<Mutex<Option<Result<Bytes, RunError>>>> = Arc::new(Mutex::new(None));
+    let cell_in = cell.clone();
+    let log = observation_log();
+    bach::sim(move || {
+        use bach::ext::*;
+        let cell = cell_in;
+        async move {
+            let mut cas = InMemoryBlobStore::new();
+            cas.put(bytes).await;
+            let store = wasm_store(Arc::new(cas), log, host);
+            let runner = Runner::new(Arc::new(store));
+            let out = runner
+                .run(program, contract, input)
+                .await
+                .map_err(|e| RunError(format!("pure run failed: {e:?}")));
+            *cell.lock().expect("pure-run result lock") = Some(out);
+        }
+        .group("pure-run")
+        .primary()
+        .spawn();
+    });
+    let result = cell
+        .lock()
+        .expect("pure-run result lock")
+        .take()
+        .ok_or_else(|| RunError("pure run did not complete".to_string()))?;
+
+    let outcome = match result {
+        Ok(output) if output.as_ref() == expect.as_ref() => CheckOutcome::Pass,
+        Ok(output) => {
+            CheckOutcome::fail(format!("pure run produced {output:?}, expected {expect:?}"))
+        }
+        Err(e) => CheckOutcome::fail(e.to_string()),
+    };
+    Ok(Report {
+        log: String::new(),
+        outcome: Some(outcome),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::run;
-    use cdz_platform::Bytes;
-    use cdz_platform::testing::{BlobSource, BlobSpec, CheckOutcome, HarnessSpec, SpawnSpec};
+    use cdz_platform::testing::{
+        BlobSource, BlobSpec, CheckOutcome, HarnessSpec, PureRun, SpawnSpec,
+    };
+    use cdz_platform::{Bytes, ContractId};
 
     #[test]
     fn a_run_records_the_spawn_of_each_blob_even_when_the_bytes_are_not_a_component() {
@@ -354,6 +437,7 @@ mod tests {
             spawns: vec![SpawnSpec::new("greeter", "greeter")],
             deliveries: vec![],
             checker: None,
+            pure_run: None,
         };
         let report = run(spec).expect("inline blobs never invoke the path loader");
         assert!(
@@ -390,6 +474,7 @@ mod tests {
             spawns: vec![SpawnSpec::new("worker", "worker")],
             deliveries: vec![],
             checker: Some("check".to_string()),
+            pure_run: None,
         };
         let report = run(spec).expect("inline blobs never invoke the path loader");
         assert!(
@@ -423,6 +508,7 @@ mod tests {
             spawns: vec![],
             deliveries: vec![],
             checker: Some("absent".to_string()),
+            pure_run: None,
         };
         assert!(
             run(spec).is_err(),
@@ -445,6 +531,7 @@ mod tests {
             spawns: vec![SpawnSpec::new("t", "undeclared")],
             deliveries: vec![],
             checker: None,
+            pure_run: None,
         };
         assert!(
             run(spec).is_err(),
@@ -464,5 +551,51 @@ mod tests {
         assert_eq!(parse_timeout(Some("")), DEFAULT_TIMEOUT);
         assert_eq!(parse_timeout(Some("0")), DEFAULT_TIMEOUT);
         assert_eq!(parse_timeout(Some("soon")), DEFAULT_TIMEOUT);
+    }
+
+    #[test]
+    fn a_pure_run_whose_program_is_not_a_component_fails_with_a_reason() {
+        // A pure-run spec runs the standalone Runner phase (no system/spawns/checker). Its program bytes are
+        // not a valid wasm component, so the run cannot instantiate it — a failed check with a diagnosed
+        // reason, not a panic. (The SUCCESS path, run -> Ok(expect_output), is exercised e2e by the nix
+        // `--features host` conformance run against the compiled reducer-emit-then-close-cdz guest.)
+        let spec = HarnessSpec {
+            system: "$system".to_string(),
+            run_for: None,
+            blobs: vec![
+                BlobSpec {
+                    name: "$system".to_string(),
+                    source: BlobSource::Inline(Bytes::from_static(b"itest:no-system-reducer")),
+                },
+                BlobSpec {
+                    name: "prog".to_string(),
+                    source: BlobSource::Inline(Bytes::from_static(b"not a wasm component")),
+                },
+            ],
+            spawns: vec![],
+            deliveries: vec![],
+            checker: None,
+            pure_run: Some(PureRun {
+                program: "prog".to_string(),
+                contract: ContractId::of(b"cdz-platform.deliver"),
+                input: Bytes::from_static(b"X"),
+                expect_output: Bytes::from_static(b"X"),
+            }),
+        };
+        let report = run(spec).expect("inline blobs never invoke the path loader");
+        assert!(
+            matches!(report.outcome, Some(CheckOutcome::Fail { .. })),
+            "a pure run of a non-component fails: {:?}",
+            report.outcome
+        );
+        let reasons = report
+            .outcome
+            .as_ref()
+            .map(CheckOutcome::reasons)
+            .unwrap_or_default();
+        assert!(
+            reasons.iter().any(|r| r.contains("pure run")),
+            "the failure names the pure run: {reasons:?}"
+        );
     }
 }
