@@ -122,12 +122,12 @@ fn entry_value(b: &mut Builder, e: &Entry) -> StructId {
 fn read_entry(arenas: &Arenas, id: StructId) -> Option<Entry> {
     let (tag, inner) = entry_ctor(arenas, id)?;
     Some(match tag {
-        "kv-get" | "kv-put" | "kv-delete" | "kv-scan" => Entry::Kv(read_kv(arenas, inner, tag)?),
-        "blob-put" | "blob-get" | "blob-has" => Entry::Blob(read_blob(arenas, inner, tag)?),
-        "delivered" | "emitted" | "closed" | "failed" => {
+        "KvGet" | "KvPut" | "KvDelete" | "KvScan" => Entry::Kv(read_kv(arenas, inner, tag)?),
+        "BlobPut" | "BlobGet" | "BlobHas" => Entry::Blob(read_blob(arenas, inner, tag)?),
+        "Delivered" | "Emitted" | "Closed" | "Failed" => {
             Entry::Event(read_event(arenas, inner, tag)?)
         }
-        "spawn" => Entry::Spawn(read_spawn(arenas, inner)?),
+        "Spawn" => Entry::Spawn(read_spawn(arenas, inner)?),
         _ => return None,
     })
 }
@@ -139,17 +139,17 @@ fn kv_value(b: &mut Builder, op: &KvOp) -> StructId {
         KvOp::Get { key, hit } => {
             let key = bytes_leaf(b, key);
             let hit = bool_value(b, *hit);
-            tagged(b, "kv-get", vec![("key", key), ("hit", hit)])
+            tagged(b, "KvGet", vec![("key", key), ("hit", hit)])
         }
         KvOp::Put { key, value } => {
             let key = bytes_leaf(b, key);
             let value = bytes_leaf(b, value);
-            tagged(b, "kv-put", vec![("key", key), ("value", value)])
+            tagged(b, "KvPut", vec![("key", key), ("value", value)])
         }
         KvOp::Delete { key, existed } => {
             let key = bytes_leaf(b, key);
             let existed = bool_value(b, *existed);
-            tagged(b, "kv-delete", vec![("key", key), ("existed", existed)])
+            tagged(b, "KvDelete", vec![("key", key), ("existed", existed)])
         }
         KvOp::Scan {
             lower,
@@ -161,7 +161,7 @@ fn kv_value(b: &mut Builder, op: &KvOp) -> StructId {
             let keys_only = bool_value(b, *keys_only);
             tagged(
                 b,
-                "kv-scan",
+                "KvScan",
                 vec![("lower", lower), ("upper", upper), ("keys-only", keys_only)],
             )
         }
@@ -170,19 +170,19 @@ fn kv_value(b: &mut Builder, op: &KvOp) -> StructId {
 
 fn read_kv(arenas: &Arenas, id: StructId, tag: &str) -> Option<KvOp> {
     Some(match tag {
-        "kv-get" => KvOp::Get {
+        "KvGet" => KvOp::Get {
             key: read_bytes(arenas, field(arenas, id, "key")?)?,
             hit: read_bool(arenas, field(arenas, id, "hit")?)?,
         },
-        "kv-put" => KvOp::Put {
+        "KvPut" => KvOp::Put {
             key: read_bytes(arenas, field(arenas, id, "key")?)?,
             value: read_bytes(arenas, field(arenas, id, "value")?)?,
         },
-        "kv-delete" => KvOp::Delete {
+        "KvDelete" => KvOp::Delete {
             key: read_bytes(arenas, field(arenas, id, "key")?)?,
             existed: read_bool(arenas, field(arenas, id, "existed")?)?,
         },
-        "kv-scan" => KvOp::Scan {
+        "KvScan" => KvOp::Scan {
             lower: read_bound(arenas, field(arenas, id, "lower")?)?,
             upper: read_bound(arenas, field(arenas, id, "upper")?)?,
             keys_only: read_bool(arenas, field(arenas, id, "keys-only")?)?,
@@ -197,14 +197,14 @@ fn read_kv(arenas: &Arenas, id: StructId, tag: &str) -> Option<KvOp> {
 /// containing kv-scan entries — the same reason the entry itself is a sum (§9 checker decodability).
 fn bound_value(b: &mut Builder, bound: &Bound<Bytes>) -> StructId {
     match bound {
-        Bound::Unbounded => qctor(b, "Bound", "unbounded", vec![]),
+        Bound::Unbounded => qctor(b, "Bound", "Unbounded", vec![]),
         Bound::Included(key) => {
             let key = bytes_leaf(b, key);
-            qctor(b, "Bound", "included", vec![key])
+            qctor(b, "Bound", "Included", vec![key])
         }
         Bound::Excluded(key) => {
             let key = bytes_leaf(b, key);
-            qctor(b, "Bound", "excluded", vec![key])
+            qctor(b, "Bound", "Excluded", vec![key])
         }
     }
 }
@@ -215,17 +215,17 @@ fn read_bound(arenas: &Arenas, id: StructId) -> Option<Bound<Bytes>> {
     };
     let (&head, tail) = items.split_first()?;
     Some(match arenas.as_name(head)? {
-        "unbounded" => {
+        "Unbounded" => {
             if !tail.is_empty() {
                 return None;
             }
             Bound::Unbounded
         }
-        "included" => {
+        "Included" => {
             let [key] = <[StructId; 1]>::try_from(tail).ok()?;
             Bound::Included(read_bytes(arenas, key)?)
         }
-        "excluded" => {
+        "Excluded" => {
             let [key] = <[StructId; 1]>::try_from(tail).ok()?;
             Bound::Excluded(read_bytes(arenas, key)?)
         }
@@ -240,17 +240,17 @@ fn blob_value(b: &mut Builder, op: &BlobOp) -> StructId {
         BlobOp::Put { hash, len } => {
             let hash = bytes_leaf(b, hash.as_bytes());
             let len = uint_leaf(b, *len as u64);
-            tagged(b, "blob-put", vec![("hash", hash), ("len", len)])
+            tagged(b, "BlobPut", vec![("hash", hash), ("len", len)])
         }
         BlobOp::Get { hash, hit } => {
             let hash = bytes_leaf(b, hash.as_bytes());
             let hit = bool_value(b, *hit);
-            tagged(b, "blob-get", vec![("hash", hash), ("hit", hit)])
+            tagged(b, "BlobGet", vec![("hash", hash), ("hit", hit)])
         }
         BlobOp::Has { hash, present } => {
             let hash = bytes_leaf(b, hash.as_bytes());
             let present = bool_value(b, *present);
-            tagged(b, "blob-has", vec![("hash", hash), ("present", present)])
+            tagged(b, "BlobHas", vec![("hash", hash), ("present", present)])
         }
     }
 }
@@ -258,15 +258,15 @@ fn blob_value(b: &mut Builder, op: &BlobOp) -> StructId {
 fn read_blob(arenas: &Arenas, id: StructId, tag: &str) -> Option<BlobOp> {
     let hash = read_hash(arenas, field(arenas, id, "hash")?)?;
     Some(match tag {
-        "blob-put" => BlobOp::Put {
+        "BlobPut" => BlobOp::Put {
             hash,
             len: usize::try_from(read_uint(arenas, field(arenas, id, "len")?)?).ok()?,
         },
-        "blob-get" => BlobOp::Get {
+        "BlobGet" => BlobOp::Get {
             hash,
             hit: read_bool(arenas, field(arenas, id, "hit")?)?,
         },
-        "blob-has" => BlobOp::Has {
+        "BlobHas" => BlobOp::Has {
             hash,
             present: read_bool(arenas, field(arenas, id, "present")?)?,
         },
@@ -299,7 +299,7 @@ fn event_value(b: &mut Builder, op: &EventOp) -> StructId {
             let error = option_value(b, error_inner);
             tagged(
                 b,
-                "delivered",
+                "Delivered",
                 vec![
                     ("event-kind", event_kind),
                     ("contract", contract),
@@ -322,7 +322,7 @@ fn event_value(b: &mut Builder, op: &EventOp) -> StructId {
             let deadline = bool_value(b, *has_deadline);
             tagged(
                 b,
-                "emitted",
+                "Emitted",
                 vec![
                     ("contract", contract),
                     ("payload", payload),
@@ -334,7 +334,7 @@ fn event_value(b: &mut Builder, op: &EventOp) -> StructId {
         EventOp::Closed { schema, reason } => {
             let schema = bytes_leaf(b, schema.hash().as_bytes());
             let reason = bytes_leaf(b, reason);
-            tagged(b, "closed", vec![("schema", schema), ("reason", reason)])
+            tagged(b, "Closed", vec![("schema", schema), ("reason", reason)])
         }
         EventOp::Failed {
             during,
@@ -346,7 +346,7 @@ fn event_value(b: &mut Builder, op: &EventOp) -> StructId {
             let reason = str_leaf(b, reason.as_str());
             tagged(
                 b,
-                "failed",
+                "Failed",
                 vec![
                     ("during", during),
                     ("contract", contract),
@@ -359,7 +359,7 @@ fn event_value(b: &mut Builder, op: &EventOp) -> StructId {
 
 fn read_event(arenas: &Arenas, id: StructId, tag: &str) -> Option<EventOp> {
     Some(match tag {
-        "delivered" => EventOp::Delivered {
+        "Delivered" => EventOp::Delivered {
             kind: read_event_kind(str_at(arenas, field(arenas, id, "event-kind")?)?)?,
             contract: read_contract(arenas, field(arenas, id, "contract")?)?,
             from: read_option(arenas, field(arenas, id, "from")?, read_origin)?,
@@ -369,17 +369,17 @@ fn read_event(arenas: &Arenas, id: StructId, tag: &str) -> Option<EventOp> {
                 read_error(str_at(a, i)?)
             })?,
         },
-        "emitted" => EventOp::Emitted {
+        "Emitted" => EventOp::Emitted {
             contract: read_contract(arenas, field(arenas, id, "contract")?)?,
             payload: read_bytes(arenas, field(arenas, id, "payload")?)?,
             continuation_token: read_bytes(arenas, field(arenas, id, "token")?)?,
             has_deadline: read_bool(arenas, field(arenas, id, "deadline")?)?,
         },
-        "closed" => EventOp::Closed {
+        "Closed" => EventOp::Closed {
             schema: read_contract(arenas, field(arenas, id, "schema")?)?,
             reason: read_bytes(arenas, field(arenas, id, "reason")?)?,
         },
-        "failed" => EventOp::Failed {
+        "Failed" => EventOp::Failed {
             during: read_event_kind(str_at(arenas, field(arenas, id, "during")?)?)?,
             contract: read_contract(arenas, field(arenas, id, "contract")?)?,
             reason: Str::from(str_at(arenas, field(arenas, id, "reason")?)?),
@@ -433,7 +433,7 @@ fn spawn_value(b: &mut Builder, info: &SpawnInfo) -> StructId {
     let kind = str_leaf(b, reducer_kind_str(info.kind));
     tagged(
         b,
-        "spawn",
+        "Spawn",
         vec![
             ("name", name),
             ("program", program),
@@ -812,7 +812,7 @@ mod tests {
         let items = super::list_items(&arenas, root).expect("the log is a list");
         let entry = super::field(&arenas, items[0], "entry").expect("the record has an entry");
         let (ctor, inner) = super::entry_ctor(&arenas, entry).expect("the entry is an Entry sum");
-        assert_eq!(ctor, "delivered");
+        assert_eq!(ctor, "Delivered");
         assert!(
             super::field(&arenas, inner, "from").is_some(),
             "`from` is present even when None"
@@ -843,7 +843,7 @@ mod tests {
         let items = super::list_items(&arenas, root).expect("the log is a list");
         let entry = super::field(&arenas, items[0], "entry").expect("the record has an entry");
         let (ctor, inner) = super::entry_ctor(&arenas, entry).expect("the entry is an Entry sum");
-        assert_eq!(ctor, "kv-scan");
+        assert_eq!(ctor, "KvScan");
         let lower = super::field(&arenas, inner, "lower").expect("the scan has a lower bound");
         assert!(
             super::field(&arenas, lower, "bound").is_none(),
