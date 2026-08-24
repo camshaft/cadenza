@@ -1687,6 +1687,86 @@ mod tests {
         assert!(store.spawn(unknown, ord(b"r")).await.is_none());
     }
 
+    #[tokio::test]
+    async fn spawn_invokes_each_capability_factory_with_the_reducers_id() {
+        // The #3197/#3199 injection seam: `spawn` assembles the reducer's `HostState` by calling
+        // `make_graph`/`make_provenance`/`make_delivery` (uniform with `make_blobs`/`make_kv`) with the
+        // reducer's id, so a caller may inject a per-reducer capability — a decorator, a recording wrapper, a
+        // stand-in — without the store knowing. This locks that the factories ARE invoked, per-reducer, with
+        // the spawn id: a regression reverting to a shared field (dropping the per-id call) would otherwise
+        // pass every other test. The factories run during `HostState` assembly, before instantiation, so an
+        // absent program (`spawn -> None`) still exercises the seam. (That the returned capability is what the
+        // guest's host calls actually hit is proven by the harness recording runs, which need a live guest.)
+        use std::sync::Mutex;
+
+        let graph_ids = Arc::new(Mutex::new(Vec::new()));
+        let prov_ids = Arc::new(Mutex::new(Vec::new()));
+        let deliv_ids = Arc::new(Mutex::new(Vec::new()));
+
+        let g = Arc::clone(&graph_ids);
+        let make_graph: Arc<dyn Fn(ReducerId) -> Arc<dyn super::ReducerGraph> + Send + Sync> =
+            Arc::new(move |id| {
+                g.lock().unwrap().push(id);
+                Arc::new(InMemoryReducerGraph::new())
+            });
+        let p = Arc::clone(&prov_ids);
+        let make_prov: Arc<dyn Fn(ReducerId) -> Arc<dyn super::Provenance> + Send + Sync> =
+            Arc::new(move |id| {
+                p.lock().unwrap().push(id);
+                Arc::new(crate::NoProvenance)
+            });
+        let d = Arc::clone(&deliv_ids);
+        let make_deliv: Arc<dyn Fn(ReducerId) -> Arc<dyn super::Delivery> + Send + Sync> =
+            Arc::new(move |id| {
+                d.lock().unwrap().push(id);
+                Arc::new(crate::NoDelivery)
+            });
+
+        let cas: Arc<dyn BlobStore> = Arc::new(InMemoryBlobStore::new());
+        let store = WasmProgramStore::new(
+            cas,
+            Arc::new(|_id| Box::new(InMemoryBlobStore::new()) as Box<dyn BlobStore>),
+            Arc::new(|_id| Box::new(InMemoryKvStore::new()) as Box<dyn KvStore>),
+            make_graph,
+        )
+        .expect("build the wasm program store")
+        .with_provenance(make_prov)
+        .with_delivery(make_deliv);
+
+        // Spawn two absent programs with distinct ids: each declines with `None`, but the capability factories
+        // were already called to build the `HostState`. Each factory must have seen exactly those ids, in
+        // order — the seam runs once per reducer, keyed on its spawn id.
+        assert!(
+            store
+                .spawn(ProgramHash::of(b"absent-a"), ord(b"reducer-a"))
+                .await
+                .is_none()
+        );
+        assert!(
+            store
+                .spawn(ProgramHash::of(b"absent-b"), ord(b"reducer-b"))
+                .await
+                .is_none()
+        );
+
+        let want = vec![ReducerId::of(b"reducer-a"), ReducerId::of(b"reducer-b")];
+        assert_eq!(
+            *graph_ids.lock().unwrap(),
+            want,
+            "make_graph called per reducer id"
+        );
+        assert_eq!(
+            *prov_ids.lock().unwrap(),
+            want,
+            "make_provenance called per reducer id"
+        );
+        assert_eq!(
+            *deliv_ids.lock().unwrap(),
+            want,
+            "make_delivery called per reducer id"
+        );
+    }
+
     #[test]
     fn a_dependency_import_name_resolves_to_its_content_address() {
         use super::dependency_address;
