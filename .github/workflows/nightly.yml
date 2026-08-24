@@ -89,10 +89,13 @@ jobs:
           cache-key: rust-gate-full
       - name: Build the runtime store
         run: cargo xtask build
-      # MUST match the shards' `download-artifact` major version (both @v8) — a v7↑/v8↓ round-trip skew
-      # produced a `digest-mismatch` on the store artifact + a slow/stuck download that ate the reclaim
-      # window (v-nix 2026-08-23, first shared-store nightly). Keep upload/download versions equal.
-      - uses: actions/upload-artifact@v8
+      # actions/upload-artifact's max version is @v7 (there is NO @v8 — "unable to resolve" — the two
+      # actions version INDEPENDENTLY). @v7-upload paired with the shards' @v8-download is the correct,
+      # compatible pairing the repo already uses (build.yml upload@v7 → publish download@v8). A prior
+      # "align to @v8" attempt (v-nix 2026-08-23) used the non-existent upload@v8 and broke build-store at
+      # "Set up job" — reverted here. (The earlier "digest-mismatch" was NOT a version skew; if the shards
+      # still evict, it is free-runner preemption — a runner-class call, not an artifact-version one.)
+      - uses: actions/upload-artifact@v7
         with:
           name: cadenza-store
           path: target/cadenza-store
