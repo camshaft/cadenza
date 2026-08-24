@@ -1494,6 +1494,14 @@
           in
           pkgs.runCommand "harness-run-${name}" { } ''
             set -euo pipefail
+            # A Cadenza guest imports `cadenza:runtime/heap@…+<hash>` (and nfc), which the itest's wasm host
+            # composes from the CAS BY HASH. The itest seeds each run's CAS from CDZ_STORE (v-platform-itest
+            # #3184); WITHOUT this the runtime is not in the CAS, so every Cadenza guest fails to instantiate
+            # SILENTLY — it never folds, records no observations, and a no-checker run still "exits 0"
+            # VACUOUSLY (the checked run fails "checker never ran"). `componentStore` already holds the
+            # runtime + nfc + every guest, so exporting it makes guests actually fold. Same pattern as the
+            # `@test` / project derivations above.
+            export CDZ_STORE="${componentStore}"
             ${platformItest}/bin/cdz-platform-itest ${ast}
             echo "ok: harness run '${name}' exited 0 (ast ${ast})" > "$out"
           '';
