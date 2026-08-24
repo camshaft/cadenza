@@ -283,17 +283,29 @@ fn map_typedef(b: &mut Builder, resolve: &Resolve, id: TypeId) -> Result<StructI
 mod tests {
     use super::*;
 
+    /// Read the source-of-truth `world.wit` at RUNTIME, or `None` when the sibling `cdz-platform`
+    /// crate is not staged. `include_str!` would embed it at COMPILE time, but that reaches out of
+    /// the `xtask` crate (`../../implementation/…`), which the Nix per-crate clippy/build sandbox
+    /// does not stage — so a compile-time read there fails to resolve the file and breaks the build.
+    /// A runtime read compiles cleanly in that sandbox and returns `None` (the test skips), while a
+    /// full checkout (local + the `checks / test` job) has the file, so the coverage holds there.
+    /// Mirrors the runtime-store probes that skip cleanly when their artifact is absent.
+    fn world_wit() -> Option<String> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()?
+            .join("implementation/seed/crates/cdz-platform/wit/world.wit");
+        std::fs::read_to_string(path).ok()
+    }
+
     /// The `reducer-world` artifact round-trips: it decodes to a `(world reducer-world …)` tree whose
     /// interfaces include the four ordinary imports and the `guest` export, each carrying `member` funcs —
     /// the exact node `wit_world::parse_target_world` walks. Guards the builder mapping against drift.
     #[test]
     fn reducer_world_artifact_is_a_well_formed_world_tree() {
+        let Some(wit) = world_wit() else { return };
         let mut resolve = Resolve::default();
         resolve
-            .push_str(
-                "world.wit",
-                include_str!("../../implementation/seed/crates/cdz-platform/wit/world.wit"),
-            )
+            .push_str("world.wit", &wit)
             .expect("parse world.wit");
         let bytes = build_world(&resolve, "reducer-world").expect("build reducer-world");
 
@@ -329,12 +341,10 @@ mod tests {
     /// The privileged superset adds the graph / deliver / provenance imports.
     #[test]
     fn event_reducer_world_adds_the_privileged_imports() {
+        let Some(wit) = world_wit() else { return };
         let mut resolve = Resolve::default();
         resolve
-            .push_str(
-                "world.wit",
-                include_str!("../../implementation/seed/crates/cdz-platform/wit/world.wit"),
-            )
+            .push_str("world.wit", &wit)
             .expect("parse world.wit");
         let bytes =
             build_world(&resolve, "event-reducer-world").expect("build event-reducer-world");
