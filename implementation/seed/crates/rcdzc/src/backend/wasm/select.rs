@@ -7958,6 +7958,7 @@ fn emit_record_arg_marshal(
     db: &mut Db,
     rec_slot: u32,
     fields: &std::collections::BTreeMap<crate::resolved::Symbol, Ty>,
+    wit: &crate::wit_world::WitType,
     cursor: Option<u32>,
     work_base: u32,
     high: &mut u32,
@@ -7972,7 +7973,29 @@ fn emit_record_arg_marshal(
         scratch_ty.insert(s, ValType::I32);
     }
     *high = (*high).max(work_base + 4);
-    for (i, (_, fty)) in fields.iter().enumerate() {
+    // Marshal the fields in the host WIT record's DECLARATION order (not the guest's name-lex `Ty::Record`
+    // order) — the component-linker requires the flattened core args (and the import record type) to match the
+    // host's field order, and the two orders differ (e.g. `message{contract, sender, payload, token}` vs
+    // name-lex `contract, payload, sender, token`). For each WIT field we `arr-get` its NAME-LEX cell index
+    // (the value-heap record cell is name-lex), so the read stays correct while the PUSH order is WIT's.
+    let crate::wit_world::WitType::Record(wit_fields) = wit else {
+        return Err(Reject::decline(
+            "a record host-arg's declared WIT type is not a record",
+        ));
+    };
+    let names: Vec<String> = fields.keys().map(|s| s.name.to_string()).collect();
+    for (fname, fwit) in wit_fields {
+        let Some(i) = names.iter().position(|n| n == fname) else {
+            return Err(Reject::decline(
+                "a host WIT record field is absent from the guest record type",
+            ));
+        };
+        let fty = fields
+            .values()
+            .nth(i)
+            .expect("name-lex index in range")
+            .clone();
+        let fty = &fty;
         match get_op_ty(db, fty)? {
             // A SCALAR field: arr-get + unbox → one core slot.
             Some(read) => {
@@ -8027,9 +8050,11 @@ fn emit_record_arg_marshal(
                 out.push(Lir::I32Add);
                 out.push(Lir::LocalSet(cursor)); // cursor += len
             }
-            // A NESTED record field (d3): arr-get its sub-record handle → recurse (fields flatten inline).
+            // A NESTED record field (d3): arr-get its sub-record handle → recurse (fields flatten inline). The
+            // nested record marshals in ITS OWN WIT declaration order (`fwit`, the nested WIT record type).
             None if matches!(fty, Ty::Record(_)) => {
                 let Ty::Record(sub) = fty else { unreachable!() };
+                let sub = sub.clone();
                 out.push(Lir::LocalGet(rec_slot));
                 out.push(Lir::ConstI32(i as i32));
                 out.push(Lir::CallImport(OP_ARR_GET)); // [sub-record handle] (borrows rec)
@@ -8037,7 +8062,8 @@ fn emit_record_arg_marshal(
                 emit_record_arg_marshal(
                     db,
                     sub_rec_slot,
-                    sub,
+                    &sub,
+                    fwit,
                     cursor,
                     work_base + 4,
                     high,
@@ -12748,7 +12774,11 @@ fn emit(
             // When a scratch cursor is reserved, per-arg slots must start ABOVE it so no marshal/scalar arg
             // reuses (and re-types) the cursor slot, which must survive across the whole arg list.
             let mut arg_base = scratch_cursor_slot.map_or(base, |c| c + 1);
-            for &arg in &args {
+            // The op's declared param WIT types (declaration order) — a RECORD arg marshals its fields in the
+            // host WIT record's field order, not the guest's name-lex order (else the component-linker's
+            // structural match fails → silent no-instantiate). `arg_i` indexes it (args ↔ WIT params align).
+            let wit_params = crate::backend::wasm::host::wit_op_param_types(db, &effect, &op);
+            for (arg_i, &arg) in args.iter().enumerate() {
                 let at = crate::infer::type_of(db, arg);
                 match at {
                     // A unit argument carries no boundary value.
@@ -12835,17 +12865,26 @@ fn emit(
                         }
                     },
                     // A RECORD argument (shape d) crosses NATIVELY: the guest DECOMPOSES the value-heap record
-                    // field-by-field into the flattened core slots the component `record` param lowers to.
-                    // Stash the record handle in a scratch slot, then per field (NAME-LEX order = the
-                    // value-heap cell layout = the component record's field order = the core flatten order):
-                    //  • a SCALAR field (`get_op_ty` Some) reads back with `arr-get` (borrows the aggregate) +
-                    //    the field's wrap-free scalar get-op → one core slot.
-                    //  • a BYTES field (`arr-get` yields the field's `list<u8>` handle) is copied rope→`mem` at
-                    //    the running cursor and pushed as `(ptr,len)` — the SAME copy a Bytes ARG does, 2 core
-                    //    slots (`host::field_boundary_abi` admits only scalar + Bytes fields).
-                    // The reads BORROW the record (no consume), so — like the String/Bytes arg marshal above —
-                    // the handle is not dropped here (its owner reclaims it).
+                    // field-by-field into the flattened core slots the component `record` param lowers to. The
+                    // fields are pushed in the host WIT record's DECLARATION order (`emit_record_arg_marshal`
+                    // reads the value-heap cell's name-lex position per WIT field), NOT the guest's name-lex
+                    // order — the component-linker requires the import's flattened args to match the host.
+                    //  • a SCALAR field reads back with `arr-get` + the field's wrap-free scalar get-op.
+                    //  • a BYTES field is copied rope→`mem` at the running cursor and pushed as `(ptr,len)`.
+                    // The reads BORROW the record (no consume), so the handle is not dropped here.
                     Ty::Record(fields) => {
+                        // The host WIT record type for THIS arg — required to order the fields (declaration
+                        // order); without it (world absent / arg not a WIT record) the marshal can't match the
+                        // host, so decline rather than emit a name-lex order that won't link.
+                        let Some(crate::wit_world::WitType::Record(_)) =
+                            wit_params.as_ref().and_then(|p| p.get(arg_i))
+                        else {
+                            return Err(Reject::decline(
+                                "a record host-arg has no matching WIT record type in the target world (needed \
+                                 to order its fields to the host's declaration order)",
+                            ));
+                        };
+                        let wit = wit_params.as_ref().unwrap()[arg_i].clone();
                         let rec_slot = arg_base.max(*high);
                         scratch_ty.insert(rec_slot, ValType::I32);
                         *high = (*high).max(rec_slot + 1);
@@ -12856,6 +12895,7 @@ fn emit(
                             db,
                             rec_slot,
                             &fields,
+                            &wit,
                             scratch_cursor_slot,
                             work_base,
                             high,
@@ -18584,6 +18624,59 @@ mod tests {
         assert!(
             host::is_boundary_record(&mut db2, &p2[0].1),
             "64-bit-field record still crosses"
+        );
+    }
+
+    // The deliver-message field-order fix: a record host-arg's fields must emit in the host WIT record's
+    // DECLARATION order, not the guest's name-lex order — else the component-linker's structural match fails
+    // and the guest silently fails to instantiate (deliver-message/response non-routing). Pure-fn test of the
+    // reorder over the message shape: name-lex `contract, payload, sender{host, reducer}, token` →
+    // WIT-declaration `contract, sender{reducer, host}, payload, token` (top-level sender/payload swap + the
+    // nested reducer/host swap, both fixed). The runtime link is re-verified by v-platform-itest's drive.
+    #[test]
+    fn record_host_arg_fields_reorder_to_wit_declaration_order() {
+        use crate::backend::wasm::host::{RecordFieldAbi, reorder_record_fields_to_wit};
+        use crate::wit_world::WitType;
+        let lu8 = || WitType::List(Box::new(WitType::U8));
+        // Guest name-lex order (BTreeMap): contract, payload, sender{host, reducer}, token.
+        let name_lex = vec![
+            ("contract".to_string(), RecordFieldAbi::Bytes),
+            ("payload".to_string(), RecordFieldAbi::Bytes),
+            (
+                "sender".to_string(),
+                RecordFieldAbi::Record(vec![
+                    ("host".to_string(), RecordFieldAbi::Bytes),
+                    ("reducer".to_string(), RecordFieldAbi::Bytes),
+                ]),
+            ),
+            ("token".to_string(), RecordFieldAbi::Bytes),
+        ];
+        // Host WIT declaration order: contract, sender{reducer, host}, payload, token.
+        let wit = WitType::Record(vec![
+            ("contract".to_string(), lu8()),
+            (
+                "sender".to_string(),
+                WitType::Record(vec![
+                    ("reducer".to_string(), lu8()),
+                    ("host".to_string(), lu8()),
+                ]),
+            ),
+            ("payload".to_string(), lu8()),
+            ("token".to_string(), lu8()),
+        ]);
+        let out = reorder_record_fields_to_wit(name_lex, &wit);
+        assert_eq!(
+            out.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+            ["contract", "sender", "payload", "token"],
+            "top-level fields reorder to the WIT declaration order (sender before payload)"
+        );
+        let RecordFieldAbi::Record(sub) = &out[1].1 else {
+            panic!("sender is a nested record");
+        };
+        assert_eq!(
+            sub.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+            ["reducer", "host"],
+            "the nested sender record reorders to the WIT order (reducer before host)"
         );
     }
 

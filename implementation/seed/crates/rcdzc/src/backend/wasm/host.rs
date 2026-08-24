@@ -41,16 +41,18 @@ pub enum HostParam {
     /// no realloc for an argument). Only the COMPONENT boundary type differs (list<u8> vs string). adv-62b's
     /// sibling: closes the wasm-vs-rust reverse-parity gap where a runtime Bytes host-arg declined.
     Bytes,
-    /// A `record` parameter with all-SCALAR fields (shape d, first slice) — its component valtype is a
-    /// `record` DEFINED type (tag `0x72`) the import instance-type declares, referenced by index (like
-    /// [`Bytes`](HostParam::Bytes)'s `(list u8)` ref). Its core form FLATTENS to one core slot per field, in
-    /// NAME-LEX field order (`Ty::Record` is a `BTreeMap`, so field order is the record's canonical order —
-    /// the same order the component `record` type declares its fields). The guest decomposes the value-heap
-    /// record field-by-field into those slots before the call (`arr-get` + `get-int`/`get-bool` per field).
-    /// Carries `(field-name, field-ABI)` per field so BOTH the core flatten and the component record type
-    /// derive from it. A SCALAR field is one core slot + an inline primitive valtype; a BYTES field crosses
-    /// as `list<u8>` — 2 core slots `(ptr,len)` + a reference to the shared `(list u8)` type. A field that is
-    /// a `String`/nested record is a LATER slice (d3) — the classifier declines a record with one.
+    /// A `record` parameter (shape d) — its component valtype is a `record` DEFINED type (tag `0x72`) the
+    /// import instance-type declares, referenced by index (like [`Bytes`](HostParam::Bytes)'s `(list u8)`
+    /// ref). Its core form FLATTENS to one slot run per field, in the HOST WIT record's DECLARATION field
+    /// order — the fields are REORDERED (`reorder_record_fields_to_wit`, from the target world's op type) out
+    /// of the guest's name-lex `Ty::Record` order, because the two differ (e.g. `message{contract, sender,
+    /// payload, token}` vs name-lex `contract, payload, sender, token`) and the component-linker requires the
+    /// import's record type to STRUCTURALLY match the host's (a name-lex order silently fails to instantiate).
+    /// The guest decomposes the value-heap record field-by-field (`emit_record_arg_marshal` reads each WIT
+    /// field's NAME-LEX cell index). Carries `(field-name, field-ABI)` per field (in WIT declaration order) so
+    /// BOTH the core flatten and the component record type derive from it. A SCALAR field is one slot + an
+    /// inline primitive valtype (any aliased width); a BYTES field crosses as `list<u8>` (2 slots + the `(list
+    /// u8)` type); a NESTED record recurses (d3); a `result<list<u8>, enum>` field is a compound-in-record.
     Record(Vec<(String, RecordFieldAbi)>),
     /// An `enum` parameter — a payloadless Cadenza sum (every variant nullary, `db.is_enum_disc`). Its
     /// component valtype is an `enum` DEFINED type (tag `0x6d`) the import instance-type declares + EXPORTS
@@ -195,6 +197,71 @@ fn field_boundary_abi(db: &mut Db, ty: &Ty) -> Option<RecordFieldAbi> {
         // A `result<list<u8>, enum>` field (the answer-back envelope) — carries the err enum's case names.
         _ => result_bytes_enum(db, ty).map(|err_cases| RecordFieldAbi::Result { err_cases }),
     }
+}
+
+/// The declared parameter WIT types of a host op (from the target world, DECLARATION order), or `None` if the
+/// world/interface/op isn't found. A host op is imported through the interface whose FQ-name last segment
+/// kebab-matches the effect (the same match `mod.rs` host_iface lookup + `is_world_import_op` use); the op is
+/// the member whose kebab name matches. Used to emit a RECORD host-arg's fields in the WIT type's DECLARATION
+/// order rather than the guest's name-lex `Ty::Record` order — the two differ (e.g. `message{contract, sender,
+/// payload, token}` vs name-lex `contract, payload, sender, token`), and the component-linker requires the
+/// import's record type to STRUCTURALLY match the host's, so a name-lex order silently fails to instantiate.
+pub fn wit_op_param_types(
+    db: &mut Db,
+    effect: &str,
+    op: &str,
+) -> Option<Vec<crate::wit_world::WitType>> {
+    use crate::backend::common::export_name::kebab_extern_name;
+    let world_bytes = db.wit_world.clone()?;
+    let arenas = crate::codec::decode(&world_bytes)?;
+    let world = crate::wit_world::parse_target_world(&arenas, arenas.root)?;
+    let ek = kebab_extern_name(effect);
+    let iface = world
+        .imports
+        .iter()
+        .find(|i| kebab_extern_name(i.name.rsplit('/').next().unwrap_or(&i.name)) == ek)?;
+    let ok = kebab_extern_name(op);
+    let member = iface
+        .members
+        .iter()
+        .find(|m| kebab_extern_name(&m.name) == ok)?;
+    Some(member.func.params.iter().map(|(_, t)| t.clone()).collect())
+}
+
+/// Reorder a name-lex list of record field ABIs to the WIT record type's DECLARATION field order, recursing
+/// into a nested record field (its sub-fields reorder to the nested WIT record's order). A field whose name
+/// isn't in `wit_fields` (or a `wit` that isn't a record) keeps the name-lex order unchanged (defensive — the
+/// classifier + the world should agree by name). This makes the emitted component record type + core flatten
+/// match the host WIT's field order.
+pub fn reorder_record_fields_to_wit(
+    name_lex: Vec<(String, RecordFieldAbi)>,
+    wit: &crate::wit_world::WitType,
+) -> Vec<(String, RecordFieldAbi)> {
+    use crate::wit_world::WitType;
+    let WitType::Record(wit_fields) = wit else {
+        return name_lex;
+    };
+    let mut by_name: std::collections::HashMap<String, RecordFieldAbi> =
+        name_lex.into_iter().collect();
+    let mut out = Vec::with_capacity(wit_fields.len());
+    for (fname, fwit) in wit_fields {
+        let Some(abi) = by_name.remove(fname) else {
+            continue;
+        };
+        // Recurse into a NESTED record field: reorder its sub-fields to the nested WIT record's order.
+        let abi = match abi {
+            RecordFieldAbi::Record(sub) => {
+                RecordFieldAbi::Record(reorder_record_fields_to_wit(sub, fwit))
+            }
+            other => other,
+        };
+        out.push((fname.clone(), abi));
+    }
+    // Any field the WIT didn't name (shouldn't happen) — append in name-lex order to stay total.
+    for (n, abi) in by_name {
+        out.push((n, abi));
+    }
+    out
 }
 
 /// Whether `ty` is a `record` whose EVERY field crosses at the boundary ([`field_boundary_abi`]) — the
@@ -628,8 +695,13 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
             //= spec/contracts/component-abi.md#the-exchanged-signature-is-monomorphic
             //# A cross-component imported or exported signature by which components exchange values MUST be monomorphic, per §Generics Do Not Cross The Boundary, so that the exchanged interface names concrete types and a component binds a peer's export at a fixed instantiation the peer emitted rather than requesting an instantiation on demand.
             let peer_bound = db.effect_bindings.contains_key(&*effect);
+            // The op's DECLARED param WIT types (declaration order) — used to reorder a RECORD arg's fields to
+            // the host WIT's field order (the guest's name-lex `Ty::Record` order differs, and the linker needs
+            // a structural match). Computed once; a non-record arg ignores it. `arg_i` indexes it (args ↔ WIT
+            // params align 1:1 for the host ops that take a record — no Unit args interleaved).
+            let wit_params = wit_op_param_types(db, &effect, &op);
             let mut params = Vec::new();
-            for &a in &args {
+            for (arg_i, &a) in args.iter().enumerate() {
                 let at = crate::infer::type_of(db, a);
                 match &at {
                     Ty::Unit => {}
@@ -660,6 +732,13 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                             }
                         }
                         if all_ok {
+                            // Reorder the name-lex fields to the host WIT record's DECLARATION order (recursing
+                            // into nested records), so the emitted component record type + core flatten match
+                            // the host — a name-lex order silently fails the component-linker structural match.
+                            let field_abis = match wit_params.as_ref().and_then(|ps| ps.get(arg_i)) {
+                                Some(wit) => reorder_record_fields_to_wit(field_abis, wit),
+                                None => field_abis,
+                            };
                             params.push(HostParam::Record(field_abis));
                         }
                     }
