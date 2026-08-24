@@ -688,6 +688,11 @@ fn emit_result_lift(
         Ty::Sum { decl, .. } => {
             emit_option_sum_lift(db, ty, decl, ptr_slot, offset, high, scratch_ty, out)
         }
+        // A SCALAR leaf (bool/char/aliased int/float, or a `Qty` over one) — load width-correct + box. Only
+        // reached as an ELEMENT/FIELD/PAYLOAD of a compound (a top-level scalar result crosses by value).
+        Ty::Bool | Ty::Char | Ty::Int(_) | Ty::Float(_) | Ty::Qty { .. } => {
+            emit_scalar_leaf_lift(db, ty, ptr_slot, offset, out)
+        }
         other => Err(Reject::decline(format!(
             "the general result-lift does not yet wire a `{}` spilled-result leaf",
             other.render_name(&db.name_ctx())
@@ -729,6 +734,90 @@ fn emit_product_lift(
         foff += fs;
     }
     out.push(Lir::LocalGet(arr));
+    Ok(())
+}
+
+/// The SCALAR-LEAF arm of [`emit_result_lift`]: a scalar element/field of a spilled compound result (a
+/// `bool`, `char`, aliased int of any width, or `f32`/`f64`, incl. a `Qty` over one) that the host stored at
+/// its NATURAL width in linear memory. Load it width-correct (sign/zero-extending a narrow int into the i64
+/// int cell `box-int` takes), then BOX it into a value-heap scalar cell (`box-int`/`box-bool`/`box-float`/
+/// `box-float32`), leaving the handle — so it can be an `arr-set` element of the enclosing tuple/list/record
+/// or an option payload. A top-level scalar RESULT never reaches here (it crosses by value, not spilled).
+fn emit_scalar_leaf_lift(
+    db: &mut Db,
+    ty: &Ty,
+    ptr_slot: u32,
+    offset: u32,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    let box_op = box_op_ty(db, ty)?
+        .ok_or_else(|| Reject::decline("a scalar-leaf result field is not a value-heap scalar"))?;
+    // Peel `Qty`/`Nominal` to the effective scalar type (its runtime rep) for the width-correct load.
+    let scalar = peel_qty_ty(ty.clone());
+    out.push(Lir::LocalGet(ptr_slot));
+    match &scalar {
+        // A bool is a 1-byte 0/1; `box-bool` takes the i32 directly (no extend).
+        Ty::Bool => out.push(Lir::I32Load8U { offset }),
+        // A char is a 4-byte code point; zero-extend into the i64 `box-int` cell.
+        Ty::Char => {
+            out.push(Lir::I32Load { offset });
+            out.push(Lir::I64ExtendI32U);
+        }
+        Ty::Int(it) => {
+            let signed = it.ground_signed();
+            match it.ground_width() {
+                64 => out.push(Lir::I64Load { offset }),
+                32 => {
+                    out.push(Lir::I32Load { offset });
+                    out.push(if signed {
+                        Lir::I64ExtendI32S
+                    } else {
+                        Lir::I64ExtendI32U
+                    });
+                }
+                16 => {
+                    out.push(if signed {
+                        Lir::I32Load16S { offset }
+                    } else {
+                        Lir::I32Load16U { offset }
+                    });
+                    out.push(if signed {
+                        Lir::I64ExtendI32S
+                    } else {
+                        Lir::I64ExtendI32U
+                    });
+                }
+                8 => {
+                    out.push(if signed {
+                        Lir::I32Load8S { offset }
+                    } else {
+                        Lir::I32Load8U { offset }
+                    });
+                    out.push(if signed {
+                        Lir::I64ExtendI32S
+                    } else {
+                        Lir::I64ExtendI32U
+                    });
+                }
+                _ => {
+                    return Err(Reject::decline(
+                        "a non-aliased int width has no scalar-leaf load",
+                    ));
+                }
+            }
+        }
+        Ty::Float(ft) => match ft.ground_width() {
+            64 => out.push(Lir::F64Load { offset }),
+            32 => out.push(Lir::F32Load { offset }),
+            _ => {
+                return Err(Reject::decline(
+                    "a non-aliased float width has no scalar-leaf load",
+                ));
+            }
+        },
+        _ => return Err(Reject::decline("not a scalar-leaf type")),
+    }
+    out.push(Lir::CallImport(box_op));
     Ok(())
 }
 
@@ -18430,6 +18519,41 @@ mod tests {
         assert!(
             host::result_is_liftable(&mut db2, &p2[0].1),
             "option<list<u8>> is still liftable"
+        );
+    }
+
+    // WIT-ABI completion (result side): a SCALAR LEAF of a spilled compound result now lifts (loaded
+    // width-correct + boxed), so a tuple/list/option OF scalars is a liftable result — while a bare scalar
+    // stays NON-spilled (it crosses by value, not via the lift). Pure-fn classification test.
+    #[test]
+    fn scalar_leaves_lift_inside_a_compound_result_but_a_bare_scalar_does_not() {
+        use crate::backend::wasm::host;
+        // tuple<u64, list<u8>> — a scalar leaf + a bytes leaf: a liftable spilled result.
+        let mut db = Db::load(crate::testkit::parse(
+            "(module m (def (f (: x (Tuple UInt64 Bytes))) x) (def (main) 0) (export main))",
+        ));
+        let (params, _) = function_of(&mut db, "f");
+        assert!(
+            host::result_is_liftable(&mut db, &params[0].1),
+            "tuple<u64, list<u8>> lifts — a scalar leaf is boxed inside the aggregate"
+        );
+        // list<s32> — a list of a NARROW int leaf lifts.
+        let mut db2 = Db::load(crate::testkit::parse(
+            "(module m (def (g (: y (List Int32))) y) (def (main) 0) (export main))",
+        ));
+        let (p2, _) = function_of(&mut db2, "g");
+        assert!(
+            host::result_is_liftable(&mut db2, &p2[0].1),
+            "list<s32> lifts — a narrow-int element is boxed"
+        );
+        // A BARE scalar result is NOT a spilled compound (crosses by value) — must NOT classify as liftable.
+        let mut db3 = Db::load(crate::testkit::parse(
+            "(module m (def (h (: z UInt64)) z) (def (main) 0) (export main))",
+        ));
+        let (p3, _) = function_of(&mut db3, "h");
+        assert!(
+            !host::result_is_liftable(&mut db3, &p3[0].1),
+            "a bare u64 result is not spilled — it crosses by value, not via the lift"
         );
     }
 

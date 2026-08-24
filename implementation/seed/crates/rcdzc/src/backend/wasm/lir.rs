@@ -168,6 +168,29 @@ pub enum Lir {
     I32Load8U {
         offset: u32,
     },
+    // Width-specific loads reading a SCALAR LEAF a spilled compound result stored at its natural width (the
+    // general result-lift's scalar-leaf boxing): a 64-bit int (`i64.load`), a float (`f64`/`f32.load`), and
+    // the sign/zero-extending narrow int loads (`i32.load8_s`, `i32.load16_s`, `i32.load16_u`). A 32-bit int /
+    // char reuses `I32Load`; an unsigned byte reuses `I32Load8U`. Each pops `[addr:i32]`, pushes the value at
+    // `addr+offset` on memory 0.
+    I64Load {
+        offset: u32,
+    },
+    F32Load {
+        offset: u32,
+    },
+    F64Load {
+        offset: u32,
+    },
+    I32Load8S {
+        offset: u32,
+    },
+    I32Load16S {
+        offset: u32,
+    },
+    I32Load16U {
+        offset: u32,
+    },
     /// `call F` — call wasm function index `F` (its arguments already pushed in order). The index is a
     /// definition's ABSOLUTE emission position (`layout.abs`), resolved at selection.
     Call(u32),

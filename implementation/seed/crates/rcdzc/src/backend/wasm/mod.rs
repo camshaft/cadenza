@@ -1954,6 +1954,21 @@ fn declare_result_lift_ops(
                 declare_result_lift_ops(db, f, used);
             }
         }
+        // A SCALAR leaf (bool/char/aliased int/float, or a `Qty` over one) — the lift boxes it into a
+        // value-heap cell: bool → `box-bool`, int/char → `box-int`, f64 → `box-float`, f32 → `box-float32`.
+        Ty::Bool => {
+            used.insert("box-bool");
+        }
+        Ty::Char | Ty::Int(_) => {
+            used.insert("box-int");
+        }
+        Ty::Float(ft) if ft.ground_width() == 64 => {
+            used.insert("box-float");
+        }
+        Ty::Float(ft) if ft.ground_width() == 32 => {
+            used.insert("box-float32");
+        }
+        Ty::Qty { inner, .. } => declare_result_lift_ops(db, &inner, used),
         // An option-shaped sum (`option<T>`): `sum-new` for the Some/None construction + the Some arm's
         // payload lift ops, recursively (general over the payload, not pinned to `Bytes`).
         _ => {
@@ -9996,6 +10011,19 @@ mod wasm_abi_tests {
                 memory_index: 0
             }))
         );
+        // The width-specific loads the general result-lift's scalar-leaf boxing uses (opcode consts checked
+        // against the authoritative encoder, exactly like the loads above).
+        let m = || wasm_encoder::MemArg {
+            offset: 0,
+            align: 0,
+            memory_index: 0,
+        };
+        assert_eq!(wasm_abi::op::I64_LOAD, opcode(I::I64Load(m())));
+        assert_eq!(wasm_abi::op::F32_LOAD, opcode(I::F32Load(m())));
+        assert_eq!(wasm_abi::op::F64_LOAD, opcode(I::F64Load(m())));
+        assert_eq!(wasm_abi::op::I32_LOAD8_S, opcode(I::I32Load8S(m())));
+        assert_eq!(wasm_abi::op::I32_LOAD16_S, opcode(I::I32Load16S(m())));
+        assert_eq!(wasm_abi::op::I32_LOAD16_U, opcode(I::I32Load16U(m())));
     }
 
     #[test]

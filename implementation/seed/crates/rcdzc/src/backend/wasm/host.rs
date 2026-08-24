@@ -296,17 +296,26 @@ pub fn result_is_liftable(db: &mut Db, ty: &Ty) -> bool {
         Ty::Bytes => true,
         Ty::List(e) => {
             let e = (**e).clone();
-            result_is_liftable(db, &e)
+            leaf_liftable(db, &e)
         }
         Ty::Tuple(elems) => {
             let elems = elems.clone();
-            !elems.is_empty() && elems.iter().all(|e| result_is_liftable(db, e))
+            !elems.is_empty() && elems.iter().all(|e| leaf_liftable(db, e))
         }
         // An option-shaped sum (`option<T>`) whose payload `T` is itself liftable — general over the payload
         // (not pinned to `Bytes`); the lift (`emit_option_sum_lift`) recurses the payload, the WIT type is
         // `option<wit(T)>`. So `option<list<u8>>`, `option<list<list<u8>>>`, `option<tuple<…>>` all lift.
-        _ => option_payload_ty(db, ty).is_some_and(|p| result_is_liftable(db, &p)),
+        _ => option_payload_ty(db, ty).is_some_and(|p| leaf_liftable(db, &p)),
     }
+}
+
+/// Whether `ty` is liftable as an ELEMENT/FIELD/PAYLOAD of a spilled compound result — a SCALAR leaf (which
+/// `emit_result_lift` loads width-correct + boxes) OR itself a liftable compound ([`result_is_liftable`]).
+/// The distinction from `result_is_liftable`: a bare SCALAR is NOT a spilled top-level result (it crosses by
+/// value), but it IS a valid leaf of a `list`/`tuple`/`option`. `abi_val_type` recognizes exactly the scalar
+/// leaves the lift boxes (bool / char / every aliased int width / f32 / f64, and a `Qty` over one).
+fn leaf_liftable(db: &mut Db, ty: &Ty) -> bool {
+    abi_val_type(ty).is_some() || result_is_liftable(db, ty)
 }
 
 /// The WIT type of a SPILLED-COMPOUND host result — the type that drives its component defined-type emission
