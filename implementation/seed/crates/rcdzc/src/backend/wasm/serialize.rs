@@ -254,6 +254,36 @@ fn instr(i: &Lir, import_index: &std::collections::HashMap<&str, u32>, out: &mut
             uleb128(0, out); // align (log2) = 0
             uleb128(*offset as u64, out); // offset
         }
+        Lir::I64Load { offset } => {
+            out.push(op::I64_LOAD);
+            uleb128(3, out); // align (log2) = 3 (natural i64)
+            uleb128(*offset as u64, out);
+        }
+        Lir::F32Load { offset } => {
+            out.push(op::F32_LOAD);
+            uleb128(2, out); // align (log2) = 2 (natural f32)
+            uleb128(*offset as u64, out);
+        }
+        Lir::F64Load { offset } => {
+            out.push(op::F64_LOAD);
+            uleb128(3, out); // align (log2) = 3 (natural f64)
+            uleb128(*offset as u64, out);
+        }
+        Lir::I32Load8S { offset } => {
+            out.push(op::I32_LOAD8_S);
+            uleb128(0, out); // align (log2) = 0
+            uleb128(*offset as u64, out);
+        }
+        Lir::I32Load16S { offset } => {
+            out.push(op::I32_LOAD16_S);
+            uleb128(1, out); // align (log2) = 1 (natural i16)
+            uleb128(*offset as u64, out);
+        }
+        Lir::I32Load16U { offset } => {
+            out.push(op::I32_LOAD16_U);
+            uleb128(1, out); // align (log2) = 1 (natural i16)
+            uleb128(*offset as u64, out);
+        }
         Lir::LocalTee(idx) => {
             out.push(op::LOCAL_TEE);
             uleb128(*idx as u64, out);
