@@ -64,20 +64,20 @@ fn host_import_functype(f: &crate::backend::wasm::host::HostImport) -> Vec<u8> {
             HostParam::Str | HostParam::Bytes => {
                 params.extend_from_slice(&[wasm_abi::CORE_I32, wasm_abi::CORE_I32])
             }
+            // A RECORD param (shape d, all-scalar fields) FLATTENS to one core slot per field, in field
+            // order (the component `record` type declares its fields in the same NAME-LEX order). The
+            // component boundary type is a `record` DEFINED type (see mod.rs `host_op_comp_functype`); the
+            // CORE marshalling is just the scalar slots the guest decomposes the record into.
+            HostParam::Record(field_abis) => {
+                for (_, v) in field_abis {
+                    params.push(v.core_byte());
+                }
+            }
         }
     }
-    // A string/bytes param is 2 core slots, so count the total slots (not the param count).
-    let mut slot_count = f
-        .params
-        .iter()
-        .map(|p| {
-            if matches!(p, HostParam::Str | HostParam::Bytes) {
-                2
-            } else {
-                1
-            }
-        })
-        .sum::<usize>();
+    // `params` now holds exactly the FLATTENED core-slot bytes (a scalar = 1, a string/bytes = 2, a record
+    // = one per field), so its length IS the core param-slot count.
+    let mut slot_count = params.len();
     // A compound `option<list<u8>>` RESULT (S0) is returned via a caller-provided RETPTR: the canonical ABI
     // lowers a >1-flat result to a TRAILING i32 return-pointer param (the callee writes the flattened
     // `(disc, listptr, listlen)` there) and the core function returns NOTHING. Mirrors the runtime's nfc
@@ -8884,4 +8884,61 @@ fn rle(valtypes: &[ValType]) -> Vec<(u32, ValType)> {
         }
     }
     groups
+}
+
+#[cfg(test)]
+mod host_import_functype_tests {
+    use super::*;
+    use crate::backend::wasm::host::{HostImport, HostParam};
+    use crate::backend::wasm::runtime_abi::AbiValType;
+
+    fn imp(params: Vec<HostParam>, result: Option<AbiValType>) -> HostImport {
+        HostImport {
+            effect: "state".into(),
+            op: "op".into(),
+            params,
+            result,
+            result_option_bytes: false,
+            result_list_byte_pairs: false,
+            result_bytes: false,
+        }
+    }
+
+    // Shape d (core flatten): a RECORD param flattens to one core slot per field, in field order — a
+    // scalar+bytes+scalar analogue but here all scalar. `record { a: s64, b: bool }` → core params
+    // `(i64, i32)`. The CORE functype is `0x60 <params-vec> <results-vec>`; a `Unit` result → empty
+    // results vec. This pins the flatten so a regression in `host_import_functype`'s Record arm is caught.
+    #[test]
+    fn a_record_param_flattens_to_one_core_slot_per_field() {
+        let f = imp(
+            vec![HostParam::Record(vec![
+                ("a".into(), AbiValType::S64),
+                ("b".into(), AbiValType::Bool),
+            ])],
+            None,
+        );
+        // 0x60 form; params = vec(2, [i64=0x7E, i32=0x7F]); results = vec(0, []).
+        assert_eq!(host_import_functype(&f), vec![0x60, 0x02, 0x7E, 0x7F, 0x00]);
+    }
+
+    // A record param INTERLEAVES its flattened slots with sibling params in order: a leading scalar
+    // `s64`, then `record { a: s64, b: bool }` → core `(i64, i64, i32)`. Guards the `params.len()`
+    // slot-count (a record contributes N, not 1, to the core arity).
+    #[test]
+    fn a_record_param_interleaves_its_flattened_slots_with_siblings() {
+        let f = imp(
+            vec![
+                HostParam::Scalar(AbiValType::S64),
+                HostParam::Record(vec![
+                    ("a".into(), AbiValType::S64),
+                    ("b".into(), AbiValType::Bool),
+                ]),
+            ],
+            None,
+        );
+        assert_eq!(
+            host_import_functype(&f),
+            vec![0x60, 0x03, 0x7E, 0x7E, 0x7F, 0x00]
+        );
+    }
 }

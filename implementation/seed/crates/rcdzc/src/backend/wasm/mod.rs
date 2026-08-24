@@ -1675,6 +1675,13 @@ fn host_op_comp_functype(
             // `list_type_idx`; `0` is a safe placeholder while no host set produces a Bytes param yet
             // (`collect_host_imports` does not push `HostParam::Bytes` until the emit brick).
             HostParam::Bytes => encode::uleb128(list_type_idx as u64, &mut param_items),
+            // A RECORD param (shape d) references a `record` DEFINED type the import instance-type declares
+            // (like `Bytes`'s `(list u8)` ref). Laying that record type into `host_effect_instance_type` and
+            // threading its index here is the d1b slice; until then a record host-arg is DECLINED up front by
+            // the boundary-representability guard (`first_unrepresentable_host_op`), so this arm is not reached
+            // in a live assembly. The placeholder index keeps the byte-shape (a type-index valtype) correct
+            // for when d1b threads the real record-type index.
+            HostParam::Record(_) => encode::uleb128(list_type_idx as u64, &mut param_items),
         }
     }
     item.extend_from_slice(&encode::wasm_vec(h.params.len(), &param_items));
@@ -1715,8 +1722,11 @@ fn host_param_abi(p: &host::HostParam) -> Option<runtime_abi::AbiValType> {
     match p {
         host::HostParam::Scalar(v) => Some(*v),
         // Str and Bytes both use the `(ptr,len)` shared-memory shape, which has no scalar peer-ABI form —
-        // a String/Bytes-param PEER op declines this increment (the host-arg support is host-only).
-        host::HostParam::Str | host::HostParam::Bytes => None,
+        // a String/Bytes-param PEER op declines this increment (the host-arg support is host-only). A RECORD
+        // param (shape d) likewise has no scalar peer-ABI form — a record crosses a PEER boundary as its
+        // `u32` heap handle, not this native host flatten (and the classifier only produces `Record` for a
+        // non-peer-bound op), so it declines here too.
+        host::HostParam::Str | host::HostParam::Bytes | host::HostParam::Record(_) => None,
     }
 }
 
