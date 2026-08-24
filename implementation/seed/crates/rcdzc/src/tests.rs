@@ -8048,6 +8048,65 @@ fn a_bare_export_param_without_a_world_is_still_ambiguous() {
     );
 }
 
+/// VARIANT/ENUM in a derived param resolves to the guest's NAMED sum. A world export member's param type
+/// carries a WIT `variant`/`enum` (here the `error` inside `on-response`'s `result<list<u8>, variant…>`),
+/// which is declared ANONYMOUSLY in the world. A Cadenza sum carries a DECL identity, so the derived boundary
+/// type references the guest's mirroring `type Err = | A | B` (matched by case-name set, kebab). Without this,
+/// `wit_type_to_type_expr` returns `None` for the variant → the whole record type-expr fails → the param is
+/// left bare → CDZ0201 (this is exactly the `on-response` gap in the echo reducer). Asserts no ambiguity.
+#[test]
+fn a_bare_export_param_with_a_variant_field_resolves_to_the_guest_named_sum() {
+    use crate::db::Db;
+    // `on-response`'s param carries `answer: result<list<u8>, variant(a, b)>`; the guest declares
+    // `type Err = | A | B` mirroring the anonymous world variant. STRING-head compounds, NAME-head prims.
+    let src = "(do \
+                 (world reducer-world \
+                   (export guest (member on-response \
+                     (func (param resp (\"record\" \
+                                         (contract (\"list\" (u8))) \
+                                         (answer (\"result\" (\"list\" (u8)) (\"variant\" (a) (b)))))) \
+                           (result (\"list\" (u8))))))) \
+                 (type Err A B) \
+                 (def (on-response resp) (. resp contract)) \
+                 (export on-response))";
+    let mut db = Db::load(crate::testkit::parse(src));
+    let diags = crate::compile::diagnostics(&mut db);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.message.contains("parameter type is ambiguous")),
+        "a variant field must resolve to the guest named sum (no CDZ0201): {:?}",
+        diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// MEANINGFULNESS GUARD for the above: the SAME world + bare-param def WITHOUT the guest `type Err` decl has
+/// no named sum to resolve the anonymous world variant against, so the derived record type-expr fails and the
+/// param stays bare → CDZ0201. Proves the guest-named-sum matching (not something else) is what types the
+/// variant-carrying param.
+#[test]
+fn a_variant_param_without_a_matching_guest_sum_stays_ambiguous() {
+    use crate::db::Db;
+    let src = "(do \
+                 (world reducer-world \
+                   (export guest (member on-response \
+                     (func (param resp (\"record\" \
+                                         (contract (\"list\" (u8))) \
+                                         (answer (\"result\" (\"list\" (u8)) (\"variant\" (a) (b)))))) \
+                           (result (\"list\" (u8))))))) \
+                 (def (on-response resp) (. resp contract)) \
+                 (export on-response))";
+    let mut db = Db::load(crate::testkit::parse(src));
+    let diags = crate::compile::diagnostics(&mut db);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("parameter type is ambiguous")),
+        "no matching guest sum → the variant-carrying param stays ambiguous (CDZ0201): {:?}",
+        diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
 /// EXTERNAL-ARTIFACT world, no-redeclare: a reducer delivered with a `KIND_WIT_WORLD` artifact (NOT an
 /// in-source `(world …)`) and NO hand-written `(effect …)` decl must still resolve its world-import perform
 /// — `compile` injects the synthesized effects from the artifact BEFORE `Db::load`, so `(host (identity)

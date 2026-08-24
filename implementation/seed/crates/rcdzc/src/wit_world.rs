@@ -361,7 +361,24 @@ fn prelude_sum(db: &crate::db::Db, name: &str, args: Vec<Ty>) -> Option<Ty> {
 /// increment), or whose inner type does not map. Builds into `db`'s arena; the synthesis pass reuses it for
 /// the injected decls.
 pub fn wit_type_to_type_expr(ast: &mut Arenas, t: &WitType) -> Option<StructId> {
+    wit_type_to_type_expr_with_sums(ast, t, &std::collections::HashMap::new())
+}
+
+/// [`wit_type_to_type_expr`] with a NOMINAL-SUM map: a WIT `variant`/`enum` is resolved to a GUEST-declared
+/// named sum whose case-name set matches (kebab-normalized), emitting that type's bare NAME. The reducer's
+/// world declares its variants ANONYMOUSLY (`variant(timeout, …)`), but the guest declares a NAMED
+/// `type Error = | Timeout | …` that mirrors it; Cadenza sums carry a DECL identity, so the derived boundary
+/// type must reference the guest's named type (not an anonymous structural sum). `sums` maps a case-name set
+/// → the guest type name (built by [`guest_sum_names`]); an EMPTY map reproduces the plain
+/// [`wit_type_to_type_expr`] (variant/enum → `None`), which the import synthesis uses (it skips such members).
+/// A `flags` type has no named-sum analogue and stays `None`.
+fn wit_type_to_type_expr_with_sums(
+    ast: &mut Arenas,
+    t: &WitType,
+    sums: &std::collections::HashMap<std::collections::BTreeSet<String>, String>,
+) -> Option<StructId> {
     use crate::ast::Leaf;
+    use crate::backend::common::export_name::kebab_extern_name;
     use crate::prelude::{push_atom, push_list};
     fn nm(ast: &mut Arenas, s: &str) -> StructId {
         push_atom(ast, Leaf::Name(s.into()))
@@ -407,14 +424,14 @@ pub fn wit_type_to_type_expr(ast: &mut Arenas, t: &WitType) -> Option<StructId> 
         // A byte-list is `Bytes` (the inverse of `ty_natural_wit`); any other element → `(List T)`.
         WitType::List(elem) if matches!(**elem, WitType::U8) => nm(ast, "Bytes"),
         WitType::List(elem) => {
-            let inner = wit_type_to_type_expr(ast, elem)?;
+            let inner = wit_type_to_type_expr_with_sums(ast, elem, sums)?;
             let head = nm(ast, "List");
             push_list(ast, vec![head, inner])
         }
         WitType::Tuple(elems) => {
             let mut items = vec![nm(ast, "Tuple")];
             for e in elems {
-                items.push(wit_type_to_type_expr(ast, e)?);
+                items.push(wit_type_to_type_expr_with_sums(ast, e, sums)?);
             }
             push_list(ast, items)
         }
@@ -424,32 +441,47 @@ pub fn wit_type_to_type_expr(ast: &mut Arenas, t: &WitType) -> Option<StructId> 
             for (name, fty) in fields {
                 let colon = nm(ast, ":");
                 let fname = nm(ast, name.as_str());
-                let ft = wit_type_to_type_expr(ast, fty)?;
+                let ft = wit_type_to_type_expr_with_sums(ast, fty, sums)?;
                 items.push(push_list(ast, vec![colon, fname, ft]));
             }
             push_list(ast, items)
         }
         // Source ctor application `(Option T)` — NOT `encode_ty`'s nominal `(Sum …)`.
         WitType::Option(inner) => {
-            let ie = wit_type_to_type_expr(ast, inner)?;
+            let ie = wit_type_to_type_expr_with_sums(ast, inner, sums)?;
             let head = nm(ast, "Option");
             push_list(ast, vec![head, ie])
         }
         // `(Result ok err)`; an absent arm is `Unit` (WIT `result` / `result<T>` / `result<_, E>`).
         WitType::Result { ok, err } => {
             let oe = match ok {
-                Some(t) => wit_type_to_type_expr(ast, t)?,
+                Some(t) => wit_type_to_type_expr_with_sums(ast, t, sums)?,
                 None => nm(ast, "Unit"),
             };
             let ee = match err {
-                Some(t) => wit_type_to_type_expr(ast, t)?,
+                Some(t) => wit_type_to_type_expr_with_sums(ast, t, sums)?,
                 None => nm(ast, "Unit"),
             };
             let head = nm(ast, "Result");
             push_list(ast, vec![head, oe, ee])
         }
-        // A nominal sum needs a SYNTHESIZED decl (Cadenza sums carry a decl identity) — a later increment.
-        WitType::Variant(_) | WitType::Enum(_) | WitType::Flags(_) => return None,
+        // A WIT `variant`/`enum` is ANONYMOUS, but a Cadenza sum carries a DECL identity — so resolve it to a
+        // GUEST-declared named sum whose case-name set matches (kebab), emitting that type's bare NAME. With an
+        // empty `sums` map (the import-synthesis path) this stays `None` — the guest hand-declares such a
+        // member. `flags` has no named-sum analogue → always `None`.
+        WitType::Variant(cases) => {
+            let set: std::collections::BTreeSet<String> =
+                cases.iter().map(|(c, _)| kebab_extern_name(c)).collect();
+            let name = sums.get(&set)?;
+            nm(ast, &name.clone())
+        }
+        WitType::Enum(cases) => {
+            let set: std::collections::BTreeSet<String> =
+                cases.iter().map(|c| kebab_extern_name(c)).collect();
+            let name = sums.get(&set)?;
+            nm(ast, &name.clone())
+        }
+        WitType::Flags(_) => return None,
     })
 }
 
@@ -673,6 +705,57 @@ fn export_member_params(
 /// the in-source and artifact export-param derivation. An author-written `(: p T)` WINS (skipped); a position
 /// past the member's params, or a type [`wit_type_to_type_expr`] cannot map (`enum`/`variant`/`flags`), is
 /// left bare (falls back to the ordinary CDZ0201). A def whose name matches no export member is untouched.
+/// The guest's NAMED sums keyed by case-name set (kebab) → the type name, so a WIT `variant`/`enum` in a
+/// derived boundary type resolves to the guest's mirroring `type` decl (Cadenza sums carry a decl identity —
+/// see [`wit_type_to_type_expr_with_sums`]). Reads every top-level `(type <Name> <case>…)` (a bare-name case
+/// or a `(Case payload…)` list); a `type` with no cases (a plain alias) is skipped. If two types share a
+/// case-name set the entry is DROPPED (ambiguous — decline to guess rather than mis-bind).
+fn guest_sum_names(
+    ast: &Arenas,
+) -> std::collections::HashMap<std::collections::BTreeSet<String>, String> {
+    use crate::backend::common::export_name::kebab_extern_name;
+    let mut by_set: std::collections::HashMap<std::collections::BTreeSet<String>, String> =
+        std::collections::HashMap::new();
+    let mut ambiguous: std::collections::HashSet<std::collections::BTreeSet<String>> =
+        std::collections::HashSet::new();
+    for it in top_level_items(ast) {
+        let Some(tail) = ast.as_form(it, "type") else {
+            continue;
+        };
+        let Some((&name_node, cases)) = tail.split_first() else {
+            continue;
+        };
+        let Some(type_name) = ast.as_name(name_node) else {
+            continue;
+        };
+        if cases.is_empty() {
+            continue;
+        }
+        // Each case's NAME: a bare `Name` (nullary case) or the head of a `(Case payload…)` list.
+        let mut set = std::collections::BTreeSet::new();
+        let mut ok = true;
+        for &c in cases {
+            match ast.as_name(c).or_else(|| ast.head_name(c)) {
+                Some(n) => {
+                    set.insert(kebab_extern_name(n));
+                }
+                None => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if !ok || set.is_empty() || ambiguous.contains(&set) {
+            continue;
+        }
+        if by_set.insert(set.clone(), type_name.to_string()).is_some() {
+            by_set.remove(&set);
+            ambiguous.insert(set);
+        }
+    }
+    by_set
+}
+
 fn apply_export_param_annotations(
     ast: &mut Arenas,
     member_params: &std::collections::HashMap<String, Vec<WitType>>,
@@ -683,6 +766,9 @@ fn apply_export_param_annotations(
     if member_params.is_empty() {
         return;
     }
+    // The guest's named sums, so a WIT variant/enum in a param type (e.g. the `error` variant inside
+    // `on-response`'s `result<…, error>`) resolves to the guest's `type Error` by matching case names.
+    let sums = guest_sum_names(ast);
     for it in top_level_items(ast) {
         // `(def (<name> param…) body)` — the signature is the def's first child, a list whose head is the
         // def name and whose tail is the params.
@@ -717,7 +803,7 @@ fn apply_export_param_annotations(
             let Some(pname) = ast.as_name(param_node).map(str::to_string) else {
                 continue;
             };
-            let Some(type_expr) = wit_type_to_type_expr(ast, ptype) else {
+            let Some(type_expr) = wit_type_to_type_expr_with_sums(ast, ptype, &sums) else {
                 continue;
             };
             // Build `(: <param-name> <derived-type-expr>)` and replace the bare binder in place.
