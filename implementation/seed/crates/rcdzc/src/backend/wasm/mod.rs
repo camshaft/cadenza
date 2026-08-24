@@ -1091,6 +1091,54 @@ pub fn emit(
         let needs_list_byte_pairs = host_imports.iter().any(|h| h.result_list_byte_pairs);
         let needs_bytes_result = host_imports.iter().any(|h| h.result_bytes);
         let list_pairs_type_idx = 2 + needs_option_bytes as u32;
+        // RECORD-param host arg (shape d): build a component `record` DEFINED type per record param (reused
+        // wit_ctype emitter, tag 0x72; all-scalar fields → each an inline primitive valtype). CONSTRAINED
+        // shape this slice (d1b): a record param composes ONLY when the host set declares NO other
+        // boundary-compound (no list<u8>/string param, no option/pairs/bytes compound result) and has a
+        // SINGLE record param — so the record lands at the host instance-type's LOCAL index 0, the index
+        // `host_op_comp_functype`'s Record arm references. A mixed/multi-record set needs the general
+        // record-type-index threading (a later slice) → decline cleanly rather than mis-index the boundary.
+        let record_defs: Vec<Vec<u8>> = {
+            let record_params: Vec<&Vec<(String, runtime_abi::AbiValType)>> = host_imports
+                .iter()
+                .flat_map(|h| &h.params)
+                .filter_map(|p| match p {
+                    host::HostParam::Record(fields) => Some(fields),
+                    _ => None,
+                })
+                .collect();
+            if record_params.is_empty() {
+                Vec::new()
+            } else {
+                let has_str_or_bytes_param = host_imports
+                    .iter()
+                    .flat_map(|h| &h.params)
+                    .any(|p| matches!(p, host::HostParam::Str | host::HostParam::Bytes));
+                if record_params.len() > 1
+                    || has_str_or_bytes_param
+                    || needs_option_bytes
+                    || needs_list_byte_pairs
+                    || needs_bytes_result
+                {
+                    return Err(Reject::decline(
+                        "a record host-argument composes only in a host set with no other boundary-compound \
+                         (no list<u8>/string parameter, no option/list/bytes compound result) and a single \
+                         record parameter; the general record-type-indexed host shape is a later increment",
+                    ));
+                }
+                use crate::backend::wasm::wit_ctype::{CDef, CRef, emit_cdef};
+                record_params
+                    .iter()
+                    .map(|fields| {
+                        let cfields: Vec<(String, CRef)> = fields
+                            .iter()
+                            .map(|(n, abi)| (n.clone(), CRef::Prim(abi.comp_byte())))
+                            .collect();
+                        emit_cdef(&CDef::Record(cfields))
+                    })
+                    .collect()
+            }
+        };
         let host_fns: Vec<envelope::HostFn> = host_imports
             .iter()
             .map(|hi| envelope::HostFn {
@@ -1127,6 +1175,7 @@ pub fn emit(
                 needs_list_byte_pairs,
                 needs_bytes_result,
                 needs_realloc,
+                &record_defs,
             )
         } else {
             envelope::assemble_typed_interface_with_host_runtime(
@@ -1139,6 +1188,7 @@ pub fn emit(
                 needs_option_bytes,
                 needs_list_byte_pairs,
                 needs_bytes_result,
+                &record_defs,
             )
         });
     }
@@ -1675,13 +1725,14 @@ fn host_op_comp_functype(
             // `list_type_idx`; `0` is a safe placeholder while no host set produces a Bytes param yet
             // (`collect_host_imports` does not push `HostParam::Bytes` until the emit brick).
             HostParam::Bytes => encode::uleb128(list_type_idx as u64, &mut param_items),
-            // A RECORD param (shape d) references a `record` DEFINED type the import instance-type declares
-            // (like `Bytes`'s `(list u8)` ref). Laying that record type into `host_effect_instance_type` and
-            // threading its index here is the d1b slice; until then a record host-arg is DECLINED up front by
-            // the boundary-representability guard (`first_unrepresentable_host_op`), so this arm is not reached
-            // in a live assembly. The placeholder index keeps the byte-shape (a type-index valtype) correct
-            // for when d1b threads the real record-type index.
-            HostParam::Record(_) => encode::uleb128(list_type_idx as u64, &mut param_items),
+            // A RECORD param (shape d) references the record's EXPORTED type in the import instance-type. A
+            // NOMINAL type used by an import func must be exported (component-model rule), so
+            // `host_effect_instance_type` lays the record as DEFINE (index 0) + EXPORT (index 1) in the
+            // supported shape (a single record param + no shared list<u8>/option/pairs type — the caller
+            // declines otherwise). The func references the EXPORTED index — 1 in that shape. This arm is only
+            // reached on that reducer path (the boundary guard declines a record arg elsewhere), so the
+            // exported record type is always at index 1 here.
+            HostParam::Record(_) => encode::uleb128(1u64, &mut param_items),
         }
     }
     item.extend_from_slice(&encode::wasm_vec(h.params.len(), &param_items));

@@ -956,6 +956,7 @@ pub fn assemble_typed_interface_with_host_runtime(
     needs_option_bytes: bool,
     needs_list_byte_pairs: bool,
     needs_bytes_result: bool,
+    record_defs: &[Vec<u8>],
 ) -> Vec<u8> {
     use crate::backend::common::export_name::kebab_extern_name;
     use crate::backend::wasm::wit_ctype::{CRef, emit_cdef, emit_functype};
@@ -998,6 +999,7 @@ pub fn assemble_typed_interface_with_host_runtime(
             needs_option_bytes,
             needs_list_byte_pairs,
             needs_bytes_result,
+            record_defs,
         ));
         items.extend_from_slice(&runtime_op_instance_type(imports));
         for (prefs, rref) in &sigs {
@@ -1202,6 +1204,7 @@ pub fn assemble_typed_interface_with_host_runtime_mem(
     // (a `list<u8>`/`string` PARAM + scalar/unit result), the mem module exports memory only and the program
     // owns its own defined cabi_realloc — no shift.
     needs_realloc: bool,
+    record_defs: &[Vec<u8>],
 ) -> Vec<u8> {
     use crate::backend::common::export_name::kebab_extern_name;
     use crate::backend::wasm::wit_ctype::{CRef, emit_cdef, emit_functype};
@@ -1243,6 +1246,7 @@ pub fn assemble_typed_interface_with_host_runtime_mem(
             needs_option_bytes,
             needs_list_byte_pairs,
             needs_bytes_result,
+            record_defs,
         ));
         items.extend_from_slice(&runtime_op_instance_type(imports));
         for (prefs, rref) in &sigs {
@@ -2450,7 +2454,7 @@ pub fn assemble_host_runtime(
     // sec 7: TWO instance-types — component type 0 (the effect) then component type 1 (the runtime). Each
     // is `0x42` + a vec of 2*count interleaved (ty, export) decls, exactly as the single-import shapes.
     let type_sec = {
-        let host_it = host_effect_instance_type(host_fns, false, false, false);
+        let host_it = host_effect_instance_type(host_fns, false, false, false, &[]);
         let rt_it = runtime_op_instance_type(imports);
         let mut items = host_it;
         items.extend_from_slice(&rt_it);
@@ -2635,7 +2639,7 @@ pub fn assemble_host_runtime_mem(
     // sec 7: TWO instance-types — host effect (comp type 0) then runtime (comp type 1) — identical to the
     // memoryless host+runtime shape (the shared memory is a CORE detail, invisible to the component types).
     let type_sec = {
-        let host_it = host_effect_instance_type(host_fns, false, false, false);
+        let host_it = host_effect_instance_type(host_fns, false, false, false, &[]);
         let rt_it = runtime_op_instance_type(imports);
         let mut items = host_it;
         items.extend_from_slice(&rt_it);
@@ -2845,6 +2849,7 @@ pub fn assemble_bytes_roundtrip_host_provider(
             needs_option_bytes,
             needs_list_byte_pairs,
             needs_bytes_result,
+            &[],
         );
         let mut items = host_it;
         items.extend_from_slice(&runtime_op_instance_type(imports));
@@ -3915,7 +3920,7 @@ pub fn assemble_host_runtime_resource(
     // sec 7: TWO instance-types — the host effect (comp type 0, its h ops) then the runtime (comp type 1,
     // its k ops).
     let type_sec = {
-        let host_it = host_effect_instance_type(host_fns, false, false, false);
+        let host_it = host_effect_instance_type(host_fns, false, false, false, &[]);
         let rt_it = runtime_op_instance_type(imports);
         let mut items = host_it;
         items.extend_from_slice(&rt_it);
@@ -4654,7 +4659,7 @@ pub fn assemble_host_runtime_resource_with_scalar_methods(
 
     // sec 7: TWO instance-types — the host effect (comp type 0, its h ops) then the runtime (comp type 1).
     let type_sec = {
-        let host_it = host_effect_instance_type(host_fns, false, false, false);
+        let host_it = host_effect_instance_type(host_fns, false, false, false, &[]);
         let rt_it = runtime_op_instance_type(imports);
         let mut items = host_it;
         items.extend_from_slice(&rt_it);
@@ -10232,6 +10237,7 @@ fn host_effect_instance_type(
     needs_option_bytes: bool,
     needs_list_byte_pairs: bool,
     needs_bytes_result: bool,
+    record_defs: &[Vec<u8>],
 ) -> Vec<u8> {
     let h = host_fns.len();
     // An `option<list<u8>>` RESULT (S0) OR a `list<tuple<list<u8>,list<u8>>>` RESULT (prefix-scan) OR a bare
@@ -10273,6 +10279,28 @@ fn host_effect_instance_type(
         let mut lot = vec![0x70];
         uleb128(tuple_idx, &mut lot);
         decls.extend_from_slice(&lot);
+        prepended += 1;
+    }
+    // RECORD-param types (shape d): a NOMINAL type (record) that a func in an IMPORT instance-type uses
+    // must be EXPORTED from the instance (a component-model rule — a structural `list<u8>` may be anonymous,
+    // a record may NOT; verified against `wasm-tools component wit`'s own encoding of a record-param import).
+    // So per record param lay TWO decls: (1) DEFINE the record (`0x01 <record-bytes>`, type index = current)
+    // then (2) EXPORT it as a named type (`0x04 <name> 0x03 0x00 <defined-idx>` — export decl, a `type`
+    // externdesc with an `eq` bound to the defined index), which introduces the EXPORTED type at the NEXT
+    // index. The op's `comp_functype` references that EXPORTED index (defined+1), NOT the raw defined index.
+    // In the supported shape (a single record param + NO Bytes/option/pairs op — enforced by the caller) no
+    // shared type is prepended, so the record is DEFINED at index 0 and EXPORTED at index 1 (the index the
+    // Record arm of `host_op_comp_functype` references), and the func types follow at index 2+.
+    for (i, rd) in record_defs.iter().enumerate() {
+        let defined_idx = prepended;
+        decls.push(0x01);
+        decls.extend_from_slice(rd);
+        prepended += 1;
+        decls.push(0x04); // export decl
+        decls.extend_from_slice(&extern_name(&format!("host-record-p{i}")));
+        decls.push(0x03); // externdesc: type
+        decls.push(0x00); // typebound: eq
+        uleb128(defined_idx, &mut decls);
         prepended += 1;
     }
     let base: u64 = prepended;

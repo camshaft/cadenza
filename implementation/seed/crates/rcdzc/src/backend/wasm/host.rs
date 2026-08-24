@@ -95,6 +95,40 @@ pub struct HostImport {
 /// whose declaration has exactly the `Some`/`None` variants instantiated at a single `Bytes` payload. The
 /// one compound host RESULT the host-fused bytes path lifts (S0); every other compound result still
 /// declines. Reads through an erased nominal wrapper.
+/// The boundary scalar ABI of a shape-d record FIELD, or `None` if the field is not a NO-WRAP scalar. This
+/// slice supports only fields whose value-heap read (`get-int`/`get-bool`/`get-float`) needs NO i64→i32
+/// narrowing: `Int64`/`UInt64` (get-int → i64 slot), `Bool` (get-bool → i32), `Float64`/`Float32`
+/// (get-float → f64/f32). A NARROW int / `Char` (get-int → i64 into an i32 slot needs a wrap), a `Qty`, a
+/// nominal wrapper, a `Bytes`/`String`, or a nested record is a LATER slice → `None`. Keeps the guest field
+/// marshal trivially correct (no per-field narrowing) and the classifier's admit set aligned with it.
+fn field_flat_abi(ty: &Ty) -> Option<AbiValType> {
+    match ty {
+        Ty::Bool => Some(AbiValType::Bool),
+        Ty::Int(it) if it.ground_width() == 64 => Some(if it.ground_signed() {
+            AbiValType::S64
+        } else {
+            AbiValType::U64
+        }),
+        Ty::Float(ft) if ft.ground_width() == 64 => Some(AbiValType::F64),
+        Ty::Float(ft) if ft.ground_width() == 32 => Some(AbiValType::F32),
+        _ => None,
+    }
+}
+
+/// Whether `ty` is a `record` whose EVERY field crosses as a NO-WRAP SCALAR ([`field_flat_abi`]) — the
+/// shape-d record host-ARGUMENT the guest flattens field-by-field into core slots (one per field). Matches
+/// the BARE `Ty::Record` the classifier keys on (a nominal-wrapped record, or a record with a narrow-int/
+/// Char/Bytes/String/nested field, yields false — a later slice), so the guard's admit set and the
+/// classifier's `HostParam::Record` production stay in lockstep (no arity skew between the sig and the args).
+pub fn is_all_scalar_record(ty: &Ty) -> bool {
+    match ty {
+        Ty::Record(fields) => {
+            !fields.is_empty() && fields.values().all(|f| field_flat_abi(f).is_some())
+        }
+        _ => false,
+    }
+}
+
 pub fn is_option_bytes(db: &mut Db, ty: &Ty) -> bool {
     let Ty::Sum { decl, args } = ty.strip_nominal() else {
         return false;
@@ -442,17 +476,17 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                     // still crosses as a `u32` handle (the `_` arm below), not this native record.
                     Ty::Record(fields) if !peer_bound => {
                         let mut field_abis = Vec::with_capacity(fields.len());
-                        let mut all_scalar = true;
+                        let mut all_flat = !fields.is_empty();
                         for (sym, fty) in fields.iter() {
-                            match abi_val_type(fty) {
+                            match field_flat_abi(fty) {
                                 Some(v) => field_abis.push((sym.name.to_string(), v)),
                                 None => {
-                                    all_scalar = false;
+                                    all_flat = false;
                                     break;
                                 }
                             }
                         }
-                        if all_scalar {
+                        if all_flat {
                             params.push(HostParam::Record(field_abis));
                         }
                     }
@@ -895,9 +929,16 @@ pub fn first_unrepresentable_host_op(
         // undetermined arg type (a synthesized node) is skipped for the same reason as the result.
         for &a in &args {
             let at = crate::infer::type_of(db, a);
+            // A shape-d all-scalar RECORD argument crosses NATIVELY (flattened per field) on the reducer
+            // typed/host-fused path — gated on `allow_option_bytes` (which marks that path) and `!peer_bound`
+            // (a peer record crosses as a `u32` handle, not this flatten), matching where the guest marshal +
+            // the record instance-type are wired. Every OTHER path keeps declining a record arg.
+            let arg_is_scalar_record =
+                allow_option_bytes && !peer_bound && is_all_scalar_record(&at);
             if !matches!(at, Ty::Unit | Ty::String | Ty::Bytes)
                 && !ty_undetermined(&at)
                 && !abi_ok(&at)
+                && !arg_is_scalar_record
             {
                 return Some((op.to_string(), "argument", at.render_name(&db.name_ctx())));
             }

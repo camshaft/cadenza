@@ -3852,6 +3852,19 @@ fn collect_used_ops_into_seen(
                             collect_used_ops_into_seen(db, arg, out, visited);
                         }
                     }
+                    // A RECORD host arg (shape d) is marshaled field-by-field by the guest: `arr-get`
+                    // (borrow each field) + the field's scalar get-op. Declare them to MATCH the emit
+                    // (else the `CallImport` resolves to u32::MAX → an invalid module), then descend to
+                    // collect the ops that BUILD the record value.
+                    Ty::Record(fields) if !peer_bound => {
+                        out.insert(OP_ARR_GET);
+                        for fty in fields.values() {
+                            if let Ok(Some(op)) = get_op_ty(db, fty) {
+                                out.insert(op);
+                            }
+                        }
+                        collect_used_ops_into_seen(db, arg, out, visited);
+                    }
                     _ => collect_used_ops_into_seen(db, arg, out, visited),
                 }
             }
@@ -12167,6 +12180,32 @@ fn emit(
                             out.push(Lir::LocalSet(cursor)); // cursor += len
                         }
                     },
+                    // A RECORD argument (shape d, all NO-WRAP-scalar fields) crosses NATIVELY: the guest
+                    // DECOMPOSES the value-heap record field-by-field into the flattened core slots the
+                    // component `record` param lowers to. Stash the record handle in a scratch slot, then per
+                    // field (NAME-LEX order = the value-heap cell layout = the component record's field order
+                    // = the core flatten order) read it back with `arr-get` (borrows the aggregate) + the
+                    // field's scalar get-op (`get-int`/`get-bool`/`get-float`; `host::field_flat_abi`
+                    // restricts fields to widths that need NO i64→i32 narrow, so the read is wrap-free). The
+                    // reads BORROW the record (no consume), so — like the String/Bytes arg marshal above —
+                    // the handle is not dropped here (its owner reclaims it; a narrow-field / owned-record
+                    // drop is a later slice).
+                    Ty::Record(fields) => {
+                        let rec_slot = arg_base.max(*high);
+                        *high = (*high).max(rec_slot + 1);
+                        scratch_ty.insert(rec_slot, ValType::I32);
+                        emit(db, arg, slots, rec_slot + 1, high, scratch_ty, layout, out)?; // [rec]
+                        out.push(Lir::LocalSet(rec_slot));
+                        for (i, (_, fty)) in fields.iter().enumerate() {
+                            let read = get_op_ty(db, fty)?.ok_or_else(|| {
+                                Reject::decline("a record host-arg field has no scalar read op")
+                            })?;
+                            out.push(Lir::LocalGet(rec_slot)); // [rec]
+                            out.push(Lir::ConstI32(i as i32)); // [rec, i]
+                            out.push(Lir::CallImport(OP_ARR_GET)); // [field-handle] (borrows rec)
+                            out.push(Lir::CallImport(read)); // [scalar]
+                        }
+                    }
                     // A scalar argument emits its value directly.
                     _ => emit(db, arg, slots, arg_base, high, scratch_ty, layout, out)?,
                 }
