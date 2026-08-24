@@ -145,15 +145,31 @@ pub enum EventOp {
         payload: Bytes,
         error: Option<Error>,
     },
-    /// A request the reducer emitted from a fold — an effect it performs, a timer it arms, or (for an
-    /// event reducer) a deliver it routes. `contract` is the request's contract-id, `payload` its input
-    /// value, `continuation_token` the token it will correlate the response by, and `has_deadline`
-    /// whether it set a per-request deadline.
+    /// A request the reducer emitted from a fold — an effect it performs or a timer it arms. `contract` is
+    /// the request's contract-id, `payload` its input value, `continuation_token` the token it will
+    /// correlate the response by, and `has_deadline` whether it set a per-request deadline. A privileged
+    /// **deliver** an event reducer routes is a distinct act, recorded as [`Routed`](Self::Routed).
     Emitted {
         contract: ContractId,
         payload: Bytes,
         continuation_token: Bytes,
         has_deadline: bool,
+    },
+    /// A privileged **deliver** an event reducer performed — the routing act itself (§4), recorded at the
+    /// `deliver` host boundary independent of whether a target was running to receive it (so a §4 dispatch
+    /// run asserts what the reducer routed without a live listener). The send-side counterpart to
+    /// [`Delivered`](Self::Delivered): `kind` is which deliver primitive (`on_message`/`on_response`/
+    /// `on_notification` at the target), `target` the reducer routed to, `contract` the routed event's
+    /// contract-id, `continuation_token` the correlation token (empty for a notification), `payload` the
+    /// routed value (a message's payload or a response's `Ok` bytes), and `error` `Some` for a response
+    /// that routed a runtime failure (`Err`) instead.
+    Routed {
+        kind: EventKind,
+        target: ReducerId,
+        contract: ContractId,
+        continuation_token: Bytes,
+        payload: Bytes,
+        error: Option<Error>,
     },
     /// The reducer terminated itself, returning `Break(schema, reason)` — the typed reason for its
     /// closure (§3). A clean completion and a failure are both closes, distinguished only by the reason.
@@ -384,6 +400,29 @@ impl fmt::Display for Record {
                     short(*contract),
                     reason.as_str()
                 ),
+                // The send side: show what the event reducer routed (deliver primitive, contract, payload)
+                // and to whom — the counterpart to the `emit`/`recv` lines, so a §4 dispatch run's routed
+                // event is visible in a log scan.
+                EventOp::Routed {
+                    kind,
+                    target,
+                    contract,
+                    payload,
+                    ..
+                } => {
+                    let verb = match kind {
+                        EventKind::Message => "deliver msg",
+                        EventKind::Response => "deliver response",
+                        EventKind::Notification => "deliver notification",
+                    };
+                    write!(
+                        f,
+                        "{verb} {} {} to {}",
+                        short(*contract),
+                        preview(payload),
+                        short(*target)
+                    )
+                }
             },
             Entry::Spawn(info) => write!(
                 f,
@@ -498,10 +537,22 @@ mod render_tests {
                     reason: Bytes::from_static(b"quiescent"),
                 }),
             ),
+            rec(
+                5,
+                b"agent",
+                Entry::Event(EventOp::Routed {
+                    kind: EventKind::Message,
+                    target: ReducerId::of(b"handler"),
+                    contract: ContractId::of(b"http.get"),
+                    continuation_token: Bytes::from_static(b"c1"),
+                    payload: Bytes::from_static(b"routed=on"),
+                    error: None,
+                }),
+            ),
         ];
         let out = render(&records);
         let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines.len(), 5, "one line per record");
+        assert_eq!(lines.len(), 6, "one line per record");
         // Each line leads with its seq and carries a readable description of the entry.
         assert!(lines[0].starts_with("#0"));
         assert!(lines[0].contains("spawn \"agent\""), "line: {}", lines[0]);
@@ -522,6 +573,11 @@ mod render_tests {
         // The close line shows WHY it closed (the reason), not just the schema.
         assert!(lines[4].contains("close "), "line: {}", lines[4]);
         assert!(lines[4].contains("\"quiescent\""), "line: {}", lines[4]);
+        // The routed line shows the deliver primitive, the payload, and the target — the send-side counterpart
+        // to the recv/emit lines, so a §4 dispatch run's routed event is visible in a log scan.
+        assert!(lines[5].contains("deliver msg"), "line: {}", lines[5]);
+        assert!(lines[5].contains("\"routed=on\""), "line: {}", lines[5]);
+        assert!(lines[5].contains(" to "), "line: {}", lines[5]);
         // An empty log renders to an empty string.
         assert!(render(&[]).is_empty());
     }

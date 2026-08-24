@@ -20,6 +20,7 @@ type Entry =
   | BlobHas(Record(hash: Bytes, present: UInt64))
   | Delivered(Record(eventKind: String, contract: Bytes, from: Option(Record(reducer: Bytes, host: Bytes)), token: Bytes, payload: Bytes, error: Option(String)))
   | Emitted(Record(contract: Bytes, payload: Bytes, token: Bytes, deadline: UInt64))
+  | Routed(Record(eventKind: String, target: Bytes, contract: Bytes, token: Bytes, payload: Bytes, error: Option(String)))
   | Closed(Record(schema: Bytes, reason: Bytes))
   | Failed(Record(during: String, contract: Bytes, reason: String))
   | Spawn(Record(name: String, program: Bytes, parent: Bytes, reducerKind: String))

@@ -137,7 +137,7 @@ fn read_entry(arenas: &Arenas, id: StructId) -> Option<Entry> {
     Some(match tag {
         "KvGet" | "KvPut" | "KvDelete" | "KvScan" => Entry::Kv(read_kv(arenas, inner, tag)?),
         "BlobPut" | "BlobGet" | "BlobHas" => Entry::Blob(read_blob(arenas, inner, tag)?),
-        "Delivered" | "Emitted" | "Closed" | "Failed" => {
+        "Delivered" | "Emitted" | "Closed" | "Failed" | "Routed" => {
             Entry::Event(read_event(arenas, inner, tag)?)
         }
         "Spawn" => Entry::Spawn(read_spawn(arenas, inner)?),
@@ -367,6 +367,36 @@ fn event_value(b: &mut Builder, op: &EventOp) -> StructId {
                 ],
             )
         }
+        EventOp::Routed {
+            kind,
+            target,
+            contract,
+            continuation_token,
+            payload,
+            error,
+        } => {
+            let event_kind = str_leaf(b, event_kind_str(*kind));
+            let target = bytes_leaf(b, target.hash().as_bytes());
+            let contract = bytes_leaf(b, contract.hash().as_bytes());
+            let token = bytes_leaf(b, continuation_token);
+            let payload = bytes_leaf(b, payload);
+            // `error` is an always-present Option (`(Some …)` / `(None unit)`), never conditionally omitted,
+            // so the routed record has one fixed shape a checker `Value.decode`s (§9), mirroring `Delivered`.
+            let error_inner = error.as_ref().map(|e| str_leaf(b, error_str(*e)));
+            let error = option_value(b, error_inner);
+            tagged(
+                b,
+                "Routed",
+                vec![
+                    ("eventKind", event_kind),
+                    ("target", target),
+                    ("contract", contract),
+                    ("token", token),
+                    ("payload", payload),
+                    ("error", error),
+                ],
+            )
+        }
     }
 }
 
@@ -396,6 +426,16 @@ fn read_event(arenas: &Arenas, id: StructId, tag: &str) -> Option<EventOp> {
             during: read_event_kind(str_at(arenas, field(arenas, id, "during")?)?)?,
             contract: read_contract(arenas, field(arenas, id, "contract")?)?,
             reason: Str::from(str_at(arenas, field(arenas, id, "reason")?)?),
+        },
+        "Routed" => EventOp::Routed {
+            kind: read_event_kind(str_at(arenas, field(arenas, id, "eventKind")?)?)?,
+            target: read_reducer(arenas, field(arenas, id, "target")?)?,
+            contract: read_contract(arenas, field(arenas, id, "contract")?)?,
+            continuation_token: read_bytes(arenas, field(arenas, id, "token")?)?,
+            payload: read_bytes(arenas, field(arenas, id, "payload")?)?,
+            error: read_option(arenas, field(arenas, id, "error")?, |a, i| {
+                read_error(str_at(a, i)?)
+            })?,
         },
         _ => return None,
     })
@@ -758,6 +798,50 @@ mod tests {
                     during: EventKind::Message,
                     contract: ContractId::of(b"go"),
                     reason: Str::from("boom"),
+                }),
+            ),
+            rec(
+                15,
+                Entry::Event(EventOp::Routed {
+                    kind: EventKind::Message,
+                    target: ReducerId::of(b"handler"),
+                    contract: ContractId::of(b"c"),
+                    continuation_token: Bytes::from_static(b"tok"),
+                    payload: Bytes::from_static(b"p"),
+                    error: None,
+                }),
+            ),
+            rec(
+                16,
+                Entry::Event(EventOp::Routed {
+                    kind: EventKind::Response,
+                    target: ReducerId::of(b"caller"),
+                    contract: ContractId::of(b"c"),
+                    continuation_token: Bytes::from_static(b"tok"),
+                    payload: Bytes::from_static(b"200"),
+                    error: None,
+                }),
+            ),
+            rec(
+                17,
+                Entry::Event(EventOp::Routed {
+                    kind: EventKind::Response,
+                    target: ReducerId::of(b"caller"),
+                    contract: ContractId::of(b"c"),
+                    continuation_token: Bytes::from_static(b"tok"),
+                    payload: Bytes::new(),
+                    error: Some(Error::Timeout),
+                }),
+            ),
+            rec(
+                18,
+                Entry::Event(EventOp::Routed {
+                    kind: EventKind::Notification,
+                    target: ReducerId::of(b"watcher"),
+                    contract: ContractId::of(b"lifecycle.spawned"),
+                    continuation_token: Bytes::new(),
+                    payload: Bytes::from_static(b"n"),
+                    error: None,
                 }),
             ),
         ];

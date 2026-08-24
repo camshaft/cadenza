@@ -15,14 +15,15 @@
 
 use super::observation::{BlobOp, Entry, EventKind, EventOp, KvOp, ObservationLog};
 use crate::{
-    BlobStore, Bytes, ContractId, Hash, HostId, KeyRange, KvKeyScan, KvScan, KvStore, Message,
-    Notification, Origin, Outcome, ProgramHash, ProgramStore, Reducer, ReducerId, Request,
-    Response, SpawnContext, Str,
+    BlobStore, Bytes, ContractId, Delivered, Delivery, Hash, HostId, KeyRange, KvKeyScan, KvScan,
+    KvStore, Message, Notification, Origin, Outcome, ProgramHash, ProgramStore, Reducer, ReducerId,
+    Request, Response, SpawnContext, Str,
 };
 use async_trait::async_trait;
 use futures_util::FutureExt as _; // catch_unwind — record an uncontrolled fold failure (§10) before it unwinds
 use std::any::Any;
 use std::panic::AssertUnwindSafe;
+use std::sync::Arc;
 
 /// A [`KvStore`] that records every operation to an [`ObservationLog`], then defers to the wrapped
 /// store. Generic over the inner backend, so it decorates any `KvStore` — the in-memory one for tests,
@@ -164,6 +165,91 @@ impl<B: BlobStore> BlobStore for RecordingBlobStore<B> {
         let present = self.inner.has(hash).await;
         self.record(BlobOp::Has { hash, present });
         present
+    }
+}
+
+/// A [`Delivery`] that records every **deliver** an event reducer routes to an [`ObservationLog`], then
+/// defers to the wrapped delivery (`design/cadenza-platform.md` §4/§9). Wrapping the `deliver` host boundary
+/// makes the routing ACT observable in isolation — recorded whether or not a target is running to receive it
+/// — so a §4 dispatch conformance run asserts *what the reducer routed* (which primitive, contract, token,
+/// payload, target) without a live listener. The send-side counterpart to [`RecordingReducer`]'s receive-side
+/// [`Delivered`](EventOp::Delivered): here the record is an [`EventOp::Routed`] attributed to the routing
+/// reducer (`owner`). Behind an `Arc` like every [`Delivery`], so the injected factory clones a shared base.
+pub struct RecordingDelivery {
+    inner: Arc<dyn Delivery>,
+    owner: Origin,
+    log: ObservationLog,
+    now: fn() -> u64,
+}
+
+impl RecordingDelivery {
+    /// Wrap `inner`, attributing every recorded deliver to `owner` (the reducer whose `deliver` import this
+    /// backs), appending to `log`, and stamping each record with `now` (the runtime's clock, for
+    /// deterministic simulated time under bach).
+    pub fn new(
+        inner: Arc<dyn Delivery>,
+        owner: Origin,
+        log: ObservationLog,
+        now: fn() -> u64,
+    ) -> Self {
+        Self {
+            inner,
+            owner,
+            log,
+            now,
+        }
+    }
+
+    /// The [`EventOp::Routed`] a delivered `event` records — the send-side split of a [`Delivered`] into the
+    /// same fields [`RecordingReducer`] records on receipt (a response's `Ok`/`Err` split into payload/error),
+    /// plus the `target` routed to. Borrows `event` so the caller can still move it into the wrapped delivery.
+    fn routed(target: ReducerId, event: &Delivered) -> EventOp {
+        match event {
+            Delivered::Message(m) => EventOp::Routed {
+                kind: EventKind::Message,
+                target,
+                contract: m.id,
+                continuation_token: m.continuation_token.clone(),
+                payload: m.payload.clone(),
+                error: None,
+            },
+            Delivered::Response(r) => {
+                let (payload, error) = match &r.payload {
+                    Ok(bytes) => (bytes.clone(), None),
+                    Err(e) => (Bytes::new(), Some(*e)),
+                };
+                EventOp::Routed {
+                    kind: EventKind::Response,
+                    target,
+                    contract: r.id,
+                    continuation_token: r.continuation_token.clone(),
+                    payload,
+                    error,
+                }
+            }
+            Delivered::Notification(n) => EventOp::Routed {
+                kind: EventKind::Notification,
+                target,
+                contract: n.id,
+                continuation_token: Bytes::new(),
+                payload: n.payload.clone(),
+                error: None,
+            },
+        }
+    }
+}
+
+#[async_trait]
+impl Delivery for RecordingDelivery {
+    async fn deliver(&self, target: ReducerId, event: Delivered) -> bool {
+        // Record the routing ACT (the observable §4 fact) before delegating, so it is captured regardless of
+        // whether a target is running — the wrapped delivery's `bool` outcome is landing, not the act.
+        self.log.record(
+            (self.now)(),
+            self.owner,
+            Entry::Event(Self::routed(target, &event)),
+        );
+        self.inner.deliver(target, event).await
     }
 }
 

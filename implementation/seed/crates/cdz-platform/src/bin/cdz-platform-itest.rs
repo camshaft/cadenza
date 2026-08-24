@@ -31,12 +31,13 @@
 
 use cdz_platform::testing::{
     BlobSource, CheckOutcome, Harness, HarnessSpec, ObservationLog, PureRun, RecordingBlobStore,
-    RecordingKvStore, SpawnSpec, check_message, no_verdict_reason, render, verdict_in,
+    RecordingDelivery, RecordingKvStore, SpawnSpec, check_message, no_verdict_reason, render,
+    verdict_in,
 };
 use cdz_platform::{
-    BachRuntime, BlobStore, Bytes, HostId, InMemoryBlobStore, InMemoryKvStore,
-    InMemoryReducerGraph, KvStore, Origin, ProgramHash, ReducerGraph, ReducerId, Runner, Runtime,
-    WasmProgramStore,
+    BachRuntime, BlobStore, Bytes, Delivery, HostId, InMemoryBlobStore, InMemoryKvStore,
+    InMemoryReducerGraph, KvStore, NoDelivery, Origin, ProgramHash, ReducerGraph, ReducerId,
+    Runner, Runtime, WasmProgramStore,
 };
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -269,20 +270,35 @@ fn wasm_store(cas: Arc<dyn BlobStore>, log: ObservationLog, host: HostId) -> Was
             BachRuntime::now as fn() -> u64,
         ))
     });
+    let blob_log = log.clone();
     let make_blobs: Arc<dyn Fn(ReducerId) -> Box<dyn BlobStore> + Send + Sync> =
         Arc::new(move |id| {
             Box::new(RecordingBlobStore::new(
                 InMemoryBlobStore::new(),
                 Origin { reducer: id, host },
-                log.clone(),
+                blob_log.clone(),
                 BachRuntime::now as fn() -> u64,
             ))
         });
     // The graph factory hands out the one shared node-wide graph (a plain `move |_id| graph.clone()`),
     // mirroring make_blobs/make_kv. A future graph-recording run wraps this in a RecordingGraph decorator.
     let graph: Arc<dyn ReducerGraph> = Arc::new(InMemoryReducerGraph::new());
+    // The delivery factory records each reducer's privileged `deliver` (the §4 routing ACT) into the log via a
+    // RecordingDelivery decorator, over a NoDelivery base — the base never lands (the itest has no live
+    // routing target), but the ACT itself is what a §4 dispatch run asserts, and it is recorded regardless.
+    let delivery_log = log;
+    let make_delivery: Arc<dyn Fn(ReducerId) -> Arc<dyn Delivery> + Send + Sync> =
+        Arc::new(move |id| {
+            Arc::new(RecordingDelivery::new(
+                Arc::new(NoDelivery),
+                Origin { reducer: id, host },
+                delivery_log.clone(),
+                BachRuntime::now as fn() -> u64,
+            )) as Arc<dyn Delivery>
+        });
     WasmProgramStore::new(cas, make_blobs, make_kv, Arc::new(move |_id| graph.clone()))
         .expect("build the wasm program store (the wasm engine must initialize)")
+        .with_delivery(make_delivery)
 }
 
 /// Drive the run to quiescence under bach over a [`WasmProgramStore`], then — if the description named a

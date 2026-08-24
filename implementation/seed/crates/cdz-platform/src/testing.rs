@@ -62,7 +62,8 @@ pub use observation::{
     BlobOp, Entry, EventKind, EventOp, KvOp, ObservationLog, Record, SpawnInfo, render,
 };
 pub use recording::{
-    RecordingBlobStore, RecordingKvStore, RecordingProgramStore, RecordingReducer,
+    RecordingBlobStore, RecordingDelivery, RecordingKvStore, RecordingProgramStore,
+    RecordingReducer,
 };
 pub use spec::{
     BlobSource, BlobSpec, DeliveryEvent, HarnessSpec, PureRun, RegistrySpec, SpecError,
