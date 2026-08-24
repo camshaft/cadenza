@@ -19,7 +19,7 @@
 use super::checker::CheckOutcome;
 use super::log_value;
 use super::observation::{Entry, EventOp, Record};
-use crate::contract_value::{bytes_leaf, read_bytes, read_hash};
+use crate::contract_value::{as_ascribed, ascribe, bytes_leaf, read_bytes, read_hash};
 use crate::{Bytes, Contract, ContractId, Delivered, HostId, Message, Origin, ReducerId, Str};
 use cadenza_ast::ast::{Arenas, Builder, Leaf, Struct, StructId};
 use cadenza_ast::codec;
@@ -65,13 +65,16 @@ pub fn encode_check(log: &[u8], verdict: ContractId) -> Bytes {
     let mut b = Builder::new();
     let log_leaf = bytes_leaf(&mut b, log);
     let verdict_leaf = bytes_leaf(&mut b, verdict.hash().as_bytes());
-    let root = crate::contracts::check::envelope_check(
+    let value = crate::contracts::check::envelope_check(
         &mut b,
         crate::contracts::check::EnvelopeCheck {
             log: log_leaf,
             verdict: verdict_leaf,
         },
     );
+    // The checker guest `Value.decode`s this payload into an `Envelope`, so wrap it in the root ascription
+    // the value decoder requires (`(: <value> Envelope)`); the type token is name-agnostic.
+    let root = ascribe(&mut b, value, "Envelope");
     Bytes::from(codec::encode(&b.finish(root)))
 }
 
@@ -80,7 +83,8 @@ pub fn encode_check(log: &[u8], verdict: ContractId) -> Bytes {
 #[must_use]
 pub fn decode_check(bytes: &[u8]) -> Option<Bytes> {
     let arenas = codec::decode(bytes)?;
-    let env = crate::contracts::check::as_envelope_check(&arenas, arenas.root)?;
+    let root = as_ascribed(&arenas, arenas.root).unwrap_or(arenas.root);
+    let env = crate::contracts::check::as_envelope_check(&arenas, root)?;
     read_bytes(&arenas, env.log)
 }
 
@@ -90,7 +94,8 @@ pub fn decode_check(bytes: &[u8]) -> Option<Bytes> {
 #[must_use]
 pub fn decode_check_verdict(bytes: &[u8]) -> Option<ContractId> {
     let arenas = codec::decode(bytes)?;
-    let env = crate::contracts::check::as_envelope_check(&arenas, arenas.root)?;
+    let root = as_ascribed(&arenas, arenas.root).unwrap_or(arenas.root);
+    let env = crate::contracts::check::as_envelope_check(&arenas, root)?;
     Some(ContractId::from_hash(read_hash(&arenas, env.verdict)?))
 }
 
@@ -105,13 +110,16 @@ pub fn encode_verdict(pass: bool, messages: &[Str]) -> Bytes {
         .map(|m| b.atom_leaf(Leaf::Str(Arc::from(m.as_str()))))
         .collect();
     let messages_leaf = string_list(&mut b, items);
-    let root = crate::contracts::verdict::verdict_verdict(
+    let value = crate::contracts::verdict::verdict_verdict(
         &mut b,
         crate::contracts::verdict::VerdictVerdict {
             pass: pass_leaf,
             messages: messages_leaf,
         },
     );
+    // Symmetric with the verdict a guest emits (its `Value.encode` wraps the root), so a native verdict and
+    // a guest verdict decode by the same path (`(: <value> Verdict)`, name-agnostic token).
+    let root = ascribe(&mut b, value, "Verdict");
     Bytes::from(codec::encode(&b.finish(root)))
 }
 
@@ -121,7 +129,9 @@ pub fn encode_verdict(pass: bool, messages: &[Str]) -> Bytes {
 #[must_use]
 pub fn decode_verdict(bytes: &[u8]) -> Option<CheckOutcome> {
     let arenas = codec::decode(bytes)?;
-    let v = crate::contracts::verdict::as_verdict_verdict(&arenas, arenas.root)?;
+    // A verdict from a Cadenza guest is `Value.encode`d (root ascription); a native `encode_verdict` matches.
+    let root = as_ascribed(&arenas, arenas.root).unwrap_or(arenas.root);
+    let v = crate::contracts::verdict::as_verdict_verdict(&arenas, root)?;
     let pass = read_bool(&arenas, v.pass)?;
     let messages = read_string_list(&arenas, v.messages)?;
     Some(if pass {
@@ -167,9 +177,10 @@ pub fn verdict_in(records: &[Record]) -> Option<CheckOutcome> {
     })
 }
 
-/// A `("list" e…)` value — the canonical list constructor (string head).
+/// A `(list e…)` value — the canonical NAME-headed list a guest `Value.decode`s (the verdict's `messages`
+/// field), matching the form a Cadenza guest's own `Value.encode` produces.
 fn string_list(b: &mut Builder, items: Vec<StructId>) -> StructId {
-    let head = b.atom_leaf(Leaf::Str(Arc::from("list")));
+    let head = b.name("list");
     b.list(std::iter::once(head).chain(items).collect())
 }
 

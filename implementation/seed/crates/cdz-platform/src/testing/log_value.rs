@@ -29,7 +29,8 @@
 
 use super::observation::{BlobOp, Entry, EventKind, EventOp, KvOp, Record, SpawnInfo};
 use crate::contract_value::{
-    bare_ctor, bytes_leaf, qctor, read_bytes, read_uint, record, record_field, uint_leaf,
+    as_ascribed, ascribe, bare_ctor, bytes_leaf, qctor, read_bytes, read_uint, record,
+    record_field, uint_leaf,
 };
 use crate::{
     Bytes, ContractId, Error, Hash, HostId, Origin, ProgramHash, ReducerId, ReducerKind, Str,
@@ -47,7 +48,11 @@ use std::sync::Arc;
 pub fn serialize(records: &[Record]) -> Vec<u8> {
     let mut b = Builder::new();
     let items: Vec<StructId> = records.iter().map(|r| record_value(&mut b, r)).collect();
-    let root = list_value(&mut b, items);
+    let list = list_value(&mut b, items);
+    // The whole log crosses as one canonical Cadenza value a guest `Value.decode`s into a `List(LogRecord)`,
+    // so the root carries the ascription `Value.decode` requires (`(: <list> List)`); the type token is
+    // name-agnostic (the decoder is target-directed), so the bare `List` suffices.
+    let root = ascribe(&mut b, list, "List");
     codec::encode(&b.finish(root))
 }
 
@@ -56,7 +61,10 @@ pub fn serialize(records: &[Record]) -> Vec<u8> {
 #[must_use]
 pub fn deserialize(bytes: &[u8]) -> Option<Vec<Record>> {
     let arenas = codec::decode(bytes)?;
-    let items = list_items(&arenas, arenas.root)?;
+    // Strip the root ascription `(: <list> List)` if present (`serialize` writes it so a guest can
+    // `Value.decode` the log); tolerate a bare list too, so the reader is liberal about the wrapper.
+    let root = as_ascribed(&arenas, arenas.root).unwrap_or(arenas.root);
+    let items = list_items(&arenas, root)?;
     items.iter().map(|&r| read_record(&arenas, r)).collect()
 }
 
@@ -183,8 +191,8 @@ fn read_kv(arenas: &Arenas, id: StructId, tag: &str) -> Option<KvOp> {
     })
 }
 
-/// A scan `Bound` as a Cadenza **sum** — `((. Bound unbounded))`, `((. Bound included) <key>)`, or
-/// `((. Bound excluded) <key>)`. A sum with a fixed per-constructor shape (not a `bound`-tagged record whose
+/// A scan `Bound` as a Cadenza **sum** — the canonical bare-constructor form `(unbounded)`,
+/// `(included <key>)`, or `(excluded <key>)`. A sum with a fixed per-constructor shape (not a `bound`-tagged record whose
 /// `key` field is present only for included/excluded) is what lets a Cadenza checker `Value.decode` a log
 /// containing kv-scan entries — the same reason the entry itself is a sum (§9 checker decodability).
 fn bound_value(b: &mut Builder, bound: &Bound<Bytes>) -> StructId {
@@ -206,11 +214,7 @@ fn read_bound(arenas: &Arenas, id: StructId) -> Option<Bound<Bytes>> {
         return None;
     };
     let (&head, tail) = items.split_first()?;
-    let m = arenas.as_form(head, ".")?;
-    if m.len() != 2 || arenas.as_name(m[0]) != Some("Bound") {
-        return None;
-    }
-    Some(match arenas.as_name(m[1])? {
+    Some(match arenas.as_name(head)? {
         "unbounded" => {
             if !tail.is_empty() {
                 return None;
@@ -469,7 +473,7 @@ fn read_reducer_kind(s: &str) -> Option<ReducerKind> {
 
 // --- primitive helpers ---
 
-/// An `Entry` sum value `((. Entry <tag>) ("record" (= <field> <value>)…))` — the constructor named by `tag`
+/// An `Entry` sum value `(<tag> (record (= <field> <value>)…))` — the bare constructor named by `tag`
 /// wrapping a record of the tag-specific fields. Encoding the entry as a CADENZA SUM (not a tag-discriminated
 /// record) is what lets a Cadenza checker `Value.decode` the whole heterogeneous log into a `List(Entry)`: a
 /// value-form sum decodes into a Cadenza sum by constructor name (kebab-matched), whereas a record with a
@@ -481,17 +485,15 @@ fn tagged(b: &mut Builder, tag: &str, fields: Vec<(&'static str, StructId)>) -> 
 }
 
 /// Read an `Entry` sum value back: its constructor name (the former tag) and the payload record the
-/// tag-specific readers pull their fields from. `None` if `id` is not an `((. Entry <ctor>) <record>)` value.
+/// tag-specific readers pull their fields from. `None` if `id` is not a `(<ctor> <record>)` value. The
+/// constructor is the canonical BARE-name head (the sum's type is fixed by the enclosing record's `entry`
+/// field, so the value carries no `(. Entry ctor)` member node).
 fn entry_ctor(arenas: &Arenas, id: StructId) -> Option<(&str, StructId)> {
     let Struct::List(items) = arenas.get(id) else {
         return None;
     };
     let (&head, tail) = items.split_first()?;
-    let m = arenas.as_form(head, ".")?;
-    if m.len() != 2 || arenas.as_name(m[0]) != Some("Entry") {
-        return None;
-    }
-    let ctor = arenas.as_name(m[1])?;
+    let ctor = arenas.as_name(head)?;
     let [inner] = <[StructId; 1]>::try_from(tail).ok()?;
     Some((ctor, inner))
 }
@@ -537,7 +539,9 @@ fn str_leaf(b: &mut Builder, text: &str) -> StructId {
 }
 
 fn list_value(b: &mut Builder, items: Vec<StructId>) -> StructId {
-    let head = b.atom_leaf(Leaf::Str(Arc::from("list")));
+    // The NAME-headed `(list …)` — the canonical Cadenza list form a guest `Value.decode`s (a string-headed
+    // `("list" …)` is a surface literal the value decoder rejects).
+    let head = b.name("list");
     b.list(std::iter::once(head).chain(items).collect())
 }
 
@@ -804,7 +808,8 @@ mod tests {
         )];
         let bytes = serialize(&log);
         let arenas = cadenza_ast::codec::decode(&bytes).expect("a decodable log");
-        let items = super::list_items(&arenas, arenas.root).expect("the log is a list");
+        let root = super::as_ascribed(&arenas, arenas.root).expect("the log root is ascribed");
+        let items = super::list_items(&arenas, root).expect("the log is a list");
         let entry = super::field(&arenas, items[0], "entry").expect("the record has an entry");
         let (ctor, inner) = super::entry_ctor(&arenas, entry).expect("the entry is an Entry sum");
         assert_eq!(ctor, "delivered");
@@ -820,8 +825,8 @@ mod tests {
 
     #[test]
     fn a_scan_bound_is_a_cadenza_sum_not_a_tagged_record() {
-        // Bound is encoded as a sum `((. Bound <ctor>) <key>?)` — a fixed per-constructor shape a Cadenza
-        // checker `Value.decode`s — not a `bound`-tagged record whose `key` varies. Round-trip alone would
+        // Bound is encoded as a sum `(<ctor> <key>?)` — a fixed per-constructor shape a Cadenza checker
+        // `Value.decode`s — not a `bound`-tagged record whose `key` varies. Round-trip alone would
         // pass for either encoding, so pin the sum form: the `lower` value is a Bound sum (decodes back) and
         // carries no `bound` record field.
         let log = vec![rec(
@@ -834,7 +839,8 @@ mod tests {
         )];
         let bytes = serialize(&log);
         let arenas = cadenza_ast::codec::decode(&bytes).expect("a decodable log");
-        let items = super::list_items(&arenas, arenas.root).expect("the log is a list");
+        let root = super::as_ascribed(&arenas, arenas.root).expect("the log root is ascribed");
+        let items = super::list_items(&arenas, root).expect("the log is a list");
         let entry = super::field(&arenas, items[0], "entry").expect("the record has an entry");
         let (ctor, inner) = super::entry_ctor(&arenas, entry).expect("the entry is an Entry sum");
         assert_eq!(ctor, "kv-scan");
