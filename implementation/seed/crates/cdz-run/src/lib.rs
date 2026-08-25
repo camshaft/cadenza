@@ -266,6 +266,7 @@ fn load_runtime_component(
     Ok(component)
 }
 
+mod grade;
 mod render;
 pub use render::render_val;
 

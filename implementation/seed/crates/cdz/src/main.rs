@@ -5338,6 +5338,8 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
                 peers: Vec::new(),
                 release: false,
                 opt_level: None,
+                grade: None,
+                component_name: None,
             }),
         }
     };
