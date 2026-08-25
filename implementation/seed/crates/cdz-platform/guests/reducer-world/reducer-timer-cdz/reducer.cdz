@@ -1,0 +1,31 @@
+// A Cadenza reducer that ARMS A FIRE-AFTER TIMER (design/cadenza-platform.md §6). Timer is a kernel
+// primitive: a reducer emits a request on the timer contract carrying a `fire-after(duration)` envelope, and
+// the runtime later wakes it by delivering a `Fired` RESPONSE correlated by the request's own continuation
+// token. This guest is delivered a trigger message on the timer contract and, on-message, arms a fire-after
+// by emitting one request BACK on that same contract (`msg.contract`, echoed — no hardcoded contract-id)
+// with a `FireAfter` payload and a distinctive continuation token; the runtime fires it and the token comes
+// back on the `Fired` response. So a run can assert the arm→fire round-trip purely from the log (the token
+// on the emitted arm reappears on the delivered wake). on-response / on-notification are inert (the wake is
+// observed in the log; the guest need not fold it to prove the fire happened).
+//
+// Building the `FireAfter` payload needs `Value.encode(Envelope.FireAfter(dur))` — a single-ctor sum over a
+// bare scalar; imports the `Envelope` type from the timer contract's schema (the `libs` manifest lists it).
+import { Envelope } from "timer"
+
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+def on-message(msg) =
+  { requests = [{ contract = msg.contract,
+                  payload = Value.encode(Envelope.FireAfter(1000000)),
+                  token = b"timer-arm",
+                  deadlineNanos = None }],
+    outcome = Outcome.Continue }
+
+def on-response(_resp) =
+  { requests = [], outcome = Outcome.Continue }
+
+def on-notification(_note) =
+  { requests = [], outcome = Outcome.Continue }
+
+export { on-message, on-response, on-notification }

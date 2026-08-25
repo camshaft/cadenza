@@ -1,0 +1,3 @@
+implementation/seed/crates/cdz-platform/contracts/check.cdz
+implementation/seed/crates/cdz-platform/contracts/verdict.cdz
+implementation/seed/crates/cdz-platform/guests/log-schema.cdz
