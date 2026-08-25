@@ -51,6 +51,14 @@ use closure::{declared_import_paths, load as load_import_closure_with};
 // Symbol-independent of the sidecar Query (the handler drives `run_sidecar` and hands the blob here).
 mod doc_module;
 
+// Delegated compilation — spawn the standalone `cdz-compile` instead of linking `rcdzc` in-process
+// (`design/DESIGN-cdz-delegate-compile.md`). Compiled when the `standalone` feature is OFF (the nix
+// build's `--no-default-features` packaging); the default (`standalone` ON) bundles the compiler
+// in-process. `cdz compile`/`cdz build` route through [`dispatch_compile_args`] /
+// [`dispatch_compile_prepared`], which pick delegation vs in-process at compile time.
+#[cfg(not(feature = "standalone"))]
+mod delegate;
+
 /// The unified tool. The name reported in tool-level diagnostics is `cdz`.
 const PROG: &str = "cdz";
 
@@ -1924,6 +1932,40 @@ fn collect_source_dir(dir: &std::path::Path, out: &mut Vec<String>) -> Result<()
 /// `spans` artifact (projected into rcdzc's wire form), so a user gets DWARF without hand-building a
 /// spans artifact. With no source input (the pure artifacts-in path), it delegates to the compiler CLI
 /// unchanged — the `rcdzc` bin's behavior is untouched.
+/// Dispatch a PURE ARTIFACTS-IN `cdz compile` (no source-file input): spawn `cdz-compile` under the
+/// `delegate-compile` feature, else run the compiler in-process (`compiler_cli::run`, byte-for-byte the
+/// standalone `rcdzc` bin's behavior). One seam so the two builds stay behavior-identical.
+fn dispatch_compile_args(args: compiler_cli::CompileArgs) -> ExitCode {
+    #[cfg(not(feature = "standalone"))]
+    {
+        delegate::delegate_args(&args, PROG)
+    }
+    #[cfg(feature = "standalone")]
+    {
+        compiler_cli::run(args, PROG)
+    }
+}
+
+/// Dispatch a compile of already-prepared input artifacts (the source-file path): spawn `cdz-compile`
+/// under the `delegate-compile` feature (materializing the artifacts to temp files), else run the
+/// compiler in-process (`compiler_cli::run_prepared`). The delegated path is behavior-identical because
+/// `cdz-compile` runs the same `run_prepared` over the same artifacts (located diagnostics included).
+fn dispatch_compile_prepared(
+    inputs: Vec<rcdzc::Artifact>,
+    targets: &[rcdzc::Target],
+    out: Option<PathBuf>,
+    opt_level: rcdzc::OptLevel,
+) -> ExitCode {
+    #[cfg(not(feature = "standalone"))]
+    {
+        delegate::delegate_from_artifacts(&inputs, targets, out.as_deref(), opt_level, PROG)
+    }
+    #[cfg(feature = "standalone")]
+    {
+        compiler_cli::run_prepared(inputs, targets, out, opt_level, PROG)
+    }
+}
+
 fn run_compile(args: compiler_cli::CompileArgs) -> ExitCode {
     // Expand any DIRECTORY input into the source files under it (recursively), so
     // `cdz compile src/ --entry app` compiles a whole package tree without naming each file. A plain
@@ -1940,7 +1982,7 @@ fn run_compile(args: compiler_cli::CompileArgs) -> ExitCode {
     // (A directory only ever expands to SOURCE files, so if one was given this branch is not taken;
     // `specs` here equals the original args, so `run(args)` sees the same inputs.)
     if !specs.iter().any(|s| is_source_file(s)) {
-        return compiler_cli::run(args, PROG);
+        return dispatch_compile_args(args);
     }
 
     // FOLLOW A SINGLE FILE'S IMPORT CLOSURE — the same resolution `cdz check`/`cdz test` do. A lone
@@ -2024,7 +2066,7 @@ fn run_compile(args: compiler_cli::CompileArgs) -> ExitCode {
     }
     // Thread the requested `--opt-level` (default `O1`) through to the compile — `cdz compile
     // --opt-level O2 foo.cdz` selects the release pass tier, same as the artifacts-in `rcdzc` path.
-    compiler_cli::run_prepared(inputs, &targets, args.out_path(), args.opt_level(), PROG)
+    dispatch_compile_prepared(inputs, &targets, args.out_path(), args.opt_level())
 }
 
 /// Compile a set of SOURCE-file `specs` (already directory-expanded) into a wasm component, with the
@@ -2061,7 +2103,7 @@ fn compile_source_specs(
     }
     // `run_prepared` applies the `[Wasm]` default when `targets` is empty, matching a bare `cdz compile`.
     // `opt_level` is the resolved build tier.
-    compiler_cli::run_prepared(inputs, targets, out, opt_level, PROG)
+    dispatch_compile_prepared(inputs, targets, out, opt_level)
 }
 
 /// `cdz build [DIR]` — the manifest-driven compile (the `cargo build` analogue). Resolves the project's

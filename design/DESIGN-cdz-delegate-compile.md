@@ -75,58 +75,65 @@ ambiguity, and the two derivations stay independently cached. Resolution order:
 `$CDZ_COMPILE_BIN` → sibling → `$PATH`. A NotFound spawn gets an actionable error (`build it with
 cargo build -p rcdzc --bin cdz-compile`, mirroring `passthrough_status`).
 
-## The scope decision (routed to the operator as an `ask`)
+## The scope decision — RESOLVED by the operator (2026-08-25)
 
-The caching win is realized **only if `cdz` links zero `rcdzc`** under the feature — which means
-*every* rcdzc-backed surface must delegate, not just `cdz compile`. Three shapes:
+The caching win is realized **only if `cdz` links zero `rcdzc`** in the delegating build — so *every*
+rcdzc-backed surface must delegate, not just `cdz compile`. The operator ruled (verbatim): "we should
+have a **standalone** feature that pulls everything in and bundles it rather than delegates. we can
+have it **enabled by default**. but the **nix build should delegate** since it is a lot better for
+caching." This is option (A) full-delegation *capability*, but framed as a **feature you turn OFF**:
 
-- **(A) Full delegation** — gate every rcdzc surface (compile + all queries + LSP + doc-module +
-  project build/run/test) behind the feature; make `rcdzc` an **optional** dependency
-  (`dep:rcdzc`). Only option that actually drops `rcdzc` from `cdz`'s closure → the stated caching
-  goal. Larger, multi-slice rework of `main.rs`/`lsp.rs`; queries/LSP pay one subprocess spawn per
-  request **when the feature is on** — but the feature is nix-only; dev/interactive `cdz` keeps the
-  in-process (feature-off) path and stays fast.
-- **(B) Compile-only delegation** — only the compile paths delegate; queries/LSP stay in-process.
-  Small and clean, but `rcdzc` still links, so **no caching benefit** — mostly symbolic.
-- **(C) A separate slim binary** — a compile+syntax-only tool that delegates, leaving full `cdz`
-  untouched; nix packages the slim one where caching matters.
+- **`standalone` (ON by default)** — bundle the compiler in-process: `cdz` links `rcdzc` and does
+  everything in this process (today's behavior). A plain `cargo build` / dev / interactive `cdz` is
+  self-contained and fast, no external process.
+- **`--no-default-features` (the NIX packaging)** — `standalone` OFF: every rcdzc surface DELEGATES
+  to `cdz-compile`, and `rcdzc` is dropped from the closure. A compiler change need not rebuild `cdz`.
+  The per-request subprocess cost bites only this build, which is fine for a packaged/CLI tool.
 
-**Recommendation: (A).** It is the only option that delivers the caching goal, the subprocess cost
-bites only the nix build, and dev/interactive `cdz` is unchanged. (C) duplicates the CLI surface;
-(B) does not move the needle. Awaiting the operator's confirmation before the invasive
-`rcdzc`-optional rework.
+So delegation lives behind `#[cfg(not(feature = "standalone"))]`, and the final slice makes
+`rcdzc = { optional = true }` with `standalone = ["dep:rcdzc"]` — a `!standalone` build then links no
+`rcdzc` at all.
 
-## Nix (v-nix's single-writer flake — announce-before-touch)
+## Nix (v-nix's single-writer flake — v-nix OWNS + lands the hunk)
 
-The flake is v-nix's territory; the operator said keep it off v-nix's plate, so **I** drive it, but
-I announce-before-touch and hand v-nix the exact hunk (coordination note already sent). The change
-is minimal:
+v-nix owns the flake and confirmed they'll land the hunk from a one-line proposal I hand them (no
+second writer). v-nix also already builds a **separate `cdzCompile` derivation** (`rcdzc --bin
+cdz-compile`) for their corpus-caching pipeline. **Decision (agreed): REUSE that derivation via
+`$CDZ_COMPILE_BIN`** rather than adding `rcdzc` to `seedCompiler`'s `cargoExtraArgs` (which would
+rebuild `cdz-compile` *inside* `cdz`'s closure and re-couple them — the opposite of the caching goal).
+The hunk wraps the packaged `cdz` (a `!standalone` build) with
+`CDZ_COMPILE_BIN=${cdzCompile}/bin/cdz-compile` → two independent content-addressed derivations.
 
-1. `seedCompiler` builds `-p cdz -p cdz-run --no-default-features`; add `-p rcdzc` (to co-produce
-   `cdz-compile` in the same `bin/`) and the `delegate-compile` feature to the `cdz` build.
-2. Ensure `cdz-compile` lands in the same output `bin/` as `cdz` so `locate_sibling_bin` finds it
-   (or set `$CDZ_COMPILE_BIN` in the `cdz` wrapper to the `cdz-compile` derivation's path — the
-   content-address route, which keeps the two derivations independently cached and is the cleaner
-   fit for "better caching").
+**⚠ Landing dependency (cross-writer).** The flake's `seedCompiler` ALREADY builds `cdz`
+`--no-default-features`, and `seedCompiler`'s `cdz` is used to COMPILE in these derivations:
+`buildCadenzaProject` (`cdz build .`, `nativeBuildInputs = [ seedCompiler ]`) and the harness guest
+build (`cdz compile … --target wasm`). Once the polarity inversion lands, those `cdz` invocations
+become `!standalone` → delegate → **need `cdz-compile` reachable** (`$CDZ_COMPILE_BIN` or on the
+derivation's PATH). So v-nix must wire `cdz-compile` into those derivations **before or with** the
+code landing, else the nix build breaks. Also: the `delegate.rs` unit tests only compile under
+`!standalone`, and `mkCrateTestCrane { crate = "cdz"; }` runs default features — so a
+`--no-default-features` cdz test job is needed to keep them gated (request to v-nix).
 
 ## Incremental slice plan
 
-0. **This design doc.** (done)
-1. **Delegation core + compile path** — `delegate.rs`: `locate_cdz_compile()`
-   (`$CDZ_COMPILE_BIN`→sibling→`$PATH`), a `delegate_compile(artifacts, targets, out, opt_level)`
-   that materializes temp files, builds argv, spawns, forwards exit/stderr; add the
-   `delegate-compile` cargo feature; route `run_compile`/`compile_source_specs` through it when the
-   feature is on. Gate: a feature-gated integration test that builds a program via the delegation
-   path and asserts byte-identical output to the in-process path.
+0. **Design doc** — merged (#3390).
+1. **Delegation core + `cdz compile`/`cdz build` path** — `delegate.rs`
+   (`locate`=`$CDZ_COMPILE_BIN`→sibling→`$PATH`; `delegate_args`; `delegate_from_artifacts`), wired via
+   `dispatch_compile_*`. Landed as PR #3397 (first under an opt-in `delegate-compile` flag, then
+   **inverted to the `standalone` polarity** per the operator's ruling). `cdz run`/`test`'s in-memory
+   compile-to-bytes path untouched.
 2. **Query delegation** — route the sidecar-driven queries (`type-at`/`def`/`scope`/`uses`/`check`/
-   `fix`/`doc-module`) through `cdz-compile` under the feature; keep node-id→span mapping in-process.
+   `fix`/`doc-module`) through `cdz-compile` under `!standalone`; keep node-id→span mapping in-process.
+   The `!standalone` arms must reference **no** `rcdzc` types (so slice 4's flip is clean).
 3. **LSP delegation** — same for `lsp.rs`.
-4. **Flip `rcdzc` optional** — `dep:rcdzc` behind the feature's inverse; confirm a feature-on build
-   has no `rcdzc` in its closure (`cargo tree`). This is the slice that realizes the caching win.
-5. **Nix default-on** — the flake hunk, handed to / co-landed with v-nix.
+4. **`cdz run`/`test` in-memory compile** — delegate `compile_project_component_bytes*` (read the
+   emitted wasm from a temp `-o`), the last in-process rcdzc caller.
+5. **Flip `rcdzc` optional** — `rcdzc = { optional = true }`, `standalone = ["dep:rcdzc"]`; assert a
+   `--no-default-features` build has no `rcdzc` in its closure (`cargo tree`). Realizes the caching win.
+6. **Nix** — v-nix lands the `CDZ_COMPILE_BIN` wrapper hunk (+ a `--no-default-features` cdz test job).
 
-(Slices 2–4 are gated by the operator's scope answer — under (B) only slice 1 lands; under (C) the
-work moves to a new bin.)
+(Each slice keeps the DEFAULT (`standalone`) build byte-identical to today, so `main` stays green
+throughout; the `!standalone` build is progressively made rcdzc-free, culminating in slice 5.)
 
 ## Invariants to pin in the gate
 

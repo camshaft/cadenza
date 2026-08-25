@@ -87,5 +87,17 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 # `cdz test` path is corpus-INDEPENDENT (cdz_corpus is referenced only by the `corpus` subcommand), so
 # dropping it removes cdz-corpus from that build's closure and breaks the seedCompiler→corpus dep edge —
 # a corpus-only MR no longer needlessly re-runs the ~28min spine. A normal `cdz` keeps `corpus` (default).
-default = ["corpus"]
+default = ["corpus", "standalone"]
 corpus = ["dep:cdz-corpus"]
+# `standalone` (ON by default) BUNDLES the compiler in-process: `cdz` links `rcdzc` and compiles in this
+# process, the self-contained behavior a plain `cargo build` / dev `cdz` wants (operator ruling 2026-08-25:
+# "a standalone feature that pulls everything in and bundles it rather than delegates … enabled by default").
+# With `standalone` OFF (`--no-default-features`, how the NIX build packages `cdz`), the compiler surface
+# DELEGATES to the external `cdz-compile` process instead — so a compiler change need not rebuild `cdz` and
+# the two cache/rebuild independently (`design/DESIGN-cdz-delegate-compile.md`). Behavior-identical either
+# way (cdz-compile IS `rcdzc::cli::run`, fed the same artifacts/flags).
+# INCREMENTAL: this slice inverts the `cdz compile`/`cdz build` path; the query/LSP/run/test surfaces still
+# run in-process in BOTH configs (so `rcdzc` stays a NON-optional dep for now). A later slice delegates those
+# too and flips `standalone = ["dep:rcdzc"]` + `rcdzc = { optional = true }`, at which point a `!standalone`
+# build drops `rcdzc` from its closure entirely (the full caching win).
+standalone = []
