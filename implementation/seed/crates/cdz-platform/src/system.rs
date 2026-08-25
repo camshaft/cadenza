@@ -240,33 +240,15 @@ impl Delivery for NoDelivery {
 /// platform.md` §9). A node injects a sink so a conformance run can see that a reducer made a (malformed) host
 /// call — the interface, the op, and the raw argument bytes — the moment the boundary rejects it. The gap only
 /// ever hides a guest bug (a correct guest never sends malformed id bytes), but the invariant is that no host
-/// call is unobservable. `Send + Sync`, shared behind an `Arc`; the default is the no-op [`NoRejectedSink`].
+/// call is unobservable. `Send + Sync`, shared behind an `Arc`; a host holds one as an `Option<Arc<dyn
+/// RejectedSink>>` — `None` when no observing node has wired a recorder, so the parse-guard path branches on
+/// the `Option` (no vtable call, no always-present `Arc`) and the compiler can drop the raw-arg capture
+/// entirely on the disabled path. A recorder is always "enabled" — its presence IS the enable.
 pub trait RejectedSink: Send + Sync {
-    /// Whether this sink records anything. `false` for a no-op sink, so the host boundary can SKIP capturing
-    /// the raw-argument `Bytes` entirely when no recorder is wired — the common production case pays zero
-    /// allocation on the parse-guard path. A real recorder returns `true` (the default).
-    fn enabled(&self) -> bool {
-        true
-    }
-
     /// Record a rejected host call: the interface and op names, and the raw argument bytes as the guest sent
     /// them. Synchronous — a sink appends to an in-memory observation log, never awaits. Only ever called when
-    /// [`enabled`](Self::enabled) is `true`, so a sink need not re-check.
+    /// the host holds `Some` sink, so a sink need not re-check.
     fn record(&self, iface: &str, op: &str, raw_args: &[Bytes]);
-}
-
-/// The null [`RejectedSink`]: a rejected call is dropped, recording nothing. The default a reducer host holds
-/// when no observing node has wired one, so the host can hold a `RejectedSink` unconditionally rather than an
-/// `Option` it must branch on — exactly as [`NoDelivery`]/[`NoProvenance`] do for the privileged imports.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct NoRejectedSink;
-
-impl RejectedSink for NoRejectedSink {
-    /// Disabled — the host boundary skips capturing raw args entirely (no allocation).
-    fn enabled(&self) -> bool {
-        false
-    }
-    fn record(&self, _iface: &str, _op: &str, _raw_args: &[Bytes]) {}
 }
 
 /// A sink for a `run` host call (the synchronous pure-run primitive, §3) — its `program`/`contract` hashes,
@@ -274,19 +256,14 @@ impl RejectedSink for NoRejectedSink {
 /// instantiates + folds a pure sub-program) but leaves no `step.requests` entry, so without this sink a
 /// conformance run cannot observe that a reducer invoked `run` (an echo of the payload is satisfiable without
 /// ever calling it, §9). A node injects a recording sink so the run act — which program, over which contract,
-/// with what result — is observable. `Send + Sync`, shared behind an `Arc`; the default is the no-op
-/// [`NoRunSink`]. Mirrors [`RejectedSink`]. The `result` carries the crate-level [`RunError`] category
-/// (`UnknownProgram`/`DidNotReturn`/`Faulted`); a recorder maps it to whatever its log shape needs.
+/// with what result — is observable. `Send + Sync`, shared behind an `Arc`; a host holds one as an
+/// `Option<Arc<dyn RunSink>>` (`None` = not recorded, the disabled path pays zero). Mirrors [`RejectedSink`].
+/// The `result` carries the crate-level [`RunError`] category (`UnknownProgram`/`DidNotReturn`/`Faulted`); a
+/// recorder maps it to whatever its log shape needs.
 pub trait RunSink: Send + Sync {
-    /// Whether this sink records anything. `false` for a no-op sink, so the host boundary skips capturing the
-    /// run's bytes when no recorder is wired (zero allocation on the run path). A real recorder returns `true`.
-    fn enabled(&self) -> bool {
-        true
-    }
-
     /// Record a `run` call: the `program` and `contract` id bytes, the `input`, and the run's `result`
     /// (`Ok(output)` or an `Err(RunError)`). Synchronous — a sink appends to an in-memory observation log.
-    /// Only ever called when [`enabled`](Self::enabled) is `true`.
+    /// Only ever called when the host holds `Some` sink.
     fn record(
         &self,
         program: &[u8],
@@ -294,27 +271,6 @@ pub trait RunSink: Send + Sync {
         input: &[u8],
         result: &Result<Bytes, RunError>,
     );
-}
-
-/// The null [`RunSink`]: a run is not recorded. The default a reducer host holds when no observing node has
-/// wired one, so the host can hold a `RunSink` unconditionally rather than an `Option` — as [`NoRejectedSink`]
-/// does for the parse-guard path.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct NoRunSink;
-
-impl RunSink for NoRunSink {
-    /// Disabled — the host boundary skips capturing the run's bytes entirely (no allocation).
-    fn enabled(&self) -> bool {
-        false
-    }
-    fn record(
-        &self,
-        _program: &[u8],
-        _contract: &[u8],
-        _input: &[u8],
-        _result: &Result<Bytes, RunError>,
-    ) {
-    }
 }
 
 /// The in-memory [`System`], generic over its [`Runtime`](crate::Runtime): each reducer an async task on the

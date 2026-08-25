@@ -326,8 +326,8 @@ fn wasm_store(cas: Arc<dyn BlobStore>, log: ObservationLog, host: HostId) -> Was
     // The rejected-sink factory records each reducer's host calls REJECTED at the arg-parse guard (a
     // malformed-arg `graph` op the host early-returns from without reaching the recordable capability, §9) via
     // a RecordingRejectedSink over the one shared log — so a conformance run can assert that a (malformed)
-    // host call was still performed + observed, closing the silent-observation hole. Default is NoRejectedSink
-    // (drops it); wiring this makes it observed.
+    // host call was still performed + observed, closing the silent-observation hole. Unset by default (the
+    // reducer's `rejected` is `None`, dropping it); wiring this factory makes it observed.
     let rejected_log = log.clone();
     let make_rejected: Arc<dyn Fn(ReducerId) -> Arc<dyn RejectedSink> + Send + Sync> =
         Arc::new(move |id| {
@@ -340,7 +340,7 @@ fn wasm_store(cas: Arc<dyn BlobStore>, log: ObservationLog, host: HostId) -> Was
     // The run-sink factory records each reducer's synchronous pure-`run` host calls (§3) — the sub-program +
     // contract + input + outcome — via a RecordingRun over the one shared log, so a conformance run can assert
     // a reducer actually invoked `run` (a `run` leaves no request in the step, so it is otherwise unobservable,
-    // §9). Default is NoRunSink (drops it); wiring this makes it observed.
+    // §9). Unset by default (the reducer's `run_sink` is `None`, dropping it); wiring this factory makes it observed.
     let run_log = log;
     let make_run: Arc<dyn Fn(ReducerId) -> Arc<dyn RunSink> + Send + Sync> = Arc::new(move |id| {
         Arc::new(RecordingRun::new(
