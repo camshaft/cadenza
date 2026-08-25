@@ -1330,6 +1330,7 @@ pass	a byte-walk lexer performing per byte — Bytes.at pairs with an advancing 
 pass	a byte-wise reversal over a seamed rope is an involution and lands bytes at mirrored offsets
 pass	a bytes segment sized by a CONSTANT LITERAL binds a fixed number of bytes then composes
 pass	a bytes value chosen by a runtime if is length-measured with valid wasm
+pass	a bytes-param leaf and a spilled record result in one member run through both memory paths (via an imposed WIT world)
 pass	a call-returned Bool newtype literal-payload arm spills correctly
 pass	a call-returned Int32 newtype literal-payload arm spills at the narrow width
 pass	a call-returned UInt8 newtype literal-payload arm spills at the narrow width
