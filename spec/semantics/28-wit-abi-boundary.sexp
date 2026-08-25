@@ -38,6 +38,8 @@
 ; SHAPE 20 — a record RESULT whose WIT field order is NOT name-lex is written by NAME (guest builds {first,second}
 ; against a second,first WIT result order). SHAPE 21 — a NESTED record param with a bytes leaf (record{a, sub:{b}})
 ; reads both the outer and the nested list<u8> leaf.
+; SHAPE 22 — a record param carrying a list<u8> LEAF beside a scalar (record{data,tag}) reads the bytes leaf
+; lifted through guest memory (Bytes.len).
 
 (case "an option<s64> field in a record result crosses the export boundary on both arms"
   (doc    "The general option<T> RESULT lift across the WIT export boundary. The guest takes a record
@@ -319,4 +321,16 @@
   (component-name "cadenza:demo/iface")
   (input (do (def (f (: m (Record (: a Bytes) (: sub (Record (: b Bytes)))))) (+ (Bytes.len (. m a)) (Bytes.len (. (. m sub) b)))) (export f)))
   (call f (: (record (= a (list 1 2)) (= sub (record (= b (list 1 2 3))))) (Record (: a Bytes) (: sub (Record (: b Bytes))))))
+  (output (: 5 Int64)))
+(case "a record param carrying a bytes leaf beside a scalar compiles and runs (via an imposed WIT world)"
+  (doc    "SHAPE 22 — a record PARAM carrying a list<u8> LEAF beside a scalar (the memory boundary every real
+           reducer needs: Message/Step carry list<u8>). The canon lift lowers the incoming `data` list into the
+           guest's linear memory, the wrapper copies those bytes into a value-heap Bytes, builds the {data, tag}
+           record, and the def returns Bytes.len(data). f({data:[1,2,3,4,5], tag:99}) == 5 proves the copied bytes
+           have the right length (bytes-alloc + the copy loop + the memory lift all agree end to end). Migrated
+           from the in-crate wasmtime test `a_record_with_a_bytes_leaf_guest_compiles_and_runs`.")
+  (wit-world (world w (export iface (member f (func (param m ("record" (data ("list" (u8))) (tag (s64)))) (result (s64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (def (f (: m (Record (: data Bytes) (: tag Int64)))) (Bytes.len (. m data))) (export f)))
+  (call f (: (record (= data (list 1 2 3 4 5)) (= tag 99)) (Record (: data Bytes) (: tag Int64))))
   (output (: 5 Int64)))
