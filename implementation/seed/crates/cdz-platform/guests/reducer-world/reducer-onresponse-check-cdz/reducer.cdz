@@ -14,9 +14,8 @@
 // NON-VACUOUS: a guest that fails to instantiate or never folds on-response emits nothing, so no such Emitted
 // exists and the check fails. Idiomatic form: List.at-None ends the index walk, the single-constructor
 // LogRecord is destructured in the Some arm, and the equality folds into a match guard.
-import { Envelope } from "check"
-import { Verdict } from "verdict"
 import { LogRecord, Entry } from "log-schema"
+import { Decision, interpret, verdict-req, pass, fail } from "checker-lib"
 
 type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
 type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
@@ -43,30 +42,13 @@ def echoed-token(records: List(LogRecord), i: Int64) =
 // The verdict payload for a decoded log: pass with no messages, else fail with one diagnostic message.
 def verdict-payload(records: List(LogRecord)) =
   if echoed-token(records, 0)
-  then Value.encode(Verdict.Verdict({ pass = true, messages = [] }))
-  else Value.encode(Verdict.Verdict({ pass = false,
-                                      messages = ["no Emitted echoed a delivered event's token: the on-response path did not carry the response token through"] }))
-
-// A verdict request on the contract-id the harness passed in the incoming `check` Envelope (`c.verdict`) — the
-// §9 checker protocol has the harness own + pass the verdict contract-id, so no hardcoded hash. The verdict
-// token is irrelevant (the harness reads the verdict by scanning Emitted on the verdict contract), so b"".
-def verdict-req(verdict-contract: Bytes, payload: Bytes) =
-  { contract = verdict-contract, payload = payload, token = b"", deadlineNanos = None }
+  then pass()
+  else fail("no Emitted echoed a delivered event's token: the on-response path did not carry the response token through")
 
 def on-message(msg) =
-  match (Value.decode(msg.payload) : Option(Envelope)) with
-  | Some(Envelope.Check(c)) =>
-      (match (Value.decode(c.log) : Option(List(LogRecord))) with
-       | Some(records) =>
-           { requests = [verdict-req(c.verdict, verdict-payload(records))], outcome = Outcome.Continue }
-       | None =>
-           { requests = [verdict-req(c.verdict,
-                                     Value.encode(Verdict.Verdict({ pass = false,
-                                                                    messages = ["observation log did not decode"] })))],
-             outcome = Outcome.Continue })
-  | None =>
-      { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = msg.payload }) }
-
+  match interpret(msg, verdict-payload) with
+  | Decision.Report(r) => { requests = [verdict-req(r.contract, r.payload)], outcome = Outcome.Continue }
+  | Decision.NotCheck(cl) => { requests = [], outcome = Outcome.Close({ schema = cl.schema, reason = cl.reason }) }
 def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
 def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
 export { on-message, on-response, on-notification }

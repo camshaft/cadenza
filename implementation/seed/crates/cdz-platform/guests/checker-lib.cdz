@@ -1,0 +1,50 @@
+// Shared library for the §9 conformance CHECKER guests (design/cadenza-platform.md §9). A checker is a
+// reducer-shaped wasm guest delivered the whole run's serialized observation log on the `check` contract; it
+// decodes the log, judges it, and emits a `verdict` request the harness reads. Every checker repeated the
+// SAME plumbing — the check/verdict/log-schema imports, the verdict-request builder, the pass/fail `Verdict`
+// encoders, and the whole decode-the-Envelope-then-decode-the-log body — differing only in its JUDGEMENT
+// predicate + fail message. This module factors that out; a checker imports `interpret`/`pass`/`fail`/
+// `verdict-req` from here (composed in via its `libs` manifest, same mechanism as reducer-multifile-cdz).
+//
+// WHY `interpret` returns a `Decision` rather than the reducer's `{ requests, outcome }` directly: the guest's
+// three exports (on-message/on-response/on-notification) all return a reducer Outcome, and the world-export
+// boundary fixes their (often unused) parameter types only when that Outcome sum is declared IN the guest
+// module and shared across all three (a cross-module imported Outcome, or a different Outcome per export,
+// leaves the boundary parameter ambiguous — CDZ0201). So the guest keeps its own local Outcome and builds
+// `{ requests, outcome }` itself; `interpret` owns everything up to that point and hands back a `Decision` the
+// guest maps in three lines. `Decision` is matched INSIDE the guest (never at the export boundary), exactly
+// like the log-schema `Entry`/`LogRecord` sums the checkers already import and match, so it composes.
+import { Envelope } from "check"
+import { Verdict } from "verdict"
+import { LogRecord } from "log-schema"
+
+// The outcome of interpreting a delivered message: emit a verdict (on `contract`, carrying `payload`) then
+// continue, or close because the message was not a `check` Envelope (a checker only understands `check`).
+type Decision =
+  | Report(Record(contract: Bytes, payload: Bytes))
+  | NotCheck(Record(schema: Bytes, reason: Bytes))
+
+// Verdict payload encoders: a clean pass (no messages), or a fail carrying one diagnostic message.
+def pass() = Value.encode(Verdict.Verdict({ pass = true, messages = [] }))
+def fail(msg) = Value.encode(Verdict.Verdict({ pass = false, messages = [msg] }))
+
+// A verdict request on the harness-provided verdict contract-id (the §9 protocol: the harness owns the verdict
+// contract and passes it in the incoming `check` Envelope, so no hardcoded hash). The token is irrelevant —
+// the harness reads the verdict by scanning Emitted on the verdict contract — so b"".
+def verdict-req(verdict-contract, payload) =
+  { contract = verdict-contract, payload = payload, token = b"", deadlineNanos = None }
+
+// Interpret a delivered message: decode the `check` Envelope, decode the observation log it carries, hand the
+// decoded records to the checker's `judge` (records -> verdict-payload Bytes), and Report the verdict on the
+// harness-provided verdict contract. A log that doesn't decode Reports a fixed-diagnostic fail; a non-check
+// message Closes. The guest maps this Decision onto its own reducer Outcome.
+def interpret(msg, judge) =
+  match (Value.decode(msg.payload) : Option(Envelope)) with
+  | Some(Envelope.Check(c)) =>
+      (match (Value.decode(c.log) : Option(List(LogRecord))) with
+       | Some(records) => Decision.Report({ contract = c.verdict, payload = judge(records) })
+       | None => Decision.Report({ contract = c.verdict, payload = fail("observation log did not decode") }))
+  | None =>
+      Decision.NotCheck({ schema = msg.contract, reason = msg.payload })
+
+export { Decision.*, pass, fail, verdict-req, interpret }

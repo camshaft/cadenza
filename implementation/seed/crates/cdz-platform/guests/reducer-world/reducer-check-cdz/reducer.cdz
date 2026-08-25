@@ -14,9 +14,8 @@
 // module is at/len/push-only — no fold/closures — the compiler-ml idiom): List.at returns Option, List.len is
 // the bound, i + 1 advances. `Entry` and `LogRecord` are IMPORTED sums (variant count invisible to the
 // matcher), so each match has a catch-all `_ =>` arm; inner matches are paren-wrapped.
-import { Envelope } from "check"
-import { Verdict } from "verdict"
 import { LogRecord, Entry } from "log-schema"
+import { Decision, interpret, verdict-req, pass, fail } from "checker-lib"
 
 type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
 type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
@@ -43,29 +42,13 @@ def echo-holds(records: List(LogRecord), i: Int64) =
 // The verdict payload for a decoded log: pass with no messages, else fail with one diagnostic message.
 def verdict-payload(records: List(LogRecord)) =
   if echo-holds(records, 0)
-  then Value.encode(Verdict.Verdict({ pass = true, messages = [] }))
-  else Value.encode(Verdict.Verdict({ pass = false,
-                                      messages = ["no echoed Emitted(C,P) matched a Delivered(C,P)"] }))
-
-// A verdict request on the contract-id the harness passed in the envelope (no hardcoded hash). The verdict
-// token is irrelevant (the harness reads the verdict by scanning Emitted on the verdict contract), so b"".
-def verdict-req(verdict-contract: Bytes, payload: Bytes) =
-  { contract = verdict-contract, payload = payload, token = b"", deadlineNanos = None }
+  then pass()
+  else fail("no echoed Emitted(C,P) matched a Delivered(C,P)")
 
 def on-message(msg) =
-  match (Value.decode(msg.payload) : Option(Envelope)) with
-  | Some(Envelope.Check(c)) =>
-      (match (Value.decode(c.log) : Option(List(LogRecord))) with
-       | Some(records) =>
-           { requests = [verdict-req(c.verdict, verdict-payload(records))], outcome = Outcome.Continue }
-       | None =>
-           { requests = [verdict-req(c.verdict,
-                                     Value.encode(Verdict.Verdict({ pass = false,
-                                                                    messages = ["observation log did not decode"] })))],
-             outcome = Outcome.Continue })
-  | None =>
-      { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = msg.payload }) }
-
+  match interpret(msg, verdict-payload) with
+  | Decision.Report(r) => { requests = [verdict-req(r.contract, r.payload)], outcome = Outcome.Continue }
+  | Decision.NotCheck(cl) => { requests = [], outcome = Outcome.Close({ schema = cl.schema, reason = cl.reason }) }
 def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
 def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
 export { on-message, on-response, on-notification }
