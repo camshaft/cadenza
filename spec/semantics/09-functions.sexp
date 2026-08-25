@@ -1113,6 +1113,45 @@
             (export f)))
   (call   f (: 3 Int64)) (output (: -3 Int64)))
 
+; --- Loop-invariant code motion preserves the computed value --------------------------------------
+; A loop-invariant subexpression (one whose operands do not change across iterations) is hoisted out of
+; the loop and computed once. These pin the VALUE PARITY of that hoist end-to-end: whatever the compiler
+; moves, the program still returns the same result it would recomputing each iteration. (The structural
+; placement — the invariant lands BEFORE the loop, not inside — is a white-box compiler check.)
+
+(case "a loop-invariant bitwise op hoisted out of a tail loop preserves the value"
+  (doc    "`(& k 255)` over the pass-through param `k` is loop-invariant (k threads unchanged), so it is
+           hoisted out of the tail loop and computed once. `(go n k 0)` adds `(& k 255)` each of n
+           iterations; `f(999) = 10 * (999 & 255 = 231) = 2310`. Pins that hoisting the invariant
+           bitwise-and does not change the accumulated result.")
+  (input  (do
+            (def (go (: n Int64) (: k Int64) (: acc Int64)) (if (= n 0) acc (go (- n 1) k (+ acc (& k 255)))))
+            (def (f (: k Int64)) (go 10 k 0))
+            (export f)))
+  (call   f (: 999 Int64)) (output (: 2310 Int64)))
+
+(case "a loop-invariant multiply in the loop condition preserves the value"
+  (doc    "`(* n 2)` is loop-invariant in the exit condition `(< i (* n 2))`, so it is hoisted before the
+           loop (computed once). `(go 0 x 0)` sums i over [0, x*2): f(3) sums 0+1+2+3+4+5 = 15; f(0) runs
+           zero iterations = 0. Pins the hoisted bound is the same value the loop would recompute.")
+  (input  (do
+            (def (go (: i Int64) (: n Int64) (: acc Int64)) (if (< i (* n 2)) (go (+ i 1) n (+ acc i)) acc))
+            (def (f (: x Int64)) (go 0 x 0))
+            (export f)))
+  (call   f (: 3 Int64)) (output (: 15 Int64))
+  (call   f (: 0 Int64)) (output (: 0 Int64)))
+
+(case "a loop-invariant used in both the condition and the body is hoisted once with the same value"
+  (doc    "The same invariant `(* n 2)` appears in the exit condition `(< i (* n 2))` AND the body `(+
+           acc (* n 2))`; the compiler value-numbers the hoist so both read one pre-loop slot. `(go 0 x
+           0)` runs x*2 iterations, adding (x*2) each: f(3) = 6 iterations * (3*2) = 36. Pins that the
+           single hoisted value feeds both uses correctly.")
+  (input  (do
+            (def (go (: i Int64) (: n Int64) (: acc Int64)) (if (< i (* n 2)) (go (+ i 1) n (+ acc (* n 2))) acc))
+            (def (f (: x Int64)) (go 0 x 0))
+            (export f)))
+  (call   f (: 3 Int64)) (output (: 36 Int64)))
+
 (case "a HOF callback matching a tuple argument computes through the nested reduction"
   (doc    "The same shape with a TUPLE-destructuring callback — `(fn (p) (match p ((tuple a b) (+ a b))))`
            — passed to a HOF. The tuple-pattern binders `a`/`b` read the substituted scrutinee just as a

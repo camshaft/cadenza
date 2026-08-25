@@ -25628,15 +25628,9 @@ mod recursion {
             and_before, 1,
             "the invariant `(& k 255)` is hoisted to a single `i64.and` before the loop: {code:?}"
         );
-
-        // VALUE PARITY: go(1000000, 999, 0) = 1000000 * (999 & 255 = 231) = 231000000.
-        use wasmtime::component::Val;
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert_eq!(
-            run_returns_with::<i64>(&bytes, "f", &[Val::S64(999)]),
-            10 * 231,
-            "go(10, 999, 0) = 10 * (999 & 255)"
-        );
+        // Value parity — that the hoisted `(& k 255)` still yields the right accumulated result — is the
+        // corpus case "a loop-invariant bitwise op hoisted out of a tail loop preserves the value"
+        // (spec/semantics/09-functions.sexp): f(999) = 10 * (999 & 255) = 2310, run via cdz-run.
     }
 
     #[test]
@@ -25695,23 +25689,10 @@ mod recursion {
             shl_inside, 0,
             "no `(* n 2)` shift remains inside the loop body: {code:?}"
         );
-
-        // VALUE + TRAP PARITY. go(0, 3, 0) sums i for i<6 = 0+1+2+3+4+5 = 15; n=0 runs 0 iterations → 0
-        // (no trap, `0*2` fits). The 0-iteration overflow case (n so large `n*2` overflows) is gate-
-        // verified in binding-and-control.sexp — the hoisted trapping multiply still traps on the entry
-        // condition check, exactly as it would in the loop.
-        use wasmtime::component::Val;
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert_eq!(
-            run_returns_with::<i64>(&bytes, "f", &[Val::S64(3)]),
-            15,
-            "go(0, 3, 0) sums i for i in [0,6)"
-        );
-        assert_eq!(
-            run_returns_with::<i64>(&bytes, "f", &[Val::S64(0)]),
-            0,
-            "n=0 runs zero iterations and does not trap"
-        );
+        // Value parity of the hoisted bound is the corpus case "a loop-invariant multiply in the loop
+        // condition preserves the value" (spec/semantics/09-functions.sexp): f(3)=15, f(0)=0 run via
+        // cdz-run. The 0-iteration trapping-overflow case is gate-verified in binding-and-control.sexp —
+        // the hoisted trapping multiply still traps on the entry condition check, as it would in the loop.
     }
 
     #[test]
@@ -25833,15 +25814,9 @@ mod recursion {
             0,
             "no `(* n 2)` remains inside the loop body (the body copy reads the hoisted slot): {code:?}"
         );
-
-        // VALUE PARITY: go(0, 3, 0) — bound = 6, loop i in [0,6), adds (n*2)=6 each iteration → 6*6 = 36.
-        use wasmtime::component::Val;
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert_eq!(
-            run_returns_with::<i64>(&bytes, "f", &[Val::S64(3)]),
-            36,
-            "go(0, 3, 0) = 6 iterations * (3*2)"
-        );
+        // Value parity — the single hoisted `(* n 2)` feeds both the condition and the body correctly —
+        // is the corpus case "a loop-invariant used in both the condition and the body is hoisted once
+        // with the same value" (spec/semantics/09-functions.sexp): f(3) = 6 * (3*2) = 36, run via cdz-run.
     }
 
     #[test]
