@@ -1634,6 +1634,8 @@ fn record_abi_has_bytes(fields: &[(String, host::RecordFieldAbi)]) -> bool {
         // A `result<list<u8>, enum>` field's Ok arm is `list<u8>` → the record needs the `(list u8)` type.
         host::RecordFieldAbi::Result { .. } => true,
         host::RecordFieldAbi::Scalar(_) => false,
+        // A `list<T>` field needs the `(list u8)` type iff its element bottoms out at a `Bytes` leaf.
+        host::RecordFieldAbi::List(elem) => host::record_field_abi_reaches_bytes(elem),
     })
 }
 
@@ -1654,47 +1656,68 @@ fn build_record_import_types(
     use crate::backend::wasm::wit_ctype::{CDef, CRef, emit_cdef};
     let mut cfields: Vec<(String, CRef)> = Vec::with_capacity(fields.len());
     for (name, abi) in fields {
-        let cref = match abi {
-            host::RecordFieldAbi::Scalar(v) => CRef::Prim(v.comp_byte()),
-            host::RecordFieldAbi::Bytes => CRef::Idx(list_idx),
-            host::RecordFieldAbi::Record(sub) => {
-                // Emit the CHILD record first (children-first); its field references the child's EXPORT index.
-                CRef::Idx(build_record_import_types(sub, list_idx, base, table))
-            }
-            // A `result<list<u8>, enum-or-variant>` field: lay the err type (nominal → define+export) then the
-            // `result` defined type (its ok arm refs `(list u8)`; its err arm refs the err type's EXPORT index),
-            // children-first, then reference the `result`'s EXPORT index. (Both are laid as uniform
-            // define+export table entries like a record; exporting the structural `result` is harmless.) The err
-            // arm's CONSTRUCTOR follows the host WIT — a payload-less `variant` when the WIT declares `variant`
-            // (`err_is_variant`), else an `enum`: a `result<_, variant>` and a `result<_, enum>` are DISTINCT
-            // component types, so a guest whose err arm mismatched the host's constructor silently failed to
-            // instantiate (the deliver-response `answer: result<list<u8>, error>` shape, where the platform WIT
-            // declares `variant error`).
-            host::RecordFieldAbi::Result {
-                err_cases,
-                err_is_variant,
-            } => {
-                let err_def = base + 2 * table.len() as u32;
-                let err_cdef = if *err_is_variant {
-                    CDef::Variant(err_cases.iter().map(|c| (c.clone(), None)).collect())
-                } else {
-                    CDef::Enum(err_cases.clone())
-                };
-                table.push(emit_cdef(&err_cdef));
-                let err_export = err_def + 1;
-                let res_def = base + 2 * table.len() as u32;
-                table.push(emit_cdef(&CDef::Result {
-                    ok: Some(CRef::Idx(list_idx)),
-                    err: Some(CRef::Idx(err_export)),
-                }));
-                CRef::Idx(res_def + 1)
-            }
-        };
-        cfields.push((name.clone(), cref));
+        cfields.push((name.clone(), record_field_cref(abi, list_idx, base, table)));
     }
     let define_idx = base + 2 * table.len() as u32;
     table.push(emit_cdef(&CDef::Record(cfields)));
     define_idx + 1 // the EXPORT index (host_effect_instance_type exports right after the define)
+}
+
+/// The component-type `CRef` for one record-field ABI, laying any needed CHILDREN-FIRST defined types into
+/// `table` (each a DEFINE + EXPORT pair; see [`build_record_import_types`]). A scalar is an inline primitive; a
+/// `Bytes` refs the shared `(list u8)`; a nested record / result / list lays its child type(s) first and refs
+/// the child's EXPORT index. Recursive so a `list<record>` / `list<list<T>>` field nests to arbitrary depth.
+fn record_field_cref(
+    abi: &host::RecordFieldAbi,
+    list_idx: u32,
+    base: u32,
+    table: &mut Vec<Vec<u8>>,
+) -> crate::backend::wasm::wit_ctype::CRef {
+    use crate::backend::wasm::wit_ctype::{CDef, CRef, emit_cdef};
+    match abi {
+        host::RecordFieldAbi::Scalar(v) => CRef::Prim(v.comp_byte()),
+        host::RecordFieldAbi::Bytes => CRef::Idx(list_idx),
+        host::RecordFieldAbi::Record(sub) => {
+            // Emit the CHILD record first (children-first); its field references the child's EXPORT index.
+            CRef::Idx(build_record_import_types(sub, list_idx, base, table))
+        }
+        // A `result<list<u8>, enum-or-variant>` field: lay the err type (nominal → define+export) then the
+        // `result` defined type (its ok arm refs `(list u8)`; its err arm refs the err type's EXPORT index),
+        // children-first, then reference the `result`'s EXPORT index. (Both are laid as uniform
+        // define+export table entries like a record; exporting the structural `result` is harmless.) The err
+        // arm's CONSTRUCTOR follows the host WIT — a payload-less `variant` when the WIT declares `variant`
+        // (`err_is_variant`), else an `enum`: a `result<_, variant>` and a `result<_, enum>` are DISTINCT
+        // component types, so a guest whose err arm mismatched the host's constructor silently failed to
+        // instantiate (the deliver-response `answer: result<list<u8>, error>` shape, where the platform WIT
+        // declares `variant error`).
+        host::RecordFieldAbi::Result {
+            err_cases,
+            err_is_variant,
+        } => {
+            let err_def = base + 2 * table.len() as u32;
+            let err_cdef = if *err_is_variant {
+                CDef::Variant(err_cases.iter().map(|c| (c.clone(), None)).collect())
+            } else {
+                CDef::Enum(err_cases.clone())
+            };
+            table.push(emit_cdef(&err_cdef));
+            let err_export = err_def + 1;
+            let res_def = base + 2 * table.len() as u32;
+            table.push(emit_cdef(&CDef::Result {
+                ok: Some(CRef::Idx(list_idx)),
+                err: Some(CRef::Idx(err_export)),
+            }));
+            CRef::Idx(res_def + 1)
+        }
+        // A `list<T>` field: build the element's CRef (children-first, recursing) then lay the `(list <elem>)`
+        // DEFINED type and reference its EXPORT index (structural, but exported uniformly like the rest).
+        host::RecordFieldAbi::List(elem) => {
+            let elem_cref = record_field_cref(elem, list_idx, base, table);
+            let list_def = base + 2 * table.len() as u32;
+            table.push(emit_cdef(&CDef::List(elem_cref)));
+            CRef::Idx(list_def + 1)
+        }
+    }
 }
 
 fn host_op_comp_functype(
@@ -9783,7 +9806,7 @@ fn emit_bytes_provider_member(
     // The spilled-RESULT component defined types, built GENERALLY from each op's WIT result type (one
     // recursion, no per-shape blocks). `result_defs` laid after the shared `(list u8)`; `result_crefs` the
     // per-op functype result reference. A bare `list<u8>` result interns to the `(list u8)` at index 0.
-    let (needs_list, result_defs, result_crefs, _arg_list_crefs) =
+    let (needs_list, result_defs, result_crefs, arg_list_crefs) =
         build_host_result_types(db, &host_imports);
     // ENUM host-call args (graph.neighbors' `dir`): a nominal `enum` DEFINED type laid (DEFINE+EXPORT) after
     // `(list u8)` + the spilled-result defined types — `base` = that prepend count. A SINGLE distinct enum
@@ -9820,7 +9843,7 @@ fn emit_bytes_provider_member(
                 hf,
                 0,
                 nominal_export_idx,
-                &[],
+                &arg_list_crefs[i],
                 result_crefs[i].clone(),
             ),
             has_list_param: hf
