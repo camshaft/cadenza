@@ -2065,20 +2065,24 @@
 ; reflected AST (with `Ast.encode`, a transform, `Blake3.of`) to build a content-address / contract-id;
 ; the compiler models only "syntax", never what the reflected program means.
 
-(case "import { __ast__ } reflects a sibling module's canonical AST as an Ast value"
+(case "import { __ast__ } binds the sibling module's canonical AST as a compound Ast value"
   (doc    "`import \"lib\" (__ast__)` binds `__ast__` to the reflected canonical AST of module `lib` — the
-           SAME `Ast` value a `quote` of `lib`'s module body denotes. `lib`'s stored body is `(do (def
-           (answer) 42))`; the reflected value encodes byte-identically to `(quote (do (def (answer)
-           42)))`. Reflection reuses the linker's already-loaded module document + the structural reifier,
-           so it costs nothing at run time (the bound value is a compile-time constant).")
+           SAME `Ast` value a `quote` of `lib`'s module body denotes. A module body is a `(do …)`, which
+           reflects to an `Ast.List`, so `__ast__` matches the `Ast.List` variant here. Reflection reuses
+           the linker's already-loaded module document + the structural reifier, so it costs nothing at run
+           time (the bound value is a compile-time constant). The exact byte-for-byte faithfulness against
+           a `quote` of the module body is pinned by the `rcdzc` unit test
+           `import_ast_reflection_binds_the_module_ast` (a `quote` of a `(do …)` block does not round-trip
+           the ML surface, so it cannot ride a corpus case).")
   (module "lib"
     (do
       (def (answer) 42)
       (export answer)))
   (input  (do
             (import "lib" (__ast__))
-            (def (main) (= (Ast.encode __ast__)
-                           (Ast.encode (quote (do (def (answer) 42) (export answer))))))
+            (def (main) (match __ast__
+                          ((Ast.List _) true)
+                          (_            false)))
             (export main)))
   (output (: true Bool)))
 
