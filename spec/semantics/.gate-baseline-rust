@@ -1558,6 +1558,7 @@ pass	a connective-wrapped perform in an if condition threads its state advance t
 pass	a consistent annotation type-checks against the inferred type
 pass	a const closure re-passed through a recursive driver specializes and computes correctly
 pass	a const collection recursively folded UNROLLS to its result at compile time
+pass	a const list whose elements are BYTES LITERALS recursively folds — a BytesOf is a const value
 pass	a const parameter rejects an argument that depends on runtime data
 pass	a const-key entry is found beside a distinct runtime-keyed entry
 pass	a constant BigInt crosses the host boundary as its value form
