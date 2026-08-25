@@ -2410,6 +2410,7 @@ pass	a match-based tail recursion with an earlier literal arm loops correctly
 pass	a match-join of two capturing lambdas let-bound and called applies the selected closure
 pass	a match-of-closures on a runtime-selected variant is applied per arm
 pass	a matched arm body performs and reads the state the scrutinee advanced
+pass	a matching-width handler state folds across two sequential performs
 pass	a max-FOLD over a list containing a computed NaN keeps the ordered maximum
 pass	a member access with no field operand is rejected, not a crash
 pass	a memoizing fold caches computed results in a Map and counts its hits

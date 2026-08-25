@@ -791,6 +791,24 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 34 Int64)))
 
+(case "a matching-width handler state folds across two sequential performs"
+  (doc    "Two sequential performs against a handler whose state advances by a RUNTIME amount: seed 10,
+           the op `next` resumes the current state `s` and threads `(+ s x)` as the next state.
+           `(do (def a (Src.next)) (def b (Src.next)) (+ a b))` — `a` reads 10, the state advances to
+           `10 + x`, `b` reads `10 + x`; with x = 5, a = 10, b = 15 → 25. The state slot, op result, and
+           next-state expression are all Int64 (matching width), so the two-perform fold threads cleanly.
+           (The width-MISMATCHED companion — a narrow-int state seeded into an Int64 op result — declines
+           cleanly rather than emitting invalid wasm, the compiler-side safe floor for that not-yet-
+           reducible case.)")
+  (input  (do
+            (effect Src (op next (-> Unit Int64)))
+            (def (main (: x Int64))
+              (handle Src 10
+                ((next (u) s (resume s (+ s x))))
+                (do (def a (Src.next)) (def b (Src.next)) (+ a b))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 25 Int64)))
+
 (case "a PURE closure iterated by a recursive combinator composes with a perform in the same body"
   (doc    "The effects-adjacent face of the iterate combinator (09-functions pins it pure): under a
            handler, the body BOTH performs (`Ctr.next` reads the seed 0 and threads 1) AND runs a

@@ -67895,16 +67895,9 @@ mod stage1 {
                 .map(|d| (&d.code, &d.message))
                 .collect::<Vec<_>>()
         );
-        // NO REGRESSION: a MATCHING-width state (Int64 seed + Int64 x, op result Int64) still folds + runs.
-        let ok = "(module m (effect Src (op next (-> Unit Int64))) \
-            (def (main (: x Int64)) (handle Src 10 ((next (u) s (resume s (+ s x)))) \
-              (do (def a (Src.next)) (def b (Src.next)) (+ a b)))) \
-            (export main))";
-        use wasmtime::component::Val;
-        let bytes = compile_component(&crate::codec::encode(&parse(ok)))
-            .expect("a matching-width (Int64) handler state must still fold");
-        let v: i64 = run_returns_with(&bytes, "main", &[Val::S64(5)]);
-        assert_eq!(v, 25, "Int64 state two-perf fold: 10 + 15 = 25");
+        // NO REGRESSION: a MATCHING-width state (Int64 seed + Int64 x, op result Int64) still folds and
+        // runs — the corpus case "a matching-width handler state folds across two sequential performs"
+        // (spec/semantics/14-effects-and-handlers.sexp): main(5) = 25 (a=10, b=15), run via cdz-run.
     }
 
     #[test]
