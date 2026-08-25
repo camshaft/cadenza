@@ -53,3 +53,47 @@
   (output (: (record (= o (Continue unit))) (record (o Outcome))))
   (call f (: (record (= x 7)) (Record (: x Int64))))
   (output (: (record (= o (Close 7))) (record (o Outcome)))))
+
+(case "a scalar export crosses the WIT boundary and returns its argument"
+  (doc    "SHAPE 3 — the simplest WIT export boundary: s64 in, s64 out (identity). Exercises the plain
+           scalar param/result canonical-ABI lowering with no compound structure. Migrated from the
+           in-crate wasmtime test `a_scalar_interface_export_guest_compiles_and_runs` (v-rb feed 4).")
+  (input (do (def (f (: x Int64)) x) (export f)))
+  (call f (: 7 Int64))
+  (output (: 7 Int64)))
+
+(case "a multi-field record result crosses the export boundary"
+  (doc    "SHAPE 4 — the multi-field RECORD RESULT spill: the guest returns { a, b } from a record
+           input, exercising the record result lift (two s64 fields, in order). Migrated from the
+           in-crate wasmtime test `a_record_result_guest_compiles_and_runs_via_result_spill` (v-rb feed 5).")
+  (input (do
+           (def (f (: m (Record (: x Int64))))
+             (record (= a (. m x)) (= b (+ (. m x) (. m x)))))
+           (export f)))
+  (call f (: (record (= x 21)) (Record (: x Int64))))
+  (output (: (record (= a 21) (= b 42)) (Record (: a Int64) (: b Int64)))))
+
+(case "a bare list of scalars in a record result crosses the export boundary"
+  (doc    "SHAPE 5 — the bare-LIST RESULT: a record field that is a list<s64>, exercising the list
+           result lift (element count + s64 element stride). Migrated from the in-crate wasmtime test
+           `a_list_result_guest_compiles_and_runs` (v-rb feed 6).")
+  (input (do
+           (def (f (: m (Record (: x Int64))))
+             (record (= xs (list (. m x) (+ (. m x) (. m x))))))
+           (export f)))
+  (call f (: (record (= x 5)) (Record (: x Int64))))
+  (output (: (record (= xs (list 5 10))) (record (xs (List Int64))))))
+
+(case "a list of records in a record result crosses the export boundary"
+  (doc    "SHAPE 7 — the list-of-records RESULT (the structural workhorse of every reducer Step's
+           `requests: list<request>`): a record field that is a LIST of RECORDS. The guest returns
+           `{ items: [ { a, b } ] }` with one element built from the input (a=x, b=x+x). Exercises the
+           LIST result lift (count + stride) AND the element RECORD lift (two s64 fields in order).
+           Migrated from the in-crate wasmtime test `a_list_of_records_result_guest_compiles_and_runs`
+           (v-rust-backend shape-2 feed 3/18).")
+  (input (do
+           (def (f (: m (Record (: x Int64))))
+             (record (= items (list (record (= a (. m x)) (= b (+ (. m x) (. m x))))))))
+           (export f)))
+  (call f (: (record (= x 7)) (Record (: x Int64))))
+  (output (: (record (= items (list (record (= a 7) (= b 14))))) (record (items (List (record (a Int64) (b Int64))))))))
