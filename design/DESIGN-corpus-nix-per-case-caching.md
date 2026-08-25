@@ -11,25 +11,33 @@ Shred each corpus file into one unit per `(case …)`, and run each case through
 derivations whose keys are chosen so unrelated changes are cache hits:
 
 ```
-corpus file ─shred─▶ per-case binary ASTs ─build─▶ emitted artifact ─exec─▶ pass/fail ─▶ aggregate
-            (parser)  program/compile-unit  (compiler)               (runtime, NO compiler)
-                      /test-run
+corpus file ─shred─▶ per-case artifacts   ─build─▶ emitted artifact ─exec─▶ pass/fail ─▶ aggregate
+            (parser)  program/wit-world/    (compiler)               (runtime, NO compiler)
+                      component-name/test-run
 ```
 
-- **shred** (one derivation per corpus file): parse the file, emit per case up to THREE **binary-AST**
-  artifacts (via `cadenza_ast::codec::encode` — we already parse the `.sexp`, so we emit the parsed form,
-  not a third text format), split BY CONSUMER (SHIPPED, `cdz corpus records --out-dir`):
-  - `program.ast` (+ `module-<name>.ast` per package sibling) — the program(s), a **compiler** input.
-  - `compile-unit.ast` — wit-world + component-name, the compilation config, a **compiler** input;
-    omitted for the common synthesized-world case.
+- **shred** (one derivation per corpus file): parse the file, emit per case the artifacts each already in
+  its CONSUMER's NATIVE form — the shred does every format transform ONCE here so no consumer re-converts
+  (the operator's "fewer transforms the better" steer). Binary-AST artifacts are `cadenza_ast::codec::encode`
+  of the parsed form (we already parse the `.sexp` — no third text format). Split BY CONSUMER (SHIPPED,
+  `cdz corpus records --out-dir`):
+  - `program.ast` (+ `module-<name>.ast` per package sibling) — the program(s) as binary AST, the compiler's
+    native `ast:<name>=…` input.
+  - `wit-world.ast` — the imposed world as binary AST (the `(world …)` subtree ITSELF, which already IS the
+    `world_schema_tree` shape rcdzc reads), the compiler's native `wit-world:<name>=…` input verbatim (the
+    `<name>` label is ignored — the world name is read from the artifact); omitted for the common
+    synthesized-world case.
+  - `component-name` — the interface the world's guest exports under, as PLAIN TEXT (a `--component-name`
+    string, not an AST); omitted unless the case names one.
   - `test-run.ast` — description + trials (call/args/expect) + host-calls/responses + warns, the
     **runner/grader** metadata; NOT a compiler input.
   Key = `{corpus-file, shred-bin}`. Re-shreds only a *changed* file. A `manifest` per file lists the case
   dirs so nix enumerates cases (tiny IFD) without re-parsing the `.sexp`.
-- **build** (one per case, per backend): compile `{program.ast (+modules), compile-unit.ast}` → emitted
-  wasm (value-case) or the captured compile outcome / error-code (error/declines-case).
-  Key = `{program.ast, modules, compile-unit.ast, compile-bin}` — a **run-metadata** edit (expected
-  output, args, host tape → `test-run.ast`) is NOT a build input, so it never rebuilds.
+- **build** (one per case, per backend): compile `{program.ast (+modules), wit-world.ast?, component-name?}`
+  → emitted wasm (value-case) or the captured compile outcome / error-code (error/declines-case). Because
+  every input is already the compiler's native form, `cdz-compile` is a pure passthrough (no decode/reencode).
+  Key = `{program.ast, modules, wit-world.ast, component-name, compile-bin}` — a **run-metadata** edit
+  (expected output, args, host tape → `test-run.ast`) is NOT a build input, so it never rebuilds.
 - **exec** (one per case, per backend): run the emitted artifact and grade against `test-run.ast`
   (`(expect-output …)` | `(expect-error CODE msg?)` | `(expect-trap …)` | `(expect-declines msg?)`,
   per-trial, + host tape + warns). Key = **`{emitted-artifact, test-run.ast, exec-bin}` — the compiler is
@@ -56,12 +64,15 @@ This mirrors the harness framework's already-landed `mkHarnessAst` (transform) v
 
 ## Phase primitives (mostly exist as `cdz` subcommands; expose as small bins)
 
-- shred: `cdz corpus records FILE…` emits `---`-separated per-case records
-  (`case\t… / call\t… / expect\t… / program\t… / host-calls\t… / wit-world\t…`). ADD an `--out-dir`
-  mode writing one record file per case (one file = one nix input). Standalone bin: `cdz-corpus`.
-- build: `cdz compile` (program → wasm). Expose a small `cdz-compile` bin.
+- shred: `cdz corpus records --out-dir DIR FILE…` writes one per-case dir of native-form artifacts
+  (`program.ast` / `module-*.ast` / `wit-world.ast` / `component-name` / `test-run.ast`) + a `manifest`
+  (SHIPPED). Standalone bin: `cdz-corpus`.
+- build: `cdz compile` already takes binary-AST `ast:/wit-world:` inputs + `--component-name`/`--entry`
+  and emits per-backend (`-t wasm|rust|…`); `rcdzc::cli::parse_and_run()` is the standalone entry.
+  Expose it as a small `cdz-compile` bin (rcdzc has a `[lib]`, no `[[bin]]` yet) — a compiler-only-closure
+  passthrough, since the shred already hands it native inputs.
 - exec: `cdz run-emitted` (run a pre-compiled artifact — already compiler-independent). Add grading
-  against an `expect` record (extend `cdz-run` or a small grader), so exec = one executable.
+  against `test-run.ast` (extend `cdz-run` or a small grader), so exec = one executable.
 
 ## Cases the design must handle
 
@@ -83,8 +94,13 @@ on the full corpus.
 
 ## Rollout (incremental, each slice gated + landable)
 
-1. **shred `--out-dir`** on the `cdz-corpus` bin (per-case record files). Unit-tested.
-2. **`cdz-compile` small bin** (compiler-only closure) — build a case record's program → wasm/outcome.
+1. **shred `--out-dir`** on the `cdz-corpus` bin — per-case dirs of NATIVE-form artifacts
+   (program/module/wit-world binary AST + component-name text + test-run), every transform done once at
+   shred (DONE: #3364 + #3382 single-form program root; native wit-world/component-name replacing the
+   compile-unit container). Unit-tested; verified end to end that a shredded case (incl. an imposed
+   `wit-world.ast` + `component-name`) compiles with the compiler's native args and NO transform.
+2. **`cdz-compile` small bin** (compiler-only closure) — a passthrough over `rcdzc::cli::parse_and_run()`
+   building a case's native artifacts → wasm/outcome per backend.
 3. **`cdz-run` grade mode** — run-emitted + compare to expect → pass/fail.
 4. **flake module**: `mkCorpusCase` (shred→build→exec) over ONE corpus file (01-literals) + aggregate;
    prove (a) compiler-comment change ⇒ exec 100% cache-hit, (b) one-case edit ⇒ only that case reruns.
