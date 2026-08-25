@@ -3973,6 +3973,7 @@ pass	a typed reducer performing a list<record-with-option-field> host arg emits,
 pass	a typed reducer performing a list<record> host arg emits, loads, and runs (via an imposed WIT world)
 pass	a typed reducer performing a list<tuple> host arg emits, loads, and runs (via an imposed WIT world)
 pass	a typed reducer performing a nested list<list<s64>> host arg emits, loads, and runs (via an imposed WIT world)
+pass	a typed reducer performing a nested-record host arg with an option + bytes leaf emits, loads, and runs (via an imposed WIT world)
 pass	a typed reducer performing a record-with-a-direct-bytes-field host arg emits, loads, and runs (via an imposed WIT world)
 pass	a typed reducer performing a record-with-a-list-field host arg emits, loads, and runs (via an imposed WIT world)
 pass	a typed reducer performing a record-with-a-tuple-field host arg emits, loads, and runs (via an imposed WIT world)
