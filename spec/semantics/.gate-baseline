@@ -2420,7 +2420,6 @@ pass	a module may nest three deep
 pass	a module member named by the export clause is reachable
 pass	a module member not named by the export clause is private
 pass	a module nested in a module projects as a nested record field
-pass	a module reflects itself via Ast.module and exports a compile-time content-address a caller imports
 pass	a module value definition registers a reachable export field
 pass	a module with two definitions of the same name is rejected
 pass	a module's delegated capability is reachable as metadata, not as an export
@@ -7189,6 +7188,7 @@ todo	a block-wrapped OUTER-effect perform in a nested handle's INIT declines cle
 todo	a block-wrapped OUTER-effect perform in a non-tail do-statement INSIDE a nested handler body declines cleanly (adv-69 c3-nested sub-face)
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject
 todo	a constant-try helper that fails feeds the None arm's fallback into resume
+todo	a module reflects itself via Ast.module and exports a compile-time content-address a caller imports
 todo	a mutually-recursive group with a BRANCH-PERFORM sharing a strict expr with the mutual call declines cleanly (adv-69 rw4 sub-face)
 todo	a mutually-recursive performer pair whose out-state a trailing caller draw observes declines cleanly (completeness gap)
 todo	a recursive nested-op performer whose resume-VALUE reads the inner state around the outer perform declines cleanly

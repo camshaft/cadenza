@@ -2126,7 +2126,14 @@
            reflect its OWN module AST, hashes it to a 32-byte digest, and exports that as a compile-time
            CONSTANT `cid`. A caller imports the constant directly — no per-caller AST transform, and no
            self-import. Pins that a module can self-reflect (Ast.module) and export a content-address
-           constant (the compiler-side of userspace contract-id construction).")
+           constant (the compiler-side of userspace contract-id construction).
+           DECLINES today (reject-don't-miscompile): `cid`'s body is β-reduced (copied) into the importer,
+           and a β-copy has no definition-site file (`link.rs::file_of` → None), so `Ast.module` cannot be
+           bound to `c` — reflecting the importer instead would be the operator-confirmed USE-SITE
+           late-binding bug. Rather than silently reflect the wrong module (this case's length-only check
+           had MASKED that miscompile), the fold declines. The def-site `const { … }` bake — which folds the
+           reflection to a literal at `c`'s definition site, before any β-copy — is the fix that makes an
+           imported reflected value cross modules stably; this case flips back to a pass once it lands.")
   (module "c"
     (do
       (def (cid) (Blake3.of (Ast.encode Ast.module)))

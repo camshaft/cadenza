@@ -496,7 +496,25 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     "Ast.module: the built-in Ast sum is unavailable",
                 ));
             };
-            let file_index = db.file_of(id).unwrap_or(0);
+            // The reflection's DEFINING module is the file whose `FileSpan` contains this occurrence. A
+            // β-REDUCED body copy has NO file (`link.rs::file_of` → `None` for a β-copy; the fill fires on
+            // the inlined copy when a def whose body uses `Ast.module` is referenced from ELSEWHERE). In a
+            // LINKED (multi-file) program the defining module is then UNRECOVERABLE — walking up the copy
+            // reaches only the USE site, not where the def is written — so defaulting to file 0 would
+            // silently reflect the WRONG module (operator-confirmed correctness bug: `Ast.module` must NOT
+            // late-bind to the use site). DECLINE instead of miscompiling; the def-site `const { … }` bake
+            // (folds the reflection to a literal at its definition site, before any β-copy) is the fix that
+            // lets an imported reflected value cross modules stably. A SINGLE-FILE program legitimately has
+            // no linkage (`file_of` is always `None`, no `file_scope`), so file 0 is correct there.
+            let file_index = match db.file_of(id) {
+                Some(fi) => fi,
+                None if db.file_scope.is_some() => {
+                    return Core::Poison(Reject::decline(
+                        "Ast.module on a β-reduced/imported body has no definition-site module in a linked package — reflect it at its definition site (a `const` block bakes the reflected value to a stable literal that crosses imports)",
+                    ));
+                }
+                None => 0,
+            };
             // The snapshot is present for any file that contains an `(. Ast module)` form (the gate in
             // `compile::module_snapshot`), and this arm only fires when the occurrence resolved to the
             // reflect intrinsic — so a genuine occurrence always has its snapshot. `None` (a file with no
