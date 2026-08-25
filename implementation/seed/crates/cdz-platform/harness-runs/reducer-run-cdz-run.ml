@@ -10,7 +10,7 @@
   deliver = [
     {
       target = "reducer-run-cdz",
-      message = { contract = "cdz-platform.run", payload = ProgramHash("reducer-emit-then-close-cdz") }
+      message = { contract = "cdz-platform.run", payload = BlobHash("reducer-emit-then-close-cdz") }
     }
   ],
   checker = "reducer-run-check-cdz"
