@@ -47,8 +47,8 @@
 //! `Ast.Bool`, String → `Ast.Str`); a RUNTIME operand (a name / a computed expression, unknown type at
 //! reify time) is wrapped in the compiler-internal `(ast-lift e)`, which `lower` resolves by `e`'s
 //! INFERRED type — IDENTITY when `e` is already an `Ast` (splice a sub-tree), else the matching leaf. A
-//! literal the `Ast` sum has no value variant for (Char/Sym/Bytes) BAILS (declines honestly, never a
-//! miscompile).
+//! literal the `Ast` sum has no value variant for BAILS (declines honestly, never a miscompile) — today
+//! only a reader error-marker leaf (`BadChar`/`BadEscape`), since the `Ast` sum covers every real leaf.
 //!
 //! An ACTIVE `(unquote-splicing e)` (depth 1) SPLICES e's list elements into the parent: `reify_active`
 //! builds the parent's element list by CONCATENATING runs of ordinary reified elements with
@@ -84,12 +84,14 @@
 //!
 //! ## Scope of this increment
 //!
-//! The built-in `Ast` sum has the full spec variant set — `Int`/`Float`/`Bool`/`Str`/`Name`/`List` — so a
-//! form built from integers, floats, booleans, strings, names, and lists is reifiable. A quote whose body
-//! mentions a leaf NO `Ast` variant carries yet (a char, symbol, or bytes literal) is LEFT UNTOUCHED here:
-//! it flows to `resolve::resolve_quote`, which DECLINES (a Todo, never a miscompile). Likewise an
-//! arity-≠1 `(quote …)` is left for `resolve_quote` to reject CDZ0201. This pass only ever rewrites a
-//! quote/quasiquote it can reify COMPLETELY — partial reification is never emitted.
+//! The built-in `Ast` sum carries a variant for EVERY syntax leaf — `Int`/`Float`/`Bool`/`Str`/`Name`/
+//! `List`/`Bytes`/`Char`/`Symbol` — so quote/reflection is TOTAL: a form built from any of them is
+//! reifiable (operator directive — reflection must never decline on a well-formed leaf). The ONLY leaf a
+//! quote still bails on is a reader ERROR MARKER (`BadChar`/`BadEscape`), which arises solely from
+//! malformed source (which does not compile); it flows to `resolve::resolve_quote`, which DECLINES (a
+//! Todo, never a miscompile). Likewise an arity-≠1 `(quote …)` is left for `resolve_quote` to reject
+//! CDZ0201. This pass only ever rewrites a quote/quasiquote it can reify COMPLETELY — partial
+//! reification is never emitted.
 //!
 //! ## Ordering / in-place rewrite
 //!
@@ -497,8 +499,25 @@ fn reify_inner(
                 let payload = push_atom(ast, leaf);
                 Some(ast_ctor(ast, "Bytes", payload))
             }
-            // Any other leaf kind (Char/Sym/…) has no `Ast` variant yet: not
-            // reifiable — bail so the whole quote declines rather than miscompiling.
+            // A CHAR literal (`#\a`) -> `(Ast.Char #\a)`. `Ast.Char` carries a `Char` payload (a char is a
+            // syntactic form — `type-system.md`), so the reified node captures the exact scalar; the
+            // payload REUSES the literal's leaf. This (with `Symbol` below) makes reflection/quote TOTAL
+            // over syntax leaves — a char literal reflects instead of declining (operator directive).
+            leaf @ Leaf::Char(_) => {
+                let payload = push_atom(ast, leaf);
+                Some(ast_ctor(ast, "Char", payload))
+            }
+            // A SYMBOL literal (`#"x"`) -> `(Ast.Symbol #"x")`. `Ast.Symbol` carries a `Symbol` payload
+            // (DISTINCT from `Ast.Name`'s String and `Ast.Str`'s String — a symbol is the nominal
+            // member-key form), so `(quote #"x")` reads back as the symbol value. The payload REUSES the
+            // literal's leaf.
+            leaf @ Leaf::Sym(_) => {
+                let payload = push_atom(ast, leaf);
+                Some(ast_ctor(ast, "Symbol", payload))
+            }
+            // A reader ERROR-RECOVERY marker leaf (`BadChar`/`BadEscape`) has no `Ast` variant — it only
+            // arises from MALFORMED source (which does not compile), so leaving it un-reifiable is not a
+            // real reflection gap: bail (decline) rather than miscompile.
             _ => None,
         },
         Struct::List(items) => {

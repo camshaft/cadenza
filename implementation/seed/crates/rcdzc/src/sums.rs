@@ -130,6 +130,16 @@ pub fn prelude_decls(ast: &mut Arenas) -> Vec<TypeDecl> {
         // (operator seq 113). Appended LAST so existing variant discriminants are unchanged (discs are
         // read BY NAME via `ast_variant_discs`, so order is display-only).
         let bytes_pay = push_atom(ast, Leaf::Name("Bytes".into()));
+        // `Char` / `Symbol` — the remaining scalar syntax leaves (`#\a` char, `#"x"` symbol). Their
+        // payloads are the ground `Char` / `Symbol` types (both nullary, like `String`). Appended LAST
+        // (after `Bytes`) so existing discriminants are unchanged (discs are read BY NAME via
+        // `ast_variant_discs`). Adding them makes IMPORT REFLECTION (`__ast__`) + `quote` TOTAL over
+        // syntax leaves: a module containing a char/symbol literal reflects instead of declining (operator
+        // directive — reflection must never bail, the same full-generality bar as the WIT surface). The
+        // codec already carries these leaves (`KIND_CHAR`/`KIND_SYM` + `Leaf::Char`/`Leaf::Sym`), so no
+        // byte-format change — only the guest-facing `Ast` VALUE sum gains the two variants.
+        let char_pay = push_atom(ast, Leaf::Name("Char".into()));
+        let sym_pay = push_atom(ast, Leaf::Name("Symbol".into()));
         // `(List Ast)` — the recursive list-of-Ast payload for the `List` variant.
         let list_head = push_atom(ast, Leaf::Name("List".into()));
         let ast_ref = push_atom(ast, Leaf::Name("Ast".into()));
@@ -159,6 +169,8 @@ pub fn prelude_decls(ast: &mut Arenas) -> Vec<TypeDecl> {
                 ("Name", &[name_pay]),
                 ("List", &[list_ast]),
                 ("Bytes", &[bytes_pay]),
+                ("Char", &[char_pay]),
+                ("Symbol", &[sym_pay]),
             ],
         )
     };

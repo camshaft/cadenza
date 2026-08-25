@@ -2868,7 +2868,9 @@ pass	a quantity read from a map COMBINES with a fresh same-dimension quantity
 pass	a quantity whose reference-scaled magnitude overflows its inner Int is rejected
 pass	a quantity's erased value is the identical numeric value the bare literal has
 pass	a quote carrying a symbol literal declines — no Ast.Symbol variant to reify it into
+pass	a quote carrying a symbol literal reifies to an Ast.Symbol value
 pass	a quote inside a tagged-template hole reaches the tag function as an Ast value
+pass	a quote of a char literal reifies to an Ast.Char value
 pass	a quote pattern binds an unquoted operand of a compound form
 pass	a quote pattern is equivalent to the Ast.* constructor pattern
 pass	a quote pattern matches a fixed arity
@@ -4145,9 +4147,11 @@ pass	an Ast.Bytes carrying NUL and high bytes round-trips through encode and dec
 pass	an Ast.Bytes nested in an Ast.List round-trips through encode and decode
 pass	an Ast.Bytes node constructs and deconstructs by pattern matching
 pass	an Ast.Bytes node round-trips through encode and decode
+pass	an Ast.Char node round-trips through encode and decode
 pass	an Ast.Int carries a BEYOND-64-bit literal losslessly through quote
 pass	an Ast.Int stores an integer wider than Int64 without loss
 pass	an Ast.List handler STATE accumulates a node per perform and each resume reads the prior length
+pass	an Ast.Symbol node round-trips through encode and decode
 pass	an EFFECTFUL @ensures predicate is value-transparent when SATISFIED — the body's own perform runs first
 pass	an EFFECTFUL @ensures predicate performs under the caller's handler at body-EXIT, after the body's own perform
 pass	an EFFECTFUL @requires predicate performs under the caller's handler and advances its state before the body
@@ -5445,6 +5449,7 @@ pass	il1 strict O-I-O-I body interleave — two independent threads advance in l
 pass	il2 the interleave WIDTH is data-driven — parity picks one-or-two O draws per I tick, a helper sums each O burst
 pass	im2min5 a performing self-recursive walk then a TRAILING draw — the callee-advanced state reaches the continuation (finding #12 face)
 pass	import { __ast__ } binds the sibling module's canonical AST as a compound Ast value
+pass	import { __ast__ } reflects a module containing char and symbol literals (reflection is total)
 pass	importing a name a module does not export is rejected
 pass	indexed reads at different indices of one list are not shared
 pass	indexing a byte sequence out of bounds yields None

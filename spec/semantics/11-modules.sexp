@@ -2101,3 +2101,22 @@
                           ((Err _) false)))
             (export main)))
   (output (: true Bool)))
+
+(case "import { __ast__ } reflects a module containing char and symbol literals (reflection is total)"
+  (doc    "Import reflection must NEVER decline on a well-formed module (operator directive): a module
+           body that contains a `#\a` char literal and a `#\"tag\"` symbol literal reflects to a genuine
+           `Ast` value, not a decline. Before Ast gained the `Char`/`Symbol` variants this rejected. The
+           reflected value is a compound `Ast.List` (a `(do …)` body).")
+  (module "lib"
+    (do
+      (def (c) #\a)
+      (def (tag) #"tag")
+      (export c)
+      (export tag)))
+  (input  (do
+            (import "lib" (__ast__))
+            (def (main) (match __ast__
+                          ((Ast.List _) true)
+                          (_            false)))
+            (export main)))
+  (output (: true Bool)))
