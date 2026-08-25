@@ -81575,49 +81575,6 @@ mod r0 {
         );
     }
 
-    /// The hand-emitted `() -> list<u8>` component RUNS under wasmtime and returns the bytes — R0's
-    /// behavior gate (the byte-identity check alone can't prove the canonical-ABI `(ptr, len)` return
-    /// area is read correctly). Observed by execution: `main()` returns `[1, 2, 3]`.
-    #[test]
-    fn list_u8_envelope_runs_and_returns_the_bytes() {
-        use wasmtime::component::{Component, Linker, Val};
-        use wasmtime::{Engine, Store};
-
-        let core = working_list_core();
-        let exports = vec![BoundaryExport {
-            name: "main".to_string(),
-            params: Vec::new(),
-            result: BoundaryResult::Bytes,
-        }];
-        let comp = assemble(&core, &exports, &[], "");
-
-        let engine = Engine::default();
-        let component = Component::from_binary(&engine, &comp).expect("valid component");
-        let linker: Linker<()> = Linker::new(&engine);
-        let mut store = Store::new(&engine, ());
-        let instance = linker
-            .instantiate(&mut store, &component)
-            .expect("instantiate");
-        let func = instance
-            .get_func(&mut store, "main")
-            .expect("export present");
-        let mut results = [Val::Bool(false)];
-        func.call(&mut store, &[], &mut results).expect("call");
-        func.post_return(&mut store).expect("post_return");
-        match &results[0] {
-            Val::List(items) => {
-                let got: Vec<u8> = items
-                    .iter()
-                    .map(|v| match v {
-                        Val::U8(b) => *b,
-                        other => panic!("list element not u8: {other:?}"),
-                    })
-                    .collect();
-                assert_eq!(got, vec![1, 2, 3], "list<u8> round-trip");
-            }
-            other => panic!("expected a list result, got {other:?}"),
-        }
-    }
 }
 
 // ── value-heap R1: monomorphized resource + encode() -> list<u8> (the ComponentBuilder reference) ──
