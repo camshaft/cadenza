@@ -9078,8 +9078,7 @@ fn canon_write_of(
             if guest_cases != wit_cases {
                 return None; // a case REORDER would need a runtime disc remap — later increment
             }
-            let (disc_size, _) =
-                wit_ctype::variant_disc_layout(&vec![None; wit_cases.len()]);
+            let (disc_size, _) = wit_ctype::variant_disc_layout(&vec![None; wit_cases.len()]);
             let store = match disc_size {
                 1 => op::I32_STORE8,
                 2 => op::I32_STORE16,
