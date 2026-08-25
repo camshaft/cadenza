@@ -52,10 +52,11 @@ use closure::{declared_import_paths, load as load_import_closure_with};
 mod doc_module;
 
 // Delegated compilation — spawn the standalone `cdz-compile` instead of linking `rcdzc` in-process
-// (`design/DESIGN-cdz-delegate-compile.md`). Compiled ONLY under the `delegate-compile` feature; the
-// in-process path stays the default. `cdz compile` routes through [`dispatch_compile_args`] /
+// (`design/DESIGN-cdz-delegate-compile.md`). Compiled when the `standalone` feature is OFF (the nix
+// build's `--no-default-features` packaging); the default (`standalone` ON) bundles the compiler
+// in-process. `cdz compile`/`cdz build` route through [`dispatch_compile_args`] /
 // [`dispatch_compile_prepared`], which pick delegation vs in-process at compile time.
-#[cfg(feature = "delegate-compile")]
+#[cfg(not(feature = "standalone"))]
 mod delegate;
 
 /// The unified tool. The name reported in tool-level diagnostics is `cdz`.
@@ -1935,11 +1936,11 @@ fn collect_source_dir(dir: &std::path::Path, out: &mut Vec<String>) -> Result<()
 /// `delegate-compile` feature, else run the compiler in-process (`compiler_cli::run`, byte-for-byte the
 /// standalone `rcdzc` bin's behavior). One seam so the two builds stay behavior-identical.
 fn dispatch_compile_args(args: compiler_cli::CompileArgs) -> ExitCode {
-    #[cfg(feature = "delegate-compile")]
+    #[cfg(not(feature = "standalone"))]
     {
         delegate::delegate_args(&args, PROG)
     }
-    #[cfg(not(feature = "delegate-compile"))]
+    #[cfg(feature = "standalone")]
     {
         compiler_cli::run(args, PROG)
     }
@@ -1955,11 +1956,11 @@ fn dispatch_compile_prepared(
     out: Option<PathBuf>,
     opt_level: rcdzc::OptLevel,
 ) -> ExitCode {
-    #[cfg(feature = "delegate-compile")]
+    #[cfg(not(feature = "standalone"))]
     {
         delegate::delegate_from_artifacts(&inputs, targets, out.as_deref(), opt_level, PROG)
     }
-    #[cfg(not(feature = "delegate-compile"))]
+    #[cfg(feature = "standalone")]
     {
         compiler_cli::run_prepared(inputs, targets, out, opt_level, PROG)
     }

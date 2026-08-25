@@ -1,7 +1,8 @@
 //! Delegated compilation — reach the compiler by SPAWNING the standalone `cdz-compile` process
-//! instead of linking `rcdzc` in-process. Gated behind the `delegate-compile` cargo feature
-//! (`design/DESIGN-cdz-delegate-compile.md`): a compiler-only change then need not rebuild `cdz`, so
-//! nix turns the feature on for the packaged toolchain and `cdz` + the compiler cache independently.
+//! instead of linking `rcdzc` in-process. Compiled when the `standalone` feature is OFF
+//! (`design/DESIGN-cdz-delegate-compile.md`): the default (`standalone` ON) bundles the compiler
+//! in-process, and the NIX build packages `cdz` with `--no-default-features` so it delegates — then a
+//! compiler-only change need not rebuild `cdz` and `cdz` + the compiler cache/rebuild independently.
 //!
 //! Why this is behavior-identical: `cdz-compile` IS `rcdzc::cli::run` under its own name (a thin shim
 //! over the same `CompileArgs` + `run` → `run_prepared`). So delegating is not a reimplementation — we
