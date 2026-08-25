@@ -53,6 +53,17 @@ pub fn bare_ctor(b: &mut Builder, name: &str, payload: Vec<StructId>) -> StructI
     b.list(std::iter::once(head).chain(payload).collect())
 }
 
+/// The `unit` atom — the canonical Value form of a Unit value. The compiler's `Value.encode` renders Unit as
+/// the bare name atom `unit` (the same form the runtime's value renderer emits for a `Unit` payload), so a
+/// **nullary single-constructor** sum elides its constructor to exactly this atom, framed only by the root
+/// ascription: `(type Ack = | Ack)` encodes at the payload boundary as `(: unit Ack)`, not `(: (Ack) Ack)`.
+/// (A *multi*-constructor nullary variant keeps its bare-name form `(Ctor)` — the elision is single-ctor
+/// only.) The inverse is [`is_unit`].
+#[must_use]
+pub fn unit(b: &mut Builder) -> StructId {
+    b.name("unit")
+}
+
 /// A root ascription `(: <value> <ty>)` — the top-level wrapper the compiler's `Value.decode` requires at the
 /// payload-encode boundary. The type token is recorded but not matched against the decode target (the decoder
 /// is type-directed by the caller's annotation), so any name — conventionally the contract's declared input
@@ -140,6 +151,13 @@ pub fn as_ascribed(arenas: &cadenza_ast::ast::Arenas, id: StructId) -> Option<St
     (inner.len() == 2).then_some(inner[0])
 }
 
+/// Whether `id` is the `unit` atom — the inverse of [`unit`]. A nullary single-constructor sum's elided
+/// payload, once the root ascription is stripped, is exactly this atom.
+#[must_use]
+pub fn is_unit(arenas: &cadenza_ast::ast::Arenas, id: StructId) -> bool {
+    arenas.as_name(id) == Some("unit")
+}
+
 /// If `id` is a prelude-constructor application `(name tail…)`, its `tail`. `None` otherwise.
 #[must_use]
 pub fn as_bare_ctor<'a>(
@@ -208,8 +226,8 @@ pub fn read_hash(arenas: &cadenza_ast::ast::Arenas, id: StructId) -> Option<Hash
 #[cfg(test)]
 mod tests {
     use super::{
-        as_ascribed, as_bare_ctor, as_qctor, ascribe, bare_ctor, bytes_leaf, qctor, read_bytes,
-        read_hash, read_uint, record, record_field, uint_leaf,
+        as_ascribed, as_bare_ctor, as_qctor, ascribe, bare_ctor, bytes_leaf, is_unit, qctor,
+        read_bytes, read_hash, read_uint, record, record_field, uint_leaf, unit,
     };
     use crate::{Hash, HashTag};
     use cadenza_ast::ast::{Builder, Leaf, Radix};
@@ -250,6 +268,27 @@ mod tests {
         let arenas = built(|b| qctor(b, "Outcome", "Delivered", vec![]));
         let tail = as_qctor(&arenas, arenas.root, "Outcome", "Delivered").expect("a Delivered");
         assert!(tail.is_empty());
+    }
+
+    #[test]
+    fn the_unit_atom_round_trips_and_is_the_single_ctor_nullary_elided_form() {
+        // A nullary SINGLE-constructor sum (`type Ack = | Ack`) elides its constructor to the bare `unit`
+        // atom — the compiler's `Value.encode` of the erased Unit payload — NOT the bare-name `(Ack)` a
+        // multi-constructor nullary variant keeps. `unit` round-trips through `is_unit`, and the two forms
+        // are distinct: the elided value is the `unit` atom, not a `(…)` list.
+        let arenas = built(unit);
+        assert!(is_unit(&arenas, arenas.root));
+        // The multi-ctor nullary form `(Delivered)` is NOT the unit atom (it is a list, not the name `unit`).
+        let other = built(|b| qctor(b, "Outcome", "Delivered", vec![]));
+        assert!(!is_unit(&other, other.root));
+        // Ascribed at the root, the single-ctor-nullary form is `(: unit Ack)`: strip the ascription, the
+        // inner value is the unit atom (what a generated `is_ack_ack` checks after `as_ascribed`).
+        let ascribed = built(|b| {
+            let u = unit(b);
+            ascribe(b, u, "Ack")
+        });
+        let inner = as_ascribed(&ascribed, ascribed.root).expect("a root ascription");
+        assert!(is_unit(&ascribed, inner));
     }
 
     #[test]

@@ -69,9 +69,9 @@ pub fn as_envelope_check(arenas: &Arenas, id: StructId) -> Option<EnvelopeCheck>
 }
 /// Build a canonical `Ack.Ack` value.
 pub fn ack_ack(b: &mut Builder) -> StructId {
-    v::qctor(b, "Ack", "Ack", vec![])
+    v::unit(b)
 }
 /// Whether `id` is a `Ack.Ack` value.
 pub fn is_ack_ack(arenas: &Arenas, id: StructId) -> bool {
-    v::as_qctor(arenas, id, "Ack", "Ack").is_some_and(|t| t.is_empty())
+    v::is_unit(arenas, id)
 }

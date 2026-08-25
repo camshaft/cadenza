@@ -600,14 +600,30 @@ fn emit_ctor(arenas: &Arenas, ty: &str, var: StructId, single: bool) -> Option<T
         Ctor::Nullary => {
             let is = syn::Ident::new(&format!("is_{build}"), Span::call_site());
             let doc_read = format!(" Whether `id` is a `{ty}.{ctor}` value.");
-            quote! {
-                #[doc = #doc_build]
-                pub fn #build(b: &mut Builder) -> StructId {
-                    v::qctor(b, #ty, #ctor, vec![])
+            if single {
+                // Single-constructor nullary sum: the constructor is ELIDED — the value IS the bare `unit`
+                // atom (the compiler's `Value.encode` of the erased Unit payload), framed only by the root
+                // ascription `(: unit T)`, matching the scalar/record single-ctor elision above.
+                quote! {
+                    #[doc = #doc_build]
+                    pub fn #build(b: &mut Builder) -> StructId {
+                        v::unit(b)
+                    }
+                    #[doc = #doc_read]
+                    pub fn #is(arenas: &Arenas, id: StructId) -> bool {
+                        v::is_unit(arenas, id)
+                    }
                 }
-                #[doc = #doc_read]
-                pub fn #is(arenas: &Arenas, id: StructId) -> bool {
-                    v::as_qctor(arenas, id, #ty, #ctor).is_some_and(|t| t.is_empty())
+            } else {
+                quote! {
+                    #[doc = #doc_build]
+                    pub fn #build(b: &mut Builder) -> StructId {
+                        v::qctor(b, #ty, #ctor, vec![])
+                    }
+                    #[doc = #doc_read]
+                    pub fn #is(arenas: &Arenas, id: StructId) -> bool {
+                        v::as_qctor(arenas, id, #ty, #ctor).is_some_and(|t| t.is_empty())
+                    }
                 }
             }
         }
