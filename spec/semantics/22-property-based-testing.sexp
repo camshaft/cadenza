@@ -1418,3 +1418,25 @@
             (export main)))
   (call   main (: 10000000 Int64)) (output (: 10000000 Int64))
   (call   main (: 42 Int64)) (output (: 42 Int64)))
+
+(case "a Value.encode/Value.decode round-trip of a NULLARY single-ctor newtype is Some(unit)"
+  (doc    "The nullary sibling of the scalar single-ctor round-trip: `(type Ack (Ack))` is a single nullary
+           ctor, which erases to `Ty::Nominal{inner:Unit}` — NO machine value at all. `Value.encode` used to
+           decline it; it now FRAMES the runtime inline-unit handle (`IMM_UNIT`) so the canonical form is the
+           elided-head `(: unit Ack)` (its descriptor is the `Named(Ack, Unit)` frame). `Value.decode` into
+           `Option Ack` reconstructs `imm_unit()` (non-NULL) and wraps it as `Some` — a `Some(unit)` carries
+           that same immediate. Ack has no payload to garble, so the round-trip can only distinguish `Some`
+           from `None`: the match returns the seed `n` on `Some` (proving the decode matched the encoded unit)
+           and -1 on `None`. `main 5 -> 5`, `main 9 -> 9` (distinct); an all-`None` decode would give -1
+           twice. Runs at the boundary (the runtime `value-encode`/`value-decode` ops execute — a compile-time
+           fold is not built). TARGET COVERAGE: the `Value` boxing emit is wasm-only, so this PASSES on wasm
+           and is TODO on rust / rust-async (additive baseline, no regression).")
+  (input  (do
+            (type Ack (Ack))
+            (def (main (: n Int64))
+              (match (: (Value.decode (Value.encode (Ack))) (Option Ack))
+                ((Some m) n)
+                ((None u) (- 0 1))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 5 Int64))
+  (call   main (: 9 Int64)) (output (: 9 Int64)))
