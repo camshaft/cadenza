@@ -1381,3 +1381,40 @@
                 ((None u) (- 0 1))))
             (export dec)))
   (declines (message "target type is unsolved")))
+
+; --- Value codec: a SCALAR-ERASED single-ctor newtype now round-trips (the boxing increment). ---
+; APPENDED by v-runtime (owner of the R2 value-encode/decode op) at file EOF per the file-22 append+ping
+; protocol. This closes the gap the (Tuple Int64 Int64) round-trip case above documents ("a scalar-erased
+; newtype still declines the emit, a later increment"): a single-FIELD single-ctor newtype over a bare
+; scalar, e.g. (type Env (FireAfter Int64)), erases to Ty::Nominal{inner:Int64} = a bare i64 — NOT a heap
+; handle. Value.encode used to DECLINE it; it now BOXES the erased scalar to a leaf (box-int) before the
+; op, and Value.decode un-declines the symmetric scalar target (value-decode reconstructs the same boxed
+; leaf, used directly as the Option Some payload). The canonical value form is the elided-head, root-
+; ascribed (: <scalar> <Type>) — rep-independent (the ctor identity rides in the descriptor, not the
+; document), matching the compiler's single-ctor ELISION.
+
+(case "a Value.encode/Value.decode round-trip preserves a scalar-erased single-ctor newtype"
+  (doc    "The R2 round-trip over a SCALAR-ERASED single-ctor newtype `(type Env (FireAfter Int64))` — a
+           single-FIELD single-ctor whose payload is a bare scalar, so it erases to `Ty::Nominal{inner:Int64}`
+           (a bare i64, NOT a heap handle). This was the `Value.encode`/`Value.decode` gap the Int/Int tuple
+           round-trip above flags as `a later increment`: encode now BOXES the erased scalar into a leaf
+           handle (`box-int`) before `value-encode`, whose descriptor is the `Named(Env, Int)` frame, so the
+           canonical form is the elided-head `(: n Env)` (rep-independent — the `FireAfter` ctor identity
+           rides in the descriptor, not the document); decode reconstructs that same boxed leaf and uses it
+           directly as the `Option` `Some` payload (a scalar `Option` payload boxes identically), so
+           `Value.decode (Value.encode (FireAfter n)) == Some (FireAfter n)`. The match unwraps the inner
+           scalar `k` and returns it; a lost/garbled round-trip or an all-`None` decode would give -1. Two
+           distinct seeds pin a faithful round-trip: `main 10000000 -> 10000000`, `main 42 -> 42` (the
+           payload survives the erase→box→encode→decode→unbox cycle in the right value). Runs at the boundary
+           so the value is realized. TARGET COVERAGE: the `Value` boxing emit is wasm-only at this landing, so
+           this PASSES on the default/wasm target and is TODO on rust / rust-async (the rust backend's `Value`
+           emit is a later increment) — an additive per-target baseline, no regression.")
+  (input  (do
+            (type Env (FireAfter Int64))
+            (def (main (: n Int64))
+              (match (: (Value.decode (Value.encode (FireAfter n))) (Option Env))
+                ((Some m) (match m ((FireAfter k) k)))
+                ((None u) (- 0 1))))
+            (export main)))
+  (call   main (: 10000000 Int64)) (output (: 10000000 Int64))
+  (call   main (: 42 Int64)) (output (: 42 Int64)))

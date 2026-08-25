@@ -10703,16 +10703,20 @@ fn value_decode_grounded_by_a_let_binder_round_trips_a_record_when_run() {
     }
 }
 
-/// R2 ENCODE GUARD — the scalar-erased-newtype DECLINE (reviewer-requested regression pin, R2 last-mile).
-/// `Value.encode` walks an i32 HEAP HANDLE; a scalar-erased newtype over a WIDER-than-i32 scalar (`type W (Mk
-/// Int64)` — the box is erased, so `W`'s runtime rep IS the bare `i64`, NOT a handle) has no handle slot. The
-/// emit's `valtype_of != I32` guard DECLINES cleanly rather than `LocalTee`ing the `i64` into an `i32` handle
-/// slot — which emitted INVALID wasm ("expected i32, found i64") LIVE ON ORIGIN before this guard (the encode
-/// arm shipped in 057e19950 with no valtype check). Pins the guard so the encode hole can't regress. (An
-/// i32-erased newtype `(Mk Int32)` encodes FINE — value-encode reads the i32 slot as the integer; only
-/// wider-than-i32 scalars mismatch, so the guard is calibrated to the rep width, verified by reviewer.)
+/// R2 ENCODE — a scalar-erased newtype over a WIDER-than-i32 scalar now COMPILES via the boxing increment
+/// (was a DECLINE; the value-model boxing slice, DESIGN-compiler-primitives-adjacent). `Value.encode` walks
+/// an i32 HEAP HANDLE; a scalar-erased newtype `(type W (Mk Int64))` erases to a bare `i64`, NOT a handle.
+/// The emit no longer declines it: it BOXES the erased scalar into a leaf handle (`box-int`, with the
+/// narrow-int i32→i64 extend for narrower widths) before `value-encode`, whose descriptor is the
+/// `Named(W, Int)` frame — so the canonical form is the elided-head `(: 7 W)`. This closes the encode hole
+/// PROPERLY (the earlier `valtype_of != I32` guard just declined to avoid the live-origin i64-into-i32-slot
+/// invalid-wasm bug; boxing is the real fix). Pins that the scalar-erased single-ctor now emits a VALID
+/// component instead of declining. The e2e round-trip (`Value.decode (Value.encode (FireAfter n)) == Some`)
+/// is pinned by the `spec/semantics/22` corpus case; here we pin the compile-succeeds-not-declines flip.
+/// (A NULLARY-rep newtype `(type Ack (Ack))` — Unit rep — still declines; that box-the-unit-leaf sub-slice
+/// is a follow-up.)
 #[test]
-fn value_encode_on_a_wide_scalar_erased_newtype_declines_not_invalid_wasm() {
+fn value_encode_on_a_wide_scalar_erased_newtype_boxes_and_compiles() {
     use crate::testkit::parse;
     let src = "(module m (type W (Mk Int64)) (def (main) (Value.encode (W.Mk 7))) (export main))";
     let out = crate::compile::compile(
@@ -10727,9 +10731,9 @@ fn value_encode_on_a_wide_scalar_erased_newtype_declines_not_invalid_wasm() {
         &[crate::backend::Target::Wasm],
     );
     assert!(
-        out.has_error(),
-        "Value.encode of a scalar-erased newtype over Int64 (no heap handle) must DECLINE, not emit invalid \
-         wasm (the live-origin i64-into-i32-handle-slot hole this guard closes): {:?}",
+        !out.has_error(),
+        "Value.encode of a scalar-erased newtype over Int64 must now COMPILE via the boxing increment \
+         (box the erased scalar to a leaf handle before value-encode), not decline: {:?}",
         out.diagnostics
             .iter()
             .map(|d| (&d.code, &d.message))
