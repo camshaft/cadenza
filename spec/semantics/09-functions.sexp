@@ -1051,6 +1051,46 @@
             (export main)))
   (call   main (: 500000 Int64)) (output (: 500099 Int64)))
 
+; --- Accumulator introduction: a linear non-tail recursion becomes a constant-stack loop -----------
+; A LINEAR non-tail recursion — one self-call whose result feeds a single enclosing ASSOCIATIVE op with
+; an identity base — is rewritten to a tail-recursive accumulator (accum::introduce) and then to a loop,
+; so a million-deep sum/product that would overflow the stack as pending `call` frames runs in O(1)
+; stack with the value unchanged. Reaching the result at a million deep (rather than a stack-overflow
+; trap) is the observable proof the transform fired.
+
+(case "a linear non-tail sum is accumulator-transformed into a constant-stack loop"
+  (doc    "`(sm n) = (if (= n 0) 0 (+ n (sm (- n 1))))` — the self-call is an OPERAND of `+`, so it is
+           NOT a tail call and would compile to a stack-growing `call`. Because `+` is associative with
+           identity 0, accumulator introduction rewrites it to a tail accumulator, which the loop
+           transform compiles to a `loop`. sm(5)=15, sm(100)=5050, and sm(1000000)=500000500000 runs in
+           O(1) stack — a frame-per-level recursion would overflow far below a million.")
+  (input  (do
+            (def (sm (: n Int64)) (if (= n 0) 0 (+ n (sm (- n 1)))))
+            (export sm)))
+  (call   sm (: 5 Int64))       (output (: 15 Int64))
+  (call   sm (: 100 Int64))     (output (: 5050 Int64))
+  (call   sm (: 1000000 Int64)) (output (: 500000500000 Int64)))
+
+(case "the accumulator transform preserves a product (factorial) shape"
+  (doc    "`(fac n) = (if (= n 0) 1 (* n (fac (- n 1))))` — the same non-tail linear shape over `*`
+           (associative, identity 1). The transform must preserve the exact product: fac(5)=120,
+           fac(10)=3628800. (Large-n is exercised by the sum cases; a large factorial overflows i64 by
+           design — see the overflow-traps pin.)")
+  (input  (do
+            (def (fac (: n Int64)) (if (= n 0) 1 (* n (fac (- n 1)))))
+            (export fac)))
+  (call   fac (: 5 Int64))  (output (: 120 Int64))
+  (call   fac (: 10 Int64)) (output (: 3628800 Int64)))
+
+(case "the accumulator transform applies with the self-call in either operand"
+  (doc    "`(sm2 n) = (if (= n 0) 0 (+ (sm2 (- n 1)) n))` — the self-call is the FIRST operand of `+`
+           (vs `(+ n (sm ...))` above). Accumulator introduction still applies (commutative-associative
+           `+`), so sm2(1000000)=500000500000 also runs in O(1) stack.")
+  (input  (do
+            (def (sm2 (: n Int64)) (if (= n 0) 0 (+ (sm2 (- n 1)) n)))
+            (export sm2)))
+  (call   sm2 (: 1000000 Int64)) (output (: 500000500000 Int64)))
+
 (case "a HOF callback matching a tuple argument computes through the nested reduction"
   (doc    "The same shape with a TUPLE-destructuring callback — `(fn (p) (match p ((tuple a b) (+ a b))))`
            — passed to a HOF. The tuple-pattern binders `a`/`b` read the substituted scrutinee just as a
@@ -3462,7 +3502,13 @@
            (sum-to (- n 1)))` keeps the `+` PENDING across every level, so 10000 genuine frames must
            coexist — no loop rewrite applies. 50005000. Pins the compiled stack budget at a depth a
            small default (or a frame far fatter than needed) would overflow; the runtime companion of
-           the small-n sum-to fold pins.")
+           the small-n sum-to fold pins. NOTE (pending v-core-opt/v-effects reconciliation on unpause):
+           accumulator introduction now FIRES for this exact `(+ n (rec (- n 1)))` shape — empirically
+           `sm(1000000)` completes in O(1) stack (see 'a linear non-tail sum is accumulator-transformed
+           into a constant-stack loop' above), so the 'no loop rewrite applies / 10000 genuine frames'
+           mechanism claim is superseded. The case still passes (50005000 is identical whether via
+           frames or a loop) but no longer exercises a 10000-frame stack budget; the owner should
+           re-base it on a genuinely non-transformable shape or retire it.")
   (input  (do
             (def (sum-to (: n Int64))
               (if (< n 1) 0 (+ n (sum-to (- n 1)))))

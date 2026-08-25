@@ -2185,6 +2185,7 @@ pass	a line comment wrapping a type declaration is seen through
 pass	a line comment wrapping the entry point is seen through
 pass	a linear index-of search returns the POSITION of a runtime key, or -1 past the end
 pass	a linear non-tail recursion over a non-associative operator preserves its exact result
+pass	a linear non-tail sum is accumulator-transformed into a constant-stack loop
 pass	a list PROJECTED from a shared aggregate, consumed then read, is unchanged (persistence via the child)
 pass	a list annotated with the wrong element type is rejected
 pass	a list arm with one constructor element binds its payload and its bare siblings
@@ -6586,6 +6587,8 @@ pass	the STATE-outer nesting of the dual-sum arm threads fresh payloads across t
 pass	the Sign sum orders Neg below Pos per its declaration
 pass	the absorption law does not discard a trapping runtime operand
 pass	the absorption law holds on runtime-element sets
+pass	the accumulator transform applies with the self-call in either operand
+pass	the accumulator transform preserves a product (factorial) shape
 pass	the additive-zero identity preserves a boundary-crossing runtime operand
 pass	the and SHORT-CIRCUITS: the second operand's perform must NOT fire (state proves it)
 pass	the and-complement folds to zero on an unsigned type but the or-complement is the width all-ones not -1

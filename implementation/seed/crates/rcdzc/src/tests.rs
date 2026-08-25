@@ -25208,48 +25208,6 @@ mod recursion {
     }
 
     #[test]
-    fn a_linear_nontail_recursion_is_accumulator_transformed_into_a_loop() {
-        use wasmtime::component::Val;
-        // ACCUMULATOR INTRODUCTION (the guide's `sm`, written NON-tail): `(def (sm n) (if (= n 0) 0
-        // (+ n (sm (- n 1)))))`. The recursive call is an OPERAND of `+`, so it is NOT a tail call and
-        // would compile to a stack-growing `call` — `sm 100000` stack-overflowed. `accum::introduce`
-        // rewrites it to a tail-recursive accumulator (`+` is associative, base 0 is its identity), which
-        // the loop transform then compiles to a `loop`. So a MILLION-deep sum now runs in O(1) stack, and
-        // the value is unchanged.
-        let sm = compile_component(&crate::codec::encode(&parse(
-            "(module m (def (sm (: n Int64)) (if (= n 0) 0 (+ n (sm (- n 1))))) (export sm))",
-        )))
-        .expect("compile");
-        assert_eq!(run_returns_with::<i64>(&sm, "sm", &[Val::S64(5)]), 15);
-        assert_eq!(run_returns_with::<i64>(&sm, "sm", &[Val::S64(100)]), 5050);
-        // The payoff: 1,000,000 terms — a stack overflow before the transform, constant stack after.
-        assert_eq!(
-            run_returns_with::<i64>(&sm, "sm", &[Val::S64(1_000_000)]),
-            500_000_500_000
-        );
-        // PRODUCT shape (factorial): `*` is associative with identity 1. `(def (fac n) (if (= n 0) 1
-        // (* n (fac (- n 1)))))` — transformed the same way. fac(10) = 3628800.
-        let fac = compile_component(&crate::codec::encode(&parse(
-            "(module m (def (fac (: n Int64)) (if (= n 0) 1 (* n (fac (- n 1))))) (export fac))",
-        )))
-        .expect("compile");
-        assert_eq!(run_returns_with::<i64>(&fac, "fac", &[Val::S64(5)]), 120);
-        assert_eq!(
-            run_returns_with::<i64>(&fac, "fac", &[Val::S64(10)]),
-            3_628_800
-        );
-        // The self-call may sit in EITHER operand: `(+ (sm2 (- n 1)) n)` (self-call first) also transforms.
-        let commuted = compile_component(&crate::codec::encode(&parse(
-            "(module m (def (sm2 (: n Int64)) (if (= n 0) 0 (+ (sm2 (- n 1)) n))) (export sm2))",
-        )))
-        .expect("compile");
-        assert_eq!(
-            run_returns_with::<i64>(&commuted, "sm2", &[Val::S64(1_000_000)]),
-            500_000_500_000
-        );
-    }
-
-    #[test]
     fn the_accumulator_transform_declines_shapes_it_cannot_reassociate() {
         use wasmtime::component::Val;
         // The transform must NOT fire (and must leave the def correct) when the shape is not a linear
