@@ -1,0 +1,25 @@
+// A reducer that exercises state DELETION (design/cadenza-platform.md §7): on-message it writes the delivered
+// payload to a key, deletes that key, then reads it back and confirms the value is GONE — echoing a marker
+// only on the expected miss. Proves the state store honours removal (put, delete, get -> absent). Delegates
+// only `state`; a floor import of the reducer world. on-response/on-notification are inert.
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+def on-message(msg) =
+  host state in
+    ( state.put(msg.payload, msg.payload) ;
+      ( state.delete(msg.payload) ;
+        (match state.get(msg.payload) with
+          | None(_) =>
+              { requests = [{ contract = msg.contract, payload = msg.payload, token = b"", deadlineNanos = None }],
+                outcome = Outcome.Continue }
+          | Some(_) =>
+              { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = b"delete-did-not-remove" }) }) ) )
+
+def on-response(_resp) =
+  { requests = [], outcome = Outcome.Continue }
+
+def on-notification(_note) =
+  { requests = [], outcome = Outcome.Continue }
+
+export { on-message, on-response, on-notification }

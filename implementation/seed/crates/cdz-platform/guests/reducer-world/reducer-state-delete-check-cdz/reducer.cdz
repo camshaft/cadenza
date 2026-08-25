@@ -1,0 +1,69 @@
+// The STATE-DELETE checker, as a Cadenza reducer guest (design/cadenza-platform.md §7/§9). The paired guest
+// (reducer-state-delete-cdz) writes a key, deletes it, then reads it back expecting a miss; this checker
+// asserts that removal was OBSERVABLE — LOG-ONLY, guest-agnostic.
+//
+// Same three schema imports as the other checkers (check Envelope / verdict Verdict / log-schema
+// LogRecord+Entry — the log carries KvPut/KvGet/KvDelete). The `libs` manifest beside this file lists them.
+//
+// JUDGEMENT: pass iff some KvGet(key = K, hit = 0) — a read that MISSED — is matched by a KvDelete(key = K,
+// existed = 1) — a delete that removed a real entry. Together they prove the store honoured removal: an entry
+// existed, delete removed it, and a subsequent read observed it gone. RELATIONAL on the key, no hardcoded
+// value; both the miss (hit = 0) and the existed (= 1) are load-bearing — a delete of a never-written key
+// (existed = 0) or a get that hit (hit = 1) both fail. NON-VACUOUS: a guest that fails to instantiate touches
+// no state, so no such pair exists. Settled idioms (List.at-None ends the walk, LogRecord destructured in the
+// Some arm, the two conditions folded into a match guard with `and`).
+import { Envelope } from "check"
+import { Verdict } from "verdict"
+import { LogRecord, Entry } from "log-schema"
+
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+// Does some KvDelete at index >= i remove key == k (existed)? (a real entry was deleted at k.)
+def has-delete(records: List(LogRecord), i: Int64, k: Bytes) =
+  match List.at(records, i) with
+  | Option.None(_) => false
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      (match rec.entry with
+        | Entry.KvDelete(dd) if (dd.key == k and dd.existed == 1) => true
+        | _ => has-delete(records, i + 1, k))
+
+// Is some missed KvGet(key = K, hit = 0) matched by a KvDelete(key = K, existed)? (read gone after removal.)
+def removal-observed(records: List(LogRecord), i: Int64) =
+  match List.at(records, i) with
+  | Option.None(_) => false
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      (match rec.entry with
+        | Entry.KvGet(g) if (g.hit == 0 and has-delete(records, 0, g.key)) => true
+        | _ => removal-observed(records, i + 1))
+
+// The verdict payload for a decoded log: pass with no messages, else fail with one diagnostic message.
+def verdict-payload(records: List(LogRecord)) =
+  if removal-observed(records, 0)
+  then Value.encode(Verdict.Verdict({ pass = true, messages = [] }))
+  else Value.encode(Verdict.Verdict({ pass = false,
+                                      messages = ["no KvGet(miss) matched a KvDelete(existed) of the same key: the state store did not observably honour removal"] }))
+
+// A verdict request on the contract-id the harness passed in the incoming `check` Envelope (`c.verdict`) — the
+// §9 checker protocol has the harness own + pass the verdict contract-id, so no hardcoded hash. The verdict
+// token is irrelevant (the harness reads the verdict by scanning Emitted on the verdict contract), so b"".
+def verdict-req(verdict-contract: Bytes, payload: Bytes) =
+  { contract = verdict-contract, payload = payload, token = b"", deadlineNanos = None }
+
+def on-message(msg) =
+  match (Value.decode(msg.payload) : Option(Envelope)) with
+  | Some(Envelope.Check(c)) =>
+      (match (Value.decode(c.log) : Option(List(LogRecord))) with
+       | Some(records) =>
+           { requests = [verdict-req(c.verdict, verdict-payload(records))], outcome = Outcome.Continue }
+       | None =>
+           { requests = [verdict-req(c.verdict,
+                                     Value.encode(Verdict.Verdict({ pass = false,
+                                                                    messages = ["observation log did not decode"] })))],
+             outcome = Outcome.Continue })
+  | None =>
+      { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = msg.payload }) }
+
+def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
+def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
+export { on-message, on-response, on-notification }
