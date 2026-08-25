@@ -14,14 +14,7 @@
 // hardcoded id and no identity import. NON-VACUOUS: a guest that fails to instantiate emits nothing, so no
 // such Emitted exists and the check fails; a guest that stamps the wrong token also fails.
 import { Entry, LogRecord } from "log-schema"
-import { Decision, interpret, verdict-req, pass, fail, any-record } from "checker-lib"
-
-// The reducer return types, kept LOCAL: the world-export boundary synthesizes on-response/on-notification's
-// (unused) parameter types from the guest's own sums — the response `answer` field is `Result(Bytes, Error)`,
-// so `Error` must be declared here even though the checker never constructs it, and `Outcome` must be the sum
-// all three exports return. A cross-module import of either leaves the boundary parameter ambiguous (CDZ0201).
-type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
-type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+import { respond, on-response, on-notification, pass, fail, any-record } from "checker-lib"
 
 // Does this record stamp its own reducer id? (an Emitted whose token equals its own source reducer id — the
 // guest stamped identity.id.) A per-record predicate; `any-record` scans the log for one.
@@ -36,13 +29,5 @@ def verdict-payload(records) =
   then pass()
   else fail("no Emitted stamped its own reducer id as its token: identity.id did not flow through")
 
-// Map checker-lib's Decision onto this reducer's Outcome: a Report emits the verdict request and continues; a
-// NotCheck (non-check message) closes with the offending schema/reason.
-def on-message(msg) =
-  match interpret(msg, verdict-payload) with
-  | Decision.Report(r) => { requests = [verdict-req(r.contract, r.payload)], outcome = Outcome.Continue }
-  | Decision.NotCheck(cl) => { requests = [], outcome = Outcome.Close({ schema = cl.schema, reason = cl.reason }) }
-
-def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
-def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
+def on-message(msg) = respond(msg, verdict-payload)
 export { on-message, on-response, on-notification }

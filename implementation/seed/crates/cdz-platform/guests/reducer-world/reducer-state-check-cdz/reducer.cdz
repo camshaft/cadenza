@@ -13,10 +13,7 @@
 // emits no matching value → fail. Settled idioms (List.at-None ends the walk, LogRecord destructured in the
 // Some arm, the equality folded into a match guard).
 import { LogRecord, Entry } from "log-schema"
-import { Decision, interpret, verdict-req, pass, fail, join-exists } from "checker-lib"
-
-type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
-type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+import { respond, on-response, on-notification, pass, fail, join-exists } from "checker-lib"
 
 // The value an Emitted record RETURNS, and the value a KvPut SET — the two sides of the state round-trip. Each
 // is a per-record key extractor (None for other records); `join-exists` looks for an Emitted whose returned
@@ -29,10 +26,6 @@ def verdict-payload(records: List(LogRecord)) =
   then pass()
   else fail("no Emitted value matched a KvPut value: the state store did not return the set value across messages")
 
-def on-message(msg) =
-  match interpret(msg, verdict-payload) with
-  | Decision.Report(r) => { requests = [verdict-req(r.contract, r.payload)], outcome = Outcome.Continue }
-  | Decision.NotCheck(cl) => { requests = [], outcome = Outcome.Close({ schema = cl.schema, reason = cl.reason }) }
-def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
-def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
+def on-message(msg) = respond(msg, verdict-payload)
+
 export { on-message, on-response, on-notification }

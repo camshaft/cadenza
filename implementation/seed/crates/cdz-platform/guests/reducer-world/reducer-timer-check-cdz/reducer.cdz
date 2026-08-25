@@ -16,10 +16,7 @@
 // token, so it cannot masquerade as the wake. Settled idioms (List.at-None ends the walk; LogRecord
 // destructured in the Some arm; the equality folded into a match guard).
 import { LogRecord, Entry } from "log-schema"
-import { Decision, interpret, verdict-req, pass, fail, join-pair, pair } from "checker-lib"
-
-type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
-type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+import { respond, on-response, on-notification, pass, fail, join-pair, pair } from "checker-lib"
 
 // The (contract, token) an Emitted ARM carried, and the (contract, token) a Delivered WAKE carried — the runtime
 // correlates a timer fire back to its arm by contract+token. `join-pair` looks for an arm matched by a wake on
@@ -32,10 +29,6 @@ def verdict-payload(records: List(LogRecord)) =
   then pass()
   else fail("no Emitted arm was matched by a Delivered wake on the same contract+token: the armed timer did not fire")
 
-def on-message(msg) =
-  match interpret(msg, verdict-payload) with
-  | Decision.Report(r) => { requests = [verdict-req(r.contract, r.payload)], outcome = Outcome.Continue }
-  | Decision.NotCheck(cl) => { requests = [], outcome = Outcome.Close({ schema = cl.schema, reason = cl.reason }) }
-def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
-def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
+def on-message(msg) = respond(msg, verdict-payload)
+
 export { on-message, on-response, on-notification }

@@ -12,10 +12,7 @@
 // three standard schemas; settled idioms (List.at-None ends the walk; LogRecord destructured in the Some arm;
 // conditions folded into match guards).
 import { LogRecord, Entry } from "log-schema"
-import { Decision, interpret, verdict-req, pass, fail, any-record } from "checker-lib"
-
-type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
-type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+import { respond, on-response, on-notification, pass, fail, any-record } from "checker-lib"
 
 // The three independent observables that together prove the composition fully executed: a GraphNeighbors read
 // with dir=="out" (enum arg marshalled), a KvGet (option-result path), and an Emitted (list-result lifted,
@@ -29,10 +26,6 @@ def verdict-payload(records: List(LogRecord)) =
   then pass()
   else fail("the composition did not fully execute: expected a GraphNeighbors(dir=outgoing) + a KvGet + an Emitted (enum-arg / list-result / option-result marshalling across two host interfaces)")
 
-def on-message(msg) =
-  match interpret(msg, verdict-payload) with
-  | Decision.Report(r) => { requests = [verdict-req(r.contract, r.payload)], outcome = Outcome.Continue }
-  | Decision.NotCheck(cl) => { requests = [], outcome = Outcome.Close({ schema = cl.schema, reason = cl.reason }) }
-def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
-def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
+def on-message(msg) = respond(msg, verdict-payload)
+
 export { on-message, on-response, on-notification }
