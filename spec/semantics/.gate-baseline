@@ -3154,8 +3154,11 @@ pass	a resume value that MATCHES a COMPOUND scrutinee over the growing state bin
 pass	a resuming arm whose resume VALUE is a transform of state and next-state is a distinct advance, observed twice
 pass	a retired collection-op name is rejected with a rename fix-it (CDZ0603)
 pass	a returned capturing closure bound with let and applied folds like the inline form
+pass	a returned capturing closure bound with let and applied twice folds each application independently
 pass	a returned lambda captures+applies a closure param bound to a TOP-LEVEL def
 pass	a returned lookup result consumed with a wildcard never inspects the payload
+pass	a returned multi-parameter capturing closure applied at full arity (flat) folds
+pass	a returned multi-parameter capturing closure applied curried folds
 pass	a returned runtime string with a multi-byte scalar renders the scalar verbatim
 pass	a returned runtime string with a non-printable scalar renders it verbatim, not a u-escape
 pass	a reverse wrapper seeding a second generic helper with an accumulator at two element types declines pending the transitive tie
