@@ -3321,26 +3321,26 @@
   (output (: true Bool)))
 
 (case "the three-way comparison orders chars by scalar value — Less"
-  (doc    "`(compare #\\a #\\b)` is `(Ordering.Less unit)` — Char offers a total order (its scalar order,
+  (doc    "`(Ordering.of #\\a #\\b)` is `(Ordering.Less unit)` — Char offers a total order (its scalar order,
            collections-and-text.md #A Char Is A Single Unicode Scalar Value), so `compare` reports it as
            the Less variant exactly as over Int64/Float64 (core-semantics.md #A Total Order Is Observed
            Through A Three-Way Comparison). Pins that the three-way comparison spans Char, the compare
            companion of the `(< #\\a #\\b)` operator case.")
-  (input  (compare #\a #\b))
+  (input  (Ordering.of #\a #\b))
   (output (: (Less unit) Ordering)))
 
 (case "the three-way comparison orders chars by scalar value — Greater"
-  (doc    "`(compare #\\b #\\a)` is `(Ordering.Greater unit)` — the Greater variant over Char, so `b`
+  (doc    "`(Ordering.of #\\b #\\a)` is `(Ordering.Greater unit)` — the Greater variant over Char, so `b`
            orders after `a` by scalar value. The Greater companion of the Less case, pinning that compare's
            direction agrees with `>` on Char.")
-  (input  (compare #\b #\a))
+  (input  (Ordering.of #\b #\a))
   (output (: (Greater unit) Ordering)))
 
 (case "the three-way comparison orders chars by scalar value — Equal"
-  (doc    "`(compare #\\a #\\a)` is `(Ordering.Equal unit)` — two chars of the same scalar report the middle
+  (doc    "`(Ordering.of #\\a #\\a)` is `(Ordering.Equal unit)` — two chars of the same scalar report the middle
            variant. With the Less and Greater cases this pins all three Ordering variants are reachable over
            Char and discriminated by the scalar relation, exactly as the Int64/Float64 triples are.")
-  (input  (compare #\a #\a))
+  (input  (Ordering.of #\a #\a))
   (output (: (Equal unit) Ordering)))
 
 (case "arithmetic between a char and an Int64 is rejected with the plain Char.to-int fix"
@@ -4443,7 +4443,7 @@
                 (def s1 (String.concat base (if (= k 1) "x" "q")))
                 (def s2 (String.concat base "y"))
                 (+ (* 100 (if (< s1 s2) 1 0))
-                   (+ (* 10 (match (compare s1 s2) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
+                   (+ (* 10 (match (Ordering.of s1 s2) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
                       (if (= s1 s2) 1 0)))))
             (export main)))
   (call   main (: 1 Int64))

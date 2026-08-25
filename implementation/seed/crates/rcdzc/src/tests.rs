@@ -40660,7 +40660,7 @@ mod match_engine {
         // applied to ZERO operands — `(=)` / `(+)` — is a MALFORMED application (the operator demands its
         // operands, the arity error `(+ 1)` already rejects), NOT the operator used as a value (which would
         // DECLINE "needs runtime closures", a to-do). Reject CDZ0201.
-        for op in ["=", "+", "<", ">", "<=", ">=", "-", "*", "compare"] {
+        for op in ["=", "+", "<", ">", "<=", ">=", "-", "*"] {
             let src = format!("(module m (def (main) ({op})) (export main))");
             assert_eq!(
                 reject_code(&src).as_deref(),
@@ -62769,7 +62769,7 @@ mod diagnostics {
         // a terse "no total order" decline. Runtime float params so it reaches lowering (a constant `compare`
         // would fold, not decline).
         let d = first_error(
-            "(module m (def (f (: x Float64) (: y Float64)) (compare x y)) (export f))",
+            "(module m (def (f (: x Float64) (: y Float64)) (Ordering.of x y)) (export f))",
         );
         // An uncoded DECLINE (a carve-out the compiler will never realize), not a coded rejection.
         assert_eq!(
@@ -62817,7 +62817,7 @@ mod diagnostics {
         // pins that redirect (lower.rs compound-`compare` arm) so a refactor can't degrade it. Runtime
         // float params inside a tuple so it reaches lowering (a constant compound would fold).
         let d = first_error(
-            "(module m (def (f (: x Float64) (: y Float64)) (compare (tuple x 1) (tuple y 2))) (export f))",
+            "(module m (def (f (: x Float64) (: y Float64)) (Ordering.of (tuple x 1) (tuple y 2))) (export f))",
         );
         // An uncoded DECLINE (the un-orderable-leaf carve-out), not a coded rejection.
         assert_eq!(
@@ -62836,7 +62836,7 @@ mod diagnostics {
         // ROUND-TRIP witness: the named route — comparing the orderable component (the Int field) on its
         // own — compiles clean, so the redirect points at a form that type-checks.
         let ast = crate::testkit::parse(
-            "(module m (def (f (: x Float64) (: y Float64)) (compare 1 2)) (export f))",
+            "(module m (def (f (: x Float64) (: y Float64)) (Ordering.of 1 2)) (export f))",
         );
         let out = compile(
             &[Artifact::new(
@@ -80069,11 +80069,11 @@ mod stage1 {
         // `Ordering` variant; deconstructed by a three-arm match → -1/0/1. Covers int, string, and the
         // agreement with `<` (all three relations across two operand types).
         for (prog, want) in [
-            ("(compare 1 2)", -1),         // Less
-            ("(compare 2 2)", 0),          // Equal
-            ("(compare 3 2)", 1),          // Greater
-            ("(compare \"a\" \"b\")", -1), // strings order lexicographically
-            ("(compare \"b\" \"b\")", 0),
+            ("(Ordering.of 1 2)", -1),         // Less
+            ("(Ordering.of 2 2)", 0),          // Equal
+            ("(Ordering.of 3 2)", 1),          // Greater
+            ("(Ordering.of \"a\" \"b\")", -1), // strings order lexicographically
+            ("(Ordering.of \"b\" \"b\")", 0),
         ] {
             let src = format!(
                 "(module m (def (main) (match {prog} \

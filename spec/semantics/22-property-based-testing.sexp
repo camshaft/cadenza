@@ -82,7 +82,7 @@
 
 (case "a generated LIST value is reproducible from its seed AND distinct seeds give distinct lists (runtime list = walks the spine)"
   (doc    "§Generation Is Seeded And Reproducible for a LIST value — the historically-blocked case (P4): a
-           list `=` needs a runtime SPINE WALK (compare length + each element), which the runtime now
+           list `=` needs a runtime SPINE WALK (Ordering.of length + each element), which the runtime now
            realizes. `gen` draws a 3-element `(List Int64)` from the seed (three successive masked draws).
            REPRODUCIBILITY: `(= (gen a) (gen a))` = true — the same seed re-draws the identical list, the
            `=` walking the spine + every element. DISCRIMINATING power (so the list `=` is not vacuously

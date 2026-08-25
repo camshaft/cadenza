@@ -737,7 +737,7 @@
 ; three-way twin of the float-compound `<` decline; distinct from it in that a BARE float `<` COMPUTES (the
 ; IEEE partial order) while a bare float `compare` cannot exist (there is no total order to report).
 (case "a runtime float compare declines — a float offers the IEEE partial order, not a total three-way"
-  (doc    "`(compare a b)` over runtime Float64 params asks for a THREE-WAY total-order comparison, but a
+  (doc    "`(Ordering.of a b)` over runtime Float64 params asks for a THREE-WAY total-order comparison, but a
            floating-point type offers only the IEEE partial order (a not-a-number is unordered), so it has no
            `compare` — it DECLINES on all backends (reject-don't-miscompile, §319). Contrast the runtime scalar/
            String/BigInt/Rational `compare` cases, which compute: those types offer a total order, float does
@@ -745,7 +745,7 @@
            (the IEEE partial order). The three-way twin of the float-compound ordering decline above.")
   (input  (do
             (def (main (: a Float64) (: b Float64))
-              (match (compare a b) ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
+              (match (Ordering.of a b) ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
             (export main)))
   ; Pin the ACTIONABLE message, not just the decline: the diagnostic must NAME the IEEE-partial-order
   ; reason so a reader reaches for the relational operators. A future wording degrade to a terse decline
@@ -761,7 +761,7 @@
 ; This case pins the current decline so that emit arm flips it to an executing witness rather than silently
 ; changing behavior.
 (case "a runtime compound compare COMPUTES the three-way Ordering via the value-cmp heap walk (§331)"
-  (doc    "`(compare (tuple a 1) (tuple b 1))` over runtime Int64-leaf tuples yields the three-way `Ordering`
+  (doc    "`(Ordering.of (tuple a 1) (tuple b 1))` over runtime Int64-leaf tuples yields the three-way `Ordering`
            sum: the descriptor-guided `value-cmp` heap walk returns -1/0/1, and the emit builds the Ordering
            discriminant as `res + 1` (all-nullary enum: Less=disc 0, Equal=1, Greater=2). §331 — the boolean
            compound `<`/`<=`/`>`/`>=` (which already compute via the same walk coerced to bool) and the
@@ -771,7 +771,7 @@
            three backends (wasm res+1; rust/rust-async a nested-if over the derived-Ord compound → Ordering ctor).")
   (input  (do
             (def (main (: a Int64) (: b Int64))
-              (match (compare (tuple a 1) (tuple b 1))
+              (match (Ordering.of (tuple a 1) (tuple b 1))
                 ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
             (export main)))
   (call main (: 1 Int64) (: 2 Int64)) (output (: 1 Int64)))
@@ -1929,33 +1929,33 @@
 ; then the seed DECLINES these rather than running them to a wrong value.
 
 (case "comparing a lesser value to a greater yields Less"
-  (doc    "`(compare 1 2)` is `(Ordering.Less unit)` — the three-way comparison reports that 1 is less
+  (doc    "`(Ordering.of 1 2)` is `(Ordering.Less unit)` — the three-way comparison reports that 1 is less
            than 2 as the `Less` variant of the Ordering sum, not a boolean (core-semantics.md #A Total
            Order Is Observed Through A Three-Way Comparison). Pins the Less arm of the three-way result.")
-  (input  (compare 1 2))
+  (input  (Ordering.of 1 2))
   (output (: (Less unit) Ordering)))
 
 (case "comparing equal values yields Equal"
-  (doc    "`(compare 2 2)` is `(Ordering.Equal unit)` — the middle variant, distinct from both Less and
+  (doc    "`(Ordering.of 2 2)` is `(Ordering.Equal unit)` — the middle variant, distinct from both Less and
            Greater. Pins that the three-way comparison reports equality as its own variant rather than
            collapsing it into one of the strict relations.")
-  (input  (compare 2 2))
+  (input  (Ordering.of 2 2))
   (output (: (Equal unit) Ordering)))
 
 (case "comparing a greater value to a lesser yields Greater"
-  (doc    "`(compare 3 2)` is `(Ordering.Greater unit)` — the Greater variant. Together with the Less and
+  (doc    "`(Ordering.of 3 2)` is `(Ordering.Greater unit)` — the Greater variant. Together with the Less and
            Equal cases this pins all three variants of the Ordering result are reachable and correctly
            discriminated by the value relation.")
-  (input  (compare 3 2))
+  (input  (Ordering.of 3 2))
   (output (: (Greater unit) Ordering)))
 
 (case "the three-way comparison is deconstructed by an exhaustive match"
   (doc    "An Ordering value is an ordinary closed sum, so it is matched with the uniform `(Ctor _)`
            patterns over its three variants (core-semantics.md #A Total Order Is Observed Through A
-           Three-Way Comparison, 2nd sentence): matching `(compare 1 2)` selects the `Less` arm, yielding
+           Three-Way Comparison, 2nd sentence): matching `(Ordering.of 1 2)` selects the `Less` arm, yielding
            -1. Pins that a comparison result dispatches through the same exhaustive match as any other
            sum, so every consumer handles all three cases.")
-  (input  (match (compare 1 2)
+  (input  (match (Ordering.of 1 2)
             ((Ordering.Less _)    -1)
             ((Ordering.Equal _)   0)
             ((Ordering.Greater _) 1)))
@@ -1964,13 +1964,13 @@
 (case "the boolean less-than operator agrees with the three-way comparison"
   (doc    "core-semantics.md #A Total Order Is Observed Through A Three-Way Comparison (3rd sentence: the
            boolean ordering operators MUST agree with the three-way comparison): `(< 1 2)` is true
-           exactly when `(compare 1 2)` is `(Ordering.Less unit)`. This case pins that agreement — `(< 1
+           exactly when `(Ordering.of 1 2)` is `(Ordering.Less unit)`. This case pins that agreement — `(< 1
            2)` is true and the compare above is Less, so a type's one order is surfaced two ways that
            cannot diverge.")
   (input  (< 1 2))
   (output (: true Bool)))
 
-; --- Runtime SCALAR three-way `compare`: `(compare a b)` over runtime Int64/Bool COMPUTES -------------
+; --- Runtime SCALAR three-way `compare`: `(Ordering.of a b)` over runtime Int64/Bool COMPUTES -------------
 ; core-semantics.md #A Total Order Is Observed Through A Three-Way Comparison (3rd sentence: the boolean
 ; ordering operators MUST agree with the three-way comparison). The constant cases above fold at compile
 ; time; these pin that a RUNTIME scalar pair (function parameters — no compile-time value) is compared the
@@ -1981,61 +1981,61 @@
 ; exactly once.
 
 (case "the three-way comparison over a runtime lesser scalar yields Less"
-  (doc    "`(compare a b)` over runtime Int64 params `a=3, b=5` selects the `Less` arm → 1. Pins that a
+  (doc    "`(Ordering.of a b)` over runtime Int64 params `a=3, b=5` selects the `Less` arm → 1. Pins that a
            runtime scalar three-way compare computes (not just a constant fold), agreeing with `(< 3 5)`.")
   (input  (do (def (cmp (: a Int64) (: b Int64))
-                (match (compare a b) ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
+                (match (Ordering.of a b) ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
               (def (main) (cmp 3 5)) (export main)))
   (output (: 1 Int64)))
 
 (case "the three-way comparison over equal runtime scalars yields Equal"
-  (doc    "`(compare a b)` over runtime Int64 params `a=b=5` selects the `Equal` arm → 2. Pins the middle
+  (doc    "`(Ordering.of a b)` over runtime Int64 params `a=b=5` selects the `Equal` arm → 2. Pins the middle
            variant of a runtime scalar three-way compare.")
   (input  (do (def (cmp (: a Int64) (: b Int64))
-                (match (compare a b) ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
+                (match (Ordering.of a b) ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
               (def (main) (cmp 5 5)) (export main)))
   (output (: 2 Int64)))
 
 (case "the three-way comparison over a runtime greater scalar yields Greater"
-  (doc    "`(compare a b)` over runtime Int64 params `a=9, b=5` selects the `Greater` arm → 3. With the two
+  (doc    "`(Ordering.of a b)` over runtime Int64 params `a=9, b=5` selects the `Greater` arm → 3. With the two
            cases above, all three variants of a runtime scalar three-way compare are reachable.")
   (input  (do (def (cmp (: a Int64) (: b Int64))
-                (match (compare a b) ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
+                (match (Ordering.of a b) ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
               (def (main) (cmp 9 5)) (export main)))
   (output (: 3 Int64)))
 
 (case "the three-way comparison over runtime booleans orders false before true"
-  (doc    "`(compare a b)` over runtime Bool params `a=false, b=true` yields `Less` → 1: Bool offers the
+  (doc    "`(Ordering.of a b)` over runtime Bool params `a=false, b=true` yields `Less` → 1: Bool offers the
            total order `false < true` (core-semantics.md #Ordering Where Offered Is Total), and the runtime
            three-way compare surfaces it exactly as the boolean `<` does. `a`/`b` are computed at runtime
            (`(< 9 2)`=false, `(< 2 9)`=true) so neither folds.")
   (input  (do (def (cmp (: a Bool) (: b Bool))
-                (match (compare a b) ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
+                (match (Ordering.of a b) ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
               (def (main) (cmp (< 9 2) (< 2 9))) (export main)))
   (output (: 1 Int64)))
 
 (case "the three-way comparison over a runtime scalar performs the operand exactly once"
-  (doc    "`(compare (+ a 1) 5)` over runtime Int64 `a=4` computes `(+ 4 1)=5` then compares to 5 →
+  (doc    "`(Ordering.of (+ a 1) 5)` over runtime Int64 `a=4` computes `(+ 4 1)=5` then compares to 5 →
            `Equal` → 2. The operand `(+ a 1)` is read by both the internal `<` and `>` but is materialized
            ONCE (a single evaluation), so an effectful/trapping operand would run exactly once — this pins
            the value side of that materialize-once lowering.")
   (input  (do (def (cmp (: a Int64))
-                (match (compare (+ a 1) 5) ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
+                (match (Ordering.of (+ a 1) 5) ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
               (def (main) (cmp 4)) (export main)))
   (output (: 2 Int64)))
 
 (case "the three-way comparison orders strings lexicographically"
-  (doc    "`(compare \"a\" \"b\")` is `(Ordering.Less unit)` — String offers a total order (the
+  (doc    "`(Ordering.of \"a\" \"b\")` is `(Ordering.Less unit)` — String offers a total order (the
            lexicographic order of its Unicode scalar values, collections-and-text.md #String Comparison
            Is Defined On Scalar Values), so compare works over it exactly as over Int64. Pins that the
            three-way comparison is offered by every type with a total order, not only the numeric types.")
-  (input  (compare "a" "b"))
+  (input  (Ordering.of "a" "b"))
   (output (: (Less unit) Ordering)))
 
 (case "the three-way comparison over a genuinely-runtime String computes content-lexicographically"
   (doc    "The String case above compares CONSTANT strings (folded before emit). Forcing genuinely-runtime
            strings — `(String.concat s \"z\")` off a parameter, so neither operand is compile-time known —
-           makes `compare` WALK the content: `(compare (mk \"a\") (mk \"b\"))` is `Less` → 1 ('az' before
+           makes `compare` WALK the content: `(Ordering.of (mk \"a\") (mk \"b\"))` is `Less` → 1 ('az' before
            'bz', content-lexicographic over Unicode scalars, collections-and-text.md #String Comparison Is
            Defined On Scalar Values). No new runtime op — the three-way desugars to the nested-if over the
            SAME `Core::StrCmp` byte-lex walk the boolean String `<`/`>` emit, so the two surfaces agree at
@@ -2043,69 +2043,69 @@
   (input  (do
             (def (mk (: s String)) (String.concat s "z"))
             (def (cmp (: x String) (: y String))
-              (match (compare x y) ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
+              (match (Ordering.of x y) ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
             (def (main) (cmp (mk "a") (mk "b")))
             (export main)))
   (output (: 1 Int64)))
 
 (case "the three-way comparison over an equal runtime String yields Equal"
-  (doc    "`(compare (mk \"m\") (mk \"m\"))` over runtime strings (built via concat off a literal, so the
+  (doc    "`(Ordering.of (mk \"m\") (mk \"m\"))` over runtime strings (built via concat off a literal, so the
            two share content but are distinct allocations) yields `Equal` → 2 — the content-lexicographic
            walk reports equality by CONTENT, not allocation identity (memory-and-resource-model.md #Sharing
            Is Not Observable). The middle-variant companion of the runtime-String Less case.")
   (input  (do
             (def (mk (: s String)) (String.concat s "!"))
             (def (cmp (: x String) (: y String))
-              (match (compare x y) ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
+              (match (Ordering.of x y) ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
             (def (main) (cmp (mk "m") (mk "m")))
             (export main)))
   (output (: 2 Int64)))
 
 (case "the three-way comparison orders Float64 by numeric value — Less"
-  (doc    "`(compare 1.5 2.5)` is `(Ordering.Less unit)`: Float64 offers the same total order the numeric
+  (doc    "`(Ordering.of 1.5 2.5)` is `(Ordering.Less unit)`: Float64 offers the same total order the numeric
            model defines for it, and `compare` reports it as the Less variant exactly as over Int64
            (core-semantics.md #A Total Order Is Observed Through A Three-Way Comparison). Pins that the
            three-way comparison spans the OTHER realized numeric type, not just Int64 — the Float64
-           companion of `(compare 1 2)`. (A NaN operand is not ordered and declines here — the finite
+           companion of `(Ordering.of 1 2)`. (A NaN operand is not ordered and declines here — the finite
            float order is what is pinned.)")
-  (input  (compare 1.5 2.5))
+  (input  (Ordering.of 1.5 2.5))
   (output (: (Less unit) Ordering)))
 
 (case "the three-way comparison orders Float64 by numeric value — Equal"
-  (doc    "`(compare 2.5 2.5)` is `(Ordering.Equal unit)` — two equal finite Float64 values report the
-           middle variant, the Float64 companion of `(compare 2 2)`. Pins that Float64 equality-under-order
+  (doc    "`(Ordering.of 2.5 2.5)` is `(Ordering.Equal unit)` — two equal finite Float64 values report the
+           middle variant, the Float64 companion of `(Ordering.of 2 2)`. Pins that Float64 equality-under-order
            agrees with the value relation (distinct from both strict arms).")
-  (input  (compare 2.5 2.5))
+  (input  (Ordering.of 2.5 2.5))
   (output (: (Equal unit) Ordering)))
 
 (case "the three-way comparison orders Float64 by numeric value — Greater"
-  (doc    "`(compare 2.5 1.5)` is `(Ordering.Greater unit)` — with the Less and Equal Float64 cases this
+  (doc    "`(Ordering.of 2.5 1.5)` is `(Ordering.Greater unit)` — with the Less and Equal Float64 cases this
            pins all three Ordering variants are reachable over Float64 and correctly discriminated by the
            numeric relation, exactly as the Int64 triple does.")
-  (input  (compare 2.5 1.5))
+  (input  (Ordering.of 2.5 1.5))
   (output (: (Greater unit) Ordering)))
 
 (case "a shorter string that is a prefix of a longer one compares Less"
-  (doc    "`(compare \"ab\" \"abc\")` is `(Ordering.Less unit)`: with equal leading scalars, the shorter
+  (doc    "`(Ordering.of \"ab\" \"abc\")` is `(Ordering.Less unit)`: with equal leading scalars, the shorter
            string orders before the longer (collections-and-text.md #String Comparison Is Defined On
            Scalar Values — lexicographic order treats end-of-string as least). Pins the length-tiebreak
-           edge of the lexicographic order that `(compare \"a\" \"b\")` (a first-scalar difference) does
+           edge of the lexicographic order that `(Ordering.of \"a\" \"b\")` (a first-scalar difference) does
            not exercise.")
-  (input  (compare "ab" "abc"))
+  (input  (Ordering.of "ab" "abc"))
   (output (: (Less unit) Ordering)))
 
 (case "the three-way comparison orders Bool with false below true"
-  (doc    "`(compare false true)` is `(Ordering.Less unit)` — Bool carries the total order false < true
+  (doc    "`(Ordering.of false true)` is `(Ordering.Less unit)` — Bool carries the total order false < true
            (the order the boolean-ordering cases above test through `<`/`>`), and `compare` reports it as
            the Less variant. Pins that the three-way comparison is offered over Bool (a finite non-numeric
            type), the compare-primitive companion of the `(< false true)` operator cases.")
-  (input  (compare false true))
+  (input  (Ordering.of false true))
   (output (: (Less unit) Ordering)))
 
 (case "the boolean less-than operator agrees with compare over Bool"
   (doc    "core-semantics.md #A Total Order Is Observed Through A Three-Way Comparison (the operators MUST
            agree with the three-way comparison): `(< false true)` is true exactly when
-           `(compare false true)` is `(Ordering.Less unit)`. This pins that agreement for Bool — the same
+           `(Ordering.of false true)` is `(Ordering.Less unit)`. This pins that agreement for Bool — the same
            one-order-surfaced-two-ways law the Int64 case pins, over the boolean order — so `<` on Bool and
            `compare` on Bool cannot diverge.")
   (input  (< false true))
@@ -2461,7 +2461,7 @@
   (input  (do
             (def (mk (: k Int64)) (if (= k 0) (: (None unit) (Option Int64)) (Some k)))
             (def (main (: a Int64) (: b Int64))
-              (match (compare (mk a) (mk b))
+              (match (Ordering.of (mk a) (mk b))
                 ((Ordering.Less _u) 1)
                 ((Ordering.Equal _u) 2)
                 ((Ordering.Greater _u) 3)))
@@ -2491,7 +2491,7 @@
   (input  (do
             (def (mk (: k Int64)) (tuple 7 (if (= k 0) (: (None unit) (Option Int64)) (Some k))))
             (def (main (: a Int64) (: b Int64))
-              (match (compare (mk a) (mk b))
+              (match (Ordering.of (mk a) (mk b))
                 ((Ordering.Less _u) 1)
                 ((Ordering.Equal _u) 2)
                 ((Ordering.Greater _u) 3)))
@@ -2535,7 +2535,7 @@
             (def (main (: a Int64) (: b Int64))
               (+ (* 100 (if (< (mk a) (mk b)) 1 0))
                  (+ (* 10 (if (= (mk a) (mk b)) 1 0))
-                    (match (compare (mk a) (mk b))
+                    (match (Ordering.of (mk a) (mk b))
                       ((Ordering.Less _u) 1)
                       ((Ordering.Equal _u) 2)
                       ((Ordering.Greater _u) 3)))))
@@ -2549,7 +2549,7 @@
             (def (main (: a Int64) (: b Int64))
               (+ (* 100 (if (< (mk a) (mk b)) 1 0))
                  (+ (* 10 (if (= (mk a) (mk b)) 1 0))
-                    (match (compare (mk a) (mk b))
+                    (match (Ordering.of (mk a) (mk b))
                       ((Ordering.Less _u) 1)
                       ((Ordering.Equal _u) 2)
                       ((Ordering.Greater _u) 3)))))
@@ -2559,7 +2559,7 @@
 
 (case "Ordering values order Less below Equal below Greater"
   (input  (do
-            (def (mk (: k Int64)) (compare k 0))
+            (def (mk (: k Int64)) (Ordering.of k 0))
             (def (main (: a Int64) (: b Int64))
               (+ (* 10 (if (< (mk a) (mk b)) 1 0))
                  (if (< (mk b) (mk a)) 1 0)))
@@ -2587,7 +2587,7 @@
             (type Mix (P Int64) (N1) (N2))
             (def (mk (: k Int64)) (if (< k 0) (Mix.N1 unit) (if (= k 0) (Mix.N2 unit) (Mix.P k))))
             (def (main (: a Int64) (: b Int64))
-              (+ (* 10 (match (compare (mk a) (mk b))
+              (+ (* 10 (match (Ordering.of (mk a) (mk b))
                          ((Ordering.Less _u) 1)
                          ((Ordering.Equal _u) 2)
                          ((Ordering.Greater _u) 3)))
@@ -2603,7 +2603,7 @@
                 (def x (= a 1))
                 (def y (= b 1))
                 (+ (* 100 (if (< x y) 1 0))
-                   (+ (* 10 (match (compare x y) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
+                   (+ (* 10 (match (Ordering.of x y) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
                       (if (= x y) 1 0)))))
             (export main)))
   (call   main (: 0 Int64) (: 1 Int64))
@@ -2643,7 +2643,7 @@
             (def (mki (: k Int64)) (if (= k 1) (IB.IE unit) (IB.IW k)))
             (def (mk (: k Int64)) (if (= k 0) (OB.OE unit) (OB.OW (mki k))))
             (def (main (: a Int64) (: b Int64))
-              (+ (* 10 (match (compare (mk a) (mk b)) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
+              (+ (* 10 (match (Ordering.of (mk a) (mk b)) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
                  (if (= (mk a) (mk b)) 1 0)))
             (export main)))
   (call   main (: 1 Int64) (: 5 Int64))
@@ -2657,7 +2657,7 @@
             (def (mki (: k Int64)) (if (= k 1) (IB.IE unit) (IB.IW k)))
             (def (mk (: k Int64)) (if (= k 0) (OB.OE unit) (OB.OW (mki k))))
             (def (main (: a Int64) (: b Int64))
-              (+ (* 10 (match (compare (mk a) (mk b)) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
+              (+ (* 10 (match (Ordering.of (mk a) (mk b)) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
                  (if (= (mk a) (mk b)) 1 0)))
             (export main)))
   (call   main (: 3 Int64) (: 5 Int64))
@@ -2671,7 +2671,7 @@
             (def (mki (: k Int64)) (if (= k 1) (IB.IE unit) (IB.IW k)))
             (def (mk (: k Int64)) (if (= k 0) (OB.OE unit) (OB.OW (mki k))))
             (def (main (: a Int64) (: b Int64))
-              (+ (* 10 (match (compare (mk a) (mk b)) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
+              (+ (* 10 (match (Ordering.of (mk a) (mk b)) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
                  (if (= (mk a) (mk b)) 1 0)))
             (export main)))
   (call   main (: 0 Int64) (: 1 Int64))
@@ -2683,7 +2683,7 @@
             (type SP (T String) (U))
             (def (mk (: k Int64)) (if (= k 0) (SP.U unit) (SP.T (String.concat "a" (if (= k 1) "b" "c")))))
             (def (main (: a Int64) (: b Int64))
-              (+ (* 10 (match (compare (mk a) (mk b)) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
+              (+ (* 10 (match (Ordering.of (mk a) (mk b)) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
                  (if (= (mk a) (mk b)) 1 0)))
             (export main)))
   (call   main (: 1 Int64) (: 2 Int64))
@@ -2695,7 +2695,7 @@
             (type SP (T String) (U))
             (def (mk (: k Int64)) (if (= k 0) (SP.U unit) (SP.T (String.concat "a" (if (= k 1) "b" "c")))))
             (def (main (: a Int64) (: b Int64))
-              (+ (* 10 (match (compare (mk a) (mk b)) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
+              (+ (* 10 (match (Ordering.of (mk a) (mk b)) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
                  (if (= (mk a) (mk b)) 1 0)))
             (export main)))
   (call   main (: 1 Int64) (: 0 Int64))
@@ -2707,7 +2707,7 @@
             (type SP (T String) (U))
             (def (mk (: k Int64)) (if (= k 0) (SP.U unit) (SP.T (String.concat "a" (if (= k 1) "b" "c")))))
             (def (main (: a Int64) (: b Int64))
-              (+ (* 10 (match (compare (mk a) (mk b)) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
+              (+ (* 10 (match (Ordering.of (mk a) (mk b)) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
                  (if (= (mk a) (mk b)) 1 0)))
             (export main)))
   (call   main (: 1 Int64) (: 1 Int64))
@@ -2718,7 +2718,7 @@
   (input  (do
             (def (mk (: z Int64) (: a Int64)) (record (= zebra z) (= apple a)))
             (def (main (: k Int64))
-              (match (compare (mk 1 9) (mk (+ 2 k) 0))
+              (match (Ordering.of (mk 1 9) (mk (+ 2 k) 0))
                 ((Ordering.Less _u) 1)
                 ((Ordering.Equal _u) 2)
                 ((Ordering.Greater _u) 3)))
@@ -2731,7 +2731,7 @@
   (input  (do
             (def (mk (: z Int64) (: a Int64)) (record (= zebra z) (= apple a)))
             (def (main (: k Int64))
-              (match (compare (mk 1 5) (mk (+ 4 k) 5))
+              (match (Ordering.of (mk 1 5) (mk (+ 4 k) 5))
                 ((Ordering.Less _u) 1)
                 ((Ordering.Equal _u) 2)
                 ((Ordering.Greater _u) 3)))
@@ -2745,12 +2745,12 @@
 ; with reduction / arbitrary-precision) that must run MID-WALK with ties falling through.
 
 (case "a Symbol leaf in a tuple orders content-lexicographically and decisively before later fields"
-  (doc    "The SYMBOL row of the compound-order heap-leaf matrix (String/rope, Rational, BigInt are the siblings): runtime-interned Symbols inside tuples — sym decisive before the numeric field ((alpha,9)<(beta,0) → 1), sym TIE falling to the number (compare Equal-path → Less at k=5), and an eq control. A walk comparing Symbols by intern handle/allocation order instead of content breaks the first face.")
+  (doc    "The SYMBOL row of the compound-order heap-leaf matrix (String/rope, Rational, BigInt are the siblings): runtime-interned Symbols inside tuples — sym decisive before the numeric field ((alpha,9)<(beta,0) → 1), sym TIE falling to the number (Ordering.of Equal-path → Less at k=5), and an eq control. A walk comparing Symbols by intern handle/allocation order instead of content breaks the first face.")
   (input  (do
             (def (mk (: s String) (: n Int64)) (tuple (Symbol.of (String.concat s "")) n))
             (def (main (: k Int64))
               (+ (* 100 (if (< (mk "alpha" 9) (mk "beta" 0)) 1 0))
-                 (+ (* 10 (match (compare (mk "beta" 1) (mk "beta" (+ 1 k))) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
+                 (+ (* 10 (match (Ordering.of (mk "beta" 1) (mk "beta" (+ 1 k))) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
                     (if (= (mk "alpha" 5) (mk "alpha" 5)) 1 0))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 121 Int64))
@@ -2762,7 +2762,7 @@
             (def (mk (: n Int64) (: d Int64) (: t Int64)) (tuple (Rational.of n d) t))
             (def (main (: a Int64))
               (+ (* 100 (if (< (mk 1 3 9) (mk a 6 0)) 1 0))
-                 (+ (* 10 (match (compare (mk 1 2 5) (mk a 6 5)) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
+                 (+ (* 10 (match (Ordering.of (mk 1 2 5) (mk a 6 5)) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
                     (if (< (mk 2 6 1) (mk 1 3 2)) 1 0))))
             (export main)))
   (call   main (: 3 Int64))
@@ -2777,7 +2777,7 @@
                 (tuple (+ (* b64 (BigInt.of h)) (BigInt.of 5)) t)))
             (def (main (: a Int64))
               (+ (* 100 (if (< (mk 3 9) (mk a 0)) 1 0))
-                 (+ (* 10 (match (compare (mk 5 1) (mk a 1)) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
+                 (+ (* 10 (match (Ordering.of (mk 5 1) (mk a 1)) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
                     (if (< (mk 5 1) (mk 5 2)) 1 0))))
             (export main)))
   (call   main (: 5 Int64))
@@ -2793,7 +2793,7 @@
                 ((Ordering.Equal _u) (k unit))
                 (other other)))
             (def (cmp-person (: n1 String) (: a1 Int64) (: n2 String) (: a2 Int64))
-              (chain (compare n1 n2) (fn ((: _u Unit)) (compare a1 a2))))
+              (chain (Ordering.of n1 n2) (fn ((: _u Unit)) (Ordering.of a1 a2))))
             (def (ord-code (: o Ordering))
               (match o ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
             (def (main (: a Int64))
@@ -2821,7 +2821,7 @@
               (do
                 (def a (BP.T (Bytes.of (list 1 (UInt8.wrap k)))))
                 (def b (BP.T (Bytes.of (list 1 3))))
-                (match (compare a b) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3))))
+                (match (Ordering.of a b) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 3 Int64)))
 
@@ -2833,7 +2833,7 @@
               (do
                 (def a (FP.T (if (= k 1) 1.5 2.5)))
                 (def b (FP.T 2.0))
-                (match (compare a b) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3))))
+                (match (Ordering.of a b) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3))))
             (export main)))
   (declines))
 
@@ -2852,7 +2852,7 @@
 (case "a tuple with a Char leaf declines compound ordering — Char has no blessed order"
   (doc    "`(< (mk #\\a) (mk #\\b))` where `mk` builds a runtime `(tuple 1 c)` with a Char component.
            Compound ordering is offered exactly when EVERY component offers a total order, and Char
-           remains outside the blessed leaf vocabulary — scalar `(compare #\\a #\\b)` IS blessed and
+           remains outside the blessed leaf vocabulary — scalar `(Ordering.of #\\a #\\b)` IS blessed and
            computes (13-strings:3092), but Char-in-a-compound follows the tuple walk, which declines
            rather than inventing an order. (Bytes USED to share this carve-out until PR#1120 blessed
            its lexicographic order — re-verified this pin still declines AFTER that blessing, so the

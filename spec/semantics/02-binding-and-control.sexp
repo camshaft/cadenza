@@ -2658,7 +2658,7 @@
   (doc    "A guard is an ordinary expression evaluated in the arm's full scope, so it reads names from the
            ENCLOSING scope too, not only the ones its pattern binds: `classify` guards `v if v < limit`
            where `v` is the pattern binder but `limit` is a FUNCTION PARAMETER. The arm fires when the
-           scrutinee is below the dynamic threshold — the common real-world guard (compare a matched value
+           scrutinee is below the dynamic threshold — the common real-world guard (Ordering.of a matched value
            against a runtime bound, not a literal). For x below `limit` it returns 0, at or above it falls
            through to 1. Every other guard case compares a binder to a LITERAL; this pins that a guard also
            closes over the enclosing bindings. Both operands runtime (call args), so nothing folds.")
@@ -3663,7 +3663,7 @@
   (doc    "core-semantics.md #Matching Is Exhaustive Or Rejected: the scrutinee is a runtime integer
            but the arm bodies are Bool — a match is an expression of whatever type its arms yield,
            not restricted to the scrutinee's type. `is-zero` maps 0 → true, else → false; is-zero(0)
-           = true. The Bool result must cross the run boundary as the program's value (compare the
+           = true. The Bool result must cross the run boundary as the program's value (Ordering.of the
            Bool-returning function cases in 09-functions.sexp — same result-kind requirement, reached
            through a match rather than a call).")
   (input  (do

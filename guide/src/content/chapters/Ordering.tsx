@@ -64,13 +64,13 @@ export default function Ordering() {
 
       <H2>The <C>Ordering</C> value</H2>
       <P>
-        <C>compare</C> takes two values and returns an <C>Ordering</C>, a sum with exactly three
+        <C>Ordering.of</C> takes two values and returns an <C>Ordering</C>, a sum with exactly three
         variants, <C>Less</C>, <C>Equal</C>, and <C>Greater</C>. You read it apart with <C>match</C>, the
         same way you would any sum. Here <C>3</C> is less than <C>9</C>, so the <C>Less</C> arm fires:
       </P>
       <Runnable
         source={`(def (order-sign a b)
-  (match (compare a b)
+  (match (Ordering.of a b)
     ((Less _)    -1)
     ((Equal _)   0)
     ((Greater _) 1)))
@@ -86,20 +86,20 @@ export default function Ordering() {
         when you write it, not discovered as a wrong answer in production.
       </Note>
       <Runnable
-        source={`(match (compare 3 9)
+        source={`(match (Ordering.of 3 9)
   ((Less _)  1)
   ((Equal _) 0))`}
         expect="error"
       />
 
       <P>
-        <C>compare</C> is <em>generic</em>, so it works on any two values of the same type, not just
+        <C>Ordering.of</C> is <em>generic</em>, so it works on any two values of the same type, not just
         numbers. Text compares in dictionary order, so <C>"apple"</C> comes before <C>"banana"</C> and
         the <C>Less</C> arm fires again:
       </P>
       <Runnable
         source={`(def (order-sign a b)
-  (match (compare a b)
+  (match (Ordering.of a b)
     ((Less _)    -1)
     ((Equal _)   0)
     ((Greater _) 1)))
@@ -162,7 +162,7 @@ export default function Ordering() {
 
       <Why tenet="A total order is a three-way answer">
         Returning <C>-1 / 0 / 1</C> works, but it leans on a convention and can't be enforced. Cadenza's{" "}
-        <C>compare</C> yields the <C>Ordering</C> sum of <em>less</em>, <em>equal</em>, and <em>greater</em>,
+        <C>Ordering.of</C> yields the <C>Ordering</C> sum of <em>less</em>, <em>equal</em>, and <em>greater</em>,
         so the three cases have names and the compiler checks a caller handled <em>all</em> of them
         (you saw the missing-arm error above). There's no fourth nonsense value to guard against: what
         would <C>2</C>, or <C>true,true</C>, even mean? And it's one order for every type, whether numbers,
@@ -199,18 +199,18 @@ export default function Ordering() {
         id="ordering:2"
         prompt={
           <>
-            Write <C>max</C> using <C>compare</C> and <C>match</C>, picking <C>a</C> when it's greater or
+            Write <C>max</C> using <C>Ordering.of</C> and <C>match</C>, picking <C>a</C> when it's greater or
             equal, and <C>b</C> when <C>a</C> is less. <C>(max 8 3)</C> should give <C>8</C>.
           </>
         }
         starter={`(def (max a b)
-  (match (compare a b)
+  (match (Ordering.of a b)
     ((Less _)    ?)
     ((Equal _)   a)
     ((Greater _) a)))
 (def (main) (max 8 3))`}
         solution={`(def (max a b)
-  (match (compare a b)
+  (match (Ordering.of a b)
     ((Less _)    b)
     ((Equal _)   a)
     ((Greater _) a)))
