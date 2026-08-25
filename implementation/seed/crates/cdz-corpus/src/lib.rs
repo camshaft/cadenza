@@ -24,9 +24,7 @@
 /// `cdz corpus`. The standalone `cdz-corpus` bin is a thin shim over it.
 pub mod cli;
 
-use std::sync::Arc;
-
-use cadenza_syntax::ast::{Arenas, Builder, Leaf, StructId};
+use cadenza_syntax::ast::{Arenas, Builder, StructId};
 use cadenza_syntax::{codec, sexpr};
 
 /// A single parsed + normalized corpus case, ready to run.
@@ -76,14 +74,16 @@ pub struct Record {
     /// artifact fed to `cdz compile`. `None` for the common synthesized-world case (byte-identical to before).
     pub wit_world: Option<String>,
     /// The interface a `(wit-world …)` case's guest exports under (`(component-name "cadenza:pkg/iface")`) —
-    /// passed to `cdz compile --component-name` and used to qualify the run export as `<iface>#<export>`.
-    /// `None` when no world is imposed.
+    /// the shred's `component-name` text file, passed to the compiler as `--component-name` and used to
+    /// qualify the run export as `<iface>#<export>`. `None` when no world is imposed.
     pub component_name: Option<String>,
-    /// The COMPILE-UNIT config as BINARY AST (`codec::encode`) — `(compile-unit (component-name "…")?
-    /// (wit-world <world-subtree>)?)` — the shred's `compile-unit.ast`, a compiler input alongside the
-    /// program. Built in the reader (where the world's arena node is live, so its subtree is `clone_into`'d
-    /// directly — no reparse). `None` for the common synthesized-world case (no `compile-unit.ast` emitted).
-    pub compile_unit_ast: Option<Vec<u8>>,
+    /// The imposed WIT world as BINARY AST (`codec::encode` of the `(world …)` subtree) — the shred's
+    /// `wit-world.ast`, fed to the compiler EXACTLY as its native `wit-world:<name>=<path>` input with NO
+    /// transform (the corpus `(world …)` form already IS the `world_schema_tree` shape the compiler reads;
+    /// the `<name>` label is ignored — the world name is read from the artifact root). Built in the reader
+    /// where the world's arena node is live (`clone_into`'d into a fresh arena, then encoded — no reparse).
+    /// `None` for the common synthesized-world case (no `wit-world.ast` emitted).
+    pub wit_world_ast: Option<Vec<u8>>,
 }
 
 /// One sibling LIBRARY module of a multi-file package case — its file name (the string an `(import
@@ -816,27 +816,14 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
         return Err(format!("case {description:?} has no primary result clause"));
     }
 
-    // COMPILE-UNIT config (wit-world + component-name), built arena-direct while the world's node is live
-    // in `a` (clone_into embeds its subtree — no reparse). `None` unless the case imposes a world/name.
-    let compile_unit_ast = if wit_world_id.is_some() || component_name.is_some() {
+    // The imposed world as its OWN binary-AST artifact: encode the `(world …)` subtree directly (its root
+    // IS the compiler's `wit-world:<name>=` input, the `world_schema_tree` shape — no wrapper, no reparse).
+    // `clone_into` embeds the subtree from `a` (where it is live) into a fresh arena finished on that node.
+    let wit_world_ast = wit_world_id.map(|id| {
         let mut b = Builder::new();
-        let head = b.name("compile-unit");
-        let mut kids = vec![head];
-        if let Some(cn) = &component_name {
-            let cnh = b.name("component-name");
-            let cnv = b.atom_leaf(Leaf::Str(Arc::from(cn.as_str())));
-            kids.push(b.list(vec![cnh, cnv]));
-        }
-        if let Some(id) = wit_world_id {
-            let wh = b.name("wit-world");
-            let wsub = clone_into(a, id, &mut b);
-            kids.push(b.list(vec![wh, wsub]));
-        }
-        let root = b.list(kids);
-        Some(codec::encode(&b.finish(root)))
-    } else {
-        None
-    };
+        let root = clone_into(a, id, &mut b);
+        codec::encode(&b.finish(root))
+    });
 
     Ok(Record {
         description,
@@ -849,7 +836,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
         warns,
         wit_world,
         component_name,
-        compile_unit_ast,
+        wit_world_ast,
     })
 }
 

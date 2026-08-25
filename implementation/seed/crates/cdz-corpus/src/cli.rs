@@ -29,9 +29,9 @@ enum CorpusCmd {
     ///
     /// Default: the whole record stream (all cases, `---`-separated) to stdout. With `--out-dir DIR`:
     /// SHRED instead — for each input file write one directory per case under `DIR/<stem>/<NNNN>-<slug>/`
-    /// holding the case's BINARY-AST artifacts (`program.ast`, `module-*.ast`?, `compile-unit.ast`?,
-    /// `test-run.ast`), plus a `DIR/<stem>/manifest` listing the case dirs in order. These are the
-    /// per-case units the nix corpus pipeline caches on; see
+    /// holding the case's artifacts, each already in its CONSUMER's native form (`program.ast`,
+    /// `module-*.ast`?, `wit-world.ast`?, `component-name`?, `test-run.ast`), plus a `DIR/<stem>/manifest`
+    /// listing the case dirs in order. These are the per-case units the nix corpus pipeline caches on; see
     /// `design/DESIGN-corpus-nix-per-case-caching.md`.
     Records {
         /// Corpus `.sexp` files to read.
@@ -85,22 +85,25 @@ fn run_records(files: &[String]) -> Result<(), String> {
 }
 
 /// `records --out-dir DIR FILE…`: SHRED each corpus file into one directory per case under
-/// `DIR/<stem>/<NNNN>-<slug>/`, each holding up to three BINARY-AST artifacts split by consumer
+/// `DIR/<stem>/<NNNN>-<slug>/`, each holding the case's artifacts already in their CONSUMER's native form
 /// (`design/DESIGN-corpus-nix-per-case-caching.md`), plus a `DIR/<stem>/manifest` listing the case dirs
 /// in order. The artifacts:
 ///
-/// - `program.ast` — the normalized program, fed straight to the compiler (build).
+/// - `program.ast` — the normalized program as binary AST, fed straight to the compiler (`ast:main=…`).
 /// - `module-<name>.ast` — one per sibling LIBRARY module (multi-file package cases), also a compiler
-///   input (the entry `(import "name")`s it).
-/// - `compile-unit.ast` — wit-world + component-name, the compilation config (also a compiler input);
-///   omitted for the common synthesized-world case.
+///   input (`ast:<name>=…`; the entry `(import "name")`s it).
+/// - `wit-world.ast` — the imposed world as binary AST (the `(world …)` subtree), the compiler's native
+///   `wit-world:<name>=…` input verbatim; omitted for the common synthesized-world case.
+/// - `component-name` — the interface the world's guest exports under, as PLAIN TEXT (a `--component-name`
+///   string, not an AST); omitted unless the case names one.
 /// - `test-run.ast` — description + trials (call/args/expect) + host-calls/responses + warns, the
 ///   run/grade metadata consumed by the runner (exec), not the compiler.
 ///
-/// Splitting by consumer is the caching win: the build derivation keys on {program+modules, compile-unit}
-/// so a run-metadata edit (expected output, args, host tape) never rebuilds; the exec derivation keys on
-/// {artifact, test-run} so it is compiler-independent. Each artifact is a real binary AST (via
-/// `codec::encode`), not a text format — we already parse the `.sexp`, so we emit the parsed form.
+/// The shred does every format transform ONCE here (extract the world subtree, encode each program), so
+/// each artifact hands to its consumer with NO further conversion — the whole point per the operator's
+/// "fewer transforms" steer. Splitting by consumer is the caching win: the build derivation keys on
+/// {program+modules, wit-world, component-name} so a run-metadata edit (expected output, args, host tape)
+/// never rebuilds; the exec derivation keys on {artifact, test-run} so it is compiler-independent.
 ///
 /// Compiler-genre only: platform-genre files (`spec/platform`) are not part of this pipeline and are a
 /// hard error under `--out-dir`.
@@ -136,9 +139,15 @@ fn shred_records(files: &[String], out_dir: &str) -> Result<(), String> {
                 )
                 .map_err(|e| format!("{path} case {i} module {}: {e}", m.name))?;
             }
-            if let Some(cu) = &rec.compile_unit_ast {
-                write_bytes(&cdir.join("compile-unit.ast"), cu)
-                    .map_err(|e| format!("{path} case {i} compile-unit: {e}"))?;
+            // The compile CONFIG, each in the compiler's NATIVE input form (no transform at compile time):
+            // the world as its own `wit-world.ast` binary artifact, the interface name as plain text.
+            if let Some(w) = &rec.wit_world_ast {
+                write_bytes(&cdir.join("wit-world.ast"), w)
+                    .map_err(|e| format!("{path} case {i} wit-world: {e}"))?;
+            }
+            if let Some(cn) = &rec.component_name {
+                std::fs::write(cdir.join("component-name"), cn)
+                    .map_err(|e| format!("{path} case {i} component-name: {e}"))?;
             }
             write_bytes(&cdir.join("test-run.ast"), &test_run_ast(rec))
                 .map_err(|e| format!("{path} case {i} test-run: {e}"))?;
@@ -330,10 +339,10 @@ mod tests {
             let tr = test_run_ast(rec);
             let tr_ast = codec::decode(&tr).expect("test-run.ast must decode");
             assert_eq!(sexpr::print(&tr_ast), sexpr::print(&tr_ast)); // decodes to a stable AST
-            // No world imposed → no compile-unit artifact.
+            // No world imposed → no wit-world artifact and no component-name.
             assert!(
-                rec.compile_unit_ast.is_none(),
-                "synthesized-world case emits no compile-unit"
+                rec.wit_world_ast.is_none() && rec.component_name.is_none(),
+                "synthesized-world case emits no wit-world / component-name"
             );
         }
         // test-run carries the graded outcome as string leaves (awkward chars safe): the error case pins
@@ -345,5 +354,38 @@ mod tests {
         );
         let run_tr = sexpr::print(&codec::decode(&test_run_ast(&recs[2])).unwrap());
         assert!(run_tr.contains("main"), "call export in test-run: {run_tr}");
+    }
+
+    /// A `(wit-world …)` + `(component-name …)` case emits the world as a NATIVE `wit-world.ast` — the
+    /// `(world …)` subtree ITSELF (its root head is `world`, no `(wit-world …)`/`(compile-unit …)` wrapper),
+    /// exactly the shape the compiler's `wit-world:<name>=` input reads — and the interface name as the plain
+    /// `component_name` string. This is the whole "no transform at compile time" contract: the artifact is
+    /// the compiler's native input verbatim.
+    #[test]
+    fn wit_world_case_emits_the_world_subtree_and_component_name() {
+        let recs = crate::read(
+            r#"(case "boundary"
+                  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result ("record" (d ("option" (s64))))))))))
+                  (component-name "cadenza:demo/iface")
+                  (input (do (def (f (: m (Record (: x Int64)))) (record (= d Option.None))) (export f)))
+                  (call f (: (record (= x 0)) (Record (: x Int64))))
+                  (output (: (record (= d (None unit))) (record (d (Option Int64))))))"#,
+        )
+        .unwrap();
+        assert_eq!(recs.len(), 1);
+        let rec = &recs[0];
+        let world = codec::decode(rec.wit_world_ast.as_ref().expect("wit-world.ast present"))
+            .expect("wit-world.ast decodes");
+        let world_text = sexpr::print(&world);
+        // Root IS the `(world …)` node — not wrapped in `(wit-world …)` or `(compile-unit …)`.
+        assert!(
+            world_text.starts_with("(world w ") && world_text.contains("(export iface"),
+            "wit-world.ast root is the (world …) subtree verbatim: {world_text}"
+        );
+        assert!(
+            !world_text.starts_with("(wit-world") && !world_text.contains("compile-unit"),
+            "no wrapper node around the world: {world_text}"
+        );
+        assert_eq!(rec.component_name.as_deref(), Some("cadenza:demo/iface"));
     }
 }
