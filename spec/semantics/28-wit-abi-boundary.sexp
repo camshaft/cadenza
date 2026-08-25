@@ -46,6 +46,8 @@
 ; SHAPE 26 — a no-effects reducer step (empty requests list; dead element-writer derived from the WIT type).
 ; SHAPE 27 — the CAPSTONE full reducer-step: list<record> requests + 3 byte leaves + option + named variant, every field asserted.
 ; SHAPE 28 — a list<u8> LEAF param AND a spilled record result in ONE member (both memory paths + all scratch locals).
+; SHAPE 29 — the flagship reducer-echo: the real message{contract,sender:{reducer,host},payload,token} (nested
+; sender record) round-trips into the full step (param permute + nested-record + whole step writer at once).
 
 (case "an option<s64> field in a record result crosses the export boundary on both arms"
   (doc    "The general option<T> RESULT lift across the WIT export boundary. The guest takes a record
@@ -420,3 +422,15 @@
   (input (do (def (f (: m (Record (: data Bytes)))) (let ((k (Bytes.len (. m data)))) (record (= n k) (= twice (+ k k))))) (export f)))
   (call f (: (record (= data (list 1 2 3 4 5 6 7))) (Record (: data Bytes))))
   (output (: (record (= n 7) (= twice 14)) (record (n Int64) (twice Int64)))))
+(case "the identity-less reducer-echo round-trips the real message shape into a step (via an imposed WIT world)"
+  (doc    "SHAPE 29 — the flagship reducer-echo (on-message(message) -> step) round-tripping the REAL
+           declaration-ordered message{contract, sender:{reducer, host}, payload, token} (a NESTED sender record
+           + four list<u8> leaves) into the full step. Exercises the message param permute + the nested-record
+           param read + the whole step result writer at once: f echoes contract/payload/token into one request
+           with deadline-nanos None and outcome Continue. Migrated from the in-crate wasmtime test
+           `the_identity_less_reducer_echo_round_trips` (the SUNSET-CORE echo relation minus identity).")
+  (wit-world (world w (export iface (member on-message (func (param m ("record" (contract ("list" (u8))) (sender ("record" (reducer ("list" (u8))) (host ("list" (u8))))) (payload ("list" (u8))) (token ("list" (u8))))) (result ("record" (requests ("list" ("record" (contract ("list" (u8))) (payload ("list" (u8))) (token ("list" (u8))) (deadline-nanos ("option" (u64)))))) (outcome ("variant" (continue) (close ("record" (schema ("list" (u8))) (reason ("list" (u8))))))))))))))
+  (component-name "cadenza:platform/guest")
+  (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (def (onMessage (: m (Record (: contract Bytes) (: sender (Record (: reducer Bytes) (: host Bytes))) (: payload Bytes) (: token Bytes)))) (record (= requests (list (record (= contract (. m contract)) (= payload (. m payload)) (= token (. m token)) (= deadline-nanos Option.None)))) (= outcome Outcome.Continue))) (export onMessage)))
+  (call on-message (: (record (= contract (list 170 187)) (= sender (record (= reducer (list 1)) (= host (list 2)))) (= payload (list 3 4 5)) (= token (list 9 9))) (Record (: contract Bytes) (: sender (Record (: reducer Bytes) (: host Bytes))) (: payload Bytes) (: token Bytes))))
+  (output (: (record (= requests ((record (= contract (170 187)) (= payload (3 4 5)) (= token (9 9)) (= deadline-nanos (None unit))))) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
