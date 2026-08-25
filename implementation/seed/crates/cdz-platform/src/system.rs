@@ -242,8 +242,16 @@ impl Delivery for NoDelivery {
 /// ever hides a guest bug (a correct guest never sends malformed id bytes), but the invariant is that no host
 /// call is unobservable. `Send + Sync`, shared behind an `Arc`; the default is the no-op [`NoRejectedSink`].
 pub trait RejectedSink: Send + Sync {
+    /// Whether this sink records anything. `false` for a no-op sink, so the host boundary can SKIP capturing
+    /// the raw-argument `Bytes` entirely when no recorder is wired — the common production case pays zero
+    /// allocation on the parse-guard path. A real recorder returns `true` (the default).
+    fn enabled(&self) -> bool {
+        true
+    }
+
     /// Record a rejected host call: the interface and op names, and the raw argument bytes as the guest sent
-    /// them. Synchronous — a sink appends to an in-memory observation log, never awaits.
+    /// them. Synchronous — a sink appends to an in-memory observation log, never awaits. Only ever called when
+    /// [`enabled`](Self::enabled) is `true`, so a sink need not re-check.
     fn record(&self, iface: &str, op: &str, raw_args: &[Bytes]);
 }
 
@@ -254,6 +262,10 @@ pub trait RejectedSink: Send + Sync {
 pub struct NoRejectedSink;
 
 impl RejectedSink for NoRejectedSink {
+    /// Disabled — the host boundary skips capturing raw args entirely (no allocation).
+    fn enabled(&self) -> bool {
+        false
+    }
     fn record(&self, _iface: &str, _op: &str, _raw_args: &[Bytes]) {}
 }
 

@@ -183,14 +183,17 @@ impl cadenza::platform::state::Host for HostState {
 // returns the empty/false result (total, graceful) AND records the rejected call to `self.rejected` with the
 // raw argument bytes, so the call is observed (§9) even though it never reached the recordable `self.graph`
 // capability below the parse. A well-formed call records via the graph decorator as usual; only the rejected
-// path is recorded here. `iface`/`op` name the WIT interface + method.
+// path is recorded here. The record is gated on `self.rejected.enabled()`, so when no recorder is wired the
+// parse-guard path pays ZERO allocation; when it is, the raw `Vec<u8>` args move into `Bytes` with no copy
+// (`Bytes::from` is O(1)). `iface`/`op` name the WIT interface + method.
 impl cadenza::platform::graph::Host for HostState {
     async fn insert(&mut self, node: Vec<u8>) -> bool {
         match to_reducer(&node) {
             Some(node) => self.graph.insert(node).await,
             None => {
-                self.rejected
-                    .record("graph", "insert", &[Bytes::copy_from_slice(&node)]);
+                if self.rejected.enabled() {
+                    self.rejected.record("graph", "insert", &[Bytes::from(node)]);
+                }
                 false
             }
         }
@@ -200,8 +203,9 @@ impl cadenza::platform::graph::Host for HostState {
         match to_reducer(&node) {
             Some(node) => self.graph.contains(node).await,
             None => {
-                self.rejected
-                    .record("graph", "contains", &[Bytes::copy_from_slice(&node)]);
+                if self.rejected.enabled() {
+                    self.rejected.record("graph", "contains", &[Bytes::from(node)]);
+                }
                 false
             }
         }
@@ -211,8 +215,9 @@ impl cadenza::platform::graph::Host for HostState {
         match to_reducer(&node) {
             Some(node) => self.graph.remove(node).await,
             None => {
-                self.rejected
-                    .record("graph", "remove", &[Bytes::copy_from_slice(&node)]);
+                if self.rejected.enabled() {
+                    self.rejected.record("graph", "remove", &[Bytes::from(node)]);
+                }
                 false
             }
         }
@@ -222,15 +227,13 @@ impl cadenza::platform::graph::Host for HostState {
         match (to_reducer(&source), to_reducer(&target), to_kind(&kind)) {
             (Some(source), Some(target), Some(kind)) => self.graph.link(source, target, kind).await,
             _ => {
-                self.rejected.record(
-                    "graph",
-                    "link",
-                    &[
-                        Bytes::copy_from_slice(&source),
-                        Bytes::copy_from_slice(&target),
-                        Bytes::copy_from_slice(&kind),
-                    ],
-                );
+                if self.rejected.enabled() {
+                    self.rejected.record(
+                        "graph",
+                        "link",
+                        &[Bytes::from(source), Bytes::from(target), Bytes::from(kind)],
+                    );
+                }
                 false
             }
         }
@@ -243,9 +246,11 @@ impl cadenza::platform::graph::Host for HostState {
         targets: Vec<Vec<u8>>,
     ) -> Vec<Vec<u8>> {
         let (Some(source_id), Some(kind_id)) = (to_reducer(&source), to_kind(&kind)) else {
-            let mut raw = vec![Bytes::copy_from_slice(&source), Bytes::copy_from_slice(&kind)];
-            raw.extend(targets.iter().map(|t| Bytes::copy_from_slice(t)));
-            self.rejected.record("graph", "set-edges", &raw);
+            if self.rejected.enabled() {
+                let mut raw = vec![Bytes::from(source), Bytes::from(kind)];
+                raw.extend(targets.into_iter().map(Bytes::from));
+                self.rejected.record("graph", "set-edges", &raw);
+            }
             return Vec::new();
         };
         // A malformed target names nothing, so it is dropped from the chain rather than aborting the set.
@@ -260,11 +265,10 @@ impl cadenza::platform::graph::Host for HostState {
         dir: cadenza::platform::graph::Dir,
     ) -> Vec<Vec<u8>> {
         let (Some(node_id), Some(kind_id)) = (to_reducer(&node), to_kind(&kind)) else {
-            self.rejected.record(
-                "graph",
-                "neighbors",
-                &[Bytes::copy_from_slice(&node), Bytes::copy_from_slice(&kind)],
-            );
+            if self.rejected.enabled() {
+                self.rejected
+                    .record("graph", "neighbors", &[Bytes::from(node), Bytes::from(kind)]);
+            }
             return Vec::new();
         };
         from_reducers(self.graph.neighbors(node_id, kind_id, dir.into()).await)
@@ -280,8 +284,9 @@ impl cadenza::platform::graph::Host for HostState {
                 .map(|kind| kind.hash().as_bytes().to_vec())
                 .collect(),
             None => {
-                self.rejected
-                    .record("graph", "in-kinds", &[Bytes::copy_from_slice(&node)]);
+                if self.rejected.enabled() {
+                    self.rejected.record("graph", "in-kinds", &[Bytes::from(node)]);
+                }
                 Vec::new()
             }
         }
@@ -294,11 +299,10 @@ impl cadenza::platform::graph::Host for HostState {
         dir: cadenza::platform::graph::Dir,
     ) -> Vec<Vec<u8>> {
         let (Some(node_id), Some(kind_id)) = (to_reducer(&node), to_kind(&kind)) else {
-            self.rejected.record(
-                "graph",
-                "reach",
-                &[Bytes::copy_from_slice(&node), Bytes::copy_from_slice(&kind)],
-            );
+            if self.rejected.enabled() {
+                self.rejected
+                    .record("graph", "reach", &[Bytes::from(node), Bytes::from(kind)]);
+            }
             return Vec::new();
         };
         from_reducers(self.graph.reach(node_id, kind_id, dir.into()).await)
