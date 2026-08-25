@@ -3727,18 +3727,23 @@ fn collect_record_field_ops(
                 collect_list_elem_ops(db, &elem, out);
             }
         }
-        // An `option<scalar>` field: the marshal `arr-get`s the Option, reads its `sum-disc`, and on the Some
-        // arm `sum-payload` + the payload scalar's unbox op — declare exactly what it calls.
-        _ if crate::backend::wasm::host::option_payload_ty(db, fty)
-            .is_some_and(|p| valtype_of(&p).is_some()) =>
+        // An `option<scalar|bytes>` field: the marshal `arr-get`s the Option, reads its `sum-disc`, and on the
+        // Some arm `sum-payload` + the payload's ops (a scalar's unbox op, or a `Bytes` payload's
+        // `bytes-len`/`bytes-get` rope copy) — declare exactly what it calls.
+        _ if crate::backend::wasm::host::option_payload_ty(db, fty).is_some_and(|p| {
+            valtype_of(&p).is_some() || matches!(p.strip_nominal(), Ty::Bytes | Ty::String)
+        }) =>
         {
             out.insert(OP_ARR_GET);
             out.insert(OP_SUM_DISC);
             out.insert(OP_SUM_PAYLOAD);
-            if let Some(payload) = crate::backend::wasm::host::option_payload_ty(db, fty)
-                && let Ok(Some(read)) = get_op_ty(db, &payload)
-            {
-                out.insert(read);
+            if let Some(payload) = crate::backend::wasm::host::option_payload_ty(db, fty) {
+                if matches!(payload.strip_nominal(), Ty::Bytes | Ty::String) {
+                    out.insert(OP_BYTES_LEN);
+                    out.insert(OP_BYTES_GET);
+                } else if let Ok(Some(read)) = get_op_ty(db, &payload) {
+                    out.insert(read);
+                }
             }
         }
         _ => {
@@ -9008,6 +9013,94 @@ fn emit_record_arg_marshal(
                 )?;
                 // (outer-ptr, count) left on the stack = the list field's 2 flattened core slots.
             }
+            // An `option<bytes>` field flattens to `(disc:i32, ptr:i32, len:i32)`. Some → `(1, ptr, len)` with
+            // the payload rope copied into `mem` at the cursor (the same copy the `result` Ok arm / a Bytes
+            // field does); None → `(0, 0, 0)`. Side-effect scratch in the `if`, push the 3 values after.
+            None if crate::backend::wasm::host::option_payload_ty(db, fty)
+                .is_some_and(|p| matches!(p.strip_nominal(), Ty::Bytes | Ty::String)) =>
+            {
+                let cursor =
+                    cursor.expect("an option<bytes> field reserves the scratch cursor (pre-scan)");
+                let crate::ty::Ty::Sum { decl, .. } = fty.strip_nominal() else {
+                    unreachable!("option is a Sum")
+                };
+                let some_disc = {
+                    let d = db.type_decl_by_occ(*decl).ok_or_else(|| {
+                        Reject::decline("the option field's sum decl was not found")
+                    })?;
+                    d.variants
+                        .iter()
+                        .position(|v| v.payloads.len() == 1)
+                        .ok_or_else(|| Reject::decline("the option field has no payload variant"))?
+                        as i32
+                };
+                let ans = work_base + 4;
+                let disc_out = work_base + 5;
+                let p0 = work_base + 6;
+                let p1 = work_base + 7;
+                for s in [ans, disc_out, p0, p1] {
+                    scratch_ty.insert(s, ValType::I32);
+                }
+                *high = (*high).max(work_base + 8);
+                out.push(Lir::LocalGet(rec_slot));
+                out.push(Lir::ConstI32(i as i32));
+                out.push(Lir::CallImport(OP_ARR_GET)); // [option handle] (borrows rec)
+                out.push(Lir::LocalSet(ans));
+                out.push(Lir::LocalGet(ans));
+                out.push(Lir::CallImport(OP_SUM_DISC));
+                out.push(Lir::ConstI32(some_disc));
+                out.push(Lir::I32Eq);
+                out.push(Lir::If(BlockType::Empty)); // Some: copy the payload rope → (ptr,len)
+                out.push(Lir::ConstI32(1));
+                out.push(Lir::LocalSet(disc_out));
+                out.push(Lir::LocalGet(ans));
+                out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [Bytes handle]
+                out.push(Lir::LocalSet(rope_slot));
+                out.push(Lir::LocalGet(rope_slot));
+                out.push(Lir::CallImport(OP_BYTES_LEN));
+                out.push(Lir::LocalSet(len_slot));
+                out.push(Lir::ConstI32(0));
+                out.push(Lir::LocalSet(pos_slot));
+                out.push(Lir::Block(BlockType::Empty));
+                out.push(Lir::Loop(BlockType::Empty));
+                out.push(Lir::LocalGet(pos_slot));
+                out.push(Lir::LocalGet(len_slot));
+                out.push(Lir::I32GeS);
+                out.push(Lir::BrIf(1));
+                out.push(Lir::LocalGet(cursor));
+                out.push(Lir::LocalGet(pos_slot));
+                out.push(Lir::I32Add);
+                out.push(Lir::LocalGet(rope_slot));
+                out.push(Lir::LocalGet(pos_slot));
+                out.push(Lir::CallImport(OP_BYTES_GET));
+                out.push(Lir::I32Store8 { offset: 0 });
+                out.push(Lir::LocalGet(pos_slot));
+                out.push(Lir::ConstI32(1));
+                out.push(Lir::I32Add);
+                out.push(Lir::LocalSet(pos_slot));
+                out.push(Lir::Br(0));
+                out.push(Lir::End);
+                out.push(Lir::End);
+                out.push(Lir::LocalGet(cursor));
+                out.push(Lir::LocalSet(p0)); // ptr = cursor (before advance)
+                out.push(Lir::LocalGet(len_slot));
+                out.push(Lir::LocalSet(p1)); // len
+                out.push(Lir::LocalGet(cursor));
+                out.push(Lir::LocalGet(len_slot));
+                out.push(Lir::I32Add);
+                out.push(Lir::LocalSet(cursor)); // cursor += len
+                out.push(Lir::Else); // None: (0, 0, 0)
+                out.push(Lir::ConstI32(0));
+                out.push(Lir::LocalSet(disc_out));
+                out.push(Lir::ConstI32(0));
+                out.push(Lir::LocalSet(p0));
+                out.push(Lir::ConstI32(0));
+                out.push(Lir::LocalSet(p1));
+                out.push(Lir::End);
+                out.push(Lir::LocalGet(disc_out)); // push (disc, ptr, len)
+                out.push(Lir::LocalGet(p0));
+                out.push(Lir::LocalGet(p1));
+            }
             // An `option<scalar>` field flattens (canonical variant flatten) to `(disc:i32, payload)`. Branch on
             // the value-heap Option's discriminant: Some (the guest decl's single-payload arm) → `(1, unbox(
             // payload))`; None → `(0, 0)`. `BlockType` is single-value, so the `if` arms SIDE-EFFECT into scratch
@@ -13752,6 +13845,8 @@ fn emit(
                     || crate::backend::wasm::host::record_has_bytes_field(&at)
                     // A record arg with a `list<T>` FIELD marshals that list's backing into `mem` → cursor too.
                     || crate::backend::wasm::host::record_has_list_field(&at)
+                    // A record arg with an `option<bytes>` FIELD copies the payload rope into `mem` → cursor.
+                    || crate::backend::wasm::host::record_has_option_bytes_field(db, &at)
                     // A `list<T>` arg marshals into `mem` (its outer array + each element) → needs the cursor.
                     || matches!(at.strip_nominal(), Ty::List(_))
             });

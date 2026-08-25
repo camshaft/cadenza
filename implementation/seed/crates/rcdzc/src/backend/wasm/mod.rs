@@ -1625,26 +1625,6 @@ fn collect_cont_host_arg_strings(db: &mut Db, cont: &crate::core::SumCont, out: 
     }
 }
 
-/// Whether a record's field-ABI tree contains ANY `Bytes` field (recursing into nested records) — a record
-/// with a byte field anywhere needs the `(list u8)` defined type + shared memory.
-fn record_abi_has_bytes(fields: &[(String, host::RecordFieldAbi)]) -> bool {
-    fields.iter().any(|(_, a)| match a {
-        host::RecordFieldAbi::Bytes => true,
-        host::RecordFieldAbi::Record(sub) => record_abi_has_bytes(sub),
-        // A `result<list<u8>, enum>` field's Ok arm is `list<u8>` → the record needs the `(list u8)` type.
-        host::RecordFieldAbi::Result { .. } => true,
-        host::RecordFieldAbi::Scalar(_) => false,
-        // A `list<T>` field needs the `(list u8)` type iff its element bottoms out at a `Bytes` leaf.
-        host::RecordFieldAbi::List(elem) => host::record_field_abi_reaches_bytes(elem),
-        // A `tuple<…>` field needs it iff any element does.
-        host::RecordFieldAbi::Tuple(elems) => {
-            elems.iter().any(host::record_field_abi_reaches_bytes)
-        }
-        // An `option<T>` field needs it iff its payload does.
-        host::RecordFieldAbi::Option(payload) => host::record_field_abi_reaches_bytes(payload),
-    })
-}
-
 /// Recursively lay a record host-arg's component `record` DEFINED types into `table` (in the order
 /// `host_effect_instance_type` lays them — each entry becomes a DEFINE + EXPORT pair), CHILDREN BEFORE
 /// PARENTS: a NESTED-record field is emitted first so the enclosing record's field can reference the child's
@@ -1844,12 +1824,16 @@ fn build_host_result_types(
 ) {
     use crate::backend::wasm::wit_ctype::{CDef, CRef, add_wit_type_deduped, emit_cdef};
     use crate::wit_world::WitType;
-    // A `list<u8>` PARAM (Bytes), any spilled result, OR a `list<T>` param whose element reaches `list<u8>`
-    // all need the shared `(list u8)` at index 0 (a `list<list<u8>>` arg's element interns to it).
+    // A `list<u8>` PARAM (Bytes), any spilled result, a `list<T>` param whose element reaches `list<u8>`, OR a
+    // RECORD param whose field reaches `list<u8>` (a `Bytes`/`option<bytes>`/`list<bytes>` field) all need the
+    // shared `(list u8)` at index 0 (the record field's cref references it).
     let has_list_param = host_imports.iter().any(|h| {
         h.params.iter().any(|p| match p {
             host::HostParam::Bytes => true,
             host::HostParam::List(e) => host::record_field_abi_reaches_bytes(e),
+            host::HostParam::Record(fields) => fields
+                .iter()
+                .any(|(_, f)| host::record_field_abi_reaches_bytes(f)),
             _ => false,
         })
     });
@@ -2043,10 +2027,6 @@ fn build_host_group(
             _ => None,
         })
         .collect();
-    let has_bytes_param = group
-        .iter()
-        .flat_map(|h| &h.params)
-        .any(|p| matches!(p, host::HostParam::Bytes));
     // NOMINAL param types laid AFTER `(list u8)` (index 0 if present) and the spilled-result defs. `base` is
     // the first nominal type's instance-type index. `record_defs` accumulates EVERY record's defined types
     // (children-first, laid as define+export by `host_effect_instance_type`); `op_nominal[i]` is op `i`'s
@@ -2064,12 +2044,14 @@ fn build_host_group(
             .iter()
             .flat_map(|h| &h.params)
             .any(|p| matches!(p, host::HostParam::Str));
-        let any_record_has_bytes = record_params.iter().any(|f| record_abi_has_bytes(f));
-        if has_str_param || has_spilled_result || (any_record_has_bytes && !has_bytes_param) {
+        // A record param whose field reaches `list<u8>` (a `Bytes`/`option<bytes>`/`list<bytes>` field) no
+        // longer needs a SIBLING `list<u8>` param: `build_host_result_types`'s `has_list_param` now prepends
+        // the shared `(list u8)` (index 0) for such a record, which the field's cref references. Only a string
+        // param or a spilled compound result still declines the record-arg composition this slice.
+        if has_str_param || has_spilled_result {
             return Err(Reject::decline(
                 "a record host-argument composes only in a host interface with no string parameter and no \
-                 option/list/bytes compound result; a record with `list<u8>` fields additionally requires a \
-                 sibling `list<u8>` parameter (a later increment)",
+                 option/list/bytes compound RESULT (a later increment)",
             ));
         }
         // MULTIPLE record params per interface (deliver's message + response): lay EACH op's record type into

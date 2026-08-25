@@ -298,12 +298,17 @@ fn field_boundary_abi(db: &mut Db, ty: &Ty) -> Option<RecordFieldAbi> {
             Some(RecordFieldAbi::Tuple(abis))
         }
         _ => {
-            // An `option<scalar>` field: a 2-case variant `{ none, some(scalar) }` flattening to `(disc,
-            // scalar)`. The payload must itself cross as a SCALAR this increment (an option<bytes>/
-            // option<compound> is a later slice — decline so the marshal's `(disc, scalar)` flatten holds).
+            // An `option<T>` field: a 2-case variant `{ none, some(T) }` flattening to `(disc, flatten(T))`.
+            // The payload crosses as a SCALAR (`(disc, scalar)`) or `Bytes` (`(disc, ptr, len)`, the Some arm
+            // copies the rope) this increment; an option<compound> is a later slice (decline).
             if let Some(payload) = option_payload_ty(db, ty) {
-                return abi_val_type(&payload)
-                    .map(|pv| RecordFieldAbi::Option(Box::new(RecordFieldAbi::Scalar(pv))));
+                if let Some(pv) = abi_val_type(&payload) {
+                    return Some(RecordFieldAbi::Option(Box::new(RecordFieldAbi::Scalar(pv))));
+                }
+                if matches!(payload.strip_nominal(), Ty::Bytes | Ty::String) {
+                    return Some(RecordFieldAbi::Option(Box::new(RecordFieldAbi::Bytes)));
+                }
+                return None;
             }
             // A `result<list<u8>, enum-or-variant>` field (the answer-back envelope) — carries the err's case
             // names. `err_is_variant` defaults to `false` (enum) here — the guest `Sum` is payload-less and
@@ -464,6 +469,22 @@ pub fn record_has_list_field(ty: &Ty) -> bool {
             .any(|f| matches!(f.strip_nominal(), Ty::List(_)) || record_has_list_field(f)),
         _ => false,
     }
+}
+
+/// Whether a record ARG has an `option<bytes>` FIELD anywhere in its tree (recursing into nested records) —
+/// its Some arm copies the payload rope into shared `mem`, so the arg needs the running scratch cursor. An
+/// `option<scalar>` does NOT (it flattens to core slots). Complements [`record_has_bytes_field`]/
+/// [`record_has_list_field`] for the cursor-reservation gate (an option is a `Sum`, invisible to those).
+pub fn record_has_option_bytes_field(db: &mut Db, ty: &Ty) -> bool {
+    let Ty::Record(fields) = ty.strip_nominal() else {
+        return false;
+    };
+    let fields = (**fields).clone(); // release the borrow of `ty` before the recursive `&mut db` calls
+    fields.values().any(|f| {
+        option_payload_ty(db, f)
+            .is_some_and(|p| matches!(p.strip_nominal(), Ty::Bytes | Ty::String))
+            || record_has_option_bytes_field(db, f)
+    })
 }
 
 /// The payload type of an OPTION-SHAPED sum (`option<T>`) — a sum with exactly two variants, one nullary
