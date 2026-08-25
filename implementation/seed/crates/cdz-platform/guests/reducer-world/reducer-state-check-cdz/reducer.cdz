@@ -1,0 +1,70 @@
+// The STATE checker, as a Cadenza reducer guest (design/cadenza-platform.md §7/§9). The paired guest
+// (reducer-state-cdz) writes the delivered payload to its key-value state store and reads it straight back;
+// this checker asserts that state round-trip observably happened — LOG-ONLY, guest-agnostic.
+//
+// Same three schema imports as the other checkers, from their single source of truth: the check Envelope
+// (log-in), the verdict Verdict (pass/fail-out), and the log-schema LogRecord/Entry (the decoded log, which
+// carries KvPut/KvGet). The `libs` manifest beside this file lists their repo-relative paths.
+//
+// JUDGEMENT: pass iff some KvGet(key = K, hit) — a SUCCESSFUL read (hit) — is matched by some KvPut(key = K):
+// the reducer wrote a key to its state store and then read it back with a hit. RELATIONAL on the key, no
+// hardcoded value. The hit check is load-bearing: it catches a store that records the get but did not persist
+// the put (a KvGet with key = K but hit = 0). NON-VACUOUS: a guest that fails to instantiate touches no state,
+// so no such KvGet exists and the check fails. Idiomatic form: List.at-None ends the walk, the single-ctor
+// LogRecord is destructured in the Some arm, the equality/hit test folds into a match guard (`and` combines
+// the two conditions).
+import { Envelope } from "check"
+import { Verdict } from "verdict"
+import { LogRecord, Entry } from "log-schema"
+
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+// Does some KvPut at index >= i write key == k? (the reducer stored something at k.)
+def has-put(records: List(LogRecord), i: Int64, k: Bytes) =
+  match List.at(records, i) with
+  | Option.None(_) => false
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      (match rec.entry with
+        | Entry.KvPut(p) if (p.key == k) => true
+        | _ => has-put(records, i + 1, k))
+
+// Is some successful KvGet(key = K, hit) matched by a KvPut of the same key? (wrote K, then read it back hit.)
+def state-round-trip(records: List(LogRecord), i: Int64) =
+  match List.at(records, i) with
+  | Option.None(_) => false
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      (match rec.entry with
+        | Entry.KvGet(g) if (g.hit == 1 and has-put(records, 0, g.key)) => true
+        | _ => state-round-trip(records, i + 1))
+
+// The verdict payload for a decoded log: pass with no messages, else fail with one diagnostic message.
+def verdict-payload(records: List(LogRecord)) =
+  if state-round-trip(records, 0)
+  then Value.encode(Verdict.Verdict({ pass = true, messages = [] }))
+  else Value.encode(Verdict.Verdict({ pass = false,
+                                      messages = ["no KvGet(hit) matched a KvPut of the same key: the state write/read round-trip did not happen"] }))
+
+// A verdict request on the contract-id the harness passed in the incoming `check` Envelope (`c.verdict`) — the
+// §9 checker protocol has the harness own + pass the verdict contract-id, so no hardcoded hash. The verdict
+// token is irrelevant (the harness reads the verdict by scanning Emitted on the verdict contract), so b"".
+def verdict-req(verdict-contract: Bytes, payload: Bytes) =
+  { contract = verdict-contract, payload = payload, token = b"", deadlineNanos = None }
+
+def on-message(msg) =
+  match (Value.decode(msg.payload) : Option(Envelope)) with
+  | Some(Envelope.Check(c)) =>
+      (match (Value.decode(c.log) : Option(List(LogRecord))) with
+       | Some(records) =>
+           { requests = [verdict-req(c.verdict, verdict-payload(records))], outcome = Outcome.Continue }
+       | None =>
+           { requests = [verdict-req(c.verdict,
+                                     Value.encode(Verdict.Verdict({ pass = false,
+                                                                    messages = ["observation log did not decode"] })))],
+             outcome = Outcome.Continue })
+  | None =>
+      { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = msg.payload }) }
+
+def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
+def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
+export { on-message, on-response, on-notification }

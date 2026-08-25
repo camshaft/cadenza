@@ -1,0 +1,24 @@
+// A reducer that exercises its durable key-value STATE store (design/cadenza-platform.md §7): on-message it
+// writes the delivered payload at a key (the payload itself), reads it straight back, and echoes the read
+// value as one request — proving a value round-trips through the reducer's own state store. Delegates only
+// `state`; on-response/on-notification are inert. Targets the shared reducer world (state is a floor import).
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+def on-message(msg) =
+  host state in
+    ( state.put(msg.payload, msg.payload) ;
+      (match state.get(msg.payload) with
+        | Some(v) =>
+            { requests = [{ contract = msg.contract, payload = v, token = b"", deadlineNanos = None }],
+              outcome = Outcome.Continue }
+        | None =>
+            { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = b"state-get-miss" }) }) )
+
+def on-response(_resp) =
+  { requests = [], outcome = Outcome.Continue }
+
+def on-notification(_note) =
+  { requests = [], outcome = Outcome.Continue }
+
+export { on-message, on-response, on-notification }
