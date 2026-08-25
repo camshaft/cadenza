@@ -74,6 +74,13 @@ fn flatten_record_field_abi(f: &crate::backend::wasm::host::RecordFieldAbi, out:
         // A `list<T>` field flattens to `(ptr, count)` — 2 slots, like `Bytes` (count in place of len) —
         // regardless of the element type (the element data lives behind the pointer, not in the flattened run).
         RecordFieldAbi::List(_) => out.extend_from_slice(&[wasm_abi::CORE_I32, wasm_abi::CORE_I32]),
+        // A `tuple<…>` field flattens its elements INLINE (positional), like a nested record — each element's
+        // flattened slots join the parent's run (a tuple does not spill).
+        RecordFieldAbi::Tuple(elems) => {
+            for e in elems {
+                flatten_record_field_abi(e, out);
+            }
+        }
     }
 }
 

@@ -87,6 +87,8 @@ pub fn record_field_abi_reaches_bytes(f: &RecordFieldAbi) -> bool {
         // A `list<T>` reaches the shared `(list u8)` type iff its element does (a `list<list<u8>>` element is
         // itself `Bytes`; a `list<s64>` does not). Recurse into the element ABI.
         RecordFieldAbi::List(elem) => record_field_abi_reaches_bytes(elem),
+        // A `tuple<…>` reaches `(list u8)` iff any element does.
+        RecordFieldAbi::Tuple(elems) => elems.iter().any(record_field_abi_reaches_bytes),
     }
 }
 
@@ -100,6 +102,10 @@ pub fn record_field_abi_needs_memory(f: &RecordFieldAbi) -> bool {
         RecordFieldAbi::Scalar(_) => false,
         RecordFieldAbi::Bytes | RecordFieldAbi::Result { .. } | RecordFieldAbi::List(_) => true,
         RecordFieldAbi::Record(sub) => sub.iter().any(|(_, sf)| record_field_abi_needs_memory(sf)),
+        // A `tuple<…>` element/field is written into mem iff any element needs mem (a scalar-only tuple as a
+        // record FIELD flattens inline with no mem; as a list element it's always in-mem, but the list itself
+        // forces mem via the `List(_)` arm, so this only decides a record's tuple FIELD).
+        RecordFieldAbi::Tuple(elems) => elems.iter().any(record_field_abi_needs_memory),
     }
 }
 
@@ -145,6 +151,12 @@ pub enum RecordFieldAbi {
     /// list element / a record's list field FIRST-CLASS: the element ABI is itself a `RecordFieldAbi`, so
     /// nesting is arbitrary-depth.
     List(Box<RecordFieldAbi>),
+    /// A `tuple<…>` field (or list ELEMENT — a `list<tuple<…>>`'s element) — the POSITIONAL product. Its
+    /// component type is a `(tuple <elem>…)` DEFINED type over the elements' own ABIs; as a list element it is
+    /// written in place at its canonical layout (`select::emit_tuple_to_mem`), as a record field it flattens
+    /// its elements inline (like a nested record). Element ABIs are themselves `RecordFieldAbi`, so arbitrary
+    /// nesting composes.
+    Tuple(Vec<RecordFieldAbi>),
 }
 
 /// One host-delegated operation the program performs — its declaring effect's NAME (the WIT interface),
@@ -260,6 +272,19 @@ fn field_boundary_abi(db: &mut Db, ty: &Ty) -> Option<RecordFieldAbi> {
         Ty::List(inner) => {
             let inner = (**inner).clone(); // release the borrow of `ty` before the recursive `&mut db` call
             field_boundary_abi(db, &inner).map(|e| RecordFieldAbi::List(Box::new(e)))
+        }
+        // A `tuple<…>` field/element crosses if EVERY element crosses — recurse (positional). Its component
+        // type is a `(tuple <elem>…)` DEFINED type; a non-empty tuple only (an empty tuple has no fields).
+        Ty::Tuple(elems) => {
+            let elems = elems.to_vec(); // release the borrow of `ty` before the recursive `&mut db` calls
+            if elems.is_empty() {
+                return None;
+            }
+            let mut abis = Vec::with_capacity(elems.len());
+            for e in &elems {
+                abis.push(field_boundary_abi(db, e)?);
+            }
+            Some(RecordFieldAbi::Tuple(abis))
         }
         // A `result<list<u8>, enum-or-variant>` field (the answer-back envelope) — carries the err's case
         // names. `err_is_variant` defaults to `false` (enum) here — the guest `Sum` is payload-less and cannot
@@ -571,6 +596,12 @@ pub fn list_elem_marshalable(ty: &Ty) -> bool {
             !fields.is_empty()
                 && fields.values().all(|f| {
                     matches!(f.strip_nominal(), Ty::Bytes | Ty::String) || abi_val_type(f).is_some()
+                })
+        }
+        Ty::Tuple(elems) => {
+            !elems.is_empty()
+                && elems.iter().all(|e| {
+                    matches!(e.strip_nominal(), Ty::Bytes | Ty::String) || abi_val_type(e).is_some()
                 })
         }
         other => abi_val_type(other).is_some(),
