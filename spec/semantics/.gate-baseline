@@ -3956,6 +3956,7 @@ pass	a type-value in integer-width position is rejected
 pass	a type-valued parameter threaded through a second call reaches Type.eq with its type intact
 pass	a type-valued parameter threads through TWO relay layers beside a runtime operand
 pass	a type-valued parameter under a function-arrow annotation dispatches an ad-hoc-polymorphic dict
+pass	a typed reducer performing a list-of-scalars host arg emits, loads, and runs (via an imposed WIT world)
 pass	a u16 bin field reads correctly at every runtime slice offset, odd or even
 pass	a u16 bin field straddles a byte-rope seam through a runtime-start slice
 pass	a u16 segment encodes an integer big-endian by default

@@ -23,6 +23,10 @@
 ;   SHAPE 2 — named VARIANT-with-payload RESULT.          SHAPE 7 — list-of-records RESULT.
 ;   SHAPE 3 — scalar identity export.                     SHAPE 8 — none-only option<s64> via an IMPOSED
 ;   SHAPE 4 — multi-field record RESULT.                    WIT world (element type from the world decl).
+; Later shapes (all via an imposed WIT world): SHAPE 9 — list-of-records with a Bytes leaf + a Bytes export
+; param. SHAPE 10 — a scalar host-import RESULT (clock.now) threaded into the step. SHAPE 11 — a RECORD
+; host-import RESULT (probe.info) with a field-order-follows-WIT reorder. SHAPE 12 — a list<s64> host-op ARG
+; (sink.push) lowered + invoked e2e (the align-8 scalar-element list-arg marshal).
 
 (case "an option<s64> field in a record result crosses the export boundary on both arms"
   (doc    "The general option<T> RESULT lift across the WIT export boundary. The guest takes a record
@@ -157,3 +161,19 @@
   (host-responses (respond probe.info (: (record (= zebra (list 9)) (= alpha (list 7))) (Record (: zebra Bytes) (: alpha Bytes)))))
   (host-calls (call cadenza:platform/probe.info))
   (output (: (record (= requests ((record (= contract (1)) (= payload (7)) (= token (3)) (= deadline-nanos (None unit))))) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+(case "a typed reducer performing a list-of-scalars host arg emits, loads, and runs (via an imposed WIT world)"
+  (doc    "SHAPE 12 — a `list<s64>` host-op ARG (sink.push : (list<s64>) -> unit) driven through an imposed
+           WIT world. The reducer on-message performs sink.push (list 1 2 3) (a unit-result, observe-only host
+           op) then returns a Continue step with an empty requests list. Running the guest LOADS the emitted
+           component and INVOKES sink.push, exercising the list<s64> arg lower (value-heap List<Int64> -> the
+           (ptr,count) the component list<s64> param lowers to, elements unboxed at i64 stride) e2e — a strictly
+           stronger check than the anchor's emit+validate+load, since a broken flatten-arity or element stride
+           fails to instantiate or run. The observed host-call sequence pins that sink.push actually fired.
+           Migrated from the in-crate wasmtime test `a_reducer_performing_a_list_scalar_arg_emits_and_loads`
+           (v-rust-backend shape-2 synthetic arg feed, align-8 stress).")
+  (wit-world (world w (export guest (member on-message (func (param m ("record" (contract ("list" (u8))) (payload ("list" (u8))) (token ("list" (u8))))) (result ("record" (requests ("list" ("record" (contract ("list" (u8))) (payload ("list" (u8))) (token ("list" (u8))) (deadline-nanos ("option" (u64)))))) (outcome ("variant" (continue) (close ("record" (schema ("list" (u8))) (reason ("list" (u8)))))))))))) (import cadenza:platform/sink (member push (func (param vals ("list" (s64))) (result ("unit")))))))
+  (component-name "cadenza:platform/guest")
+  (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (effect sink (op push (-> (List Int64) Unit))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (sink) (do (sink.push (list 1 2 3)) (record (= requests (list)) (= outcome Outcome.Continue))))) (export onMessage)))
+  (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
+  (host-calls (call cadenza:platform/sink.push))
+  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
