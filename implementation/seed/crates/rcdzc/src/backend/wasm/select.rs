@@ -4367,6 +4367,13 @@ fn collect_used_ops_into_seen(
             out.insert(OP_BYTES_ALLOC);
             out.insert(OP_BYTES_SET);
             out.insert(OP_DROP);
+            // A scalar-erased operand (a single-field single-ctor newtype over a scalar) is BOXED to a leaf
+            // handle first, so its box op (`box-int`/`box-bool`/`box-float`/`box-float32`) must be imported
+            // too. `box_op_ty` returns `None` for an already-handle operand (no extra import needed).
+            let vty = type_of(db, value);
+            if let Ok(Some(op)) = box_op_ty(db, &vty) {
+                out.insert(op);
+            }
             collect_used_ops_into_seen(db, value, out, visited);
         }
         // `Value.decode` (R2) imports `value-decode` (the parse) + the descriptor-baking op set + `drop`
@@ -12378,23 +12385,34 @@ fn emit(
         // NOT copy the doc into the export retarea: the fresh owned doc handle IS the `Bytes` value, left on
         // the stack. `value-encode` BORROWS `v` (an inspector) so an owned-temporary `v` is dropped after.
         Core::ValueEncode { value, desc } => {
-            // The runtime `value-encode(v, desc)` op walks a HEAP HANDLE `v` (an i32 handle into the value
-            // store) guided by the descriptor. A value whose machine rep is a HANDLE (a record/tuple/sum/
-            // collection/bignum — `valtype_of == I32`) feeds it directly. But a value whose type is
-            // descriptor-eligible yet whose machine rep ERASES TO A BARE SCALAR — a single-field newtype
-            // over an int, `(type Pt (Mk Int64))`, is `valtype_of == I64` — is NOT a handle, so passing it
-            // to the handle-typed op is a stack type mismatch (i64 where i32 is wanted → an invalid module).
-            // Boxing such a scalar into a leaf handle first is a later increment; for R2 v1 (the carve-out
-            // payloads are multi-field declared records = genuine handles) DECLINE cleanly on a non-handle
-            // value rep, matching the reject-not-miscompile discipline.
-            if valtype_of(&type_of(db, value)) != Some(ValType::I32) {
-                return Err(Reject::decline(
-                    "Value.encode on a value whose machine rep is not a heap handle (a scalar-erased \
-                     newtype / bare scalar) — boxing it to a leaf handle is a later increment; the \
-                     runtime value-encode op walks an i32 handle",
-                ));
-            }
-            let vo = heap_operand_ownership(db, value)?;
+            // The runtime `value-encode(v, desc)` op walks an i32 HEAP HANDLE `v` guided by the descriptor.
+            // A value whose machine rep is already a HANDLE (a record/tuple/sum/collection/bignum/bytes/…)
+            // feeds it directly. A value whose type is descriptor-eligible but whose machine rep ERASES TO A
+            // BARE SCALAR — a single-FIELD single-ctor newtype over a scalar, e.g. `type Envelope =
+            // | FireAfter(UInt64)` erases to `Ty::Nominal{inner:UInt64}` = a bare i64 — is NOT a handle. Its
+            // descriptor is `Named(TypeName, <scalar-shape>)` (the `(: <value> Type)` frame), so the runtime
+            // `Named` arm just FRAMES the inner scalar leaf — there is NO sum node/disc to read. So we BOX the
+            // erased scalar into a leaf handle first (`box-int`/`box-bool`/`box-float`/`box-float32`, with the
+            // narrow-int i32→i64 extend), then feed THAT leaf to `value-encode`; the canonical form is the
+            // elided-head `(: N Envelope)` (rep-independent — the ctor identity rides in the descriptor, not
+            // the document — matching the single-ctor ELISION of the compiler's canonical value form).
+            // `box_op_ty` discriminates the three reps: `Some(op)` = an erased SCALAR (box it); `None` with an
+            // i32 rep = an already-built HANDLE (feed directly); `None` with NO rep = `Unit` (a NULLARY
+            // single-ctor, `type Ack = | Ack` → `Nominal{inner:Unit}`, no machine value). The Unit case FRAMES
+            // the runtime's inline-unit handle: its descriptor is `Named(Type, Unit)` and the runtime `Named`
+            // → `Unit` arm renders the bare `unit` atom, so `value-encode(IMM_UNIT, desc)` yields the elided-
+            // head `(: unit Ack)` — the same rep-independent single-ctor form as the scalar case.
+            let vty = type_of(db, value);
+            let box_op = box_op_ty(db, &vty)?;
+            let is_handle = box_op.is_none() && valtype_of(&vty) == Some(ValType::I32);
+            let is_unit = box_op.is_none() && valtype_of(&vty).is_none();
+            // Only a genuine handle operand carries transferable ownership; a boxed scalar leaf is a FRESH
+            // OWNED temporary (dropped after the borrowing encode); the Unit handle is an IMMEDIATE (no drop).
+            let vo = if is_handle {
+                Some(heap_operand_ownership(db, value)?)
+            } else {
+                None
+            };
             let val_slot = *high;
             let desc_slot = *high + 1;
             *high = desc_slot + 1;
@@ -12411,15 +12429,34 @@ fn emit(
                 out.push(Lir::CallImport(OP_BYTES_SET)); // [desc-buf]
             }
             out.push(Lir::LocalSet(desc_slot)); // [] — descriptor stored, stack clear
-            emit(db, value, slots, op_base, high, scratch_ty, layout, out)?; // [v]
+            emit(db, value, slots, op_base, high, scratch_ty, layout, out)?; // handle:[h] scalar:[s] unit:[]
+            if is_unit {
+                // Unit (nullary single-ctor): `emit` left NOTHING (Unit occupies no slot; any effects in the
+                // operand still ran). Push the runtime's inline-unit handle for `value-encode` to frame.
+                out.push(Lir::ConstI32(super::runtime_abi::IMM_UNIT as i32)); // [unit]
+            } else if let Some(op) = box_op {
+                // Erased scalar → box to a leaf handle: extend a narrow int/char to the i64 `box-int` cell
+                // (no-op for a wide int / float / bool), then the width-correct box op → a fresh i32 leaf.
+                emit_box_i32_to_i64_extend(db, value, out);
+                out.push(Lir::CallImport(op)); // [leaf]
+            }
             out.push(Lir::LocalTee(val_slot)); // [v]
             out.push(Lir::LocalGet(desc_slot)); // [v, desc]
             out.push(Lir::CallImport(OP_VALUE_ENCODE)); // [v, desc] → [doc] (borrows both)
-            // Drop the borrowed-only descriptor Bytes, then any owned-temporary value operand — the fresh
-            // doc retains no reference to either.
+            // Drop the borrowed-only descriptor Bytes, then the value operand: a fresh boxed leaf is always
+            // owned (drop it); a handle operand drops only if it was owned. The fresh doc retains neither.
             out.push(Lir::LocalGet(desc_slot));
             out.push(Lir::CallImport(OP_DROP));
-            vo.drop_slot_if_owned(val_slot, out);
+            match vo {
+                Some(vo) => vo.drop_slot_if_owned(val_slot, out),
+                // A boxed scalar leaf is a fresh owned temporary → drop it; the Unit handle is an IMMEDIATE
+                // (`IMM_UNIT`, not a heap node) → nothing to reclaim.
+                None if !is_unit => {
+                    out.push(Lir::LocalGet(val_slot));
+                    out.push(Lir::CallImport(OP_DROP));
+                }
+                None => {}
+            }
             Ok(()) // leaves [doc]
         }
         // `Value.decode b` (R2, the inverse) — parse the binary-AST document `b` into a fresh owned value of
@@ -12434,21 +12471,39 @@ fn emit(
             disc_some,
             disc_none,
         } => {
-            // `value-decode` CONSTRUCTS a fresh heap-handle value; the `Some` payload carries it as an i32
-            // handle. A target type whose rep erases to a bare scalar (a single-field newtype over an int)
-            // is not a handle, so the Some-payload slot would mismatch — same non-handle-rep gap as
-            // `ValueEncode`. DECLINE for R2 v1 (the carve-out targets are declared records = handles);
-            // scalar-target decode + unbox is a later increment. The target type is the node's `(Option a)`
-            // element (`type_of(id)` peeled), which `lower_value_decode` already grounded to a concrete `a`.
-            let target_is_handle = matches!(
-                type_of(db, id),
-                Ty::Sum { ref args, .. } if args.first().and_then(valtype_of) == Some(ValType::I32)
-            );
-            if !target_is_handle {
+            // `value-decode` CONSTRUCTS a fresh value and the emit wraps it into the `(Option a)` result's
+            // `Some(handle)`. The result node's type is `Option a`; `a` (peeled by `lower_value_decode`) is
+            // the decode TARGET. Two target reps decode:
+            //   - `a` is a HEAP HANDLE (record/tuple/sum/collection/bytes/…): value-decode returns the handle,
+            //     used directly as the Some payload (the original R2 carve-out).
+            //   - `a` is a SCALAR-ERASED single-field single-ctor (e.g. Envelope=|FireAfter(UInt64) →
+            //     Ty::Nominal{inner:UInt64}): its descriptor is `Named(Type, <scalar>)`, and value-decode's
+            //     Int/Bool/Float leaf arm constructs a BOXED leaf (`op_box_int`/…). That boxed leaf is EXACTLY
+            //     the rep a scalar `Option` payload uses (a `Some(scalar)` boxes the scalar the same way), so
+            //     the decoded handle is used directly as the Some payload — NO unbox/rebox. `box_op_ty(a)`
+            //     being `Some` is the scalar discriminator (mirrors the `ValueEncode` box path).
+            //   - `a` is a NULLARY single-ctor (`type Ack = | Ack` → `Ty::Nominal{inner:Unit}`): its
+            //     descriptor is `Named(Ack, Unit)`, and value-decode's `Unit` arm returns the inline-unit
+            //     handle (`imm_unit()`, non-NULL), used directly as the `Some` payload (a `Some(unit)` carries
+            //     the same immediate — see the nullary `sum-new` payload). NULL still signals a decode miss.
+            // An UNSOLVED target (`Ty::Var`/`Any`) is DECLINED (also caught earlier at lowering); an
+            // unencodable target type (Fn/Cont/…) declines via `box_op_ty`'s `?`.
+            let target_ty = type_of(db, id);
+            let target_ok = match &target_ty {
+                Ty::Sum { args, .. } => match args.first() {
+                    Some(Ty::Var(_)) | Some(Ty::Any) => false,
+                    Some(a) => {
+                        box_op_ty(db, a)?; // declines an unencodable target; handle/scalar/Unit all decode
+                        true
+                    }
+                    None => false,
+                },
+                _ => false,
+            };
+            if !target_ok {
                 return Err(Reject::decline(
-                    "Value.decode into a target whose machine rep is not a heap handle (a scalar-erased \
-                     newtype / bare scalar) — unboxing the decoded leaf is a later increment; the Some \
-                     payload carries an i32 handle",
+                    "Value.decode into an unsolved or unencodable target — annotate the scrutinee / use a \
+                     typed let-binder so `a` grounds to a concrete decodable type",
                 ));
             }
             let bo = heap_operand_ownership(db, bytes)?;
