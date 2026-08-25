@@ -1,53 +1,27 @@
-// The BLOBS checker, as a Cadenza reducer guest (design/cadenza-platform.md §8/§9). The paired guest
-// (reducer-blobs-cdz) stores the delivered payload in the content-addressed blob store and reads it straight
-// back by hash; this checker asserts that blob round-trip observably happened — LOG-ONLY, guest-agnostic.
+// The BLOBS checker (design/cadenza-platform.md §8/§9). The paired guest (reducer-blobs-cdz) stores the
+// delivered payload in the content-addressed blob store and reads it straight back by hash; this checker
+// asserts that blob round-trip observably happened — LOG-ONLY, guest-agnostic.
 //
-// Plumbing (decode the check Envelope, decode the log, emit the verdict) is shared via checker-lib's
-// interpret(); this file keeps only its JUDGEMENT predicate + verdict-payload and maps the Decision onto its
-// own local Outcome. Local Outcome + Error stay in the guest: the reducer-world export boundary synthesizes the
-// unused on-response/on-notification param types from the guest's local sums, so a lib-owned Outcome/Error would
-// leave them ambiguous (CDZ0201). See checker-lib.cdz.
+// Round-3 checker-lib form: judgement is two field extractors + one combinator; respond() owns the decode +
+// verdict emit, and the inert on-response/on-notification are re-exported from checker-lib.
 //
-// JUDGEMENT: pass iff some BlobGet(hash = H, hit) — a SUCCESSFUL read — is matched by some BlobPut(hash = H):
-// the reducer stored bytes (getting hash H) and read them back by H with a hit. RELATIONAL on the content
-// hash, no hardcoded value. The hit check is load-bearing: it catches a store that records the get but did not
-// persist the put (a BlobGet with hash = H but hit = 0). NON-VACUOUS: a guest that fails to instantiate
-// touches no blob store, so no such BlobGet exists and the check fails. Settled idioms (List.at-None ends the
-// walk, LogRecord destructured in the Some arm, `g.hit == 1 and has-put(…)` folded into a match guard).
-import { LogRecord, Entry } from "log-schema"
-import { Decision, interpret, verdict-req, pass, fail } from "checker-lib"
+// JUDGEMENT: pass iff some successful BlobGet(hash = H, hit) shares its hash with a BlobPut(hash = H) — the
+// reducer stored bytes (getting hash H) and read them back by H with a hit. RELATIONAL on the content hash,
+// no hardcoded value. The hit gate is load-bearing (get-hit-hash yields None unless hit == 1): it catches a
+// store that recorded the get but did not persist the put. NON-VACUOUS: a guest that fails to instantiate
+// touches no blob store, so no BlobGet(hit) key exists and the check fails.
+import { Entry } from "log-schema"
+import { respond, on-response, on-notification, pass, fail, join-exists } from "checker-lib"
 
-type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
-type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+// A successful BlobGet's hash (None unless hit == 1) — the read side of the round-trip join.
+def get-hit-hash(rec) = match rec.entry with | Entry.BlobGet(g) if (g.hit == 1) => Some(g.hash) | _ => None
+// A BlobPut's hash — the store side.
+def put-hash(rec) = match rec.entry with | Entry.BlobPut(p) => Some(p.hash) | _ => None
 
-// Does some BlobPut at index >= i store hash == h? (the reducer put bytes that content-addressed to h.)
-def has-put(records: List(LogRecord), i: Int64, h: Bytes) =
-  match List.at(records, i) with
-  | Option.None(_) => false
-  | Option.Some(LogRecord.LogRecord(rec)) =>
-      (match rec.entry with
-        | Entry.BlobPut(p) if (p.hash == h) => true
-        | _ => has-put(records, i + 1, h))
-
-// Is some successful BlobGet(hash = H, hit) matched by a BlobPut of the same hash? (stored H, then read hit.)
-def blob-round-trip(records: List(LogRecord), i: Int64) =
-  match List.at(records, i) with
-  | Option.None(_) => false
-  | Option.Some(LogRecord.LogRecord(rec)) =>
-      (match rec.entry with
-        | Entry.BlobGet(g) if (g.hit == 1 and has-put(records, 0, g.hash)) => true
-        | _ => blob-round-trip(records, i + 1))
-
-// The verdict payload for a decoded log: pass with no messages, else fail with one diagnostic message.
-def verdict-payload(records: List(LogRecord)) =
-  if blob-round-trip(records, 0)
+def verdict-payload(records) =
+  if join-exists(records, get-hit-hash, put-hash)
   then pass()
-  else fail("no BlobGet(hit) matched a BlobPut of the same hash: the blob store/read round-trip did not happen")
+  else fail("no BlobGet(hit) shared a hash with a BlobPut: the blob store/read round-trip did not happen")
 
-def on-message(msg) =
-  match interpret(msg, verdict-payload) with
-  | Decision.Report(r) => { requests = [verdict-req(r.contract, r.payload)], outcome = Outcome.Continue }
-  | Decision.NotCheck(cl) => { requests = [], outcome = Outcome.Close({ schema = cl.schema, reason = cl.reason }) }
-def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
-def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
+def on-message(msg) = respond(msg, verdict-payload)
 export { on-message, on-response, on-notification }
