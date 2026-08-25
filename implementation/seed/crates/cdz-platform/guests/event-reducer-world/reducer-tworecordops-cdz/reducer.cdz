@@ -1,0 +1,36 @@
+// A Cadenza EVENT reducer performing TWO record-arg deliver ops SEQUENCED in one fold (design/cadenza-platform.md
+// §4) — migrated from v-rust-backend's in-crate "two record ops in one interface" behavioral test. on-message it
+// performs, in order, deliver-message (the nested-sender envelope) THEN deliver-notification (the flat record),
+// proving host-call SEQUENCING (Core::Seq: two host-reaching statements) across two ops of ONE interface. The
+// individual record shapes are already covered by the dispatch runs (notify / message / response); the NEW
+// coverage is that BOTH execute, IN ORDER, in one guest — a dropped or reordered second call (the sequencing-bug
+// class) would leave the log missing or misordered, which a load-only test cannot catch.
+//
+// Both targets are msg.sender.reducer (a valid 33-byte ReducerId): the host's deliver parses the target and
+// rejects a malformed one (recording a HostCallRejected, not a Routed), so an unparseable target would make the
+// deliver observations invisible; the sender's id parses, so both land as Routed with their fields. The checker
+// asserts a Routed(eventKind="message") precedes a Routed(eventKind="notification"). Targets the privileged
+// event-reducer-world (the only world importing deliver). on-response / on-notification are inert.
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+def on-message(msg) =
+  host deliver in
+    ( deliver.deliver-message(
+        msg.sender.reducer,
+        { contract = msg.contract,
+          sender = { reducer = msg.sender.reducer, host = msg.sender.host },
+          payload = msg.payload,
+          token = msg.token }) ;
+      deliver.deliver-notification(
+        msg.sender.reducer,
+        { contract = msg.contract, payload = msg.payload }) ;
+      { requests = [], outcome = Outcome.Continue } )
+
+def on-response(_resp) =
+  { requests = [], outcome = Outcome.Continue }
+
+def on-notification(_note) =
+  { requests = [], outcome = Outcome.Continue }
+
+export { on-message, on-response, on-notification }
