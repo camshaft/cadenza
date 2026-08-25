@@ -3315,6 +3315,22 @@ fn coerce_one(s: &str, t: &Type) -> Result<Val> {
             let vals: Result<Vec<Val>> = parts.iter().map(|e| coerce_one(e, &et)).collect();
             Val::List(vals?)
         }
+        // An ENUM argument (a payload-less sum): the corpus writes the `render_val` form `(<case> unit)` (a
+        // bare `<case>` is also accepted). Extract the case name and validate it against the enum's declared
+        // cases; `Val::Enum` carries just the name and the boundary lifts it to the discriminant. This is the
+        // read side of the reducer response's `error` enum (a `result<_, enum>` param arm).
+        Type::Enum(et) => {
+            let case = parse_tuple_fields(s)
+                .and_then(|p| p.into_iter().next())
+                .unwrap_or_else(|| s.trim().to_string());
+            if !et.names().any(|n| n == case) {
+                return Err(anyhow!(
+                    "argument `{s}`: `{case}` is not a case of the enum (declared cases: {})",
+                    et.names().collect::<Vec<_>>().join(", ")
+                ));
+            }
+            Val::Enum(case)
+        }
         other => {
             return Err(anyhow!(
                 "argument `{s}`: compound parameter type {other:?} is not supported by cdz-run yet"

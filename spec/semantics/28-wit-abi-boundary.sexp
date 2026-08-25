@@ -31,6 +31,7 @@
 ; host-op ARG with a scalar u64 RESULT (hasher.hash) threaded into the step's deadline-nanos. SHAPE 15 — a
 ; COMPOUND result<Bytes, enum> host-import RESULT (run.run) matched Ok(v)->payload / Err->fallback. SHAPE 16 —
 ; the option<s64> PARAM read (the read side: a record{d: option<s64>} param matched Some(x)->x / None->-1).
+; SHAPE 17 — the result<Bytes, enum> PARAM read (Ok(bs)->Bytes.len / Err(e)->10+disc; both arms, enum-err arg).
 
 (case "an option<s64> field in a record result crosses the export boundary on both arms"
   (doc    "The general option<T> RESULT lift across the WIT export boundary. The guest takes a record
@@ -241,3 +242,21 @@
   (output (: 42 Int64))
   (call f (: (record (= d None)) (Record (: d (Option Int64)))))
   (output (: -1 Int64)))
+(case "a result<Bytes, enum> param field is read and rebuilt by the wrapper on Ok and Err arms (via an imposed WIT world)"
+  (doc    "SHAPE 17 — the result<Ok, Err> PARAM lift (the read side, complement to SHAPE 15's result RESULT): the
+           guest f takes a record { a: result<Bytes, Error> } where Error is a 4-case enum, and matches m.a:
+           Ok(bs) -> Bytes.len(bs); Err(e) -> 10 + e's decl disc. Feeding Ok([1,2,3]) -> 3 exercises the Bytes Ok
+           arm (ptr/len copy-in inside the sum); Err(timeout) -> 10 and Err(faulted) -> 13 exercise the Enum Err
+           arm (the flattened disc leaf rebuilt into the guest error cell, disc-preserving) - a misread of the
+           Bytes arm's 2 leaves would misalign the enum disc and flip the Err results. The enum-err ARG is passed
+           as the render form `(<case> unit)` (cdz-run's coerce_one gained a Type::Enum arm for this). Migrated
+           from the in-crate wasmtime test `a_result_bytes_enum_param_field_is_read_by_the_wrapper`.")
+  (wit-world (world w (export iface (member f (func (param m ("record" (a ("result" ("list" (u8)) ("enum" timeout missing schema faulted))))) (result (s64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (type Error (Timeout) (Missing) (Schema) (Faulted)) (def (f (: m (Record (: a (Result Bytes Error))))) (match (. m a) ((Result.Ok bs) (Bytes.len bs)) ((Result.Err e) (match e (Error.Timeout 10) (Error.Missing 11) (Error.Schema 12) (Error.Faulted 13))))) (export f)))
+  (call f (: (record (= a (Ok (list 1 2 3)))) (Record (: a (Result Bytes Error)))))
+  (output (: 3 Int64))
+  (call f (: (record (= a (Err (timeout unit)))) (Record (: a (Result Bytes Error)))))
+  (output (: 10 Int64))
+  (call f (: (record (= a (Err (faulted unit)))) (Record (: a (Result Bytes Error)))))
+  (output (: 13 Int64)))
