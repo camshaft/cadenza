@@ -6,19 +6,12 @@
 // (b) identity.id() returning the reducer's own id, observable because the stored value then equals the
 // storing reducer's id (the log record's source). Targets the ordinary reducer-world (state + identity are
 // floor imports). on-response / on-notification are inert.
-type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
-type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+import { Outcome, on-response, on-notification } from "reducer-lib"
 
 def on-message(msg) =
   host state in
   host identity in
     ( state.put(msg.token, identity.id()) ;
       { requests = [], outcome = Outcome.Continue } )
-
-def on-response(_resp) =
-  { requests = [], outcome = Outcome.Continue }
-
-def on-notification(_note) =
-  { requests = [], outcome = Outcome.Continue }
 
 export { on-message, on-response, on-notification }

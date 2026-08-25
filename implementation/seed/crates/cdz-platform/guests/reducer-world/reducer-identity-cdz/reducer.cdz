@@ -2,18 +2,11 @@
 // list<u8> host result, #3121) and stamps it as the echoed request's token, proving a host value flows
 // through the guest and back. Targets the shared world.wit (external artifact). Only on-message delegates
 // `identity` (the effect it performs); on-response/on-notification are inert.
-type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
-type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+import { Outcome, on-response, on-notification } from "reducer-lib"
 
 def on-message(msg) =
   host identity in
     { requests = [{ contract = msg.contract, payload = msg.payload, token = identity.id(), deadlineNanos = None }],
       outcome = Outcome.Continue }
-
-def on-response(_resp) =
-  { requests = [], outcome = Outcome.Continue }
-
-def on-notification(_note) =
-  { requests = [], outcome = Outcome.Continue }
 
 export { on-message, on-response, on-notification }

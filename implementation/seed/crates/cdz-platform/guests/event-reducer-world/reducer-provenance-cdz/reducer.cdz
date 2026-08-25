@@ -2,8 +2,7 @@
 // (provenance.program-of, a bare list<u8> host result, #3121 shared-allocator) and stamps it as the echoed
 // request's token — a host value flows through the guest and back. Delegates only `provenance`;
 // on-response/on-notification are inert. Uses the natural [{…}]/[] list literal (no List.push helpers).
-type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
-type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+import { Outcome, on-response, on-notification } from "reducer-lib"
 
 def on-message(msg) =
   host provenance in
@@ -12,11 +11,5 @@ def on-message(msg) =
                     token = provenance.program-of(msg.sender.reducer),
                     deadlineNanos = None }],
       outcome = Outcome.Continue }
-
-def on-response(_resp) =
-  { requests = [], outcome = Outcome.Continue }
-
-def on-notification(_note) =
-  { requests = [], outcome = Outcome.Continue }
 
 export { on-message, on-response, on-notification }

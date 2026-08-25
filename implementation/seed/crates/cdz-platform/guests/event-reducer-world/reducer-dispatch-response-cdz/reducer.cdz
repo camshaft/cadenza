@@ -14,8 +14,7 @@
 // The answer must have a CONCRETE `Result(Bytes, Error)` type — a bare `Ok(msg.payload)` leaves the `Err`
 // type variable unresolved and the compiler correctly declines an unresolved-type field (v-rb) — so it is
 // ascribed, fixing both type parameters to this guest's `Error`.
-type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
-type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+import { Outcome, Error, on-response, on-notification } from "reducer-lib"
 
 def on-message(msg) =
   host deliver in
@@ -25,11 +24,5 @@ def on-message(msg) =
           token = msg.token,
           answer = (Ok(msg.payload) : Result(Bytes, Error)) }) ;
       { requests = [], outcome = Outcome.Continue } )
-
-def on-response(_resp) =
-  { requests = [], outcome = Outcome.Continue }
-
-def on-notification(_note) =
-  { requests = [], outcome = Outcome.Continue }
 
 export { on-message, on-response, on-notification }

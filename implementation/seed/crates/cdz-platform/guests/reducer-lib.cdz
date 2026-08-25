@@ -1,0 +1,30 @@
+// Shared scaffolding for EVERY reducer-shaped Cadenza guest (design/cadenza-platform.md §3) — not just the §9
+// checkers. Every reducer guest repeated the same reducer-interface plumbing: the `Outcome` return sum, the
+// `Error` sum, and the two inert `on-response` / `on-notification` handlers a guest that only reacts to
+// delivered messages needs but never varies. This module owns them so a guest keeps only its own `on-message`
+// logic and re-exports the shared handlers. (The §9 checkers layer their check/verdict machinery — respond,
+// the log-iteration combinators — on top of this in checker-lib.cdz.)
+//
+// Composed into a guest via its `libs` manifest (the mkCadenzaGuest multi-file path). Self-contained: it
+// imports nothing, so a plain reducer that only needs the scaffolding does not drag in the checker schemas.
+
+// How a fold ends (design §7): keep the session running for the next event, or close it with a typed reason.
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+
+// The runtime message-fold error sum (a reducer's response `answer` is `Result(payload, Error)`, §4). Declared
+// here so a guest need not re-declare it; the world-export boundary reads it when synthesizing the response
+// parameter type of `on-response` below, and a guest that builds an `answer` (e.g. deliver-response) imports it.
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+// The inert on-response / on-notification a message-only reducer shares — no requests, just continue. The
+// parameters are annotated to their concrete world shapes (response = {contract, token, answer:
+// Result(payload, Error)}, notification = {contract, payload}) so the world-export boundary can fix them
+// against this module's Outcome/Error rather than requiring the guest to declare its own (the CDZ0201
+// parameter-synthesis remedy). A guest with inert handlers re-exports these directly; a guest whose handler
+// actually reacts (e.g. reducer-onresponse-cdz emits on-response) keeps its own and re-exports only the inert one.
+def on-response(_resp: Record(contract: Bytes, token: Bytes, answer: Result(Bytes, Error))) =
+  { requests = [], outcome = Outcome.Continue }
+def on-notification(_note: Record(contract: Bytes, payload: Bytes)) =
+  { requests = [], outcome = Outcome.Continue }
+
+export { Outcome.*, Error.*, on-response, on-notification }

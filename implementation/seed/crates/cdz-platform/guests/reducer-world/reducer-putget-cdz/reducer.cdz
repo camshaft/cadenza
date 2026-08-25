@@ -6,8 +6,7 @@
 // statements) + a COMPOUND (option<list<u8>>) host-call result the guest matches — distinct from the
 // single-op state runs (which each perform one op) and the two-message state run (put in one message, get in
 // another). Single host interface (state), reducer-world. on-response / on-notification inert.
-type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
-type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+import { Outcome, on-response, on-notification } from "reducer-lib"
 
 def on-message(msg) =
   host state in
@@ -19,6 +18,4 @@ def on-message(msg) =
         | None(_) =>
             { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = b"get-miss" }) }) )
 
-def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
-def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
 export { on-message, on-response, on-notification }

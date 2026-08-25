@@ -5,14 +5,11 @@
 // early-returns without reaching the recordable capability — now emitting a HostCallRejected observation
 // instead of silently dropping. The result is discarded. Targets the privileged event-reducer-world (imports
 // provenance); spawned as an event reducer; single host interface. on-response / on-notification inert.
-type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
-type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+import { Outcome, on-response, on-notification } from "reducer-lib"
 
 def on-message(msg) =
   host provenance in
     ( provenance.program-of(msg.token) ;
       { requests = [], outcome = Outcome.Continue } )
 
-def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
-def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
 export { on-message, on-response, on-notification }

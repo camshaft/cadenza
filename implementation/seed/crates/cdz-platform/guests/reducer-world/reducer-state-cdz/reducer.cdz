@@ -5,8 +5,7 @@
 // payload is a SET, writing that payload at the cell. Runs drive it with two messages (set, then get or
 // delete), so a returned value or an observed removal proves the store PERSISTED across folds. Delegates only
 // `state`, a floor import. on-response/on-notification are inert.
-type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
-type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+import { Outcome, on-response, on-notification } from "reducer-lib"
 
 def on-message(msg) =
   host state in
@@ -28,11 +27,5 @@ def on-message(msg) =
      else
        ( state.put(b"cell", msg.payload) ;
          { requests = [], outcome = Outcome.Continue } )))
-
-def on-response(_resp) =
-  { requests = [], outcome = Outcome.Continue }
-
-def on-notification(_note) =
-  { requests = [], outcome = Outcome.Continue }
 
 export { on-message, on-response, on-notification }
