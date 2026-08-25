@@ -98,6 +98,11 @@ fn host_import_functype(f: &crate::backend::wasm::host::HostImport) -> Vec<u8> {
             // An ENUM param crosses as ONE `i32` core slot — the discriminant (a payloadless enum's in-guest
             // rep). The component boundary type is an `enum` DEFINED type (see mod.rs `host_op_comp_functype`).
             HostParam::Enum(_) => params.push(wasm_abi::CORE_I32),
+            // A `list<T>` param crosses as `(ptr: i32, count: i32)` — 2 core slots (like `Bytes`'s `(ptr,len)`,
+            // count in place of len). The component boundary type is a `(list <elem>)` DEFINED type.
+            HostParam::List(_) => {
+                params.extend_from_slice(&[wasm_abi::CORE_I32, wasm_abi::CORE_I32])
+            }
         }
     }
     // `params` now holds exactly the FLATTENED core-slot bytes (a scalar = 1, a string/bytes = 2, a record
@@ -242,6 +247,11 @@ fn instr(i: &Lir, import_index: &std::collections::HashMap<&str, u32>, out: &mut
         Lir::I32Store8 { offset } => {
             out.push(op::I32_STORE8);
             uleb128(0, out); // align (log2) = 0
+            uleb128(*offset as u64, out); // offset
+        }
+        Lir::I32Store { offset } => {
+            out.push(op::I32_STORE);
+            uleb128(2, out); // align (log2) = 2 (natural i32 alignment)
             uleb128(*offset as u64, out); // offset
         }
         Lir::I32Load { offset } => {

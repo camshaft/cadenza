@@ -1163,7 +1163,7 @@ pub fn emit(
             .iter()
             .map(|h| envelope::HostFn {
                 op: h.op.clone(),
-                comp_functype: host_op_comp_functype(h, 0, 0, None),
+                comp_functype: host_op_comp_functype(h, 0, 0, &[], None),
                 has_list_param: h.params.iter().any(|p| matches!(p, host::HostParam::Bytes)),
                 core_functype: Vec::new(), // unused by the envelope (the core module builds its own)
             })
@@ -1699,6 +1699,9 @@ fn host_op_comp_functype(
     h: &host::HostImport,
     list_type_idx: u32,
     nominal_type_idx: u32,
+    // Per HostParam position: a `list<T>` arg's `(list <elem>)` DEFINED-type `CRef` (from
+    // `build_host_result_types`); `None`/absent for a non-list param.
+    list_param_crefs: &[Option<crate::backend::wasm::wit_ctype::CRef>],
     result_cref: Option<crate::backend::wasm::wit_ctype::CRef>,
 ) -> Vec<u8> {
     use host::HostParam;
@@ -1732,6 +1735,16 @@ fn host_op_comp_functype(
             // nominal param type this slice (single record OR single enum). Its discriminant crosses as one
             // i32 core slot (serialize.rs).
             HostParam::Enum(_) => encode::uleb128(nominal_type_idx as u64, &mut param_items),
+            // A `list<T>` param references its `(list <elem>)` DEFINED type by the per-param `CRef` the caller
+            // computed (`build_host_result_types`), like a spilled result references its type.
+            HostParam::List(_) => {
+                let cref = list_param_crefs
+                    .get(i)
+                    .cloned()
+                    .flatten()
+                    .unwrap_or(crate::backend::wasm::wit_ctype::CRef::Idx(list_type_idx));
+                crate::backend::wasm::wit_ctype::encode_cref(&cref, &mut param_items);
+            }
         }
     }
     item.extend_from_slice(&encode::wasm_vec(h.params.len(), &param_items));
@@ -1767,7 +1780,7 @@ fn host_op_comp_functype(
 /// per-shape offsets. Reproduces the former fixed indices for the three original shapes (bare list<u8> → 0,
 /// option → 1, list<tuple> → 2+has_option) and generalizes to any structural list/tuple nesting (e.g.
 /// graph.neighbors' `list<list<u8>>`).
-#[allow(clippy::type_complexity)] // (needs_list, [(def-bytes, is-nominal)], per-op result CRef)
+#[allow(clippy::type_complexity)] // (needs_list, [(def, nominal)], [result CRef], [[list-arg CRef]])
 fn build_host_result_types(
     db: &mut Db,
     host_imports: &[host::HostImport],
@@ -1775,12 +1788,21 @@ fn build_host_result_types(
     bool,
     Vec<(Vec<u8>, bool)>,
     Vec<Option<crate::backend::wasm::wit_ctype::CRef>>,
+    // Per op, per HostParam position: the `CRef` a `list<T>` ARG references (its `(list <elem>)` DEFINED type
+    // in the SAME instance-type table as the results, deduped). `None` for a non-list param.
+    Vec<Vec<Option<crate::backend::wasm::wit_ctype::CRef>>>,
 ) {
     use crate::backend::wasm::wit_ctype::{CDef, CRef, add_wit_type_deduped, emit_cdef};
     use crate::wit_world::WitType;
-    let has_list_param = host_imports
-        .iter()
-        .any(|h| h.params.iter().any(|p| matches!(p, host::HostParam::Bytes)));
+    // A `list<u8>` PARAM (Bytes), any spilled result, OR a `list<T>` param whose element reaches `list<u8>`
+    // all need the shared `(list u8)` at index 0 (a `list<list<u8>>` arg's element interns to it).
+    let has_list_param = host_imports.iter().any(|h| {
+        h.params.iter().any(|p| match p {
+            host::HostParam::Bytes => true,
+            host::HostParam::List(e) => host::record_field_abi_reaches_bytes(e),
+            _ => false,
+        })
+    });
     let has_spilled = host_imports.iter().any(|h| h.spilled_result.is_some());
     let needs_list = has_list_param || has_spilled;
     let mut table: Vec<CDef> = Vec::new();
@@ -1793,6 +1815,9 @@ fn build_host_result_types(
         memo.push((WitType::List(Box::new(WitType::U8)), CRef::Idx(0)));
     }
     let mut result_crefs = Vec::with_capacity(host_imports.len());
+    // Per op, per HostParam position: a `list<T>` arg's `(list <elem>)` CRef (built into the SAME table, so a
+    // `list<list<u8>>` arg + a `list<list<u8>>` result share one defined type). `None` for a non-list param.
+    let mut arg_list_crefs: Vec<Vec<Option<CRef>>> = Vec::with_capacity(host_imports.len());
     for h in host_imports {
         let cref = h.spilled_result.as_ref().and_then(|ty| {
             // Prefer the WORLD's declared result WitType (the authoritative host contract) so a nominal err
@@ -1805,6 +1830,20 @@ fn build_host_result_types(
             add_wit_type_deduped(&wt, &mut table, &mut memo)
         });
         result_crefs.push(cref);
+        // A `list<T>` ARG references a `(list <elem>)` DEFINED type — build it from the WORLD's declared param
+        // WIT type (the authoritative host contract), aligned with the HostParam positions (a `Unit` arg is
+        // elided from BOTH the WIT params and the HostParams, so positions stay 1:1). Built into the shared
+        // table (deduped with results + each other).
+        let wit_params = host::wit_op_param_types(db, &h.effect, &h.op);
+        let mut per_param: Vec<Option<CRef>> = vec![None; h.params.len()];
+        for (i, p) in h.params.iter().enumerate() {
+            if matches!(p, host::HostParam::List(_))
+                && let Some(pw) = wit_params.as_ref().and_then(|ps| ps.get(i))
+            {
+                per_param[i] = add_wit_type_deduped(pw, &mut table, &mut memo);
+            }
+        }
+        arg_list_crefs.push(per_param);
     }
     // EXPORT-AWARE INDEXING: a NOMINAL defined type (`variant`/`enum`/`record`) that an import func's type
     // references must be EXPORTED from the instance-type (component-model rule — the same the ARG-side records
@@ -1835,16 +1874,19 @@ fn build_host_result_types(
     for c in result_crefs.iter_mut().flatten() {
         *c = remap(c);
     }
-    // The RESULT defined types are `table[start..]` (index 0 is the shared `(list u8)` the instance-type lays
-    // as its own prepend). Emit each with its CRefs remapped to the export-aware indices; pair with whether it
-    // is nominal (so the instance-type lays it define+export).
+    for c in arg_list_crefs.iter_mut().flatten().flatten() {
+        *c = remap(c);
+    }
+    // The instance-type DEFINED types are `table[start..]` (index 0 is the shared `(list u8)` the instance-type
+    // lays as its own prepend) — spilled-result types AND `list<T>`-arg types (deduped together). Emit each
+    // with its CRefs remapped to the export-aware indices; pair with whether it is nominal (define+export).
     let start = if needs_list { 1 } else { 0 };
     let result_defs: Vec<(Vec<u8>, bool)> = table[start..]
         .iter()
         .enumerate()
         .map(|(k, def)| (emit_cdef(&remap_cdef(def, &remap)), nominal[start + k]))
         .collect();
-    (needs_list, result_defs, result_crefs)
+    (needs_list, result_defs, result_crefs, arg_list_crefs)
 }
 
 /// Whether a component defined type is NOMINAL — a `record`/`variant`/`enum`/`flags` that, when used by an
@@ -1922,7 +1964,8 @@ fn build_host_group(
                 )
             })?
     };
-    let (needs_list, result_defs, result_crefs) = build_host_result_types(db, group);
+    let (needs_list, result_defs, result_crefs, arg_list_crefs) =
+        build_host_result_types(db, group);
     let has_spilled_result = group.iter().any(|h| h.spilled_result.is_some());
     let record_params: Vec<&Vec<(String, host::RecordFieldAbi)>> = group
         .iter()
@@ -2009,7 +2052,13 @@ fn build_host_group(
         .enumerate()
         .map(|(i, hi)| envelope::HostFn {
             op: hi.op.clone(),
-            comp_functype: host_op_comp_functype(hi, 0, op_nominal[i], result_crefs[i].clone()),
+            comp_functype: host_op_comp_functype(
+                hi,
+                0,
+                op_nominal[i],
+                &arg_list_crefs[i],
+                result_crefs[i].clone(),
+            ),
             has_list_param: hi
                 .params
                 .iter()
@@ -2112,10 +2161,13 @@ fn host_param_abi(p: &host::HostParam) -> Option<runtime_abi::AbiValType> {
         // non-peer-bound op), so it declines here too.
         // An ENUM param likewise has no scalar peer-ABI form (a peer-bound enum crosses as its `u32` handle,
         // and the classifier only produces `Enum` for a non-peer-bound host op) → declines here.
+        // A `list<T>` param likewise has no scalar peer-ABI form (a peer-bound list crosses as its `u32`
+        // handle, and the classifier only produces `List` for a non-peer-bound host op) → declines here.
         host::HostParam::Str
         | host::HostParam::Bytes
         | host::HostParam::Record(_)
-        | host::HostParam::Enum(_) => None,
+        | host::HostParam::Enum(_)
+        | host::HostParam::List(_) => None,
     }
 }
 
@@ -2861,7 +2913,7 @@ fn emit_runtime_resource(
             .iter()
             .map(|hi| envelope::HostFn {
                 op: hi.op.clone(),
-                comp_functype: host_op_comp_functype(hi, 0, 0, None),
+                comp_functype: host_op_comp_functype(hi, 0, 0, &[], None),
                 has_list_param: hi
                     .params
                     .iter()
@@ -4801,7 +4853,7 @@ fn emit_closure_host_resource(
         .iter()
         .map(|hi| envelope::HostFn {
             op: hi.op.clone(),
-            comp_functype: host_op_comp_functype(hi, 0, 0, None),
+            comp_functype: host_op_comp_functype(hi, 0, 0, &[], None),
             has_list_param: hi
                 .params
                 .iter()
@@ -7981,7 +8033,7 @@ fn emit_runtime_bytes_resource(
             .iter()
             .map(|hi| envelope::HostFn {
                 op: hi.op.clone(),
-                comp_functype: host_op_comp_functype(hi, 0, 0, None),
+                comp_functype: host_op_comp_functype(hi, 0, 0, &[], None),
                 has_list_param: hi
                     .params
                     .iter()
@@ -8283,7 +8335,7 @@ fn emit_runtime_sum_resource(
             .iter()
             .map(|hi| envelope::HostFn {
                 op: hi.op.clone(),
-                comp_functype: host_op_comp_functype(hi, 0, 0, None),
+                comp_functype: host_op_comp_functype(hi, 0, 0, &[], None),
                 has_list_param: hi
                     .params
                     .iter()
@@ -8540,7 +8592,7 @@ fn emit_recursive_sum_resource(
             .iter()
             .map(|hi| envelope::HostFn {
                 op: hi.op.clone(),
-                comp_functype: host_op_comp_functype(hi, 0, 0, None),
+                comp_functype: host_op_comp_functype(hi, 0, 0, &[], None),
                 has_list_param: hi
                     .params
                     .iter()
@@ -9684,7 +9736,8 @@ fn emit_bytes_provider_member(
     // The spilled-RESULT component defined types, built GENERALLY from each op's WIT result type (one
     // recursion, no per-shape blocks). `result_defs` laid after the shared `(list u8)`; `result_crefs` the
     // per-op functype result reference. A bare `list<u8>` result interns to the `(list u8)` at index 0.
-    let (needs_list, result_defs, result_crefs) = build_host_result_types(db, &host_imports);
+    let (needs_list, result_defs, result_crefs, _arg_list_crefs) =
+        build_host_result_types(db, &host_imports);
     // ENUM host-call args (graph.neighbors' `dir`): a nominal `enum` DEFINED type laid (DEFINE+EXPORT) after
     // `(list u8)` + the spilled-result defined types — `base` = that prepend count. A SINGLE distinct enum
     // type this slice; the op's `comp_functype` references its EXPORTED index. Composes WITH a spilled result
@@ -9720,6 +9773,7 @@ fn emit_bytes_provider_member(
                 hf,
                 0,
                 nominal_export_idx,
+                &[],
                 result_crefs[i].clone(),
             ),
             has_list_param: hf
