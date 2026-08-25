@@ -45,8 +45,8 @@ wasmtime::component::bindgen!({
 
 use crate::{
     BlobStore, Bytes, ContractId, Delivered, Delivery, EdgeKind, Error, Hash, HostId, KvStore,
-    Message, Notification, Origin, Outcome, ReducerGraph, ReducerId, Request, ResourceLimits,
-    Response,
+    Message, Notification, Origin, Outcome, ReducerGraph, ReducerId, RejectedSink, Request,
+    ResourceLimits, Response,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -104,6 +104,11 @@ struct HostState {
     /// and a pure program may call `run` to compose other pure programs. `None` only where no run capability is
     /// wired at all (a bare [`HostState`] built for a non-run test).
     run: Option<Arc<Instantiator>>,
+    /// Where a host call the boundary REJECTED (a raw `list<u8>` arg that failed to parse into its typed
+    /// id/kind) is recorded, so no host call is silently unobserved (§9). Always present
+    /// ([`NoRejectedSink`](crate::NoRejectedSink) when no observing node wired one), so the parse-guard path
+    /// records unconditionally without an `Option` to branch on.
+    rejected: Arc<dyn RejectedSink>,
     /// The per-reducer linear-memory limiter the wasm store enforces (see `arm_store_safety`): a ceiling on
     /// linear memory so one guest cannot exhaust host RAM and take down the process. Lives here because a wasm
     /// [`Store`]'s limiter projects from its data (`Store::limiter`); the store enforces the limits it holds.
@@ -174,32 +179,60 @@ impl cadenza::platform::state::Host for HostState {
     }
 }
 
+// Each method parses its `list<u8>` node/edge-kind arg into a `ReducerId`/`EdgeKind`; on a malformed one it
+// returns the empty/false result (total, graceful) AND records the rejected call to `self.rejected` with the
+// raw argument bytes, so the call is observed (§9) even though it never reached the recordable `self.graph`
+// capability below the parse. A well-formed call records via the graph decorator as usual; only the rejected
+// path is recorded here. `iface`/`op` name the WIT interface + method.
 impl cadenza::platform::graph::Host for HostState {
     async fn insert(&mut self, node: Vec<u8>) -> bool {
         match to_reducer(&node) {
             Some(node) => self.graph.insert(node).await,
-            None => false,
+            None => {
+                self.rejected
+                    .record("graph", "insert", &[Bytes::copy_from_slice(&node)]);
+                false
+            }
         }
     }
 
     async fn contains(&mut self, node: Vec<u8>) -> bool {
         match to_reducer(&node) {
             Some(node) => self.graph.contains(node).await,
-            None => false,
+            None => {
+                self.rejected
+                    .record("graph", "contains", &[Bytes::copy_from_slice(&node)]);
+                false
+            }
         }
     }
 
     async fn remove(&mut self, node: Vec<u8>) -> bool {
         match to_reducer(&node) {
             Some(node) => self.graph.remove(node).await,
-            None => false,
+            None => {
+                self.rejected
+                    .record("graph", "remove", &[Bytes::copy_from_slice(&node)]);
+                false
+            }
         }
     }
 
     async fn link(&mut self, source: Vec<u8>, target: Vec<u8>, kind: Vec<u8>) -> bool {
         match (to_reducer(&source), to_reducer(&target), to_kind(&kind)) {
             (Some(source), Some(target), Some(kind)) => self.graph.link(source, target, kind).await,
-            _ => false,
+            _ => {
+                self.rejected.record(
+                    "graph",
+                    "link",
+                    &[
+                        Bytes::copy_from_slice(&source),
+                        Bytes::copy_from_slice(&target),
+                        Bytes::copy_from_slice(&kind),
+                    ],
+                );
+                false
+            }
         }
     }
 
@@ -209,12 +242,15 @@ impl cadenza::platform::graph::Host for HostState {
         kind: Vec<u8>,
         targets: Vec<Vec<u8>>,
     ) -> Vec<Vec<u8>> {
-        let (Some(source), Some(kind)) = (to_reducer(&source), to_kind(&kind)) else {
+        let (Some(source_id), Some(kind_id)) = (to_reducer(&source), to_kind(&kind)) else {
+            let mut raw = vec![Bytes::copy_from_slice(&source), Bytes::copy_from_slice(&kind)];
+            raw.extend(targets.iter().map(|t| Bytes::copy_from_slice(t)));
+            self.rejected.record("graph", "set-edges", &raw);
             return Vec::new();
         };
         // A malformed target names nothing, so it is dropped from the chain rather than aborting the set.
         let targets = targets.iter().filter_map(|t| to_reducer(t)).collect();
-        from_reducers(self.graph.set_edges(source, kind, targets).await)
+        from_reducers(self.graph.set_edges(source_id, kind_id, targets).await)
     }
 
     async fn neighbors(
@@ -223,10 +259,15 @@ impl cadenza::platform::graph::Host for HostState {
         kind: Vec<u8>,
         dir: cadenza::platform::graph::Dir,
     ) -> Vec<Vec<u8>> {
-        let (Some(node), Some(kind)) = (to_reducer(&node), to_kind(&kind)) else {
+        let (Some(node_id), Some(kind_id)) = (to_reducer(&node), to_kind(&kind)) else {
+            self.rejected.record(
+                "graph",
+                "neighbors",
+                &[Bytes::copy_from_slice(&node), Bytes::copy_from_slice(&kind)],
+            );
             return Vec::new();
         };
-        from_reducers(self.graph.neighbors(node, kind, dir.into()).await)
+        from_reducers(self.graph.neighbors(node_id, kind_id, dir.into()).await)
     }
 
     async fn in_kinds(&mut self, node: Vec<u8>) -> Vec<Vec<u8>> {
@@ -238,7 +279,11 @@ impl cadenza::platform::graph::Host for HostState {
                 .into_iter()
                 .map(|kind| kind.hash().as_bytes().to_vec())
                 .collect(),
-            None => Vec::new(),
+            None => {
+                self.rejected
+                    .record("graph", "in-kinds", &[Bytes::copy_from_slice(&node)]);
+                Vec::new()
+            }
         }
     }
 
@@ -248,10 +293,15 @@ impl cadenza::platform::graph::Host for HostState {
         kind: Vec<u8>,
         dir: cadenza::platform::graph::Dir,
     ) -> Vec<Vec<u8>> {
-        let (Some(node), Some(kind)) = (to_reducer(&node), to_kind(&kind)) else {
+        let (Some(node_id), Some(kind_id)) = (to_reducer(&node), to_kind(&kind)) else {
+            self.rejected.record(
+                "graph",
+                "reach",
+                &[Bytes::copy_from_slice(&node), Bytes::copy_from_slice(&kind)],
+            );
             return Vec::new();
         };
-        from_reducers(self.graph.reach(node, kind, dir.into()).await)
+        from_reducers(self.graph.reach(node_id, kind_id, dir.into()).await)
     }
 }
 
@@ -999,6 +1049,7 @@ fn null_host_state(
         provenance: Arc::new(crate::NoProvenance),
         delivery: Arc::new(crate::NoDelivery),
         run,
+        rejected: Arc::new(crate::NoRejectedSink),
         limits: reducer_store_limits(limits),
         resource_limits: *limits,
     }
@@ -1026,6 +1077,7 @@ fn null_host_state(
 type GraphFactory = Arc<dyn Fn(ReducerId) -> Arc<dyn ReducerGraph> + Send + Sync>;
 type ProvenanceFactory = Arc<dyn Fn(ReducerId) -> Arc<dyn Provenance> + Send + Sync>;
 type DeliveryFactory = Arc<dyn Fn(ReducerId) -> Arc<dyn Delivery> + Send + Sync>;
+type RejectedSinkFactory = Arc<dyn Fn(ReducerId) -> Arc<dyn RejectedSink> + Send + Sync>;
 
 pub struct WasmProgramStore {
     /// The shared per-host instantiation core (engine, linkers, content store, compiled cache, pure-run memo),
@@ -1051,6 +1103,11 @@ pub struct WasmProgramStore {
     /// it is never absent, only null. Injecting a decorating factory here can, for one, make the deliver ACT
     /// observable (§9).
     make_delivery: DeliveryFactory,
+    /// Builds each reducer's sink for host calls the boundary rejected before the recordable capability (a
+    /// malformed-arg `graph` op, §9). Defaults to a factory over [`NoRejectedSink`](crate::NoRejectedSink)
+    /// until set with [`with_rejected`](WasmProgramStore::with_rejected), so a rejected call is dropped unless
+    /// an observing node injects a recording sink.
+    make_rejected: RejectedSinkFactory,
 }
 
 impl WasmProgramStore {
@@ -1097,6 +1154,9 @@ impl WasmProgramStore {
             make_graph,
             make_provenance: Arc::new(|_id| Arc::new(crate::NoProvenance) as Arc<dyn Provenance>),
             make_delivery: Arc::new(|_id| Arc::new(crate::NoDelivery) as Arc<dyn Delivery>),
+            make_rejected: Arc::new(|_id| {
+                Arc::new(crate::NoRejectedSink) as Arc<dyn RejectedSink>
+            }),
         })
     }
 
@@ -1121,6 +1181,17 @@ impl WasmProgramStore {
     #[must_use]
     pub fn with_delivery(mut self, make_delivery: DeliveryFactory) -> Self {
         self.make_delivery = make_delivery;
+        self
+    }
+
+    /// Wire each reducer's sink for host calls the boundary rejected before the recordable capability (a
+    /// malformed-arg `graph` op, §9). Pass `move |_id| sink.clone()` for a shared sink, or a factory that
+    /// builds a per-reducer recording decorator so a rejected call becomes an observation attributed to the
+    /// calling reducer. The default drops rejected calls ([`NoRejectedSink`](crate::NoRejectedSink)). Uniform
+    /// with `make_blobs`.
+    #[must_use]
+    pub fn with_rejected(mut self, make_rejected: RejectedSinkFactory) -> Self {
+        self.make_rejected = make_rejected;
         self
     }
 }
@@ -1199,6 +1270,7 @@ impl ProgramStore for WasmProgramStore {
             provenance: (self.make_provenance)(ctx.id),
             delivery: (self.make_delivery)(ctx.id),
             run: Some(Arc::clone(&self.inst)),
+            rejected: (self.make_rejected)(ctx.id),
             limits: reducer_store_limits(&effective),
             resource_limits: effective,
         };
@@ -1245,6 +1317,7 @@ mod tests {
             provenance: Arc::new(crate::NoProvenance),
             delivery: Arc::new(crate::NoDelivery),
             run: None,
+            rejected: Arc::new(crate::NoRejectedSink),
             limits: super::reducer_store_limits(&super::ResourceLimits::default()),
             resource_limits: super::ResourceLimits::default(),
         }
@@ -1365,6 +1438,81 @@ mod tests {
         );
         // A malformed (wrong-length) node names nothing.
         assert!(!Graph::contains(&mut host, b"not a hash".to_vec()).await);
+    }
+
+    #[tokio::test]
+    async fn a_malformed_graph_arg_is_recorded_as_a_rejected_call_not_silently_dropped() {
+        // The observation-completeness seam (§9): a `graph` op whose raw `list<u8>` arg fails to parse returns
+        // the empty/false result BUT records the rejected call to the injected `RejectedSink` with the raw
+        // bytes — so it is observed even though it never reached the recordable `self.graph`. A well-formed call
+        // does NOT hit the sink (it records via the graph decorator instead). This locks that no host call is
+        // silently unobservable, per the log-all-host-calls invariant.
+        use super::RejectedSink;
+        use std::sync::Mutex;
+
+        #[derive(Default)]
+        struct Capturing {
+            calls: Mutex<Vec<(String, String, Vec<Bytes>)>>,
+        }
+        impl RejectedSink for Capturing {
+            fn record(&self, iface: &str, op: &str, raw_args: &[Bytes]) {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push((iface.to_string(), op.to_string(), raw_args.to_vec()));
+            }
+        }
+
+        let sink = Arc::new(Capturing::default());
+        let mut host = host(ReducerId::of(b"me"));
+        host.rejected = sink.clone();
+
+        // A malformed node (not a 33-byte hash) with a well-formed kind: the guard fails on the node, so
+        // `neighbors` returns [] and records the rejected call with BOTH raw args verbatim.
+        let bad_node = vec![1u8, 2, 3];
+        let kind = kind_bytes(b"edge");
+        assert!(
+            Graph::neighbors(&mut host, bad_node.clone(), kind.clone(), Dir::Outgoing)
+                .await
+                .is_empty()
+        );
+        let malformed_link_kind = b"nope".to_vec();
+        assert!(
+            !Graph::link(
+                &mut host,
+                rid_bytes(b"a"),
+                rid_bytes(b"b"),
+                malformed_link_kind.clone(),
+            )
+            .await
+        );
+        // A WELL-FORMED read does not record a rejection (it reaches `self.graph`).
+        assert!(
+            Graph::neighbors(&mut host, rid_bytes(b"a"), kind.clone(), Dir::Outgoing)
+                .await
+                .is_empty()
+        );
+
+        let calls = sink.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2, "only the two malformed calls are recorded");
+        assert_eq!(
+            calls[0],
+            (
+                "graph".to_string(),
+                "neighbors".to_string(),
+                vec![Bytes::from(bad_node), Bytes::from(kind)],
+            ),
+            "the rejected neighbors call carries iface, op, and the raw args verbatim"
+        );
+        assert_eq!(calls[1].1, "link");
+        assert_eq!(
+            calls[1].2,
+            vec![
+                Bytes::from(rid_bytes(b"a")),
+                Bytes::from(rid_bytes(b"b")),
+                Bytes::from(malformed_link_kind),
+            ]
+        );
     }
 
     #[tokio::test]
