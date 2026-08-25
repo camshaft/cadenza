@@ -4592,6 +4592,7 @@ pass	an operation with a RECORD parameter binds the compound and the arm reads i
 pass	an operation with a TUPLE parameter binds the compound and the arm projects it
 pass	an option value annotated with the wrong payload type is rejected
 pass	an option<s64> field in a record result crosses the export boundary on both arms
+pass	an option<s64> param field is read and rebuilt by the wrapper on both arms (via an imposed WIT world)
 pass	an ordering < of two same-bits Float32 literals const-folds false
 pass	an ordering <= of two same-bits Float32 literals const-folds true
 pass	an ordering > of two same-bits Float32 literals const-folds false
