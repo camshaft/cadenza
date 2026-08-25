@@ -2437,6 +2437,41 @@
             ((Err _) false)))
   (output (: true Bool)))
 
+(case "a const Ast-list FILTERED by a nested recursive comment-peeler const-evaluates at compile time"
+  (doc    "The general const-EVALUATOR (DESIGN-general-const-eval.md, Stage b) interprets a total function
+           applied to compile-time-constant AST values to a constant value, so a real self-reflection
+           transform composes and folds. This is the `collect-types` shape a comment-tolerant contract-id
+           transform needs: `collect` recurses down a `const (List Ast)`, and for EACH form binds `g = peel h`
+           — where `peel` is ITSELF a recursive comment-unwrapper (`(comment … form)` → its wrapped form) that
+           calls `child`/`head-name`/`name-of` (Ast destructors over `Ast.List`/`Ast.Name` + `List.at`'s
+           `Option`) — then FILTERS: it prepends `g` only when its head is `type`, else drops it. Every
+           sub-recursion (peel, collect) and destructor composes as VALUES: the const-demanding `Ast.encode`
+           forces the whole thing to a constant, so `Bytes.len` of the encoded filtered list is positive. The
+           unroll-and-refold could not fold this (a recursion consuming another recursion's const result, a
+           let-bound nested-recursion result carried through a filter); the evaluator does.")
+  (input  (do
+            (def (child (const (: form Ast)) (: i Int64))
+              (match form
+                ((Ast.List es) (match (List.at es i) ((Option.Some v) v) ((Option.None) (Ast.Name "?"))))
+                (_ (Ast.Name "?"))))
+            (def (name-of (const (: form Ast))) (match form ((Ast.Name n) n) (_ "")))
+            (def (head-name (const (: form Ast))) (name-of (child form 0)))
+            (def (peel (const (: x Ast)))
+              (if (= (head-name x) "comment") (peel (child x 2)) x))
+            (def (collect (const (: xs (List Ast))))
+              (match xs
+                ((list) (: (list) (List Ast)))
+                ((list h .. t)
+                  (let ((g (peel h)) (tail (collect t)))
+                    (if (= (head-name g) "type") (List.prepend tail g) tail)))))
+            (def (main)
+              (> (Bytes.len (Ast.encode (Ast.List (collect (list
+                   (Ast.List (list (Ast.Name "comment") (Ast.Str "c")
+                                   (Ast.List (list (Ast.Name "type") (Ast.Name "A")))))
+                   (Ast.List (list (Ast.Name "type") (Ast.Name "B")))))))) 0))
+            (export main)))
+  (output (: true Bool)))
+
 (case "decoding bytes that are not a canonical AST yields the error case, not a trap"
   (doc    "contracts/value-interchange.md #Decode Inverts Serialize And Refuses Otherwise + #A Decode Over
            External Bytes Is Total: `Ast.decode` consumes bytes that may come from an EXTERNAL source, so it

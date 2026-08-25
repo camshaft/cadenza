@@ -1558,6 +1558,7 @@ pass	a conjunction guards a let over a runtime value inside a conditional
 pass	a conjunction of two float compares preserves NaN-false through the connective fold
 pass	a connective-wrapped perform in an if condition threads its state advance to the taken branch
 pass	a consistent annotation type-checks against the inferred type
+pass	a const Ast-list FILTERED by a nested recursive comment-peeler const-evaluates at compile time
 pass	a const closure re-passed through a recursive driver specializes and computes correctly
 pass	a const collection recursively folded UNROLLS to its result at compile time
 pass	a const list recursively FILTERED (conditional include) folds to a constant
