@@ -1091,6 +1091,28 @@
             (export sm2)))
   (call   sm2 (: 1000000 Int64)) (output (: 500000500000 Int64)))
 
+(case "the accumulator transform declines when the base is not the operator's identity"
+  (doc    "`(sm n) = (if (= n 0) 100 (+ n (sm (- n 1))))` — the linear non-tail `+` shape, but the base
+           is 100, NOT `+`'s identity 0. Reassociating into an accumulator seeded at 100 would fold the
+           base in once per level and change the result, so the transform must DECLINE (stay a plain
+           recursion) and still compute the right value: sm(3) = 3+2+1+100 = 106. A misfiring transform
+           that reassociated regardless would yield a different number — this pins it does not.")
+  (input  (do
+            (def (sm (: n Int64)) (if (= n 0) 100 (+ n (sm (- n 1)))))
+            (export sm)))
+  (call   sm (: 3 Int64)) (output (: 106 Int64)))
+
+(case "the accumulator transform declines a non-associative combine with the self-call first"
+  (doc    "`(f n) = (if (= n 0) 0 (- (f (- n 1)) 1))` — the self-call is the FIRST operand of a
+           NON-associative `-`, so reassociating into an accumulator would change the result; the
+           transform must decline and preserve the exact left-nested value: f(0)=0, f(1)=-1, f(2)=-2,
+           f(3)=-3. Companion of the right-nested non-associative case; here the recursive call sits in
+           the operator's first operand.")
+  (input  (do
+            (def (f (: n Int64)) (if (= n 0) 0 (- (f (- n 1)) 1)))
+            (export f)))
+  (call   f (: 3 Int64)) (output (: -3 Int64)))
+
 (case "a HOF callback matching a tuple argument computes through the nested reduction"
   (doc    "The same shape with a TUPLE-destructuring callback — `(fn (p) (match p ((tuple a b) (+ a b))))`
            — passed to a HOF. The tuple-pattern binders `a`/`b` read the substituted scrutinee just as a
