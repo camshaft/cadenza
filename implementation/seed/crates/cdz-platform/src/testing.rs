@@ -67,8 +67,7 @@ pub use recording::{
     RecordingProvenance, RecordingReducer, RecordingRejectedSink, RecordingRun,
 };
 pub use spec::{
-    BlobSource, BlobSpec, DeliveryEvent, HarnessSpec, PayloadSource, PureRun, RegistrySpec,
-    SpecError,
+    BlobSource, BlobSpec, DeliveryEvent, HarnessSpec, PureRun, RegistrySpec, SpecError,
 };
 
 #[cfg(test)]
