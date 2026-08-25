@@ -28,7 +28,8 @@
 ; host-import RESULT (probe.info) with a field-order-follows-WIT reorder. SHAPE 12 — a list<s64> host-op ARG
 ; (sink.push) lowered + invoked e2e (the align-8 scalar-element list-arg marshal). SHAPE 13 — an all-scalar
 ; record{a,b} host-op ARG (deliver.push) flattened to two i64 core slots + invoked e2e. SHAPE 14 — a Bytes
-; host-op ARG with a scalar u64 RESULT (hasher.hash) threaded into the step's deadline-nanos.
+; host-op ARG with a scalar u64 RESULT (hasher.hash) threaded into the step's deadline-nanos. SHAPE 15 — a
+; COMPOUND result<Bytes, enum> host-import RESULT (run.run) matched Ok(v)->payload / Err->fallback.
 
 (case "an option<s64> field in a record result crosses the export boundary on both arms"
   (doc    "The general option<T> RESULT lift across the WIT export boundary. The guest takes a record
@@ -209,3 +210,19 @@
   (host-responses (respond hasher.hash (: 42 UInt64)))
   (host-calls (call cadenza:platform/hasher.hash))
   (output (: (record (= requests ((record (= contract (1)) (= payload (2)) (= token (3)) (= deadline-nanos (Some 42))))) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+(case "a typed reducer performing a run.run result host op threads the Ok bytes into the step (via an imposed WIT world)"
+  (doc    "SHAPE 15 — a COMPOUND result<Bytes, enum> host-import RESULT (run.run : (Bytes,Bytes,Bytes) -> result<list<u8>, variant{timeout,faulted}>)
+           driven through an imposed WIT world. The reducer on-message performs run.run(contract,contract,payload) and
+           matches the result: Ok(v) -> the request payload is v; Err(_) -> the payload falls back to m.payload. Stubbing
+           run.run -> Ok(b\"RAN\") and asserting payload == (82 65 78) makes the compound result<T,E> lift load-bearing (the
+           spilled result disc + Ok list<u8> payload). Migrated from the in-crate wasmtime test
+           `a_reducer_performing_run_with_a_result_host_result_emits_and_loads` (v-rb shape-2 run.run feed; #3301 landed the
+           RunSink host half so this needs NO Entry::Run — host-responses stubs the result + output-assertion suffices).
+           The sole-use world builder is RETAINED (a separate WIT-type unit test still reads it), so only the anchor retires.")
+  (wit-world (world w (export guest (member on-message (func (param m ("record" (contract ("list" (u8))) (payload ("list" (u8))) (token ("list" (u8))))) (result ("record" (requests ("list" ("record" (contract ("list" (u8))) (payload ("list" (u8))) (token ("list" (u8))) (deadline-nanos ("option" (u64)))))) (outcome ("variant" (continue) (close ("record" (schema ("list" (u8))) (reason ("list" (u8)))))))))))) (import cadenza:platform/run (member run (func (param program ("list" (u8))) (param contract ("list" (u8))) (param input ("list" (u8))) (result ("result" ("list" (u8)) ("variant" (timeout) (faulted)))))))))
+  (component-name "cadenza:platform/guest")
+  (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (type Error (Timeout) (Faulted)) (effect run (op run (-> Bytes Bytes Bytes (Result Bytes Error)))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (run) (record (= requests (list (record (= contract (. m contract)) (= payload (match (run.run (. m contract) (. m contract) (. m payload)) ((Ok v) v) ((Err _e) (. m payload)))) (= token (. m token)) (= deadline-nanos Option.None)))) (= outcome Outcome.Continue)))) (export onMessage)))
+  (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
+  (host-responses (respond run.run (: (Ok (list 82 65 78)) (Result Bytes Error))))
+  (host-calls (call cadenza:platform/run.run))
+  (output (: (record (= requests ((record (= contract (1)) (= payload (82 65 78)) (= token (3)) (= deadline-nanos (None unit))))) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
