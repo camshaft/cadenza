@@ -63100,7 +63100,8 @@ mod stage1 {
         // A CONSTANT record returned as the program result now crosses the host boundary as a
         // component-model resource whose `encode()` yields the canonical value form (the escape path,
         // §3a) — it no longer declines. (The end-to-end value assertion, decoding to `(: (record …)
-        // (Record …))`, is `constant_resource_escape::a_constant_record_return_decodes`.) A record
+        // (Record …))`, is the corpus case "a constant record is returned as a program result" in
+        // `spec/semantics/05-compound-types.sexp`.) A record
         // consumed INTERNALLY still folds/declines per its use; this pins that a constant record RESULT
         // compiles to a component.
         let src = "(module m (def (main) (record (x 1))) (export main))";
@@ -63175,7 +63176,8 @@ mod stage1 {
         // A CONSTANT tuple returned across the host boundary now crosses as a monomorphized component
         // RESOURCE whose `encode() -> list<u8>` yields the canonical binary value form; the host decodes
         // + prints `(: (tuple …) (Tuple …))` (the escape path, §3a). It no longer declines. (The
-        // end-to-end value assertion is `constant_resource_escape::a_constant_tuple_return_decodes…`.)
+        // end-to-end value assertion is the corpus case "a constant tuple is returned as a program
+        // result" in `spec/semantics/05-compound-types.sexp`.)
         // A RUNTIME tuple (elements computed at run time) still declines here pending R2 (the real
         // handle-walking encoder) — see `a_runtime_tuple_return_still_declines_pending_r2`.
         let src = "(module m (def (main) (tuple 1 2)) (export main))";
@@ -82376,113 +82378,6 @@ mod r1_reference {
         } else {
             panic!("make did not return a resource");
         }
-    }
-}
-
-// ── value-heap R1c/R3: a COMPILER-GENERATED constant-compound resource escape, run + decoded ──────
-//
-// The compiler routes a nullary export returning a fully-CONSTANT compound through the resource escape
-// path (`emit` → `serialize::resource_core_module` with the baked `constant_value_form` bytes →
-// `envelope::assemble_resource`). This exercises the WHOLE pipeline the corpus's constant tuple/record
-// returns need: the value is serialized to its canonical binary form AT COMPILE TIME, crosses as the
-// resource `encode()`'s `list<u8>`, and the host DECODES it with the same codec + prints the recorded
-// `(: value type)` text. Constant-first (R1): no runtime heap construction, so it runs under a bare
-// linker (no value-heap runtime composed) — the runtime path (R2) reuses this envelope + host wiring.
-mod constant_resource_escape {
-    use crate::compile::compile_component;
-    use crate::testkit::parse;
-
-    /// Compile `src`, run its resource export under wasmtime, and DECODE the `encode()` bytes back to
-    /// canonical text — the value the host would print. Returns the decoded `(: value type)` string.
-    fn run_and_decode(src: &str) -> String {
-        use wasmtime::component::{Component, Linker, Val};
-        use wasmtime::{Engine, Store};
-        let comp = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        // Validate then run under a bare linker — a constant escape composes no runtime.
-        let mut validator =
-            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
-        validator
-            .validate_all(&comp)
-            .expect("resource component validates");
-        let engine = Engine::default();
-        let component = Component::from_binary(&engine, &comp).expect("valid component");
-        let linker: Linker<()> = Linker::new(&engine);
-        let mut store = Store::new(&engine, ());
-        let instance = linker
-            .instantiate(&mut store, &component)
-            .expect("instantiate");
-        let iface = instance
-            .get_export_index(&mut store, None, "cadenza:run/run")
-            .expect("run interface");
-        let make_idx = instance
-            .get_export_index(&mut store, Some(&iface), "make")
-            .expect("make export");
-        let encode_idx = instance
-            .get_export_index(&mut store, Some(&iface), "encode")
-            .expect("encode export");
-        let make = instance.get_func(&mut store, make_idx).expect("make func");
-        let encode = instance
-            .get_func(&mut store, encode_idx)
-            .expect("encode func");
-        let mut handle = [Val::Bool(false)];
-        make.call(&mut store, &[], &mut handle).expect("make call");
-        make.post_return(&mut store).expect("make post_return");
-        let mut out = [Val::Bool(false)];
-        encode
-            .call(&mut store, &handle, &mut out)
-            .expect("encode call");
-        encode.post_return(&mut store).expect("encode post_return");
-        let bytes: Vec<u8> = match &out[0] {
-            Val::List(items) => items
-                .iter()
-                .map(|v| match v {
-                    Val::U8(b) => *b,
-                    o => panic!("not u8: {o:?}"),
-                })
-                .collect(),
-            o => panic!("expected list<u8>, got {o:?}"),
-        };
-        // Decode with `cadenza-syntax`'s codec — the SAME codec `cdz-run` (the host) uses; rcdzc's own
-        // `codec` is a byte-identical COPY (the copy-don't-depend rule), so the bytes the compiler baked
-        // decode here through the front-end crate exactly as the host will. Then print canonical text.
-        let arenas = cadenza_syntax::codec::decode(&bytes).expect("decode canonical value form");
-        cadenza_syntax::sexpr::print(&arenas).trim().to_string()
-    }
-
-    /// A constant tuple returned as the program result crosses as a resource and decodes to the exact
-    /// corpus text — the `(def (main) (tuple 3 1))` case (`spec/semantics/05-compound-types.sexp`).
-    #[test]
-    fn a_constant_tuple_return_decodes_to_its_value_form() {
-        let src = "(module m (def (main) (tuple 3 1)) (export main))";
-        assert_eq!(run_and_decode(src), "(: (tuple 3 1) (Tuple Int64 Int64))");
-    }
-
-    /// A constant tuple with a Bool element — the heap layout carries a Bool beside an Int64.
-    #[test]
-    fn a_constant_mixed_tuple_return_decodes() {
-        let src = "(module m (def (main) (tuple 0 true)) (export main))";
-        assert_eq!(run_and_decode(src), "(: (tuple 0 true) (Tuple Int64 Bool))");
-    }
-
-    /// A nested constant tuple — a compound element recurses in both the value and the type.
-    #[test]
-    fn a_constant_nested_tuple_return_decodes() {
-        let src = "(module m (def (main) (tuple 2 (tuple 2 2))) (export main))";
-        assert_eq!(
-            run_and_decode(src),
-            "(: (tuple 2 (tuple 2 2)) (Tuple Int64 (Tuple Int64 Int64)))"
-        );
-    }
-
-    /// A constant record — the value head is lowercase `record`, the type head capital `Record`, fields
-    /// in canonical (key-sorted) order.
-    #[test]
-    fn a_constant_record_return_decodes() {
-        let src = "(module m (def (main) (record (a 3) (b 1))) (export main))";
-        assert_eq!(
-            run_and_decode(src),
-            "(: (record (= a 3) (= b 1)) (Record (: a Int64) (: b Int64)))"
-        );
     }
 }
 

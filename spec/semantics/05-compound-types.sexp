@@ -1347,6 +1347,34 @@
             (def (main) (tuple 3 1)) (export main)))
   (output (: (tuple 3 1) (Tuple Int64 Int64))))
 
+(case "a constant mixed-leaf tuple (Int64 beside Bool) is returned as a program result"
+  (doc    "`(tuple 0 true)` — a compile-time-known compound whose leaves span two scalar reps: an Int64
+           beside a Bool. The value heap lays the Bool out beside the Int64, and the compiler-emitted
+           encoder walks both leaf kinds to render `(: (tuple 0 true) (Tuple Int64 Bool))` across the
+           resource-with-display run boundary. Pins that a mixed-leaf constant compound crosses and
+           decodes to its exact value form (companion to the homogeneous `(tuple 3 1)` control above).")
+  (input  (do
+            (def (main) (tuple 0 true)) (export main)))
+  (output (: (tuple 0 true) (Tuple Int64 Bool))))
+
+(case "a constant nested tuple is returned as a program result"
+  (doc    "`(tuple 2 (tuple 2 2))` — a compound one of whose elements is itself a compound. The value
+           heap nests the inner tuple, and the compiler-emitted encoder recurses in both the value and
+           the static type to render `(: (tuple 2 (tuple 2 2)) (Tuple Int64 (Tuple Int64 Int64)))`.
+           Pins that a nested constant compound crosses the run boundary and decodes at full depth.")
+  (input  (do
+            (def (main) (tuple 2 (tuple 2 2))) (export main)))
+  (output (: (tuple 2 (tuple 2 2)) (Tuple Int64 (Tuple Int64 Int64)))))
+
+(case "a constant record is returned as a program result"
+  (doc    "`(record (= a 3) (= b 1))` — a compile-time-known record. The value head is lowercase
+           `record` and the type head capital `Record`, fields rendered in canonical (key-sorted) order
+           with NAMES the runtime does not hold (the compiler-emitted renderer bakes them from the
+           static type). The constant control companion to the runtime-field record result below.")
+  (input  (do
+            (def (main) (record (= a 3) (= b 1))) (export main)))
+  (output (: (record (= a 3) (= b 1)) (Record (: a Int64) (: b Int64)))))
+
 ; A compound result crosses as a resource-with-display (`cadenza:run/run`'s make/encode), NOT a bare
 ; function — so the host reaches it by taking the escape path, NOT by looking up a function of the export's
 ; name. That path must fire whether the export is the nullary `main` OR a DIFFERENTLY-NAMED export the
