@@ -3792,6 +3792,16 @@ fn collect_list_elem_ops(
         for ety in &elems {
             collect_record_field_ops(db, ety, out);
         }
+    } else if let Some(payload) =
+        crate::backend::wasm::host::option_payload_ty(db, elem).filter(|p| valtype_of(p).is_some())
+    {
+        // An OPTION<scalar> element (`emit_option_to_mem`): reads `sum-disc`, and on Some `sum-payload` + the
+        // payload scalar's unbox op.
+        out.insert(OP_SUM_DISC);
+        out.insert(OP_SUM_PAYLOAD);
+        if let Ok(Some(read)) = get_op_ty(db, &payload) {
+            out.insert(read);
+        }
     } else if let Ok(Some(read)) = get_op_ty(db, elem) {
         out.insert(read);
     }
@@ -8353,9 +8363,33 @@ fn emit_list_arg_marshal(
         None
     };
     let is_tuple = tuple_elem.is_some();
+    // An `option<scalar>` element (`list<option<s64>>`): written in place at its canonical option layout (disc
+    // byte + payload scalar) by `emit_option_to_mem`. Carries the payload `Ty` + the guest decl's some-disc.
+    let option_elem: Option<(Ty, i32)> = if is_bytes || is_nested_list || is_record || is_tuple {
+        None
+    } else if let Some(payload) =
+        crate::backend::wasm::host::option_payload_ty(db, elem).filter(|p| valtype_of(p).is_some())
+    {
+        let crate::ty::Ty::Sum { decl, .. } = elem.strip_nominal() else {
+            unreachable!("option is a Sum")
+        };
+        let some_disc = db
+            .type_decl_by_occ(*decl)
+            .and_then(|d| d.variants.iter().position(|v| v.payloads.len() == 1))
+            .map(|i| i as i32);
+        some_disc.map(|sd| (payload, sd))
+    } else {
+        None
+    };
+    let is_option = option_elem.is_some();
     // The store for a scalar element, by its slot valtype + canonical size: i64→i64.store, f64→f64.store,
     // f32→f32.store, i32 → 4-byte i32.store / 2-byte store16 / 1-byte store8.
-    let scalar_store: Option<Lir> = if is_bytes || is_nested_list || is_record || is_tuple {
+    let scalar_store: Option<Lir> = if is_bytes
+        || is_nested_list
+        || is_record
+        || is_tuple
+        || is_option
+    {
         None
     } else {
         let (size, _) = canonical_layout(db, elem);
@@ -8390,7 +8424,7 @@ fn emit_list_arg_marshal(
     } else {
         canonical_layout(db, elem).1
     };
-    let read = if is_bytes || is_nested_list || is_record || is_tuple {
+    let read = if is_bytes || is_nested_list || is_record || is_tuple || is_option {
         None
     } else {
         Some(get_op_ty(db, elem)?.ok_or_else(|| {
@@ -8563,6 +8597,21 @@ fn emit_list_arg_marshal(
             slotaddr,
             tup_elems,
             cursor,
+            work_base + 9,
+            high,
+            scratch_ty,
+            out,
+        )?;
+    } else if let Some((payload_ty, some_disc)) = &option_elem {
+        // OPTION element (`list<option<scalar>>`): write the value-heap Option IN PLACE into the outer slot at
+        // `slotaddr` per its canonical option layout (disc byte + payload scalar), via `emit_option_to_mem`.
+        // `eh` is the borrowed element Option handle. work_base ABOVE this level's scratch (`+9`).
+        emit_option_to_mem(
+            db,
+            eh,
+            slotaddr,
+            payload_ty,
+            *some_disc,
             work_base + 9,
             high,
             scratch_ty,
@@ -8775,6 +8824,81 @@ fn emit_tuple_to_mem(
     emit_product_to_mem(
         db, tup_slot, dest_addr, &layout, cursor, work_base, high, scratch_ty, out,
     )
+}
+
+/// Marshal a value-heap `option<scalar>` (handle in `opt_slot`) as a host `list<option>` ELEMENT — writing it
+/// IN PLACE into linear memory at `dest_addr` per the canonical option layout: a 1-byte discriminant at
+/// offset 0 (WIT `option` some=1 / none=0) then the payload scalar at `align_up(1, align(payload))` — the
+/// exact layout `emit_option_sum_lift` (the result side) reads back. `some_disc` is the guest decl's
+/// single-payload variant index. Scratch (`is_some`) at `work_base`. A SCALAR payload only (no `cursor`; an
+/// option<bytes>/compound element is a later slice).
+#[allow(clippy::too_many_arguments)]
+fn emit_option_to_mem(
+    db: &mut Db,
+    opt_slot: u32,
+    dest_addr: u32,
+    payload_ty: &Ty,
+    some_disc: i32,
+    work_base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    let (psize, palign) = canonical_layout(db, payload_ty);
+    let payload_off = align_up_u32(disc_size_for(2), palign); // disc is 1 byte for a 2-variant option
+    let pv = valtype_of(payload_ty)
+        .ok_or_else(|| Reject::decline("an option<scalar> element payload has no valtype"))?;
+    let read = get_op_ty(db, payload_ty)?
+        .ok_or_else(|| Reject::decline("an option<scalar> element payload has no unbox op"))?;
+    let width_store = |offset: u32| -> Result<Lir, Reject> {
+        Ok(match (pv, psize) {
+            (ValType::I64, _) => Lir::I64Store { offset },
+            (ValType::F64, _) => Lir::F64Store { offset },
+            (ValType::F32, _) => Lir::F32Store { offset },
+            (ValType::I32, 4) => Lir::I32Store { offset },
+            (ValType::I32, 2) => Lir::I32Store16 { offset },
+            (ValType::I32, 1) => Lir::I32Store8 { offset },
+            _ => {
+                return Err(Reject::decline(
+                    "an option<scalar> element payload has no width store",
+                ));
+            }
+        })
+    };
+    let zero = match pv {
+        ValType::I64 => Lir::ConstI64(0),
+        ValType::F64 => Lir::F64ConstBits(0),
+        ValType::F32 => Lir::F32ConstBits(0),
+        _ => Lir::ConstI32(0),
+    };
+    let is_some = work_base;
+    scratch_ty.insert(is_some, ValType::I32);
+    *high = (*high).max(work_base + 1);
+    // is_some = (guest sum-disc == some_disc); this IS the WIT option disc (some=1 / none=0).
+    out.push(Lir::LocalGet(opt_slot));
+    out.push(Lir::CallImport(OP_SUM_DISC));
+    out.push(Lir::ConstI32(some_disc));
+    out.push(Lir::I32Eq);
+    out.push(Lir::LocalSet(is_some));
+    out.push(Lir::LocalGet(dest_addr));
+    out.push(Lir::LocalGet(is_some));
+    out.push(Lir::I32Store8 { offset: 0 }); // 1-byte disc
+    out.push(Lir::LocalGet(is_some));
+    out.push(Lir::If(BlockType::Empty)); // Some: dest[payload_off] = unbox(sum-payload)
+    out.push(Lir::LocalGet(dest_addr));
+    out.push(Lir::LocalGet(opt_slot));
+    out.push(Lir::CallImport(OP_SUM_PAYLOAD));
+    out.push(Lir::CallImport(read));
+    if read == OP_GET_INT && matches!(pv, ValType::I32) {
+        out.push(Lir::I32WrapI64);
+    }
+    out.push(width_store(payload_off)?);
+    out.push(Lir::Else); // None: dest[payload_off] = 0
+    out.push(Lir::LocalGet(dest_addr));
+    out.push(zero);
+    out.push(width_store(payload_off)?);
+    out.push(Lir::End);
+    Ok(())
 }
 
 /// Marshal a value-heap RECORD host argument whose handle is in `rec_slot` into the FLATTENED core slots the

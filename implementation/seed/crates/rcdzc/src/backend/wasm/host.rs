@@ -629,10 +629,10 @@ pub fn spilled_result_wit_type(db: &mut Db, ty: &Ty) -> Option<crate::wit_world:
 /// every field is a scalar or `Bytes` (written in place at its canonical layout by `emit_record_to_mem`).
 /// Kept in lockstep with the marshal's element arms so the representability gate admits exactly what the
 /// marshal emits — a record with a nested-record/list field, or a tuple/variant element, declines here.
-pub fn list_elem_marshalable(ty: &Ty) -> bool {
-    match ty.strip_nominal() {
+pub fn list_elem_marshalable(db: &mut Db, ty: &Ty) -> bool {
+    match ty.strip_nominal().clone() {
         Ty::Bytes | Ty::String => true,
-        Ty::List(inner) => list_elem_marshalable(inner),
+        Ty::List(inner) => list_elem_marshalable(db, &inner),
         Ty::Record(fields) => {
             !fields.is_empty()
                 && fields.values().all(|f| {
@@ -645,7 +645,13 @@ pub fn list_elem_marshalable(ty: &Ty) -> bool {
                     matches!(e.strip_nominal(), Ty::Bytes | Ty::String) || abi_val_type(e).is_some()
                 })
         }
-        other => abi_val_type(other).is_some(),
+        // An `option<scalar>` element (`list<option<s64>>`): written in place at its canonical layout by
+        // `select::emit_option_to_mem` (disc byte + the payload scalar). A scalar payload only this increment
+        // (option<bytes>/compound element is a later slice — the option-to-mem writer would need a cursor).
+        ref other if option_payload_ty(db, other).is_some_and(|p| abi_val_type(&p).is_some()) => {
+            true
+        }
+        ref other => abi_val_type(other).is_some(),
     }
 }
 
@@ -1482,9 +1488,13 @@ pub fn first_unrepresentable_host_op(
             // = `list<list<u8>>`), a SCALAR (aliased-width int/char/float — written inline), OR a NESTED `list`
             // (recursed to arbitrary depth). Same reducer/host-fused gating; a record/tuple/variant element is a
             // later increment (declined here + at the marshal, in lockstep).
-            let arg_is_boundary_list = allow_option_bytes
-                && !peer_bound
-                && matches!(at.strip_nominal(), Ty::List(e) if list_elem_marshalable(e));
+            let list_elem_ok = if let Ty::List(e) = at.strip_nominal() {
+                let e = (**e).clone();
+                list_elem_marshalable(db, &e)
+            } else {
+                false
+            };
+            let arg_is_boundary_list = allow_option_bytes && !peer_bound && list_elem_ok;
             if !matches!(at, Ty::Unit | Ty::String | Ty::Bytes)
                 && !ty_undetermined(&at)
                 && !abi_ok(&at)
