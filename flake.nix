@@ -652,6 +652,13 @@
             inherit pname src;
             version = "0.0.0";
             nativeBuildInputs = [ seedCompiler ];
+            # After v-cdz-delegate's #3397, a `--no-default-features` cdz (which `seedCompiler` is)
+            # DELEGATES compilation to the external `cdz-compile` CLI instead of linking rcdzc — so this
+            # cdz needs `cdz-compile` reachable. Point at the SEPARATE content-addressed `cdzCompile`
+            # derivation (kept independent of cdz — the whole caching point; per the agreed seam). The
+            # delegate resolves `CDZ_COMPILE_BIN` first. Harmless BEFORE #3397 (cdz is still in-process, so
+            # this var sits unused) — landing it here keeps the harness/project builds green when #3397 flips.
+            CDZ_COMPILE_BIN = "${cdzCompile}/bin/cdz-compile";
             buildPhase = ''
               runHook preBuild
               set -o pipefail
@@ -710,6 +717,13 @@
             inherit pname src;
             version = "0.0.0";
             nativeBuildInputs = [ seedCompiler ];
+            # After v-cdz-delegate's #3397, a `--no-default-features` cdz (which `seedCompiler` is)
+            # DELEGATES compilation to the external `cdz-compile` CLI instead of linking rcdzc — so this
+            # cdz needs `cdz-compile` reachable. Point at the SEPARATE content-addressed `cdzCompile`
+            # derivation (kept independent of cdz — the whole caching point; per the agreed seam). The
+            # delegate resolves `CDZ_COMPILE_BIN` first. Harmless BEFORE #3397 (cdz is still in-process, so
+            # this var sits unused) — landing it here keeps the harness/project builds green when #3397 flips.
+            CDZ_COMPILE_BIN = "${cdzCompile}/bin/cdz-compile";
             buildPhase = ''
               runHook preBuild
               # `set -o pipefail` is LOAD-BEARING here: without it, `cdz test | tee` adopts the LAST
@@ -765,6 +779,8 @@
             fileset = dir;
           };
           nativeBuildInputs = [ seedCompiler ];
+          # cdz-compile reachable for post-#3397 delegation (see buildCadenzaProject); harmless before it.
+          CDZ_COMPILE_BIN = "${cdzCompile}/bin/cdz-compile";
           buildPhase = ''
             runHook preBuild
             set -o pipefail
@@ -1146,7 +1162,13 @@
                 );
           in
           pkgs.runCommand pname
-            { nativeBuildInputs = [ seedCompiler pkgs.wasm-tools ]; } ''
+            {
+              nativeBuildInputs = [ seedCompiler pkgs.wasm-tools ];
+              # cdz-compile reachable for post-#3397 delegation (see buildCadenzaProject); harmless before it.
+              # This is the HARNESS guest build — the conformance suite depends on it, so it must not break
+              # the moment #3397 flips cdz to delegating.
+              CDZ_COMPILE_BIN = "${cdzCompile}/bin/cdz-compile";
+            } ''
             set -euo pipefail
             ${compile}
             # Canonicalize (strip the tool-version `producers` sections) so the guest's content address is
