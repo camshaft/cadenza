@@ -7,10 +7,7 @@
 // without the host seam (or a well-formed arg) nothing records; the exact iface+op guards against an
 // unrelated rejected call. Settled idioms + String equality on the recorded iface/op.
 import { LogRecord, Entry } from "log-schema"
-import { Decision, interpret, verdict-req, pass, fail, any-record } from "checker-lib"
-
-type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
-type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+import { respond, on-response, on-notification, pass, fail, any-record } from "checker-lib"
 
 // A HostCallRejected recorded at the provenance/program-of parse-guard boundary.
 def program-of-rejected(rec) =
@@ -21,10 +18,6 @@ def verdict-payload(records: List(LogRecord)) =
   then pass()
   else fail("no HostCallRejected(provenance, program-of) recorded: a malformed-arg host call was not observed at the parse-guard boundary")
 
-def on-message(msg) =
-  match interpret(msg, verdict-payload) with
-  | Decision.Report(r) => { requests = [verdict-req(r.contract, r.payload)], outcome = Outcome.Continue }
-  | Decision.NotCheck(cl) => { requests = [], outcome = Outcome.Close({ schema = cl.schema, reason = cl.reason }) }
-def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
-def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
+def on-message(msg) = respond(msg, verdict-payload)
+
 export { on-message, on-response, on-notification }

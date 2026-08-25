@@ -15,10 +15,7 @@
 // exists and the check fails. Idiomatic form: List.at-None ends the index walk, the single-constructor
 // LogRecord is destructured in the Some arm, and the equality folds into a match guard.
 import { LogRecord, Entry } from "log-schema"
-import { Decision, interpret, verdict-req, pass, fail, join-exists } from "checker-lib"
-
-type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
-type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+import { respond, on-response, on-notification, pass, fail, join-exists } from "checker-lib"
 
 // The token a Delivered event carried, and the payload an Emitted request echoed — the on-response path carries
 // the response token through as the emitted payload. `join-exists` looks for an Emitted whose payload equals
@@ -31,10 +28,6 @@ def verdict-payload(records: List(LogRecord)) =
   then pass()
   else fail("no Emitted echoed a delivered event's token: the on-response path did not carry the response token through")
 
-def on-message(msg) =
-  match interpret(msg, verdict-payload) with
-  | Decision.Report(r) => { requests = [verdict-req(r.contract, r.payload)], outcome = Outcome.Continue }
-  | Decision.NotCheck(cl) => { requests = [], outcome = Outcome.Close({ schema = cl.schema, reason = cl.reason }) }
-def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
-def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
+def on-message(msg) = respond(msg, verdict-payload)
+
 export { on-message, on-response, on-notification }

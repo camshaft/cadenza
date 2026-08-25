@@ -8,10 +8,7 @@
 // the run-controlled key, no hardcoded bytes. NON-VACUOUS: a guest that does not put, or whose get missed
 // (hit = 0), yields no such pair. Settled idioms.
 import { LogRecord, Entry } from "log-schema"
-import { Decision, interpret, verdict-req, pass, fail, join-exists } from "checker-lib"
-
-type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
-type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+import { respond, on-response, on-notification, pass, fail, join-exists } from "checker-lib"
 
 // The key a SUCCESSFUL KvGet (hit==1) read, and the key a KvPut wrote — `join-exists` looks for a get-hit whose
 // key was written by a put, proving put-then-get sequencing in one fold (the compound get returned Some). The
@@ -24,10 +21,6 @@ def verdict-payload(records: List(LogRecord)) =
   then pass()
   else fail("no KvGet(hit) matched a KvPut of the same key: put-then-get sequencing (compound get returning Some) was not observed in one fold")
 
-def on-message(msg) =
-  match interpret(msg, verdict-payload) with
-  | Decision.Report(r) => { requests = [verdict-req(r.contract, r.payload)], outcome = Outcome.Continue }
-  | Decision.NotCheck(cl) => { requests = [], outcome = Outcome.Close({ schema = cl.schema, reason = cl.reason }) }
-def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
-def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
+def on-message(msg) = respond(msg, verdict-payload)
+
 export { on-message, on-response, on-notification }

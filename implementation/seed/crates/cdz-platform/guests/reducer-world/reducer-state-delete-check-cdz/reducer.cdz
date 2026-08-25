@@ -8,10 +8,7 @@
 // delete removed it, and the read saw it gone. RELATIONAL on the key; both the miss and the existed flag are
 // load-bearing. NON-VACUOUS: a guest that never persists/deletes yields no such pair. Settled idioms.
 import { LogRecord, Entry } from "log-schema"
-import { Decision, interpret, verdict-req, pass, fail, join-exists } from "checker-lib"
-
-type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
-type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+import { respond, on-response, on-notification, pass, fail, join-exists } from "checker-lib"
 
 // The key a KvGet MISSED (hit==0) after removal, and the key a KvDelete removed (existed==1) — `join-exists`
 // looks for a miss whose key was deleted, proving the store observably honoured removal across messages. Both
@@ -24,10 +21,6 @@ def verdict-payload(records: List(LogRecord)) =
   then pass()
   else fail("no KvGet(miss) matched a KvDelete(existed) of the same key: the state store did not observably honour removal across messages")
 
-def on-message(msg) =
-  match interpret(msg, verdict-payload) with
-  | Decision.Report(r) => { requests = [verdict-req(r.contract, r.payload)], outcome = Outcome.Continue }
-  | Decision.NotCheck(cl) => { requests = [], outcome = Outcome.Close({ schema = cl.schema, reason = cl.reason }) }
-def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
-def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
+def on-message(msg) = respond(msg, verdict-payload)
+
 export { on-message, on-response, on-notification }

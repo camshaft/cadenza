@@ -15,10 +15,7 @@
 // but the QUERY — that the reducer asked, and about the sender — is the observable fact. Same explicit INDEX
 // RECURSION + imported-sum catch-all idiom as reducer-dispatch-check-cdz.
 import { LogRecord, Entry } from "log-schema"
-import { Decision, interpret, verdict-req, pass, fail, join-exists } from "checker-lib"
-
-type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
-type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+import { respond, on-response, on-notification, pass, fail, join-exists } from "checker-lib"
 
 // The sender reducer id of a delivered message (its `from` Origin), and the reducer a ProgramOf read named —
 // `join-exists` looks for a ProgramOf whose reducer is the sender of some delivered message, proving the
@@ -34,10 +31,6 @@ def verdict-payload(records: List(LogRecord)) =
   then pass()
   else fail("no ProgramOf named a delivered message's sender: the reducer did not read the sender's provenance")
 
-def on-message(msg) =
-  match interpret(msg, verdict-payload) with
-  | Decision.Report(r) => { requests = [verdict-req(r.contract, r.payload)], outcome = Outcome.Continue }
-  | Decision.NotCheck(cl) => { requests = [], outcome = Outcome.Close({ schema = cl.schema, reason = cl.reason }) }
-def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
-def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
+def on-message(msg) = respond(msg, verdict-payload)
+
 export { on-message, on-response, on-notification }

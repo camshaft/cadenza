@@ -18,10 +18,7 @@
 // `LogRecord` are IMPORTED sums (variant count invisible to the matcher), so each match has a catch-all `_ =>`
 // arm; inner matches are paren-wrapped.
 import { LogRecord, Entry } from "log-schema"
-import { Decision, interpret, verdict-req, pass, fail, join-pair, pair } from "checker-lib"
-
-type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
-type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+import { respond, on-response, on-notification, pass, fail, join-pair, pair } from "checker-lib"
 
 // The (contract, payload) key of a Routed event — what the reducer re-routed — and of a Delivered event —
 // what it received. `join-pair` looks for a Routed whose (contract, payload) matches some Delivered's, proving
@@ -35,10 +32,6 @@ def verdict-payload(records: List(LogRecord)) =
   then pass()
   else fail("no Routed(C,P) matched a Delivered(C,P): the event reducer did not route the delivered event")
 
-def on-message(msg) =
-  match interpret(msg, verdict-payload) with
-  | Decision.Report(r) => { requests = [verdict-req(r.contract, r.payload)], outcome = Outcome.Continue }
-  | Decision.NotCheck(cl) => { requests = [], outcome = Outcome.Close({ schema = cl.schema, reason = cl.reason }) }
-def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
-def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
+def on-message(msg) = respond(msg, verdict-payload)
+
 export { on-message, on-response, on-notification }
