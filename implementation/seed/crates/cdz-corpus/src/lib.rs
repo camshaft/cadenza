@@ -1173,19 +1173,16 @@ fn normalize_program(a: &Arenas, input: StructId) -> String {
 
 /// Normalize `input` to the runnable export-shape program, once, yielding BOTH serializations from one
 /// build (no round-trip through the other's format): the one-line s-expression TEXT (the stdout/xtask
-/// path), and the BINARY AST bytes (`codec::encode`, the shred's `program.ast`). The bytes are
-/// DOCUMENT-WRAPPED in the synthetic `(do …)` root that `sexpr::read_all` produces, so `program.ast` is
-/// byte-identical to what `cdz convert --to binary` (thus the compiler's binary-AST input convention)
-/// expects; the text is `print_from` of the INNER program node (bare, unwrapped — exactly the historical
-/// text), the bytes are `encode` of the whole `(do <program>)` document.
+/// path), and the BINARY AST bytes (`codec::encode`, the shred's `program.ast`). The program's ROOT is
+/// the normalized `(do (def …) … (export …))` form itself — the SINGLE-FORM shape `sexpr::read` (and thus
+/// `cdz convert --to binary` / the compiler's binary-AST input) expects. It is NOT the synthetic multi-form
+/// `(do …)` document `sexpr::read_all` wraps a whole corpus FILE in: the program is already one `(do …)`
+/// form, and re-wrapping it (`(do (do …))`) would bury the `(export …)` a level too deep, so the compiler
+/// would see nothing public. The text is `print_from` of the same root (identical one-line rendering).
 pub(crate) fn normalize_program_text_and_ast(a: &Arenas, input: StructId) -> (String, Vec<u8>) {
     let mut b = Builder::new();
     let prog = build_normalized_program(a, input, &mut b);
-    // Wrap in the synthetic document root `sexpr::read_all` uses (a `do` head over the top-level forms),
-    // so the encoded AST matches the universal read_all/convert convention.
-    let do_head = b.name("do");
-    let doc = b.list(vec![do_head, prog]);
-    let arenas = b.finish(doc);
+    let arenas = b.finish(prog);
     (sexpr::print_from(&arenas, prog), codec::encode(&arenas))
 }
 
