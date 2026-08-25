@@ -56,6 +56,8 @@
 ; runtime bool-branch coverage the platform state (delete returns unit) has no home for.
 ; SHAPE 33 — a list<tuple<s64,Bytes>> host-op ARG (sink.push): each tuple element written in place at its
 ; positional layout (s64 inline + Bytes rope spilled with (ptr,len)) + invoked e2e.
+; SHAPE 34 — a list<tuple<Bytes,Bytes>> host-import RESULT (kv.prefix-scan) branched on List.len>0; needed a
+; cdz-run coerce_one fix (record-erased sorting was misfiring on positional tuples of lists).
 
 (case "an option<s64> field in a record result crosses the export boundary on both arms"
   (doc    "The general option<T> RESULT lift across the WIT export boundary. The guest takes a record
@@ -479,3 +481,12 @@
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+(case "a typed reducer threading a list<tuple<bytes,bytes>> host-op result branches on its length (via an imposed WIT world)"
+  (doc "SHAPE 34 - a list<tuple<Bytes,Bytes>> host-import RESULT (kv.prefix-scan : (Bytes) -> list<tuple<Bytes,Bytes>>) driven through an imposed WIT world. The reducer on-message performs kv.prefix-scan(m.token) and branches on List.len(result) > 0: non-empty -> one echo request, empty -> no requests. Stubbing prefix-scan -> two pairs and asserting the non-empty branch fires (one request) makes the list<tuple> RESULT lift load-bearing: the retptr count read + 16-byte element stride + nested byte-list copy. A broken lift reading the retptr'd list as empty would take the empty branch. Covers the general list<tuple<Bytes,Bytes>> host-result lift v-platform-itest's state iface has no scan-returning-pairs op to exercise. Runtime coverage for the kv.prefix-scan result shape (retires the in-crate run_reducer_bytes_with_scan test).")
+  (wit-world (world w (export guest (member on-message (func (param m ("record" (contract ("list" (u8))) (payload ("list" (u8))) (token ("list" (u8))))) (result ("record" (requests ("list" ("record" (contract ("list" (u8))) (payload ("list" (u8))) (token ("list" (u8))) (deadline-nanos ("option" (u64)))))) (outcome ("variant" (continue) (close ("record" (schema ("list" (u8))) (reason ("list" (u8)))))))))))) (import cadenza:platform/kv (member prefix-scan (func (param key ("list" (u8))) (result ("list" ("tuple" ("list" (u8)) ("list" (u8))))))))))
+  (component-name "cadenza:platform/guest")
+  (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (effect kv (op prefix-scan (-> Bytes (List (Tuple Bytes Bytes))))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (kv) (if (> (List.len (kv.prefix-scan (. m token))) 0) (record (= requests (list (record (= contract (. m contract)) (= payload (. m payload)) (= token (. m token)) (= deadline-nanos Option.None)))) (= outcome Outcome.Continue)) (record (= requests (list)) (= outcome Outcome.Continue))))) (export onMessage)))
+  (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
+  (host-responses (respond kv.prefix-scan (: (list ((list 107) (list 49)) ((list 107) (list 50))) (List (Tuple Bytes Bytes)))))
+  (host-calls (call cadenza:platform/kv.prefix-scan))
+  (output (: (record (= requests ((record (= contract (1)) (= payload (2)) (= token (3)) (= deadline-nanos (None unit))))) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
