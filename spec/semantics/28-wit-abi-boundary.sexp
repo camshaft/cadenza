@@ -33,7 +33,8 @@
 ; the option<s64> PARAM read (the read side: a record{d: option<s64>} param matched Some(x)->x / None->-1).
 ; SHAPE 17 — the result<Bytes, enum> PARAM read (Ok(bs)->Bytes.len / Err(e)->10+disc; both arms, enum-err arg).
 ; SHAPE 18 — a named-VARIANT RESULT writer NAME-matches (not positionally): a reversed guest decl still maps
-; each case to the WIT case by name (Continue->continue disc 0, Close->close disc 1).
+; each case to the WIT case by name (Continue->continue disc 0, Close->close disc 1). SHAPE 19 — a record PARAM
+; whose WIT field order is NOT name-lex is read by NAME (guest reads .contract across a payload,contract WIT order).
 
 (case "an option<s64> field in a record result crosses the export boundary on both arms"
   (doc    "The general option<T> RESULT lift across the WIT export boundary. The guest takes a record
@@ -278,3 +279,16 @@
   (output (: (record (= o (continue unit))) (record (o Rev))))
   (call f (: (record (= x 5)) (Record (: x Int64))))
   (output (: (record (= o (close 5))) (record (o Rev)))))
+(case "a record param field is read by NAME when the WIT field order is not name-lexicographic (via an imposed WIT world)"
+  (doc    "SHAPE 19 — a record PARAM whose WIT field order differs from the guest name-lex order is read by NAME, not
+           position. The world declares f's param as record { payload: list<u8>, contract: list<u8> } (WIT order
+           payload,contract), while the guest reads (. m contract) and returns Bytes.len(m.contract). Calling with
+           payload=[9,9] (len 2) and contract=[1,2,3] (len 3) must return 3 (the contract length): a positional
+           misroute would read payload and return 2. Proves the param permute keys on the field NAME across the
+           WIT/guest order mismatch. Migrated from the in-crate wasmtime test
+           `a_non_name_lex_record_param_permutes_by_name`.")
+  (wit-world (world w (export iface (member f (func (param m ("record" (payload ("list" (u8))) (contract ("list" (u8))))) (result (s64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (def (f (: m (Record (: contract Bytes) (: payload Bytes)))) (Bytes.len (. m contract))) (export f)))
+  (call f (: (record (= payload (list 9 9)) (= contract (list 1 2 3))) (Record (: contract Bytes) (: payload Bytes))))
+  (output (: 3 Int64)))
