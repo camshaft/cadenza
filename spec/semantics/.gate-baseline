@@ -3525,6 +3525,7 @@ pass	a runtime-selected branch with a runtime-divisor div-by-zero traps only whe
 pass	a runtime-selected closure survives as a value threaded through a recursive HOF (false branch)
 pass	a runtime-selected closure survives as a value threaded through a recursive HOF (true branch)
 pass	a runtime-selected function chosen directly at the application head is applied
+pass	a runtime-selected function chosen directly at the application head is applied (false branch)
 pass	a runtime-selected trapping branch with a non-zero divisor computes normally
 pass	a runtime-woven Ast and its quote twin resolve to ONE Map key
 pass	a runtime-woven Ast compares structurally equal to an equivalent quote

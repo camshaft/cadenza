@@ -1533,6 +1533,16 @@
   (call   main (: true Bool))
   (output (: 11 Int64)))
 
+(case "a runtime-selected function chosen directly at the application head is applied (false branch)"
+  (doc    "The false branch of the head-position commuting conversion above: `((if b (fn (x) (+ x 1)) (fn
+           (x) (- x 1))) 10)` with b=false takes the `(fn (x) (- x 1))` branch → 10 - 1 = 9. The same
+           program run with the other runtime input, pinning the head-position selection is genuinely by
+           the runtime condition.")
+  (input  (do
+            (def (main (: b Bool)) ((if b (fn (x) (+ x 1)) (fn (x) (- x 1))) 10)) (export main)))
+  (call   main (: false Bool))
+  (output (: 9 Int64)))
+
 ; The COMMUTING CONVERSION also applies to a `match` head, not only an `if`: `((match c (p0 f0) (p1 f1)…)
 ; args…)` pushes the application into each ARM body → `(match c (p0 (f0 args…)) (p1 (f1 args…))…)` (a
 ; "case-of-match", the sum analogue of case-of-case). A match whose arms return CLOSURES — the dispatch-

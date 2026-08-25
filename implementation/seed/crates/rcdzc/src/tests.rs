@@ -79070,40 +79070,6 @@ mod stage1 {
         );
     }
 
-    #[test]
-    fn a_runtime_selected_function_applies_via_case_of_case() {
-        use wasmtime::component::Val;
-        // `((if c f g) x)` with a RUNTIME condition — the function is chosen at run time. The
-        // application is pushed into each branch (case-of-case: `(if c (f x) (g x))`), where each
-        // branch's lambda β-reduces, so the whole thing computes with no closure surviving. Driven
-        // through a Bool parameter so the condition is genuinely runtime (a constant would fold the
-        // `if` upstream). `core-semantics.md` §A Function Is A First-Class Value (an `if` returns a fn).
-        let src = "(module m \
-            (def (choose (: b Bool)) (if b (fn (x) (+ x 1)) (fn (x) (+ x 10)))) \
-            (def (main (: b Bool)) ((choose b) 5)) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert_eq!(
-            run_returns_with::<i64>(&bytes, "main", &[Val::Bool(true)]),
-            6
-        );
-        assert_eq!(
-            run_returns_with::<i64>(&bytes, "main", &[Val::Bool(false)]),
-            15
-        );
-        // The `if` directly in head position (no intervening def).
-        let src2 = "(module m \
-            (def (main (: b Bool)) ((if b (fn (x) (+ x 1)) (fn (x) (- x 1))) 10)) (export main))";
-        let bytes2 = compile_component(&crate::codec::encode(&parse(src2))).expect("compile");
-        assert_eq!(
-            run_returns_with::<i64>(&bytes2, "main", &[Val::Bool(true)]),
-            11
-        );
-        assert_eq!(
-            run_returns_with::<i64>(&bytes2, "main", &[Val::Bool(false)]),
-            9
-        );
-    }
-
     /// Run `src`'s `main` with a single integer `arg` through the COMPOSED value-heap runtime (a closure
     /// is a heap cell, so instantiation needs the runtime linked), returning the rendered result string.
     /// Skips (returns `None`) if the runtime wasm is not built.
