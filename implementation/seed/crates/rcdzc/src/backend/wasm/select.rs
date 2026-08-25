@@ -3745,6 +3745,15 @@ fn collect_list_elem_ops(
         out.insert(OP_VEC_GET);
         let inner = (**inner).clone();
         collect_list_elem_ops(db, &inner, out);
+    } else if let Ty::Record(fields) = elem.strip_nominal() {
+        // A RECORD element (`emit_record_to_mem`): `arr-get` each field (borrow) + the field's own ops (a
+        // scalar's unbox get-op, a `Bytes` field's `bytes-len`/`bytes-get` rope copy) — via the same
+        // `collect_record_field_ops` the flatten marshal uses.
+        out.insert(OP_ARR_GET);
+        let fields = fields.clone();
+        for fty in fields.values() {
+            collect_record_field_ops(db, fty, out);
+        }
     } else if let Ok(Some(read)) = get_op_ty(db, elem) {
         out.insert(read);
     }
@@ -8260,6 +8269,10 @@ fn emit_binder_ref(id: StructId, slot: u32, out: &mut Emit) {
 fn emit_list_arg_marshal(
     db: &mut Db,
     elem: &Ty,
+    // The ELEMENT's declared WIT type (from the list param's `WitType::List(elem)`), when known — needed to
+    // order a RECORD element's fields to the host's DECLARATION order (`emit_record_to_mem`), and threaded to
+    // the inner list on a nested `list<list<…>>`. `None` for a scalar/bytes element (offset-agnostic).
+    elem_wit: Option<&crate::wit_world::WitType>,
     list_slot: u32,
     cursor: u32,
     work_base: u32,
@@ -8280,9 +8293,21 @@ fn emit_list_arg_marshal(
         None
     };
     let is_nested_list = nested_list_inner.is_some();
+    // A RECORD element (`list<record{…}>`, the reducer `list<request>` shape): the element is written IN PLACE
+    // into the outer array slot at its canonical record layout (each field at its offset; a Bytes field's rope
+    // spills after the array), via `emit_record_to_mem`. Not a scalar inline store — a distinct writer.
+    let record_elem: Option<std::collections::BTreeMap<crate::resolved::Symbol, Ty>> =
+        if is_bytes || is_nested_list {
+            None
+        } else if let Ty::Record(fs) = elem.strip_nominal() {
+            Some((**fs).clone())
+        } else {
+            None
+        };
+    let is_record = record_elem.is_some();
     // The store for a scalar element, by its slot valtype + canonical size: i64→i64.store, f64→f64.store,
     // f32→f32.store, i32 → 4-byte i32.store / 2-byte store16 / 1-byte store8.
-    let scalar_store: Option<Lir> = if is_bytes || is_nested_list {
+    let scalar_store: Option<Lir> = if is_bytes || is_nested_list || is_record {
         None
     } else {
         let (size, _) = canonical_layout(db, elem);
@@ -8317,7 +8342,7 @@ fn emit_list_arg_marshal(
     } else {
         canonical_layout(db, elem).1
     };
-    let read = if is_bytes || is_nested_list {
+    let read = if is_bytes || is_nested_list || is_record {
         None
     } else {
         Some(get_op_ty(db, elem)?.ok_or_else(|| {
@@ -8431,7 +8456,23 @@ fn emit_list_arg_marshal(
             scratch_ty.insert(s, ValType::I32);
         }
         *high = (*high).max(work_base + 9);
-        emit_list_arg_marshal(db, inner, eh, cursor, work_base + 9, high, scratch_ty, out)?;
+        // The inner list's own element WIT (a `list<list<…>>`'s `WitType::List(inner)`), threaded so a
+        // record deeper in the nest still orders its fields to the host declaration order.
+        let inner_wit = match elem_wit {
+            Some(crate::wit_world::WitType::List(iw)) => Some(iw.as_ref()),
+            _ => None,
+        };
+        emit_list_arg_marshal(
+            db,
+            inner,
+            inner_wit,
+            eh,
+            cursor,
+            work_base + 9,
+            high,
+            scratch_ty,
+            out,
+        )?;
         // stack: [inner-ptr, inner-count] → pop count (top) then ptr, store the header at slotaddr.
         out.push(Lir::LocalSet(nl_count));
         out.push(Lir::LocalSet(nl_ptr));
@@ -8441,6 +8482,28 @@ fn emit_list_arg_marshal(
         out.push(Lir::LocalGet(slotaddr));
         out.push(Lir::LocalGet(nl_count));
         out.push(Lir::I32Store { offset: 4 });
+    } else if let Some(rec_fields) = &record_elem {
+        // RECORD element (`list<record{…}>`): write the value-heap record IN PLACE into the outer slot at
+        // `slotaddr` per its canonical record layout — each field at its declaration offset, a Bytes field's
+        // rope spilling after the array at the shared `cursor`. `eh` is the borrowed element record handle;
+        // the field ORDER follows the host WIT record decl order. work_base ABOVE this level's scratch (`+9`).
+        let ew = elem_wit.ok_or_else(|| {
+            Reject::decline(
+                "a `list<record>` host-arg needs the element record's WIT type to order its fields",
+            )
+        })?;
+        emit_record_to_mem(
+            db,
+            eh,
+            slotaddr,
+            rec_fields,
+            ew,
+            cursor,
+            work_base + 9,
+            high,
+            scratch_ty,
+            out,
+        )?;
     } else {
         // scalar element: outer[i] = unbox(eh), width-narrowed, stored INLINE (no cursor advance).
         let read = read.expect("a scalar element has an unbox op");
@@ -8467,6 +8530,136 @@ fn emit_list_arg_marshal(
     // Push (outer-ptr, count) — the core `(list <T>)` param.
     out.push(Lir::LocalGet(outer));
     out.push(Lir::LocalGet(count));
+    Ok(())
+}
+
+/// Marshal a value-heap RECORD (handle in `rec_slot`) as a host `list<record>` ELEMENT — writing it IN PLACE
+/// into linear memory at `dest_addr` per the canonical record layout: each field at its DECLARATION-order
+/// offset, a `Bytes` field's rope copied after the outer array at the running `cursor` with its `(ptr,len)`
+/// written inline. The memory-writing analogue of [`emit_record_arg_marshal`] (that one FLATTENS a top-level
+/// record arg to core stack slots; this writes a by-reference record element). Field ORDER follows the host
+/// WIT record's DECLARATION order (`wit`) so the emitted bytes match the host's canonical `record` layout.
+/// Reads BORROW `rec_slot` (`arr-get`; the element handle is not consumed). Scratch (rope/len/pos) lives at
+/// `work_base..work_base+3`. A field that is not a scalar or `Bytes` (a nested record/list) declines — a later
+/// increment (each nesting level takes a disjoint scratch region above its parent's, like the list marshal).
+#[allow(clippy::too_many_arguments)]
+fn emit_record_to_mem(
+    db: &mut Db,
+    rec_slot: u32,
+    dest_addr: u32,
+    fields: &std::collections::BTreeMap<crate::resolved::Symbol, Ty>,
+    wit: &crate::wit_world::WitType,
+    cursor: u32,
+    work_base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    let crate::wit_world::WitType::Record(wit_fields) = wit else {
+        return Err(Reject::decline(
+            "a `list<record>` element's declared WIT type is not a record",
+        ));
+    };
+    let rope = work_base;
+    let len = work_base + 1;
+    let pos = work_base + 2;
+    for s in [rope, len, pos] {
+        scratch_ty.insert(s, ValType::I32);
+    }
+    *high = (*high).max(work_base + 3);
+    let names: Vec<String> = fields.keys().map(|s| s.name.to_string()).collect();
+    // Walk the WIT fields in DECLARATION order, accumulating each field's canonical offset (aligned to its
+    // own alignment) — the exact offset walk `emit_result_lift`'s Record arm reads back.
+    let mut foff: u32 = 0;
+    for (fname, _fwit) in wit_fields {
+        let i = names.iter().position(|n| n == fname).ok_or_else(|| {
+            Reject::decline(
+                "a host WIT record field is absent from the guest `list<record>` element type",
+            )
+        })?;
+        let fty = fields
+            .values()
+            .nth(i)
+            .expect("name-lex index in range")
+            .clone();
+        let (fs, fa) = canonical_layout(db, &fty);
+        foff = align_up_u32(foff, fa);
+        match get_op_ty(db, &fty)? {
+            // A SCALAR field: `mem[dest_addr + foff] = narrow(unbox(arr-get(rec, i)))` at its canonical width.
+            Some(read) => {
+                let store = match (valtype_of(&fty), fs) {
+                    (Some(ValType::I64), _) => Lir::I64Store { offset: foff },
+                    (Some(ValType::F64), _) => Lir::F64Store { offset: foff },
+                    (Some(ValType::F32), _) => Lir::F32Store { offset: foff },
+                    (Some(ValType::I32), 4) => Lir::I32Store { offset: foff },
+                    (Some(ValType::I32), 2) => Lir::I32Store16 { offset: foff },
+                    (Some(ValType::I32), 1) => Lir::I32Store8 { offset: foff },
+                    _ => {
+                        return Err(Reject::decline(
+                            "a `list<record>` element's scalar field has no width store",
+                        ));
+                    }
+                };
+                out.push(Lir::LocalGet(dest_addr)); // store addr base (offset immediate = foff)
+                out.push(Lir::LocalGet(rec_slot));
+                out.push(Lir::ConstI32(i as i32));
+                out.push(Lir::CallImport(OP_ARR_GET)); // [addr, field] (borrows rec)
+                out.push(Lir::CallImport(read)); // [addr, scalar]
+                if read == OP_GET_INT && matches!(valtype_of(&fty), Some(ValType::I32)) {
+                    out.push(Lir::I32WrapI64); // a narrow int / char boxes as i64 → narrow to its i32 slot
+                }
+                out.push(store);
+            }
+            // A `Bytes` field: copy its rope into `mem` at `cursor`, write `(ptr@foff, len@foff+4)`, advance cursor.
+            None if matches!(fty.strip_nominal(), Ty::Bytes | Ty::String) => {
+                out.push(Lir::LocalGet(rec_slot));
+                out.push(Lir::ConstI32(i as i32));
+                out.push(Lir::CallImport(OP_ARR_GET)); // [rope handle] (borrows rec)
+                out.push(Lir::LocalSet(rope));
+                out.push(Lir::LocalGet(rope));
+                out.push(Lir::CallImport(OP_BYTES_LEN));
+                out.push(Lir::LocalSet(len));
+                out.push(Lir::ConstI32(0));
+                out.push(Lir::LocalSet(pos));
+                out.push(Lir::Block(BlockType::Empty));
+                out.push(Lir::Loop(BlockType::Empty));
+                out.push(Lir::LocalGet(pos));
+                out.push(Lir::LocalGet(len));
+                out.push(Lir::I32GeS);
+                out.push(Lir::BrIf(1));
+                out.push(Lir::LocalGet(cursor));
+                out.push(Lir::LocalGet(pos));
+                out.push(Lir::I32Add); // addr = cursor + pos
+                out.push(Lir::LocalGet(rope));
+                out.push(Lir::LocalGet(pos));
+                out.push(Lir::CallImport(OP_BYTES_GET));
+                out.push(Lir::I32Store8 { offset: 0 });
+                out.push(Lir::LocalGet(pos));
+                out.push(Lir::ConstI32(1));
+                out.push(Lir::I32Add);
+                out.push(Lir::LocalSet(pos));
+                out.push(Lir::Br(0));
+                out.push(Lir::End);
+                out.push(Lir::End);
+                out.push(Lir::LocalGet(dest_addr));
+                out.push(Lir::LocalGet(cursor));
+                out.push(Lir::I32Store { offset: foff }); // ptr
+                out.push(Lir::LocalGet(dest_addr));
+                out.push(Lir::LocalGet(len));
+                out.push(Lir::I32Store { offset: foff + 4 }); // len
+                out.push(Lir::LocalGet(cursor));
+                out.push(Lir::LocalGet(len));
+                out.push(Lir::I32Add);
+                out.push(Lir::LocalSet(cursor)); // cursor += len
+            }
+            _ => {
+                return Err(Reject::decline(
+                    "a `list<record>` element field that is not a scalar or `Bytes` is a later increment",
+                ));
+            }
+        }
+        foff += fs;
+    }
     Ok(())
 }
 
@@ -13509,6 +13702,13 @@ fn emit(
                         let cursor = scratch_cursor_slot.expect(
                             "a list arg reserves the scratch cursor (has_runtime_compound)",
                         );
+                        // The element's declared WIT type (the list param's `WitType::List(elem)`) — threaded so
+                        // a RECORD element orders its fields to the host WIT declaration order. `None` for a
+                        // scalar/bytes element (offset-agnostic) or when no world declares this param.
+                        let elem_wit = match wit_params.as_ref().and_then(|p| p.get(arg_i)) {
+                            Some(crate::wit_world::WitType::List(ew)) => Some(ew.as_ref()),
+                            _ => None,
+                        };
                         let list_slot = arg_base.max(*high);
                         scratch_ty.insert(list_slot, ValType::I32);
                         *high = (*high).max(list_slot + 1);
@@ -13516,7 +13716,8 @@ fn emit(
                         out.push(Lir::LocalSet(list_slot));
                         let work_base = *high;
                         emit_list_arg_marshal(
-                            db, &elem, list_slot, cursor, work_base, high, scratch_ty, out,
+                            db, &elem, elem_wit, list_slot, cursor, work_base, high, scratch_ty,
+                            out,
                         )?;
                     }
                     // A scalar argument emits its value directly.
