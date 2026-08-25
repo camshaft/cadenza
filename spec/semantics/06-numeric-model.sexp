@@ -3770,6 +3770,17 @@
   (call   main (: -9223372036854775808 Int64))
   (trap   "overflow"))
 
+(case "a genuinely-runtime UNARY negation returns the negation and traps at the minimum integer"
+  (doc    "The unary `(- n)` spelling of runtime negation, the companion of the binary `(- 0 a)` above:
+           `(- n)` over an entry parameter returns -n for an in-range value — f(7) = -7, f(-42) = 42 —
+           and traps at n = Int64.min, whose magnitude +2^63 has no Int64 representation (a wrapping
+           negate would wrongly return Int64.min). Pins that unary minus lowers to the same CHECKED
+           negate as the binary form.")
+  (input  (do (def (f (: n Int64)) (- n)) (export f)))
+  (call   f (: 7 Int64))                    (output (: -7 Int64))
+  (call   f (: -42 Int64))                  (output (: 42 Int64))
+  (call   f (: -9223372036854775808 Int64)) (trap   "overflow"))
+
 (case "a genuinely-runtime NARROW-width unsigned overflow traps on the emitted operation"
   (doc    "The narrow-width companion of the Int64 runtime-overflow set above: `(+ x (: 1 UInt8))` over an
            entry parameter `x : UInt8`, called with x = 255 (UInt8.max). The operands are the exported

@@ -60082,7 +60082,6 @@ mod stage1 {
         use crate::core::Core;
         use crate::db::Db;
         use crate::lower::core_of;
-        use wasmtime::component::Val;
         // FOLD unit: a constant operand folds to its negation — `(- (+ 2 3))` → `Core::ConstInt(-5)`, no
         // runtime subtract emitted.
         let fold = |body: &str| -> Option<i64> {
@@ -60101,35 +60100,9 @@ mod stage1 {
             "constant negation folds to -5"
         );
         assert_eq!(fold("(- (- 4))"), Some(4), "double negation folds to +4");
-
-        // BEHAVIOR run: negate a runtime parameter — `(- n)` returns -n, and `n == Int64.min` TRAPS
-        // (its negation +2^63 has no Int64 representation), exactly as the binary `(- 0 n)` does.
-        let src = "(module m (def (f (: n Int64)) (- n)) (export f))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert_eq!(run_returns_with::<i64>(&bytes, "f", &[Val::S64(7)]), -7);
-        assert_eq!(run_returns_with::<i64>(&bytes, "f", &[Val::S64(-42)]), 42);
-        // Int64.min negation traps (the run panics inside `run_returns_with`'s `.expect`) — assert the
-        // overflow trap via a caught call rather than the helper (which unwraps).
-        let engine = wasmtime::Engine::default();
-        let component = wasmtime::component::Component::from_binary(&engine, &bytes).expect("load");
-        let mut store = wasmtime::Store::new(&engine, ());
-        let linker = wasmtime::component::Linker::new(&engine);
-        let instance = linker
-            .instantiate(&mut store, &component)
-            .expect("instantiate");
-        let func = instance
-            .get_func(&mut store, "f")
-            .expect("export f present");
-        let typed = func
-            .typed::<(i64,), (i64,)>(&store)
-            .expect("f : (s64) -> s64");
-        let err = typed
-            .call(&mut store, (i64::MIN,))
-            .expect_err("negating Int64.min must trap");
-        assert!(
-            format!("{err:?}").contains("integer overflow"),
-            "negating Int64.min traps with an integer-overflow, got: {err:?}"
-        );
+        // Runtime behavior — `(- n)` returns -n (f(7)=-7, f(-42)=42) and traps at Int64.min — is the
+        // corpus case "a genuinely-runtime UNARY negation returns the negation and traps at the minimum
+        // integer" (spec/semantics/06-numeric-model.sexp), run end-to-end via cdz-run.
     }
 
     #[test]
