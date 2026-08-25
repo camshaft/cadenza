@@ -1,0 +1,49 @@
+// The provenance.program-of arg-parse-guard observation checker (design/cadenza-platform.md §9) — asserts a
+// provenance host call the reducer performed with a MALFORMED argument was OBSERVED, not silently dropped
+// (the #3272 deliver/provenance extension of the parse-guard seam). Paired guest calls provenance.program-of with a
+// short (non-ReducerId) arg; the host early-returns and emits a HostCallRejected. LOG-ONLY, guest-agnostic.
+//
+// JUDGEMENT: pass iff some HostCallRejected(iface = "provenance", op = "program-of") is recorded. NON-VACUOUS:
+// without the host seam (or a well-formed arg) nothing records; the exact iface+op guards against an
+// unrelated rejected call. Settled idioms + String equality on the recorded iface/op.
+import { Envelope } from "check"
+import { Verdict } from "verdict"
+import { LogRecord, Entry } from "log-schema"
+
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+def rejected-observed(records: List(LogRecord), i: Int64) =
+  match List.at(records, i) with
+  | Option.None(_) => false
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      (match rec.entry with
+        | Entry.HostCallRejected(r) if (r.iface == "provenance" and r.op == "program-of") => true
+        | _ => rejected-observed(records, i + 1))
+
+def verdict-payload(records: List(LogRecord)) =
+  if rejected-observed(records, 0)
+  then Value.encode(Verdict.Verdict({ pass = true, messages = [] }))
+  else Value.encode(Verdict.Verdict({ pass = false,
+                                      messages = ["no HostCallRejected(provenance, program-of) recorded: a malformed-arg host call was not observed at the parse-guard boundary"] }))
+
+def verdict-req(verdict-contract: Bytes, payload: Bytes) =
+  { contract = verdict-contract, payload = payload, token = b"", deadlineNanos = None }
+
+def on-message(msg) =
+  match (Value.decode(msg.payload) : Option(Envelope)) with
+  | Some(Envelope.Check(c)) =>
+      (match (Value.decode(c.log) : Option(List(LogRecord))) with
+       | Some(records) =>
+           { requests = [verdict-req(c.verdict, verdict-payload(records))], outcome = Outcome.Continue }
+       | None =>
+           { requests = [verdict-req(c.verdict,
+                                     Value.encode(Verdict.Verdict({ pass = false,
+                                                                    messages = ["observation log did not decode"] })))],
+             outcome = Outcome.Continue })
+  | None =>
+      { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = msg.payload }) }
+
+def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
+def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
+export { on-message, on-response, on-notification }

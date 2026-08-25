@@ -1,0 +1,23 @@
+// A Cadenza reducer performing a DELIVER host call with a MALFORMED TARGET — to prove the host records it
+// (design/cadenza-platform.md §9; the deliver/provenance extension #3272 of the parse-guard seam #3267).
+// On-message it calls deliver.deliver-message(target, envelope) with target = msg.token; the run delivers a
+// short token (not a valid 33-byte ReducerId), so the host parses the TARGET (only the target is parsed; the
+// envelope is structured WIT), fails, and early-returns — now emitting a HostCallRejected observation instead
+// of silently dropping. The envelope is well-formed (its fields are not the reject point). Targets the
+// privileged event-reducer-world (imports deliver); spawned as an event reducer. on-response/on-notification inert.
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+def on-message(msg) =
+  host deliver in
+    ( deliver.deliver-message(
+        msg.token,
+        { contract = msg.contract,
+          sender = { reducer = msg.sender.reducer, host = msg.sender.host },
+          payload = msg.payload,
+          token = msg.token }) ;
+      { requests = [], outcome = Outcome.Continue } )
+
+def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
+def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
+export { on-message, on-response, on-notification }
