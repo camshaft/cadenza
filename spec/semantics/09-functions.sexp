@@ -986,6 +986,71 @@
             (export main)))
   (output (: 3 Int64)))
 
+; --- Tail recursion compiles to a constant-stack loop -------------------------------------------
+; core-semantics.md: a SELF tail-call updates the parameter locals and `br`s back to the function's own
+; `loop` — no call frame grows, so a tail-recursive count runs in O(1) stack. A frame-per-iteration
+; `call` would trap far below a million. These run a MILLION iterations to completion: reaching the
+; result (rather than a stack-overflow trap) is the observable proof the tail-call became a loop.
+
+(case "a self-tail-recursive accumulator runs a million iterations in constant stack"
+  (doc    "`(f n acc)` decrements `n` and increments `acc` in a SELF tail position; `(f n 0)` counts `n`
+           up from 0. The self tail-call compiles to a `loop` (args update the param locals, `br` back —
+           no frame), so `main 1000000` completes returning 1000000. A stack-growing recursive `call`
+           would trap long before a million frames.")
+  (input  (do
+            (def (f (: n Int64) (: acc Int64)) (if (= n 0) acc (f (- n 1) (+ acc 1))))
+            (def (main (: n Int64)) (f n 0))
+            (export main)))
+  (call   main (: 1000000 Int64)) (output (: 1000000 Int64)))
+
+(case "a same-signature mutual tail cycle shares one constant-stack loop"
+  (doc    "`even`/`odd` are a SAME-SIGNATURE mutual tail-recursive pair: each cross-call is in tail
+           position, so the group compiles to ONE shared `loop` with a `which` dispatch — a cross-call
+           sets `which` and `br`s back (no frame). `main 1000000` = even parity = 1; `main 999999` = 0.
+           A million cross-calls complete in O(1) stack.")
+  (input  (do
+            (def (even (: n Int64)) (if (= n 0) 1 (odd (- n 1))))
+            (def (odd  (: n Int64)) (if (= n 0) 0 (even (- n 1))))
+            (def (main (: n Int64)) (even n))
+            (export main)))
+  (call   main (: 1000000 Int64)) (output (: 1 Int64))
+  (call   main (: 999999 Int64))  (output (: 0 Int64)))
+
+(case "a three-member mutual tail cycle shares one loop"
+  (doc    "A 3-cycle mutual tail group `g0 -> g1 -> g2 -> g0`, same signature — all three compile into
+           shared loops over the SAME member set {g0,g1,g2}, dispatched by a `which`. `(g0 n)` counts
+           down through the cycle to a base at k=0 and returns 0 regardless of which member the last hop
+           lands on. `main 1000002` = 0 (a million hops in constant stack); `main 0` = 0.")
+  (input  (do
+            (def (g0 (: k Int64)) (if (< k 1) k (g1 (- k 1))))
+            (def (g1 (: k Int64)) (if (< k 1) k (g2 (- k 1))))
+            (def (g2 (: k Int64)) (if (< k 1) k (g0 (- k 1))))
+            (def (main (: n Int64)) (g0 n))
+            (export main)))
+  (call   main (: 1000002 Int64)) (output (: 0 Int64))
+  (call   main (: 0 Int64))       (output (: 0 Int64)))
+
+(case "a match-based self-tail-recursion loops in constant stack"
+  (doc    "The base case via a MATCH (idiomatic): `(match n (0 acc) (_ (f (- n 1) (+ acc 1))))`. The
+           self tail-call sits in a match ARM; the arm's call becomes a loop `br` (not a frame). `main
+           1000000` = 1000000, completing in O(1) stack.")
+  (input  (do
+            (def (f (: n Int64) (: acc Int64)) (match n (0 acc) (_ (f (- n 1) (+ acc 1)))))
+            (def (main (: n Int64)) (f n 0))
+            (export main)))
+  (call   main (: 1000000 Int64)) (output (: 1000000 Int64)))
+
+(case "a match-based tail recursion with an earlier literal arm loops correctly"
+  (doc    "A match with an EARLIER literal arm before the recursive one: `(match n (0 acc) (1 (+ acc
+           100)) (_ (g (- n 1) (+ acc 1))))`. The recursive arm is nested one probe deeper, so its call
+           `br`s to the depth+1 loop target. `g 500000 0` counts down and, at n==1, adds 100 instead of
+           1: 499999 increments (n=500000..2) + 100 = 500099.")
+  (input  (do
+            (def (g (: n Int64) (: acc Int64)) (match n (0 acc) (1 (+ acc 100)) (_ (g (- n 1) (+ acc 1)))))
+            (def (main (: n Int64)) (g n 0))
+            (export main)))
+  (call   main (: 500000 Int64)) (output (: 500099 Int64)))
+
 (case "a HOF callback matching a tuple argument computes through the nested reduction"
   (doc    "The same shape with a TUPLE-destructuring callback — `(fn (p) (match p ((tuple a b) (+ a b))))`
            — passed to a HOF. The tuple-pattern binders `a`/`b` read the substituted scrutinee just as a

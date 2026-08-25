@@ -2393,6 +2393,8 @@ pass	a match whose only arm is guarded by a literally-true condition is still no
 pass	a match whose only arm is guarded is non-exhaustive
 pass	a match whose only variant arm is guarded is non-exhaustive
 pass	a match-arm binder shadowing a parameter binds the scrutinee, not the argument
+pass	a match-based self-tail-recursion loops in constant stack
+pass	a match-based tail recursion with an earlier literal arm loops correctly
 pass	a match-join of two capturing lambdas let-bound and called applies the selected closure
 pass	a match-of-closures on a runtime-selected variant is applied per arm
 pass	a matched arm body performs and reads the state the scrutinee advanced
@@ -3524,6 +3526,7 @@ pass	a same-name monomorphic constructor in a called helper resolves to the cons
 pass	a same-name multi-variant constructor in a called helper resolves to the constructor
 pass	a same-name variant of a multi-variant sum constructs bare in a body
 pass	a same-scrutinee re-match whose inner arm set OMITS the refined variant falls to the inner default
+pass	a same-signature mutual tail cycle shares one constant-stack loop
 pass	a same-type sum match is accepted and binds the payload (the control)
 pass	a same-unit quantity join flows and its magnitude reads back
 pass	a satisfied @ensures on a performing def passes the effectful result through
@@ -3562,6 +3565,7 @@ pass	a self-recursive Bool-returning function whose recursive call is the then-b
 pass	a self-recursive effectful loop sums a fresh-id draw per step — the gensym idiom
 pass	a self-tail call passing a heap-match argument compiles to valid wasm
 pass	a self-tail loop advancing by a tuple projection while accumulating compound-sum nodes compiles
+pass	a self-tail-recursive accumulator runs a million iterations in constant stack
 pass	a self-tail-recursive fn with a MIXED Option-returning innermost match emits valid wasm
 pass	a self-tail-recursive mixed match whose recursive arm returns an Option compiles to valid wasm
 pass	a separator JOIN over a runtime parts list handles first-vs-rest and the empty list
@@ -3811,6 +3815,7 @@ pass	a three-element runtime tuple is returned as a result
 pass	a three-hole tag reads its holes in exact left-to-right order
 pass	a three-level curried spine applies through both intermediate closures
 pass	a three-level nested multi-arg constructor destructures to every leaf payload
+pass	a three-member mutual tail cycle shares one loop
 pass	a three-parameter closure is applied at full arity through a recursive HOF
 pass	a three-payload constructor fully curried builds the variant
 pass	a three-payload constructor partially applied in a runtime tuple completes via eta-closure
