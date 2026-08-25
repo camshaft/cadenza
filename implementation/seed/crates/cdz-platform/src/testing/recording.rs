@@ -14,13 +14,13 @@
 //! emits, or closes with, then defer to the wrapped reducer unchanged.
 
 use super::observation::{
-    BlobOp, Entry, EventKind, EventOp, GraphOp, KvOp, ObservationLog, ProvOp, RejectedCall,
+    BlobOp, Entry, EventKind, EventOp, GraphOp, KvOp, ObservationLog, ProvOp, RejectedCall, RunCall,
 };
 use crate::{
     BlobStore, Bytes, ContractId, Delivered, Delivery, Dir, EdgeKind, Hash, HostId, KeyRange,
     KvKeyScan, KvScan, KvStore, Message, Notification, Origin, Outcome, ProgramHash, ProgramStore,
-    Provenance, Reducer, ReducerGraph, ReducerId, RejectedSink, Request, Response, SpawnContext,
-    Str,
+    Provenance, Reducer, ReducerGraph, ReducerId, RejectedSink, Request, Response, RunError,
+    RunSink, SpawnContext, Str,
 };
 use async_trait::async_trait;
 use futures_util::FutureExt as _; // catch_unwind — record an uncontrolled fold failure (§10) before it unwinds
@@ -450,6 +450,56 @@ impl RejectedSink for RecordingRejectedSink {
                 iface: Str::from(iface),
                 op: Str::from(op),
                 raw_args: raw_args.to_vec(),
+            }),
+        );
+    }
+}
+
+/// A [`RunSink`] that records a synchronous pure-`run` host call (§3) — the sub-program and contract ids, the
+/// input, and the run's outcome — to the [`ObservationLog`] attributed to the reducer's [`Origin`]. A `run` is
+/// hosted but leaves no `step.requests` entry, so without this sink a checker cannot observe that a reducer
+/// invoked `run` (`design/cadenza-platform.md` §9, log-every-host-call). Maps the crate-level [`RunError`]
+/// category to the [`RunCall`] `error` string the WIT `result<payload, error>` surfaces
+/// (`UnknownProgram`→`missing-handler`, `DidNotReturn`/`Faulted`→`faulted`). Constructed per reducer, like the
+/// store/graph decorators, and wired via [`WasmProgramStore::with_run_sink`](crate::WasmProgramStore).
+pub struct RecordingRun {
+    owner: Origin,
+    log: ObservationLog,
+    now: fn() -> u64,
+}
+
+impl RecordingRun {
+    /// A sink attributing every `run` call to `owner`, appending to `log`, and stamping each record with `now`.
+    pub fn new(owner: Origin, log: ObservationLog, now: fn() -> u64) -> Self {
+        Self { owner, log, now }
+    }
+}
+
+impl RunSink for RecordingRun {
+    fn record(
+        &self,
+        program: &[u8],
+        contract: &[u8],
+        input: &[u8],
+        result: &Result<Bytes, RunError>,
+    ) {
+        // The 3→2 category map the WIT boundary applies: a successful run carries its output bytes, a failed
+        // one names its category. `missing-handler` is the unknown-program case; `faulted` covers both a run
+        // that trapped and one that never returned.
+        let (output, error) = match result {
+            Ok(out) => (Some(out.clone()), None),
+            Err(RunError::UnknownProgram) => (None, Some(Str::from("missing-handler"))),
+            Err(RunError::DidNotReturn | RunError::Faulted) => (None, Some(Str::from("faulted"))),
+        };
+        self.log.record(
+            (self.now)(),
+            self.owner,
+            Entry::Run(RunCall {
+                program: Bytes::copy_from_slice(program),
+                contract: Bytes::copy_from_slice(contract),
+                input: Bytes::copy_from_slice(input),
+                output,
+                error,
             }),
         );
     }

@@ -72,6 +72,11 @@ pub enum Entry {
     /// interface + operation and carries the raw argument bytes as received, since a malformed value has no
     /// typed shape to record. A well-formed call still records through its typed op (`Kv`/`Graph`/…).
     HostCallRejected(RejectedCall),
+    /// A synchronous pure-`run` host call (§3): the sub-program and contract ids it ran, the input, and its
+    /// outcome. A `run` is hosted (it instantiates + folds a pure sub-program) but leaves no `step.requests`
+    /// entry, so without this a checker cannot observe that a reducer invoked `run` — an echo of the payload
+    /// is satisfiable without ever calling it (`design/cadenza-platform.md` §9, log-every-host-call).
+    Run(RunCall),
 }
 
 /// A host call rejected at the argument-parse boundary (`design/cadenza-platform.md` §9): its interface and
@@ -86,6 +91,25 @@ pub struct RejectedCall {
     pub op: Str,
     /// The raw argument byte slices as received, before the (failed) parse.
     pub raw_args: Vec<Bytes>,
+}
+
+/// A pure-`run` host call (`design/cadenza-platform.md` §3): the `program` and `contract` id hash bytes, the
+/// `input` bytes, and its outcome. On success `output` is the returned bytes and `error` is `None`; on failure
+/// `output` is `None` and `error` names the category (`missing-handler`/`faulted`), mirroring the WIT
+/// `result<payload, error>` a guest sees. A `run` is hosted but leaves no request in the step, so recording it
+/// here is what makes the run act observable to a checker.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunCall {
+    /// The sub-program's id hash bytes.
+    pub program: Bytes,
+    /// The contract id hash bytes the run was over.
+    pub contract: Bytes,
+    /// The input bytes handed to the run.
+    pub input: Bytes,
+    /// The returned output bytes on a successful run, else `None`.
+    pub output: Option<Bytes>,
+    /// The failure category (`missing-handler`/`faulted`) on a failed run, else `None`.
+    pub error: Option<Str>,
 }
 
 /// A reducer the harness spawned at the start of a run, and the name the run gave it — the log's record
@@ -616,6 +640,17 @@ impl fmt::Display for Record {
                 c.iface.as_str(),
                 c.op.as_str(),
                 c.raw_args.len()
+            ),
+            Entry::Run(r) => write!(
+                f,
+                "run program=({} byte(s)) contract=({} byte(s)) input=({} byte(s)) -> {}",
+                r.program.len(),
+                r.contract.len(),
+                r.input.len(),
+                match &r.output {
+                    Some(o) => format!("ok ({} byte(s))", o.len()),
+                    None => format!("err {}", r.error.as_ref().map_or("?", Str::as_str)),
+                }
             ),
         }
     }

@@ -59,12 +59,12 @@ pub use checker_run::run_checker;
 pub use harness::{Harness, Parent, Run, SpawnSpec};
 pub use log_value::{deserialize as deserialize_log, serialize as serialize_log};
 pub use observation::{
-    BlobOp, Entry, EventKind, EventOp, GraphOp, KvOp, ObservationLog, ProvOp, Record, SpawnInfo,
-    render,
+    BlobOp, Entry, EventKind, EventOp, GraphOp, KvOp, ObservationLog, ProvOp, Record, RunCall,
+    SpawnInfo, render,
 };
 pub use recording::{
     RecordingBlobStore, RecordingDelivery, RecordingGraph, RecordingKvStore, RecordingProgramStore,
-    RecordingProvenance, RecordingReducer, RecordingRejectedSink,
+    RecordingProvenance, RecordingReducer, RecordingRejectedSink, RecordingRun,
 };
 pub use spec::{
     BlobSource, BlobSpec, DeliveryEvent, HarnessSpec, PureRun, RegistrySpec, SpecError,
