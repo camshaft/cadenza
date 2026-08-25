@@ -4566,6 +4566,7 @@ pass	an imported def whose body is Ast.module reflects its DEFINING module, not 
 pass	an imported helper reaches its own file's private definition when inlined
 pass	an imported helper's performs discharge at a handler whose STATE is the importer's heap Map
 pass	an imported name resolves to a sibling file's exported definition
+pass	an imported nullary accessor projecting a field off a recursive self-reflected record descriptor folds
 pass	an in-bounds slice yields Some of the bytes at that range
 pass	an in-program handler OVERRIDES an effect's peer binding (the test-mock, no peer call)
 pass	an in-program two-site handler runs INSIDE a host block beside a host call

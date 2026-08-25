@@ -631,6 +631,24 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             // multi-use `if`-binding (`reduce_to_if` stops there), declines this and falls through to the
             // runtime read below.
             crate::eval::Member::NotRecord => {
+                // A projection off a const-param fn call whose body RECURSES (a self-reflected contract
+                // descriptor `contract(Ast.module).id`) does not reduce to a record via the ordinary
+                // evaluator — the recursion declines, so `member_value` misses it. The general
+                // const-evaluator DOES fold it (operand → constant record → project the field), so try it
+                // before emitting a runtime projection (which would build a record with `Ast`-heap fields and
+                // fail to emit). Reached only after `member_value` already failed, so ordinary records are
+                // unaffected; `const_eval` falls through (`None`) on any non-constant. (This is the projection
+                // analogue of the `Resolved::Apply` `Err`-arm const-fold — a record-returning const fn is
+                // consumed by a Member, not a bare call.)
+                {
+                    let mut budget: u64 = 1_000_000;
+                    if let Some(cv) = const_eval(db, id, &CEnv::default(), &mut budget)
+                        && let Some(core) = cval_to_core(db, &cv)
+                        && core_is_const_value(db, &core)
+                    {
+                        return core;
+                    }
+                }
                 if let Some((cond, then_, else_)) = crate::eval::reduce_to_if(db, operand)
                     && let crate::eval::Member::Field(tf) =
                         crate::eval::member_value(db, then_, &key)
@@ -1625,6 +1643,19 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 if let Some(body) = crate::eval::lambda_body_of_nullary(db, head)
                     && crate::eval::is_recursive(db, body)
                 {
+                    // BEFORE declining: a nullary def is `is_recursive` if its body merely CALLS a recursive
+                    // helper — even when the def itself is not self-recursive and const-FOLDS. A self-reflected
+                    // descriptor accessor `def id() = contract(Ast.module).id` (where `contract` recurses over
+                    // the module forms) is exactly this: not unproductive, it evaluates to a constant. Try the
+                    // general const-evaluator on the body; a genuinely unproductive nullary self-recursion
+                    // (`(def (f) (f))`) yields no constant and falls through to the CDZ0999 decline.
+                    let mut budget: u64 = 1_000_000;
+                    if let Some(cv) = const_eval(db, body, &CEnv::default(), &mut budget)
+                        && let Some(core) = cval_to_core(db, &cv)
+                        && core_is_const_value(db, &core)
+                    {
+                        return core;
+                    }
                     // A NULLARY self-recursion has no parameter to vary, so it can never reduce to a value
                     // (following it re-enters the same body without end) AND has no runtime-function form to
                     // specialize — a genuinely UNPRODUCTIVE recursion, not a not-yet-built gap. This is the
@@ -24420,7 +24451,25 @@ fn const_eval_apply(
                 }
             });
         }
-        return apply_const_prim(prim, &vs);
+        if let Some(r) = apply_const_prim(prim, &vs) {
+            return Some(r);
+        }
+        // A prim the evaluator does not fold natively (Ast.encode, Blake3.of, Bytes.concat, …) — these ARE
+        // compile-time folds `core_of` implements. Materialize the (constant) argument values to nodes,
+        // rebuild the application over a fresh copy of the prim head, and fold it via `core_of`, then convert
+        // the constant back to a `CVal`. So a descriptor field `Blake3.of(Ast.encode(…))` const-evaluates
+        // even though `const_eval` has no hand-written rule for those prims.
+        let head_copy = copy_ast_subtree(db, head);
+        let mut items = Vec::with_capacity(vs.len() + 1);
+        items.push(head_copy);
+        for v in &vs {
+            items.push(cval_to_ast(db, v)?);
+        }
+        let app = db.push_list(items);
+        crate::resolve::resolve_subtree(db, app);
+        let c = core_of(db, app);
+        let isc = core_is_const_value(db, &c);
+        return if isc { core_to_cval(db, &c) } else { None };
     }
     let params = crate::eval::lambda_params_of(db, head)?;
     if params.len() != args.len() {
@@ -24659,6 +24708,22 @@ fn cval_to_ast(db: &mut Db, v: &CVal) -> Option<StructId> {
             synth_core(db, core, crate::ty::Ty::Any)
         }
     })
+}
+
+/// Deep-copy an AST subtree into FRESH nodes (a prim head re-materialized for a delegated `core_of` fold), so
+/// splicing it into a synthesized application never reparents a node the original program still holds.
+fn copy_ast_subtree(db: &mut Db, node: StructId) -> StructId {
+    match db.ast.get(node) {
+        crate::ast::Struct::Atom(lid) => {
+            let leaf = db.ast.leaf(*lid).clone();
+            db.push_atom(leaf)
+        }
+        crate::ast::Struct::List(children) => {
+            let children = children.clone();
+            let copies: Vec<StructId> = children.iter().map(|&c| copy_ast_subtree(db, c)).collect();
+            db.push_list(copies)
+        }
+    }
 }
 
 fn core_is_const_value(db: &mut Db, c: &Core) -> bool {

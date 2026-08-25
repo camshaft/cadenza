@@ -2162,3 +2162,45 @@
             (def (main) (if (= m Ast.module) 1 0))
             (export main)))
   (output (: 0 Int64)))
+
+(case "an imported nullary accessor projecting a field off a recursive self-reflected record descriptor folds"
+  (doc    "The operator's record-API cross-module path: a module `c` reflects ITSELF, builds a full descriptor
+           record via a RECURSIVE comment-tolerant transform (`contract` collects the module's `type` forms,
+           peeling comments), and exports a nullary accessor `cid` that projects the descriptor's `id` field
+           (the `0x01 ++ blake3(canonical decl)` content-address). A CONSUMER imports `cid` and calls it. This
+           folds entirely at compile time: the general const-evaluator evaluates the recursive `contract` over
+           `Ast.module` to a constant record, projects `.id`, and delegates the `Ast.encode`/`Blake3.of` folds
+           to `core_of` — so the imported `cid()` is a compile-time constant the consumer reads (a 32-byte
+           digest here), NOT a runtime record build (which would fail to emit, its `Ast`-typed fields having no
+           runtime rep). Pins that a self-reflected contract DESCRIPTOR — not just a bare Bytes id — crosses
+           modules by folding. (The accessor is named `cid`, distinct from the `id` FIELD: a same-name
+           accessor + field is a separate resolution matter.)")
+  (module "c"
+    (do
+      (def (child (const (: form Ast)) (: i Int64))
+        (match form
+          ((Ast.List es) (match (List.at es i) ((Option.Some v) v) ((Option.None) (Ast.Name "?"))))
+          (_ (Ast.Name "?"))))
+      (def (name-of (const (: form Ast))) (match form ((Ast.Name n) n) (_ "")))
+      (def (head-name (const (: form Ast))) (name-of (child form 0)))
+      (def (peel (const (: x Ast)))
+        (if (= (head-name x) "comment") (peel (child x 2)) x))
+      (def (collect (const (: xs (List Ast))))
+        (match xs
+          ((list) (: (list) (List Ast)))
+          ((list h .. t)
+            (let ((g (peel h)) (tail (collect t)))
+              (if (= (head-name g) "type") (List.prepend tail g) tail)))))
+      (def (contract (const (: mm Ast)))
+        (match mm
+          ((Ast.List forms)
+            (record (id (Blake3.of (Ast.encode (Ast.List (List.prepend (collect forms) (Ast.Name "types"))))))
+                    (nm "")))
+          (_ (record (id b"") (nm "")))))
+      (def (cid) (. (contract Ast.module) id))
+      (export cid)))
+  (input  (do
+            (import "c" (cid))
+            (def (main) (Bytes.len (cid)))
+            (export main)))
+  (output (: 32 Int64)))
