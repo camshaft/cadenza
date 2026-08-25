@@ -715,6 +715,10 @@ fn product_field_marshalable(db: &mut Db, f: &Ty) -> bool {
     matches!(f.strip_nominal(), Ty::Bytes | Ty::String)
         || abi_val_type(f).is_some()
         || option_payload_ty(db, f).is_some_and(|p| abi_val_type(&p).is_some())
+        // A general `variant<scalar>` field of a product element (`list<record{v: variant{…}, …}>` /
+        // `list<tuple<variant, …>>`): written in place by `select::emit_variant_to_mem`. Detected after
+        // option (option takes its own arm); this is the residual general scalar-payload variant.
+        || variant_scalar_payload_cases(db, f).is_some()
 }
 
 pub fn list_elem_marshalable(db: &mut Db, ty: &Ty) -> bool {
