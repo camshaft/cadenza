@@ -191,6 +191,41 @@ mod tests {
     }
 
     #[test]
+    fn delegated_flags_parse_back_through_the_real_compiler_cli() {
+        // The string tests above pin the SPELLING; this pins that `cdz-compile` (= `rcdzc::cli`)
+        // actually ACCEPTS each spelling AND parses it back to the same variant we delegated from.
+        // So a rename of a `TargetArg`/`OptLevelArg` value (or a new backend) that would silently make
+        // the delegated `--target`/`--opt-level` unparseable fails HERE, not only at runtime spawn.
+        use clap::Parser;
+        for t in [
+            Target::Wasm,
+            Target::WasmDebug,
+            Target::Dwarf,
+            Target::Rust,
+            Target::RustAsync,
+        ] {
+            let parsed = rcdzc::cli::CompileArgs::try_parse_from([
+                "cdz-compile",
+                "x.ast",
+                "--target",
+                target_cli(t),
+            ])
+            .unwrap_or_else(|e| panic!("--target {} must parse: {e}", target_cli(t)));
+            assert_eq!(parsed.targets(), vec![t], "round-trip for {t:?}");
+        }
+        for o in [OptLevel::O0, OptLevel::O1, OptLevel::O2, OptLevel::O3] {
+            let parsed = rcdzc::cli::CompileArgs::try_parse_from([
+                "cdz-compile",
+                "x.ast",
+                "--opt-level",
+                opt_cli(o),
+            ])
+            .unwrap_or_else(|e| panic!("--opt-level {} must parse: {e}", opt_cli(o)));
+            assert_eq!(parsed.opt_level(), o, "round-trip for {o:?}");
+        }
+    }
+
+    #[test]
     fn cdz_compile_bin_env_override_wins() {
         // $CDZ_COMPILE_BIN takes precedence over the sibling/$PATH resolution — the nix-injection path.
         // SAFETY: single-threaded test; the var is set and read within this test only.
