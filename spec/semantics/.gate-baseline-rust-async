@@ -849,6 +849,7 @@ pass	a NESTED Tuple ARG with a LIST result crosses the direct-call boundary
 pass	a NESTED Tuple ARG with a fixed-shape COMPOUND result crosses the direct-call boundary
 pass	a NESTED Tuple ARG with a narrow Bool leaf crosses the direct-call boundary
 pass	a NESTED Tuple arg ALONGSIDE a flat Tuple arg
+pass	a NESTED const recursion — a recursive helper called per element inside a recursive build — folds
 pass	a NESTED float tuple as a SET element dedups by deep content
 pass	a NESTED list-of-lists-of-quantities used as a Map key canonicalizes and hits
 pass	a NESTED mixed ARG (a tuple containing a record) crosses the direct-call boundary
