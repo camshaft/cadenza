@@ -5955,6 +5955,27 @@
             (export main)))
   (output (: 2 Int64)))
 
+(case "a NESTED const recursion — a recursive helper called per element inside a recursive build — folds"
+  (doc    "A recursive build over a `const (List …)` that calls ANOTHER recursive `const`-param helper PER
+           ELEMENT — the nested-recursion composition. `build` recurses down the list and, for each head, calls
+           the recursive `dec` (which counts a `const` scalar down to a base case); the results assemble into a
+           constant list. This folds because the const-fold unroll accepts a `const` parameter of ANY shape a
+           total recursion shrinks — a `(List …)` OR a bare-name type (here `dec`'s `const (: n Int64)` scalar)
+           — not only a `(List …)`. Before that, `dec`'s per-element call declined (`(dec h)`'s arg reaches a
+           const scalar param but `dec` is recursive, so it took the recursive-decline path → CDZ0201), which
+           blocked the general self-reflected transform's `rebuild`-of-`unwrap` (a recursive comment-peeler
+           called per form). `build [3 2 1]` = `[0 0 0]` (each `dec h` = 0), length 3. The `const` parameters
+           force compile time, so a passing output witnesses the whole nested fold reaching a constant.")
+  (input  (do
+            (def (dec (const (: n Int64))) (if (= n 0) 0 (dec (- n 1))))
+            (def (build (const (: xs (List Int64))))
+              (match xs
+                ((list) (: (list) (List Int64)))
+                ((list h .. t) (List.prepend (build t) (dec h)))))
+            (def (main) (List.len (build (list 3 2 1))))
+            (export main)))
+  (output (: 3 Int64)))
+
 (case "the runtime-list version of a tail fold compiles and folds correctly"
   (doc    "The correct alternative to the const-collection reject above: the SAME tail fold over a RUNTIME
            `(List Int64)` parameter (no `const`) compiles to a proper `loop` whose `br_if` exit is the real

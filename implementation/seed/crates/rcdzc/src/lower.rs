@@ -1418,18 +1418,26 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                                 // runtime-call/decline path — it can neither hang nor blow up.
                                 //
                                 // GATE (CHEAP, no `core_of`): a `const` parameter whose declared TYPE is a
-                                // `(List …)` — the shrinking collection a `(list h .. t)` fold recurses over.
-                                // This structurally distinguishes a genuine bounded list-fold (accept, try to
-                                // unroll) from a const RECORD/dictionary a counter-driven recursion passes
-                                // UNCHANGED (a dict consumer has a `const` param too, but its type is a record,
-                                // it does not fold, and even folding its args to TEST would waste the
-                                // reduction budget). Reading the param's `(: name (List …))` annotation costs
-                                // nothing, so the expensive `is_const_value`/unroll below runs ONLY for a
-                                // const-list-fold. Combined with the fully-folded-constant check, only a
-                                // terminating const list-fold is accepted; everything else emits the runtime
-                                // call as before.
-                                let has_const_list_param =
-                                    callee_def_index(g, head).is_some_and(|callee| {
+                                // shape a TOTAL recursion SHRINKS to a base case — a `(List …)` a
+                                // `(list h .. t)` fold recurses over, OR a bare-NAME type: a SCALAR
+                                // (`Int64`/`Bool`/`Float64`/`String`/`Bytes`/`Char`/`Symbol`) counted down
+                                // (`(dec n)` → `(dec (- n 1))`), or a user SUM (`Ast`) peeled by structural
+                                // recursion (`(unwrap form)` → `(unwrap (child form 2))`). This structurally
+                                // distinguishes a genuine bounded fold (accept, try to unroll) from a const
+                                // RECORD/dictionary a counter-driven recursion passes UNCHANGED — a dict
+                                // consumer has a `const` param too, but its type is a `(Record …)`/`(Map …)`/
+                                // `(Set …)`/`(Tuple …)` compound FORM that does not shrink, does not fold, and
+                                // folding its args to TEST would waste the reduction budget. So the gate
+                                // accepts `(List …)` OR any bare NAME and rejects every OTHER form. Reading the
+                                // `(: name TYPE)` annotation costs nothing, so the expensive `is_const_value`/
+                                // unroll below runs ONLY for a foldable shape. Combined with the fully-folded-
+                                // constant check, only a TERMINATING const fold is accepted; everything else
+                                // emits the runtime call as before. Broadening beyond `(List …)` (was
+                                // const-list-only) is what lets a recursive helper with a const scalar/sum
+                                // param — called PER ELEMENT inside a recursive build (`rebuild`-of-`unwrap`) —
+                                // fold, closing the NESTED-recursion gap of the general const-fold.
+                                let has_const_foldable_param = callee_def_index(g, head)
+                                    .is_some_and(|callee| {
                                         let params = g.defs[callee].params.clone();
                                         params.iter().any(|&p| {
                                             g.const_params
@@ -1437,11 +1445,13 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                                                 && g.ast
                                                     .as_form(p, ":")
                                                     .and_then(|t| t.get(1).copied())
-                                                    .and_then(|ty| g.ast.as_form(ty, "List"))
-                                                    .is_some()
+                                                    .is_some_and(|ty| {
+                                                        g.ast.as_form(ty, "List").is_some()
+                                                            || g.ast.as_name(ty).is_some()
+                                                    })
                                         })
                                     });
-                                if has_const_list_param
+                                if has_const_foldable_param
                                     && args.iter().all(|&a| is_const_value(g, a))
                                     && let Ok(Some(unrolled)) =
                                         crate::eval::apply_lambda_one_level_recursive(
