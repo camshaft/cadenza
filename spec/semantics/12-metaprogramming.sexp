@@ -2506,6 +2506,41 @@
             (export main)))
   (output (: true Bool)))
 
+(case "a recursive transform composed over Ast.module const-evaluates at compile time"
+  (doc    "The general const-evaluator evaluates a total function applied to `Ast.module` — the reflected
+           enclosing module `Ast` — to a constant, so a self-reflection transform that RECURSES over the
+           module's own forms folds. `Ast.module` folds (via `core_of`) to a constant `Ast.List` of the
+           module's forms; the evaluator converts that constant to a value, so `collect` (a recursive filter
+           that calls the recursive comment-peeler `peel` per form) composes over it and the const-encode
+           forces the whole thing to a constant — the `Ast.module`-SOURCE depth gap that declined before
+           (the SAME transform folds over a plain literal but declined when the source was `Ast.module`-
+           derived, because the reflected forms did not propagate as values through the nested recursion).
+           This is the compiler capability a userspace contract-id transform needs: run a recursive transform
+           over the module's OWN reflected AST at compile time. Content-agnostic: the encoded filtered form
+           list has a non-negative length regardless of what this module contains, so a `> -1` check folds to
+           `true` — and the point is that it FOLDS (a non-folding transform would decline at `Ast.encode`).")
+  (input  (do
+            (def (child (const (: form Ast)) (: i Int64))
+              (match form
+                ((Ast.List es) (match (List.at es i) ((Option.Some v) v) ((Option.None) (Ast.Name "?"))))
+                (_ (Ast.Name "?"))))
+            (def (name-of (const (: form Ast))) (match form ((Ast.Name n) n) (_ "")))
+            (def (head-name (const (: form Ast))) (name-of (child form 0)))
+            (def (peel (const (: x Ast)))
+              (if (= (head-name x) "comment") (peel (child x 2)) x))
+            (def (collect (const (: xs (List Ast))))
+              (match xs
+                ((list) (: (list) (List Ast)))
+                ((list h .. t)
+                  (let ((g (peel h)) (tail (collect t)))
+                    (if (= (head-name g) "type") (List.prepend tail g) tail)))))
+            (def (forms-of (const (: mm Ast)))
+              (match mm ((Ast.List fs) fs) (_ (: (list) (List Ast)))))
+            (def (main)
+              (> (Bytes.len (Ast.encode (Ast.List (collect (forms-of Ast.module))))) (- 0 1)))
+            (export main)))
+  (output (: true Bool)))
+
 (case "decoding bytes that are not a canonical AST yields the error case, not a trap"
   (doc    "contracts/value-interchange.md #Decode Inverts Serialize And Refuses Otherwise + #A Decode Over
            External Bytes Is Total: `Ast.decode` consumes bytes that may come from an EXTERNAL source, so it
