@@ -449,6 +449,15 @@ pub fn result_is_liftable(db: &mut Db, ty: &Ty) -> bool {
             let elems = elems.clone();
             !elems.is_empty() && elems.iter().all(|e| leaf_liftable(db, e))
         }
+        // A `record { f: T… }` whose EVERY field is liftable — a host op returning a native record. The lift
+        // (`emit_result_lift`'s `Ty::Record` arm) reads each field at its host WIT-DECLARATION offset and
+        // arr-sets it to the field's name-lex value-heap slot (following the host's field ORDER, the result
+        // side of the #3223 rule); `declare_result_lift_ops` declares its `arr-alloc`/`arr-set` + field ops,
+        // and its component `record` DEFINED type is DEFINED + EXPORTED by the nominal-export-for-results path.
+        Ty::Record(fields) => {
+            let fields = fields.clone();
+            !fields.is_empty() && fields.values().all(|f| leaf_liftable(db, f))
+        }
         // A `result<list<u8>, enum>` (run.run's `result<payload, error>`): Ok = `Bytes`, Err = a PAYLOAD-LESS
         // enum. The lift (`emit_result_sum_lift`) reads the WIT-canonical disc (Ok=0/Err=1), copies the Bytes on
         // Ok, and rebuilds the guest's `Error` enum-disc on Err; the WIT type is `result<list<u8>, enum>`.
