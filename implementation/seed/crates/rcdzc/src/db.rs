@@ -2253,12 +2253,12 @@ impl Db {
         // BEFORE the parent index (which must index the synthesized nodes so a name inside a synthesized
         // ctor type resolves by the scope walk).
         crate::sums::synthesize(&mut ast, &mut type_decls);
-        // Augment the BUILT-IN `Ast` record with the `Ast.here` self-reflection field (`Ast.here : Ast` —
+        // Augment the BUILT-IN `Ast` record with the `Ast.module` self-reflection field (`Ast.module : Ast` —
         // operator directive: NAMESPACED on the Ast record, not a bare global). Gated to the built-in Ast
         // decl (in the prelude range — the last `prelude_sum_count` decls — with name "Ast"), so a USER
         // `(type Ast …)` (scanned earlier, outside the prelude range) is UNTOUCHED and shadows the
         // reflection. Done here rather than in the generic `sum_record` so it is NOT a name-special-case in
-        // the shared sum synthesis (`reference-compiler.md` §Nothing Is Privileged By Name); the `here`
+        // the shared sum synthesis (`reference-compiler.md` §Nothing Is Privileged By Name); the `module`
         // field's `(meta apply)` is `Prim::ReflectModule`, filled at lowering (v-compiler-primitives) from
         // the enclosing module's canonical source. Appends `(here <op-record>)` to the built-in Ast record.
         if prelude_sum_count > 0 {
@@ -2268,7 +2268,7 @@ impl Db {
                 .find(|d| d.name.as_str() == "Ast")
                 .and_then(|d| d.synth)
             {
-                let field = crate::prelude::ast_here_field(&mut ast);
+                let field = crate::prelude::ast_module_field(&mut ast);
                 let items = match ast.get(ast_record) {
                     Struct::List(items) => Some(items.clone()),
                     _ => None,

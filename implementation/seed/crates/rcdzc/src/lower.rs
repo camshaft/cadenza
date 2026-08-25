@@ -20674,7 +20674,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         // The schema-decode prims (`«T»-schema` / `payload-of` / `decode`) fold in their own arms
         // (`lower_schema_decode`), never an integer binary operation.
         | Prim::SchemaOf
-        // `Ast.here` is the self-reflection magic-constant (folds to the enclosing module's `Ast`
+        // `Ast.module` is the self-reflection magic-constant (folds to the enclosing module's `Ast`
         // value at lowering — v-compiler-primitives' fill), never an integer binary operation.
         | Prim::ReflectModule
         | Prim::PayloadOf
