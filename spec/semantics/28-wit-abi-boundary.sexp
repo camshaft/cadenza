@@ -60,6 +60,8 @@
 ; cdz-run coerce_one fix (record-erased sorting was misfiring on positional tuples of lists).
 ; SHAPE 35 — a record host-op ARG with an option<s64> FIELD (sink.push(record{d, n})): the record flattens,
 ; the option field to (disc, payload) — Some(42) -> (1,42) — + invoked e2e.
+; SHAPE 36 — a record host-op ARG with an option<Bytes> FIELD (sink.push(record{d, n})): the option flattens
+; to (disc, ptr, len), Some copies the payload rope + invoked e2e.
 
 (case "an option<s64> field in a record result crosses the export boundary on both arms"
   (doc    "The general option<T> RESULT lift across the WIT export boundary. The guest takes a record
@@ -501,3 +503,14 @@
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+
+(case "a typed reducer performing a record-with-an-option-bytes-field host arg emits, loads, and runs (via an imposed WIT world)"
+  (doc "SHAPE 36 — record{d: option<bytes>, n: s64} host-op ARG; the option field flattens to (disc, ptr, len), Some copies the payload rope. Runtime coverage for v-rust-backend increment 6 (#3354).")
+  (wit-world (world w (export guest (member on-message (func (param m ("record" (contract ("list" (u8))) (payload ("list" (u8))) (token ("list" (u8))))) (result ("record" (requests ("list" ("record" (contract ("list" (u8))) (payload ("list" (u8))) (token ("list" (u8))) (deadline-nanos ("option" (u64)))))) (outcome ("variant" (continue) (close ("record" (schema ("list" (u8))) (reason ("list" (u8)))))))))))) (import cadenza:platform/sink (member push (func (param r ("record" (d ("option" ("list" (u8)))) (n (s64)))) (result ("unit")))))))
+  (component-name "cadenza:platform/guest")
+  (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (effect sink (op push (-> (Record (: d (Option Bytes)) (: n Int64)) Unit))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (sink) (do (sink.push (record (= d (Option.Some (. m contract))) (= n 7))) (record (= requests (list)) (= outcome Outcome.Continue))))) (export onMessage)))
+  (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
+  (host-calls (call cadenza:platform/sink.push))
+  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+
+And a direct record-with-bytes-field: same shape but the sink push param is ("record" (c ("list" (u8))) (n (s64))), guest op (-> (Record (: c Bytes) (: n Int64)) Unit), body (sink.push (record (= c (. m contract)) (= n 7))). Ping if you want me to write the second one out fully. Both are new NON-record-result cases (no sibling bytes param)
