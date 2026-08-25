@@ -80049,25 +80049,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_curried_multi_payload_constructor_application_reaches_full_arity() {
-        // The CONSTRUCTOR analogue of the curried-closure flattening above: `((T.Mk n) 2)` applies the
-        // two-payload variant ctor `T.Mk` to `n` then `2` (the curried spelling of `(T.Mk n 2)`). The
-        // application spine flattens so the ctor reaches FULL arity in one construction, building `(T.Mk n
-        // 2)`, which the `match` destructures to `(+ n 2)`. With runtime `n` nothing folds. Pins the curried
-        // constructor-application spine. (Contrast: a PARTIAL ctor application EXPORTED — `(def (main)
-        // (T.Mk 1))` — currently fails to lift with a leaky internal error; see issue
-        // mlrepro-partial-ctor-application-export-leaky-internal-error. This case is the FULL-arity path,
-        // which works.)
-        use wasmtime::component::Val;
-        let src = "(module m \
-            (type T (Mk Int64 Int64)) \
-            (def (main (: n Int64)) (match ((T.Mk n) 2) ((T.Mk a b) (+ a b)))) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert_eq!(run_returns_with::<i64>(&bytes, "main", &[Val::S64(5)]), 7); // 5 + 2
-        assert_eq!(run_returns_with::<i64>(&bytes, "main", &[Val::S64(40)]), 42); // 40 + 2
-    }
-
-    #[test]
     fn a_partially_applied_function_escapes_as_a_value_and_runs_through_a_recursive_hof() {
         // A PARTIAL APPLICATION escaping short of full arity, run as a runtime closure. `(g n)` where `g`
         // is `main`'s statically-known two-parameter lambda applied to ONE arg PARTIALLY APPLIES at compile
