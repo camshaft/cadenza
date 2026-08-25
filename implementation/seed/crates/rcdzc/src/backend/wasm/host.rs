@@ -534,13 +534,20 @@ pub fn spilled_result_wit_type(db: &mut Db, ty: &Ty) -> Option<crate::wit_world:
 /// the core and component bytes) rather than a raw byte.
 /// Whether a `list<T>` ELEMENT type is marshalable as a host arg by `select::emit_list_arg_marshal`: a
 /// `Bytes`/`String` (crosses as an inner `(ptr,len)`), a SCALAR (aliased-width int/char/float, written
-/// inline), or a NESTED `list` whose own element is marshalable (recursed to arbitrary depth). Kept in
-/// lockstep with the marshal's element arms so the representability gate admits exactly what the marshal
-/// emits — a record/tuple/variant element is not yet marshaled and declines here.
+/// inline), a NESTED `list` whose own element is marshalable (recursed to arbitrary depth), or a RECORD whose
+/// every field is a scalar or `Bytes` (written in place at its canonical layout by `emit_record_to_mem`).
+/// Kept in lockstep with the marshal's element arms so the representability gate admits exactly what the
+/// marshal emits — a record with a nested-record/list field, or a tuple/variant element, declines here.
 pub fn list_elem_marshalable(ty: &Ty) -> bool {
     match ty.strip_nominal() {
         Ty::Bytes | Ty::String => true,
         Ty::List(inner) => list_elem_marshalable(inner),
+        Ty::Record(fields) => {
+            !fields.is_empty()
+                && fields.values().all(|f| {
+                    matches!(f.strip_nominal(), Ty::Bytes | Ty::String) || abi_val_type(f).is_some()
+                })
+        }
         other => abi_val_type(other).is_some(),
     }
 }
