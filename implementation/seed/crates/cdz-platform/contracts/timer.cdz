@@ -47,3 +47,10 @@ def arm-conforms() =
 def fired-conforms() =
   match a-fired() with
   | Event.Fired(t) => if t == 1724371200 then unit else trap("fired_time mismatch")
+
+// Make the schema types importable as a LIBRARY (`import { Envelope, Event } from "timer"`): a guest that
+// arms a timer builds an `Envelope.FireAfter(dur)` to emit, and a checker matching the fire may read the
+// `Event.Fired` wake, so both need the types AND their constructors in scope. The `.*` exports every
+// constructor (a bare `Envelope` would expose only the opaque type handle, unmatchable/unbuildable). Inert
+// for the Rust codegen (which reads the schema, not the export clause) and for a single-file compile.
+export { Envelope.*, Event.* }

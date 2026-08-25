@@ -1,0 +1,70 @@
+// The §6 TIMER checker, as a Cadenza reducer guest (design/cadenza-platform.md §6/§9). The paired guest
+// (reducer-timer-cdz) arms a fire-after by emitting a request on the timer contract with a distinctive
+// continuation token; the runtime fires it and delivers a `Fired` RESPONSE correlated by that token. This
+// checker asserts the arm→fire round-trip happened, LOG-ONLY and guest-agnostic.
+//
+// It imports the same three schemas as the other checkers: the check Envelope (log-in), the verdict Verdict
+// (pass/fail-out), and the log-schema LogRecord/Entry (the decoded log — the arm is an `Emitted`, the wake a
+// `Delivered`). The `libs` manifest beside this file lists their repo-relative paths.
+//
+// JUDGEMENT: pass iff some `Emitted(contract = C, token = T)` — the arm — is matched by a `Delivered(contract
+// = C, token = T)` — the wake delivered back on the arm's own token. Since the runtime correlates a timer
+// wake to its arm by the request's continuation token, a matching pair proves the armed timer actually
+// FIRED. It is a RELATIONAL match on the run-controlled (C, T), no hardcoded id, and NON-VACUOUS: a timer
+// that never fires (or a guest that never arms) leaves the emitted arm with no delivered wake on its token,
+// so no pair matches and the check fails. The trigger message that starts the guest carries a different
+// token, so it cannot masquerade as the wake. Settled idioms (List.at-None ends the walk; LogRecord
+// destructured in the Some arm; the equality folded into a match guard).
+import { Envelope } from "check"
+import { Verdict } from "verdict"
+import { LogRecord, Entry } from "log-schema"
+
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+// Does some Delivered at index >= i carry (contract == c, token == t)? (the wake delivered on the arm's
+// token — the runtime correlates a timer fire back to its arm by the continuation token.)
+def has-wake(records: List(LogRecord), i: Int64, c: Bytes, t: Bytes) =
+  match List.at(records, i) with
+  | Option.None(_) => false
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      (match rec.entry with
+        | Entry.Delivered(d) if (d.contract == c and d.token == t) => true
+        | _ => has-wake(records, i + 1, c, t))
+
+// Is some Emitted(contract = C, token = T) — an arm — matched by a Delivered(C, T) — the wake? Scans emitted
+// records; for each, checks the whole log for a delivery correlated by the same contract+token.
+def armed-then-fired(records: List(LogRecord), i: Int64) =
+  match List.at(records, i) with
+  | Option.None(_) => false
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      (match rec.entry with
+        | Entry.Emitted(e) if has-wake(records, 0, e.contract, e.token) => true
+        | _ => armed-then-fired(records, i + 1))
+
+def verdict-payload(records: List(LogRecord)) =
+  if armed-then-fired(records, 0)
+  then Value.encode(Verdict.Verdict({ pass = true, messages = [] }))
+  else Value.encode(Verdict.Verdict({ pass = false,
+                                      messages = ["no Emitted arm was matched by a Delivered wake on the same contract+token: the armed timer did not fire"] }))
+
+def verdict-req(verdict-contract: Bytes, payload: Bytes) =
+  { contract = verdict-contract, payload = payload, token = b"", deadlineNanos = None }
+
+def on-message(msg) =
+  match (Value.decode(msg.payload) : Option(Envelope)) with
+  | Some(Envelope.Check(c)) =>
+      (match (Value.decode(c.log) : Option(List(LogRecord))) with
+       | Some(records) =>
+           { requests = [verdict-req(c.verdict, verdict-payload(records))], outcome = Outcome.Continue }
+       | None =>
+           { requests = [verdict-req(c.verdict,
+                                     Value.encode(Verdict.Verdict({ pass = false,
+                                                                    messages = ["observation log did not decode"] })))],
+             outcome = Outcome.Continue })
+  | None =>
+      { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = msg.payload }) }
+
+def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
+def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
+export { on-message, on-response, on-notification }
