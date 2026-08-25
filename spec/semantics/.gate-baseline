@@ -6588,6 +6588,8 @@ pass	the Sign sum orders Neg below Pos per its declaration
 pass	the absorption law does not discard a trapping runtime operand
 pass	the absorption law holds on runtime-element sets
 pass	the accumulator transform applies with the self-call in either operand
+pass	the accumulator transform declines a non-associative combine with the self-call first
+pass	the accumulator transform declines when the base is not the operator's identity
 pass	the accumulator transform preserves a product (factorial) shape
 pass	the additive-zero identity preserves a boundary-crossing runtime operand
 pass	the and SHORT-CIRCUITS: the second operand's perform must NOT fire (state proves it)

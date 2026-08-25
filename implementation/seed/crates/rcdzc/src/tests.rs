@@ -25208,32 +25208,6 @@ mod recursion {
     }
 
     #[test]
-    fn the_accumulator_transform_declines_shapes_it_cannot_reassociate() {
-        use wasmtime::component::Val;
-        // The transform must NOT fire (and must leave the def correct) when the shape is not a linear
-        // associative-combine recursion. Each of these stays a plain recursion and still computes right.
-        // (1) TWO self-calls (fibonacci) — not linear; must not transform.
-        let fib = compile_component(&crate::codec::encode(&parse(
-            "(module m (def (fib (: n Int64)) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) (export fib))",
-        )))
-        .expect("compile");
-        assert_eq!(run_returns_with::<i64>(&fib, "fib", &[Val::S64(10)]), 55);
-        // (2) base value is NOT the op's identity (`+` with base 100) — reassociating would change the
-        // result, so it must NOT transform. sm(3) = 3+2+1+100 = 106.
-        let based = compile_component(&crate::codec::encode(&parse(
-            "(module m (def (sm (: n Int64)) (if (= n 0) 100 (+ n (sm (- n 1))))) (export sm))",
-        )))
-        .expect("compile");
-        assert_eq!(run_returns_with::<i64>(&based, "sm", &[Val::S64(3)]), 106);
-        // (3) a non-associative combine (`-`) — must not transform. f(3) = -(f2)-1 chain = -3.
-        let sub = compile_component(&crate::codec::encode(&parse(
-            "(module m (def (f (: n Int64)) (if (= n 0) 0 (- (f (- n 1)) 1))) (export f))",
-        )))
-        .expect("compile");
-        assert_eq!(run_returns_with::<i64>(&sub, "f", &[Val::S64(3)]), -3);
-    }
-
-    #[test]
     fn a_recursive_overflow_traps_at_runtime() {
         // fac(25) overflows i64 (25! > 2^63); the checked multiply TRAPS at run time (not a compile-time
         // fold — the value only exists at run time through the call chain). Proves the call ABI carries
