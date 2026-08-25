@@ -1,0 +1,24 @@
+// A Cadenza reducer SEQUENCING two host calls in one fold — state.put THEN a compound state.get
+// (design/cadenza-platform.md §7). Migrated from v-rust-backend's put-then-compound-get anchor, so the
+// compiler need not carry a wasmtime dev-dep to prove this shape. On-message it writes the delivered payload
+// at the delivered token, then in the SAME fold reads it back and matches the compound (Option) result,
+// emitting the read-back value. This exercises host-call SEQUENCING (Core::Seq with two host-reaching
+// statements) + a COMPOUND (option<list<u8>>) host-call result the guest matches — distinct from the
+// single-op state runs (which each perform one op) and the two-message state run (put in one message, get in
+// another). Single host interface (state), reducer-world. on-response / on-notification inert.
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+def on-message(msg) =
+  host state in
+    ( state.put(msg.token, msg.payload) ;
+      (match state.get(msg.token) with
+        | Some(v) =>
+            { requests = [{ contract = msg.contract, payload = v, token = msg.token, deadlineNanos = None }],
+              outcome = Outcome.Continue }
+        | None(_) =>
+            { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = b"get-miss" }) }) )
+
+def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
+def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
+export { on-message, on-response, on-notification }

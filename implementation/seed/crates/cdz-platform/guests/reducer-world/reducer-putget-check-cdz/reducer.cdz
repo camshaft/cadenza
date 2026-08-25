@@ -1,0 +1,61 @@
+// The put-then-compound-get checker (design/cadenza-platform.md §7/§9) — asserts a reducer WROTE then READ a
+// value back in ONE fold (state.put then a compound state.get returning Some). Paired guest reducer-putget-cdz
+// does state.put(token, payload) ; match state.get(token) with Some(v) => emit v | None => close. LOG-ONLY.
+//
+// JUDGEMENT: pass iff some KvGet(key = K, hit = 1) — a READ THAT HIT — has its key K matched by an earlier
+// KvPut(key = K) — the write. A hit-after-write in the same reducer's store proves both the SEQUENCING (put
+// then get in one fold) and that the compound (option<list<u8>>) get result was Some (hit = 1). RELATIONAL on
+// the run-controlled key, no hardcoded bytes. NON-VACUOUS: a guest that does not put, or whose get missed
+// (hit = 0), yields no such pair. Settled idioms.
+import { Envelope } from "check"
+import { Verdict } from "verdict"
+import { LogRecord, Entry } from "log-schema"
+
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+// Does some KvPut write key == k? (the value stored under k.)
+def has-put-key(records: List(LogRecord), i: Int64, k: Bytes) =
+  match List.at(records, i) with
+  | Option.None(_) => false
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      (match rec.entry with
+        | Entry.KvPut(p) if (p.key == k) => true
+        | _ => has-put-key(records, i + 1, k))
+
+// Is some KvGet(key = K, hit = 1) matched by a KvPut(key = K)? (read-after-write in one fold; the compound
+// get returned Some.)
+def put-then-get-hit(records: List(LogRecord), i: Int64) =
+  match List.at(records, i) with
+  | Option.None(_) => false
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      (match rec.entry with
+        | Entry.KvGet(g) if (g.hit == 1 and has-put-key(records, 0, g.key)) => true
+        | _ => put-then-get-hit(records, i + 1))
+
+def verdict-payload(records: List(LogRecord)) =
+  if put-then-get-hit(records, 0)
+  then Value.encode(Verdict.Verdict({ pass = true, messages = [] }))
+  else Value.encode(Verdict.Verdict({ pass = false,
+                                      messages = ["no KvGet(hit) matched a KvPut of the same key: put-then-get sequencing (compound get returning Some) was not observed in one fold"] }))
+
+def verdict-req(verdict-contract: Bytes, payload: Bytes) =
+  { contract = verdict-contract, payload = payload, token = b"", deadlineNanos = None }
+
+def on-message(msg) =
+  match (Value.decode(msg.payload) : Option(Envelope)) with
+  | Some(Envelope.Check(c)) =>
+      (match (Value.decode(c.log) : Option(List(LogRecord))) with
+       | Some(records) =>
+           { requests = [verdict-req(c.verdict, verdict-payload(records))], outcome = Outcome.Continue }
+       | None =>
+           { requests = [verdict-req(c.verdict,
+                                     Value.encode(Verdict.Verdict({ pass = false,
+                                                                    messages = ["observation log did not decode"] })))],
+             outcome = Outcome.Continue })
+  | None =>
+      { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = msg.payload }) }
+
+def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
+def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
+export { on-message, on-response, on-notification }
