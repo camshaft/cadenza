@@ -437,58 +437,6 @@ pub(crate) fn reflect_document(ast: &mut Arenas, node: StructId) -> Option<Struc
     reify_inner(ast, node, true, true)
 }
 
-/// Desugar every `Ast.self` (`(. Ast self)`) occurrence in `ast` into the reified AST of the ENCLOSING
-/// MODULE — the whole file's canonical AST reflected as an `Ast` value. `Ast.self` is the first-class
-/// self-reflection intrinsic (operator direction): any code reflects its OWN containing module — more
-/// general than a self-import of `__ast__` (a caller need not know or name its own module path).
-///
-/// Runs PER-FILE on the RAW arena BEFORE the link merge, where the file's own root form is intact (a
-/// merged arena flattens each file's items, so the module root must be reflected here). Rewrites each
-/// occurrence in place — mirroring [`reify_quotes`] — so downstream `resolve` never sees a bare
-/// `(. Ast self)` (which would fault as an unknown `Ast` member); it sees an ordinary `Ast.List`
-/// construction. A file with no `Ast.self` is a no-op (fast-bailed on the `self` leaf scan). Reflection
-/// captures the module VERBATIM, including the `Ast.self` calls themselves (they are ordinary source
-/// forms); the enclosing code selects the pieces it wants (the P4 contract-id enumerates its interface).
-pub(crate) fn desugar_ast_self(ast: &mut Arenas) {
-    // Fast bail: a `(. Ast self)` form requires a `self` NAME leaf; if none exists, there is nothing to do.
-    if !ast
-        .leaves
-        .iter()
-        .any(|l| matches!(l, Leaf::Name(n) if n.as_ref() == "self"))
-    {
-        return;
-    }
-    let original_len = ast.structure.len() as u32;
-    // Collect `(. Ast self)` occurrences among the ORIGINAL nodes (reflection APPENDS, so bound the scan).
-    let mut occs: Vec<StructId> = Vec::new();
-    for i in 0..original_len {
-        let id = StructId(i);
-        if let Some(tail) = ast.as_form(id, ".")
-            && tail.len() == 2
-            && ast.as_name(tail[0]) == Some("Ast")
-            && ast.as_name(tail[1]) == Some("self")
-        {
-            occs.push(id);
-        }
-    }
-    if occs.is_empty() {
-        return;
-    }
-    // Reflect the module's own root ONCE, BEFORE rewriting (so the reflected value captures the module
-    // verbatim). If the root is un-reifiable, leave the occurrences alone — `resolve` then reports the
-    // unknown-member `(. Ast self)`, never a miscompile.
-    let Some(reified) = reflect_document(ast, ast.root) else {
-        return;
-    };
-    // Overwrite each occurrence's structure entry with a COPY of the reified root's entry (mirror
-    // `reify_quotes`' rewrite). Occurrences share the reified subtree's children (inert data); `reified`
-    // itself becomes an unreferenced appended node (harmless dead arena entry).
-    let reified_entry = ast.get(reified).clone();
-    for occ in occs {
-        ast.structure[occ.0 as usize] = reified_entry.clone();
-    }
-}
-
 /// The shared body of `reify`, parameterized by whether an integer-literal payload is GROUNDED to
 /// `BigInt`. In VALUE position (`ground_ints` true — the reifier building an `Ast` value) a bare int
 /// literal is wrapped `(: N BigInt)` so it grounds to `Ast.Int`'s `BigInt` payload. In PATTERN position

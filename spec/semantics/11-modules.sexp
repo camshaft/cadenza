@@ -2121,15 +2121,15 @@
             (export main)))
   (output (: true Bool)))
 
-(case "a module reflects itself via Ast.self and exports a compile-time content-address a caller imports"
-  (doc    "SELF-REFLECTION (the P4 contract-id mechanism): module `c` uses the `Ast.self` intrinsic to
+(case "a module reflects itself via Ast.module and exports a compile-time content-address a caller imports"
+  (doc    "SELF-REFLECTION (the P4 contract-id mechanism): module `c` uses the `Ast.module` intrinsic to
            reflect its OWN module AST, hashes it to a 32-byte digest, and exports that as a compile-time
            CONSTANT `cid`. A caller imports the constant directly — no per-caller AST transform, and no
-           self-import. Pins that a module can self-reflect (Ast.self) and export a content-address
+           self-import. Pins that a module can self-reflect (Ast.module) and export a content-address
            constant (the compiler-side of userspace contract-id construction).")
   (module "c"
     (do
-      (def (cid) (Blake3.of (Ast.encode Ast.self)))
+      (def (cid) (Blake3.of (Ast.encode Ast.module)))
       (export cid)))
   (input  (do
             (import "c" (cid))

@@ -3802,12 +3802,13 @@
             ((Err _) false)))
   (output (: true Bool)))
 
-(case "Ast.self reflects the enclosing module as an Ast.List value"
-  (doc    "`Ast.self` is the self-reflection intrinsic: it reflects the AST of the module the call occurs
-           in. A module body is a `(do …)`, which reflects to an `Ast.List`, so matching `Ast.self` against
-           the `Ast.List` variant is true. More general than importing one's own `__ast__` — any code can
-           reflect its containing module without naming its own path (operator direction).")
+(case "Ast.module reflects the enclosing module as an Ast.List value"
+  (doc    "`Ast.module` is the self-reflection intrinsic (a member of the built-in `Ast` sum): it reflects the
+           AST of the module the occurrence is in, type-directed through ordinary resolution. A module body
+           is a `(do …)`, which reflects to an `Ast.List`, so matching `Ast.module` against the `Ast.List`
+           variant is true. More general than importing one's own `__ast__` — any code can reflect its
+           containing module without naming its own path.")
   (input  (do
-            (def (main) (match Ast.self ((Ast.List _) true) (_ false)))
+            (def (main) (match Ast.module ((Ast.List _) true) (_ false)))
             (export main)))
   (output (: true Bool)))
