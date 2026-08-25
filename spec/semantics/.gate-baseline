@@ -7209,6 +7209,7 @@ todo	a DIRECT branch perform in a NESTED handler-arm resume-value declines clean
 todo	a HEAP-accumulator block-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor)
 todo	a List entry argument is marshalled as a vec!
 todo	a MULTIBYTE and an EMPTY runtime String entry arg measure their UTF-8 byte lengths
+todo	a NON-TAIL const recursion nested inside an outer unroll declines (todo) — the tail-nested twin folds
 todo	a Rational ENTRY parameter crosses the boundary and reduces per call
 todo	a Rational entry argument is marshalled through Rational::new
 todo	a String ENTRY arg rides a rope into an effect-op argument and the arm reads its bytes

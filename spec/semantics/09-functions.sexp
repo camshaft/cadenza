@@ -6041,6 +6041,30 @@
             (export main)))
   (output (: 3 Int64)))
 
+(case "a NON-TAIL const recursion nested inside an outer unroll declines (todo) — the tail-nested twin folds"
+  (doc    "The DUAL of the NESTED case above, marking the current boundary of the general const-fold. There the
+           per-element helper `dec` is TAIL-recursive (its self-call IS the whole else-arm), so the const-fold
+           unroll reduces it LINEARLY and folds. Here `tri` is NON-TAIL — its self-call sits INSIDE an op,
+           `(+ n (tri (- n 1)))`, so unrolling accumulates a residual expression tree. When `tri` is const-
+           folded WHILE INSIDE the outer `rb` unroll (a recursive helper called per element from a recursive
+           build), the one-level-unroll-and-refold cannot collapse that accumulating residual across the nested
+           unroll frames, so it DECLINES (CDZ0201) rather than folding — a `todo`, not a miscompile. NOTE the
+           decline is specific to the RE-ENTRANT case: `tri` folds FINE standalone, in a runtime function, and
+           at top level (only a non-tail recursion const-folded inside ANOTHER const-fold unroll declines). The
+           general const-eval extension (a real interpreter for the nested call, or a reduction depth/budget
+           adjustment) would fold it. Intended value: `rb [1 2 3]` = `[1 2 3]` (each `tri h` a constant), length
+           3. OFF the P4 self-reflection critical path — that transform uses only tail/search/filter recursions,
+           all of which fold.")
+  (input  (do
+            (def (tri (const (: n Int64))) (if (= n 0) 0 (+ n (tri (- n 1)))))
+            (def (rb (const (: xs (List Int64))))
+              (match xs
+                ((list) (: (list) (List Int64)))
+                ((list h .. t) (List.prepend (rb t) (tri h)))))
+            (def (main) (List.len (rb (list 1 2 3))))
+            (export main)))
+  (output (: 3 Int64)))
+
 (case "the runtime-list version of a tail fold compiles and folds correctly"
   (doc    "The correct alternative to the const-collection reject above: the SAME tail fold over a RUNTIME
            `(List Int64)` parameter (no `const`) compiles to a proper `loop` whose `br_if` exit is the real

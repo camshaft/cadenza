@@ -7173,6 +7173,7 @@ todo	a BLOCK-wrapped branch perform in a non-tail DO-STATEMENT declines cleanly 
 todo	a DEPTH-3 nested-op chain whose deepest resume performs the outer effect declines cleanly (no silent drop)
 todo	a DIRECT branch perform in a NESTED handler-arm resume-value declines cleanly (adv-69 a3-direct sub-face)
 todo	a HEAP-accumulator block-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor)
+todo	a NON-TAIL const recursion nested inside an outer unroll declines (todo) — the tail-nested twin folds
 todo	a block-wrapped OUTER-effect perform in a do-statement TWO nested handlers deep declines cleanly (adv-69 nh7 depth-3)
 todo	a block-wrapped OUTER-effect perform in a nested handle's INIT declines cleanly (adv-69 a4-init sub-face)
 todo	a block-wrapped OUTER-effect perform in a non-tail do-statement INSIDE a nested handler body declines cleanly (adv-69 c3-nested sub-face)
