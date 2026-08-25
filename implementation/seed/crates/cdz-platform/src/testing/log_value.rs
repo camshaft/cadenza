@@ -33,7 +33,7 @@
 //! returns `None`), never a panic.
 
 use super::observation::{
-    BlobOp, Entry, EventKind, EventOp, GraphOp, KvOp, ProvOp, Record, SpawnInfo,
+    BlobOp, Entry, EventKind, EventOp, GraphOp, KvOp, ProvOp, Record, RejectedCall, SpawnInfo,
 };
 use crate::contract_value::{
     as_ascribed, ascribe, bare_ctor, bytes_leaf, qctor, read_bytes, read_uint, record,
@@ -134,6 +134,7 @@ fn entry_value(b: &mut Builder, e: &Entry) -> StructId {
         Entry::Provenance(op) => prov_value(b, op),
         Entry::Graph(op) => graph_value(b, op),
         Entry::Spawn(info) => spawn_value(b, info),
+        Entry::HostCallRejected(c) => rejected_value(b, c),
     }
 }
 
@@ -151,6 +152,7 @@ fn read_entry(arenas: &Arenas, id: StructId) -> Option<Entry> {
             Entry::Graph(read_graph(arenas, inner, tag)?)
         }
         "Spawn" => Entry::Spawn(read_spawn(arenas, inner)?),
+        "HostCallRejected" => Entry::HostCallRejected(read_rejected(arenas, inner)?),
         _ => return None,
     })
 }
@@ -752,6 +754,34 @@ fn read_spawn(arenas: &Arenas, id: StructId) -> Option<SpawnInfo> {
     })
 }
 
+// --- host-call-rejected (the arg-parse-guard observation, §9) ---
+
+/// A `HostCallRejected` as a record `{iface, op, rawArgs}` — the interface/op strings and the raw argument
+/// byte leaves as received. `rawArgs` is a name-headed list of raw-bytes leaves, order-preserving.
+fn rejected_value(b: &mut Builder, c: &RejectedCall) -> StructId {
+    let iface = str_leaf(b, c.iface.as_str());
+    let op = str_leaf(b, c.op.as_str());
+    let items = c.raw_args.iter().map(|a| bytes_leaf(b, a)).collect();
+    let raw_args = list_value(b, items);
+    tagged(
+        b,
+        "HostCallRejected",
+        vec![("iface", iface), ("op", op), ("rawArgs", raw_args)],
+    )
+}
+
+fn read_rejected(arenas: &Arenas, id: StructId) -> Option<RejectedCall> {
+    let raw_args = list_items(arenas, field(arenas, id, "rawArgs")?)?
+        .iter()
+        .map(|&a| read_bytes(arenas, a))
+        .collect::<Option<Vec<_>>>()?;
+    Some(RejectedCall {
+        iface: Str::from(str_at(arenas, field(arenas, id, "iface")?)?),
+        op: Str::from(str_at(arenas, field(arenas, id, "op")?)?),
+        raw_args,
+    })
+}
+
 fn reducer_kind_str(kind: ReducerKind) -> &'static str {
     match kind {
         ReducerKind::Ordinary => "ordinary",
@@ -896,7 +926,7 @@ fn read_hash(arenas: &Arenas, id: StructId) -> Option<Hash> {
 mod tests {
     use super::{deserialize, serialize};
     use crate::testing::observation::{
-        BlobOp, Entry, EventKind, EventOp, GraphOp, KvOp, ProvOp, Record, SpawnInfo,
+        BlobOp, Entry, EventKind, EventOp, GraphOp, KvOp, ProvOp, Record, RejectedCall, SpawnInfo,
     };
     use crate::{
         Bytes, ContractId, Dir, EdgeKind, Error, Hash, HashTag, HostId, Origin, ProgramHash,
@@ -1169,6 +1199,17 @@ mod tests {
                     kind: EdgeKind::spawn(),
                     dir: Dir::Out,
                     result: vec![ReducerId::of(b"parent"), ReducerId::of(b"root")],
+                }),
+            ),
+            rec(
+                18,
+                Entry::HostCallRejected(RejectedCall {
+                    iface: Str::from("graph"),
+                    op: Str::from("neighbors"),
+                    raw_args: vec![
+                        Bytes::from_static(b"not-a-reducer-id"),
+                        Bytes::from_static(b"kind"),
+                    ],
                 }),
             ),
         ];

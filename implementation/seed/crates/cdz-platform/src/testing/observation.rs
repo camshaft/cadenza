@@ -65,6 +65,27 @@ pub enum Entry {
     /// is self-describing: a reader derefs a name to the reducer id ([`Record::source`]) it was assigned,
     /// with no out-of-band metadata (§3).
     Spawn(SpawnInfo),
+    /// A privileged host call whose ARGUMENTS did not parse to their typed form, so the host early-returned
+    /// a default (`[]`/`false`) without reaching the recordable capability. Recorded regardless — at the host
+    /// boundary, above the parse — so no host call a reducer performs is silently unobservable
+    /// (`design/cadenza-platform.md` §9, log-every-host-call). Coarse and interface-general: it names the
+    /// interface + operation and carries the raw argument bytes as received, since a malformed value has no
+    /// typed shape to record. A well-formed call still records through its typed op (`Kv`/`Graph`/…).
+    HostCallRejected(RejectedCall),
+}
+
+/// A host call rejected at the argument-parse boundary (`design/cadenza-platform.md` §9): its interface and
+/// operation names, and the raw argument byte slices as received (before the parse that failed). Coarse and
+/// interface-general because a malformed argument has no typed form — the point is only that the call was
+/// *performed* and *observed*, so a checker can assert it happened rather than it vanishing silently.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RejectedCall {
+    /// The host interface the operation belongs to (e.g. `graph`).
+    pub iface: Str,
+    /// The operation name within the interface (e.g. `neighbors`).
+    pub op: Str,
+    /// The raw argument byte slices as received, before the (failed) parse.
+    pub raw_args: Vec<Bytes>,
 }
 
 /// A reducer the harness spawned at the start of a run, and the name the run gave it — the log's record
@@ -588,6 +609,13 @@ impl fmt::Display for Record {
                 info.name.as_str(),
                 short(info.program),
                 info.kind
+            ),
+            Entry::HostCallRejected(c) => write!(
+                f,
+                "host-call-rejected {}.{} ({} arg(s), unparseable)",
+                c.iface.as_str(),
+                c.op.as_str(),
+                c.raw_args.len()
             ),
         }
     }
