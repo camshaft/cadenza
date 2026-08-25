@@ -7186,3 +7186,4 @@ todo	expect traps on the absent case of a runtime optional
 todo	read of malformed text is a coded reject, not a wrong value
 todo	runtime Blake3.of equals the compile-time fold of the same bytes (section-9 byte-identity)
 todo	two adapter records with different state types drive a take-while fold in one program
+pass	a module reflects its own __ast__ and exports a compile-time content-address a caller imports

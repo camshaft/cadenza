@@ -2120,3 +2120,20 @@
                           (_            false)))
             (export main)))
   (output (: true Bool)))
+
+(case "a module reflects its own __ast__ and exports a compile-time content-address a caller imports"
+  (doc    "SELF-REFLECTION (the P4 contract-id mechanism): module `c` imports its OWN `__ast__`, hashes
+           its canonical AST to a 32-byte digest, and exports that as a compile-time CONSTANT `cid`. A
+           caller imports the constant directly — no per-caller AST transform. The `m → m` self-import of
+           `__ast__` is inert reflection, NOT a cyclic-import error. Pins that a module can self-reflect and
+           export a content-address constant (the compiler-side of userspace contract-id construction).")
+  (module "c"
+    (do
+      (import "c" (__ast__))
+      (def (cid) (Blake3.of (Ast.encode __ast__)))
+      (export cid)))
+  (input  (do
+            (import "c" (cid))
+            (def (main) (Bytes.len cid))
+            (export main)))
+  (output (: 32 Int64)))

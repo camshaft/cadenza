@@ -785,6 +785,16 @@ fn find_import_cycle(scopes: &[FileScope]) -> Option<Vec<usize>> {
         while let Some((node, path)) = stack.pop() {
             let mut advanced = false;
             for imp in &scopes[node].imports {
+                // An `__ast__` (import-reflection) import is NOT a dependency edge: it binds the target
+                // module's SYNTAX as inert compile-time data (reflected from the raw arena, available
+                // before any compilation), creating no value/type/compile-order dependency. So it can
+                // never form a real dependency cycle — a module reflecting its OWN `__ast__` (the P4
+                // self-reflection: a contract module hashes its own AST and exports the id as a const) is
+                // a self-edge `m → m` that must NOT be flagged CDZ0201, and even mutual A/B reflection is
+                // fine. Skip these edges entirely.
+                if imp.local == AST_REFLECT_NAME {
+                    continue;
+                }
                 let to = imp.from_file;
                 match mark[to] {
                     Mark::OnStack => {
@@ -1025,6 +1035,35 @@ mod tests {
         assert!(
             out.artifact(Target::Wasm.artifact_kind()).is_some(),
             "a component should be produced for the reflecting package"
+        );
+    }
+
+    /// SELF-REFLECTION (P4 mechanism): a module may `import { __ast__ }` from ITSELF to reflect its own
+    /// AST and, e.g., export its content-address as a compile-time constant. The `__ast__` import is inert
+    /// reflection, not a dependency edge, so the `m → m` self-edge is NOT a cyclic-import error (CDZ0201).
+    #[test]
+    fn a_module_reflects_its_own_ast_via_self_import() {
+        use crate::abi::Artifact;
+        use crate::backend::Target;
+        let m = crate::codec::encode(&arena_of(
+            "(do (import \"m\" (__ast__)) \
+             (def (cid) (Bytes.len (Blake3.of (Ast.encode __ast__)))) (export cid))",
+        ));
+        let out = crate::compile(
+            &[
+                Artifact::new(Artifact::KIND_AST, "m", m),
+                Artifact::new(KIND_ENTRY, "entry", b"m".to_vec()),
+            ],
+            &[Target::Wasm],
+        );
+        assert!(
+            !out.has_error(),
+            "a module self-reflecting its own __ast__ must not be a cyclic-import error; diagnostics: {:?}",
+            out.diagnostics
+        );
+        assert!(
+            out.artifact(Target::Wasm.artifact_kind()).is_some(),
+            "the self-reflecting module should emit a component"
         );
     }
 
