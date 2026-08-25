@@ -19,7 +19,16 @@
 //!   (= blobs   ("list" <blob>…))              ; the program blobs, by name
 //!   (= spawns  ("list" <spawn>…))             ; the tasks to spawn, in order
 //!   (= deliver ("list" <delivery>…))          ; optional; the initial events to inject, in order
-//!   (= checker "check")))                      ; optional; the blob name of the checker reducer (§9)
+//!   (= checker "check")                        ; optional; the blob name of the checker reducer (§9)
+//!   (= edges   ("list" <edge>…))))             ; optional; reducer-graph transform chains to seed (§4)
+//! ```
+//!
+//! An `<edge>` seeds one transform chain (§4): for the emitting task `from`, effects on `contract` route
+//! through the ordered chain of transform tasks `to`. All three are task names (resolved to ids like a
+//! spawn); the graph is otherwise empty, so an emitter with no edge for a contract has an empty chain (which
+//! the default event handler answers with `missing-handler`):
+//! ```text
+//! ("record" (= from "emitter") (= contract "AbC…base62") (= to ("list" "transform-a" "transform-b")))
 //! ```
 //!
 //! The `checker`, if present, names a program blob the harness runs over the completed observation log to
@@ -141,6 +150,28 @@ pub struct HarnessSpec {
     /// is the sole source of the default handler; a run stands up a specific default handler here and routes
     /// named contracts to named handlers, then asserts how an effect is routed/answered.
     pub registry: RegistrySpec,
+    /// The reducer-graph transform chains to seed before the run (§4): each edge configures, for an emitting
+    /// task and a contract, the ordered chain of transform tasks its effects on that contract route through.
+    /// The graph is otherwise empty, so an emitter with no edge for a contract has an empty chain — which the
+    /// default event handler answers with `missing-handler` (the reject arm). An edge with a non-empty chain
+    /// is the forward arm: the default handler routes the effect to the first transform. All tasks are named
+    /// (resolved to ids at run time, like spawns); empty for a run that seeds no chains.
+    pub edges: Vec<GraphEdge>,
+}
+
+/// One reducer-graph transform chain to seed (`design/cadenza-platform.md` §3/§4): for the emitting task
+/// [`from`](GraphEdge::from), effects on [`contract`](GraphEdge::contract) route through the ordered chain of
+/// transform tasks [`to`](GraphEdge::to). Mirrors the graph's `set-edges` (whole-chain replace) keyed by
+/// [`EdgeKind::for_contract`](crate::graph::EdgeKind::for_contract). All are task **names** resolved to ids at
+/// run time; an empty `to` seeds no chain (the same as declaring no edge).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GraphEdge {
+    /// The emitting task whose effects on `contract` this chain governs.
+    pub from: String,
+    /// The contract whose chain this configures.
+    pub contract: ContractId,
+    /// The ordered transform tasks the effect routes through (chain order).
+    pub to: Vec<String>,
 }
 
 /// The event registry a run installs (`design/cadenza-platform.md` §4): a **default** event handler that
@@ -312,6 +343,11 @@ pub enum SpecError {
         /// The delivery target that resolves to no task.
         target: String,
     },
+    /// A graph edge's `from` emitter or a `to` transform names a task the run does not spawn.
+    UnknownEdgeTask {
+        /// The edge endpoint (emitter or transform) that resolves to no task.
+        task: String,
+    },
 }
 
 impl fmt::Display for SpecError {
@@ -350,6 +386,12 @@ impl fmt::Display for SpecError {
             SpecError::DuplicateTask { task } => write!(f, "duplicate task name `{task}`"),
             SpecError::UnknownTarget { target } => {
                 write!(f, "delivery target `{target}` is not a task the run spawns")
+            }
+            SpecError::UnknownEdgeTask { task } => {
+                write!(
+                    f,
+                    "graph edge names task `{task}`, which is not a task the run spawns"
+                )
             }
         }
     }
@@ -441,6 +483,18 @@ impl HarnessSpec {
             Some(id) => read_registry(arenas, id)?,
         };
 
+        let edges = match record_field(arenas, root, "edges") {
+            None => Vec::new(),
+            Some(id) => list_items(arenas, id)
+                .ok_or(SpecError::WrongType {
+                    field: "edges",
+                    want: "a (list …) of edge records",
+                })?
+                .iter()
+                .map(|&e| read_edge(arenas, e))
+                .collect::<Result<_, _>>()?,
+        };
+
         Ok(HarnessSpec {
             run_for,
             blobs,
@@ -450,6 +504,7 @@ impl HarnessSpec {
             pure_run,
             deps,
             registry,
+            edges,
         })
     }
 
@@ -518,6 +573,20 @@ impl HarnessSpec {
                 });
             }
         }
+        // A graph edge seeds a transform chain between spawned tasks: its `from` emitter and every `to`
+        // transform must be a task the run spawns (like a delivery target).
+        for edge in &self.edges {
+            if !spawned.contains(edge.from.as_str()) {
+                return Err(SpecError::UnknownEdgeTask {
+                    task: edge.from.clone(),
+                });
+            }
+            for to in &edge.to {
+                if !spawned.contains(to.as_str()) {
+                    return Err(SpecError::UnknownEdgeTask { task: to.clone() });
+                }
+            }
+        }
         Ok(())
     }
 
@@ -550,6 +619,15 @@ impl HarnessSpec {
         // there are any.
         if !self.registry.handlers.is_empty() {
             harness = harness.registry(self.registry.handlers);
+        }
+        // Seed the reducer-graph transform chains, if any (§4) — resolved from names to ids at run time.
+        if !self.edges.is_empty() {
+            harness = harness.edges(
+                self.edges
+                    .into_iter()
+                    .map(|e| (e.from, e.contract, e.to))
+                    .collect(),
+            );
         }
         Ok(harness)
     }
@@ -618,6 +696,11 @@ impl HarnessSpec {
         }
         let registry = registry_to_ast(b, &self.registry);
         fields.push(("registry", registry));
+        if !self.edges.is_empty() {
+            let items = self.edges.iter().map(|edge| edge_to_ast(b, edge)).collect();
+            let edges = list_value(b, items);
+            fields.push(("edges", edges));
+        }
         record(b, fields)
     }
 }
@@ -641,6 +724,16 @@ fn registry_to_ast(b: &mut Builder, registry: &RegistrySpec) -> StructId {
         fields.push(("handlers", handlers));
     }
     record(b, fields)
+}
+
+/// The `("record" (= from …) (= contract b"…33") (= to ("list" …)))` node for one edge — the inverse of
+/// [`read_edge`]. The contract crosses as its raw 33 tagged bytes (like a delivery's contract).
+fn edge_to_ast(b: &mut Builder, edge: &GraphEdge) -> StructId {
+    let from = str_leaf(b, &edge.from);
+    let contract = bytes_leaf(b, edge.contract.hash().as_bytes());
+    let to_items = edge.to.iter().map(|t| str_leaf(b, t)).collect();
+    let to = list_value(b, to_items);
+    record(b, vec![("from", from), ("contract", contract), ("to", to)])
 }
 
 /// The `("record" (= bytes …)|(= path …))` node for one unnamed dependency — the inverse of [`read_dep`]
@@ -993,6 +1086,40 @@ fn read_handler(arenas: &Arenas, id: StructId) -> Result<(ContractId, String), S
     Ok((contract, program))
 }
 
+/// Read one `edges` record into a [`GraphEdge`] — a record with a `from` (emitting task name), a `contract`
+/// (contract-id, by base62 string or raw bytes), and a `to` (a `(list …)` of transform task names in chain
+/// order). Liberal about the record head.
+fn read_edge(arenas: &Arenas, id: StructId) -> Result<GraphEdge, SpecError> {
+    if !is_record(arenas, id) {
+        return Err(SpecError::WrongType {
+            field: "edges",
+            want: "a (record …) with from, contract and to",
+        });
+    }
+    let from = str_field(arenas, id, "from")?
+        .ok_or(SpecError::MissingField("from"))?
+        .to_string();
+    let contract = read_contract_id(arenas, id)?;
+    let to_list = record_field(arenas, id, "to").ok_or(SpecError::MissingField("to"))?;
+    let to = list_items(arenas, to_list)
+        .ok_or(SpecError::WrongType {
+            field: "to",
+            want: "a (list …) of transform task names",
+        })?
+        .iter()
+        .map(|&t| {
+            arenas
+                .as_str(t)
+                .map(str::to_string)
+                .ok_or(SpecError::WrongType {
+                    field: "to",
+                    want: "a task name string",
+                })
+        })
+        .collect::<Result<_, _>>()?;
+    Ok(GraphEdge { from, contract, to })
+}
+
 /// Read one `deps` record into a [`BlobSource`] — an UNNAMED content-addressed component: a record with
 /// exactly one of `bytes` (inline) or `path` (a file the executable reads), like a blob but with no `name`
 /// (nothing refers to a dep by name; it is resolved by content hash). Liberal about the record head.
@@ -1155,7 +1282,8 @@ fn answer_to_ast(b: &mut Builder, answer: &Result<Bytes, Error>) -> StructId {
 #[cfg(test)]
 mod tests {
     use super::{
-        BlobSource, BlobSpec, DeliveryEvent, HarnessSpec, PureRun, RegistrySpec, SpecError,
+        BlobSource, BlobSpec, DeliveryEvent, GraphEdge, HarnessSpec, PureRun, RegistrySpec,
+        SpecError,
     };
     use crate::contract_value::bare_ctor;
     use crate::contract_value::{bytes_leaf, record, uint_leaf};
@@ -1326,6 +1454,7 @@ mod tests {
                 default: "sys".to_string(),
                 handlers: vec![],
             },
+            edges: vec![],
         };
         // The loader is invoked for the path blob only, with the exact path string.
         let mut loaded = Vec::new();
@@ -1360,6 +1489,7 @@ mod tests {
                 default: "sys".to_string(),
                 handlers: vec![],
             },
+            edges: vec![],
         };
         let result = spec.build(|_| Err("no such file"));
         assert_eq!(result.err(), Some("no such file"));
@@ -1508,6 +1638,7 @@ mod tests {
                 default: "sys".to_string(),
                 handlers: vec![],
             },
+            edges: vec![],
         };
         let bytes = spec.encode();
         assert_eq!(HarnessSpec::decode(&bytes), Ok(spec));
@@ -1528,6 +1659,7 @@ mod tests {
                 default: "sys".to_string(),
                 handlers: vec![],
             },
+            edges: vec![],
         };
         assert_eq!(HarnessSpec::decode(&spec.encode()), Ok(spec));
     }
@@ -1750,6 +1882,7 @@ mod tests {
                 default: "sys".to_string(),
                 handlers: vec![],
             },
+            edges: vec![],
         };
         assert_eq!(spec.validate(), Ok(()));
     }
@@ -1768,6 +1901,7 @@ mod tests {
                 default: "sys".to_string(),
                 handlers: vec![],
             },
+            edges: vec![],
         };
         assert_eq!(
             spec.validate(),
@@ -1792,6 +1926,7 @@ mod tests {
                 default: "sys".to_string(),
                 handlers: vec![],
             },
+            edges: vec![],
         };
         assert_eq!(
             spec.validate(),
@@ -1820,6 +1955,7 @@ mod tests {
                 default: "sys".to_string(),
                 handlers: vec![],
             },
+            edges: vec![],
         };
         assert_eq!(
             spec.validate(),
@@ -1844,6 +1980,7 @@ mod tests {
                 default: "sys".to_string(),
                 handlers: vec![],
             },
+            edges: vec![],
         };
         assert_eq!(
             spec.validate(),
@@ -1867,6 +2004,7 @@ mod tests {
                 default: "sys".to_string(),
                 handlers: vec![],
             },
+            edges: vec![],
         };
         assert_eq!(
             spec.validate(),
@@ -1874,6 +2012,60 @@ mod tests {
                 target: "ghost".to_string(),
             })
         );
+    }
+
+    #[test]
+    fn validate_rejects_an_edge_naming_an_unspawned_task() {
+        // An edge seeds a transform chain between spawned tasks; a `to` transform that is not spawned is
+        // unresolved, so validate rejects it before the run (rather than panicking in name resolution).
+        let spec = HarnessSpec {
+            run_for: None,
+            blobs: vec![blob("sys"), blob("w")],
+            spawns: vec![SpawnSpec::new("emitter", "w")],
+            deliveries: vec![],
+            checker: None,
+            pure_run: None,
+            deps: Vec::new(),
+            registry: RegistrySpec {
+                default: "sys".to_string(),
+                handlers: vec![],
+            },
+            edges: vec![GraphEdge {
+                from: "emitter".to_string(),
+                contract: ContractId::of(b"cdz-platform.effect"),
+                to: vec!["ghost".to_string()],
+            }],
+        };
+        assert_eq!(
+            spec.validate(),
+            Err(SpecError::UnknownEdgeTask {
+                task: "ghost".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn an_edge_round_trips() {
+        // A seeded transform chain survives encode→decode, so a run can express the graph forward arm.
+        let spec = HarnessSpec {
+            run_for: None,
+            blobs: vec![],
+            spawns: vec![],
+            deliveries: vec![],
+            checker: None,
+            pure_run: None,
+            deps: Vec::new(),
+            registry: RegistrySpec {
+                default: "sys".to_string(),
+                handlers: vec![],
+            },
+            edges: vec![GraphEdge {
+                from: "emitter".to_string(),
+                contract: ContractId::of(b"cdz-platform.effect"),
+                to: vec!["transform-a".to_string(), "transform-b".to_string()],
+            }],
+        };
+        assert_eq!(HarnessSpec::decode(&spec.encode()), Ok(spec));
     }
 
     #[test]
@@ -1909,6 +2101,7 @@ mod tests {
                 default: "sys".to_string(),
                 handlers: vec![],
             },
+            edges: vec![],
         };
         assert_eq!(HarnessSpec::decode(&spec.encode()), Ok(spec));
     }
@@ -2002,6 +2195,7 @@ mod tests {
                 default: "sys".to_string(),
                 handlers: vec![],
             },
+            edges: vec![],
         };
         assert_eq!(HarnessSpec::decode(&spec.encode()), Ok(spec));
     }
@@ -2030,6 +2224,7 @@ mod tests {
                 default: "sys".to_string(),
                 handlers: vec![],
             },
+            edges: vec![],
         };
         assert_eq!(HarnessSpec::decode(&spec.encode()), Ok(spec));
     }
@@ -2056,6 +2251,7 @@ mod tests {
                 default: "sys".to_string(),
                 handlers: vec![],
             },
+            edges: vec![],
         };
         assert_eq!(HarnessSpec::decode(&spec.encode()), Ok(spec));
     }
@@ -2082,6 +2278,7 @@ mod tests {
             pure_run: None,
             deps: vec![],
             registry,
+            edges: vec![],
         };
         let spec = base(RegistrySpec {
             default: "default-handler".to_string(),
@@ -2131,6 +2328,7 @@ mod tests {
                 default: "sys".to_string(),
                 handlers: vec![],
             },
+            edges: vec![],
         };
         assert_eq!(
             spec.validate(),
