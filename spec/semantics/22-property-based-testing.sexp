@@ -1478,3 +1478,41 @@
             (export main)))
   (call   main (: 3.5 Float64)) (output (: 3.5 Float64))
   (call   main (: -2.25 Float64)) (output (: -2.25 Float64)))
+
+(case "a Value.encode/Value.decode round-trip preserves a scalar-erased single-ctor newtype NESTED as a tuple element"
+  (doc    "Pins the COMPOSITION the top-level single-ctor cases do not cover: a scalar-erased single-ctor
+           newtype `(type Env (FireAfter Int64))` used as a COMPOUND ELEMENT (a tuple element). The tuple's
+           element-boxing boxes the erased newtype scalar (box_op_ty peels the nominal → box-int), the shape
+           descriptor nests `Named(Env, Int)` as element[0], value-encode renders the element as the framed
+           `(: n Env)` inside the `(tuple …)`, and decode reconstructs the boxed leaf as the tuple element.
+           Platform-relevant: a contract type with a newtype-typed field/element must round-trip. The match
+           unwraps the tuple, then the newtype element `e`, then its inner `d`, folding `d*1000 + k` to prove
+           the newtype element survived in position: `main 7` → `(tuple (FireAfter 7) 8)` → 7*1000+8 = 7008; a
+           dropped/garbled newtype element would differ or give -1. wasm-only (rust `Value` emit is a later
+           increment) — additive baseline.")
+  (input  (do
+            (type Env (FireAfter Int64))
+            (def (main (: n Int64))
+              (match (: (Value.decode (Value.encode (tuple (FireAfter n) (+ n 1)))) (Option (Tuple Env Int64)))
+                ((Some m) (match m ((tuple e k) (match e ((FireAfter d) (+ (* d 1000) k))))))
+                ((None u) (- 0 1))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 7008 Int64)))
+
+(case "a Value.encode/Value.decode round-trip preserves a scalar-erased single-ctor newtype NESTED as a record field"
+  (doc    "The record-field companion of the nested tuple-element case: a scalar-erased single-ctor newtype
+           `(type Env (FireAfter Int64))` as a RECORD FIELD `at`. Records are positional heap arrays in
+           canonical (key-sorted) field order at run time, so the field boxes + the descriptor nests
+           `Named(Env, Int)` under the sorted field position exactly like the tuple element; value-encode
+           renders `(record (= at (: n Env)) (= tag …))`, decode reconstructs it. The match reads `(. m at)`,
+           unwraps the newtype's inner `d`, folds `d*1000 + tag`: `main 7` → `{at: FireAfter 7, tag: 9}` →
+           7*1000+9 = 7009; a lost newtype field would differ or give -1. Confirms the newtype-as-field shape
+           a platform contract record uses round-trips. wasm-only (rust `Value` emit is a later increment).")
+  (input  (do
+            (type Env (FireAfter Int64))
+            (def (main (: n Int64))
+              (match (: (Value.decode (Value.encode (record (= at (FireAfter n)) (= tag (+ n 2))))) (Option (Record (: at Env) (: tag Int64))))
+                ((Some m) (+ (* 1000 (match (. m at) ((FireAfter d) d))) (. m tag)))
+                ((None u) (- 0 1))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 7009 Int64)))
