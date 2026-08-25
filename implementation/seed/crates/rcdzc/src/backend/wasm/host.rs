@@ -64,6 +64,27 @@ pub enum HostParam {
     /// guest's raw disc IS the component enum's canonical discriminant). The edge-direction shape a
     /// `graph.neighbors(node, kind, dir)` op takes (`dir: enum`).
     Enum(Vec<String>),
+    /// A `list<T>` (non-`Bytes`) parameter — e.g. `graph.set-edges`'s `targets: list<reducer-id>` =
+    /// `list<list<u8>>`. Its component valtype is a `(list <elem>)` DEFINED type (referenced by index, like
+    /// [`Bytes`](HostParam::Bytes)'s `(list u8)`); its core form is `(ptr: i32, count: i32)` — the guest
+    /// marshals the value-heap `List` into a `count * stride(elem)` region of the shared `mem` (each element
+    /// canonical-encoded at its stride offset), then passes `(region-ptr, count)`. Carries the ELEMENT's ABI
+    /// ([`RecordFieldAbi`]) — a `Bytes` element copies its rope into `mem` elsewhere + writes `(ptr,len)` into
+    /// the element slot (the shape `set-edges` needs); a scalar element writes its value inline. A `list<u8>`
+    /// stays [`Bytes`](HostParam::Bytes) (its own `(ptr,len)` shape), not this. The arg-side analogue of the
+    /// spilled result-list LIFT.
+    List(Box<RecordFieldAbi>),
+}
+
+/// Whether a record-field ABI bottoms out at a `list<u8>` (`Bytes`) leaf — so a `list<T>` param carrying it
+/// as its element needs the shared `(list u8)` DEFINED type (index 0) in the instance-type. A `Scalar` does
+/// not; a `Bytes`/`Result` (its ok arm is `list<u8>`) does; a nested `Record` if any sub-field does.
+pub fn record_field_abi_reaches_bytes(f: &RecordFieldAbi) -> bool {
+    match f {
+        RecordFieldAbi::Scalar(_) => false,
+        RecordFieldAbi::Bytes | RecordFieldAbi::Result { .. } => true,
+        RecordFieldAbi::Record(sub) => sub.iter().any(|(_, sf)| record_field_abi_reaches_bytes(sf)),
+    }
 }
 
 /// The boundary ABI of one shape-d record FIELD.
@@ -815,6 +836,18 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                             params.push(HostParam::Record(field_abis));
                         }
                     }
+                    // A `list<T>` (non-`Bytes`) arg (`graph.set-edges`'s `targets: list<reducer-id>`) crosses as
+                    // a component `(list <elem>)` DEFINED type — core `(ptr, count)`. The guest marshals the
+                    // value-heap `List` into the shared `mem`. Admitted when the ELEMENT crosses as a record
+                    // field ABI (`field_boundary_abi` — Bytes / scalar / nested). A `Bytes` (`list<u8>`) arg is
+                    // NOT this (it's `HostParam::Bytes`, its own `(ptr,len)`). A PEER-bound list is a `u32`
+                    // handle (`_` arm). Checked before the scalar arm.
+                    Ty::List(elem) if !peer_bound => {
+                        if let Some(elem_abi) = field_boundary_abi(db, elem) {
+                            params.push(HostParam::List(Box::new(elem_abi)));
+                        }
+                        // else: element not crossable → push nothing → the boundary guard declines the op.
+                    }
                     // An ENUM arg (a payloadless Cadenza sum, `graph.neighbors`'s `dir`) crosses NATIVELY as a
                     // component `enum` DEFINED type: ONE `i32` core slot (the discriminant, which is a
                     // payloadless enum's in-guest rep — a bare `i32.const disc`), so the guest passes it with no
@@ -1264,11 +1297,19 @@ pub fn first_unrepresentable_host_op(
             // `allow_option_bytes` + `!peer_bound`, matching where the enum instance-type is wired).
             let arg_is_boundary_enum =
                 allow_option_bytes && !peer_bound && enum_cases(db, &at).is_some();
+            // A `list<T>` arg (`graph.set-edges`'s `targets: list<reducer-id>`) crosses as a `(list <elem>)`
+            // component type — the guest marshals the value-heap `List` into shared `mem` (this slice: a
+            // `list<u8>` element = `list<list<u8>>`, `select::emit_list_bytes_arg_marshal`). Same reducer/
+            // host-fused gating; a non-`list<u8>` element is a later increment (declined here + at the marshal).
+            let arg_is_boundary_list = allow_option_bytes
+                && !peer_bound
+                && matches!(at.strip_nominal(), Ty::List(e) if matches!(e.strip_nominal(), Ty::Bytes));
             if !matches!(at, Ty::Unit | Ty::String | Ty::Bytes)
                 && !ty_undetermined(&at)
                 && !abi_ok(&at)
                 && !arg_is_boundary_record
                 && !arg_is_boundary_enum
+                && !arg_is_boundary_list
             {
                 return Some((op.to_string(), "argument", at.render_name(&db.name_ctx())));
             }

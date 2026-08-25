@@ -157,6 +157,13 @@ pub enum Lir {
     I32Store8 {
         offset: u32,
     },
+    /// `i32.store (align=2, offset=O)` — pop `[addr:i32, val:i32]` and write the full i32 `val` to linear
+    /// memory 0 at `addr + O`. Writes the `(ptr, len)` slots of a `list<T>` host-ARG's outer array marshaled
+    /// into the shared host memory (the arg-side analogue of the result lift's `I32Load` reads). Stack order
+    /// is address-then-value; natural i32 alignment (2); memory index 0.
+    I32Store {
+        offset: u32,
+    },
     /// `i32.load (align=2, offset=O)` — pop `[addr:i32]`, push the i32 read from linear memory 0 at `addr+O`.
     /// The kv.get lift reads the spilled `option<list<u8>>` result struct a host import wrote at the caller-
     /// provided retptr (disc@0, list-ptr@4, list-len@8). Memory index 0; natural i32 alignment (2).
