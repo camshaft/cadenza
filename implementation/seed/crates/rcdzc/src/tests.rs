@@ -6860,6 +6860,33 @@ fn a_no_redeclare_world_import_perform_resolves_via_the_injected_effect() {
     }
 }
 
+/// NAMESPACED `Ordering.of` (former top-level `compare`): the three-way comparison is a member on the
+/// built-in `Ordering` record (operator directive: prelude records with associated functions, no bare
+/// globals) — carried on the `Ordering` `TypeDecl.associated`, the SAME pattern as `Ast.module`.
+/// `(. Ordering of) a b : Ordering`, reducing identically to the old `compare` (same `Prim::Compare`).
+#[test]
+fn ordering_of_resolves_and_types_as_the_three_way_compare() {
+    use crate::db::Db;
+    let src = "(module m (def (cmp (: a Int64) (: b Int64)) ((. Ordering of) a b)) (export cmp))";
+    let mut db = Db::load(crate::testkit::parse(src));
+    let diags = crate::compile::diagnostics(&mut db);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.message.contains("unbound") || d.message.contains("field `of`")),
+        "(. Ordering of) must resolve on the built-in Ordering record: {:?}",
+        diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    let d = db.def_by_name("cmp").expect("def cmp");
+    let body = db.defs[d].body.expect("cmp body");
+    let ty = crate::infer::type_of(&mut db, body);
+    assert_eq!(
+        ty.render_name(&db.name_ctx()),
+        "Ordering",
+        "Ordering.of a b : Ordering (same reduction as the former `compare`), got {ty:?}"
+    );
+}
+
 /// SELF-REFLECTION `Ast.module` (front-end): the reflection member on the built-in `Ast` record resolves via
 /// ordinary member access and TYPES as the built-in `Ast` sum — the type-directed, prelude-derived,
 /// NAMESPACED replacement for the retired `(. Ast self)` blind syntax-rewrite (operator directive: namespace
@@ -40461,7 +40488,7 @@ mod match_engine {
         // applied to ZERO operands — `(=)` / `(+)` — is a MALFORMED application (the operator demands its
         // operands, the arity error `(+ 1)` already rejects), NOT the operator used as a value (which would
         // DECLINE "needs runtime closures", a to-do). Reject CDZ0201.
-        for op in ["=", "+", "<", ">", "<=", ">=", "-", "*", "compare"] {
+        for op in ["=", "+", "<", ">", "<=", ">=", "-", "*"] {
             let src = format!("(module m (def (main) ({op})) (export main))");
             assert_eq!(
                 reject_code(&src).as_deref(),
@@ -62570,7 +62597,7 @@ mod diagnostics {
         // a terse "no total order" decline. Runtime float params so it reaches lowering (a constant `compare`
         // would fold, not decline).
         let d = first_error(
-            "(module m (def (f (: x Float64) (: y Float64)) (compare x y)) (export f))",
+            "(module m (def (f (: x Float64) (: y Float64)) (Ordering.of x y)) (export f))",
         );
         // An uncoded DECLINE (a carve-out the compiler will never realize), not a coded rejection.
         assert_eq!(
@@ -62618,7 +62645,7 @@ mod diagnostics {
         // pins that redirect (lower.rs compound-`compare` arm) so a refactor can't degrade it. Runtime
         // float params inside a tuple so it reaches lowering (a constant compound would fold).
         let d = first_error(
-            "(module m (def (f (: x Float64) (: y Float64)) (compare (tuple x 1) (tuple y 2))) (export f))",
+            "(module m (def (f (: x Float64) (: y Float64)) (Ordering.of (tuple x 1) (tuple y 2))) (export f))",
         );
         // An uncoded DECLINE (the un-orderable-leaf carve-out), not a coded rejection.
         assert_eq!(
@@ -62637,7 +62664,7 @@ mod diagnostics {
         // ROUND-TRIP witness: the named route — comparing the orderable component (the Int field) on its
         // own — compiles clean, so the redirect points at a form that type-checks.
         let ast = crate::testkit::parse(
-            "(module m (def (f (: x Float64) (: y Float64)) (compare 1 2)) (export f))",
+            "(module m (def (f (: x Float64) (: y Float64)) (Ordering.of 1 2)) (export f))",
         );
         let out = compile(
             &[Artifact::new(
@@ -79870,11 +79897,11 @@ mod stage1 {
         // `Ordering` variant; deconstructed by a three-arm match → -1/0/1. Covers int, string, and the
         // agreement with `<` (all three relations across two operand types).
         for (prog, want) in [
-            ("(compare 1 2)", -1),         // Less
-            ("(compare 2 2)", 0),          // Equal
-            ("(compare 3 2)", 1),          // Greater
-            ("(compare \"a\" \"b\")", -1), // strings order lexicographically
-            ("(compare \"b\" \"b\")", 0),
+            ("(Ordering.of 1 2)", -1),         // Less
+            ("(Ordering.of 2 2)", 0),          // Equal
+            ("(Ordering.of 3 2)", 1),          // Greater
+            ("(Ordering.of \"a\" \"b\")", -1), // strings order lexicographically
+            ("(Ordering.of \"b\" \"b\")", 0),
         ] {
             let src = format!(
                 "(module m (def (main) (match {prog} \

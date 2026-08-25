@@ -1013,7 +1013,7 @@ fn rustc_roundtrip_all_nullary_sum_orders_by_discriminant() {
            (def (mk (: k Int64)) (if (< k 0) (Tri.Lo unit) (if (= k 0) (Tri.Mid unit) (Tri.Hi unit)))) \
            (def (main (: a Int64) (: b Int64)) \
              (+ (* 10 (if (< (mk a) (mk b)) 1 0)) \
-                (match (compare (mk a) (mk b)) \
+                (match (Ordering.of (mk a) (mk b)) \
                   ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))) \
            (export main))",
     );
@@ -3513,7 +3513,7 @@ fn rustc_roundtrip_option_compare_follows_cadenza_some_before_none_not_std() {
         "(module m \
            (def (mk (: k Int64)) (if (= k 0) (: (None unit) (Option Int64)) (Some k))) \
            (def (go (: a Int64) (: b Int64)) \
-             (match (compare (mk a) (mk b)) ((Ordering.Less) 1) ((Ordering.Equal) 2) ((Ordering.Greater) 3))) \
+             (match (Ordering.of (mk a) (mk b)) ((Ordering.Less) 1) ((Ordering.Equal) 2) ((Ordering.Greater) 3))) \
          (export go))",
     );
     if let Some(out) = rustc_run(&cmp, "go(3, 0)") {
@@ -3538,7 +3538,7 @@ fn rustc_roundtrip_option_compare_follows_cadenza_some_before_none_not_std() {
         "(module m \
            (def (mk (: k Int64)) (if (= k 0) (: (None unit) (Option Int64)) (Some k))) \
            (def (go (: n Int64)) \
-             (match (compare (tuple n (mk n)) (tuple n (mk 0))) \
+             (match (Ordering.of (tuple n (mk n)) (tuple n (mk 0))) \
                ((Ordering.Less) 1) ((Ordering.Equal) 2) ((Ordering.Greater) 3))) \
          (export go))",
     );
@@ -3554,7 +3554,7 @@ fn rustc_roundtrip_option_compare_follows_cadenza_some_before_none_not_std() {
         "(module m \
            (def (mk (: k Int64)) (if (= k 0) (: (Err unit) (Result Int64 Unit)) (Ok k))) \
            (def (go (: a Int64) (: b Int64)) \
-             (match (compare (mk a) (mk b)) ((Ordering.Less) 1) ((Ordering.Equal) 2) ((Ordering.Greater) 3))) \
+             (match (Ordering.of (mk a) (mk b)) ((Ordering.Less) 1) ((Ordering.Equal) 2) ((Ordering.Greater) 3))) \
          (export go))",
     );
     if let Some(out) = rustc_run(&res, "go(1, 0)") {
@@ -3649,7 +3649,7 @@ fn rustc_roundtrip_recursive_option_carrying_sum_compare_terminates_via_helper()
         (def (mk-some (: k Int64)) (Lst.Cons (tuple (Some k) (Lst.Nil)))) \
         (def (mk-none) (Lst.Cons (tuple (: (None unit) (Option Int64)) (Lst.Nil)))) \
         (def (go (: k Int64)) \
-          (match (compare (mk-some k) (mk-none)) \
+          (match (Ordering.of (mk-some k) (mk-none)) \
             ((Ordering.Less) 1) ((Ordering.Equal) 2) ((Ordering.Greater) 3))) \
         (export go))";
     match compile_rust_result(src) {
@@ -7579,7 +7579,7 @@ fn rustc_roundtrip_recursive_option_carrying_sum_compare_recurses_through_a_list
     let src = "(module m \
         (type Ast (Leaf (Option Int64)) (Node (List Ast))) \
         (def (go (: k Int64)) \
-          (match (compare (Ast.Node (list (Ast.Leaf (Some k)))) \
+          (match (Ordering.of (Ast.Node (list (Ast.Leaf (Some k)))) \
                           (Ast.Node (list (Ast.Leaf (: (None unit) (Option Int64)))))) \
             ((Ordering.Less) 1) ((Ordering.Equal) 2) ((Ordering.Greater) 3))) \
         (export go))";
@@ -7615,7 +7615,7 @@ fn rustc_roundtrip_list_of_option_compare_is_lexicographic_with_some_before_none
     // silently mis-order a list of options without a failing case.
     let src = "(module m \
         (def (cmp2 (: a (List (Option Int64))) (: b (List (Option Int64)))) \
-          (match (compare a b) ((Ordering.Less) 1) ((Ordering.Equal) 2) ((Ordering.Greater) 3))) \
+          (match (Ordering.of a b) ((Ordering.Less) 1) ((Ordering.Equal) 2) ((Ordering.Greater) 3))) \
         (def (p1) (cmp2 (list (Some 1)) (list (: (None unit) (Option Int64))))) \
         (def (p2) (cmp2 (list (Some 1)) (list (Some 1) (Some 2)))) \
         (def (p3) (cmp2 (list (: (None unit) (Option Int64))) (list (Some 1)))) \
@@ -7665,7 +7665,7 @@ fn rustc_roundtrip_record_with_option_field_compare_is_lexicographic_in_sorted_k
         (def (mk-n (: y Int64)) \
           (: (record (a (: (None unit) (Option Int64))) (b y)) (Record (a (Option Int64)) (b Int64)))) \
         (def (cmp3 (: x (Record (a (Option Int64)) (b Int64))) (: y (Record (a (Option Int64)) (b Int64)))) \
-          (match (compare x y) ((Ordering.Less) 1) ((Ordering.Equal) 2) ((Ordering.Greater) 3))) \
+          (match (Ordering.of x y) ((Ordering.Less) 1) ((Ordering.Equal) 2) ((Ordering.Greater) 3))) \
         (def (p1) (cmp3 (mk-a 1 9) (mk-n 0))) \
         (def (p2) (cmp3 (mk-n 0) (mk-a 1 9))) \
         (def (p3) (cmp3 (mk-a 1 5) (mk-a 1 7))) \
@@ -7719,7 +7719,7 @@ fn rustc_roundtrip_nonrecursive_user_sum_with_option_payload_compare_declared_di
         (def (mk-a (: k Int64)) (if (= k 0) (W.A (: (None unit) (Option Int64))) (W.A (Some k)))) \
         (def (mk-b (: k Int64)) (if (= k 0) (W.B (: (None unit) (Option Int64))) (W.B (Some k)))) \
         (def (cmp2 (: x W) (: y W)) \
-          (match (compare x y) ((Ordering.Less) 1) ((Ordering.Equal) 2) ((Ordering.Greater) 3))) \
+          (match (Ordering.of x y) ((Ordering.Less) 1) ((Ordering.Equal) 2) ((Ordering.Greater) 3))) \
         (def (p1) (cmp2 (mk-a 5) (mk-b 5))) \
         (def (p2) (cmp2 (mk-b 5) (mk-a 5))) \
         (def (p3) (cmp2 (mk-a 1) (mk-a 0))) \
@@ -7770,7 +7770,7 @@ fn rustc_roundtrip_nested_option_of_option_compare_emits_declared_order_some_bef
     // layers, giving the total order Some(Some k) < Some(None) < None (NOT std's None < Some).
     let src = "(module m \
         (def (cmp2 (: x (Option (Option Int64))) (: y (Option (Option Int64)))) \
-          (match (compare x y) ((Ordering.Less) 1) ((Ordering.Equal) 2) ((Ordering.Greater) 3))) \
+          (match (Ordering.of x y) ((Ordering.Less) 1) ((Ordering.Equal) 2) ((Ordering.Greater) 3))) \
         (def (p1) (cmp2 (Some (Some 1)) (Some (: (None unit) (Option Int64))))) \
         (def (p2) (cmp2 (Some (: (None unit) (Option Int64))) (: (None unit) (Option (Option Int64))))) \
         (def (p3) (cmp2 (Some (Some 1)) (Some (Some 1)))) \
@@ -7858,7 +7858,7 @@ fn rustc_roundtrip_generic_user_sum_carrying_option_compare_emits_via_full_type_
     let src = "(module m \
         (type Box a (Wrap a) (Empty)) \
         (def (cmp2 (: x (Box (Option Int64))) (: y (Box (Option Int64)))) \
-          (match (compare x y) ((Ordering.Less) 1) ((Ordering.Equal) 2) ((Ordering.Greater) 3))) \
+          (match (Ordering.of x y) ((Ordering.Less) 1) ((Ordering.Equal) 2) ((Ordering.Greater) 3))) \
         (def (p1) (cmp2 (Box.Wrap (Some 1)) (Box.Wrap (: (None unit) (Option Int64))))) \
         (def (p2) (cmp2 (Box.Wrap (Some 1)) (Box.Empty))) \
         (def (p3) (cmp2 (Box.Wrap (Some 1)) (Box.Wrap (Some 1)))) \
