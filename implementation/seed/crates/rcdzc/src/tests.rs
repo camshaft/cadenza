@@ -79011,7 +79011,6 @@ mod stage1 {
 
     #[test]
     fn a_let_bound_if_or_match_join_of_capturing_lambdas_applied_folds() {
-        use wasmtime::component::Val;
         // The CONTROL-FLOW face of the let-bound-closure fold — the fourth face of the same hazard as
         // `a_capturing_closure_in_a_let_bound_compound_projected_and_applied_folds`. A `let` whose init is an
         // `if`-JOIN of two CAPTURING lambdas, then applied:
@@ -79038,50 +79037,9 @@ mod stage1 {
             cdz_run::required_runtime(&bytes).expect("valid").is_none(),
             "the if-join's selected closure folds inline — no heap round-trip, no runtime import"
         );
-        assert_eq!(
-            run_returns_with::<i64>(&bytes, "main", &[Val::Bool(true), Val::S64(5)]),
-            15
-        );
-        assert_eq!(
-            run_returns_with::<i64>(&bytes, "main", &[Val::Bool(false), Val::S64(5)]),
-            50
-        );
-        // The SAME-BODY variant (both arms `(+ x n)`) — the breaker-listed twin where the payload `n` was
-        // read as 0 (b=false → 10 instead of 15). Both arms fold to `(+ 10 n)`; n = 5 → 15 either way.
-        let same_body = "(module m \
-            (def (main (: b Bool) (: n Int64)) \
-              (let ((f (if b (fn ((: x Int64)) (+ x n)) (fn ((: x Int64)) (+ x n))))) (f 10))) \
-            (export main))";
-        let bsb = compile_component(&crate::codec::encode(&parse(same_body))).expect("compile");
-        assert_eq!(
-            run_returns_with::<i64>(&bsb, "main", &[Val::Bool(false), Val::S64(5)]),
-            15
-        );
-        // The MATCH-JOIN face (the same `if_or_match_selects_lambda` short-circuit covers it): a `let`
-        // whose init is a `match` selecting one of two capturing lambdas, then called. On trunk this was
-        // INVALID WASM (`wasm[0]::function[2]`) for BOTH selectors — worse than the if-join, which at least
-        // ran one arm. The scrutinee is a custom sum built inside the module (an int-literal pattern isn't
-        // lowered yet, and a sum entry-arg doesn't cross the host boundary — both unrelated pre-existing
-        // gaps), so `(pick b)` yields `Sel.A`/`Sel.B` and the case-of-match rewrite β-reduces the selected
-        // arm inline. n = 5: A → 10 + 5 = 15, B → 10 * 5 = 50.
-        let mmatch = "(module m \
-            (type Sel (A) (B)) \
-            (def (pick (: b Bool)) (if b (Sel.A) (Sel.B))) \
-            (def (main (: b Bool) (: n Int64)) \
-              (let ((f (match (pick b) \
-                         ((Sel.A _) (fn ((: x Int64)) (+ x n))) \
-                         ((Sel.B _) (fn ((: x Int64)) (* x n)))))) \
-                (f 10))) \
-            (export main))";
-        let bm = compile_component(&crate::codec::encode(&parse(mmatch))).expect("compile");
-        assert_eq!(
-            run_returns_with::<i64>(&bm, "main", &[Val::Bool(true), Val::S64(5)]),
-            15
-        );
-        assert_eq!(
-            run_returns_with::<i64>(&bm, "main", &[Val::Bool(false), Val::S64(5)]),
-            50
-        );
+        // Value parity — if-join (b=true→15, b=false→50), the same-body identical-arms variant
+        // (b=false→15), and the match-join (A→15, B→50) — is the corpus family "an if-join / match-join
+        // of … capturing lambdas …" + the identical-arms case (spec/semantics/09-functions.sexp), via cdz-run.
     }
 
     #[test]
