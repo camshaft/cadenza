@@ -38,8 +38,12 @@
 //!
 //! A `<delivery>` names a `target` task and carries exactly one event to inject into it — a `message` (an
 //! effect folded through `on_message`) or a `notification` (a control-plane event folded through
-//! `on_notification`). Both carry a `contract` (a contract-id) and a `payload` (opaque bytes); a message also
-//! takes an optional `token` (the caller's continuation token, default empty). A `contract` is written either
+//! `on_notification`). Both carry a `contract` (a contract-id) and a `payload`; a message also
+//! takes an optional `token` (the caller's continuation token, default empty). A message `payload` is either
+//! opaque bytes, or a resolve reference to a named blob — `BlobBytes(<name>)` (its content bytes) or
+//! `BlobHash(<name>)` (its content hash) — that resolves at build from the run's blob table (so a reducer can
+//! be handed another program's hash to `run` it, or a shared blob's bytes, by name; §3/§8). A `contract` is
+//! written either
 //! as its raw 33 tagged bytes, or as a **base62** string (the §8 text form) — the string form is what a
 //! name→id rewrite substitutes for a contract name (contract-name resolution is done outside the platform and
 //! rewritten into the spec, so a resolved name arrives as its base62 id):
@@ -72,11 +76,12 @@ use crate::contract_value::{
     bare_ctor, bytes_leaf, read_bytes, read_uint, record, record_field, uint_leaf,
 };
 use crate::{
-    Bytes, ContractId, Delivered, Error, Hash, HostId, Message, Notification, Origin, ReducerId,
-    ReducerKind, Response,
+    Bytes, ContractId, Delivered, Error, Hash, HostId, Message, Notification, Origin, ProgramHash,
+    ReducerId, ReducerKind, Response,
 };
 use cadenza_ast::ast::{Arenas, Builder, Leaf, Struct, StructId};
 use cadenza_ast::codec;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -100,6 +105,25 @@ pub enum BlobSource {
     Inline(Bytes),
     /// A filesystem path to read the program bytes from, relative to the caller's working directory.
     Path(String),
+}
+
+/// A delivered message's payload: literal bytes, or an explicit **resolve reference** to a named blob. A
+/// reference is a call that says HOW to resolve the payload from a blob the run declares — `BlobBytes(<name>)`
+/// resolves to the named blob's content bytes, `BlobHash(<name>)` to its content hash — resolved at
+/// [`build`](HarnessSpec::build) from the same blob table a spawn resolves through (§3/§8). This lets a run
+/// hand a reducer another program's hash to `run` it, or a shared blob's bytes, by NAME rather than by an
+/// author writing a content hash or duplicating bytes. The reference names its own resolution (no type
+/// inspection); a literal `b"…"` payload is carried inline unchanged (only a `BlobBytes`/`BlobHash` head
+/// triggers resolution).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PayloadSource {
+    /// The opaque payload bytes, carried inline in the AST.
+    Inline(Bytes),
+    /// The name of a blob whose content BYTES are the payload — resolved at build time.
+    BlobBytes(String),
+    /// The name of a blob whose content HASH is the payload — resolved at build time (the byte form
+    /// `ProgramHash::try_from` reads back, e.g. the program a `run.run` runs).
+    BlobHash(String),
 }
 
 /// A program blob in a run: its name (a spawn refers to it by this) and where its bytes come from.
@@ -221,8 +245,10 @@ pub enum DeliveryEvent {
     Message {
         /// The contract-id of the effect.
         contract: ContractId,
-        /// The effect's input value, opaque bytes.
-        payload: Bytes,
+        /// The effect's input value: literal bytes, or a `BlobBytes(<name>)` / `BlobHash(<name>)` resolve
+        /// reference to a named blob's content bytes / hash at build (so a reducer can be handed a program to
+        /// `run`, or a shared blob's bytes, by name).
+        payload: PayloadSource,
         /// The caller's continuation token (the reducer's reply is correlated back by it); empty by default.
         token: Bytes,
         /// The sender the kernel stamps on the delivered message (`msg.from`), so a run can exercise a
@@ -251,8 +277,9 @@ pub enum DeliveryEvent {
 
 impl DeliveryEvent {
     /// Realize this as a platform [`Delivered`], stamping a message with the harness's synthetic external
-    /// origin (an injected event has no real sending reducer).
-    fn into_delivered(self) -> Delivered {
+    /// origin (an injected event has no real sending reducer). `resolve` turns a message's [`PayloadSource`]
+    /// into its bytes — the identity for an inline payload, the blob table lookup for a resolve reference.
+    fn into_delivered(self, resolve: &impl Fn(&PayloadSource) -> Bytes) -> Delivered {
         match self {
             DeliveryEvent::Message {
                 contract,
@@ -261,7 +288,7 @@ impl DeliveryEvent {
                 from,
             } => Delivered::Message(Message {
                 id: contract,
-                payload,
+                payload: resolve(&payload),
                 from: from.unwrap_or_else(external_origin),
                 continuation_token: token,
             }),
@@ -602,18 +629,39 @@ impl HarnessSpec {
         if let Some(run_for) = self.run_for {
             harness = harness.run_for(run_for);
         }
+        // Resolve blobs to bytes, and keep each blob's bytes by name so a `BlobBytes`/`BlobHash` message
+        // payload can be resolved below from the same table a spawn resolves through (§3/§8). `Bytes` clones
+        // are O(1) (refcounted), so keeping them costs a pointer per blob.
+        let mut blobs_by_name: BTreeMap<String, Bytes> = BTreeMap::new();
         for blob in self.blobs {
             let bytes = match blob.source {
                 BlobSource::Inline(bytes) => bytes,
                 BlobSource::Path(path) => load_path(&path)?,
             };
+            blobs_by_name.insert(blob.name.clone(), bytes.clone());
             harness = harness.blob(blob.name, bytes);
         }
         for spawn in self.spawns {
             harness = harness.spawn(spawn);
         }
+        // Resolve a message payload: an inline payload is its own bytes; a `BlobBytes(<name>)` resolves to the
+        // named blob's content bytes, a `BlobHash(<name>)` to its content hash (the byte form `run.run` parses
+        // back via `ProgramHash::try_from`). An unknown name yields empty bytes — a `run` of it then reports
+        // `missing-handler`, observable rather than a build panic.
+        let resolve = |src: &PayloadSource| -> Bytes {
+            match src {
+                PayloadSource::Inline(bytes) => bytes.clone(),
+                PayloadSource::BlobBytes(name) => {
+                    blobs_by_name.get(name).cloned().unwrap_or_default()
+                }
+                PayloadSource::BlobHash(name) => blobs_by_name
+                    .get(name)
+                    .map(|b| Bytes::copy_from_slice(ProgramHash::of(b).hash().as_bytes()))
+                    .unwrap_or_default(),
+            }
+        };
         for (target, event) in self.deliveries {
-            harness = harness.deliver(target, event.into_delivered());
+            harness = harness.deliver(target, event.into_delivered(&resolve));
         }
         // The default handler is already set via `Harness::new` above; layer per-contract overrides only when
         // there are any.
@@ -915,7 +963,7 @@ fn read_delivery(arenas: &Arenas, id: StructId) -> Result<(String, DeliveryEvent
     let event = match (message, notification, response) {
         (Some(m), None, None) => DeliveryEvent::Message {
             contract: read_contract_id(arenas, m)?,
-            payload: read_required_bytes(arenas, m, "payload")?,
+            payload: read_payload_source(arenas, m, "payload")?,
             token: read_optional_token(arenas, m)?,
             from: read_optional_from(arenas, m)?,
         },
@@ -1201,6 +1249,45 @@ fn read_contract_id(arenas: &Arenas, event: StructId) -> Result<ContractId, Spec
     }
 }
 
+/// Read a message `payload` field as a [`PayloadSource`]: a `BlobBytes(<name>)` / `BlobHash(<name>)` resolve
+/// reference — resolved to the named blob's content bytes / hash at [`build`](HarnessSpec::build) — else a
+/// literal bytes leaf carried inline. Mirrors [`read_answer`]'s name-headed-list read; a non-list or a
+/// differently-headed value falls through to the bytes-leaf read, so an ordinary `b"…"` payload is unaffected.
+fn read_payload_source(
+    arenas: &Arenas,
+    record: StructId,
+    field: &'static str,
+) -> Result<PayloadSource, SpecError> {
+    let id = record_field(arenas, record, field).ok_or(SpecError::MissingField(field))?;
+    if let Struct::List(items) = arenas.get(id)
+        && let Some((&head, tail)) = items.split_first()
+        && let Some(ctor @ ("BlobBytes" | "BlobHash")) = arenas.as_name(head)
+    {
+        let [name] = <[StructId; 1]>::try_from(tail).map_err(|_| SpecError::WrongType {
+            field,
+            want: "a single blob name in BlobBytes(…) / BlobHash(…)",
+        })?;
+        let name = arenas
+            .as_str(name)
+            .ok_or(SpecError::WrongType {
+                field,
+                want: "a blob-name string in BlobBytes(…) / BlobHash(…)",
+            })?
+            .to_string();
+        return Ok(if ctor == "BlobHash" {
+            PayloadSource::BlobHash(name)
+        } else {
+            PayloadSource::BlobBytes(name)
+        });
+    }
+    Ok(PayloadSource::Inline(read_bytes(arenas, id).ok_or(
+        SpecError::WrongType {
+            field,
+            want: "a bytes literal or BlobBytes(<name>) / BlobHash(<name>)",
+        },
+    )?))
+}
+
 /// Read a required bytes-leaf field of a record, or a [`SpecError`] if absent or not a bytes literal.
 fn read_required_bytes(
     arenas: &Arenas,
@@ -1226,7 +1313,17 @@ fn delivery_to_ast(b: &mut Builder, target: &str, event: &DeliveryEvent) -> Stru
             from,
         } => {
             let contract = bytes_leaf(b, contract.hash().as_bytes());
-            let payload = bytes_leaf(b, payload);
+            let payload = match payload {
+                PayloadSource::Inline(bytes) => bytes_leaf(b, bytes),
+                PayloadSource::BlobBytes(name) => {
+                    let name = str_leaf(b, name);
+                    bare_ctor(b, "BlobBytes", vec![name])
+                }
+                PayloadSource::BlobHash(name) => {
+                    let name = str_leaf(b, name);
+                    bare_ctor(b, "BlobHash", vec![name])
+                }
+            };
             let mut fields = vec![("contract", contract), ("payload", payload)];
             if !token.is_empty() {
                 let token = bytes_leaf(b, token);
@@ -1282,13 +1379,13 @@ fn answer_to_ast(b: &mut Builder, answer: &Result<Bytes, Error>) -> StructId {
 #[cfg(test)]
 mod tests {
     use super::{
-        BlobSource, BlobSpec, DeliveryEvent, GraphEdge, HarnessSpec, PureRun, RegistrySpec,
-        SpecError,
+        BlobSource, BlobSpec, DeliveryEvent, GraphEdge, HarnessSpec, PayloadSource, PureRun,
+        RegistrySpec, SpecError, read_payload_source,
     };
     use crate::contract_value::bare_ctor;
     use crate::contract_value::{bytes_leaf, record, uint_leaf};
     use crate::testing::SpawnSpec;
-    use crate::{Bytes, ContractId, Error, HostId, Origin, ReducerId, ReducerKind};
+    use crate::{Bytes, ContractId, Delivered, Error, HostId, Origin, ReducerId, ReducerKind};
     use cadenza_ast::ast::{Arenas, Builder, Leaf, StructId};
     use cadenza_ast::codec;
     use std::sync::Arc;
@@ -1618,7 +1715,7 @@ mod tests {
                     "root".to_string(),
                     DeliveryEvent::Message {
                         contract: ContractId::of(b"temp.celsius"),
-                        payload: Bytes::from_static(b"21"),
+                        payload: PayloadSource::Inline(Bytes::from_static(b"21")),
                         token: Bytes::from_static(b"tok-1"),
                         from: None,
                     },
@@ -1707,7 +1804,7 @@ mod tests {
                     "root".to_string(),
                     DeliveryEvent::Message {
                         contract: cid,
-                        payload: Bytes::from_static(b"21"),
+                        payload: PayloadSource::Inline(Bytes::from_static(b"21")),
                         token: Bytes::from_static(b"tok"),
                         from: None,
                     },
@@ -1745,7 +1842,7 @@ mod tests {
                 "root".to_string(),
                 DeliveryEvent::Message {
                     contract: cid,
-                    payload: Bytes::from_static(b"p"),
+                    payload: PayloadSource::Inline(Bytes::from_static(b"p")),
                     token: Bytes::new(),
                     from: None,
                 },
@@ -1857,7 +1954,7 @@ mod tests {
             target.to_string(),
             DeliveryEvent::Message {
                 contract: ContractId::of(b"c"),
-                payload: Bytes::new(),
+                payload: PayloadSource::Inline(Bytes::new()),
                 token: Bytes::new(),
                 from: None,
             },
@@ -2180,7 +2277,7 @@ mod tests {
                 "root".to_string(),
                 DeliveryEvent::Message {
                     contract: ContractId::of(b"c"),
-                    payload: Bytes::from_static(b"p"),
+                    payload: PayloadSource::Inline(Bytes::from_static(b"p")),
                     token: Bytes::new(),
                     from: Some(Origin {
                         reducer: ReducerId::of(b"peer"),
@@ -2337,5 +2434,60 @@ mod tests {
                 blob: "missing".to_string(),
             })
         );
+    }
+
+    #[test]
+    fn blob_resolve_references_decode_and_a_bytes_payload_stays_inline() {
+        // `BlobHash("sub")` / `BlobBytes("sub")` read as resolve references (resolved at build); a literal
+        // `b"…"` stays Inline — the head is what discriminates, so ordinary payloads are unaffected.
+        let hash = built(|b| {
+            let sub = s(b, "sub");
+            let r = bare_ctor(b, "BlobHash", vec![sub]);
+            record(b, vec![("payload", r)])
+        });
+        assert_eq!(
+            read_payload_source(&hash, hash.root, "payload"),
+            Ok(PayloadSource::BlobHash("sub".to_string()))
+        );
+        let bytes = built(|b| {
+            let sub = s(b, "sub");
+            let r = bare_ctor(b, "BlobBytes", vec![sub]);
+            record(b, vec![("payload", r)])
+        });
+        assert_eq!(
+            read_payload_source(&bytes, bytes.root, "payload"),
+            Ok(PayloadSource::BlobBytes("sub".to_string()))
+        );
+        let inline = built(|b| {
+            let bytes = bytes_leaf(b, b"literal");
+            record(b, vec![("payload", bytes)])
+        });
+        assert_eq!(
+            read_payload_source(&inline, inline.root, "payload"),
+            Ok(PayloadSource::Inline(Bytes::from_static(b"literal")))
+        );
+    }
+
+    #[test]
+    fn into_delivered_resolves_a_blob_reference_payload() {
+        // A message whose payload is a resolve reference goes through the build-time resolver; an Inline
+        // payload is returned as-is.
+        let msg = DeliveryEvent::Message {
+            contract: ContractId::of(b"c"),
+            payload: PayloadSource::BlobHash("sub".to_string()),
+            token: Bytes::new(),
+            from: None,
+        };
+        let resolve = |src: &PayloadSource| match src {
+            PayloadSource::BlobHash(name) => {
+                assert_eq!(name, "sub");
+                Bytes::from_static(b"SUBHASH")
+            }
+            other => panic!("expected a BlobHash reference, got {other:?}"),
+        };
+        match msg.into_delivered(&resolve) {
+            Delivered::Message(m) => assert_eq!(m.payload, Bytes::from_static(b"SUBHASH")),
+            other => panic!("expected a message, got {other:?}"),
+        }
     }
 }

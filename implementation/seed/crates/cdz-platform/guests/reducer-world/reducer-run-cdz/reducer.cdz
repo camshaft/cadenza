@@ -1,0 +1,31 @@
+// A Cadenza reducer performing the synchronous pure-RUN primitive (design/cadenza-platform.md §3): on-message
+// it runs a SUB-program — whose content hash arrives as the delivered payload (a (program-hash <name>)
+// reference the harness resolved to the sub's hash) — over the incoming contract with a fixed input, via
+// `run.run`, and emits the run's Ok output. A pure run instantiates the sub with no capabilities, folds one
+// input, and returns the sub's Break/Close reason as the output (run.run : (program, contract, input) ->
+// result<payload, error>). Migrated from v-rust-backend's in-crate run-with-a-result test; the driven run
+// RECORDS the run (Entry::Run, via the RunSink seam) so a checker asserts it happened AND returned — a
+// load-only test cannot observe a `run` (it leaves no request in the step, so an echo of the payload is
+// satisfiable without ever calling it, §9).
+//
+// The run's result is result<payload, error>: ascribed to a concrete Result(Bytes, Error) so both type params
+// are fixed (a bare Ok/Err leaves the error type unresolved and the compiler declines it), the same shape as
+// deliver-response's answer. Targets reducer-world (the floor world that imports `run`). on-response /
+// on-notification are inert.
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+def on-message(msg) =
+  host run in
+    (match (run.run(msg.payload, msg.contract, b"RUN-INPUT") : Result(Bytes, Error)) with
+      | Ok(out) => { requests = [{ contract = msg.contract, payload = out, token = msg.token, deadlineNanos = None }],
+                     outcome = Outcome.Continue }
+      | Err(_e) => { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = b"run-failed" }) })
+
+def on-response(_resp) =
+  { requests = [], outcome = Outcome.Continue }
+
+def on-notification(_note) =
+  { requests = [], outcome = Outcome.Continue }
+
+export { on-message, on-response, on-notification }
