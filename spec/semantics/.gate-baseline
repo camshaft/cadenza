@@ -1654,7 +1654,6 @@ pass	a decimal token trailing letters is a malformed literal, not an unbound nam
 pass	a declaration in a do block shadows an outer binding
 pass	a decoded field re-encodes into the same-width segment without an explicit narrow
 pass	a decoded length field re-encodes a length-prefixed frame end to end
-pass	a decoded payload feeds ordinary arithmetic
 pass	a decomposed literal indexes and measures by its normalized length, not the raw scalar count
 pass	a deep NESTED-VARIANT pattern selects a runtime recursive sum by spine depth
 pass	a deep balanced tree is built and folded to a scalar, consuming both children
@@ -3454,7 +3453,6 @@ pass	a runtime-built BigInt sum-payload literal probe falls through on a non-mat
 pass	a runtime-built BigInt sum-payload literal probe matches its constructor
 pass	a runtime-built generic user sum escapes with its parametric type frame
 pass	a runtime-built list nested in a tuple crosses the host boundary rendering the nested collection
-pass	a runtime-built open-sum variant decodes through the schema
 pass	a runtime-built string crosses the boundary as its value form
 pass	a runtime-computed BigInt result crosses the host boundary
 pass	a runtime-computed Rational crosses the host boundary as its exact value
@@ -3533,8 +3531,6 @@ pass	a scaled cube dimension raises its prefix scale to the power (km³ → ×1e
 pass	a scaled derived quantity displays with BOTH scales folded into the magnitude
 pass	a scaled reciprocal dimension folds the denominator prefix scale (1/ms → ×1000 per second)
 pass	a scaled-unit PARAMETER annotation keeps its scale across the type round-trip (mixed-scale combine)
-pass	a schema decode's Err result is handled as data on its own branch
-pass	a schema decode's Ok result is matched to recover the decoded payload
 pass	a scientific-notation float literal denotes the scaled value
 pass	a scientific-notation literal annotated Rational scales the numerator
 pass	a scrutinee FAILING the pattern reaches the catch-all WITHOUT running the guard's perform
@@ -4205,7 +4201,6 @@ pass	an OPTION handler state TOGGLES its variant per perform
 pass	an OPTION payload quantity renders scaled to its reference in the value form
 pass	an ORDER-PRESERVING dedup threads a seen-Set and an out-List as twin accumulators
 pass	an OVERFLOWING literal to a narrow effect-op parameter is rejected
-pass	an Ok and an Err decode compose through one shared handler
 pass	an Ok carrying a bare None type-checks under a whole-expression annotation
 pass	an Option built by an if with the nullary branch first type-checks
 pass	an Option built by an if with the payload branch first type-checks (the control)
@@ -4574,11 +4569,9 @@ pass	an odd-width signed division overflow traps at the declared width (Int24 mi
 pass	an odd-width unsigned shift result exceeding the declared width traps (UInt4: 3<<3)
 pass	an offered ordering is total and deterministic
 pass	an open sum nested as another sum's payload matches with an inner wildcard
-pass	an open sum payload that does not match its schema yields a typed failure, not a trap
 pass	an open sum with a guarded named arm plus an open-tail arm is exhaustive
 pass	an open sum's open-tail arm dispatches a NAMED-but-uncovered variant, not only unnamed ones
 pass	an open sum's open-tail arm dispatches a variant the specific arms do not name
-pass	an open sum's payload decodes against a schema to a typed result
 pass	an open-row function accepts a runtime MERGE result and reads the carried field
 pass	an open-row function is applied at TWO different record widths in one program
 pass	an open-row function over a Record.with result reads the UPDATED value
@@ -6597,7 +6590,6 @@ pass	the composed slice view EQUALS its flat twin and keys a Map by canonical co
 pass	the compound comparator drives a full INSERTION SORT over runtime tuples
 pass	the conditional-shot-count arm's SINGLE-shot branch (same program, other input)
 pass	the cross-handler op-arg lift fires 100 times inside a recursive accumulator loop
-pass	the decode error's kind is matchable
 pass	the default-integer pragma is definition-site scoped, not use-site
 pass	the difference contains the elements not in the second set
 pass	the difference of a set with itself is empty

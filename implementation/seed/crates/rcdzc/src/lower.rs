@@ -1918,17 +1918,6 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // of its `blake3::hash`; a runtime `Bytes` declines (the runtime lowering to heap op 91 is
                 // a later increment). Byte-identical to that op — both call the one `blake3` crate (§9).
                 Some(Prim::Blake3Of) if args.len() == 1 => lower_blake3_of(db, id, args[0]),
-                // `payload-of` — extract a compile-time-visible open sum variant's single payload as a
-                // schema-checkable value (const-fold path; a runtime variant declines, OQ-4). The value
-                // flows into `decode`; the fold reads the constant `SumNew`'s payload core.
-                Some(Prim::PayloadOf) if args.len() == 1 => lower_payload_of(db, args[0]),
-                // `decode` — decode a `payload-of` value against a `«T»-schema` to a typed Result. FOLD:
-                // the payload's constant type AGREES with the schema's target → `(Ok payload)`; a
-                // MISMATCH → `(Err (TypeMismatch unit))`, NEVER a trap (§214). Modelled on the Ast.decode
-                // Result-building path. A runtime payload/schema declines (const-fold only, OQ-4).
-                Some(Prim::SchemaDecode) if args.len() == 2 => {
-                    lower_schema_decode(db, id, args[0], args[1])
-                }
                 // `print` — render a compile-time-visible `Ast` value to its canonical re-readable TEXT
                 // (`Core::ConstStr`). The text analogue of `Ast.encode`; a runtime Ast declines.
                 Some(Prim::Print) if args.len() == 1 => lower_print(db, args[0]),
@@ -3793,142 +3782,6 @@ fn lower_ast_decode(db: &mut Db, id: StructId, bytes: StructId) -> Core {
             }
         }
     }
-}
-
-/// Lower `(payload-of variant)` — extract an open sum variant's single PAYLOAD as a schema-checkable
-/// value (`type-system.md §An Open Sum's Payload May Be Schema-Typed`, OS2). CONST-FOLD only: a
-/// compile-time-visible variant (`Core::SumNew` with exactly one payload) folds to that payload's core;
-/// a runtime variant, or a nullary / multi-payload one, declines (the runtime payload path is deferred,
-/// OQ-4). The discriminant is irrelevant — `payload-of` reads whatever variant it is handed (unlike
-/// `SumExpect`, which probes disc-0 and traps on absence); the payload slot is what a schema decodes.
-fn lower_payload_of(db: &mut Db, variant: StructId) -> Core {
-    match payload_of_node(db, variant) {
-        Ok(node) => core_of(db, node),
-        Err(r) => Core::Poison(r),
-    }
-}
-
-/// The single-payload NODE of a compile-time-visible variant `(Measured 7)` — the arena occurrence of
-/// its sole payload (so a caller reads both its CORE and its solved TYPE). `Err` if the variant is not a
-/// constant `SumNew`, or does not carry exactly one payload. Shared by `lower_payload_of` (which folds
-/// the node to its core) and `lower_schema_decode` (which needs the payload's TYPE for the schema
-/// comparison — `payload-of`'s own identity typing loses it).
-fn payload_of_node(db: &mut Db, variant: StructId) -> Result<StructId, Reject> {
-    match core_of(db, variant) {
-        Core::Poison(r) => Err(r),
-        Core::SumNew { payloads, .. } if payloads.len() == 1 => Ok(payloads[0]),
-        Core::SumNew { .. } => Err(Reject::decline(
-            "payload-of needs a variant carrying exactly one payload",
-        )),
-        _ => Err(Reject::decline(
-            "payload-of of a runtime variant is not yet computed (constant variant only)",
-        )),
-    }
-}
-
-/// Lower `(decode schema payload)` — decode an open sum variant's payload against a schema witness to a
-/// typed `Result` (`type-system.md §An Open Sum's Payload May Be Schema-Typed`; `value-interchange.md`
-/// §Decode Inverts Serialize And Refuses Otherwise). CONST-FOLD only (OQ-4 defers runtime): read the
-/// schema's TARGET type (the `Schema` sum's type argument) and the PAYLOAD's constant type; they AGREE
-/// → `(Ok payload)`, a MISMATCH → `(Err (TypeMismatch unit))` — NEVER a trap (§214: a schema mismatch is
-/// a typed failure, so a fold over an open vocabulary handles a malformed payload as data). Modelled on
-/// `lower_ast_decode`'s Result-building (Ok/Err by discriminant via `result_discs`).
-fn lower_schema_decode(db: &mut Db, id: StructId, schema: StructId, payload: StructId) -> Core {
-    // The result Ok/Err discriminants — the decode returns `(Result t DecodeError)`.
-    let Some((disc_ok, disc_err)) = result_discs(db, id) else {
-        return Core::Poison(Reject::decline(
-            "decode result is not the built-in Result sum",
-        ));
-    };
-    // The schema's TARGET type — `(Schema T)` solves to `Ty::Sum{Schema, args:[T]}`, so the sole type
-    // argument is the target `T` the payload must match. A schema whose type is not `(Schema _)` (or has
-    // no argument) declines — the operand is not a schema witness.
-    let target = match crate::infer::type_of(db, schema) {
-        crate::ty::Ty::Sum { args, .. } if args.len() == 1 => args[0].clone(),
-        _ => {
-            return Core::Poison(Reject::decline(
-                "decode's first operand is not a schema witness `(Schema T)`",
-            ));
-        }
-    };
-    // The PAYLOAD's node + real type. `payload-of`'s own scheme is identity (`∀v. v→v`), so it types the
-    // result as the VARIANT type, not the payload's — useless for the schema comparison. Peel through the
-    // `(payload-of <variant>)` application to the variant's actual payload NODE, and read ITS solved type
-    // (`Int64` for `(Measured 7)`). A `payload` that is not a `payload-of` application declines (the only
-    // sanctioned producer of a decodable payload is `payload-of`, OQ-3).
-    let (payload_core, payload_ty) = match resolved_of(db, payload) {
-        Resolved::Apply { head, args }
-            if crate::eval::meta_apply_of(db, head) == Some(Prim::PayloadOf) && args.len() == 1 =>
-        {
-            match payload_of_node(db, args[0]) {
-                Ok(node) => (core_of(db, node), crate::infer::type_of(db, node)),
-                Err(r) => return Core::Poison(r),
-            }
-        }
-        _ => {
-            // Fall back: fold the payload directly + use its (identity) type — a decline is likely, but
-            // a poison propagates cleanly rather than mis-selecting an arm.
-            let c = core_of(db, payload);
-            if let Core::Poison(r) = c {
-                return Core::Poison(r);
-            }
-            (c, crate::infer::type_of(db, payload))
-        }
-    };
-    // AGREE → `(Ok payload)`; MISMATCH → `(Err (TypeMismatch unit))`. Never a trap (§214).
-    if payload_ty.agrees_with(&target) {
-        trace!(target: "rcdzc::fold", node = id.0, "decode folds a matching payload to (Ok payload)");
-        // The `Ok` payload is the decoded value itself — a fresh node carrying the payload's core+type.
-        let ok_payload = synth_core(db, payload_core, payload_ty);
-        Core::SumNew {
-            disc: disc_ok,
-            payloads: vec![ok_payload],
-        }
-    } else {
-        trace!(target: "rcdzc::fold", node = id.0, "decode folds a mismatched payload to (Err (TypeMismatch unit))");
-        // `(Err (TypeMismatch unit))` — build the `DecodeError`'s `TypeMismatch` variant (disc 0),
-        // then wrap in the Result `Err`. Never an `unreachable`/trap.
-        let derr = build_decode_error(db);
-        Core::SumNew {
-            disc: disc_err,
-            payloads: vec![derr],
-        }
-    }
-}
-
-/// Build the constant `TypeMismatch` value — discriminant 0 of the multi-variant `DecodeError` prelude
-/// sum (`(type DecodeError TypeMismatch Eof)`), the schema-mismatch failure kind. A NULLARY variant (no
-/// payload), so a synthesized `Core::SumNew{disc:0, payloads:[]}`; it renders `(Err (TypeMismatch unit))`
-/// (a nullary variant crosses the boundary as `(Name unit)`) — the honest canonical spelling (a
-/// single-variant sum would newtype-erase and drop the ctor name). The `Err` payload of a schema-mismatch
-/// `decode`; never a trap.
-fn build_decode_error(db: &mut Db) -> StructId {
-    // `DecodeError`'s `TypeMismatch` is discriminant 0 (declaration order), nullary.
-    let ty = decode_error_ty(db);
-    synth_core(
-        db,
-        Core::SumNew {
-            disc: 0,
-            payloads: vec![],
-        },
-        ty,
-    )
-}
-
-/// The `Ty::Sum` type-value of the `DecodeError` prelude sum (monomorphic, no args), by declaration
-/// occurrence — so a built `(TypeMismatch unit)` value carries the right nominal type (`DecodeError`) for
-/// rendering / `Result`-payload typing. Falls back to `Ty::Any` if the sum is not declared (it always is,
-/// via `sums::prelude_decls`).
-fn decode_error_ty(db: &mut Db) -> crate::ty::Ty {
-    for td in &db.type_decls {
-        if td.name == "DecodeError" {
-            return crate::ty::Ty::Sum {
-                decl: td.occ,
-                args: std::rc::Rc::from(&[][..]),
-            };
-        }
-    }
-    crate::ty::Ty::Any
 }
 
 /// Rebuild an `Ast` sum VALUE (`Core::SumNew`) from a node of a `codec::decode`d cadenza-ast `Arenas` — the
@@ -20704,19 +20557,14 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         // in `lower_print`/`lower_read`, never an integer binary operation.
         | Prim::Print
         | Prim::Read
-        // The schema-decode prims (`«T»-schema` / `payload-of` / `decode`) fold in their own arms
-        // (`lower_schema_decode`), never an integer binary operation.
-        | Prim::SchemaOf
         // `Ast.module` is the self-reflection magic-constant (folds to the enclosing module's `Ast`
         // value at lowering — v-compiler-primitives' fill), never an integer binary operation.
         | Prim::ReflectModule
-        | Prim::PayloadOf
         | Prim::FEq
         | Prim::FLt
         | Prim::FLe
         | Prim::FGt
-        | Prim::FGe
-        | Prim::SchemaDecode => {
+        | Prim::FGe => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
         }
     };
@@ -27513,9 +27361,6 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::ReflectModule => "reflect-module",
         Prim::Print => "print",
         Prim::Read => "read",
-        Prim::SchemaOf => "schema-of",
-        Prim::PayloadOf => "payload-of",
-        Prim::SchemaDecode => "schema-decode",
         Prim::ListCtor => "List",
         Prim::BytesOf => "bytes-of",
         Prim::BytesLen => "bytes-len",

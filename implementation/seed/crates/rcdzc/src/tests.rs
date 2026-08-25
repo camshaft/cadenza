@@ -61584,43 +61584,6 @@ mod diagnostics {
     }
 
     #[test]
-    fn schema_decode_folds_to_a_typed_result_never_a_trap() {
-        // OS2 — schema-typed payload decode. `(decode «T»-schema (payload-of (Ctor v)))` folds to a
-        // typed `(Result T DecodeError)`: a payload whose type AGREES with the schema target → `(Ok v)`;
-        // a MISMATCH → `(Err TypeMismatch)`, NEVER a trap (§214). Both compile CLEAN (no reject) and
-        // NEVER emit a trap-poison — the mismatch is data, not a halt.
-
-        // (a) MATCH: an Int64 payload decoded against `Int64-schema` → the program compiles clean and
-        // types `(Result Int64 DecodeError)` (verified by the corpus value case; here: no fault).
-        let ok = all_errors(
-            "(module m (type Reading (Measured Int64) (Labeled String) .. r) \
-             (def (main) (decode Int64-schema (payload-of (Measured 7)))) (export main))",
-        );
-        assert!(
-            ok.is_empty(),
-            "a matching schema decode compiles clean: {ok:?}"
-        );
-
-        // (b) MISMATCH: a String payload against `Int64-schema` — compiles clean AND does NOT trap (the
-        // failure is a typed `Err`, not an `unreachable`). A CDZ0304 (provable trap) here would be the
-        // §214 violation the design forbids.
-        let mismatch = all_errors(
-            "(module m (type Reading (Measured Int64) (Labeled String) .. r) \
-             (def (main) (decode Int64-schema (payload-of (Labeled \"x\")))) (export main))",
-        );
-        assert!(
-            mismatch.is_empty(),
-            "a mismatched schema decode compiles clean (a typed Err, never a trap): {mismatch:?}"
-        );
-        assert!(
-            !mismatch
-                .iter()
-                .any(|d| d.code.as_deref() == Some("CDZ0304")),
-            "a schema mismatch must NOT be a provable trap (§214): {mismatch:?}"
-        );
-    }
-
-    #[test]
     fn a_single_variant_open_sum_is_not_erased_to_an_irrefutable_newtype() {
         // OS1 soundness edge — a CLOSED single-variant sum `(type Box (Wrap Int64))` erases to a newtype
         // whose sole constructor pattern `(Wrap n)` is IRREFUTABLE (no `_` needed). But the SAME sum
