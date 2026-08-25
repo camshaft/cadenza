@@ -1,0 +1,43 @@
+@!contract "cdz-platform.effect"
+@!input Effect
+@!output Ack
+
+// A neutral EXAMPLE application effect (design/cadenza-platform.md §4) — an ordinary effect a reducer
+// performs, carrying an opaque Bytes payload. It exists as a conformance FIXTURE: the §4 graph-routing runs
+// need an ordinary reducer to emit an effect on a contract that is NOT one of the kernel's special contracts
+// (`deliver` / `timer` / `run` are intercepted by the system on emit — see src/system.rs), so that the effect
+// is ROUTED to the registry's default event handler. Reusing a platform-protocol contract (check / verdict /
+// lifecycle / spawned) as an application effect would misuse it and set a poor example, so the graph runs
+// perform this dedicated, protocol-neutral effect instead. Nothing here is special to the kernel; it is a
+// plain request/response contract like any application effect would declare.
+//
+// This file is real Cadenza and is the source of truth for the schema: `cargo xtask codegen` validates it
+// with the `cdz` binary and generates src/contracts/effect.rs from it. Re-run `cargo xtask codegen` after
+// editing; `cargo xtask codegen --check` fails if the committed generated file is stale. The compiler is a
+// codegen-time tool only — it never ships. (This uses the CURRENT `@!contract` mechanism; it is unrelated to
+// the AST-import contract-writing capability being built elsewhere.)
+
+// The effect's input: an opaque payload the reducer performs the effect with. Bytes, mirroring how every
+// contract carries a user payload (deliver.cdz) — the effect's meaning is its contract-id, not a struct here.
+type Effect =
+  | Perform(Bytes)
+
+// The output type. A performed effect is answered by its handler chain; with no chain the default handler
+// declines with a rejection response, so a value of this type is never built for the reject arm. Present
+// because a contract declares an output type — the unit Ack.
+type Ack =
+  | Ack
+
+// --- conformance proof: a fully-literal effect, ascribed against the schema type ---
+def an-effect() -> Effect =
+  Effect.Perform(b"effect-payload")
+
+@test
+def effect-conforms() =
+  match an-effect() with
+  | Effect.Perform(p) => if p == b"effect-payload" then unit else trap("effect payload mismatch")
+
+// Make the schema types importable as a LIBRARY (`import { Effect, Ack } from "effect"`), consistent with
+// check.cdz / verdict.cdz. Inert for the Rust codegen (which reads the schema, not the export clause) and for
+// a single-file compile.
+export { Effect.*, Ack.* }
