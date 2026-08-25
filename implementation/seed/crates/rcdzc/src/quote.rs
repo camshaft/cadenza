@@ -437,6 +437,22 @@ pub(crate) fn reflect_document(ast: &mut Arenas, node: StructId) -> Option<Struc
     reify_inner(ast, node, true, true)
 }
 
+/// Does `ast` contain a `(. Ast module)` form anywhere — the `Ast.module` self-reflection intrinsic? A
+/// cheap structural scan used to GATE the pre-resolve source snapshot: the snapshot (a per-file arena
+/// clone the `Prim::ReflectModule` fill reflects from) is captured ONLY for a file that actually
+/// self-reflects, so the overwhelmingly common program that never mentions `Ast.module` pays NO clone.
+/// Precise (not a bare `module` name-leaf scan — `module` is also the module-declaration keyword): it
+/// matches the exact `(. Ast module)` member form, mirroring how the fill occurrence resolves.
+pub(crate) fn contains_ast_module(ast: &Arenas) -> bool {
+    (0..ast.structure.len() as u32).any(|i| {
+        let id = StructId(i);
+        matches!(ast.as_form(id, "."), Some(tail)
+            if tail.len() == 2
+                && ast.as_name(tail[0]) == Some("Ast")
+                && ast.as_name(tail[1]) == Some("module"))
+    })
+}
+
 /// The shared body of `reify`, parameterized by whether an integer-literal payload is GROUNDED to
 /// `BigInt`. In VALUE position (`ground_ints` true — the reifier building an `Ast` value) a bare int
 /// literal is wrapped `(: N BigInt)` so it grounds to `Ast.Int`'s `BigInt` payload. In PATTERN position
