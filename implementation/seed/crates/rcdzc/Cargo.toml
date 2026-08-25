@@ -35,6 +35,16 @@ path = "src/lib.rs"
 # (sign, magnitude bytes) struct, so nothing is pulled in for arbitrary precision, and the core
 # ports cleanly to the Cadenza self-host.
 
+[dependencies.blake3]
+# The ONE exception to COPY-DON'T-DEPEND, waived by the operator (2026-08-25) specifically for blake3:
+# the compile-time `Blake3.of` fold calls `blake3::hash` so its 32-byte digest is BYTE-IDENTICAL to the
+# runtime `hash-blake3` heap op (idx 91), which uses the SAME crate (design-compiler-primitives §9 —
+# same hash both places). BLAKE3 is a fixed algorithm, so the digest is version-independent. Same crate
+# + version + no-default-features the runtime (`cdz-runtime`) uses, plain UNKEYED BLAKE3-256, no key /
+# derive-key / domain tag (all domain separation is userspace, D7).
+version = "1.8"
+default-features = false
+
 [dependencies.tracing]
 # TRACE-LEVEL DECISION LOGGING. The query producers (resolve/infer/lower/eval) emit a `trace!` event
 # at each decision — a name's resolution, a solved type, a fold outcome, a decline — so a debugging

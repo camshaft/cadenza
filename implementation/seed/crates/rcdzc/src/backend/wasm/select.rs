@@ -1457,6 +1457,7 @@ fn binding_escapes_dup_aware(
         | Core::ConstRational(_, _)
         | Core::ConstBool(_)
         | Core::ConstStr(_)
+        | Core::ConstBytes(_)
         | Core::ConstChar(_)
         | Core::ConstFloat(_)
         | Core::ConstFloatNan
@@ -2141,6 +2142,7 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
         | Core::ConstRational(_, _)
         | Core::ConstBool(_)
         | Core::ConstStr(_)
+        | Core::ConstBytes(_)
         | Core::ConstChar(_)
         | Core::ConstFloat(_)
         | Core::ConstFloatNan
@@ -2883,6 +2885,7 @@ fn mark_binder_dups_inner(
         | Core::ConstRational(_, _)
         | Core::ConstBool(_)
         | Core::ConstStr(_)
+        | Core::ConstBytes(_)
         | Core::ConstChar(_)
         | Core::ConstFloat(_)
         | Core::ConstFloatNan
@@ -3688,6 +3691,12 @@ fn collect_used_ops_into_seen(
             for elem in elems.iter() {
                 collect_used_ops_into_seen(db, *elem, out, visited);
             }
+        }
+        // A baked byte-constant materializes with the SAME `bytes-alloc`+`bytes-set` shape as `BytesOf`,
+        // but has no child nodes to descend into (the bytes are known constants).
+        Core::ConstBytes(_) => {
+            out.insert(OP_BYTES_ALLOC);
+            out.insert(OP_BYTES_SET);
         }
         // A runtime `(bin …)` build allocs the byte buffer + writes each segment byte with `bytes-set`.
         Core::BinBuild { segs } => {
@@ -8824,6 +8833,19 @@ fn emit(
                     }
                 }
                 out.push(Lir::CallImport(OP_BYTES_SET)); // → [buf]  (bytes-set returns the buffer)
+            }
+            Ok(()) // leaves [buf] — the bytes handle
+        }
+        // A baked byte-constant — the leaf twin of `BytesOf`. Same `bytes-alloc`+`bytes-set` sequence,
+        // reading each byte from the constant slice (already in 0..=255) rather than a child node. Leaves
+        // the bytes handle on the stack, byte-identical to a `BytesOf` of the same constant elements.
+        Core::ConstBytes(bytes) => {
+            out.push(Lir::ConstI32(bytes.len() as i32)); // [len]
+            out.push(Lir::CallImport(OP_BYTES_ALLOC)); // → [buf]
+            for (i, &byte) in bytes.iter().enumerate() {
+                out.push(Lir::ConstI32(i as i32)); // [buf, index]
+                out.push(Lir::ConstI32(byte as i32)); // [buf, index, byte]
+                out.push(Lir::CallImport(OP_BYTES_SET)); // → [buf]
             }
             Ok(()) // leaves [buf] — the bytes handle
         }
@@ -14341,10 +14363,11 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
         | Core::MapInsert { .. }
         | Core::MapRemove { .. }
         // A constant string/bytes materializes a FRESH owned byte-leaf handle (`bytes-alloc`+`bytes-set`,
-        // see the `Core::ConstStr`/`BytesOf` emit), so — like a constructor — the `value-eq` emit drops
-        // it after the borrowing compare. This is the `(= h "+")` shape: comparing a runtime payload
-        // string against a constant-string literal.
+        // see the `Core::ConstStr`/`ConstBytes`/`BytesOf` emit), so — like a constructor — the `value-eq`
+        // emit drops it after the borrowing compare. This is the `(= h "+")` shape: comparing a runtime
+        // payload string against a constant-string literal.
         | Core::ConstStr(_)
+        | Core::ConstBytes(_)
         | Core::BytesOf { .. }
         // A runtime Bytes/String PRODUCER returns a FRESH owned handle: `bytes-concat`/`bytes-slice`/
         // `bytes-compact` each consume their operand(s) and hand back a new sequence; `str-from-bytes`

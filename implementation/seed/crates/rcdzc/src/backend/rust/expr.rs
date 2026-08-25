@@ -3122,6 +3122,17 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 "{{ let mut __b: Vec<u8> = Vec::new(); {lines}__b }}"
             ))
         }
+        // A baked byte-constant materializes directly as its `Vec<u8>` — the leaf twin of `BytesOf` (no
+        // per-element sub-emit, the bytes are already known). Same runtime Bytes value a `BytesOf` of the
+        // identical constant elements would build.
+        Core::ConstBytes(bytes) => {
+            let elems = bytes
+                .iter()
+                .map(|b| format!("{b}u8"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            Ok(format!("vec![{elems}]"))
+        }
         // `Bytes.len` → the byte count as `Int64`.
         Core::BytesLen { operand } => {
             // A diverging operand makes the `.len()` dead (see `Core::ListLen`).

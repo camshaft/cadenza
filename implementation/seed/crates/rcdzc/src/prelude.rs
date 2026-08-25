@@ -208,6 +208,13 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     // `Type.of` is a type-level operation, not a runtime one.
     names.insert("Type".to_string(), type_module(ast));
 
+    // `Blake3` — the module of blake3 hashing operations. `of` hashes a `Bytes` to its 32-byte digest as
+    // a `Bytes` (`(. Blake3 of)`). NAMES THE ALGORITHM (a future digest is a different named module, not a
+    // silent change), and is entirely generic (raw bytes → digest, no domain tag — that is userspace's
+    // job). NOT a type — no `(meta t)`. The compile-time half of the contract-primitives blake3 (folds a
+    // constant `Bytes` via `blake3::hash`; a runtime `Bytes` awaits the runtime lowering to heap op 91).
+    names.insert("Blake3".to_string(), blake3_module(ast));
+
     // `Char` — the module of char OPERATIONS (`to-int`/`from-int`), a NULLARY type like `String`. Its
     // `(meta t)` is the ground `Ty::Char`, so bare `Char` in type position IS the type; the operation
     // fields project via member access `(. Char to-int)`.
@@ -1744,6 +1751,36 @@ fn qty_module(ast: &mut Arenas) -> StructId {
 /// program can BRANCH on types at compile time (`(if (Type.eq (Type.of x) Int64) …)`). Unlike `Qty`, the
 /// module itself is NOT a type constructor (no top-level `(meta apply)`) — it is only a namespace; `Type`
 /// in a bare type position is not a type (a value's type-of is `Ty::Type`, spelled only by reflection).
+/// The type `(fn () (-> Bytes Bytes))` for `Blake3.of` — a monomorphic arrow taking a `Bytes` and
+/// returning its 32-byte blake3 digest as a `Bytes`. A ZERO-PARAM `fn` wrapper (see
+/// [`string_to_bytes_type`] — the wrapper makes `scheme_of` read a SCHEME, not a bare type-value). Both
+/// `Bytes` positions are the `(intrinsic bytes-ty)` type-value directly (a bare `Bytes` name would
+/// mis-resolve inside the module being built).
+fn blake3_of_type(ast: &mut Arenas) -> StructId {
+    let bytes_in = intrinsic_node(ast, "bytes-ty");
+    let bytes_out = intrinsic_node(ast, "bytes-ty");
+    let body = arrow_type(ast, bytes_in, bytes_out); // (-> Bytes Bytes)
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
+    let params = push_list(ast, vec![]);
+    push_list(ast, vec![fn_head, params, body])
+}
+
+/// The `Blake3` module record — a record of hashing OPERATIONS reached by member access (`(. Blake3
+/// of)`). It carries NO `(meta t)`: `Blake3` is NOT a type, only a namespace (unlike `Bytes`/`String`,
+/// whose bare name IS a type). One field `of : Bytes → Bytes` — the blake3 content hash. NAMES THE
+/// ALGORITHM (design-compiler-primitives.md D5): a future digest is a DIFFERENT named module/function,
+/// never a silent change to a generic `Hash`. The operation is ENTIRELY GENERIC (raw bytes → digest, no
+/// tag/prefix — all domain separation is userspace, D7). Same monomorphic-op shape as the `Bytes`/`String`
+/// operations (`list_op_record` with a `(fn () (-> …))` scheme + `(meta apply) = (intrinsic blake3-of)`).
+fn blake3_module(ast: &mut Arenas) -> StructId {
+    let head = push_atom(ast, Leaf::Str("record".into()));
+    let of_type = blake3_of_type(ast);
+    let of_op = list_op_record(ast, "blake3-of", of_type);
+    let of_field = push_atom(ast, Leaf::Name("of".into()));
+    let of = push_list(ast, vec![of_field, of_op]);
+    push_list(ast, vec![head, of])
+}
+
 fn type_module(ast: &mut Arenas) -> StructId {
     let head = push_atom(ast, Leaf::Str("record".into()));
     let of_field = push_atom(ast, Leaf::Name("of".into()));

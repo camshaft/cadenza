@@ -1133,6 +1133,7 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
         | Core::ConstRational(_, _)
         | Core::ConstBool(_)
         | Core::ConstStr(_)
+        | Core::ConstBytes(_)
         | Core::ConstChar(_)
         | Core::ConstFloat(_)
         | Core::ConstFloatNan

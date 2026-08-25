@@ -292,6 +292,17 @@ pub enum Core {
     /// Core walk per node) is a refcount bump, not a UTF-8 heap copy — same rationale as `Core::Record`'s
     /// `Rc<BTreeMap>` and the element families' `Rc<[StructId]>`.
     ConstStr(std::rc::Rc<str>),
+    /// A BYTES constant — a compile-time-known byte sequence baked as a single leaf (`Ty::Bytes`). The
+    /// LEAF twin of `Core::BytesOf { elems }`: `BytesOf` carries one child NODE per byte (a `ConstInt` or
+    /// a runtime element) and is emitted by materializing each element at run time, whereas `ConstBytes`
+    /// holds the raw bytes directly and has NO child nodes — so it is classified as a leaf constant
+    /// everywhere (like `ConstStr`), and the backend materializes it as a Bytes value from the baked slice
+    /// (the same `bytes-alloc`+`bytes-set` shape a `BytesOf`-of-constants lowers to). Produced by the
+    /// compile-time fold of `Ast.encode` (a whole canonical `cdzast` document as one baked constant, rather
+    /// than N per-byte `ConstInt` nodes), and the substrate a compile-time `Blake3.of`/const-executed
+    /// transform folds a `Bytes` result into. Behind an `Rc<[u8]>` so cloning it on every `core_of` memo
+    /// read is a refcount bump, not a byte copy — same rationale as `Core::ConstStr`'s `Rc<str>`.
+    ConstBytes(std::rc::Rc<[u8]>),
     /// A CHAR constant — a single Unicode scalar value (`Ty::Char`). Constant equality/ordering compare
     /// by scalar value (`c as u32`). Crossing the boundary as a char value + `Char.to-int`/`from-int` are
     /// later increments (a char at the boundary still declines — no scalar machine path yet).
