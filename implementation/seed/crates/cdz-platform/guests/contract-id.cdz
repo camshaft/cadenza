@@ -1,0 +1,94 @@
+// The shared self-reflection contract-id library (design/cadenza-platform.md §1/§4, P4). A contract module
+// self-reflects via `Ast.module` and calls this to obtain its own content-addressed contract-id —
+// `0x01 (Contract tag) ++ blake3(canonical (contract <name> (types <type>…) <input> <output>))` — byte-
+// identical to the host (`cdz_platform::Contract` / `cdz_contract::contract_id_from_module`). So a guest
+// (e.g. a reducer) can match `msg.contract` against a contract's id WITHOUT a hardcoded hash literal.
+//
+// Two entry points:
+//   contract-id(m) -> Bytes                     -- just the id (the routing key). Crosses module imports.
+//   contract(m)    -> Record(id, name, input, output, types)  -- the full descriptor (the id plus the
+//     structured AST pieces). Import the accessor under a name DISTINCT from the record fields
+//     (`def cid() = contract(Ast.module).id`, not `def id()`), so it crosses module imports.
+//
+// Handles the NATURAL contract-module shape: doc comments nest following forms (peeled per form via
+// `unwrap`), and `def`/`@test`/`export` forms are dropped (only `(type …)` forms collected). The whole
+// transform const-folds at compile time (general const-eval): `Ast.encode` requires a compile-time-const
+// AST, and the `const` params force the fold. This is a compile-time library — it computes ids, never runs.
+
+def at-or-name(const l: List(Ast), i: Int64) -> Ast =
+  match List.at(l, i) with
+  | Option.Some(v) => v
+  | Option.None => Ast.Name("?")
+
+def child(const form: Ast, i: Int64) -> Ast =
+  match form with
+  | Ast.List(elems) => at-or-name(elems, i)
+  | _ => Ast.Name("?")
+
+def name-of(const form: Ast) -> String =
+  match form with
+  | Ast.Name(n) => n
+  | _ => ""
+
+def str-of(const form: Ast) -> String =
+  match form with
+  | Ast.Str(s) => s
+  | _ => ""
+
+def head-name(const form: Ast) -> String = name-of(child(form, 0))
+
+// Peel `(comment <text> <form>)` wrappers (chained comments nest). Mirrors the host `unwrap_comment`.
+def unwrap(const form: Ast) -> Ast =
+  if head-name(form) == "comment" then unwrap(child(form, 2)) else form
+
+// Collect the `(type …)` declarations in order, peeling comments, dropping pragmas / def / @test / export.
+def collect-types(const forms: List(Ast)) -> List(Ast) =
+  match forms with
+  | [] => ([] : List(Ast))
+  | [f, .. rest] =>
+      let g = unwrap(f) in
+      let tail = collect-types(rest) in
+      if head-name(g) == "type" then List.prepend(tail, g) else tail
+
+// Find a `(pragma <key> <value>)` and return <value> (peeling comments); Ast.Name "?" if absent.
+def find-pragma(const forms: List(Ast), const key: String) -> Ast =
+  match forms with
+  | [] => Ast.Name("?")
+  | [f, .. rest] =>
+      let g = unwrap(f) in
+      if (head-name(g) == "pragma") and (name-of(child(g, 1)) == key)
+      then child(g, 2)
+      else find-pragma(rest, key)
+
+// The `(types …)` node — every declared type, in order.
+def types-of(const forms: List(Ast)) -> Ast =
+  Ast.List(List.prepend(collect-types(forms), Ast.Name("types")))
+
+// The canonical declaration `(contract <name> (types …) <input> <output>)` the host hashes.
+def declaration(const m: Ast) -> Ast =
+  match m with
+  | Ast.List(forms) =>
+      Ast.List([Ast.Name("contract"),
+                find-pragma(forms, "contract"),
+                types-of(forms),
+                find-pragma(forms, "input"),
+                find-pragma(forms, "output")])
+  | _ => Ast.Name("?")
+
+// The contract-id: 0x01 Contract tag ++ blake3 of the canonical declaration's encoding.
+def contract-id(const m: Ast) -> Bytes =
+  Bytes.concat(b"\x01", Blake3.of(Ast.encode(declaration(m))))
+
+// The full descriptor: the id plus the structured pieces.
+def contract(const m: Ast) -> Record(id: Bytes, name: String, input: Ast, output: Ast, types: Ast) =
+  match m with
+  | Ast.List(forms) =>
+      { id = contract-id(m),
+        name = str-of(find-pragma(forms, "contract")),
+        input = find-pragma(forms, "input"),
+        output = find-pragma(forms, "output"),
+        types = types-of(forms) }
+  | _ =>
+      { id = b"", name = "", input = Ast.Name("?"), output = Ast.Name("?"), types = Ast.Name("?") }
+
+export { contract-id, contract }
