@@ -127,10 +127,11 @@ fn compile_with_opt_inner(
         .iter()
         .find(|a| a.kind == link::KIND_ENTRY)
         .map(|a| String::from_utf8_lossy(&a.bytes).into_owned());
-    let (mut arenas, linkage) = match link_inputs(&ast_arts, entry_name.as_deref()) {
-        Ok(a) => a,
-        Err(r) => return fail(vec![r]),
-    };
+    let (mut arenas, linkage, source_snapshots) =
+        match link_inputs(&ast_arts, entry_name.as_deref()) {
+            Ok(a) => a,
+            Err(r) => return fail(vec![r]),
+        };
     // NO-REDECLARE for an EXTERNAL artifact world: a reducer delivered with a `KIND_WIT_WORLD` artifact (vs
     // an in-source `(world …)`) gets its world-import effects synthesized too. Inject them into the arena
     // BEFORE `Db::load` so the synthesized `(effect …)` decls are scanned + resolved like hand-written ones
@@ -166,6 +167,11 @@ fn compile_with_opt_inner(
     });
 
     let mut db = Db::load_linked(arenas, linkage);
+    // Hand the compiler the per-file pre-resolve SOURCE snapshots captured by `link_inputs` (before
+    // `Db::load` mutated the arena). The self-reflection fill (`Ast.module` → `Prim::ReflectModule`) reflects
+    // the enclosing module from these at lowering, keyed by `file_of`. Set here (post-load), like
+    // `component_name`, so `Db::load`'s many callers need no new argument.
+    db.source_snapshots = source_snapshots;
     // A PROVIDER compile names the interface it publishes its exports under (X4b) — the
     // `component-name` request artifact. A peer consumer binds to this name with an `(effect …)`
     // `(bind "cadenza:pkg/iface")` (the effects-unified surface, U2). Absent (the common case) → exports
@@ -6193,10 +6199,16 @@ fn uses_verification_annotation(arena: &crate::ast::Arenas) -> bool {
     })
 }
 
-fn link_inputs(
-    ast_arts: &[&Artifact],
-    entry_name: Option<&str>,
-) -> Result<(crate::ast::Arenas, Option<crate::link::Linkage>), Reject> {
+/// The result of [`link_inputs`]: the linked (possibly-merged) arena, its linkage (`None` for the
+/// single-file fast path), and the per-file pre-resolve SOURCE snapshots (indexed to match `Db::file_of`,
+/// for the `Ast.module` self-reflection fill).
+type LinkedInputs = (
+    crate::ast::Arenas,
+    Option<crate::link::Linkage>,
+    Vec<std::rc::Rc<crate::ast::Arenas>>,
+);
+
+fn link_inputs(ast_arts: &[&Artifact], entry_name: Option<&str>) -> Result<LinkedInputs, Reject> {
     match ast_arts {
         // No `ast` artifact in the input list — the source tree the tool requires to derive a component
         // is absent, so this is a diagnostic (`compile` turns the `Reject` into an error `Diagnostic`),
@@ -6214,30 +6226,38 @@ fn link_inputs(
         [only] if entry_name.is_none() => {
             let mut user = crate::codec::decode(&only.bytes)
                 .ok_or_else(|| Reject::decline("binary AST failed to decode"))?;
-            // Desugar `Ast.self` (`(. Ast self)`) into this module's reflected AST BEFORE anything else,
-            // over the comment-STRIPPED arena (so a comment change never alters the reflected value — and
-            // it reflects the same canonical form `__ast__` does). A no-op for a program without `Ast.self`
-            // (fast-bailed on the `self` leaf scan); `strip_comments` is idempotent with `Db::load`'s.
+            // Comment-strip the raw arena (idempotent with `Db::load`'s own strip) BEFORE capturing the
+            // self-reflection SOURCE snapshot, so a comment change never alters the reflected `Ast.module`
+            // value — the same canonical form `__ast__`/`quote` reflect. The snapshot is the module's
+            // pre-resolve source; the fill (`core_of` `Prim::ReflectModule`) reflects it, because the live
+            // arena is mutated by `Db::load` before lowering. Snapshots are ordered to match `file_of`.
             crate::db::strip_comments(&mut user);
-            crate::quote::desugar_ast_self(&mut user);
             if VERIFY_KERNEL_LINKING_ENABLED
                 && uses_verification_annotation(&user)
                 && let Some(kernel) = bundled_verify_kernel_arena()
             {
                 // Link kernel + user as a package; the user file is the entry. The kernel exports its
                 // rules + abstract `Thm`; the user imports them (and the compiler synthesizes the
-                // discharge program against them at a3/b3).
+                // discharge program against them at a3/b3). Snapshots in the SAME order as `files`
+                // ([kernel, user]) so `file_of(occ)` indexes the right module for `Ast.module`.
+                let snapshots = vec![
+                    std::rc::Rc::new(kernel.clone()),
+                    std::rc::Rc::new(user.clone()),
+                ];
                 let files = vec![
                     (VERIFY_KERNEL_NAME.to_string(), kernel),
                     (only.name.clone(), user),
                 ];
                 let linked = crate::link::link(&files, &only.name)?;
                 let linkage = linked.linkage();
-                Ok((linked.arenas, Some(linkage)))
+                Ok((linked.arenas, Some(linkage), snapshots))
             } else {
-                // No verification annotation (or linking not yet enabled) — the untouched fast path:
-                // flat namespace, no linkage, byte-identical to before.
-                Ok((user, None))
+                // No verification annotation (or linking not yet enabled) — the fast path: flat namespace,
+                // no linkage. One file, so its snapshot is index 0 (`file_of` returns `None` here → the
+                // fill uses index 0). The returned arena is `Db::load`-mutated in place, so the snapshot is
+                // an independent clone of the pre-mutation source.
+                let snapshot = std::rc::Rc::new(user.clone());
+                Ok((user, None, vec![snapshot]))
             }
         }
         // A package: decode every file, then splice. The entry defaults to the sole file's name when
@@ -6246,6 +6266,7 @@ fn link_inputs(
         // clauses, if any, are validated), but with one file there is no cross-file scoping to enforce.
         _ => {
             let mut files = Vec::with_capacity(ast_arts.len());
+            let mut snapshots = Vec::with_capacity(ast_arts.len());
             for art in ast_arts {
                 let mut arena = crate::codec::decode(&art.bytes).ok_or_else(|| {
                     Reject::decline(format!("binary AST for `{}` failed to decode", art.name))
@@ -6257,10 +6278,10 @@ fn link_inputs(
                 // The db-level strip already fixes the single-file/def/type/export cases; this extends the
                 // same peel to the LINK scan so a commented import in a package resolves identically.
                 crate::db::strip_comments(&mut arena);
-                // Desugar `Ast.self` per-file on the raw (stripped) arena, where this file's own root is
-                // intact — each file's `Ast.self` reflects THAT file's module AST (the merge would flatten
-                // the roots). A no-op without `Ast.self`.
-                crate::quote::desugar_ast_self(&mut arena);
+                // Capture each file's comment-stripped SOURCE as its self-reflection snapshot — the merge
+                // flattens the file roots, so `Ast.module` in THIS file must reflect THIS file's own module
+                // root. Snapshots are pushed in file order, matching the `FileSpan` index `file_of` returns.
+                snapshots.push(std::rc::Rc::new(arena.clone()));
                 files.push((art.name.clone(), arena));
             }
             let entry = match entry_name {
@@ -6274,7 +6295,7 @@ fn link_inputs(
             };
             let linked = crate::link::link(&files, &entry)?;
             let linkage = linked.linkage();
-            Ok((linked.arenas, Some(linkage)))
+            Ok((linked.arenas, Some(linkage), snapshots))
         }
     }
 }

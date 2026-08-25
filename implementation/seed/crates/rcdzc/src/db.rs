@@ -873,6 +873,17 @@ pub struct Db {
     /// component funcs (byte-identical to before). Set AFTER `Db::load`/`load_linked` by the caller
     /// (`compile`), which reads the request artifact.
     pub component_name: Option<String>,
+    /// PER-FILE pre-resolve SOURCE snapshots, indexed by the SAME file index [`file_of`](Db::file_of)
+    /// returns — the comment-stripped raw arena of each linked file, captured in `compile::link_inputs`
+    /// BEFORE `Db::load` runs any mutating pass (strip_def_docs / verify / world-import-export injection /
+    /// resolve). The self-reflection intrinsic `Ast.module` (`Prim::ReflectModule`) is filled at LOWERING
+    /// from these: `core_of` maps the occurrence's `file_of` index to its snapshot and reflects that file's
+    /// module root as an `Ast` value (`arenas_to_ast_value`), so the reflected value is byte-identical to
+    /// `quote`/`__ast__` over the same module — the live `ast` arena is unusable there (it is mutated in
+    /// place before lowering). `Rc` so the fill can clone one out (O(1)) without borrowing `Db` immutably
+    /// while it mutates the arena. Empty for a `Db` built without linkage-time capture (tests via
+    /// `Db::load`); set AFTER `load_linked` by `compile`, like `component_name`.
+    pub source_snapshots: Vec<std::rc::Rc<Arenas>>,
     /// The PREPARSED TARGET WIT WORLD as a raw `cadenza-ast` binary document (§3b full-A end-state), or
     /// `None` when the program targets no world. Populated by `compile` from the `KIND_WIT_WORLD` input
     /// artifact (an external WIT→binary-AST step OR v-syntax's inline-declaration lowering — rcdzc never
@@ -2742,6 +2753,7 @@ impl Db {
             type_decls,
             effect_decls,
             component_name: None,
+            source_snapshots: Vec::new(),
             wit_world: None,
             effect_bindings,
             modules,

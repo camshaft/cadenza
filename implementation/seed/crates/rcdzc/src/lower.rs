@@ -477,6 +477,39 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 }),
             }
         }
+        // `Ast.module` used as a VALUE — an operator record whose `(meta apply)` is `Prim::ReflectModule`:
+        // the type-directed self-reflection intrinsic. Fills the ENCLOSING module's own AST as an `Ast`
+        // value HERE at lowering — there is no runtime "reflect the current module", so it always folds to
+        // a constant. Reflected from the module's pre-resolve SOURCE snapshot (`link_inputs` captured it
+        // before `Db::load` mutated the live arena), keyed by `file_of(id)` — this occurrence's file; a
+        // single-file program has no linkage (`file_of` → `None`) so its snapshot is index 0.
+        // `arenas_to_ast_value` walks that raw arena into a `Core::SumNew` `Ast` tree WITHOUT the resolve
+        // pass (the appended nodes would otherwise be unresolved), byte-identical to what `quote`/`__ast__`
+        // reflect over the same module. Declines cleanly (never a miscompile) when the built-in `Ast` sum is
+        // unavailable, no snapshot exists, or the module has a leaf with no `Ast` variant (Char/Symbol).
+        // Checked before the plain-record arm so it is not lowered as a data record of its meta fields.
+        Resolved::Record { .. }
+            if crate::eval::meta_apply_of(db, id) == Some(crate::resolved::Prim::ReflectModule) =>
+        {
+            let Some(disc) = ast_variant_discs(db) else {
+                return Core::Poison(Reject::decline(
+                    "Ast.module: the built-in Ast sum is unavailable",
+                ));
+            };
+            let file_index = db.file_of(id).unwrap_or(0);
+            let Some(snapshot) = db.source_snapshots.get(file_index).cloned() else {
+                return Core::Poison(Reject::decline(
+                    "Ast.module: no source snapshot for the enclosing module",
+                ));
+            };
+            let module_root = snapshot.root;
+            match arenas_to_ast_value(db, &snapshot, module_root, &disc) {
+                Some(root) => core_of(db, root),
+                None => Core::Poison(Reject::decline(
+                    "Ast.module: the enclosing module has a node with no Ast variant",
+                )),
+            }
+        }
         // `Map.empty` used as a VALUE — an operator record whose `(meta apply)` is `Prim::MapEmpty`.
         // Lowers to an empty `Core::MapNew` (built on the CHAMP heap via `map-empty`). Its key/value types
         // are read off the node's solved type `Ty::Map(k, v)` (unified against its use — an empty map's
