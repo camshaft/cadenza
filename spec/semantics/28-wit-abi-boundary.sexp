@@ -142,3 +142,18 @@
   (host-responses (respond clock.now (: 42 UInt64)))
   (host-calls (call cadenza:platform/clock.now))
   (output (: (record (= requests ((record (= contract (1)) (= payload (2)) (= token (3)) (= deadline-nanos (Some 42))))) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+
+(case "a reducer performing a RECORD host import reads a field of the result (via an imposed WIT world)"
+  (doc    "SHAPE 11 — a RECORD host-import RESULT (probe.info : (Bytes) -> record{zebra, alpha}) driven through
+           an imposed WIT world; the host RECORD's declared order (zebra, alpha) differs from the guest name-lex
+           order, exercising the field-order-follows-WIT reorder on the lift. The reducer reads the result's
+           `alpha` field into the request payload. Stubbing probe.info -> {zebra:(9), alpha:(7)} and asserting
+           payload == (7) makes the record host result + its field-reorder load-bearing. Migrated from the
+           in-crate wasmtime test `a_reducer_performing_a_record_result_host_op_emits_and_loads` (v-rb synthetic-op host-result).")
+  (wit-world (world w (export guest (member on-message (func (param m ("record" (contract ("list" (u8))) (payload ("list" (u8))) (token ("list" (u8))))) (result ("record" (requests ("list" ("record" (contract ("list" (u8))) (payload ("list" (u8))) (token ("list" (u8))) (deadline-nanos ("option" (u64)))))) (outcome ("variant" (continue) (close ("record" (schema ("list" (u8))) (reason ("list" (u8)))))))))))) (import cadenza:platform/probe (member info (func (param key ("list" (u8))) (result ("record" (zebra ("list" (u8))) (alpha ("list" (u8))))))))))
+  (component-name "cadenza:platform/guest")
+  (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (effect probe (op info (-> Bytes (Record (: zebra Bytes) (: alpha Bytes))))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (probe) (record (= requests (list (record (= contract (. m contract)) (= payload (. (probe.info (. m token)) alpha)) (= token (. m token)) (= deadline-nanos Option.None)))) (= outcome Outcome.Continue)))) (export onMessage)))
+  (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
+  (host-responses (respond probe.info (: (record (= zebra (list 9)) (= alpha (list 7))) (Record (: zebra Bytes) (: alpha Bytes)))))
+  (host-calls (call cadenza:platform/probe.info))
+  (output (: (record (= requests ((record (= contract (1)) (= payload (7)) (= token (3)) (= deadline-nanos (None unit))))) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
