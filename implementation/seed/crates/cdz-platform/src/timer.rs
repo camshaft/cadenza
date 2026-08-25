@@ -5,7 +5,7 @@
 //! carrying the recorded fire time. A program never reads a wall-clock during a fold — that would make the
 //! same event fold differently tomorrow — so the raw primitive knows only a relative `duration` (in
 //! nanoseconds), and the reducer only ever sees the recorded fired time folded into its state. Absolute
-//! deadlines and crons are built on top of this raw primitive by the system reducer (read `now`, compute the
+//! deadlines and crons are built on top of this raw primitive by the event reducer (read `now`, compute the
 //! delay, arm `fire-after`); the deadline enforcement in §4 is one such policy.
 //!
 //! A native, system-owned reducer answers this contract — the timer is entirely dependent on how the runtime

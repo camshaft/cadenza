@@ -21,7 +21,7 @@
 //!   the platform under the bach simulator to quiescence deterministically, and return the [`Run`] (the
 //!   log plus the name→id assignment) for a checker.
 //! - [`HarnessSpec`] — a whole run decoded from a **Cadenza binary AST**: the executable's input is one
-//!   Cadenza value describing the blobs (inline or by path), the tasks to spawn, and the system reducer, so
+//!   Cadenza value describing the blobs (inline or by path), the tasks to spawn, and the event reducer, so
 //!   the harness is driven by a serializable value rather than a command line.
 //! - [`serialize_log`] / [`deserialize_log`] — the observation log as a **Cadenza value**: the full-fidelity,
 //!   language-neutral log a checker reads (§9), where the human [`render`] is lossy. Every id, token, and

@@ -159,7 +159,7 @@ pub struct Notification {
 /// `Sync` would rule out a wasm-backed reducer, which owns a wasmtime `Store` — `Send` but not `Sync` — with
 /// no benefit, since nothing ever holds a reducer behind a shared reference.
 ///
-/// The system reducer that shepherds an effect (§4) is a distinct, privileged interface, not this one.
+/// The event reducer that shepherds an effect (§4) is a distinct, privileged interface, not this one.
 #[async_trait]
 pub trait Reducer: Send {
     /// React to a [`Response`] — a reply to a request this reducer performed.

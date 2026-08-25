@@ -111,7 +111,7 @@ impl SpawnSpec {
         self
     }
 
-    /// Set the reducer's privilege — [`Event`](ReducerKind::Event) for a privileged event/system reducer,
+    /// Set the reducer's privilege — [`Event`](ReducerKind::Event) for a privileged event reducer,
     /// [`Ordinary`](ReducerKind::Ordinary) otherwise (the default).
     #[must_use]
     pub fn kind(mut self, kind: ReducerKind) -> Self {

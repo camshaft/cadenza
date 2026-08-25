@@ -6,8 +6,8 @@
 //! capability. Over it sit the value primitives ([`Str`], [`Bytes`], §12), the swappable async backends
 //! (the [`BlobStore`] §8 and the [`KvStore`] §7), the [`Contract`] whose declaration hashes to its id (§1),
 //! the ordinary [`Reducer`] interface and its event types (§3), and the [`ReducerGraph`] — the one routing
-//! substrate holding the spawn tree, supervision links, and the handler chains the system reducer routes
-//! through (§3/§4/§7). The system reducer, dispatch, and the request context come next (§4).
+//! substrate holding the spawn tree, supervision links, and the handler chains the event reducer routes
+//! through (§3/§4/§7). The event reducer, dispatch, and the request context come next (§4).
 
 mod blob_store;
 mod config;

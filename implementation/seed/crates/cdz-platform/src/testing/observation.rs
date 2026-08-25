@@ -80,7 +80,7 @@ pub struct SpawnInfo {
     pub program: ProgramHash,
     /// Its parent reducer (its own id for a root).
     pub parent: ReducerId,
-    /// Its privilege — ordinary, or a privileged event/system reducer.
+    /// Its privilege — ordinary, or a privileged event reducer.
     pub kind: ReducerKind,
 }
 
