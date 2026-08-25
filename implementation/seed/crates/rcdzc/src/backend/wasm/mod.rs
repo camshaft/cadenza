@@ -1722,6 +1722,18 @@ fn record_field_cref(
             table.push(emit_cdef(&CDef::Option(payload_cref)));
             CRef::Idx(opt_def + 1)
         }
+        // A general `variant` field: lay a `variant` DEFINED type (NOMINAL → the export-aware remap gives it
+        // define+export, like a record/enum) over its cases (each an inline scalar payload CRef or none), and
+        // reference its EXPORT index.
+        host::RecordFieldAbi::Variant(cases) => {
+            let vcases: Vec<(String, Option<CRef>)> = cases
+                .iter()
+                .map(|(name, p)| (name.clone(), p.map(|v| CRef::Prim(v.comp_byte()))))
+                .collect();
+            let var_def = base + 2 * table.len() as u32;
+            table.push(emit_cdef(&CDef::Variant(vcases)));
+            CRef::Idx(var_def + 1)
+        }
     }
 }
 

@@ -91,6 +91,8 @@ pub fn record_field_abi_reaches_bytes(f: &RecordFieldAbi) -> bool {
         RecordFieldAbi::Tuple(elems) => elems.iter().any(record_field_abi_reaches_bytes),
         // An `option<T>` reaches `(list u8)` iff its payload does (option<bytes>); a scalar payload does not.
         RecordFieldAbi::Option(payload) => record_field_abi_reaches_bytes(payload),
+        // A `variant` with only SCALAR payloads (this increment's scope) never reaches `(list u8)`.
+        RecordFieldAbi::Variant(_) => false,
     }
 }
 
@@ -111,6 +113,8 @@ pub fn record_field_abi_needs_memory(f: &RecordFieldAbi) -> bool {
         // An `option<T>` field flattens to `(disc, flatten(payload))` — it needs mem iff its payload does
         // (option<bytes> copies a rope; an option<scalar> flattens with no mem).
         RecordFieldAbi::Option(payload) => record_field_abi_needs_memory(payload),
+        // A `variant` with only SCALAR payloads flattens to `(disc, scalar)` core slots — no memory.
+        RecordFieldAbi::Variant(_) => false,
     }
 }
 
@@ -168,6 +172,13 @@ pub enum RecordFieldAbi {
     /// This increment carries a SCALAR payload only (`Box<Scalar>`); an `option<bytes>`/`option<compound>` is a
     /// later increment.
     Option(Box<RecordFieldAbi>),
+    /// A general `variant { c0, c1(T1), … }` field (NOT option/result-shaped) — the case names in DECLARATION
+    /// (= discriminant) order, each with an optional SCALAR payload. Its component type is a `variant` DEFINED
+    /// type. As a record FIELD it flattens (canonical variant flatten) to `(disc:i32, join(payloads))`; this
+    /// increment scopes the payload cases to a UNIFORM single SCALAR type, so the join is that one scalar slot —
+    /// the guest branches on the value-heap sum's disc (Some payload → unbox; nullary → 0). A payload case with
+    /// a `Bytes`/compound payload, or MIXED payload widths, is a later increment.
+    Variant(Vec<(String, Option<AbiValType>)>),
 }
 
 /// One host-delegated operation the program performs — its declaring effect's NAME (the WIT interface),
@@ -252,6 +263,56 @@ pub fn result_bytes_enum(db: &mut Db, ty: &Ty) -> Option<Vec<String>> {
     )
 }
 
+/// The case list of a general `variant`-with-scalar-payload host boundary type — a `Sum` that is NOT
+/// option-shaped ([`option_payload_ty`]) nor `result<Bytes,enum>` ([`result_bytes_enum`]), with AT LEAST ONE
+/// payload case, every case nullary or a SINGLE scalar payload, and all payload cases sharing ONE
+/// `AbiValType` (so the canonical variant flatten's payload join is that one scalar slot). Returns
+/// `(kebab-case-name, Option<payload-scalar>)` per case in DECLARATION (= discriminant) order, else `None`
+/// (a payloadless enum → the [`enum_cases`] path; a mixed-width / `Bytes` / compound / multi-payload variant
+/// is a later increment). The general-variant analogue of [`enum_cases`], carrying the payloads.
+pub fn variant_scalar_payload_cases(
+    db: &mut Db,
+    ty: &Ty,
+) -> Option<Vec<(String, Option<AbiValType>)>> {
+    use crate::backend::common::export_name::kebab_extern_name;
+    let Ty::Sum { decl, .. } = ty.strip_nominal() else {
+        return None;
+    };
+    // Option/result-shaped sums use their own arms (distinct component types) — never this general variant.
+    if option_payload_ty(db, ty).is_some() || result_bytes_enum(db, ty).is_some() {
+        return None;
+    }
+    let decl = *decl;
+    // Snapshot (name, payload-count) per variant to release the immutable Db borrow before the &mut calls.
+    let variants: Vec<(String, usize)> = {
+        let d = db.type_decl_by_occ(decl)?;
+        d.variants
+            .iter()
+            .map(|v| (kebab_extern_name(&v.name), v.payloads.len()))
+            .collect()
+    };
+    let mut cases = Vec::with_capacity(variants.len());
+    let mut join: Option<AbiValType> = None;
+    let mut any_payload = false;
+    for (disc, (name, n)) in variants.into_iter().enumerate() {
+        match n {
+            0 => cases.push((name, None)),
+            1 => {
+                let pty = crate::backend::wasm::select::variant_payload_ty_at(db, ty, disc as u32)?;
+                let pv = abi_val_type(&pty)?; // a scalar payload only this increment
+                if join.is_some_and(|prev| prev != pv) {
+                    return None; // MIXED payload widths → the flatten join is a later increment
+                }
+                join = Some(pv);
+                any_payload = true;
+                cases.push((name, Some(pv)));
+            }
+            _ => return None, // a multi-payload case → a later increment
+        }
+    }
+    any_payload.then_some(cases)
+}
+
 /// The boundary ABI of a shape-d record FIELD, or `None` if the field has no boundary form yet. Supports a
 /// NO-WRAP scalar (`Int64`/`UInt64`/`Bool`/`Float64`/`Float32` — the read needs no i64→i32 narrow), a
 /// `Bytes` (`list<u8>`) field, a NESTED record (recurse), and a `result<list<u8>, enum>` field
@@ -313,10 +374,15 @@ fn field_boundary_abi(db: &mut Db, ty: &Ty) -> Option<RecordFieldAbi> {
             // A `result<list<u8>, enum-or-variant>` field (the answer-back envelope) — carries the err's case
             // names. `err_is_variant` defaults to `false` (enum) here — the guest `Sum` is payload-less and
             // cannot tell which constructor the host declared; `reorder_record_fields_to_wit` stamps it from WIT.
-            result_bytes_enum(db, ty).map(|err_cases| RecordFieldAbi::Result {
-                err_cases,
-                err_is_variant: false,
-            })
+            if let Some(err_cases) = result_bytes_enum(db, ty) {
+                return Some(RecordFieldAbi::Result {
+                    err_cases,
+                    err_is_variant: false,
+                });
+            }
+            // A general `variant { c0, c1(scalar), … }` field (not option/result-shaped) with uniform scalar
+            // payloads — the `variant` DEFINED type + the `(disc, payload)` canonical flatten.
+            variant_scalar_payload_cases(db, ty).map(RecordFieldAbi::Variant)
         }
     }
 }

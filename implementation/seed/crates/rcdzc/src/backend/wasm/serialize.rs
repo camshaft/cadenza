@@ -87,6 +87,15 @@ fn flatten_record_field_abi(f: &crate::backend::wasm::host::RecordFieldAbi, out:
             out.push(wasm_abi::CORE_I32); // the discriminant
             flatten_record_field_abi(payload, out);
         }
+        // A general `variant` flattens (canonical variant flatten) to `(disc:i32, join(case payloads))`. This
+        // increment scopes payloads to a UNIFORM single scalar, so the join is that one scalar slot (the first
+        // payload case's core byte; the detector guarantees ≥1 payload case, all sharing the valtype).
+        RecordFieldAbi::Variant(cases) => {
+            out.push(wasm_abi::CORE_I32); // the discriminant
+            if let Some(pv) = cases.iter().find_map(|(_, p)| *p) {
+                out.push(pv.core_byte());
+            }
+        }
     }
 }
 

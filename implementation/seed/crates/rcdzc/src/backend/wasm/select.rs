@@ -3762,6 +3762,22 @@ fn collect_record_field_ops(
                 }
             }
         }
+        // A general `variant<scalar>` field: the marshal `arr-get`s the variant, reads `sum-disc`, and on a
+        // payload case `sum-payload` + the payload scalar's unbox op.
+        _ if crate::backend::wasm::host::variant_scalar_payload_cases(db, fty).is_some() => {
+            out.insert(OP_ARR_GET);
+            out.insert(OP_SUM_DISC);
+            out.insert(OP_SUM_PAYLOAD);
+            let first_payload_disc =
+                crate::backend::wasm::host::variant_scalar_payload_cases(db, fty)
+                    .and_then(|cs| cs.iter().position(|(_, p)| p.is_some()));
+            if let Some(d) = first_payload_disc
+                && let Some(pty) = variant_payload_ty_at(db, fty, d as u32)
+                && let Ok(Some(read)) = get_op_ty(db, &pty)
+            {
+                out.insert(read);
+            }
+        }
         _ => {
             if let Ty::Record(sub) = fty {
                 out.insert(OP_ARR_GET);
@@ -8005,7 +8021,7 @@ fn sum_single_payload_ty(db: &mut Db, sum: &crate::ty::Ty) -> Option<crate::ty::
 /// → `Int64`). Recorded in `Emit::sum_path_types` as a switch descends, then read by the `Payload`-step
 /// type resolution below. `None` for a nullary/unresolvable variant. Mirrors the Rust backend's
 /// `variant_payload_ty`.
-fn variant_payload_ty_at(db: &mut Db, sum: &Ty, disc: u32) -> Option<Ty> {
+pub(crate) fn variant_payload_ty_at(db: &mut Db, sum: &Ty, disc: u32) -> Option<Ty> {
     let stripped = sum.strip_nominal().clone();
     let Ty::Sum { decl, .. } = &stripped else {
         return None;
@@ -9427,10 +9443,84 @@ fn emit_record_arg_marshal(
                 out.push(Lir::LocalGet(disc_out)); // push (disc, payload)
                 out.push(Lir::LocalGet(pval));
             }
+            // A general `variant { c0, c1(scalar), … }` field flattens (canonical variant flatten) to
+            // `(disc:i32, payload)`. The guest's `sum-disc` IS the component discriminant (cases in
+            // declaration order, like an enum). The payload slot: if `disc` is a PAYLOAD case → unbox(
+            // sum-payload); else the payload-width zero. Side-effect scratch in the `if`, push `(disc,
+            // payload)` after — the option-field shape generalized to N cases (payload-case-set membership).
+            None if crate::backend::wasm::host::variant_scalar_payload_cases(db, fty).is_some() => {
+                let cases = crate::backend::wasm::host::variant_scalar_payload_cases(db, fty)
+                    .expect("variant-shaped by the guard");
+                let payload_discs: Vec<i32> = cases
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(d, (_, p))| p.map(|_| d as i32))
+                    .collect();
+                let first_pd = *payload_discs
+                    .first()
+                    .expect("the detector guarantees ≥1 payload case");
+                let payload_ty =
+                    variant_payload_ty_at(db, fty, first_pd as u32).ok_or_else(|| {
+                        Reject::decline("a variant field payload type could not be resolved")
+                    })?;
+                let pv = valtype_of(&payload_ty).ok_or_else(|| {
+                    Reject::decline("a variant field scalar payload has no valtype")
+                })?;
+                let read = get_op_ty(db, &payload_ty)?
+                    .ok_or_else(|| Reject::decline("a variant field payload has no unbox op"))?;
+                let ans = work_base + 4;
+                let disc_out = work_base + 5;
+                let is_payload = work_base + 6;
+                let pval = work_base + 7;
+                scratch_ty.insert(ans, ValType::I32);
+                scratch_ty.insert(disc_out, ValType::I32);
+                scratch_ty.insert(is_payload, ValType::I32);
+                scratch_ty.insert(pval, pv);
+                *high = (*high).max(work_base + 8);
+                let zero = match pv {
+                    ValType::I64 => Lir::ConstI64(0),
+                    ValType::F64 => Lir::F64ConstBits(0),
+                    ValType::F32 => Lir::F32ConstBits(0),
+                    _ => Lir::ConstI32(0),
+                };
+                out.push(Lir::LocalGet(rec_slot));
+                out.push(Lir::ConstI32(i as i32));
+                out.push(Lir::CallImport(OP_ARR_GET)); // [variant handle] (borrows rec)
+                out.push(Lir::LocalSet(ans));
+                out.push(Lir::LocalGet(ans));
+                out.push(Lir::CallImport(OP_SUM_DISC)); // [disc] (= component disc, decl order)
+                out.push(Lir::LocalSet(disc_out));
+                // is_payload = OR over the payload-case discs of (disc == pd).
+                for (k, pd) in payload_discs.iter().enumerate() {
+                    out.push(Lir::LocalGet(disc_out));
+                    out.push(Lir::ConstI32(*pd));
+                    out.push(Lir::I32Eq);
+                    if k > 0 {
+                        out.push(Lir::I32Or);
+                    }
+                }
+                out.push(Lir::LocalSet(is_payload));
+                out.push(Lir::LocalGet(is_payload));
+                out.push(Lir::If(BlockType::Empty)); // a payload case → unbox the payload
+                out.push(Lir::LocalGet(ans));
+                out.push(Lir::CallImport(OP_SUM_PAYLOAD));
+                out.push(Lir::CallImport(read));
+                if read == OP_GET_INT && matches!(pv, ValType::I32) {
+                    out.push(Lir::I32WrapI64);
+                }
+                out.push(Lir::LocalSet(pval));
+                out.push(Lir::Else); // a nullary case → the payload-width zero
+                out.push(zero);
+                out.push(Lir::LocalSet(pval));
+                out.push(Lir::End);
+                out.push(Lir::LocalGet(disc_out)); // push (disc, payload)
+                out.push(Lir::LocalGet(pval));
+            }
             None => {
                 return Err(Reject::decline(
                     "a record host-arg field has no boundary read (only scalar, list<u8>, list<T>, \
-                     option<scalar>, nested-record, and result<list<u8>, enum> fields cross this increment)",
+                     option<scalar>, variant<scalar>, nested-record, and result<list<u8>, enum> fields cross \
+                     this increment)",
                 ));
             }
         }
