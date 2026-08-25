@@ -67,6 +67,7 @@ pass	Blake3.of composes with Ast.encode — hashing an encoded AST folds to a 32
 pass	Blake3.of is a 32-byte digest
 pass	Blake3.of is deterministic — the same bytes hash to the same digest
 pass	Blake3.of is sensitive — a one-bit-different input hashes to a different digest
+pass	Blake3.of of a runtime Bytes is a 32-byte digest (runtime op 91)
 pass	Blake3.of of the empty byte string is the official empty-input BLAKE3-256 digest
 pass	Bytes.concat of two runtime SLICES splices window content in order
 pass	Bytes.concat of two sliced-view to-bytes is read twice and both reads see the concatenated bytes
@@ -2509,6 +2510,7 @@ pass	a named higher-order function receives a lambda argument
 pass	a named multi-argument function applies in explicit curried form
 pass	a named multi-argument function applies to all its arguments at once
 pass	a named rate unit converts to the reference rate (Float)
+pass	a named variant-with-payload field in a record result crosses the export boundary on both arms
 pass	a named width alias and its width-indexed expansion name the same type
 pass	a named-wildcard guard binder over a string binds in both the guard and the body
 pass	a narrow addition reconciles a constant LEFT operand to the variable's width
@@ -6242,6 +6244,7 @@ pass	runtime BigInt add/subtract carries and borrows exactly across the 64-bit l
 pass	runtime BigInt addition runs on the arbitrary-precision runtime
 pass	runtime BigInt equality holds for values reached by different arithmetic
 pass	runtime BigInt remainder runs on the arbitrary-precision runtime
+pass	runtime Blake3.of equals the compile-time fold of the same bytes (section-9 byte-identity)
 pass	runtime Bools order false below true with compare and equality agreeing
 pass	runtime Bytes ordering is content-lexicographic over unsigned bytes — the blessed total order
 pass	runtime Bytes value-equality distinguishes different content
@@ -7180,5 +7183,3 @@ todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	read of malformed text is a coded reject, not a wrong value
 todo	two runtime String entry args compare by content including multibyte
-pass	Blake3.of of a runtime Bytes is a 32-byte digest (runtime op 91)
-pass	runtime Blake3.of equals the compile-time fold of the same bytes (section-9 byte-identity)

@@ -2520,6 +2520,7 @@ pass	a named higher-order function receives a lambda argument
 pass	a named multi-argument function applies in explicit curried form
 pass	a named multi-argument function applies to all its arguments at once
 pass	a named rate unit converts to the reference rate (Float)
+pass	a named variant-with-payload field in a record result crosses the export boundary on both arms
 pass	a named width alias and its width-indexed expansion name the same type
 pass	a named-wildcard guard binder over a string binds in both the guard and the body
 pass	a narrow addition reconciles a constant LEFT operand to the variable's width
@@ -7145,6 +7146,7 @@ pass	zgz1 a ZIGZAG codec accumulator — enc maps signed to unsigned (2v for non
 pass	zpl1 a ZIPLINE with a brake zone — gliding advances the position by speed times the hang time and gravity feeds the speed capped at nine, a brake in the zone past ten sheds four speed floored at one (a clean one-tag) while an early brake SCRAPES (counted, shedding one), the read packs position speed and scrapes, and the seed's launch speed reaches the zone before the brake on one line while the other scrapes short of it
 pass	α-equivalence (aconv) recognizes (λx.x) and (λy.y) as the same term up to bound-variable renaming
 pass	α-equivalence handles nesting and distinguishes a bound variable from a same-numbered free variable
+todo	Blake3.of of a runtime Bytes is a 32-byte digest (runtime op 91)
 todo	Set.of over runtime lists at two different element types declines pending the recursive-generic tie
 todo	Type is a first-class value
 todo	a BARE-param escaping closure capturing a handled value declines cleanly (annotated-param twin folds)
@@ -7179,6 +7181,5 @@ todo	round-trip: a higher-order closure applied to TWO distinct inner closures
 todo	round-trip: a higher-order closure whose inner closure CAPTURES and is applied twice
 todo	round-trip: a higher-order closure whose inner closure takes an UNANNOTATED compound param
 todo	round-trip: an UNANNOTATED inner closure with a List param via the context arrow
-todo	two adapter records with different state types drive a take-while fold in one program
-todo	Blake3.of of a runtime Bytes is a 32-byte digest (runtime op 91)
 todo	runtime Blake3.of equals the compile-time fold of the same bytes (section-9 byte-identity)
+todo	two adapter records with different state types drive a take-while fold in one program
