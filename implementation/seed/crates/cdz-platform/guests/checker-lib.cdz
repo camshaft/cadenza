@@ -17,14 +17,10 @@
 import { Envelope } from "check"
 import { Verdict } from "verdict"
 import { LogRecord } from "log-schema"
-
-// The reducer return types. PROBE (tick 14): can a checker IMPORT these instead of declaring them locally?
-// Historically each checker had to declare Outcome+Error locally because the world-export boundary synthesizes
-// on-response/on-notification's unused parameter types from the guest's own sums (response answer =
-// Result(Bytes, Error)) → a cross-module import tripped CDZ0201. Testing whether ANNOTATING those unused params
-// (the CDZ0201 remedy) lets the types be lib-owned.
-type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
-type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+// The reducer-interface scaffolding (Outcome, Error, the two inert handlers) is owned by reducer-lib — the
+// shared base every reducer guest uses. checker-lib layers the check/verdict machinery on top and re-exports
+// the scaffolding so a checker imports everything it needs from one place.
+import { Outcome, on-response, on-notification } from "reducer-lib"
 
 // The outcome of interpreting a delivered message: emit a verdict (on `contract`, carrying `payload`) then
 // continue, or close because the message was not a `check` Envelope (a checker only understands `check`).
@@ -62,14 +58,6 @@ def respond(msg, judge) =
   | Decision.Report(r) => { requests = [verdict-req(r.contract, r.payload)], outcome = Outcome.Continue }
   | Decision.NotCheck(cl) => { requests = [], outcome = Outcome.Close({ schema = cl.schema, reason = cl.reason }) }
 
-// The inert on-response / on-notification every checker shares — a checker judges only delivered messages.
-// The parameters are annotated (response is `{contract, token, answer: Result(payload, Error)}`, notification
-// is `{contract, payload}`) so the world-export boundary can fix them against the lib-owned Outcome; a checker
-// re-exports these directly instead of re-declaring the two inert handlers.
-def on-response(_resp: Record(contract: Bytes, token: Bytes, answer: Result(Bytes, Error))) =
-  { requests = [], outcome = Outcome.Continue }
-def on-notification(_note: Record(contract: Bytes, payload: Bytes)) =
-  { requests = [], outcome = Outcome.Continue }
 
 // ── Log-iteration combinators — make a checker DECLARATIVE: it says WHAT to find in the observation log, the
 // index-recursion lives here. Every combinator takes ordinary NAMED field-extractor functions (no captured
