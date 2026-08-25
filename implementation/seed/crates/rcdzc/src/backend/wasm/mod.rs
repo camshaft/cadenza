@@ -9053,6 +9053,40 @@ fn canon_write_of(
         // (§1 nominal identity). `boundary_disc` = the matched WIT case index. Belt-and-suspenders: each arm's
         // payload-presence must still agree (guest-nullary iff WIT-case-nullary). A payload arm resolves its
         // type via the ctor + `payload_ty_at_instantiation` (concrete payloads, e.g. a `closed` record, too).
+        // A payloadless `enum` (all-nullary sum) result FIELD — the guest value is a BARE i32 discriminant
+        // (`db.is_enum_disc`, NOT a heap `sum`, unlike a payload-carrying variant handled below), so store the
+        // disc DIRECTLY (no unbox). Accepts a WIT `enum` OR an all-nullary `variant` (both the disc-only
+        // shape). Gated on the guest decl-order MATCHING the WIT case-order by name, so the guest's raw disc
+        // IS the WIT case index (no runtime remap; a reordering declines this increment — a later slice). The
+        // guest-export result-side twin of a host-import enum arg/result (bare-i32 enum-disc).
+        Ty::Sum { decl, .. } if db.is_enum_disc(*decl) => {
+            use crate::backend::common::export_name::kebab_extern_name;
+            let wit_cases: Vec<String> = match wty {
+                WitType::Enum(cs) => cs.clone(),
+                WitType::Variant(cs) if cs.iter().all(|(_, p)| p.is_none()) => {
+                    cs.iter().map(|(n, _)| n.clone()).collect()
+                }
+                _ => return None,
+            };
+            let guest_cases: Vec<String> = {
+                let dr = db.type_decl_by_occ(*decl)?;
+                dr.variants
+                    .iter()
+                    .map(|v| kebab_extern_name(&v.name))
+                    .collect()
+            };
+            if guest_cases != wit_cases {
+                return None; // a case REORDER would need a runtime disc remap — later increment
+            }
+            let (disc_size, _) =
+                wit_ctype::variant_disc_layout(&vec![None; wit_cases.len()]);
+            let store = match disc_size {
+                1 => op::I32_STORE8,
+                2 => op::I32_STORE16,
+                _ => op::I32_STORE,
+            };
+            Some(CanonWrite::EnumDisc { store })
+        }
         Ty::Sum { decl, .. } if matches!(wty, WitType::Variant(_)) => {
             use crate::backend::common::export_name::kebab_extern_name;
             let WitType::Variant(cases) = wty else {
@@ -9201,6 +9235,8 @@ fn canon_write_ops(
     use crate::backend::wasm::serialize::CanonWrite;
     match cw {
         CanonWrite::Scalar { read, .. } => out(read),
+        // A bare-i32 enum disc is stored directly (no unbox / heap op) — registers nothing.
+        CanonWrite::EnumDisc { .. } => {}
         CanonWrite::Bytes => {
             out("bytes-len");
             out("bytes-get");
