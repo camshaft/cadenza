@@ -1,0 +1,22 @@
+// The KV-PUT arg-marshalling checker (design/cadenza-platform.md §7/§9) — the assertion half of the migrated
+// "kv.put(pl, pl)" test. The paired guest (reducer-kvput-cdz) performs state.put(payload, payload); this
+// checker asserts the recorded put carries key == value, i.e. BOTH args of the two-arg host call crossed as
+// the same payload bytes (independent arg marshalling). RELATIONAL within the record (key vs value), no
+// hardcoded value. NON-VACUOUS: a guest that fails to instantiate performs no put, so no KvPut exists and the
+// check fails; a put whose args were mismarshalled has key != value and likewise fails.
+//
+// Round-3 checker-lib form: judgement is one field predicate + one combinator; respond() owns the decode +
+// verdict emit, and the inert on-response/on-notification are re-exported from checker-lib.
+import { LogRecord, Entry } from "log-schema"
+import { respond, on-response, on-notification, pass, fail, any-record } from "checker-lib"
+
+// Does some KvPut carry key == value? (the reducer put the payload under itself — both args crossed as it.)
+def put-key-eq-value(rec) = match rec.entry with | Entry.KvPut(p) if (p.key == p.value) => true | _ => false
+
+def verdict-payload(records: List(LogRecord)) =
+  if any-record(records, put-key-eq-value)
+  then pass()
+  else fail("no KvPut whose key == value: state.put(payload, payload) did not record a key==value write (arg marshalling)")
+
+def on-message(msg) = respond(msg, verdict-payload)
+export { on-message, on-response, on-notification }

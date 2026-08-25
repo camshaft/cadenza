@@ -1,0 +1,24 @@
+// A Cadenza reducer performing a single key-value PUT with the SAME bytes as both arguments (design
+// /cadenza-platform.md §7) — migrated from v-rust-backend's in-crate "kv.put(pl, pl)" arg-marshalling test
+// (the reducer-shaped, arg-asserting half of the kv cluster; the result-asserting kv ops are v-wasmtime's
+// corpus). It stores the delivered payload under itself as the key: state.put(msg.payload, msg.payload). The
+// coverage is ARGUMENT marshalling — that BOTH args of a two-arg host call crossed as the payload (key AND
+// value), independently — which the driven harness observes as a recorded KvPut{key, value}. A checker asserts
+// the recorded put has key == value; a broken arg marshalling (either arg wrong) would break that equality.
+//
+// Targets reducer-world (the floor world that imports `state`). on-response / on-notification are inert.
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+def on-message(msg) =
+  host state in
+    ( state.put(msg.payload, msg.payload) ;
+      { requests = [], outcome = Outcome.Continue } )
+
+def on-response(_resp) =
+  { requests = [], outcome = Outcome.Continue }
+
+def on-notification(_note) =
+  { requests = [], outcome = Outcome.Continue }
+
+export { on-message, on-response, on-notification }
