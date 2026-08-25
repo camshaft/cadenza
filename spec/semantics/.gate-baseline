@@ -2688,6 +2688,7 @@ pass	a non-tail-resumptive outer handler reduces a reducible inner handle before
 pass	a non-unit base in a Unit.^ power is rejected
 pass	a non-unit factor in a Unit.* composition is rejected
 pass	a non-unit factor in a Unit./ composition is rejected
+pass	a none-only option<s64> record field resolves its element type from an imposed WIT world
 pass	a nonneg-dividend signed division elides the MIN over -1 guard and divides by -1 as a plain negation
 pass	a nonzero BigInt literal probe dispatches across MUTUAL recursion post-fix
 pass	a nonzero BigInt probe over a scrutinee REBUILT each recursive frame dispatches every time

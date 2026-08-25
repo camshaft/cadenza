@@ -1259,7 +1259,7 @@ enum GateTargetArg {
 /// is given, the export is invoked with those runtime arguments (`--call <export> --arg <v>…`) — how a
 /// case exercises a parameterized entrypoint rather than a nullary one; `None` runs the sole export
 /// with no arguments (the common case).
-#[allow(clippy::too_many_arguments)] // host protocol = responses + calls, threaded alongside the pipeline args
+#[allow(clippy::too_many_arguments)] // host protocol + wit-world, threaded alongside the pipeline args
 fn run_program(
     tools: &Tools,
     store: &Option<PathBuf>,
@@ -1268,12 +1268,32 @@ fn run_program(
     call: Option<&Call>,
     host_responses: &[(String, String)],
     host_calls: &[String],
+    wit_world: Option<&str>,
+    component_name: Option<&str>,
     target: GateTarget,
 ) -> Ran {
+    // A case that imposes an explicit WIT world (general WIT-ABI shape) is driven only through the WASM
+    // path (the authoritative WIT-ABI boundary check). The Rust/ML backends have no external-world ingest
+    // on this path, so a wit-world case is not-yet-supported there → DECLINE (Todo, coverage-not-yet),
+    // never a disagreement. (The wasm path handles it; the others stay byte-identical for non-world cases.)
+    if wit_world.is_some() && !matches!(target, GateTarget::Wasm) {
+        return Ran::Declined {
+            code: None,
+            message: String::new(),
+        };
+    }
     match target {
-        GateTarget::Wasm => {
-            run_program_wasm(tools, store, program, modules, call, host_responses, None)
-        }
+        GateTarget::Wasm => run_program_wasm(
+            tools,
+            store,
+            program,
+            modules,
+            call,
+            host_responses,
+            None,
+            wit_world,
+            component_name,
+        ),
         // Both Rust backends render a host call the SAME way: the emitted `mod prog` calls
         // `crate::__cdz_host_<key>()` and `run_program_rust` generates those shim fns from `host_responses`
         // (a non-host case passes empty slices → byte-identical to before). A UNIT-result effect op has no
@@ -1452,6 +1472,7 @@ fn run_program_emitted(tools: &Tools, program: &str) -> Ran {
 /// PACKAGE case (`modules` non-empty) instead writes the entry + library files to a temp dir and runs
 /// `cdz compile <files> --entry main` (the package path); either way the emitted component is run the
 /// same way.
+#[allow(clippy::too_many_arguments)]
 fn run_program_wasm(
     tools: &Tools,
     store: &Option<PathBuf>,
@@ -1460,14 +1481,17 @@ fn run_program_wasm(
     call: Option<&Call>,
     host_responses: &[(String, String)],
     opt_level: Option<&str>,
+    wit_world: Option<&str>,
+    component_name: Option<&str>,
 ) -> Ran {
     use std::io::Write;
     use std::process::Stdio;
 
     // Emit the component bytes — either the single-file pipe or the multi-file package compile.
     // `opt_level` selects the pass tier (only the opt-sweep passes a level; `None` = compiler default).
+    // A `(wit-world …)` case imposes an explicit export world (single-file only for now).
     let component = if modules.is_empty() {
-        emit_component_single_at(tools, program, opt_level)
+        emit_component_single_at(tools, program, opt_level, wit_world, component_name)
     } else {
         emit_component_package(tools, program, modules, opt_level)
     };
@@ -1489,7 +1513,14 @@ fn run_program_wasm(
     // the export's declared parameter type (its `--arg` allows a leading `-`, so a negative value is
     // taken as the argument, not a flag).
     if let Some(call) = call {
-        run.arg("--call").arg(&call.export);
+        // A `(wit-world …)` case's guest exports THROUGH the named interface instance, so qualify the
+        // export as `<iface>#<export>` (cdz-run resolves the interface-nested member); a synthesized-world
+        // case (no component-name) calls the bare top-level export as before.
+        let export = match component_name {
+            Some(iface) => format!("{iface}#{}", call.export),
+            None => call.export.clone(),
+        };
+        run.arg("--call").arg(&export);
         for arg in &call.args {
             run.arg("--arg").arg(arg);
         }
@@ -1539,9 +1570,18 @@ fn emit_component_single_at(
     tools: &Tools,
     program: &str,
     opt_level: Option<&str>,
+    wit_world: Option<&str>,
+    component_name: Option<&str>,
 ) -> Result<EmittedComponent, Ran> {
     use std::io::Write;
     use std::process::{Command, Stdio};
+
+    // A `(wit-world …)` case imposes an EXTERNAL declared world (+ optional component-name), so the guest
+    // + world must be compiled as separate ARTIFACTS (a stdin pipe carries only one) — delegate to the
+    // world-aware path. The common synthesized-world case (no world) stays the stdin pipe below.
+    if let Some(world) = wit_world {
+        return emit_component_with_world(tools, program, world, component_name, opt_level);
+    }
 
     // Stage 1: program text (stdin) → binary AST (stdout).
     let mut syntax = Command::new(&tools.syntax)
@@ -1603,6 +1643,91 @@ fn emit_component_single_at(
 /// as `main.sexp`) and each library `(name, prog)` (as `<name>.sexp`) into a fresh temp dir, then run
 /// `cdz compile <lib>.sexp… main.sexp --entry main -o -` — the `cdz` front-end parses each source in
 /// process and `compile()` links them. `Err(Ran::Declined)` on a reject/decline (code from stderr).
+/// The WIT-WORLD single-file emit path (`DESIGN-compiler-platform-separation.md` §3b): compile a guest
+/// against an EXTERNAL declared world so its export crosses under a named interface, rather than the
+/// synthesized-world boundary. Convert the guest + world s-expr to binary AST, write them to a temp dir,
+/// and run `cdz compile ast:main=<guest> wit-world:wit-world=<world> [--component-name <iface>] -o -` (a
+/// stdin pipe carries only one artifact, so both go through files). `Err(Ran::Declined)` on a rejection.
+fn emit_component_with_world(
+    tools: &Tools,
+    program: &str,
+    world: &str,
+    component_name: Option<&str>,
+    opt_level: Option<&str>,
+) -> Result<EmittedComponent, Ran> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    // A unique temp dir per invocation (PID + monotonic tick) so concurrent gate workers never collide.
+    static TICK: AtomicU64 = AtomicU64::new(0);
+    let tick = TICK.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("cdz-world-{}-{tick}", std::process::id()));
+    if std::fs::create_dir_all(&dir).is_err() {
+        return Err(Ran::BadArtifact("could not create a temp world dir".into()));
+    }
+    // `cdz-syntax convert --from sexpr --to binary -` on one s-expr text → its binary AST bytes.
+    let convert = |sexpr: &str| -> Option<Vec<u8>> {
+        let mut c = Command::new(&tools.syntax)
+            .args(["convert", "--from", "sexpr", "--to", "binary", "-"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap_or_else(|e| launch_fail("cdz-syntax", e));
+        c.stdin.take().unwrap().write_all(sexpr.as_bytes()).ok();
+        let out = c.wait_with_output().expect("wait cdz-syntax convert");
+        out.status.success().then_some(out.stdout)
+    };
+    let fail = |dir: &PathBuf, msg: &str| -> Result<EmittedComponent, Ran> {
+        let _ = std::fs::remove_dir_all(dir);
+        Err(Ran::BadArtifact(msg.into()))
+    };
+    let (Some(prog_bin), Some(world_bin)) = (convert(program), convert(world)) else {
+        return fail(
+            &dir,
+            "wit-world case: guest/world s-expr failed to convert to binary AST",
+        );
+    };
+    let prog_path = dir.join("main.bin");
+    let world_path = dir.join("world.bin");
+    if std::fs::write(&prog_path, &prog_bin).is_err()
+        || std::fs::write(&world_path, &world_bin).is_err()
+    {
+        return fail(&dir, "wit-world case: could not write temp artifact files");
+    }
+
+    let mut cmd = Command::new(&tools.rcdzc);
+    cmd.arg("compile")
+        .arg(format!("ast:main={}", prog_path.display()))
+        .arg(format!("wit-world:wit-world={}", world_path.display()));
+    if let Some(iface) = component_name {
+        cmd.arg("--component-name").arg(iface);
+    }
+    if let Some(level) = opt_level {
+        cmd.arg("--opt-level").arg(level);
+    }
+    cmd.arg("-o")
+        .arg("-")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = cmd.spawn().unwrap_or_else(|e| launch_fail("rcdzc", e));
+    let out = match wait_with_timeout(child, run_timeout()).expect("wait rcdzc") {
+        Some(o) => o,
+        None => {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(Ran::Trap("compile timeout (hang)".to_string()));
+        }
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    if out.status.success() {
+        Ok((out.stdout, collect_warnings(&out.stderr)))
+    } else {
+        let (code, message) = first_error_diag(&out.stderr);
+        Err(Ran::Declined { code, message })
+    }
+}
+
 fn emit_component_package(
     tools: &Tools,
     program: &str,
@@ -3629,6 +3754,8 @@ fn sweep_one_case(
                 call,
                 &rec.host_responses,
                 Some(lvl),
+                rec.wit_world.as_deref(),
+                rec.component_name.as_deref(),
             ),
             // A host-delegating case is level-independent in its host protocol (the opt sweep looks for a
             // TIER divergence, not a host-boundary regression), so it declines here and is skipped below —
@@ -3797,6 +3924,8 @@ fn gate_one_case(
                         t.call.as_ref(),
                         &rec.host_responses,
                         &rec.host_calls,
+                        rec.wit_world.as_deref(),
+                        rec.component_name.as_deref(),
                         target,
                     )
                 })
@@ -3880,6 +4009,14 @@ struct CorpusRecord {
     /// compile to have emitted, for EACH pin, some warning with that code whose message contains the phrase
     /// (a PRESENCE check, `grade_ran`). Empty for a case with no `(warns …)`.
     warns: Vec<(String, Option<String>)>,
+    /// An explicit WIT WORLD the case imposes (general WIT-ABI shape), from the stream's `wit-world` line —
+    /// one-line world sexpr. When present, the wasm gate driver converts it to a `wit-world` binary-AST
+    /// artifact fed to `cdz compile` (the export boundary is DECLARED, not synthesized), pairs it with
+    /// `--component-name`, and qualifies the run `--call` as `<iface>#<export>`. `None` for a synthesized-world case.
+    wit_world: Option<String>,
+    /// The interface a `(wit-world …)` case's guest exports under (stream `component-name` line) — passed to
+    /// `cdz compile --component-name` and used to qualify the run export. `None` when no world is imposed.
+    component_name: Option<String>,
 }
 
 /// One (call, expected-payload) trial of a case — a single run of the compiled program.
@@ -3928,6 +4065,7 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
     let mut host_responses: Vec<(String, String)> = Vec::new();
     let mut host_calls: Vec<String> = Vec::new();
     let mut warns: Vec<(String, Option<String>)> = Vec::new();
+    let (mut wit_world, mut component_name): (Option<String>, Option<String>) = (None, None);
     let (mut call_export, mut call_args): (Option<String>, Vec<String>) = (None, Vec::new());
     for line in text.lines() {
         if line == "---" {
@@ -3940,6 +4078,8 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
                 host_responses: std::mem::take(&mut host_responses),
                 host_calls: std::mem::take(&mut host_calls),
                 warns: std::mem::take(&mut warns),
+                wit_world: std::mem::take(&mut wit_world),
+                component_name: std::mem::take(&mut component_name),
             });
             // Defensive: a well-formed record ends every trial with an `expect`, so nothing is pending.
             call_export = None;
@@ -3988,6 +4128,11 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
                     let (code, message) = split_message_clause(val);
                     warns.push((code.to_string(), message.map(str::to_string)));
                 }
+                // `wit-world\t<world-sexpr>` / `component-name\t<iface>` — an explicit WIT world the case
+                // imposes on the guest (general WIT-ABI shape). Threaded into the wasm emit (world artifact +
+                // `--component-name`) and the run (`--call <iface>#<export>`).
+                "wit-world" => wit_world = Some(val.to_string()),
+                "component-name" => component_name = Some(val.to_string()),
                 _ => {}
             }
         }
@@ -4013,6 +4158,8 @@ fn grade(tools: &Tools, store: &Option<PathBuf>, rec: &CorpusRecord, target: Gat
                 t.call.as_ref(),
                 &rec.host_responses,
                 &rec.host_calls,
+                rec.wit_world.as_deref(),
+                rec.component_name.as_deref(),
                 target,
             )
         })
@@ -5625,6 +5772,8 @@ fn compute_ml_conformance(paths: &Paths, profile: &str, files: &[PathBuf]) -> Ml
                         call,
                         &rec.host_responses,
                         &rec.host_calls,
+                        rec.wit_world.as_deref(),
+                        rec.component_name.as_deref(),
                         GateTarget::CadenzaMl,
                     );
                     let outcome = match &ml {
@@ -5643,6 +5792,8 @@ fn compute_ml_conformance(paths: &Paths, profile: &str, files: &[PathBuf]) -> Ml
                                 call,
                                 &rec.host_responses,
                                 &rec.host_calls,
+                                rec.wit_world.as_deref(),
+                                rec.component_name.as_deref(),
                                 GateTarget::Wasm,
                             );
                             // An oracle-side harness failure is likewise not comparable — not a disagreement.
@@ -7693,6 +7844,8 @@ mod trap_grading_tests {
             host_responses: Vec::new(),
             host_calls: Vec::new(),
             warns: vec![(warn_code.to_string(), Some(warn_msg.to_string()))],
+            wit_world: None,
+            component_name: None,
         };
         // The run: a value 42 whose compile emitted `unused binding `unused``.
         let ran = vec![Ran::Value(
