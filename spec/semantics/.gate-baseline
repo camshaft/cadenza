@@ -4547,6 +4547,7 @@ pass	an if with identical branches folds even when the condition is a NaN-false 
 pass	an if with identical branches folds to the branch when the condition is trap-free
 pass	an if with identical branches still evaluates a TRAPPING condition
 pass	an if-join of two capturing lambdas let-bound and called applies the selected closure
+pass	an if-join of two identical capturing lambdas still reads the capture on the false arm
 pass	an if-operand arithmetic op with deferred-width branches is Int64, and its wide result is correct
 pass	an if-selected partially-applied constructor is completed by application (eta-closure), both arms
 pass	an if-tuple returned from a call, let-bound and projected twice

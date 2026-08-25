@@ -646,6 +646,19 @@
   (call   main (: false Bool) (: 5 Int64))
   (output (: 50 Int64)))
 
+(case "an if-join of two identical capturing lambdas still reads the capture on the false arm"
+  (doc    "The same-body face of the if-join fold: BOTH arms are `(fn (x) (+ x n))`, so the selected
+           closure is `(+ 10 n)` regardless of `b`. A speculative lift that dropped the capture read `n`
+           as 0 on the false arm — b=false → 10 instead of 15. n = 5, b=false → 10 + 5 = 15 (identical to
+           b=true). Pins that both identical arms fold with the capture intact (a breaker-listed regression).")
+  (input  (do
+            (def (main (: b Bool) (: n Int64))
+              (let ((f (if b (fn ((: x Int64)) (+ x n)) (fn ((: x Int64)) (+ x n)))))
+                (f 10)))
+            (export main)))
+  (call   main (: false Bool) (: 5 Int64))
+  (output (: 15 Int64)))
+
 ; The MATCH-JOIN twin of the case above — the SAME `if_or_match_selects_lambda` short-circuit covers it. A
 ; `let` whose init is a `match` selecting one of two capturing lambdas, then called. On trunk this was even
 ; WORSE than the if-join: INVALID WASM (`wasm[0]::function[2]`) for BOTH selectors, where the if-join at
