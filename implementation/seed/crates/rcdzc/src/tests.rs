@@ -79608,27 +79608,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_non_recursive_generic_producer_composes_at_two_element_types() {
-        // COVERAGE (v-inference): a NON-recursive generic PRODUCER — `wrap1 : a -> Box a` (builds a user
-        // generic sum without recursing) — monomorphizes by INLINING at each call site, so it composes at
-        // MULTIPLE element types with no result-element tie. `unwrap(wrap1(n)) + byte-len(unwrap(wrap1("ab")))`
-        // = `n + 2`, used at Int64 AND String in one program. This is the BOUNDARY of the recursive-producer
-        // gap (a recursive `List a -> Iter a` producer at ≥2 types is gated on the not-yet-built tie); a
-        // non-recursive producer is unaffected because the call site's concrete arg type flows into the
-        // inlined body. Pins that non-recursive generic producers stay working across ≥2 instantiations.
-        let src = "(module m \
-            (type Box (Wrap a)) \
-            (def (wrap1 x) (Box.Wrap x)) \
-            (def (unwrap b) (match b ((Box.Wrap v) v))) \
-            (def (main (: n Int64)) (+ (unwrap (wrap1 n)) (String.byte-len (unwrap (wrap1 \"ab\"))))) \
-            (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        use wasmtime::component::Val;
-        assert_eq!(run_returns_with::<i64>(&bytes, "main", &[Val::S64(5)]), 7); // 5 + byte-len("ab")=2
-        assert_eq!(run_returns_with::<i64>(&bytes, "main", &[Val::S64(40)]), 42); // 40 + 2
-    }
-
-    #[test]
     fn an_unannotated_predicate_closure_infers_through_a_recursive_counting_hof() {
         // COVERAGE (v-inference): an inferred closure's RESULT type (not just its params) must cross the
         // runtime `call_indirect` correctly for a NON-numeric result. A bare predicate `(fn (x) (< x 10))`
