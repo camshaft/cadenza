@@ -14,7 +14,7 @@
 //! while unweighted edges (the spawn tree, a subscription) order by id.
 //!
 //! This is the **routing substrate** the kernel maintains as sessions register handlers and spawn: the
-//! system reducer [`resolve`](ReducerGraph::resolve)s a contract to the chain that answers it, and walks a
+//! event reducer [`resolve`](ReducerGraph::resolve)s a contract to the chain that answers it, and walks a
 //! reducer's [`ancestors`](ReducerGraph::ancestors) to reason about authority down the tree, since a child's
 //! effects pass through its ancestors' middleware (§5). The tag byte of a hash keeps the kinds apart: a
 //! contract-tagged edge kind is a handler chain, so [`contracts_for`](ReducerGraph::contracts_for) reads a
@@ -202,7 +202,7 @@ pub trait ReducerGraph: Send + Sync {
     }
 
     /// The ancestors of `reducer`, nearest first: its parent, then grandparent, up to and including the
-    /// root — the spawn chain the system reducer walks to build a handler chain across generations (§3).
+    /// root — the spawn chain the event reducer walks to build a handler chain across generations (§3).
     /// Empty for a root or an unknown reducer.
     async fn ancestors(&self, reducer: ReducerId) -> Vec<ReducerId> {
         self.reach(reducer, EdgeKind::spawn(), Dir::Out).await
@@ -225,7 +225,7 @@ pub trait ReducerGraph: Send + Sync {
 
     /// The handler chain that answers `contract` for `reducer` — its `owner -> handler`
     /// [`for_contract`](EdgeKind::for_contract) out-edges in chain order (§3/§4). Empty if `reducer`
-    /// registers no handler for `contract`, which the system reducer reports as `MissingHandler`.
+    /// registers no handler for `contract`, which the event reducer reports as `MissingHandler`.
     async fn resolve(&self, reducer: ReducerId, contract: ContractId) -> Vec<ReducerId> {
         self.neighbors(reducer, EdgeKind::for_contract(contract), Dir::Out)
             .await

@@ -1,12 +1,12 @@
 //! The event registry (`design/cadenza-platform.md` §3) — the kernel's trust root.
 //!
-//! On an emitted effect the kernel must pick which **system reducer** shepherds it (§4). This registry is
+//! On an emitted effect the kernel must pick which **event reducer** shepherds it (§4). This registry is
 //! that choice: a contract-id maps to the event-reducer program (by content hash) that governs its events,
 //! with a **default** for every contract without an explicit entry. The default is itself a program
 //! bootstrapped at setup, so the kernel ships with no dispatch logic — it only holds this table and looks up
 //! the program to run.
 //!
-//! It is the **trust root**: the whole security model rests on the chosen system reducer being correct, so
+//! It is the **trust root**: the whole security model rests on the chosen event reducer being correct, so
 //! installing or changing an override is the highest privilege in the system — settable only by the root
 //! authority.
 //!
@@ -152,7 +152,7 @@ mod tests {
 
     /// The registry resolves under Cameron's Bach simulator, not just tokio — `resolve` is await-only and
     /// the in-memory map is runtime-agnostic, so Bach drives it unchanged (the seam for deterministic
-    /// dispatch, where routing an effect resolves the system reducer for its contract).
+    /// dispatch, where routing an effect resolves the event reducer for its contract).
     #[test]
     fn event_registry_resolves_under_the_bach_simulator() {
         use bach::ext::*;

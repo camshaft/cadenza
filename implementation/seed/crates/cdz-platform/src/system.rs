@@ -10,7 +10,7 @@
 //! fail) fits the same trait as an in-memory one; it is used behind `dyn`, so the platform holds an
 //! `Arc<dyn System>` and is not generic over the backend. The system records the spawn tree, the supervision
 //! links, and each reducer's [kind](ReducerKind) in the [`ReducerGraph`](crate::ReducerGraph) it holds, and
-//! it owns dispatch's first act: when a reducer emits an ordinary effect, the system looks up the system
+//! it owns dispatch's first act: when a reducer emits an ordinary effect, the system looks up the event
 //! reducer for that contract in the [`EventRegistry`](crate::EventRegistry), instantiates a fresh per-event
 //! context, and delivers the effect to it (§4). Deriving a *top-level* reducer's id from its genesis is the
 //! layer above this; the per-event context ids the system derives itself, from each reducer's rolling hash.
@@ -63,11 +63,11 @@ impl std::error::Error for SystemError {
 /// (`design/cadenza-platform.md` §3/§4/§5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReducerKind {
-    /// An ordinary reducer. Its effects are routed *for* it — it emits requests and the system reducer
+    /// An ordinary reducer. Its effects are routed *for* it — it emits requests and the event reducer
     /// handling its events carries them out — so an ordinary reducer may not [`deliver`](System::deliver)
     /// itself; the system ignores a deliver it emits.
     Ordinary,
-    /// A privileged event/system reducer: the one kind that may [`deliver`](System::deliver), since routing an
+    /// A privileged event reducer: the one kind that may [`deliver`](System::deliver), since routing an
     /// event into another reducer's log is the one privileged act (§4). Its authority comes from the trust
     /// root, not its parent, so it does not inherit the parent's permission model — the system tracks it under
     /// the reducer that requested it, but as a privileged node.
@@ -235,7 +235,7 @@ impl Delivery for NoDelivery {
 /// The in-memory [`System`], generic over its [`Runtime`](crate::Runtime): each reducer an async task on the
 /// runtime, draining a channel mailbox. Its state lives in a [`Shared`] behind an `Arc`, so a running
 /// reducer's own task can spawn and deliver in turn — the recursion the router needs to route an emitted
-/// effect to the system reducer that shepherds it. It loads a spawned reducer's program inside that reducer's
+/// effect to the event reducer that shepherds it. It loads a spawned reducer's program inside that reducer's
 /// own task, so a slow load blocks no one.
 pub struct TaskSystem<R: Runtime> {
     shared: Arc<Shared<R>>,
@@ -243,7 +243,7 @@ pub struct TaskSystem<R: Runtime> {
 
 impl<R: Runtime> TaskSystem<R> {
     /// A system with no running reducers. `programs` instantiates a reducer from its program hash; `graph`
-    /// tracks the spawn tree, supervision links, and handler chains; `events` maps a contract to the system
+    /// tracks the spawn tree, supervision links, and handler chains; `events` maps a contract to the event
     /// reducer that shepherds it (§4); and `host` is this node's id, stamped as the `from` host on every
     /// message the system routes, so an effect is attributable to a reducer-on-a-host (§3).
     #[must_use]
@@ -319,7 +319,7 @@ impl<R: Runtime> System for TaskSystem<R> {
 }
 
 /// The system's shared state, held behind an `Arc` so a running reducer's own task can route the effects it
-/// emits — spawning the system reducer for a contract and delivering to it — without routing through a
+/// emits — spawning the event reducer for a contract and delivering to it — without routing through a
 /// separate, central router.
 /// Every running reducer, keyed by id: its mailbox `Sender` (for [`deliver`](System::deliver)) and the
 /// [`ProgramHash`] it was spawned from (for [`program_of`](System::program_of) — the provenance a privileged
@@ -375,7 +375,7 @@ impl<R: Runtime> Shared<R> {
     /// deliver its birth notification, then drive it in its own task — folding events, routing the effects it
     /// emits, honoring its delivers if it is privileged, and reclaiming it and notifying its watchers when it
     /// closes. Takes `self` by `Arc` so the task can retain it to route in turn. Returns a boxed future
-    /// (rather than an `async fn`) so the recursion — a reducer's task launching the system reducer for an
+    /// (rather than an `async fn`) so the recursion — a reducer's task launching the event reducer for an
     /// effect it emits — goes through a type-erased indirection, which both breaks the infinite future type
     /// and lets the `Send` bound be stated explicitly instead of inferred through the cycle.
     fn launch(self: Arc<Self>, spawn: Spawn) -> Pin<Box<dyn Future<Output = ()> + Send>> {
@@ -461,7 +461,7 @@ impl<R: Runtime> Shared<R> {
                                 // AS THE RESPONSE to this request, correlated by the request's own standard
                                 // continuation-token (not a bespoke field). The recorded fire time is stamped
                                 // from the runtime's clock; the reducer folds it without reading a clock
-                                // itself. Enforcing a request deadline on top of this raw wake is the system
+                                // itself. Enforcing a request deadline on top of this raw wake is the event
                                 // reducer's policy (§4), not the kernel's.
                                 if let Some(arm) = FireAfter::decode(&request.payload) {
                                     let shared = Arc::clone(&shared);
@@ -523,7 +523,7 @@ impl<R: Runtime> Shared<R> {
                                     }));
                                 }
                             } else {
-                                // An ordinary effect: the kernel looks up the system reducer for the contract,
+                                // An ordinary effect: the kernel looks up the event reducer for the contract,
                                 // instantiates a fresh per-event context, and delivers the effect to it (§4).
                                 rolling = Hash::of(HashTag::SystemProperty, rolling.as_bytes());
                                 let context_nonce = Bytes::copy_from_slice(rolling.as_bytes());
@@ -534,7 +534,7 @@ impl<R: Runtime> Shared<R> {
                                     parent: id,
                                 }
                                 .id();
-                                // Spawn the system reducer (privileged) if this context is not already running,
+                                // Spawn the event reducer (privileged) if this context is not already running,
                                 // then deliver the effect to it stamped with the emitter's origin.
                                 if !shared.contains(context) {
                                     // `launch` returns a boxed future, so this recursive call is type-erased.
@@ -1278,7 +1278,7 @@ mod tests {
     }
 
     /// A reducer that, on its first message, emits one ordinary (non-deliver) effect against `contract`,
-    /// then closes — so the system must route that effect to the system reducer for the contract.
+    /// then closes — so the system must route that effect to the event reducer for the contract.
     struct Emitter {
         contract: ContractId,
     }
@@ -1307,7 +1307,7 @@ mod tests {
         }
     }
 
-    /// A stand-in system reducer: it records the origin and contract of the effect routed to it, then closes.
+    /// A stand-in event reducer: it records the origin and contract of the effect routed to it, then closes.
     struct SystemStub {
         saw: bach::sync::mpsc::UnboundedSender<(ReducerId, ContractId)>,
     }
@@ -1361,7 +1361,7 @@ mod tests {
                     .unwrap();
 
                 // Deliver a message so the emitter emits its effect; the system routes it to a freshly
-                // spawned system reducer, which sees it as a message from the emitter on the http.get
+                // spawned event reducer, which sees it as a message from the emitter on the http.get
                 // contract.
                 assert!(
                     system

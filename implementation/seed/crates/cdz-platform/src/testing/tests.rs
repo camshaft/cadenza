@@ -73,7 +73,7 @@ impl Reducer for EmitAndClose {
     }
 }
 
-/// A stand-in system reducer: closes on the routed effect (or message) it receives.
+/// A stand-in event reducer: closes on the routed effect (or message) it receives.
 struct JustClose;
 #[async_trait::async_trait]
 impl Reducer for JustClose {
@@ -593,7 +593,7 @@ fn the_program_store_seam_captures_the_whole_systems_event_flow_under_bach() {
             store.register(ProgramHash::of(b"sys"), || Box::new(JustClose));
 
             // Wrap the program store: every reducer the kernel instantiates through it — the emitter and
-            // the per-event system reducer it spawns to route the effect — is recorded.
+            // the per-event event reducer it spawns to route the effect — is recorded.
             let recording = RecordingProgramStore::new(store, host, log.clone(), clock);
             let system = TaskSystem::<BachRuntime>::new(
                 Arc::new(recording),
@@ -648,7 +648,7 @@ fn the_program_store_seam_captures_the_whole_systems_event_flow_under_bach() {
                         && r.source.reducer == emitter),
                 "the emitter's close was recorded"
             );
-            // The system reducer — spawned by the kernel through the SAME recording store — recorded
+            // The event reducer — spawned by the kernel through the SAME recording store — recorded
             // receiving the routed effect as a message from the emitter. This proves the seam captures
             // kernel-spawned reducers, not only the ones the harness spawns directly.
             assert!(
@@ -656,7 +656,7 @@ fn the_program_store_seam_captures_the_whole_systems_event_flow_under_bach() {
                     Entry::Event(EventOp::Delivered {
                         kind: EventKind::Message, contract, from: Some(o), ..
                     }) if *contract == http && o.reducer == emitter)),
-                "the kernel-spawned system reducer's receipt of the routed effect was recorded"
+                "the kernel-spawned event reducer's receipt of the routed effect was recorded"
             );
         }
         .group("itest")
@@ -668,7 +668,7 @@ fn the_program_store_seam_captures_the_whole_systems_event_flow_under_bach() {
 // ---- the run-to-quiescence harness driver (§3/§9) ----
 
 /// Run a fresh copy of the same scenario — an emitter task that performs one effect and closes, plus the
-/// system reducer that shepherds it. The caller NAMES a program blob and a task running it and delivers by
+/// event reducer that shepherds it. The caller NAMES a program blob and a task running it and delivers by
 /// task name; the harness derives the hashes/ids. The native store factory (which ignores the seeded CAS)
 /// registers the reducers under the same content hashes the blobs resolve to (`ProgramHash::of(bytes)`).
 /// Returns the `Run` so it can be run more than once.
@@ -724,20 +724,20 @@ fn the_driver_runs_a_reducer_set_to_quiescence_and_returns_the_event_log() {
                 && r.source.reducer == emitter),
         "the emitter's close was recorded"
     );
-    // The kernel-spawned system reducer received the routed effect as a message from the emitter, so
+    // The kernel-spawned event reducer received the routed effect as a message from the emitter, so
     // the run drove past the initial delivery through the effect's dispatch to quiescence.
     assert!(
         records.iter().any(|r| matches!(&r.entry,
             Entry::Event(EventOp::Delivered {
                 kind: EventKind::Message, contract, from: Some(o), ..
             }) if *contract == http && o.reducer == emitter)),
-        "the routed effect reached the system reducer"
+        "the routed effect reached the event reducer"
     );
 }
 
 #[test]
 fn a_registry_override_routes_a_contracts_effect_to_the_override_handler() {
-    // The run installs a registry: default = the system reducer, plus an override routing `http.get` to a
+    // The run installs a registry: default = the event reducer, plus an override routing `http.get` to a
     // distinct handler program. The emitter emits `http.get`; the platform resolves the contract through the
     // registry to the OVERRIDE handler, which emits a distinctive `marker` effect. The default (JustClose)
     // emits nothing, so the marker's presence proves the override — not the default — received the effect.
@@ -1307,7 +1307,7 @@ fn a_checker_reducer_folds_the_delivered_log_and_emits_a_verdict_the_harness_rea
             .deliver("checker", check_message(log_to_check))
             .run(|_cas| {
                 let mut store = crate::program::testing::Store::new();
-                // The checker under test, plus a stand-in system reducer to absorb the routed verdict effect.
+                // The checker under test, plus a stand-in event reducer to absorb the routed verdict effect.
                 store.register(ProgramHash::of(b"checker"), || {
                     Box::new(SpawnPresenceChecker)
                 });

@@ -14,8 +14,8 @@ use super::observation::Record;
 use crate::{Bytes, ProgramStore};
 use std::sync::Arc;
 
-/// The blob name of the placeholder system reducer the checker run routes any emitted effect to. The verdict
-/// is read from the emitted-request observation, not from a system reducer handling it, so a non-component
+/// The blob name of the placeholder event reducer the checker run routes any emitted effect to. The verdict
+/// is read from the emitted-request observation, not from a event reducer handling it, so a non-component
 /// placeholder is enough — a routed verdict is recorded and then declined, never crashing the run.
 const CHECKER_SYSTEM: &str = "$checker-system";
 
