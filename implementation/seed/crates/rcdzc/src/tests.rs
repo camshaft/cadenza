@@ -5934,6 +5934,48 @@ fn a_result_bytes_enum_param_field_is_read_by_the_wrapper() {
     );
 }
 
+/// The KIND_WIT_WORLD reader is LEAF-INTERN-ORDER-INDEPENDENT. `codec::encode` is NOT canonical — the
+/// leaf table reflects BUILD order, so the SAME world tree built bottom-up by the in-crate `Builder`
+/// (`option_result_world_bytes`) vs top-down by the sexpr PARSER front-end (the `cdz convert` path) encodes
+/// to DIFFERENT bytes. But `parse_target_world`/`parse_wit_type` walk STRUCTURALLY (`head_name`/`head_ctor`/
+/// indexed children — never by leaf-intern order), so both decode to the SAME `TargetWorld`. Pins that a
+/// world artifact's export member types derive identically regardless of which tool encoded it — disproving
+/// a reported "the reader mis-derives on cdz-convert bytes" hypothesis: the reader is order-agnostic.
+#[test]
+fn the_world_reader_is_leaf_intern_order_independent() {
+    let builder_bytes = option_result_world_bytes();
+    let parser_bytes = crate::codec::encode(&crate::testkit::parse(
+        "(world w (export iface (member f \
+           (func (param m (\"record\" (x (s64)))) \
+                 (result (\"record\" (d (\"option\" (s64)))))))))",
+    ));
+    // The two builders intern leaves in different order → different bytes (encode is not canonical). This is
+    // exactly the reporter's premise; the point is the READER survives it.
+    assert_ne!(
+        builder_bytes, parser_bytes,
+        "bottom-up (Builder) vs top-down (parser) intern → different bytes (encode reflects build order)"
+    );
+    let ba = crate::codec::decode(&builder_bytes).expect("builder decodes");
+    let pa = crate::codec::decode(&parser_bytes).expect("parser decodes");
+    let bw = crate::wit_world::parse_target_world(&ba, ba.root);
+    let pw = crate::wit_world::parse_target_world(&pa, pa.root);
+    assert_eq!(
+        bw, pw,
+        "the world reader is structural (leaf-order-independent) — both codecs parse the same TargetWorld"
+    );
+    // And the export param reads as record{x:s64} from BOTH — not a nested/handle mis-read.
+    let want =
+        crate::wit_world::WitType::Record(vec![("x".into(), crate::wit_world::WitType::S64)]);
+    assert_eq!(
+        &bw.as_ref().unwrap().exports[0].members[0].func.params[0].1,
+        &want
+    );
+    assert_eq!(
+        &pw.as_ref().unwrap().exports[0].members[0].func.params[0].1,
+        &want
+    );
+}
+
 fn option_result_world_bytes() -> Vec<u8> {
     use crate::ast::{Builder, Leaf};
     let mut b = Builder::new();
