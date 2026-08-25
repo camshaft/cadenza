@@ -3727,6 +3727,22 @@ fn collect_record_field_ops(
                 collect_list_elem_ops(db, &elem, out);
             }
         }
+        // A `tuple<…>` field (flattened inline): the marshal `arr-get`s the tuple handle, then per element a
+        // SCALAR's unbox op OR a `Bytes` element's `bytes-len`/`bytes-get` rope copy.
+        _ if matches!(fty.strip_nominal(), Ty::Tuple(_)) => {
+            out.insert(OP_ARR_GET);
+            if let Ty::Tuple(elems) = fty.strip_nominal() {
+                let elems: Vec<Ty> = elems.iter().cloned().collect();
+                for ety in &elems {
+                    if matches!(ety.strip_nominal(), Ty::Bytes | Ty::String) {
+                        out.insert(OP_BYTES_LEN);
+                        out.insert(OP_BYTES_GET);
+                    } else if let Ok(Some(read)) = get_op_ty(db, ety) {
+                        out.insert(read);
+                    }
+                }
+            }
+        }
         // An `option<scalar|bytes>` field: the marshal `arr-get`s the Option, reads its `sum-disc`, and on the
         // Some arm `sum-payload` + the payload's ops (a scalar's unbox op, or a `Bytes` payload's
         // `bytes-len`/`bytes-get` rope copy) — declare exactly what it calls.
@@ -9179,6 +9195,82 @@ fn emit_record_arg_marshal(
                 )?;
                 // (outer-ptr, count) left on the stack = the list field's 2 flattened core slots.
             }
+            // A `tuple<…>` field flattens its elements INLINE (positional), each element's flattened slots
+            // joining the parent's core run — the canonical tuple flatten. Per element (read from the tuple
+            // cell by position): a SCALAR pushes one slot; a `Bytes` element copies its rope into `mem` at the
+            // cursor and pushes `(ptr,len)`. `sub_rec_slot` holds the tuple handle. A nested compound element is
+            // a later increment (declines). Mirrors the scalar/`Bytes` field arms, indexed by tuple position.
+            None if matches!(fty, Ty::Tuple(_)) => {
+                let Ty::Tuple(elems) = fty else {
+                    unreachable!()
+                };
+                let elems: Vec<Ty> = elems.iter().cloned().collect();
+                out.push(Lir::LocalGet(rec_slot));
+                out.push(Lir::ConstI32(i as i32));
+                out.push(Lir::CallImport(OP_ARR_GET)); // [tuple handle] (borrows rec)
+                out.push(Lir::LocalSet(sub_rec_slot));
+                for (j, ety) in elems.iter().enumerate() {
+                    match get_op_ty(db, ety)? {
+                        // A SCALAR element: arr-get + unbox → one core slot, pushed inline.
+                        Some(read) => {
+                            out.push(Lir::LocalGet(sub_rec_slot));
+                            out.push(Lir::ConstI32(j as i32));
+                            out.push(Lir::CallImport(OP_ARR_GET)); // [element] (borrows tuple)
+                            out.push(Lir::CallImport(read));
+                            if read == OP_GET_INT && matches!(valtype_of(ety), Some(ValType::I32)) {
+                                out.push(Lir::I32WrapI64);
+                            }
+                        }
+                        // A `Bytes` element: copy its rope → `mem` at the cursor, push `(ptr,len)`.
+                        None if matches!(ety.strip_nominal(), Ty::Bytes | Ty::String) => {
+                            let cursor = cursor.expect(
+                                "a tuple-field record reserves the scratch cursor (pre-scan)",
+                            );
+                            out.push(Lir::LocalGet(sub_rec_slot));
+                            out.push(Lir::ConstI32(j as i32));
+                            out.push(Lir::CallImport(OP_ARR_GET)); // [element list<u8> handle]
+                            out.push(Lir::LocalSet(rope_slot));
+                            out.push(Lir::LocalGet(rope_slot));
+                            out.push(Lir::CallImport(OP_BYTES_LEN));
+                            out.push(Lir::LocalSet(len_slot));
+                            out.push(Lir::ConstI32(0));
+                            out.push(Lir::LocalSet(pos_slot));
+                            out.push(Lir::Block(BlockType::Empty));
+                            out.push(Lir::Loop(BlockType::Empty));
+                            out.push(Lir::LocalGet(pos_slot));
+                            out.push(Lir::LocalGet(len_slot));
+                            out.push(Lir::I32GeS);
+                            out.push(Lir::BrIf(1));
+                            out.push(Lir::LocalGet(cursor));
+                            out.push(Lir::LocalGet(pos_slot));
+                            out.push(Lir::I32Add);
+                            out.push(Lir::LocalGet(rope_slot));
+                            out.push(Lir::LocalGet(pos_slot));
+                            out.push(Lir::CallImport(OP_BYTES_GET));
+                            out.push(Lir::I32Store8 { offset: 0 });
+                            out.push(Lir::LocalGet(pos_slot));
+                            out.push(Lir::ConstI32(1));
+                            out.push(Lir::I32Add);
+                            out.push(Lir::LocalSet(pos_slot));
+                            out.push(Lir::Br(0));
+                            out.push(Lir::End);
+                            out.push(Lir::End);
+                            out.push(Lir::LocalGet(cursor));
+                            out.push(Lir::LocalGet(len_slot)); // push (ptr, len)
+                            out.push(Lir::LocalGet(cursor));
+                            out.push(Lir::LocalGet(len_slot));
+                            out.push(Lir::I32Add);
+                            out.push(Lir::LocalSet(cursor)); // cursor += len
+                        }
+                        _ => {
+                            return Err(Reject::decline(
+                                "a record host-arg tuple field with a non-scalar/non-`Bytes` element is a \
+                                 later increment",
+                            ));
+                        }
+                    }
+                }
+            }
             // An `option<bytes>` field flattens to `(disc:i32, ptr:i32, len:i32)`. Some → `(1, ptr, len)` with
             // the payload rope copied into `mem` at the cursor (the same copy the `result` Ok arm / a Bytes
             // field does); None → `(0, 0, 0)`. Side-effect scratch in the `if`, push the 3 values after.
@@ -14013,6 +14105,8 @@ fn emit(
                     || crate::backend::wasm::host::record_has_list_field(&at)
                     // A record arg with an `option<bytes>` FIELD copies the payload rope into `mem` → cursor.
                     || crate::backend::wasm::host::record_has_option_bytes_field(db, &at)
+                    // A record arg with a `tuple<…>` FIELD may copy a Bytes element's rope → reserve the cursor.
+                    || crate::backend::wasm::host::record_has_tuple_field(&at)
                     // A `list<T>` arg marshals into `mem` (its outer array + each element) → needs the cursor.
                     || matches!(at.strip_nominal(), Ty::List(_))
             });

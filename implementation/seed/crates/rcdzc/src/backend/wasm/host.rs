@@ -471,6 +471,19 @@ pub fn record_has_list_field(ty: &Ty) -> bool {
     }
 }
 
+/// Whether a record ARG has a `tuple<…>` FIELD anywhere in its tree (recursing into nested records) — a tuple
+/// field may carry a `Bytes` element whose rope is copied into shared `mem`, so the arg reserves the running
+/// scratch cursor. Reserving for ANY tuple field (even scalar-only) is a harmless over-reservation (an unused
+/// cursor slot). Complements [`record_has_bytes_field`]/[`record_has_list_field`] for the cursor gate.
+pub fn record_has_tuple_field(ty: &Ty) -> bool {
+    match ty.strip_nominal() {
+        Ty::Record(fields) => fields
+            .values()
+            .any(|f| matches!(f.strip_nominal(), Ty::Tuple(_)) || record_has_tuple_field(f)),
+        _ => false,
+    }
+}
+
 /// Whether a record ARG has an `option<bytes>` FIELD anywhere in its tree (recursing into nested records) —
 /// its Some arm copies the payload rope into shared `mem`, so the arg needs the running scratch cursor. An
 /// `option<scalar>` does NOT (it flattens to core slots). Complements [`record_has_bytes_field`]/
