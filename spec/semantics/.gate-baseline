@@ -2439,6 +2439,7 @@ pass	a multi-argument closure with COMPOUND args round-trips — flat arrow spel
 pass	a multi-argument op with TWO heap arguments — a String key and a Map to search
 pass	a multi-byte runtime bit-field takes the matching wide unsigned type
 pass	a multi-export compound-result shared call is a repeatable (borrow<t>) callback
+pass	a multi-export record interface guest emits a wrapper per member and runs both (via an imposed WIT world)
 pass	a multi-export set of parameterized capturing closures is driven per export
 pass	a multi-export shared call is a repeatable (borrow<t>) callback
 pass	a multi-field record result crosses the export boundary

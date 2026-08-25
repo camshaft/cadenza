@@ -41,6 +41,8 @@
 ; SHAPE 22 — a record param carrying a list<u8> LEAF beside a scalar (record{data,tag}) reads the bytes leaf
 ; lifted through guest memory (Bytes.len).
 ; SHAPE 23 — a record PARAM interface export built via the boundary wrapper (f(record{a})=m.a, f({a:7})=7).
+; SHAPE 24 (reserved: nested list<list<s64>> host-op ARG, pending v-rb #3321 on main). SHAPE 25 — a MULTI-EXPORT
+; record interface (two members f,g), one boundary wrapper per member, both run under the interface.
 
 (case "an option<s64> field in a record result crosses the export boundary on both arms"
   (doc    "The general option<T> RESULT lift across the WIT export boundary. The guest takes a record
@@ -346,3 +348,18 @@
   (input (do (def (f (: m (Record (: a Int64)))) (. m a)) (export f)))
   (call f (: (record (= a 7)) (Record (: a Int64))))
   (output (: 7 Int64)))
+(case "a multi-export record interface guest emits a wrapper per member and runs both (via an imposed WIT world)"
+  (doc    "SHAPE 25 — a MULTI-EXPORT record-interface guest: the world's interface iface has TWO record-param
+           members f(record{a: s64})->s64 and g(record{b: s64})->s64 (the shape a real reducer needs:
+           on-message/on-response/on-notification are separate members). The compiler emits one boundary wrapper
+           per member appended to the core module. Guest defines both f(m)=m.a and g(m)=m.b; running BOTH under
+           the interface (f({a:7})==7, g({b:9})==9) proves each member's wrapper builds its own record + reads its
+           own field independently. Migrated from the in-crate wasmtime test
+           `a_multi_export_record_interface_guest_compiles_and_runs`.")
+  (wit-world (world w (export iface (member f (func (param m ("record" (a (s64)))) (result (s64)))) (member g (func (param m ("record" (b (s64)))) (result (s64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (def (f (: m (Record (: a Int64)))) (. m a)) (def (g (: m (Record (: b Int64)))) (. m b)) (export f) (export g)))
+  (call f (: (record (= a 7)) (Record (: a Int64))))
+  (output (: 7 Int64))
+  (call g (: (record (= b 9)) (Record (: b Int64))))
+  (output (: 9 Int64)))
