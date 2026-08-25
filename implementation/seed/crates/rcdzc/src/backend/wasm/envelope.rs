@@ -949,18 +949,19 @@ pub fn assemble_typed_interface_with_runtime(
 pub fn assemble_typed_interface_with_host_runtime(
     core: &[u8],
     iface: &TypedInterface,
-    effect_iface: &str,
-    host_fns: &[HostFn],
+    groups: &[HostGroup],
     imports: &[&RtOp],
     import_name: &str,
-    needs_list: bool,
-    result_defs: &[Vec<u8>],
-    record_defs: &[Vec<u8>],
 ) -> Vec<u8> {
     use crate::backend::common::export_name::kebab_extern_name;
     use crate::backend::wasm::wit_ctype::{CRef, emit_cdef, emit_functype};
     type Sig = (Vec<(String, CRef)>, Option<CRef>);
-    let h = host_fns.len();
+    // Each interface is its own imported component instance-type; the ops FLATTEN across groups into one
+    // ordered core-func run (group 0's ops, then group 1's, …), invisible to the core side (all bind under
+    // one `"host"` module). `G == 1` is byte-identical to the single-interface emit.
+    let g = groups.len();
+    let all_host_fns: Vec<&HostFn> = groups.iter().flat_map(|gr| &gr.host_fns).collect();
+    let h = all_host_fns.len();
     let k = imports.len();
     let m = iface.funcs.len();
 
@@ -984,50 +985,57 @@ pub fn assemble_typed_interface_with_host_runtime(
         sigs.push((prefs, rref));
     }
     let d = table.len();
-    let functype_base = (d + 2) as u32; // defined 0..d, host-it d, runtime-it d+1, functypes d+2..
+    // defined 0..d, host instance-types d..d+g, runtime instance-type d+g, functypes d+g+1..
+    let functype_base = (d + g + 1) as u32;
 
-    // sec 7: defined types (comp types 0..d), host instance-type (comp type d), runtime instance-type (comp
-    // type d+1), then the m per-func functypes (d+2..d+2+m).
+    // sec 7: defined types (comp types 0..d), the g host instance-types (comp types d..d+g), the runtime
+    // instance-type (comp type d+g), then the m per-func functypes (d+g+1..).
     let type_sec = {
         let mut items = Vec::new();
         for def in &table {
             items.extend_from_slice(&emit_cdef(def));
         }
-        items.extend_from_slice(&host_effect_instance_type(
-            host_fns,
-            needs_list,
-            result_defs,
-            record_defs,
-        ));
+        for gr in groups {
+            items.extend_from_slice(&host_effect_instance_type(
+                &gr.host_fns,
+                gr.needs_list,
+                &gr.result_defs,
+                &gr.record_defs,
+            ));
+        }
         items.extend_from_slice(&runtime_op_instance_type(imports));
         for (prefs, rref) in &sigs {
             items.extend_from_slice(&emit_functype(prefs, rref.as_ref()));
         }
-        section(sec::COMPONENT_TYPE, &wasm_vec(d + 2 + m, &items))
+        section(sec::COMPONENT_TYPE, &wasm_vec(d + g + 1 + m, &items))
     };
-    // sec 10: import the host effect (instance of comp type d, under the kebab effect name) → comp instance 0,
-    // then the runtime (instance of comp type d+1, under import_name) → comp instance 1.
+    // sec 10: import each host interface (instance of comp type d+i, under its kebab FQ name) → comp instance
+    // i, then the runtime (instance of comp type d+g, under import_name) → comp instance g.
     let import_sec = {
         let mut items = Vec::new();
-        let mut eff = extern_name(&kebab_extern_name(effect_iface));
-        eff.push(0x05); // ComponentTypeRef::Instance
-        uleb128(d as u64, &mut eff);
-        items.extend_from_slice(&eff);
+        for (i, gr) in groups.iter().enumerate() {
+            let mut eff = extern_name(&kebab_extern_name(&gr.effect_iface));
+            eff.push(0x05); // ComponentTypeRef::Instance
+            uleb128((d + i) as u64, &mut eff);
+            items.extend_from_slice(&eff);
+        }
         let mut rt = extern_name(import_name);
         rt.push(0x05);
-        uleb128((d + 1) as u64, &mut rt);
+        uleb128((d + g) as u64, &mut rt);
         items.extend_from_slice(&rt);
-        section(sec::COMPONENT_IMPORT, &wasm_vec(2, &items))
+        section(sec::COMPONENT_IMPORT, &wasm_vec(g + 1, &items))
     };
-    // sec 6 (first): alias h host ops out of comp instance 0 (→ comp funcs 0..h), then k runtime ops out of
-    // comp instance 1 (→ comp funcs h..h+k).
+    // sec 6 (first): alias each group's ops out of ITS comp instance i (in group order → comp funcs 0..h),
+    // then k runtime ops out of comp instance g (→ comp funcs h..h+k).
     let op_alias_sec = {
         let mut items = Vec::new();
-        for f in host_fns {
-            items.extend_from_slice(&comp_alias_item(0, &kebab_extern_name(&f.op)));
+        for (i, gr) in groups.iter().enumerate() {
+            for f in &gr.host_fns {
+                items.extend_from_slice(&comp_alias_item(i as u32, &kebab_extern_name(&f.op)));
+            }
         }
         for op in imports {
-            items.extend_from_slice(&comp_alias_item(1, op.name));
+            items.extend_from_slice(&comp_alias_item(g as u32, op.name));
         }
         section(sec::ALIAS, &wasm_vec(h + k, &items))
     };
@@ -1039,13 +1047,13 @@ pub fn assemble_typed_interface_with_host_runtime(
         }
         section(sec::CANON, &wasm_vec(h + k, &items))
     };
-    // sec 2: THREE core instances — (0) lowered HOST ops under their op names → `"host"`; (1) lowered RUNTIME
-    // ops under their names → `"heap"`; (2) the program bound to BOTH.
+    // sec 2: THREE core instances — (0) lowered HOST ops (ALL groups, flattened) under their op names →
+    // `"host"`; (1) lowered RUNTIME ops under their names → `"heap"`; (2) the program bound to BOTH.
     let core_instance_sec = {
         let mut items = Vec::new();
         let mut host = vec![0x01];
         let mut host_exports = Vec::new();
-        for (i, f) in host_fns.iter().enumerate() {
+        for (i, f) in all_host_fns.iter().enumerate() {
             host_exports.extend_from_slice(&uleb_bytes(f.op.len() as u64));
             host_exports.extend_from_slice(f.op.as_bytes());
             host_exports.push(0x00); // ExportKind::Func
@@ -1146,21 +1154,22 @@ pub fn assemble_typed_interface_with_host_runtime(
         inst_def.extend_from_slice(&inst_items);
         section(sec::COMPONENT_INSTANCE, &wasm_vec(1, &inst_def))
     };
-    // sec 11: export the bundled instance (comp instance 2 — imported host 0, imported runtime 1).
+    // sec 11: export the bundled instance (comp instance g+1 — the g imported host instances 0..g, then the
+    // imported runtime g, then this FromExports bundle).
     let export_sec = {
         let mut item = vec![0x00];
         item.extend_from_slice(&uleb_bytes(iface.name.len() as u64));
         item.extend_from_slice(iface.name.as_bytes());
         item.push(0x05); // sort: instance
-        uleb128(2u64, &mut item);
+        uleb128((g + 1) as u64, &mut item);
         item.push(0x00);
         section(sec::COMPONENT_EXPORT, &wasm_vec(1, &item))
     };
 
     let mut out = Vec::new();
     out.extend_from_slice(COMPONENT_MAGIC);
-    out.extend_from_slice(&type_sec); // 7: defined types + host-it + runtime-it + functypes
-    out.extend_from_slice(&import_sec); // 10: import host effect + runtime
+    out.extend_from_slice(&type_sec); // 7: defined types + host-its + runtime-it + functypes
+    out.extend_from_slice(&import_sec); // 10: import host interfaces + runtime
     out.extend_from_slice(&op_alias_sec); // 6: alias host ops then runtime ops
     out.extend_from_slice(&lower_sec); // 8: lower both op sets → core funcs
     out.extend_from_slice(&core_module_section(core)); // 1: the embedded program (imports "host" + "heap")
@@ -1179,34 +1188,36 @@ pub fn assemble_typed_interface_with_host_runtime(
 /// and the wrapper `core` IMPORTS `"mem"`.`"mem"` as its memory (its `list<u8>`-leaf handling + the host-op
 /// lift share the one memory). Merges that mem-shape wiring with the typed interface-instance export.
 ///
-/// Index spaces (`h`/`k`/`m`/`d` = host/runtime/func/defined-type counts): component types — defined `0..d`,
-/// host instance-type `d`, runtime instance-type `d+1`, functypes `d+2..d+2+m`; component funcs — host op
-/// aliases `0..h`, runtime `h..h+k`, lifts `h+k..h+k+m`; core funcs — lowered host `0..h`, lowered runtime
-/// `h..h+k`, boundary aliases `h+k..h+k+m`, `cabi_realloc` `h+k+m`; component instances — imported host `0`,
-/// imported runtime `1`, exported bundle `2`; CORE instances — mem `0`, host ops `1`, runtime ops `2`,
-/// program `3`; core modules — mem `0`, program `1`; core memory `0` (the shared `"mem"`).
+/// Index spaces (`g`/`h`/`k`/`m`/`d` = interface/host-op/runtime/func/defined-type counts, `h` summed over
+/// all `g` groups): component types — defined `0..d`, the `g` host instance-types `d..d+g`, runtime
+/// instance-type `d+g`, functypes `d+g+1..`; component funcs — host op aliases `0..h` (group order), runtime
+/// `h..h+k`, lifts `h+k..h+k+m`; core funcs — lowered host `0..h`, lowered runtime `h..h+k`, boundary aliases
+/// `h+k..h+k+m`, `cabi_realloc` `h+k+m`; component instances — imported host `0..g`, imported runtime `g`,
+/// exported bundle `g+1`; CORE instances — mem `0`, host ops `1`, runtime ops `2`, program `3`; core modules —
+/// mem `0`, program `1`; core memory `0` (the shared `"mem"`). Group boundaries are invisible to the core side
+/// (all host ops bind under one `"host"` module by name); `g == 1` is byte-identical to the single-interface emit.
 #[allow(clippy::too_many_arguments)]
 pub fn assemble_typed_interface_with_host_runtime_mem(
     core: &[u8],
     iface: &TypedInterface,
-    effect_iface: &str,
-    host_fns: &[HostFn],
+    groups: &[HostGroup],
     imports: &[&RtOp],
     import_name: &str,
-    needs_list: bool,
-    result_defs: &[Vec<u8>],
     // A host op with a COMPOUND result needs the SHARED cabi_realloc (from the mem module) at lower-time: the
     // mem module exports memory + cabi_realloc, both aliased BEFORE the host-op lowers. cabi_realloc becomes
     // CORE FUNC 0, so every lowered op / boundary / lift core-func index shifts by +1 (`rs`). When false
     // (a `list<u8>`/`string` PARAM + scalar/unit result), the mem module exports memory only and the program
     // owns its own defined cabi_realloc — no shift.
     needs_realloc: bool,
-    record_defs: &[Vec<u8>],
 ) -> Vec<u8> {
     use crate::backend::common::export_name::kebab_extern_name;
     use crate::backend::wasm::wit_ctype::{CRef, emit_cdef, emit_functype};
     type Sig = (Vec<(String, CRef)>, Option<CRef>);
-    let h = host_fns.len();
+    // g imported host instance-types (one per interface); host ops FLATTEN across groups into one core-func
+    // run under `"host"` (invisible to the core side). `g == 1` is byte-identical to the single-interface emit.
+    let g = groups.len();
+    let all_host_fns: Vec<&HostFn> = groups.iter().flat_map(|gr| &gr.host_fns).collect();
+    let h = all_host_fns.len();
     let k = imports.len();
     let m = iface.funcs.len();
     let rs = needs_realloc as u32; // core-func shift: +1 when cabi_realloc is aliased as core func 0
@@ -1231,44 +1242,51 @@ pub fn assemble_typed_interface_with_host_runtime_mem(
         sigs.push((prefs, rref));
     }
     let d = table.len();
-    let functype_base = (d + 2) as u32;
+    // defined 0..d, host instance-types d..d+g, runtime instance-type d+g, functypes d+g+1..
+    let functype_base = (d + g + 1) as u32;
 
     let type_sec = {
         let mut items = Vec::new();
         for def in &table {
             items.extend_from_slice(&emit_cdef(def));
         }
-        items.extend_from_slice(&host_effect_instance_type(
-            host_fns,
-            needs_list,
-            result_defs,
-            record_defs,
-        ));
+        for gr in groups {
+            items.extend_from_slice(&host_effect_instance_type(
+                &gr.host_fns,
+                gr.needs_list,
+                &gr.result_defs,
+                &gr.record_defs,
+            ));
+        }
         items.extend_from_slice(&runtime_op_instance_type(imports));
         for (prefs, rref) in &sigs {
             items.extend_from_slice(&emit_functype(prefs, rref.as_ref()));
         }
-        section(sec::COMPONENT_TYPE, &wasm_vec(d + 2 + m, &items))
+        section(sec::COMPONENT_TYPE, &wasm_vec(d + g + 1 + m, &items))
     };
     let import_sec = {
         let mut items = Vec::new();
-        let mut eff = extern_name(&kebab_extern_name(effect_iface));
-        eff.push(0x05);
-        uleb128(d as u64, &mut eff);
-        items.extend_from_slice(&eff);
+        for (i, gr) in groups.iter().enumerate() {
+            let mut eff = extern_name(&kebab_extern_name(&gr.effect_iface));
+            eff.push(0x05);
+            uleb128((d + i) as u64, &mut eff);
+            items.extend_from_slice(&eff);
+        }
         let mut rt = extern_name(import_name);
         rt.push(0x05);
-        uleb128((d + 1) as u64, &mut rt);
+        uleb128((d + g) as u64, &mut rt);
         items.extend_from_slice(&rt);
-        section(sec::COMPONENT_IMPORT, &wasm_vec(2, &items))
+        section(sec::COMPONENT_IMPORT, &wasm_vec(g + 1, &items))
     };
     let op_alias_sec = {
         let mut items = Vec::new();
-        for f in host_fns {
-            items.extend_from_slice(&comp_alias_item(0, &kebab_extern_name(&f.op)));
+        for (i, gr) in groups.iter().enumerate() {
+            for f in &gr.host_fns {
+                items.extend_from_slice(&comp_alias_item(i as u32, &kebab_extern_name(&f.op)));
+            }
         }
         for op in imports {
-            items.extend_from_slice(&comp_alias_item(1, op.name));
+            items.extend_from_slice(&comp_alias_item(g as u32, op.name));
         }
         section(sec::ALIAS, &wasm_vec(h + k, &items))
     };
@@ -1318,7 +1336,7 @@ pub fn assemble_typed_interface_with_host_runtime_mem(
         let mut items = Vec::new();
         let mut host = vec![0x01];
         let mut host_exports = Vec::new();
-        for (i, f) in host_fns.iter().enumerate() {
+        for (i, f) in all_host_fns.iter().enumerate() {
             host_exports.extend_from_slice(&uleb_bytes(f.op.len() as u64));
             host_exports.extend_from_slice(f.op.as_bytes());
             host_exports.push(0x00);
@@ -1427,7 +1445,7 @@ pub fn assemble_typed_interface_with_host_runtime_mem(
         item.extend_from_slice(&uleb_bytes(iface.name.len() as u64));
         item.extend_from_slice(iface.name.as_bytes());
         item.push(0x05);
-        uleb128(2u64, &mut item);
+        uleb128((g + 1) as u64, &mut item); // exported bundle = comp instance g+1 (g host + 1 runtime imported)
         item.push(0x00);
         section(sec::COMPONENT_EXPORT, &wasm_vec(1, &item))
     };
@@ -1740,6 +1758,31 @@ pub struct HostFn {
     /// reference `i+1`. A pure scalar/string set (`has_list_param` false for all) is byte-identical (no
     /// prepend, func types 0..h). See `list_u8_defined_type` + the export-side `comp_functype` mirror.
     pub has_list_param: bool,
+}
+
+/// One host INTERFACE a reducer delegates to — its FQ WIT import name (`cadenza:platform/graph`), the ops it
+/// declares, and the component DEFINED types those ops reference (all LOCAL to this interface's own
+/// instance-type index space). A reducer performing ops from N interfaces (e.g. `graph` + `deliver`) emits N
+/// of these: each becomes one imported component instance-type with its own prepended `(list u8)` / spilled-
+/// result / record-or-enum defined types (`host_effect_instance_type`), and each op's `comp_functype`
+/// references those types by the LOCAL index the caller computed for THIS group. The types are per-group (not
+/// component-wide) because an import instance-type must STRUCTURALLY match the host's interface — a spurious
+/// type export another interface needs would make the host fail to satisfy this one. `needs_list` /
+/// `result_defs` / `record_defs` are exactly the per-interface subset of what the single-interface path
+/// computed globally; a single-group slice is byte-identical to the pre-multi-interface emit.
+pub struct HostGroup {
+    /// The FQ WIT import interface name (the component-import extern name), e.g. `cadenza:platform/deliver`.
+    pub effect_iface: String,
+    /// The ops of THIS interface the reducer performs, in emit order.
+    pub host_fns: Vec<HostFn>,
+    /// Whether this interface's instance-type prepends the shared `(list u8)` at its local index 0 (any
+    /// `list<u8>` param or `list<u8>`-leaf spilled result among its ops).
+    pub needs_list: bool,
+    /// This interface's spilled-RESULT component defined types (children-first, deduped), laid after
+    /// `(list u8)` — each op's result `CRef` indexes into them.
+    pub result_defs: Vec<Vec<u8>>,
+    /// This interface's RECORD-or-ENUM param defined types (define+export pairs), laid after the result defs.
+    pub record_defs: Vec<Vec<u8>>,
 }
 
 /// The HOST-IMPORT shape (E2h-2): a program that DELEGATES a single effect `iface` to the host, importing
