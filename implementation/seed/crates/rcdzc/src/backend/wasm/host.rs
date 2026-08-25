@@ -152,6 +152,15 @@ pub struct HostImport {
     /// opaque `u32` handle over the shared runtime, never this canonical spilled marshal, so a peer op leaves
     /// this `None`.
     pub spilled_result: Option<Ty>,
+    /// The operation's result when it is a payloadless `enum` returned BY VALUE — the kebab case names (in
+    /// discriminant/declaration order, the same the component `enum` type declares). An enum flattens to ONE
+    /// `i32` (the discriminant), so it is NOT spilled (no retptr, unlike [`spilled_result`]); its component
+    /// result type is an `enum` DEFINED + EXPORTED type (referenced via the op's `result_cref`, like a spilled
+    /// compound), while its CORE result is a bare `i32`. The guest uses the returned `i32` AS the enum value
+    /// (a payloadless enum's in-guest rep is a bare `i32` discriminant), so NO lift/wrap is emitted — the
+    /// symmetric result-side of [`HostParam::Enum`]. Mutually exclusive with `result`/`spilled_result`
+    /// (all three `None` for a plain scalar/unit op). Host-boundary only (a peer-bound enum is a `u32` handle).
+    pub enum_result: Option<Vec<String>>,
 }
 
 /// Whether `ty` is the built-in `Option<Bytes>` (guest `option<list<u8>>` at the host boundary) — a `Sum`
@@ -893,7 +902,18 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
             } else {
                 None
             };
-            let result_abi = if matches!(result, Ty::Unit) || spilled_result.is_some() {
+            // A payloadless `enum` RESULT crosses BY VALUE (one i32 disc), NOT spilled — the symmetric
+            // result-side of an enum ARG. Host-boundary only; disjoint from a spilled compound (an enum is
+            // never `result_is_liftable`) and from a scalar (`abi_val_type` is `None` for a `Sum`).
+            let enum_result = if !peer_bound && spilled_result.is_none() {
+                enum_cases(db, &result)
+            } else {
+                None
+            };
+            let result_abi = if matches!(result, Ty::Unit)
+                || spilled_result.is_some()
+                || enum_result.is_some()
+            {
                 None
             } else if peer_bound {
                 extern_abi_val_type(&result)
@@ -906,6 +926,7 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                 params,
                 result: result_abi,
                 spilled_result,
+                enum_result,
             };
             if !out.iter().any(|h| h.effect == imp.effect && h.op == imp.op) {
                 out.push(imp);
@@ -1287,10 +1308,16 @@ pub fn first_unrepresentable_host_op(
         // (a peer op crosses its compound as a handle, never this canonical spilled marshal).
         let result_is_liftable_spilled =
             allow_option_bytes && !peer_bound && result_is_liftable(db, &result);
+        // A payloadless `enum` result crosses BY VALUE (one i32 disc) — representable on the same reducer/
+        // host-fused path the enum ARG + spilled compounds ride (gated on `allow_option_bytes` + `!peer_bound`,
+        // matching where the enum result's component type is wired). NOT spilled (never `result_is_liftable`).
+        let enum_result_by_value =
+            allow_option_bytes && !peer_bound && enum_cases(db, &result).is_some();
         if !matches!(result, Ty::Unit)
             && !ty_undetermined(&result)
             && !abi_ok(&result)
             && !result_is_liftable_spilled
+            && !enum_result_by_value
         {
             return Some((op.to_string(), "result", result.render_name(&db.name_ctx())));
         }

@@ -1831,6 +1831,16 @@ fn build_host_result_types(
                 .or_else(|| host::spilled_result_wit_type(db, ty))?;
             add_wit_type_deduped(&wt, &mut table, &mut memo)
         });
+        // A payloadless `enum` RESULT (by-value i32) references its `enum` DEFINED type by the SAME
+        // `result_cref` mechanism a spilled compound uses — prefer the WORLD's declared result type (so the
+        // host's `enum`/`variant` CONSTRUCTOR is followed), else the guest case names. The core functype
+        // still returns i32 (serialize `host_import_functype`); only the COMPONENT result type is nominal.
+        let cref = cref.or_else(|| {
+            let cases = h.enum_result.as_ref()?;
+            let wt = host::wit_op_result_type(db, &h.effect, &h.op)
+                .unwrap_or_else(|| WitType::Enum(cases.clone()));
+            add_wit_type_deduped(&wt, &mut table, &mut memo)
+        });
         result_crefs.push(cref);
         // A `list<T>` ARG references a `(list <elem>)` DEFINED type — build it from the WORLD's declared param
         // WIT type (the authoritative host contract), aligned with the HostParam positions (a `Unit` arg is
