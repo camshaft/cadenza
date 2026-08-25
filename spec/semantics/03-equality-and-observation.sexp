@@ -2884,3 +2884,16 @@
                     (if (< (list (Node (list 1))) (list (Node (list 1 k)))) 1 0))))
             (export main)))
   (call   main (: 2 Int64)) (output (: 111 Int64)))
+
+(case "a user (type Ordering …) shadows the built-in, so Ordering.of is no longer the three-way comparison"
+  (doc    "`Ordering.of` is the NAMESPACED three-way comparison — an associated function on the BUILT-IN
+           `Ordering` record (the former top-level `compare`), reached by ordinary member access. A user
+           `(type Ordering …)` shadows the built-in (a top-level type declaration resolves before the
+           prelude) and carries no associated `of` member, so `Ordering.of` is an ordinary unknown-member
+           access (CDZ0201), NOT the comparison. This is the binding-respecting property namespacing on a
+           shadowable record delivers and a bare global `compare` could not: the comparison follows binding.")
+  (input  (do
+            (type Ordering (Foo))
+            (def (main) (Ordering.of 1 2))
+            (export main)))
+  (error  CDZ0201))

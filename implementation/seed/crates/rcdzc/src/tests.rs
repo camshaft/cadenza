@@ -6264,23 +6264,11 @@ fn ast_module_resolves_and_types_as_the_builtin_ast() {
     );
 }
 
-/// SELF-REFLECTION shadow-correctness: a user `(type Ast …)` has NO `module` field — the reflection lives ONLY
-/// on the BUILT-IN Ast record (augmented in `Db::load_linked` gated to the prelude Ast decl). So `(. Ast module)`
-/// against a user `type Ast` does NOT reflect; it's an ordinary no-such-field member access. This is the
-/// binding-respecting property the redesign is for (a user shadowing `Ast` routes away from the reflection,
-/// which a blind syntax-rewrite could not honor).
-#[test]
-fn a_user_type_ast_shadows_away_the_module_reflection() {
-    use crate::db::Db;
-    let src = "(module m (type Ast (Foo)) (def (x) (. Ast module)) (export x))";
-    let mut db = Db::load(crate::testkit::parse(src));
-    let diags = crate::compile::diagnostics(&mut db);
-    assert!(
-        diags.iter().any(|d| d.message.contains("module")),
-        "a user `type Ast` has no `module` field → the reflection does not fire (no-field member access): {:?}",
-        diags.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-}
+// NOTE: the self-reflection shadow-correctness (a user `(type Ast …)` shadows away `Ast.module`, so it is a
+// no-such-field member access → CDZ0201, not the reflection) is a LANGUAGE SEMANTIC and lives in the
+// language-neutral corpus (`spec/semantics/08-self-hosting-surface.sexp`, "a user (type Ast …) shadows the
+// built-in, so Ast.module is no longer the self-reflection"), NOT a Rust `#[test]` locked to this
+// implementation (operator directive: semantics belong in the corpus, other-language compilers are planned).
 
 /// NO-ANNOTATION EXPORT BOUNDARY (`derive_world_export_param_annotations`): a reducer writes its guest-export
 /// entry point with a BARE param — `(def (on-message msg) …)` — and the export-param pre-pass DERIVES `msg`'s
