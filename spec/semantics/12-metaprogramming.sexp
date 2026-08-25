@@ -2472,6 +2472,40 @@
             (export main)))
   (output (: true Bool)))
 
+(case "a const-folded RECORD descriptor holds a recursive-transform result, projected at compile time"
+  (doc    "The operator's record-API shape (`contract(m) -> Record(id, …, types)`, caller reads a field):
+           the general const-evaluator handles RECORD construction + FIELD PROJECTION as values, so a
+           descriptor whose field is computed by a recursive Ast transform folds and the projection reads it
+           at compile time. `build` returns `(record (types (Ast.List (collect xs))) (count 7))` — the
+           `types` field is the recursive comment-peeling type-filter over a `const (List Ast)`. Projecting
+           `.types` and const-encoding it yields positive bytes: the record, the recursion inside it, and the
+           projection all const-evaluate. This is the substrate for a userspace contract descriptor built
+           from a self-reflected module (the field is read at compile time, no record built at run time).")
+  (input  (do
+            (def (child (const (: form Ast)) (: i Int64))
+              (match form
+                ((Ast.List es) (match (List.at es i) ((Option.Some v) v) ((Option.None) (Ast.Name "?"))))
+                (_ (Ast.Name "?"))))
+            (def (name-of (const (: form Ast))) (match form ((Ast.Name n) n) (_ "")))
+            (def (head-name (const (: form Ast))) (name-of (child form 0)))
+            (def (peel (const (: x Ast)))
+              (if (= (head-name x) "comment") (peel (child x 2)) x))
+            (def (collect (const (: xs (List Ast))))
+              (match xs
+                ((list) (: (list) (List Ast)))
+                ((list h .. t)
+                  (let ((g (peel h)) (tail (collect t)))
+                    (if (= (head-name g) "type") (List.prepend tail g) tail)))))
+            (def (build (const (: xs (List Ast))))
+              (record (types (Ast.List (collect xs))) (count 7)))
+            (def (main)
+              (> (Bytes.len (Ast.encode (. (build (list
+                   (Ast.List (list (Ast.Name "comment") (Ast.Str "c")
+                                   (Ast.List (list (Ast.Name "type") (Ast.Name "A")))))
+                   (Ast.List (list (Ast.Name "type") (Ast.Name "B"))))) types))) 0))
+            (export main)))
+  (output (: true Bool)))
+
 (case "decoding bytes that are not a canonical AST yields the error case, not a trap"
   (doc    "contracts/value-interchange.md #Decode Inverts Serialize And Refuses Otherwise + #A Decode Over
            External Bytes Is Total: `Ast.decode` consumes bytes that may come from an EXTERNAL source, so it

@@ -24145,6 +24145,12 @@ enum CVal {
         head: StructId,
         payloads: Vec<CVal>,
     },
+    /// A RECORD value (Stage b) — named fields, canonically ordered by the `Symbol` key. Built by a record
+    /// literal; projected by member access. The substrate of the operator's `contract(m) -> Record(id, …)`
+    /// API, where a caller reads `.id` off a const-folded descriptor.
+    Record(std::collections::BTreeMap<crate::resolved::Symbol, CVal>),
+    /// A TUPLE value (Stage b) — a fixed positional product; projected by index.
+    Tuple(Vec<CVal>),
 }
 
 /// The const-evaluator's binding environment: a CALL parameter's name occurrence → its argument value.
@@ -24212,6 +24218,32 @@ fn const_eval(db: &mut Db, node: StructId, env: &CEnv, budget: &mut u64) -> Opti
             }
             None
         }
+        // A RECORD literal — evaluate each field's value; canonically ordered by the `Symbol` key.
+        Resolved::Record { fields } => {
+            let mut m = std::collections::BTreeMap::new();
+            for (sym, &val) in fields.iter() {
+                m.insert(sym.clone(), const_eval(db, val, env, budget)?);
+            }
+            Some(CVal::Record(m))
+        }
+        // Member access `(. operand key)` — project a field off a constant record.
+        Resolved::Member { operand, key } => match const_eval(db, operand, env, budget)? {
+            CVal::Record(m) => m.get(&key).cloned(),
+            _ => None,
+        },
+        // A TUPLE literal — evaluate each positional element.
+        Resolved::Tuple { elems } => {
+            let mut vs = Vec::with_capacity(elems.len());
+            for &e in elems.iter() {
+                vs.push(const_eval(db, e, env, budget)?);
+            }
+            Some(CVal::Tuple(vs))
+        }
+        // A tuple projection `(. operand index)` — read element `index` off a constant tuple.
+        Resolved::Proj { operand, index } => match const_eval(db, operand, env, budget)? {
+            CVal::Tuple(vs) => vs.get(index).cloned(),
+            _ => None,
+        },
         // A match pattern binder — a projection of the scrutinee value along `steps`.
         Resolved::SumPayload {
             scrutinee, steps, ..
@@ -24482,11 +24514,11 @@ fn cval_to_core(db: &mut Db, v: &CVal) -> Option<Core> {
         CVal::Str(s) => Core::ConstStr(s.clone()),
         CVal::Bytes(b) => Core::ConstBytes(b.clone()),
         CVal::Unit => Core::Unit,
-        // A compound (list / sum) materializes to a freshly-synthesized literal AST subtree that `core_of`
-        // folds back to a `Core::ListNew` / `Core::SumNew` — reusing the lowering's own construction (disc,
-        // element boxing) rather than re-deriving it. Resolve the fresh subtree first so its constructor
-        // references and element folds resolve in scope.
-        CVal::List(_) | CVal::Sum { .. } => {
+        // A compound (list / sum / record / tuple) materializes to a freshly-synthesized literal AST subtree
+        // that `core_of` folds back to a `Core::ListNew` / `SumNew` / `Record` / `Tuple` — reusing the
+        // lowering's own construction (disc, element boxing) rather than re-deriving it. Resolve the fresh
+        // subtree first so its constructor references and element folds resolve in scope.
+        CVal::List(_) | CVal::Sum { .. } | CVal::Record(_) | CVal::Tuple(_) => {
             let node = cval_to_ast(db, v)?;
             crate::resolve::resolve_subtree(db, node);
             core_of(db, node)
@@ -24534,6 +24566,28 @@ fn cval_to_ast(db: &mut Db, v: &CVal) -> Option<StructId> {
                 }
                 db.push_list(items)
             }
+        }
+        // A record re-materializes to `(record (key val) …)`; `core_of` folds it to a `Core::Record`.
+        CVal::Record(m) => {
+            let head = db.push_name("record");
+            let mut items = Vec::with_capacity(m.len() + 1);
+            items.push(head);
+            for (sym, v) in m {
+                let k = db.push_name(&sym.name);
+                let vv = cval_to_ast(db, v)?;
+                items.push(db.push_list(vec![k, vv]));
+            }
+            db.push_list(items)
+        }
+        // A tuple re-materializes to `(tuple e0 …)`; `core_of` folds it to a `Core::Tuple`.
+        CVal::Tuple(xs) => {
+            let head = db.push_name("tuple");
+            let mut items = Vec::with_capacity(xs.len() + 1);
+            items.push(head);
+            for x in xs {
+                items.push(cval_to_ast(db, x)?);
+            }
+            db.push_list(items)
         }
         CVal::Unit => return None,
     })
