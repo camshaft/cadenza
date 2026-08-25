@@ -586,6 +586,15 @@ pub struct TypeDecl {
     /// `Ref` to it), reached by the ordinary scope→top-level lookup like a `def` — no separate name map
     /// (which would collapse identity onto the name and clobber a same-named declaration).
     pub synth: Option<StructId>,
+    /// ASSOCIATED FUNCTIONS — extra NON-ctor member fields the sum synthesis (`sums::sum_record`) appends
+    /// to this sum's record (`(name <op-record>)` nodes), so they are reached as `(. Type member)` like a
+    /// variant ctor. Data-driven: a decl declares its own associated members here, and `sum_record` appends
+    /// whatever it carries — so a built-in prelude sum's namespaced operations (e.g. `Ast.module`
+    /// self-reflection, later `Ast.print`/`Ast.read`) live in the PRELUDE (`sums::prelude_decls` attaches
+    /// them, built by `prelude`), NOT a `Db::load` post-synthesis special-case. Empty for a user sum and for
+    /// most prelude sums; only a sum with prelude-declared associated ops (currently the built-in `Ast`)
+    /// carries any. Nothing is privileged BY NAME in `sum_record` — it just appends the decl's list.
+    pub associated: Vec<StructId>,
 }
 
 /// One operation of an effect declaration — a `(op NAME (-> Param Result))` clause. Its position in
@@ -2252,33 +2261,12 @@ impl Db {
         // arena and recording each on its `TypeDecl.synth` — AFTER the scan (it reads `type_decls`) and
         // BEFORE the parent index (which must index the synthesized nodes so a name inside a synthesized
         // ctor type resolves by the scope walk).
+        // Synthesize each `(type …)` sum as a record — the built-in `Ast` record's ASSOCIATED FUNCTIONS
+        // (`Ast.module` self-reflection; later `Ast.print`/`Ast.read`) are appended here too, because the
+        // `Ast` `TypeDecl` CARRIES them (`TypeDecl.associated`, attached in `sums::prelude_decls`), so
+        // `sum_record` appends them data-driven — no `Db::load` post-synthesis special-case (they live in
+        // the prelude, like any prelude module's fields).
         crate::sums::synthesize(&mut ast, &mut type_decls);
-        // Augment the BUILT-IN `Ast` record with the `Ast.module` self-reflection field (`Ast.module : Ast` —
-        // operator directive: NAMESPACED on the Ast record, not a bare global). Gated to the built-in Ast
-        // decl (in the prelude range — the last `prelude_sum_count` decls — with name "Ast"), so a USER
-        // `(type Ast …)` (scanned earlier, outside the prelude range) is UNTOUCHED and shadows the
-        // reflection. Done here rather than in the generic `sum_record` so it is NOT a name-special-case in
-        // the shared sum synthesis (`reference-compiler.md` §Nothing Is Privileged By Name); the `module`
-        // field's `(meta apply)` is `Prim::ReflectModule`, filled at lowering (v-compiler-primitives) from
-        // the enclosing module's canonical source. Appends `(here <op-record>)` to the built-in Ast record.
-        if prelude_sum_count > 0 {
-            let start = type_decls.len().saturating_sub(prelude_sum_count);
-            if let Some(ast_record) = type_decls[start..]
-                .iter()
-                .find(|d| d.name.as_str() == "Ast")
-                .and_then(|d| d.synth)
-            {
-                let field = crate::prelude::ast_module_field(&mut ast);
-                let items = match ast.get(ast_record) {
-                    Struct::List(items) => Some(items.clone()),
-                    _ => None,
-                };
-                if let Some(mut new_items) = items {
-                    new_items.push(field);
-                    ast.structure[ast_record.0 as usize] = Struct::List(new_items);
-                }
-            }
-        }
         // Synthesize each `(effect …)` as a record (fields = operation values), the effect analogue of
         // the sum synthesis above — AFTER the scan (it reads `effect_decls`) and BEFORE the parent index
         // (which must index the synthesized nodes so a name inside a synthesized op type resolves).
@@ -5701,6 +5689,9 @@ pub(crate) fn scan_type_decl(ast: &Arenas, item: StructId) -> Option<TypeDecl> {
         variants,
         open_tail,
         synth: None,
+        // A scanned decl (user OR prelude) declares no associated members here; the built-in `Ast`'s are
+        // attached in `sums::prelude_decls` (prelude-defined), consumed generically by `sum_record`.
+        associated: Vec::new(),
     })
 }
 
