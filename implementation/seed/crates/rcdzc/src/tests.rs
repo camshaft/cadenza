@@ -98087,6 +98087,7 @@ mod closure_host_resource {
             params: Vec::<HostParam>::new(),
             result: None,
             spilled_result: None,
+            enum_result: None,
         }];
         // The runtime cell ops (make builds the capturing cell; call recovers it). Shift to h..h+k.
         let imports = vec![
@@ -98201,6 +98202,7 @@ mod closure_host_resource {
             params: Vec::<HostParam>::new(),
             result: None, // () -> () — leaves nothing on the stack
             spilled_result: None,
+            enum_result: None,
         }];
         let imports = vec![
             OPS.arr_alloc,

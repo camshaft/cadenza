@@ -119,6 +119,10 @@ fn host_import_functype(f: &crate::backend::wasm::host::HostImport) -> Vec<u8> {
     item.extend_from_slice(&wasm_vec(slot_count, &params));
     if f.spilled_result.is_some() {
         item.extend_from_slice(&wasm_vec(0, &[])); // no core result — written via the retptr param
+    } else if f.enum_result.is_some() {
+        // A payloadless `enum` result crosses BY VALUE as ONE `i32` (the discriminant) — like a scalar at the
+        // core level (no retptr), but its COMPONENT result type is the `enum` DEFINED type (the op's result_cref).
+        item.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
     } else {
         match f.result {
             Some(r) => item.extend_from_slice(&wasm_vec(1, &[r.core_byte()])),
@@ -8980,6 +8984,7 @@ mod host_import_functype_tests {
             params,
             result,
             spilled_result: None,
+            enum_result: None,
         }
     }
 
