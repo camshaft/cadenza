@@ -609,6 +609,7 @@ fn the_program_store_seam_captures_the_whole_systems_event_flow_under_bach() {
                     parent: emitter,
                     kind: ReducerKind::Ordinary,
                     links: Links::NONE,
+                    limits: None,
                 })
                 .await
                 .unwrap();

@@ -47,7 +47,7 @@ mod system;
 mod timer;
 
 pub use blob_store::{BlobStore, InMemoryBlobStore};
-pub use config::ResourceLimits;
+pub use config::{ResourceLimits, SpawnLimits};
 pub use contract::Contract;
 pub use deliver::{Deliver, Delivered, deliver_contract};
 pub use event_registry::{EventRegistry, InMemoryEventRegistry};

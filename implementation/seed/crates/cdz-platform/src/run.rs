@@ -102,6 +102,7 @@ impl<P: ProgramStore + ?Sized> Runner<P> {
                 SpawnContext {
                     id: null_run_id(),
                     kind: ReducerKind::Pure,
+                    limits: None,
                 },
             )
             .await

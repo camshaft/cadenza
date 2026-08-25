@@ -430,6 +430,7 @@ impl Harness {
                     parent: kernel_parent,
                     kind: spec.kind,
                     links: spec.links,
+                    limits: None,
                 },
             ));
         }
