@@ -5081,6 +5081,7 @@ pass	digit-separator literals in decimal and hex drive runtime modular arithmeti
 pass	dimensional equality is decided by canonical exponent map, not written form
 pass	disjunction is false exactly when both operands are false
 pass	disjunction shields a trapping right operand when the left is true
+pass	distinct declarations fold to distinct contract-ids
 pass	distinct large floats are not equal
 pass	distinct names bound to the same string key the same map entry
 pass	distinct seeds produce distinct generated values (the stream covers, it is not constant)
@@ -6577,6 +6578,7 @@ pass	the closure state is REPLACED per dispatch by one capturing the arm's OWN b
 pass	the closure's inner arm performs an OUTER effect through the closure boundary
 pass	the compare walk recurses list-of-sums-of-lists with discriminant-first at depth
 pass	the complement laws fold x-and-not-x to zero and x-or-not-x to all-ones on a signed runtime value
+pass	the composed contract-id is deterministic — the same declaration folds to the same id
 pass	the composed multibyte slice view equals its literal twin and keys a Map
 pass	the composed slice view EQUALS its flat twin and keys a Map by canonical content
 pass	the compound comparator drives a full INSERTION SORT over runtime tuples
@@ -6710,6 +6712,7 @@ pass	the power form derives the same dimension as repeated multiplication
 pass	the pre-update record survives a CONDITIONAL Record.with in a branch join
 pass	the prelude binds Constructor values not pre-applied Sums
 pass	the prelude module keeps working beside a same-named colliding variant
+pass	the primitives compose to a compile-time tagged contract-id of the expected length
 pass	the program manifest is the union of its entrypoints' delegations
 pass	the read primitive skips a line comment inside program text
 pass	the reader literal reads to Symbol.of
