@@ -266,10 +266,10 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     //# The ordering value's type MUST be an ordinary closed sum type of the language, so that a comparison result is deconstructed by the same exhaustive match as any other sum and every consumer handles all three cases.
     //= spec/capabilities/core-semantics.md#a-total-order-is-observed-through-a-three-way-comparison
     //# The boolean ordering operators MUST agree with the three-way comparison, so that a type has one total order surfaced two ways that cannot disagree.
-    names.insert(
-        "compare".to_string(),
-        operator_record(ast, "compare", OpShape::Compare),
-    );
+    // `compare` is NO LONGER a bare top-level name — it is NAMESPACED as `Ordering.of` (operator directive:
+    // prelude records with associated functions, not bare globals). Its op-record is attached as the `of`
+    // field on the built-in `Ordering` record via `TypeDecl.associated` (set in `sums::prelude_decls` at the
+    // Ordering declaration, `ordering_of_field`), reached as `(. Ordering of)` / `Ordering.of a b`.
 
     // `trap` — the DIVERGING primitive `∀a. String → a` (core-semantics.md §A Trap Occurs Only Where Its
     // Computation Is Observed; type-system.md §Never Is The Empty Sum — a diverging expression has type
@@ -2180,6 +2180,21 @@ pub(crate) fn ast_module_field(ast: &mut Arenas) -> StructId {
 /// join this list when those relocations land (a user `type Ast` carries none, so it shadows them).
 pub(crate) fn ast_associated_fields(ast: &mut Arenas) -> Vec<StructId> {
     vec![ast_module_field(ast)]
+}
+
+/// The `(of <op-record>)` field for the built-in `Ordering` record — `Ordering.of a b : Ordering`, the
+/// three-way comparison (`core-semantics.md` §A Total Order Is Observed Through A Three-Way Comparison).
+/// The NAMESPACED home of the former top-level `compare` (operator directive: prelude records with
+/// associated functions, no bare globals). The field value is the EXACT op-record `compare` was — an
+/// `operator_record` with `(meta t) = compare_type_lambda` (`∀a. a → a → Ordering`) and `(meta apply) =
+/// (intrinsic compare)` (`Prim::Compare`) — so `Ordering.of` reduces identically to the old `compare`, no
+/// new prim. Carried on the `Ordering` `TypeDecl.associated` (set in `sums::prelude_decls`, appended by
+/// `sum_record`), the SAME pattern as `Ast.module` — so it lives in the prelude, and a user `type Ordering`
+/// (a separate decl carrying no associated) shadows it.
+pub(crate) fn ordering_of_field(ast: &mut Arenas) -> StructId {
+    let op = operator_record(ast, "compare", OpShape::Compare);
+    let of_name = push_atom(ast, Leaf::Name("of".into()));
+    push_list(ast, vec![of_name, op]) // (of <op-record>)
 }
 
 /// The type-lambda `(fn (a) (-> a a))` for `payload-of` — `∀v. v → v`. Typed as identity: the extracted

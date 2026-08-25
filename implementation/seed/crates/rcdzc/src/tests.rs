@@ -7032,6 +7032,33 @@ fn a_no_redeclare_world_import_perform_resolves_via_the_injected_effect() {
     }
 }
 
+/// NAMESPACED `Ordering.of` (former top-level `compare`): the three-way comparison is a member on the
+/// built-in `Ordering` record (operator directive: prelude records with associated functions, no bare
+/// globals) — carried on the `Ordering` `TypeDecl.associated`, the SAME pattern as `Ast.module`.
+/// `(. Ordering of) a b : Ordering`, reducing identically to the old `compare` (same `Prim::Compare`).
+#[test]
+fn ordering_of_resolves_and_types_as_the_three_way_compare() {
+    use crate::db::Db;
+    let src = "(module m (def (cmp (: a Int64) (: b Int64)) ((. Ordering of) a b)) (export cmp))";
+    let mut db = Db::load(crate::testkit::parse(src));
+    let diags = crate::compile::diagnostics(&mut db);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.message.contains("unbound") || d.message.contains("field `of`")),
+        "(. Ordering of) must resolve on the built-in Ordering record: {:?}",
+        diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    let d = db.def_by_name("cmp").expect("def cmp");
+    let body = db.defs[d].body.expect("cmp body");
+    let ty = crate::infer::type_of(&mut db, body);
+    assert_eq!(
+        ty.render_name(&db.name_ctx()),
+        "Ordering",
+        "Ordering.of a b : Ordering (same reduction as the former `compare`), got {ty:?}"
+    );
+}
+
 /// SELF-REFLECTION `Ast.module` (front-end): the reflection member on the built-in `Ast` record resolves via
 /// ordinary member access and TYPES as the built-in `Ast` sum — the type-directed, prelude-derived,
 /// NAMESPACED replacement for the retired `(. Ast self)` blind syntax-rewrite (operator directive: namespace

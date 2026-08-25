@@ -85,15 +85,25 @@ pub fn prelude_decls(ast: &mut Arenas) -> Vec<TypeDecl> {
     // program uses bare `Sign.Neg`/`Zero`/`Pos` without declaring it. Nothing privileged — the same
     // `type_form` + `scan_type_decl` path, just no type parameters.
     let sign = type_form(ast, "Sign", &[("Neg", &[]), ("Zero", &[]), ("Pos", &[])]);
-    // `(type Ordering Less Equal Greater)` — the result of the three-way `compare` (core-semantics.md §A
+    // `(type Ordering Less Equal Greater)` — the result of the three-way comparison (core-semantics.md §A
     // Total Order Is Observed Through A Three-Way Comparison). A monomorphic closed prelude sum like
-    // `Sign`; the DISCRIMINANT ORDER is Less=0, Equal=1, Greater=2, which `compare` maps a `<`/`=`/`>`
-    // ordering to. `compare` itself is a prelude operator (see `prelude::install`).
-    let ordering = type_form(
-        ast,
-        "Ordering",
-        &[("Less", &[]), ("Equal", &[]), ("Greater", &[])],
-    );
+    // `Sign`; the DISCRIMINANT ORDER is Less=0, Equal=1, Greater=2, which the comparison maps a `<`/`=`/`>`
+    // ordering to. The comparison is NAMESPACED as `Ordering.of` (its associated function, below) — the
+    // former top-level `compare`.
+    let ordering = {
+        let form = type_form(
+            ast,
+            "Ordering",
+            &[("Less", &[]), ("Equal", &[]), ("Greater", &[])],
+        );
+        let mut decl = crate::db::scan_type_decl(ast, form).expect("built-in Ordering decl scans");
+        // `Ordering.of` — the three-way comparison, set HERE at the Ordering declaration (prelude-defined),
+        // the SAME `TypeDecl.associated` pattern as `Ast.module`; `sum_record` appends it to the synthesized
+        // Ordering record. Replaces the former top-level `compare` (operator directive: prelude records with
+        // associated functions, no bare globals).
+        decl.associated = vec![crate::prelude::ordering_of_field(ast)];
+        decl
+    };
     // `(type Ast (Int BigInt) (Name String) (List (List Ast)))` — THE abstract-syntax-tree type
     // (`metaprogramming.md` §Quote Produces An AST Value; type-system.md §The Abstract Syntax Tree Type
     // Is An Ordinary Sum Type). A RECURSIVE, MONOMORPHIC prelude sum: a variant per syntactic form, each
@@ -214,10 +224,13 @@ pub fn prelude_decls(ast: &mut Arenas) -> Vec<TypeDecl> {
     // The plain prelude sums (no associated functions) scan straight through; `ast_decl` is ALREADY a
     // fully-formed `TypeDecl` (its associated functions were set at its declaration above), spliced in at
     // its canonical position — no scan-then-find-by-name.
-    let mut decls: Vec<TypeDecl> = [option, result, sign, ordering]
+    let mut decls: Vec<TypeDecl> = [option, result, sign]
         .into_iter()
         .filter_map(|item| crate::db::scan_type_decl(ast, item))
         .collect();
+    // `ordering` and `ast_decl` are ALREADY fully-formed `TypeDecl`s (their associated functions —
+    // `Ordering.of` / `Ast.module` — were set at their declarations above), spliced in at their positions.
+    decls.push(ordering);
     decls.push(ast_decl);
     decls.extend(
         [decode_error, schema]
