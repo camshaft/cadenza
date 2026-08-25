@@ -40,6 +40,7 @@
 ; reads both the outer and the nested list<u8> leaf.
 ; SHAPE 22 — a record param carrying a list<u8> LEAF beside a scalar (record{data,tag}) reads the bytes leaf
 ; lifted through guest memory (Bytes.len).
+; SHAPE 23 — a record PARAM interface export built via the boundary wrapper (f(record{a})=m.a, f({a:7})=7).
 
 (case "an option<s64> field in a record result crosses the export boundary on both arms"
   (doc    "The general option<T> RESULT lift across the WIT export boundary. The guest takes a record
@@ -334,3 +335,14 @@
   (input (do (def (f (: m (Record (: data Bytes) (: tag Int64)))) (Bytes.len (. m data))) (export f)))
   (call f (: (record (= data (list 1 2 3 4 5)) (= tag 99)) (Record (: data Bytes) (: tag Int64))))
   (output (: 5 Int64)))
+(case "a record param interface export builds the record via the boundary wrapper and runs (via an imposed WIT world)"
+  (doc    "SHAPE 23 — a RECORD-param interface export handled by the boundary WRAPPER (the on-message(message)->step
+           shape, record in). The canon lift hands the def the flattened field; the wrapper builds the value-heap
+           record handle then calls the def. Guest f(m: record{a: s64}) = m.a; f({a:7}) == 7 proves the wrapper's
+           record build (arr-alloc/box-int) + the field read agree end to end. Migrated from the in-crate wasmtime
+           test `a_record_param_guest_compiles_and_runs_via_a_wrapper`.")
+  (wit-world (world w (export iface (member f (func (param m ("record" (a (s64)))) (result (s64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (def (f (: m (Record (: a Int64)))) (. m a)) (export f)))
+  (call f (: (record (= a 7)) (Record (: a Int64))))
+  (output (: 7 Int64)))
