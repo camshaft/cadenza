@@ -560,6 +560,15 @@ pub enum Core {
         disc_some: u32,
         disc_none: u32,
     },
+    /// `Blake3.of b` on a RUNTIME `Bytes` — the blake3 content hash `Bytes → Bytes` via the appended
+    /// value-heap runtime op `hash-blake3` (heap index 91). A CONSTANT source folds to a `Core::ConstBytes`
+    /// of its `blake3::hash` in `lower_blake3_of` (P3b compile half) and never reaches here; this is the
+    /// RUNTIME path (P3b runtime half). The op BORROWS the `operand` handle (an inspector, like
+    /// `value-encode`) and returns a FRESH OWNED 32-byte `Bytes` leaf; the SAME `blake3` crate the
+    /// compile-time fold uses, so the two produce byte-identical digests (design-compiler-primitives §9).
+    Blake3Of {
+        operand: StructId,
+    },
     /// `BigInt.of x` on a RUNTIME fixed-width integer — widen `x` (an i64-slot value) into a `BigInt`
     /// heap leaf via the runtime `bigint-of-i64` op. A CONSTANT source folds to `Core::ConstInt` retyped
     /// `BigInt` in `lower` (B1) and never reaches here; this is the runtime path (B3b).

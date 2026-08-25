@@ -1501,6 +1501,7 @@ fn collect_host_arg_strings_at(db: &mut Db, id: crate::ast::StructId, out: &mut 
             collect_host_arg_strings(db, len, out);
         }
         Core::BytesCompact { operand }
+        | Core::Blake3Of { operand }
         | Core::StrFromBytes { bytes: operand, .. }
         | Core::StrToBytes { string: operand }
         | Core::NfcNormalize { string: operand }

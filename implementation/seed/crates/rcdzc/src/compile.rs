@@ -4826,6 +4826,8 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
             collect_reached_poisons(db, len, out);
         }
         Core::BytesCompact { operand } => collect_reached_poisons(db, operand, out),
+        // `Blake3.of` unconditionally evaluates its bytes operand (the runtime hash reads it) — descend.
+        Core::Blake3Of { operand } => collect_reached_poisons(db, operand, out),
         // `String.from-bytes` unconditionally evaluates its bytes operand (the runtime op reads it) — descend.
         Core::StrFromBytes { bytes, .. } => collect_reached_poisons(db, bytes, out),
         // `String.to-bytes` unconditionally evaluates its string operand (the runtime flatten reads it) — descend.

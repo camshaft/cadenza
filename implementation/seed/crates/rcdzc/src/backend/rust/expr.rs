@@ -3206,6 +3206,12 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // and owned, so on the native rep this is a NO-OP: return the operand (the rope-flatten the wasm
         // runtime does has no analogue for a `Vec`).
         Core::BytesCompact { operand } => emit(db, operand, env, ctx),
+        // Runtime `Blake3.of` on the RUST backend is not yet emitted: emitted programs do not link the
+        // `blake3` crate (unlike the wasm path's `hash-blake3` heap op). DECLINE cleanly (a rust-baseline
+        // TODO, never a miscompile) until the rust-emit blake3 dep lands (coordinated with v-rust-backend).
+        Core::Blake3Of { .. } => Err(crate::diag::Reject::decline(
+            "Blake3.of on a runtime Bytes is not yet emitted on the rust backend (wasm heap op 91 only)",
+        )),
         // `String.at`/`String.scalar-at` on a RUNTIME string → the i-th UNICODE SCALAR, fallibly, as a
         // one-scalar `(Option String)`. `.chars()` iterates by scalar value (matching the spec's
         // scalar-value addressing — NOT bytes), `.nth(i)` picks it, `.map(to_string)` wraps the scalar as
