@@ -3834,6 +3834,17 @@ fn collect_list_elem_ops(
         if let Ok(Some(read)) = get_op_ty(db, &payload) {
             out.insert(read);
         }
+    } else if let Some(cases) = crate::backend::wasm::host::variant_scalar_payload_cases(db, elem) {
+        // A VARIANT<scalar> element (`emit_variant_to_mem`): reads `sum-disc`, and on a payload case
+        // `sum-payload` + the payload scalar's unbox op (the N-case generalization of the option arm).
+        out.insert(OP_SUM_DISC);
+        out.insert(OP_SUM_PAYLOAD);
+        if let Some(pd) = cases.iter().position(|(_, p)| p.is_some())
+            && let Some(pty) = variant_payload_ty_at(db, elem, pd as u32)
+            && let Ok(Some(read)) = get_op_ty(db, &pty)
+        {
+            out.insert(read);
+        }
     } else if let Ok(Some(read)) = get_op_ty(db, elem) {
         out.insert(read);
     }
@@ -8414,6 +8425,15 @@ fn emit_list_arg_marshal(
         None
     };
     let is_option = option_elem.is_some();
+    // A general `variant<scalar>` element (`list<variant{a, b(s64), …}>`): written in place at its canonical
+    // variant layout (disc + uniform scalar payload) by `emit_variant_to_mem` — the N-case generalization of
+    // the option element. Detected AFTER option/result (they take their own arms), so this is the residual
+    // general variant. Scoped to a uniform single scalar payload (the #3368 record-field variant shape).
+    let is_variant: bool = if is_bytes || is_nested_list || is_record || is_tuple || is_option {
+        false
+    } else {
+        crate::backend::wasm::host::variant_scalar_payload_cases(db, elem).is_some()
+    };
     // The store for a scalar element, by its slot valtype + canonical size: i64→i64.store, f64→f64.store,
     // f32→f32.store, i32 → 4-byte i32.store / 2-byte store16 / 1-byte store8.
     let scalar_store: Option<Lir> = if is_bytes
@@ -8421,6 +8441,7 @@ fn emit_list_arg_marshal(
         || is_record
         || is_tuple
         || is_option
+        || is_variant
     {
         None
     } else {
@@ -8456,7 +8477,7 @@ fn emit_list_arg_marshal(
     } else {
         canonical_layout(db, elem).1
     };
-    let read = if is_bytes || is_nested_list || is_record || is_tuple || is_option {
+    let read = if is_bytes || is_nested_list || is_record || is_tuple || is_option || is_variant {
         None
     } else {
         Some(get_op_ty(db, elem)?.ok_or_else(|| {
@@ -8649,6 +8670,11 @@ fn emit_list_arg_marshal(
             scratch_ty,
             out,
         )?;
+    } else if is_variant {
+        // VARIANT<scalar> element (`list<variant{a, b(s64), …}>`): write the value-heap variant IN PLACE into
+        // the outer slot at `slotaddr` per its canonical variant layout (disc + uniform scalar payload), via
+        // `emit_variant_to_mem`. `eh` is the borrowed element variant handle. work_base ABOVE this level (`+9`).
+        emit_variant_to_mem(db, eh, slotaddr, elem, work_base + 9, high, scratch_ty, out)?;
     } else {
         // scalar element: outer[i] = unbox(eh), width-narrowed, stored INLINE (no cursor advance).
         let read = read.expect("a scalar element has an unbox op");
@@ -8968,6 +8994,113 @@ fn emit_option_to_mem(
     }
     out.push(width_store(payload_off)?);
     out.push(Lir::Else); // None: dest[payload_off] = 0
+    out.push(Lir::LocalGet(dest_addr));
+    out.push(zero);
+    out.push(width_store(payload_off)?);
+    out.push(Lir::End);
+    Ok(())
+}
+
+/// Write a value-heap general `variant { c0, c1(scalar), … }` ELEMENT (in `var_slot`) IN PLACE into linear
+/// memory at `dest_addr` per its canonical variant layout: the discriminant at offset 0 (its width by case
+/// count) followed by the uniform scalar payload at `align_up(disc_size, payload_align)`. The guest's
+/// `sum-disc` IS the component discriminant (cases in declaration order, like an enum), so the RAW disc is
+/// stored (not remapped as the 2-case option does). A payload case (`disc` in the payload-case set) stores
+/// `unbox(sum-payload)`; a nullary case the payload-width zero. The N-case generalization of
+/// [`emit_option_to_mem`], scoped (like the record-field variant arm, #3368) to a uniform single scalar
+/// payload — a mixed-width / `Bytes` / compound payload join is a later increment.
+#[allow(clippy::too_many_arguments)]
+fn emit_variant_to_mem(
+    db: &mut Db,
+    var_slot: u32,
+    dest_addr: u32,
+    variant_ty: &Ty,
+    work_base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    let cases = crate::backend::wasm::host::variant_scalar_payload_cases(db, variant_ty)
+        .ok_or_else(|| Reject::decline("a variant element is not a scalar-payload variant"))?;
+    let ncases = cases.len();
+    let payload_discs: Vec<i32> = cases
+        .iter()
+        .enumerate()
+        .filter_map(|(d, (_, p))| p.map(|_| d as i32))
+        .collect();
+    let first_pd = *payload_discs
+        .first()
+        .ok_or_else(|| Reject::decline("a variant element has no payload case"))?;
+    let payload_ty = variant_payload_ty_at(db, variant_ty, first_pd as u32)
+        .ok_or_else(|| Reject::decline("a variant element payload type could not be resolved"))?;
+    let (psize, palign) = canonical_layout(db, &payload_ty);
+    let disc_size = disc_size_for(ncases);
+    let payload_off = align_up_u32(disc_size, palign);
+    let pv = valtype_of(&payload_ty)
+        .ok_or_else(|| Reject::decline("a variant element scalar payload has no valtype"))?;
+    let read = get_op_ty(db, &payload_ty)?
+        .ok_or_else(|| Reject::decline("a variant element payload has no unbox op"))?;
+    let width_store = |offset: u32| -> Result<Lir, Reject> {
+        Ok(match (pv, psize) {
+            (ValType::I64, _) => Lir::I64Store { offset },
+            (ValType::F64, _) => Lir::F64Store { offset },
+            (ValType::F32, _) => Lir::F32Store { offset },
+            (ValType::I32, 4) => Lir::I32Store { offset },
+            (ValType::I32, 2) => Lir::I32Store16 { offset },
+            (ValType::I32, 1) => Lir::I32Store8 { offset },
+            _ => {
+                return Err(Reject::decline(
+                    "a variant element payload has no width store",
+                ));
+            }
+        })
+    };
+    let disc_store = |offset: u32| -> Lir {
+        match disc_size {
+            1 => Lir::I32Store8 { offset },
+            2 => Lir::I32Store16 { offset },
+            _ => Lir::I32Store { offset },
+        }
+    };
+    let zero = match pv {
+        ValType::I64 => Lir::ConstI64(0),
+        ValType::F64 => Lir::F64ConstBits(0),
+        ValType::F32 => Lir::F32ConstBits(0),
+        _ => Lir::ConstI32(0),
+    };
+    let disc = work_base;
+    let is_payload = work_base + 1;
+    scratch_ty.insert(disc, ValType::I32);
+    scratch_ty.insert(is_payload, ValType::I32);
+    *high = (*high).max(work_base + 2);
+    // disc = guest sum-disc (= the component discriminant, decl order); store it at offset 0.
+    out.push(Lir::LocalGet(var_slot));
+    out.push(Lir::CallImport(OP_SUM_DISC));
+    out.push(Lir::LocalSet(disc));
+    out.push(Lir::LocalGet(dest_addr));
+    out.push(Lir::LocalGet(disc));
+    out.push(disc_store(0));
+    // is_payload = OR over the payload-case discs of (disc == pd).
+    for (k, pd) in payload_discs.iter().enumerate() {
+        out.push(Lir::LocalGet(disc));
+        out.push(Lir::ConstI32(*pd));
+        out.push(Lir::I32Eq);
+        if k > 0 {
+            out.push(Lir::I32Or);
+        }
+    }
+    out.push(Lir::LocalSet(is_payload));
+    out.push(Lir::LocalGet(is_payload));
+    out.push(Lir::If(BlockType::Empty)); // a payload case → dest[payload_off] = unbox(sum-payload)
+    out.push(Lir::LocalGet(dest_addr));
+    out.push(Lir::LocalGet(var_slot));
+    out.push(Lir::CallImport(OP_SUM_PAYLOAD));
+    out.push(Lir::CallImport(read));
+    if read == OP_GET_INT && matches!(pv, ValType::I32) {
+        out.push(Lir::I32WrapI64);
+    }
+    out.push(width_store(payload_off)?);
+    out.push(Lir::Else); // a nullary case → dest[payload_off] = 0
     out.push(Lir::LocalGet(dest_addr));
     out.push(zero);
     out.push(width_store(payload_off)?);

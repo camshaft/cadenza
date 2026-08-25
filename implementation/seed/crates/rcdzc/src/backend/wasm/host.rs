@@ -733,6 +733,11 @@ pub fn list_elem_marshalable(db: &mut Db, ty: &Ty) -> bool {
         ref other if option_payload_ty(db, other).is_some_and(|p| abi_val_type(&p).is_some()) => {
             true
         }
+        // A `variant<scalar>` element (`list<variant{a, b(s64), …}>`): written in place at its canonical
+        // variant layout (disc + uniform scalar payload) by `select::emit_variant_to_mem`. Detected AFTER
+        // option (option takes its own arm); this is the residual general scalar-payload variant. A mixed-
+        // width / Bytes / compound variant payload is a later slice (the flatten join widens).
+        ref other if variant_scalar_payload_cases(db, other).is_some() => true,
         ref other => abi_val_type(other).is_some(),
     }
 }
