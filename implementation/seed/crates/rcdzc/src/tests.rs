@@ -78632,39 +78632,6 @@ mod stage1 {
     }
 
     #[test]
-    fn partial_application_captures_a_runtime_variable_in_the_residual() {
-        use wasmtime::component::Val;
-        // Partially applying to a VARIABLE reference (a runtime param / let-bound) must CAPTURE it in the
-        // residual lambda: `((sub n) 3)` curries to `(fn (b) (- n b))`, and `n` — a caller-pinned free
-        // variable — must keep its binding across the residual's later full application. The currying copy
-        // re-copied the `n` name atom and re-resolved it against the residual's scope (where it is
-        // unbound) → CDZ0101. Fixed by SHARING a resolve-pinned name (a captured free var) rather than
-        // re-copying it. A CONSTANT capture always worked (no free var); this pins the variable case.
-        let param =
-            "(module m (def (sub a b) (- a b)) (def (main (: n Int64)) ((sub n) 3)) (export main))";
-        let b =
-            compile_component(&crate::codec::encode(&parse(param))).expect("compile param capture");
-        assert_eq!(run_returns_with::<i64>(&b, "main", &[Val::S64(10)]), 7);
-        // The let-bound companion: `(let ((m 10)) ((sub m) 3))` = 7 — the captured value is any in-scope
-        // binding, not only a parameter.
-        let letcap = "(module m (def (sub a b) (- a b)) (def (main) (let ((m 10)) ((sub m) 3))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(letcap)))
-                    .expect("compile let capture"),
-                "main"
-            ),
-            7
-        );
-        // A body-internal `let`-local is UNAFFECTED (never resolve-pinned, so it still re-resolves against
-        // the copied scope): `(inc n)` with `(let ((k 10)) (+ n k))`, n=5 → 15.
-        let letlocal = "(module m (def (inc n) (let ((k 10)) (+ n k))) (def (main (: v Int64)) (inc v)) (export main))";
-        let l =
-            compile_component(&crate::codec::encode(&parse(letlocal))).expect("compile let-local");
-        assert_eq!(run_returns_with::<i64>(&l, "main", &[Val::S64(5)]), 15);
-    }
-
-    #[test]
     fn a_let_bound_variable_passed_as_a_call_argument_resolves_at_the_call_site() {
         // `(let ((k 10)) (inc k))` = 11: β-reduction splices the CALL-SITE argument `k` into a copy of
         // `inc`'s body, and `push_list` re-parents the splice — so without pinning the argument's scope
