@@ -1115,6 +1115,17 @@ turning it off changes only what can be audited, never how a reducer behaves. Wh
 kept, human inspection should be able to render the raw events, not only a program's
 projection of them.
 
+The log aims to record **every host call** a reducer makes, so a checker can see exactly
+what a reducer asked of the substrate. One boundary case is not yet covered: a host import
+that parses its arguments (a `graph` call parses the `list<u8>` node/edge-kind into a
+reducer-id/edge-kind) and finds them malformed returns the empty/false result at the host
+boundary, *above* the recordable capability, so that (rejected) call is currently
+unobserved. This only hides a **guest bug** — a correct guest never sends malformed id
+bytes — so it is a known, low-urgency completeness gap, not a soundness one. Closing it is
+a coarse, interface-general `HostCallRejected` log entry (the interface, the op, and the raw
+argument bytes) emitted at the host boundary regardless of the parse, so no host call is
+silently unobservable; it is staged behind the conformance run that would assert it.
+
 ### Nothing blocks the runtime
 
 Every reducer runs on the shared async runtime that interleaves sessions, so **no reducer

@@ -174,6 +174,13 @@ impl cadenza::platform::state::Host for HostState {
     }
 }
 
+// Each method parses its `list<u8>` node/edge-kind arg into a `ReducerId`/`EdgeKind` and, on a malformed one,
+// returns the empty/false result WITHOUT calling `self.graph.<op>`. Because recording (§9) is a decorator on
+// the typed `ReducerGraph` — below this parse — a malformed-arg call is thus executed but NOT observed: a known
+// observation-completeness gap. It only hides a guest bug (a correct guest never sends malformed id bytes), so
+// it is low-urgency. Closing it is a coarse, interface-general `HostCallRejected` log entry emitted here at the
+// host boundary regardless of the parse (recorded via a host-boundary recorder seam), staged behind the
+// conformance run that asserts it; see `design/cadenza-platform.md` §9 and the observation-model note.
 impl cadenza::platform::graph::Host for HostState {
     async fn insert(&mut self, node: Vec<u8>) -> bool {
         match to_reducer(&node) {
