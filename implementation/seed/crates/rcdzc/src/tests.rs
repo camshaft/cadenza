@@ -75360,21 +75360,27 @@ mod stage1 {
         // recursively folded UNROLLS to its result") now does the SOUND thing: it fully UNROLLS the bounded
         // const fold to its constant result at compile time, so the program COMPILES (folds to a value) —
         // neither hangs nor rejects. The behavioral oracle for the fold value lives in that corpus case; this
-        // test pins that the composition COMPILES (no reject) and that the NON-folding siblings still compile.
+        // test pins the EMIT SHAPE: not merely that it compiles (the old hanging miscompile ALSO compiled —
+        // to a `loop`), but that NO tail-loop is emitted at all (the recursion is fully unrolled away). That
+        // is the precise anti-miscompile guard; a bare "does not reject" would not detect a regression to the
+        // hang. And that the NON-folding siblings still compile.
         let reject_code = |src: &str| {
             crate::compile::compile_component(&crate::codec::encode(&parse(src)))
                 .err()
                 .and_then(|e| e.code)
         };
-        assert_eq!(
-            reject_code(
-                "(module m \
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m \
                    (def (s (const (: xs (List Int64))) (: acc Int64)) \
                      (match xs ((list) acc) ((list h .. t) (s t (+ acc h))))) \
-                   (def (main) (s (list 1 2 3) 0)) (export main))"
-            ),
-            None,
-            "a const list consumed by a tail fold now UNROLLS to a constant (#3344) — compiles, does not reject"
+                   (def (main) (s (list 1 2 3) 0)) (export main))",
+        )))
+        .expect("a const list consumed by a tail fold now UNROLLS to a constant (#3344) — compiles, no reject");
+        assert_eq!(
+            count_opcode(&bytes, |op| matches!(op, wasmparser::Operator::Loop { .. })),
+            0,
+            "the const-list fold must UNROLL to its constant result — NO tail-loop may be emitted (the \
+             const-erasure × tail-loop composition that used to hang is fully folded away)"
         );
         // The RUNTIME-list version (no `const`) compiles cleanly — the list is an ordinary runtime value the
         // tail-loop iterates with its real `br_if` length/nil exit. So the reject is specific to the
