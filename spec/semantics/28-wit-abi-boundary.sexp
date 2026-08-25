@@ -41,7 +41,8 @@
 ; SHAPE 22 — a record param carrying a list<u8> LEAF beside a scalar (record{data,tag}) reads the bytes leaf
 ; lifted through guest memory (Bytes.len).
 ; SHAPE 23 — a record PARAM interface export built via the boundary wrapper (f(record{a})=m.a, f({a:7})=7).
-; SHAPE 24 (reserved: nested list<list<s64>> host-op ARG, pending v-rb #3321 on main). SHAPE 25 — a MULTI-EXPORT
+; SHAPE 24 — a NESTED list<list<s64>> host-op ARG (sink.push) lowered + invoked e2e (the recursive nested-list
+; arg marshal: outer array of (ptr,count) inner lists). SHAPE 25 — a MULTI-EXPORT
 ; record interface (two members f,g), one boundary wrapper per member, both run under the interface.
 ; SHAPE 26 — a no-effects reducer step (empty requests list; dead element-writer derived from the WIT type).
 ; SHAPE 27 — the CAPSTONE full reducer-step: list<record> requests + 3 byte leaves + option + named variant, every field asserted.
@@ -390,3 +391,19 @@
   (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (def (f (: m (Record (: contract Bytes) (: payload Bytes)))) (record (= requests (list (record (= contract (. m contract)) (= payload (. m payload)) (= token (. m contract)) (= deadline-nanos (Option.Some 5))))) (= outcome Outcome.Continue))) (export f)))
   (call f (: (record (= contract (list 170 187)) (= payload (list 1 2 3))) (Record (: contract Bytes) (: payload Bytes))))
   (output (: (record (= requests ((record (= contract (170 187)) (= payload (1 2 3)) (= token (170 187)) (= deadline-nanos (Some 5))))) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option Int64))))) (outcome outcome)))))
+(case "a typed reducer performing a nested list<list<s64>> host arg emits, loads, and runs (via an imposed WIT world)"
+  (doc    "SHAPE 24 — a NESTED list<list<s64>> host-op ARG (sink.push : (list<list<s64>>) -> unit) driven through an
+           imposed WIT world. The reducer on-message performs sink.push (list (list 1 2) (list 3)) (a unit-result,
+           observe-only host op) then returns a Continue step with an empty requests list. Running the guest LOADS
+           the emitted component and INVOKES sink.push, exercising the RECURSIVE nested-list arg marshal (the outer
+           list of (ptr,count) inner lists, each an i64-strided array) e2e — the runtime byte-movement coverage a
+           validate-only check cannot provide: a broken nested marshal (wrong inner stride, dropped inner list,
+           or list<s64>-instead-of-list<list<s64>>) fails to instantiate or run. The observed host-call sequence
+           pins that sink.push actually fired. Runtime coverage for v-rust-backend INCREMENT 1 (#3321, the recursive
+           nested-list host-arg lowering — arg-side WIT generality).")
+  (wit-world (world w (export guest (member on-message (func (param m ("record" (contract ("list" (u8))) (payload ("list" (u8))) (token ("list" (u8))))) (result ("record" (requests ("list" ("record" (contract ("list" (u8))) (payload ("list" (u8))) (token ("list" (u8))) (deadline-nanos ("option" (u64)))))) (outcome ("variant" (continue) (close ("record" (schema ("list" (u8))) (reason ("list" (u8)))))))))))) (import cadenza:platform/sink (member push (func (param vals ("list" ("list" (s64)))) (result ("unit")))))))
+  (component-name "cadenza:platform/guest")
+  (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (effect sink (op push (-> (List (List Int64)) Unit))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (sink) (do (sink.push (list (list 1 2) (list 3))) (record (= requests (list)) (= outcome Outcome.Continue))))) (export onMessage)))
+  (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
+  (host-calls (call cadenza:platform/sink.push))
+  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
