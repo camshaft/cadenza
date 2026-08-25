@@ -3141,6 +3141,7 @@ pass	a repeated runtime checked-multiply is computed once and still traps on ove
 pass	a repeated runtime subexpression is computed once (CSE) and reused across an operator
 pass	a repeated trapping divide in a short-circuited and's right operand stays shielded (CSE must not hoist it past the connective)
 pass	a repeated trapping divide in a short-circuited or's right operand stays shielded (CSE must not hoist it past the connective)
+pass	a repeated trapping divide inside one if-arm is not speculated past the branch
 pass	a repeated trapping division in a guarded arm stays shielded — a CSE class must not hoist past the branch
 pass	a rest-binder over a runtime-start slice measures the SLICE length, not the parent's
 pass	a rest-pattern head binder read inside an inlined match-arg callee's scrutinee resolves
