@@ -1,0 +1,26 @@
+// The RUN checker (design/cadenza-platform.md §3/§9) — the assertion half of the migrated run-with-a-result
+// test. The paired guest (reducer-run-cdz) performs run.run over a sub-program and emits the run's Ok output;
+// this checker asserts the run happened AND returned a value that flowed out: some Entry::Run whose `output`
+// (Some on a successful run) equals an Emitted request's payload. RELATIONAL on the run output — no hardcoded
+// value — so it proves run.run returned bytes the reducer then surfaced. NON-VACUOUS: a guest that never calls
+// run records no Entry::Run (a `run` leaves no request in the step), so no output key exists and the check
+// fails; a run that faulted has output = None (no key) and likewise fails.
+//
+// Round-3 checker-lib form: the judgement is two field extractors + one combinator; respond() owns the decode
+// + verdict emit, and the inert on-response/on-notification are re-exported from checker-lib.
+import { LogRecord, Entry } from "log-schema"
+import { respond, on-response, on-notification, pass, fail, join-exists } from "checker-lib"
+
+// A Run's output bytes when the run succeeded (output = Some) — the join key; None (no key) for a faulted run
+// or a non-Run record.
+def run-output(rec) = match rec.entry with | Entry.Run(r) => r.output | _ => None
+// An Emitted request's payload — the value the reducer surfaced.
+def emitted-payload(rec) = match rec.entry with | Entry.Emitted(e) => Some(e.payload) | _ => None
+
+def verdict-payload(records: List(LogRecord)) =
+  if join-exists(records, run-output, emitted-payload)
+  then pass()
+  else fail("no Run whose Ok output was emitted: run.run did not return a value the reducer surfaced")
+
+def on-message(msg) = respond(msg, verdict-payload)
+export { on-message, on-response, on-notification }
