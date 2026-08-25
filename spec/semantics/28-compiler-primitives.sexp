@@ -74,3 +74,32 @@
             (export run)))
   (call   run 5)
   (output (: true Bool)))
+
+; --- The primitives COMPOSE into a contract-id (design §4 — validate the primitives suffice) -----------
+; A userspace contract-id is `tag ++ blake3(canonical-declaration-bytes)`. These pin that the three
+; primitives compose to a COMPILE-TIME CONSTANT tagged id, entirely in the compiler's contract-agnostic
+; surface: a compile-time Ast (here a `quote`; import reflection's `__ast__` is the same value form) ->
+; `Ast.encode` -> `Blake3.of` -> `Bytes.concat` with a userspace domain tag. All const-fold; the whole id
+; is a baked constant a guest compares against `msg.contract` with `Bytes.eq`. (The concrete contract-id
+; SCHEME + the .cdz library live in the platform lane; this only pins that the primitives are sufficient.)
+
+(case "the primitives compose to a compile-time tagged contract-id of the expected length"
+  (doc    "`Bytes.concat (userspace 0x01 tag) (Blake3.of (Ast.encode <decl-Ast>))` folds to a 33-byte
+           constant (1 tag byte + 32 blake3 bytes) — a content-address of the declaration AST, built with
+           NO contract knowledge in the compiler. Pins the design §4 composition end-to-end at compile time.")
+  (input  (Bytes.len (Bytes.concat b"\x01" (Blake3.of (Ast.encode (quote (contract temp-celsius Int64 Int64)))))))
+  (output (: 33 Int64)))
+
+(case "the composed contract-id is deterministic — the same declaration folds to the same id"
+  (doc    "Hashing the SAME declaration AST twice yields the same tagged id (a content-address). `Bytes.eq`
+           over the two folded ids is true.")
+  (input  (= (Bytes.concat b"\x01" (Blake3.of (Ast.encode (quote (contract temp-celsius Int64 Int64)))))
+             (Bytes.concat b"\x01" (Blake3.of (Ast.encode (quote (contract temp-celsius Int64 Int64)))))))
+  (output (: true Bool)))
+
+(case "distinct declarations fold to distinct contract-ids"
+  (doc    "Two DIFFERENT declaration ASTs (differing name) fold to DIFFERENT tagged ids — the property that
+           makes exact-hash contract routing sound. `Bytes.eq` over the two ids is false.")
+  (input  (= (Bytes.concat b"\x01" (Blake3.of (Ast.encode (quote (contract temp-celsius Int64 Int64)))))
+             (Bytes.concat b"\x01" (Blake3.of (Ast.encode (quote (contract temp-fahrenheit Int64 Int64)))))))
+  (output (: false Bool)))
