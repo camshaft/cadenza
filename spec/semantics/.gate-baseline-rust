@@ -6592,6 +6592,7 @@ pass	the churned-to-empty map REGROWS with correct structure (no residue corrupt
 pass	the closure state is REPLACED per dispatch by one capturing the arm's OWN binder
 pass	the closure's inner arm performs an OUTER effect through the closure boundary
 pass	the compare walk recurses list-of-sums-of-lists with discriminant-first at depth
+pass	the compile-time contract-id fold is byte-identical to the host Contract (golden #3238)
 pass	the complement laws fold x-and-not-x to zero and x-or-not-x to all-ones on a signed runtime value
 pass	the composed contract-id is deterministic — the same declaration folds to the same id
 pass	the composed multibyte slice view equals its literal twin and keys a Map

@@ -103,3 +103,23 @@
   (input  (= (Bytes.concat b"\x01" (Blake3.of (Ast.encode (quote (contract temp-celsius Int64 Int64)))))
              (Bytes.concat b"\x01" (Blake3.of (Ast.encode (quote (contract temp-fahrenheit Int64 Int64)))))))
   (output (: false Bool)))
+
+(case "the compile-time contract-id fold is byte-identical to the host Contract (golden #3238)"
+  (doc    "BYTE-IDENTITY cross-check (design §9): the compile-time primitive fold and the host contract-id
+           constructor (`cdz_platform::Contract::new` → `cdz_contract::contract_declaration` → `Hash::of`)
+           must produce the SAME 33-byte id, else a userspace P4 contract-id would not match the platform's
+           routing key. The host hashes the ASSEMBLED semantic-interface form
+           `(contract <str-name> (types <type-decl>…) <input-name> <output-name>)`, canonicalized then
+           `codec::encode`d, prefixed with the 0x01 Contract tag. This reproduces that exact form for the
+           `temp.celsius` fixture — note the name is a STRING leaf (not a Name), and `(types (type Temp
+           (Mk f64)))` mirrors the host's declaration builder — and folds `Bytes.concat 0x01 (Blake3.of
+           (Ast.encode …))` at compile time. The result equals the golden id pinned by
+           `cdz-platform` test `id_is_byte_stable_…` (#3238, base62 01UUXRcMG63Ct66Z4TP7l6QfY7pvktdISpoHyTdJVtS70).
+           Because `Ast.encode` canonicalizes with the same `cadenza-ast` codec the host uses, an assembled
+           quote of the same structure encodes byte-for-byte identically. If this drifts, the compile-time
+           primitives and the host contract-id have diverged — a P4 flag-day, not a papering-over.")
+  (input  (= (Bytes.concat b"\x01"
+               (Blake3.of (Ast.encode
+                 (quote (contract "temp.celsius" (types (type Temp (Mk f64))) Temp Temp)))))
+             b"\x01\x86\x0c\x7a\xcb\x43\xd2\x6c\xb9\x3a\x8c\xed\xd7\xd6\x97\xb2\x30\x08\x8a\x50\xd5\x0e\xb2\x37\x6c\xcf\xee\x60\xca\xba\x2c\x52\x3a"))
+  (output (: true Bool)))
