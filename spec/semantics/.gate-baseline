@@ -2275,10 +2275,13 @@ pass	a little-endian u16 bin field stitches its bytes across a rope seam in le o
 pass	a logical right shift that drops every significant bit of a masked unsigned value folds to zero
 pass	a lookup at a runtime key finds the present value, else None
 pass	a loop whose bound is an invariant computation runs correctly (the bound is hoisted)
+pass	a loop-invariant bitwise op hoisted out of a tail loop preserves the value
 pass	a loop-invariant computed in both the condition and the body is shared, computing correctly
 pass	a loop-invariant heap projection consumed in the loop body is not LICM-hoisted
+pass	a loop-invariant multiply in the loop condition preserves the value
 pass	a loop-invariant subexpression in a MATCH scrutinee is hoisted to valid wasm
 pass	a loop-invariant trapping expression is not evaluated when the loop runs zero iterations
+pass	a loop-invariant used in both the condition and the body is hoisted once with the same value
 pass	a lower-bound branch refinement does NOT license eliding the upper-overflow guard
 pass	a lowercase type variable in a USER-GENERIC parameter annotation is rejected
 pass	a lowercase-named type cross-references another lowercase-named type in a field
