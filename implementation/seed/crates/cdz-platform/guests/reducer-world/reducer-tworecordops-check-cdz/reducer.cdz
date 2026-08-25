@@ -1,0 +1,55 @@
+// The TWO-RECORD-OPS SEQUENCING checker (design/cadenza-platform.md §9) — the assertion half of the migrated
+// v-rb "two record ops in one interface" test. The paired guest (reducer-tworecordops-cdz) performs, in one
+// fold, deliver-message THEN deliver-notification; this checker asserts BOTH were observed and IN ORDER: a
+// Routed(eventKind="message") precedes a Routed(eventKind="notification"). That ordering is the Core::Seq proof —
+// a dropped or reordered second host call leaves no notification-after-message and the check fails. NON-VACUOUS.
+// LOG-ONLY and guest-agnostic.
+//
+// Plumbing (decode the check Envelope, decode the log, emit the verdict) is shared via checker-lib's
+// interpret(); this file keeps only its JUDGEMENT predicate + verdict-payload and maps the Decision onto its
+// own local Outcome. Local Outcome + Error stay in the guest: the reducer-world export boundary synthesizes the
+// unused on-response/on-notification param types from the guest's local sums, so a lib-owned Outcome/Error would
+// leave them ambiguous (CDZ0201). See checker-lib.cdz.
+//
+// eventKind is the recorded canonical string (log_value.rs event_kind_str): the host maps deliver-message ->
+// Routed{kind=Message} -> "message" and deliver-notification -> Routed{kind=Notification} -> "notification"
+// (recording.rs), so the checker matches those recorded forms, not the WIT op names. `Entry`/`LogRecord` are
+// imported sums (variant count invisible to the matcher), so each match has a catch-all `_ =>` arm.
+import { LogRecord, Entry } from "log-schema"
+import { Decision, interpret, verdict-req, pass, fail } from "checker-lib"
+
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+// Is there a Routed(eventKind="notification") at index >= j? (the second, later deliver op.)
+def has-notification-from(records: List(LogRecord), j: Int64) =
+  match List.at(records, j) with
+  | Option.None(_) => false
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      (match rec.entry with
+        | Entry.Routed(rt) if (rt.eventKind == "notification") => true
+        | _ => has-notification-from(records, j + 1))
+
+// Is there a Routed(eventKind="message") at some index i followed by a Routed(eventKind="notification") at a
+// later index? (deliver-message then deliver-notification, sequenced in order — the Core::Seq of two host calls.)
+def message-then-notification(records: List(LogRecord), i: Int64) =
+  match List.at(records, i) with
+  | Option.None(_) => false
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      (match rec.entry with
+        | Entry.Routed(rt) if (rt.eventKind == "message" and has-notification-from(records, i + 1)) => true
+        | _ => message-then-notification(records, i + 1))
+
+// The verdict payload for a decoded log: pass with no messages, else fail with one diagnostic message.
+def verdict-payload(records: List(LogRecord)) =
+  if message-then-notification(records, 0)
+  then pass()
+  else fail("expected a Routed(message) then a Routed(notification): the two sequenced deliver ops did not both execute in order")
+
+def on-message(msg) =
+  match interpret(msg, verdict-payload) with
+  | Decision.Report(r) => { requests = [verdict-req(r.contract, r.payload)], outcome = Outcome.Continue }
+  | Decision.NotCheck(cl) => { requests = [], outcome = Outcome.Close({ schema = cl.schema, reason = cl.reason }) }
+def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
+def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
+export { on-message, on-response, on-notification }
