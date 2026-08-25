@@ -221,4 +221,22 @@ mod tests {
             cdz_contract::contract_id("temp.celsius", temp_type, "Temp", "Temp")
         );
     }
+
+    #[test]
+    fn id_is_byte_stable_a_golden_pin_on_the_declaration_encoding() {
+        // A GOLDEN pin, complementing the relational tests above. Those prove the id is reproducible /
+        // nominal / evolution-sensitive, but NONE pins its actual value — so a change to the canonical
+        // declaration encoding (the `cadenza-ast` codec, a field order, a tag byte) would silently SHIFT
+        // every contract-id while those relational tests still pass, breaking routing (already-registered
+        // contracts stop matching, since routing is exact-hash equality, §1) and any userspace contract-id
+        // builder (`DESIGN-compiler-primitives` P4) that must reproduce this exact byte-form. This asserts a
+        // fixture contract's id is a specific value, so such drift fails loudly here. If it ever legitimately
+        // changes, that is a deliberate contract-id flag-day — re-pin intentionally, do not paper over.
+        let c = Contract::new(Str::from("temp.celsius"), temp_type, "Temp", "Temp");
+        assert_eq!(
+            c.id().hash().to_string(),
+            "01UUXRcMG63Ct66Z4TP7l6QfY7pvktdISpoHyTdJVtS70",
+            "the contract-id byte-form drifted (or this is a deliberate flag-day)"
+        );
+    }
 }
