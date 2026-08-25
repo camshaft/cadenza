@@ -24135,14 +24135,13 @@ enum CVal {
     Unit,
     List(Vec<CVal>),
     /// A SUM / variant value (Stage b) — an `Ast` node, an `Option`/`Result`, or any user sum. `disc` is the
-    /// variant discriminant (for matching against a variant pattern), `head` is the constructor's occurrence
-    /// (so the value re-materializes to its constructor application `(head payloads…)`, which `core_of` folds
-    /// back to a `Core::SumNew`), and `payloads` are the constructor's argument values (empty for a nullary
-    /// variant like `Option.None`). A single-payload variant binds via a `[Payload]` step; a match reads the
-    /// payload out by projecting this value.
+    /// variant discriminant (matched against a variant pattern) and `payloads` are the constructor's argument
+    /// values (empty for a nullary variant like `Option.None`). Re-materializes to a `Core::SumNew { disc,
+    /// payloads }` directly (no constructor head needed — payloads are synthesized const nodes), so a value
+    /// SOURCED from `core_of` (a reflected `Ast.module` form, a quote) round-trips too, not just a
+    /// syntactically-constructed one.
     Sum {
         disc: u32,
-        head: StructId,
         payloads: Vec<CVal>,
     },
     /// A RECORD value (Stage b) — named fields, canonically ordered by the `Symbol` key. Built by a record
@@ -24168,6 +24167,17 @@ fn const_eval(db: &mut Db, node: StructId, env: &CEnv, budget: &mut u64) -> Opti
         return None;
     }
     *budget -= 1;
+    // `Ast.module` (whatever its resolved shape — a `(. Ast module)` member or the reflect op-record) folds
+    // via `core_of` to the reflected module `Ast` (a `Core::SumNew` tree); convert that constant to a `CVal`
+    // so the reflected forms flow as matchable values into a transform (the `Ast.module`-SOURCE depth gap).
+    if crate::eval::meta_apply_of(db, node) == Some(crate::resolved::Prim::ReflectModule) {
+        let c = core_of(db, node);
+        return if core_is_const_value(db, &c) {
+            core_to_cval(db, &c)
+        } else {
+            None
+        };
+    }
     match resolved_of(db, node) {
         Resolved::Int(v) => Some(CVal::Int(v)),
         Resolved::Bool(b) => Some(CVal::Bool(b)),
@@ -24277,12 +24287,89 @@ fn const_eval(db: &mut Db, node: StructId, env: &CEnv, budget: &mut u64) -> Opti
             let disc = crate::eval::variant_disc_of(db, node)?;
             Some(CVal::Sum {
                 disc,
-                head: node,
                 payloads: Vec::new(),
             })
         }
-        _ => None,
+        // A node this stage does not interpret STRUCTURALLY, but which `core_of` already folds to a constant
+        // — notably `Ast.module` (the reflected module `Ast`, built as a `Core::SumNew` tree) and a `quote`.
+        // Convert that constant `Core` into a `CVal` so it flows as a value into the surrounding recursion/
+        // composition (the `Ast.module`-SOURCE depth gap: the reflected forms fold, but must propagate as
+        // matchable/projectable values through a nested-recursion filter). `core_of` declines (yields a
+        // non-constant) for a runtime value, so this is still const-only.
+        _ => {
+            let c = core_of(db, node);
+            if core_is_const_value(db, &c) {
+                core_to_cval(db, &c)
+            } else {
+                None
+            }
+        }
     }
+}
+
+/// Convert a CONSTANT `Core` value into a `CVal` — the bridge for a value `core_of` already folded (a
+/// reflected `Ast.module`, a quote) so it can participate in the evaluator's matching / projection /
+/// re-materialization. Recurses on the compound's element NODES (a `Core` compound references its elements as
+/// AST occurrences). `None` for a non-constant or a shape this stage does not carry.
+fn core_to_cval(db: &mut Db, c: &Core) -> Option<CVal> {
+    Some(match c {
+        Core::ConstInt(v) => CVal::Int(v.clone()),
+        Core::ConstBool(b) => CVal::Bool(*b),
+        Core::ConstStr(s) => CVal::Str(s.clone()),
+        Core::ConstBytes(b) => CVal::Bytes(b.clone()),
+        Core::Unit => CVal::Unit,
+        Core::BytesOf { elems } => {
+            // A `BytesOf` of constant byte elements is a constant bytes value.
+            let elems = elems.clone();
+            let mut bytes = Vec::with_capacity(elems.len());
+            for &e in elems.iter() {
+                let ec = core_of(db, e);
+                match core_to_cval(db, &ec)? {
+                    CVal::Int(v) => bytes.push(v.to_i64()? as u8),
+                    _ => return None,
+                }
+            }
+            CVal::Bytes(bytes.into())
+        }
+        Core::ListNew { elems } => {
+            let elems = elems.clone();
+            let mut vs = Vec::with_capacity(elems.len());
+            for &e in elems.iter() {
+                let ec = core_of(db, e);
+                vs.push(core_to_cval(db, &ec)?);
+            }
+            CVal::List(vs)
+        }
+        Core::SumNew { disc, payloads } => {
+            let (disc, payloads) = (*disc, payloads.clone());
+            let mut ps = Vec::with_capacity(payloads.len());
+            for &p in payloads.iter() {
+                let pc = core_of(db, p);
+                ps.push(core_to_cval(db, &pc)?);
+            }
+            CVal::Sum { disc, payloads: ps }
+        }
+        Core::Tuple { elems } => {
+            let elems = elems.clone();
+            let mut vs = Vec::with_capacity(elems.len());
+            for &e in elems.iter() {
+                let ec = core_of(db, e);
+                vs.push(core_to_cval(db, &ec)?);
+            }
+            CVal::Tuple(vs)
+        }
+        Core::Record { fields } => {
+            let fields: Vec<(crate::resolved::Symbol, StructId)> =
+                fields.iter().map(|(k, &v)| (k.clone(), v)).collect();
+            let mut m = std::collections::BTreeMap::new();
+            for (k, v) in fields {
+                let vc = core_of(db, v);
+                m.insert(k, core_to_cval(db, &vc)?);
+            }
+            CVal::Record(m)
+        }
+        _ => return None,
+    })
 }
 
 /// Evaluate a function application to a `CVal`. A primitive (or a prelude wrapper that routes to an
@@ -24303,11 +24390,7 @@ fn const_eval_apply(
         for &a in args {
             payloads.push(const_eval(db, a, env, budget)?);
         }
-        return Some(CVal::Sum {
-            disc,
-            head,
-            payloads,
-        });
+        return Some(CVal::Sum { disc, payloads });
     }
     if let Some(prim) =
         crate::eval::prim_of(db, head).or_else(|| crate::eval::meta_apply_of(db, head))
@@ -24317,11 +24400,9 @@ fn const_eval_apply(
             vs.push(const_eval(db, a, env, budget)?);
         }
         // `List.at (list, index)` → an `Option`: `Option.Some elem` in range, else `Option.None`. The
-        // Some/None discriminants are read off THIS node's result type (`option_discs`); the synthesized
-        // sum's `head` is this node (not a real constructor), so it can be MATCHED/projected but not
-        // materialized (`cval_to_ast` guards materialization on a real constructor head, so an unmatched
-        // `List.at` result declines rather than mis-materializing). `List.at` is the destructor `child`/
-        // `at-or-name` build on. Handled HERE (not `apply_const_prim`) because it needs the node + `db`.
+        // Some/None discriminants are read off THIS node's result type (`option_discs`). `List.at` is the
+        // destructor `child`/`at-or-name` build on. Handled HERE (not `apply_const_prim`) because it needs
+        // the node + `db`.
         if prim == Prim::ListAt
             && let [CVal::List(xs), CVal::Int(i)] = &vs[..]
         {
@@ -24330,13 +24411,11 @@ fn const_eval_apply(
             return Some(if idx >= 0 && (idx as usize) < xs.len() {
                 CVal::Sum {
                     disc: some_disc,
-                    head: node,
                     payloads: vec![xs[idx as usize].clone()],
                 }
             } else {
                 CVal::Sum {
                     disc: none_disc,
-                    head: node,
                     payloads: Vec::new(),
                 }
             });
@@ -24514,21 +24593,55 @@ fn cval_to_core(db: &mut Db, v: &CVal) -> Option<Core> {
         CVal::Str(s) => Core::ConstStr(s.clone()),
         CVal::Bytes(b) => Core::ConstBytes(b.clone()),
         CVal::Unit => Core::Unit,
-        // A compound (list / sum / record / tuple) materializes to a freshly-synthesized literal AST subtree
-        // that `core_of` folds back to a `Core::ListNew` / `SumNew` / `Record` / `Tuple` — reusing the
-        // lowering's own construction (disc, element boxing) rather than re-deriving it. Resolve the fresh
-        // subtree first so its constructor references and element folds resolve in scope.
-        CVal::List(_) | CVal::Sum { .. } | CVal::Record(_) | CVal::Tuple(_) => {
-            let node = cval_to_ast(db, v)?;
-            crate::resolve::resolve_subtree(db, node);
-            core_of(db, node)
+        // A compound (list / sum / record / tuple) materializes to the corresponding `Core` DIRECTLY, its
+        // element/payload nodes synthesized via `cval_to_ast` (each a `synth_core` node whose memoized core IS
+        // the element's constant). No constructor head, no AST re-parse, no resolution — so a value with no
+        // syntactic constructor (a reflected `Ast.module` form, a `List.at` Option) materializes exactly like
+        // a syntactically-built one.
+        CVal::List(xs) => {
+            let mut elems = Vec::with_capacity(xs.len());
+            for x in xs {
+                elems.push(cval_to_ast(db, x)?);
+            }
+            Core::ListNew {
+                elems: elems.into(),
+            }
+        }
+        CVal::Sum { disc, payloads } => {
+            let mut ps = Vec::with_capacity(payloads.len());
+            for p in payloads {
+                ps.push(cval_to_ast(db, p)?);
+            }
+            Core::SumNew {
+                disc: *disc,
+                payloads: ps,
+            }
+        }
+        CVal::Tuple(xs) => {
+            let mut elems = Vec::with_capacity(xs.len());
+            for x in xs {
+                elems.push(cval_to_ast(db, x)?);
+            }
+            Core::Tuple {
+                elems: elems.into(),
+            }
+        }
+        CVal::Record(m) => {
+            let mut fields = std::collections::BTreeMap::new();
+            for (k, val) in m {
+                fields.insert(k.clone(), cval_to_ast(db, val)?);
+            }
+            Core::Record {
+                fields: std::rc::Rc::new(fields),
+            }
         }
     })
 }
 
-/// Synthesize a literal AST node for a constant value — the ELEMENTS of a materialized list / the payloads of
-/// a materialized sum reference their own AST occurrences. `None` for a value with no literal spelling this
-/// stage synthesizes.
+/// Synthesize a NODE for a constant value — a scalar is a literal atom; a compound is a `synth_core` node
+/// whose memoized core is the value's `Core` (so `core_of`/`core_is_const_value`/the backend see an ordinary
+/// constant, no resolution needed). Used for the element/payload/field occurrences a materialized
+/// `Core::ListNew`/`SumNew`/`Record`/`Tuple` references.
 fn cval_to_ast(db: &mut Db, v: &CVal) -> Option<StructId> {
     Some(match v {
         CVal::Int(x) => db.push_atom(crate::ast::Leaf::Int {
@@ -24538,75 +24651,14 @@ fn cval_to_ast(db: &mut Db, v: &CVal) -> Option<StructId> {
         CVal::Bool(b) => db.push_atom(crate::ast::Leaf::Bool(*b)),
         CVal::Str(s) => db.push_atom(crate::ast::Leaf::Str(s.clone())),
         CVal::Bytes(b) => db.push_atom(crate::ast::Leaf::Bytes(b.to_vec())),
-        CVal::List(xs) => {
-            let head = db.push_name("list");
-            let mut items = Vec::with_capacity(xs.len() + 1);
-            items.push(head);
-            for x in xs {
-                items.push(cval_to_ast(db, x)?);
-            }
-            db.push_list(items)
+        CVal::Unit => synth_core(db, Core::Unit, crate::ty::Ty::Unit),
+        CVal::List(_) | CVal::Sum { .. } | CVal::Record(_) | CVal::Tuple(_) => {
+            let core = cval_to_core(db, v)?;
+            // The type is not read on the const-fold / encode path (those read the memoized `Core`), so a
+            // permissive `Any` is sufficient — the authoritative fact is the core.
+            synth_core(db, core, crate::ty::Ty::Any)
         }
-        // A sum re-materializes to its constructor applied to its payloads: `(Ctor p0 …)`, or the bare
-        // constructor for a nullary variant. The constructor head is DEEP-COPIED (fresh nodes) so the
-        // original program AST is never reparented; `core_of` on the fresh application yields the `SumNew`.
-        CVal::Sum { head, payloads, .. } => {
-            // Only a REAL constructor head re-materializes (a synthesized sum — e.g. a `List.at` Option whose
-            // head is the `List.at` node — has no `(meta variant)`, so it declines rather than emitting a
-            // bogus application; such a value is only ever matched/projected, never materialized).
-            crate::eval::variant_disc_of(db, *head)?;
-            let h = copy_ast_subtree(db, *head);
-            if payloads.is_empty() {
-                h
-            } else {
-                let mut items = Vec::with_capacity(payloads.len() + 1);
-                items.push(h);
-                for p in payloads {
-                    items.push(cval_to_ast(db, p)?);
-                }
-                db.push_list(items)
-            }
-        }
-        // A record re-materializes to `(record (key val) …)`; `core_of` folds it to a `Core::Record`.
-        CVal::Record(m) => {
-            let head = db.push_name("record");
-            let mut items = Vec::with_capacity(m.len() + 1);
-            items.push(head);
-            for (sym, v) in m {
-                let k = db.push_name(&sym.name);
-                let vv = cval_to_ast(db, v)?;
-                items.push(db.push_list(vec![k, vv]));
-            }
-            db.push_list(items)
-        }
-        // A tuple re-materializes to `(tuple e0 …)`; `core_of` folds it to a `Core::Tuple`.
-        CVal::Tuple(xs) => {
-            let head = db.push_name("tuple");
-            let mut items = Vec::with_capacity(xs.len() + 1);
-            items.push(head);
-            for x in xs {
-                items.push(cval_to_ast(db, x)?);
-            }
-            db.push_list(items)
-        }
-        CVal::Unit => return None,
     })
-}
-
-/// Deep-copy an AST subtree into FRESH nodes (a constructor head re-materialized for a folded sum value), so
-/// splicing it into a synthesized application never reparents a node the original program still holds.
-fn copy_ast_subtree(db: &mut Db, node: StructId) -> StructId {
-    match db.ast.get(node) {
-        crate::ast::Struct::Atom(lid) => {
-            let leaf = db.ast.leaf(*lid).clone();
-            db.push_atom(leaf)
-        }
-        crate::ast::Struct::List(children) => {
-            let children = children.clone();
-            let copies: Vec<StructId> = children.iter().map(|&c| copy_ast_subtree(db, c)).collect();
-            db.push_list(copies)
-        }
-    }
 }
 
 fn core_is_const_value(db: &mut Db, c: &Core) -> bool {

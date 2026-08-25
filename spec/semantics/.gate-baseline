@@ -3092,6 +3092,7 @@ pass	a recursive sum type works with pattern matching
 pass	a recursive tag builds a compound Ast.List at compile-time fold
 pass	a recursive tag function const-folds to a compile-time Ast
 pass	a recursive tag scans its chunk text byte-by-byte and folds to a constant Ast
+pass	a recursive transform composed over Ast.module const-evaluates at compile time
 pass	a recursive transformer passing its element to an incompatibly-typed callee is rejected
 pass	a recursive unifier distinguishes arrow components through the payload slots
 pass	a recursive user sum built in a lib is folded by the entry over the imported type
