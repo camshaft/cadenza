@@ -2892,8 +2892,36 @@ fn lower_ast_encode(db: &mut Db, id: StructId, ast_val: StructId) -> Core {
     };
     let bytes = crate::codec::encode(&b.finish(root));
     trace!(target: "rcdzc::fold", node = id.0, len = bytes.len(), "Ast.encode folds a constant AST to its canonical cdzast bytes");
-    Core::BytesOf {
-        elems: bytes_to_elems(db, &bytes).into(),
+    // Bake the whole canonical document as ONE leaf constant (`Core::ConstBytes`) rather than a
+    // `BytesOf` of N per-byte `ConstInt` nodes — a compile-time bytes constant, the substrate a
+    // compile-time `Blake3.of`/const-executed transform folds over. Consumers of a compile-time-visible
+    // Bytes read it via `const_byte_slice` (which also handles a `BytesOf` of constants).
+    Core::ConstBytes(bytes.into())
+}
+
+/// Read the raw bytes of a COMPILE-TIME-VISIBLE `Bytes` value, or `None` if it is not fully constant.
+/// Handles BOTH representations of a constant byte sequence: a baked `Core::ConstBytes` leaf (the
+/// `Ast.encode` fold produces this), and a `Core::BytesOf` whose every element folded to a `ConstInt`
+/// in `0..=255` (a `b"…"` literal / `Bytes.of` of constants). A runtime element / a runtime Bytes → `None`.
+/// This is the single entry every constant-Bytes fold reads through, so the two representations are
+/// interchangeable at every fold site.
+fn const_byte_slice(db: &mut Db, id: StructId) -> Option<Vec<u8>> {
+    match core_of(db, id) {
+        Core::ConstBytes(bytes) => Some(bytes.to_vec()),
+        Core::BytesOf { elems } => {
+            let mut raw = Vec::with_capacity(elems.len());
+            for e in elems.iter().copied() {
+                match core_of(db, e) {
+                    Core::ConstInt(v) => match v.to_i64() {
+                        Some(n) if (0..=255).contains(&n) => raw.push(n as u8),
+                        _ => return None,
+                    },
+                    _ => return None,
+                }
+            }
+            Some(raw)
+        }
+        _ => None,
     }
 }
 
@@ -3651,31 +3679,18 @@ fn lower_ast_decode(db: &mut Db, id: StructId, bytes: StructId) -> Core {
             "Ast.decode: the built-in Ast sum is unavailable",
         ));
     };
-    // Collect the raw bytes of a compile-time-visible `Bytes.of`; a runtime Bytes declines.
-    let Core::BytesOf { elems } = core_of(db, bytes) else {
+    // A poison operand propagates as the decline.
+    if let Core::Poison(r) = core_of(db, bytes) {
+        return Core::Poison(r);
+    }
+    // Collect the raw bytes of a compile-time-visible Bytes — a baked `Core::ConstBytes` (what the
+    // `Ast.encode` fold now produces) OR a `Core::BytesOf` of constant elements (a `b"…"` literal /
+    // `Bytes.of`); a runtime Bytes declines.
+    let Some(raw) = const_byte_slice(db, bytes) else {
         return Core::Poison(Reject::decline(
             "Ast.decode of a runtime byte sequence is not yet computed (constant Bytes only)",
         ));
     };
-    let mut raw = Vec::with_capacity(elems.len());
-    for e in elems.iter().copied() {
-        match core_of(db, e) {
-            Core::ConstInt(v) => match v.to_i64() {
-                Some(n) if (0..=255).contains(&n) => raw.push(n as u8),
-                _ => {
-                    return Core::Poison(Reject::decline(
-                        "Ast.decode: a byte element is not in 0..=255",
-                    ));
-                }
-            },
-            Core::Poison(r) => return Core::Poison(r),
-            _ => {
-                return Core::Poison(Reject::decline(
-                    "Ast.decode of a runtime byte sequence is not yet computed (constant Bytes only)",
-                ));
-            }
-        }
-    }
     // `codec::decode` parses the WHOLE byte sequence into a cadenza-ast `Arenas` — the canonical `cdzast`
     // decoder (None on a bad header / malformed structure / out-of-range id / TRAILING bytes; it consumes
     // the whole input or refuses, so no separate length check). Then rebuild the `Ast` sum VALUE from the
@@ -11533,6 +11548,7 @@ fn is_foldable_const(c: &Core) -> bool {
         Core::ConstInt(_)
             | Core::ConstBool(_)
             | Core::ConstStr(_)
+            | Core::ConstBytes(_)
             | Core::ConstChar(_)
             | Core::ListNew { .. }
             | Core::MapNew { .. }
@@ -19751,6 +19767,7 @@ pub(crate) fn is_trap_free(db: &mut Db, id: StructId) -> bool {
         Core::ConstInt(_)
         | Core::ConstBool(_)
         | Core::ConstStr(_)
+        | Core::ConstBytes(_)
         | Core::ConstChar(_)
         | Core::ConstFloat(_)
         | Core::ConstFloatNan
@@ -22503,6 +22520,16 @@ pub(crate) fn const_compound_eq(db: &mut Db, a: StructId, b: StructId) -> Option
             }
             Some(true)
         }
+        // A baked `Core::ConstBytes` on either side (the `Ast.encode` fold now produces one): equal iff the
+        // same raw bytes. `const_byte_slice` also reads a `Core::BytesOf` of constants, so a ConstBytes-vs-
+        // BytesOf pair (e.g. `(= (Ast.encode …) (Bytes.of …))`) compares too. Placed before the element-wise
+        // BytesOf arm; a BytesOf/BytesOf pair still takes that arm.
+        (Core::ConstBytes(_), _) | (_, Core::ConstBytes(_)) => {
+            match (const_byte_slice(db, a), const_byte_slice(db, b)) {
+                (Some(x), Some(y)) => Some(x == y),
+                _ => None,
+            }
+        }
         (Core::Tuple { elems: ea }, Core::Tuple { elems: eb })
         | (Core::ListNew { elems: ea }, Core::ListNew { elems: eb })
         // Two constant byte sequences: equal iff the same bytes in the same order — the SAME
@@ -23970,6 +23997,7 @@ fn is_const_value(db: &mut Db, id: StructId) -> bool {
         Core::ConstInt(_)
         | Core::ConstBool(_)
         | Core::ConstStr(_)
+        | Core::ConstBytes(_)
         | Core::ConstFloat(_)
         | Core::Unit => true,
         Core::Tuple { elems } | Core::ListNew { elems } => {
@@ -25125,6 +25153,17 @@ fn lower_bytes_concat(db: &mut Db, lhs: StructId, rhs: StructId) -> Core {
         return Core::BytesOf {
             elems: elems.into(),
         };
+    }
+    // Neither operand is a plain constant `BytesOf` (that pair returned above), but a baked `Core::ConstBytes`
+    // may be involved (the `Ast.encode` fold produces one). If BOTH operands are still compile-time-visible
+    // bytes, fold to a single baked `ConstBytes` — so a `(Ast.decode (Bytes.concat (Ast.encode …) (Bytes.of
+    // …)))` still const-folds through the decode. `const_byte_slice` reads both a ConstBytes and a
+    // BytesOf-of-constants, so a mixed pair folds too.
+    if let (Some(a), Some(b)) = (const_byte_slice(db, lhs), const_byte_slice(db, rhs)) {
+        let mut raw = a;
+        raw.extend_from_slice(&b);
+        trace!(target: "rcdzc::fold", len = raw.len(), "Bytes.concat folds a constant sequence involving a ConstBytes");
+        return Core::ConstBytes(raw.into());
     }
     Core::BytesConcat { lhs, rhs }
 }
