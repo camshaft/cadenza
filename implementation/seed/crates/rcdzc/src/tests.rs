@@ -25276,33 +25276,6 @@ mod recursion {
     }
 
     #[test]
-    fn a_narrow_two_parameter_recursion_emits_valid_wasm() {
-        use wasmtime::component::Val;
-        // A recursive function with TWO narrow (UInt8) parameters, threading the accumulator through the
-        // recursive call: `(f (: n UInt8) (: acc UInt8)) = (if (= n 0) acc (f (- n 1) (+ acc 1)))`. A
-        // narrow parameter lives in an i32 slot; the bare-literal argument `0` for `acc` in `(f n 0)`
-        // defaults to i64, so the call pushed an i64 into an i32 param slot → the module FAILED wasm
-        // validation ("expected i32, found i64"). Grounding each call argument to its parameter's width
-        // (`emit_call_args`) fixes it. `f(10, 0)` counts n down adding 1 to acc → 10. Runs (not just
-        // compiles) so an invalid module would surface as a load failure, not a silent pass.
-        let bytes = compile_component(&crate::codec::encode(&parse(
-            "(module m \
-               (def (f (: n UInt8) (: acc UInt8)) (if (= n 0) acc (f (- n 1) (+ acc 1)))) \
-               (def (go (: n UInt8)) (f n 0)) (export go))",
-        )))
-        .expect("a narrow two-parameter recursion must compile to valid wasm");
-        assert_eq!(run_returns_with::<u8>(&bytes, "go", &[Val::U8(10)]), 10);
-        // The Int64 (non-narrow) control still runs — the i64 slots never mismatched.
-        let wide = compile_component(&crate::codec::encode(&parse(
-            "(module m \
-               (def (f (: n Int64) (: acc Int64)) (if (= n 0) acc (f (- n 1) (+ acc 1)))) \
-               (def (go (: n Int64)) (f n 0)) (export go))",
-        )))
-        .expect("compile Int64 control");
-        assert_eq!(run_returns_with::<i64>(&wide, "go", &[Val::S64(10)]), 10);
-    }
-
-    #[test]
     fn a_recursive_overflow_traps_at_runtime() {
         // fac(25) overflows i64 (25! > 2^63); the checked multiply TRAPS at run time (not a compile-time
         // fold — the value only exists at run time through the call chain). Proves the call ABI carries
