@@ -33,7 +33,8 @@
 //! returns `None`), never a panic.
 
 use super::observation::{
-    BlobOp, Entry, EventKind, EventOp, GraphOp, KvOp, ProvOp, Record, RejectedCall, SpawnInfo,
+    BlobOp, Entry, EventKind, EventOp, GraphOp, KvOp, ProvOp, Record, RejectedCall, RunCall,
+    SpawnInfo,
 };
 use crate::contract_value::{
     as_ascribed, ascribe, bare_ctor, bytes_leaf, qctor, read_bytes, read_uint, record,
@@ -135,6 +136,7 @@ fn entry_value(b: &mut Builder, e: &Entry) -> StructId {
         Entry::Graph(op) => graph_value(b, op),
         Entry::Spawn(info) => spawn_value(b, info),
         Entry::HostCallRejected(c) => rejected_value(b, c),
+        Entry::Run(r) => run_value(b, r),
     }
 }
 
@@ -153,6 +155,7 @@ fn read_entry(arenas: &Arenas, id: StructId) -> Option<Entry> {
         }
         "Spawn" => Entry::Spawn(read_spawn(arenas, inner)?),
         "HostCallRejected" => Entry::HostCallRejected(read_rejected(arenas, inner)?),
+        "Run" => Entry::Run(read_run(arenas, inner)?),
         _ => return None,
     })
 }
@@ -782,6 +785,43 @@ fn read_rejected(arenas: &Arenas, id: StructId) -> Option<RejectedCall> {
     })
 }
 
+/// A `Run` as a record `{program, contract, input, output, error}` — the program/contract id hash bytes and
+/// the input bytes, plus the outcome as two ALWAYS-PRESENT Option fields (`output` the returned bytes on
+/// success, `error` the failure-category string on failure), so the record has one fixed shape a Cadenza
+/// checker `Value.decode`s (§9), mirroring a delivered entry's `from`/`error`.
+fn run_value(b: &mut Builder, r: &RunCall) -> StructId {
+    let program = bytes_leaf(b, &r.program);
+    let contract = bytes_leaf(b, &r.contract);
+    let input = bytes_leaf(b, &r.input);
+    let output_inner = r.output.as_ref().map(|o| bytes_leaf(b, o));
+    let output = option_value(b, output_inner);
+    let error_inner = r.error.as_ref().map(|e| str_leaf(b, e.as_str()));
+    let error = option_value(b, error_inner);
+    tagged(
+        b,
+        "Run",
+        vec![
+            ("program", program),
+            ("contract", contract),
+            ("input", input),
+            ("output", output),
+            ("error", error),
+        ],
+    )
+}
+
+fn read_run(arenas: &Arenas, id: StructId) -> Option<RunCall> {
+    Some(RunCall {
+        program: read_bytes(arenas, field(arenas, id, "program")?)?,
+        contract: read_bytes(arenas, field(arenas, id, "contract")?)?,
+        input: read_bytes(arenas, field(arenas, id, "input")?)?,
+        output: read_option(arenas, field(arenas, id, "output")?, read_bytes)?,
+        error: read_option(arenas, field(arenas, id, "error")?, |a, i| {
+            str_at(a, i).map(Str::from)
+        })?,
+    })
+}
+
 fn reducer_kind_str(kind: ReducerKind) -> &'static str {
     match kind {
         ReducerKind::Ordinary => "ordinary",
@@ -926,7 +966,8 @@ fn read_hash(arenas: &Arenas, id: StructId) -> Option<Hash> {
 mod tests {
     use super::{deserialize, serialize};
     use crate::testing::observation::{
-        BlobOp, Entry, EventKind, EventOp, GraphOp, KvOp, ProvOp, Record, RejectedCall, SpawnInfo,
+        BlobOp, Entry, EventKind, EventOp, GraphOp, KvOp, ProvOp, Record, RejectedCall, RunCall,
+        SpawnInfo,
     };
     use crate::{
         Bytes, ContractId, Dir, EdgeKind, Error, Hash, HashTag, HostId, Origin, ProgramHash,
@@ -1210,6 +1251,26 @@ mod tests {
                         Bytes::from_static(b"not-a-reducer-id"),
                         Bytes::from_static(b"kind"),
                     ],
+                }),
+            ),
+            rec(
+                19,
+                Entry::Run(RunCall {
+                    program: Bytes::from_static(b"sub-program-hash"),
+                    contract: Bytes::from_static(b"contract-hash"),
+                    input: Bytes::from_static(b"the-input"),
+                    output: Some(Bytes::from_static(b"the-output")),
+                    error: None,
+                }),
+            ),
+            rec(
+                20,
+                Entry::Run(RunCall {
+                    program: Bytes::from_static(b"missing-program"),
+                    contract: Bytes::from_static(b"contract-hash"),
+                    input: Bytes::from_static(b"the-input"),
+                    output: None,
+                    error: Some(Str::from("missing-handler")),
                 }),
             ),
         ];

@@ -34,6 +34,7 @@ type Entry =
   | Failed(Record(during: String, contract: Bytes, reason: String))
   | Spawn(Record(name: String, program: Bytes, parent: Bytes, reducerKind: String))
   | HostCallRejected(Record(iface: String, op: String, rawArgs: List(Bytes)))
+  | Run(Record(program: Bytes, contract: Bytes, input: Bytes, output: Option(Bytes), error: Option(String)))
 
 type LogRecord =
   | LogRecord(Record(seq: UInt64, time: UInt64, source: Record(reducer: Bytes, host: Bytes), entry: Entry))

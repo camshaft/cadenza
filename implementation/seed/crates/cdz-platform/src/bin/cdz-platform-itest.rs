@@ -32,12 +32,13 @@
 use cdz_platform::testing::{
     BlobSource, CheckOutcome, Harness, HarnessSpec, ObservationLog, PureRun, RecordingBlobStore,
     RecordingDelivery, RecordingGraph, RecordingKvStore, RecordingProvenance,
-    RecordingRejectedSink, SpawnSpec, check_message, no_verdict_reason, render, verdict_in,
+    RecordingRejectedSink, RecordingRun, SpawnSpec, check_message, no_verdict_reason, render,
+    verdict_in,
 };
 use cdz_platform::{
     BachRuntime, BlobStore, Bytes, Delivery, HostId, InMemoryBlobStore, InMemoryKvStore,
     InMemoryReducerGraph, KvStore, NoDelivery, NoProvenance, Origin, ProgramHash, Provenance,
-    ReducerGraph, ReducerId, RejectedSink, Runner, Runtime, WasmProgramStore,
+    ReducerGraph, ReducerId, RejectedSink, RunSink, Runner, Runtime, WasmProgramStore,
 };
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -327,7 +328,7 @@ fn wasm_store(cas: Arc<dyn BlobStore>, log: ObservationLog, host: HostId) -> Was
     // a RecordingRejectedSink over the one shared log — so a conformance run can assert that a (malformed)
     // host call was still performed + observed, closing the silent-observation hole. Default is NoRejectedSink
     // (drops it); wiring this makes it observed.
-    let rejected_log = log;
+    let rejected_log = log.clone();
     let make_rejected: Arc<dyn Fn(ReducerId) -> Arc<dyn RejectedSink> + Send + Sync> =
         Arc::new(move |id| {
             Arc::new(RecordingRejectedSink::new(
@@ -336,11 +337,24 @@ fn wasm_store(cas: Arc<dyn BlobStore>, log: ObservationLog, host: HostId) -> Was
                 BachRuntime::now as fn() -> u64,
             )) as Arc<dyn RejectedSink>
         });
+    // The run-sink factory records each reducer's synchronous pure-`run` host calls (§3) — the sub-program +
+    // contract + input + outcome — via a RecordingRun over the one shared log, so a conformance run can assert
+    // a reducer actually invoked `run` (a `run` leaves no request in the step, so it is otherwise unobservable,
+    // §9). Default is NoRunSink (drops it); wiring this makes it observed.
+    let run_log = log;
+    let make_run: Arc<dyn Fn(ReducerId) -> Arc<dyn RunSink> + Send + Sync> = Arc::new(move |id| {
+        Arc::new(RecordingRun::new(
+            Origin { reducer: id, host },
+            run_log.clone(),
+            BachRuntime::now as fn() -> u64,
+        )) as Arc<dyn RunSink>
+    });
     WasmProgramStore::new(cas, make_blobs, make_kv, make_graph)
         .expect("build the wasm program store (the wasm engine must initialize)")
         .with_delivery(make_delivery)
         .with_provenance(make_provenance)
         .with_rejected(make_rejected)
+        .with_run_sink(make_run)
 }
 
 /// Drive the run to quiescence under bach over a [`WasmProgramStore`], then — if the description named a
