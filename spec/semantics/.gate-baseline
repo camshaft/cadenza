@@ -1207,6 +1207,7 @@ pass	a bare data-constructor-colliding variant's OTHER arm fires on the other di
 pass	a bare empty list reflects an undetermined element, distinct from a concrete list type
 pass	a bare equality keyword is rejected, not a crash
 pass	a bare in-range ConstFloat if-branch under a Float32 annotation emits valid f32 and runs
+pass	a bare list of scalars in a record result crosses the export boundary
 pass	a bare literal annotated Float32 is grounded at binary32 precision (literal path, not a runtime demote)
 pass	a bare literal argument out of range for a narrow parameter width is rejected at check
 pass	a bare literal exceeding the default-integer pragma's narrow type is rejected
@@ -2208,6 +2209,7 @@ pass	a list of closures each keeps its own capture, selected by a runtime index
 pass	a list of maps with different keys is homogeneous, not a type error
 pass	a list of maps: a runtime index then looks a runtime key up in the found map
 pass	a list of nominal-over-quantity newtypes is a compound Map key
+pass	a list of records in a record result crosses the export boundary
 pass	a list of records with different field sets is a type error
 pass	a list of records: a runtime index then reads a field of the found record
 pass	a list of sets: a runtime index then tests membership in the found set
@@ -2437,6 +2439,7 @@ pass	a multi-byte runtime bit-field takes the matching wide unsigned type
 pass	a multi-export compound-result shared call is a repeatable (borrow<t>) callback
 pass	a multi-export set of parameterized capturing closures is driven per export
 pass	a multi-export shared call is a repeatable (borrow<t>) callback
+pass	a multi-field record result crosses the export boundary
 pass	a multi-field record with one param-named key survives the call
 pass	a multi-level RRB list persistently updates deep interior-level indices leaving the original intact
 pass	a multi-limb BigInt leaf in a tuple orders by the high limb and ties fall to the next field
@@ -3511,6 +3514,7 @@ pass	a scalar element is projected DIRECTLY from a named function's runtime tupl
 pass	a scalar element is projected directly from a fn-return tuple with runtime content
 pass	a scalar element is projected directly from a function's runtime tuple result
 pass	a scalar element is projected from a let-bound runtime tuple
+pass	a scalar export crosses the WIT boundary and returns its argument
 pass	a scalar slice spanning a width TRANSITION carries its multibyte content exactly
 pass	a scalar walk over a rope spanning ALL FOUR UTF-8 widths counts the wide scalars
 pass	a scalar-aware string shrinker converges to the 1-minimal failing string
