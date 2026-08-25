@@ -269,6 +269,18 @@ impl LinkedProgram {
     }
 }
 
+/// The reserved import name that reflects the target module's canonical AST as a compile-time `Ast`
+/// value (import reflection, DESIGN-compiler-primitives.md §3a/D1). Double-underscore namespaces it out
+/// of user names (the `__`-prefixed synthesized-name convention: `__invariant_check_*`, `__bytes_of_rt$`).
+pub(crate) const AST_REFLECT_NAME: &str = "__ast__";
+
+/// The synthesized nullary value-def name that carries a reflected module's AST, one per reflected file.
+/// A bare reference to a nullary def denotes its body (resolve.rs), so the local `__ast__` an import binds
+/// to this def resolves to the reflected `Ast` value. The `$` keeps it out of the source name space.
+fn ast_reflect_def_name(from_file: usize) -> String {
+    format!("{AST_REFLECT_NAME}${from_file}")
+}
+
 /// Link a package of named `ast` artifacts into one compilation unit. `files` is `(artifact name,
 /// decoded arena)` in the order the caller supplied them; `entry` names the entry file (its
 /// `(export …)` forms the component boundary). Splice order is the given order (a topological order
@@ -501,25 +513,76 @@ pub fn link(files: &[(String, Arenas)], entry: &str) -> Result<LinkedProgram, Re
         });
     }
 
+    // The merged arena so far (root filled in below). Assemble it now so import reflection can reify
+    // sibling module ASTs directly into it — the merge above copied every file's FULL structure, so each
+    // reflected module's own `(do …)` root already lives here at its `FileSpan.struct_base` offset.
+    let mut merged = Arenas {
+        leaves,
+        structure,
+        root: StructId(0),
+    };
+
+    // IMPORT REFLECTION (DESIGN-compiler-primitives.md §3a): for each sibling module that some file
+    // reflects via `import { __ast__ }`, splice a synthesized nullary value-def `(def (__ast__$<from_file>)
+    // <reflected module AST>)` into the merged program. The def's body is the module's `(do …)` root
+    // reflected structurally as an `Ast` value; the local `__ast__` an import bound (above) resolves to it
+    // through the ordinary import→def binding. Dedup by `from_file` so two importers share one synth def.
+    let mut reflect_files: Vec<usize> = scopes
+        .iter()
+        .flat_map(|s| s.imports.iter())
+        .filter(|i| i.local == AST_REFLECT_NAME)
+        .map(|i| i.from_file)
+        .collect();
+    reflect_files.sort_unstable();
+    reflect_files.dedup();
+    for from_file in reflect_files {
+        // The reflected module's own `(do …)` root, at its position in the merged arena.
+        let sib_root = StructId(file_spans[from_file].struct_base + files[from_file].1.root.0);
+        let Some(reified) = crate::quote::reflect_document(&mut merged, sib_root) else {
+            // A leaf with no `Ast` variant (a Char/Symbol literal) — reflection declines, never
+            // miscompiles (matching the realized `Ast` set Int/Float/Bool/Str/Name/List/Bytes).
+            return Err(Reject::decline(format!(
+                "`import {{ __ast__ }}` from `{}`: the module contains a syntax leaf with no `Ast` \
+                 variant (a Char/Symbol literal) and cannot yet be reflected",
+                file_spans[from_file].path
+            )));
+        };
+        // Splice `(def (__ast__$N) <reified>)` — a nullary value-def; a bare reference denotes its body.
+        let name_leaf = LeafId(merged.leaves.len() as u32);
+        merged
+            .leaves
+            .push(Leaf::Name(ast_reflect_def_name(from_file).into()));
+        let name_atom = StructId(merged.structure.len() as u32);
+        merged.structure.push(Struct::Atom(name_leaf));
+        let sig = StructId(merged.structure.len() as u32);
+        merged.structure.push(Struct::List(vec![name_atom]));
+        let def_leaf = LeafId(merged.leaves.len() as u32);
+        merged.leaves.push(Leaf::Name("def".into()));
+        let def_atom = StructId(merged.structure.len() as u32);
+        merged.structure.push(Struct::Atom(def_leaf));
+        let def_form = StructId(merged.structure.len() as u32);
+        merged
+            .structure
+            .push(Struct::List(vec![def_atom, sig, reified]));
+        do_children.push(def_form);
+    }
+
     // Synthesize the `(do …)` root: a fresh `do` name leaf + its atom, then the list whose head is
-    // that atom and whose tail is every file's top-level items. These nodes sit AFTER all files, so
-    // they are outside every `FileSpan` (they belong to no source file).
-    let do_leaf = LeafId(leaves.len() as u32);
-    leaves.push(Leaf::Name("do".into()));
-    let do_atom = StructId(structure.len() as u32);
-    structure.push(Struct::Atom(do_leaf));
+    // that atom and whose tail is every file's top-level items (plus any reflection synth-defs). These
+    // nodes sit AFTER all files, so they are outside every `FileSpan` (they belong to no source file).
+    let do_leaf = LeafId(merged.leaves.len() as u32);
+    merged.leaves.push(Leaf::Name("do".into()));
+    let do_atom = StructId(merged.structure.len() as u32);
+    merged.structure.push(Struct::Atom(do_leaf));
     let mut root_children = Vec::with_capacity(do_children.len() + 1);
     root_children.push(do_atom);
     root_children.extend(do_children);
-    let root = StructId(structure.len() as u32);
-    structure.push(Struct::List(root_children));
+    let root = StructId(merged.structure.len() as u32);
+    merged.structure.push(Struct::List(root_children));
+    merged.root = root;
 
     Ok(LinkedProgram {
-        arenas: Arenas {
-            leaves,
-            structure,
-            root,
-        },
+        arenas: merged,
         files: file_spans,
         scopes,
         entry: entry_ix,
@@ -618,6 +681,28 @@ fn resolve_import_clause(
             )
             .at(occ));
         };
+        // `__ast__` — the reserved IMPORT-REFLECTION name every module implicitly exports (DESIGN-compiler-
+        // primitives.md §3a/D1). It is NOT a real export, so bypass the export-visibility check. It binds to
+        // the target module's canonical AST reified as an `Ast` value — a synthesized nullary value-def
+        // (`__ast__$<from_file>`, spliced into the merged program by `link()` below) whose body is that
+        // reflected AST. Point this import's `exported` at that synth def so the ordinary import→def binding
+        // (`db::build_file_scope`) wires the local `__ast__` to it, with no db-side special-casing.
+        if name == AST_REFLECT_NAME {
+            if out.iter().any(|i| i.local == name) {
+                return Err(Reject::coded(
+                    Code::Malformed,
+                    format!("`(import …)`: `{name}` is imported more than once into this file"),
+                )
+                .at(occ));
+            }
+            out.push(Import {
+                local: AST_REFLECT_NAME.to_string(),
+                from_file,
+                exported: ast_reflect_def_name(from_file),
+                occ,
+            });
+            continue;
+        }
         if !exports_of[from_file].iter().any(|e| e == name) {
             // Distinguish the two reasons the name is not importable, so the message is ACTIONABLE:
             //  - `{path}` DEFINES `{name}` but does not `(export …)` it → say so + name the fix (add an
@@ -908,6 +993,38 @@ mod tests {
         assert!(
             out.artifact(Target::Wasm.artifact_kind()).is_some(),
             "a wasm component should be produced from the spliced package"
+        );
+    }
+
+    /// Import reflection (DESIGN-compiler-primitives.md §3a): `import { __ast__ }` binds the reserved
+    /// name to the target module's canonical AST reified as an `Ast` value — byte-identical to a `quote`
+    /// of the module body. Emits a component (the reflected value is a compile-time constant). The
+    /// corpus (`11-modules.sexp`) drives the value assertion end-to-end.
+    #[test]
+    fn import_ast_reflection_binds_the_module_ast() {
+        use crate::abi::Artifact;
+        use crate::backend::Target;
+        let lib = crate::codec::encode(&arena_of("(do (def (answer) 42) (export answer))"));
+        let app = crate::codec::encode(&arena_of(
+            "(do (import \"lib\" (__ast__)) \
+             (def (main) (= (Ast.encode __ast__) \
+                            (Ast.encode (quote (do (def (answer) 42) (export answer)))))) \
+             (export main))",
+        ));
+        let inputs = vec![
+            Artifact::new(Artifact::KIND_AST, "lib", lib),
+            Artifact::new(Artifact::KIND_AST, "app", app),
+            Artifact::new(KIND_ENTRY, "entry", b"app".to_vec()),
+        ];
+        let out = crate::compile(&inputs, &[Target::Wasm]);
+        assert!(
+            !out.has_error(),
+            "import reflection should compile clean; diagnostics: {:?}",
+            out.diagnostics
+        );
+        assert!(
+            out.artifact(Target::Wasm.artifact_kind()).is_some(),
+            "a component should be produced for the reflecting package"
         );
     }
 

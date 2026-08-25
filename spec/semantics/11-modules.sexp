@@ -2056,3 +2056,44 @@
   (call   main (: 2 Int64)) (output (: 104 Int64))
   (call   main (: 3 Int64)) (output (: 1403 Int64))
   (call   main (: 9 Int64)) (output (: -1 Int64)))
+
+; --- Import reflection: the reserved `__ast__` name -------------------------------------------------
+; A module implicitly exports the reserved name `__ast__`, which reflects that module's canonical AST as
+; a compile-time `Ast` value (DESIGN-compiler-primitives.md §3a — import reflection). It is imported in
+; the ordinary name-list form alongside a module's real items, and binds to the SAME `Ast` value a
+; `quote` of the module body would produce. A contract-agnostic compiler primitive: userspace walks the
+; reflected AST (with `Ast.encode`, a transform, `Blake3.of`) to build a content-address / contract-id;
+; the compiler models only "syntax", never what the reflected program means.
+
+(case "import { __ast__ } reflects a sibling module's canonical AST as an Ast value"
+  (doc    "`import \"lib\" (__ast__)` binds `__ast__` to the reflected canonical AST of module `lib` — the
+           SAME `Ast` value a `quote` of `lib`'s module body denotes. `lib`'s stored body is `(do (def
+           (answer) 42))`; the reflected value encodes byte-identically to `(quote (do (def (answer)
+           42)))`. Reflection reuses the linker's already-loaded module document + the structural reifier,
+           so it costs nothing at run time (the bound value is a compile-time constant).")
+  (module "lib"
+    (do
+      (def (answer) 42)
+      (export answer)))
+  (input  (do
+            (import "lib" (__ast__))
+            (def (main) (= (Ast.encode __ast__)
+                           (Ast.encode (quote (do (def (answer) 42) (export answer))))))
+            (export main)))
+  (output (: true Bool)))
+
+(case "a reflected module AST is a well-formed Ast value that round-trips through encode/decode"
+  (doc    "The reflected `__ast__` is an ordinary `Ast` value: `Ast.encode` serializes it to canonical
+           bytes and `Ast.decode` reads them back to an equal tree (value-interchange.md — the encoding is
+           a bijection). Pins that reflection produces a genuine `Ast` value, not a bespoke handle.")
+  (module "lib"
+    (do
+      (def (answer) 42)
+      (export answer)))
+  (input  (do
+            (import "lib" (__ast__))
+            (def (main) (match (Ast.decode (Ast.encode __ast__))
+                          ((Ok a)  (= (Ast.encode a) (Ast.encode __ast__)))
+                          ((Err _) false)))
+            (export main)))
+  (output (: true Bool)))

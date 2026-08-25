@@ -7167,3 +7167,5 @@ todo	round-trip: a higher-order closure whose inner closure CAPTURES and is appl
 todo	round-trip: a higher-order closure whose inner closure takes an UNANNOTATED compound param
 todo	round-trip: an UNANNOTATED inner closure with a List param via the context arrow
 todo	two adapter records with different state types drive a take-while fold in one program
+pass	import { __ast__ } reflects a sibling module's canonical AST as an Ast value
+pass	a reflected module AST is a well-formed Ast value that round-trips through encode/decode
