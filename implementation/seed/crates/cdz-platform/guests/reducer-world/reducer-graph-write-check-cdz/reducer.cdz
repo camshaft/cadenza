@@ -1,0 +1,62 @@
+// The §7 GRAPH-WRITE checker (design/cadenza-platform.md §7/§9) — the assertion half of the migrated
+// set-edges emit test. The paired guest (reducer-graph-write-cdz) performs one graph.set-edges(from, kind,
+// targets) with from = its sender's ReducerId and targets = [that same ReducerId]. This checker asserts the
+// write was OBSERVED with its list<reducer-id> argument intact, LOG-ONLY and guest-agnostic.
+//
+// JUDGEMENT: pass iff some GraphSetEdges(from = F, targets = [T, ..]) has its FIRST target T == F. Since the
+// guest passes the same ReducerId as both `from` and the sole target, a match proves (a) the set-edges write
+// reached the recorder (so its args parsed — a valid ReducerId, not a short token), and (b) the
+// list<reducer-id> argument round-tripped the id value through the host boundary. RELATIONAL on the
+// run-controlled id, no hardcoded bytes. NON-VACUOUS: a guest that fails to instantiate, or a set-edges whose
+// args do not parse (the arg-parse-guard boundary), records no GraphSetEdges → fail. Imports the three standard
+// schemas; settled idioms (List.at-None ends the walk; LogRecord destructured in the Some arm; condition in a
+// match guard).
+import { Envelope } from "check"
+import { Verdict } from "verdict"
+import { LogRecord, Entry } from "log-schema"
+
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+// Does this set-edges carry a non-empty targets list whose first entry equals `from`? (the list<reducer-id>
+// arg round-tripped the same id the guest passed as both `from` and the sole target.)
+def targets-carry-from(s) =
+  match List.at(s.targets, 0) with
+  | Option.Some(t) => t == s.from
+  | Option.None(_) => false
+
+// Is some GraphSetEdges recorded with targets[0] == from? (a graph WRITE was observed, its list arg intact.)
+def set-edges-observed(records: List(LogRecord), i: Int64) =
+  match List.at(records, i) with
+  | Option.None(_) => false
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      (match rec.entry with
+        | Entry.GraphSetEdges(s) if targets-carry-from(s) => true
+        | _ => set-edges-observed(records, i + 1))
+
+def verdict-payload(records: List(LogRecord)) =
+  if set-edges-observed(records, 0)
+  then Value.encode(Verdict.Verdict({ pass = true, messages = [] }))
+  else Value.encode(Verdict.Verdict({ pass = false,
+                                      messages = ["no GraphSetEdges with targets[0] == from: the graph-write set-edges call was not observed with its list<reducer-id> argument intact"] }))
+
+def verdict-req(verdict-contract: Bytes, payload: Bytes) =
+  { contract = verdict-contract, payload = payload, token = b"", deadlineNanos = None }
+
+def on-message(msg) =
+  match (Value.decode(msg.payload) : Option(Envelope)) with
+  | Some(Envelope.Check(c)) =>
+      (match (Value.decode(c.log) : Option(List(LogRecord))) with
+       | Some(records) =>
+           { requests = [verdict-req(c.verdict, verdict-payload(records))], outcome = Outcome.Continue }
+       | None =>
+           { requests = [verdict-req(c.verdict,
+                                     Value.encode(Verdict.Verdict({ pass = false,
+                                                                    messages = ["observation log did not decode"] })))],
+             outcome = Outcome.Continue })
+  | None =>
+      { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = msg.payload }) }
+
+def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
+def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
+export { on-message, on-response, on-notification }

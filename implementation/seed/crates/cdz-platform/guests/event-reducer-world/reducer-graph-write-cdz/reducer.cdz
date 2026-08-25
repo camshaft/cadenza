@@ -1,0 +1,30 @@
+// A Cadenza reducer performing a graph WRITE — the §7 handler-chain set-edges effect (design/cadenza-platform.md
+// §7). Migrated from v-rust-backend's in-crate set-edges emit test (a_reducer_performing_set_edges_with_a_list_arg
+// _emits_and_loads), so the compiler need not carry a wasmtime dev-dep to prove this shape. Prior conformance
+// covered only graph READS (neighbors); this covers a graph WRITE whose argument is a `list<reducer-id>` — the
+// atomic whole-chain replace an event reducer uses to install a contract's handler chain.
+//
+// On-message it performs `graph.set-edges(from, kind, targets)` where from = msg.sender.reducer (a real 33-byte
+// ReducerId), kind = msg.contract (any bytes is a valid edge-kind), and targets = [msg.sender.reducer] (a
+// one-element list<reducer-id>). The set-edges RESULT (the prior chain) is discarded. CRITICAL: from and each
+// target MUST be a valid 33-byte ReducerId — the host's `set-edges` parses each arg to a ReducerId and
+// early-returns without recording on an unparseable one (the arg-parse-guard boundary, design §9), so passing an
+// arbitrary short token would be a silent no-op. msg.sender.reducer is always a valid ReducerId, so the call
+// reaches the recording provider and a GraphSetEdges observation (from, kind, targets) is appended. Targets the
+// privileged event-reducer-world (the world importing `graph`); spawned as an event reducer. on-response /
+// on-notification are inert.
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+def on-message(msg) =
+  host graph in
+    ( graph.set-edges(msg.sender.reducer, msg.contract, [msg.sender.reducer]) ;
+      { requests = [], outcome = Outcome.Continue } )
+
+def on-response(_resp) =
+  { requests = [], outcome = Outcome.Continue }
+
+def on-notification(_note) =
+  { requests = [], outcome = Outcome.Continue }
+
+export { on-message, on-response, on-notification }
