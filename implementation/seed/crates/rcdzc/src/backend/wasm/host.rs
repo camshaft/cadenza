@@ -241,6 +241,36 @@ pub fn wit_op_param_types(
     Some(member.func.params.iter().map(|(_, t)| t.clone()).collect())
 }
 
+/// The declared RESULT WIT type of a host op (from the target world), or `None` if the world/interface/op
+/// isn't found. The result-side analogue of [`wit_op_param_types`] — the AUTHORITATIVE host contract for a
+/// spilled compound result's component type, so its err arm follows the host's `variant`-vs-`enum` CONSTRUCTOR
+/// (the #3228 rule, result-side): `run.run`'s world result `result<payload, variant error>` must emit a
+/// `variant` err arm, not the `enum` a guest-`Ty`-derived type ([`spilled_result_wit_type`]) would (a
+/// `result<_, variant>` and a `result<_, enum>` are DISTINCT component types → a mismatch silently fails to
+/// instantiate). For a STRUCTURAL result (`list`/`option`/`tuple`/`bytes`) this equals the guest-derived type,
+/// so preferring it is byte-neutral there and corrective only for a nominal (variant/enum) arm.
+pub fn wit_op_result_type(
+    db: &mut Db,
+    effect: &str,
+    op: &str,
+) -> Option<crate::wit_world::WitType> {
+    use crate::backend::common::export_name::kebab_extern_name;
+    let world_bytes = db.wit_world.clone()?;
+    let arenas = crate::codec::decode(&world_bytes)?;
+    let world = crate::wit_world::parse_target_world(&arenas, arenas.root)?;
+    let ek = kebab_extern_name(effect);
+    let iface = world
+        .imports
+        .iter()
+        .find(|i| kebab_extern_name(i.name.rsplit('/').next().unwrap_or(&i.name)) == ek)?;
+    let ok = kebab_extern_name(op);
+    let member = iface
+        .members
+        .iter()
+        .find(|m| kebab_extern_name(&m.name) == ok)?;
+    Some(member.func.result.clone())
+}
+
 /// Reorder a name-lex list of record field ABIs to the WIT record type's DECLARATION field order, recursing
 /// into a nested record field (its sub-fields reorder to the nested WIT record's order). A field whose name
 /// isn't in `wit_fields` (or a `wit` that isn't a record) keeps the name-lex order unchanged (defensive — the
