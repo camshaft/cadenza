@@ -813,6 +813,13 @@ pub enum CanonWrite {
         wrap_i64: bool,
         store: u8,
     },
+    /// A payloadless `enum` (all-nullary sum): the guest value is a BARE i32 discriminant (`db.is_enum_disc`
+    /// — no heap box, unlike a payload-carrying variant which is a heap `sum`). So store that i32 DIRECTLY at
+    /// the field offset with NO unbox `read` (a `Scalar`'s `get-int` would wrongly treat the bare disc as a
+    /// heap handle). `store` is the disc width (`i32.store8`/`16`/`32` by case count). The guest's raw disc IS
+    /// the WIT case index (the arm is gated on decl-order == WIT-case-order, so no remap). The guest-export
+    /// result-side twin of a host-import enum arg/result (bare-i32 enum-disc).
+    EnumDisc { store: u8 },
     /// A fixed record (an `arr` cell): per field, `arr-get(handle, index)` → write recursively at the field's
     /// canonical offset.
     Record { fields: Vec<CanonField> },
@@ -2837,6 +2844,14 @@ fn emit_canon_write(
             if *wrap_i64 {
                 out.push(op::I32_WRAP_I64);
             }
+            out.push(*store);
+            out.push(0x00); // align hint (conservative)
+            uleb128(offset as u64, out);
+        }
+        CanonWrite::EnumDisc { store } => {
+            // store(dst_base + offset) = handle (the BARE i32 discriminant, stored directly — no unbox).
+            get(dst_base, out);
+            get(handle, out);
             out.push(*store);
             out.push(0x00); // align hint (conservative)
             uleb128(offset as u64, out);
