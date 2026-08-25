@@ -2739,6 +2739,7 @@ pass	a one-shot handler arm folds a body with TWO performs by re-reducing the co
 pass	a one-shot two-hole body folds across a let binding
 pass	a one-shot two-hole body folds with the leading perform in an if condition
 pass	a package entry's exported def wins over a same-named def in a library file
+pass	a package entry's exported def wins over an alphabetically-later same-named library def
 pass	a pairwise MAX-GAP walk over an Instant timeline subtracts adjacent newtype payloads
 pass	a param-keyed map literal selects its literal-pattern arm by value in both directions
 pass	a param-left arith-right Float64.of-int equality compiles to a valid module and computes

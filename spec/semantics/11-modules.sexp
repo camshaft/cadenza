@@ -355,6 +355,23 @@
 ; modules sharing a private helper name (the per-(file,name) case above): that is cross-module and fine;
 ; this is two modules claiming the SAME name in the SAME scope. Two DISTINCT-named modules coexist (control).
 
+(case "a package entry's exported def wins over an alphabetically-later same-named library def"
+  (doc    "The mirror of the case above, pinning that the entry wins regardless of the library's sort
+           order: here the ENTRY's `main` (`* 100`) must win over a library `zzz`'s same-named `main`
+           (`* 7`), where the library name sorts AFTER the entry. n=3 → 300, not 21. Together with the
+           earlier-sorted-library case above (a library `aaa` losing to the entry), this covers both
+           splice orderings — the export always binds the entry file's own def, never a same-named
+           sibling's, no matter which file the flat cross-file scan would have spliced first.")
+  (module "zzz"
+    (do
+      (def (main (: n Int64)) (* n 7))
+      (export main)))
+  (input  (do
+            (def (main (: n Int64)) (* n 100))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 300 Int64)))
+
 (case "a duplicate module declaration in one scope is rejected"
   (doc    "Two `(module a …)` declarations in the same `(do …)` scope both bind the name `a` — a fixed-name-
            set collision, so the second rejects CDZ0201, exactly as a duplicate `def a` or a duplicate type
