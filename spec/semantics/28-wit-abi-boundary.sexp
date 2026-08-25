@@ -45,6 +45,7 @@
 ; record interface (two members f,g), one boundary wrapper per member, both run under the interface.
 ; SHAPE 26 — a no-effects reducer step (empty requests list; dead element-writer derived from the WIT type).
 ; SHAPE 27 — the CAPSTONE full reducer-step: list<record> requests + 3 byte leaves + option + named variant, every field asserted.
+; SHAPE 28 — a list<u8> LEAF param AND a spilled record result in ONE member (both memory paths + all scratch locals).
 
 (case "an option<s64> field in a record result crosses the export boundary on both arms"
   (doc    "The general option<T> RESULT lift across the WIT export boundary. The guest takes a record
@@ -407,3 +408,15 @@
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+(case "a bytes-param leaf and a spilled record result in one member run through both memory paths (via an imposed WIT world)"
+  (doc    "SHAPE 28 — BOTH memory boundaries in ONE member: a list<u8> LEAF param AND a spilled record result,
+           the exact combined shape of a reducer's on-message(message) -> step. The wrapper uses both memory
+           paths (bytes copy-in for the param leaf + result spill) and all four scratch locals without collision.
+           f(m: record{data: Bytes}) = let k = Bytes.len(m.data) in { n: k, twice: 2*k }; f({data:[1..7]}) ==
+           { n: 7, twice: 14 } proves the copied-in bytes length + the spilled two-field record result agree.
+           Migrated from the in-crate wasmtime test `a_bytes_param_and_record_result_guest_compiles_and_runs`.")
+  (wit-world (world w (export iface (member f (func (param m ("record" (data ("list" (u8))))) (result ("record" (n (s64)) (twice (s64)))))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (def (f (: m (Record (: data Bytes)))) (let ((k (Bytes.len (. m data)))) (record (= n k) (= twice (+ k k))))) (export f)))
+  (call f (: (record (= data (list 1 2 3 4 5 6 7))) (Record (: data Bytes))))
+  (output (: (record (= n 7) (= twice 14)) (record (n Int64) (twice Int64)))))
