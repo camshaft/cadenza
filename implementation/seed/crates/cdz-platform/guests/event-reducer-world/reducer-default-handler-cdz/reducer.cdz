@@ -1,0 +1,57 @@
+// The DEFAULT EVENT HANDLER as a Cadenza event-reducer guest (design/cadenza-platform.md §4;
+// DESIGN-default-event-handler-guest.md). This is the privileged event program the EventRegistry resolves a
+// contract to when no override is installed — the "default" the whole routing model rests on.
+//
+// The operator's model (settled): the EventRegistry maps a contract to the PRIVILEGED event program that
+// carries out its events (this guest); the reducer GRAPH holds, per emitting reducer, the ordered chain of
+// NON-privileged transform reducers configured to transform THAT reducer's requests. So on each effect — a
+// `message` the kernel routes here, stamped with the emitting reducer as `sender` — this handler reads the
+// emitter's transform chain for the effect's contract from the graph and routes through it:
+//
+//   graph.neighbors(msg.sender.reducer, msg.contract, Dir.Outgoing)
+//
+// The NODE is the emitting reducer ("the actual reducer that spawned the event"), and the edge KIND is the
+// contract-id itself — the graph keys a contract's chain under `for_contract(contract)`, whose bytes ARE the
+// contract-id. The chain returns in weight-then-id order, i.e. routing order.
+//
+//   - chain non-empty  → FORWARD the effect to the first transform (`deliver-message`, full envelope intact),
+//                        which re-routes onward as it emits.
+//   - chain empty      → HANDLE BY DEFAULT: with no configured transform, decline with a rejection `response`
+//                        (`answer = Err(missing-handler)`) back to the caller — routing itself never
+//                        auto-faults; the default handler decides.
+//
+// Both are the privileged event reducer performing `deliver` on the emitter's behalf — the emitter only ever
+// emitted an effect. Targets the privileged event-reducer-world (the world importing `graph` + `deliver`).
+// on-response / on-notification are inert (this handler acts on the emitted effect, folded through on-message).
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+// Matches the world's `dir` enum { outgoing, incoming } by case-name set (kebab-normalized); the world-import
+// synthesis binds this sum to the enum so `Dir.Outgoing` crosses as the enum arg to `graph.neighbors`.
+type Dir = | Outgoing | Incoming
+
+def on-message(msg) =
+  host graph in
+  host deliver in
+    ( (match graph.neighbors(msg.sender.reducer, msg.contract, Dir.Outgoing) with
+        | [] =>
+            deliver.deliver-response(
+              msg.sender.reducer,
+              { contract = msg.contract,
+                token = msg.token,
+                answer = (Err(Error.MissingHandler) : Result(Bytes, Error)) })
+        | [handler, .. _] =>
+            deliver.deliver-message(
+              handler,
+              { contract = msg.contract,
+                sender = { reducer = msg.sender.reducer, host = msg.sender.host },
+                payload = msg.payload,
+                token = msg.token })) ;
+      { requests = [], outcome = Outcome.Continue } )
+
+def on-response(_resp) =
+  { requests = [], outcome = Outcome.Continue }
+
+def on-notification(_note) =
+  { requests = [], outcome = Outcome.Continue }
+
+export { on-message, on-response, on-notification }
