@@ -8,6 +8,13 @@
 // the guest would fail to instantiate or trap, so a run that drives it to a recorded GraphNeighbors + KvGet +
 // Emitted is the end-to-end ABI proof. Targets the privileged event-reducer-world (the world importing both
 // `state` and `graph`); spawned as an event reducer. on-response / on-notification are inert.
+//
+// The `graph.neighbors` NODE is `msg.sender.reducer` (a real 33-byte ReducerId), NOT `msg.token`: the host's
+// `neighbors` parses its node arg to a ReducerId and early-returns an empty list on an unparseable one, so an
+// arbitrary token would never reach the recording provider (no `GraphNeighbors` observation). The sender's id
+// parses, so the call reaches the recorder and the observation is appended (result empty — the run seeds no
+// edges; the point is the enum arg crossed and the call was observed). (That host early-return is itself a
+// silent-observation gap, separately flagged for the host to record the call regardless of arg-parse.)
 type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
 type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
 // Matches the world's `dir` enum { outgoing, incoming } by case-name set (kebab-normalized); the world-import
@@ -17,7 +24,7 @@ type Dir = | Outgoing | Incoming
 def on-message(msg) =
   host state in
   host graph in
-    ( graph.neighbors(msg.token, msg.contract, Dir.Outgoing) ;
+    ( graph.neighbors(msg.sender.reducer, msg.contract, Dir.Outgoing) ;
       { requests = [{ contract = msg.contract,
                       payload = (match state.get(msg.token) with
                                   | Some(v) => v
