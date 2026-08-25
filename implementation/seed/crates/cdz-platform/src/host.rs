@@ -321,35 +321,54 @@ impl cadenza::platform::provenance::Host for HostState {
         // The WIT returns a program hash unconditionally; empty bytes encode absence — a malformed id or a
         // reducer that is not running (or, under NoProvenance, always). The guest reads empty as "no
         // provenance" (a well-formed program hash is never empty).
-        let Ok(reducer) = ReducerId::try_from(reducer.as_slice()) else {
+        let Ok(reducer_id) = ReducerId::try_from(reducer.as_slice()) else {
+            if self.rejected.enabled() {
+                self.rejected
+                    .record("provenance", "program-of", &[Bytes::from(reducer)]);
+            }
             return Vec::new();
         };
-        match self.provenance.program_of(reducer).await {
+        match self.provenance.program_of(reducer_id).await {
             Some(program) => program.hash().as_bytes().to_vec(),
             None => Vec::new(),
         }
     }
 }
 
+// The deliver ops parse their `target` `list<u8>` into a `ReducerId` (and decode the WIT envelope); on a
+// malformed one they return `false` AND record the rejected call to `self.rejected` (iface `deliver`, the op,
+// the raw `target` bytes), so a malformed routing act is observed (§9) rather than silently dropped — the same
+// completeness the graph ops get. The envelope is a structured WIT record, not a raw `list<u8>`, so only the
+// raw `target` id is captured. Gated on `enabled()` (zero alloc when no recorder) with a zero-copy `Bytes::from`.
 impl cadenza::platform::deliver::Host for HostState {
     async fn deliver_message(&mut self, target: Vec<u8>, event: wit_reducer::Message) -> bool {
         // A malformed target or a malformed event (an id that is not a hash, an origin that is not) names
         // nothing to deliver to or from, so it is a failed delivery — `false` — not a panic. The node-side
         // delivery reports whether a reducer is running under `target` and received it.
-        let (Some(target), Some(message)) = (to_reducer(&target), message_from_wit(event)) else {
+        let (Some(target_id), Some(message)) = (to_reducer(&target), message_from_wit(event))
+        else {
+            if self.rejected.enabled() {
+                self.rejected
+                    .record("deliver", "deliver-message", &[Bytes::from(target)]);
+            }
             return false;
         };
         self.delivery
-            .deliver(target, Delivered::Message(message))
+            .deliver(target_id, Delivered::Message(message))
             .await
     }
 
     async fn deliver_response(&mut self, target: Vec<u8>, event: wit_reducer::Response) -> bool {
-        let (Some(target), Some(response)) = (to_reducer(&target), response_from_wit(event)) else {
+        let (Some(target_id), Some(response)) = (to_reducer(&target), response_from_wit(event))
+        else {
+            if self.rejected.enabled() {
+                self.rejected
+                    .record("deliver", "deliver-response", &[Bytes::from(target)]);
+            }
             return false;
         };
         self.delivery
-            .deliver(target, Delivered::Response(response))
+            .deliver(target_id, Delivered::Response(response))
             .await
     }
 
@@ -358,13 +377,17 @@ impl cadenza::platform::deliver::Host for HostState {
         target: Vec<u8>,
         event: wit_reducer::Notification,
     ) -> bool {
-        let (Some(target), Some(notification)) =
+        let (Some(target_id), Some(notification)) =
             (to_reducer(&target), notification_from_wit(event))
         else {
+            if self.rejected.enabled() {
+                self.rejected
+                    .record("deliver", "deliver-notification", &[Bytes::from(target)]);
+            }
             return false;
         };
         self.delivery
-            .deliver(target, Delivered::Notification(notification))
+            .deliver(target_id, Delivered::Notification(notification))
             .await
     }
 }
@@ -1522,6 +1545,76 @@ mod tests {
                 Bytes::from(rid_bytes(b"b")),
                 Bytes::from(malformed_link_kind),
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_malformed_deliver_or_provenance_arg_is_recorded_too() {
+        // The same observation-completeness seam (§9) covers the OTHER parsing host ifaces: a `deliver` op with
+        // a malformed target and a `provenance.program-of` with a malformed reducer-id each return their
+        // empty/false result AND record the rejected call (iface, op, raw target/reducer bytes), so no parsing
+        // host call is silently unobservable.
+        use super::RejectedSink;
+        use super::cadenza::platform::deliver::Host as Deliver;
+        use super::cadenza::platform::provenance::Host as Provenance;
+        use std::sync::Mutex;
+
+        #[derive(Default)]
+        struct Capturing {
+            calls: Mutex<Vec<(String, String, Vec<Bytes>)>>,
+        }
+        impl RejectedSink for Capturing {
+            fn record(&self, iface: &str, op: &str, raw_args: &[Bytes]) {
+                self.calls.lock().unwrap().push((
+                    iface.to_string(),
+                    op.to_string(),
+                    raw_args.to_vec(),
+                ));
+            }
+        }
+
+        let sink = Arc::new(Capturing::default());
+        let mut host = host(ReducerId::of(b"me"));
+        host.rejected = sink.clone();
+
+        // provenance.program-of with a short (non-hash) reducer id: returns empty AND records the rejection.
+        let bad_reducer = vec![9u8, 9, 9];
+        assert!(
+            Provenance::program_of(&mut host, bad_reducer.clone())
+                .await
+                .is_empty()
+        );
+        // deliver-message with a malformed target: returns false AND records the rejection (raw target only —
+        // the envelope is a structured WIT record). A well-formed envelope isolates the failure to the target.
+        let bad_target = vec![1u8, 2];
+        let msg = wit_reducer::Message {
+            contract: cid(b"c").hash().as_bytes().to_vec(),
+            sender: super::origin_to_wit(Origin {
+                reducer: ReducerId::of(b"peer"),
+                host: HostId::of(b"h"),
+            }),
+            payload: b"p".to_vec(),
+            token: b"t".to_vec(),
+        };
+        assert!(!Deliver::deliver_message(&mut host, bad_target.clone(), msg).await);
+
+        let calls = sink.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(
+            calls[0],
+            (
+                "provenance".to_string(),
+                "program-of".to_string(),
+                vec![Bytes::from(bad_reducer)],
+            )
+        );
+        assert_eq!(
+            calls[1],
+            (
+                "deliver".to_string(),
+                "deliver-message".to_string(),
+                vec![Bytes::from(bad_target)],
+            )
         );
     }
 
