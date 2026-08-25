@@ -1779,8 +1779,9 @@ pub struct HostGroup {
     /// `list<u8>` param or `list<u8>`-leaf spilled result among its ops).
     pub needs_list: bool,
     /// This interface's spilled-RESULT component defined types (children-first, deduped), laid after
-    /// `(list u8)` — each op's result `CRef` indexes into them.
-    pub result_defs: Vec<Vec<u8>>,
+    /// `(list u8)` — each op's result `CRef` indexes into them. The `bool` marks a NOMINAL def (`variant`/
+    /// `enum`/`record`) that must be laid define+EXPORT (a result's err enum), not a bare anonymous define.
+    pub result_defs: Vec<(Vec<u8>, bool)>,
     /// This interface's RECORD-or-ENUM param defined types (define+export pairs), laid after the result defs.
     pub record_defs: Vec<Vec<u8>>,
 }
@@ -2883,7 +2884,7 @@ pub fn assemble_bytes_roundtrip_host_provider(
     imports: &[&RtOp],
     import_name: &str,
     needs_list: bool,
-    result_defs: &[Vec<u8>],
+    result_defs: &[(Vec<u8>, bool)],
     nominal_defs: &[Vec<u8>],
 ) -> Vec<u8> {
     let h = host_fns.len();
@@ -10288,7 +10289,9 @@ fn list_u8_defined_type() -> Vec<u8> {
 fn host_effect_instance_type(
     host_fns: &[HostFn],
     needs_list: bool,
-    result_defs: &[Vec<u8>],
+    // Each spilled-RESULT defined type + whether it is NOMINAL (a `variant`/`enum`/`record` an import func's
+    // result references, which MUST be exported — like a record param — else "instance not valid as import").
+    result_defs: &[(Vec<u8>, bool)],
     record_defs: &[Vec<u8>],
 ) -> Vec<u8> {
     let h = host_fns.len();
@@ -10307,10 +10310,23 @@ fn host_effect_instance_type(
     // op's `comp_functype` references its own result type by the `CRef` index the caller computed. This ONE
     // list REPLACES the former per-shape option / tuple / list<tuple> blocks; `list<list<u8>>`
     // (graph.neighbors) is just another entry here, no new branch.
-    for rd in result_defs {
+    for (i, (rd, is_nominal)) in result_defs.iter().enumerate() {
+        let defined_idx = prepended;
         decls.push(0x01);
         decls.extend_from_slice(rd);
         prepended += 1;
+        // A NOMINAL result-def (`variant`/`enum`/`record` — e.g. run.run's `result<list<u8>, enum>` err arm)
+        // must be EXPORTED (component-model rule, like a record param); a structural `list`/`option`/`result`/
+        // `tuple` stays an anonymous bare define. The caller (`build_host_result_types`) already remapped every
+        // reference to the EXPORT index (`defined_idx + 1`) via its export-aware indexing.
+        if *is_nominal {
+            decls.push(0x04); // export decl
+            decls.extend_from_slice(&extern_name(&format!("host-result-t{i}")));
+            decls.push(0x03); // externdesc: type
+            decls.push(0x00); // typebound: eq
+            uleb128(defined_idx, &mut decls);
+            prepended += 1;
+        }
     }
     // RECORD-param types (shape d): a NOMINAL type (record) that a func in an IMPORT instance-type uses
     // must be EXPORTED from the instance (a component-model rule — a structural `list<u8>` may be anonymous,

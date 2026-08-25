@@ -3532,6 +3532,202 @@ fn a_typed_reducer_with_a_state_get_host_import_emits_and_loads() {
     );
 }
 
+/// A reducer world importing `cadenza:platform/run`.`run : func(program: list<u8>, contract: list<u8>,
+/// input: list<u8>) -> result<list<u8>, variant(timeout, faulted)>` — a host op with a COMPOUND `result<T,E>`
+/// RESULT whose err arm is a payload-less variant. Drives the spilled `result` lift + the nominal-export-for-
+/// results (the err type is DEFINED + EXPORTED in the instance-type).
+fn run_result_world_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let list_u8 = |b: &mut Builder| {
+        let u8h = b.name("u8");
+        let u8p = b.list(vec![u8h]);
+        let lh = b.atom_leaf(Leaf::Str("list".into()));
+        b.list(vec![lh, u8p])
+    };
+    let field = |b: &mut Builder, name: &str, ty| {
+        let n = b.name(name);
+        b.list(vec![n, ty])
+    };
+    let record = |b: &mut Builder, fields: Vec<crate::ast::StructId>| {
+        let h = b.atom_leaf(Leaf::Str("record".into()));
+        let mut v = vec![h];
+        v.extend(fields);
+        b.list(v)
+    };
+    let bytes_field = |b: &mut Builder, name: &str| {
+        let t = list_u8(b);
+        field(b, name, t)
+    };
+    let message = {
+        let m_contract = bytes_field(&mut b, "contract");
+        let m_payload = bytes_field(&mut b, "payload");
+        let m_token = bytes_field(&mut b, "token");
+        record(&mut b, vec![m_contract, m_payload, m_token])
+    };
+    let step = {
+        let request = {
+            let r_contract = bytes_field(&mut b, "contract");
+            let r_payload = bytes_field(&mut b, "payload");
+            let r_token = bytes_field(&mut b, "token");
+            let r_deadline = {
+                let u64h = b.name("u64");
+                let u64t = b.list(vec![u64h]);
+                let oh = b.atom_leaf(Leaf::Str("option".into()));
+                let ot = b.list(vec![oh, u64t]);
+                field(&mut b, "deadline-nanos", ot)
+            };
+            record(&mut b, vec![r_contract, r_payload, r_token, r_deadline])
+        };
+        let requests_list = {
+            let lh = b.atom_leaf(Leaf::Str("list".into()));
+            b.list(vec![lh, request])
+        };
+        let outcome = {
+            let cont_case = {
+                let n = b.name("continue");
+                b.list(vec![n])
+            };
+            let close_case = {
+                let cs = bytes_field(&mut b, "schema");
+                let cr = bytes_field(&mut b, "reason");
+                let rec = record(&mut b, vec![cs, cr]);
+                let n = b.name("close");
+                b.list(vec![n, rec])
+            };
+            let vh = b.atom_leaf(Leaf::Str("variant".into()));
+            b.list(vec![vh, cont_case, close_case])
+        };
+        let s_requests = field(&mut b, "requests", requests_list);
+        let s_outcome = field(&mut b, "outcome", outcome);
+        record(&mut b, vec![s_requests, s_outcome])
+    };
+    let on_message = {
+        let func_h = b.name("func");
+        let param_h = b.name("param");
+        let pn = b.name("m");
+        let param_node = b.list(vec![param_h, pn, message]);
+        let result_h = b.name("result");
+        let result_node = b.list(vec![result_h, step]);
+        let func = b.list(vec![func_h, param_node, result_node]);
+        let member_h = b.name("member");
+        let mn = b.name("on-message");
+        b.list(vec![member_h, mn, func])
+    };
+    let exp_h = b.name("export");
+    let iname = b.name("guest");
+    let export = b.list(vec![exp_h, iname, on_message]);
+    // import cadenza:platform/run { run: func(program, contract, input: list<u8>) -> result<list<u8>, err> }
+    let run_member = {
+        let func_h = b.name("func");
+        let param = |b: &mut Builder, name: &str| {
+            let ph = b.name("param");
+            let pn = b.name(name);
+            let ty = list_u8(b);
+            b.list(vec![ph, pn, ty])
+        };
+        let p1 = param(&mut b, "program");
+        let p2 = param(&mut b, "contract");
+        let p3 = param(&mut b, "input");
+        let res_ty = {
+            let err_variant = {
+                let vh = b.atom_leaf(Leaf::Str("variant".into()));
+                let c1 = {
+                    let n = b.name("timeout");
+                    b.list(vec![n])
+                };
+                let c2 = {
+                    let n = b.name("faulted");
+                    b.list(vec![n])
+                };
+                b.list(vec![vh, c1, c2])
+            };
+            let rh = b.atom_leaf(Leaf::Str("result".into()));
+            let ok = list_u8(&mut b);
+            b.list(vec![rh, ok, err_variant])
+        };
+        let result_h = b.name("result");
+        let rnode = b.list(vec![result_h, res_ty]);
+        let func = b.list(vec![func_h, p1, p2, p3, rnode]);
+        let member_h = b.name("member");
+        let mn = b.name("run");
+        b.list(vec![member_h, mn, func])
+    };
+    let imp_h = b.name("import");
+    let run_name = b.name("cadenza:platform/run");
+    let run = b.list(vec![imp_h, run_name, run_member]);
+    let world_h = b.name("world");
+    let wn = b.name("w");
+    let world = b.list(vec![world_h, wn, export, run]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+/// A typed reducer performing `run.run : (list<u8>, list<u8>, list<u8>) -> result<list<u8>, enum>` — a host
+/// op with a COMPOUND `result<T, E>` RESULT (Ok = `list<u8>`, Err = a payload-less enum, the §3 pure-run
+/// shape) — EMITS + VALIDATES + LOADS. The spilled result lifts via `emit_result_sum_lift` (disc → Ok: lift
+/// the Bytes payload; Err: box the enum discriminant + wrap), and the err enum is DEFINED + EXPORTED in the
+/// `run` instance-type (nominal-export-for-results) — a `result<_, enum>` whose enum was unexported failed to
+/// instantiate ("instance not valid to be used as import"). `onMessage` sets a request's payload from the
+/// matched result. wasmparser validation is the strong structural check.
+#[test]
+fn a_reducer_performing_run_with_a_result_host_result_emits_and_loads() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (type Outcome Continue (Close (Record (schema Bytes) (reason Bytes)))) \
+                 (type Error Timeout Faulted) \
+                 (effect run (op run (-> Bytes Bytes Bytes (Result Bytes Error)))) \
+                 (def (onMessage (: m (Record (contract Bytes) (payload Bytes) (token Bytes)))) \
+                   (host (run) \
+                     (record \
+                       (requests (list (record \
+                                         (contract (. m contract)) \
+                                         (payload (match (run.run (. m contract) (. m contract) (. m payload)) \
+                                                    ((Ok v) v) \
+                                                    ((Err _e) (. m payload)))) \
+                                         (token (. m token)) \
+                                         (deadline-nanos Option.None)))) \
+                       (outcome Outcome.Continue)))) \
+                 (export onMessage))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:platform/guest"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                run_result_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "a reducer performing run.run (result<list<u8>, enum> host result) must emit: {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("the run-performing reducer emits a component");
+    let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+    v.validate_all(bytes).expect(
+        "the run-performing reducer component validates (the err enum is exported + the result lifts)",
+    );
+    cdz_run::required_runtime(bytes)
+        .expect("the run-performing reducer component loads on the pinned wasmtime");
+    assert!(
+        String::from_utf8_lossy(bytes).contains("cadenza:platform/run"),
+        "the reducer imports the run host interface at the world's FQ name"
+    );
+}
+
 /// A reducer world importing `cadenza:platform/deliver`.`push` — a host op taking an ALL-SCALAR `record`
 /// PARAMETER (`record { a: s64, b: s64 }`) and returning unit. Drives shape d (record host-arg): the guest
 /// FLATTENS the value-heap record field-by-field into the two core slots the component `record` param

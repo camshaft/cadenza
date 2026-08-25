@@ -398,6 +398,10 @@ pub fn result_is_liftable(db: &mut Db, ty: &Ty) -> bool {
             let elems = elems.clone();
             !elems.is_empty() && elems.iter().all(|e| leaf_liftable(db, e))
         }
+        // A `result<list<u8>, enum>` (run.run's `result<payload, error>`): Ok = `Bytes`, Err = a PAYLOAD-LESS
+        // enum. The lift (`emit_result_sum_lift`) reads the WIT-canonical disc (Ok=0/Err=1), copies the Bytes on
+        // Ok, and rebuilds the guest's `Error` enum-disc on Err; the WIT type is `result<list<u8>, enum>`.
+        _ if result_bytes_enum(db, ty).is_some() => true,
         // An option-shaped sum (`option<T>`) whose payload `T` is itself liftable — general over the payload
         // (not pinned to `Bytes`); the lift (`emit_option_sum_lift`) recurses the payload, the WIT type is
         // `option<wit(T)>`. So `option<list<u8>>`, `option<list<list<u8>>>`, `option<tuple<…>>` all lift.
@@ -425,6 +429,16 @@ pub fn spilled_result_wit_type(db: &mut Db, ty: &Ty) -> Option<crate::wit_world:
         return Some(WitType::Option(Box::new(spilled_result_wit_type(
             db, &payload,
         )?)));
+    }
+    // A `result<list<u8>, enum>` (run.run): `result<list<u8>, enum{err-cases}>`. The err arm is emitted as an
+    // `enum` here (from the guest's payload-less `Error` sum); a host WIT that declares the err arm as a
+    // `variant` needs the WORLD result type threaded (the #3228 variant-vs-enum rule, result-side) — a
+    // follow-up. For a WIT `enum error` this already host-links; emit+validate is constructor-agnostic.
+    if let Some(err_cases) = result_bytes_enum(db, ty) {
+        return Some(WitType::Result {
+            ok: Some(Box::new(WitType::List(Box::new(WitType::U8)))),
+            err: Some(Box::new(WitType::Enum(err_cases))),
+        });
     }
     crate::wit_world::ty_natural_wit(ty)
 }
