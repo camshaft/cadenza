@@ -511,6 +511,17 @@ pub enum Prim {
     /// (`hash-blake3`) lands. Byte-identical to that runtime op — both call the one `blake3` crate over the
     /// same bytes (design §9). The compile-time half of the third contract-agnostic primitive.
     Blake3Of,
+    /// `Ast.here` — the enclosing module's own source as an `Ast` value: the `(meta apply)` of the `here`
+    /// field on the built-in `Ast` record, a bare VALUE `Ast.here : Ast` (magic-constant style, like
+    /// `Int64-schema : (Schema Int64)` — never applied; the `() -> Ast` is its internal shape). The
+    /// TYPE-DIRECTED, prelude-derived self-reflection (operator redesign of the retired `(. Ast self)`
+    /// syntax-rewrite): it resolves through ordinary member access on the built-in `Ast` (so a user
+    /// `type Ast` shadows it — the reflection field lives ONLY on the built-in Ast record) and types as the
+    /// built-in `Ast` sum. ALWAYS folds at compile time (no runtime "reflect the current module") — the
+    /// lowerer fills it from the enclosing module's canonical SOURCE via `file_of(occ)` + a pre-resolve
+    /// per-file source snapshot (v-compiler-primitives' fill), so it never reaches a backend as a distinct
+    /// op. Byte-identical to `quote`/`__ast__` over the same module.
+    ReflectModule,
     /// `print` — render an `Ast` value as its canonical re-readable TEXT: `Ast → String` (self-hosting-
     /// surface.md §A Printer Renders The Canonical Representation As Re-Readable Text). The text analogue of
     /// `AstEncode` (which produces canonical BYTES): a compile-time-visible `Ast` value (a `Core::SumNew`
@@ -942,6 +953,7 @@ impl Prim {
             "ast-encode" => Some(Prim::AstEncode),
             "ast-decode" => Some(Prim::AstDecode),
             "blake3-of" => Some(Prim::Blake3Of),
+            "reflect-module" => Some(Prim::ReflectModule),
             "schema-of" => Some(Prim::SchemaOf),
             "payload-of" => Some(Prim::PayloadOf),
             "schema-decode" => Some(Prim::SchemaDecode),

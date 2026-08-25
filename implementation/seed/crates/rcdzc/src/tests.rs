@@ -7932,6 +7932,52 @@ fn a_no_redeclare_world_import_perform_resolves_via_the_injected_effect() {
     }
 }
 
+/// SELF-REFLECTION `Ast.here` (front-end): the reflection member on the built-in `Ast` record resolves via
+/// ordinary member access and TYPES as the built-in `Ast` sum — the type-directed, prelude-derived,
+/// NAMESPACED replacement for the retired `(. Ast self)` blind syntax-rewrite (operator directive: namespace
+/// on the Ast record, no bare global). (The compile-time FILL of the module's source is v-compiler-primitives'
+/// lowering slice; this pins the FRONT-END: `(. Ast here)` binds + types, no unbound / no-field.)
+#[test]
+fn ast_here_resolves_and_types_as_the_builtin_ast() {
+    use crate::db::Db;
+    let src = "(module m (def (self-ast) (. Ast here)) (export self-ast))";
+    let mut db = Db::load(crate::testkit::parse(src));
+    let diags = crate::compile::diagnostics(&mut db);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.message.contains("field `here`") || d.message.contains("unbound")),
+        "(. Ast here) must resolve on the built-in Ast record: {:?}",
+        diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    let d = db.def_by_name("self-ast").expect("def self-ast");
+    let body = db.defs[d].body.expect("self-ast body");
+    let ty = crate::infer::type_of(&mut db, body);
+    assert_eq!(
+        ty.render_name(&db.name_ctx()),
+        "Ast",
+        "Ast.here is a bare value of the built-in Ast sum, got {ty:?}"
+    );
+}
+
+/// SELF-REFLECTION shadow-correctness: a user `(type Ast …)` has NO `here` field — the reflection lives ONLY
+/// on the BUILT-IN Ast record (augmented in `Db::load_linked` gated to the prelude Ast decl). So `(. Ast here)`
+/// against a user `type Ast` does NOT reflect; it's an ordinary no-such-field member access. This is the
+/// binding-respecting property the redesign is for (a user shadowing `Ast` routes away from the reflection,
+/// which a blind syntax-rewrite could not honor).
+#[test]
+fn a_user_type_ast_shadows_away_the_here_reflection() {
+    use crate::db::Db;
+    let src = "(module m (type Ast (Foo)) (def (x) (. Ast here)) (export x))";
+    let mut db = Db::load(crate::testkit::parse(src));
+    let diags = crate::compile::diagnostics(&mut db);
+    assert!(
+        diags.iter().any(|d| d.message.contains("here")),
+        "a user `type Ast` has no `here` field → the reflection does not fire (no-field member access): {:?}",
+        diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
 /// NO-ANNOTATION EXPORT BOUNDARY (`derive_world_export_param_annotations`): a reducer writes its guest-export
 /// entry point with a BARE param — `(def (on-message msg) …)` — and the export-param pre-pass DERIVES `msg`'s
 /// type from the matching world guest-export member (`on-message`'s declared `msg` param, a record), injecting
