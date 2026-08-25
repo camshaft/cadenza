@@ -1,0 +1,24 @@
+// A reducer that exercises the content-addressed BLOB store (design/cadenza-platform.md §8): on-message it
+// stores the delivered payload (getting back the hash that names it), reads it straight back by that hash,
+// and echoes the read bytes as one request — proving bytes round-trip through the content store. Delegates
+// only `blobs`; a floor import of the reducer world. on-response/on-notification are inert.
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+def on-message(msg) =
+  host blobs in
+    (let h = blobs.put(msg.payload) in
+      (match blobs.get(h) with
+        | Some(v) =>
+            { requests = [{ contract = msg.contract, payload = v, token = b"", deadlineNanos = None }],
+              outcome = Outcome.Continue }
+        | None =>
+            { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = b"blob-get-miss" }) }))
+
+def on-response(_resp) =
+  { requests = [], outcome = Outcome.Continue }
+
+def on-notification(_note) =
+  { requests = [], outcome = Outcome.Continue }
+
+export { on-message, on-response, on-notification }
