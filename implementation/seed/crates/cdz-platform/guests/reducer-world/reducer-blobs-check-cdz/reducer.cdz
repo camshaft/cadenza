@@ -2,9 +2,11 @@
 // (reducer-blobs-cdz) stores the delivered payload in the content-addressed blob store and reads it straight
 // back by hash; this checker asserts that blob round-trip observably happened — LOG-ONLY, guest-agnostic.
 //
-// Same three schema imports as the other checkers, from their single source of truth: the check Envelope
-// (log-in), the verdict Verdict (pass/fail-out), and the log-schema LogRecord/Entry (the decoded log, which
-// carries BlobPut/BlobGet). The `libs` manifest beside this file lists their repo-relative paths.
+// Plumbing (decode the check Envelope, decode the log, emit the verdict) is shared via checker-lib's
+// interpret(); this file keeps only its JUDGEMENT predicate + verdict-payload and maps the Decision onto its
+// own local Outcome. Local Outcome + Error stay in the guest: the reducer-world export boundary synthesizes the
+// unused on-response/on-notification param types from the guest's local sums, so a lib-owned Outcome/Error would
+// leave them ambiguous (CDZ0201). See checker-lib.cdz.
 //
 // JUDGEMENT: pass iff some BlobGet(hash = H, hit) — a SUCCESSFUL read — is matched by some BlobPut(hash = H):
 // the reducer stored bytes (getting hash H) and read them back by H with a hit. RELATIONAL on the content
@@ -12,9 +14,8 @@
 // persist the put (a BlobGet with hash = H but hit = 0). NON-VACUOUS: a guest that fails to instantiate
 // touches no blob store, so no such BlobGet exists and the check fails. Settled idioms (List.at-None ends the
 // walk, LogRecord destructured in the Some arm, `g.hit == 1 and has-put(…)` folded into a match guard).
-import { Envelope } from "check"
-import { Verdict } from "verdict"
 import { LogRecord, Entry } from "log-schema"
+import { Decision, interpret, verdict-req, pass, fail } from "checker-lib"
 
 type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
 type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
@@ -40,30 +41,13 @@ def blob-round-trip(records: List(LogRecord), i: Int64) =
 // The verdict payload for a decoded log: pass with no messages, else fail with one diagnostic message.
 def verdict-payload(records: List(LogRecord)) =
   if blob-round-trip(records, 0)
-  then Value.encode(Verdict.Verdict({ pass = true, messages = [] }))
-  else Value.encode(Verdict.Verdict({ pass = false,
-                                      messages = ["no BlobGet(hit) matched a BlobPut of the same hash: the blob store/read round-trip did not happen"] }))
-
-// A verdict request on the contract-id the harness passed in the incoming `check` Envelope (`c.verdict`) — the
-// §9 checker protocol has the harness own + pass the verdict contract-id, so no hardcoded hash. The verdict
-// token is irrelevant (the harness reads the verdict by scanning Emitted on the verdict contract), so b"".
-def verdict-req(verdict-contract: Bytes, payload: Bytes) =
-  { contract = verdict-contract, payload = payload, token = b"", deadlineNanos = None }
+  then pass()
+  else fail("no BlobGet(hit) matched a BlobPut of the same hash: the blob store/read round-trip did not happen")
 
 def on-message(msg) =
-  match (Value.decode(msg.payload) : Option(Envelope)) with
-  | Some(Envelope.Check(c)) =>
-      (match (Value.decode(c.log) : Option(List(LogRecord))) with
-       | Some(records) =>
-           { requests = [verdict-req(c.verdict, verdict-payload(records))], outcome = Outcome.Continue }
-       | None =>
-           { requests = [verdict-req(c.verdict,
-                                     Value.encode(Verdict.Verdict({ pass = false,
-                                                                    messages = ["observation log did not decode"] })))],
-             outcome = Outcome.Continue })
-  | None =>
-      { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = msg.payload }) }
-
+  match interpret(msg, verdict-payload) with
+  | Decision.Report(r) => { requests = [verdict-req(r.contract, r.payload)], outcome = Outcome.Continue }
+  | Decision.NotCheck(cl) => { requests = [], outcome = Outcome.Close({ schema = cl.schema, reason = cl.reason }) }
 def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
 def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
 export { on-message, on-response, on-notification }
