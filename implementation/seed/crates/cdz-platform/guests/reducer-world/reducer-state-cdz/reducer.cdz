@@ -1,22 +1,33 @@
-// A reducer that exercises its durable key-value STATE store ACROSS messages (design/cadenza-platform.md §7):
-// the run delivers TWO messages. On the first (the cell is empty) it SETs — writes the delivered payload at a
-// fixed key. On the second (the cell now holds the earlier value) it RETURNs — reads that key and echoes the
-// stored value as one request. Because the two folds are separate deliveries, a returned value proves the
-// store PERSISTED it across messages, not merely within one on-message. The guest branches on the store's own
-// state (get -> None = first/set, Some = second/return), so it needs no message tagging. Delegates only
-// `state`; a floor import of the reducer world. on-response/on-notification are inert.
+// A reducer exposing the THREE key-value STATE operations (design/cadenza-platform.md §7), dispatched by the
+// delivered message so ONE program serves every state-store conformance run — only the harness checker
+// differs. The op is the message payload as a sentinel: `get` reads the fixed cell and echoes the stored
+// value; `delete` removes it and confirms it is gone (echoing a marker only on the expected miss); any other
+// payload is a SET, writing that payload at the cell. Runs drive it with two messages (set, then get or
+// delete), so a returned value or an observed removal proves the store PERSISTED across folds. Delegates only
+// `state`, a floor import. on-response/on-notification are inert.
 type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
 type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
 
 def on-message(msg) =
   host state in
-    (match state.get(b"cell") with
-      | None(_) =>
-          ( state.put(b"cell", msg.payload) ;
-            { requests = [], outcome = Outcome.Continue } )
-      | Some(v) =>
-          { requests = [{ contract = msg.contract, payload = v, token = b"", deadlineNanos = None }],
-            outcome = Outcome.Continue })
+    (if (msg.payload == b"get") then
+       (match state.get(b"cell") with
+         | Some(v) =>
+             { requests = [{ contract = msg.contract, payload = v, token = b"", deadlineNanos = None }],
+               outcome = Outcome.Continue }
+         | None(_) =>
+             { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = b"get-miss" }) })
+     else (if (msg.payload == b"delete") then
+       ( state.delete(b"cell") ;
+         (match state.get(b"cell") with
+           | None(_) =>
+               { requests = [{ contract = msg.contract, payload = b"deleted", token = b"", deadlineNanos = None }],
+                 outcome = Outcome.Continue }
+           | Some(_) =>
+               { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = b"delete-did-not-remove" }) }) )
+     else
+       ( state.put(b"cell", msg.payload) ;
+         { requests = [], outcome = Outcome.Continue } )))
 
 def on-response(_resp) =
   { requests = [], outcome = Outcome.Continue }
