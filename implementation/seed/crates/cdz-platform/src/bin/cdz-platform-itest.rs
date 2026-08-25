@@ -71,7 +71,13 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let spec = match HarnessSpec::decode(&spec_bytes) {
+    // Decode, resolving `BlobBytes(<name>)` / `BlobHash(<name>)` references against the run's blobs. A blob
+    // supplied by path (how a program is provided) has its bytes materialized by reading the path here — so a
+    // `BlobHash` payload (e.g. the program a `run.run` runs) resolves even though the bytes are on disk, not
+    // inline. A path that fails to read yields `None`, so the reference is a clean decode error.
+    let spec = match HarnessSpec::decode_with(&spec_bytes, |path| {
+        std::fs::read(path).ok().map(Bytes::from)
+    }) {
         Ok(spec) => spec,
         Err(e) => {
             eprintln!("{}: {e}", spec_path.display());
