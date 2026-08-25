@@ -158,7 +158,7 @@ pub fn prelude_decls(ast: &mut Arenas) -> Vec<TypeDecl> {
         // syntactic form and a `List` variant carrying a `(List Ast)` of the same type:
         //= spec/capabilities/type-system.md#the-abstract-syntax-tree-is-an-ordinary-sum-type
         //# The abstract syntax tree type MUST be an ordinary sum type of the language — a variant per syntactic form (an integer, a float, a string, a boolean, a name, and a list of child nodes) with the list variant carrying a list of the same type — rather than a primitive the type system special-cases.
-        type_form_payloads(
+        let form = type_form_payloads(
             ast,
             "Ast",
             &[
@@ -172,7 +172,14 @@ pub fn prelude_decls(ast: &mut Arenas) -> Vec<TypeDecl> {
                 ("Char", &[char_pay]),
                 ("Symbol", &[sym_pay]),
             ],
-        )
+        );
+        let mut decl = crate::db::scan_type_decl(ast, form).expect("built-in Ast decl scans");
+        // Ast's ASSOCIATED FUNCTIONS (`Ast.module` self-reflection; `Ast.print`/`Ast.read` once those land)
+        // — set HERE, at the Ast declaration, prelude-defined. `sum_record` appends `decl.associated` to the
+        // synthesized Ast record, so these live in the PRELUDE like `bigint_module`'s fields — not a
+        // `Db::load` post-synthesis special-case, and not found-by-name after the fact.
+        decl.associated = crate::prelude::ast_associated_fields(ast);
+        decl
     };
     // `(type DecodeError TypeMismatch Eof)` — the failure type in a schema `decode`'s `Err` arm
     // (`value-interchange.md` §Decode Inverts Serialize And Refuses Otherwise; type-system.md §An Open
@@ -204,18 +211,20 @@ pub fn prelude_decls(ast: &mut Arenas) -> Vec<TypeDecl> {
         "Schema",
         &[("Schema-wit", &["a"]), ("Schema-none", &[])],
     );
-    [
-        option,
-        result,
-        sign,
-        ordering,
-        ast_decl,
-        decode_error,
-        schema,
-    ]
-    .into_iter()
-    .filter_map(|item| crate::db::scan_type_decl(ast, item))
-    .collect()
+    // The plain prelude sums (no associated functions) scan straight through; `ast_decl` is ALREADY a
+    // fully-formed `TypeDecl` (its associated functions were set at its declaration above), spliced in at
+    // its canonical position — no scan-then-find-by-name.
+    let mut decls: Vec<TypeDecl> = [option, result, sign, ordering]
+        .into_iter()
+        .filter_map(|item| crate::db::scan_type_decl(ast, item))
+        .collect();
+    decls.push(ast_decl);
+    decls.extend(
+        [decode_error, schema]
+            .into_iter()
+            .filter_map(|item| crate::db::scan_type_decl(ast, item)),
+    );
+    decls
 }
 
 /// Build a `(type NAME (V payload-node…)…)` declaration form from PRE-BUILT payload TYPE-EXPRESSION nodes
@@ -370,6 +379,14 @@ fn sum_record(ast: &mut Arenas, decl: &TypeDecl) -> (StructId, Vec<StructId>) {
         let dk = push_atom(ast, Leaf::Name("decode".into()));
         children.push(push_list(ast, vec![dk, decode_op]));
     }
+
+    // ASSOCIATED FUNCTIONS the decl declares (`TypeDecl.associated`) — prelude-defined non-ctor member
+    // fields appended to this sum's record, so a built-in prelude sum's namespaced operations (the built-in
+    // `Ast` record's `Ast.module` self-reflection; later `Ast.print`/`Ast.read`) are reached as
+    // `(. Type member)` like a ctor. Data-driven: append whatever the decl carries — only a prelude sum
+    // with declared associated ops has any; a user sum's is empty. NOT a name test here (`prelude_decls`
+    // attaches them to the built-in decl), so nothing is privileged by name in this generic builder.
+    children.extend(decl.associated.iter().copied());
 
     (push_list(ast, children), ctors)
 }

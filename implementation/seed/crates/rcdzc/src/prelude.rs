@@ -2172,6 +2172,16 @@ pub(crate) fn ast_module_field(ast: &mut Arenas) -> StructId {
     push_list(ast, vec![module_name, op]) // (module <op-record>)
 }
 
+/// The built-in `Ast` record's ASSOCIATED FUNCTIONS — the prelude-defined non-ctor member fields
+/// (`(name <op-record>)` nodes) that `sums::sum_record` appends to the synthesized `Ast` record, so they
+/// are reached as `(. Ast member)`. Defined HERE in the prelude (attached to the Ast `TypeDecl` in
+/// `sums::prelude_decls`), like `bigint_module`'s fields live in the prelude — NOT a `Db::load`
+/// post-synthesis special-case. Currently just `Ast.module` (self-reflection); `Ast.print`/`Ast.read`
+/// join this list when those relocations land (a user `type Ast` carries none, so it shadows them).
+pub(crate) fn ast_associated_fields(ast: &mut Arenas) -> Vec<StructId> {
+    vec![ast_module_field(ast)]
+}
+
 /// The type-lambda `(fn (a) (-> a a))` for `payload-of` — `∀v. v → v`. Typed as identity: the extracted
 /// payload flows into `decode`'s free payload parameter, so its static type need only pass through. The
 /// FOLD (`lower_payload_of`) does the real work — reading a constant variant's single payload core. The
