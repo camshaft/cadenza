@@ -501,6 +501,16 @@ pub enum Prim {
     /// <SumNew tree>)` / `(Err unit)`; a runtime `Bytes` declines (the runtime deserializer is a later
     /// increment). The decode companion of `AstEncode`; the format is `lower::decode_ast_value`.
     AstDecode,
+    /// `Blake3.of` — the blake3 content hash: `Bytes → Bytes` (a 32-byte unkeyed BLAKE3-256 digest as a
+    /// `Bytes` value; the `(meta apply)` of the `Blake3` module's `of` field). NAMES THE ALGORITHM
+    /// (design-compiler-primitives.md D5): a future digest is a DIFFERENT named function, never a silent
+    /// change to a generic `Hash`. ENTIRELY GENERIC — raw `bytes → digest`, no tag/prefix/domain
+    /// separation (that is userspace's job, D7). Constant-fold this increment: a compile-time-visible
+    /// `Bytes` (a `Core::ConstBytes` / a `Core::BytesOf` of constants) folds to the `Core::ConstBytes` of
+    /// its `blake3::hash`; a runtime `Bytes` declines until the runtime lowering to heap op 91
+    /// (`hash-blake3`) lands. Byte-identical to that runtime op — both call the one `blake3` crate over the
+    /// same bytes (design §9). The compile-time half of the third contract-agnostic primitive.
+    Blake3Of,
     /// `print` — render an `Ast` value as its canonical re-readable TEXT: `Ast → String` (self-hosting-
     /// surface.md §A Printer Renders The Canonical Representation As Re-Readable Text). The text analogue of
     /// `AstEncode` (which produces canonical BYTES): a compile-time-visible `Ast` value (a `Core::SumNew`
@@ -931,6 +941,7 @@ impl Prim {
             "ast-lift" => Some(Prim::AstLift),
             "ast-encode" => Some(Prim::AstEncode),
             "ast-decode" => Some(Prim::AstDecode),
+            "blake3-of" => Some(Prim::Blake3Of),
             "schema-of" => Some(Prim::SchemaOf),
             "payload-of" => Some(Prim::PayloadOf),
             "schema-decode" => Some(Prim::SchemaDecode),

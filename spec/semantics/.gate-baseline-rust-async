@@ -63,6 +63,11 @@ pass	BigInt.of a UInt64 at u64::MAX is a positive BigInt
 pass	BigInt.of a UInt64 widens to the exact value (round-trips back through Int64.of where it fits)
 pass	BigInt.of a UInt8 at its high bit widens to the exact value (smallest-width zero-extend)
 pass	BigInt.of a signed Int32 is a positive BigInt (the narrow path breaks regardless of sign)
+pass	Blake3.of composes with Ast.encode — hashing an encoded AST folds to a 32-byte digest
+pass	Blake3.of is a 32-byte digest
+pass	Blake3.of is deterministic — the same bytes hash to the same digest
+pass	Blake3.of is sensitive — a one-bit-different input hashes to a different digest
+pass	Blake3.of of the empty byte string is the official empty-input BLAKE3-256 digest
 pass	Bytes.concat of two runtime SLICES splices window content in order
 pass	Bytes.concat of two sliced-view to-bytes is read twice and both reads see the concatenated bytes
 pass	Bytes.of of a computed (concatenated) runtime list builds a byte sequence of that length
@@ -3098,6 +3103,7 @@ pass	a reference to an unbound name is rejected before running
 pass	a referenced let binding whose init overflows IS observed, so its trap occurs (the anchor)
 pass	a refined-newtype shrink stays IN-DOMAIN — it converges to the minimal value the invariant still admits, not below the floor
 pass	a refining arm shadowed by an earlier full-variant cover is unreachable and earns a CDZ0213 warning
+pass	a reflected module AST is a well-formed Ast value that round-trips through encode/decode
 pass	a reflected quantity type rejects a value of a different dimension
 pass	a reframed packet with a TRANSFORMED header compares byte-equal to its independent twin
 pass	a refutable constructor pattern in a let binder is rejected
@@ -5449,6 +5455,7 @@ pass	if1 a WHOLE nested handle expression as an IF's CONDITION beside outer draw
 pass	il1 strict O-I-O-I body interleave — two independent threads advance in lockstep, positional weights pin the dispatch order
 pass	il2 the interleave WIDTH is data-driven — parity picks one-or-two O draws per I tick, a helper sums each O burst
 pass	im2min5 a performing self-recursive walk then a TRAILING draw — the callee-advanced state reaches the continuation (finding #12 face)
+pass	import { __ast__ } binds the sibling module's canonical AST as a compound Ast value
 pass	importing a name a module does not export is rejected
 pass	indexed reads at different indices of one list are not shared
 pass	indexing a byte sequence out of bounds yields None
@@ -7167,5 +7174,3 @@ todo	round-trip: a higher-order closure whose inner closure CAPTURES and is appl
 todo	round-trip: a higher-order closure whose inner closure takes an UNANNOTATED compound param
 todo	round-trip: an UNANNOTATED inner closure with a List param via the context arrow
 todo	two adapter records with different state types drive a take-while fold in one program
-pass	import { __ast__ } binds the sibling module's canonical AST as a compound Ast value
-pass	a reflected module AST is a well-formed Ast value that round-trips through encode/decode

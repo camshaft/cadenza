@@ -1880,6 +1880,11 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // unit)`, NEVER a trap. A runtime Bytes declines (the runtime deserializer is a later
                 // increment).
                 Some(Prim::AstDecode) if args.len() == 1 => lower_ast_decode(db, id, args[0]),
+                // `Blake3.of` — the blake3 content hash `Bytes → Bytes`. FOLD a compile-time-visible
+                // `Bytes` (a `Core::ConstBytes` / a `Core::BytesOf` of constants) to the `Core::ConstBytes`
+                // of its `blake3::hash`; a runtime `Bytes` declines (the runtime lowering to heap op 91 is
+                // a later increment). Byte-identical to that op — both call the one `blake3` crate (§9).
+                Some(Prim::Blake3Of) if args.len() == 1 => lower_blake3_of(db, id, args[0]),
                 // `payload-of` — extract a compile-time-visible open sum variant's single payload as a
                 // schema-checkable value (const-fold path; a runtime variant declines, OQ-4). The value
                 // flows into `decode`; the fold reads the constant `SumNew`'s payload core.
@@ -2897,6 +2902,26 @@ fn lower_ast_encode(db: &mut Db, id: StructId, ast_val: StructId) -> Core {
     // compile-time `Blake3.of`/const-executed transform folds over. Consumers of a compile-time-visible
     // Bytes read it via `const_byte_slice` (which also handles a `BytesOf` of constants).
     Core::ConstBytes(bytes.into())
+}
+
+/// Lower `(Blake3.of b)` — the blake3 content hash `Bytes → Bytes`. FOLD a compile-time-visible `Bytes`
+/// (a `Core::ConstBytes`, or a `Core::BytesOf` of constants) to the `Core::ConstBytes` of its 32-byte
+/// `blake3::hash`; a runtime `Bytes` declines (the runtime lowering to heap op 91 `hash-blake3` is a later
+/// increment). A poison operand propagates. The digest is plain UNKEYED BLAKE3-256 over the raw bytes —
+/// no key, no domain tag (all domain separation is userspace, D7) — so it is BYTE-IDENTICAL to the runtime
+/// op, which calls the same `blake3` crate over the same bytes (design-compiler-primitives.md §9).
+fn lower_blake3_of(db: &mut Db, id: StructId, bytes: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, bytes) {
+        return Core::Poison(r);
+    }
+    let Some(raw) = const_byte_slice(db, bytes) else {
+        return Core::Poison(Reject::decline(
+            "Blake3.of of a runtime byte sequence is not yet computed (constant Bytes only)",
+        ));
+    };
+    let digest = blake3::hash(&raw);
+    trace!(target: "rcdzc::fold", node = id.0, len = raw.len(), "Blake3.of folds a constant Bytes to its 32-byte blake3 digest");
+    Core::ConstBytes(digest.as_bytes().to_vec().into())
 }
 
 /// Read the raw bytes of a COMPILE-TIME-VISIBLE `Bytes` value, or `None` if it is not fully constant.
@@ -20484,6 +20509,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::AstLift
         | Prim::AstEncode
         | Prim::AstDecode
+        | Prim::Blake3Of
         | Prim::ListCtor
         | Prim::BytesOf
         | Prim::BytesLen
@@ -27383,6 +27409,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::AstLift => "ast-lift",
         Prim::AstEncode => "ast-encode",
         Prim::AstDecode => "ast-decode",
+        Prim::Blake3Of => "blake3-of",
         Prim::Print => "print",
         Prim::Read => "read",
         Prim::SchemaOf => "schema-of",
