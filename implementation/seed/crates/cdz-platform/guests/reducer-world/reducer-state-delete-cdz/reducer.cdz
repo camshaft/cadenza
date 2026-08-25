@@ -1,20 +1,27 @@
-// A reducer that exercises state DELETION (design/cadenza-platform.md §7): on-message it writes the delivered
-// payload to a key, deletes that key, then reads it back and confirms the value is GONE — echoing a marker
-// only on the expected miss. Proves the state store honours removal (put, delete, get -> absent). Delegates
-// only `state`; a floor import of the reducer world. on-response/on-notification are inert.
+// A reducer that exercises state DELETION ACROSS messages (design/cadenza-platform.md §7): the run delivers
+// TWO messages. On the FIRST it SETs — writes the delivered payload at a fixed key. On the SECOND it DELETEs
+// that key and confirms the value is GONE (reads it back expecting a miss), echoing a marker only on the
+// expected miss. Because the value was written on an earlier delivery, deleting it on a later one proves the
+// store honours removal of PERSISTED state (a real entry existed, delete removed it, a subsequent read sees it
+// gone). The guest branches on its own store state (get(cell) == None = first/set, Some = second/delete).
+// Delegates only `state`; a floor import. on-response/on-notification are inert.
 type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
 type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
 
 def on-message(msg) =
   host state in
-    ( state.put(msg.payload, msg.payload) ;
-      ( state.delete(msg.payload) ;
-        (match state.get(msg.payload) with
-          | None(_) =>
-              { requests = [{ contract = msg.contract, payload = msg.payload, token = b"", deadlineNanos = None }],
-                outcome = Outcome.Continue }
-          | Some(_) =>
-              { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = b"delete-did-not-remove" }) }) ) )
+    (match state.get(b"cell") with
+      | None(_) =>
+          ( state.put(b"cell", msg.payload) ;
+            { requests = [], outcome = Outcome.Continue } )
+      | Some(_) =>
+          ( state.delete(b"cell") ;
+            (match state.get(b"cell") with
+              | None(_) =>
+                  { requests = [{ contract = msg.contract, payload = msg.payload, token = b"", deadlineNanos = None }],
+                    outcome = Outcome.Continue }
+              | Some(_) =>
+                  { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = b"delete-did-not-remove" }) }) ))
 
 def on-response(_resp) =
   { requests = [], outcome = Outcome.Continue }
