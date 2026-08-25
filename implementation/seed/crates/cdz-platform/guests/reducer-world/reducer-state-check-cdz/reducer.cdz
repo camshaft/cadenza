@@ -1,0 +1,66 @@
+// The STATE checker, as a Cadenza reducer guest (design/cadenza-platform.md §7/§9). The paired guest
+// (reducer-state-cdz) is delivered TWO messages: the first SETs a value in its state store, the second
+// RETURNs it (reads it back and emits it). This checker asserts that set-then-return round-trip observably
+// happened ACROSS the two messages — LOG-ONLY, guest-agnostic.
+//
+// Same three schema imports as the other checkers (check Envelope / verdict Verdict / log-schema
+// LogRecord+Entry — the log carries KvPut/Emitted). The `libs` manifest beside this file lists them.
+//
+// JUDGEMENT: pass iff some Emitted(payload = V) — the RETURN — carries a value V that was written to the state
+// store by some KvPut(value = V) — the SET. Since the emit happens on the second message and the put on the
+// first, a match proves the store persisted the value across folds. RELATIONAL on the value, no hardcoded
+// bytes. NON-VACUOUS: a guest that fails to instantiate, or a store that does not persist across messages,
+// emits no matching value → fail. Settled idioms (List.at-None ends the walk, LogRecord destructured in the
+// Some arm, the equality folded into a match guard).
+import { Envelope } from "check"
+import { Verdict } from "verdict"
+import { LogRecord, Entry } from "log-schema"
+
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+// Does some KvPut at index >= i write value == v? (the reducer stored v in its state.)
+def has-put-value(records: List(LogRecord), i: Int64, v: Bytes) =
+  match List.at(records, i) with
+  | Option.None(_) => false
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      (match rec.entry with
+        | Entry.KvPut(p) if (p.value == v) => true
+        | _ => has-put-value(records, i + 1, v))
+
+// Is some Emitted(payload = V) — the RETURN — matched by a KvPut(value = V) — the SET? (value round-tripped
+// through the state store across the two messages.)
+def set-then-returned(records: List(LogRecord), i: Int64) =
+  match List.at(records, i) with
+  | Option.None(_) => false
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      (match rec.entry with
+        | Entry.Emitted(e) if has-put-value(records, 0, e.payload) => true
+        | _ => set-then-returned(records, i + 1))
+
+def verdict-payload(records: List(LogRecord)) =
+  if set-then-returned(records, 0)
+  then Value.encode(Verdict.Verdict({ pass = true, messages = [] }))
+  else Value.encode(Verdict.Verdict({ pass = false,
+                                      messages = ["no Emitted value matched a KvPut value: the state store did not return the set value across messages"] }))
+
+def verdict-req(verdict-contract: Bytes, payload: Bytes) =
+  { contract = verdict-contract, payload = payload, token = b"", deadlineNanos = None }
+
+def on-message(msg) =
+  match (Value.decode(msg.payload) : Option(Envelope)) with
+  | Some(Envelope.Check(c)) =>
+      (match (Value.decode(c.log) : Option(List(LogRecord))) with
+       | Some(records) =>
+           { requests = [verdict-req(c.verdict, verdict-payload(records))], outcome = Outcome.Continue }
+       | None =>
+           { requests = [verdict-req(c.verdict,
+                                     Value.encode(Verdict.Verdict({ pass = false,
+                                                                    messages = ["observation log did not decode"] })))],
+             outcome = Outcome.Continue })
+  | None =>
+      { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = msg.payload }) }
+
+def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
+def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
+export { on-message, on-response, on-notification }

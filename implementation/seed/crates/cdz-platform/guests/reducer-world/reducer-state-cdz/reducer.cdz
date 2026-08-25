@@ -1,0 +1,38 @@
+// A reducer exposing the THREE key-value STATE operations (design/cadenza-platform.md §7), dispatched by the
+// delivered message so ONE program serves every state-store conformance run — only the harness checker
+// differs. The op is the message payload as a sentinel: `get` reads the fixed cell and echoes the stored
+// value; `delete` removes it and confirms it is gone (echoing a marker only on the expected miss); any other
+// payload is a SET, writing that payload at the cell. Runs drive it with two messages (set, then get or
+// delete), so a returned value or an observed removal proves the store PERSISTED across folds. Delegates only
+// `state`, a floor import. on-response/on-notification are inert.
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+def on-message(msg) =
+  host state in
+    (if (msg.payload == b"get") then
+       (match state.get(b"cell") with
+         | Some(v) =>
+             { requests = [{ contract = msg.contract, payload = v, token = b"", deadlineNanos = None }],
+               outcome = Outcome.Continue }
+         | None(_) =>
+             { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = b"get-miss" }) })
+     else (if (msg.payload == b"delete") then
+       ( state.delete(b"cell") ;
+         (match state.get(b"cell") with
+           | None(_) =>
+               { requests = [{ contract = msg.contract, payload = b"deleted", token = b"", deadlineNanos = None }],
+                 outcome = Outcome.Continue }
+           | Some(_) =>
+               { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = b"delete-did-not-remove" }) }) )
+     else
+       ( state.put(b"cell", msg.payload) ;
+         { requests = [], outcome = Outcome.Continue } )))
+
+def on-response(_resp) =
+  { requests = [], outcome = Outcome.Continue }
+
+def on-notification(_note) =
+  { requests = [], outcome = Outcome.Continue }
+
+export { on-message, on-response, on-notification }
