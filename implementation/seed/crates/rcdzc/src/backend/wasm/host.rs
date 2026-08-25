@@ -89,6 +89,8 @@ pub fn record_field_abi_reaches_bytes(f: &RecordFieldAbi) -> bool {
         RecordFieldAbi::List(elem) => record_field_abi_reaches_bytes(elem),
         // A `tuple<…>` reaches `(list u8)` iff any element does.
         RecordFieldAbi::Tuple(elems) => elems.iter().any(record_field_abi_reaches_bytes),
+        // An `option<T>` reaches `(list u8)` iff its payload does (option<bytes>); a scalar payload does not.
+        RecordFieldAbi::Option(payload) => record_field_abi_reaches_bytes(payload),
     }
 }
 
@@ -106,6 +108,9 @@ pub fn record_field_abi_needs_memory(f: &RecordFieldAbi) -> bool {
         // record FIELD flattens inline with no mem; as a list element it's always in-mem, but the list itself
         // forces mem via the `List(_)` arm, so this only decides a record's tuple FIELD).
         RecordFieldAbi::Tuple(elems) => elems.iter().any(record_field_abi_needs_memory),
+        // An `option<T>` field flattens to `(disc, flatten(payload))` — it needs mem iff its payload does
+        // (option<bytes> copies a rope; an option<scalar> flattens with no mem).
+        RecordFieldAbi::Option(payload) => record_field_abi_needs_memory(payload),
     }
 }
 
@@ -157,6 +162,12 @@ pub enum RecordFieldAbi {
     /// its elements inline (like a nested record). Element ABIs are themselves `RecordFieldAbi`, so arbitrary
     /// nesting composes.
     Tuple(Vec<RecordFieldAbi>),
+    /// An `option<T>` field — a 2-case variant `{ none, some(T) }`. Its component type is an `(option <T>)`
+    /// DEFINED type. As a record FIELD it flattens (canonical variant flatten) to `(disc:i32, flatten(T))` —
+    /// the guest branches on the value-heap Option's discriminant: Some → `(1, payload)`, None → `(0, 0-pad)`.
+    /// This increment carries a SCALAR payload only (`Box<Scalar>`); an `option<bytes>`/`option<compound>` is a
+    /// later increment.
+    Option(Box<RecordFieldAbi>),
 }
 
 /// One host-delegated operation the program performs — its declaring effect's NAME (the WIT interface),
@@ -286,13 +297,22 @@ fn field_boundary_abi(db: &mut Db, ty: &Ty) -> Option<RecordFieldAbi> {
             }
             Some(RecordFieldAbi::Tuple(abis))
         }
-        // A `result<list<u8>, enum-or-variant>` field (the answer-back envelope) — carries the err's case
-        // names. `err_is_variant` defaults to `false` (enum) here — the guest `Sum` is payload-less and cannot
-        // tell which constructor the host declared; `reorder_record_fields_to_wit` stamps it from the WIT.
-        _ => result_bytes_enum(db, ty).map(|err_cases| RecordFieldAbi::Result {
-            err_cases,
-            err_is_variant: false,
-        }),
+        _ => {
+            // An `option<scalar>` field: a 2-case variant `{ none, some(scalar) }` flattening to `(disc,
+            // scalar)`. The payload must itself cross as a SCALAR this increment (an option<bytes>/
+            // option<compound> is a later slice — decline so the marshal's `(disc, scalar)` flatten holds).
+            if let Some(payload) = option_payload_ty(db, ty) {
+                return abi_val_type(&payload)
+                    .map(|pv| RecordFieldAbi::Option(Box::new(RecordFieldAbi::Scalar(pv))));
+            }
+            // A `result<list<u8>, enum-or-variant>` field (the answer-back envelope) — carries the err's case
+            // names. `err_is_variant` defaults to `false` (enum) here — the guest `Sum` is payload-less and
+            // cannot tell which constructor the host declared; `reorder_record_fields_to_wit` stamps it from WIT.
+            result_bytes_enum(db, ty).map(|err_cases| RecordFieldAbi::Result {
+                err_cases,
+                err_is_variant: false,
+            })
+        }
     }
 }
 

@@ -1640,6 +1640,8 @@ fn record_abi_has_bytes(fields: &[(String, host::RecordFieldAbi)]) -> bool {
         host::RecordFieldAbi::Tuple(elems) => {
             elems.iter().any(host::record_field_abi_reaches_bytes)
         }
+        // An `option<T>` field needs it iff its payload does.
+        host::RecordFieldAbi::Option(payload) => host::record_field_abi_reaches_bytes(payload),
     })
 }
 
@@ -1731,6 +1733,14 @@ fn record_field_cref(
             let tup_def = base + 2 * table.len() as u32;
             table.push(emit_cdef(&CDef::Tuple(elem_crefs)));
             CRef::Idx(tup_def + 1)
+        }
+        // An `option<T>` field: build the payload's CRef (children-first) then lay the `(option <T>)` DEFINED
+        // type and reference its index.
+        host::RecordFieldAbi::Option(payload) => {
+            let payload_cref = record_field_cref(payload, list_idx, base, table);
+            let opt_def = base + 2 * table.len() as u32;
+            table.push(emit_cdef(&CDef::Option(payload_cref)));
+            CRef::Idx(opt_def + 1)
         }
     }
 }

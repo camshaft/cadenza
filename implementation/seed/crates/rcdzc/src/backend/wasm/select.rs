@@ -3727,6 +3727,20 @@ fn collect_record_field_ops(
                 collect_list_elem_ops(db, &elem, out);
             }
         }
+        // An `option<scalar>` field: the marshal `arr-get`s the Option, reads its `sum-disc`, and on the Some
+        // arm `sum-payload` + the payload scalar's unbox op — declare exactly what it calls.
+        _ if crate::backend::wasm::host::option_payload_ty(db, fty)
+            .is_some_and(|p| valtype_of(&p).is_some()) =>
+        {
+            out.insert(OP_ARR_GET);
+            out.insert(OP_SUM_DISC);
+            out.insert(OP_SUM_PAYLOAD);
+            if let Some(payload) = crate::backend::wasm::host::option_payload_ty(db, fty)
+                && let Ok(Some(read)) = get_op_ty(db, &payload)
+            {
+                out.insert(read);
+            }
+        }
         _ => {
             if let Ty::Record(sub) = fty {
                 out.insert(OP_ARR_GET);
@@ -8994,10 +9008,78 @@ fn emit_record_arg_marshal(
                 )?;
                 // (outer-ptr, count) left on the stack = the list field's 2 flattened core slots.
             }
+            // An `option<scalar>` field flattens (canonical variant flatten) to `(disc:i32, payload)`. Branch on
+            // the value-heap Option's discriminant: Some (the guest decl's single-payload arm) → `(1, unbox(
+            // payload))`; None → `(0, 0)`. `BlockType` is single-value, so the `if` arms SIDE-EFFECT into scratch
+            // slots (disc_out, pval) and we push the 2 flattened values AFTER the `if` — the same shape as the
+            // `result<list<u8>, enum>` field arm. WIT `option` disc is some=1 / none=0.
+            None if crate::backend::wasm::host::option_payload_ty(db, fty)
+                .is_some_and(|p| valtype_of(&p).is_some()) =>
+            {
+                // An option<scalar> field touches no `mem` (it flattens to core slots) — no `cursor` needed.
+                let payload_ty = crate::backend::wasm::host::option_payload_ty(db, fty)
+                    .expect("option-shaped by the guard");
+                let pv = valtype_of(&payload_ty).expect("a scalar option payload has a valtype");
+                let read = get_op_ty(db, &payload_ty)?
+                    .ok_or_else(|| Reject::decline("an option payload scalar has no unbox op"))?;
+                // The guest decl's SOME discriminant = the single-payload variant's index.
+                let crate::ty::Ty::Sum { decl, .. } = fty.strip_nominal() else {
+                    unreachable!("option is a Sum")
+                };
+                let some_disc = {
+                    let d = db.type_decl_by_occ(*decl).ok_or_else(|| {
+                        Reject::decline("the option field's sum decl was not found")
+                    })?;
+                    d.variants
+                        .iter()
+                        .position(|v| v.payloads.len() == 1)
+                        .ok_or_else(|| Reject::decline("the option field has no payload variant"))?
+                        as i32
+                };
+                let ans = work_base + 4;
+                let disc_out = work_base + 5;
+                let pval = work_base + 6;
+                scratch_ty.insert(ans, ValType::I32);
+                scratch_ty.insert(disc_out, ValType::I32);
+                scratch_ty.insert(pval, pv);
+                *high = (*high).max(work_base + 7);
+                let zero = match pv {
+                    ValType::I64 => Lir::ConstI64(0),
+                    ValType::F64 => Lir::F64ConstBits(0),
+                    ValType::F32 => Lir::F32ConstBits(0),
+                    _ => Lir::ConstI32(0),
+                };
+                out.push(Lir::LocalGet(rec_slot));
+                out.push(Lir::ConstI32(i as i32));
+                out.push(Lir::CallImport(OP_ARR_GET)); // [option handle] (borrows rec)
+                out.push(Lir::LocalSet(ans));
+                out.push(Lir::LocalGet(ans));
+                out.push(Lir::CallImport(OP_SUM_DISC)); // [guest disc]
+                out.push(Lir::ConstI32(some_disc));
+                out.push(Lir::I32Eq);
+                out.push(Lir::If(BlockType::Empty)); // guest disc == some_disc → Some
+                out.push(Lir::ConstI32(1)); // WIT `option` some = 1
+                out.push(Lir::LocalSet(disc_out));
+                out.push(Lir::LocalGet(ans));
+                out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // [payload handle]
+                out.push(Lir::CallImport(read)); // [payload scalar]
+                if read == OP_GET_INT && matches!(pv, ValType::I32) {
+                    out.push(Lir::I32WrapI64); // a narrow int / char payload narrows to its i32 slot
+                }
+                out.push(Lir::LocalSet(pval));
+                out.push(Lir::Else); // None
+                out.push(Lir::ConstI32(0)); // WIT `option` none = 0
+                out.push(Lir::LocalSet(disc_out));
+                out.push(zero);
+                out.push(Lir::LocalSet(pval));
+                out.push(Lir::End);
+                out.push(Lir::LocalGet(disc_out)); // push (disc, payload)
+                out.push(Lir::LocalGet(pval));
+            }
             None => {
                 return Err(Reject::decline(
                     "a record host-arg field has no boundary read (only scalar, list<u8>, list<T>, \
-                     nested-record, and result<list<u8>, enum> fields cross this increment)",
+                     option<scalar>, nested-record, and result<list<u8>, enum> fields cross this increment)",
                 ));
             }
         }
