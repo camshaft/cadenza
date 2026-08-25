@@ -7170,6 +7170,7 @@ todo	a block-wrapped OUTER-effect perform in a nested handle's INIT declines cle
 todo	a block-wrapped OUTER-effect perform in a non-tail do-statement INSIDE a nested handler body declines cleanly (adv-69 c3-nested sub-face)
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject
 todo	a constant-try helper that fails feeds the None arm's fallback into resume
+todo	a list of records with a bytes leaf crosses the export boundary via an imposed WIT world
 todo	a mutually-recursive group with a BRANCH-PERFORM sharing a strict expr with the mutual call declines cleanly (adv-69 rw4 sub-face)
 todo	a mutually-recursive performer pair whose out-state a trailing caller draw observes declines cleanly (completeness gap)
 todo	a none-only option<s64> record field resolves its element type from an imposed WIT world
