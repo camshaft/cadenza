@@ -2957,6 +2957,7 @@ pass	a record match pattern destructures a record scrutinee by field
 pass	a record missing a field the annotation names is rejected
 pass	a record of quantities RETURNED as a value renders every field scaled to its reference
 pass	a record op argument with a HEAP field crosses the perform and its scalar field accumulates state
+pass	a record param carrying a bytes leaf beside a scalar compiles and runs (via an imposed WIT world)
 pass	a record param field is read by NAME when the WIT field order is not name-lexicographic (via an imposed WIT world)
 pass	a record pattern destructures a ROW-OP derived record (with-chain result)
 pass	a record pattern over a Map-STORED record reads live heap fields after retrieval
