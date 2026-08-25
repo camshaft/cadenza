@@ -410,11 +410,19 @@ impl std::error::Error for SpecError {}
 impl HarnessSpec {
     /// Decode a harness description from a Cadenza binary AST. Total: any malformation is a [`SpecError`].
     pub fn decode(bytes: &[u8]) -> Result<Self, SpecError> {
+        Self::decode_with(bytes, |_| None)
+    }
+
+    /// Decode a run, resolving `BlobBytes(<name>)` / `BlobHash(<name>)` reference pseudo-functions BEFORE
+    /// interpreting the value — so a reference resolves wherever it appears (any field), not special-cased per
+    /// field (`design/cadenza-platform.md` §3/§8). `load` materializes a `path`-form blob's bytes (the harness
+    /// supplies guest programs by path); [`decode`](Self::decode) passes a no-op loader for the all-inline case.
+    pub fn decode_with(
+        bytes: &[u8],
+        load: impl FnMut(&str) -> Option<Bytes>,
+    ) -> Result<Self, SpecError> {
         let arenas = codec::decode(bytes).ok_or(SpecError::Undecodable)?;
-        // Resolve reference pseudo-functions (`BlobBytes(<name>)` / `BlobHash(<name>)`) against the run's
-        // inline blobs BEFORE interpreting the value, so a reference resolves wherever it appears — a payload,
-        // or any other field — rather than being special-cased per field (`design/cadenza-platform.md` §3/§8).
-        let resolved = resolve_references(&arenas)?;
+        let resolved = resolve_references(&arenas, load)?;
         Self::read(&resolved, resolved.root)
     }
 
@@ -1215,11 +1223,15 @@ fn read_contract_id(arenas: &Arenas, event: StructId) -> Result<ContractId, Spec
     }
 }
 
-/// The run's INLINE blobs by name — the table a `BlobBytes`/`BlobHash` reference resolves against. Only inline
-/// (`bytes = b"…"`) blobs are resolvable in the pass; a `path` blob's bytes are loaded lazily at build for a
-/// spawn, so a reference to one is an unknown name (rejected). Every harness run the executable reads carries
-/// inline blobs (the build step inlines a program named by a spawn), so this covers the real cases.
-fn inline_blob_table(arenas: &Arenas) -> BTreeMap<String, Bytes> {
+/// The run's blobs by name — the table a `BlobBytes`/`BlobHash` reference resolves against. An inline
+/// (`bytes = b"…"`) blob contributes its bytes directly; a `path = "…"` blob contributes the bytes `load`
+/// materializes from that path (the harness supplies guest programs by path, so a reference to one resolves
+/// only once the loader can read it — at build, not decode). A path a caller supplies no loader for (or that
+/// fails to read) is absent, so a reference to it is a clean rejection rather than empty bytes.
+fn blob_table(
+    arenas: &Arenas,
+    mut load: impl FnMut(&str) -> Option<Bytes>,
+) -> BTreeMap<String, Bytes> {
     let mut table = BTreeMap::new();
     let Some(blobs) =
         record_field(arenas, arenas.root, "blobs").and_then(|id| list_items(arenas, id))
@@ -1227,10 +1239,21 @@ fn inline_blob_table(arenas: &Arenas) -> BTreeMap<String, Bytes> {
         return table;
     };
     for &blob in blobs {
-        if let Ok(Some(name)) = str_field(arenas, blob, "name")
-            && let Some(bytes) =
-                record_field(arenas, blob, "bytes").and_then(|id| read_bytes(arenas, id))
+        let Ok(Some(name)) = str_field(arenas, blob, "name") else {
+            continue;
+        };
+        let bytes = if let Some(bytes) =
+            record_field(arenas, blob, "bytes").and_then(|id| read_bytes(arenas, id))
         {
+            Some(bytes)
+        } else if let Some(path) =
+            record_field(arenas, blob, "path").and_then(|id| arenas.as_str(id))
+        {
+            load(path)
+        } else {
+            None
+        };
+        if let Some(bytes) = bytes {
             table.insert(name.to_string(), bytes);
         }
     }
@@ -1243,8 +1266,11 @@ fn inline_blob_table(arenas: &Arenas) -> BTreeMap<String, Bytes> {
 /// resolution is thus an explicit resolve CALL (its head names how to resolve), the cleaner and more general
 /// shape (`design/cadenza-platform.md` §3/§8). Everything else is copied unchanged. An unknown name, a wrong
 /// arity, or a non-literal name arg is a clean [`SpecError`] — reject rather than resolve to nothing.
-fn resolve_references(arenas: &Arenas) -> Result<Arenas, SpecError> {
-    let table = inline_blob_table(arenas);
+fn resolve_references(
+    arenas: &Arenas,
+    load: impl FnMut(&str) -> Option<Bytes>,
+) -> Result<Arenas, SpecError> {
+    let table = blob_table(arenas, load);
     let mut b = Builder::new();
     let root = rewrite_references(arenas, arenas.root, &table, &mut b)?;
     Ok(b.finish(root))
@@ -1375,7 +1401,7 @@ fn answer_to_ast(b: &mut Builder, answer: &Result<Bytes, Error>) -> StructId {
 mod tests {
     use super::{
         BlobSource, BlobSpec, DeliveryEvent, GraphEdge, HarnessSpec, PureRun, RegistrySpec,
-        SpecError, resolve_references,
+        SpecError, read_bytes, record_field, resolve_references,
     };
     use crate::contract_value::bare_ctor;
     use crate::contract_value::{bytes_leaf, record, uint_leaf};
@@ -2460,7 +2486,8 @@ mod tests {
                 ],
             )
         });
-        let resolved = resolve_references(&arenas).expect("resolve the BlobHash reference");
+        let resolved =
+            resolve_references(&arenas, |_| None).expect("resolve the BlobHash reference");
         let spec = HarnessSpec::read(&resolved, resolved.root).expect("read the resolved spec");
         let want = Bytes::copy_from_slice(ProgramHash::of(sub).hash().as_bytes());
         match &spec.deliveries[0].1 {
@@ -2480,11 +2507,48 @@ mod tests {
             record(b, vec![("x", msg)])
         });
         assert_eq!(
-            resolve_references(&arenas),
+            resolve_references(&arenas, |_| None),
             Err(SpecError::UnknownBlob {
                 referrer: "BlobHash reference".to_string(),
                 blob: "missing".to_string(),
             })
+        );
+    }
+
+    /// A `path`-form blob's bytes are materialized through the loader, so a `BlobHash` reference to a
+    /// path-supplied program (how the harness supplies guests) resolves at build — the case #3341's
+    /// decode-time inline-only pass got wrong.
+    #[test]
+    fn resolve_references_materializes_a_path_blob_via_the_loader() {
+        let sub = b"path-supplied-program-bytes";
+        let arenas = built(|b| {
+            let name = s(b, "sub");
+            let path = s(b, "/nix/store/sub.wasm");
+            let blob = record(b, vec![("name", name), ("path", path)]);
+            let blobs = list(b, vec![blob]);
+            let ref_name = s(b, "sub");
+            let bhash = bare_ctor(b, "BlobHash", vec![ref_name]);
+            let msg = record(b, vec![("payload", bhash)]);
+            let registry = reg(b, "sub");
+            record(
+                b,
+                vec![("registry", registry), ("blobs", blobs), ("x", msg)],
+            )
+        });
+        // A loader that materializes the path (as the itest binary does via fs::read).
+        let resolved = resolve_references(&arenas, |path| {
+            assert_eq!(path, "/nix/store/sub.wasm");
+            Some(Bytes::copy_from_slice(sub))
+        })
+        .expect("resolve the path-blob BlobHash reference");
+        // The `x.payload` node resolved to the path blob's content hash.
+        let x = record_field(&resolved, resolved.root, "x").expect("x field");
+        let payload = record_field(&resolved, x, "payload").expect("payload field");
+        assert_eq!(
+            read_bytes(&resolved, payload),
+            Some(Bytes::copy_from_slice(
+                ProgramHash::of(sub).hash().as_bytes()
+            ))
         );
     }
 }
