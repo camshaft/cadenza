@@ -1440,3 +1440,41 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 5 Int64))
   (call   main (: 9 Int64)) (output (: 9 Int64)))
+
+(case "a Value.encode/Value.decode round-trip of a NARROW signed-int single-ctor sign-extends correctly"
+  (doc    "Pins the NARROW-INT box path of the single-ctor boxing that the Int64 case above does NOT exercise:
+           `(type Tag (Mk Int8))` erases to `Ty::Nominal{inner:Int8}` = a bare i32 SCALAR (a ≤32-bit int
+           occupies an i32 slot). Value.encode must SIGN-extend it into the i64 `box-int` cell
+           (`I64ExtendI32S`, not `I64ExtendI32U`) before boxing — a NEGATIVE seed proves the sign is
+           preserved: a wrong zero-extend would turn -5 (i32 `0xFFFF_FFFB`) into 4294967291, giving a garbage
+           round-trip. `Value.decode (Value.encode (Mk n)) == Some (Mk n)`; the match unwraps `k : Int8` and
+           widens via `Int64.of` for the boundary. `main -5 -> -5`, `main 100 -> 100`; a lost round-trip gives
+           -1. wasm-only (rust `Value` emit is a later increment) — additive baseline.")
+  (input  (do
+            (type Tag (Mk Int8))
+            (def (main (: n Int8))
+              (match (: (Value.decode (Value.encode (Mk n))) (Option Tag))
+                ((Some m) (match m ((Mk k) (Int64.of k))))
+                ((None u) (- 0 1))))
+            (export main)))
+  (call   main (: -5 Int8)) (output (: -5 Int64))
+  (call   main (: 100 Int8)) (output (: 100 Int64)))
+
+(case "a Value.encode/Value.decode round-trip of a Float64 single-ctor uses box-float"
+  (doc    "Pins the FLOAT box path of the single-ctor boxing (a distinct box op from box-int): `(type Temp
+           (Celsius Float64))` erases to `Ty::Nominal{inner:Float64}` = a bare f64 SCALAR. Value.encode boxes
+           it via `box-float` (NOT box-int — no i32→i64 extend, the f64 is the op's arg directly), whose
+           descriptor is `Named(Temp, Float)`, so the form is the elided-head `(: 3.5 Temp)`; decode
+           reconstructs via `op_box_float`. `Value.decode (Value.encode (Celsius n)) == Some (Celsius n)`; the
+           match unwraps `k : Float64` and returns it. `main 3.5 -> 3.5`, `main -2.25 -> -2.25` (both exactly
+           representable, so the round-trip is byte-exact); a lost round-trip gives -1.0. wasm-only (rust
+           `Value` emit is a later increment) — additive baseline.")
+  (input  (do
+            (type Temp (Celsius Float64))
+            (def (main (: n Float64))
+              (match (: (Value.decode (Value.encode (Celsius n))) (Option Temp))
+                ((Some m) (match m ((Celsius k) k)))
+                ((None u) -1.0)))
+            (export main)))
+  (call   main (: 3.5 Float64)) (output (: 3.5 Float64))
+  (call   main (: -2.25 Float64)) (output (: -2.25 Float64)))
