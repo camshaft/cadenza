@@ -4583,6 +4583,207 @@ fn an_identity_performing_reducer_emits_and_loads() {
     );
 }
 
+/// A reducer world importing TWO host interfaces — `cadenza:platform/state` (`get: func(key: list<u8>) ->
+/// option<list<u8>>`) AND `cadenza:platform/identity` (`id: func() -> list<u8>`) — plus the typed guest
+/// export. Drives the MULTI-INTERFACE host emit: a guest performing ops from both interfaces must emit TWO
+/// imported component instance-types (each with its own defined types), not decline.
+fn state_and_identity_two_interface_world_bytes() -> Vec<u8> {
+    use crate::ast::{Builder, Leaf};
+    let mut b = Builder::new();
+    let list_u8 = |b: &mut Builder| {
+        let u8h = b.name("u8");
+        let u8p = b.list(vec![u8h]);
+        let lh = b.atom_leaf(Leaf::Str("list".into()));
+        b.list(vec![lh, u8p])
+    };
+    let field = |b: &mut Builder, name: &str, ty| {
+        let n = b.name(name);
+        b.list(vec![n, ty])
+    };
+    let record = |b: &mut Builder, fields: Vec<crate::ast::StructId>| {
+        let h = b.atom_leaf(Leaf::Str("record".into()));
+        let mut v = vec![h];
+        v.extend(fields);
+        b.list(v)
+    };
+    let bytes_field = |b: &mut Builder, name: &str| {
+        let t = list_u8(b);
+        field(b, name, t)
+    };
+    let message = {
+        let m_contract = bytes_field(&mut b, "contract");
+        let m_payload = bytes_field(&mut b, "payload");
+        let m_token = bytes_field(&mut b, "token");
+        record(&mut b, vec![m_contract, m_payload, m_token])
+    };
+    let step = {
+        let request = {
+            let r_contract = bytes_field(&mut b, "contract");
+            let r_payload = bytes_field(&mut b, "payload");
+            let r_token = bytes_field(&mut b, "token");
+            let r_deadline = {
+                let u64h = b.name("u64");
+                let u64t = b.list(vec![u64h]);
+                let oh = b.atom_leaf(Leaf::Str("option".into()));
+                let ot = b.list(vec![oh, u64t]);
+                field(&mut b, "deadline-nanos", ot)
+            };
+            record(&mut b, vec![r_contract, r_payload, r_token, r_deadline])
+        };
+        let requests_list = {
+            let lh = b.atom_leaf(Leaf::Str("list".into()));
+            b.list(vec![lh, request])
+        };
+        let closed = {
+            let c_schema = bytes_field(&mut b, "schema");
+            let c_reason = bytes_field(&mut b, "reason");
+            record(&mut b, vec![c_schema, c_reason])
+        };
+        let outcome = {
+            let cont_case = {
+                let n = b.name("continue");
+                b.list(vec![n])
+            };
+            let close_case = {
+                let n = b.name("close");
+                b.list(vec![n, closed])
+            };
+            let vh = b.atom_leaf(Leaf::Str("variant".into()));
+            b.list(vec![vh, cont_case, close_case])
+        };
+        let s_requests = field(&mut b, "requests", requests_list);
+        let s_outcome = field(&mut b, "outcome", outcome);
+        record(&mut b, vec![s_requests, s_outcome])
+    };
+    let on_message = {
+        let func_h = b.name("func");
+        let param_h = b.name("param");
+        let pn = b.name("m");
+        let param_node = b.list(vec![param_h, pn, message]);
+        let result_h = b.name("result");
+        let result_node = b.list(vec![result_h, step]);
+        let func = b.list(vec![func_h, param_node, result_node]);
+        let member_h = b.name("member");
+        let mn = b.name("on-message");
+        b.list(vec![member_h, mn, func])
+    };
+    let exp_h = b.name("export");
+    let iname = b.name("guest");
+    let export = b.list(vec![exp_h, iname, on_message]);
+    // import cadenza:platform/state { get: func(key: list<u8>) -> option<list<u8>> }
+    let get_member = {
+        let func_h = b.name("func");
+        let p1h = b.name("param");
+        let p1n = b.name("key");
+        let p1ty = list_u8(&mut b);
+        let p1 = b.list(vec![p1h, p1n, p1ty]);
+        let result_h = b.name("result");
+        let opt_bytes = {
+            let oh = b.atom_leaf(Leaf::Str("option".into()));
+            let inner = list_u8(&mut b);
+            b.list(vec![oh, inner])
+        };
+        let rnode = b.list(vec![result_h, opt_bytes]);
+        let func = b.list(vec![func_h, p1, rnode]);
+        let member_h = b.name("member");
+        let mn = b.name("get");
+        b.list(vec![member_h, mn, func])
+    };
+    let imp_h = b.name("import");
+    let state_name = b.name("cadenza:platform/state");
+    let state = b.list(vec![imp_h, state_name, get_member]);
+    // import cadenza:platform/identity { id: func() -> list<u8> } — a SECOND interface (nullary bytes result).
+    let id_member = {
+        let func_h = b.name("func");
+        let result_h = b.name("result");
+        let id_out = list_u8(&mut b);
+        let rnode = b.list(vec![result_h, id_out]);
+        let func = b.list(vec![func_h, rnode]); // nullary
+        let member_h = b.name("member");
+        let mn = b.name("id");
+        b.list(vec![member_h, mn, func])
+    };
+    let imp2_h = b.name("import");
+    let identity_name = b.name("cadenza:platform/identity");
+    let identity = b.list(vec![imp2_h, identity_name, id_member]);
+    let world_h = b.name("world");
+    let wn = b.name("w");
+    let world = b.list(vec![world_h, wn, export, state, identity]);
+    let a = b.finish(world);
+    crate::codec::encode(&a)
+}
+
+/// MULTI-INTERFACE host emit: a typed reducer performing ops from TWO host interfaces in one guest —
+/// `identity.id : () -> list<u8>` (interface `cadenza:platform/identity`) AND `state.get : (list<u8>) ->
+/// option<list<u8>>` (interface `cadenza:platform/state`) — EMITS + VALIDATES + LOADS. Both need linear
+/// memory (a spilled `list<u8>`/`option<list<u8>>` result + a `list<u8>` param), so this drives the shared-
+/// `"mem"` multi-interface path: TWO imported component instance-types (identity + state), the host ops
+/// FLATTENED into one `"host"` core instance, one shared memory + allocator. Before the multi-interface
+/// emit this DECLINED ("a reducer performing more than one host interface is not yet emitted"). The default-
+/// handler guest (graph + deliver) is the flagship consumer; this pins the mechanics on the simplest 2-
+/// interface shape. wasmparser validation checks the emitted component is structurally well-formed.
+#[test]
+fn a_typed_reducer_performing_two_host_interfaces_emits_and_loads() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (type Outcome Continue (Close (Record (schema Bytes) (reason Bytes)))) \
+                 (effect state (op get (-> Bytes (Option Bytes)))) \
+                 (effect identity (op id (-> Unit Bytes))) \
+                 (def (onMessage (: m (Record (contract Bytes) (payload Bytes) (token Bytes)))) \
+                   (host (state identity) \
+                     (record \
+                       (requests (list (record \
+                                         (contract (identity.id unit)) \
+                                         (payload (match (state.get (. m token)) \
+                                                    ((Some v) v) \
+                                                    ((None) (. m payload)))) \
+                                         (token (. m token)) \
+                                         (deadline-nanos Option.None)))) \
+                       (outcome Outcome.Continue)))) \
+                 (export onMessage))";
+    let out = crate::compile::compile(
+        &[
+            crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            ),
+            crate::cli::component_name_artifact("cadenza:platform/guest"),
+            crate::abi::Artifact::new(
+                crate::link::KIND_WIT_WORLD,
+                "wit-world",
+                state_and_identity_two_interface_world_bytes(),
+            ),
+        ],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        !out.has_error(),
+        "a reducer performing two host interfaces must emit (multi-interface host shape): {:?}",
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    let bytes = out
+        .artifact(crate::backend::Target::Wasm.artifact_kind())
+        .expect("the two-interface reducer emits a component");
+    if std::env::var("VRB_DUMP_TWO_IFACE").is_ok() {
+        std::fs::write("/tmp/vrb-two-iface.wasm", bytes).unwrap();
+    }
+    let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+    v.validate_all(bytes).expect(
+        "the two-interface reducer component validates (two imported host instances + shared memory)",
+    );
+    cdz_run::required_runtime(bytes)
+        .expect("the two-interface reducer component loads on the pinned wasmtime");
+    let text = String::from_utf8_lossy(bytes);
+    assert!(
+        text.contains("cadenza:platform/state") && text.contains("cadenza:platform/identity"),
+        "the reducer imports BOTH host interfaces at their world FQ names"
+    );
+}
+
 /// W4c-b-iii DX: a reducer with an IN-SOURCE `(world … (export <FQ-iface> …))` and NO `--component-name`
 /// (NO `KIND_COMPONENT_NAME` artifact) routes to the typed interface-instance emit — `compile` DERIVES the
 /// component name from the world's FQ export interface (`cadenza:platform/guest`). Without the derive, the

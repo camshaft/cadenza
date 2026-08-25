@@ -1041,168 +1041,52 @@ pub fn emit(
                 &import_name,
             ));
         }
-        // SINGLE host effect this increment (every host op shares one interface); multi-interface is later.
-        let effect = host_imports[0].effect.clone();
-        if host_imports.iter().any(|h| h.effect != effect) {
-            return Err(Reject::decline(
-                "a reducer performing more than one host interface is not yet emitted (single \
-                 interface per typed-interface guest; the multi-interface shape is a later increment)",
-            ));
+        // Group the host imports by INTERFACE (effect), preserving first-seen order — a reducer performing ops
+        // from N interfaces (graph + deliver, the default-handler guest) emits N imported component
+        // instance-types. The core side stays FLAT: all ops bind under one `"host"` module by name (group
+        // boundaries are invisible to it), so `core_module_with_wrappers` takes the flat `host_imports`.
+        let mut group_order: Vec<String> = Vec::new();
+        let mut grouped: std::collections::HashMap<String, Vec<host::HostImport>> =
+            std::collections::HashMap::new();
+        for hi in &host_imports {
+            if !grouped.contains_key(&hi.effect) {
+                group_order.push(hi.effect.clone());
+            }
+            grouped
+                .entry(hi.effect.clone())
+                .or_default()
+                .push(hi.clone());
         }
-        // A host op that needs LINEAR MEMORY — a `list<u8>`/`string` PARAM, or a compound RESULT
-        // (`list<u8>`/`option<list<u8>>`/`list<tuple>`) whose spilled return the guest lifts — must lower with a
-        // Memory canon option, so its memory must be available at lower-time (before the program core). That is
-        // the SHARED `"mem"` module shape (`assemble_typed_interface_with_host_runtime_mem`): the wrapper core
-        // IMPORTS `"mem"` and its `list<u8>`-leaf handling + the host-op lift share the one memory. A MEMORYLESS
-        // host op (scalar/unit — `clock.now : () -> u64`) takes the simpler defined-memory shape.
+        // Cross-interface op-name COLLISION: the merged `"host"` core instance exports each op BY NAME, so two
+        // interfaces sharing an op name would collide. `collect_host_imports` self-dedups by (effect, op), so a
+        // duplicate name here is a genuine cross-interface clash — decline (the interface-qualified host binding
+        // is a later increment). Single-interface guests never trip this.
+        {
+            let mut seen = std::collections::HashSet::new();
+            if host_imports.iter().any(|hi| !seen.insert(hi.op.clone())) {
+                return Err(Reject::decline(
+                    "two host ops share a name across the reducer's interfaces; the interface-qualified host \
+                     binding is a later increment",
+                ));
+            }
+        }
+        let mut groups = Vec::with_capacity(group_order.len());
+        for effect in &group_order {
+            groups.push(build_host_group(
+                db,
+                &world_bytes,
+                effect,
+                &grouped[effect],
+            )?);
+        }
+        // A host op that needs LINEAR MEMORY — a `list<u8>`/`string` PARAM, or a compound RESULT whose spilled
+        // return the guest lifts — lowers with a Memory canon option, so the SHARED `"mem"` module shape. The
+        // memory + realloc are COMPONENT-WIDE (one shared memory across all interfaces), so compute over ALL ops.
         let host_needs_memory = host::set_needs_memory(&host_imports)
             || host_imports.iter().any(|h| h.spilled_result.is_some());
-        // `typed_needs_realloc` (computed above) = a compound host RESULT is present → the shared-allocator
-        // shape (wrapper imports `"mem"`.`"cabi_realloc"`; `typed_layout` already carries the +1 import shift).
         let needs_realloc = typed_needs_realloc;
-        // The host interface's FQ WIT name (the import extern name) — the world import whose last `/`-segment
-        // kebab-matches the effect (the same match `is_world_import_op` uses).
-        let host_iface = {
-            use crate::backend::common::export_name::kebab_extern_name;
-            let arenas = crate::codec::decode(&world_bytes).ok_or_else(|| {
-                Reject::decline(
-                    "the target world did not decode for the host-import interface lookup",
-                )
-            })?;
-            let world = crate::wit_world::parse_target_world(&arenas, arenas.root)
-                .ok_or_else(|| Reject::decline("the target world did not parse"))?;
-            let ek = kebab_extern_name(&effect);
-            world
-                .imports
-                .iter()
-                .find(|i| kebab_extern_name(i.name.rsplit('/').next().unwrap_or(&i.name)) == ek)
-                .map(|i| i.name.clone())
-                .ok_or_else(|| {
-                    Reject::decline(
-                        "the performed host effect has no matching import interface in the world",
-                    )
-                })?
-        };
-        // The spilled-result SHAPE is read off each op's carried WIT result type (no per-shape bool flags):
-        // `option<list<u8>>`, `list<tuple<list<u8>,list<u8>>>`, or bare `list<u8>` — each selects which
-        // component defined-type the import instance-type prepends + the functype result index.
-        // The spilled-RESULT component defined types, built GENERALLY from each op's WIT result type (one
-        // recursion, no per-shape blocks) — `result_defs` laid after the shared `(list u8)`, `result_crefs`
-        // the per-op functype result reference. `list<list<u8>>` (graph.neighbors) rides this like any shape.
-        let (needs_list, result_defs, result_crefs) = build_host_result_types(db, &host_imports);
-        let has_spilled_result = host_imports.iter().any(|h| h.spilled_result.is_some());
-        // RECORD-param host arg (shape d): build a component `record` DEFINED type per record param (reused
-        // wit_ctype emitter, tag 0x72; all-scalar fields → each an inline primitive valtype). CONSTRAINED
-        // shape this slice (d1b): a record param composes ONLY when the host set declares NO other
-        // boundary-compound (no list<u8>/string param, no option/pairs/bytes compound result) and has a
-        // SINGLE record param — so the record lands at the host instance-type's LOCAL index 0, the index
-        // `host_op_comp_functype`'s Record arm references. A mixed/multi-record set needs the general
-        // record-type-index threading (a later slice) → decline cleanly rather than mis-index the boundary.
-        let record_params: Vec<&Vec<(String, host::RecordFieldAbi)>> = host_imports
-            .iter()
-            .flat_map(|h| &h.params)
-            .filter_map(|p| match p {
-                host::HostParam::Record(fields) => Some(fields),
-                _ => None,
-            })
-            .collect();
-        // ENUM params (graph.neighbors' `dir`) — a nominal type like a record, but coexists with a spilled
-        // result (base accounts for the result defined types). Distinct enum types across the set.
-        let enum_params: Vec<&Vec<String>> = host_imports
-            .iter()
-            .flat_map(|h| &h.params)
-            .filter_map(|p| match p {
-                host::HostParam::Enum(cases) => Some(cases),
-                _ => None,
-            })
-            .collect();
-        let has_bytes_param = host_imports
-            .iter()
-            .flat_map(|h| &h.params)
-            .any(|p| matches!(p, host::HostParam::Bytes));
-        // The (single) record host-arg's component `record` DEFINED types + the EXPORTED index of the TOP
-        // record (threaded into `host_op_comp_functype`'s Record arm). A NOMINAL record used by an import func
-        // is DEFINED then EXPORTED; the func + any enclosing field reference the EXPORTED index. Nested records
-        // (d3, the message envelope's `sender: origin`) are laid children-first by `build_record_import_types`.
-        // The `(list u8)` type is at index 0 when present (a `list<u8>` param OR a record byte field), so the
-        // record table starts at `base` = that count; entry `i` is define `base+2i` / export `base+2i+1`.
-        // The NOMINAL param types (record OR enum) are laid as DEFINE+EXPORT pairs AFTER the `(list u8)` type
-        // and the spilled-result defined types — so `base` (the first nominal define index) = the count of
-        // those prepends. A record and an enum currently don't co-occur, and a record still can't co-occur with
-        // a spilled result (its byte-index math predates the general result defs); an ENUM param, by contrast,
-        // composes WITH a spilled result (graph.neighbors: enum `dir` + `list<list<u8>>` result), since `base`
-        // accounts for `result_defs`. The op's `comp_functype` references the single nominal EXPORTED index.
-        let base = needs_list as u32 + result_defs.len() as u32;
-        let (record_defs, nominal_export_idx): (Vec<Vec<u8>>, u32) = {
-            if !record_params.is_empty() && !enum_params.is_empty() {
-                return Err(Reject::decline(
-                    "a host set mixing a record parameter and an enum parameter is not yet emitted (a single \
-                     nominal param type per set — record OR enum — this slice)",
-                ));
-            } else if !record_params.is_empty() {
-                let has_str_param = host_imports
-                    .iter()
-                    .flat_map(|h| &h.params)
-                    .any(|p| matches!(p, host::HostParam::Str));
-                let any_record_has_bytes = record_params.iter().any(|f| record_abi_has_bytes(f));
-                // Supported RECORD shape: a SINGLE record param, no String param, no spilled compound RESULT
-                // (a record's index math predates the general result defs — a later slice). A `list<u8>` PARAM
-                // is allowed (deliver's `target`) and shares the `(list u8)` type (index 0). A record with byte
-                // fields REQUIRES the `(list u8)` at index 0, so decline a byte-field record with no `list<u8>`
-                // param.
-                if record_params.len() > 1
-                    || has_str_param
-                    || has_spilled_result
-                    || (any_record_has_bytes && !has_bytes_param)
-                {
-                    return Err(Reject::decline(
-                        "a record host-argument composes only in a host set with a single record parameter, \
-                         no string parameter, and no option/list/bytes compound result; a record with \
-                         `list<u8>` fields additionally requires a sibling `list<u8>` parameter (the general \
-                         record-type-indexed host shape is a later increment)",
-                    ));
-                }
-                let mut table = Vec::new();
-                let export_idx = build_record_import_types(record_params[0], 0, base, &mut table);
-                (table, export_idx)
-            } else if !enum_params.is_empty() {
-                // A SINGLE distinct enum param type this slice (like the single-record constraint). Lay it as
-                // ONE `enum` DEFINE (at `base`) + EXPORT (at `base+1`, the index the func references).
-                let distinct = enum_params.iter().all(|c| *c == enum_params[0]);
-                if !distinct {
-                    return Err(Reject::decline(
-                        "a host set with more than one DISTINCT enum parameter type is not yet emitted (a \
-                         single enum type per set this slice)",
-                    ));
-                }
-                let bytes = crate::backend::wasm::wit_ctype::emit_cdef(
-                    &crate::backend::wasm::wit_ctype::CDef::Enum(enum_params[0].clone()),
-                );
-                (vec![bytes], base + 1)
-            } else {
-                (Vec::new(), 0)
-            }
-        };
-        let host_fns: Vec<envelope::HostFn> = host_imports
-            .iter()
-            .enumerate()
-            .map(|(i, hi)| envelope::HostFn {
-                op: hi.op.clone(),
-                comp_functype: host_op_comp_functype(
-                    hi,
-                    0,
-                    nominal_export_idx,
-                    result_crefs[i].clone(),
-                ),
-                has_list_param: hi
-                    .params
-                    .iter()
-                    .any(|p| matches!(p, host::HostParam::Bytes)),
-                core_functype: Vec::new(),
-            })
-            .collect();
-        // `typed_layout` already carries the +1 import shift when `typed_needs_realloc` (matching
-        // `core_module_impl`'s realloc-import mode), so the def/self-call indices line up with the emitted core.
+        // `typed_layout` already carries the +1 import shift when `typed_needs_realloc`, so the def/self-call
+        // indices line up with the emitted core.
         let wrapped_core = serialize::core_module_with_wrappers(
             &funcs,
             &imports,
@@ -1211,32 +1095,24 @@ pub fn emit(
             typed_layout,
         )
         .map_err(Reject::decline)?;
-        // A memory-needing host op takes the SHARED-`"mem"` shape (wrapper imports memory); a memoryless one
-        // takes the simpler defined-memory shape. Both compose the host effect + runtime + typed export.
+        // A memory-needing host set takes the SHARED-`"mem"` shape; a memoryless one the defined-memory shape.
+        // Both compose the N host interfaces + runtime + typed export.
         return Ok(if host_needs_memory {
             envelope::assemble_typed_interface_with_host_runtime_mem(
                 &wrapped_core,
                 &typed,
-                &host_iface,
-                &host_fns,
+                &groups,
                 &imports,
                 &import_name,
-                needs_list,
-                &result_defs,
                 needs_realloc,
-                &record_defs,
             )
         } else {
             envelope::assemble_typed_interface_with_host_runtime(
                 &wrapped_core,
                 &typed,
-                &host_iface,
-                &host_fns,
+                &groups,
                 &imports,
                 &import_name,
-                needs_list,
-                &result_defs,
-                &record_defs,
             )
         });
     }
@@ -1928,6 +1804,135 @@ fn build_host_result_types(
     let start = if needs_list { 1 } else { 0 };
     let result_defs: Vec<Vec<u8>> = table[start..].iter().map(emit_cdef).collect();
     (needs_list, result_defs, result_crefs)
+}
+
+/// Build the [`envelope::HostGroup`] for ONE host interface's ops — its FQ WIT import name, the component
+/// DEFINED types those ops reference (shared `(list u8)`, the spilled-result defs, and a single record OR enum
+/// param type, all LOCAL to this interface's own instance-type index space), and each op's component functype
+/// referencing those local indices. This is exactly the single-interface computation, SCOPED to one interface
+/// — so a reducer performing ops from N interfaces gets N self-contained instance-types, each structurally
+/// matching its host (no spurious cross-interface type). The per-interface decline conditions (multi-record,
+/// record+enum mix, record+spilled-result, string+record) match the single-interface path, now evaluated PER
+/// interface (so a record in one interface + an enum in another compose — they never share an instance-type).
+fn build_host_group(
+    db: &mut Db,
+    world_bytes: &[u8],
+    effect: &str,
+    group: &[host::HostImport],
+) -> Result<envelope::HostGroup, Reject> {
+    use crate::backend::common::export_name::kebab_extern_name;
+    // The host interface's FQ WIT name (the import extern name): the world import whose last `/`-segment
+    // kebab-matches the effect (the same match `is_world_import_op` uses).
+    let host_iface = {
+        let arenas = crate::codec::decode(world_bytes).ok_or_else(|| {
+            Reject::decline("the target world did not decode for the host-import interface lookup")
+        })?;
+        let world = crate::wit_world::parse_target_world(&arenas, arenas.root)
+            .ok_or_else(|| Reject::decline("the target world did not parse"))?;
+        let ek = kebab_extern_name(effect);
+        world
+            .imports
+            .iter()
+            .find(|i| kebab_extern_name(i.name.rsplit('/').next().unwrap_or(&i.name)) == ek)
+            .map(|i| i.name.clone())
+            .ok_or_else(|| {
+                Reject::decline(
+                    "the performed host effect has no matching import interface in the world",
+                )
+            })?
+    };
+    let (needs_list, result_defs, result_crefs) = build_host_result_types(db, group);
+    let has_spilled_result = group.iter().any(|h| h.spilled_result.is_some());
+    let record_params: Vec<&Vec<(String, host::RecordFieldAbi)>> = group
+        .iter()
+        .flat_map(|h| &h.params)
+        .filter_map(|p| match p {
+            host::HostParam::Record(fields) => Some(fields),
+            _ => None,
+        })
+        .collect();
+    let enum_params: Vec<&Vec<String>> = group
+        .iter()
+        .flat_map(|h| &h.params)
+        .filter_map(|p| match p {
+            host::HostParam::Enum(cases) => Some(cases),
+            _ => None,
+        })
+        .collect();
+    let has_bytes_param = group
+        .iter()
+        .flat_map(|h| &h.params)
+        .any(|p| matches!(p, host::HostParam::Bytes));
+    // NOMINAL param types laid AFTER `(list u8)` (index 0 if present) and the spilled-result defs.
+    let base = needs_list as u32 + result_defs.len() as u32;
+    let (record_defs, nominal_export_idx): (Vec<Vec<u8>>, u32) = {
+        if !record_params.is_empty() && !enum_params.is_empty() {
+            return Err(Reject::decline(
+                "a host interface mixing a record parameter and an enum parameter is not yet emitted (a \
+                 single nominal param type per interface — record OR enum — this slice)",
+            ));
+        } else if !record_params.is_empty() {
+            let has_str_param = group
+                .iter()
+                .flat_map(|h| &h.params)
+                .any(|p| matches!(p, host::HostParam::Str));
+            let any_record_has_bytes = record_params.iter().any(|f| record_abi_has_bytes(f));
+            if record_params.len() > 1
+                || has_str_param
+                || has_spilled_result
+                || (any_record_has_bytes && !has_bytes_param)
+            {
+                return Err(Reject::decline(
+                    "a record host-argument composes only in a host interface with a single record \
+                     parameter, no string parameter, and no option/list/bytes compound result; a record with \
+                     `list<u8>` fields additionally requires a sibling `list<u8>` parameter (the general \
+                     record-type-indexed host shape is a later increment)",
+                ));
+            }
+            let mut table = Vec::new();
+            let export_idx = build_record_import_types(record_params[0], 0, base, &mut table);
+            (table, export_idx)
+        } else if !enum_params.is_empty() {
+            let distinct = enum_params.iter().all(|c| *c == enum_params[0]);
+            if !distinct {
+                return Err(Reject::decline(
+                    "a host interface with more than one DISTINCT enum parameter type is not yet emitted (a \
+                     single enum type per interface this slice)",
+                ));
+            }
+            let bytes = crate::backend::wasm::wit_ctype::emit_cdef(
+                &crate::backend::wasm::wit_ctype::CDef::Enum(enum_params[0].clone()),
+            );
+            (vec![bytes], base + 1)
+        } else {
+            (Vec::new(), 0)
+        }
+    };
+    let host_fns: Vec<envelope::HostFn> = group
+        .iter()
+        .enumerate()
+        .map(|(i, hi)| envelope::HostFn {
+            op: hi.op.clone(),
+            comp_functype: host_op_comp_functype(
+                hi,
+                0,
+                nominal_export_idx,
+                result_crefs[i].clone(),
+            ),
+            has_list_param: hi
+                .params
+                .iter()
+                .any(|p| matches!(p, host::HostParam::Bytes)),
+            core_functype: Vec::new(),
+        })
+        .collect();
+    Ok(envelope::HostGroup {
+        effect_iface: host_iface,
+        host_fns,
+        needs_list,
+        result_defs,
+        record_defs,
+    })
 }
 
 /// Declare into `used` the value-heap runtime ops that `select::emit_result_lift` emits when lifting a
