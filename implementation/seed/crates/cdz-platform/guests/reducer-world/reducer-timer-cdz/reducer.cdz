@@ -12,8 +12,7 @@
 // bare scalar; imports the `Envelope` type from the timer contract's schema (the `libs` manifest lists it).
 import { Envelope } from "timer"
 
-type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
-type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+import { Outcome, on-response, on-notification } from "reducer-lib"
 
 def on-message(msg) =
   { requests = [{ contract = msg.contract,
@@ -21,11 +20,5 @@ def on-message(msg) =
                   token = b"timer-arm",
                   deadlineNanos = None }],
     outcome = Outcome.Continue }
-
-def on-response(_resp) =
-  { requests = [], outcome = Outcome.Continue }
-
-def on-notification(_note) =
-  { requests = [], outcome = Outcome.Continue }
 
 export { on-message, on-response, on-notification }

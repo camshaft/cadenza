@@ -15,8 +15,7 @@
 // parses, so the call reaches the recorder and the observation is appended (result empty — the run seeds no
 // edges; the point is the enum arg crossed and the call was observed). (That host early-return is itself a
 // silent-observation gap, separately flagged for the host to record the call regardless of arg-parse.)
-type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
-type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+import { Outcome, on-response, on-notification } from "reducer-lib"
 // Matches the world's `dir` enum { outgoing, incoming } by case-name set (kebab-normalized); the world-import
 // synthesis binds this sum to the enum so `Dir.Outgoing` crosses as the enum arg to `graph.neighbors`.
 type Dir = | Outgoing | Incoming
@@ -32,11 +31,5 @@ def on-message(msg) =
                       token = msg.token,
                       deadlineNanos = None }],
         outcome = Outcome.Continue } )
-
-def on-response(_resp) =
-  { requests = [], outcome = Outcome.Continue }
-
-def on-notification(_note) =
-  { requests = [], outcome = Outcome.Continue }
 
 export { on-message, on-response, on-notification }

@@ -8,17 +8,10 @@
 // capability set the kernel wires for a pure run. It does not re-declare an inline world (operator review on
 // #3153): a guest that touches nothing but its input/output shares this one world instead of repeating an
 // anonymous inline world block.
-type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
-type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+import { Outcome, on-response, on-notification } from "reducer-lib"
 
 def on-message(msg) =
   { requests = [{ contract = msg.contract, payload = msg.payload, token = msg.token, deadlineNanos = None }],
     outcome = Outcome.Close({ schema = msg.contract, reason = msg.payload }) }
-
-def on-response(_resp) =
-  { requests = [], outcome = Outcome.Continue }
-
-def on-notification(_note) =
-  { requests = [], outcome = Outcome.Continue }
 
 export { on-message, on-response, on-notification }

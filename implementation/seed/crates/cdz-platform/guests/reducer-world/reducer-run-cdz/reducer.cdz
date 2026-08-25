@@ -12,8 +12,7 @@
 // are fixed (a bare Ok/Err leaves the error type unresolved and the compiler declines it), the same shape as
 // deliver-response's answer. Targets reducer-world (the floor world that imports `run`). on-response /
 // on-notification are inert.
-type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
-type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+import { Outcome, Error, on-response, on-notification } from "reducer-lib"
 
 def on-message(msg) =
   host run in
@@ -21,11 +20,5 @@ def on-message(msg) =
       | Ok(out) => { requests = [{ contract = msg.contract, payload = out, token = msg.token, deadlineNanos = None }],
                      outcome = Outcome.Continue }
       | Err(_e) => { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = b"run-failed" }) })
-
-def on-response(_resp) =
-  { requests = [], outcome = Outcome.Continue }
-
-def on-notification(_note) =
-  { requests = [], outcome = Outcome.Continue }
 
 export { on-message, on-response, on-notification }

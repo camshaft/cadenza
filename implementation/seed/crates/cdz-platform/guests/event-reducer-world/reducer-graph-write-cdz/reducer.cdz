@@ -13,18 +13,11 @@
 // reaches the recording provider and a GraphSetEdges observation (from, kind, targets) is appended. Targets the
 // privileged event-reducer-world (the world importing `graph`); spawned as an event reducer. on-response /
 // on-notification are inert.
-type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
-type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+import { Outcome, on-response, on-notification } from "reducer-lib"
 
 def on-message(msg) =
   host graph in
     ( graph.set-edges(msg.sender.reducer, msg.contract, [msg.sender.reducer]) ;
       { requests = [], outcome = Outcome.Continue } )
-
-def on-response(_resp) =
-  { requests = [], outcome = Outcome.Continue }
-
-def on-notification(_note) =
-  { requests = [], outcome = Outcome.Continue }
 
 export { on-message, on-response, on-notification }
