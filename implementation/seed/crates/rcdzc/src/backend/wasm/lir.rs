@@ -164,6 +164,22 @@ pub enum Lir {
     I32Store {
         offset: u32,
     },
+    /// `i64.store` / `f32.store` / `f64.store` / `i32.store16` (align natural / low bits) — the wider + narrow
+    /// stores that write a SCALAR `list<T>` host-ARG element (or a scalar record leaf into `mem`) at its
+    /// canonical stride offset: an `i64` (8), an `f32` (4) / `f64` (8), a 2-byte `i16`/`u16`. Stack order is
+    /// address-then-value; memory index 0. (The 1-byte `i32.store8` + 4-byte `i32.store` already exist.)
+    I64Store {
+        offset: u32,
+    },
+    F32Store {
+        offset: u32,
+    },
+    F64Store {
+        offset: u32,
+    },
+    I32Store16 {
+        offset: u32,
+    },
     /// `i32.load (align=2, offset=O)` — pop `[addr:i32]`, push the i32 read from linear memory 0 at `addr+O`.
     /// The kv.get lift reads the spilled `option<list<u8>>` result struct a host import wrote at the caller-
     /// provided retptr (disc@0, list-ptr@4, list-len@8). Memory index 0; natural i32 alignment (2).

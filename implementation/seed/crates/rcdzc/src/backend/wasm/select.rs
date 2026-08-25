@@ -4466,11 +4466,18 @@ fn collect_used_ops_into_seen(
                     // `vec-get`) + copies each `list<u8>` element's rope (`bytes-len`/`bytes-get`) into `mem`.
                     // Declare them (else the marshal's `CallImport` resolves to u32::MAX), then descend to
                     // collect the ops that BUILD the list value.
-                    Ty::List(_) if !peer_bound => {
+                    Ty::List(elem) if !peer_bound => {
+                        // The marshal (`emit_list_arg_marshal`) walks the list (`vec-len`/`vec-get`), then per
+                        // element: a `Bytes` element copies its rope (`bytes-len`/`bytes-get`); a SCALAR element
+                        // unboxes with its get-op. Declare exactly what the marshal calls (else u32::MAX).
                         out.insert(OP_VEC_LEN);
                         out.insert(OP_VEC_GET);
-                        out.insert(OP_BYTES_LEN);
-                        out.insert(OP_BYTES_GET);
+                        if matches!(elem.strip_nominal(), Ty::Bytes | Ty::String) {
+                            out.insert(OP_BYTES_LEN);
+                            out.insert(OP_BYTES_GET);
+                        } else if let Ok(Some(read)) = get_op_ty(db, &elem) {
+                            out.insert(read);
+                        }
                         collect_used_ops_into_seen(db, arg, out, visited);
                     }
                     _ => collect_used_ops_into_seen(db, arg, out, visited),
@@ -8088,23 +8095,63 @@ fn emit_binder_ref(id: StructId, slot: u32, out: &mut Emit) {
     out.push(Lir::LocalGet(slot));
 }
 
-/// Marshal a value-heap `List<Bytes>` host ARG (handle in `list_slot`) into the shared `mem`: an OUTER array
-/// of `count` `(ptr,len)` element slots (8 bytes each) laid at the running `cursor`, with each element's rope
-/// copied into `mem` right after the array; leaves `(outer-ptr, count)` on the operand stack (the core
-/// `(ptr,count)` the `(list <list u8>)` param lowers to). The element stride is 8 (a `list<u8>` = `(ptr,len)`).
-/// The `cursor` advances past the outer array THEN each rope, so N compound args in one call stay disjoint.
+/// Marshal a value-heap `List<T>` host ARG (handle in `list_slot`) into the shared `mem`: an OUTER array of
+/// `count` element slots (each `stride(T)` bytes) laid at the running `cursor`; leaves `(outer-ptr, count)` on
+/// the operand stack (the core `(ptr,count)` the `(list <T>)` param lowers to). Per element (`vec-get`):
+///  • a `Bytes` element (`list<u8>`, stride 8) copies its rope into `mem` AFTER the array + writes `(ptr,len)`
+///    into the slot (the `set-edges` `list<list<u8>>` shape) — the `cursor` advances past each rope;
+///  • a SCALAR element (stride = its canonical size 1/2/4/8) unboxes (`get-int`/`bool`/`float`/`float32`) and
+///    writes the value INLINE into the slot with the width store (`i32.store`/`i64.store`/`f*.store`/store16/8,
+///    narrowing a `get-int` i64 to a sub-64 int slot) — no extra region.
 /// The arg-side inverse of `emit_result_lift`'s `List` arm (which READS this exact layout). `list_slot` is
-/// BORROWED (the list is consumed by the host call, not retained here). `work_base` is the first free scratch.
-fn emit_list_bytes_arg_marshal(
+/// BORROWED. A non-`Bytes`/non-scalar element (a nested list/record) DECLINES (a later increment).
+#[allow(clippy::too_many_arguments)]
+fn emit_list_arg_marshal(
+    db: &mut Db,
+    elem: &Ty,
     list_slot: u32,
     cursor: u32,
     work_base: u32,
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
     out: &mut Emit,
-) {
+) -> Result<(), Reject> {
+    let is_bytes = matches!(elem.strip_nominal(), Ty::Bytes | Ty::String);
+    // The store for a scalar element, by its slot valtype + canonical size: i64→i64.store, f64→f64.store,
+    // f32→f32.store, i32 → 4-byte i32.store / 2-byte store16 / 1-byte store8.
+    let scalar_store: Option<Lir> = if is_bytes {
+        None
+    } else {
+        let (size, _) = canonical_layout(db, elem);
+        Some(match (valtype_of(elem), size) {
+            (Some(ValType::I64), _) => Lir::I64Store { offset: 0 },
+            (Some(ValType::F64), _) => Lir::F64Store { offset: 0 },
+            (Some(ValType::F32), _) => Lir::F32Store { offset: 0 },
+            (Some(ValType::I32), 4) => Lir::I32Store { offset: 0 },
+            (Some(ValType::I32), 2) => Lir::I32Store16 { offset: 0 },
+            (Some(ValType::I32), 1) => Lir::I32Store8 { offset: 0 },
+            _ => {
+                return Err(Reject::decline(
+                    "a `list<T>` host-arg with a non-`list<u8>`/non-scalar element is not yet marshaled (a \
+                     later increment)",
+                ));
+            }
+        })
+    };
+    let stride: u32 = if is_bytes {
+        8
+    } else {
+        canonical_layout(db, elem).0
+    };
+    let read = if is_bytes {
+        None
+    } else {
+        Some(get_op_ty(db, elem)?.ok_or_else(|| {
+            Reject::decline("a `list<T>` scalar element has no unbox op (not a value-heap scalar)")
+        })?)
+    };
     let count = work_base;
-    let (outer, i, elem, ilen, ipos, slotaddr) = (
+    let (outer, i, eh, ilen, ipos, slotaddr) = (
         count + 1,
         count + 2,
         count + 3,
@@ -8113,10 +8160,10 @@ fn emit_list_bytes_arg_marshal(
         count + 6,
     );
     *high = (*high).max(slotaddr + 1);
-    for s in [count, outer, i, elem, ilen, ipos, slotaddr] {
+    for s in [count, outer, i, eh, ilen, ipos, slotaddr] {
         scratch_ty.insert(s, ValType::I32);
     }
-    // count = vec-len(list); outer = cursor; cursor += count * 8 (reserve the outer (ptr,len) array).
+    // count = vec-len(list); outer = cursor; cursor += count * stride (reserve the outer element array).
     out.push(Lir::LocalGet(list_slot));
     out.push(Lir::CallImport(OP_VEC_LEN));
     out.push(Lir::LocalSet(count));
@@ -8124,7 +8171,7 @@ fn emit_list_bytes_arg_marshal(
     out.push(Lir::LocalSet(outer));
     out.push(Lir::LocalGet(cursor));
     out.push(Lir::LocalGet(count));
-    out.push(Lir::ConstI32(8));
+    out.push(Lir::ConstI32(stride as i32));
     out.push(Lir::I32Mul);
     out.push(Lir::I32Add);
     out.push(Lir::LocalSet(cursor));
@@ -8136,55 +8183,71 @@ fn emit_list_bytes_arg_marshal(
     out.push(Lir::LocalGet(count));
     out.push(Lir::I32GeS);
     out.push(Lir::BrIf(1)); // i >= count → $elems-done
-    // elem = vec-get(list, i); ilen = bytes-len(elem). The element's rope copies to `cursor` (its inner ptr).
+    // eh = vec-get(list, i); slotaddr = outer + i*stride.
     out.push(Lir::LocalGet(list_slot));
     out.push(Lir::LocalGet(i));
     out.push(Lir::CallImport(OP_VEC_GET));
-    out.push(Lir::LocalSet(elem));
-    out.push(Lir::LocalGet(elem));
-    out.push(Lir::CallImport(OP_BYTES_LEN));
-    out.push(Lir::LocalSet(ilen));
-    // copy loop: pos=0; while pos<ilen { mem[cursor+pos] = bytes-get(elem,pos); pos++ }
-    out.push(Lir::ConstI32(0));
-    out.push(Lir::LocalSet(ipos));
-    out.push(Lir::Block(BlockType::Empty)); // $copy-done
-    out.push(Lir::Loop(BlockType::Empty)); // $copy
-    out.push(Lir::LocalGet(ipos));
-    out.push(Lir::LocalGet(ilen));
-    out.push(Lir::I32GeS);
-    out.push(Lir::BrIf(1)); // pos >= ilen → $copy-done
-    out.push(Lir::LocalGet(cursor));
-    out.push(Lir::LocalGet(ipos));
-    out.push(Lir::I32Add); // addr = cursor + pos
-    out.push(Lir::LocalGet(elem));
-    out.push(Lir::LocalGet(ipos));
-    out.push(Lir::CallImport(OP_BYTES_GET)); // byte
-    out.push(Lir::I32Store8 { offset: 0 });
-    out.push(Lir::LocalGet(ipos));
-    out.push(Lir::ConstI32(1));
-    out.push(Lir::I32Add);
-    out.push(Lir::LocalSet(ipos));
-    out.push(Lir::Br(0)); // → $copy
-    out.push(Lir::End); // $copy
-    out.push(Lir::End); // $copy-done
-    // outer[i] = (inner-ptr = cursor, ilen): slotaddr = outer + i*8; store ptr@0, len@4.
+    out.push(Lir::LocalSet(eh));
     out.push(Lir::LocalGet(outer));
     out.push(Lir::LocalGet(i));
-    out.push(Lir::ConstI32(8));
+    out.push(Lir::ConstI32(stride as i32));
     out.push(Lir::I32Mul);
     out.push(Lir::I32Add);
     out.push(Lir::LocalSet(slotaddr));
-    out.push(Lir::LocalGet(slotaddr));
-    out.push(Lir::LocalGet(cursor));
-    out.push(Lir::I32Store { offset: 0 }); // ptr
-    out.push(Lir::LocalGet(slotaddr));
-    out.push(Lir::LocalGet(ilen));
-    out.push(Lir::I32Store { offset: 4 }); // len
-    // cursor += ilen (advance past this element's rope); i++.
-    out.push(Lir::LocalGet(cursor));
-    out.push(Lir::LocalGet(ilen));
-    out.push(Lir::I32Add);
-    out.push(Lir::LocalSet(cursor));
+    if is_bytes {
+        // ilen = bytes-len(eh); the rope copies to `cursor` (its inner ptr).
+        out.push(Lir::LocalGet(eh));
+        out.push(Lir::CallImport(OP_BYTES_LEN));
+        out.push(Lir::LocalSet(ilen));
+        out.push(Lir::ConstI32(0));
+        out.push(Lir::LocalSet(ipos));
+        out.push(Lir::Block(BlockType::Empty)); // $copy-done
+        out.push(Lir::Loop(BlockType::Empty)); // $copy
+        out.push(Lir::LocalGet(ipos));
+        out.push(Lir::LocalGet(ilen));
+        out.push(Lir::I32GeS);
+        out.push(Lir::BrIf(1)); // pos >= ilen → $copy-done
+        out.push(Lir::LocalGet(cursor));
+        out.push(Lir::LocalGet(ipos));
+        out.push(Lir::I32Add); // addr = cursor + pos
+        out.push(Lir::LocalGet(eh));
+        out.push(Lir::LocalGet(ipos));
+        out.push(Lir::CallImport(OP_BYTES_GET)); // byte
+        out.push(Lir::I32Store8 { offset: 0 });
+        out.push(Lir::LocalGet(ipos));
+        out.push(Lir::ConstI32(1));
+        out.push(Lir::I32Add);
+        out.push(Lir::LocalSet(ipos));
+        out.push(Lir::Br(0)); // → $copy
+        out.push(Lir::End); // $copy
+        out.push(Lir::End); // $copy-done
+        // outer[i] = (inner-ptr = cursor, ilen); cursor += ilen.
+        out.push(Lir::LocalGet(slotaddr));
+        out.push(Lir::LocalGet(cursor));
+        out.push(Lir::I32Store { offset: 0 }); // ptr
+        out.push(Lir::LocalGet(slotaddr));
+        out.push(Lir::LocalGet(ilen));
+        out.push(Lir::I32Store { offset: 4 }); // len
+        out.push(Lir::LocalGet(cursor));
+        out.push(Lir::LocalGet(ilen));
+        out.push(Lir::I32Add);
+        out.push(Lir::LocalSet(cursor));
+    } else {
+        // scalar element: outer[i] = unbox(eh), width-narrowed, stored INLINE (no cursor advance).
+        let read = read.expect("a scalar element has an unbox op");
+        out.push(Lir::LocalGet(slotaddr)); // store addr
+        out.push(Lir::LocalGet(eh));
+        out.push(Lir::CallImport(read)); // unboxed value (i64 for get-int, else its width)
+        if read == OP_GET_INT && matches!(valtype_of(elem), Some(ValType::I32)) {
+            out.push(Lir::I32WrapI64); // a narrow int / char boxes as i64 → narrow to its i32 slot
+        }
+        out.push(
+            scalar_store
+                .clone()
+                .expect("a scalar element has a width store"),
+        );
+    }
+    // i++.
     out.push(Lir::LocalGet(i));
     out.push(Lir::ConstI32(1));
     out.push(Lir::I32Add);
@@ -8192,9 +8255,10 @@ fn emit_list_bytes_arg_marshal(
     out.push(Lir::Br(0)); // → $elems
     out.push(Lir::End); // $elems
     out.push(Lir::End); // $elems-done
-    // Push (outer-ptr, count) — the core `(list <list u8>)` param.
+    // Push (outer-ptr, count) — the core `(list <T>)` param.
     out.push(Lir::LocalGet(outer));
     out.push(Lir::LocalGet(count));
+    Ok(())
 }
 
 /// Marshal a value-heap RECORD host argument whose handle is in `rec_slot` into the FLATTENED core slots the
@@ -13225,12 +13289,7 @@ fn emit(
                     // `(outer-ptr, count)`. This slice marshals a `list<list<u8>>` (a `list<u8>` element =
                     // `(ptr,len)`); a non-`list<u8>` element is a later increment (decline).
                     Ty::List(elem) => {
-                        if !matches!(elem.strip_nominal(), Ty::Bytes) {
-                            return Err(Reject::decline(
-                                "a `list<T>` host-arg with a non-`list<u8>` element is not yet marshaled (a \
-                                 later increment)",
-                            ));
-                        }
+                        let elem = (*elem).clone();
                         let cursor = scratch_cursor_slot.expect(
                             "a list arg reserves the scratch cursor (has_runtime_compound)",
                         );
@@ -13240,9 +13299,9 @@ fn emit(
                         emit(db, arg, slots, list_slot + 1, high, scratch_ty, layout, out)?; // [list]
                         out.push(Lir::LocalSet(list_slot));
                         let work_base = *high;
-                        emit_list_bytes_arg_marshal(
-                            list_slot, cursor, work_base, high, scratch_ty, out,
-                        );
+                        emit_list_arg_marshal(
+                            db, &elem, list_slot, cursor, work_base, high, scratch_ty, out,
+                        )?;
                     }
                     // A scalar argument emits its value directly.
                     _ => emit(db, arg, slots, arg_base, high, scratch_ty, layout, out)?,

@@ -254,6 +254,26 @@ fn instr(i: &Lir, import_index: &std::collections::HashMap<&str, u32>, out: &mut
             uleb128(2, out); // align (log2) = 2 (natural i32 alignment)
             uleb128(*offset as u64, out); // offset
         }
+        Lir::I64Store { offset } => {
+            out.push(op::I64_STORE);
+            uleb128(3, out); // align (log2) = 3 (natural i64 alignment)
+            uleb128(*offset as u64, out);
+        }
+        Lir::F32Store { offset } => {
+            out.push(op::F32_STORE);
+            uleb128(2, out); // align (log2) = 2
+            uleb128(*offset as u64, out);
+        }
+        Lir::F64Store { offset } => {
+            out.push(op::F64_STORE);
+            uleb128(3, out); // align (log2) = 3
+            uleb128(*offset as u64, out);
+        }
+        Lir::I32Store16 { offset } => {
+            out.push(op::I32_STORE16);
+            uleb128(1, out); // align (log2) = 1 (2-byte)
+            uleb128(*offset as u64, out);
+        }
         Lir::I32Load { offset } => {
             out.push(op::I32_LOAD);
             uleb128(2, out); // align (log2) = 2 (natural i32 alignment)
