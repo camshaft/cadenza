@@ -84,6 +84,9 @@ pub fn record_field_abi_reaches_bytes(f: &RecordFieldAbi) -> bool {
         RecordFieldAbi::Scalar(_) => false,
         RecordFieldAbi::Bytes | RecordFieldAbi::Result { .. } => true,
         RecordFieldAbi::Record(sub) => sub.iter().any(|(_, sf)| record_field_abi_reaches_bytes(sf)),
+        // A `list<T>` reaches the shared `(list u8)` type iff its element does (a `list<list<u8>>` element is
+        // itself `Bytes`; a `list<s64>` does not). Recurse into the element ABI.
+        RecordFieldAbi::List(elem) => record_field_abi_reaches_bytes(elem),
     }
 }
 
@@ -122,6 +125,13 @@ pub enum RecordFieldAbi {
         err_cases: Vec<String>,
         err_is_variant: bool,
     },
+    /// A `list<T>` field (or list ELEMENT — a `list<list<T>>`'s inner list) — 2 core slots `(ptr,count)` (like
+    /// [`Bytes`](RecordFieldAbi::Bytes), count in place of len), and the component type is a `(list <elem>)`
+    /// DEFINED type over the element's own ABI (recursively). The guest marshals it into shared `mem` — an
+    /// outer element array + each element lowered after it (`select::emit_list_arg_marshal`, recursed). Makes a
+    /// list element / a record's list field FIRST-CLASS: the element ABI is itself a `RecordFieldAbi`, so
+    /// nesting is arbitrary-depth.
+    List(Box<RecordFieldAbi>),
 }
 
 /// One host-delegated operation the program performs — its declaring effect's NAME (the WIT interface),
@@ -231,6 +241,12 @@ fn field_boundary_abi(db: &mut Db, ty: &Ty) -> Option<RecordFieldAbi> {
                 fields.push((sym.name.to_string(), field_boundary_abi(db, fty)?));
             }
             (!fields.is_empty()).then_some(RecordFieldAbi::Record(fields))
+        }
+        // A `list<T>` field/element (a `list<list<T>>`'s inner list, or a record's list field) crosses if its
+        // ELEMENT crosses — recurse. Its component type is a `(list <elem>)` DEFINED type; core `(ptr,count)`.
+        Ty::List(inner) => {
+            let inner = (**inner).clone(); // release the borrow of `ty` before the recursive `&mut db` call
+            field_boundary_abi(db, &inner).map(|e| RecordFieldAbi::List(Box::new(e)))
         }
         // A `result<list<u8>, enum-or-variant>` field (the answer-back envelope) — carries the err's case
         // names. `err_is_variant` defaults to `false` (enum) here — the guest `Sum` is payload-less and cannot
@@ -516,6 +532,19 @@ pub fn spilled_result_wit_type(db: &mut Db, ty: &Ty) -> Option<crate::wit_world:
 /// SCALAR boundary form (unit, or a compound/string — the latter declines this increment). Mirrors
 /// `comp_valtype_of`'s aliased-width mapping, but yields the backend's `AbiValType` (which carries both
 /// the core and component bytes) rather than a raw byte.
+/// Whether a `list<T>` ELEMENT type is marshalable as a host arg by `select::emit_list_arg_marshal`: a
+/// `Bytes`/`String` (crosses as an inner `(ptr,len)`), a SCALAR (aliased-width int/char/float, written
+/// inline), or a NESTED `list` whose own element is marshalable (recursed to arbitrary depth). Kept in
+/// lockstep with the marshal's element arms so the representability gate admits exactly what the marshal
+/// emits — a record/tuple/variant element is not yet marshaled and declines here.
+pub fn list_elem_marshalable(ty: &Ty) -> bool {
+    match ty.strip_nominal() {
+        Ty::Bytes | Ty::String => true,
+        Ty::List(inner) => list_elem_marshalable(inner),
+        other => abi_val_type(other).is_some(),
+    }
+}
+
 pub fn abi_val_type(ty: &Ty) -> Option<AbiValType> {
     match ty {
         Ty::Bool => Some(AbiValType::Bool),
@@ -1341,12 +1370,12 @@ pub fn first_unrepresentable_host_op(
             // A `list<T>` arg (`graph.set-edges`'s `targets: list<reducer-id>`) crosses as a `(list <elem>)`
             // component type — the guest marshals the value-heap `List` into shared `mem`
             // (`select::emit_list_arg_marshal`). The element must itself be marshalable: a `list<u8>` (Bytes,
-            // = `list<list<u8>>`) OR a SCALAR (aliased-width int/char/float — written inline). Same reducer/
-            // host-fused gating; a nested-list/record element is a later increment (declined here + at the marshal).
+            // = `list<list<u8>>`), a SCALAR (aliased-width int/char/float — written inline), OR a NESTED `list`
+            // (recursed to arbitrary depth). Same reducer/host-fused gating; a record/tuple/variant element is a
+            // later increment (declined here + at the marshal, in lockstep).
             let arg_is_boundary_list = allow_option_bytes
                 && !peer_bound
-                && matches!(at.strip_nominal(), Ty::List(e)
-                    if matches!(e.strip_nominal(), Ty::Bytes) || abi_val_type(e).is_some());
+                && matches!(at.strip_nominal(), Ty::List(e) if list_elem_marshalable(e));
             if !matches!(at, Ty::Unit | Ty::String | Ty::Bytes)
                 && !ty_undetermined(&at)
                 && !abi_ok(&at)

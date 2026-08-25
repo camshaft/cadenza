@@ -3727,6 +3727,29 @@ fn collect_record_field_ops(
     }
 }
 
+/// Collect the runtime ops `emit_list_arg_marshal` calls to lower a `list<T>` ELEMENT of type `elem` (mirrors
+/// the marshal's element arms so the import section declares exactly what the body calls): a `Bytes`/`String`
+/// element's rope copy (`bytes-len`/`bytes-get`), a NESTED list element's walk (`vec-len`/`vec-get`) recursed
+/// on its inner element, or a SCALAR element's unbox get-op. The caller inserts the OUTER list's
+/// `vec-len`/`vec-get` once. Kept in lockstep with `host::list_elem_marshalable` (the representability gate).
+fn collect_list_elem_ops(
+    db: &mut Db,
+    elem: &Ty,
+    out: &mut std::collections::BTreeSet<&'static str>,
+) {
+    if matches!(elem.strip_nominal(), Ty::Bytes | Ty::String) {
+        out.insert(OP_BYTES_LEN);
+        out.insert(OP_BYTES_GET);
+    } else if let Ty::List(inner) = elem.strip_nominal() {
+        out.insert(OP_VEC_LEN);
+        out.insert(OP_VEC_GET);
+        let inner = (**inner).clone();
+        collect_list_elem_ops(db, &inner, out);
+    } else if let Ok(Some(read)) = get_op_ty(db, elem) {
+        out.insert(read);
+    }
+}
+
 fn collect_used_ops_into_seen(
     db: &mut Db,
     id: StructId,
@@ -4597,16 +4620,12 @@ fn collect_used_ops_into_seen(
                     // collect the ops that BUILD the list value.
                     Ty::List(elem) if !peer_bound => {
                         // The marshal (`emit_list_arg_marshal`) walks the list (`vec-len`/`vec-get`), then per
-                        // element: a `Bytes` element copies its rope (`bytes-len`/`bytes-get`); a SCALAR element
-                        // unboxes with its get-op. Declare exactly what the marshal calls (else u32::MAX).
+                        // element lowers it (`collect_list_elem_ops` mirrors the marshal's element arms: a
+                        // `Bytes` rope copy, a NESTED-list recursion, or a SCALAR unbox). Declare exactly what
+                        // the marshal calls (else the `CallImport` resolves to u32::MAX → an invalid module).
                         out.insert(OP_VEC_LEN);
                         out.insert(OP_VEC_GET);
-                        if matches!(elem.strip_nominal(), Ty::Bytes | Ty::String) {
-                            out.insert(OP_BYTES_LEN);
-                            out.insert(OP_BYTES_GET);
-                        } else if let Ok(Some(read)) = get_op_ty(db, &elem) {
-                            out.insert(read);
-                        }
+                        collect_list_elem_ops(db, &elem, out);
                         collect_used_ops_into_seen(db, arg, out, visited);
                     }
                     _ => collect_used_ops_into_seen(db, arg, out, visited),
@@ -8232,8 +8251,11 @@ fn emit_binder_ref(id: StructId, slot: u32, out: &mut Emit) {
 ///  • a SCALAR element (stride = its canonical size 1/2/4/8) unboxes (`get-int`/`bool`/`float`/`float32`) and
 ///    writes the value INLINE into the slot with the width store (`i32.store`/`i64.store`/`f*.store`/store16/8,
 ///    narrowing a `get-int` i64 to a sub-64 int slot) — no extra region.
+///  • a NESTED list element (`list<list<T>>`, stride 8) RECURSES — marshals the inner list into `mem` at the
+///    running `cursor` (its own outer array + data, past this level's), then writes its `(ptr, count)` header
+///    into the slot (arbitrary nesting depth rides this recursion).
 /// The arg-side inverse of `emit_result_lift`'s `List` arm (which READS this exact layout). `list_slot` is
-/// BORROWED. A non-`Bytes`/non-scalar element (a nested list/record) DECLINES (a later increment).
+/// BORROWED. A non-`Bytes`/non-scalar/non-list element (a record/tuple/variant) DECLINES (a later increment).
 #[allow(clippy::too_many_arguments)]
 fn emit_list_arg_marshal(
     db: &mut Db,
@@ -8246,9 +8268,21 @@ fn emit_list_arg_marshal(
     out: &mut Emit,
 ) -> Result<(), Reject> {
     let is_bytes = matches!(elem.strip_nominal(), Ty::Bytes | Ty::String);
+    // A NESTED list element (`list<list<T>>`): the element itself crosses as an 8-byte `(ptr, count)` header
+    // written into the outer slot, its backing array + element data laid recursively AFTER the outer array
+    // (a recursive `emit_list_arg_marshal` on the inner element). Neither a bytes-rope copy nor a scalar
+    // inline store — this is the recursion that generalizes the arg-side list marshal to arbitrary depth.
+    let nested_list_inner: Option<Ty> = if is_bytes {
+        None
+    } else if let Ty::List(inner) = elem.strip_nominal() {
+        Some((**inner).clone())
+    } else {
+        None
+    };
+    let is_nested_list = nested_list_inner.is_some();
     // The store for a scalar element, by its slot valtype + canonical size: i64→i64.store, f64→f64.store,
     // f32→f32.store, i32 → 4-byte i32.store / 2-byte store16 / 1-byte store8.
-    let scalar_store: Option<Lir> = if is_bytes {
+    let scalar_store: Option<Lir> = if is_bytes || is_nested_list {
         None
     } else {
         let (size, _) = canonical_layout(db, elem);
@@ -8261,12 +8295,14 @@ fn emit_list_arg_marshal(
             (Some(ValType::I32), 1) => Lir::I32Store8 { offset: 0 },
             _ => {
                 return Err(Reject::decline(
-                    "a `list<T>` host-arg with a non-`list<u8>`/non-scalar element is not yet marshaled (a \
-                     later increment)",
+                    "a `list<T>` host-arg with a non-`list<u8>`/non-scalar/non-list element is not yet \
+                     marshaled (a later increment)",
                 ));
             }
         })
     };
+    // A `list<T>` element (incl. a nested list) crosses as an 8-byte `(ptr, count)` header; `canonical_layout`
+    // gives (8, 4) for `List`, so `stride`/`elem_align` cover the nested-list case with no special value.
     let stride: u32 = if is_bytes {
         8
     } else {
@@ -8281,7 +8317,7 @@ fn emit_list_arg_marshal(
     } else {
         canonical_layout(db, elem).1
     };
-    let read = if is_bytes {
+    let read = if is_bytes || is_nested_list {
         None
     } else {
         Some(get_op_ty(db, elem)?.ok_or_else(|| {
@@ -8382,6 +8418,29 @@ fn emit_list_arg_marshal(
         out.push(Lir::LocalGet(ilen));
         out.push(Lir::I32Add);
         out.push(Lir::LocalSet(cursor));
+    } else if let Some(inner) = &nested_list_inner {
+        // NESTED list element: recurse to marshal the inner `List<T>` into `mem` (its own outer array + element
+        // data laid at the SHARED running `cursor`, past this level's outer array), then store the
+        // `(inner-ptr, inner-count)` header it leaves on the stack into the outer slot at `slotaddr`
+        // (`ptr@0`, `count@4`) — the exact `(ptr, count)` layout `emit_result_lift`'s List arm reads back. The
+        // recursion takes a work_base ABOVE this level's scratch (`+9`) so a nested marshal never reuses a
+        // live slot; `eh` (the element handle, a borrowed inner `List`) is its `list_slot`.
+        let nl_ptr = work_base + 7;
+        let nl_count = work_base + 8;
+        for s in [nl_ptr, nl_count] {
+            scratch_ty.insert(s, ValType::I32);
+        }
+        *high = (*high).max(work_base + 9);
+        emit_list_arg_marshal(db, inner, eh, cursor, work_base + 9, high, scratch_ty, out)?;
+        // stack: [inner-ptr, inner-count] → pop count (top) then ptr, store the header at slotaddr.
+        out.push(Lir::LocalSet(nl_count));
+        out.push(Lir::LocalSet(nl_ptr));
+        out.push(Lir::LocalGet(slotaddr));
+        out.push(Lir::LocalGet(nl_ptr));
+        out.push(Lir::I32Store { offset: 0 });
+        out.push(Lir::LocalGet(slotaddr));
+        out.push(Lir::LocalGet(nl_count));
+        out.push(Lir::I32Store { offset: 4 });
     } else {
         // scalar element: outer[i] = unbox(eh), width-narrowed, stored INLINE (no cursor advance).
         let read = read.expect("a scalar element has an unbox op");
