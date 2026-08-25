@@ -1028,6 +1028,30 @@ mod tests {
         );
     }
 
+    /// `Ast.self` (the self-reflection intrinsic) reflects the ENCLOSING module's AST — a module can
+    /// hash its own canonical AST and export the digest as a compile-time constant with no self-import.
+    #[test]
+    fn ast_self_reflects_the_enclosing_module() {
+        use crate::abi::Artifact;
+        use crate::backend::Target;
+        let m = crate::codec::encode(&arena_of(
+            "(do (def (cid) (Bytes.len (Blake3.of (Ast.encode Ast.self)))) (export cid))",
+        ));
+        let out = crate::compile(
+            &[Artifact::new(Artifact::KIND_AST, "m", m)],
+            &[Target::Wasm],
+        );
+        assert!(
+            !out.has_error(),
+            "Ast.self should reflect the enclosing module and compile; diagnostics: {:?}",
+            out.diagnostics
+        );
+        assert!(
+            out.artifact(Target::Wasm.artifact_kind()).is_some(),
+            "an Ast.self-using module should emit a component"
+        );
+    }
+
     /// A multi-file package with NO `entry` marker declines — there is no rule to pick the entry, so
     /// the compiler rejects rather than guessing (`DESIGN-package-linking.md` §3c).
     #[test]

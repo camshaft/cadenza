@@ -3801,3 +3801,13 @@
             ((Ok a)  (= a (Ast.Symbol #"add")))
             ((Err _) false)))
   (output (: true Bool)))
+
+(case "Ast.self reflects the enclosing module as an Ast.List value"
+  (doc    "`Ast.self` is the self-reflection intrinsic: it reflects the AST of the module the call occurs
+           in. A module body is a `(do …)`, which reflects to an `Ast.List`, so matching `Ast.self` against
+           the `Ast.List` variant is true. More general than importing one's own `__ast__` — any code can
+           reflect its containing module without naming its own path (operator direction).")
+  (input  (do
+            (def (main) (match Ast.self ((Ast.List _) true) (_ false)))
+            (export main)))
+  (output (: true Bool)))
