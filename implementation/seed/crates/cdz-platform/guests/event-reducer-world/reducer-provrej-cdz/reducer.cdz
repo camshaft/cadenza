@@ -1,0 +1,18 @@
+// A Cadenza reducer performing a PROVENANCE host call with a MALFORMED argument — to prove the host records
+// it (design/cadenza-platform.md §9, log-every-host-call; the deliver/provenance extension #3272 of the
+// graph parse-guard seam #3267). On-message it calls provenance.program-of(msg.token); the run delivers a
+// short token (not a valid 33-byte ReducerId), so the host's program-of fails to parse the reducer-id and
+// early-returns without reaching the recordable capability — now emitting a HostCallRejected observation
+// instead of silently dropping. The result is discarded. Targets the privileged event-reducer-world (imports
+// provenance); spawned as an event reducer; single host interface. on-response / on-notification inert.
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+def on-message(msg) =
+  host provenance in
+    ( provenance.program-of(msg.token) ;
+      { requests = [], outcome = Outcome.Continue } )
+
+def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
+def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
+export { on-message, on-response, on-notification }
