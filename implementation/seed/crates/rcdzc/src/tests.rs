@@ -81574,7 +81574,6 @@ mod r0 {
             "list<u8> envelope mismatch vs ComponentBuilder"
         );
     }
-
 }
 
 // ── value-heap R1: monomorphized resource + encode() -> list<u8> (the ComponentBuilder reference) ──
@@ -81841,7 +81840,6 @@ mod r1_reference {
             "resource envelope mismatch vs ComponentBuilder"
         );
     }
-
 }
 
 // ── value-heap R2: a RUNTIME compound escapes — the handle-walking encode() (ComponentBuilder ref) ──
