@@ -6887,6 +6887,42 @@ fn ordering_of_resolves_and_types_as_the_three_way_compare() {
     );
 }
 
+/// NAMESPACED `Ast.print` / `Ast.read` (former top-level `print` / `read`): the compiler-exposed printer and
+/// reader are members on the built-in `Ast` record (operator directive: prelude records with associated
+/// functions, no bare globals) — carried on the `Ast` `TypeDecl.associated`, the SAME pattern as `Ast.module`.
+/// `(. Ast print) v : String` and `(. Ast read) s : Ast`, reducing identically to the old bare names (same
+/// `Prim::Print` / `Prim::Read`). Pins the FRONT-END: both resolve + type, no unbound / no-such-field.
+#[test]
+fn ast_print_and_read_resolve_and_type_as_the_printer_and_reader() {
+    use crate::db::Db;
+    let src = "(module m (def (pr (: v Ast)) ((. Ast print) v)) (def (rd (: s String)) ((. Ast read) s)) (export pr) (export rd))";
+    let mut db = Db::load(crate::testkit::parse(src));
+    let diags = crate::compile::diagnostics(&mut db);
+    assert!(
+        !diags.iter().any(|d| d.message.contains("unbound")
+            || d.message.contains("field `print`")
+            || d.message.contains("field `read`")),
+        "(. Ast print)/(. Ast read) must resolve on the built-in Ast record: {:?}",
+        diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    let pr = db.def_by_name("pr").expect("def pr");
+    let pr_body = db.defs[pr].body.expect("pr body");
+    let pr_ty = crate::infer::type_of(&mut db, pr_body);
+    assert_eq!(
+        pr_ty.render_name(&db.name_ctx()),
+        "String",
+        "Ast.print v : String (same reduction as the former `print`), got {pr_ty:?}"
+    );
+    let rd = db.def_by_name("rd").expect("def rd");
+    let rd_body = db.defs[rd].body.expect("rd body");
+    let rd_ty = crate::infer::type_of(&mut db, rd_body);
+    assert_eq!(
+        rd_ty.render_name(&db.name_ctx()),
+        "Ast",
+        "Ast.read s : Ast (same reduction as the former `read`), got {rd_ty:?}"
+    );
+}
+
 /// SELF-REFLECTION `Ast.module` (front-end): the reflection member on the built-in `Ast` record resolves via
 /// ordinary member access and TYPES as the built-in `Ast` sum — the type-directed, prelude-derived,
 /// NAMESPACED replacement for the retired `(. Ast self)` blind syntax-rewrite (operator directive: namespace
