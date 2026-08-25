@@ -3097,6 +3097,7 @@ pass	a recursively-built binary tree renders its full runtime structure
 pass	a recursively-built byte sequence assembles its bytes at run time
 pass	a recursively-built linked list renders its full runtime spine
 pass	a reduce-shaped wrapper seeding a second generic helper at two element types declines pending the transitive tie
+pass	a reducer performing a scalar host import threads the u64 result into the step (via an imposed WIT world)
 pass	a redundant full-width mask on an unsigned runtime value is elided
 pass	a redundant relational check inside its own truthy branch is known-true and its dead branch is eliminated
 pass	a reference to an unbound name is rejected before running

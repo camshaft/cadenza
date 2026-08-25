@@ -128,3 +128,17 @@
   (input (do (def (f (: m (Record (: tok Bytes)))) (record (= items (list (record (= echo (. m tok))))))) (export f)))
   (call f (: (record (= tok (list 10 20 30))) (Record (: tok Bytes))))
   (output (: (record (= items ((record (= echo (10 20 30)))))) (record (items (List (record (echo (List UInt8)))))))))
+
+(case "a reducer performing a scalar host import threads the u64 result into the step (via an imposed WIT world)"
+  (doc    "SHAPE 10 — a scalar host-import RESULT (clock.now : () -> u64) driven through an imposed WIT world.
+           The reducer on-message performs clock.now (nullary scalar host op) and threads the u64 into the
+           step's request deadline-nanos = Some(now). Stubbing clock.now -> 42 + asserting deadline-nanos ==
+           Some(42) makes the scalar host result LOAD-BEARING. Migrated from the in-crate wasmtime test
+           `a_typed_reducer_with_a_scalar_host_import_emits_and_loads` (v-rb synthetic-op host-result).")
+  (wit-world (world w (export guest (member on-message (func (param m ("record" (contract ("list" (u8))) (payload ("list" (u8))) (token ("list" (u8))))) (result ("record" (requests ("list" ("record" (contract ("list" (u8))) (payload ("list" (u8))) (token ("list" (u8))) (deadline-nanos ("option" (u64)))))) (outcome ("variant" (continue) (close ("record" (schema ("list" (u8))) (reason ("list" (u8)))))))))))) (import cadenza:platform/clock (member now (func (result (u64)))))))
+  (component-name "cadenza:platform/guest")
+  (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (effect clock (op now (-> Unit UInt64))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (clock) (record (= requests (list (record (= contract (. m contract)) (= payload (. m payload)) (= token (. m token)) (= deadline-nanos (Option.Some (clock.now unit)))))) (= outcome Outcome.Continue)))) (export onMessage)))
+  (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
+  (host-responses (respond clock.now (: 42 UInt64)))
+  (host-calls (call cadenza:platform/clock.now))
+  (output (: (record (= requests ((record (= contract (1)) (= payload (2)) (= token (3)) (= deadline-nanos (Some 42))))) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
