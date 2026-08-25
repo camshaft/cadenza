@@ -1783,13 +1783,26 @@ fn build_record_import_types(
                 // Emit the CHILD record first (children-first); its field references the child's EXPORT index.
                 CRef::Idx(build_record_import_types(sub, list_idx, base, table))
             }
-            // A `result<list<u8>, enum>` field: lay the err ENUM (nominal → define+export) then the `result`
-            // defined type (its ok arm refs `(list u8)`; its err arm refs the err enum's EXPORT index),
+            // A `result<list<u8>, enum-or-variant>` field: lay the err type (nominal → define+export) then the
+            // `result` defined type (its ok arm refs `(list u8)`; its err arm refs the err type's EXPORT index),
             // children-first, then reference the `result`'s EXPORT index. (Both are laid as uniform
-            // define+export table entries like a record; exporting the structural `result` is harmless.)
-            host::RecordFieldAbi::Result { err_cases } => {
+            // define+export table entries like a record; exporting the structural `result` is harmless.) The err
+            // arm's CONSTRUCTOR follows the host WIT — a payload-less `variant` when the WIT declares `variant`
+            // (`err_is_variant`), else an `enum`: a `result<_, variant>` and a `result<_, enum>` are DISTINCT
+            // component types, so a guest whose err arm mismatched the host's constructor silently failed to
+            // instantiate (the deliver-response `answer: result<list<u8>, error>` shape, where the platform WIT
+            // declares `variant error`).
+            host::RecordFieldAbi::Result {
+                err_cases,
+                err_is_variant,
+            } => {
                 let err_def = base + 2 * table.len() as u32;
-                table.push(emit_cdef(&CDef::Enum(err_cases.clone())));
+                let err_cdef = if *err_is_variant {
+                    CDef::Variant(err_cases.iter().map(|c| (c.clone(), None)).collect())
+                } else {
+                    CDef::Enum(err_cases.clone())
+                };
+                table.push(emit_cdef(&err_cdef));
                 let err_export = err_def + 1;
                 let res_def = base + 2 * table.len() as u32;
                 table.push(emit_cdef(&CDef::Result {

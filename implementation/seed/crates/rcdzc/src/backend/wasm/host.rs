@@ -84,15 +84,23 @@ pub enum RecordFieldAbi {
     /// the parent's flattened run). The guest marshals it by projecting the sub-record handle (`arr-get`) then
     /// RECURSING field-by-field.
     Record(Vec<(String, RecordFieldAbi)>),
-    /// A `result<list<u8>, enum>` field (the response envelope's `answer`) — a compound-in-record. The
-    /// canonical ABI flattens a `result<T, E>` like a 2-case variant: `(disc:i32, join(flatten(ok),
-    /// flatten(err)))`; with `ok = list<u8>` (`(ptr,len)`) and `err = enum` (one `i32` disc) the join pads to
-    /// `(disc:i32, i32, i32)` = 3 core slots. Its component type references a `result<list<u8>, err-enum>`
-    /// DEFINED type (whose err arm references the EXPORTED err-enum type). `err_cases` are the err enum's
-    /// case names (kebab, declaration = discriminant order) — for the component `enum` defined type. The
-    /// guest lowers it by branching on the value-heap sum's disc: Ok → rope→mem copy `(ptr,len)`,
-    /// Err → `(enum-disc, 0)`.
-    Result { err_cases: Vec<String> },
+    /// A `result<list<u8>, enum-or-variant>` field (the response envelope's `answer`) — a compound-in-record.
+    /// The canonical ABI flattens a `result<T, E>` like a 2-case variant: `(disc:i32, join(flatten(ok),
+    /// flatten(err)))`; with `ok = list<u8>` (`(ptr,len)`) and a PAYLOAD-LESS err (one `i32` disc) the join
+    /// pads to `(disc:i32, i32, i32)` = 3 core slots. Its component type references a `result<list<u8>, err>`
+    /// DEFINED type (whose err arm references the EXPORTED err defined type). `err_cases` are the err's case
+    /// names (kebab, declaration = discriminant order). `err_is_variant` selects the err arm's component TYPE
+    /// CONSTRUCTOR — a payload-less `variant` (`0x71`) when the host WIT declares `variant`, else an `enum`
+    /// (`0x6d`): the two are DISTINCT component types (a `result<_, variant>` does NOT structurally match a
+    /// `result<_, enum>`), so the err arm MUST follow the WIT declaration or the component-linker silently
+    /// fails to instantiate — the same WIT-must-drive-the-emitted-type rule as the field ORDER. Set by
+    /// [`reorder_record_fields_to_wit`] from the host WIT (the guest side, a payload-less `Sum`, cannot tell
+    /// which the host declared). The guest lowers it by branching on the value-heap sum's disc: Ok → rope→mem
+    /// copy `(ptr,len)`, Err → `(disc, 0)` — the marshal is identical for `variant`/`enum` (only the type differs).
+    Result {
+        err_cases: Vec<String>,
+        err_is_variant: bool,
+    },
 }
 
 /// One host-delegated operation the program performs — its declaring effect's NAME (the WIT interface),
@@ -194,8 +202,13 @@ fn field_boundary_abi(db: &mut Db, ty: &Ty) -> Option<RecordFieldAbi> {
             }
             (!fields.is_empty()).then_some(RecordFieldAbi::Record(fields))
         }
-        // A `result<list<u8>, enum>` field (the answer-back envelope) — carries the err enum's case names.
-        _ => result_bytes_enum(db, ty).map(|err_cases| RecordFieldAbi::Result { err_cases }),
+        // A `result<list<u8>, enum-or-variant>` field (the answer-back envelope) — carries the err's case
+        // names. `err_is_variant` defaults to `false` (enum) here — the guest `Sum` is payload-less and cannot
+        // tell which constructor the host declared; `reorder_record_fields_to_wit` stamps it from the WIT.
+        _ => result_bytes_enum(db, ty).map(|err_cases| RecordFieldAbi::Result {
+            err_cases,
+            err_is_variant: false,
+        }),
     }
 }
 
@@ -248,10 +261,26 @@ pub fn reorder_record_fields_to_wit(
         let Some(abi) = by_name.remove(fname) else {
             continue;
         };
-        // Recurse into a NESTED record field: reorder its sub-fields to the nested WIT record's order.
+        // Recurse into a NESTED record field: reorder its sub-fields to the nested WIT record's order. For a
+        // `result` field, stamp the err arm's component-type constructor from the WIT (`variant` vs `enum`) —
+        // the emitted type MUST follow the host WIT (a `result<_, variant>` is a distinct component type from
+        // a `result<_, enum>`; a name-lex/guest-default choice silently fails to instantiate).
         let abi = match abi {
             RecordFieldAbi::Record(sub) => {
                 RecordFieldAbi::Record(reorder_record_fields_to_wit(sub, fwit))
+            }
+            RecordFieldAbi::Result { err_cases, .. } => {
+                let err_is_variant = matches!(
+                    fwit,
+                    WitType::Result {
+                        err: Some(e),
+                        ..
+                    } if matches!(e.as_ref(), WitType::Variant(_))
+                );
+                RecordFieldAbi::Result {
+                    err_cases,
+                    err_is_variant,
+                }
             }
             other => other,
         };

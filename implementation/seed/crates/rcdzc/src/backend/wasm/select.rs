@@ -18680,6 +18680,97 @@ mod tests {
         );
     }
 
+    // The deliver-RESPONSE fix (fix-forward of #3223): a `result<list<u8>, err>` host-arg field must emit its
+    // err arm with the SAME component-type CONSTRUCTOR the host WIT declares — a payload-less `variant` when
+    // the WIT says `variant` (the platform `variant error`), an `enum` when it says `enum`. A `result<_,
+    // variant>` and a `result<_, enum>` are DISTINCT component types, so a guest whose err arm mismatched the
+    // host's constructor SILENTLY failed to instantiate (deliver-response's `answer: result<list<u8>, error>`).
+    // The reorder stamps `err_is_variant` from the WIT (the guest side, a payload-less `Sum`, cannot tell).
+    #[test]
+    fn result_host_arg_err_arm_follows_the_wit_variant_or_enum_constructor() {
+        use crate::backend::wasm::host::{RecordFieldAbi, reorder_record_fields_to_wit};
+        use crate::wit_world::WitType;
+        let lu8 = || WitType::List(Box::new(WitType::U8));
+        let cases = || {
+            vec![
+                "timeout".to_string(),
+                "missing-handler".to_string(),
+                "schema-violation".to_string(),
+                "faulted".to_string(),
+            ]
+        };
+        // Name-lex guest order {answer, contract, token}; answer is a result-field (err defaults to enum).
+        let name_lex = || {
+            vec![
+                (
+                    "answer".to_string(),
+                    RecordFieldAbi::Result {
+                        err_cases: cases(),
+                        err_is_variant: false,
+                    },
+                ),
+                ("contract".to_string(), RecordFieldAbi::Bytes),
+                ("token".to_string(), RecordFieldAbi::Bytes),
+            ]
+        };
+        // Host WIT `response { contract, token, answer: result<list<u8>, VARIANT error> }` — the platform shape.
+        let wit_variant = WitType::Record(vec![
+            ("contract".to_string(), lu8()),
+            ("token".to_string(), lu8()),
+            (
+                "answer".to_string(),
+                WitType::Result {
+                    ok: Some(Box::new(lu8())),
+                    err: Some(Box::new(WitType::Variant(
+                        cases().into_iter().map(|c| (c, None)).collect(),
+                    ))),
+                },
+            ),
+        ]);
+        let out = reorder_record_fields_to_wit(name_lex(), &wit_variant);
+        assert_eq!(
+            out.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+            ["contract", "token", "answer"],
+            "the response record reorders to the WIT declaration order (answer last)"
+        );
+        let RecordFieldAbi::Result {
+            err_is_variant,
+            err_cases,
+        } = &out[2].1
+        else {
+            panic!("answer is a result field");
+        };
+        assert!(
+            *err_is_variant,
+            "the err arm follows the WIT `variant` constructor, so it emits a component variant not an enum"
+        );
+        assert_eq!(
+            err_cases,
+            &cases(),
+            "the err case names are preserved in order"
+        );
+        // A host WIT that declares the err arm as `enum` keeps the enum constructor (no false promotion).
+        let wit_enum = WitType::Record(vec![
+            ("contract".to_string(), lu8()),
+            ("token".to_string(), lu8()),
+            (
+                "answer".to_string(),
+                WitType::Result {
+                    ok: Some(Box::new(lu8())),
+                    err: Some(Box::new(WitType::Enum(cases()))),
+                },
+            ),
+        ]);
+        let out = reorder_record_fields_to_wit(name_lex(), &wit_enum);
+        let RecordFieldAbi::Result { err_is_variant, .. } = &out[2].1 else {
+            panic!("answer is a result field");
+        };
+        assert!(
+            !*err_is_variant,
+            "a WIT `enum` err arm stays an enum (the constructor follows the WIT, not a default)"
+        );
+    }
+
     #[test]
     fn selects_a_literal_to_i64_const() {
         let (ast, body) = scalar_program();
