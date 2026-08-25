@@ -29,6 +29,37 @@ pub fn render_val(v: &Val) -> String {
             let inner: Vec<String> = xs.iter().map(render_val).collect();
             format!("({})", inner.join(" "))
         }
+        // A RECORD renders in the corpus value-form `(record (= name value) …)`, in field order — the same
+        // spelling the resource-escape / codec path prints, so a typed interface-export result (rendered
+        // here) matches a `(wit-world …)` case's `(output …)` clause.
+        Val::Record(fields) => {
+            let inner: Vec<String> = fields
+                .iter()
+                .map(|(n, v)| format!("(= {n} {})", render_val(v)))
+                .collect();
+            format!("(record {})", inner.join(" "))
+        }
+        // An OPTION renders `(Some <value>)` / `(None unit)` — the corpus sum value-form (the `unit` payload
+        // marks the absent case, matching the reader).
+        Val::Option(None) => "(None unit)".to_string(),
+        Val::Option(Some(v)) => format!("(Some {})", render_val(v)),
+        // A RESULT renders `(Ok <value>)` / `(Err <value>)`; an empty payload renders `unit`.
+        Val::Result(Ok(p)) => {
+            format!(
+                "(Ok {})",
+                p.as_deref()
+                    .map(render_val)
+                    .unwrap_or_else(|| "unit".into())
+            )
+        }
+        Val::Result(Err(p)) => {
+            format!(
+                "(Err {})",
+                p.as_deref()
+                    .map(render_val)
+                    .unwrap_or_else(|| "unit".into())
+            )
+        }
         other => format!("{other:?}"),
     }
 }

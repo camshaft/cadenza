@@ -62,6 +62,15 @@ pub struct Record {
     /// (a PRESENCE check, not exclusive). The portable-diagnostic-test capability (operator seq353 inc2);
     /// empty for a case with no `(warns …)`.
     pub warns: Vec<(String, Option<String>)>,
+    /// An explicit WIT WORLD the case imposes on the guest (`(wit-world <world-sexpr>)`) — the general
+    /// WIT-ABI shape where the export boundary is DECLARED, not synthesized from the guest. Stored as
+    /// one-line s-expression text (like `program`); the gate driver converts it to a `wit-world` binary-AST
+    /// artifact fed to `cdz compile`. `None` for the common synthesized-world case (byte-identical to before).
+    pub wit_world: Option<String>,
+    /// The interface a `(wit-world …)` case's guest exports under (`(component-name "cadenza:pkg/iface")`) —
+    /// passed to `cdz compile --component-name` and used to qualify the run export as `<iface>#<export>`.
+    /// `None` when no world is imposed.
+    pub component_name: Option<String>,
 }
 
 /// One sibling LIBRARY module of a multi-file package case — its file name (the string an `(import
@@ -378,6 +387,20 @@ pub fn render(records: &[Record]) -> String {
             }
             out.push('\n');
         }
+        // An explicit WIT world the case imposes (general WIT-ABI shape): `wit-world\t<world-sexpr>` (one
+        // line, like `program`) + `component-name\t<iface>`. The gate driver converts the world to a
+        // `wit-world` binary-AST artifact for `cdz compile --component-name` + qualifies the run `--call`.
+        // Absent for a synthesized-world case (byte-identical to before).
+        if let Some(w) = &r.wit_world {
+            out.push_str("wit-world\t");
+            out.push_str(w);
+            out.push('\n');
+        }
+        if let Some(cn) = &r.component_name {
+            out.push_str("component-name\t");
+            out.push_str(cn);
+            out.push('\n');
+        }
         out.push_str("---\n");
     }
     out
@@ -568,6 +591,8 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
     let mut host_responses: Vec<(String, String)> = Vec::new();
     let mut host_calls: Vec<String> = Vec::new();
     let mut warns: Vec<(String, Option<String>)> = Vec::new();
+    let mut wit_world: Option<String> = None;
+    let mut component_name: Option<String> = None;
     // Trials accumulate as the clauses are walked: a `(call …)` sets the PENDING call, and the next
     // result clause (`output`/`error`/`trap`) CLOSES a trial pairing that pending call with the result.
     // A result with no preceding `(call …)` is a no-call trial. This lets a case INTERLEAVE several
@@ -740,6 +765,23 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                     warns.push((code, message_clause(a, tail)));
                 }
             }
+            // `(wit-world <world-sexpr>)` — an explicit WIT world the export boundary is DECLARED by (the
+            // general WIT-ABI shape), vs synthesized from the guest. Store the world subtree as one-line
+            // s-expr text; the gate driver converts it to a `wit-world` binary-AST artifact for `cdz compile`.
+            Some("wit-world") => {
+                wit_world = a
+                    .as_form(clause, "wit-world")
+                    .and_then(|t| t.first().copied())
+                    .map(|id| sexpr::print_from(a, id));
+            }
+            // `(component-name "cadenza:pkg/iface")` — the interface the `(wit-world …)` guest publishes its
+            // export under; passed to `cdz compile --component-name` and used to qualify the run `--call`.
+            Some("component-name") => {
+                component_name = a
+                    .as_form(clause, "component-name")
+                    .and_then(|t| t.first().copied())
+                    .and_then(|id| string_leaf(a, id));
+            }
             // `doc` — not needed to run + compare a case.
             _ => {}
         }
@@ -760,6 +802,8 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
         host_responses,
         host_calls,
         warns,
+        wit_world,
+        component_name,
     })
 }
 

@@ -6,19 +6,23 @@
 ; fully end-to-end, in the corpus — reusing this established `.sexp` format rather than a new one.
 ; The mission retires rcdzc's `wasmtime` dev-dependency once all its behavioral coverage lands here.
 ;
-; A shape-2 case declares a guest that EXPORTS a typed function; the harness compiles it (the WIT
-; world is SYNTHESIZED from the guest's own type annotations — no external world artifact needed),
-; then `(call <export> <arg>...)` invokes it across the component boundary and `(output ...)` asserts
-; the returned value. The interesting content is the ABI marshalling of the param/result TYPES
-; (records, options, lists, variants/enums) as they cross the canonical component boundary — a broken
-; lift (wrong discriminant, payload offset, or element shape) yields a different observable value.
+; A shape-2 case declares a guest that EXPORTS a typed function; `(call <export> <arg>...)` invokes it
+; across the component boundary and `(output ...)` asserts the returned value. The interesting content
+; is the ABI marshalling of the param/result TYPES (records, options, lists, variants/enums) as they
+; cross the canonical component boundary — a broken lift (wrong discriminant, payload offset, or element
+; shape) yields a different observable value. The WIT world is USUALLY SYNTHESIZED from the guest's own
+; type annotations (no external artifact). A case may instead IMPOSE an explicit world with a
+; `(wit-world <world-sexpr>)` + `(component-name "iface")` clause — the export then crosses under that
+; named interface (`(call <export>)` is invoked as `<iface>#<export>`); an imposed-world case runs only
+; on the wasm backend (Rust/ML decline → Todo, no external-world ingest there). World type-tag heads MUST
+; be STRING LITERALS: `("record" …)`, `("option" …)`, `("list" …)`; field names / scalars stay bare.
 ;
 ; This file grows one shape at a time as v-rust-backend feeds each anchored shape; each corpus case
 ; that goes green retires its in-crate `run_returns` equivalent (no coverage gap).
-;   SHAPE 1  — option<s64> RESULT: a record-in guest returns a record whose field is an
-;     `option<s64>`, exercising the Option discriminant AND the payload lane on both arms.
-;   SHAPE 2  — named VARIANT-with-payload RESULT: a discriminated union `Continue | Close(s64)` in a
-;     record field, exercising the variant discriminant AND the payload case's s64 lane on both arms.
+;   SHAPE 1 — option<s64> RESULT (both arms).             SHAPE 5 — bare list<s64> RESULT.
+;   SHAPE 2 — named VARIANT-with-payload RESULT.          SHAPE 7 — list-of-records RESULT.
+;   SHAPE 3 — scalar identity export.                     SHAPE 8 — none-only option<s64> via an IMPOSED
+;   SHAPE 4 — multi-field record RESULT.                    WIT world (element type from the world decl).
 
 (case "an option<s64> field in a record result crosses the export boundary on both arms"
   (doc    "The general option<T> RESULT lift across the WIT export boundary. The guest takes a record
@@ -97,3 +101,17 @@
            (export f)))
   (call f (: (record (= x 7)) (Record (: x Int64))))
   (output (: (record (= items (list (record (= a 7) (= b 14))))) (record (items (List (record (a Int64) (b Int64))))))))
+
+(case "a none-only option<s64> record field resolves its element type from an imposed WIT world"
+  (doc    "SHAPE 8 — the general WIT-ABI shape where the export boundary is DECLARED by an explicit WIT
+           world, not synthesized from the guest. The guest's field d is STATICALLY Option.None (no Some
+           arm), so its option element type cannot be inferred from a payload — it is fixed by the world's
+           `d: option<s64>` declaration (the `(wit-world …)` clause). The guest exports f UNDER the
+           interface `cadenza:demo/iface` (`(component-name …)`), so the run invokes it through that
+           interface instance. A broken WIT-element-type resolution fails to emit or mis-types d. Migrated
+           from the in-crate wasmtime test `a_none_only_option_result_resolves_via_wit`.")
+  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result ("record" (d ("option" (s64))))))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (def (f (: m (Record (: x Int64)))) (record (= d Option.None))) (export f)))
+  (call f (: (record (= x 0)) (Record (: x Int64))))
+  (output (: (record (= d (None unit))) (record (d (Option Int64))))))

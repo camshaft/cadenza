@@ -1885,6 +1885,43 @@ fn run_export(
         }
     };
 
+    // An INTERFACE-QUALIFIED export `<iface>#<member>` (e.g. `cadenza:demo/iface#f`): a guest that exports
+    // its function THROUGH a named interface INSTANCE (a `--component-name` provider, or the explicit WIT
+    // world a corpus `(wit-world …)` case imposes) rather than as a top-level bare func. Resolve the member
+    // inside the instance, coerce the args to its declared param types, call, and render — the interface
+    // analog of the plain top-level path below. Handled FIRST so a `#`-qualified name never falls into the
+    // resource-escape / closure dispatch (which key off a NON-top-level bare name).
+    if let Some((iface, member)) = opts.export.as_deref().and_then(|n| n.split_once('#')) {
+        let iface_idx = instance
+            .get_export_index(&mut *store, None, iface)
+            .ok_or_else(|| anyhow!("component exports no interface `{iface}`"))?;
+        let member_idx = instance
+            .get_export_index(&mut *store, Some(&iface_idx), member)
+            .ok_or_else(|| anyhow!("interface `{iface}` has no member `{member}`"))?;
+        let func = instance
+            .get_func(&mut *store, member_idx)
+            .ok_or_else(|| anyhow!("interface member `{iface}#{member}` is not a func"))?;
+        let param_types: Vec<Type> = func
+            .params(&*store)
+            .iter()
+            .map(|(_, t)| t.clone())
+            .collect();
+        let args = coerce_args(&opts.args, &param_types)?;
+        let mut results = vec![Val::Bool(false); func.results(&*store).len()];
+        return match func.call(&mut *store, &args, &mut results) {
+            Ok(()) => {
+                let rendered = match results.first() {
+                    None => "unit".to_string(),
+                    Some(Val::String(s)) => s.clone(),
+                    Some(other) => render_val(other),
+                };
+                let _ = func.post_return(&mut *store);
+                Ok(Outcome::Value(rendered))
+            }
+            Err(e) => Ok(Outcome::Trap(trap_message(&e))),
+        };
+    }
+
     // The RESOURCE ESCAPE (`DESIGN-value-heap-rcdzc.md` §3a): a program whose result is a COMPOUND
     // exports no bare function — it publishes a `cadenza:run/run` instance carrying `make : () -> own<t>`
     // + `encode : (own<t>) -> list<u8>`. Call `make` then `encode`, DECODE the canonical binary value
@@ -3235,6 +3272,48 @@ fn coerce_one(s: &str, t: &Type) -> Result<Val> {
                     "argument `{s}`: expected a result literal `(Ok <value>)` or `(Err <value>)`"
                 ));
             }
+        }
+        // A RECORD argument (a world-imposed / interface-nested export's record param): the host supplies it
+        // as a component `record{…}` value. The corpus writes `(record (= name value) …)` (canonical field
+        // groups); parse the groups, match each DECLARED field by name, and coerce its value against the
+        // field's type (a nested record/option/list/tuple field recurses through `coerce_one`). Built in the
+        // record type's DECLARED field order so it matches the component-model layout regardless of source order.
+        Type::Record(rt) => {
+            let mut parts = parse_tuple_fields(s).ok_or_else(|| {
+                anyhow!("argument `{s}`: expected a record literal like `(record (= x 1))`")
+            })?;
+            if parts.first().map(String::as_str) == Some("record") {
+                parts.remove(0);
+            }
+            let mut given: std::collections::BTreeMap<String, String> =
+                std::collections::BTreeMap::new();
+            for f in &parts {
+                let (n, v) = named_field(f).ok_or_else(|| {
+                    anyhow!("argument `{s}`: record field `{f}` is not a `(= name value)` group")
+                })?;
+                given.insert(n, v);
+            }
+            let mut fields: Vec<(String, Val)> = Vec::new();
+            for field in rt.fields() {
+                let vtext = given.get(field.name).ok_or_else(|| {
+                    anyhow!("argument `{s}`: record is missing field `{}`", field.name)
+                })?;
+                fields.push((field.name.to_string(), coerce_one(vtext, &field.ty)?));
+            }
+            Val::Record(fields)
+        }
+        // A LIST argument: the corpus writes `(list e0 e1 …)`; coerce each element against the element type
+        // (elements may themselves be compound and recurse).
+        Type::List(lt) => {
+            let mut parts = parse_tuple_fields(s).ok_or_else(|| {
+                anyhow!("argument `{s}`: expected a list literal like `(list 1 2)`")
+            })?;
+            if parts.first().map(String::as_str) == Some("list") {
+                parts.remove(0);
+            }
+            let et = lt.ty();
+            let vals: Result<Vec<Val>> = parts.iter().map(|e| coerce_one(e, &et)).collect();
+            Val::List(vals?)
         }
         other => {
             return Err(anyhow!(
