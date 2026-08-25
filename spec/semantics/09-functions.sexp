@@ -5916,6 +5916,22 @@
             (export main)))
   (output (: 6 Int64)))
 
+(case "a const list whose elements are BYTES LITERALS recursively folds — a BytesOf is a const value"
+  (doc    "The recursive const-fold unroll (case above) accepts a `const (List …)` whose elements are
+           compile-time constants. A `b\"…\"` bytes LITERAL lowers to a `Core::BytesOf` (of constant byte
+           elements), which IS a constant value — like `ConstBytes`. So a const list of bytes literals folds
+           the same as a const list of ints: `cat [b\"ab\", b\"cd\"] b\"\"` concatenates to a 4-byte constant.
+           Pins that `is_const_value` recognizes `BytesOf` (of consts): without it, a const list carrying any
+           bytes literal was wrongly deemed non-const, so the unroll declined — the exact gap that blocked a
+           recursive fold over a REFLECTED module's forms (`Ast.module`) or a QUOTE containing a `b\"…\"`
+           (e.g. a userspace contract-id transform building tagged bytes with `Bytes.concat(b\"\\x01\", …)`).")
+  (input  (do
+            (def (cat (const (: xs (List Bytes))) (: acc Bytes))
+              (match xs ((list) acc) ((list h .. t) (cat t (Bytes.concat acc h)))))
+            (def (main) (Bytes.len (cat (list b"ab" b"cd") b"")))
+            (export main)))
+  (output (: 4 Int64)))
+
 (case "the runtime-list version of a tail fold compiles and folds correctly"
   (doc    "The correct alternative to the const-collection reject above: the SAME tail fold over a RUNTIME
            `(List Int64)` parameter (no `const`) compiles to a proper `loop` whose `br_if` exit is the real

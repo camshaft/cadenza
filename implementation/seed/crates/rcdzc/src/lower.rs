@@ -24070,6 +24070,8 @@ fn core_is_const_value(db: &mut Db, c: &Core) -> bool {
             .iter()
             .all(|&(k, v)| is_const_value(db, k) && is_const_value(db, v)),
         Core::SetOf { elems, .. } => elems.iter().all(|&e| is_const_value(db, e)),
+        // A `BytesOf` of constant elements is a constant bytes value (see `is_const_value`).
+        Core::BytesOf { elems } => elems.iter().all(|&e| is_const_value(db, e)),
         _ => false,
     }
 }
@@ -24091,6 +24093,13 @@ fn is_const_value(db: &mut Db, id: StructId) -> bool {
             .iter()
             .all(|&(k, v)| is_const_value(db, k) && is_const_value(db, v)),
         Core::SetOf { elems, .. } => elems.iter().all(|&e| is_const_value(db, e)),
+        // A `BytesOf` built from constant integer elements is a compile-time-constant bytes value (a
+        // `b"…"` literal / `Bytes.of` of constants), exactly like `ConstBytes` — a constant that a const
+        // list-fold may carry (e.g. a reflected/quoted module source containing a `b"…"` literal, or a
+        // transform that builds tagged bytes with `Bytes.concat(b"\x01", …)`). Without this, a const list
+        // whose elements include such a literal was wrongly deemed non-const, so the recursive const-fold
+        // unroll declined (`Ast.encode of a runtime AST value`).
+        Core::BytesOf { elems } => elems.iter().all(|&e| is_const_value(db, e)),
         _ => false,
     }
 }

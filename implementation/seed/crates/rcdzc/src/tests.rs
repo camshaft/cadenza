@@ -75451,12 +75451,15 @@ mod stage1 {
     }
 
     #[test]
-    fn a_const_collection_recursively_folded_rejects_rather_than_hanging() {
-        // SAFETY: MISCOMPILE GUARD: a `const` COLLECTION param consumed by a SELF-RECURSIVE fold used to compile
-        // to an INFINITE LOOP — the const erasure and the tail-loop transform composed to emit a
-        // `loop { … br 0 }` with no exit test (the `(list)`-nil / length check was const-folded away). A
-        // valid program HUNG. `type_specialize` now DECLINES the composition (decline-don't-miscompile),
-        // so it rejects (coded CDZ0201) rather than hanging.
+    fn a_const_collection_recursively_folded_unrolls_not_hangs_or_rejects() {
+        // A `const` COLLECTION param consumed by a SELF-RECURSIVE fold once composed the const erasure with
+        // the tail-loop transform into an INFINITE LOOP (a `loop { … br 0 }` with the `(list)`-nil exit
+        // const-folded away) — a valid program HUNG. It was then DECLINED (reject-don't-miscompile). The
+        // recursive-const-fold unroll (#3344, spec/semantics/09-functions.sexp "a const collection
+        // recursively folded UNROLLS to its result") now does the SOUND thing: it fully UNROLLS the bounded
+        // const fold to its constant result at compile time, so the program COMPILES (folds to a value) —
+        // neither hangs nor rejects. The behavioral oracle for the fold value lives in that corpus case; this
+        // test pins that the composition COMPILES (no reject) and that the NON-folding siblings still compile.
         let reject_code = |src: &str| {
             crate::compile::compile_component(&crate::codec::encode(&parse(src)))
                 .err()
@@ -75468,10 +75471,9 @@ mod stage1 {
                    (def (s (const (: xs (List Int64))) (: acc Int64)) \
                      (match xs ((list) acc) ((list h .. t) (s t (+ acc h))))) \
                    (def (main) (s (list 1 2 3) 0)) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0201"),
-            "a const list consumed by a tail fold must be rejected, not compiled to an infinite loop"
+            ),
+            None,
+            "a const list consumed by a tail fold now UNROLLS to a constant (#3344) — compiles, does not reject"
         );
         // The RUNTIME-list version (no `const`) compiles cleanly — the list is an ordinary runtime value the
         // tail-loop iterates with its real `br_if` length/nil exit. So the reject is specific to the
