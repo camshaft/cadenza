@@ -60,6 +60,19 @@ pub fn render_val(v: &Val) -> String {
                     .unwrap_or_else(|| "unit".into())
             )
         }
+        // A VARIANT renders `(<case> <payload>)` / `(<case> unit)` for the nullary case — the case NAME is
+        // the WIT/component-model spelling (kebab, e.g. `continue`/`close`), which is the recorded canonical
+        // form a corpus `(output …)` matches. An ENUM (no payloads) renders `(<case> unit)` likewise.
+        Val::Variant(case, payload) => {
+            format!(
+                "({case} {})",
+                payload
+                    .as_deref()
+                    .map(render_val)
+                    .unwrap_or_else(|| "unit".into())
+            )
+        }
+        Val::Enum(case) => format!("({case} unit)"),
         other => format!("{other:?}"),
     }
 }
