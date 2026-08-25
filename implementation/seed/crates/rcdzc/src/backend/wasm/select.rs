@@ -8847,10 +8847,39 @@ fn emit_product_to_mem(
                     out,
                 )?;
             }
+            // A general `variant<scalar>` field: write it at `dest_addr + foff` per the canonical variant
+            // layout (disc + uniform scalar payload) via `emit_variant_to_mem` — the N-case generalization of
+            // the option field arm. Its base address is computed into a temp (the writer's store offsets are
+            // relative to that base). Reuses the proven variant memory-writer wholesale.
+            None if crate::backend::wasm::host::variant_scalar_payload_cases(db, fty).is_some() => {
+                let var_slot = work_base + 3;
+                let field_addr = work_base + 4;
+                scratch_ty.insert(var_slot, ValType::I32);
+                scratch_ty.insert(field_addr, ValType::I32);
+                *high = (*high).max(work_base + 5);
+                out.push(Lir::LocalGet(agg_slot));
+                out.push(Lir::ConstI32(cell as i32));
+                out.push(Lir::CallImport(OP_ARR_GET)); // [variant handle] (borrows agg)
+                out.push(Lir::LocalSet(var_slot));
+                out.push(Lir::LocalGet(dest_addr));
+                out.push(Lir::ConstI32(foff as i32));
+                out.push(Lir::I32Add);
+                out.push(Lir::LocalSet(field_addr)); // field_addr = dest_addr + foff
+                emit_variant_to_mem(
+                    db,
+                    var_slot,
+                    field_addr,
+                    fty,
+                    work_base + 5,
+                    high,
+                    scratch_ty,
+                    out,
+                )?;
+            }
             _ => {
                 return Err(Reject::decline(
-                    "a product host-arg element field that is not a scalar, `Bytes`, or option<scalar> is a \
-                     later increment",
+                    "a product host-arg element field that is not a scalar, `Bytes`, option<scalar>, or \
+                     variant<scalar> is a later increment",
                 ));
             }
         }
