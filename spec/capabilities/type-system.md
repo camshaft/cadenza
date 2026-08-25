@@ -207,12 +207,6 @@ A match on an open sum MUST carry an open-tail arm covering the variants not nam
 
 A closed sum MUST remain the default: a sum declared without a row variable is closed, and the abstract syntax tree type MUST be a closed sum, so that a compiler's match over the AST is checked against a fixed, known variant set.
 
-### An Open Sum's Payload May Be Schema-Typed
-
-A program MUST be able to decode an open sum variant's payload against a schema resolved at run time, yielding a typed result rather than raw bytes, so that an extensible-vocabulary value carries a payload the program can use after a checked decode.
-
-A payload decode that does not match its schema MUST yield a typed failure result rather than a trap, so that a program folding an open vocabulary handles a malformed or unknown payload as data rather than halting.
-
 ### The Abstract Syntax Tree Is An Ordinary Sum Type
 
 The abstract syntax tree type MUST be an ordinary sum type of the language — a variant per syntactic form (an integer, a float, a string, a boolean, a name, and a list of child nodes) with the list variant carrying a list of the same type — rather than a primitive the type system special-cases.

@@ -2,6 +2,13 @@
 
 *2026-07-04*
 
+> **PARTIALLY SUPERSEDED (2026-08-25).** The **schema-typed-payload decode** half of this learning was
+> removed: the operator ruled that the `decode` / `payload-of` / `Int64-schema` prelude surface (with the
+> synthesized `Schema` / `DecodeError` sums and type-system.md §"An Open Sum's Payload May Be Schema-Typed",
+> now retracted) was never greenlit and had zero consumers. **Open sum types themselves remain realized and
+> unaffected** — only the schema-typed-payload decode mechanism this doc also motivated was deleted. Read
+> the schema-payload sections below as historical rationale for a feature that no longer exists.
+
 **What happened.** The target's vocabulary is **open**: event kinds are not a fixed enumeration in code
 — a kind is introduced by publishing its schema as an event, and **a fold that has no handler for an
 event's kind MUST treat it as a no-op rather than fail**. This imposes two things on Cadenza that the
