@@ -1202,12 +1202,15 @@ pub fn host_import_index(imports: &[HostImport], effect: &str, op: &str) -> Opti
 /// shared-memory module + a Memory canon-option on each string op's lower. A scalar-only host set needs no
 /// memory (byte-identical to the E2h-2 scalar shape).
 pub fn set_needs_memory(imports: &[HostImport]) -> bool {
-    // A Str OR Bytes param crosses as `(ptr,len)` read out of the program's linear memory, so either
-    // requires the shared-memory core module + the canon `Lower`'s `Memory(0)` option.
+    // A Str/Bytes param crosses as `(ptr,len)` read out of the program's linear memory, and a `list<T>` param
+    // crosses as `(ptr,count)` (the guest marshals the list INTO the shared memory) — each requires the
+    // shared-memory core module + the canon `Lower`'s `Memory(0)` option. (A Record with a Bytes field also
+    // marshals into mem, but the classifier only produces `Record` when a sibling `list<u8>`/Bytes forces the
+    // memory anyway; the Str/Bytes/List check covers every memory-touching param.)
     imports.iter().any(|h| {
         h.params
             .iter()
-            .any(|p| matches!(p, HostParam::Str | HostParam::Bytes))
+            .any(|p| matches!(p, HostParam::Str | HostParam::Bytes | HostParam::List(_)))
     })
 }
 
@@ -1298,12 +1301,14 @@ pub fn first_unrepresentable_host_op(
             let arg_is_boundary_enum =
                 allow_option_bytes && !peer_bound && enum_cases(db, &at).is_some();
             // A `list<T>` arg (`graph.set-edges`'s `targets: list<reducer-id>`) crosses as a `(list <elem>)`
-            // component type — the guest marshals the value-heap `List` into shared `mem` (this slice: a
-            // `list<u8>` element = `list<list<u8>>`, `select::emit_list_bytes_arg_marshal`). Same reducer/
-            // host-fused gating; a non-`list<u8>` element is a later increment (declined here + at the marshal).
+            // component type — the guest marshals the value-heap `List` into shared `mem`
+            // (`select::emit_list_arg_marshal`). The element must itself be marshalable: a `list<u8>` (Bytes,
+            // = `list<list<u8>>`) OR a SCALAR (aliased-width int/char/float — written inline). Same reducer/
+            // host-fused gating; a nested-list/record element is a later increment (declined here + at the marshal).
             let arg_is_boundary_list = allow_option_bytes
                 && !peer_bound
-                && matches!(at.strip_nominal(), Ty::List(e) if matches!(e.strip_nominal(), Ty::Bytes));
+                && matches!(at.strip_nominal(), Ty::List(e)
+                    if matches!(e.strip_nominal(), Ty::Bytes) || abi_val_type(e).is_some());
             if !matches!(at, Ty::Unit | Ty::String | Ty::Bytes)
                 && !ty_undetermined(&at)
                 && !abi_ok(&at)
