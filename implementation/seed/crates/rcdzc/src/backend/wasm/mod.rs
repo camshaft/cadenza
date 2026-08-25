@@ -1636,6 +1636,10 @@ fn record_abi_has_bytes(fields: &[(String, host::RecordFieldAbi)]) -> bool {
         host::RecordFieldAbi::Scalar(_) => false,
         // A `list<T>` field needs the `(list u8)` type iff its element bottoms out at a `Bytes` leaf.
         host::RecordFieldAbi::List(elem) => host::record_field_abi_reaches_bytes(elem),
+        // A `tuple<…>` field needs it iff any element does.
+        host::RecordFieldAbi::Tuple(elems) => {
+            elems.iter().any(host::record_field_abi_reaches_bytes)
+        }
     })
 }
 
@@ -1716,6 +1720,17 @@ fn record_field_cref(
             let list_def = base + 2 * table.len() as u32;
             table.push(emit_cdef(&CDef::List(elem_cref)));
             CRef::Idx(list_def + 1)
+        }
+        // A `tuple<…>` field: build each element's CRef (children-first) then lay the `(tuple <elem>…)` DEFINED
+        // type and reference its index (structural, exported uniformly like the rest).
+        host::RecordFieldAbi::Tuple(elems) => {
+            let elem_crefs: Vec<CRef> = elems
+                .iter()
+                .map(|e| record_field_cref(e, list_idx, base, table))
+                .collect();
+            let tup_def = base + 2 * table.len() as u32;
+            table.push(emit_cdef(&CDef::Tuple(elem_crefs)));
+            CRef::Idx(tup_def + 1)
         }
     }
 }

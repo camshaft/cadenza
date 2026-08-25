@@ -3765,6 +3765,14 @@ fn collect_list_elem_ops(
         for fty in fields.values() {
             collect_record_field_ops(db, fty, out);
         }
+    } else if let Ty::Tuple(elems) = elem.strip_nominal() {
+        // A TUPLE element (`emit_tuple_to_mem`): `arr-get` each element (borrow) + its own ops — the same
+        // `collect_record_field_ops` per element (a tuple is a positional product).
+        out.insert(OP_ARR_GET);
+        let elems: Vec<Ty> = elems.iter().cloned().collect();
+        for ety in &elems {
+            collect_record_field_ops(db, ety, out);
+        }
     } else if let Ok(Some(read)) = get_op_ty(db, elem) {
         out.insert(read);
     }
@@ -8316,9 +8324,19 @@ fn emit_list_arg_marshal(
             None
         };
     let is_record = record_elem.is_some();
+    // A TUPLE element (`list<tuple<…>>`): the POSITIONAL product — written in place at its canonical layout
+    // (cell i = element i), via `emit_tuple_to_mem`. Same in-place write as a record element, no name reorder.
+    let tuple_elem: Option<Vec<Ty>> = if is_bytes || is_nested_list || is_record {
+        None
+    } else if let Ty::Tuple(es) = elem.strip_nominal() {
+        Some(es.iter().cloned().collect())
+    } else {
+        None
+    };
+    let is_tuple = tuple_elem.is_some();
     // The store for a scalar element, by its slot valtype + canonical size: i64→i64.store, f64→f64.store,
     // f32→f32.store, i32 → 4-byte i32.store / 2-byte store16 / 1-byte store8.
-    let scalar_store: Option<Lir> = if is_bytes || is_nested_list || is_record {
+    let scalar_store: Option<Lir> = if is_bytes || is_nested_list || is_record || is_tuple {
         None
     } else {
         let (size, _) = canonical_layout(db, elem);
@@ -8353,7 +8371,7 @@ fn emit_list_arg_marshal(
     } else {
         canonical_layout(db, elem).1
     };
-    let read = if is_bytes || is_nested_list || is_record {
+    let read = if is_bytes || is_nested_list || is_record || is_tuple {
         None
     } else {
         Some(get_op_ty(db, elem)?.ok_or_else(|| {
@@ -8515,6 +8533,22 @@ fn emit_list_arg_marshal(
             scratch_ty,
             out,
         )?;
+    } else if let Some(tup_elems) = &tuple_elem {
+        // TUPLE element (`list<tuple<…>>`): write the value-heap tuple IN PLACE into the outer slot at
+        // `slotaddr` per its canonical (positional) layout — element i at its offset; a Bytes element's rope
+        // spills after the array at the shared `cursor`. `eh` is the borrowed element tuple handle. A tuple's
+        // WIT order IS its element order (no name reorder), so `elem_wit` is not needed for ordering.
+        emit_tuple_to_mem(
+            db,
+            eh,
+            slotaddr,
+            tup_elems,
+            cursor,
+            work_base + 9,
+            high,
+            scratch_ty,
+            out,
+        )?;
     } else {
         // scalar element: outer[i] = unbox(eh), width-narrowed, stored INLINE (no cursor advance).
         let read = read.expect("a scalar element has an unbox op");
@@ -8544,33 +8578,26 @@ fn emit_list_arg_marshal(
     Ok(())
 }
 
-/// Marshal a value-heap RECORD (handle in `rec_slot`) as a host `list<record>` ELEMENT — writing it IN PLACE
-/// into linear memory at `dest_addr` per the canonical record layout: each field at its DECLARATION-order
-/// offset, a `Bytes` field's rope copied after the outer array at the running `cursor` with its `(ptr,len)`
-/// written inline. The memory-writing analogue of [`emit_record_arg_marshal`] (that one FLATTENS a top-level
-/// record arg to core stack slots; this writes a by-reference record element). Field ORDER follows the host
-/// WIT record's DECLARATION order (`wit`) so the emitted bytes match the host's canonical `record` layout.
-/// Reads BORROW `rec_slot` (`arr-get`; the element handle is not consumed). Scratch (rope/len/pos) lives at
-/// `work_base..work_base+3`. A field that is not a scalar or `Bytes` (a nested record/list) declines — a later
-/// increment (each nesting level takes a disjoint scratch region above its parent's, like the list marshal).
+/// The shared write-loop for a PRODUCT (record or tuple) host `list<…>` ELEMENT — writes each field IN PLACE
+/// into linear memory at `dest_addr` per the canonical layout: a SCALAR inline at its offset, a `Bytes` field's
+/// rope copied after the outer array at the running `cursor` with its `(ptr,len)` written inline. `layout` is
+/// the fields in CANONICAL (memory) order as `(value-heap cell index, field type)` — a RECORD resolves it from
+/// the WIT DECLARATION order (each field's name-lex cell), a TUPLE positionally (cell i = element i). Reads
+/// BORROW `agg_slot` (`arr-get`; the element handle is not consumed). Scratch (rope/len/pos) at
+/// `work_base..work_base+3`. A field that is not a scalar or `Bytes` (a nested record/list/tuple) declines —
+/// a later increment (each nesting level takes a disjoint scratch region above its parent's).
 #[allow(clippy::too_many_arguments)]
-fn emit_record_to_mem(
+fn emit_product_to_mem(
     db: &mut Db,
-    rec_slot: u32,
+    agg_slot: u32,
     dest_addr: u32,
-    fields: &std::collections::BTreeMap<crate::resolved::Symbol, Ty>,
-    wit: &crate::wit_world::WitType,
+    layout: &[(usize, Ty)],
     cursor: u32,
     work_base: u32,
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
     out: &mut Emit,
 ) -> Result<(), Reject> {
-    let crate::wit_world::WitType::Record(wit_fields) = wit else {
-        return Err(Reject::decline(
-            "a `list<record>` element's declared WIT type is not a record",
-        ));
-    };
     let rope = work_base;
     let len = work_base + 1;
     let pos = work_base + 2;
@@ -8578,27 +8605,17 @@ fn emit_record_to_mem(
         scratch_ty.insert(s, ValType::I32);
     }
     *high = (*high).max(work_base + 3);
-    let names: Vec<String> = fields.keys().map(|s| s.name.to_string()).collect();
-    // Walk the WIT fields in DECLARATION order, accumulating each field's canonical offset (aligned to its
-    // own alignment) — the exact offset walk `emit_result_lift`'s Record arm reads back.
+    // Walk the fields in CANONICAL layout order, accumulating each field's offset (aligned to its own
+    // alignment) — the exact offset walk `emit_result_lift`'s product arm reads back.
     let mut foff: u32 = 0;
-    for (fname, _fwit) in wit_fields {
-        let i = names.iter().position(|n| n == fname).ok_or_else(|| {
-            Reject::decline(
-                "a host WIT record field is absent from the guest `list<record>` element type",
-            )
-        })?;
-        let fty = fields
-            .values()
-            .nth(i)
-            .expect("name-lex index in range")
-            .clone();
-        let (fs, fa) = canonical_layout(db, &fty);
+    for (cell, fty) in layout {
+        let cell = *cell;
+        let (fs, fa) = canonical_layout(db, fty);
         foff = align_up_u32(foff, fa);
-        match get_op_ty(db, &fty)? {
-            // A SCALAR field: `mem[dest_addr + foff] = narrow(unbox(arr-get(rec, i)))` at its canonical width.
+        match get_op_ty(db, fty)? {
+            // A SCALAR field: `mem[dest_addr + foff] = narrow(unbox(arr-get(agg, cell)))` at its canonical width.
             Some(read) => {
-                let store = match (valtype_of(&fty), fs) {
+                let store = match (valtype_of(fty), fs) {
                     (Some(ValType::I64), _) => Lir::I64Store { offset: foff },
                     (Some(ValType::F64), _) => Lir::F64Store { offset: foff },
                     (Some(ValType::F32), _) => Lir::F32Store { offset: foff },
@@ -8607,25 +8624,25 @@ fn emit_record_to_mem(
                     (Some(ValType::I32), 1) => Lir::I32Store8 { offset: foff },
                     _ => {
                         return Err(Reject::decline(
-                            "a `list<record>` element's scalar field has no width store",
+                            "a product host-arg element's scalar field has no width store",
                         ));
                     }
                 };
                 out.push(Lir::LocalGet(dest_addr)); // store addr base (offset immediate = foff)
-                out.push(Lir::LocalGet(rec_slot));
-                out.push(Lir::ConstI32(i as i32));
-                out.push(Lir::CallImport(OP_ARR_GET)); // [addr, field] (borrows rec)
+                out.push(Lir::LocalGet(agg_slot));
+                out.push(Lir::ConstI32(cell as i32));
+                out.push(Lir::CallImport(OP_ARR_GET)); // [addr, field] (borrows agg)
                 out.push(Lir::CallImport(read)); // [addr, scalar]
-                if read == OP_GET_INT && matches!(valtype_of(&fty), Some(ValType::I32)) {
+                if read == OP_GET_INT && matches!(valtype_of(fty), Some(ValType::I32)) {
                     out.push(Lir::I32WrapI64); // a narrow int / char boxes as i64 → narrow to its i32 slot
                 }
                 out.push(store);
             }
             // A `Bytes` field: copy its rope into `mem` at `cursor`, write `(ptr@foff, len@foff+4)`, advance cursor.
             None if matches!(fty.strip_nominal(), Ty::Bytes | Ty::String) => {
-                out.push(Lir::LocalGet(rec_slot));
-                out.push(Lir::ConstI32(i as i32));
-                out.push(Lir::CallImport(OP_ARR_GET)); // [rope handle] (borrows rec)
+                out.push(Lir::LocalGet(agg_slot));
+                out.push(Lir::ConstI32(cell as i32));
+                out.push(Lir::CallImport(OP_ARR_GET)); // [rope handle] (borrows agg)
                 out.push(Lir::LocalSet(rope));
                 out.push(Lir::LocalGet(rope));
                 out.push(Lir::CallImport(OP_BYTES_LEN));
@@ -8665,13 +8682,80 @@ fn emit_record_to_mem(
             }
             _ => {
                 return Err(Reject::decline(
-                    "a `list<record>` element field that is not a scalar or `Bytes` is a later increment",
+                    "a product host-arg element field that is not a scalar or `Bytes` is a later increment",
                 ));
             }
         }
         foff += fs;
     }
     Ok(())
+}
+
+/// Marshal a value-heap RECORD as a host `list<record>` ELEMENT — writing it IN PLACE at `dest_addr`. Resolves
+/// the canonical field order from the host WIT record's DECLARATION order (`wit`) — each field's NAME-LEX cell
+/// index — so the emitted bytes match the host's `record` layout, then delegates to [`emit_product_to_mem`].
+/// The memory-writing analogue of [`emit_record_arg_marshal`] (that FLATTENS a top-level record arg; this
+/// writes a by-reference record element). Reads BORROW `rec_slot`.
+#[allow(clippy::too_many_arguments)]
+fn emit_record_to_mem(
+    db: &mut Db,
+    rec_slot: u32,
+    dest_addr: u32,
+    fields: &std::collections::BTreeMap<crate::resolved::Symbol, Ty>,
+    wit: &crate::wit_world::WitType,
+    cursor: u32,
+    work_base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    let crate::wit_world::WitType::Record(wit_fields) = wit else {
+        return Err(Reject::decline(
+            "a `list<record>` element's declared WIT type is not a record",
+        ));
+    };
+    let names: Vec<String> = fields.keys().map(|s| s.name.to_string()).collect();
+    let mut layout: Vec<(usize, Ty)> = Vec::with_capacity(wit_fields.len());
+    for (fname, _fwit) in wit_fields {
+        let i = names.iter().position(|n| n == fname).ok_or_else(|| {
+            Reject::decline(
+                "a host WIT record field is absent from the guest `list<record>` element type",
+            )
+        })?;
+        let fty = fields
+            .values()
+            .nth(i)
+            .expect("name-lex index in range")
+            .clone();
+        layout.push((i, fty));
+    }
+    emit_product_to_mem(
+        db, rec_slot, dest_addr, &layout, cursor, work_base, high, scratch_ty, out,
+    )
+}
+
+/// Marshal a value-heap TUPLE as a host `list<tuple>` ELEMENT — the POSITIONAL product: cell `i` is element
+/// `i` (a tuple's WIT order IS its element order, no name reorder), then delegates to [`emit_product_to_mem`].
+#[allow(clippy::too_many_arguments)]
+fn emit_tuple_to_mem(
+    db: &mut Db,
+    tup_slot: u32,
+    dest_addr: u32,
+    elems: &[Ty],
+    cursor: u32,
+    work_base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    let layout: Vec<(usize, Ty)> = elems
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (i, t.clone()))
+        .collect();
+    emit_product_to_mem(
+        db, tup_slot, dest_addr, &layout, cursor, work_base, high, scratch_ty, out,
+    )
 }
 
 /// Marshal a value-heap RECORD host argument whose handle is in `rec_slot` into the FLATTENED core slots the
