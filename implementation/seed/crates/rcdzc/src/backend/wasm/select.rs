@@ -8748,9 +8748,51 @@ fn emit_product_to_mem(
                 out.push(Lir::I32Add);
                 out.push(Lir::LocalSet(cursor)); // cursor += len
             }
+            // An `option<scalar>` field: write it at `dest_addr + foff` per the canonical option layout (disc
+            // byte + payload) via `emit_option_to_mem`. Its base address is computed into a temp (the writer's
+            // store offsets are relative to that base). Reuses the option memory-writer wholesale.
+            None if crate::backend::wasm::host::option_payload_ty(db, fty)
+                .is_some_and(|p| valtype_of(&p).is_some()) =>
+            {
+                let payload = crate::backend::wasm::host::option_payload_ty(db, fty)
+                    .expect("option-shaped by the guard");
+                let crate::ty::Ty::Sum { decl, .. } = fty.strip_nominal() else {
+                    unreachable!("option is a Sum")
+                };
+                let some_disc = db
+                    .type_decl_by_occ(*decl)
+                    .and_then(|d| d.variants.iter().position(|v| v.payloads.len() == 1))
+                    .ok_or_else(|| Reject::decline("the option field has no payload variant"))?
+                    as i32;
+                let opt_slot = work_base + 3;
+                let field_addr = work_base + 4;
+                scratch_ty.insert(opt_slot, ValType::I32);
+                scratch_ty.insert(field_addr, ValType::I32);
+                *high = (*high).max(work_base + 5);
+                out.push(Lir::LocalGet(agg_slot));
+                out.push(Lir::ConstI32(cell as i32));
+                out.push(Lir::CallImport(OP_ARR_GET)); // [option handle] (borrows agg)
+                out.push(Lir::LocalSet(opt_slot));
+                out.push(Lir::LocalGet(dest_addr));
+                out.push(Lir::ConstI32(foff as i32));
+                out.push(Lir::I32Add);
+                out.push(Lir::LocalSet(field_addr)); // field_addr = dest_addr + foff
+                emit_option_to_mem(
+                    db,
+                    opt_slot,
+                    field_addr,
+                    &payload,
+                    some_disc,
+                    work_base + 5,
+                    high,
+                    scratch_ty,
+                    out,
+                )?;
+            }
             _ => {
                 return Err(Reject::decline(
-                    "a product host-arg element field that is not a scalar or `Bytes` is a later increment",
+                    "a product host-arg element field that is not a scalar, `Bytes`, or option<scalar> is a \
+                     later increment",
                 ));
             }
         }

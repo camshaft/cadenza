@@ -629,21 +629,24 @@ pub fn spilled_result_wit_type(db: &mut Db, ty: &Ty) -> Option<crate::wit_world:
 /// every field is a scalar or `Bytes` (written in place at its canonical layout by `emit_record_to_mem`).
 /// Kept in lockstep with the marshal's element arms so the representability gate admits exactly what the
 /// marshal emits — a record with a nested-record/list field, or a tuple/variant element, declines here.
+/// Whether a RECORD/TUPLE field of a `list<record|tuple>` ELEMENT is marshalable in place by
+/// `select::emit_product_to_mem`: a scalar, a `Bytes`, or an `option<scalar>` (written via `emit_option_to_mem`
+/// at the field's canonical offset). A nested record/list/tuple/option<bytes> field is a later slice.
+fn product_field_marshalable(db: &mut Db, f: &Ty) -> bool {
+    matches!(f.strip_nominal(), Ty::Bytes | Ty::String)
+        || abi_val_type(f).is_some()
+        || option_payload_ty(db, f).is_some_and(|p| abi_val_type(&p).is_some())
+}
+
 pub fn list_elem_marshalable(db: &mut Db, ty: &Ty) -> bool {
     match ty.strip_nominal().clone() {
         Ty::Bytes | Ty::String => true,
         Ty::List(inner) => list_elem_marshalable(db, &inner),
         Ty::Record(fields) => {
-            !fields.is_empty()
-                && fields.values().all(|f| {
-                    matches!(f.strip_nominal(), Ty::Bytes | Ty::String) || abi_val_type(f).is_some()
-                })
+            !fields.is_empty() && fields.values().all(|f| product_field_marshalable(db, f))
         }
         Ty::Tuple(elems) => {
-            !elems.is_empty()
-                && elems.iter().all(|e| {
-                    matches!(e.strip_nominal(), Ty::Bytes | Ty::String) || abi_val_type(e).is_some()
-                })
+            !elems.is_empty() && elems.iter().all(|e| product_field_marshalable(db, e))
         }
         // An `option<scalar>` element (`list<option<s64>>`): written in place at its canonical layout by
         // `select::emit_option_to_mem` (disc byte + the payload scalar). A scalar payload only this increment
