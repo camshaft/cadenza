@@ -9,7 +9,7 @@
   deliver = [
     {
       target = "reducer-kvput-cdz",
-      message = { contract = "cdz-platform.kvput", payload = b"\x01\x02\x03" }
+      message = { contract = "cdz-platform.deliver", payload = b"\x01\x02\x03" }
     }
   ],
   checker = "reducer-kvput-check-cdz"
