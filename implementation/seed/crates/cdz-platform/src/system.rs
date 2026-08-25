@@ -269,6 +269,54 @@ impl RejectedSink for NoRejectedSink {
     fn record(&self, _iface: &str, _op: &str, _raw_args: &[Bytes]) {}
 }
 
+/// A sink for a `run` host call (the synchronous pure-run primitive, §3) — its `program`/`contract` hashes,
+/// the `input` bytes, and its `result` (the output, or the [`RunError`] category). A `run` is HOSTED (it
+/// instantiates + folds a pure sub-program) but leaves no `step.requests` entry, so without this sink a
+/// conformance run cannot observe that a reducer invoked `run` (an echo of the payload is satisfiable without
+/// ever calling it, §9). A node injects a recording sink so the run act — which program, over which contract,
+/// with what result — is observable. `Send + Sync`, shared behind an `Arc`; the default is the no-op
+/// [`NoRunSink`]. Mirrors [`RejectedSink`]. The `result` carries the crate-level [`RunError`] category
+/// (`UnknownProgram`/`DidNotReturn`/`Faulted`); a recorder maps it to whatever its log shape needs.
+pub trait RunSink: Send + Sync {
+    /// Whether this sink records anything. `false` for a no-op sink, so the host boundary skips capturing the
+    /// run's bytes when no recorder is wired (zero allocation on the run path). A real recorder returns `true`.
+    fn enabled(&self) -> bool {
+        true
+    }
+
+    /// Record a `run` call: the `program` and `contract` id bytes, the `input`, and the run's `result`
+    /// (`Ok(output)` or an `Err(RunError)`). Synchronous — a sink appends to an in-memory observation log.
+    /// Only ever called when [`enabled`](Self::enabled) is `true`.
+    fn record(
+        &self,
+        program: &[u8],
+        contract: &[u8],
+        input: &[u8],
+        result: &Result<Bytes, RunError>,
+    );
+}
+
+/// The null [`RunSink`]: a run is not recorded. The default a reducer host holds when no observing node has
+/// wired one, so the host can hold a `RunSink` unconditionally rather than an `Option` — as [`NoRejectedSink`]
+/// does for the parse-guard path.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoRunSink;
+
+impl RunSink for NoRunSink {
+    /// Disabled — the host boundary skips capturing the run's bytes entirely (no allocation).
+    fn enabled(&self) -> bool {
+        false
+    }
+    fn record(
+        &self,
+        _program: &[u8],
+        _contract: &[u8],
+        _input: &[u8],
+        _result: &Result<Bytes, RunError>,
+    ) {
+    }
+}
+
 /// The in-memory [`System`], generic over its [`Runtime`](crate::Runtime): each reducer an async task on the
 /// runtime, draining a channel mailbox. Its state lives in a [`Shared`] behind an `Arc`, so a running
 /// reducer's own task can spawn and deliver in turn — the recursion the router needs to route an emitted

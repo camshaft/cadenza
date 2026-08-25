@@ -46,7 +46,7 @@ wasmtime::component::bindgen!({
 use crate::{
     BlobStore, Bytes, ContractId, Delivered, Delivery, EdgeKind, Error, Hash, HostId, KvStore,
     Message, Notification, Origin, Outcome, ReducerGraph, ReducerId, RejectedSink, Request,
-    ResourceLimits, Response,
+    ResourceLimits, Response, RunSink,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -109,6 +109,11 @@ struct HostState {
     /// ([`NoRejectedSink`](crate::NoRejectedSink) when no observing node wired one), so the parse-guard path
     /// records unconditionally without an `Option` to branch on.
     rejected: Arc<dyn RejectedSink>,
+    /// Where a `run` host call (the pure-run primitive) is recorded — which program/contract, the input, and
+    /// the result — so a conformance run can observe that a reducer invoked `run` (§9), which leaves no
+    /// `step.requests` entry otherwise. Always present ([`NoRunSink`](crate::NoRunSink) when no observing node
+    /// wired one). Mirrors [`rejected`](Self::rejected).
+    run_sink: Arc<dyn RunSink>,
     /// The per-reducer linear-memory limiter the wasm store enforces (see `arm_store_safety`): a ceiling on
     /// linear memory so one guest cannot exhaust host RAM and take down the process. Lives here because a wasm
     /// [`Store`]'s limiter projects from its data (`Store::limiter`); the store enforces the limits it holds.
@@ -142,7 +147,21 @@ impl cadenza::platform::run::Host for HostState {
         // Every reducer instantiated by the store carries the run capability (the shared instantiation core);
         // `None` only in a bare test HostState, where there is nothing to answer with — a `faulted` run.
         let inst = self.run.as_ref().ok_or(wit_types::Error::Faulted)?;
-        match inst.run_pure(program, contract, Bytes::from(input)).await {
+        let input = Bytes::from(input);
+        let result = inst.run_pure(program, contract, input.clone()).await;
+        // Record the run act (§9) — which program/contract, the input, and the outcome (Ok or a RunError
+        // category) — before mapping to the WIT result, so a conformance run observes the run. Gated on the
+        // sink being enabled, so a node with no recorder wired pays zero here (`program`/`contract` are `Copy`
+        // ids, so this reuses them after `run_pure`). `input` is a ref-counted `Bytes` (its clone is O(1)).
+        if self.run_sink.enabled() {
+            self.run_sink.record(
+                program.hash().as_bytes(),
+                contract.hash().as_bytes(),
+                input.as_ref(),
+                &result,
+            );
+        }
+        match result {
             Ok(output) => Ok(output.to_vec()),
             // No program to run maps to `missing-handler`; a fault or a program that never returned is the
             // general `faulted` — the same mapping the run effect uses (§3/§4).
@@ -1084,6 +1103,7 @@ fn null_host_state(
         delivery: Arc::new(crate::NoDelivery),
         run,
         rejected: Arc::new(crate::NoRejectedSink),
+        run_sink: Arc::new(crate::NoRunSink),
         limits: reducer_store_limits(limits),
         resource_limits: *limits,
     }
@@ -1112,6 +1132,7 @@ type GraphFactory = Arc<dyn Fn(ReducerId) -> Arc<dyn ReducerGraph> + Send + Sync
 type ProvenanceFactory = Arc<dyn Fn(ReducerId) -> Arc<dyn Provenance> + Send + Sync>;
 type DeliveryFactory = Arc<dyn Fn(ReducerId) -> Arc<dyn Delivery> + Send + Sync>;
 type RejectedSinkFactory = Arc<dyn Fn(ReducerId) -> Arc<dyn RejectedSink> + Send + Sync>;
+type RunSinkFactory = Arc<dyn Fn(ReducerId) -> Arc<dyn RunSink> + Send + Sync>;
 
 pub struct WasmProgramStore {
     /// The shared per-host instantiation core (engine, linkers, content store, compiled cache, pure-run memo),
@@ -1142,6 +1163,10 @@ pub struct WasmProgramStore {
     /// until set with [`with_rejected`](WasmProgramStore::with_rejected), so a rejected call is dropped unless
     /// an observing node injects a recording sink.
     make_rejected: RejectedSinkFactory,
+    /// Builds each reducer's sink for `run` host calls (§9). Defaults to a factory over
+    /// [`NoRunSink`](crate::NoRunSink) until set with [`with_run_sink`](WasmProgramStore::with_run_sink), so a
+    /// run is not recorded unless an observing node injects a recording sink.
+    make_run_sink: RunSinkFactory,
 }
 
 impl WasmProgramStore {
@@ -1189,6 +1214,7 @@ impl WasmProgramStore {
             make_provenance: Arc::new(|_id| Arc::new(crate::NoProvenance) as Arc<dyn Provenance>),
             make_delivery: Arc::new(|_id| Arc::new(crate::NoDelivery) as Arc<dyn Delivery>),
             make_rejected: Arc::new(|_id| Arc::new(crate::NoRejectedSink) as Arc<dyn RejectedSink>),
+            make_run_sink: Arc::new(|_id| Arc::new(crate::NoRunSink) as Arc<dyn RunSink>),
         })
     }
 
@@ -1224,6 +1250,16 @@ impl WasmProgramStore {
     #[must_use]
     pub fn with_rejected(mut self, make_rejected: RejectedSinkFactory) -> Self {
         self.make_rejected = make_rejected;
+        self
+    }
+
+    /// Wire each reducer's sink for `run` host calls (§9). Pass `move |_id| sink.clone()` for a shared sink, or
+    /// a factory that builds a per-reducer recording decorator so a run becomes an observation attributed to
+    /// the calling reducer. The default drops runs ([`NoRunSink`](crate::NoRunSink)). Uniform with
+    /// `with_rejected`.
+    #[must_use]
+    pub fn with_run_sink(mut self, make_run_sink: RunSinkFactory) -> Self {
+        self.make_run_sink = make_run_sink;
         self
     }
 }
@@ -1303,6 +1339,7 @@ impl ProgramStore for WasmProgramStore {
             delivery: (self.make_delivery)(ctx.id),
             run: Some(Arc::clone(&self.inst)),
             rejected: (self.make_rejected)(ctx.id),
+            run_sink: (self.make_run_sink)(ctx.id),
             limits: reducer_store_limits(&effective),
             resource_limits: effective,
         };
@@ -1350,6 +1387,7 @@ mod tests {
             delivery: Arc::new(crate::NoDelivery),
             run: None,
             rejected: Arc::new(crate::NoRejectedSink),
+            run_sink: Arc::new(crate::NoRunSink),
             limits: super::reducer_store_limits(&super::ResourceLimits::default()),
             resource_limits: super::ResourceLimits::default(),
         }
@@ -1419,6 +1457,67 @@ mod tests {
             )
             .await,
             Err(super::wit_types::Error::Faulted)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_run_call_is_recorded_via_the_run_sink() {
+        // The RunSink seam (§9): a `run` host call is recorded — program/contract/input + the run's result —
+        // so a conformance run can observe that a reducer invoked `run` (it leaves no `step.requests` entry).
+        // Exercised on the error path (an empty run store → the program is absent → `RunError::UnknownProgram`),
+        // which still reaches the hook after `run_pure`; the Ok path needs a real wasm program (covered e2e by
+        // the conformance run v-platform-itest builds on this seam).
+        use super::cadenza::platform::run::Host as Run;
+        use super::{RunError, RunSink};
+        use std::sync::Mutex;
+
+        // (program, contract, input, is_ok) captured per recorded run.
+        type Captured = (Vec<u8>, Vec<u8>, Vec<u8>, bool);
+        #[derive(Default)]
+        struct Capturing {
+            calls: Mutex<Vec<Captured>>,
+        }
+        impl RunSink for Capturing {
+            fn record(
+                &self,
+                program: &[u8],
+                contract: &[u8],
+                input: &[u8],
+                result: &Result<Bytes, RunError>,
+            ) {
+                self.calls.lock().unwrap().push((
+                    program.to_vec(),
+                    contract.to_vec(),
+                    input.to_vec(),
+                    result.is_ok(),
+                ));
+            }
+        }
+
+        let sink = Arc::new(Capturing::default());
+        let mut h = host_with_empty_run();
+        h.run_sink = sink.clone();
+
+        let program = crate::ProgramHash::of(b"absent");
+        let contract = crate::ContractId::of(b"c");
+        assert_eq!(
+            Run::run(
+                &mut h,
+                program.hash().as_bytes().to_vec(),
+                contract.hash().as_bytes().to_vec(),
+                b"the-input".to_vec(),
+            )
+            .await,
+            Err(super::wit_types::Error::MissingHandler),
+        );
+        let calls = sink.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "the run call is recorded once");
+        assert_eq!(calls[0].0, program.hash().as_bytes(), "program id bytes");
+        assert_eq!(calls[0].1, contract.hash().as_bytes(), "contract id bytes");
+        assert_eq!(calls[0].2, b"the-input", "input bytes verbatim");
+        assert!(
+            !calls[0].3,
+            "the absent-program run is recorded as an Err(RunError), not Ok"
         );
     }
 
