@@ -90,6 +90,19 @@ pub fn record_field_abi_reaches_bytes(f: &RecordFieldAbi) -> bool {
     }
 }
 
+/// Whether a record-field ABI MARSHALS INTO SHARED MEMORY — a `Bytes`/`Result` (rope copy), a `list<T>` (its
+/// backing array + elements, for ANY element type — unlike [`record_field_abi_reaches_bytes`], a `list<s64>`
+/// counts), or a nested `Record` with such a field. Distinct from reaches-bytes: it decides whether a
+/// `HostParam::Record` forces the shared-memory core module + the canon `Lower`'s `Memory` option
+/// (`set_needs_memory`), which a list-of-scalars field needs even though it never touches the `(list u8)` type.
+pub fn record_field_abi_needs_memory(f: &RecordFieldAbi) -> bool {
+    match f {
+        RecordFieldAbi::Scalar(_) => false,
+        RecordFieldAbi::Bytes | RecordFieldAbi::Result { .. } | RecordFieldAbi::List(_) => true,
+        RecordFieldAbi::Record(sub) => sub.iter().any(|(_, sf)| record_field_abi_needs_memory(sf)),
+    }
+}
+
 /// The boundary ABI of one shape-d record FIELD.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum RecordFieldAbi {
@@ -392,6 +405,18 @@ pub fn record_has_bytes_field(ty: &Ty) -> bool {
         Ty::Record(fields) => fields
             .values()
             .any(|f| matches!(f, Ty::Bytes) || record_has_bytes_field(f)),
+        _ => false,
+    }
+}
+
+/// Whether a record ARG has a `list<T>` FIELD anywhere in its tree (recursing into nested records) — a list
+/// field marshals its backing array + elements into shared `mem`, so the arg needs the running scratch cursor
+/// reserved just like a `Bytes` field. Complements [`record_has_bytes_field`] for the cursor-reservation gate.
+pub fn record_has_list_field(ty: &Ty) -> bool {
+    match ty.strip_nominal() {
+        Ty::Record(fields) => fields
+            .values()
+            .any(|f| matches!(f.strip_nominal(), Ty::List(_)) || record_has_list_field(f)),
         _ => false,
     }
 }
@@ -1272,13 +1297,18 @@ pub fn host_import_index(imports: &[HostImport], effect: &str, op: &str) -> Opti
 pub fn set_needs_memory(imports: &[HostImport]) -> bool {
     // A Str/Bytes param crosses as `(ptr,len)` read out of the program's linear memory, and a `list<T>` param
     // crosses as `(ptr,count)` (the guest marshals the list INTO the shared memory) — each requires the
-    // shared-memory core module + the canon `Lower`'s `Memory(0)` option. (A Record with a Bytes field also
-    // marshals into mem, but the classifier only produces `Record` when a sibling `list<u8>`/Bytes forces the
-    // memory anyway; the Str/Bytes/List check covers every memory-touching param.)
+    // shared-memory core module + the canon `Lower`'s `Memory(0)` option. A RECORD param that marshals into mem
+    // (a `Bytes`/`Result`/`list<T>` field anywhere in its tree) needs it too — the earlier assumption that a
+    // Record param always had a sibling Bytes/list forcing memory no longer holds (a `record{ids: list<s64>}`
+    // arg's list field marshals its backing into mem with no sibling Bytes/list param).
     imports.iter().any(|h| {
-        h.params
-            .iter()
-            .any(|p| matches!(p, HostParam::Str | HostParam::Bytes | HostParam::List(_)))
+        h.params.iter().any(|p| match p {
+            HostParam::Str | HostParam::Bytes | HostParam::List(_) => true,
+            HostParam::Record(fields) => {
+                fields.iter().any(|(_, a)| record_field_abi_needs_memory(a))
+            }
+            _ => false,
+        })
     })
 }
 

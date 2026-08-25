@@ -3716,6 +3716,17 @@ fn collect_record_field_ops(
             out.insert(OP_BYTES_LEN);
             out.insert(OP_BYTES_GET);
         }
+        // A `list<T>` field (non-`Bytes`): the field marshal `arr-get`s the List handle then runs the list
+        // marshal (`vec-len`/`vec-get` + the element's own ops) — declare exactly what it calls.
+        _ if matches!(fty.strip_nominal(), Ty::List(_)) => {
+            out.insert(OP_ARR_GET);
+            out.insert(OP_VEC_LEN);
+            out.insert(OP_VEC_GET);
+            if let Ty::List(elem) = fty.strip_nominal() {
+                let elem = (**elem).clone();
+                collect_list_elem_ops(db, &elem, out);
+            }
+        }
         _ => {
             if let Ty::Record(sub) = fty {
                 out.insert(OP_ARR_GET);
@@ -8865,10 +8876,44 @@ fn emit_record_arg_marshal(
                 out.push(Lir::LocalGet(p0));
                 out.push(Lir::LocalGet(p1));
             }
+            // A `list<T>` field (NON-`Bytes`; a `list<u8>` field is `Ty::Bytes`, handled above): `arr-get` its
+            // `List` handle → marshal the list into `mem` (its backing array + elements at the running cursor)
+            // and push `(ptr, count)` — the same 2 flattened core slots a `list<T>` ARG lowers to. The whole
+            // list marshal (`emit_list_arg_marshal`, incl. its own Block/Loop) rides here mid-flatten exactly as
+            // the `Bytes`/`result` arms do; `sub_rec_slot` briefly holds the field's list handle, and the list
+            // marshal takes a work_base ABOVE this level's scratch (`*high`). The element WIT comes from `fwit`
+            // (`WitType::List(elem)`), so a record/nested element inside the field still orders correctly.
+            None if matches!(fty, Ty::List(_)) => {
+                let cursor =
+                    cursor.expect("a list-field record reserves the scratch cursor (pre-scan)");
+                let Ty::List(elem) = fty else { unreachable!() };
+                let elem = (**elem).clone();
+                let elem_wit = match fwit {
+                    crate::wit_world::WitType::List(ew) => Some(ew.as_ref()),
+                    _ => None,
+                };
+                out.push(Lir::LocalGet(rec_slot));
+                out.push(Lir::ConstI32(i as i32));
+                out.push(Lir::CallImport(OP_ARR_GET)); // [field List handle] (borrows rec)
+                out.push(Lir::LocalSet(sub_rec_slot));
+                let lwb = *high;
+                emit_list_arg_marshal(
+                    db,
+                    &elem,
+                    elem_wit,
+                    sub_rec_slot,
+                    cursor,
+                    lwb,
+                    high,
+                    scratch_ty,
+                    out,
+                )?;
+                // (outer-ptr, count) left on the stack = the list field's 2 flattened core slots.
+            }
             None => {
                 return Err(Reject::decline(
-                    "a record host-arg field has no boundary read (only scalar, list<u8>, nested-record, \
-                     and result<list<u8>, enum> fields cross this increment)",
+                    "a record host-arg field has no boundary read (only scalar, list<u8>, list<T>, \
+                     nested-record, and result<list<u8>, enum> fields cross this increment)",
                 ));
             }
         }
@@ -13539,6 +13584,8 @@ fn emit(
                     // A record arg with a `Bytes` FIELD (shape d2) also copies rope bytes into `mem`, so it
                     // needs the running scratch cursor reserved just like a Bytes arg.
                     || crate::backend::wasm::host::record_has_bytes_field(&at)
+                    // A record arg with a `list<T>` FIELD marshals that list's backing into `mem` → cursor too.
+                    || crate::backend::wasm::host::record_has_list_field(&at)
                     // A `list<T>` arg marshals into `mem` (its outer array + each element) → needs the cursor.
                     || matches!(at.strip_nominal(), Ty::List(_))
             });
