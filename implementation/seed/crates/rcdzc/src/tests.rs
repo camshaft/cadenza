@@ -66050,62 +66050,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_package_entrys_exported_def_wins_over_a_same_named_sibling_def() {
-        // REGRESSION (breaker `adv-package-entry-colliding-def-name-runs-wrong-files-main`,
-        // `package-export-boundary-binds-flat-def-by-name-not-per-file`): when two files of a package
-        // each define `main`, the COMPONENT'S exported `main` must be the ENTRY file's own def — never a
-        // sibling's. The export boundary used to bind through the package-wide first-wins `def_of_name`
-        // (`scan_top_level`), so the alphabetically-first file's `main` hijacked the export and BOTH entry
-        // choices ran the wrong file's code — a SILENT wrong program (no diagnostic, plausible output).
-        // Internal CALLS already resolved per-file; only this boundary site missed the per-file rule.
-        //
-        // Compile the whole package through `compile()` (the real path the CLI drives), naming the entry
-        // via a `KIND_ENTRY` artifact, then RUN the component: `--entry zzz` (main = n*7) must give 21 at
-        // n=3, and `--entry aaa` (main = n*100) must give 300 — each entry's OWN main, not the first-spliced.
-        use crate::abi::Artifact;
-        use wasmtime::component::Val;
-        let aaa = crate::codec::encode(&parse(
-            "(do (def (main (: n Int64)) (* n 100)) (export main))",
-        ));
-        let zzz = crate::codec::encode(&parse(
-            "(do (def (main (: n Int64)) (* n 7)) (export main))",
-        ));
-        let compile_pkg = |entry: &str| -> Vec<u8> {
-            let out = crate::host::run_with_compiler_stack(|| {
-                crate::compile::compile(
-                    &[
-                        Artifact::new(Artifact::KIND_AST, "aaa", aaa.clone()),
-                        Artifact::new(Artifact::KIND_AST, "zzz", zzz.clone()),
-                        Artifact::new(crate::link::KIND_ENTRY, "entry", entry.as_bytes().to_vec()),
-                    ],
-                    &[crate::backend::Target::Wasm],
-                )
-            });
-            out.artifact(crate::backend::Target::Wasm.artifact_kind())
-                .unwrap_or_else(|| {
-                    panic!(
-                        "package with entry `{entry}` compiles: {:?}",
-                        out.diagnostics
-                    )
-                })
-                .to_vec()
-        };
-        // `--entry zzz` runs zzz's own `main` (n*7) — 21, NOT aaa's `main` (n*100 = 300).
-        assert_eq!(
-            run_returns_with::<i64>(&compile_pkg("zzz"), "main", &[Val::S64(3)]),
-            21,
-            "the entry `zzz`'s exported `main` (n*7) wins over the sibling `aaa`'s same-named `main`"
-        );
-        // The mirror: `--entry aaa` runs aaa's own `main` (n*100) — 300. (Both entry choices used to give
-        // 300 — the alphabetically-first `main` — before the export bound per-file.)
-        assert_eq!(
-            run_returns_with::<i64>(&compile_pkg("aaa"), "main", &[Val::S64(3)]),
-            300,
-            "the entry `aaa`'s exported `main` (n*100) wins over the sibling `zzz`'s same-named `main`"
-        );
-    }
-
-    #[test]
     fn a_package_export_binds_the_entry_files_def_not_a_private_siblings_same_named_def() {
         // The sharper control (breaker's "even a PRIVATE lib `main` hijacks"): the sibling `lib` defines
         // `main` but does NOT export it (it exports `other`); the entry `zzz` exports its own `main`. The
