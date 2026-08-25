@@ -89,3 +89,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 # a corpus-only MR no longer needlessly re-runs the ~28min spine. A normal `cdz` keeps `corpus` (default).
 default = ["corpus"]
 corpus = ["dep:cdz-corpus"]
+# `delegate-compile` (OFF by default) makes `cdz compile` reach the compiler by SPAWNING the standalone
+# `cdz-compile` process instead of running `rcdzc` in-process (`design/DESIGN-cdz-delegate-compile.md`).
+# Behavior-identical (cdz-compile IS `rcdzc::cli::run`, fed the same artifacts/flags), so a compiler-only
+# change need not rebuild `cdz` — the caching win nix wants (it turns this on for the packaged toolchain).
+# Slice 1 covers the `cdz compile` subcommand; queries/LSP/project-build still run in-process (rcdzc stays
+# a hard dep until a later slice flips it optional). A dev/interactive `cdz` (feature off) is unaffected.
+delegate-compile = []
