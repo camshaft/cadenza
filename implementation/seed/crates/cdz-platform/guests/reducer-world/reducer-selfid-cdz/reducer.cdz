@@ -1,0 +1,19 @@
+// P4 SELF-REFLECTION ROUTING (design/cadenza-platform.md §1/§4). This reducer decides whether to act on a
+// delivered message by comparing the message's contract-id against the id its OWN embedded contract module
+// (temp-celsius) self-reflects via `contract-id(Ast.module)` — NO hardcoded hash literal. `cid()` is a nullary
+// def the compiler const-folds to the temp.celsius routing key (byte-identical to the host contract-id), and
+// it crosses the module import intact. On a match the reducer emits one request BACK on that same contract
+// carrying a marker; on a mismatch it closes. So an observed Emitted on the delivered contract proves the
+// guest's self-reflected id equals the real routing key the harness delivered on — the P4 property, e2e.
+// Delegates no host interface; on-response/on-notification are inert (owned by reducer-lib).
+import { Outcome, on-response, on-notification } from "reducer-lib"
+import { cid } from "temp-celsius"
+
+def on-message(msg) =
+  if (msg.contract == cid()) then
+    { requests = [{ contract = msg.contract, payload = b"self-id-match", token = b"", deadlineNanos = None }],
+      outcome = Outcome.Continue }
+  else
+    { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = b"contract-mismatch" }) }
+
+export { on-message, on-response, on-notification }

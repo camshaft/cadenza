@@ -1,0 +1,15 @@
+@!contract "temp.celsius"
+@!input Temp
+@!output Temp
+
+// The test-contract module for the P4 self-reflection routing run (design/cadenza-platform.md §1, P4). A
+// minimal single-type schema that SELF-REFLECTS its own contract-id: `cid()` calls the shared `contract-id`
+// lib on `Ast.module` (this module's own AST) to compute the temp.celsius routing key at compile time —
+// `0x01 (Contract tag) ++ blake3(canonical (contract "temp.celsius" (types (type Temp …)) Temp Temp))`,
+// byte-identical to the host's `cdz_platform::Contract`. The accessor is named `cid` (DISTINCT from any record
+// field) so it crosses the module import into the reducer. Not a real contract — the simplest schema that
+// exercises the self-describe path; the doc comment also exercises the lib's comment-tolerant module walk.
+type Temp = | Mk(f64)
+import { contract-id } from "contract-id"
+def cid() -> Bytes = contract-id(Ast.module)
+export { cid }

@@ -1,0 +1,28 @@
+// The P4 SELF-REFLECTION ROUTING checker (design/cadenza-platform.md §1/§4/§9). The paired guest
+// (reducer-selfid-cdz) acts on a delivered message ONLY when the message's contract equals the id its embedded
+// temp.celsius module self-reflects via `contract-id(Ast.module)`, emitting a marker request BACK on that same
+// contract. This checker asserts, LOG-ONLY, that the reducer routed: some Delivered record and some Emitted
+// record share a contract-id. Because the reducer emits solely on a self-id match, a shared contract proves
+// the compiler's const-folded self-reflected id equals the real routing key the harness delivered on — the
+// e2e P4 property. RELATIONAL on the contract, no hardcoded hash in the checker. NON-VACUOUS: if the
+// self-reflected id folded to the wrong bytes the reducer would decline (Close, no Emitted), so no contract is
+// shared and the check fails.
+//
+// Round-3 checker-lib form: two field extractors + one combinator; respond() owns the decode + verdict emit,
+// and the inert on-response/on-notification come from checker-lib.
+import { LogRecord, Entry } from "log-schema"
+import { respond, on-response, on-notification, pass, fail, join-exists } from "checker-lib"
+
+// The contract a message was DELIVERED on, and the contract the reducer EMITTED on — the two sides of the
+// self-id route. A shared contract-id means the reducer emitted back on the contract it was delivered, which
+// (given it emits only on a self-id match) proves the self-reflected id equals that routing key.
+def delivered-contract(rec) = match rec.entry with | Entry.Delivered(d) => Some(d.contract) | _ => None
+def emitted-contract(rec) = match rec.entry with | Entry.Emitted(e) => Some(e.contract) | _ => None
+
+def verdict-payload(records: List(LogRecord)) =
+  if join-exists(records, delivered-contract, emitted-contract)
+  then pass()
+  else fail("no Emitted shared a contract with a Delivered: the reducer did not route on its self-reflected contract-id")
+
+def on-message(msg) = respond(msg, verdict-payload)
+export { on-message, on-response, on-notification }
