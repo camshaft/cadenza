@@ -83,31 +83,52 @@ lockstep flip from lowercase-hex), which the host / nix compose resolves from th
    `assemble_typed_interface_with_runtime` (composing the value-heap runtime import). Additive over the
    former record-boundary decline; a scalar interface still takes the no-wrapper `scalar_interface_export`.
 
-5. **The platform host imports (any world import) — TODO (W4c-b-iii), FULLY GENERIC.** A reducer that calls
+5. **The platform host imports (any world import) — DONE (W4c-b-iii), FULLY GENERIC.** A reducer that calls
    any world import (`identity.id`, `state.get`, `graph.neighbors`, `deliver.*`, `program-of`, `run.run`, …)
-   needs that host-import interface composed into the reducer-boundary component alongside the runtime.
-   **Operator directive (2026-08-23): this MUST be generic over an arbitrary `world.wit` import member — perform
-   ANY import, zero interface-specific (kv/state.get-shaped) arms.** The generality lives in two places, both
-   already designed to be signature-driven:
-   - **Front-end / reify (v-inference, confirmed generic):** the perform→`Core::HostCall` lowering is
-     data-driven off `wit_world::is_world_import_op` reading the decoded world — no per-interface hard-coding
-     (lower.rs sync/async fork, infer.rs typing). A 0-arg `list<u8>`-returning import types + lowers today:
-     `identity.id : () -> reducer-id` → `HostCall{effect: identity, op: id, args: [], result: Bytes}`.
-   - **Collection (rcdzc, already generic):** `host::collect_host_imports_at` builds the import's WIT signature
-     VERBATIM from the op's declared arg/result types — params from the arg types, result from `result`, nothing
-     injected (per `spec/contracts/host-interface-binding.md#a-host-import-is-a-wit-typed-function`). Handles any
-     arity incl. 0-arg, and params/results across scalar/`string`/`list<u8>`/`option<list<u8>>`.
-   - **The confirmed residual (rcdzc, MY lane):** the **typed interface-instance** emit path
-     (`record_interface_export` → `assemble_typed_interface_with_runtime`, mod.rs:1000-1016) composes ONLY the
-     value-heap runtime — it never threads `host_imports`, so a reducer guest performing a world import has no
-     host interface composed and its core `CallHostImport` index is unbound. (Host imports DO compose for the
-     bytes-provider `apply` path and the pure host-delegating Path B `assemble_host_runtime` — just not the
-     typed interface path.) The fix: an assembler that composes the guest's host import interface(s) alongside
-     the typed interface-instance export + the runtime (combine `assemble_host_runtime`'s two-import bookkeeping
-     with `assemble_typed_interface_with_runtime`'s instance export), driven purely off each `HostCall`'s
-     collected signature — one generic marshalling rule, NO per-interface arm. `record_interface_export` must
-     collect the body's `Core::HostCall`s (via `is_world_import_op`) and thread them through, and
-     `core_module_with_wrappers` must compose the host-import funcs into the wrapper core's import space.
+   has that host-import interface composed into the reducer-boundary component alongside the runtime + the
+   typed guest export. **Operator directive (2026-08-23): generic over an arbitrary `world.wit` import member —
+   perform ANY import, zero interface-specific arms.** The generality lives in three places, all
+   signature-driven off the decoded world:
+   - **Front-end / reify (v-inference):** perform→`Core::HostCall` is data-driven off
+     `wit_world::is_world_import_op` reading the decoded world — no per-interface hard-coding (lower.rs
+     sync/async fork, infer.rs typing). E.g. `identity.id : () -> reducer-id` →
+     `HostCall{effect: identity, op: id, args: [], result: Bytes}`.
+   - **Collection (rcdzc):** `host::collect_host_imports_at` builds each import's boundary signature from the
+     op's declared arg/result types, nothing injected (per
+     `spec/contracts/host-interface-binding.md#a-host-import-is-a-wit-typed-function`). Any arity incl. 0-arg.
+   - **Typed-interface emit (rcdzc):** `record_interface_export` collects the body's `Core::HostCall`s and
+     `mod.rs` groups them BY INTERFACE (`build_host_group`), composing N imported component instance-types
+     (one per interface) alongside the runtime + the typed export, via
+     `assemble_typed_interface_with_host_runtime[_mem]`. The core side stays flat (all host ops bind under one
+     `"host"` module by name); group boundaries are invisible to it. `g == 1` is byte-identical to the
+     original single-interface emit.
+
+   **The shape coverage — the emitted boundary type ALWAYS follows the WORLD's declared WIT type, never the
+   guest `Ty`, so a guest whose value shape differs (name-lex field order, an enum-vs-variant sum) still emits
+   the host's exact type** (a structural mismatch silently fails to instantiate — the recurring trap, caught
+   by v-platform-itest's runtime conformance runs, not by emit+validate+load):
+   - **Arguments** (`select::emit_record_arg_marshal` + `host::HostParam`): a scalar (any aliased width),
+     `string`, `list<u8>` (`Bytes`, copied rope→shared-mem as `(ptr,len)`), an all-crossable `record`
+     (flattened field-by-field in the WIT's DECLARATION order — `reorder_record_fields_to_wit`, recursing
+     nested records; the guest reads each WIT field's name-lex cell), a payload-less `enum` (one i32 disc),
+     and a `result<list<u8>, enum-or-variant>` field. A nominal arg type (record/enum/variant) is DEFINED +
+     EXPORTED in the interface's instance-type. Multiple record-arg ops per interface each get their own
+     record defined type (`build_host_group`'s per-op record indexing).
+   - **Results** (`select::emit_result_lift`, general over the WIT type — one recursion, no per-shape arm):
+     a scalar (by value); a SPILLED compound via the caller retptr the guest LIFTS — `list<u8>`,
+     `option<T>`, `tuple<…>`, `list<list<u8>>` (graph.neighbors), `list<tuple<…>>` (kv.prefix-scan),
+     `record`, and `result<list<u8>, enum-or-variant>` (run.run). A nominal result type (variant/enum/record)
+     is DEFINED + EXPORTED in the instance-type via `build_host_result_types`' export-aware index assignment;
+     the result WIT type is read off the world (`host::wit_op_result_type`) so a `variant` err arm emits a
+     variant, an `enum` an enum. `collect_used_ops` mirrors each spilled result's lift ops into the import set.
+   - **The variant-vs-enum-follows-WIT rule holds on BOTH boundary sides** — a `result<_, variant>` and a
+     `result<_, enum>` are DISTINCT component types, so the err arm's constructor follows the world: args via
+     `RecordFieldAbi::Result{err_is_variant}` (stamped by `reorder_record_fields_to_wit`), results via
+     `wit_op_result_type`.
+   - **Not yet emitted (decline cleanly, a later increment when a consumer needs it):** a `list<T>` (non-Bytes)
+     ARGUMENT (`graph.set-edges`'s `targets: list<reducer-id>` — the arg-side analogue of the result-side list
+     lift); a richer `result<T, E>` (non-`Bytes` Ok arm, a payload-carrying err arm); a cross-interface op-NAME
+     collision (needs interface-qualified binding); a record + spilled-result in one interface.
 
    **The one generic mapping rule** (v-platform owns the contract, aligns to the existing
    `spec/contracts/host-interface-binding.md`): a world import member `iface.op : (P…) -> R` ↔ guest effect op
