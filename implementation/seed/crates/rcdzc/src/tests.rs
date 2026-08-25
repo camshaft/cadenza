@@ -78943,7 +78943,6 @@ mod stage1 {
 
     #[test]
     fn a_returned_capturing_closure_bound_by_let_and_applied_folds() {
-        use wasmtime::component::Val;
         // A capturing closure RETURNED by a function, BOUND with `let`, then APPLIED — the discriminator
         // that MISCOMPILED (invalid wasm, silently written at exit 0). `(mk n)` returns `(fn (x) (+ n x))`
         // capturing the parameter `n`; `(let ((f (mk n))) (f 3))` binds that closure to `f` and applies it.
@@ -78964,24 +78963,9 @@ mod stage1 {
             cdz_run::required_runtime(&bytes).expect("valid").is_none(),
             "the let-bound closure folds inline — no heap round-trip, no runtime import"
         );
-        assert_eq!(run_returns_with::<i64>(&bytes, "main", &[Val::S64(10)]), 13);
-        // Applied MORE THAN ONCE through the one binding — each application folds independently:
-        // (10+3) + (10+4) = 27.
-        let twice = "(module m (def (mk (: n Int64)) (fn ((: x Int64)) (+ n x))) \
-            (def (main (: n Int64)) (let ((f (mk n))) (+ (f 3) (f 4)))) (export main))";
-        let b2 = compile_component(&crate::codec::encode(&parse(twice))).expect("compile");
-        assert_eq!(run_returns_with::<i64>(&b2, "main", &[Val::S64(10)]), 27);
-        // A MULTI-PARAM returned closure applied at full arity, both flat `(f 3 4)` and curried `((f 3) 4)`:
-        // 10 + 3 + 4 = 17.
-        for shape in [
-            "(module m (def (mk (: n Int64)) (fn (x y) (+ n (+ x y)))) \
-             (def (main (: n Int64)) (let ((f (mk n))) (f 3 4))) (export main))",
-            "(module m (def (mk (: n Int64)) (fn (x y) (+ n (+ x y)))) \
-             (def (main (: n Int64)) (let ((f (mk n))) ((f 3) 4))) (export main))",
-        ] {
-            let b = compile_component(&crate::codec::encode(&parse(shape))).expect("compile");
-            assert_eq!(run_returns_with::<i64>(&b, "main", &[Val::S64(10)]), 17);
-        }
+        // Value parity of the folds — f(3)=13, applied-twice (f 3)+(f 4)=27, and the multi-parameter
+        // full-arity flat `(f 3 4)` / curried `((f 3) 4)` = 17 — is the corpus family "a returned
+        // capturing closure bound with let and applied …" (spec/semantics/09-functions.sexp), via cdz-run.
     }
 
     #[test]

@@ -355,6 +355,38 @@
   (call   main (: 10 Int64))
   (output (: 13 Int64)))
 
+(case "a returned capturing closure bound with let and applied twice folds each application independently"
+  (doc    "The same `(mk n)` returning `(fn (x) (+ n x))`, bound once with `let` and applied TWICE — each
+           application folds independently: `(let ((f (mk n))) (+ (f 3) (f 4)))` with n = 10 is (10+3) +
+           (10+4) = 27. Pins that one let-bound closure binding folds correctly across multiple uses.")
+  (input  (do
+            (def (mk (: n Int64)) (fn ((: x Int64)) (+ n x)))
+            (def (main (: n Int64)) (let ((f (mk n))) (+ (f 3) (f 4))))
+            (export main)))
+  (call   main (: 10 Int64))
+  (output (: 27 Int64)))
+
+(case "a returned multi-parameter capturing closure applied at full arity (flat) folds"
+  (doc    "`(mk n)` returns a TWO-parameter capturing closure `(fn (x y) (+ n (+ x y)))`; bound with `let`
+           and applied at full arity flat `(f 3 4)` with n = 10 is 10 + 3 + 4 = 17.")
+  (input  (do
+            (def (mk (: n Int64)) (fn (x y) (+ n (+ x y))))
+            (def (main (: n Int64)) (let ((f (mk n))) (f 3 4)))
+            (export main)))
+  (call   main (: 10 Int64))
+  (output (: 17 Int64)))
+
+(case "a returned multi-parameter capturing closure applied curried folds"
+  (doc    "The curried-application face of the returned two-parameter capturing closure: `((f 3) 4)`
+           reaches full arity through a partial application; `(fn (x y) (+ n (+ x y)))` with n = 10 is
+           10 + 3 + 4 = 17 — identical to the flat `(f 3 4)`.")
+  (input  (do
+            (def (mk (: n Int64)) (fn (x y) (+ n (+ x y))))
+            (def (main (: n Int64)) (let ((f (mk n))) ((f 3) 4)))
+            (export main)))
+  (call   main (: 10 Int64))
+  (output (: 17 Int64)))
+
 ; A closure STORED IN A VARIANT FIELD, then matched out and applied — the ad-hoc-polymorphism dispatch
 ; shape (a "protocol" = a variant/record of closures). The closure captures `k`, so it CANNOT β-reduce
 ; away (it survives as a runtime closure value flowing through the `Box.Mk` destructure); yet its
