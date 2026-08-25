@@ -2628,6 +2628,7 @@ pass	a nested non-exhaustive match names the uncovered inner variant (CDZ0210 no
 pass	a nested option value annotated with the wrong inner payload type is rejected
 pass	a nested pattern under an open sum's named variant still requires the outer open-tail arm
 pass	a nested quote pattern matches a compound-within-a-compound two levels deep
+pass	a nested record param with a bytes leaf compiles and runs (via an imposed WIT world)
 pass	a nested runtime tuple built behind a recursive call escapes to the host
 pass	a nested runtime tuple is returned as a result
 pass	a nested sum match missing an inner variant is non-exhaustive

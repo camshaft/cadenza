@@ -36,7 +36,8 @@
 ; each case to the WIT case by name (Continue->continue disc 0, Close->close disc 1). SHAPE 19 — a record PARAM
 ; whose WIT field order is NOT name-lex is read by NAME (guest reads .contract across a payload,contract WIT order).
 ; SHAPE 20 — a record RESULT whose WIT field order is NOT name-lex is written by NAME (guest builds {first,second}
-; against a second,first WIT result order).
+; against a second,first WIT result order). SHAPE 21 — a NESTED record param with a bytes leaf (record{a, sub:{b}})
+; reads both the outer and the nested list<u8> leaf.
 
 (case "an option<s64> field in a record result crosses the export boundary on both arms"
   (doc    "The general option<T> RESULT lift across the WIT export boundary. The guest takes a record
@@ -307,3 +308,15 @@
   (input (do (def (f (: m (Record (: x Int64)))) (record (= first (. m x)) (= second (+ (. m x) (. m x))))) (export f)))
   (call f (: (record (= x 10)) (Record (: x Int64))))
   (output (: (record (= second 20) (= first 10)) (record (second Int64) (first Int64)))))
+(case "a nested record param with a bytes leaf compiles and runs (via an imposed WIT world)"
+  (doc    "SHAPE 21 — a record PARAM with a NESTED record field carrying a list<u8> leaf, the shape of a reducer
+           message's sender (a record-within-record with byte leaves). The guest reads both the outer bytes leaf
+           and the nested one: f(m: record{a: Bytes, sub: record{b: Bytes}}) = Bytes.len(m.a) + Bytes.len(m.sub.b).
+           The wrapper builds the outer value-heap cell with a nested sub-cell for sub, copying each list<u8> leaf
+           out of shared memory. f({a:[1,2], sub:{b:[1,2,3]}}) == 5 (len(a)=2 + len(sub.b)=3). Migrated from the
+           in-crate wasmtime test `a_nested_record_bytes_param_guest_compiles_and_runs`.")
+  (wit-world (world w (export iface (member f (func (param m ("record" (a ("list" (u8))) (sub ("record" (b ("list" (u8))))))) (result (s64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (def (f (: m (Record (: a Bytes) (: sub (Record (: b Bytes)))))) (+ (Bytes.len (. m a)) (Bytes.len (. (. m sub) b)))) (export f)))
+  (call f (: (record (= a (list 1 2)) (= sub (record (= b (list 1 2 3))))) (Record (: a Bytes) (: sub (Record (: b Bytes))))))
+  (output (: 5 Int64)))
