@@ -8272,6 +8272,15 @@ fn emit_list_arg_marshal(
     } else {
         canonical_layout(db, elem).0
     };
+    // The outer element array's alignment: a `list<u8>`/`list<String>` element crosses as an
+    // `(ptr, len)` header (align 4); a scalar element as its canonical width's alignment. The canonical
+    // ABI requires a `list<T>`'s pointer to be aligned to `alignment(T)`, so the running byte-granular
+    // cursor must be rounded up before the outer array is placed (see the cursor alignment below).
+    let elem_align: u32 = if is_bytes {
+        4
+    } else {
+        canonical_layout(db, elem).1
+    };
     let read = if is_bytes {
         None
     } else {
@@ -8296,6 +8305,18 @@ fn emit_list_arg_marshal(
     out.push(Lir::LocalGet(list_slot));
     out.push(Lir::CallImport(OP_VEC_LEN));
     out.push(Lir::LocalSet(count));
+    // Align the byte-granular cursor UP to the element alignment before placing the outer array — the
+    // canonical ABI rejects a `list<T>` whose pointer is not `alignment(T)`-aligned ("list pointer is
+    // not aligned"). Prior scalar/bytes args leave the cursor at an arbitrary byte offset, so a
+    // `list<list<u8>>`/`list<scalar>` arg placed straight at it would trap at the host's list.lift.
+    if elem_align > 1 {
+        out.push(Lir::LocalGet(cursor));
+        out.push(Lir::ConstI32((elem_align - 1) as i32));
+        out.push(Lir::I32Add);
+        out.push(Lir::ConstI32(!((elem_align - 1) as i32)));
+        out.push(Lir::I32And);
+        out.push(Lir::LocalSet(cursor));
+    }
     out.push(Lir::LocalGet(cursor));
     out.push(Lir::LocalSet(outer));
     out.push(Lir::LocalGet(cursor));
