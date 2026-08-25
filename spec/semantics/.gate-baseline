@@ -7181,3 +7181,4 @@ todo	expect traps on the absent case of a runtime optional
 todo	read of malformed text is a coded reject, not a wrong value
 todo	two runtime String entry args compare by content including multibyte
 pass	Blake3.of of a runtime Bytes is a 32-byte digest (runtime op 91)
+pass	runtime Blake3.of equals the compile-time fold of the same bytes (section-9 byte-identity)

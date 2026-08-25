@@ -62,3 +62,15 @@
             (export run)))
   (call   run 5)
   (output (: 32 Int64)))
+
+(case "runtime Blake3.of equals the compile-time fold of the same bytes (section-9 byte-identity)"
+  (doc    "THE section-9 cross-check: the runtime `hash-blake3` op over a RUNTIME Bytes `(Bytes.of (list
+           (UInt8.wrap k)))` (k=5) produces the SAME digest as the COMPILE-TIME fold `Blake3.of b\"\x05\"`
+           (a ConstBytes baked at compile time). Both call the one blake3 crate over the same one byte, so
+           `Bytes.eq` is true — compile==runtime, witnessed end-to-end. (This is also the P4 dispatch shape:
+           `Bytes.eq` of a runtime digest against a compile-time id constant.)")
+  (input  (do
+            (def (run (: k Int64)) (= (Blake3.of (Bytes.of (list (UInt8.wrap k)))) (Blake3.of b"\x05")))
+            (export run)))
+  (call   run 5)
+  (output (: true Bool)))

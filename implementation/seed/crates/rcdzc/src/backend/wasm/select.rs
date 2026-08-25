@@ -14594,6 +14594,13 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
         // either way an owned reference transfers out, exactly like `StrToBytes`/`BytesConcat`. So as a
         // borrowing-op operand it is Owned and the emit reclaims it after the borrow.
         | Core::NfcNormalize { .. }
+        // `Blake3.of` on a runtime Bytes (`hash-blake3`, op 91) BORROWS its operand and returns a FRESH
+        // owned 32-byte Bytes leaf. So a `Blake3.of` result used as a `value-eq` operand — the P4
+        // dispatch shape `(= (Blake3.of msg-contract) id)` / `(= (Blake3.of x) (Blake3.of y))` — is an
+        // owned temporary the borrow must reclaim. WITHOUT this it fell to `_ => decline` ("ownership this
+        // backend cannot yet prove"), blocking a runtime-digest equality (a completeness gap, not a
+        // miscompile) even though a `Bytes.of` of the same content compares fine.
+        | Core::Blake3Of { .. }
         // A runtime `(bin …)` construction builds a FRESH owned Bytes on the rope heap (`bytes-alloc` +
         // per-segment range-check-and-write, exactly like `BytesOf`), so as a `value-eq` operand it is
         // Owned and the emit drops it after the borrowing compare. WITHOUT this a runtime `(bin …)` result
