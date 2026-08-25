@@ -38,7 +38,7 @@ use super::recording::RecordingProgramStore;
 use crate::{
     BachRuntime, BlobStore, Bytes, ContractId, Delivered, Genesis, HostId, InMemoryBlobStore,
     InMemoryEventRegistry, InMemoryReducerGraph, Links, Origin, ProgramHash, ProgramStore,
-    ReducerId, ReducerKind, Runtime, Spawn, Str, System, TaskSystem,
+    ReducerGraph, ReducerId, ReducerKind, Runtime, Spawn, Str, System, TaskSystem,
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -223,6 +223,11 @@ pub struct Harness {
     /// Empty keeps every contract on the [`default_handler`](Self::default_handler). Names resolve to content
     /// hashes at run time, alongside the blob/spawn names.
     overrides: Vec<(ContractId, String)>,
+    /// The reducer-graph transform chains to seed before the run (§4), from [`edges`](Harness::edges): each
+    /// `(from task, contract, ordered to-tasks)` installs the chain an emitter's effects on that contract
+    /// route through. Task names resolve to reducer ids at run time; empty seeds an empty graph (every
+    /// emitter has an empty chain, so the default handler answers with `missing-handler`).
+    graph_edges: Vec<(String, ContractId, Vec<String>)>,
 }
 
 impl Harness {
@@ -240,6 +245,7 @@ impl Harness {
             run_for: DEFAULT_RUN_FOR,
             log: None,
             overrides: Vec::new(),
+            graph_edges: Vec::new(),
         }
     }
 
@@ -250,6 +256,18 @@ impl Harness {
     #[must_use]
     pub fn registry(mut self, overrides: Vec<(ContractId, String)>) -> Self {
         self.overrides = overrides;
+        self
+    }
+
+    /// Seed the reducer graph's transform chains before the run (§3/§4): each `(from, contract, chain)`
+    /// installs, for the emitting task `from`, the ordered chain of transform tasks its effects on `contract`
+    /// route through — the `set-edges` write half. All are task names (resolved to reducer ids at run time,
+    /// like spawns/deliveries), so every one must be a [`spawn`](Harness::spawn)ed task. Without this the
+    /// graph is empty, so an emitter has no chain for any contract and the default event handler answers its
+    /// effect with `missing-handler` (the reject arm); an edge is what exercises the forward arm.
+    #[must_use]
+    pub fn edges(mut self, edges: Vec<(String, ContractId, Vec<String>)>) -> Self {
+        self.graph_edges = edges;
         self
     }
 
@@ -338,6 +356,7 @@ impl Harness {
             run_for,
             log: external_log,
             overrides,
+            graph_edges,
         } = self;
 
         // Resolve names to hashes/ids (pure, deterministic — done before the sim). A blob name resolves to
@@ -423,6 +442,25 @@ impl Harness {
                 (id, event)
             })
             .collect();
+        // Resolve each graph edge's task names to reducer ids, like deliveries — so the graph can be seeded
+        // inside the sim without the name→id map crossing the closure boundary (§4).
+        let resolved_edges: Vec<(ReducerId, ContractId, Vec<ReducerId>)> = graph_edges
+            .into_iter()
+            .map(|(from, contract, to)| {
+                let from_id = *ids.get(&from).unwrap_or_else(|| {
+                    panic!("edge names from-task '{from}', which is not a task in the run")
+                });
+                let to_ids = to
+                    .into_iter()
+                    .map(|t| {
+                        *ids.get(&t).unwrap_or_else(|| {
+                            panic!("edge names to-task '{t}', which is not a task in the run")
+                        })
+                    })
+                    .collect();
+                (from_id, contract, to_ids)
+            })
+            .collect();
 
         // Record into the caller's log if one was supplied (so a caller's recording store backends share it),
         // else a fresh one for this run.
@@ -449,9 +487,16 @@ impl Harness {
                     log.clone(),
                     BachRuntime::now as fn() -> u64,
                 );
+                // Seed the reducer graph's transform chains before the system runs (§4): each resolved edge
+                // installs the emitter's chain for a contract, so the default handler routes an effect on it
+                // to the first transform (forward) instead of finding an empty chain (reject).
+                let graph = InMemoryReducerGraph::new();
+                for (from, contract, chain) in resolved_edges {
+                    graph.set_chain(from, contract, chain).await;
+                }
                 let system = TaskSystem::<BachRuntime>::new(
                     Arc::new(recording),
-                    Arc::new(InMemoryReducerGraph::new()),
+                    Arc::new(graph),
                     Arc::new(registry),
                     host,
                 );

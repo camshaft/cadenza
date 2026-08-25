@@ -524,6 +524,7 @@ mod tests {
                 default: "$system".to_string(),
                 handlers: vec![],
             },
+            edges: vec![],
         };
         let report = run(spec).expect("inline blobs never invoke the path loader");
         assert!(
@@ -565,6 +566,7 @@ mod tests {
                 default: "$system".to_string(),
                 handlers: vec![],
             },
+            edges: vec![],
         };
         let report = run(spec).expect("inline blobs never invoke the path loader");
         assert!(
@@ -603,6 +605,7 @@ mod tests {
                 default: "$system".to_string(),
                 handlers: vec![],
             },
+            edges: vec![],
         };
         assert!(
             run(spec).is_err(),
@@ -630,6 +633,7 @@ mod tests {
                 default: "$system".to_string(),
                 handlers: vec![],
             },
+            edges: vec![],
         };
         assert!(
             run(spec).is_err(),
@@ -683,6 +687,7 @@ mod tests {
                 default: "$system".to_string(),
                 handlers: vec![],
             },
+            edges: vec![],
         };
         let report = run(spec).expect("inline blobs never invoke the path loader");
         assert!(
