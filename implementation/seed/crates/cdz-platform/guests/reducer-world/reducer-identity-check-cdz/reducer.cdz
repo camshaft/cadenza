@@ -14,7 +14,7 @@
 // hardcoded id and no identity import. NON-VACUOUS: a guest that fails to instantiate emits nothing, so no
 // such Emitted exists and the check fails; a guest that stamps the wrong token also fails.
 import { Entry, LogRecord } from "log-schema"
-import { Decision, interpret, verdict-req, pass, fail } from "checker-lib"
+import { Decision, interpret, verdict-req, pass, fail, any-record } from "checker-lib"
 
 // The reducer return types, kept LOCAL: the world-export boundary synthesizes on-response/on-notification's
 // (unused) parameter types from the guest's own sums — the response `answer` field is `Result(Bytes, Error)`,
@@ -23,18 +23,16 @@ import { Decision, interpret, verdict-req, pass, fail } from "checker-lib"
 type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
 type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
 
-// Does some Emitted record carry a token equal to its own source reducer id? (the guest stamped identity.id.)
-def stamped-own-id(records: List(LogRecord), i: Int64) =
-  match List.at(records, i) with
-  | Option.None(_) => false
-  | Option.Some(LogRecord.LogRecord(rec)) =>
-      (match rec.entry with
-        | Entry.Emitted(e) if (e.token == rec.source.reducer) => true
-        | _ => stamped-own-id(records, i + 1))
+// Does this record stamp its own reducer id? (an Emitted whose token equals its own source reducer id — the
+// guest stamped identity.id.) A per-record predicate; `any-record` scans the log for one.
+def stamps-own-id(rec) =
+  match rec.entry with
+  | Entry.Emitted(e) if (e.token == rec.source.reducer) => true
+  | _ => false
 
 // The verdict payload for a decoded log: pass with no messages, else fail with one diagnostic message.
 def verdict-payload(records) =
-  if stamped-own-id(records, 0)
+  if any-record(records, stamps-own-id)
   then pass()
   else fail("no Emitted stamped its own reducer id as its token: identity.id did not flow through")
 

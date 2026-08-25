@@ -7,21 +7,17 @@
 // without the host seam (or a well-formed arg) nothing records; the exact iface+op guards against an
 // unrelated rejected call. Settled idioms + String equality on the recorded iface/op.
 import { LogRecord, Entry } from "log-schema"
-import { Decision, interpret, verdict-req, pass, fail } from "checker-lib"
+import { Decision, interpret, verdict-req, pass, fail, any-record } from "checker-lib"
 
 type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
 type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
 
-def rejected-observed(records: List(LogRecord), i: Int64) =
-  match List.at(records, i) with
-  | Option.None(_) => false
-  | Option.Some(LogRecord.LogRecord(rec)) =>
-      (match rec.entry with
-        | Entry.HostCallRejected(r) if (r.iface == "deliver" and r.op == "deliver-message") => true
-        | _ => rejected-observed(records, i + 1))
+// A HostCallRejected recorded at the deliver/deliver-message parse-guard boundary.
+def deliver-message-rejected(rec) =
+  match rec.entry with | Entry.HostCallRejected(r) if (r.iface == "deliver" and r.op == "deliver-message") => true | _ => false
 
 def verdict-payload(records: List(LogRecord)) =
-  if rejected-observed(records, 0)
+  if any-record(records, deliver-message-rejected)
   then pass()
   else fail("no HostCallRejected(deliver, deliver-message) recorded: a malformed-arg host call was not observed at the parse-guard boundary")
 

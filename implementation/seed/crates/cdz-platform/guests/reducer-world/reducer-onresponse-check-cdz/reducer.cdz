@@ -15,33 +15,19 @@
 // exists and the check fails. Idiomatic form: List.at-None ends the index walk, the single-constructor
 // LogRecord is destructured in the Some arm, and the equality folds into a match guard.
 import { LogRecord, Entry } from "log-schema"
-import { Decision, interpret, verdict-req, pass, fail } from "checker-lib"
+import { Decision, interpret, verdict-req, pass, fail, join-exists } from "checker-lib"
 
 type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
 type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
 
-// Does some Emitted at index >= i carry payload == t? (the guest echoed the token t as an emitted payload.)
-def emitted-payload-is(records: List(LogRecord), i: Int64, t: Bytes) =
-  match List.at(records, i) with
-  | Option.None(_) => false
-  | Option.Some(LogRecord.LogRecord(rec)) =>
-      (match rec.entry with
-        | Entry.Emitted(e) if (e.payload == t) => true
-        | _ => emitted-payload-is(records, i + 1, t))
+// The token a Delivered event carried, and the payload an Emitted request echoed — the on-response path carries
+// the response token through as the emitted payload. `join-exists` looks for an Emitted whose payload equals
+// some Delivered's token.
+def delivered-token(rec) = match rec.entry with | Entry.Delivered(d) => Some(d.token) | _ => None
+def emitted-payload(rec) = match rec.entry with | Entry.Emitted(e) => Some(e.payload) | _ => None
 
-// Is some delivered event's token echoed as an emitted payload? Scans delivered records; for each, checks the
-// whole log for an Emitted whose payload equals that delivered token.
-def echoed-token(records: List(LogRecord), i: Int64) =
-  match List.at(records, i) with
-  | Option.None(_) => false
-  | Option.Some(LogRecord.LogRecord(rec)) =>
-      (match rec.entry with
-        | Entry.Delivered(d) if emitted-payload-is(records, 0, d.token) => true
-        | _ => echoed-token(records, i + 1))
-
-// The verdict payload for a decoded log: pass with no messages, else fail with one diagnostic message.
 def verdict-payload(records: List(LogRecord)) =
-  if echoed-token(records, 0)
+  if join-exists(records, delivered-token, emitted-payload)
   then pass()
   else fail("no Emitted echoed a delivered event's token: the on-response path did not carry the response token through")
 

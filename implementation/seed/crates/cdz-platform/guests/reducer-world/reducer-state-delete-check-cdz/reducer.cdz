@@ -8,31 +8,19 @@
 // delete removed it, and the read saw it gone. RELATIONAL on the key; both the miss and the existed flag are
 // load-bearing. NON-VACUOUS: a guest that never persists/deletes yields no such pair. Settled idioms.
 import { LogRecord, Entry } from "log-schema"
-import { Decision, interpret, verdict-req, pass, fail } from "checker-lib"
+import { Decision, interpret, verdict-req, pass, fail, join-exists } from "checker-lib"
 
 type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
 type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
 
-// Does some KvDelete at index >= i remove key == k (existed)?
-def has-delete(records: List(LogRecord), i: Int64, k: Bytes) =
-  match List.at(records, i) with
-  | Option.None(_) => false
-  | Option.Some(LogRecord.LogRecord(rec)) =>
-      (match rec.entry with
-        | Entry.KvDelete(dd) if (dd.key == k and dd.existed == 1) => true
-        | _ => has-delete(records, i + 1, k))
-
-// Is some missed KvGet(key = K, hit = 0) matched by a KvDelete(key = K, existed)? (read gone after removal.)
-def removal-observed(records: List(LogRecord), i: Int64) =
-  match List.at(records, i) with
-  | Option.None(_) => false
-  | Option.Some(LogRecord.LogRecord(rec)) =>
-      (match rec.entry with
-        | Entry.KvGet(g) if (g.hit == 0 and has-delete(records, 0, g.key)) => true
-        | _ => removal-observed(records, i + 1))
+// The key a KvGet MISSED (hit==0) after removal, and the key a KvDelete removed (existed==1) — `join-exists`
+// looks for a miss whose key was deleted, proving the store observably honoured removal across messages. Both
+// gates are load-bearing: a get that hit, or a delete of an absent key, yields no key.
+def get-miss-key(rec) = match rec.entry with | Entry.KvGet(g) if (g.hit == 0) => Some(g.key) | _ => None
+def delete-existed-key(rec) = match rec.entry with | Entry.KvDelete(dd) if (dd.existed == 1) => Some(dd.key) | _ => None
 
 def verdict-payload(records: List(LogRecord)) =
-  if removal-observed(records, 0)
+  if join-exists(records, get-miss-key, delete-existed-key)
   then pass()
   else fail("no KvGet(miss) matched a KvDelete(existed) of the same key: the state store did not observably honour removal across messages")
 

@@ -12,29 +12,22 @@
 // schemas; settled idioms (List.at-None ends the walk; LogRecord destructured in the Some arm; condition in a
 // match guard).
 import { LogRecord, Entry } from "log-schema"
-import { Decision, interpret, verdict-req, pass, fail } from "checker-lib"
+import { Decision, interpret, verdict-req, pass, fail, any-record } from "checker-lib"
 
 type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
 type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
 
-// Does this set-edges carry a non-empty targets list whose first entry equals `from`? (the list<reducer-id>
-// arg round-tripped the same id the guest passed as both `from` and the sole target.)
+// A GraphSetEdges whose targets[0] equals `from` — the list<reducer-id> arg round-tripped the id the guest
+// passed as both `from` and the sole target (a graph WRITE observed with its list argument intact).
 def targets-carry-from(s) =
   match List.at(s.targets, 0) with
   | Option.Some(t) => t == s.from
   | Option.None(_) => false
-
-// Is some GraphSetEdges recorded with targets[0] == from? (a graph WRITE was observed, its list arg intact.)
-def set-edges-observed(records: List(LogRecord), i: Int64) =
-  match List.at(records, i) with
-  | Option.None(_) => false
-  | Option.Some(LogRecord.LogRecord(rec)) =>
-      (match rec.entry with
-        | Entry.GraphSetEdges(s) if targets-carry-from(s) => true
-        | _ => set-edges-observed(records, i + 1))
+def set-edges-carries-from(rec) =
+  match rec.entry with | Entry.GraphSetEdges(s) if targets-carry-from(s) => true | _ => false
 
 def verdict-payload(records: List(LogRecord)) =
-  if set-edges-observed(records, 0)
+  if any-record(records, set-edges-carries-from)
   then pass()
   else fail("no GraphSetEdges with targets[0] == from: the graph-write set-edges call was not observed with its list<reducer-id> argument intact")
 

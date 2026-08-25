@@ -11,22 +11,17 @@
 // idioms (List.at-None ends the walk; LogRecord destructured in the Some arm; conditions in a match guard;
 // String equality on the recorded iface/op — the recorded form is the crate's op spelling, kebab "neighbors").
 import { LogRecord, Entry } from "log-schema"
-import { Decision, interpret, verdict-req, pass, fail } from "checker-lib"
+import { Decision, interpret, verdict-req, pass, fail, any-record } from "checker-lib"
 
 type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
 type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
 
-// Is some HostCallRejected recorded for graph.neighbors? (the malformed-arg call was observed.)
-def rejected-observed(records: List(LogRecord), i: Int64) =
-  match List.at(records, i) with
-  | Option.None(_) => false
-  | Option.Some(LogRecord.LogRecord(rec)) =>
-      (match rec.entry with
-        | Entry.HostCallRejected(r) if (r.iface == "graph" and r.op == "neighbors") => true
-        | _ => rejected-observed(records, i + 1))
+// A HostCallRejected recorded at the graph/neighbors parse-guard boundary.
+def neighbors-rejected(rec) =
+  match rec.entry with | Entry.HostCallRejected(r) if (r.iface == "graph" and r.op == "neighbors") => true | _ => false
 
 def verdict-payload(records: List(LogRecord)) =
-  if rejected-observed(records, 0)
+  if any-record(records, neighbors-rejected)
   then pass()
   else fail("no HostCallRejected(graph, neighbors) recorded: a malformed-arg host call was not observed at the parse-guard boundary")
 

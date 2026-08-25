@@ -47,4 +47,99 @@ def interpret(msg, judge) =
   | None =>
       Decision.NotCheck({ schema = msg.contract, reason = msg.payload })
 
-export { Decision.*, pass, fail, verdict-req, interpret }
+// ── Log-iteration combinators — make a checker DECLARATIVE: it says WHAT to find in the observation log, the
+// index-recursion lives here. Every combinator takes ordinary NAMED field-extractor functions (no captured
+// state) operating on the UNWRAPPED per-record `rec` (the record inside a LogRecord.LogRecord), the same shape
+// checkers already destructure — so they compose into the guest via `libs` with no export-boundary risk.
+
+// Does some record satisfy `pred`? (a single existence scan over the whole log.) `pred: rec -> Bool`.
+def any-record-from(records, i, pred) =
+  match List.at(records, i) with
+  | Option.None(_) => false
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      if pred(rec) then true else any-record-from(records, i + 1, pred)
+def any-record(records, pred) = any-record-from(records, 0, pred)
+
+// Relational JOIN on a Bytes key: does some record from which `left` yields Some(k) share that key k with some
+// record from which `right` yields Some(k')? `left`,`right: rec -> Option(Bytes)`. This is the declarative form
+// of the recurring "for each X, is there a matching Y on a shared field" nested scan.
+//
+// Implementation note: each extractor is consumed by ONE self-recursive `collect` pass into a `List(Bytes)`
+// (the same singly-threaded HOF shape as `any-record`, which the compiler specializes) — we do NOT thread an
+// extractor through a second data-carrying helper, which would force a first-class closure over the
+// non-machine-representable per-record type. The join itself is then pure `Bytes`-list intersection, no HOF.
+def collect-from(records, i, extract, acc) =
+  match List.at(records, i) with
+  | Option.None(_) => acc
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      (match extract(rec) with
+        | Option.Some(k) => collect-from(records, i + 1, extract, List.push(acc, k))
+        | Option.None(_) => collect-from(records, i + 1, extract, acc))
+def collect(records, extract) = collect-from(records, 0, extract, ([] : List(Bytes)))
+
+def mem(ys, j, x) =
+  match List.at(ys, j) with
+  | Option.None(_) => false
+  | Option.Some(y) => if y == x then true else mem(ys, j + 1, x)
+def any-common(xs, i, ys) =
+  match List.at(xs, i) with
+  | Option.None(_) => false
+  | Option.Some(x) => if mem(ys, 0, x) then true else any-common(xs, i + 1, ys)
+
+def join-exists(records, left, right) =
+  any-common(collect(records, left), 0, collect(records, right))
+
+// Relational JOIN on a TWO-field key (e.g. a correlation of contract + token, or contract + payload): same
+// collect-then-pure-intersection shape as `join-exists`, but keys are `Pair`s compared on both fields.
+// `left`,`right: rec -> Option(Pair)`; build a key with the `pair(a, b)` helper.
+type Pair = | Pair(Record(a: Bytes, b: Bytes))
+def pair(a, b) = Pair.Pair({ a = a, b = b })
+def pair-eq(x, y) =
+  match x with | Pair.Pair(p) => (match y with | Pair.Pair(q) => p.a == q.a and p.b == q.b)
+// The Pair recursive helpers are annotated to their concrete `Pair`/`List(Pair)` types: a user-sum element
+// threaded through a recursive accumulator is not pinned by the body alone, so without the annotation this
+// hits the recursive-generic monomorphization tie (the Bytes helpers above escape it only because a Bytes
+// ascription flows in). Annotating makes each helper monomorphic.
+def collect-pairs-from(records, i: Int64, extract, acc: List(Pair)) =
+  match List.at(records, i) with
+  | Option.None(_) => acc
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      (match extract(rec) with
+        | Option.Some(p) => collect-pairs-from(records, i + 1, extract, List.push(acc, p))
+        | Option.None(_) => collect-pairs-from(records, i + 1, extract, acc))
+def collect-pairs(records, extract) = collect-pairs-from(records, 0, extract, ([] : List(Pair)))
+def mem-pair(ys: List(Pair), j: Int64, x: Pair) =
+  match List.at(ys, j) with
+  | Option.None(_) => false
+  | Option.Some(y) => if pair-eq(x, y) then true else mem-pair(ys, j + 1, x)
+def any-common-pair(xs: List(Pair), i: Int64, ys: List(Pair)) =
+  match List.at(xs, i) with
+  | Option.None(_) => false
+  | Option.Some(x) => if mem-pair(ys, 0, x) then true else any-common-pair(xs, i + 1, ys)
+def join-pair(records, left, right) =
+  any-common-pair(collect-pairs(records, left), 0, collect-pairs(records, right))
+
+// Positional ordering: does some record satisfying `first` occur BEFORE some record satisfying `second`?
+// `first`,`second: rec -> Bool`. Collects the matching INDICES (self-threaded scan) into two `List(Int64)`s,
+// then asks — with pure Int64-list ops — whether some first-index precedes some second-index.
+def collect-idx-from(records, i, pred, acc) =
+  match List.at(records, i) with
+  | Option.None(_) => acc
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      if pred(rec) then collect-idx-from(records, i + 1, pred, List.push(acc, i))
+      else collect-idx-from(records, i + 1, pred, acc)
+def collect-idx(records, pred) = collect-idx-from(records, 0, pred, ([] : List(Int64)))
+// `x`/`ys` are annotated Int64: index comparison `>` is width-polymorphic, so nothing in the body pins the
+// recursive parameter's width — without the annotation this hits the recursive-generic monomorphization tie.
+def any-gt(ys: List(Int64), j: Int64, x: Int64) =
+  match List.at(ys, j) with
+  | Option.None(_) => false
+  | Option.Some(y) => if y > x then true else any-gt(ys, j + 1, x)
+def any-precedes(xs: List(Int64), i: Int64, ys: List(Int64)) =
+  match List.at(xs, i) with
+  | Option.None(_) => false
+  | Option.Some(x) => if any-gt(ys, 0, x) then true else any-precedes(xs, i + 1, ys)
+def ordered(records, first, second) =
+  any-precedes(collect-idx(records, first), 0, collect-idx(records, second))
+
+export { Decision.*, pass, fail, verdict-req, interpret, any-record, join-exists, Pair.*, pair, join-pair, ordered }
