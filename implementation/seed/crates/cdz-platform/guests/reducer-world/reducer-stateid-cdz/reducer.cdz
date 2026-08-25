@@ -1,0 +1,24 @@
+// A Cadenza reducer performing TWO host interfaces in one fold — `state` and `identity`
+// (design/cadenza-platform.md §3/§7). Migrated from v-rust-backend's in-crate two-host-interfaces test, so the
+// compiler need not carry a wasmtime dev-dep to prove this shape. On-message it stores its OWN reducer id
+// (from identity.id()) into the state store under the delivered token: state.put(msg.token, identity.id()).
+// This exercises (a) a multi-host-interface guest (state + identity — the multi-interface emit of #3232), and
+// (b) identity.id() returning the reducer's own id, observable because the stored value then equals the
+// storing reducer's id (the log record's source). Targets the ordinary reducer-world (state + identity are
+// floor imports). on-response / on-notification are inert.
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+def on-message(msg) =
+  host state in
+  host identity in
+    ( state.put(msg.token, identity.id()) ;
+      { requests = [], outcome = Outcome.Continue } )
+
+def on-response(_resp) =
+  { requests = [], outcome = Outcome.Continue }
+
+def on-notification(_note) =
+  { requests = [], outcome = Outcome.Continue }
+
+export { on-message, on-response, on-notification }
