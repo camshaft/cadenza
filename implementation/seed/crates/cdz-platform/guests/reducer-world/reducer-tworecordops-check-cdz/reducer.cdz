@@ -3,16 +3,20 @@
 // fold, deliver-message THEN deliver-notification; this checker asserts BOTH were observed and IN ORDER: a
 // Routed(eventKind="message") precedes a Routed(eventKind="notification"). That ordering is the Core::Seq proof —
 // a dropped or reordered second host call leaves no notification-after-message and the check fails. NON-VACUOUS.
-// LOG-ONLY and guest-agnostic; imports the three standard schemas (check Envelope, verdict Verdict, log-schema
-// LogRecord/Entry) via the `libs` manifest beside this file.
+// LOG-ONLY and guest-agnostic.
+//
+// Plumbing (decode the check Envelope, decode the log, emit the verdict) is shared via checker-lib's
+// interpret(); this file keeps only its JUDGEMENT predicate + verdict-payload and maps the Decision onto its
+// own local Outcome. Local Outcome + Error stay in the guest: the reducer-world export boundary synthesizes the
+// unused on-response/on-notification param types from the guest's local sums, so a lib-owned Outcome/Error would
+// leave them ambiguous (CDZ0201). See checker-lib.cdz.
 //
 // eventKind is the recorded canonical string (log_value.rs event_kind_str): the host maps deliver-message ->
 // Routed{kind=Message} -> "message" and deliver-notification -> Routed{kind=Notification} -> "notification"
 // (recording.rs), so the checker matches those recorded forms, not the WIT op names. `Entry`/`LogRecord` are
 // imported sums (variant count invisible to the matcher), so each match has a catch-all `_ =>` arm.
-import { Envelope } from "check"
-import { Verdict } from "verdict"
 import { LogRecord, Entry } from "log-schema"
+import { Decision, interpret, verdict-req, pass, fail } from "checker-lib"
 
 type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
 type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
@@ -39,29 +43,13 @@ def message-then-notification(records: List(LogRecord), i: Int64) =
 // The verdict payload for a decoded log: pass with no messages, else fail with one diagnostic message.
 def verdict-payload(records: List(LogRecord)) =
   if message-then-notification(records, 0)
-  then Value.encode(Verdict.Verdict({ pass = true, messages = [] }))
-  else Value.encode(Verdict.Verdict({ pass = false,
-                                      messages = ["expected a Routed(message) then a Routed(notification): the two sequenced deliver ops did not both execute in order"] }))
-
-// A verdict request on the contract-id the harness passed in the envelope (no hardcoded hash). The verdict token
-// is irrelevant (the harness reads the verdict by scanning Emitted on the verdict contract), so b"".
-def verdict-req(verdict-contract: Bytes, payload: Bytes) =
-  { contract = verdict-contract, payload = payload, token = b"", deadlineNanos = None }
+  then pass()
+  else fail("expected a Routed(message) then a Routed(notification): the two sequenced deliver ops did not both execute in order")
 
 def on-message(msg) =
-  match (Value.decode(msg.payload) : Option(Envelope)) with
-  | Some(Envelope.Check(c)) =>
-      (match (Value.decode(c.log) : Option(List(LogRecord))) with
-       | Some(records) =>
-           { requests = [verdict-req(c.verdict, verdict-payload(records))], outcome = Outcome.Continue }
-       | None =>
-           { requests = [verdict-req(c.verdict,
-                                     Value.encode(Verdict.Verdict({ pass = false,
-                                                                    messages = ["observation log did not decode"] })))],
-             outcome = Outcome.Continue })
-  | None =>
-      { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = msg.payload }) }
-
+  match interpret(msg, verdict-payload) with
+  | Decision.Report(r) => { requests = [verdict-req(r.contract, r.payload)], outcome = Outcome.Continue }
+  | Decision.NotCheck(cl) => { requests = [], outcome = Outcome.Close({ schema = cl.schema, reason = cl.reason }) }
 def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
 def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
 export { on-message, on-response, on-notification }
