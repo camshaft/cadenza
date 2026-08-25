@@ -56,6 +56,41 @@
   (call main (: 20 Int64)) (output (: 710 Int64))
   (call main (: 0 Int64)) (output (: 510 Int64)))
 
+(case "a partial application captures a runtime parameter in the residual closure"
+  (doc    "Partially applying to a VARIABLE reference must CAPTURE it in the residual lambda: `((sub n) 3)`
+           curries `(sub a b) = (- a b)` to `(fn (b) (- n b))`, and `n` — a caller-pinned free variable —
+           must keep its binding across the residual's later application. n = 10 → (- 10 3) = 7. Pins the
+           free-variable currying capture (a re-copy that re-resolved `n` in the residual's scope, where it
+           is unbound, spuriously rejected it); a constant capture always worked — this is the variable case.")
+  (input  (do
+            (def (sub a b) (- a b))
+            (def (main (: n Int64)) ((sub n) 3))
+            (export main)))
+  (call   main (: 10 Int64))
+  (output (: 7 Int64)))
+
+(case "a partial application captures a let-bound variable in the residual closure"
+  (doc    "The let-bound companion: the captured value is any in-scope binding, not only a parameter.
+           `(let ((m 10)) ((sub m) 3))` curries `sub` capturing the let-local `m` in the residual → (- 10
+           3) = 7.")
+  (input  (do
+            (def (sub a b) (- a b))
+            (def (main) (let ((m 10)) ((sub m) 3)))
+            (export main)))
+  (output (: 7 Int64)))
+
+(case "a body-internal let-local is unaffected by the free-variable currying capture"
+  (doc    "The negative control: a body-internal `let`-local is NOT resolve-pinned, so it still re-resolves
+           against the copied scope normally. `(inc n) = (let ((k 10)) (+ n k))`, applied `(inc v)` with
+           v = 5 → 5 + 10 = 15. Pins that the free-variable capture fix does not disturb ordinary
+           body-local resolution.")
+  (input  (do
+            (def (inc n) (let ((k 10)) (+ n k)))
+            (def (main (: v Int64)) (inc v))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 15 Int64)))
+
 (case "an unannotated tuple-SWAP instantiates at two mixed scalar-heap element pairings in one program"
   (doc    "The mixed scalar-heap instantiation face: swap p = (b a) at (Int64, String-rope) AND
            ((List Int64), Int64) in one program — the specializer must produce two layouts where the

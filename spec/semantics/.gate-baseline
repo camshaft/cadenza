@@ -1277,6 +1277,7 @@ pass	a block-wrapped OUTER-effect perform in a match-SCRUTINEE inside a nested h
 pass	a block-wrapped branch perform of the OUTER effect in a let-init INSIDE a nested handler body folds through the block (adv-69 a4)
 pass	a block-wrapped conditional whose CONDITION performs (not a branch) folds correctly (adv-69 boundary control)
 pass	a body that TRAPS keeps its OWN trap kind under an @ensures — the postcondition wrapper is transparent to an aborting body
+pass	a body-internal let-local is unaffected by the free-variable currying capture
 pass	a bool match missing the false arm is non-exhaustive
 pass	a bool match missing the true arm is non-exhaustive
 pass	a bool match on a constant scrutinee is non-exhaustive even when the constant hits the sole arm
@@ -2765,6 +2766,8 @@ pass	a parameterized export returns a sum value computed from its argument
 pass	a parameterized export returns a tuple computed from its argument
 pass	a parameterized plain export alongside a closure export applies its argument
 pass	a parameterized plain export alongside a closure export — the closure captures and applies
+pass	a partial application captures a let-bound variable in the residual closure
+pass	a partial application captures a runtime parameter in the residual closure
 pass	a partial application persists its capture across two applications
 pass	a partial constructor bound in a let completes when applied
 pass	a partial constructor bound in a let-tuple completes when applied to a runtime arg
