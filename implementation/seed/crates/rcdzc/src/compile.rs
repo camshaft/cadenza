@@ -6205,8 +6205,17 @@ fn uses_verification_annotation(arena: &crate::ast::Arenas) -> bool {
 type LinkedInputs = (
     crate::ast::Arenas,
     Option<crate::link::Linkage>,
-    Vec<std::rc::Rc<crate::ast::Arenas>>,
+    Vec<Option<std::rc::Rc<crate::ast::Arenas>>>,
 );
+
+/// The per-file self-reflection SOURCE snapshot for [`Db::source_snapshots`](crate::db::Db::source_snapshots):
+/// a clone of the comment-stripped arena ONLY when the file actually contains an `(. Ast module)` form, else
+/// `None`. Gating the clone on real `Ast.module` use keeps the overwhelmingly common (non-self-reflecting)
+/// program clone-free; a self-reflecting file pays one clone so the `Prim::ReflectModule` fill can reflect its
+/// pre-mutation source (the live arena is rewritten in place before lowering).
+fn module_snapshot(arena: &crate::ast::Arenas) -> Option<std::rc::Rc<crate::ast::Arenas>> {
+    crate::quote::contains_ast_module(arena).then(|| std::rc::Rc::new(arena.clone()))
+}
 
 fn link_inputs(ast_arts: &[&Artifact], entry_name: Option<&str>) -> Result<LinkedInputs, Reject> {
     match ast_arts {
@@ -6239,11 +6248,9 @@ fn link_inputs(ast_arts: &[&Artifact], entry_name: Option<&str>) -> Result<Linke
                 // Link kernel + user as a package; the user file is the entry. The kernel exports its
                 // rules + abstract `Thm`; the user imports them (and the compiler synthesizes the
                 // discharge program against them at a3/b3). Snapshots in the SAME order as `files`
-                // ([kernel, user]) so `file_of(occ)` indexes the right module for `Ast.module`.
-                let snapshots = vec![
-                    std::rc::Rc::new(kernel.clone()),
-                    std::rc::Rc::new(user.clone()),
-                ];
+                // ([kernel, user]) so `file_of(occ)` indexes the right module for `Ast.module`. Cloned
+                // ONLY for a file that actually contains an `(. Ast module)` form (the kernel never does).
+                let snapshots = vec![module_snapshot(&kernel), module_snapshot(&user)];
                 let files = vec![
                     (VERIFY_KERNEL_NAME.to_string(), kernel),
                     (only.name.clone(), user),
@@ -6254,9 +6261,10 @@ fn link_inputs(ast_arts: &[&Artifact], entry_name: Option<&str>) -> Result<Linke
             } else {
                 // No verification annotation (or linking not yet enabled) — the fast path: flat namespace,
                 // no linkage. One file, so its snapshot is index 0 (`file_of` returns `None` here → the
-                // fill uses index 0). The returned arena is `Db::load`-mutated in place, so the snapshot is
-                // an independent clone of the pre-mutation source.
-                let snapshot = std::rc::Rc::new(user.clone());
+                // fill uses index 0). Snapshot the pre-mutation source ONLY if the program self-reflects
+                // (`Ast.module`) — the common program clones NOTHING; `Db::load` mutates the returned arena
+                // in place, so a self-reflecting program keeps an independent clone.
+                let snapshot = module_snapshot(&user);
                 Ok((user, None, vec![snapshot]))
             }
         }
@@ -6280,8 +6288,10 @@ fn link_inputs(ast_arts: &[&Artifact], entry_name: Option<&str>) -> Result<Linke
                 crate::db::strip_comments(&mut arena);
                 // Capture each file's comment-stripped SOURCE as its self-reflection snapshot — the merge
                 // flattens the file roots, so `Ast.module` in THIS file must reflect THIS file's own module
-                // root. Snapshots are pushed in file order, matching the `FileSpan` index `file_of` returns.
-                snapshots.push(std::rc::Rc::new(arena.clone()));
+                // root. Pushed in file order, matching the `FileSpan` index `file_of` returns. Cloned ONLY
+                // for a file that contains an `(. Ast module)` form (a file that never self-reflects → `None`,
+                // no clone).
+                snapshots.push(module_snapshot(&arena));
                 files.push((art.name.clone(), arena));
             }
             let entry = match entry_name {

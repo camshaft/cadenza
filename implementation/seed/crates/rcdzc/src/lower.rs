@@ -497,7 +497,11 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 ));
             };
             let file_index = db.file_of(id).unwrap_or(0);
-            let Some(snapshot) = db.source_snapshots.get(file_index).cloned() else {
+            // The snapshot is present for any file that contains an `(. Ast module)` form (the gate in
+            // `compile::module_snapshot`), and this arm only fires when the occurrence resolved to the
+            // reflect intrinsic — so a genuine occurrence always has its snapshot. `None` (a file with no
+            // snapshot) declines cleanly rather than miscompiling.
+            let Some(snapshot) = db.source_snapshots.get(file_index).cloned().flatten() else {
                 return Core::Poison(Reject::decline(
                     "Ast.module: no source snapshot for the enclosing module",
                 ));

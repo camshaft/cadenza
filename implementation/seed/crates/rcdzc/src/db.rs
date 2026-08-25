@@ -874,16 +874,18 @@ pub struct Db {
     /// (`compile`), which reads the request artifact.
     pub component_name: Option<String>,
     /// PER-FILE pre-resolve SOURCE snapshots, indexed by the SAME file index [`file_of`](Db::file_of)
-    /// returns — the comment-stripped raw arena of each linked file, captured in `compile::link_inputs`
+    /// returns — the comment-stripped raw arena of a linked file, captured in `compile::link_inputs`
     /// BEFORE `Db::load` runs any mutating pass (strip_def_docs / verify / world-import-export injection /
     /// resolve). The self-reflection intrinsic `Ast.module` (`Prim::ReflectModule`) is filled at LOWERING
     /// from these: `core_of` maps the occurrence's `file_of` index to its snapshot and reflects that file's
     /// module root as an `Ast` value (`arenas_to_ast_value`), so the reflected value is byte-identical to
     /// `quote`/`__ast__` over the same module — the live `ast` arena is unusable there (it is mutated in
-    /// place before lowering). `Rc` so the fill can clone one out (O(1)) without borrowing `Db` immutably
-    /// while it mutates the arena. Empty for a `Db` built without linkage-time capture (tests via
+    /// place before lowering). `None` for a file that does NOT contain an `(. Ast module)` form: the clone
+    /// is GATED on actual self-reflection use (`quote::contains_ast_module`), so the overwhelmingly common
+    /// program pays NO snapshot clone. `Rc` so the fill can clone one out (O(1)) without borrowing `Db`
+    /// immutably while it mutates the arena. Empty for a `Db` built without linkage-time capture (tests via
     /// `Db::load`); set AFTER `load_linked` by `compile`, like `component_name`.
-    pub source_snapshots: Vec<std::rc::Rc<Arenas>>,
+    pub source_snapshots: Vec<Option<std::rc::Rc<Arenas>>>,
     /// The PREPARSED TARGET WIT WORLD as a raw `cadenza-ast` binary document (§3b full-A end-state), or
     /// `None` when the program targets no world. Populated by `compile` from the `KIND_WIT_WORLD` input
     /// artifact (an external WIT→binary-AST step OR v-syntax's inline-declaration lowering — rcdzc never
