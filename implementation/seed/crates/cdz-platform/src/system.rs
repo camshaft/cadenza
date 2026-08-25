@@ -232,6 +232,43 @@ impl Delivery for NoDelivery {
     }
 }
 
+/// A sink for a host call the host boundary **rejected** before it reached a recordable capability — a call
+/// whose raw `list<u8>` argument failed to parse into the typed id/kind it needed (a `graph` op given a
+/// malformed node/edge-kind). The call still returns its empty/false result (the host imports are total and
+/// graceful), but recording is a decorator on the *typed* capability, below that parse — so without this sink
+/// the rejected call is silently unobserved, a hole in the log-all-host-calls invariant (`design/cadenza-
+/// platform.md` §9). A node injects a sink so a conformance run can see that a reducer made a (malformed) host
+/// call — the interface, the op, and the raw argument bytes — the moment the boundary rejects it. The gap only
+/// ever hides a guest bug (a correct guest never sends malformed id bytes), but the invariant is that no host
+/// call is unobservable. `Send + Sync`, shared behind an `Arc`; the default is the no-op [`NoRejectedSink`].
+pub trait RejectedSink: Send + Sync {
+    /// Whether this sink records anything. `false` for a no-op sink, so the host boundary can SKIP capturing
+    /// the raw-argument `Bytes` entirely when no recorder is wired — the common production case pays zero
+    /// allocation on the parse-guard path. A real recorder returns `true` (the default).
+    fn enabled(&self) -> bool {
+        true
+    }
+
+    /// Record a rejected host call: the interface and op names, and the raw argument bytes as the guest sent
+    /// them. Synchronous — a sink appends to an in-memory observation log, never awaits. Only ever called when
+    /// [`enabled`](Self::enabled) is `true`, so a sink need not re-check.
+    fn record(&self, iface: &str, op: &str, raw_args: &[Bytes]);
+}
+
+/// The null [`RejectedSink`]: a rejected call is dropped, recording nothing. The default a reducer host holds
+/// when no observing node has wired one, so the host can hold a `RejectedSink` unconditionally rather than an
+/// `Option` it must branch on — exactly as [`NoDelivery`]/[`NoProvenance`] do for the privileged imports.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoRejectedSink;
+
+impl RejectedSink for NoRejectedSink {
+    /// Disabled — the host boundary skips capturing raw args entirely (no allocation).
+    fn enabled(&self) -> bool {
+        false
+    }
+    fn record(&self, _iface: &str, _op: &str, _raw_args: &[Bytes]) {}
+}
+
 /// The in-memory [`System`], generic over its [`Runtime`](crate::Runtime): each reducer an async task on the
 /// runtime, draining a channel mailbox. Its state lives in a [`Shared`] behind an `Arc`, so a running
 /// reducer's own task can spawn and deliver in turn — the recursion the router needs to route an emitted
