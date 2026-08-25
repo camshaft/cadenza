@@ -1513,6 +1513,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_unwired_host_records_nothing_and_stays_graceful() {
+        // The disabled path of the `Option<Arc<dyn ..>>` sinks (#3323): a host with no recorder wired
+        // (`rejected`/`run_sink` are `None` — the production default) takes the record hooks as a clean no-op.
+        // It must return the SAME graceful empty/false/Err result the recorded path returns and never panic —
+        // a regression to `.unwrap()`ing the `None` sink would be caught here. Pins that recording is purely
+        // ADDITIVE: wiring `Some` observes, `None` changes nothing observable to the guest.
+        use super::cadenza::platform::run::Host as Run;
+
+        // A rejected graph op (a malformed node) with no rejected sink: still the graceful `false`.
+        let mut host = host(ReducerId::of(b"me"));
+        assert!(host.rejected.is_none(), "no rejected recorder wired");
+        assert!(
+            !Graph::contains(&mut host, b"not a hash".to_vec()).await,
+            "a malformed node names nothing -> false, with no sink to record to"
+        );
+
+        // A `run` with no run sink: still resolves (here the absent-program error path), no panic on the hook.
+        let mut h = host_with_empty_run();
+        assert!(h.run_sink.is_none(), "no run recorder wired");
+        let program = crate::ProgramHash::of(b"absent");
+        let contract = crate::ContractId::of(b"c");
+        assert_eq!(
+            Run::run(
+                &mut h,
+                program.hash().as_bytes().to_vec(),
+                contract.hash().as_bytes().to_vec(),
+                b"the-input".to_vec(),
+            )
+            .await,
+            Err(super::wit_types::Error::MissingHandler),
+        );
+    }
+
+    #[tokio::test]
     async fn blobs_round_trip_and_a_malformed_hash_is_absent() {
         let mut host = host(ReducerId::of(b"me"));
         // `put` stores the bytes and returns their content hash; `get` reads them back by that hash.
