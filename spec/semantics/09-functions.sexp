@@ -5932,6 +5932,29 @@
             (export main)))
   (output (: 4 Int64)))
 
+(case "a const list recursively FILTERED (conditional include) folds to a constant"
+  (doc    "A recursive const-fold whose step CONDITIONALLY includes an element in the built list — a FILTER
+           `let tail = keep t in (if (p h) (List.prepend tail h) tail)` — folds to a constant, like the
+           UNCONDITIONAL rebuild cases above. The recursed `tail` is bound in a `let` and read from BOTH arms
+           of the `if` (the then-arm prepends onto it, the else-arm returns it whole), so ordinary `let`-
+           lowering keeps it as a multi-use `Core::Let` slot — a residual the fold's constant-value check
+           rejects, declining a program that genuinely folds. Under the const-fold unroll a `let` binding
+           whose init folds to a CONSTANT is inlined at every use (a constant is free to duplicate, no
+           recompute / no effect), so the whole filter collapses: `keep-pos [1 -2 3]` = `[1 3]`, length 2. The
+           `const` parameter forces compile time — a non-folding filter would REJECT, not run — so a passing
+           output witnesses the fold. This is the FILTER piece the general self-reflected contract-id transform
+           needs (`collect-types` filters `Ast.module`'s forms to the `type` declarations before hashing).")
+  (input  (do
+            (def (keep-pos (const (: xs (List Int64))))
+              (match xs
+                ((list) (: (list) (List Int64)))
+                ((list h .. t)
+                  (let ((tail (keep-pos t)))
+                    (if (> h 0) (List.prepend tail h) tail)))))
+            (def (main) (List.len (keep-pos (list 1 -2 3))))
+            (export main)))
+  (output (: 2 Int64)))
+
 (case "the runtime-list version of a tail fold compiles and folds correctly"
   (doc    "The correct alternative to the const-collection reject above: the SAME tail fold over a RUNTIME
            `(List Int64)` parameter (no `const`) compiles to a proper `loop` whose `br_if` exit is the real

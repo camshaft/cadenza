@@ -1452,7 +1452,17 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                                     // binder ref keeps a stale `SumPayload { scrutinee }` at the callee's
                                     // ORIGINAL scrutinee, so `resolved_of` must recompute against the copy's.
                                     crate::resolve::forget_subtree(g, unrolled);
+                                    // Lower the unrolled step under the const-fold-unroll flag: a `let`
+                                    // binding whose init folds to a constant (the recursed tail) is then
+                                    // inlined at every use regardless of use-count / whole-escape, so a
+                                    // FILTER step (`let tail = rec(t) in if p(h) then prepend(tail, h) else
+                                    // tail` — tail read in both branches) collapses to a constant instead of
+                                    // leaving a residual `Core::Let` the const-value check rejects. Restored
+                                    // immediately so only this speculative lowering sees it.
+                                    let prev_unroll = g.const_fold_unroll;
+                                    g.const_fold_unroll = true;
                                     let folded = core_of(g, unrolled);
+                                    g.const_fold_unroll = prev_unroll;
                                     // ACCEPT only a FULLY-FOLDED CONSTANT — the unroll succeeded end-to-end
                                     // (a shrinking const fold reaching its base arm). A const-param recursion
                                     // whose body reads a RUNTIME value (e.g. a dictionary consumer driven by a
@@ -13981,6 +13991,24 @@ fn should_keep_binding(
         .is_some_and(|n| n.starts_with("#st"))
     {
         return true;
+    }
+    // Inside a RECURSIVE-CONST-FOLD unroll (P2), a binding whose init folds to a compile-time CONSTANT is
+    // inlined at every use — regardless of use-count or whole-escape. The unroll's job is to collapse the
+    // step to a single constant; a FILTER step binds the recursed tail in a `let` and reads it from BOTH
+    // arms (`let tail = rec(t) in if p(h) then prepend(tail, h) else tail`), so the ordinary `count >= 2`
+    // rule below would KEEP it as a `Core::Let` and the fold's constant-value check would reject the
+    // residual, declining a program that genuinely folds. A constant is free to duplicate (no recompute, no
+    // effect), and inside the unroll the copies fold into the one result — so the code-size reason the
+    // ordinary escaping-const-list path materializes (the `Core::ListNew` gate below, gated `!escapes_whole`)
+    // does not apply. Gated on `const_fold_unroll` so general `let`-lowering is byte-for-byte unchanged.
+    // Placed AFTER the lambda / host-effect / `#st` force-keeps (a constant reaches none of them) and BEFORE
+    // the use-count rule. `core_of(init)` here is memoized and on the same footing as the `is_compound_value`
+    // / `ListNew`-const gates just below, which already lower `init`.
+    if db.const_fold_unroll {
+        let folded = core_of(db, init);
+        if core_is_const_value(db, &folded) {
+            return false;
+        }
     }
     // A value that folds to a constant / atom leaves no computation to share — always propagate.
     if !is_runtime_computation(db, init) {

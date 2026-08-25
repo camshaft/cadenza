@@ -1300,6 +1300,19 @@ pub struct Db {
     /// total synthesis work, not current depth).
     pub(crate) reduce_nodes: u64,
 
+    /// True WHILE the recursive-const-fold unroll (P2, `lower.rs`) is speculatively lowering an unrolled
+    /// step body to test whether it folds to a compile-time constant. Under this flag, `should_keep_binding`
+    /// INLINES any `let` binding whose init folds to a constant, regardless of use-count or whole-escape:
+    /// the unroll's whole point is to collapse the step to ONE constant, and a filter step binds the
+    /// recursed tail in a `let` read from BOTH branches (`if p(h) then prepend(tail, h) else tail`) — the
+    /// ordinary `count >= 2` / escaping-const-list keep would leave a residual `Core::Let`, which is not a
+    /// constant value, so the fold would decline. Duplicating a constant at each use is free (no recompute,
+    /// no effect) and, inside the unroll, the copies fold away into the single result — so the code-size
+    /// reason the ordinary path materializes an escaping const list does not apply here. Scoped to this flag
+    /// so GENERAL `let`-lowering (outside a const-fold unroll) is byte-for-byte unchanged. Set/restored
+    /// around the unroll's `core_of`; nested unrolls re-set it idempotently.
+    pub(crate) const_fold_unroll: bool,
+
     /// The current RECURSIVE-DESCENT depth across the demand queries (`type_of`, `collect`, `core_of`)
     /// — the recursive-descent backstop. Bumped on entering a query's recursion and restored on exit;
     /// past [`DESCENT_DEPTH_LIMIT`] the query declines instead of recursing, so pathologically deep
@@ -2795,6 +2808,7 @@ impl Db {
             nonfinal_splice_patterns,
             reduce_depth: 0,
             reduce_nodes: 0,
+            const_fold_unroll: false,
             descent_depth: 0,
             walk_depth: 0,
             callee_visited: crate::fxhash::FxHashSet::default(),
