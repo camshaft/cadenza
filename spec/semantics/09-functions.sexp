@@ -6109,6 +6109,27 @@
             (export main)))
   (output (: 3 Int64)))
 
+(case "a NON-TAIL recursive helper called per element inside a recursive build folds (general const-eval)"
+  (doc    "The NESTED case above uses a TAIL-recursive helper (`dec`); this uses a NON-TAIL one — `tri`'s
+           self-call sits inside `(+ n (tri (- n 1)))`, accumulating a sum. The general const-EVALUATOR
+           (DESIGN-general-const-eval.md) interprets a total function applied to compile-time-constant
+           arguments to a constant VALUE, so it composes natively: `rb` evaluates `tri h` to a constant for
+           each element and assembles the constant list — where the unroll-and-refold could not (a non-tail
+           recursion const-folded inside another recursion's fold left a residual it could not collapse). The
+           evaluator is bounded by a step budget (a non-terminating fold declines, never hangs) and fires only
+           under the same `const`-parameter demand as the unroll, so nothing outside a genuine const fold is
+           affected. `rb [1 2 3]` = `[tri 1, tri 2, tri 3]` = `[1 3 6]`, length 3. The `const` parameters force
+           compile time, so a passing output witnesses the whole non-tail nested fold reaching a constant.")
+  (input  (do
+            (def (tri (const (: n Int64))) (if (= n 0) 0 (+ n (tri (- n 1)))))
+            (def (rb (const (: xs (List Int64))))
+              (match xs
+                ((list) (: (list) (List Int64)))
+                ((list h .. t) (List.prepend (rb t) (tri h)))))
+            (def (main) (List.len (rb (list 1 2 3))))
+            (export main)))
+  (output (: 3 Int64)))
+
 (case "the runtime-list version of a tail fold compiles and folds correctly"
   (doc    "The correct alternative to the const-collection reject above: the SAME tail fold over a RUNTIME
            `(List Int64)` parameter (no `const`) compiles to a proper `loop` whose `br_if` exit is the real

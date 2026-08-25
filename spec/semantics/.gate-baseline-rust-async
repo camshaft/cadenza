@@ -863,6 +863,7 @@ pass	a NOMINAL-over-tuple ARG crosses as the underlying tuple (direct-call)
 pass	a NON-LAST handler arm whose body is a MATCH round-trips through the ML printer
 pass	a NON-TAIL host call consumes rows on the unwind, deepest frame first
 pass	a NON-TAIL recursion rebinding its rope arg to a slice-concat accumulates after each return
+pass	a NON-TAIL recursive helper called per element inside a recursive build folds (general const-eval)
 pass	a NON-identity constant add over a high UInt64 operand still rejects the overflow
 pass	a NON-recursive helper calling a nested op whose resume performs the outer effect folds
 pass	a NON-tail heap-spine build 5000 deep constructs and drains through real frames

@@ -1451,6 +1451,32 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                                                     })
                                         })
                                     });
+                                // GENERAL CONST-EVALUATION (P2, DESIGN-general-const-eval.md): interpret the
+                                // total function applied to compile-time-constant arguments to a constant
+                                // VALUE. Tried BEFORE the unroll-and-refold because it COMPOSES natively (a
+                                // recursion consuming another recursion's const result; a let-bound nested-
+                                // recursion result carried through a filter) where the refold cannot. Same
+                                // activation gate (const-param demand + all-args-const) and a step budget;
+                                // falls through to the unroll on any value it cannot yet evaluate (Stage a:
+                                // scalars + lists), so it is a COMPLETENESS gain on the accept path, never a
+                                // miscompile. A wrong value would be caught by the corpus gate; incompleteness
+                                // is safe by construction (the unroll / runtime-call path still runs).
+                                if has_const_foldable_param
+                                    && args.iter().all(|&a| is_const_value(g, a))
+                                {
+                                    let mut budget: u64 = 1_000_000;
+                                    if let Some(cv) = const_eval_apply(
+                                        g,
+                                        head,
+                                        &args,
+                                        &CEnv::default(),
+                                        &mut budget,
+                                    ) && let Some(core) = cval_to_core(g, &cv)
+                                        && core_is_const_value(g, &core)
+                                    {
+                                        return core;
+                                    }
+                                }
                                 if has_const_foldable_param
                                     && args.iter().all(|&a| is_const_value(g, a))
                                     && let Ok(Some(unrolled)) =
@@ -24091,6 +24117,299 @@ fn lower_map_field_runtime(
 /// Whether an already-lowered [`Core`] is a compile-time CONSTANT value — the [`is_const_value`] test on a
 /// `Core` in hand (rather than a node to lower). Used by the recursive-const-fold unroll to accept only a
 /// fully-folded constant result.
+/// A self-contained compile-time constant VALUE for the general const-evaluator (`DESIGN-general-const-eval.md`,
+/// Stage a: scalars + lists). Unlike `Core` — whose compounds reference AST nodes, so a nested const result
+/// cannot flow as a value into an enclosing fold — a `CVal` is a closed value tree, so a nested const call
+/// evaluates to a `CVal` the caller consumes directly. That native composition is exactly what the
+/// unroll-and-refold could not do (a recursion consuming another recursion's const result; a let-bound
+/// nested-recursion result carried through a filter). Stage a covers Int/Bool/Str/Bytes/Unit and homogeneous
+/// lists; Ast/sum/record/map values are later stages (an unhandled form yields `None`, so the caller falls
+/// through to the existing unroll/decline — a COMPLETENESS gain on the accept path, never a miscompile).
+#[derive(Clone)]
+enum CVal {
+    Int(crate::ast::IntValue),
+    Bool(bool),
+    Str(std::rc::Rc<str>),
+    Bytes(std::rc::Rc<[u8]>),
+    Unit,
+    List(Vec<CVal>),
+}
+
+/// The const-evaluator's binding environment: a CALL parameter's name occurrence → its argument value.
+/// Only call params live here; a `let`-bound reference follows its `Ref` to the initializer (re-evaluated in
+/// the current env), and a match pattern binder is a `SumPayload` projection of the (re-evaluated) scrutinee
+/// — so nothing else needs an explicit binding.
+type CEnv = crate::fxhash::FxHashMap<StructId, CVal>;
+
+/// Evaluate `node` to a compile-time constant `CVal` under `env`, or `None` if it is not a constant this
+/// stage can evaluate. `budget` debits one per step so a non-terminating / explosively-growing recursion
+/// declines rather than hangs (the same soundness guard the unroll relies on). Reuses `resolved_of` for the
+/// resolved form; delegates nothing to `core_of` (it is a closed value interpreter), so it composes.
+fn const_eval(db: &mut Db, node: StructId, env: &CEnv, budget: &mut u64) -> Option<CVal> {
+    if *budget == 0 {
+        return None;
+    }
+    *budget -= 1;
+    match resolved_of(db, node) {
+        Resolved::Int(v) => Some(CVal::Int(v)),
+        Resolved::Bool(b) => Some(CVal::Bool(b)),
+        Resolved::Str(s) | Resolved::SymbolConst(s) => Some(CVal::Str(s.into())),
+        Resolved::Bytes(b) => Some(CVal::Bytes(b.into())),
+        Resolved::Unit => Some(CVal::Unit),
+        // A call parameter reference — its value is bound in the env by the enclosing application.
+        Resolved::Param { binder } => env.get(&binder).cloned(),
+        // A plain reference (a `let`-bound name, a nullary-def reference) follows through to its
+        // initializer / body, re-evaluated in the current env (const, so re-evaluation is sound).
+        Resolved::Ref { value } => const_eval(db, value, env, budget),
+        // A `let`'s value is its body's value; a body reference to a bound name follows via `Ref` above.
+        Resolved::Let { body, .. } => const_eval(db, body, env, budget),
+        Resolved::If { cond, then_, else_ } => match const_eval(db, cond, env, budget)? {
+            CVal::Bool(true) => const_eval(db, then_, env, budget),
+            CVal::Bool(false) => const_eval(db, else_, env, budget),
+            _ => None,
+        },
+        Resolved::And { lhs, rhs, is_and } => match (const_eval(db, lhs, env, budget)?, is_and) {
+            (CVal::Bool(false), true) => Some(CVal::Bool(false)),
+            (CVal::Bool(true), false) => Some(CVal::Bool(true)),
+            (CVal::Bool(_), _) => match const_eval(db, rhs, env, budget)? {
+                CVal::Bool(b) => Some(CVal::Bool(b)),
+                _ => None,
+            },
+            _ => None,
+        },
+        Resolved::Not { operand } => match const_eval(db, operand, env, budget)? {
+            CVal::Bool(b) => Some(CVal::Bool(!b)),
+            _ => None,
+        },
+        Resolved::List { elems } => {
+            let mut vs = Vec::with_capacity(elems.len());
+            for &e in elems.iter() {
+                vs.push(const_eval(db, e, env, budget)?);
+            }
+            Some(CVal::List(vs))
+        }
+        Resolved::Match { scrutinee, arms } => {
+            let v = const_eval(db, scrutinee, env, budget)?;
+            for (pat, body) in arms.iter() {
+                if const_pattern_matches(db, *pat, &v) {
+                    return const_eval(db, *body, env, budget);
+                }
+            }
+            None
+        }
+        // A match pattern binder — a projection of the scrutinee value along `steps`.
+        Resolved::SumPayload {
+            scrutinee, steps, ..
+        } => {
+            let mut v = const_eval(db, scrutinee, env, budget)?;
+            for step in steps.iter() {
+                v = match (step, &v) {
+                    (crate::core::PathStep::Elem(i), CVal::List(xs)) => xs.get(*i)?.clone(),
+                    (crate::core::PathStep::RestFrom(k), CVal::List(xs)) => {
+                        CVal::List(xs.get(*k..).map(<[CVal]>::to_vec).unwrap_or_default())
+                    }
+                    // Payload (sum unwrap) / Elem-on-tuple-or-record are later stages.
+                    _ => return None,
+                };
+            }
+            Some(v)
+        }
+        // A type ascription `(: value T)` — its value is the inner expression's value (the type is a
+        // compile-time-only annotation, erased at runtime). Notably the `([] : List T)` empty-list base arm.
+        Resolved::Annot { expr, .. } => const_eval(db, expr, env, budget),
+        Resolved::Apply { head, args } => const_eval_apply(db, head, &args, env, budget),
+        _ => None,
+    }
+}
+
+/// Evaluate a function application to a `CVal`. A primitive (or a prelude wrapper that routes to an
+/// intrinsic in its body) applies its const semantics; a def/lambda binds its parameters to the evaluated
+/// arguments in a fresh env and evaluates its body (recursion permitted — the `budget` bounds it).
+fn const_eval_apply(
+    db: &mut Db,
+    head: StructId,
+    args: &[StructId],
+    env: &CEnv,
+    budget: &mut u64,
+) -> Option<CVal> {
+    if let Some(prim) =
+        crate::eval::prim_of(db, head).or_else(|| crate::eval::meta_apply_of(db, head))
+    {
+        let mut vs = Vec::with_capacity(args.len());
+        for &a in args {
+            vs.push(const_eval(db, a, env, budget)?);
+        }
+        return apply_const_prim(prim, &vs);
+    }
+    let params = crate::eval::lambda_params_of(db, head)?;
+    if params.len() != args.len() {
+        return None;
+    }
+    let body = crate::eval::lambda_body(db, head)?;
+    let mut child = CEnv::default();
+    for (&p, &a) in params.iter().zip(args.iter()) {
+        let av = const_eval(db, a, env, budget)?;
+        child.insert(p, av);
+    }
+    const_eval(db, body, &child, budget)
+}
+
+/// Apply a primitive to already-evaluated constant operands (Stage a: integer arithmetic + comparison,
+/// equality, and the homogeneous list ops). An operand shape the prim does not define over yields `None`.
+fn apply_const_prim(prim: Prim, vs: &[CVal]) -> Option<CVal> {
+    use std::cmp::Ordering;
+    match (prim, vs) {
+        (Prim::Add, [CVal::Int(a), CVal::Int(b)]) => Some(CVal::Int(a.add(b))),
+        (Prim::Sub, [CVal::Int(a), CVal::Int(b)]) => Some(CVal::Int(a.sub(b))),
+        (Prim::Mul, [CVal::Int(a), CVal::Int(b)]) => Some(CVal::Int(a.mul(b))),
+        (Prim::Lt, [CVal::Int(a), CVal::Int(b)]) => Some(CVal::Bool(a.cmp(b) == Ordering::Less)),
+        (Prim::Gt, [CVal::Int(a), CVal::Int(b)]) => Some(CVal::Bool(a.cmp(b) == Ordering::Greater)),
+        (Prim::Le, [CVal::Int(a), CVal::Int(b)]) => Some(CVal::Bool(a.cmp(b) != Ordering::Greater)),
+        (Prim::Ge, [CVal::Int(a), CVal::Int(b)]) => Some(CVal::Bool(a.cmp(b) != Ordering::Less)),
+        (Prim::Eq, [a, b]) => cval_eq(a, b).map(CVal::Bool),
+        (Prim::ListNew, elems) => Some(CVal::List(elems.to_vec())),
+        (Prim::ListLen, [CVal::List(xs)]) => {
+            Some(CVal::Int(crate::ast::IntValue::from_i64(xs.len() as i64)))
+        }
+        // `List.prepend (list, elem)` → `elem :: list` (the element becomes the new head).
+        (Prim::ListPrepend, [CVal::List(xs), e]) => {
+            let mut r = Vec::with_capacity(xs.len() + 1);
+            r.push(e.clone());
+            r.extend(xs.iter().cloned());
+            Some(CVal::List(r))
+        }
+        // `List.push (list, elem)` → `list ++ [elem]` (the element becomes the new tail).
+        (Prim::ListPush, [CVal::List(xs), e]) => {
+            let mut r = xs.clone();
+            r.push(e.clone());
+            Some(CVal::List(r))
+        }
+        _ => None,
+    }
+}
+
+/// Structural equality of two constant values (Stage a's value domain). `None` for a pair this stage does
+/// not compare (so the caller declines rather than guessing).
+fn cval_eq(a: &CVal, b: &CVal) -> Option<bool> {
+    use std::cmp::Ordering;
+    match (a, b) {
+        (CVal::Int(x), CVal::Int(y)) => Some(x.cmp(y) == Ordering::Equal),
+        (CVal::Bool(x), CVal::Bool(y)) => Some(x == y),
+        (CVal::Str(x), CVal::Str(y)) => Some(x == y),
+        (CVal::Bytes(x), CVal::Bytes(y)) => Some(x == y),
+        (CVal::Unit, CVal::Unit) => Some(true),
+        (CVal::List(x), CVal::List(y)) => {
+            if x.len() != y.len() {
+                return Some(false);
+            }
+            for (p, q) in x.iter().zip(y.iter()) {
+                if !cval_eq(p, q)? {
+                    return Some(false);
+                }
+            }
+            Some(true)
+        }
+        _ => None,
+    }
+}
+
+/// Whether the match pattern `pat` matches the constant value `v` (Stage a: wildcard/binder, list nil /
+/// leading+rest, and scalar literals). Correctness is critical — a wrong verdict selects the wrong arm — so
+/// only the patterns whose semantics are exact here return a decision; anything else is a non-match (`false`),
+/// which lets the evaluator try the next arm or decline. A binder / `_` always matches (its binding is read
+/// via the arm body's `SumPayload` projection, not bound here).
+fn const_pattern_matches(db: &mut Db, pat: StructId, v: &CVal) -> bool {
+    if let Some(items) = db.ast.as_form(pat, "list").map(<[StructId]>::to_vec) {
+        let CVal::List(xs) = v else {
+            return false;
+        };
+        // A REST pattern `(list p0 … p_{k-1} .. rest)` matches a list with at least the leading count, each
+        // leading element matching; a FIXED pattern `(list p0 … p_{n-1})` matches a list of exactly n, each
+        // element matching.
+        let rest_pos = items
+            .iter()
+            .position(|&it| db.ast.as_name(it) == Some(".."));
+        match rest_pos {
+            Some(rp) => {
+                if xs.len() < rp {
+                    return false;
+                }
+                items[..rp]
+                    .iter()
+                    .zip(xs.iter())
+                    .all(|(&p, x)| const_pattern_matches(db, p, x))
+            }
+            None => {
+                xs.len() == items.len()
+                    && items
+                        .iter()
+                        .zip(xs.iter())
+                        .all(|(&p, x)| const_pattern_matches(db, p, x))
+            }
+        }
+    } else if let Some(n) = db.ast.as_name(pat) {
+        // A binder or wildcard `_` matches any value. (A member-access constructor pattern like
+        // `Option.None` is a `(. …)` form, not a name, so it is NOT treated as a catch-all binder.)
+        let _ = n;
+        true
+    } else {
+        match (resolved_of(db, pat), v) {
+            (Resolved::Int(lit), CVal::Int(x)) => x.cmp(&lit) == std::cmp::Ordering::Equal,
+            (Resolved::Bool(lit), CVal::Bool(x)) => *x == lit,
+            (Resolved::Str(lit), CVal::Str(x)) => x.as_ref() == lit.as_str(),
+            _ => false,
+        }
+    }
+}
+
+/// Materialize a constant value to a `Core` constant — the bridge from the evaluator's value domain back to
+/// the lowering's. A list becomes a `Core::ListNew` whose elements are freshly-synthesized literal AST nodes
+/// (so `core_is_const_value` / the backend see an ordinary constant list). `None` for a value with no
+/// literal AST form this stage synthesizes (e.g. a `Unit` inside a list).
+fn cval_to_core(db: &mut Db, v: &CVal) -> Option<Core> {
+    Some(match v {
+        CVal::Int(x) => Core::ConstInt(x.clone()),
+        CVal::Bool(b) => Core::ConstBool(*b),
+        CVal::Str(s) => Core::ConstStr(s.clone()),
+        CVal::Bytes(b) => Core::ConstBytes(b.clone()),
+        CVal::Unit => Core::Unit,
+        CVal::List(xs) => {
+            let mut elems = Vec::with_capacity(xs.len());
+            for x in xs {
+                elems.push(cval_to_ast(db, x)?);
+            }
+            Core::ListNew {
+                elems: elems.into(),
+            }
+        }
+    })
+}
+
+/// Synthesize a literal AST node for a constant value — used for the ELEMENTS of a materialized constant
+/// list (a `Core::ListNew` references its elements as AST occurrences). `None` for a value with no literal
+/// spelling this stage synthesizes.
+fn cval_to_ast(db: &mut Db, v: &CVal) -> Option<StructId> {
+    Some(match v {
+        CVal::Int(x) => db.push_atom(crate::ast::Leaf::Int {
+            value: x.clone(),
+            radix: crate::ast::Radix::Dec,
+        }),
+        CVal::Bool(b) => db.push_atom(crate::ast::Leaf::Bool(*b)),
+        CVal::Str(s) => db.push_atom(crate::ast::Leaf::Str(s.clone())),
+        CVal::Bytes(b) => db.push_atom(crate::ast::Leaf::Bytes(b.to_vec())),
+        CVal::List(xs) => {
+            let head = db.push_name("list");
+            let mut items = Vec::with_capacity(xs.len() + 1);
+            items.push(head);
+            for x in xs {
+                items.push(cval_to_ast(db, x)?);
+            }
+            db.push_list(items)
+        }
+        CVal::Unit => return None,
+    })
+}
+
 fn core_is_const_value(db: &mut Db, c: &Core) -> bool {
     match c {
         Core::ConstInt(_)
