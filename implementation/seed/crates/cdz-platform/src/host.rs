@@ -105,15 +105,15 @@ struct HostState {
     /// wired at all (a bare [`HostState`] built for a non-run test).
     run: Option<Arc<Instantiator>>,
     /// Where a host call the boundary REJECTED (a raw `list<u8>` arg that failed to parse into its typed
-    /// id/kind) is recorded, so no host call is silently unobserved (§9). Always present
-    /// ([`NoRejectedSink`](crate::NoRejectedSink) when no observing node wired one), so the parse-guard path
-    /// records unconditionally without an `Option` to branch on.
-    rejected: Arc<dyn RejectedSink>,
+    /// id/kind) is recorded, so no host call is silently unobserved (§9). `None` when no observing node wired a
+    /// recorder — the common production case — so the parse-guard path branches on the `Option` (no vtable
+    /// call, no always-present `Arc`) and the raw-arg capture is dropped entirely on the disabled path.
+    rejected: Option<Arc<dyn RejectedSink>>,
     /// Where a `run` host call (the pure-run primitive) is recorded — which program/contract, the input, and
     /// the result — so a conformance run can observe that a reducer invoked `run` (§9), which leaves no
-    /// `step.requests` entry otherwise. Always present ([`NoRunSink`](crate::NoRunSink) when no observing node
-    /// wired one). Mirrors [`rejected`](Self::rejected).
-    run_sink: Arc<dyn RunSink>,
+    /// `step.requests` entry otherwise. `None` when no observing node wired a recorder (the run path pays zero
+    /// then). Mirrors [`rejected`](Self::rejected).
+    run_sink: Option<Arc<dyn RunSink>>,
     /// The per-reducer linear-memory limiter the wasm store enforces (see `arm_store_safety`): a ceiling on
     /// linear memory so one guest cannot exhaust host RAM and take down the process. Lives here because a wasm
     /// [`Store`]'s limiter projects from its data (`Store::limiter`); the store enforces the limits it holds.
@@ -150,11 +150,11 @@ impl cadenza::platform::run::Host for HostState {
         let input = Bytes::from(input);
         let result = inst.run_pure(program, contract, input.clone()).await;
         // Record the run act (§9) — which program/contract, the input, and the outcome (Ok or a RunError
-        // category) — before mapping to the WIT result, so a conformance run observes the run. Gated on the
-        // sink being enabled, so a node with no recorder wired pays zero here (`program`/`contract` are `Copy`
-        // ids, so this reuses them after `run_pure`). `input` is a ref-counted `Bytes` (its clone is O(1)).
-        if self.run_sink.enabled() {
-            self.run_sink.record(
+        // category) — before mapping to the WIT result, so a conformance run observes the run. `None` when no
+        // recorder is wired, so a node without one pays zero here (`program`/`contract` are `Copy` ids, so this
+        // reuses them after `run_pure`). `input` is a ref-counted `Bytes` (its clone is O(1)).
+        if let Some(run_sink) = &self.run_sink {
+            run_sink.record(
                 program.hash().as_bytes(),
                 contract.hash().as_bytes(),
                 input.as_ref(),
@@ -202,7 +202,7 @@ impl cadenza::platform::state::Host for HostState {
 // returns the empty/false result (total, graceful) AND records the rejected call to `self.rejected` with the
 // raw argument bytes, so the call is observed (§9) even though it never reached the recordable `self.graph`
 // capability below the parse. A well-formed call records via the graph decorator as usual; only the rejected
-// path is recorded here. The record is gated on `self.rejected.enabled()`, so when no recorder is wired the
+// path is recorded here. The record is gated on `self.rejected` being `Some`, so when no recorder is wired the
 // parse-guard path pays ZERO allocation; when it is, the raw `Vec<u8>` args move into `Bytes` with no copy
 // (`Bytes::from` is O(1)). `iface`/`op` name the WIT interface + method.
 impl cadenza::platform::graph::Host for HostState {
@@ -210,9 +210,8 @@ impl cadenza::platform::graph::Host for HostState {
         match to_reducer(&node) {
             Some(node) => self.graph.insert(node).await,
             None => {
-                if self.rejected.enabled() {
-                    self.rejected
-                        .record("graph", "insert", &[Bytes::from(node)]);
+                if let Some(rejected) = &self.rejected {
+                    rejected.record("graph", "insert", &[Bytes::from(node)]);
                 }
                 false
             }
@@ -223,9 +222,8 @@ impl cadenza::platform::graph::Host for HostState {
         match to_reducer(&node) {
             Some(node) => self.graph.contains(node).await,
             None => {
-                if self.rejected.enabled() {
-                    self.rejected
-                        .record("graph", "contains", &[Bytes::from(node)]);
+                if let Some(rejected) = &self.rejected {
+                    rejected.record("graph", "contains", &[Bytes::from(node)]);
                 }
                 false
             }
@@ -236,9 +234,8 @@ impl cadenza::platform::graph::Host for HostState {
         match to_reducer(&node) {
             Some(node) => self.graph.remove(node).await,
             None => {
-                if self.rejected.enabled() {
-                    self.rejected
-                        .record("graph", "remove", &[Bytes::from(node)]);
+                if let Some(rejected) = &self.rejected {
+                    rejected.record("graph", "remove", &[Bytes::from(node)]);
                 }
                 false
             }
@@ -249,8 +246,8 @@ impl cadenza::platform::graph::Host for HostState {
         match (to_reducer(&source), to_reducer(&target), to_kind(&kind)) {
             (Some(source), Some(target), Some(kind)) => self.graph.link(source, target, kind).await,
             _ => {
-                if self.rejected.enabled() {
-                    self.rejected.record(
+                if let Some(rejected) = &self.rejected {
+                    rejected.record(
                         "graph",
                         "link",
                         &[Bytes::from(source), Bytes::from(target), Bytes::from(kind)],
@@ -268,10 +265,10 @@ impl cadenza::platform::graph::Host for HostState {
         targets: Vec<Vec<u8>>,
     ) -> Vec<Vec<u8>> {
         let (Some(source_id), Some(kind_id)) = (to_reducer(&source), to_kind(&kind)) else {
-            if self.rejected.enabled() {
+            if let Some(rejected) = &self.rejected {
                 let mut raw = vec![Bytes::from(source), Bytes::from(kind)];
                 raw.extend(targets.into_iter().map(Bytes::from));
-                self.rejected.record("graph", "set-edges", &raw);
+                rejected.record("graph", "set-edges", &raw);
             }
             return Vec::new();
         };
@@ -287,8 +284,8 @@ impl cadenza::platform::graph::Host for HostState {
         dir: cadenza::platform::graph::Dir,
     ) -> Vec<Vec<u8>> {
         let (Some(node_id), Some(kind_id)) = (to_reducer(&node), to_kind(&kind)) else {
-            if self.rejected.enabled() {
-                self.rejected.record(
+            if let Some(rejected) = &self.rejected {
+                rejected.record(
                     "graph",
                     "neighbors",
                     &[Bytes::from(node), Bytes::from(kind)],
@@ -309,9 +306,8 @@ impl cadenza::platform::graph::Host for HostState {
                 .map(|kind| kind.hash().as_bytes().to_vec())
                 .collect(),
             None => {
-                if self.rejected.enabled() {
-                    self.rejected
-                        .record("graph", "in-kinds", &[Bytes::from(node)]);
+                if let Some(rejected) = &self.rejected {
+                    rejected.record("graph", "in-kinds", &[Bytes::from(node)]);
                 }
                 Vec::new()
             }
@@ -325,9 +321,8 @@ impl cadenza::platform::graph::Host for HostState {
         dir: cadenza::platform::graph::Dir,
     ) -> Vec<Vec<u8>> {
         let (Some(node_id), Some(kind_id)) = (to_reducer(&node), to_kind(&kind)) else {
-            if self.rejected.enabled() {
-                self.rejected
-                    .record("graph", "reach", &[Bytes::from(node), Bytes::from(kind)]);
+            if let Some(rejected) = &self.rejected {
+                rejected.record("graph", "reach", &[Bytes::from(node), Bytes::from(kind)]);
             }
             return Vec::new();
         };
@@ -341,9 +336,8 @@ impl cadenza::platform::provenance::Host for HostState {
         // reducer that is not running (or, under NoProvenance, always). The guest reads empty as "no
         // provenance" (a well-formed program hash is never empty).
         let Ok(reducer_id) = ReducerId::try_from(reducer.as_slice()) else {
-            if self.rejected.enabled() {
-                self.rejected
-                    .record("provenance", "program-of", &[Bytes::from(reducer)]);
+            if let Some(rejected) = &self.rejected {
+                rejected.record("provenance", "program-of", &[Bytes::from(reducer)]);
             }
             return Vec::new();
         };
@@ -358,7 +352,7 @@ impl cadenza::platform::provenance::Host for HostState {
 // malformed one they return `false` AND record the rejected call to `self.rejected` (iface `deliver`, the op,
 // the raw `target` bytes), so a malformed routing act is observed (§9) rather than silently dropped — the same
 // completeness the graph ops get. The envelope is a structured WIT record, not a raw `list<u8>`, so only the
-// raw `target` id is captured. Gated on `enabled()` (zero alloc when no recorder) with a zero-copy `Bytes::from`.
+// raw `target` id is captured. Gated on `self.rejected` being `Some` (zero alloc when no recorder) with a zero-copy `Bytes::from`.
 impl cadenza::platform::deliver::Host for HostState {
     async fn deliver_message(&mut self, target: Vec<u8>, event: wit_reducer::Message) -> bool {
         // A malformed target or a malformed event (an id that is not a hash, an origin that is not) names
@@ -366,9 +360,8 @@ impl cadenza::platform::deliver::Host for HostState {
         // delivery reports whether a reducer is running under `target` and received it.
         let (Some(target_id), Some(message)) = (to_reducer(&target), message_from_wit(event))
         else {
-            if self.rejected.enabled() {
-                self.rejected
-                    .record("deliver", "deliver-message", &[Bytes::from(target)]);
+            if let Some(rejected) = &self.rejected {
+                rejected.record("deliver", "deliver-message", &[Bytes::from(target)]);
             }
             return false;
         };
@@ -380,9 +373,8 @@ impl cadenza::platform::deliver::Host for HostState {
     async fn deliver_response(&mut self, target: Vec<u8>, event: wit_reducer::Response) -> bool {
         let (Some(target_id), Some(response)) = (to_reducer(&target), response_from_wit(event))
         else {
-            if self.rejected.enabled() {
-                self.rejected
-                    .record("deliver", "deliver-response", &[Bytes::from(target)]);
+            if let Some(rejected) = &self.rejected {
+                rejected.record("deliver", "deliver-response", &[Bytes::from(target)]);
             }
             return false;
         };
@@ -399,9 +391,8 @@ impl cadenza::platform::deliver::Host for HostState {
         let (Some(target_id), Some(notification)) =
             (to_reducer(&target), notification_from_wit(event))
         else {
-            if self.rejected.enabled() {
-                self.rejected
-                    .record("deliver", "deliver-notification", &[Bytes::from(target)]);
+            if let Some(rejected) = &self.rejected {
+                rejected.record("deliver", "deliver-notification", &[Bytes::from(target)]);
             }
             return false;
         };
@@ -1102,8 +1093,8 @@ fn null_host_state(
         provenance: Arc::new(crate::NoProvenance),
         delivery: Arc::new(crate::NoDelivery),
         run,
-        rejected: Arc::new(crate::NoRejectedSink),
-        run_sink: Arc::new(crate::NoRunSink),
+        rejected: None,
+        run_sink: None,
         limits: reducer_store_limits(limits),
         resource_limits: *limits,
     }
@@ -1159,14 +1150,14 @@ pub struct WasmProgramStore {
     /// observable (§9).
     make_delivery: DeliveryFactory,
     /// Builds each reducer's sink for host calls the boundary rejected before the recordable capability (a
-    /// malformed-arg `graph` op, §9). Defaults to a factory over [`NoRejectedSink`](crate::NoRejectedSink)
-    /// until set with [`with_rejected`](WasmProgramStore::with_rejected), so a rejected call is dropped unless
-    /// an observing node injects a recording sink.
-    make_rejected: RejectedSinkFactory,
-    /// Builds each reducer's sink for `run` host calls (§9). Defaults to a factory over
-    /// [`NoRunSink`](crate::NoRunSink) until set with [`with_run_sink`](WasmProgramStore::with_run_sink), so a
-    /// run is not recorded unless an observing node injects a recording sink.
-    make_run_sink: RunSinkFactory,
+    /// malformed-arg `graph` op, §9). `None` until set with [`with_rejected`](WasmProgramStore::with_rejected),
+    /// so a rejected call is dropped (each reducer's `rejected` is `None`) unless an observing node injects a
+    /// recording sink — the disabled path then pays zero (no factory call, no `Arc`).
+    make_rejected: Option<RejectedSinkFactory>,
+    /// Builds each reducer's sink for `run` host calls (§9). `None` until set with
+    /// [`with_run_sink`](WasmProgramStore::with_run_sink), so a run is not recorded (each reducer's `run_sink`
+    /// is `None`) unless an observing node injects a recording sink.
+    make_run_sink: Option<RunSinkFactory>,
 }
 
 impl WasmProgramStore {
@@ -1213,8 +1204,8 @@ impl WasmProgramStore {
             make_graph,
             make_provenance: Arc::new(|_id| Arc::new(crate::NoProvenance) as Arc<dyn Provenance>),
             make_delivery: Arc::new(|_id| Arc::new(crate::NoDelivery) as Arc<dyn Delivery>),
-            make_rejected: Arc::new(|_id| Arc::new(crate::NoRejectedSink) as Arc<dyn RejectedSink>),
-            make_run_sink: Arc::new(|_id| Arc::new(crate::NoRunSink) as Arc<dyn RunSink>),
+            make_rejected: None,
+            make_run_sink: None,
         })
     }
 
@@ -1245,21 +1236,21 @@ impl WasmProgramStore {
     /// Wire each reducer's sink for host calls the boundary rejected before the recordable capability (a
     /// malformed-arg `graph` op, §9). Pass `move |_id| sink.clone()` for a shared sink, or a factory that
     /// builds a per-reducer recording decorator so a rejected call becomes an observation attributed to the
-    /// calling reducer. The default drops rejected calls ([`NoRejectedSink`](crate::NoRejectedSink)). Uniform
-    /// with `make_blobs`.
+    /// calling reducer. Unset (`None`) by default, so a rejected call is dropped and the parse-guard path pays
+    /// zero; wiring a factory makes each reducer's `rejected` `Some`. Uniform with `make_blobs`.
     #[must_use]
     pub fn with_rejected(mut self, make_rejected: RejectedSinkFactory) -> Self {
-        self.make_rejected = make_rejected;
+        self.make_rejected = Some(make_rejected);
         self
     }
 
     /// Wire each reducer's sink for `run` host calls (§9). Pass `move |_id| sink.clone()` for a shared sink, or
     /// a factory that builds a per-reducer recording decorator so a run becomes an observation attributed to
-    /// the calling reducer. The default drops runs ([`NoRunSink`](crate::NoRunSink)). Uniform with
-    /// `with_rejected`.
+    /// the calling reducer. Unset (`None`) by default, so a run is not recorded; wiring a factory makes each
+    /// reducer's `run_sink` `Some`. Uniform with `with_rejected`.
     #[must_use]
     pub fn with_run_sink(mut self, make_run_sink: RunSinkFactory) -> Self {
-        self.make_run_sink = make_run_sink;
+        self.make_run_sink = Some(make_run_sink);
         self
     }
 }
@@ -1338,8 +1329,8 @@ impl ProgramStore for WasmProgramStore {
             provenance: (self.make_provenance)(ctx.id),
             delivery: (self.make_delivery)(ctx.id),
             run: Some(Arc::clone(&self.inst)),
-            rejected: (self.make_rejected)(ctx.id),
-            run_sink: (self.make_run_sink)(ctx.id),
+            rejected: self.make_rejected.as_ref().map(|f| f(ctx.id)),
+            run_sink: self.make_run_sink.as_ref().map(|f| f(ctx.id)),
             limits: reducer_store_limits(&effective),
             resource_limits: effective,
         };
@@ -1386,8 +1377,8 @@ mod tests {
             provenance: Arc::new(crate::NoProvenance),
             delivery: Arc::new(crate::NoDelivery),
             run: None,
-            rejected: Arc::new(crate::NoRejectedSink),
-            run_sink: Arc::new(crate::NoRunSink),
+            rejected: None,
+            run_sink: None,
             limits: super::reducer_store_limits(&super::ResourceLimits::default()),
             resource_limits: super::ResourceLimits::default(),
         }
@@ -1496,7 +1487,7 @@ mod tests {
 
         let sink = Arc::new(Capturing::default());
         let mut h = host_with_empty_run();
-        h.run_sink = sink.clone();
+        h.run_sink = Some(sink.clone() as Arc<dyn RunSink>);
 
         let program = crate::ProgramHash::of(b"absent");
         let contract = crate::ContractId::of(b"c");
@@ -1597,7 +1588,7 @@ mod tests {
 
         let sink = Arc::new(Capturing::default());
         let mut host = host(ReducerId::of(b"me"));
-        host.rejected = sink.clone();
+        host.rejected = Some(sink.clone() as Arc<dyn RejectedSink>);
 
         // A malformed node (not a 33-byte hash) with a well-formed kind: the guard fails on the node, so
         // `neighbors` returns [] and records the rejected call with BOTH raw args verbatim.
@@ -1674,7 +1665,7 @@ mod tests {
 
         let sink = Arc::new(Capturing::default());
         let mut host = host(ReducerId::of(b"me"));
-        host.rejected = sink.clone();
+        host.rejected = Some(sink.clone() as Arc<dyn RejectedSink>);
 
         // provenance.program-of with a short (non-hash) reducer id: returns empty AND records the rejection.
         let bad_reducer = vec![9u8, 9, 9];
