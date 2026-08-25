@@ -7,10 +7,8 @@
   ],
   spawns = [{ name = "reducer-state-cdz", blob = "reducer-state-cdz" }],
   deliver = [
-    {
-      target = "reducer-state-cdz",
-      message = { contract = "cdz-platform.deliver", payload = b"STATEVALUE" }
-    }
+    { target = "reducer-state-cdz", message = { contract = "cdz-platform.deliver", payload = b"STATEVALUE" } },
+    { target = "reducer-state-cdz", message = { contract = "cdz-platform.deliver", payload = b"RETURN" } }
   ],
   checker = "reducer-state-check-cdz"
 }

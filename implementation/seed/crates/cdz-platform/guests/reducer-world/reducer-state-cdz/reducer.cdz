@@ -1,19 +1,22 @@
-// A reducer that exercises its durable key-value STATE store (design/cadenza-platform.md §7): on-message it
-// writes the delivered payload at a key (the payload itself), reads it straight back, and echoes the read
-// value as one request — proving a value round-trips through the reducer's own state store. Delegates only
-// `state`; on-response/on-notification are inert. Targets the shared reducer world (state is a floor import).
+// A reducer that exercises its durable key-value STATE store ACROSS messages (design/cadenza-platform.md §7):
+// the run delivers TWO messages. On the first (the cell is empty) it SETs — writes the delivered payload at a
+// fixed key. On the second (the cell now holds the earlier value) it RETURNs — reads that key and echoes the
+// stored value as one request. Because the two folds are separate deliveries, a returned value proves the
+// store PERSISTED it across messages, not merely within one on-message. The guest branches on the store's own
+// state (get -> None = first/set, Some = second/return), so it needs no message tagging. Delegates only
+// `state`; a floor import of the reducer world. on-response/on-notification are inert.
 type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
 type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
 
 def on-message(msg) =
   host state in
-    ( state.put(msg.payload, msg.payload) ;
-      (match state.get(msg.payload) with
-        | Some(v) =>
-            { requests = [{ contract = msg.contract, payload = v, token = b"", deadlineNanos = None }],
-              outcome = Outcome.Continue }
-        | None =>
-            { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = b"state-get-miss" }) }) )
+    (match state.get(b"cell") with
+      | None(_) =>
+          ( state.put(b"cell", msg.payload) ;
+            { requests = [], outcome = Outcome.Continue } )
+      | Some(v) =>
+          { requests = [{ contract = msg.contract, payload = v, token = b"", deadlineNanos = None }],
+            outcome = Outcome.Continue })
 
 def on-response(_resp) =
   { requests = [], outcome = Outcome.Continue }
