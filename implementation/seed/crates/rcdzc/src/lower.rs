@@ -1467,6 +1467,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                                     let mut budget: u64 = 1_000_000;
                                     if let Some(cv) = const_eval_apply(
                                         g,
+                                        id,
                                         head,
                                         &args,
                                         &CEnv::default(),
@@ -24133,6 +24134,17 @@ enum CVal {
     Bytes(std::rc::Rc<[u8]>),
     Unit,
     List(Vec<CVal>),
+    /// A SUM / variant value (Stage b) — an `Ast` node, an `Option`/`Result`, or any user sum. `disc` is the
+    /// variant discriminant (for matching against a variant pattern), `head` is the constructor's occurrence
+    /// (so the value re-materializes to its constructor application `(head payloads…)`, which `core_of` folds
+    /// back to a `Core::SumNew`), and `payloads` are the constructor's argument values (empty for a nullary
+    /// variant like `Option.None`). A single-payload variant binds via a `[Payload]` step; a match reads the
+    /// payload out by projecting this value.
+    Sum {
+        disc: u32,
+        head: StructId,
+        payloads: Vec<CVal>,
+    },
 }
 
 /// The const-evaluator's binding environment: a CALL parameter's name occurrence → its argument value.
@@ -24191,8 +24203,11 @@ fn const_eval(db: &mut Db, node: StructId, env: &CEnv, budget: &mut u64) -> Opti
         Resolved::Match { scrutinee, arms } => {
             let v = const_eval(db, scrutinee, env, budget)?;
             for (pat, body) in arms.iter() {
-                if const_pattern_matches(db, *pat, &v) {
-                    return const_eval(db, *body, env, budget);
+                // `None` = the match is undecidable at this stage (a pattern shape not yet interpreted):
+                // decline the whole evaluation rather than guess an arm (guessing would miscompile).
+                match const_pattern_matches(db, *pat, &v)? {
+                    true => return const_eval(db, *body, env, budget),
+                    false => continue,
                 }
             }
             None
@@ -24208,7 +24223,13 @@ fn const_eval(db: &mut Db, node: StructId, env: &CEnv, budget: &mut u64) -> Opti
                     (crate::core::PathStep::RestFrom(k), CVal::List(xs)) => {
                         CVal::List(xs.get(*k..).map(<[CVal]>::to_vec).unwrap_or_default())
                     }
-                    // Payload (sum unwrap) / Elem-on-tuple-or-record are later stages.
+                    // Unwrap a sum variant's single payload — a variant pattern binder `(Ctor x)` reads its
+                    // payload out through a `[Payload]` step. (A multi-payload variant's `[Payload, Elem(i)]`
+                    // reaches the `Elem` on the payload TUPLE — a later stage; here the payload is one value.)
+                    (crate::core::PathStep::Payload, CVal::Sum { payloads, .. }) => {
+                        payloads.first()?.clone()
+                    }
+                    // Elem-on-tuple/record and multi-payload tuples are later stages.
                     _ => return None,
                 };
             }
@@ -24217,7 +24238,17 @@ fn const_eval(db: &mut Db, node: StructId, env: &CEnv, budget: &mut u64) -> Opti
         // A type ascription `(: value T)` — its value is the inner expression's value (the type is a
         // compile-time-only annotation, erased at runtime). Notably the `([] : List T)` empty-list base arm.
         Resolved::Annot { expr, .. } => const_eval(db, expr, env, budget),
-        Resolved::Apply { head, args } => const_eval_apply(db, head, &args, env, budget),
+        Resolved::Apply { head, args } => const_eval_apply(db, node, head, &args, env, budget),
+        // A NULLARY variant constructor used as a bare value (`Option.None`, a payload-less user variant):
+        // it carries a `(meta variant)` discriminant and constructs its (empty-payload) sum value directly.
+        _ if crate::eval::variant_disc_of(db, node).is_some() => {
+            let disc = crate::eval::variant_disc_of(db, node)?;
+            Some(CVal::Sum {
+                disc,
+                head: node,
+                payloads: Vec::new(),
+            })
+        }
         _ => None,
     }
 }
@@ -24227,17 +24258,56 @@ fn const_eval(db: &mut Db, node: StructId, env: &CEnv, budget: &mut u64) -> Opti
 /// arguments in a fresh env and evaluates its body (recursion permitted — the `budget` bounds it).
 fn const_eval_apply(
     db: &mut Db,
+    node: StructId,
     head: StructId,
     args: &[StructId],
     env: &CEnv,
     budget: &mut u64,
 ) -> Option<CVal> {
+    // A VARIANT CONSTRUCTOR applied to its payload(s) — an `Ast.Name`/`Ast.List`/`Option.Some`/user-sum
+    // constructor. Its value is the sum with the constructor's discriminant and the evaluated payloads.
+    if let Some(disc) = crate::eval::variant_disc_of(db, head) {
+        let mut payloads = Vec::with_capacity(args.len());
+        for &a in args {
+            payloads.push(const_eval(db, a, env, budget)?);
+        }
+        return Some(CVal::Sum {
+            disc,
+            head,
+            payloads,
+        });
+    }
     if let Some(prim) =
         crate::eval::prim_of(db, head).or_else(|| crate::eval::meta_apply_of(db, head))
     {
         let mut vs = Vec::with_capacity(args.len());
         for &a in args {
             vs.push(const_eval(db, a, env, budget)?);
+        }
+        // `List.at (list, index)` → an `Option`: `Option.Some elem` in range, else `Option.None`. The
+        // Some/None discriminants are read off THIS node's result type (`option_discs`); the synthesized
+        // sum's `head` is this node (not a real constructor), so it can be MATCHED/projected but not
+        // materialized (`cval_to_ast` guards materialization on a real constructor head, so an unmatched
+        // `List.at` result declines rather than mis-materializing). `List.at` is the destructor `child`/
+        // `at-or-name` build on. Handled HERE (not `apply_const_prim`) because it needs the node + `db`.
+        if prim == Prim::ListAt
+            && let [CVal::List(xs), CVal::Int(i)] = &vs[..]
+        {
+            let (some_disc, none_disc) = option_discs(db, node)?;
+            let idx = i.to_i64()?;
+            return Some(if idx >= 0 && (idx as usize) < xs.len() {
+                CVal::Sum {
+                    disc: some_disc,
+                    head: node,
+                    payloads: vec![xs[idx as usize].clone()],
+                }
+            } else {
+                CVal::Sum {
+                    disc: none_disc,
+                    head: node,
+                    payloads: Vec::new(),
+                }
+            });
         }
         return apply_const_prim(prim, &vs);
     }
@@ -24313,15 +24383,15 @@ fn cval_eq(a: &CVal, b: &CVal) -> Option<bool> {
     }
 }
 
-/// Whether the match pattern `pat` matches the constant value `v` (Stage a: wildcard/binder, list nil /
-/// leading+rest, and scalar literals). Correctness is critical — a wrong verdict selects the wrong arm — so
-/// only the patterns whose semantics are exact here return a decision; anything else is a non-match (`false`),
-/// which lets the evaluator try the next arm or decline. A binder / `_` always matches (its binding is read
-/// via the arm body's `SumPayload` projection, not bound here).
-fn const_pattern_matches(db: &mut Db, pat: StructId, v: &CVal) -> bool {
+/// Whether the match pattern `pat` matches the constant value `v`: `Some(true)`/`Some(false)` for a decided
+/// match, `None` when the pattern shape is not yet interpreted (the caller then DECLINES the whole
+/// evaluation — never guesses an arm, since a wrong verdict would miscompile). Handles wildcard/binder, list
+/// nil / leading+rest, scalar literals, and VARIANT patterns (a constructor, nullary or applied — matched by
+/// discriminant, with payload sub-patterns matched recursively).
+fn const_pattern_matches(db: &mut Db, pat: StructId, v: &CVal) -> Option<bool> {
     if let Some(items) = db.ast.as_form(pat, "list").map(<[StructId]>::to_vec) {
         let CVal::List(xs) = v else {
-            return false;
+            return Some(false);
         };
         // A REST pattern `(list p0 … p_{k-1} .. rest)` matches a list with at least the leading count, each
         // leading element matching; a FIXED pattern `(list p0 … p_{n-1})` matches a list of exactly n, each
@@ -24329,37 +24399,76 @@ fn const_pattern_matches(db: &mut Db, pat: StructId, v: &CVal) -> bool {
         let rest_pos = items
             .iter()
             .position(|&it| db.ast.as_name(it) == Some(".."));
-        match rest_pos {
+        return match rest_pos {
             Some(rp) => {
                 if xs.len() < rp {
-                    return false;
+                    return Some(false);
                 }
-                items[..rp]
-                    .iter()
-                    .zip(xs.iter())
-                    .all(|(&p, x)| const_pattern_matches(db, p, x))
+                all_match(db, &items[..rp], xs)
             }
             None => {
-                xs.len() == items.len()
-                    && items
-                        .iter()
-                        .zip(xs.iter())
-                        .all(|(&p, x)| const_pattern_matches(db, p, x))
+                if xs.len() != items.len() {
+                    return Some(false);
+                }
+                all_match(db, &items, xs)
             }
+        };
+    }
+    // A VARIANT pattern — a constructor with a `(meta variant)` discriminant. An APPLIED pattern
+    // `(Ctor sp0 …)` is a list whose HEAD is the constructor (the discriminant is read off the HEAD, not the
+    // whole application) and whose tail are the sub-patterns; a bare/nullary constructor (a name atom, or a
+    // `(. Sum V)` member whose head is the `.` atom) is the constructor itself with no sub-patterns. Checked
+    // BEFORE the bare-name binder case so a nullary constructor is matched by discriminant, not mistaken for a
+    // catch-all binder.
+    let (ctor_head, subpats): (StructId, Vec<StructId>) = match db.ast.get(pat) {
+        crate::ast::Struct::List(xs2)
+            if xs2.first().is_some_and(|&h| db.ast.as_name(h) != Some(".")) =>
+        {
+            (xs2[0], xs2.iter().skip(1).copied().collect())
         }
-    } else if let Some(n) = db.ast.as_name(pat) {
-        // A binder or wildcard `_` matches any value. (A member-access constructor pattern like
-        // `Option.None` is a `(. …)` form, not a name, so it is NOT treated as a catch-all binder.)
-        let _ = n;
-        true
-    } else {
-        match (resolved_of(db, pat), v) {
-            (Resolved::Int(lit), CVal::Int(x)) => x.cmp(&lit) == std::cmp::Ordering::Equal,
-            (Resolved::Bool(lit), CVal::Bool(x)) => *x == lit,
-            (Resolved::Str(lit), CVal::Str(x)) => x.as_ref() == lit.as_str(),
-            _ => false,
+        _ => (pat, Vec::new()),
+    };
+    if let Some(pdisc) = crate::eval::variant_disc_of(db, ctor_head) {
+        let CVal::Sum { disc, payloads, .. } = v else {
+            return Some(false);
+        };
+        if *disc != pdisc {
+            return Some(false);
+        }
+        if subpats.is_empty() {
+            // A nullary-constructor pattern (no sub-patterns) matches a no-payload variant of this disc.
+            return Some(payloads.is_empty());
+        }
+        // A single-payload constructor binds one value; a multi-payload constructor's tuple destructure is a
+        // later stage (decline rather than mis-decide).
+        let payloads = payloads.clone();
+        if subpats.len() != payloads.len() {
+            return None;
+        }
+        return all_match(db, &subpats, &payloads);
+    }
+    if let Some(_n) = db.ast.as_name(pat) {
+        // A binder or wildcard `_` matches any value (its binding is read via the arm body's `SumPayload`
+        // projection, not bound here).
+        return Some(true);
+    }
+    match (resolved_of(db, pat), v) {
+        (Resolved::Int(lit), CVal::Int(x)) => Some(x.cmp(&lit) == std::cmp::Ordering::Equal),
+        (Resolved::Bool(lit), CVal::Bool(x)) => Some(*x == lit),
+        (Resolved::Str(lit), CVal::Str(x)) => Some(x.as_ref() == lit.as_str()),
+        _ => None,
+    }
+}
+
+/// All `pats[i]` match `vals[i]` — `Some(true)` only if every sub-pattern decides true, `Some(false)` if any
+/// decides false, `None` if any is undecidable (so the caller declines).
+fn all_match(db: &mut Db, pats: &[StructId], vals: &[CVal]) -> Option<bool> {
+    for (&p, x) in pats.iter().zip(vals.iter()) {
+        if !const_pattern_matches(db, p, x)? {
+            return Some(false);
         }
     }
+    Some(true)
 }
 
 /// Materialize a constant value to a `Core` constant — the bridge from the evaluator's value domain back to
@@ -24373,21 +24482,21 @@ fn cval_to_core(db: &mut Db, v: &CVal) -> Option<Core> {
         CVal::Str(s) => Core::ConstStr(s.clone()),
         CVal::Bytes(b) => Core::ConstBytes(b.clone()),
         CVal::Unit => Core::Unit,
-        CVal::List(xs) => {
-            let mut elems = Vec::with_capacity(xs.len());
-            for x in xs {
-                elems.push(cval_to_ast(db, x)?);
-            }
-            Core::ListNew {
-                elems: elems.into(),
-            }
+        // A compound (list / sum) materializes to a freshly-synthesized literal AST subtree that `core_of`
+        // folds back to a `Core::ListNew` / `Core::SumNew` — reusing the lowering's own construction (disc,
+        // element boxing) rather than re-deriving it. Resolve the fresh subtree first so its constructor
+        // references and element folds resolve in scope.
+        CVal::List(_) | CVal::Sum { .. } => {
+            let node = cval_to_ast(db, v)?;
+            crate::resolve::resolve_subtree(db, node);
+            core_of(db, node)
         }
     })
 }
 
-/// Synthesize a literal AST node for a constant value — used for the ELEMENTS of a materialized constant
-/// list (a `Core::ListNew` references its elements as AST occurrences). `None` for a value with no literal
-/// spelling this stage synthesizes.
+/// Synthesize a literal AST node for a constant value — the ELEMENTS of a materialized list / the payloads of
+/// a materialized sum reference their own AST occurrences. `None` for a value with no literal spelling this
+/// stage synthesizes.
 fn cval_to_ast(db: &mut Db, v: &CVal) -> Option<StructId> {
     Some(match v {
         CVal::Int(x) => db.push_atom(crate::ast::Leaf::Int {
@@ -24406,8 +24515,44 @@ fn cval_to_ast(db: &mut Db, v: &CVal) -> Option<StructId> {
             }
             db.push_list(items)
         }
+        // A sum re-materializes to its constructor applied to its payloads: `(Ctor p0 …)`, or the bare
+        // constructor for a nullary variant. The constructor head is DEEP-COPIED (fresh nodes) so the
+        // original program AST is never reparented; `core_of` on the fresh application yields the `SumNew`.
+        CVal::Sum { head, payloads, .. } => {
+            // Only a REAL constructor head re-materializes (a synthesized sum — e.g. a `List.at` Option whose
+            // head is the `List.at` node — has no `(meta variant)`, so it declines rather than emitting a
+            // bogus application; such a value is only ever matched/projected, never materialized).
+            crate::eval::variant_disc_of(db, *head)?;
+            let h = copy_ast_subtree(db, *head);
+            if payloads.is_empty() {
+                h
+            } else {
+                let mut items = Vec::with_capacity(payloads.len() + 1);
+                items.push(h);
+                for p in payloads {
+                    items.push(cval_to_ast(db, p)?);
+                }
+                db.push_list(items)
+            }
+        }
         CVal::Unit => return None,
     })
+}
+
+/// Deep-copy an AST subtree into FRESH nodes (a constructor head re-materialized for a folded sum value), so
+/// splicing it into a synthesized application never reparents a node the original program still holds.
+fn copy_ast_subtree(db: &mut Db, node: StructId) -> StructId {
+    match db.ast.get(node) {
+        crate::ast::Struct::Atom(lid) => {
+            let leaf = db.ast.leaf(*lid).clone();
+            db.push_atom(leaf)
+        }
+        crate::ast::Struct::List(children) => {
+            let children = children.clone();
+            let copies: Vec<StructId> = children.iter().map(|&c| copy_ast_subtree(db, c)).collect();
+            db.push_list(copies)
+        }
+    }
 }
 
 fn core_is_const_value(db: &mut Db, c: &Core) -> bool {
