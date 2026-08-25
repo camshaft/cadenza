@@ -33,6 +33,13 @@ debug-counters = []
 [dependencies]
 wit-bindgen-rt = { version = "0.44", features = ["bitflags"] }
 
+# BLAKE3 for the `hash-blake3` heap op (idx 91) — the runtime half of the compiler's `Blake3.of`
+# primitive (DESIGN-compiler-primitives.md P3a). `default-features = false` keeps it wasm-friendly
+# (no `rayon`/`mmap`/CLI features) and drops `std` so the pure portable digest builds cleanly for
+# wasm32-unknown-unknown; it still uses the crate's `alloc` API. The SAME crate computes the
+# compile-time fold in rcdzc, so both places produce byte-identical digests (the design's §9 invariant).
+blake3 = { version = "1.8", default-features = false }
+
 # The embedded wasm allocator (see src/allocator.rs) — the runtime ships its own allocator. Gated to
 # wasm only: native `cargo test` uses the system allocator, so the Handle-typed core stays testable
 # natively without pulling talc in. Swappable in one file — the heap core never references it.

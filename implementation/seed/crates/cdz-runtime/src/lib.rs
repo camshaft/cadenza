@@ -5639,6 +5639,25 @@ impl Handle {
     }
 }
 
+/// `hash-blake3(bytes)` (heap index 91) — the BLAKE3 digest of `input`'s Bytes-leaf contents, as a fresh
+/// 32-byte Bytes leaf. A GENERIC content hash (`bytes -> digest`): no tag, no prefix, no notion of a
+/// "contract" — userspace prepends any domain separation before calling (DESIGN-compiler-primitives.md D7).
+/// This is the RUNTIME half of the compiler's `Blake3.of`; the compile-time fold calls the SAME `blake3`
+/// crate over the same bytes, so both produce byte-identical digests (that design's §9 load-bearing
+/// invariant). BORROWS `input` (reads it, never drops it — an inspector, like `op_value_encode_form`) and
+/// returns a fresh owned leaf. Reads `input` LOGICALLY via the index accessors so a rope Bytes value
+/// flattens correctly, exactly as `op_value_decode` reads its document. TOTAL: an empty input hashes to
+/// blake3's defined empty-input digest; never traps.
+fn op_hash_blake3(input: Handle) -> Handle {
+    let n = op_bytes_len(input);
+    let mut buf = Vec::with_capacity(n as usize);
+    for i in 0..n {
+        buf.push(op_bytes_get(input, i) as u8);
+    }
+    let digest = blake3::hash(&buf);
+    alloc(Vec::new(), digest.as_bytes().to_vec())
+}
+
 #[cfg(target_arch = "wasm32")]
 struct Component;
 
@@ -5935,6 +5954,14 @@ impl Guest for Component {
             doc_bytes.push(op_bytes_get(doc_h, i) as u8);
         }
         op_value_decode(&doc_bytes, &desc_bytes).to_u32()
+    }
+    // BLAKE3 content hash (index 91) — the digest of `bytes`'s Bytes-leaf contents as a fresh 32-byte Bytes
+    // leaf. A generic `bytes -> digest` primitive (no tag/prefix — userspace owns domain separation, DESIGN-
+    // compiler-primitives.md D7); the runtime half of the compiler's `Blake3.of`, sharing the one `blake3`
+    // crate with the compile-time fold so both agree bit-for-bit. BORROWS `bytes` (an inspector); returns a
+    // fresh owned handle the caller drops. See `op_hash_blake3`.
+    fn hash_blake3(bytes: u32) -> u32 {
+        op_hash_blake3(Handle::from_u32(bytes)).to_u32()
     }
     // Value-form COMPARE (index 86) — the blessed three-way order over two runtime compound values of the
     // same type, guided by the compiler-baked shape `desc` (read exactly as `value-encode` reads it). BORROWS
@@ -19332,6 +19359,59 @@ mod tests {
         assert_eq!(op_bytes_len(c), 4);
         assert_eq!(bytes_to_vec(c), vec![1, 2, 3, 4]);
         op_drop(c);
+    }
+
+    /// `hash-blake3` (heap index 91) is BYTE-IDENTICAL to `blake3::hash` of the same input — for a flat
+    /// leaf, a ROPE (which must flatten first), and the empty input. This pins the RUNTIME half of the
+    /// design's §9 byte-identity invariant (DESIGN-compiler-primitives.md): the compile-time `Blake3.of`
+    /// fold calls the SAME `blake3::hash`, so op==crate here means both halves agree bit-for-bit. Also
+    /// verifies the op BORROWS its input (the caller can still drop the input afterwards, and every handle
+    /// returns to the live-node baseline — the op consumes nothing).
+    #[test]
+    fn hash_blake3_matches_the_blake3_crate() {
+        reset();
+        let before = live_nodes();
+
+        // (1) A flat leaf → the crate's digest, exactly 32 bytes.
+        let input: &[u8] = b"cadenza contract declaration";
+        let leaf = bytes_leaf(input);
+        let digest = op_hash_blake3(leaf);
+        assert_eq!(op_bytes_len(digest), 32, "a blake3 digest is 32 bytes");
+        assert_eq!(
+            bytes_to_vec(digest),
+            blake3::hash(input).as_bytes().to_vec(),
+            "hash-blake3 must equal blake3::hash of the same bytes"
+        );
+        op_drop(leaf); // safe BECAUSE the op only borrowed it (a consumed input would double-free here)
+        op_drop(digest);
+
+        // (2) A ROPE input hashes as its FLATTENED bytes (the op reads logically via the index accessors).
+        let rope = op_bytes_concat(bytes_leaf(&[1u8, 2, 3]), bytes_leaf(&[4u8, 5]));
+        let d_rope = op_hash_blake3(rope);
+        assert_eq!(
+            bytes_to_vec(d_rope),
+            blake3::hash(&[1u8, 2, 3, 4, 5]).as_bytes().to_vec(),
+            "a rope input hashes identically to its flattened byte sequence"
+        );
+        op_drop(rope);
+        op_drop(d_rope);
+
+        // (3) The empty input hashes to blake3's defined empty-input digest; never traps.
+        let empty = op_bytes_alloc(0);
+        let d_empty = op_hash_blake3(empty);
+        assert_eq!(
+            bytes_to_vec(d_empty),
+            blake3::hash(b"").as_bytes().to_vec(),
+            "empty input → blake3's empty-string digest"
+        );
+        op_drop(empty);
+        op_drop(d_empty);
+
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak — the op borrows its input and every handle is released"
+        );
     }
 
     #[test]

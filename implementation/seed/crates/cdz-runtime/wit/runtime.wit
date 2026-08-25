@@ -472,6 +472,17 @@ interface heap {
   //    runtime's own bytes↔handle bridge — a reducer's `apply` becomes `value-decode(event_bytes, event_desc)`
   //    → fold → `value-encode(result, result_desc)`. APPENDED last (frozen-contract rule). See `op_value_decode`.
   value-decode: func(bytes: u32, desc: u32) -> u32;    // 90 — canonical value-form Bytes + shape desc → fresh owned heap value (borrows both; NULL on mismatch)
+
+  //  hash-blake3(bytes) -> handle
+  //    The BLAKE3 digest of a Bytes leaf's contents — a fresh 32-byte Bytes leaf. A GENERIC content-hash
+  //    primitive (`bytes -> digest`): no tag, no prefix, no notion of "contract" — any domain-separation a
+  //    scheme wants is prepended to `bytes` in USERSPACE before this op (DESIGN-compiler-primitives.md D7).
+  //    The runtime half of the compiler's `Blake3.of` (the compile-time half const-folds via the same
+  //    `blake3` crate — byte-identical both places, the load-bearing invariant of that design's §9). BORROWS
+  //    `bytes` (an inspector — the caller owns its release, like `value-encode`); returns a fresh owned
+  //    32-byte Bytes handle the caller drops. TOTAL: never traps (empty input hashes the empty string, blake3's
+  //    defined digest of no bytes). APPENDED last (frozen-contract rule). See `op_hash_blake3`.
+  hash-blake3: func(bytes: u32) -> u32;                // 91 — BLAKE3 of a Bytes leaf's contents → a fresh 32-byte Bytes leaf (borrows input)
 }
 
 world runtime {

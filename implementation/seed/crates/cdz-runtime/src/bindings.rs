@@ -910,6 +910,13 @@ pub mod exports {
                     let result0 = T::value_decode(arg0 as u32, arg1 as u32);
                     _rt::as_i32(result0)
                 }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_hash_blake3_cabi<T: Guest>(arg0: i32) -> i32 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::hash_blake3(arg0 as u32);
+                    _rt::as_i32(result0)
+                }
                 pub trait Guest {
                     /// ── Scalar leaves (indices 0–5). Box a primitive, read it back. No type tag: `get-*` is only
                     ///    ever called where the compiler's static type already says which primitive this handle
@@ -1409,6 +1416,17 @@ pub mod exports {
                     ///    runtime's own bytes↔handle bridge — a reducer's `apply` becomes `value-decode(event_bytes, event_desc)`
                     ///    → fold → `value-encode(result, result_desc)`. APPENDED last (frozen-contract rule). See `op_value_decode`.
                     fn value_decode(bytes: u32, desc: u32) -> u32;
+                    /// 90 — canonical value-form Bytes + shape desc → fresh owned heap value (borrows both; NULL on mismatch)
+                    ///  hash-blake3(bytes) -> handle
+                    ///    The BLAKE3 digest of a Bytes leaf's contents — a fresh 32-byte Bytes leaf. A GENERIC content-hash
+                    ///    primitive (`bytes -> digest`): no tag, no prefix, no notion of "contract" — any domain-separation a
+                    ///    scheme wants is prepended to `bytes` in USERSPACE before this op (DESIGN-compiler-primitives.md D7).
+                    ///    The runtime half of the compiler's `Blake3.of` (the compile-time half const-folds via the same
+                    ///    `blake3` crate — byte-identical both places, the load-bearing invariant of that design's §9). BORROWS
+                    ///    `bytes` (an inspector — the caller owns its release, like `value-encode`); returns a fresh owned
+                    ///    32-byte Bytes handle the caller drops. TOTAL: never traps (empty input hashes the empty string, blake3's
+                    ///    defined digest of no bytes). APPENDED last (frozen-contract rule). See `op_hash_blake3`.
+                    fn hash_blake3(bytes: u32) -> u32;
                 }
                 #[doc(hidden)]
                 macro_rules! __export_cadenza_runtime_heap_cabi {
@@ -1740,7 +1758,11 @@ pub mod exports {
                         "cadenza:runtime/heap#value-decode")] unsafe extern "C" fn
                         export_value_decode(arg0 : i32, arg1 : i32,) -> i32 { unsafe {
                         $($path_to_types)*:: _export_value_decode_cabi::<$ty > (arg0,
-                        arg1) } } };
+                        arg1) } } #[unsafe (export_name =
+                        "cadenza:runtime/heap#hash-blake3")] unsafe extern "C" fn
+                        export_hash_blake3(arg0 : i32,) -> i32 { unsafe {
+                        $($path_to_types)*:: _export_hash_blake3_cabi::<$ty > (arg0) } }
+                        };
                     };
                 }
                 #[doc(hidden)]
@@ -1949,10 +1971,10 @@ pub(crate) use __export_runtime_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 2334] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xa0\x11\x01A\x02\x01\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 2362] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xbc\x11\x01A\x02\x01\
 A\x04\x01B\x03\x01p}\x01@\x01\x04utf8\0\0\0\x04\0\x03nfc\x01\x01\x03\0\x15cadenz\
-a:nfc/normalize\x05\0\x01B\x8f\x01\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\
+a:nfc/normalize\x05\0\x01B\x91\x01\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\
 \x01\x06handley\0x\x04\0\x07get-int\x01\x01\x01@\x01\x01v\x7f\0y\x04\0\x08box-bo\
 ol\x01\x02\x01@\x01\x06handley\0\x7f\x04\0\x08get-bool\x01\x03\x01@\x01\x01vu\0y\
 \x04\0\x09box-float\x01\x04\x01@\x01\x06handley\0u\x04\0\x09get-float\x01\x05\x01\
@@ -2000,9 +2022,10 @@ map-to-list\x01/\x04\0\x0estr-from-bytes\x01\x0e\x01@\x03\x01ay\x01by\x04descy\0
 z\x04\0\x09value-cmp\x010\x01@\x02\x01ay\x04descy\0y\x04\0\x12value-canonicalize\
 \x011\x01@\x03\x01ay\x01by\x04descy\0\x7f\x04\0\x0fvalue-eq-shaped\x012\x04\0\x11\
 str-nfc-normalize\x01$\x01@\x02\x05bytesy\x04descy\0y\x04\0\x0cvalue-decode\x013\
-\x04\0\x14cadenza:runtime/heap\x05\x01\x04\0\x17cadenza:runtime/runtime\x04\0\x0b\
-\x0d\x01\0\x07runtime\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-com\
-ponent\x070.227.1\x10wit-bindgen-rust\x060.41.0";
+\x01@\x01\x05bytesy\0y\x04\0\x0bhash-blake3\x014\x04\0\x14cadenza:runtime/heap\x05\
+\x01\x04\0\x17cadenza:runtime/runtime\x04\0\x0b\x0d\x01\0\x07runtime\x03\0\0\0G\x09\
+producers\x01\x0cprocessed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rus\
+t\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {
