@@ -1,0 +1,53 @@
+// The state+identity checker (design/cadenza-platform.md §3/§7/§9) — the assertion half of the migrated
+// two-host-interfaces test. The paired guest (reducer-stateid-cdz) stores its OWN reducer id
+// (identity.id()) into its state store: state.put(token, identity.id()). This checker asserts that
+// happened, LOG-ONLY and guest-agnostic.
+//
+// JUDGEMENT: pass iff some KvPut whose stored VALUE equals the storing reducer's own id — the record's
+// source.reducer. Since the guest put identity.id() as the value, a match proves BOTH host interfaces worked
+// in one fold: state.put recorded the write, and identity.id() returned the reducer's own id (the value ==
+// the source reducer). RELATIONAL on the run-derived id (no hardcoded bytes). NON-VACUOUS: a broken identity
+// (wrong id) or a guest that never put yields no such KvPut. Imports the three standard schemas; settled
+// idioms (List.at-None ends the walk; LogRecord destructured in the Some arm; condition in a match guard).
+import { Envelope } from "check"
+import { Verdict } from "verdict"
+import { LogRecord, Entry } from "log-schema"
+
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+// Does some KvPut store a value equal to the storing reducer's own id (the record's source.reducer)?
+def stored-own-id(records: List(LogRecord), i: Int64) =
+  match List.at(records, i) with
+  | Option.None(_) => false
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      (match rec.entry with
+        | Entry.KvPut(p) if (p.value == rec.source.reducer) => true
+        | _ => stored-own-id(records, i + 1))
+
+def verdict-payload(records: List(LogRecord)) =
+  if stored-own-id(records, 0)
+  then Value.encode(Verdict.Verdict({ pass = true, messages = [] }))
+  else Value.encode(Verdict.Verdict({ pass = false,
+                                      messages = ["no KvPut stored the reducer's own id: identity.id() + state.put across two host interfaces was not observed"] }))
+
+def verdict-req(verdict-contract: Bytes, payload: Bytes) =
+  { contract = verdict-contract, payload = payload, token = b"", deadlineNanos = None }
+
+def on-message(msg) =
+  match (Value.decode(msg.payload) : Option(Envelope)) with
+  | Some(Envelope.Check(c)) =>
+      (match (Value.decode(c.log) : Option(List(LogRecord))) with
+       | Some(records) =>
+           { requests = [verdict-req(c.verdict, verdict-payload(records))], outcome = Outcome.Continue }
+       | None =>
+           { requests = [verdict-req(c.verdict,
+                                     Value.encode(Verdict.Verdict({ pass = false,
+                                                                    messages = ["observation log did not decode"] })))],
+             outcome = Outcome.Continue })
+  | None =>
+      { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = msg.payload }) }
+
+def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
+def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
+export { on-message, on-response, on-notification }
