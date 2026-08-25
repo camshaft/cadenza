@@ -567,10 +567,24 @@ impl HarnessSpec {
                 });
             }
         }
-        for (target, _event) in &self.deliveries {
+        for (target, event) in &self.deliveries {
             if !spawned.contains(target.as_str()) {
                 return Err(SpecError::UnknownTarget {
                     target: target.clone(),
+                });
+            }
+            // A message payload that is a `BlobBytes`/`BlobHash` resolve reference names a blob that must be
+            // declared (like a spawn) — reject an undeclared name here rather than letting `build` resolve it
+            // to empty bytes (a silent miscompile that masks an author's typo).
+            if let DeliveryEvent::Message {
+                payload: PayloadSource::BlobBytes(name) | PayloadSource::BlobHash(name),
+                ..
+            } = event
+                && !blobs.contains(name.as_str())
+            {
+                return Err(SpecError::UnknownBlob {
+                    referrer: format!("delivery to `{target}`"),
+                    blob: name.clone(),
                 });
             }
         }
@@ -2489,5 +2503,44 @@ mod tests {
             Delivered::Message(m) => assert_eq!(m.payload, Bytes::from_static(b"SUBHASH")),
             other => panic!("expected a message, got {other:?}"),
         }
+    }
+
+    /// `validate` rejects a message payload whose `BlobHash`/`BlobBytes` reference names an undeclared blob —
+    /// the same cross-reference check as a spawn, so a typo'd resolve reference is a clean [`SpecError`]
+    /// rather than a build-time resolution to empty bytes (a silent miscompile).
+    #[test]
+    fn validate_rejects_a_payload_reference_to_an_unknown_blob() {
+        let spec = HarnessSpec {
+            run_for: None,
+            blobs: vec![BlobSpec {
+                name: "main".to_string(),
+                source: BlobSource::Inline(Bytes::from_static(b"m")),
+            }],
+            spawns: vec![SpawnSpec::new("main", "main")],
+            deliveries: vec![(
+                "main".to_string(),
+                DeliveryEvent::Message {
+                    contract: ContractId::of(b"c"),
+                    payload: PayloadSource::BlobHash("missing".to_string()),
+                    token: Bytes::new(),
+                    from: None,
+                },
+            )],
+            checker: None,
+            pure_run: None,
+            deps: Vec::new(),
+            registry: RegistrySpec {
+                default: "main".to_string(),
+                handlers: vec![],
+            },
+            edges: vec![],
+        };
+        assert_eq!(
+            spec.validate(),
+            Err(SpecError::UnknownBlob {
+                referrer: "delivery to `main`".to_string(),
+                blob: "missing".to_string(),
+            })
+        );
     }
 }
