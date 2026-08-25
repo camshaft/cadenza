@@ -127,6 +127,11 @@ pub struct Spawn {
     /// The supervision links between it and its parent, one per direction (ignored for a root, which has no
     /// parent to link with).
     pub links: Links,
+    /// The per-spawn resource budget it requests (`DESIGN-per-spawn-limits-and-spawn-capability`): a memory
+    /// ceiling + a max-yields compute budget, clamped to the node ceiling when the store is armed (a spawn can
+    /// lower its own budget, never raise it above the node's). `None` inherits the node's [`ResourceLimits`]
+    /// unchanged — the case for every spawn until the privileged `spawn` capability (which sets it) lands.
+    pub limits: Option<crate::SpawnLimits>,
 }
 
 /// How reducers are run, delivered to, and reclaimed — the whole lifecycle in one interface. Spawning a
@@ -382,6 +387,7 @@ impl<R: Runtime> Shared<R> {
                 parent,
                 kind,
                 links,
+                limits,
             } = spawn;
             // Record the spawn tree and supervision edges before the task starts (§7). A root has no parent edge;
             // a child links to its parent, plus a watch_exit edge per requested supervision direction.
@@ -425,7 +431,7 @@ impl<R: Runtime> Shared<R> {
                 // Load the program inside the reducer's own task, so a slow load blocks no one.
                 if let Some(mut reducer) = shared
                     .programs
-                    .spawn(program, SpawnContext { id, kind })
+                    .spawn(program, SpawnContext { id, kind, limits })
                     .await
                 {
                     while let Some(event) = R::recv(&mut inbox).await {
@@ -540,6 +546,7 @@ impl<R: Runtime> Shared<R> {
                                             parent: id,
                                             kind: ReducerKind::Event,
                                             links: Links::NONE,
+                                            limits: None,
                                         })
                                         .await;
                                 }
@@ -639,6 +646,7 @@ mod tests {
             parent: id,
             kind,
             links: Links::NONE,
+            limits: None,
         }
     }
     fn origin() -> Origin {
@@ -735,6 +743,7 @@ mod tests {
                         parent: router,
                         kind: ReducerKind::Ordinary,
                         links: Links::NONE,
+                        limits: None,
                     })
                     .await
                     .unwrap();
@@ -804,6 +813,7 @@ mod tests {
                         parent: router,
                         kind: ReducerKind::Ordinary,
                         links: Links::NONE,
+                        limits: None,
                     })
                     .await
                     .unwrap();
@@ -1020,6 +1030,7 @@ mod tests {
                 parent,
                 kind: ReducerKind::Ordinary,
                 links,
+                limits: None,
             })
             .await
             .unwrap();
@@ -1092,6 +1103,7 @@ mod tests {
                             parent_watches_child: true,
                             child_watches_parent: false,
                         },
+                        limits: None,
                     })
                     .await
                     .unwrap();
@@ -1171,6 +1183,7 @@ mod tests {
                             parent_watches_child: false,
                             child_watches_parent: true,
                         },
+                        limits: None,
                     })
                     .await
                     .unwrap();
@@ -1244,6 +1257,7 @@ mod tests {
                         parent,
                         kind: ReducerKind::Ordinary,
                         links: Links::NONE,
+                        limits: None,
                     })
                     .await
                     .unwrap();

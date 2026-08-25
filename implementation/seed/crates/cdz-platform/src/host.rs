@@ -104,10 +104,16 @@ struct HostState {
     /// and a pure program may call `run` to compose other pure programs. `None` only where no run capability is
     /// wired at all (a bare [`HostState`] built for a non-run test).
     run: Option<Arc<Instantiator>>,
-    /// The per-reducer resource limits the wasm store enforces (see `arm_store_safety`): a ceiling on linear
-    /// memory so one guest cannot exhaust host RAM and take down the process. Lives here because a wasm
+    /// The per-reducer linear-memory limiter the wasm store enforces (see `arm_store_safety`): a ceiling on
+    /// linear memory so one guest cannot exhaust host RAM and take down the process. Lives here because a wasm
     /// [`Store`]'s limiter projects from its data (`Store::limiter`); the store enforces the limits it holds.
+    /// Built from [`resource_limits`](Self::resource_limits) at assembly.
     limits: wasmtime::StoreLimits,
+    /// This reducer's **effective** resource limits — the node's [`ResourceLimits`] with any per-spawn budget
+    /// already resolved (`ResourceLimits::resolve_for_spawn`, clamped to the node ceiling). `arm_store_safety`
+    /// reads the compute bounds (`yield_every`/`max_yields`) from here, so the store is armed with *this*
+    /// reducer's budget, not a node-uniform one; [`limits`](Self::limits) is the memory half of the same.
+    resource_limits: ResourceLimits,
 }
 
 impl cadenza::platform::identity::Host for HostState {
@@ -535,7 +541,13 @@ fn reducer_store_limits(limits: &ResourceLimits) -> wasmtime::StoreLimits {
 ///
 /// A breach of either bound traps, which the fold path turns into a per-reducer `Crashed` (§7), never a
 /// process-wide failure.
-fn arm_store_safety(store: &mut Store<HostState>, limits: &ResourceLimits) {
+///
+/// The bounds come from the store's own [`HostState::resource_limits`] — this reducer's *effective* limits,
+/// already resolved from any per-spawn request clamped to the node ceiling (`resolve_for_spawn`). So each
+/// store is armed with its own budget, not a node-uniform value; the memory half is the `HostState::limits`
+/// limiter, built from the same effective limits.
+fn arm_store_safety(store: &mut Store<HostState>) {
+    let limits = store.data().resource_limits;
     store.set_epoch_deadline(limits.yield_every);
     let yield_every = limits.yield_every;
     let mut yields_left = limits.max_yields;
@@ -676,7 +688,7 @@ impl ReducerHost {
         host: HostState,
     ) -> Result<WasmReducer, wasmtime::Error> {
         let mut store = Store::new(&self.engine, host);
-        arm_store_safety(&mut store, &self.limits);
+        arm_store_safety(&mut store);
         let world = pre.instantiate_async(&mut store).await?;
         Ok(WasmReducer { store, world })
     }
@@ -915,7 +927,7 @@ impl Instantiator {
             // (a store-bound dependency instance cannot be pre-instantiated). Host imports for the kind are
             // wired first (the capability split), then the dependencies composed in.
             let mut store = Store::new(&self.host.engine, host_state);
-            arm_store_safety(&mut store, &self.host.limits);
+            arm_store_safety(&mut store);
             let mut linker = Linker::new(&self.host.engine);
             add_host_imports(&mut linker, kind).ok()?;
             self.bind_dependencies(&mut store, &mut linker, &component)
@@ -988,6 +1000,7 @@ fn null_host_state(
         delivery: Arc::new(crate::NoDelivery),
         run,
         limits: reducer_store_limits(limits),
+        resource_limits: *limits,
     }
 }
 
@@ -1173,6 +1186,11 @@ impl ProgramStore for WasmProgramStore {
         // also reach, without a cycle back here). Each factory builds this reducer's view of its capability
         // (default: the shared one; an injected factory: a per-reducer variant, e.g. a decorator that logs the
         // call attributed to its id, §9).
+        // Resolve this reducer's effective limits: the node's, with any per-spawn budget clamped to the node
+        // ceiling (a spawn can lower its own budget, never raise it above the node's). `None` inherits the
+        // node's. The store is armed (compute + memory) from these, so the per-spawn budget actually reaches
+        // the store rather than the node-uniform value.
+        let effective = self.inst.host.limits.resolve_for_spawn(ctx.limits);
         let host_state = HostState {
             id: ctx.id,
             blobs: (self.make_blobs)(ctx.id),
@@ -1181,7 +1199,8 @@ impl ProgramStore for WasmProgramStore {
             provenance: (self.make_provenance)(ctx.id),
             delivery: (self.make_delivery)(ctx.id),
             run: Some(Arc::clone(&self.inst)),
-            limits: reducer_store_limits(&self.inst.host.limits),
+            limits: reducer_store_limits(&effective),
+            resource_limits: effective,
         };
         self.inst
             .instantiate_program(program, ctx.kind, host_state)
@@ -1227,6 +1246,7 @@ mod tests {
             delivery: Arc::new(crate::NoDelivery),
             run: None,
             limits: super::reducer_store_limits(&super::ResourceLimits::default()),
+            resource_limits: super::ResourceLimits::default(),
         }
     }
 
@@ -1776,6 +1796,7 @@ mod tests {
         SpawnContext {
             id: ReducerId::of(id),
             kind: ReducerKind::Ordinary,
+            limits: None,
         }
     }
 

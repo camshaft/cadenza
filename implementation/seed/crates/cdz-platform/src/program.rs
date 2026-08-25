@@ -30,6 +30,12 @@ pub struct SpawnContext {
     pub id: ReducerId,
     /// What the reducer was spawned as — fixes its capability set (§3).
     pub kind: ReducerKind,
+    /// The per-spawn resource budget requested for this reducer (`DESIGN-per-spawn-limits-and-spawn-capability`),
+    /// carried from its [`Spawn`](crate::Spawn). A wasm backend arms the store with these limits clamped to the
+    /// node ceiling (`ResourceLimits::resolve_for_spawn`); a backend that holds its own state ignores it.
+    /// `None` inherits the node's limits — the case for every spawn until the privileged `spawn` capability
+    /// sets a per-spawn budget.
+    pub limits: Option<crate::SpawnLimits>,
 }
 
 /// A store that instantiates a reducer from its [`ProgramHash`] — the program that drives it. The production
@@ -147,6 +153,7 @@ mod tests {
         SpawnContext {
             id: ReducerId::of(b"test-reducer"),
             kind: ReducerKind::Ordinary,
+            limits: None,
         }
     }
 
