@@ -308,14 +308,23 @@ mod tests {
         .unwrap();
         assert_eq!(recs.len(), 3);
         for rec in &recs {
-            // program.ast decodes AND is the binary of the SAME normalized program as the `program` text
-            // (one arena, two serializations — no round-trip through the other).
+            // program.ast decodes AND is the binary of the SAME normalized program as the `program` text.
+            // Compare against SINGLE-FORM `sexpr::read` (root = the `(do … (export …))` form itself) — the
+            // shape `cdz convert --to binary` and the compiler consume; NOT `read_all`, which wraps a whole
+            // corpus FILE's forms in an extra synthetic `(do …)` and would double-wrap this lone program.
             let prog = codec::decode(&rec.program_ast).expect("program.ast must decode");
-            let prog_text = sexpr::read_all(&rec.program).expect("program text reparses");
+            let prog_text = sexpr::read(&rec.program).expect("program text reparses");
             assert_eq!(
                 sexpr::print(&prog),
                 sexpr::print(&prog_text),
-                "program.ast == program text AST"
+                "program.ast == program text AST (single-form root, compiler convention)"
+            );
+            // The root is the program form, NOT a synthetic document wrapper: its head is `do` and it
+            // carries an `(export …)` directly among its children (not buried under a second `(do …)`).
+            assert!(
+                sexpr::print(&prog).starts_with("(do ") && sexpr::print(&prog).contains("(export "),
+                "program.ast root is the runnable (do … (export …)) form: {}",
+                sexpr::print(&prog)
             );
             // test-run.ast decodes (built arena-direct via Builder).
             let tr = test_run_ast(rec);
