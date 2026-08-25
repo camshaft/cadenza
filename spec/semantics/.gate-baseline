@@ -3963,6 +3963,7 @@ pass	a type-value in integer-width position is rejected
 pass	a type-valued parameter threaded through a second call reaches Type.eq with its type intact
 pass	a type-valued parameter threads through TWO relay layers beside a runtime operand
 pass	a type-valued parameter under a function-arrow annotation dispatches an ad-hoc-polymorphic dict
+pass	a typed reducer branching on a bool host-op result emits a request when true (via an imposed WIT world)
 pass	a typed reducer performing a bytes host arg with a scalar result threads the u64 into the step (via an imposed WIT world)
 pass	a typed reducer performing a list-of-scalars host arg emits, loads, and runs (via an imposed WIT world)
 pass	a typed reducer performing a list<record> host arg emits, loads, and runs (via an imposed WIT world)
