@@ -48,6 +48,7 @@ pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
 pass	Ast.encode and Ast.decode round-trip
 pass	Ast.encode emits the canonical cdzast container header (byte 0 is 'c')
+pass	Ast.self reflects the enclosing module as an Ast.List value
 pass	BETA over the capture-avoiding substitution still proves the identity theorem (no regression)
 pass	BIJECTIVE base-26 column codec biases each step by one and round-trips at the boundaries
 pass	BINARY SEARCH against a hidden state target — the body bisects on the arm's ordering verdicts, eight probes find any target in 0..100
@@ -2430,6 +2431,7 @@ pass	a module may nest three deep
 pass	a module member named by the export clause is reachable
 pass	a module member not named by the export clause is private
 pass	a module nested in a module projects as a nested record field
+pass	a module reflects itself via Ast.self and exports a compile-time content-address a caller imports
 pass	a module value definition registers a reachable export field
 pass	a module with two definitions of the same name is rejected
 pass	a module's delegated capability is reachable as metadata, not as an export

@@ -6212,8 +6212,14 @@ fn link_inputs(
         // kernel — and so the kernel's `Thm` keeps its unforgeable opacity (`is_linked_package` true only
         // for a verification-using program; a non-verification program stays on the fast path unchanged).
         [only] if entry_name.is_none() => {
-            let user = crate::codec::decode(&only.bytes)
+            let mut user = crate::codec::decode(&only.bytes)
                 .ok_or_else(|| Reject::decline("binary AST failed to decode"))?;
+            // Desugar `Ast.self` (`(. Ast self)`) into this module's reflected AST BEFORE anything else,
+            // over the comment-STRIPPED arena (so a comment change never alters the reflected value — and
+            // it reflects the same canonical form `__ast__` does). A no-op for a program without `Ast.self`
+            // (fast-bailed on the `self` leaf scan); `strip_comments` is idempotent with `Db::load`'s.
+            crate::db::strip_comments(&mut user);
+            crate::quote::desugar_ast_self(&mut user);
             if VERIFY_KERNEL_LINKING_ENABLED
                 && uses_verification_annotation(&user)
                 && let Some(kernel) = bundled_verify_kernel_arena()
@@ -6251,6 +6257,10 @@ fn link_inputs(
                 // The db-level strip already fixes the single-file/def/type/export cases; this extends the
                 // same peel to the LINK scan so a commented import in a package resolves identically.
                 crate::db::strip_comments(&mut arena);
+                // Desugar `Ast.self` per-file on the raw (stripped) arena, where this file's own root is
+                // intact — each file's `Ast.self` reflects THAT file's module AST (the merge would flatten
+                // the roots). A no-op without `Ast.self`.
+                crate::quote::desugar_ast_self(&mut arena);
                 files.push((art.name.clone(), arena));
             }
             let entry = match entry_name {
