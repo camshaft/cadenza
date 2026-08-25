@@ -1863,62 +1863,72 @@ fn build_host_group(
         .iter()
         .flat_map(|h| &h.params)
         .any(|p| matches!(p, host::HostParam::Bytes));
-    // NOMINAL param types laid AFTER `(list u8)` (index 0 if present) and the spilled-result defs.
+    // NOMINAL param types laid AFTER `(list u8)` (index 0 if present) and the spilled-result defs. `base` is
+    // the first nominal type's instance-type index. `record_defs` accumulates EVERY record's defined types
+    // (children-first, laid as define+export by `host_effect_instance_type`); `op_nominal[i]` is op `i`'s
+    // nominal EXPORTED type index (`0` = no nominal param — unused by `host_op_comp_functype` for that op).
     let base = needs_list as u32 + result_defs.len() as u32;
-    let (record_defs, nominal_export_idx): (Vec<Vec<u8>>, u32) = {
-        if !record_params.is_empty() && !enum_params.is_empty() {
+    let mut record_defs: Vec<Vec<u8>> = Vec::new();
+    let mut op_nominal: Vec<u32> = vec![0; group.len()];
+    if !record_params.is_empty() && !enum_params.is_empty() {
+        return Err(Reject::decline(
+            "a host interface mixing a record parameter and an enum parameter is not yet emitted (record OR \
+             enum per interface — this slice)",
+        ));
+    } else if !record_params.is_empty() {
+        let has_str_param = group
+            .iter()
+            .flat_map(|h| &h.params)
+            .any(|p| matches!(p, host::HostParam::Str));
+        let any_record_has_bytes = record_params.iter().any(|f| record_abi_has_bytes(f));
+        if has_str_param || has_spilled_result || (any_record_has_bytes && !has_bytes_param) {
             return Err(Reject::decline(
-                "a host interface mixing a record parameter and an enum parameter is not yet emitted (a \
-                 single nominal param type per interface — record OR enum — this slice)",
+                "a record host-argument composes only in a host interface with no string parameter and no \
+                 option/list/bytes compound result; a record with `list<u8>` fields additionally requires a \
+                 sibling `list<u8>` parameter (a later increment)",
             ));
-        } else if !record_params.is_empty() {
-            let has_str_param = group
-                .iter()
-                .flat_map(|h| &h.params)
-                .any(|p| matches!(p, host::HostParam::Str));
-            let any_record_has_bytes = record_params.iter().any(|f| record_abi_has_bytes(f));
-            if record_params.len() > 1
-                || has_str_param
-                || has_spilled_result
-                || (any_record_has_bytes && !has_bytes_param)
-            {
-                return Err(Reject::decline(
-                    "a record host-argument composes only in a host interface with a single record \
-                     parameter, no string parameter, and no option/list/bytes compound result; a record with \
-                     `list<u8>` fields additionally requires a sibling `list<u8>` parameter (the general \
-                     record-type-indexed host shape is a later increment)",
-                ));
-            }
-            let mut table = Vec::new();
-            let export_idx = build_record_import_types(record_params[0], 0, base, &mut table);
-            (table, export_idx)
-        } else if !enum_params.is_empty() {
-            let distinct = enum_params.iter().all(|c| *c == enum_params[0]);
-            if !distinct {
-                return Err(Reject::decline(
-                    "a host interface with more than one DISTINCT enum parameter type is not yet emitted (a \
-                     single enum type per interface this slice)",
-                ));
-            }
-            let bytes = crate::backend::wasm::wit_ctype::emit_cdef(
-                &crate::backend::wasm::wit_ctype::CDef::Enum(enum_params[0].clone()),
-            );
-            (vec![bytes], base + 1)
-        } else {
-            (Vec::new(), 0)
         }
-    };
+        // MULTIPLE record params per interface (deliver's message + response): lay EACH op's record type into
+        // the SHARED table (its indices continue past the prior records', children-first), and thread THAT
+        // op's own top-record EXPORT index into its functype. `build_record_import_types` computes indices
+        // from `base + 2*record_defs.len()`, so accumulating across ops keeps every reference absolute.
+        for (i, hi) in group.iter().enumerate() {
+            if let Some(fields) = hi.params.iter().find_map(|p| match p {
+                host::HostParam::Record(f) => Some(f),
+                _ => None,
+            }) {
+                op_nominal[i] = build_record_import_types(fields, 0, base, &mut record_defs);
+            }
+        }
+    } else if !enum_params.is_empty() {
+        let distinct = enum_params.iter().all(|c| *c == enum_params[0]);
+        if !distinct {
+            return Err(Reject::decline(
+                "a host interface with more than one DISTINCT enum parameter type is not yet emitted (a \
+                 single enum type per interface this slice)",
+            ));
+        }
+        // A SINGLE shared `enum` DEFINE (at `base`) + EXPORT (at `base+1`); every enum op references it.
+        record_defs.push(crate::backend::wasm::wit_ctype::emit_cdef(
+            &crate::backend::wasm::wit_ctype::CDef::Enum(enum_params[0].clone()),
+        ));
+        let enum_export = base + 1;
+        for (i, hi) in group.iter().enumerate() {
+            if hi
+                .params
+                .iter()
+                .any(|p| matches!(p, host::HostParam::Enum(_)))
+            {
+                op_nominal[i] = enum_export;
+            }
+        }
+    }
     let host_fns: Vec<envelope::HostFn> = group
         .iter()
         .enumerate()
         .map(|(i, hi)| envelope::HostFn {
             op: hi.op.clone(),
-            comp_functype: host_op_comp_functype(
-                hi,
-                0,
-                nominal_export_idx,
-                result_crefs[i].clone(),
-            ),
+            comp_functype: host_op_comp_functype(hi, 0, op_nominal[i], result_crefs[i].clone()),
             has_list_param: hi
                 .params
                 .iter()
