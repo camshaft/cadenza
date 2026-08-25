@@ -35,6 +35,8 @@
 ; SHAPE 18 — a named-VARIANT RESULT writer NAME-matches (not positionally): a reversed guest decl still maps
 ; each case to the WIT case by name (Continue->continue disc 0, Close->close disc 1). SHAPE 19 — a record PARAM
 ; whose WIT field order is NOT name-lex is read by NAME (guest reads .contract across a payload,contract WIT order).
+; SHAPE 20 — a record RESULT whose WIT field order is NOT name-lex is written by NAME (guest builds {first,second}
+; against a second,first WIT result order).
 
 (case "an option<s64> field in a record result crosses the export boundary on both arms"
   (doc    "The general option<T> RESULT lift across the WIT export boundary. The guest takes a record
@@ -292,3 +294,16 @@
   (input (do (def (f (: m (Record (: contract Bytes) (: payload Bytes)))) (Bytes.len (. m contract))) (export f)))
   (call f (: (record (= payload (list 9 9)) (= contract (list 1 2 3))) (Record (: contract Bytes) (: payload Bytes))))
   (output (: 3 Int64)))
+(case "a record result field is written by NAME when the WIT field order is not name-lexicographic (via an imposed WIT world)"
+  (doc    "SHAPE 20 — the record RESULT writer places fields by NAME, not by the guest name-lex slot order. The
+           world declares f's result as record { second: s64, first: s64 } (WIT order second,first; name-lex is
+           first < second), the shape of a real step/request (declaration-ordered, not alphabetical). The guest
+           builds { first: m.x, second: 2*m.x }; the writer must place first at WIT-position 1 and second at
+           WIT-position 0, reading each from its guest name-lex slot. f({x:10}) renders (in WIT order) as
+           { second: 20, first: 10 } - a positional write would swap them. Migrated from the in-crate wasmtime
+           test `a_non_name_lex_record_result_permutes_by_name`.")
+  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result ("record" (second (s64)) (first (s64)))))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (def (f (: m (Record (: x Int64)))) (record (= first (. m x)) (= second (+ (. m x) (. m x))))) (export f)))
+  (call f (: (record (= x 10)) (Record (: x Int64))))
+  (output (: (record (= second 20) (= first 10)) (record (second Int64) (first Int64)))))

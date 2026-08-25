@@ -2961,6 +2961,7 @@ pass	a record pattern destructures a ROW-OP derived record (with-chain result)
 pass	a record pattern over a Map-STORED record reads live heap fields after retrieval
 pass	a record reached VIA Record.with keys a Map like the directly-built record
 pass	a record reached via a with-CHAIN keys like the final direct build, generations intact
+pass	a record result field is written by NAME when the WIT field order is not name-lexicographic (via an imposed WIT world)
 pass	a record scrutinee is bound whole by a match binder
 pass	a record sub-pattern nested inside a tuple match binds its field (nested-record match binder)
 pass	a record threaded through self-recursion with per-step Record.with leaves the SEED intact
