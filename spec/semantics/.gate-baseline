@@ -4516,6 +4516,7 @@ pass	an ill-formed integer width NESTED in a compound annotation is rejected
 pass	an ill-formed integer width in a type-declaration payload is rejected
 pass	an ill-typed ctor-match scrutinee taints the whole match, not masked by well-typed arms
 pass	an ill-typed inner-match scrutinee taints the outer match
+pass	an imported def whose body is Ast.module reflects its DEFINING module, not the importer
 pass	an imported helper reaches its own file's private definition when inlined
 pass	an imported helper's performs discharge at a handler whose STATE is the importer's heap Map
 pass	an imported name resolves to a sibling file's exported definition

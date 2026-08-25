@@ -491,28 +491,12 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         Resolved::Record { .. }
             if crate::eval::meta_apply_of(db, id) == Some(crate::resolved::Prim::ReflectModule) =>
         {
-            let Some(disc) = ast_variant_discs(db) else {
-                return Core::Poison(Reject::decline(
-                    "Ast.module: the built-in Ast sum is unavailable",
-                ));
-            };
-            let file_index = db.file_of(id).unwrap_or(0);
-            // The snapshot is present for any file that contains an `(. Ast module)` form (the gate in
-            // `compile::module_snapshot`), and this arm only fires when the occurrence resolved to the
-            // reflect intrinsic — so a genuine occurrence always has its snapshot. `None` (a file with no
-            // snapshot) declines cleanly rather than miscompiling.
-            let Some(snapshot) = db.source_snapshots.get(file_index).cloned().flatten() else {
-                return Core::Poison(Reject::decline(
-                    "Ast.module: no source snapshot for the enclosing module",
-                ));
-            };
-            let module_root = snapshot.root;
-            match arenas_to_ast_value(db, &snapshot, module_root, &disc) {
-                Some(root) => core_of(db, root),
-                None => Core::Poison(Reject::decline(
-                    "Ast.module: the enclosing module has a node with no Ast variant",
-                )),
-            }
+            // A directly-folded reflect op-record (rare — `Ast.module` is normally reached via member
+            // access, handled at the `Resolved::Member` arm below with the ACCESS SITE's file). The
+            // op-record is a shared, fileless built-in (the built-in `Ast` record's `module` field, the
+            // SAME node for every occurrence), so here fall back to `file_of(id)` (a genuine occurrence has
+            // one; a β-copy has none → file 0).
+            reflect_module_value(db, db.file_of(id).unwrap_or(0))
         }
         // `Map.empty` used as a VALUE — an operator record whose `(meta apply)` is `Prim::MapEmpty`.
         // Lowers to an empty `Core::MapNew` (built on the CHAMP heap via `map-empty`). Its key/value types
@@ -550,7 +534,21 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // evaluator. A non-record operand or an absent field is a poison so a mis-projection never
         // emits a wrong value.
         Resolved::Member { operand, key } => match crate::eval::member_value(db, operand, &key) {
-            crate::eval::Member::Field(value) => core_of(db, value),
+            crate::eval::Member::Field(value) => {
+                // `Ast.module` reflects the DEFINING module — the file of the ACCESS SITE `id` (the
+                // `(. Ast module)` occurrence), NOT the shared, fileless built-in reflect op-record
+                // `value` (folding which via `core_of` would default to file 0 and reflect the WRONG
+                // module — the operator-confirmed use-site late-binding bug). `Resolved::Ref` folds a
+                // value/nullary-def body IN PLACE (no copy, above), so a cross-module reference to
+                // `def m = Ast.module` reaches this arm with `id` at the DEFINING file's occurrence, and
+                // `file_of(id)` is that module. (A β-reduced/copied access site has no file → file 0.)
+                if crate::eval::meta_apply_of(db, value)
+                    == Some(crate::resolved::Prim::ReflectModule)
+                {
+                    return reflect_module_value(db, db.file_of(id).unwrap_or(0));
+                }
+                core_of(db, value)
+            }
             // ANCHOR AT THE MEMBER NODE (`id`), symmetric with `infer::no_field_reject` (which stamps its
             // copy at the same member node): the ONE absent-field defect is reported by both the infer
             // check and this emit fold, and anchoring both at the member node lets `dedup_faults` collapse
@@ -3848,6 +3846,34 @@ fn lower_ast_decode(db: &mut Db, id: StructId, bytes: StructId) -> Core {
                 payloads: vec![unit],
             }
         }
+    }
+}
+
+/// Fold `Ast.module` to the `Ast` VALUE reflecting the module in `file_index` — the module's own source
+/// tree (`self-hosting-surface.md` §A Program's Syntax Tree Is An Ordinary Value). `file_index` is the
+/// DEFINING module of the `Ast.module` occurrence — the caller passes the file of the ACCESS SITE (the
+/// `(. Ast module)` member-access node), NOT the shared, fileless built-in reflect op-record: the op-record
+/// is the same node for every occurrence, so keying on it would lose which module wrote `Ast.module` and
+/// reflect file 0 (the operator-confirmed use-site late-binding bug). Reads that file's source snapshot and
+/// rebuilds its AST value via `arenas_to_ast_value`. Declines cleanly (never miscompiles) when the built-in
+/// `Ast` sum is unavailable, the file has no snapshot, or the module has a leaf with no `Ast` variant.
+fn reflect_module_value(db: &mut Db, file_index: usize) -> Core {
+    let Some(disc) = ast_variant_discs(db) else {
+        return Core::Poison(Reject::decline(
+            "Ast.module: the built-in Ast sum is unavailable",
+        ));
+    };
+    let Some(snapshot) = db.source_snapshots.get(file_index).cloned().flatten() else {
+        return Core::Poison(Reject::decline(
+            "Ast.module: no source snapshot for the enclosing module",
+        ));
+    };
+    let module_root = snapshot.root;
+    match arenas_to_ast_value(db, &snapshot, module_root, &disc) {
+        Some(root) => core_of(db, root),
+        None => Core::Poison(Reject::decline(
+            "Ast.module: the enclosing module has a node with no Ast variant",
+        )),
     }
 }
 

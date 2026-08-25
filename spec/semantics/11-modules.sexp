@@ -2126,13 +2126,39 @@
            reflect its OWN module AST, hashes it to a 32-byte digest, and exports that as a compile-time
            CONSTANT `cid`. A caller imports the constant directly — no per-caller AST transform, and no
            self-import. Pins that a module can self-reflect (Ast.module) and export a content-address
-           constant (the compiler-side of userspace contract-id construction).")
+           constant (the compiler-side of userspace contract-id construction).
+           The imported `cid` binds to its DEFINING module `c`, NOT the importer — a VALUE check, not a
+           length one: the importer computes its OWN reflection digest `(Blake3.of (Ast.encode Ast.module))`
+           and asserts it DIFFERS from the imported `cid` (they are different modules, so different digests).
+           A use-site misreflection (`Ast.module` late-binding to the importer, the bug this pins) would make
+           them EQUAL — a length check (`Bytes.len cid == 32`) could NOT catch it, since both digests are 32
+           bytes; that weak check masked this miscompile. `Ast.module` reflects the file of the ACCESS SITE
+           occurrence (the `(. Ast module)` node), so `c`'s exported reflection stays bound to `c`.")
   (module "c"
     (do
       (def (cid) (Blake3.of (Ast.encode Ast.module)))
       (export cid)))
   (input  (do
             (import "c" (cid))
-            (def (main) (Bytes.len cid))
+            (def (main) (if (= cid (Blake3.of (Ast.encode Ast.module))) 1 0))
             (export main)))
-  (output (: 32 Int64)))
+  (output (: 0 Int64)))
+
+(case "an imported def whose body is Ast.module reflects its DEFINING module, not the importer"
+  (doc    "The BARE-reflection twin of the digest case above (no hash in between). A library `lib` exports a
+           value def `m` whose body IS `Ast.module` — the reflection of `lib`. The importer references the
+           imported `m` and compares it to its OWN `Ast.module` (the importer's module). They are different
+           modules, so the `Ast` values differ: `(= m Ast.module)` is FALSE → 0. If `Ast.module` late-bound
+           to the USE site (the bug), the imported `m` would reflect the IMPORTER and the two would be EQUAL
+           → 1. Pins that a value-def reference folds the def body in place at its DEFINING occurrence, so the
+           reflection binds to `lib` regardless of who imports `m` (the `Ast.module` fold keys on the access
+           site's file, not the shared built-in reflect op-record).")
+  (module "lib"
+    (do
+      (def m Ast.module)
+      (export m)))
+  (input  (do
+            (import "lib" (m))
+            (def (main) (if (= m Ast.module) 1 0))
+            (export main)))
+  (output (: 0 Int64)))
