@@ -81,6 +81,12 @@ fn flatten_record_field_abi(f: &crate::backend::wasm::host::RecordFieldAbi, out:
                 flatten_record_field_abi(e, out);
             }
         }
+        // An `option<T>` field flattens (canonical variant flatten) to `(disc:i32, flatten(payload))` — the
+        // disc slot then the payload's own flattened slots (one scalar this increment).
+        RecordFieldAbi::Option(payload) => {
+            out.push(wasm_abi::CORE_I32); // the discriminant
+            flatten_record_field_abi(payload, out);
+        }
     }
 }
 
