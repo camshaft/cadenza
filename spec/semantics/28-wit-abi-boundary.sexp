@@ -29,7 +29,8 @@
 ; (sink.push) lowered + invoked e2e (the align-8 scalar-element list-arg marshal). SHAPE 13 — an all-scalar
 ; record{a,b} host-op ARG (deliver.push) flattened to two i64 core slots + invoked e2e. SHAPE 14 — a Bytes
 ; host-op ARG with a scalar u64 RESULT (hasher.hash) threaded into the step's deadline-nanos. SHAPE 15 — a
-; COMPOUND result<Bytes, enum> host-import RESULT (run.run) matched Ok(v)->payload / Err->fallback.
+; COMPOUND result<Bytes, enum> host-import RESULT (run.run) matched Ok(v)->payload / Err->fallback. SHAPE 16 —
+; the option<s64> PARAM read (the read side: a record{d: option<s64>} param matched Some(x)->x / None->-1).
 
 (case "an option<s64> field in a record result crosses the export boundary on both arms"
   (doc    "The general option<T> RESULT lift across the WIT export boundary. The guest takes a record
@@ -226,3 +227,17 @@
   (host-responses (respond run.run (: (Ok (list 82 65 78)) (Result Bytes Error))))
   (host-calls (call cadenza:platform/run.run))
   (output (: (record (= requests ((record (= contract (1)) (= payload (82 65 78)) (= token (3)) (= deadline-nanos (None unit))))) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+(case "an option<s64> param field is read and rebuilt by the wrapper on both arms (via an imposed WIT world)"
+  (doc    "SHAPE 16 — the option<T> PARAM lift (the read side, complement to SHAPE 1's option RESULT): the guest
+           f takes a record { d: option<s64> } and matches it (Some(x) -> x, None -> -1). Feeding d=Some(42) -> 42
+           and d=None -> -1 exercises BOTH arms of the boundary option read (disc None=0/Some=1 + the payload at
+           the variant payload offset), which the wrapper rebuilds into the guest option cell. The export crosses
+           under the interface cadenza:demo/iface. Migrated from the in-crate wasmtime test
+           `an_option_param_field_is_read_by_the_wrapper` (the param-side variant reader, deadline-nanos read shape).")
+  (wit-world (world w (export iface (member f (func (param m ("record" (d ("option" (s64))))) (result (s64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (def (f (: m (Record (: d (Option Int64))))) (match (. m d) ((Option.Some x) x) (Option.None (- 0 1)))) (export f)))
+  (call f (: (record (= d (Some 42))) (Record (: d (Option Int64)))))
+  (output (: 42 Int64))
+  (call f (: (record (= d None)) (Record (: d (Option Int64)))))
+  (output (: -1 Int64)))
